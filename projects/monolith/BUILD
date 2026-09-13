@@ -1,40 +1,3 @@
-# gazelle:exclude agent
-# gazelle:exclude agent_sessions
-# gazelle:exclude auth
-# gazelle:exclude artifact
-# gazelle:exclude chat
-# gazelle:exclude chat_public
-# gazelle:exclude cluster
-# gazelle:exclude app
-# gazelle:exclude core
-# gazelle:exclude demos
-# gazelle:exclude ember_public
-# gazelle:exclude e2e
-# gazelle:exclude framework
-# gazelle:exclude swarm
-# gazelle:exclude knowledge
-# gazelle:exclude notes
-# gazelle:exclude scripts
-# gazelle:exclude home
-# gazelle:exclude sandbox
-# gazelle:exclude shotter
-# gazelle:exclude scheduler
-# gazelle:exclude semgrep_scan
-# gazelle:exclude goosecracker
-# gazelle:exclude shared
-# gazelle:exclude ships
-# gazelle:exclude hikes
-# gazelle:exclude moving
-# gazelle:exclude stars
-# gazelle:exclude trips
-# gazelle:exclude dr_jobs
-# gazelle:exclude worldcup
-# gazelle:exclude campsites
-# gazelle:exclude grimoire
-# gazelle:exclude grimoire_chat
-# gazelle:exclude faas
-# gazelle:exclude updates
-# gazelle:exclude observability
 # The frontend is pnpm/rules_js with hand-written BUILD files, so gazelle must
 # not walk it. frontend/BUILD already carries a `# gazelle:ignore`, but that
 # directive applies ONLY to the directory it appears in and does NOT recurse:
@@ -79,7 +42,10 @@ exec_filegroup(
 # Module config.py files for chart validation test.
 filegroup(
     name = "module_configs",
-    srcs = glob(["*/config.py"]),
+    srcs = [
+        "//projects/monolith/agent:config.py",
+        "//projects/monolith/swarm:config.py",
+    ],
     visibility = ["//projects/monolith/chart:__pkg__"],
 )
 
@@ -89,99 +55,41 @@ filegroup(
 # module would pull in the whole FastAPI/pydantic closure to read two strings.
 filegroup(
     name = "framework_core_src",
-    srcs = ["framework/core.py"],
+    srcs = ["//projects/monolith/framework:core.py"],
     visibility = ["//projects/monolith/chart:__pkg__"],
-)
-
-# Shared source closure for the monolith binaries. Both the API server
-# (:main / :image) and the batch-jobs entrypoint (:jobs / :jobs_image) glob the
-# same tree so their image dependency layers are byte-identical: Bazel caches
-# them and the OCI registry dedupes the blobs, so the jobs image costs only its
-# thin launcher layer to build and push. Keep them sharing this variable rather
-# than maintaining two globs that could silently drift apart.
-_BACKEND_SRCS = glob(
-    [
-        "agent/**/*.py",
-        "agent_sessions/**/*.py",
-        "app/**/*.py",
-        "auth/**/*.py",
-        "core/**/*.py",
-        "framework/**/*.py",
-        "artifact/**/*.py",
-        "chat/**/*.py",
-        "chat_public/**/*.py",
-        "cluster/**/*.py",
-        "demos/**/*.py",
-        "ember_public/**/*.py",
-        "goosecracker/**/*.py",
-        "knowledge/**/*.py",
-        "observability/**/*.py",
-        "home/**/*.py",
-        "sandbox/**/*.py",
-        "shotter/**/*.py",
-        "scheduler/**/*.py",
-        "semgrep_scan/**/*.py",
-        "shared/**/*.py",
-        "ships/**/*.py",
-        "hikes/**/*.py",
-        "moving/**/*.py",
-        "stars/**/*.py",
-        "trips/**/*.py",
-        "dr_jobs/**/*.py",
-        "worldcup/**/*.py",
-        "campsites/**/*.py",
-        "grimoire/**/*.py",
-        "grimoire_chat/**/*.py",
-        "faas/**/*.py",
-        "swarm/**/*.py",
-        "updates/**/*.py",
-    ],
-    exclude = [
-        # pytest discovers both *_test.py (sibling convention) and
-        # test_*.py (its default). Exclude both so that any test
-        # file in these source trees stays out of the production
-        # binary AND out of downstream test targets' runfiles.
-        "**/*_test.py",
-        "**/test_*.py",
-        "*/tests/**/*.py",
-        "shared/testing/**/*.py",
-        # Offline grid generator: run by hand, not part of the runtime image.
-        "stars/grid_gen/**",
-        # Run-by-hand S3->Postgres backfill, not part of the runtime image.
-        "trips/backfill/**",
-    ],
 )
 
 py_venv_binary(
     name = "main",
-    srcs = _BACKEND_SRCS,  # keep
+    srcs = ["//projects/monolith/app:main.py"],  # keep
     data = [
         # ratings.py reads this committed Elo snapshot at runtime via
         # Path(__file__).parent/"ratings"/"elo_2026.json"; the "worldcup/**/*.py"
         # glob does not capture the .json, so ship it explicitly into runfiles.
-        "worldcup/ratings/elo_2026.json",
+        "//projects/monolith/worldcup:ratings/elo_2026.json",
         # campsites.client.load_catalog reads this committed static catalog at
         # runtime via importlib.resources.files("campsites")/"catalog.json"; the
         # "campsites/**/*.py" glob does not capture the .json, so ship it into
         # runfiles explicitly (mirrors the worldcup Elo snapshot above).
-        "campsites/catalog.json",
+        "//projects/monolith/campsites:catalog.json",
         # directives.get_active reads this committed base directive at runtime
         # via Path(__file__).parent / "directive_seed.md" (ADR 035 phase 5); the
         # "chat/**/*.py" glob does not capture the .md, so ship it explicitly.
-        "chat/directive_seed.md",
+        "//projects/monolith/chat:directive_seed.md",
         # orchestrator.load_bundle reads this committed baked context bundle at
         # runtime via Path(__file__).with_name("orchestrator_bundle.md") (ADR
         # 036); the "chat/**/*.py" glob does not capture the .md, so ship it
         # explicitly or every escalation fails open with FileNotFoundError.
-        "chat/orchestrator_bundle.md",
+        "//projects/monolith/chat:orchestrator_bundle.md",
         # loadtest_corpus.load_corpus reads these committed .sample files at
         # runtime via Path(__file__).parent; the "demos/**/*.py" glob does not
         # capture non-.py data, so ship them explicitly into runfiles (mirrors
         # the worldcup Elo snapshot and campsites catalog above).
         ":frontend_dist",
-    ] + glob(["demos/loadtest_corpus/**/*.sample"]),
+        "//projects/monolith/demos:loadtest_samples",
+    ],
     imports = ["."],  # keep
-    main = "app/main.py",
+    main = "//projects/monolith/app:main.py",
     visibility = ["//:__subpackages__"],
     deps = [":monolith_backend"],  # keep
 )
@@ -197,7 +105,7 @@ py_venv_binary(
 # file in their own `data`.
 pkg_tar(
     name = "repo_docs_manifest_layer",
-    srcs = ["knowledge/repo_docs_manifest.ndjson"],
+    srcs = ["//projects/monolith/knowledge:repo_docs_manifest.ndjson"],
     package_dir = "/etc/monolith",
 )
 
@@ -210,17 +118,17 @@ pkg_tar(
 # :repo_docs_manifest_layer tar on :jobs_image rather than as data here.
 py_venv_binary(
     name = "jobs",
-    srcs = _BACKEND_SRCS,  # keep
+    srcs = ["//projects/monolith/app:jobs_main.py"],  # keep
     data = [
-        "worldcup/ratings/elo_2026.json",
+        "//projects/monolith/worldcup:ratings/elo_2026.json",
         # The campsites-refresh job (campsites.jobs.refresh_handler) reads this
         # static catalog from runfiles via campsites.client.load_catalog, so it
         # must ship in the jobs image too (data on :main does not propagate to
         # this separate binary).
-        "campsites/catalog.json",
+        "//projects/monolith/campsites:catalog.json",
     ],
     imports = ["."],  # keep
-    main = "app/jobs_main.py",
+    main = "//projects/monolith/app:jobs_main.py",
     visibility = ["//:__subpackages__"],
     # typer is the jobs entrypoint's CLI framework but is NOT a serving dep, so
     # it is absent from :monolith_backend; the binary must depend on it directly
@@ -239,9 +147,9 @@ py_venv_binary(
 # listener touches only agent_sessions store/models and core.db.
 py_venv_binary(
     name = "progress",
-    srcs = _BACKEND_SRCS,  # keep
+    srcs = ["//projects/monolith/app:progress_main.py"],  # keep
     imports = ["."],  # keep
-    main = "app/progress_main.py",
+    main = "//projects/monolith/app:progress_main.py",
     visibility = ["//:__subpackages__"],
     deps = [":monolith_backend"],  # keep
 )
@@ -252,7 +160,7 @@ py_venv_binary(
 #       --vault-root /path/to/vault --dirs _processed
 py_venv_binary(
     name = "add_visibility_field",
-    main = "knowledge/tools/add_visibility_field.py",
+    main = "//projects/monolith/knowledge:tools/add_visibility_field.py",
     visibility = ["//:__subpackages__"],
 )
 
@@ -265,7 +173,7 @@ py_venv_binary(
 # quote note content and must never be committed.
 py_venv_binary(
     name = "classify_visibility_backfill",
-    main = "knowledge/tools/classify_visibility_backfill.py",
+    main = "//projects/monolith/knowledge:tools/classify_visibility_backfill.py",
     visibility = ["//:__subpackages__"],
 )
 
@@ -278,7 +186,7 @@ py_venv_binary(
 # imports = ["."] would repoint the venv main and break `bazel run`.
 py_venv_binary(
     name = "gen_repo_docs_manifest",
-    main = "knowledge/tools/gen_repo_docs_manifest.py",
+    main = "//projects/monolith/knowledge:tools/gen_repo_docs_manifest.py",
     visibility = ["//:__subpackages__"],
 )
 
@@ -290,13 +198,13 @@ py_venv_binary(
 # `imports` attr rationale as gen_repo_docs_manifest above.
 py_venv_binary(
     name = "gen_docs_manifest",
-    main = "knowledge/tools/gen_docs_manifest.py",
+    main = "//projects/monolith/knowledge:tools/gen_docs_manifest.py",
     visibility = ["//:__subpackages__"],
 )
 
 py_venv_binary(
     name = "gen_posts_manifest",
-    main = "knowledge/tools/gen_posts_manifest.py",
+    main = "//projects/monolith/knowledge:tools/gen_posts_manifest.py",
     visibility = ["//:__subpackages__"],
 )
 
@@ -312,1285 +220,261 @@ py_venv_binary(
 # gen_repo_docs_manifest above.
 py_venv_binary(
     name = "gen_orchestrator_bundle",
-    main = "knowledge/tools/gen_orchestrator_bundle.py",
+    main = "//projects/monolith/knowledge:tools/gen_orchestrator_bundle.py",
     visibility = ["//:__subpackages__"],
 )
 
-# Per-package libraries. Splitting :monolith_backend by subtree means a
-# change under grimoire/ invalidates grimoire's tests, not all 354. The
-# The packages in the agent/chat/home import cycle share one
-# target because Bazel deps must be acyclic; everything else is a DAG.
-py_library(
+# Python package targets live with their source trees. This group admits the
+# private backend, compatibility aliases, and peer domain packages while
+# excluding the public aggregator package. Public membership is exposed only
+# through each package's explicitly tagged :public target.
+package_group(
+    name = "package_consumers",
+    packages = [
+        "-//projects/monolith/public_backend",
+        "//projects/monolith",
+        "//projects/monolith/...",
+    ],
+)
+
+# Compatibility aliases keep the existing hand-written tests and downstream
+# labels stable while source ownership moves into the package directories.
+alias(
     name = "pkg_auth",
-    srcs = glob(
-        [
-            "auth/**/*.py",
-        ],
-        exclude = [
-            "**/*_test.py",
-            "**/test_*.py",
-            "*/tests/**/*.py",
-        ],
-    ),
-    imports = ["."],
+    actual = "//projects/monolith/auth:pkg_auth",
     visibility = ["//:__subpackages__"],
-    deps = [
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//opentelemetry_sdk",
-        # PyJWT is currently locked transitively through mcp and semgrep.
-        "@pip//pyjwt",
-        "@pip//starlette",
-    ],
 )
 
-py_library(
+alias(
     name = "pkg_core",
-    srcs = glob(
-        [
-            "core/**/*.py",
-        ],
-        exclude = [
-            "**/*_test.py",
-            "**/test_*.py",
-            "*/tests/**/*.py",
-        ],
-    ),
-    imports = ["."],
+    actual = "//projects/monolith/core:pkg_core",
     visibility = ["//:__subpackages__"],
-    deps = [
-        "@pip//certifi",
-        "@pip//fastapi",
-        "@pip//fastmcp",
-        "@pip//httpx",
-        "@pip//opentelemetry_exporter_otlp_proto_http",
-        "@pip//opentelemetry_instrumentation_fastapi",
-        "@pip//opentelemetry_instrumentation_httpx",
-        "@pip//opentelemetry_sdk",
-        "@pip//pgvector",
-        "@pip//psycopg",
-        "@pip//psycopg_binary",
-        "@pip//pydantic",
-        "@pip//python_multipart",
-        "@pip//pyyaml",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-        "@pip//tzdata",
-        "@pip//uvicorn",
-    ],
 )
 
-py_library(
+alias(
     name = "pkg_shared",
-    srcs = glob(
-        [
-            "shared/**/*.py",
-        ],
-        exclude = [
-            "**/*_test.py",
-            "**/test_*.py",
-            "*/tests/**/*.py",
-            "shared/testing/**/*.py",
-        ],
-    ),
-    imports = ["."],
+    actual = "//projects/monolith/shared:pkg_shared",
     visibility = ["//:__subpackages__"],
-    deps = [
-        "@pip//certifi",
-        "@pip//fastapi",
-        "@pip//genai_prices",
-        "@pip//httpx",
-        "@pip//opentelemetry_exporter_otlp_proto_http",
-        "@pip//opentelemetry_instrumentation_fastapi",
-        "@pip//opentelemetry_instrumentation_httpx",
-        "@pip//opentelemetry_sdk",
-        "@pip//pgvector",
-        "@pip//psycopg",
-        "@pip//psycopg_binary",
-        "@pip//pydantic",
-        "@pip//python_multipart",
-        "@pip//pyyaml",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-        "@pip//tzdata",
-        "@pip//uvicorn",
-    ],
 )
 
-py_library(
+alias(
     name = "pkg_framework",
-    srcs = glob(
-        [
-            "framework/**/*.py",
-        ],
-        exclude = [
-            "**/*_test.py",
-            "**/test_*.py",
-            "*/tests/**/*.py",
-        ],
-    ),
-    imports = ["."],
+    actual = "//projects/monolith/framework:pkg_framework",
     visibility = ["//:__subpackages__"],
-    deps = [
-        ":pkg_auth",
-        ":pkg_core",
-        "@pip//certifi",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//opentelemetry_exporter_otlp_proto_http",
-        "@pip//opentelemetry_instrumentation_fastapi",
-        "@pip//opentelemetry_instrumentation_httpx",
-        "@pip//opentelemetry_sdk",
-        "@pip//pgvector",
-        "@pip//psycopg",
-        "@pip//psycopg_binary",
-        "@pip//pydantic",
-        "@pip//python_multipart",
-        "@pip//pyyaml",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-        "@pip//tzdata",
-        "@pip//uvicorn",
-    ],
 )
 
-py_library(
+alias(
     name = "pkg_artifact",
-    srcs = glob(
-        [
-            "artifact/**/*.py",
-        ],
-        exclude = [
-            "**/*_test.py",
-            "**/test_*.py",
-            "*/tests/**/*.py",
-        ],
-    ),
-    imports = ["."],
+    actual = "//projects/monolith/artifact:pkg_artifact",
     visibility = ["//:__subpackages__"],
-    deps = [
-        ":pkg_framework",
-        "@pip//boto3",
-        "@pip//certifi",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//opentelemetry_exporter_otlp_proto_http",
-        "@pip//opentelemetry_instrumentation_fastapi",
-        "@pip//opentelemetry_instrumentation_httpx",
-        "@pip//opentelemetry_sdk",
-        "@pip//pgvector",
-        "@pip//psycopg",
-        "@pip//psycopg_binary",
-        "@pip//pydantic",
-        "@pip//python_multipart",
-        "@pip//pyyaml",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-        "@pip//tzdata",
-        "@pip//uvicorn",
-    ],
 )
 
-py_library(
+alias(
     name = "pkg_scheduler",
-    srcs = glob(
-        [
-            "scheduler/**/*.py",
-        ],
-        exclude = [
-            "**/*_test.py",
-            "**/test_*.py",
-            "*/tests/**/*.py",
-        ],
-    ),
-    imports = ["."],
+    actual = "//projects/monolith/scheduler:pkg_scheduler",
     visibility = ["//:__subpackages__"],
-    deps = [
-        ":pkg_cluster",
-        ":pkg_core",
-        ":pkg_framework",
-        "@pip//certifi",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//kubernetes_asyncio",
-        "@pip//opentelemetry_exporter_otlp_proto_http",
-        "@pip//opentelemetry_instrumentation_fastapi",
-        "@pip//opentelemetry_instrumentation_httpx",
-        "@pip//opentelemetry_sdk",
-        "@pip//pgvector",
-        "@pip//psycopg",
-        "@pip//psycopg_binary",
-        "@pip//pydantic",
-        "@pip//python_multipart",
-        "@pip//pyyaml",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-        "@pip//tzdata",
-        "@pip//uvicorn",
-    ],
 )
 
-py_library(
+alias(
     name = "pkg_cluster",
-    srcs = glob(
-        [
-            "cluster/**/*.py",
-        ],
-        exclude = [
-            "**/*_test.py",
-            "**/test_*.py",
-            "*/tests/**/*.py",
-        ],
-    ),
-    imports = ["."],
+    actual = "//projects/monolith/cluster:pkg_cluster",
     visibility = ["//:__subpackages__"],
-    deps = [
-        ":pkg_core",
-        ":pkg_framework",
-        "@pip//certifi",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//kubernetes_asyncio",
-        "@pip//opentelemetry_exporter_otlp_proto_http",
-        "@pip//opentelemetry_instrumentation_fastapi",
-        "@pip//opentelemetry_instrumentation_httpx",
-        "@pip//opentelemetry_sdk",
-        "@pip//pgvector",
-        "@pip//psycopg",
-        "@pip//psycopg_binary",
-        "@pip//pydantic",
-        "@pip//python_multipart",
-        "@pip//pyyaml",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-        "@pip//tzdata",
-        "@pip//uvicorn",
-    ],
 )
 
-py_library(
+alias(
     name = "pkg_trips",
-    srcs = glob(
-        [
-            "trips/**/*.py",
-        ],
-        exclude = [
-            "**/*_test.py",
-            "**/test_*.py",
-            "*/tests/**/*.py",
-            "trips/backfill/**",
-        ],
-    ),
-    imports = ["."],
+    actual = "//projects/monolith/trips:pkg_trips",
     visibility = ["//:__subpackages__"],
-    deps = [
-        ":pkg_core",
-        ":pkg_framework",
-        "@pip//boto3",
-        "@pip//certifi",
-        "@pip//defusedxml",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//opentelemetry_exporter_otlp_proto_http",
-        "@pip//opentelemetry_instrumentation_fastapi",
-        "@pip//opentelemetry_instrumentation_httpx",
-        "@pip//opentelemetry_sdk",
-        "@pip//pgvector",
-        "@pip//pillow",
-        "@pip//psycopg",
-        "@pip//psycopg_binary",
-        "@pip//pydantic",
-        "@pip//python_multipart",
-        "@pip//pyyaml",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-        "@pip//tzdata",
-        "@pip//uvicorn",
-    ],
 )
 
-py_library(
+alias(
     name = "pkg_faas",
-    srcs = glob(
-        [
-            "faas/**/*.py",
-        ],
-        exclude = [
-            "**/*_test.py",
-            "**/test_*.py",
-            "*/tests/**/*.py",
-        ],
-    ),
-    imports = ["."],
+    actual = "//projects/monolith/faas:pkg_faas",
     visibility = ["//:__subpackages__"],
-    deps = [
-        ":pkg_core",
-        ":pkg_framework",
-        ":pkg_shared",
-        "@pip//boto3",
-        "@pip//certifi",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//kubernetes_asyncio",
-        "@pip//opentelemetry_exporter_otlp_proto_http",
-        "@pip//opentelemetry_instrumentation_fastapi",
-        "@pip//opentelemetry_instrumentation_httpx",
-        "@pip//opentelemetry_sdk",
-        "@pip//pgvector",
-        "@pip//psycopg",
-        "@pip//psycopg_binary",
-        "@pip//pydantic",
-        "@pip//python_multipart",
-        "@pip//pyyaml",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-        "@pip//tzdata",
-        "@pip//uvicorn",
-    ],
 )
 
-py_library(
+alias(
     name = "pkg_sandbox",
-    srcs = glob(
-        [
-            "sandbox/**/*.py",
-        ],
-        exclude = [
-            "**/*_test.py",
-            "**/test_*.py",
-            "*/tests/**/*.py",
-        ],
-    ),
-    imports = ["."],
+    actual = "//projects/monolith/sandbox:pkg_sandbox",
     visibility = ["//:__subpackages__"],
-    deps = [
-        ":pkg_core",
-        ":pkg_framework",
-        ":pkg_shared",
-        "@pip//certifi",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//opentelemetry_exporter_otlp_proto_http",
-        "@pip//opentelemetry_instrumentation_fastapi",
-        "@pip//opentelemetry_instrumentation_httpx",
-        "@pip//opentelemetry_sdk",
-        "@pip//pgvector",
-        "@pip//psycopg",
-        "@pip//psycopg_binary",
-        "@pip//pydantic",
-        "@pip//python_multipart",
-        "@pip//pyyaml",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-        "@pip//tzdata",
-        "@pip//uvicorn",
-    ],
 )
 
-py_library(
+alias(
     name = "pkg_shotter",
-    srcs = glob(
-        [
-            "shotter/**/*.py",
-        ],
-        exclude = [
-            "**/*_test.py",
-            "**/test_*.py",
-            "*/tests/**/*.py",
-        ],
-    ),
-    imports = ["."],
+    actual = "//projects/monolith/shotter:pkg_shotter",
     visibility = ["//:__subpackages__"],
-    deps = [
-        ":pkg_core",
-        ":pkg_framework",
-        ":pkg_shared",
-        "@pip//boto3",
-        "@pip//certifi",
-        "@pip//fastapi",
-        "@pip//httpx",
-        # shotter/mcp.py imports mcp.types.ImageContent directly (ADR
-        # embervm/035 section 5), so unlike pkg_sandbox this needs the mcp
-        # package explicitly, not just transitively through fastmcp.
-        "@pip//mcp",
-        "@pip//opentelemetry_exporter_otlp_proto_http",
-        "@pip//opentelemetry_instrumentation_fastapi",
-        "@pip//opentelemetry_instrumentation_httpx",
-        "@pip//opentelemetry_sdk",
-        "@pip//pgvector",
-        "@pip//psycopg",
-        "@pip//psycopg_binary",
-        "@pip//pydantic",
-        "@pip//python_multipart",
-        "@pip//pyyaml",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-        "@pip//tzdata",
-        "@pip//uvicorn",
-    ],
 )
 
-py_library(
+alias(
     name = "pkg_semgrep_scan",
-    srcs = glob(
-        [
-            "semgrep_scan/**/*.py",
-        ],
-        exclude = [
-            "**/*_test.py",
-            "**/test_*.py",
-            "*/tests/**/*.py",
-        ],
-    ),
-    imports = ["."],
+    actual = "//projects/monolith/semgrep_scan:pkg_semgrep_scan",
     visibility = ["//:__subpackages__"],
-    deps = [
-        ":pkg_core",
-        ":pkg_framework",
-        ":pkg_shared",
-        "@pip//certifi",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//opentelemetry_exporter_otlp_proto_http",
-        "@pip//opentelemetry_instrumentation_fastapi",
-        "@pip//opentelemetry_instrumentation_httpx",
-        "@pip//opentelemetry_sdk",
-        "@pip//pgvector",
-        "@pip//psycopg",
-        "@pip//psycopg_binary",
-        "@pip//pydantic",
-        "@pip//python_multipart",
-        "@pip//pyyaml",
-        # NOTE: semgrep_scan/report.py uploads to the Semgrep App via plain
-        # authenticated HTTP (explicit Authorization: Bearer) using httpx (already
-        # a dep above), not ScanHandler.
-        # pysemgrep INTERNAL APIs for the fc-invoke -> Semgrep-App relay
-        # (semgrep_scan/report.py): only the out.* atd types (light) + __VERSION__.
-        # We do NOT use ScanHandler / get_state / app_session (auth never attaches
-        # outside a click command, and start_scan polls the OOM /config ruleset).
-        # Pinned 1.168.0 in bazel/requirements/tools.in.
-        "@pip//semgrep",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-        "@pip//tzdata",
-        "@pip//uvicorn",
-    ],
 )
 
-py_library(
+alias(
     name = "pkg_campsites",
-    srcs = glob(
-        [
-            "campsites/**/*.py",
-        ],
-        exclude = [
-            "**/*_test.py",
-            "**/test_*.py",
-            "*/tests/**/*.py",
-        ],
-    ),
-    imports = ["."],
+    actual = "//projects/monolith/campsites:pkg_campsites",
     visibility = ["//:__subpackages__"],
-    deps = [
-        ":pkg_core",
-        ":pkg_framework",
-        ":pkg_scheduler",
-        "@pip//certifi",
-        "@pip//curl_cffi",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//opentelemetry_exporter_otlp_proto_http",
-        "@pip//opentelemetry_instrumentation_fastapi",
-        "@pip//opentelemetry_instrumentation_httpx",
-        "@pip//opentelemetry_sdk",
-        "@pip//pgvector",
-        "@pip//psycopg",
-        "@pip//psycopg_binary",
-        "@pip//pydantic",
-        "@pip//python_multipart",
-        "@pip//pyyaml",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-        "@pip//tzdata",
-        "@pip//uvicorn",
-    ],
 )
 
-py_library(
+alias(
     name = "pkg_ships",
-    srcs = glob(
-        [
-            "ships/**/*.py",
-        ],
-        exclude = [
-            "**/*_test.py",
-            "**/test_*.py",
-            "*/tests/**/*.py",
-        ],
-    ),
-    imports = ["."],
+    actual = "//projects/monolith/ships:pkg_ships",
     visibility = ["//:__subpackages__"],
-    deps = [
-        ":pkg_core",
-        ":pkg_framework",
-        ":pkg_scheduler",
-        "@pip//certifi",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//opentelemetry_exporter_otlp_proto_http",
-        "@pip//opentelemetry_instrumentation_fastapi",
-        "@pip//opentelemetry_instrumentation_httpx",
-        "@pip//opentelemetry_sdk",
-        "@pip//pgvector",
-        "@pip//psycopg",
-        "@pip//psycopg_binary",
-        "@pip//pydantic",
-        "@pip//python_multipart",
-        "@pip//pyyaml",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-        "@pip//tzdata",
-        "@pip//uvicorn",
-        "@pip//websockets",
-    ],
 )
 
-py_library(
+alias(
     name = "pkg_worldcup",
-    srcs = glob(
-        [
-            "worldcup/**/*.py",
-        ],
-        exclude = [
-            "**/*_test.py",
-            "**/test_*.py",
-            "*/tests/**/*.py",
-        ],
-    ),
-    imports = ["."],
+    actual = "//projects/monolith/worldcup:pkg_worldcup",
     visibility = ["//:__subpackages__"],
-    deps = [
-        ":pkg_core",
-        ":pkg_framework",
-        ":pkg_scheduler",
-        "@pip//certifi",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//opentelemetry_exporter_otlp_proto_http",
-        "@pip//opentelemetry_instrumentation_fastapi",
-        "@pip//opentelemetry_instrumentation_httpx",
-        "@pip//opentelemetry_sdk",
-        "@pip//pgvector",
-        "@pip//psycopg",
-        "@pip//psycopg_binary",
-        "@pip//pydantic",
-        "@pip//python_multipart",
-        "@pip//pyyaml",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-        "@pip//tzdata",
-        "@pip//uvicorn",
-    ],
 )
 
-py_library(
+alias(
     name = "pkg_knowledge",
-    srcs = glob(
-        [
-            "knowledge/**/*.py",
-        ],
-        exclude = [
-            "**/*_test.py",
-            "**/test_*.py",
-            "*/tests/**/*.py",
-        ],
-    ),
-    # entities.yaml is 2.5 KB and deliberately ships as runfiles data, unlike
-    # the multi-megabyte ndjson manifest isolated in its own image layer below.
-    data = ["knowledge/entities.yaml"],
-    imports = ["."],
+    actual = "//projects/monolith/knowledge:pkg_knowledge",
     visibility = ["//:__subpackages__"],
-    deps = [
-        ":pkg_core",
-        ":pkg_framework",
-        ":pkg_scheduler",
-        ":pkg_shared",
-        ":swarm_factory_controls",
-        "@pip//boto3",
-        "@pip//certifi",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//lxml_html_clean",
-        "@pip//networkx",
-        "@pip//opentelemetry_exporter_otlp_proto_http",
-        "@pip//opentelemetry_instrumentation_fastapi",
-        "@pip//opentelemetry_instrumentation_httpx",
-        "@pip//opentelemetry_sdk",
-        "@pip//pgvector",
-        "@pip//psycopg",
-        "@pip//psycopg_binary",
-        "@pip//pydantic",
-        "@pip//python_multipart",
-        "@pip//pyyaml",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-        "@pip//trafilatura",
-        "@pip//tzdata",
-        "@pip//uvicorn",
-        "@pip//youtube_transcript_api",
-    ],
 )
 
-py_library(
+alias(
     name = "pkg_hikes",
-    srcs = glob(
-        [
-            "hikes/**/*.py",
-        ],
-        exclude = [
-            "**/*_test.py",
-            "**/test_*.py",
-            "*/tests/**/*.py",
-        ],
-    ),
-    imports = ["."],
+    actual = "//projects/monolith/hikes:pkg_hikes",
     visibility = ["//:__subpackages__"],
-    deps = [
-        ":pkg_core",
-        ":pkg_framework",
-        ":pkg_scheduler",
-        ":pkg_shared",
-        "@pip//beautifulsoup4",
-        "@pip//certifi",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//opentelemetry_exporter_otlp_proto_http",
-        "@pip//opentelemetry_instrumentation_fastapi",
-        "@pip//opentelemetry_instrumentation_httpx",
-        "@pip//opentelemetry_sdk",
-        "@pip//pgvector",
-        "@pip//psycopg",
-        "@pip//psycopg_binary",
-        "@pip//pydantic",
-        "@pip//python_multipart",
-        "@pip//pyyaml",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-        "@pip//timelength",
-        "@pip//tzdata",
-        "@pip//uvicorn",
-    ],
 )
 
-py_library(
+alias(
     name = "pkg_moving",
-    srcs = glob(
-        [
-            "moving/**/*.py",
-        ],
-        exclude = [
-            "**/*_test.py",
-            "**/test_*.py",
-            "*/tests/**/*.py",
-        ],
-    ),
-    imports = ["."],
+    actual = "//projects/monolith/moving:pkg_moving",
     visibility = ["//:__subpackages__"],
-    deps = [
-        ":pkg_chat_public",
-        ":pkg_core",
-        ":pkg_framework",
-        ":pkg_shared",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//pydantic",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-    ],
 )
 
-py_library(
+alias(
     name = "pkg_updates",
-    srcs = glob(
-        [
-            "updates/**/*.py",
-        ],
-        exclude = [
-            "**/*_test.py",
-            "**/test_*.py",
-            "*/tests/**/*.py",
-        ],
-    ),
-    imports = ["."],
+    actual = "//projects/monolith/updates:pkg_updates",
     visibility = ["//:__subpackages__"],
-    deps = [
-        ":pkg_auth",
-        ":pkg_core",
-        ":pkg_framework",
-        "@pip//fastapi",
-        "@pip//fastmcp",
-        "@pip//pydantic",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-    ],
 )
 
-py_library(
+alias(
     name = "pkg_stars",
-    srcs = glob(
-        [
-            "stars/**/*.py",
-        ],
-        exclude = [
-            "**/*_test.py",
-            "**/test_*.py",
-            "*/tests/**/*.py",
-            "stars/grid_gen/**",
-        ],
-    ),
-    imports = ["."],
+    actual = "//projects/monolith/stars:pkg_stars",
     visibility = ["//:__subpackages__"],
-    deps = [
-        ":pkg_core",
-        ":pkg_framework",
-        ":pkg_scheduler",
-        ":pkg_shared",
-        "@pip//astral",
-        "@pip//boto3",
-        "@pip//certifi",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//opentelemetry_exporter_otlp_proto_http",
-        "@pip//opentelemetry_instrumentation_fastapi",
-        "@pip//opentelemetry_instrumentation_httpx",
-        "@pip//opentelemetry_sdk",
-        "@pip//pgvector",
-        "@pip//psycopg",
-        "@pip//psycopg_binary",
-        "@pip//pydantic",
-        "@pip//python_multipart",
-        "@pip//pyyaml",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-        "@pip//tzdata",
-        "@pip//uvicorn",
-    ],
 )
 
-py_library(
+alias(
     name = "pkg_chat_public",
-    srcs = glob(
-        [
-            "chat_public/**/*.py",
-        ],
-        exclude = [
-            "**/*_test.py",
-            "**/test_*.py",
-            "*/tests/**/*.py",
-        ],
-    ),
-    imports = ["."],
+    actual = "//projects/monolith/chat_public:pkg_chat_public",
     visibility = ["//:__subpackages__"],
-    deps = [
-        ":pkg_core",
-        ":pkg_framework",
-        ":pkg_knowledge",
-        ":pkg_shared",
-        "@pip//certifi",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//opentelemetry_exporter_otlp_proto_http",
-        "@pip//opentelemetry_instrumentation_fastapi",
-        "@pip//opentelemetry_instrumentation_httpx",
-        "@pip//opentelemetry_sdk",
-        "@pip//pgvector",
-        "@pip//psycopg",
-        "@pip//psycopg_binary",
-        "@pip//pydantic",
-        "@pip//python_multipart",
-        "@pip//pyyaml",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-        "@pip//tzdata",
-        "@pip//uvicorn",
-    ],
 )
 
-py_library(
+alias(
     name = "pkg_grimoire",
-    srcs = glob(
-        [
-            "grimoire/**/*.py",
-        ],
-        exclude = [
-            "**/*_test.py",
-            "**/test_*.py",
-            "*/tests/**/*.py",
-        ],
-    ),
-    imports = ["."],
+    actual = "//projects/monolith/grimoire:pkg_grimoire",
     visibility = ["//:__subpackages__"],
-    deps = [
-        ":pkg_core",
-        ":pkg_framework",
-        ":pkg_knowledge",
-        ":pkg_scheduler",
-        ":pkg_shared",
-        "@pip//boto3",
-        "@pip//certifi",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//opentelemetry_exporter_otlp_proto_http",
-        "@pip//opentelemetry_instrumentation_fastapi",
-        "@pip//opentelemetry_instrumentation_httpx",
-        "@pip//opentelemetry_sdk",
-        "@pip//pgvector",
-        "@pip//psycopg",
-        "@pip//psycopg_binary",
-        "@pip//pydantic",
-        "@pip//python_multipart",
-        "@pip//pyyaml",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-        "@pip//tzdata",
-        "@pip//uvicorn",
-    ],
 )
 
-py_library(
+alias(
     name = "pkg_grimoire_chat",
-    srcs = glob(
-        [
-            "grimoire_chat/**/*.py",
-        ],
-        exclude = [
-            "**/*_test.py",
-            "**/test_*.py",
-            "*/tests/**/*.py",
-        ],
-    ),
-    imports = ["."],
+    actual = "//projects/monolith/grimoire_chat:pkg_grimoire_chat",
     visibility = ["//:__subpackages__"],
-    deps = [
-        ":pkg_core",
-        ":pkg_framework",
-        ":pkg_grimoire",
-        ":pkg_knowledge",
-        "@pip//certifi",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//opentelemetry_exporter_otlp_proto_http",
-        "@pip//opentelemetry_instrumentation_fastapi",
-        "@pip//opentelemetry_instrumentation_httpx",
-        "@pip//opentelemetry_sdk",
-        "@pip//pgvector",
-        "@pip//psycopg",
-        "@pip//psycopg_binary",
-        "@pip//pydantic",
-        "@pip//python_multipart",
-        "@pip//pyyaml",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-        "@pip//tzdata",
-        "@pip//uvicorn",
-    ],
 )
 
-py_library(
+alias(
     name = "pkg_ember_public",
-    srcs = glob(
-        [
-            "ember_public/**/*.py",
-        ],
-        exclude = [
-            "**/*_test.py",
-            "**/test_*.py",
-            "*/tests/**/*.py",
-        ],
-    ),
-    imports = ["."],
+    actual = "//projects/monolith/ember_public:pkg_ember_public",
     visibility = ["//:__subpackages__"],
-    deps = [
-        ":pkg_chat_public",
-        ":pkg_core",
-        ":pkg_faas",
-        ":pkg_framework",
-        ":pkg_semgrep_scan",
-        ":pkg_shared",
-        "@pip//certifi",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//opentelemetry_exporter_otlp_proto_http",
-        "@pip//opentelemetry_instrumentation_fastapi",
-        "@pip//opentelemetry_instrumentation_httpx",
-        "@pip//opentelemetry_sdk",
-        "@pip//pgvector",
-        "@pip//psycopg",
-        "@pip//psycopg_binary",
-        "@pip//pydantic",
-        "@pip//python_multipart",
-        "@pip//pyyaml",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-        "@pip//tzdata",
-        "@pip//uvicorn",
-    ],
 )
 
-py_library(
+alias(
     name = "pkg_cyclegroup",
-    srcs = glob(
-        [
-            "agent/**/*.py",
-            "chat/**/*.py",
-            "goosecracker/**/*.py",
-            "home/**/*.py",
-        ],
-        exclude = [
-            "**/*_test.py",
-            "**/test_*.py",
-            "*/tests/**/*.py",
-        ],
-    ),
-    imports = ["."],
+    actual = "//projects/monolith/agent:pkg_cyclegroup",
     visibility = ["//:__subpackages__"],
-    deps = [
-        ":agent_sessions_admission",
-        ":pkg_artifact",
-        ":pkg_cluster",
-        ":pkg_core",
-        ":pkg_framework",
-        ":pkg_knowledge",
-        ":pkg_sandbox",
-        ":pkg_scheduler",
-        ":pkg_shared",
-        "@pip//boto3",
-        "@pip//certifi",
-        "@pip//discord_py",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//icalendar",
-        "@pip//opentelemetry_exporter_otlp_proto_http",
-        "@pip//opentelemetry_instrumentation_fastapi",
-        "@pip//opentelemetry_instrumentation_httpx",
-        "@pip//opentelemetry_sdk",
-        "@pip//pgvector",
-        "@pip//psycopg",
-        "@pip//psycopg_binary",
-        "@pip//pydantic",
-        "@pip//pydantic_ai_slim",
-        "@pip//python_multipart",
-        "@pip//pyyaml",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-        "@pip//tzdata",
-        "@pip//uvicorn",
-    ],
 )
 
-py_library(
+alias(
     name = "agent_sessions_rationale",
-    srcs = ["agent_sessions/rationale.py"],
-    imports = ["."],
+    actual = "//projects/monolith/agent_sessions:agent_sessions_rationale",
     visibility = ["//:__subpackages__"],
 )
 
-py_library(
+alias(
     name = "agent_sessions_admission",
-    srcs = [
-        "agent_sessions/__init__.py",
-        "agent_sessions/admission.py",
-        "agent_sessions/api.py",
-        "agent_sessions/constants.py",
-        "agent_sessions/models.py",
-        "agent_sessions/reconciliation.py",
-    ],
-    imports = ["."],
+    actual = "//projects/monolith/agent_sessions:agent_sessions_admission",
     visibility = ["//:__subpackages__"],
-    deps = [
-        ":pkg_core",
-        ":pkg_shared",
-        ":swarm_factory_controls",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-    ],
 )
 
-py_library(
+alias(
     name = "pkg_agent_sessions",
-    srcs = glob(
-        [
-            "agent_sessions/**/*.py",
-        ],
-        exclude = [
-            "**/*_test.py",
-            "**/test_*.py",
-            "*/tests/**/*.py",
-            "agent_sessions/rationale.py",
-            "agent_sessions/__init__.py",
-            "agent_sessions/admission.py",
-            "agent_sessions/api.py",
-            "agent_sessions/constants.py",
-            "agent_sessions/models.py",
-            "agent_sessions/reconciliation.py",
-        ],
-    ),
-    imports = ["."],
+    actual = "//projects/monolith/agent_sessions:pkg_agent_sessions",
     visibility = ["//:__subpackages__"],
-    deps = [
-        ":agent_sessions_admission",
-        ":agent_sessions_rationale",
-        # mcp.py and router.py read the request principal via auth.api.
-        ":pkg_auth",
-        ":pkg_core",
-        ":pkg_cyclegroup",
-        ":pkg_faas",
-        ":pkg_framework",
-        ":pkg_knowledge",
-        ":pkg_shared",
-        ":swarm_factory_controls",
-        "@pip//certifi",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//opentelemetry_exporter_otlp_proto_http",
-        "@pip//opentelemetry_instrumentation_fastapi",
-        "@pip//opentelemetry_instrumentation_httpx",
-        "@pip//opentelemetry_sdk",
-        "@pip//pgvector",
-        "@pip//psycopg",
-        "@pip//psycopg_binary",
-        "@pip//pydantic",
-        "@pip//python_multipart",
-        "@pip//pyyaml",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-        "@pip//tzdata",
-        "@pip//uvicorn",
-    ],
 )
 
-py_library(
+alias(
     name = "swarm_rationale",
-    srcs = ["swarm/rationale.py"],
-    imports = ["."],
+    actual = "//projects/monolith/swarm:swarm_rationale",
     visibility = ["//:__subpackages__"],
-    deps = [":agent_sessions_rationale"],
 )
 
-# Shared admission fence must also ship in the pruned session executor binary.
-# Keep it below the full swarm package to avoid a dependency cycle.
-py_library(
+alias(
     name = "swarm_factory_controls",
-    srcs = [
-        "swarm/__init__.py",
-        "swarm/api.py",
-        "swarm/factory_controls.py",
-        "swarm/factory_models.py",
-        "swarm/models.py",
-    ],
-    imports = ["."],
+    actual = "//projects/monolith/swarm:swarm_factory_controls",
     visibility = ["//:__subpackages__"],
-    deps = [
-        ":pkg_core",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-    ],
 )
 
-py_library(
+alias(
     name = "pkg_swarm",
-    srcs = glob(
-        ["swarm/**/*.py"],
-        exclude = [
-            "**/*_test.py",
-            "**/test_*.py",
-            "*/tests/**/*.py",
-            "swarm/__init__.py",
-            "swarm/api.py",
-            "swarm/factory_controls.py",
-            "swarm/factory_models.py",
-            "swarm/models.py",
-            "swarm/rationale.py",
-        ],
-    ),
-    imports = ["."],
+    actual = "//projects/monolith/swarm:pkg_swarm",
     visibility = ["//:__subpackages__"],
-    deps = [
-        ":agent_sessions_admission",
-        ":agent_sessions_rationale",
-        ":pkg_agent_sessions",
-        ":pkg_core",
-        ":pkg_cyclegroup",
-        ":pkg_framework",
-        ":pkg_knowledge",
-        ":swarm_factory_controls",
-        "@pip//certifi",
-        "@pip//dbos",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//jsonschema",
-        "@pip//opentelemetry_exporter_otlp_proto_http",
-        "@pip//opentelemetry_instrumentation_fastapi",
-        "@pip//opentelemetry_instrumentation_httpx",
-        "@pip//opentelemetry_sdk",
-        "@pip//pgvector",
-        "@pip//psycopg",
-        "@pip//psycopg_binary",
-        "@pip//pydantic",
-        "@pip//python_multipart",
-        "@pip//pyyaml",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-        "@pip//tzdata",
-        "@pip//uvicorn",
-    ],
 )
 
-py_library(
+alias(
     name = "pkg_dr_jobs",
-    srcs = glob(
-        [
-            "dr_jobs/**/*.py",
-        ],
-        exclude = [
-            "**/*_test.py",
-            "**/test_*.py",
-            "*/tests/**/*.py",
-        ],
-    ),
-    imports = ["."],
+    actual = "//projects/monolith/dr_jobs:pkg_dr_jobs",
     visibility = ["//:__subpackages__"],
-    deps = [
-        ":pkg_core",
-        ":pkg_cyclegroup",
-        ":pkg_framework",
-        ":pkg_scheduler",
-        "@pip//certifi",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//opentelemetry_exporter_otlp_proto_http",
-        "@pip//opentelemetry_instrumentation_fastapi",
-        "@pip//opentelemetry_instrumentation_httpx",
-        "@pip//opentelemetry_sdk",
-        "@pip//pgvector",
-        "@pip//psycopg",
-        "@pip//psycopg_binary",
-        "@pip//pydantic",
-        "@pip//python_multipart",
-        "@pip//pyyaml",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-        "@pip//tzdata",
-        "@pip//uvicorn",
-    ],
 )
 
-py_library(
+alias(
     name = "pkg_demos",
-    srcs = glob(
-        [
-            "demos/**/*.py",
-        ],
-        exclude = [
-            "**/*_test.py",
-            "**/test_*.py",
-            "*/tests/**/*.py",
-        ],
-    ),
-    imports = ["."],
+    actual = "//projects/monolith/demos:pkg_demos",
     visibility = ["//:__subpackages__"],
-    deps = [
-        ":pkg_cluster",
-        ":pkg_core",
-        ":pkg_cyclegroup",
-        ":pkg_ember_public",
-        ":pkg_framework",
-        ":pkg_sandbox",
-        ":pkg_semgrep_scan",
-        ":pkg_shared",
-        "@pip//certifi",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//opentelemetry_exporter_otlp_proto_http",
-        "@pip//opentelemetry_instrumentation_fastapi",
-        "@pip//opentelemetry_instrumentation_httpx",
-        "@pip//opentelemetry_sdk",
-        "@pip//pgvector",
-        "@pip//psycopg",
-        "@pip//psycopg_binary",
-        "@pip//pydantic",
-        "@pip//python_multipart",
-        "@pip//pyyaml",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-        "@pip//tzdata",
-        "@pip//uvicorn",
-    ],
 )
 
 py_library(
     name = "monolith_backend",
-    srcs = glob(
-        [
-            "agent/**/*.py",
-            "agent_sessions/**/*.py",
-            "app/**/*.py",
-            "auth/**/*.py",
-            "core/**/*.py",
-            "framework/**/*.py",
-            "artifact/**/*.py",
-            "chat/**/*.py",
-            "chat_public/**/*.py",
-            "cluster/**/*.py",
-            "demos/**/*.py",
-            "ember_public/**/*.py",
-            "goosecracker/**/*.py",
-            "knowledge/**/*.py",
-            "observability/**/*.py",
-            "home/**/*.py",
-            "sandbox/**/*.py",
-            "shotter/**/*.py",
-            "scheduler/**/*.py",
-            "semgrep_scan/**/*.py",
-            "shared/**/*.py",
-            "ships/**/*.py",
-            "hikes/**/*.py",
-            "moving/**/*.py",
-            "stars/**/*.py",
-            "trips/**/*.py",
-            "dr_jobs/**/*.py",
-            "worldcup/**/*.py",
-            "campsites/**/*.py",
-            "grimoire/**/*.py",
-            "grimoire_chat/**/*.py",
-            "faas/**/*.py",
-            "swarm/**/*.py",
-            "updates/**/*.py",
-        ],
-        exclude = [
-            # pytest discovers both *_test.py (sibling convention) and
-            # test_*.py (its default). Exclude both so a broken test in
-            # one knowledge/*.py file does not cascade across every
-            # downstream test target that depends on this library
-            # (per the 217-target cascade on PR #2349).
-            "**/*_test.py",
-            "**/test_*.py",
-            "*/tests/**/*.py",
-            "shared/testing/**/*.py",
-            # Offline grid generator: run by hand, not part of the runtime image.
-            "stars/grid_gen/**",
-            # Run-by-hand S3->Postgres backfill (boto3/typer/httpx orchestration)
-            # stays out of the runtime image; the pure exif.py/transform.py
-            # modules live at trips/ level and DO ship for the live ingest +
-            # SSR read paths.
-            "trips/backfill/**",
-        ],
-    ),  # keep
     # entities.yaml is 2.5 KB and deliberately ships as runfiles data, unlike
     # the multi-megabyte ndjson manifest isolated in its own image layer.
-    data = ["knowledge/entities.yaml"],
+    data = ["//projects/monolith/knowledge:entities.yaml"],
     visibility = ["//:__subpackages__"],
     deps = [
+        "//projects/monolith/agent:pkg_cyclegroup",
+        "//projects/monolith/agent_sessions:pkg_agent_sessions",
+        "//projects/monolith/app:pkg_app",
+        "//projects/monolith/auth:pkg_auth",
+        "//projects/monolith/core:pkg_core",
+        "//projects/monolith/framework:pkg_framework",
+        "//projects/monolith/artifact:pkg_artifact",
+        "//projects/monolith/chat_public:pkg_chat_public",
+        "//projects/monolith/cluster:pkg_cluster",
+        "//projects/monolith/demos:pkg_demos",
+        "//projects/monolith/ember_public:pkg_ember_public",
+        "//projects/monolith/faas:pkg_faas",
+        "//projects/monolith/knowledge:pkg_knowledge",
+        "//projects/monolith/observability:pkg_observability",
+        "//projects/monolith/sandbox:pkg_sandbox",
+        "//projects/monolith/scheduler:pkg_scheduler",
+        "//projects/monolith/semgrep_scan:pkg_semgrep_scan",
+        "//projects/monolith/shared:pkg_shared",
+        "//projects/monolith/ships:pkg_ships",
+        "//projects/monolith/hikes:pkg_hikes",
+        "//projects/monolith/moving:pkg_moving",
+        "//projects/monolith/stars:pkg_stars",
+        "//projects/monolith/trips:pkg_trips",
+        "//projects/monolith/dr_jobs:pkg_dr_jobs",
+        "//projects/monolith/worldcup:pkg_worldcup",
+        "//projects/monolith/campsites:pkg_campsites",
+        "//projects/monolith/grimoire:pkg_grimoire",
+        "//projects/monolith/grimoire_chat:pkg_grimoire_chat",
+        "//projects/monolith/shotter:pkg_shotter",
+        "//projects/monolith/swarm:pkg_swarm",
+        "//projects/monolith/updates:pkg_updates",
         "@pip//dbos",
         "@pip//astral",
         "@pip//beautifulsoup4",
@@ -1647,18 +531,10 @@ py_library(
 )
 
 # nosemgrep: py-glob-missing-tests-exclude — this IS a testing library
-py_library(
+alias(
     name = "shared_testing",
-    srcs = glob(["shared/testing/**/*.py"]),
-    imports = ["."],
+    actual = "//projects/monolith/shared:shared_testing",
     visibility = ["//:__subpackages__"],
-    deps = [
-        ":monolith_backend",
-        "@pip//httpx",
-        "@pip//pytest",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-    ],
 )
 
 py3_image(
@@ -1674,7 +550,7 @@ py3_image(
         "SSL_CERT_FILE": "/projects/monolith/main.runfiles/_main/projects/monolith/.main/lib/python3.13/site-packages/certifi/cacert.pem",
         "REPO_DOCS_MANIFEST_PATH": "/etc/monolith/repo_docs_manifest.ndjson",
     },
-    main = "app/main.py",
+    main = "//projects/monolith/app:main.py",
     repository = "ghcr.io/jomcgi/homelab/projects/monolith/backend",
     tars = [":repo_docs_manifest_layer"],
 )
@@ -1694,7 +570,7 @@ py3_image(
         "SSL_CERT_FILE": "/projects/monolith/jobs.runfiles/_main/projects/monolith/.jobs/lib/python3.13/site-packages/certifi/cacert.pem",
         "REPO_DOCS_MANIFEST_PATH": "/etc/monolith/repo_docs_manifest.ndjson",
     },
-    main = "app/jobs_main.py",
+    main = "//projects/monolith/app:jobs_main.py",
     repository = "ghcr.io/jomcgi/homelab/projects/monolith/jobs",
     tars = [":repo_docs_manifest_layer"],
 )
@@ -1710,7 +586,7 @@ py3_image(
     env = {
         "PYTHONPATH": "/projects/monolith/progress.runfiles/_main:/projects/monolith/progress.runfiles/_main/projects/monolith",
     },
-    main = "app/progress_main.py",
+    main = "//projects/monolith/app:progress_main.py",
     repository = "ghcr.io/jomcgi/homelab/projects/monolith/progress",
 )
 
@@ -1722,7 +598,7 @@ py3_image(
     env = {
         "PYTHONPATH": "/projects/monolith/main_agents.runfiles/_main:/projects/monolith/main_agents.runfiles/_main/projects/monolith",
     },
-    main = "app/agents_main.py",
+    main = "//projects/monolith/app:agents_main.py",
     repository = "ghcr.io/jomcgi/homelab/projects/monolith/agents",
 )
 
@@ -1738,221 +614,28 @@ py3_image(
 # routers, home read router/config/models, ships/stars/hikes/dr_jobs/shared)
 # stays in full. The pip deps mirror :monolith_backend wholesale: a missing
 # wheel would crash the public binary at startup, so trimming is a follow-up.
-_PUBLIC_PRUNE_EXCLUDE = [
-    # Standard excludes (mirror :monolith_backend / :main).
-    "**/*_test.py",
-    # Semgrep: the public tier ships only semgrep_scan/client.py (+ __init__)
-    # for the ember demo; the MCP tool, App reporting, PR router, full-scan
-    # and perf surfaces are private-only.
-    "semgrep_scan/mcp.py",
-    "semgrep_scan/module.py",
-    "semgrep_scan/report.py",
-    "semgrep_scan/router.py",
-    "semgrep_scan/cohorts.py",
-    "semgrep_scan/perf_*.py",
-    "**/test_*.py",
-    "*/tests/**/*.py",
-    "shared/testing/**/*.py",
-    "stars/grid_gen/**",
-    "trips/backfill/**",
-    # Whole private domains.
-    "agent/**",
-    "chat/**",
-    "cluster/**",
-    "goosecracker/**",
-    "scheduler/**",
-    # shotter (issue #4994): MCP-only, never globbed into either public srcs
-    # list below, so this entry is belt-and-suspenders rather than load-
-    # bearing today. Listed explicitly so a future public glob edit that
-    # copy-pastes a directory list does not silently pull in the SeaweedFS
-    # write path (boto3 credentials, EMBERVM_URL dispatch) without a second
-    # thought.
-    "shotter/**",
-    # Trips: the read path (models.py + read_router.py + __init__.py) ships in
-    # the public image; the write/heavy path stays out (pillow/boto3/defusedxml).
-    "trips/ingest_router.py",
-    "trips/ingest.py",
-    "trips/s3.py",
-    "trips/exif.py",
-    "trips/transform.py",
-    # Worldcup: only the read path (models.py + router.py + __init__.py) ships in
-    # the public image. __init__.register_public imports worldcup.router, and
-    # router imports worldcup.models; neither pulls the sim/poller graph. The
-    # simulate/poll-only modules (jobs/client/sim/outcome/ratings) and the Elo
-    # snapshot data stay out (httpx/scheduler/sim closure is private-only).
-    "worldcup/jobs.py",
-    "worldcup/client.py",
-    "worldcup/sim.py",
-    "worldcup/outcome.py",
-    "worldcup/ratings.py",
-    # The "*.py" include glob never captures the JSON; listed for defence in
-    # depth (the public binary also omits it from `data`).
-    "worldcup/ratings/elo_2026.json",
-    # Campsites: only the read path (models.py + router.py + __init__.py) ships in
-    # the public image. The scraper and weather-fetch modules (jobs/client/weather)
-    # pull curl_cffi/httpx and stay out of the public binary, as does the run-by-hand
-    # catalog generator (gen_catalog.py).
-    "campsites/jobs.py",
-    "campsites/client.py",
-    "campsites/weather.py",
-    "campsites/gen_catalog.py",
-    # Private entrypoint + MCP app.
-    "app/main.py",
-    "app/mcp_app.py",
-    # Private module registry (imports chat/agent/demos/...) and the
-    # single-domain entrypoint: never part of the public composition.
-    "app/modules_private.py",
-    "app/main_domain.py",
-    # Batch-jobs entrypoint: runs as :jobs_image, never in the public binary.
-    "app/jobs_main.py",
-    # Ember synthetic prober and private trigger: run only in the private API
-    # and jobs images. The public tier ships the READ side (synthetic.py +
-    # synthetic_models.py, which health.py needs to answer /api/health) but must
-    # not carry the prober or internal endpoint that drives the workloads, same split as
-    # worldcup/jobs.py and campsites/jobs.py.
-    "ember_public/synthetic_probe.py",
-    "ember_public/synthetic_router.py",
-    # Visibility write path must not ship in public or agents images.
-    "knowledge/publish.py",
-    # Private knowledge routers / write paths / heavy maintenance internals.
-    "knowledge/router.py",
-    "knowledge/tasks_router.py",
-    "knowledge/gaps.py",
-    "knowledge/ingest_queue.py",
-    "knowledge/mcp.py",
-    "knowledge/service.py",
-    "knowledge/layout.py",
-    # The public observability router needs the model and parser, never the
-    # snapshot writer or its PostgreSQL mutation path.
-    "observability/merged_prs_writer.py",
-    # Private home scheduling + observability writer paths.
-    "home/schedule.py",
-    "home/schedule_router.py",
-    "home/observability/slo.py",
-    "home/observability/rollup.py",
-    "home/observability/stats.py",
-    "home/observability/traces.py",
-    # Grimoire: only the public read path ships. The daily ingest/extract jobs
-    # import the scheduler (a forbidden public module), so they stay out of the
-    # public binary; the read path (public/router_public/library/models/
-    # visibility plus the extract/ingest helpers it calls) ships.
-    "grimoire/jobs.py",
-    # FaaS: only the public invocation path ships. The ingestion API (router.py)
-    # is the authenticated private-tier author surface (no /api on public); the
-    # write path (storage.py = S3, workload.py = K8s CR CRUD) is private-only; the
-    # guest function code (functions/**) runs inside the
-    # microVM, never in the monolith. register_public imports only
-    # invoke_router_public -> invoke_router -> repository/embervm_client/models,
-    # none of which pull the pruned files (main_public_imports_test enforces it).
-    "faas/router.py",
-    "faas/storage.py",
-    "faas/workload.py",
-    "faas/functions/**/*.py",
-]
-
 # ---------------------------------------------------------------------------
 # Agent service (issue #5656 slice 1): a pruned, authenticated MCP binary that
-# runs app/agents_main.py. It carries only the knowledge catalogue plus the
+# runs app/agents_main.py. It depends only on the knowledge catalogue plus the
 # auth, core, framework, shared, and app support code needed to serve it. Every
-# unrelated domain and every private knowledge, home, cluster, and app path is
-# excluded from the source glob below. app/main_agents_imports_test.py imports
+# unrelated domain and every private knowledge, home, cluster, and app target is
+# absent from the dependency list below. app/main_agents_imports_test.py imports
 # the entrypoint in a fresh process and PROVES that none of those private
 # modules enter its runtime closure, so excluding their FILES is safe: any new
 # eager dependency fails in CI before a later image can fail at startup. The
 # pip dependencies mirror :monolith_backend wholesale for now. Trimming wheels
 # is separate from enforcing the Python source boundary.
-_AGENTS_PRUNE_EXCLUDE = [
-    # Standard production excludes (mirror :monolith_backend / :main).
-    "**/*_test.py",
-    "**/test_*.py",
-    "*/tests/**/*.py",
-    "shared/testing/**/*.py",
-    # Whole private domains.
-    "agent/**",
-    "agent_sessions/**",
-    "cluster/**",
-    "demos/**",
-    "goosecracker/**",
-    "moving/**",
-    "sandbox/**",
-    "scheduler/**",
-    "shotter/**",
-    "trips/**",
-    "updates/**",
-    # The chat domain is NOT globbed at all for this tier (see the srcs list
-    # below), so it needs no exclusions here. The two files that DO ship are
-    # named one by one, which is default-deny: a new chat/*.py cannot join this
-    # tier by merely existing.
-    "artifact/**",
-    "campsites/**",
-    "chat_public/**",
-    "dr_jobs/**",
-    "ember_public/**",
-    "faas/**",
-    "grimoire/**",
-    "grimoire_chat/**",
-    "hikes/**",
-    "home/**",
-    "semgrep_scan/**",
-    "ships/**",
-    "stars/**",
-    "swarm/**",
-    "worldcup/**",
-    # Private entrypoints and registries. The import test itself is excluded
-    # explicitly as well as by the standard test patterns above.
-    "app/main.py",
-    "app/mcp_app.py",
-    "app/modules_private.py",
-    "app/main_domain.py",
-    "app/jobs_main.py",
-    "app/progress_main.py",
-    "app/main_agents_imports_test.py",
-    # The shared private monolith MCP server. agents_main owns a dedicated
-    # four-tool FastMCP instance instead.
-    "core/mcp_app.py",
-    # Visibility write path must not ship in public or agents images.
-    "knowledge/publish.py",
-    # Private knowledge routers and write or maintenance paths.
-    "knowledge/router.py",
-    "knowledge/tasks_router.py",
-    "knowledge/gaps.py",
-    "knowledge/ingest_queue.py",
-    "knowledge/service.py",
-    "knowledge/layout.py",
-    # Private home scheduling and observability writer paths. home/** is not in
-    # the allowlist today, but keeping the individual paths documents the
-    # boundary if a narrow home dependency is added later.
-    "home/schedule.py",
-    "home/schedule_router.py",
-    "home/observability/slo.py",
-    "home/observability/rollup.py",
-    "home/observability/stats.py",
-    "home/observability/traces.py",
-]
-
 py_library(
     name = "monolith_agents_backend",
-    srcs = glob(
-        [
-            "app/**/*.py",
-            "auth/**/*.py",
-            "core/**/*.py",
-            "framework/**/*.py",
-            "knowledge/**/*.py",
-            "shared/**/*.py",
-        ],
-        exclude = _AGENTS_PRUNE_EXCLUDE,
-    ) + [
-        # The outbox PRODUCER only. enqueue_message is infrastructure every
-        # replica uses ("producers on any replica enqueue a row; the leader's
-        # bot drains it"), and both files import no other domain. The drain
-        # loop and the rest of chat stay out. Named explicitly rather than
-        # globbed so adding a chat file cannot widen this tier silently.
-        "chat/models.py",
-        "chat/outbox.py",
-    ],  # keep
     visibility = ["//:__subpackages__"],
     deps = [
+        "//projects/monolith/app:agents",
+        "//projects/monolith/auth:agents",
+        "//projects/monolith/chat:agents",
+        "//projects/monolith/core:agents",
+        "//projects/monolith/framework:agents",
+        "//projects/monolith/knowledge:agents",
+        "//projects/monolith/shared:agents",
         "@pip//astral",
         "@pip//beautifulsoup4",
         "@pip//boto3",
@@ -1991,157 +674,26 @@ py_library(
 
 py_venv_binary(
     name = "main_agents",
-    srcs = glob(
-        [
-            "app/**/*.py",
-            "auth/**/*.py",
-            "core/**/*.py",
-            "framework/**/*.py",
-            "knowledge/**/*.py",
-            "shared/**/*.py",
-        ],
-        exclude = _AGENTS_PRUNE_EXCLUDE,
-    ) + [
-        # The outbox PRODUCER only. enqueue_message is infrastructure every
-        # replica uses ("producers on any replica enqueue a row; the leader's
-        # bot drains it"), and both files import no other domain. The drain
-        # loop and the rest of chat stay out. Named explicitly rather than
-        # globbed so adding a chat file cannot widen this tier silently.
-        "chat/models.py",
-        "chat/outbox.py",
-    ],  # keep
+    srcs = ["//projects/monolith/app:agents_main.py"],  # keep
     imports = ["."],  # keep
-    main = "app/agents_main.py",
+    main = "//projects/monolith/app:agents_main.py",
     visibility = ["//:__subpackages__"],
     deps = [":monolith_agents_backend"],  # keep
 )
 
-py_library(
+alias(
     name = "monolith_public_backend",
-    srcs = glob(
-        [
-            "agent_sessions/__init__.py",
-            "agent_sessions/public_module.py",
-            "agent_sessions/public_router.py",
-            "app/**/*.py",
-            "core/**/*.py",
-            "framework/**/*.py",
-            "artifact/**/*.py",
-            "knowledge/**/*.py",
-            "observability/**/*.py",
-            "home/**/*.py",
-            "shared/**/*.py",
-            "ships/**/*.py",
-            "hikes/**/*.py",
-            "stars/**/*.py",
-            "dr_jobs/**/*.py",
-            "chat_public/**/*.py",
-            "trips/**/*.py",
-            "worldcup/**/*.py",
-            "campsites/**/*.py",
-            # Grimoire public read tier: the read modules (router_public, public,
-            # library, models, visibility, extract, ingest) ship here so
-            # main_public can mount register_public. The private grant router and
-            # scheduler-bound jobs are never imported by the public closure
-            # (main_public_imports_test enforces this).
-            "grimoire/**/*.py",
-            "grimoire_chat/**/*.py",
-            # FaaS public invocation tier: only the invoke path ships (Task 13).
-            # register_public mounts invoke_router_public, which pulls
-            # invoke_router (shared relay) + repository + embervm_client + models.
-            # The ingestion API (router.py) and the write path (storage.py,
-            # workload.py) plus the guest function code (functions/**) are pruned
-            # below; main_public_imports_test enforces they stay out of the closure.
-            "faas/**/*.py",
-            # Ember public tier (docs/plans/2026-07-18-ember-public-pages.md Task 1):
-            # the demo-postgres core, public-safe by construction (never imports
-            # demos/sandbox.client; EMBERVM_URL read directly from the environment).
-            "ember_public/**/*.py",
-            # Semgrep demo (ember_public.semgrep_router): only client.py + the
-            # package __init__ ship; the rest is pruned below (private-only).
-            "semgrep_scan/**/*.py",
-        ],
-        exclude = _PUBLIC_PRUNE_EXCLUDE,
-    ),  # keep
+    actual = "//projects/monolith/public_backend:monolith_public_backend",
     visibility = ["//:__subpackages__"],
-    deps = [
-        "@pip//astral",
-        "@pip//beautifulsoup4",
-        "@pip//boto3",
-        "@pip//certifi",
-        "@pip//discord_py",
-        "@pip//fastapi",
-        "@pip//fastmcp",
-        "@pip//httpx",
-        "@pip//icalendar",
-        "@pip//kubernetes_asyncio",
-        "@pip//lxml_html_clean",  # explicit: overrides.txt strips lxml[html-clean] extra
-        "@pip//networkx",
-        "@pip//opentelemetry_exporter_otlp_proto_http",
-        "@pip//opentelemetry_instrumentation_fastapi",
-        "@pip//opentelemetry_instrumentation_httpx",
-        "@pip//opentelemetry_sdk",
-        "@pip//pgvector",
-        "@pip//psycopg",
-        "@pip//psycopg_binary",
-        "@pip//pydantic",
-        "@pip//pydantic_ai_slim",
-        "@pip//pyyaml",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-        "@pip//timelength",
-        "@pip//trafilatura",
-        "@pip//tzdata",
-        "@pip//uvicorn",
-        "@pip//websockets",
-        "@pip//youtube_transcript_api",
-    ],
 )
 
 py_venv_binary(
     name = "main_public",
-    srcs = glob(
-        [
-            "agent_sessions/__init__.py",
-            "agent_sessions/public_module.py",
-            "agent_sessions/public_router.py",
-            "app/**/*.py",
-            "core/**/*.py",
-            "framework/**/*.py",
-            "artifact/**/*.py",
-            "knowledge/**/*.py",
-            "observability/**/*.py",
-            "home/**/*.py",
-            "shared/**/*.py",
-            "ships/**/*.py",
-            "hikes/**/*.py",
-            "stars/**/*.py",
-            "dr_jobs/**/*.py",
-            "chat_public/**/*.py",
-            "trips/**/*.py",
-            "worldcup/**/*.py",
-            "campsites/**/*.py",
-            "grimoire/**/*.py",
-            "grimoire_chat/**/*.py",
-            # FaaS public invocation tier: only the invoke path ships (Task 13).
-            # register_public mounts invoke_router_public, which pulls
-            # invoke_router (shared relay) + repository + embervm_client + models.
-            # The ingestion API (router.py) and the write path (storage.py,
-            # workload.py) plus the guest function code (functions/**) are pruned
-            # below; main_public_imports_test enforces they stay out of the closure.
-            "faas/**/*.py",
-            "ember_public/**/*.py",
-            # Semgrep demo (ember_public.semgrep_router): only client.py + the
-            # package __init__ ship; mcp/report/full_scan/router/perf stay
-            # pruned below (private-tier surfaces).
-            "semgrep_scan/**/*.py",
-        ],
-        exclude = _PUBLIC_PRUNE_EXCLUDE,
-    ),  # keep
+    srcs = ["//projects/monolith/app:main_public.py"],  # keep
     imports = ["."],  # keep
-    main = "app/main_public.py",
+    main = "//projects/monolith/app:main_public.py",
     visibility = ["//:__subpackages__"],
-    deps = [":monolith_public_backend"],  # keep
+    deps = ["//projects/monolith/public_backend:monolith_public_backend"],  # keep
 )
 
 py3_image(
@@ -2156,7 +708,7 @@ py3_image(
         # at certifi's bundle so outbound HTTPS works.
         "SSL_CERT_FILE": "/projects/monolith/main_public.runfiles/_main/projects/monolith/.main_public/lib/python3.13/site-packages/certifi/cacert.pem",
     },
-    main = "app/main_public.py",
+    main = "//projects/monolith/app:main_public.py",
     repository = "ghcr.io/jomcgi/homelab/projects/monolith/public-backend",
 )
 
@@ -2172,18 +724,19 @@ py3_image(
 # ---------------------------------------------------------------------------
 py_venv_binary(
     name = "main_domain",
-    srcs = _BACKEND_SRCS,  # keep
+    srcs = ["//projects/monolith/app:main_domain.py"],  # keep
     data = [
         # Same runtime data files as :main (any domain may be selected at
         # startup); only the static frontend bundle is omitted, because the
         # domain profile never serves it (framework: static_frontend=False).
-        "campsites/catalog.json",
-        "chat/directive_seed.md",
-        "chat/orchestrator_bundle.md",
-        "worldcup/ratings/elo_2026.json",
-    ] + glob(["demos/loadtest_corpus/**/*.sample"]),
+        "//projects/monolith/campsites:catalog.json",
+        "//projects/monolith/chat:directive_seed.md",
+        "//projects/monolith/chat:orchestrator_bundle.md",
+        "//projects/monolith/worldcup:ratings/elo_2026.json",
+        "//projects/monolith/demos:loadtest_samples",
+    ],
     imports = ["."],  # keep
-    main = "app/main_domain.py",
+    main = "//projects/monolith/app:main_domain.py",
     visibility = ["//:__subpackages__"],
     deps = [":monolith_backend"],  # keep
 )
@@ -2195,12 +748,12 @@ monolith_domain_images(
     domains = MONOLITH_DOMAINS,
     extra_env = {"REPO_DOCS_MANIFEST_PATH": "/etc/monolith/repo_docs_manifest.ndjson"},
     extra_tars = [":repo_docs_manifest_layer"],
-    main = "app/main_domain.py",
+    main = "//projects/monolith/app:main_domain.py",
 )
 
 py_test(
     name = "auth_verifier_test",
-    srcs = ["auth/verifier_test.py"],
+    srcs = ["//projects/monolith/auth:verifier_test.py"],
     imports = ["."],
     deps = [
         ":pkg_auth",
@@ -2214,7 +767,7 @@ py_test(
 
 py_test(
     name = "auth_plumbing_test",
-    srcs = ["auth/plumbing_test.py"],
+    srcs = ["//projects/monolith/auth:plumbing_test.py"],
     imports = ["."],
     deps = [
         ":pkg_auth",
@@ -2227,11 +780,56 @@ py_test(
 
 py_test(
     name = "markers_test",
-    srcs = ["shared/testing/markers_test.py"],
+    srcs = ["//projects/monolith/shared:testing/markers_test.py"],
     imports = ["."],
     deps = [
         ":shared_testing",
         "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "package_classification_test",
+    srcs = ["package_classification_test.py"],
+    data = [
+        "BUILD",
+        "//projects/monolith/agent:BUILD",
+        "//projects/monolith/agent_sessions:BUILD",
+        "//projects/monolith/app:BUILD",
+        "//projects/monolith/artifact:BUILD",
+        "//projects/monolith/auth:BUILD",
+        "//projects/monolith/campsites:BUILD",
+        "//projects/monolith/chat:BUILD",
+        "//projects/monolith/chat_public:BUILD",
+        "//projects/monolith/cluster:BUILD",
+        "//projects/monolith/core:BUILD",
+        "//projects/monolith/demos:BUILD",
+        "//projects/monolith/dr_jobs:BUILD",
+        "//projects/monolith/e2e:BUILD",
+        "//projects/monolith/ember_public:BUILD",
+        "//projects/monolith/faas:BUILD",
+        "//projects/monolith/framework:BUILD",
+        "//projects/monolith/goosecracker:BUILD",
+        "//projects/monolith/grimoire:BUILD",
+        "//projects/monolith/grimoire_chat:BUILD",
+        "//projects/monolith/hikes:BUILD",
+        "//projects/monolith/home:BUILD",
+        "//projects/monolith/knowledge:BUILD",
+        "//projects/monolith/moving:BUILD",
+        "//projects/monolith/observability:BUILD",
+        "//projects/monolith/public_backend:BUILD",
+        "//projects/monolith/sandbox:BUILD",
+        "//projects/monolith/scheduler:BUILD",
+        "//projects/monolith/scripts:BUILD",
+        "//projects/monolith/semgrep_scan:BUILD",
+        "//projects/monolith/shared:BUILD",
+        "//projects/monolith/ships:BUILD",
+        "//projects/monolith/shotter:BUILD",
+        "//projects/monolith/stars:BUILD",
+        "//projects/monolith/swarm:BUILD",
+        "//projects/monolith/trips:BUILD",
+        "//projects/monolith/updates:BUILD",
+        "//projects/monolith/worldcup:BUILD",
     ],
 )
 
@@ -2241,41 +839,34 @@ py_test(
 py_test(
     name = "import_boundaries_test",
     srcs = ["import_boundaries_test.py"],
-    data = glob(
-        include = [
-            "ships/**/*.py",
-            "stars/**/*.py",
-            "artifact/**/*.py",
-            "chat/**/*.py",
-            "chat_public/**/*.py",
-            "grimoire_chat/**/*.py",
-            "knowledge/**/*.py",
-            "hikes/**/*.py",
-            "moving/**/*.py",
-            "dr_jobs/**/*.py",
-            "trips/**/*.py",
-            "home/**/*.py",
-            "scheduler/**/*.py",
-            "agent/**/*.py",
-            "agent_sessions/**/*.py",
-            "auth/**/*.py",
-            "goosecracker/**/*.py",
-            "worldcup/**/*.py",
-            "campsites/**/*.py",
-        ],
-        exclude = [
-            "**/*_test.py",
-            "**/test_*.py",
-            "*/tests/**/*.py",
-        ],
-    ),
+    data = [
+        "//projects/monolith/agent:boundary_sources",
+        "//projects/monolith/agent_sessions:boundary_sources",
+        "//projects/monolith/artifact:boundary_sources",
+        "//projects/monolith/auth:boundary_sources",
+        "//projects/monolith/campsites:boundary_sources",
+        "//projects/monolith/chat:boundary_sources",
+        "//projects/monolith/chat_public:boundary_sources",
+        "//projects/monolith/dr_jobs:boundary_sources",
+        "//projects/monolith/goosecracker:boundary_sources",
+        "//projects/monolith/grimoire_chat:boundary_sources",
+        "//projects/monolith/hikes:boundary_sources",
+        "//projects/monolith/home:boundary_sources",
+        "//projects/monolith/knowledge:boundary_sources",
+        "//projects/monolith/moving:boundary_sources",
+        "//projects/monolith/scheduler:boundary_sources",
+        "//projects/monolith/ships:boundary_sources",
+        "//projects/monolith/stars:boundary_sources",
+        "//projects/monolith/trips:boundary_sources",
+        "//projects/monolith/worldcup:boundary_sources",
+    ],
     imports = ["."],
     deps = ["@pip//pytest"],
 )
 
 py_test(
     name = "view_test",
-    srcs = ["swarm/view_test.py"],
+    srcs = ["//projects/monolith/swarm:view_test.py"],
     imports = ["."],
     deps = [
         ":pkg_swarm",
@@ -2285,7 +876,7 @@ py_test(
 
 py_test(
     name = "rows_test",
-    srcs = ["swarm/rows_test.py"],
+    srcs = ["//projects/monolith/swarm:rows_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
@@ -2295,7 +886,7 @@ py_test(
 
 py_test(
     name = "models_test",
-    srcs = ["swarm/models_test.py"],
+    srcs = ["//projects/monolith/swarm:models_test.py"],
     imports = ["."],
     deps = [
         ":pkg_swarm",
@@ -2307,7 +898,7 @@ py_test(
 
 py_test(
     name = "swarm_turn_artifact_test",
-    srcs = ["swarm/turn_artifact_test.py"],
+    srcs = ["//projects/monolith/swarm:turn_artifact_test.py"],
     imports = ["."],
     deps = [
         ":pkg_swarm",
@@ -2317,7 +908,7 @@ py_test(
 
 py_test(
     name = "swarm_graph_test",
-    srcs = ["swarm/graph_test.py"],
+    srcs = ["//projects/monolith/swarm:graph_test.py"],
     imports = ["."],
     deps = [
         ":pkg_swarm",
@@ -2327,7 +918,7 @@ py_test(
 
 py_test(
     name = "swarm_store_test",
-    srcs = ["swarm/store_test.py"],
+    srcs = ["//projects/monolith/swarm:store_test.py"],
     imports = ["."],
     deps = [
         ":pkg_swarm",
@@ -2338,7 +929,7 @@ py_test(
 
 py_test(
     name = "rationale_test",
-    srcs = ["swarm/rationale_test.py"],
+    srcs = ["//projects/monolith/swarm:rationale_test.py"],
     imports = ["."],
     deps = [
         ":pkg_swarm",
@@ -2349,7 +940,7 @@ py_test(
 
 py_test(
     name = "deviations_test",
-    srcs = ["swarm/deviations_test.py"],
+    srcs = ["//projects/monolith/swarm:deviations_test.py"],
     imports = ["."],
     deps = [
         ":pkg_swarm",
@@ -2359,7 +950,7 @@ py_test(
 
 py_test(
     name = "budget_test",
-    srcs = ["swarm/budget_test.py"],
+    srcs = ["//projects/monolith/swarm:budget_test.py"],
     imports = ["."],
     deps = [
         ":pkg_swarm",
@@ -2369,7 +960,7 @@ py_test(
 
 py_test(
     name = "tier_test",
-    srcs = ["swarm/tier_test.py"],
+    srcs = ["//projects/monolith/swarm:tier_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
@@ -2379,7 +970,7 @@ py_test(
 
 py_test(
     name = "frontend_test",
-    srcs = ["app/frontend_test.py"],
+    srcs = ["//projects/monolith/app:frontend_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
@@ -2393,7 +984,7 @@ py_test(
 
 py_test(
     name = "home_schedule_test",
-    srcs = ["home/schedule_test.py"],
+    srcs = ["//projects/monolith/home:schedule_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -2407,7 +998,7 @@ py_test(
 
 py_test(
     name = "home_schedule_extra_test",
-    srcs = ["home/schedule_extra_test.py"],
+    srcs = ["//projects/monolith/home:schedule_extra_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -2421,7 +1012,7 @@ py_test(
 
 py_test(
     name = "home_schedule_router_test",
-    srcs = ["home/schedule_router_test.py"],
+    srcs = ["//projects/monolith/home:schedule_router_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -2435,11 +1026,11 @@ py_test(
 
 py_test(
     name = "home_dashboard_test",
-    srcs = ["home/dashboard_test.py"],
+    srcs = ["//projects/monolith/home:dashboard_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
-        ":monolith_public_backend",
+        "//projects/monolith/public_backend:monolith_public_backend",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -2451,7 +1042,7 @@ py_test(
 
 py_test(
     name = "home_cluster_snapshot_test",
-    srcs = ["home/cluster_snapshot_test.py"],
+    srcs = ["//projects/monolith/home:cluster_snapshot_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -2464,7 +1055,7 @@ py_test(
 
 py_test(
     name = "db_test",
-    srcs = ["core/db_test.py"],
+    srcs = ["//projects/monolith/core:db_test.py"],
     imports = ["."],
     deps = [
         ":pkg_core",
@@ -2475,7 +1066,7 @@ py_test(
 
 py_test(
     name = "github_test",
-    srcs = ["core/github_test.py"],
+    srcs = ["//projects/monolith/core:github_test.py"],
     imports = ["."],
     deps = [
         ":pkg_core",
@@ -2486,7 +1077,7 @@ py_test(
 
 py_test(
     name = "mcp_policy_test",
-    srcs = ["core/mcp_policy_test.py"],
+    srcs = ["//projects/monolith/core:mcp_policy_test.py"],
     imports = ["."],
     deps = [
         ":pkg_auth",
@@ -2498,7 +1089,7 @@ py_test(
 
 py_test(
     name = "observability_merged_prs_test",
-    srcs = ["observability/merged_prs_test.py"],
+    srcs = ["//projects/monolith/observability:merged_prs_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
@@ -2509,10 +1100,10 @@ py_test(
 
 py_test(
     name = "observability_public_router_test",
-    srcs = ["observability/public_router_test.py"],
+    srcs = ["//projects/monolith/observability:public_router_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_public_backend",
+        "//projects/monolith/public_backend:monolith_public_backend",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -2529,23 +1120,57 @@ py_test(
     name = "github_repo_slug_test",
     srcs = ["github_repo_slug_test.py"],
     data = glob(
-        ["**/*.py"],
+        ["*.py"],
+        allow_empty = True,
         exclude = [
-            "**/*_test.py",
-            "**/test_*.py",
-            # pytest auto-collects any conftest.py it finds under its rootdir,
-            # which here is the runfiles tree. Collecting one imports it, and
-            # these pull sqlmodel and friends that this target deliberately
-            # does not depend on, so the run dies at collection.
-            "**/conftest.py",
+            "*_test.py",
+            "test_*.py",
+            "conftest.py",
         ],
-    ),
+    ) + [
+        "//projects/monolith/agent:source_scan_files",
+        "//projects/monolith/agent_sessions:source_scan_files",
+        "//projects/monolith/app:source_scan_files",
+        "//projects/monolith/artifact:source_scan_files",
+        "//projects/monolith/auth:source_scan_files",
+        "//projects/monolith/campsites:source_scan_files",
+        "//projects/monolith/chat:source_scan_files",
+        "//projects/monolith/chat_public:source_scan_files",
+        "//projects/monolith/cluster:source_scan_files",
+        "//projects/monolith/core:source_scan_files",
+        "//projects/monolith/demos:source_scan_files",
+        "//projects/monolith/dr_jobs:source_scan_files",
+        "//projects/monolith/e2e:source_scan_files",
+        "//projects/monolith/ember_public:source_scan_files",
+        "//projects/monolith/faas:source_scan_files",
+        "//projects/monolith/framework:source_scan_files",
+        "//projects/monolith/goosecracker:source_scan_files",
+        "//projects/monolith/grimoire:source_scan_files",
+        "//projects/monolith/grimoire_chat:source_scan_files",
+        "//projects/monolith/hikes:source_scan_files",
+        "//projects/monolith/home:source_scan_files",
+        "//projects/monolith/knowledge:source_scan_files",
+        "//projects/monolith/moving:source_scan_files",
+        "//projects/monolith/observability:source_scan_files",
+        "//projects/monolith/sandbox:source_scan_files",
+        "//projects/monolith/scheduler:source_scan_files",
+        "//projects/monolith/scripts:source_scan_files",
+        "//projects/monolith/semgrep_scan:source_scan_files",
+        "//projects/monolith/shared:source_scan_files",
+        "//projects/monolith/ships:source_scan_files",
+        "//projects/monolith/shotter:source_scan_files",
+        "//projects/monolith/stars:source_scan_files",
+        "//projects/monolith/swarm:source_scan_files",
+        "//projects/monolith/trips:source_scan_files",
+        "//projects/monolith/updates:source_scan_files",
+        "//projects/monolith/worldcup:source_scan_files",
+    ],
     imports = ["."],
 )
 
 py_test(
     name = "jobs_main_test",
-    srcs = ["app/jobs_main_test.py"],
+    srcs = ["//projects/monolith/app:jobs_main_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
@@ -2557,7 +1182,7 @@ py_test(
 
 py_test(
     name = "main_test",
-    srcs = ["app/main_test.py"],
+    srcs = ["//projects/monolith/app:main_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
@@ -2572,7 +1197,7 @@ py_test(
 
 py_test(
     name = "main_public_routes_test",
-    srcs = ["app/main_public_routes_test.py"],
+    srcs = ["//projects/monolith/app:main_public_routes_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
@@ -2585,7 +1210,7 @@ py_test(
 
 py_test(
     name = "main_public_imports_test",
-    srcs = ["app/main_public_imports_test.py"],
+    srcs = ["//projects/monolith/app:main_public_imports_test.py"],
     imports = ["."],
     # Depend on the PRUNED public library, not :monolith_backend. This makes the
     # test a pre-deploy validator of the prune itself: if the public glob omits a
@@ -2593,14 +1218,14 @@ py_test(
     # (returncode != 0) here in CI rather than only at pod startup. It still
     # asserts the forbidden private modules are absent from the closure.
     deps = [
-        ":monolith_public_backend",
+        "//projects/monolith/public_backend:monolith_public_backend",
         "@pip//pytest",
     ],
 )
 
 py_test(
     name = "main_agents_imports_test",
-    srcs = ["app/main_agents_imports_test.py"],
+    srcs = ["//projects/monolith/app:main_agents_imports_test.py"],
     imports = ["."],
     # Depend on the PRUNED agents library, not :monolith_backend. This makes
     # the test validate both the source prune and the fresh-process import
@@ -2613,7 +1238,7 @@ py_test(
 
 py_test(
     name = "framework_core_test",
-    srcs = ["framework/core_test.py"],
+    srcs = ["//projects/monolith/framework:core_test.py"],
     imports = ["."],
     deps = [
         ":pkg_framework",
@@ -2627,7 +1252,7 @@ py_test(
 
 py_test(
     name = "main_domain_test",
-    srcs = ["app/main_domain_test.py"],
+    srcs = ["//projects/monolith/app:main_domain_test.py"],
     data = ["domain_images.bzl"],
     imports = ["."],
     deps = [
@@ -2641,7 +1266,7 @@ py_test(
 
 py_test(
     name = "cluster_summarize_test",
-    srcs = ["cluster/summarize_test.py"],
+    srcs = ["//projects/monolith/cluster:summarize_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cluster",
@@ -2651,7 +1276,7 @@ py_test(
 
 py_test(
     name = "cluster_mcp_test",
-    srcs = ["cluster/mcp_test.py"],
+    srcs = ["//projects/monolith/cluster:mcp_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cluster",
@@ -2664,7 +1289,7 @@ py_test(
 
 py_test(
     name = "semgrep_mcp_test",
-    srcs = ["semgrep_scan/mcp_test.py"],
+    srcs = ["//projects/monolith/semgrep_scan:mcp_test.py"],
     imports = ["."],
     deps = [
         ":pkg_core",
@@ -2677,13 +1302,13 @@ py_test(
 
 py_test(
     name = "semgrep_report_test",
-    srcs = ["semgrep_scan/report_test.py"],
+    srcs = ["//projects/monolith/semgrep_scan:report_test.py"],
     data = [
         # report_test loads this captured cli_output fixture at runtime via
         # Path(__file__).parent/"testdata"; the "semgrep_scan/**/*.py" backend
         # glob does not capture the .json, so ship it into runfiles. 8 results
         # (7 findings + 1 ignored), derived from a real 1.168.0 Pro finding.
-        "semgrep_scan/testdata/real_cli_output.json",
+        "//projects/monolith/semgrep_scan:testdata/real_cli_output.json",
     ],
     imports = ["."],
     # Drives the async relay via asyncio.run (sync test fns), so no
@@ -2703,7 +1328,7 @@ py_test(
 
 py_test(
     name = "semgrep_router_test",
-    srcs = ["semgrep_scan/router_test.py"],
+    srcs = ["//projects/monolith/semgrep_scan:router_test.py"],
     imports = ["."],
     # gazelle:exclude semgrep_scan means this py_test is hand-added, not generated.
     # Drives the async webhook via FastAPI TestClient (BackgroundTasks run inline
@@ -2719,7 +1344,7 @@ py_test(
 
 py_test(
     name = "semgrep_perf_store_test",
-    srcs = ["semgrep_scan/perf_store_test.py"],
+    srcs = ["//projects/monolith/semgrep_scan:perf_store_test.py"],
     imports = ["."],
     # gazelle:exclude semgrep_scan means this py_test is hand-added, not generated.
     deps = [
@@ -2731,7 +1356,7 @@ py_test(
 
 py_test(
     name = "semgrep_perf_harvest_test",
-    srcs = ["semgrep_scan/perf_harvest_test.py"],
+    srcs = ["//projects/monolith/semgrep_scan:perf_harvest_test.py"],
     imports = ["."],
     # gazelle:exclude semgrep_scan means this py_test is hand-added, not generated.
     deps = [
@@ -2744,7 +1369,7 @@ py_test(
 
 py_test(
     name = "semgrep_cohorts_test",
-    srcs = ["semgrep_scan/cohorts_test.py"],
+    srcs = ["//projects/monolith/semgrep_scan:cohorts_test.py"],
     imports = ["."],
     # gazelle:exclude semgrep_scan means this py_test is hand-added, not generated.
     deps = [
@@ -2755,7 +1380,7 @@ py_test(
 
 py_test(
     name = "semgrep_perf_compare_test",
-    srcs = ["semgrep_scan/perf_compare_test.py"],
+    srcs = ["//projects/monolith/semgrep_scan:perf_compare_test.py"],
     imports = ["."],
     # gazelle:exclude semgrep_scan means this py_test is hand-added, not generated.
     deps = [
@@ -2766,7 +1391,7 @@ py_test(
 
 py_test(
     name = "semgrep_perf_router_test",
-    srcs = ["semgrep_scan/perf_router_test.py"],
+    srcs = ["//projects/monolith/semgrep_scan:perf_router_test.py"],
     imports = ["."],
     # gazelle:exclude semgrep_scan means this py_test is hand-added, not generated.
     deps = [
@@ -2781,7 +1406,7 @@ py_test(
 
 py_test(
     name = "semgrep_perf_webhook_test",
-    srcs = ["semgrep_scan/perf_webhook_test.py"],
+    srcs = ["//projects/monolith/semgrep_scan:perf_webhook_test.py"],
     imports = ["."],
     # gazelle:exclude semgrep_scan means this py_test is hand-added, not generated.
     deps = [
@@ -2794,7 +1419,7 @@ py_test(
 
 py_test(
     name = "sandbox_mcp_test",
-    srcs = ["sandbox/mcp_test.py"],
+    srcs = ["//projects/monolith/sandbox:mcp_test.py"],
     imports = ["."],
     deps = [
         ":pkg_core",
@@ -2808,7 +1433,7 @@ py_test(
 # sandbox is gazelle-excluded, so its py_tests are hand-registered.
 py_test(
     name = "sandbox_client_test",
-    srcs = ["sandbox/client_test.py"],
+    srcs = ["//projects/monolith/sandbox:client_test.py"],
     imports = ["."],
     deps = [
         ":pkg_sandbox",
@@ -2824,7 +1449,7 @@ py_test(
 # no-ops.
 py_test(
     name = "sandbox_scratch_postgres_test",
-    srcs = ["sandbox/scratch_postgres_test.py"],
+    srcs = ["//projects/monolith/sandbox:scratch_postgres_test.py"],
     imports = ["."],
     deps = [
         ":pkg_sandbox",
@@ -2837,7 +1462,7 @@ py_test(
 py_test(
     name = "integration_test",
     size = "medium",
-    srcs = ["app/integration_test.py"],
+    srcs = ["//projects/monolith/app:integration_test.py"],
     imports = ["."],
     tags = ["integration"],
     deps = [
@@ -2852,7 +1477,7 @@ py_test(
 
 py_test(
     name = "chat_models_test",
-    srcs = ["chat/models_test.py"],
+    srcs = ["//projects/monolith/chat:models_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -2864,7 +1489,7 @@ py_test(
 
 py_test(
     name = "chat_models_db_constraints_test",
-    srcs = ["chat/models_db_constraints_test.py"],
+    srcs = ["//projects/monolith/chat:models_db_constraints_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -2877,7 +1502,7 @@ py_test(
 
 py_test(
     name = "chat_models_reminder_test",
-    srcs = ["chat/models_reminder_test.py"],
+    srcs = ["//projects/monolith/chat:models_reminder_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -2890,7 +1515,7 @@ py_test(
 
 py_test(
     name = "chat_reminders_test",
-    srcs = ["chat/reminders_test.py"],
+    srcs = ["//projects/monolith/chat:reminders_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -2903,7 +1528,7 @@ py_test(
 
 py_test(
     name = "chat_jobs_reminder_test",
-    srcs = ["chat/jobs_reminder_test.py"],
+    srcs = ["//projects/monolith/chat:jobs_reminder_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -2916,7 +1541,7 @@ py_test(
 
 py_test(
     name = "chat_models_coverage_test",
-    srcs = ["chat/models_coverage_test.py"],
+    srcs = ["//projects/monolith/chat:models_coverage_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -2928,7 +1553,7 @@ py_test(
 
 py_test(
     name = "shared_embedding_test",
-    srcs = ["shared/embedding_test.py"],
+    srcs = ["//projects/monolith/shared:embedding_test.py"],
     imports = ["."],
     deps = [
         ":pkg_shared",
@@ -2940,7 +1565,7 @@ py_test(
 
 py_test(
     name = "shared_pricing_test",
-    srcs = ["shared/pricing_test.py"],
+    srcs = ["//projects/monolith/shared:pricing_test.py"],
     imports = ["."],
     deps = [
         ":pkg_shared",
@@ -2950,7 +1575,7 @@ py_test(
 
 py_test(
     name = "shared_inference_test",
-    srcs = ["shared/inference_test.py"],
+    srcs = ["//projects/monolith/shared:inference_test.py"],
     imports = ["."],
     deps = [
         ":pkg_shared",
@@ -2961,7 +1586,7 @@ py_test(
 
 py_test(
     name = "shared_k8s_auth_test",
-    srcs = ["shared/k8s_auth_test.py"],
+    srcs = ["//projects/monolith/shared:k8s_auth_test.py"],
     imports = ["."],
     deps = [
         ":pkg_shared",
@@ -2971,7 +1596,7 @@ py_test(
 
 py_test(
     name = "shared_embedding_retry_test",
-    srcs = ["shared/embedding_retry_test.py"],
+    srcs = ["//projects/monolith/shared:embedding_retry_test.py"],
     imports = ["."],
     deps = [
         ":pkg_shared",
@@ -2983,7 +1608,7 @@ py_test(
 
 py_test(
     name = "shared_embedding_batch_test",
-    srcs = ["shared/embedding_batch_test.py"],
+    srcs = ["//projects/monolith/shared:embedding_batch_test.py"],
     imports = ["."],
     deps = [
         ":pkg_shared",
@@ -2995,7 +1620,7 @@ py_test(
 
 py_test(
     name = "chat_store_test",
-    srcs = ["chat/store_test.py"],
+    srcs = ["//projects/monolith/chat:store_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3008,7 +1633,7 @@ py_test(
 
 py_test(
     name = "chat_query_stats_test",
-    srcs = ["chat/query_stats_test.py"],
+    srcs = ["//projects/monolith/chat:query_stats_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3021,7 +1646,7 @@ py_test(
 
 py_test(
     name = "chat_store_fetch_window_test",
-    srcs = ["chat/store_fetch_window_test.py"],
+    srcs = ["//projects/monolith/chat:store_fetch_window_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3034,7 +1659,7 @@ py_test(
 
 py_test(
     name = "chat_digest_test",
-    srcs = ["chat/digest_test.py"],
+    srcs = ["//projects/monolith/chat:digest_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3046,7 +1671,7 @@ py_test(
 
 py_test(
     name = "chat_channel_data_test",
-    srcs = ["chat/channel_data_test.py"],
+    srcs = ["//projects/monolith/chat:channel_data_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3058,7 +1683,7 @@ py_test(
 
 py_test(
     name = "chat_observer_test",
-    srcs = ["chat/observer_test.py"],
+    srcs = ["//projects/monolith/chat:observer_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3070,7 +1695,7 @@ py_test(
 
 py_test(
     name = "chat_observer_job_test",
-    srcs = ["chat/observer_job_test.py"],
+    srcs = ["//projects/monolith/chat:observer_job_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3083,7 +1708,7 @@ py_test(
 
 py_test(
     name = "chat_outbox_test",
-    srcs = ["chat/outbox_test.py"],
+    srcs = ["//projects/monolith/chat:outbox_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3094,7 +1719,7 @@ py_test(
 
 py_test(
     name = "chat_whatsapp_outbox_test",
-    srcs = ["chat/whatsapp_outbox_test.py"],
+    srcs = ["//projects/monolith/chat:whatsapp_outbox_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3107,7 +1732,7 @@ py_test(
 
 py_test(
     name = "chat_whatsapp_group_test",
-    srcs = ["chat/whatsapp_group_test.py"],
+    srcs = ["//projects/monolith/chat:whatsapp_group_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3120,7 +1745,7 @@ py_test(
 
 py_test(
     name = "chat_whatsapp_inbound_test",
-    srcs = ["chat/whatsapp_inbound_test.py"],
+    srcs = ["//projects/monolith/chat:whatsapp_inbound_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3135,7 +1760,7 @@ py_test(
 
 py_test(
     name = "chat_whatsapp_timeparse_test",
-    srcs = ["chat/whatsapp_timeparse_test.py"],
+    srcs = ["//projects/monolith/chat:whatsapp_timeparse_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3145,7 +1770,7 @@ py_test(
 
 py_test(
     name = "chat_whatsapp_intents_test",
-    srcs = ["chat/whatsapp_intents_test.py"],
+    srcs = ["//projects/monolith/chat:whatsapp_intents_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3155,7 +1780,7 @@ py_test(
 
 py_test(
     name = "chat_whatsapp_calendar_test",
-    srcs = ["chat/whatsapp_calendar_test.py"],
+    srcs = ["//projects/monolith/chat:whatsapp_calendar_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3166,7 +1791,7 @@ py_test(
 
 py_test(
     name = "chat_whatsapp_capabilities_test",
-    srcs = ["chat/whatsapp_capabilities_test.py"],
+    srcs = ["//projects/monolith/chat:whatsapp_capabilities_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3179,7 +1804,7 @@ py_test(
 
 py_test(
     name = "chat_whatsapp_digest_test",
-    srcs = ["chat/whatsapp_digest_test.py"],
+    srcs = ["//projects/monolith/chat:whatsapp_digest_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3191,7 +1816,7 @@ py_test(
 
 py_test(
     name = "chat_orchestrator_bundle_test",
-    srcs = ["chat/orchestrator_bundle_test.py"],
+    srcs = ["//projects/monolith/chat:orchestrator_bundle_test.py"],
     # The test reads both the hand-written base prompt and the committed
     # generated bundle directly from runfiles (Path(__file__).parent), so ship
     # them as data (mirrors chat_directives_test's directive_seed.md). The
@@ -3200,8 +1825,8 @@ py_test(
     # sandbox, same reason gen_repo_docs_manifest_test.py never calls
     # iter_doc_paths.
     data = [
-        "chat/orchestrator_bundle.md",
-        "chat/orchestrator_prompt.md",
+        "//projects/monolith/chat:orchestrator_bundle.md",
+        "//projects/monolith/chat:orchestrator_prompt.md",
     ],
     imports = ["."],
     deps = [
@@ -3213,7 +1838,7 @@ py_test(
 
 py_test(
     name = "chat_acl_test",
-    srcs = ["chat/acl_test.py"],
+    srcs = ["//projects/monolith/chat:acl_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3225,7 +1850,7 @@ py_test(
 
 py_test(
     name = "chat_attention_log_test",
-    srcs = ["chat/attention_log_test.py"],
+    srcs = ["//projects/monolith/chat:attention_log_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3237,11 +1862,11 @@ py_test(
 
 py_test(
     name = "chat_directives_test",
-    srcs = ["chat/directives_test.py"],
+    srcs = ["//projects/monolith/chat:directives_test.py"],
     # directives.get_active reads the committed seed from runfiles via
     # Path(__file__).parent / "directive_seed.md", so ship it as test data
     # (mirrors campsites_client_test's catalog.json).
-    data = ["chat/directive_seed.md"],
+    data = ["//projects/monolith/chat:directive_seed.md"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3253,7 +1878,7 @@ py_test(
 
 py_test(
     name = "chat_ambient_analysis_test",
-    srcs = ["chat/ambient_analysis_test.py"],
+    srcs = ["//projects/monolith/chat:ambient_analysis_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3266,7 +1891,7 @@ py_test(
 
 py_test(
     name = "chat_autopilot_job_test",
-    srcs = ["chat/autopilot_job_test.py"],
+    srcs = ["//projects/monolith/chat:autopilot_job_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3279,7 +1904,7 @@ py_test(
 
 py_test(
     name = "chat_attention_test",
-    srcs = ["chat/attention_test.py"],
+    srcs = ["//projects/monolith/chat:attention_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3294,7 +1919,7 @@ py_test(
 
 py_test(
     name = "chat_reply_sanitize_test",
-    srcs = ["chat/reply_sanitize_test.py"],
+    srcs = ["//projects/monolith/chat:reply_sanitize_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3307,7 +1932,7 @@ py_test(
 
 py_test(
     name = "chat_web_search_test",
-    srcs = ["chat/web_search_test.py"],
+    srcs = ["//projects/monolith/chat:web_search_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3319,7 +1944,7 @@ py_test(
 
 py_test(
     name = "chat_bot_test",
-    srcs = ["chat/bot_test.py"],
+    srcs = ["//projects/monolith/chat:bot_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3330,7 +1955,7 @@ py_test(
 
 py_test(
     name = "chat_bot_send_message_test",
-    srcs = ["chat/bot_send_message_test.py"],
+    srcs = ["//projects/monolith/chat:bot_send_message_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3341,7 +1966,7 @@ py_test(
 
 py_test(
     name = "chat_agent_test",
-    srcs = ["chat/agent_test.py"],
+    srcs = ["//projects/monolith/chat:agent_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3354,7 +1979,7 @@ py_test(
 
 py_test(
     name = "chat_store_coverage_test",
-    srcs = ["chat/store_coverage_test.py"],
+    srcs = ["//projects/monolith/chat:store_coverage_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3367,7 +1992,7 @@ py_test(
 
 py_test(
     name = "chat_bot_on_message_test",
-    srcs = ["chat/bot_on_message_test.py"],
+    srcs = ["//projects/monolith/chat:bot_on_message_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -3382,7 +2007,7 @@ py_test(
 
 py_test(
     name = "chat_bot_streaming_test",
-    srcs = ["chat/bot_streaming_test.py"],
+    srcs = ["//projects/monolith/chat:bot_streaming_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3395,7 +2020,7 @@ py_test(
 
 py_test(
     name = "chat_web_search_coverage_test",
-    srcs = ["chat/web_search_coverage_test.py"],
+    srcs = ["//projects/monolith/chat:web_search_coverage_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3407,7 +2032,7 @@ py_test(
 
 py_test(
     name = "shared_embedding_coverage_test",
-    srcs = ["shared/embedding_coverage_test.py"],
+    srcs = ["//projects/monolith/shared:embedding_coverage_test.py"],
     imports = ["."],
     deps = [
         ":pkg_shared",
@@ -3419,7 +2044,7 @@ py_test(
 
 py_test(
     name = "chat_agent_deps_test",
-    srcs = ["chat/agent_deps_test.py"],
+    srcs = ["//projects/monolith/chat:agent_deps_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3432,7 +2057,7 @@ py_test(
 
 py_test(
     name = "chat_agent_coverage_test",
-    srcs = ["chat/agent_coverage_test.py"],
+    srcs = ["//projects/monolith/chat:agent_coverage_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3445,7 +2070,7 @@ py_test(
 
 py_test(
     name = "main_lifespan_discord_test",
-    srcs = ["app/main_lifespan_discord_test.py"],
+    srcs = ["//projects/monolith/app:main_lifespan_discord_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
@@ -3461,7 +2086,7 @@ py_test(
 
 py_test(
     name = "leadership_test",
-    srcs = ["core/leadership_test.py"],
+    srcs = ["//projects/monolith/core:leadership_test.py"],
     imports = ["."],
     deps = [
         ":pkg_core",
@@ -3472,7 +2097,7 @@ py_test(
 
 py_test(
     name = "chat_agent_extra_test",
-    srcs = ["chat/agent_extra_test.py"],
+    srcs = ["//projects/monolith/chat:agent_extra_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3486,7 +2111,7 @@ py_test(
 
 py_test(
     name = "chat_bot_extra_test",
-    srcs = ["chat/bot_extra_test.py"],
+    srcs = ["//projects/monolith/chat:bot_extra_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3499,7 +2124,7 @@ py_test(
 
 py_test(
     name = "chat_web_search_extra_test",
-    srcs = ["chat/web_search_extra_test.py"],
+    srcs = ["//projects/monolith/chat:web_search_extra_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3511,7 +2136,7 @@ py_test(
 
 py_test(
     name = "chat_store_extra_test",
-    srcs = ["chat/store_extra_test.py"],
+    srcs = ["//projects/monolith/chat:store_extra_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3524,7 +2149,7 @@ py_test(
 
 py_test(
     name = "main_otel_test",
-    srcs = ["app/main_otel_test.py"],
+    srcs = ["//projects/monolith/app:main_otel_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
@@ -3538,7 +2163,7 @@ py_test(
 
 py_test(
     name = "shared_embedding_extra_test",
-    srcs = ["shared/embedding_extra_test.py"],
+    srcs = ["//projects/monolith/shared:embedding_extra_test.py"],
     imports = ["."],
     deps = [
         ":pkg_shared",
@@ -3550,7 +2175,7 @@ py_test(
 
 py_test(
     name = "chat_changelog_test",
-    srcs = ["chat/changelog_test.py"],
+    srcs = ["//projects/monolith/chat:changelog_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3564,7 +2189,7 @@ py_test(
 
 py_test(
     name = "chat_changelog_fetch_test",
-    srcs = ["chat/changelog_fetch_test.py"],
+    srcs = ["//projects/monolith/chat:changelog_fetch_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3576,7 +2201,7 @@ py_test(
 
 py_test(
     name = "chat_summarizer_test",
-    srcs = ["chat/summarizer_test.py"],
+    srcs = ["//projects/monolith/chat:summarizer_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3589,7 +2214,7 @@ py_test(
 
 py_test(
     name = "main_extra_test",
-    srcs = ["app/main_extra_test.py"],
+    srcs = ["//projects/monolith/app:main_extra_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
@@ -3605,7 +2230,7 @@ py_test(
 
 py_test(
     name = "log_test",
-    srcs = ["core/log_test.py"],
+    srcs = ["//projects/monolith/core:log_test.py"],
     imports = ["."],
     deps = [
         ":pkg_core",
@@ -3615,7 +2240,7 @@ py_test(
 
 py_test(
     name = "log_config_test",
-    srcs = ["core/log_config_test.py"],
+    srcs = ["//projects/monolith/core:log_config_test.py"],
     imports = ["."],
     deps = [
         ":pkg_core",
@@ -3625,7 +2250,7 @@ py_test(
 
 py_test(
     name = "main_log_task_test",
-    srcs = ["app/main_log_task_test.py"],
+    srcs = ["//projects/monolith/app:main_log_task_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
@@ -3636,7 +2261,7 @@ py_test(
 
 py_test(
     name = "main_sidecar_test",
-    srcs = ["app/main_sidecar_test.py"],
+    srcs = ["//projects/monolith/app:main_sidecar_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
@@ -3652,7 +2277,7 @@ py_test(
 
 py_test(
     name = "store_integrity_test",
-    srcs = ["chat/store_integrity_test.py"],
+    srcs = ["//projects/monolith/chat:store_integrity_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3666,7 +2291,7 @@ py_test(
 
 py_test(
     name = "bot_self_message_test",
-    srcs = ["chat/bot_self_message_test.py"],
+    srcs = ["//projects/monolith/chat:bot_self_message_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3678,7 +2303,7 @@ py_test(
 
 py_test(
     name = "bot_embed_test",
-    srcs = ["chat/bot_embed_test.py"],
+    srcs = ["//projects/monolith/chat:bot_embed_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3690,7 +2315,7 @@ py_test(
 
 py_test(
     name = "web_search_headers_test",
-    srcs = ["chat/web_search_headers_test.py"],
+    srcs = ["//projects/monolith/chat:web_search_headers_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3702,7 +2327,7 @@ py_test(
 
 py_test(
     name = "chat_models_summary_test",
-    srcs = ["chat/models_summary_test.py"],
+    srcs = ["//projects/monolith/chat:models_summary_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3713,7 +2338,7 @@ py_test(
 
 py_test(
     name = "chat_store_channel_summary_test",
-    srcs = ["chat/store_channel_summary_test.py"],
+    srcs = ["//projects/monolith/chat:store_channel_summary_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3726,7 +2351,7 @@ py_test(
 
 py_test(
     name = "chat_store_summary_test",
-    srcs = ["chat/store_summary_test.py"],
+    srcs = ["//projects/monolith/chat:store_summary_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3739,7 +2364,7 @@ py_test(
 
 py_test(
     name = "chat_vision_errors_test",
-    srcs = ["chat/vision_errors_test.py"],
+    srcs = ["//projects/monolith/chat:vision_errors_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3751,7 +2376,7 @@ py_test(
 
 py_test(
     name = "chat_orchestrator_client_test",
-    srcs = ["chat/orchestrator_client_test.py"],
+    srcs = ["//projects/monolith/chat:orchestrator_client_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3763,7 +2388,7 @@ py_test(
 
 py_test(
     name = "chat_orchestrator_plan_test",
-    srcs = ["chat/orchestrator_plan_test.py"],
+    srcs = ["//projects/monolith/chat:orchestrator_plan_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3773,10 +2398,10 @@ py_test(
 
 py_test(
     name = "chat_orchestrator_test",
-    srcs = ["chat/orchestrator_test.py"],
+    srcs = ["//projects/monolith/chat:orchestrator_test.py"],
     # compile() reads the committed bundle from runfiles (Path(__file__).parent),
     # so ship it as data (mirrors chat_orchestrator_bundle_test).
-    data = ["chat/orchestrator_bundle.md"],
+    data = ["//projects/monolith/chat:orchestrator_bundle.md"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3790,7 +2415,7 @@ py_test(
 
 py_test(
     name = "chat_summarizer_llm_caller_test",
-    srcs = ["chat/summarizer_llm_caller_test.py"],
+    srcs = ["//projects/monolith/chat:summarizer_llm_caller_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3804,7 +2429,7 @@ py_test(
 
 py_test(
     name = "chat_summarizer_agent_reply_test",
-    srcs = ["chat/summarizer_agent_reply_test.py"],
+    srcs = ["//projects/monolith/chat:summarizer_agent_reply_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3817,7 +2442,7 @@ py_test(
 
 py_test(
     name = "chat_bot_agent_prompt_echo_test",
-    srcs = ["chat/bot_agent_prompt_echo_test.py"],
+    srcs = ["//projects/monolith/chat:bot_agent_prompt_echo_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -3830,7 +2455,7 @@ py_test(
 
 py_test(
     name = "chat_summarizer_channel_test",
-    srcs = ["chat/summarizer_channel_test.py"],
+    srcs = ["//projects/monolith/chat:summarizer_channel_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3843,7 +2468,7 @@ py_test(
 
 py_test(
     name = "chat_bot_exception_test",
-    srcs = ["chat/bot_exception_test.py"],
+    srcs = ["//projects/monolith/chat:bot_exception_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3854,7 +2479,7 @@ py_test(
 
 py_test(
     name = "chat_bot_error_handling_test",
-    srcs = ["chat/bot_error_handling_test.py"],
+    srcs = ["//projects/monolith/chat:bot_error_handling_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3866,7 +2491,7 @@ py_test(
 
 py_test(
     name = "chat_agent_tools_test",
-    srcs = ["chat/agent_tools_test.py"],
+    srcs = ["//projects/monolith/chat:agent_tools_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3878,7 +2503,7 @@ py_test(
 
 py_test(
     name = "chat_store_attachments_test",
-    srcs = ["chat/store_attachments_test.py"],
+    srcs = ["//projects/monolith/chat:store_attachments_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3891,7 +2516,7 @@ py_test(
 
 py_test(
     name = "chat_agent_coerce_test",
-    srcs = ["chat/agent_coerce_test.py"],
+    srcs = ["//projects/monolith/chat:agent_coerce_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3901,7 +2526,7 @@ py_test(
 
 py_test(
     name = "chat_store_blob_test",
-    srcs = ["chat/store_blob_test.py"],
+    srcs = ["//projects/monolith/chat:store_blob_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3914,7 +2539,7 @@ py_test(
 
 py_test(
     name = "chat_store_flush_blob_test",
-    srcs = ["chat/store_flush_blob_test.py"],
+    srcs = ["//projects/monolith/chat:store_flush_blob_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3928,7 +2553,7 @@ py_test(
 
 py_test(
     name = "chat_store_save_messages_test",
-    srcs = ["chat/store_save_messages_test.py"],
+    srcs = ["//projects/monolith/chat:store_save_messages_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3941,7 +2566,7 @@ py_test(
 
 py_test(
     name = "chat_store_embed_text_test",
-    srcs = ["chat/store_embed_text_test.py"],
+    srcs = ["//projects/monolith/chat:store_embed_text_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3951,7 +2576,7 @@ py_test(
 
 py_test(
     name = "chat_agent_tool_execution_test",
-    srcs = ["chat/agent_tool_execution_test.py"],
+    srcs = ["//projects/monolith/chat:agent_tool_execution_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3965,7 +2590,7 @@ py_test(
 
 py_test(
     name = "chat_agent_channel_digest_tool_test",
-    srcs = ["chat/agent_channel_digest_tool_test.py"],
+    srcs = ["//projects/monolith/chat:agent_channel_digest_tool_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3979,7 +2604,7 @@ py_test(
 
 py_test(
     name = "chat_agent_reminder_tools_test",
-    srcs = ["chat/agent_reminder_tools_test.py"],
+    srcs = ["//projects/monolith/chat:agent_reminder_tools_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -3993,7 +2618,7 @@ py_test(
 
 py_test(
     name = "chat_bot_attachments_test",
-    srcs = ["chat/bot_attachments_test.py"],
+    srcs = ["//projects/monolith/chat:bot_attachments_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -4006,7 +2631,7 @@ py_test(
 
 py_test(
     name = "chat_bot_multimodal_test",
-    srcs = ["chat/bot_multimodal_test.py"],
+    srcs = ["//projects/monolith/chat:bot_multimodal_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -4019,7 +2644,7 @@ py_test(
 
 py_test(
     name = "chat_startup_test",
-    srcs = ["chat/startup_test.py"],
+    srcs = ["//projects/monolith/chat:startup_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -4032,7 +2657,7 @@ py_test(
 
 py_test(
     name = "chat_summarizer_startup_test",
-    srcs = ["chat/summarizer_startup_test.py"],
+    srcs = ["//projects/monolith/chat:summarizer_startup_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -4045,7 +2670,7 @@ py_test(
 
 py_test(
     name = "chat_summarizer_prompts_test",
-    srcs = ["chat/summarizer_prompts_test.py"],
+    srcs = ["//projects/monolith/chat:summarizer_prompts_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -4058,7 +2683,7 @@ py_test(
 
 py_test(
     name = "chat_vision_timeout_test",
-    srcs = ["chat/vision_timeout_test.py"],
+    srcs = ["//projects/monolith/chat:vision_timeout_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -4070,7 +2695,7 @@ py_test(
 
 py_test(
     name = "chat_web_search_null_results_test",
-    srcs = ["chat/web_search_null_results_test.py"],
+    srcs = ["//projects/monolith/chat:web_search_null_results_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -4082,7 +2707,7 @@ py_test(
 
 py_test(
     name = "chat_models_persistence_test",
-    srcs = ["chat/models_persistence_test.py"],
+    srcs = ["//projects/monolith/chat:models_persistence_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -4094,7 +2719,7 @@ py_test(
 
 py_test(
     name = "chat_store_upsert_test",
-    srcs = ["chat/store_upsert_test.py"],
+    srcs = ["//projects/monolith/chat:store_upsert_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -4107,7 +2732,7 @@ py_test(
 
 py_test(
     name = "chat_store_bulk_test",
-    srcs = ["chat/store_bulk_test.py"],
+    srcs = ["//projects/monolith/chat:store_bulk_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -4120,7 +2745,7 @@ py_test(
 
 py_test(
     name = "chat_models_validation_test",
-    srcs = ["chat/models_validation_test.py"],
+    srcs = ["//projects/monolith/chat:models_validation_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -4132,7 +2757,7 @@ py_test(
 
 py_test(
     name = "app_main_summary_test",
-    srcs = ["app/main_summary_test.py"],
+    srcs = ["//projects/monolith/app:main_summary_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
@@ -4147,7 +2772,7 @@ py_test(
 
 py_test(
     name = "app_main_summary_edge_test",
-    srcs = ["app/main_summary_edge_test.py"],
+    srcs = ["//projects/monolith/app:main_summary_edge_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
@@ -4162,8 +2787,8 @@ py_test(
 
 py_test(
     name = "scripts_preview_layout_test",
-    srcs = ["scripts/preview_layout_test.py"],
-    data = ["scripts/preview-layout.py"],
+    srcs = ["//projects/monolith/scripts:preview_layout_test.py"],
+    data = ["//projects/monolith/scripts:preview-layout.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
@@ -4174,7 +2799,7 @@ py_test(
 
 py_test(
     name = "chat_agent_helper_functions_test",
-    srcs = ["chat/agent_helper_functions_test.py"],
+    srcs = ["//projects/monolith/chat:agent_helper_functions_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -4188,7 +2813,7 @@ py_test(
 
 py_test(
     name = "chat_backfill_test",
-    srcs = ["chat/backfill_test.py"],
+    srcs = ["//projects/monolith/chat:backfill_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -4200,7 +2825,7 @@ py_test(
 
 py_test(
     name = "chat_vision_test",
-    srcs = ["chat/vision_test.py"],
+    srcs = ["//projects/monolith/chat:vision_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -4212,7 +2837,7 @@ py_test(
 
 py_test(
     name = "chat_new_coverage_test",
-    srcs = ["chat/chat_new_coverage_test.py"],
+    srcs = ["//projects/monolith/chat:chat_new_coverage_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -4228,7 +2853,7 @@ py_test(
 
 py_test(
     name = "chat_web_search_missing_fields_test",
-    srcs = ["chat/web_search_missing_fields_test.py"],
+    srcs = ["//projects/monolith/chat:web_search_missing_fields_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -4240,7 +2865,7 @@ py_test(
 
 py_test(
     name = "chat_store_non_integrity_error_test",
-    srcs = ["chat/store_non_integrity_error_test.py"],
+    srcs = ["//projects/monolith/chat:store_non_integrity_error_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -4254,7 +2879,7 @@ py_test(
 
 py_test(
     name = "chat_summarizer_none_id_test",
-    srcs = ["chat/summarizer_none_id_test.py"],
+    srcs = ["//projects/monolith/chat:summarizer_none_id_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -4267,7 +2892,7 @@ py_test(
 
 py_test(
     name = "shared_embedding_null_test",
-    srcs = ["shared/embedding_null_test.py"],
+    srcs = ["//projects/monolith/shared:embedding_null_test.py"],
     imports = ["."],
     deps = [
         ":pkg_shared",
@@ -4279,7 +2904,7 @@ py_test(
 
 py_test(
     name = "chat_bot_session_failure_test",
-    srcs = ["chat/bot_session_failure_test.py"],
+    srcs = ["//projects/monolith/chat:bot_session_failure_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -4291,7 +2916,7 @@ py_test(
 
 py_test(
     name = "chat_bot_thinking_test",
-    srcs = ["chat/bot_thinking_test.py"],
+    srcs = ["//projects/monolith/chat:bot_thinking_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -4304,7 +2929,7 @@ py_test(
 
 py_test(
     name = "chat_bot_embeddable_content_test",
-    srcs = ["chat/bot_embeddable_content_test.py"],
+    srcs = ["//projects/monolith/chat:bot_embeddable_content_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -4316,7 +2941,7 @@ py_test(
 
 py_test(
     name = "chat_agent_max_tokens_test",
-    srcs = ["chat/agent_max_tokens_test.py"],
+    srcs = ["//projects/monolith/chat:agent_max_tokens_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -4327,7 +2952,7 @@ py_test(
 
 py_test(
     name = "chat_agent_signpost_test",
-    srcs = ["chat/agent_signpost_test.py"],
+    srcs = ["//projects/monolith/chat:agent_signpost_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -4339,7 +2964,7 @@ py_test(
 
 py_test(
     name = "shared_embedding_retryable_test",
-    srcs = ["shared/embedding_retryable_test.py"],
+    srcs = ["//projects/monolith/shared:embedding_retryable_test.py"],
     imports = ["."],
     deps = [
         ":pkg_shared",
@@ -4350,7 +2975,7 @@ py_test(
 
 py_test(
     name = "chat_vision_retryable_test",
-    srcs = ["chat/vision_retryable_test.py"],
+    srcs = ["//projects/monolith/chat:vision_retryable_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -4361,7 +2986,7 @@ py_test(
 
 py_test(
     name = "chat_store_null_data_test",
-    srcs = ["chat/store_null_data_test.py"],
+    srcs = ["//projects/monolith/chat:store_null_data_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -4374,7 +2999,7 @@ py_test(
 
 py_test(
     name = "chat_bot_auto_search_test",
-    srcs = ["chat/bot_auto_search_test.py"],
+    srcs = ["//projects/monolith/chat:bot_auto_search_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -4387,7 +3012,7 @@ py_test(
 
 py_test(
     name = "chat_bot_response_storage_test",
-    srcs = ["chat/bot_response_storage_test.py"],
+    srcs = ["//projects/monolith/chat:bot_response_storage_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -4400,7 +3025,7 @@ py_test(
 
 py_test(
     name = "shared_embedding_connect_timeout_test",
-    srcs = ["shared/embedding_connect_timeout_test.py"],
+    srcs = ["//projects/monolith/shared:embedding_connect_timeout_test.py"],
     imports = ["."],
     deps = [
         ":pkg_shared",
@@ -4412,7 +3037,7 @@ py_test(
 
 py_test(
     name = "chat_agent_web_search_tool_test",
-    srcs = ["chat/agent_web_search_tool_test.py"],
+    srcs = ["//projects/monolith/chat:agent_web_search_tool_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -4424,7 +3049,7 @@ py_test(
 
 py_test(
     name = "chat_bot_summary_injection_test",
-    srcs = ["chat/bot_summary_injection_test.py"],
+    srcs = ["//projects/monolith/chat:bot_summary_injection_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -4438,7 +3063,7 @@ py_test(
 
 py_test(
     name = "chat_bot_identity_note_test",
-    srcs = ["chat/bot_identity_note_test.py"],
+    srcs = ["//projects/monolith/chat:bot_identity_note_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -4452,7 +3077,7 @@ py_test(
 
 py_test(
     name = "chat_bot_subject_note_test",
-    srcs = ["chat/bot_subject_note_test.py"],
+    srcs = ["//projects/monolith/chat:bot_subject_note_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -4466,7 +3091,7 @@ py_test(
 
 py_test(
     name = "chat_bot_attachment_download_test",
-    srcs = ["chat/bot_attachment_download_test.py"],
+    srcs = ["//projects/monolith/chat:bot_attachment_download_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -4481,9 +3106,9 @@ py_test(
     size = "large",
     timeout = "moderate",
     srcs = [
-        "e2e/__init__.py",
-        "e2e/conftest.py",
-        "e2e/e2e_test.py",
+        "//projects/monolith/e2e:__init__.py",
+        "//projects/monolith/e2e:conftest.py",
+        "//projects/monolith/e2e:e2e_test.py",
     ],
     data = [
         "//projects/monolith/chart:migrations",
@@ -4512,9 +3137,9 @@ py_test(
     size = "large",
     timeout = "long",
     srcs = [
-        "e2e/__init__.py",
-        "e2e/conftest.py",
-        "e2e/e2e_playwright_test.py",
+        "//projects/monolith/e2e:__init__.py",
+        "//projects/monolith/e2e:conftest.py",
+        "//projects/monolith/e2e:e2e_playwright_test.py",
     ],
     data = [
         ":frontend_dist",
@@ -4544,7 +3169,7 @@ py_test(
 
 py_test(
     name = "chat_router_test",
-    srcs = ["chat/router_test.py"],
+    srcs = ["//projects/monolith/chat:router_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -4557,7 +3182,7 @@ py_test(
 
 py_test(
     name = "agent_sessions_router_test",
-    srcs = ["agent_sessions/router_test.py"],
+    srcs = ["//projects/monolith/agent_sessions:router_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -4573,7 +3198,7 @@ py_test(
 
 py_test(
     name = "swarm_config_test",
-    srcs = ["swarm/config_test.py"],
+    srcs = ["//projects/monolith/swarm:config_test.py"],
     imports = ["."],
     deps = [
         ":pkg_swarm",
@@ -4583,7 +3208,7 @@ py_test(
 
 py_test(
     name = "swarm_runtime_test",
-    srcs = ["swarm/runtime_test.py"],
+    srcs = ["//projects/monolith/swarm:runtime_test.py"],
     imports = ["."],
     deps = [
         ":pkg_swarm",
@@ -4595,7 +3220,7 @@ py_test(
 
 py_test(
     name = "swarm_policy_test",
-    srcs = ["swarm/policy_test.py"],
+    srcs = ["//projects/monolith/swarm:policy_test.py"],
     imports = ["."],
     deps = [
         ":pkg_swarm",
@@ -4605,7 +3230,7 @@ py_test(
 
 py_test(
     name = "swarm_classifier_test",
-    srcs = ["swarm/classifier_test.py"],
+    srcs = ["//projects/monolith/swarm:classifier_test.py"],
     imports = ["."],
     deps = [
         ":pkg_swarm",
@@ -4616,7 +3241,7 @@ py_test(
 
 py_test(
     name = "swarm_factory_conductor_test",
-    srcs = ["swarm/factory_conductor_test.py"],
+    srcs = ["//projects/monolith/swarm:factory_conductor_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -4632,7 +3257,7 @@ py_test(
 
 py_test(
     name = "swarm_model_pool_test",
-    srcs = ["swarm/model_pool_test.py"],
+    srcs = ["//projects/monolith/swarm:model_pool_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -4643,7 +3268,7 @@ py_test(
 
 py_test(
     name = "swarm_factory_controls_test",
-    srcs = ["swarm/factory_controls_test.py"],
+    srcs = ["//projects/monolith/swarm:factory_controls_test.py"],
     imports = ["."],
     deps = [
         ":pkg_auth",
@@ -4658,7 +3283,7 @@ py_test(
 
 py_test(
     name = "swarm_mcp_test",
-    srcs = ["swarm/mcp_test.py"],
+    srcs = ["//projects/monolith/swarm:mcp_test.py"],
     imports = ["."],
     deps = [
         ":pkg_auth",
@@ -4671,7 +3296,7 @@ py_test(
 
 py_test(
     name = "swarm_factory_intake_test",
-    srcs = ["swarm/factory_intake_test.py"],
+    srcs = ["//projects/monolith/swarm:factory_intake_test.py"],
     imports = ["."],
     deps = [
         ":pkg_auth",
@@ -4686,7 +3311,7 @@ py_test(
 
 py_test(
     name = "swarm_factory_intake_loop_test",
-    srcs = ["swarm/factory_intake_loop_test.py"],
+    srcs = ["//projects/monolith/swarm:factory_intake_loop_test.py"],
     imports = ["."],
     deps = [
         ":pkg_auth",
@@ -4701,7 +3326,7 @@ py_test(
 
 py_test(
     name = "swarm_factory_landing_test",
-    srcs = ["swarm/factory_landing_test.py"],
+    srcs = ["//projects/monolith/swarm:factory_landing_test.py"],
     imports = ["."],
     deps = [
         ":pkg_auth",
@@ -4716,7 +3341,7 @@ py_test(
 
 py_test(
     name = "swarm_factory_quota_guard_test",
-    srcs = ["swarm/factory_quota_guard_test.py"],
+    srcs = ["//projects/monolith/swarm:factory_quota_guard_test.py"],
     imports = ["."],
     deps = [
         ":pkg_auth",
@@ -4731,7 +3356,7 @@ py_test(
 
 py_test(
     name = "swarm_factory_refine_test",
-    srcs = ["swarm/factory_refine_test.py"],
+    srcs = ["//projects/monolith/swarm:factory_refine_test.py"],
     imports = ["."],
     deps = [
         ":pkg_auth",
@@ -4746,7 +3371,7 @@ py_test(
 
 py_test(
     name = "swarm_factory_decisions_test",
-    srcs = ["swarm/factory_decisions_test.py"],
+    srcs = ["//projects/monolith/swarm:factory_decisions_test.py"],
     imports = ["."],
     deps = [
         ":pkg_auth",
@@ -4761,7 +3386,7 @@ py_test(
 
 py_test(
     name = "swarm_factory_escalation_test",
-    srcs = ["swarm/factory_escalation_test.py"],
+    srcs = ["//projects/monolith/swarm:factory_escalation_test.py"],
     imports = ["."],
     deps = [
         ":pkg_auth",
@@ -4776,7 +3401,7 @@ py_test(
 
 py_test(
     name = "swarm_factory_fence_test",
-    srcs = ["swarm/factory_fence_test.py"],
+    srcs = ["//projects/monolith/swarm:factory_fence_test.py"],
     imports = ["."],
     deps = [
         ":pkg_auth",
@@ -4791,7 +3416,7 @@ py_test(
 
 py_test(
     name = "swarm_factory_router_test",
-    srcs = ["swarm/factory_router_test.py"],
+    srcs = ["//projects/monolith/swarm:factory_router_test.py"],
     imports = ["."],
     deps = [
         ":pkg_auth",
@@ -4806,7 +3431,7 @@ py_test(
 
 py_test(
     name = "swarm_factory_integration_test",
-    srcs = ["swarm/factory_integration_test.py"],
+    srcs = ["//projects/monolith/swarm:factory_integration_test.py"],
     imports = ["."],
     deps = [
         ":pkg_auth",
@@ -4821,7 +3446,7 @@ py_test(
 
 py_test(
     name = "swarm_factory_supervision_test",
-    srcs = ["swarm/factory_supervision_test.py"],
+    srcs = ["//projects/monolith/swarm:factory_supervision_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -4837,7 +3462,7 @@ py_test(
 
 py_test(
     name = "swarm_factory_attempt_stop_test",
-    srcs = ["swarm/factory_attempt_stop_test.py"],
+    srcs = ["//projects/monolith/swarm:factory_attempt_stop_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -4855,7 +3480,7 @@ py_test(
 
 py_test(
     name = "swarm_node_workflows_test",
-    srcs = ["swarm/node_workflows_test.py"],
+    srcs = ["//projects/monolith/swarm:node_workflows_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -4871,7 +3496,7 @@ py_test(
 
 py_test(
     name = "agent_sessions_factory_transport_test",
-    srcs = ["agent_sessions/factory_transport_test.py"],
+    srcs = ["//projects/monolith/agent_sessions:factory_transport_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -4882,7 +3507,7 @@ py_test(
 
 py_test(
     name = "swarm_router_test",
-    srcs = ["swarm/router_test.py"],
+    srcs = ["//projects/monolith/swarm:router_test.py"],
     imports = ["."],
     deps = [
         ":pkg_swarm",
@@ -4895,7 +3520,7 @@ py_test(
 
 py_test(
     name = "swarm_drainer_router_test",
-    srcs = ["swarm/drainer_router_test.py"],
+    srcs = ["//projects/monolith/swarm:drainer_router_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -4911,7 +3536,7 @@ py_test(
 
 py_test(
     name = "swarm_health_test",
-    srcs = ["swarm/health_test.py"],
+    srcs = ["//projects/monolith/swarm:health_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -4922,7 +3547,7 @@ py_test(
 
 py_test(
     name = "swarm_drainer_test",
-    srcs = ["swarm/drainer_test.py"],
+    srcs = ["//projects/monolith/swarm:drainer_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -4936,8 +3561,8 @@ py_test(
 
 py_test(
     name = "knowledge_extraction_test",
-    srcs = ["knowledge/extraction_test.py"],
-    data = ["knowledge/testdata/codex_session_redacted.txt"],
+    srcs = ["//projects/monolith/knowledge:extraction_test.py"],
+    data = ["//projects/monolith/knowledge:testdata/codex_session_redacted.txt"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -4950,7 +3575,7 @@ py_test(
 
 py_test(
     name = "knowledge_entities_test",
-    srcs = ["knowledge/entities_test.py"],
+    srcs = ["//projects/monolith/knowledge:entities_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -4961,7 +3586,7 @@ py_test(
 
 py_test(
     name = "knowledge_extraction_gates_test",
-    srcs = ["knowledge/extraction_gates_test.py"],
+    srcs = ["//projects/monolith/knowledge:extraction_gates_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -4972,7 +3597,7 @@ py_test(
 
 py_test(
     name = "knowledge_recall_test",
-    srcs = ["knowledge/recall_test.py"],
+    srcs = ["//projects/monolith/knowledge:recall_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -4985,10 +3610,10 @@ py_test(
 
 py_test(
     name = "knowledge_gate_calibration_test",
-    srcs = ["knowledge/gate_calibration_test.py"],
+    srcs = ["//projects/monolith/knowledge:gate_calibration_test.py"],
     data = [
-        "knowledge/testdata/atoms-all.tsv",
-        "knowledge/testdata/atoms-graded.tsv",
+        "//projects/monolith/knowledge:testdata/atoms-all.tsv",
+        "//projects/monolith/knowledge:testdata/atoms-graded.tsv",
     ],
     imports = ["."],
     deps = [
@@ -4999,7 +3624,7 @@ py_test(
 
 py_test(
     name = "knowledge_lens_test",
-    srcs = ["knowledge/lens_test.py"],
+    srcs = ["//projects/monolith/knowledge:lens_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -5009,7 +3634,7 @@ py_test(
 
 py_test(
     name = "knowledge_docfix_test",
-    srcs = ["knowledge/docfix_test.py"],
+    srcs = ["//projects/monolith/knowledge:docfix_test.py"],
     data = [
         "//projects/monolith/chart:docfix_review_test_data",
         "//projects/monolith/deploy:deploy_values",
@@ -5032,7 +3657,7 @@ py_test(
 
 py_test(
     name = "knowledge_extraction_repo_diff_test",
-    srcs = ["knowledge/extraction_repo_diff_test.py"],
+    srcs = ["//projects/monolith/knowledge:extraction_repo_diff_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -5044,7 +3669,7 @@ py_test(
 
 py_test(
     name = "knowledge_health_test",
-    srcs = ["knowledge/health_test.py"],
+    srcs = ["//projects/monolith/knowledge:health_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -5054,7 +3679,7 @@ py_test(
 
 py_test(
     name = "knowledge_burst_test",
-    srcs = ["knowledge/burst_test.py"],
+    srcs = ["//projects/monolith/knowledge:burst_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -5066,7 +3691,7 @@ py_test(
 
 py_test(
     name = "swarm_drain_console_test",
-    srcs = ["swarm/drain_console_test.py"],
+    srcs = ["//projects/monolith/swarm:drain_console_test.py"],
     imports = ["."],
     deps = [
         ":pkg_swarm",
@@ -5076,7 +3701,7 @@ py_test(
 
 py_test(
     name = "swarm_drain_console_router_test",
-    srcs = ["swarm/drain_console_router_test.py"],
+    srcs = ["//projects/monolith/swarm:drain_console_router_test.py"],
     imports = ["."],
     deps = [
         ":pkg_swarm",
@@ -5088,7 +3713,7 @@ py_test(
 
 py_test(
     name = "swarm_compare_router_test",
-    srcs = ["swarm/compare_router_test.py"],
+    srcs = ["//projects/monolith/swarm:compare_router_test.py"],
     imports = ["."],
     deps = [
         ":pkg_swarm",
@@ -5099,7 +3724,7 @@ py_test(
 
 py_test(
     name = "swarm_unified_diff_test",
-    srcs = ["swarm/unified_diff_test.py"],
+    srcs = ["//projects/monolith/swarm:unified_diff_test.py"],
     imports = ["."],
     deps = [
         ":pkg_swarm",
@@ -5109,7 +3734,7 @@ py_test(
 
 py_test(
     name = "swarm_walkthrough_composer_test",
-    srcs = ["swarm/walkthrough_composer_test.py"],
+    srcs = ["//projects/monolith/swarm:walkthrough_composer_test.py"],
     imports = ["."],
     deps = [
         ":pkg_swarm",
@@ -5119,7 +3744,7 @@ py_test(
 
 py_test(
     name = "swarm_workflows_test",
-    srcs = ["swarm/workflows_test.py"],
+    srcs = ["//projects/monolith/swarm:workflows_test.py"],
     imports = ["."],
     deps = [
         ":pkg_swarm",
@@ -5129,7 +3754,7 @@ py_test(
 
 py_test(
     name = "swarm_steps_test",
-    srcs = ["swarm/steps_test.py"],
+    srcs = ["//projects/monolith/swarm:steps_test.py"],
     imports = ["."],
     deps = [
         ":pkg_swarm",
@@ -5140,7 +3765,7 @@ py_test(
 
 py_test(
     name = "agent_sessions_permit_supervision_test",
-    srcs = ["agent_sessions/permit_supervision_test.py"],
+    srcs = ["//projects/monolith/agent_sessions:permit_supervision_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -5152,7 +3777,7 @@ py_test(
 
 py_test(
     name = "agent_sessions_factory_view_test",
-    srcs = ["agent_sessions/factory_view_test.py"],
+    srcs = ["//projects/monolith/agent_sessions:factory_view_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -5165,7 +3790,7 @@ py_test(
 # so this links no database and no swarm package.
 py_test(
     name = "agent_sessions_factory_public_test",
-    srcs = ["agent_sessions/factory_public_test.py"],
+    srcs = ["//projects/monolith/agent_sessions:factory_public_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -5176,7 +3801,7 @@ py_test(
 
 py_test(
     name = "agent_sessions_admission_test",
-    srcs = ["agent_sessions/admission_test.py"],
+    srcs = ["//projects/monolith/agent_sessions:admission_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -5187,7 +3812,7 @@ py_test(
 
 py_test(
     name = "agent_sessions_store_test",
-    srcs = ["agent_sessions/store_test.py"],
+    srcs = ["//projects/monolith/agent_sessions:store_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -5198,20 +3823,20 @@ py_test(
 
 bdd_test(
     name = "agent_sessions_store_postgres_test",
-    srcs = ["agent_sessions/store_postgres_test.py"],
+    srcs = ["//projects/monolith/agent_sessions:store_postgres_test.py"],
 )
 
 bdd_test(
     name = "agent_sessions_process_crash_test",
     srcs = [
-        "agent_sessions/process_crash_driver_test.py",
-        "agent_sessions/process_crash_test.py",
+        "//projects/monolith/agent_sessions:process_crash_driver_test.py",
+        "//projects/monolith/agent_sessions:process_crash_test.py",
     ],
 )
 
 py_test(
     name = "agent_sessions_api_test",
-    srcs = ["agent_sessions/api_test.py"],
+    srcs = ["//projects/monolith/agent_sessions:api_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -5222,7 +3847,7 @@ py_test(
 
 py_test(
     name = "agent_sessions_progress_ingest_test",
-    srcs = ["agent_sessions/progress_ingest_test.py"],
+    srcs = ["//projects/monolith/agent_sessions:progress_ingest_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -5235,7 +3860,7 @@ py_test(
 
 py_test(
     name = "agent_sessions_result_receipts_test",
-    srcs = ["agent_sessions/result_receipts_test.py"],
+    srcs = ["//projects/monolith/agent_sessions:result_receipts_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -5249,7 +3874,7 @@ py_test(
 
 py_test(
     name = "agent_sessions_preinvoke_test",
-    srcs = ["agent_sessions/preinvoke_test.py"],
+    srcs = ["//projects/monolith/agent_sessions:preinvoke_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -5266,7 +3891,7 @@ py_test(
 
 py_test(
     name = "agent_sessions_receipt_capture_test",
-    srcs = ["agent_sessions/receipt_capture_test.py"],
+    srcs = ["//projects/monolith/agent_sessions:receipt_capture_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -5281,7 +3906,7 @@ py_test(
 
 py_test(
     name = "agent_sessions_receipt_consumer_test",
-    srcs = ["agent_sessions/receipt_consumer_test.py"],
+    srcs = ["//projects/monolith/agent_sessions:receipt_consumer_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -5296,7 +3921,7 @@ py_test(
 
 py_test(
     name = "agent_sessions_response_lost_test",
-    srcs = ["agent_sessions/response_lost_test.py"],
+    srcs = ["//projects/monolith/agent_sessions:response_lost_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -5311,7 +3936,7 @@ py_test(
 
 py_test(
     name = "chat_router_backfill_exception_test",
-    srcs = ["chat/router_backfill_exception_test.py"],
+    srcs = ["//projects/monolith/chat:router_backfill_exception_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -5321,7 +3946,7 @@ py_test(
 
 py_test(
     name = "chat_backfill_flush_test",
-    srcs = ["chat/backfill_flush_test.py"],
+    srcs = ["//projects/monolith/chat:backfill_flush_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -5333,7 +3958,7 @@ py_test(
 
 py_test(
     name = "chat_store_find_user_test",
-    srcs = ["chat/store_find_user_test.py"],
+    srcs = ["//projects/monolith/chat:store_find_user_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -5346,7 +3971,7 @@ py_test(
 
 py_test(
     name = "chat_store_search_model_validate_test",
-    srcs = ["chat/store_search_model_validate_test.py"],
+    srcs = ["//projects/monolith/chat:store_search_model_validate_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -5358,7 +3983,7 @@ py_test(
 
 py_test(
     name = "chat_bot_thinking_view_callback_test",
-    srcs = ["chat/bot_thinking_view_callback_test.py"],
+    srcs = ["//projects/monolith/chat:bot_thinking_view_callback_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -5370,7 +3995,7 @@ py_test(
 
 py_test(
     name = "chat_store_lock_test",
-    srcs = ["chat/store_lock_test.py"],
+    srcs = ["//projects/monolith/chat:store_lock_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -5383,7 +4008,7 @@ py_test(
 
 py_test(
     name = "chat_bot_reprocess_test",
-    srcs = ["chat/bot_reprocess_test.py"],
+    srcs = ["//projects/monolith/chat:bot_reprocess_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -5395,7 +4020,7 @@ py_test(
 
 py_test(
     name = "main_lock_sweep_test",
-    srcs = ["app/main_lock_sweep_test.py"],
+    srcs = ["//projects/monolith/app:main_lock_sweep_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
@@ -5411,7 +4036,7 @@ py_test(
 
 py_test(
     name = "main_app_state_test",
-    srcs = ["app/main_app_state_test.py"],
+    srcs = ["//projects/monolith/app:main_app_state_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
@@ -5427,7 +4052,7 @@ py_test(
 
 py_test(
     name = "scheduler_test",
-    srcs = ["scheduler/scheduler_test.py"],
+    srcs = ["//projects/monolith/scheduler:scheduler_test.py"],
     imports = ["."],
     deps = [
         ":pkg_scheduler",
@@ -5439,7 +4064,7 @@ py_test(
 
 py_test(
     name = "scheduler_argo_handled_test",
-    srcs = ["scheduler/argo_handled_test.py"],
+    srcs = ["//projects/monolith/scheduler:argo_handled_test.py"],
     imports = ["."],
     deps = [
         ":pkg_scheduler",
@@ -5449,7 +4074,7 @@ py_test(
 
 py_test(
     name = "main_log_coverage_test",
-    srcs = ["app/main_log_coverage_test.py"],
+    srcs = ["//projects/monolith/app:main_log_coverage_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
@@ -5464,7 +4089,7 @@ py_test(
 
 py_test(
     name = "home_schedule_calendar_handler_test",
-    srcs = ["home/schedule_calendar_handler_test.py"],
+    srcs = ["//projects/monolith/home:schedule_calendar_handler_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -5477,7 +4102,7 @@ py_test(
 
 py_test(
     name = "shared_forecast_freshness_test",
-    srcs = ["shared/forecast_freshness_test.py"],
+    srcs = ["//projects/monolith/shared:forecast_freshness_test.py"],
     imports = ["."],
     deps = [
         ":pkg_shared",
@@ -5487,7 +4112,7 @@ py_test(
 
 py_test(
     name = "knowledge_chunker_test",
-    srcs = ["knowledge/chunker_test.py"],
+    srcs = ["//projects/monolith/knowledge:chunker_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -5497,7 +4122,7 @@ py_test(
 
 py_test(
     name = "knowledge_chunker_extra_test",
-    srcs = ["knowledge/chunker_extra_test.py"],
+    srcs = ["//projects/monolith/knowledge:chunker_extra_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -5507,7 +4132,7 @@ py_test(
 
 py_test(
     name = "knowledge_chunker_split_edge_cases_test",
-    srcs = ["knowledge/chunker_split_edge_cases_test.py"],
+    srcs = ["//projects/monolith/knowledge:chunker_split_edge_cases_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -5517,7 +4142,7 @@ py_test(
 
 py_test(
     name = "knowledge_frontmatter_test",
-    srcs = ["knowledge/frontmatter_test.py"],
+    srcs = ["//projects/monolith/knowledge:frontmatter_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -5528,7 +4153,7 @@ py_test(
 
 py_test(
     name = "knowledge_frontmatter_scoped_test",
-    srcs = ["knowledge/frontmatter_scoped_test.py"],
+    srcs = ["//projects/monolith/knowledge:frontmatter_scoped_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -5538,7 +4163,7 @@ py_test(
 
 py_test(
     name = "knowledge_layout_test",
-    srcs = ["knowledge/layout_test.py"],
+    srcs = ["//projects/monolith/knowledge:layout_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -5549,7 +4174,7 @@ py_test(
 
 py_test(
     name = "knowledge_links_test",
-    srcs = ["knowledge/links_test.py"],
+    srcs = ["//projects/monolith/knowledge:links_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -5559,7 +4184,7 @@ py_test(
 
 py_test(
     name = "knowledge_links_extra_test",
-    srcs = ["knowledge/links_extra_test.py"],
+    srcs = ["//projects/monolith/knowledge:links_extra_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -5569,7 +4194,7 @@ py_test(
 
 py_test(
     name = "knowledge_links_coverage_test",
-    srcs = ["knowledge/links_coverage_test.py"],
+    srcs = ["//projects/monolith/knowledge:links_coverage_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -5579,7 +4204,7 @@ py_test(
 
 py_test(
     name = "knowledge_store_test",
-    srcs = ["knowledge/store_test.py"],
+    srcs = ["//projects/monolith/knowledge:store_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -5593,7 +4218,7 @@ py_test(
 
 py_test(
     name = "knowledge_store_scoped_test",
-    srcs = ["knowledge/store_scoped_test.py"],
+    srcs = ["//projects/monolith/knowledge:store_scoped_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -5605,7 +4230,7 @@ py_test(
 
 py_test(
     name = "knowledge_indexing_test",
-    srcs = ["knowledge/indexing_test.py"],
+    srcs = ["//projects/monolith/knowledge:indexing_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -5616,7 +4241,7 @@ py_test(
 
 py_test(
     name = "knowledge_wikilinks_test",
-    srcs = ["knowledge/wikilinks_test.py"],
+    srcs = ["//projects/monolith/knowledge:wikilinks_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -5626,7 +4251,7 @@ py_test(
 
 py_test(
     name = "knowledge_visibility_test",
-    srcs = ["knowledge/visibility_test.py"],
+    srcs = ["//projects/monolith/knowledge:visibility_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -5636,7 +4261,7 @@ py_test(
 
 py_test(
     name = "knowledge_profile_test",
-    srcs = ["knowledge/profile_test.py"],
+    srcs = ["//projects/monolith/knowledge:profile_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -5646,7 +4271,7 @@ py_test(
 
 py_test(
     name = "knowledge_tools_add_visibility_field_test",
-    srcs = ["knowledge/tools/add_visibility_field_test.py"],
+    srcs = ["//projects/monolith/knowledge:tools/add_visibility_field_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -5656,7 +4281,7 @@ py_test(
 
 py_test(
     name = "knowledge_tools_classify_visibility_backfill_test",
-    srcs = ["knowledge/tools/classify_visibility_backfill_test.py"],
+    srcs = ["//projects/monolith/knowledge:tools/classify_visibility_backfill_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -5666,7 +4291,7 @@ py_test(
 
 py_test(
     name = "knowledge_gen_repo_docs_manifest_test",
-    srcs = ["knowledge/gen_repo_docs_manifest_test.py"],
+    srcs = ["//projects/monolith/knowledge:gen_repo_docs_manifest_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -5676,7 +4301,7 @@ py_test(
 
 py_test(
     name = "knowledge_gen_docs_manifest_test",
-    srcs = ["knowledge/gen_docs_manifest_test.py"],
+    srcs = ["//projects/monolith/knowledge:gen_docs_manifest_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -5686,7 +4311,7 @@ py_test(
 
 py_test(
     name = "knowledge_gen_posts_manifest_test",
-    srcs = ["knowledge/gen_posts_manifest_test.py"],
+    srcs = ["//projects/monolith/knowledge:gen_posts_manifest_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -5696,7 +4321,7 @@ py_test(
 
 py_test(
     name = "knowledge_tools_prettier_json_test",
-    srcs = ["knowledge/tools/prettier_json_test.py"],
+    srcs = ["//projects/monolith/knowledge:tools/prettier_json_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -5706,7 +4331,7 @@ py_test(
 
 py_test(
     name = "knowledge_gardener_test",
-    srcs = ["knowledge/gardener_test.py"],
+    srcs = ["//projects/monolith/knowledge:gardener_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -5716,7 +4341,7 @@ py_test(
 
 py_test(
     name = "knowledge_models_test",
-    srcs = ["knowledge/models_test.py"],
+    srcs = ["//projects/monolith/knowledge:models_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -5729,7 +4354,7 @@ py_test(
 
 py_test(
     name = "grimoire_models_test",
-    srcs = ["grimoire/models_test.py"],
+    srcs = ["//projects/monolith/grimoire:models_test.py"],
     imports = ["."],
     deps = [
         ":pkg_grimoire",
@@ -5742,7 +4367,7 @@ py_test(
 
 py_test(
     name = "grimoire_visibility_test",
-    srcs = ["grimoire/visibility_test.py"],
+    srcs = ["//projects/monolith/grimoire:visibility_test.py"],
     imports = ["."],
     deps = [
         ":pkg_grimoire",
@@ -5755,7 +4380,7 @@ py_test(
 
 py_test(
     name = "grimoire_router_test",
-    srcs = ["grimoire/router_test.py"],
+    srcs = ["//projects/monolith/grimoire:router_test.py"],
     imports = ["."],
     deps = [
         ":pkg_core",
@@ -5769,7 +4394,7 @@ py_test(
 
 py_test(
     name = "grimoire_entities_test",
-    srcs = ["grimoire/entities_test.py"],
+    srcs = ["//projects/monolith/grimoire:entities_test.py"],
     imports = ["."],
     deps = [
         ":pkg_core",
@@ -5783,7 +4408,7 @@ py_test(
 
 py_test(
     name = "grimoire_search_test",
-    srcs = ["grimoire/search_test.py"],
+    srcs = ["//projects/monolith/grimoire:search_test.py"],
     imports = ["."],
     deps = [
         ":pkg_core",
@@ -5800,7 +4425,7 @@ py_test(
 
 py_test(
     name = "grimoire_library_test",
-    srcs = ["grimoire/library_test.py"],
+    srcs = ["//projects/monolith/grimoire:library_test.py"],
     imports = ["."],
     deps = [
         ":pkg_core",
@@ -5816,7 +4441,7 @@ py_test(
 
 py_test(
     name = "grimoire_public_test",
-    srcs = ["grimoire/public_test.py"],
+    srcs = ["//projects/monolith/grimoire:public_test.py"],
     imports = ["."],
     deps = [
         ":pkg_grimoire",
@@ -5829,7 +4454,7 @@ py_test(
 
 py_test(
     name = "grimoire_explore_test",
-    srcs = ["grimoire/explore_test.py"],
+    srcs = ["//projects/monolith/grimoire:explore_test.py"],
     imports = ["."],
     deps = [
         ":pkg_grimoire",
@@ -5842,7 +4467,7 @@ py_test(
 
 py_test(
     name = "grimoire_router_public_test",
-    srcs = ["grimoire/router_public_test.py"],
+    srcs = ["//projects/monolith/grimoire:router_public_test.py"],
     imports = ["."],
     deps = [
         ":pkg_core",
@@ -5858,7 +4483,7 @@ py_test(
 
 py_test(
     name = "grimoire_ingest_test",
-    srcs = ["grimoire/ingest_test.py"],
+    srcs = ["//projects/monolith/grimoire:ingest_test.py"],
     imports = ["."],
     deps = [
         ":pkg_grimoire",
@@ -5871,7 +4496,7 @@ py_test(
 
 py_test(
     name = "grimoire_extract_test",
-    srcs = ["grimoire/extract_test.py"],
+    srcs = ["//projects/monolith/grimoire:extract_test.py"],
     imports = ["."],
     deps = [
         ":pkg_grimoire",
@@ -5886,7 +4511,7 @@ py_test(
 
 py_test(
     name = "grimoire_marker_test",
-    srcs = ["grimoire/marker_test.py"],
+    srcs = ["//projects/monolith/grimoire:marker_test.py"],
     imports = ["."],
     deps = [
         ":pkg_grimoire",
@@ -5896,7 +4521,7 @@ py_test(
 
 py_test(
     name = "grimoire_jobs_test",
-    srcs = ["grimoire/jobs_test.py"],
+    srcs = ["//projects/monolith/grimoire:jobs_test.py"],
     imports = ["."],
     deps = [
         ":pkg_grimoire",
@@ -5910,7 +4535,7 @@ py_test(
 
 py_test(
     name = "grimoire_hierarchy_backfill_test",
-    srcs = ["grimoire/hierarchy_backfill_test.py"],
+    srcs = ["//projects/monolith/grimoire:hierarchy_backfill_test.py"],
     imports = ["."],
     deps = [
         ":pkg_grimoire",
@@ -5923,7 +4548,7 @@ py_test(
 
 py_test(
     name = "ships_models_test",
-    srcs = ["ships/models_test.py"],
+    srcs = ["//projects/monolith/ships:models_test.py"],
     imports = ["."],
     deps = [
         ":pkg_ships",
@@ -5935,9 +4560,9 @@ py_test(
 py_test(
     name = "moving_models_test",
     srcs = [
-        "moving/tests/__init__.py",
-        "moving/tests/conftest.py",
-        "moving/tests/models_test.py",
+        "//projects/monolith/moving:tests/__init__.py",
+        "//projects/monolith/moving:tests/conftest.py",
+        "//projects/monolith/moving:tests/models_test.py",
     ],
     data = ["//projects/monolith/chart:migrations"],
     imports = ["."],
@@ -5952,8 +4577,8 @@ py_test(
 py_test(
     name = "moving_collisions_test",
     srcs = [
-        "moving/tests/__init__.py",
-        "moving/tests/collisions_test.py",
+        "//projects/monolith/moving:tests/__init__.py",
+        "//projects/monolith/moving:tests/collisions_test.py",
     ],
     imports = ["."],
     deps = [
@@ -5965,9 +4590,9 @@ py_test(
 py_test(
     name = "moving_viewer_test",
     srcs = [
-        "moving/tests/__init__.py",
-        "moving/tests/conftest.py",
-        "moving/tests/viewer_test.py",
+        "//projects/monolith/moving:tests/__init__.py",
+        "//projects/monolith/moving:tests/conftest.py",
+        "//projects/monolith/moving:tests/viewer_test.py",
     ],
     imports = ["."],
     deps = [
@@ -5983,9 +4608,9 @@ py_test(
 py_test(
     name = "moving_router_test",
     srcs = [
-        "moving/tests/__init__.py",
-        "moving/tests/conftest.py",
-        "moving/tests/router_test.py",
+        "//projects/monolith/moving:tests/__init__.py",
+        "//projects/monolith/moving:tests/conftest.py",
+        "//projects/monolith/moving:tests/router_test.py",
     ],
     imports = ["."],
     deps = [
@@ -6001,9 +4626,9 @@ py_test(
 py_test(
     name = "moving_chat_test",
     srcs = [
-        "moving/tests/__init__.py",
-        "moving/tests/chat_test.py",
-        "moving/tests/conftest.py",
+        "//projects/monolith/moving:tests/__init__.py",
+        "//projects/monolith/moving:tests/chat_test.py",
+        "//projects/monolith/moving:tests/conftest.py",
     ],
     imports = ["."],
     deps = [
@@ -6019,9 +4644,9 @@ py_test(
 py_test(
     name = "moving_gcal_sync_test",
     srcs = [
-        "moving/tests/__init__.py",
-        "moving/tests/conftest.py",
-        "moving/tests/gcal_sync_test.py",
+        "//projects/monolith/moving:tests/__init__.py",
+        "//projects/monolith/moving:tests/conftest.py",
+        "//projects/monolith/moving:tests/gcal_sync_test.py",
     ],
     imports = ["."],
     deps = [
@@ -6035,7 +4660,7 @@ py_test(
 
 py_test(
     name = "updates_test",
-    srcs = ["updates/updates_test.py"],
+    srcs = ["//projects/monolith/updates:updates_test.py"],
     imports = ["."],
     deps = [
         ":pkg_auth",
@@ -6051,7 +4676,7 @@ py_test(
 
 py_test(
     name = "hikes_models_test",
-    srcs = ["hikes/models_test.py"],
+    srcs = ["//projects/monolith/hikes:models_test.py"],
     imports = ["."],
     deps = [
         ":pkg_hikes",
@@ -6062,7 +4687,7 @@ py_test(
 
 py_test(
     name = "faas_models_test",
-    srcs = ["faas/models_test.py"],
+    srcs = ["//projects/monolith/faas:models_test.py"],
     imports = ["."],
     deps = [
         ":pkg_faas",
@@ -6073,7 +4698,7 @@ py_test(
 
 py_test(
     name = "faas_storage_test",
-    srcs = ["faas/storage_test.py"],
+    srcs = ["//projects/monolith/faas:storage_test.py"],
     imports = ["."],
     deps = [
         ":pkg_faas",
@@ -6084,7 +4709,7 @@ py_test(
 
 py_test(
     name = "faas_runtime_test",
-    srcs = ["faas/runtime_test.py"],
+    srcs = ["//projects/monolith/faas:runtime_test.py"],
     imports = ["."],
     deps = [
         ":pkg_faas",
@@ -6094,7 +4719,7 @@ py_test(
 
 py_test(
     name = "faas_embervm_client_test",
-    srcs = ["faas/embervm_client_test.py"],
+    srcs = ["//projects/monolith/faas:embervm_client_test.py"],
     imports = ["."],
     deps = [
         ":pkg_faas",
@@ -6105,7 +4730,7 @@ py_test(
 
 py_test(
     name = "faas_workload_test",
-    srcs = ["faas/workload_test.py"],
+    srcs = ["//projects/monolith/faas:workload_test.py"],
     imports = ["."],
     deps = [
         ":pkg_faas",
@@ -6117,7 +4742,7 @@ py_test(
 
 py_test(
     name = "faas_reconcile_test",
-    srcs = ["faas/reconcile_test.py"],
+    srcs = ["//projects/monolith/faas:reconcile_test.py"],
     imports = ["."],
     deps = [
         ":pkg_faas",
@@ -6128,7 +4753,7 @@ py_test(
 
 py_test(
     name = "faas_router_test",
-    srcs = ["faas/router_test.py"],
+    srcs = ["//projects/monolith/faas:router_test.py"],
     imports = ["."],
     deps = [
         ":pkg_core",
@@ -6143,7 +4768,7 @@ py_test(
 
 py_test(
     name = "faas_invoke_router_test",
-    srcs = ["faas/invoke_router_test.py"],
+    srcs = ["//projects/monolith/faas:invoke_router_test.py"],
     imports = ["."],
     deps = [
         ":pkg_core",
@@ -6158,7 +4783,7 @@ py_test(
 
 py_test(
     name = "faas_invoke_router_public_test",
-    srcs = ["faas/invoke_router_public_test.py"],
+    srcs = ["//projects/monolith/faas:invoke_router_public_test.py"],
     imports = ["."],
     deps = [
         ":pkg_core",
@@ -6172,7 +4797,7 @@ py_test(
 
 py_test(
     name = "stars_models_test",
-    srcs = ["stars/models_test.py"],
+    srcs = ["//projects/monolith/stars:models_test.py"],
     imports = ["."],
     deps = [
         ":pkg_stars",
@@ -6183,7 +4808,7 @@ py_test(
 
 py_test(
     name = "stars_scoring_test",
-    srcs = ["stars/scoring_test.py"],
+    srcs = ["//projects/monolith/stars:scoring_test.py"],
     imports = ["."],
     deps = [
         ":pkg_stars",
@@ -6194,7 +4819,7 @@ py_test(
 
 py_test(
     name = "stars_forecast_test",
-    srcs = ["stars/forecast_test.py"],
+    srcs = ["//projects/monolith/stars:forecast_test.py"],
     imports = ["."],
     deps = [
         ":pkg_stars",
@@ -6204,7 +4829,7 @@ py_test(
 
 py_test(
     name = "stars_jobs_test",
-    srcs = ["stars/jobs_test.py"],
+    srcs = ["//projects/monolith/stars:jobs_test.py"],
     imports = ["."],
     deps = [
         ":pkg_shared",
@@ -6216,7 +4841,7 @@ py_test(
 
 py_test(
     name = "stars_grid_test",
-    srcs = ["stars/grid_test.py"],
+    srcs = ["//projects/monolith/stars:grid_test.py"],
     imports = ["."],
     deps = [
         ":pkg_core",
@@ -6228,7 +4853,7 @@ py_test(
 
 py_test(
     name = "stars_climatology_test",
-    srcs = ["stars/climatology_test.py"],
+    srcs = ["//projects/monolith/stars:climatology_test.py"],
     imports = ["."],
     deps = [
         ":pkg_core",
@@ -6240,7 +4865,7 @@ py_test(
 
 py_test(
     name = "stars_router_test",
-    srcs = ["stars/router_test.py"],
+    srcs = ["//projects/monolith/stars:router_test.py"],
     imports = ["."],
     deps = [
         ":pkg_core",
@@ -6255,7 +4880,7 @@ py_test(
 
 py_test(
     name = "stars_health_test",
-    srcs = ["stars/health_test.py"],
+    srcs = ["//projects/monolith/stars:health_test.py"],
     imports = ["."],
     deps = [
         ":pkg_stars",
@@ -6266,7 +4891,7 @@ py_test(
 
 py_test(
     name = "hikes_walkhighlands_test",
-    srcs = ["hikes/walkhighlands_test.py"],
+    srcs = ["//projects/monolith/hikes:walkhighlands_test.py"],
     imports = ["."],
     deps = [
         ":pkg_hikes",
@@ -6276,7 +4901,7 @@ py_test(
 
 py_test(
     name = "hikes_forecast_test",
-    srcs = ["hikes/forecast_test.py"],
+    srcs = ["//projects/monolith/hikes:forecast_test.py"],
     imports = ["."],
     deps = [
         ":pkg_hikes",
@@ -6286,7 +4911,7 @@ py_test(
 
 py_test(
     name = "hikes_router_test",
-    srcs = ["hikes/router_test.py"],
+    srcs = ["//projects/monolith/hikes:router_test.py"],
     imports = ["."],
     deps = [
         ":pkg_core",
@@ -6303,10 +4928,10 @@ py_test(
 # unit tests for the public-chat session lifecycle, budgets, and SSE shape.
 py_test(
     name = "chat_public_router_test",
-    srcs = ["chat_public/router_test.py"],
+    srcs = ["//projects/monolith/chat_public:router_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_public_backend",
+        "//projects/monolith/public_backend:monolith_public_backend",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -6316,7 +4941,7 @@ py_test(
 
 py_test(
     name = "chat_public_health_test",
-    srcs = ["chat_public/health_test.py"],
+    srcs = ["//projects/monolith/chat_public:health_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
@@ -6333,7 +4958,7 @@ py_test(
 # (S3 faked) and the S3 helper (boto3 mocked).
 py_test(
     name = "artifact_router_test",
-    srcs = ["artifact/router_test.py"],
+    srcs = ["//projects/monolith/artifact:router_test.py"],
     imports = ["."],
     deps = [
         ":pkg_artifact",
@@ -6345,7 +4970,7 @@ py_test(
 
 py_test(
     name = "artifact_s3_test",
-    srcs = ["artifact/s3_test.py"],
+    srcs = ["//projects/monolith/artifact:s3_test.py"],
     imports = ["."],
     deps = [
         ":pkg_artifact",
@@ -6359,10 +4984,10 @@ py_test(
 # round-trip via the read route, empty-transcript -> 400, missing -> 404.
 py_test(
     name = "chat_public_snapshots_test",
-    srcs = ["chat_public/snapshots_test.py"],
+    srcs = ["//projects/monolith/chat_public:snapshots_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_public_backend",
+        "//projects/monolith/public_backend:monolith_public_backend",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -6375,10 +5000,10 @@ py_test(
 # the busy SSE event, salted ip_hash storage).
 py_test(
     name = "chat_public_phase2_test",
-    srcs = ["chat_public/phase2_test.py"],
+    srcs = ["//projects/monolith/chat_public:phase2_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_public_backend",
+        "//projects/monolith/public_backend:monolith_public_backend",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -6391,10 +5016,10 @@ py_test(
 # ceiling, rolling-summary compaction, in-flight slot release after stream).
 py_test(
     name = "chat_public_phase3_test",
-    srcs = ["chat_public/phase3_test.py"],
+    srcs = ["//projects/monolith/chat_public:phase3_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_public_backend",
+        "//projects/monolith/public_backend:monolith_public_backend",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -6408,10 +5033,10 @@ py_test(
 # retrieval still streams, and retrieve() embed+map+fail-open behaviour.
 py_test(
     name = "chat_public_phase4_test",
-    srcs = ["chat_public/phase4_test.py"],
+    srcs = ["//projects/monolith/chat_public:phase4_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_public_backend",
+        "//projects/monolith/public_backend:monolith_public_backend",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -6426,10 +5051,10 @@ py_test(
 # token+done and persists the turn).
 py_test(
     name = "chat_public_phase5_test",
-    srcs = ["chat_public/phase5_test.py"],
+    srcs = ["//projects/monolith/chat_public:phase5_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_public_backend",
+        "//projects/monolith/public_backend:monolith_public_backend",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -6444,10 +5069,10 @@ py_test(
 # error fail open to an ungrounded turn.
 py_test(
     name = "grimoire_chat_retrieval_test",
-    srcs = ["grimoire_chat/retrieval_test.py"],
+    srcs = ["//projects/monolith/grimoire_chat:retrieval_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_public_backend",
+        "//projects/monolith/public_backend:monolith_public_backend",
         "@pip//pytest",
         "@pip//pytest_asyncio",
         "@pip//sqlmodel",
@@ -6461,10 +5086,10 @@ py_test(
 # is server-fixed + env-overridable.
 py_test(
     name = "grimoire_chat_router_test",
-    srcs = ["grimoire_chat/router_test.py"],
+    srcs = ["//projects/monolith/grimoire_chat:router_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_public_backend",
+        "//projects/monolith/public_backend:monolith_public_backend",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -6535,7 +5160,7 @@ py_test(
 
 py_test(
     name = "hikes_jobs_test",
-    srcs = ["hikes/jobs_test.py"],
+    srcs = ["//projects/monolith/hikes:jobs_test.py"],
     imports = ["."],
     deps = [
         ":pkg_hikes",
@@ -6547,7 +5172,7 @@ py_test(
 
 py_test(
     name = "hikes_init_test",
-    srcs = ["hikes/__init___test.py"],
+    srcs = ["//projects/monolith/hikes:__init___test.py"],
     imports = ["."],
     deps = [
         ":pkg_hikes",
@@ -6557,7 +5182,7 @@ py_test(
 
 py_test(
     name = "dr_jobs_models_test",
-    srcs = ["dr_jobs/models_test.py"],
+    srcs = ["//projects/monolith/dr_jobs:models_test.py"],
     imports = ["."],
     deps = [
         ":pkg_dr_jobs",
@@ -6568,7 +5193,7 @@ py_test(
 
 py_test(
     name = "dr_jobs_scraper_test",
-    srcs = ["dr_jobs/scraper_test.py"],
+    srcs = ["//projects/monolith/dr_jobs:scraper_test.py"],
     imports = ["."],
     deps = [
         ":pkg_dr_jobs",
@@ -6580,7 +5205,7 @@ py_test(
 
 py_test(
     name = "dr_jobs_router_test",
-    srcs = ["dr_jobs/router_test.py"],
+    srcs = ["//projects/monolith/dr_jobs:router_test.py"],
     imports = ["."],
     deps = [
         ":pkg_core",
@@ -6594,7 +5219,7 @@ py_test(
 
 py_test(
     name = "dr_jobs_jobs_test",
-    srcs = ["dr_jobs/jobs_test.py"],
+    srcs = ["//projects/monolith/dr_jobs:jobs_test.py"],
     imports = ["."],
     deps = [
         ":pkg_core",
@@ -6606,9 +5231,9 @@ py_test(
 
 py_test(
     name = "worldcup_ratings_test",
-    srcs = ["worldcup/ratings_test.py"],
+    srcs = ["//projects/monolith/worldcup:ratings_test.py"],
     # ratings.load_elo() reads the committed Elo snapshot at runtime.
-    data = ["worldcup/ratings/elo_2026.json"],
+    data = ["//projects/monolith/worldcup:ratings/elo_2026.json"],
     imports = ["."],
     deps = [
         ":pkg_worldcup",
@@ -6618,7 +5243,7 @@ py_test(
 
 py_test(
     name = "worldcup_outcome_test",
-    srcs = ["worldcup/outcome_test.py"],
+    srcs = ["//projects/monolith/worldcup:outcome_test.py"],
     imports = ["."],
     deps = [
         ":pkg_worldcup",
@@ -6628,8 +5253,8 @@ py_test(
 
 py_test(
     name = "worldcup_sim_test",
-    srcs = ["worldcup/sim_test.py"],
-    data = ["worldcup/ratings/elo_2026.json"],
+    srcs = ["//projects/monolith/worldcup:sim_test.py"],
+    data = ["//projects/monolith/worldcup:ratings/elo_2026.json"],
     imports = ["."],
     deps = [
         ":pkg_worldcup",
@@ -6639,7 +5264,7 @@ py_test(
 
 py_test(
     name = "worldcup_strength_test",
-    srcs = ["worldcup/strength_test.py"],
+    srcs = ["//projects/monolith/worldcup:strength_test.py"],
     imports = ["."],
     deps = [
         ":pkg_worldcup",
@@ -6649,7 +5274,7 @@ py_test(
 
 py_test(
     name = "worldcup_client_test",
-    srcs = ["worldcup/client_test.py"],
+    srcs = ["//projects/monolith/worldcup:client_test.py"],
     imports = ["."],
     deps = [
         ":pkg_worldcup",
@@ -6660,8 +5285,8 @@ py_test(
 
 py_test(
     name = "worldcup_jobs_test",
-    srcs = ["worldcup/jobs_test.py"],
-    data = ["worldcup/ratings/elo_2026.json"],
+    srcs = ["//projects/monolith/worldcup:jobs_test.py"],
+    data = ["//projects/monolith/worldcup:ratings/elo_2026.json"],
     imports = ["."],
     deps = [
         ":pkg_core",
@@ -6673,8 +5298,8 @@ py_test(
 
 py_test(
     name = "worldcup_router_test",
-    srcs = ["worldcup/router_test.py"],
-    data = ["worldcup/ratings/elo_2026.json"],
+    srcs = ["//projects/monolith/worldcup:router_test.py"],
+    data = ["//projects/monolith/worldcup:ratings/elo_2026.json"],
     imports = ["."],
     deps = [
         ":pkg_core",
@@ -6688,10 +5313,10 @@ py_test(
 
 py_test(
     name = "campsites_client_test",
-    srcs = ["campsites/client_test.py"],
+    srcs = ["//projects/monolith/campsites:client_test.py"],
     # The load_catalog / _read_catalog_json tests read the committed static
     # catalog from runfiles, so ship it as test data.
-    data = ["campsites/catalog.json"],
+    data = ["//projects/monolith/campsites:catalog.json"],
     imports = ["."],
     deps = [
         ":pkg_campsites",
@@ -6701,7 +5326,7 @@ py_test(
 
 py_test(
     name = "campsites_weather_test",
-    srcs = ["campsites/weather_test.py"],
+    srcs = ["//projects/monolith/campsites:weather_test.py"],
     imports = ["."],
     deps = [
         ":pkg_campsites",
@@ -6711,7 +5336,7 @@ py_test(
 
 py_test(
     name = "campsites_jobs_test",
-    srcs = ["campsites/jobs_test.py"],
+    srcs = ["//projects/monolith/campsites:jobs_test.py"],
     imports = ["."],
     deps = [
         ":pkg_campsites",
@@ -6723,7 +5348,7 @@ py_test(
 
 py_test(
     name = "campsites_router_test",
-    srcs = ["campsites/router_test.py"],
+    srcs = ["//projects/monolith/campsites:router_test.py"],
     imports = ["."],
     deps = [
         ":pkg_campsites",
@@ -6737,7 +5362,7 @@ py_test(
 
 py_test(
     name = "stars_init_test",
-    srcs = ["stars/__init___test.py"],
+    srcs = ["//projects/monolith/stars:__init___test.py"],
     imports = ["."],
     deps = [
         ":pkg_stars",
@@ -6748,8 +5373,8 @@ py_test(
 py_test(
     name = "hikes_generate_seed_test",
     srcs = [
-        "hikes/tools/generate_seed.py",
-        "hikes/tools/generate_seed_test.py",
+        "//projects/monolith/hikes:tools/generate_seed.py",
+        "//projects/monolith/hikes:tools/generate_seed_test.py",
     ],
     imports = ["hikes/tools"],
     deps = ["@pip//pytest"],
@@ -6758,8 +5383,8 @@ py_test(
 py_test(
     name = "stars_generate_grid_test",
     srcs = [
-        "stars/grid_gen/generate_grid.py",
-        "stars/grid_gen/generate_grid_test.py",
+        "//projects/monolith/stars:grid_gen/generate_grid.py",
+        "//projects/monolith/stars:grid_gen/generate_grid_test.py",
     ],
     imports = ["stars/grid_gen"],
     deps = ["@pip//pytest"],
@@ -6768,8 +5393,8 @@ py_test(
 py_test(
     name = "stars_generate_grid_v2_test",
     srcs = [
-        "stars/grid_gen/generate_grid_v2.py",
-        "stars/grid_gen/generate_grid_v2_test.py",
+        "//projects/monolith/stars:grid_gen/generate_grid_v2.py",
+        "//projects/monolith/stars:grid_gen/generate_grid_v2_test.py",
     ],
     imports = ["stars/grid_gen"],
     deps = ["@pip//pytest"],
@@ -6777,7 +5402,7 @@ py_test(
 
 py_test(
     name = "ships_heat_test",
-    srcs = ["ships/heat_test.py"],
+    srcs = ["//projects/monolith/ships:heat_test.py"],
     imports = ["."],
     deps = [
         ":pkg_ships",
@@ -6788,7 +5413,7 @@ py_test(
 
 py_test(
     name = "ships_ais_test",
-    srcs = ["ships/ais_test.py"],
+    srcs = ["//projects/monolith/ships:ais_test.py"],
     imports = ["."],
     deps = [
         ":pkg_ships",
@@ -6798,7 +5423,7 @@ py_test(
 
 py_test(
     name = "ships_store_test",
-    srcs = ["ships/store_test.py"],
+    srcs = ["//projects/monolith/ships:store_test.py"],
     imports = ["."],
     deps = [
         ":pkg_ships",
@@ -6809,7 +5434,7 @@ py_test(
 
 py_test(
     name = "ships_ingest_test",
-    srcs = ["ships/ingest_test.py"],
+    srcs = ["//projects/monolith/ships:ingest_test.py"],
     imports = ["."],
     deps = [
         ":pkg_ships",
@@ -6821,7 +5446,7 @@ py_test(
 
 py_test(
     name = "ships_router_test",
-    srcs = ["ships/router_test.py"],
+    srcs = ["//projects/monolith/ships:router_test.py"],
     imports = ["."],
     deps = [
         ":pkg_core",
@@ -6835,7 +5460,7 @@ py_test(
 
 py_test(
     name = "ships_retention_test",
-    srcs = ["ships/retention_test.py"],
+    srcs = ["//projects/monolith/ships:retention_test.py"],
     imports = ["."],
     deps = [
         ":pkg_ships",
@@ -6845,7 +5470,7 @@ py_test(
 
 py_test(
     name = "knowledge_gap_model_test",
-    srcs = ["knowledge/gap_model_test.py"],
+    srcs = ["//projects/monolith/knowledge:gap_model_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -6858,7 +5483,7 @@ py_test(
 
 py_test(
     name = "knowledge_gap_set_class_test",
-    srcs = ["knowledge/gap_set_class_test.py"],
+    srcs = ["//projects/monolith/knowledge:gap_set_class_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -6871,7 +5496,7 @@ py_test(
 
 py_test(
     name = "knowledge_gap_answer_fileless_test",
-    srcs = ["knowledge/gap_answer_fileless_test.py"],
+    srcs = ["//projects/monolith/knowledge:gap_answer_fileless_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -6885,7 +5510,7 @@ py_test(
 
 py_test(
     name = "knowledge_store_gap_queries_test",
-    srcs = ["knowledge/store_gap_queries_test.py"],
+    srcs = ["//projects/monolith/knowledge:store_gap_queries_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -6898,7 +5523,7 @@ py_test(
 
 py_test(
     name = "knowledge_service_test",
-    srcs = ["knowledge/service_test.py"],
+    srcs = ["//projects/monolith/knowledge:service_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -6919,7 +5544,7 @@ sh_binary(
 
 py_test(
     name = "chat_backfill_extra_test",
-    srcs = ["chat/backfill_extra_test.py"],
+    srcs = ["//projects/monolith/chat:backfill_extra_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -6930,7 +5555,7 @@ py_test(
 
 py_test(
     name = "knowledge_store_extra_test",
-    srcs = ["knowledge/store_extra_test.py"],
+    srcs = ["//projects/monolith/knowledge:store_extra_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -6942,7 +5567,7 @@ py_test(
 
 py_test(
     name = "knowledge_frontmatter_extra_test",
-    srcs = ["knowledge/frontmatter_extra_test.py"],
+    srcs = ["//projects/monolith/knowledge:frontmatter_extra_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -6953,7 +5578,7 @@ py_test(
 
 py_test(
     name = "knowledge_frontmatter_json_safe_test",
-    srcs = ["knowledge/frontmatter_json_safe_test.py"],
+    srcs = ["//projects/monolith/knowledge:frontmatter_json_safe_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -6964,7 +5589,7 @@ py_test(
 
 py_test(
     name = "chat_store_reclaim_race_test",
-    srcs = ["chat/store_reclaim_race_test.py"],
+    srcs = ["//projects/monolith/chat:store_reclaim_race_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -6977,7 +5602,7 @@ py_test(
 
 py_test(
     name = "home_schedule_naive_dtend_test",
-    srcs = ["home/schedule_naive_dtend_test.py"],
+    srcs = ["//projects/monolith/home:schedule_naive_dtend_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -6989,7 +5614,7 @@ py_test(
 
 py_test(
     name = "knowledge_store_zero_chunk_test",
-    srcs = ["knowledge/store_zero_chunk_test.py"],
+    srcs = ["//projects/monolith/knowledge:store_zero_chunk_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -7001,7 +5626,7 @@ py_test(
 
 py_test(
     name = "knowledge_store_optional_metadata_test",
-    srcs = ["knowledge/store_optional_metadata_test.py"],
+    srcs = ["//projects/monolith/knowledge:store_optional_metadata_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -7013,7 +5638,7 @@ py_test(
 
 py_test(
     name = "knowledge_raw_paths_test",
-    srcs = ["knowledge/raw_paths_test.py"],
+    srcs = ["//projects/monolith/knowledge:raw_paths_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -7023,7 +5648,7 @@ py_test(
 
 py_test(
     name = "knowledge_migrate_raw_bucketing_test",
-    srcs = ["knowledge/migrate_raw_bucketing_test.py"],
+    srcs = ["//projects/monolith/knowledge:migrate_raw_bucketing_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -7035,7 +5660,7 @@ py_test(
 
 py_test(
     name = "knowledge_fixes_coverage_test",
-    srcs = ["knowledge/knowledge_fixes_coverage_test.py"],
+    srcs = ["//projects/monolith/knowledge:knowledge_fixes_coverage_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -7049,7 +5674,7 @@ py_test(
 
 py_test(
     name = "knowledge_router_test",
-    srcs = ["knowledge/router_test.py"],
+    srcs = ["//projects/monolith/knowledge:router_test.py"],
     imports = ["."],
     deps = [
         ":pkg_core",
@@ -7066,7 +5691,7 @@ py_test(
 
 py_test(
     name = "knowledge_router_raws_test",
-    srcs = ["knowledge/router_raws_test.py"],
+    srcs = ["//projects/monolith/knowledge:router_raws_test.py"],
     imports = ["."],
     deps = [
         ":pkg_core",
@@ -7081,7 +5706,7 @@ py_test(
 
 py_test(
     name = "knowledge_redact_test",
-    srcs = ["knowledge/redact_test.py"],
+    srcs = ["//projects/monolith/knowledge:redact_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -7091,7 +5716,7 @@ py_test(
 
 py_test(
     name = "knowledge_publish_test",
-    srcs = ["knowledge/publish_test.py"],
+    srcs = ["//projects/monolith/knowledge:publish_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -7103,7 +5728,7 @@ py_test(
 
 py_test(
     name = "knowledge_notes_crud_test",
-    srcs = ["knowledge/notes_crud_test.py"],
+    srcs = ["//projects/monolith/knowledge:notes_crud_test.py"],
     imports = ["."],
     deps = [
         ":pkg_core",
@@ -7122,7 +5747,7 @@ py_test(
 
 py_test(
     name = "knowledge_mcp_test",
-    srcs = ["knowledge/mcp_test.py"],
+    srcs = ["//projects/monolith/knowledge:mcp_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -7135,7 +5760,7 @@ py_test(
 
 py_test(
     name = "knowledge_mcp_registry_test",
-    srcs = ["knowledge/mcp_registry_test.py"],
+    srcs = ["//projects/monolith/knowledge:mcp_registry_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -7147,7 +5772,7 @@ py_test(
 
 py_test(
     name = "knowledge_mcp_reports_test",
-    srcs = ["knowledge/mcp_reports_test.py"],
+    srcs = ["//projects/monolith/knowledge:mcp_reports_test.py"],
     imports = ["."],
     deps = [
         ":pkg_auth",
@@ -7163,7 +5788,7 @@ py_test(
 
 py_test(
     name = "knowledge_interventions_test",
-    srcs = ["knowledge/interventions_test.py"],
+    srcs = ["//projects/monolith/knowledge:interventions_test.py"],
     imports = ["."],
     deps = [
         ":pkg_auth",
@@ -7182,7 +5807,7 @@ py_test(
 
 py_test(
     name = "knowledge_gap_api_test",
-    srcs = ["knowledge/gap_api_test.py"],
+    srcs = ["//projects/monolith/knowledge:gap_api_test.py"],
     imports = ["."],
     deps = [
         ":pkg_core",
@@ -7199,7 +5824,7 @@ py_test(
 
 py_test(
     name = "knowledge_gap_review_endpoints_test",
-    srcs = ["knowledge/gap_review_endpoints_test.py"],
+    srcs = ["//projects/monolith/knowledge:gap_review_endpoints_test.py"],
     imports = ["."],
     deps = [
         ":pkg_core",
@@ -7216,7 +5841,7 @@ py_test(
 
 py_test(
     name = "knowledge_note_review_endpoints_test",
-    srcs = ["knowledge/note_review_endpoints_test.py"],
+    srcs = ["//projects/monolith/knowledge:note_review_endpoints_test.py"],
     imports = ["."],
     deps = [
         ":pkg_core",
@@ -7233,7 +5858,7 @@ py_test(
 
 py_test(
     name = "knowledge_notes_test",
-    srcs = ["knowledge/notes_test.py"],
+    srcs = ["//projects/monolith/knowledge:notes_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -7246,7 +5871,7 @@ py_test(
 
 py_test(
     name = "tasks_router_test",
-    srcs = ["knowledge/tasks_router_test.py"],
+    srcs = ["//projects/monolith/knowledge:tasks_router_test.py"],
     imports = ["."],
     deps = [
         ":pkg_core",
@@ -7260,7 +5885,7 @@ py_test(
 
 py_test(
     name = "knowledge_raw_store_test",
-    srcs = ["knowledge/raw_store_test.py"],
+    srcs = ["//projects/monolith/knowledge:raw_store_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -7271,7 +5896,7 @@ py_test(
 
 py_test(
     name = "knowledge_store_note_links_test",
-    srcs = ["knowledge/store_note_links_test.py"],
+    srcs = ["//projects/monolith/knowledge:store_note_links_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -7283,7 +5908,7 @@ py_test(
 
 py_test(
     name = "knowledge_ingest_queue_claim_test",
-    srcs = ["knowledge/ingest_queue_claim_test.py"],
+    srcs = ["//projects/monolith/knowledge:ingest_queue_claim_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -7293,7 +5918,7 @@ py_test(
 
 py_test(
     name = "knowledge_ingest_queue_webpage_title_test",
-    srcs = ["knowledge/ingest_queue_webpage_title_test.py"],
+    srcs = ["//projects/monolith/knowledge:ingest_queue_webpage_title_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -7304,7 +5929,7 @@ py_test(
 
 py_test(
     name = "chat_web_search_type_error_test",
-    srcs = ["chat/web_search_type_error_test.py"],
+    srcs = ["//projects/monolith/chat:web_search_type_error_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -7316,7 +5941,7 @@ py_test(
 
 py_test(
     name = "sse_test",
-    srcs = ["chat/sse_test.py"],
+    srcs = ["//projects/monolith/chat:sse_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -7327,7 +5952,7 @@ py_test(
 
 py_test(
     name = "explorer_test",
-    srcs = ["chat/explorer_test.py"],
+    srcs = ["//projects/monolith/chat:explorer_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -7339,7 +5964,7 @@ py_test(
 
 py_test(
     name = "explore_router_test",
-    srcs = ["chat/explore_router_test.py"],
+    srcs = ["//projects/monolith/chat:explore_router_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -7353,7 +5978,7 @@ py_test(
 
 py_test(
     name = "cluster_agent_test",
-    srcs = ["chat/cluster_agent_test.py"],
+    srcs = ["//projects/monolith/chat:cluster_agent_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cluster",
@@ -7366,7 +5991,7 @@ py_test(
 
 py_test(
     name = "knowledge_ingest_queue_router_test",
-    srcs = ["knowledge/ingest_queue_router_test.py"],
+    srcs = ["//projects/monolith/knowledge:ingest_queue_router_test.py"],
     imports = ["."],
     deps = [
         ":pkg_core",
@@ -7381,7 +6006,7 @@ py_test(
 
 py_test(
     name = "knowledge_dead_letter_test",
-    srcs = ["knowledge/dead_letter_test.py"],
+    srcs = ["//projects/monolith/knowledge:dead_letter_test.py"],
     imports = ["."],
     deps = [
         ":pkg_core",
@@ -7396,7 +6021,7 @@ py_test(
 
 py_test(
     name = "tasks_store_test",
-    srcs = ["knowledge/tasks_store_test.py"],
+    srcs = ["//projects/monolith/knowledge:tasks_store_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -7409,7 +6034,7 @@ py_test(
 
 py_test(
     name = "tasks_rollup_test",
-    srcs = ["knowledge/tasks_rollup_test.py"],
+    srcs = ["//projects/monolith/knowledge:tasks_rollup_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -7422,7 +6047,7 @@ py_test(
 
 py_test(
     name = "home_observability_slo_test",
-    srcs = ["home/observability/slo_test.py"],
+    srcs = ["//projects/monolith/home:observability/slo_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -7432,7 +6057,7 @@ py_test(
 
 py_test(
     name = "home_observability_router_test",
-    srcs = ["home/observability/router_test.py"],
+    srcs = ["//projects/monolith/home:observability/router_test.py"],
     imports = ["."],
     deps = [
         ":pkg_core",
@@ -7497,7 +6122,7 @@ semgrep_target_test(
 
 py_test(
     name = "home_observability_stats_test",
-    srcs = ["home/observability/stats_test.py"],
+    srcs = ["//projects/monolith/home:observability/stats_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -7510,7 +6135,7 @@ py_test(
 
 py_test(
     name = "home_observability_traces_test",
-    srcs = ["home/observability/traces_test.py"],
+    srcs = ["//projects/monolith/home:observability/traces_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -7521,7 +6146,7 @@ py_test(
 
 py_test(
     name = "demos_firecracker_api_test",
-    srcs = ["demos/firecracker_api_test.py"],
+    srcs = ["//projects/monolith/demos:firecracker_api_test.py"],
     imports = ["."],
     deps = [
         ":pkg_demos",
@@ -7536,7 +6161,7 @@ py_test(
 # both the route and the demos-absence guarantee).
 py_test(
     name = "ember_public_router_test",
-    srcs = ["ember_public/router_test.py"],
+    srcs = ["//projects/monolith/ember_public:router_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
@@ -7552,7 +6177,7 @@ py_test(
 # query demo core (validation, session rate limit, semaphore, error mapping).
 py_test(
     name = "ember_public_bazel_core_test",
-    srcs = ["ember_public/bazel_core_test.py"],
+    srcs = ["//projects/monolith/ember_public:bazel_core_test.py"],
     imports = ["."],
     deps = [
         ":pkg_ember_public",
@@ -7569,7 +6194,7 @@ py_test(
 # catch that here because the whole directory is excluded from it.
 py_test(
     name = "ember_public_health_test",
-    srcs = ["ember_public/health_test.py"],
+    srcs = ["//projects/monolith/ember_public:health_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
@@ -7584,7 +6209,7 @@ py_test(
 
 py_test(
     name = "ember_public_synthetic_health_test",
-    srcs = ["ember_public/synthetic_health_test.py"],
+    srcs = ["//projects/monolith/ember_public:synthetic_health_test.py"],
     imports = ["."],
     deps = [
         ":pkg_ember_public",
@@ -7596,7 +6221,7 @@ py_test(
 
 py_test(
     name = "ember_public_synthetic_probe_test",
-    srcs = ["ember_public/synthetic_probe_test.py"],
+    srcs = ["//projects/monolith/ember_public:synthetic_probe_test.py"],
     imports = ["."],
     deps = [
         # probe_codex imports agent_sessions.api lazily, inside the function, so
@@ -7614,7 +6239,7 @@ py_test(
 
 py_test(
     name = "ember_public_synthetic_router_test",
-    srcs = ["ember_public/synthetic_router_test.py"],
+    srcs = ["//projects/monolith/ember_public:synthetic_router_test.py"],
     imports = ["."],
     deps = [
         ":pkg_ember_public",
@@ -7626,8 +6251,8 @@ py_test(
 
 py_test(
     name = "demos_loadtest_corpus_test",
-    srcs = ["demos/loadtest_corpus_test.py"],
-    data = glob(["demos/loadtest_corpus/**/*.sample"]),
+    srcs = ["//projects/monolith/demos:loadtest_corpus_test.py"],
+    data = ["//projects/monolith/demos:loadtest_samples"],
     imports = ["."],
     deps = [
         ":pkg_demos",
@@ -7637,10 +6262,10 @@ py_test(
 
 py_test(
     name = "demos_loadtest_test",
-    srcs = ["demos/loadtest_test.py"],
+    srcs = ["//projects/monolith/demos:loadtest_test.py"],
     # run_load_test defaults its corpus to load_corpus(workload), which reads
     # the committed .sample files at runtime.
-    data = glob(["demos/loadtest_corpus/**/*.sample"]),
+    data = ["//projects/monolith/demos:loadtest_samples"],
     imports = ["."],
     deps = [
         ":pkg_demos",
@@ -7651,7 +6276,7 @@ py_test(
 
 py_test(
     name = "home_observability_rollup_test",
-    srcs = ["home/observability/rollup_test.py"],
+    srcs = ["//projects/monolith/home:observability/rollup_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -7662,7 +6287,7 @@ py_test(
 
 py_test(
     name = "cluster_kubernetes_test",
-    srcs = ["cluster/kubernetes_test.py"],
+    srcs = ["//projects/monolith/cluster:kubernetes_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cluster",
@@ -7674,7 +6299,7 @@ py_test(
 
 py_test(
     name = "core_platform_probe_test",
-    srcs = ["core/platform_probe_test.py"],
+    srcs = ["//projects/monolith/core:platform_probe_test.py"],
     imports = ["."],
     deps = [
         ":pkg_core",
@@ -7685,7 +6310,7 @@ py_test(
 
 py_test(
     name = "cluster_cd_health_test",
-    srcs = ["cluster/cd_health_test.py"],
+    srcs = ["//projects/monolith/cluster:cd_health_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cluster",
@@ -7696,7 +6321,7 @@ py_test(
 
 py_test(
     name = "cluster_recovery_startup_test",
-    srcs = ["cluster/recovery_startup_test.py"],
+    srcs = ["//projects/monolith/cluster:recovery_startup_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cluster",
@@ -7709,7 +6334,7 @@ py_test(
 
 py_test(
     name = "scheduler_views_test",
-    srcs = ["scheduler/views_test.py"],
+    srcs = ["//projects/monolith/scheduler:views_test.py"],
     imports = ["."],
     deps = [
         ":pkg_scheduler",
@@ -7720,7 +6345,7 @@ py_test(
 
 py_test(
     name = "scheduler_service_test",
-    srcs = ["scheduler/service_test.py"],
+    srcs = ["//projects/monolith/scheduler:service_test.py"],
     imports = ["."],
     deps = [
         ":pkg_scheduler",
@@ -7734,7 +6359,7 @@ py_test(
 
 py_test(
     name = "scheduler_router_test",
-    srcs = ["scheduler/router_test.py"],
+    srcs = ["//projects/monolith/scheduler:router_test.py"],
     imports = ["."],
     deps = [
         ":pkg_core",
@@ -7749,9 +6374,9 @@ py_test(
 bdd_test(
     name = "home_bdd_api_test",
     srcs = [
-        "home/tests/__init__.py",
-        "home/tests/bdd_api_test.py",
-        "home/tests/conftest.py",
+        "//projects/monolith/home:tests/__init__.py",
+        "//projects/monolith/home:tests/bdd_api_test.py",
+        "//projects/monolith/home:tests/conftest.py",
     ],
 )
 
@@ -7781,7 +6406,7 @@ bdd_test(
 # tolerate empty usage payloads, and grant public_reader only the views.
 bdd_test(
     name = "public_agent_activity_views_test",
-    srcs = ["agent_sessions/public_agent_activity_views_test.py"],
+    srcs = ["//projects/monolith/agent_sessions:public_agent_activity_views_test.py"],
     deps = ["@pip//typer"],
 )
 
@@ -7792,7 +6417,7 @@ bdd_test(
 # half is agent_sessions_factory_public_test, which needs no database.
 bdd_test(
     name = "factory_public_writer_test",
-    srcs = ["agent_sessions/factory_public_writer_test.py"],
+    srcs = ["//projects/monolith/agent_sessions:factory_public_writer_test.py"],
 )
 
 # Real-Postgres test: the public_writer role can DML only the chat_public schema,
@@ -7835,9 +6460,9 @@ bdd_test(
     name = "home_bdd_playwright_test",
     timeout = "long",
     srcs = [
-        "home/tests/__init__.py",
-        "home/tests/bdd_playwright_test.py",
-        "home/tests/conftest.py",
+        "//projects/monolith/home:tests/__init__.py",
+        "//projects/monolith/home:tests/bdd_playwright_test.py",
+        "//projects/monolith/home:tests/conftest.py",
     ],
     playwright = True,
 )
@@ -7845,31 +6470,31 @@ bdd_test(
 bdd_test(
     name = "home_bdd_public_test",
     srcs = [
-        "home/tests/__init__.py",
-        "home/tests/bdd_public_test.py",
-        "home/tests/conftest.py",
+        "//projects/monolith/home:tests/__init__.py",
+        "//projects/monolith/home:tests/bdd_public_test.py",
+        "//projects/monolith/home:tests/conftest.py",
     ],
 )
 
 bdd_test(
     name = "chat_bdd_api_test",
     srcs = [
-        "chat/tests/__init__.py",
-        "chat/tests/bdd_api_test.py",
-        "chat/tests/conftest.py",
+        "//projects/monolith/chat:tests/__init__.py",
+        "//projects/monolith/chat:tests/bdd_api_test.py",
+        "//projects/monolith/chat:tests/conftest.py",
     ],
 )
 
 bdd_test(
     name = "knowledge_bdd_api_test",
     srcs = [
-        "knowledge/tests/__init__.py",
-        "knowledge/tests/bdd_api_test.py",
-        "knowledge/tests/bdd_health_kg_test.py",
-        "knowledge/tests/bdd_raws_test.py",
-        "knowledge/tests/bdd_raws_usage_test.py",
-        "knowledge/tests/bdd_reports_test.py",
-        "knowledge/tests/conftest.py",
+        "//projects/monolith/knowledge:tests/__init__.py",
+        "//projects/monolith/knowledge:tests/bdd_api_test.py",
+        "//projects/monolith/knowledge:tests/bdd_health_kg_test.py",
+        "//projects/monolith/knowledge:tests/bdd_raws_test.py",
+        "//projects/monolith/knowledge:tests/bdd_raws_usage_test.py",
+        "//projects/monolith/knowledge:tests/bdd_reports_test.py",
+        "//projects/monolith/knowledge:tests/conftest.py",
     ],
 )
 
@@ -7877,9 +6502,9 @@ bdd_test(
     name = "knowledge_bdd_playwright_test",
     timeout = "long",
     srcs = [
-        "knowledge/tests/__init__.py",
-        "knowledge/tests/bdd_playwright_test.py",
-        "knowledge/tests/conftest.py",
+        "//projects/monolith/knowledge:tests/__init__.py",
+        "//projects/monolith/knowledge:tests/bdd_playwright_test.py",
+        "//projects/monolith/knowledge:tests/conftest.py",
     ],
     playwright = True,
 )
@@ -7887,9 +6512,9 @@ bdd_test(
 bdd_test(
     name = "knowledge_bdd_public_test",
     srcs = [
-        "knowledge/tests/__init__.py",
-        "knowledge/tests/bdd_public_test.py",
-        "knowledge/tests/conftest.py",
+        "//projects/monolith/knowledge:tests/__init__.py",
+        "//projects/monolith/knowledge:tests/bdd_public_test.py",
+        "//projects/monolith/knowledge:tests/conftest.py",
     ],
 )
 
@@ -7901,9 +6526,9 @@ bdd_test(
 bdd_test(
     name = "shotter_bdd_mcp_tool_test",
     srcs = [
-        "shotter/tests/__init__.py",
-        "shotter/tests/bdd_mcp_tool_test.py",
-        "shotter/tests/conftest.py",
+        "//projects/monolith/shotter:tests/__init__.py",
+        "//projects/monolith/shotter:tests/bdd_mcp_tool_test.py",
+        "//projects/monolith/shotter:tests/conftest.py",
     ],
 )
 
@@ -7911,14 +6536,51 @@ py_test(
     name = "bdd_completeness_test",
     size = "small",
     srcs = [
-        "app/__init__.py",
-        "app/bdd_completeness_test.py",
+        "//projects/monolith/app:__init__.py",
+        "//projects/monolith/app:bdd_completeness_test.py",
     ],
     # The data glob hoovers up EVERY domain's tests, so each one needs an
     # explicit --ignore below or pytest collects and runs it here. A `future`
     # tag does not help: that tags the dedicated bdd_test target, while this is
     # a separate py_test that picks the file up by glob.
-    data = glob(["*/tests/*_test.py"]),
+    data = [
+        "//projects/monolith/agent:bdd_tests",
+        "//projects/monolith/agent_sessions:bdd_tests",
+        "//projects/monolith/app:bdd_tests",
+        "//projects/monolith/artifact:bdd_tests",
+        "//projects/monolith/auth:bdd_tests",
+        "//projects/monolith/campsites:bdd_tests",
+        "//projects/monolith/chat:bdd_tests",
+        "//projects/monolith/chat_public:bdd_tests",
+        "//projects/monolith/cluster:bdd_tests",
+        "//projects/monolith/core:bdd_tests",
+        "//projects/monolith/demos:bdd_tests",
+        "//projects/monolith/dr_jobs:bdd_tests",
+        "//projects/monolith/e2e:bdd_tests",
+        "//projects/monolith/ember_public:bdd_tests",
+        "//projects/monolith/faas:bdd_tests",
+        "//projects/monolith/framework:bdd_tests",
+        "//projects/monolith/goosecracker:bdd_tests",
+        "//projects/monolith/grimoire:bdd_tests",
+        "//projects/monolith/grimoire_chat:bdd_tests",
+        "//projects/monolith/hikes:bdd_tests",
+        "//projects/monolith/home:bdd_tests",
+        "//projects/monolith/knowledge:bdd_tests",
+        "//projects/monolith/moving:bdd_tests",
+        "//projects/monolith/observability:bdd_tests",
+        "//projects/monolith/sandbox:bdd_tests",
+        "//projects/monolith/scheduler:bdd_tests",
+        "//projects/monolith/scripts:bdd_tests",
+        "//projects/monolith/semgrep_scan:bdd_tests",
+        "//projects/monolith/shared:bdd_tests",
+        "//projects/monolith/ships:bdd_tests",
+        "//projects/monolith/shotter:bdd_tests",
+        "//projects/monolith/stars:bdd_tests",
+        "//projects/monolith/swarm:bdd_tests",
+        "//projects/monolith/trips:bdd_tests",
+        "//projects/monolith/updates:bdd_tests",
+        "//projects/monolith/worldcup:bdd_tests",
+    ],
     env = {"PYTEST_ADDOPTS": "--import-mode=importlib --ignore=projects/monolith/home/tests --ignore=projects/monolith/chat/tests --ignore=projects/monolith/knowledge/tests --ignore=projects/monolith/scheduler/tests --ignore=projects/monolith/agent/tests --ignore=projects/monolith/goosecracker/tests --ignore=projects/monolith/moving/tests --ignore=projects/monolith/shotter/tests"},
     imports = ["."],
     tags = ["bdd"],
@@ -7931,7 +6593,7 @@ py_test(
 
 py_test(
     name = "agent_config_test",
-    srcs = ["agent/config_test.py"],
+    srcs = ["//projects/monolith/agent:config_test.py"],
     imports = ["."],
     deps = [
         ":pkg_core",
@@ -7942,7 +6604,7 @@ py_test(
 
 py_test(
     name = "agent_routine_reconciliation_test",
-    srcs = ["agent/routine_reconciliation_test.py"],
+    srcs = ["//projects/monolith/agent:routine_reconciliation_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -7955,7 +6617,7 @@ py_test(
 
 py_test(
     name = "agent_routine_jobs_test",
-    srcs = ["agent/routine_jobs_test.py"],
+    srcs = ["//projects/monolith/agent:routine_jobs_test.py"],
     imports = ["."],
     deps = [
         ":agent_sessions_admission",
@@ -7969,7 +6631,7 @@ py_test(
 
 py_test(
     name = "agent_notify_test",
-    srcs = ["agent/notify_test.py"],
+    srcs = ["//projects/monolith/agent:notify_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -7981,42 +6643,42 @@ py_test(
 bdd_test(
     name = "agent_bdd_locks_test",
     srcs = [
-        "agent/tests/__init__.py",
-        "agent/tests/bdd_locks_test.py",
-        "agent/tests/conftest.py",
+        "//projects/monolith/agent:tests/__init__.py",
+        "//projects/monolith/agent:tests/bdd_locks_test.py",
+        "//projects/monolith/agent:tests/conftest.py",
     ],
 )
 
 bdd_test(
     name = "agent_bdd_routine_jobs_test",
     srcs = [
-        "agent/tests/__init__.py",
-        "agent/tests/bdd_routine_jobs_test.py",
-        "agent/tests/conftest.py",
+        "//projects/monolith/agent:tests/__init__.py",
+        "//projects/monolith/agent:tests/bdd_routine_jobs_test.py",
+        "//projects/monolith/agent:tests/conftest.py",
     ],
 )
 
 bdd_test(
     name = "agent_bdd_drainer_test",
     srcs = [
-        "agent/tests/__init__.py",
-        "agent/tests/bdd_drainer_test.py",
-        "agent/tests/conftest.py",
+        "//projects/monolith/agent:tests/__init__.py",
+        "//projects/monolith/agent:tests/bdd_drainer_test.py",
+        "//projects/monolith/agent:tests/conftest.py",
     ],
 )
 
 bdd_test(
     name = "agent_bdd_checks_test",
     srcs = [
-        "agent/tests/__init__.py",
-        "agent/tests/bdd_checks_test.py",
-        "agent/tests/conftest.py",
+        "//projects/monolith/agent:tests/__init__.py",
+        "//projects/monolith/agent:tests/bdd_checks_test.py",
+        "//projects/monolith/agent:tests/conftest.py",
     ],
 )
 
 py_test(
     name = "goosecracker_repo_catalog_test",
-    srcs = ["goosecracker/tests/repo_catalog_test.py"],
+    srcs = ["//projects/monolith/goosecracker:tests/repo_catalog_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -8026,8 +6688,8 @@ py_test(
 
 py_test(
     name = "goosecracker_recipe_catalog_test",
-    srcs = ["goosecracker/tests/recipe_catalog_test.py"],
-    data = glob(["goosecracker/recipes/*.yaml"]),
+    srcs = ["//projects/monolith/goosecracker:tests/recipe_catalog_test.py"],
+    data = ["//projects/monolith/goosecracker:recipes"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -8037,7 +6699,7 @@ py_test(
 
 py_test(
     name = "agent_sessions_store_voice_test",
-    srcs = ["agent_sessions/store_voice_test.py"],
+    srcs = ["//projects/monolith/agent_sessions:store_voice_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -8048,7 +6710,7 @@ py_test(
 
 py_test(
     name = "agent_sessions_titles_test",
-    srcs = ["agent_sessions/titles_test.py"],
+    srcs = ["//projects/monolith/agent_sessions:titles_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -8060,7 +6722,7 @@ py_test(
 
 py_test(
     name = "agent_sessions_kg_feed_test",
-    srcs = ["agent_sessions/kg_feed_test.py"],
+    srcs = ["//projects/monolith/agent_sessions:kg_feed_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -8072,7 +6734,7 @@ py_test(
 
 py_test(
     name = "agent_sessions_mcp_test",
-    srcs = ["agent_sessions/mcp_test.py"],
+    srcs = ["//projects/monolith/agent_sessions:mcp_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -8085,7 +6747,7 @@ py_test(
 
 py_test(
     name = "agent_sessions_provider_quota_test",
-    srcs = ["agent_sessions/provider_quota_test.py"],
+    srcs = ["//projects/monolith/agent_sessions:provider_quota_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -8100,7 +6762,7 @@ py_test(
 
 py_test(
     name = "agent_sessions_transport_test",
-    srcs = ["agent_sessions/transport_test.py"],
+    srcs = ["//projects/monolith/agent_sessions:transport_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -8112,7 +6774,7 @@ py_test(
 
 py_test(
     name = "agent_sessions_voice_ui_test",
-    srcs = ["agent_sessions/voice_ui_test.py"],
+    srcs = ["//projects/monolith/agent_sessions:voice_ui_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -8129,7 +6791,7 @@ py_test(
 
 py_test(
     name = "agent_sessions_swarm_decision_test",
-    srcs = ["agent_sessions/swarm_decision_test.py"],
+    srcs = ["//projects/monolith/agent_sessions:swarm_decision_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -8170,63 +6832,29 @@ semgrep_target_test(
 # KML gap route and NRCan elevation) and upsert into Postgres. Not part of the
 # server image (excluded from the :main / :monolith_backend globs above).
 #   bazel run //projects/monolith:trips_backfill -- run --slug <slug> ...
-py_library(
+alias(
     name = "trips_backfill_lib",
-    srcs = glob(
-        ["trips/**/*.py"],
-        exclude = ["trips/**/*_test.py"],
-    ),
-    imports = ["."],
+    actual = "//projects/monolith/trips:trips_backfill_lib",
     visibility = ["//:__subpackages__"],
-    deps = [
-        "@pip//boto3",
-        "@pip//botocore",
-        "@pip//defusedxml",
-        "@pip//httpx",
-        "@pip//pillow",
-        "@pip//pyyaml",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-        "@pip//typer",
-        "@pip//tzdata",
-    ],
 )
 
-py_venv_binary(
+alias(
     name = "trips_backfill",
-    srcs = glob(
-        ["trips/**/*.py"],
-        exclude = ["trips/**/*_test.py"],
-    ),
-    main = "trips/backfill/main.py",
+    actual = "//projects/monolith/trips:trips_backfill",
     visibility = ["//:__subpackages__"],
 )
 
-semgrep_target_test(
+alias(
     name = "trips_backfill_semgrep_test",
-    exclude_rules = [
-        # main.py guards the SeaweedFS endpoint with a scheme check, but
-        # semgrep-core ignores the inline # nosemgrep (mirrors :main). The
-        # # keep stops gazelle from dropping it back to the file directive set.
-        "boto3-endpoint-url-missing-scheme",  # keep
-        # trips.models uses datetime fields for the migration's TIMESTAMPTZ
-        # columns; semgrep-core ignores the inline # nosemgrep (mirrors :main).
-        "sqlmodel-datetime-without-factory",
-        "avoid-sqlalchemy-text",
-        "tainted-fastapi-http-request-httpx",
-        "tainted-path-traversal-stdlib-fastapi",
-        # validate_image opens in-memory bytes, not a path; false positive (mirrors :main).
-        "tainted-path-traversal-pillow-fastapi",
-    ],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-    target = ":trips_backfill",
+    actual = "//projects/monolith/trips:trips_backfill_semgrep_test",
+    visibility = ["//:__subpackages__"],
 )
 
 # Backfill tests dep on :trips_backfill_lib (boto3/typer/httpx orchestration),
 # NOT :monolith_backend, since the backfill is excluded from the server image.
 py_test(
     name = "trips_backfill_main_test",
-    srcs = ["trips/backfill/main_test.py"],
+    srcs = ["//projects/monolith/trips:backfill/main_test.py"],
     imports = ["."],
     deps = [
         ":trips_backfill_lib",
@@ -8236,7 +6864,7 @@ py_test(
 
 py_test(
     name = "trips_models_test",
-    srcs = ["trips/models_test.py"],
+    srcs = ["//projects/monolith/trips:models_test.py"],
     imports = ["."],
     deps = [
         ":pkg_trips",
@@ -8247,7 +6875,7 @@ py_test(
 
 py_test(
     name = "trips_transform_test",
-    srcs = ["trips/transform_test.py"],
+    srcs = ["//projects/monolith/trips:transform_test.py"],
     imports = ["."],
     deps = [
         ":pkg_trips",
@@ -8257,7 +6885,7 @@ py_test(
 
 py_test(
     name = "trips_exif_test",
-    srcs = ["trips/exif_test.py"],
+    srcs = ["//projects/monolith/trips:exif_test.py"],
     imports = ["."],
     deps = [
         ":pkg_trips",
@@ -8267,11 +6895,11 @@ py_test(
 
 py_test(
     name = "trips_ingest_test",
-    srcs = ["trips/ingest_test.py"],
+    srcs = ["//projects/monolith/trips:ingest_test.py"],
     # Tiny committed JPEG fixtures (geotagged + no-GPS) the test reads through
     # the real exif.extract_exif path. Excluded from the server libs above so
     # the bytes never ship in the production image.
-    data = glob(["trips/testdata/**"]),
+    data = ["//projects/monolith/trips:testdata"],
     imports = ["."],
     deps = [
         ":pkg_trips",
@@ -8281,9 +6909,9 @@ py_test(
 
 py_test(
     name = "trips_ingest_router_test",
-    srcs = ["trips/ingest_router_test.py"],
+    srcs = ["//projects/monolith/trips:ingest_router_test.py"],
     # Same committed JPEG fixtures posted through the TestClient.
-    data = glob(["trips/testdata/**"]),
+    data = ["//projects/monolith/trips:testdata"],
     imports = ["."],
     deps = [
         ":pkg_core",
@@ -8298,7 +6926,7 @@ py_test(
 
 py_test(
     name = "trips_read_router_test",
-    srcs = ["trips/read_router_test.py"],
+    srcs = ["//projects/monolith/trips:read_router_test.py"],
     imports = ["."],
     deps = [
         ":pkg_core",
@@ -8377,10 +7005,10 @@ semgrep_target_test(
 # (_format_turns, _build_messages, summarize) with mocked inference.complete.
 py_test(
     name = "chat_public_summarizer_test",
-    srcs = ["chat_public/summarizer_test.py"],
+    srcs = ["//projects/monolith/chat_public:summarizer_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_public_backend",
+        "//projects/monolith/public_backend:monolith_public_backend",
         "@pip//pytest",
         "@pip//pytest_asyncio",
         "@pip//sqlmodel",
@@ -8393,10 +7021,10 @@ py_test(
 # compact_if_needed). SQLite + StaticPool, no HTTP layer.
 py_test(
     name = "chat_public_sessions_test",
-    srcs = ["chat_public/sessions_test.py"],
+    srcs = ["//projects/monolith/chat_public:sessions_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_public_backend",
+        "//projects/monolith/public_backend:monolith_public_backend",
         "@pip//pytest",
         "@pip//pytest_asyncio",
         "@pip//sqlmodel",
@@ -8407,7 +7035,7 @@ py_test(
 # (_as_utc, _graph_etag, _GRAPH_CACHE_CONTROL).
 py_test(
     name = "knowledge_http_cache_test",
-    srcs = ["knowledge/http_cache_test.py"],
+    srcs = ["//projects/monolith/knowledge:http_cache_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -8419,7 +7047,7 @@ py_test(
 # PublicChunk SQLModel definitions -- instantiation and SQLite round-trips.
 py_test(
     name = "knowledge_public_models_test",
-    srcs = ["knowledge/public_models_test.py"],
+    srcs = ["//projects/monolith/knowledge:public_models_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -8432,7 +7060,7 @@ py_test(
 # note endpoints via TestClient + SQLite session.
 py_test(
     name = "knowledge_public_router_test",
-    srcs = ["knowledge/public_router_test.py"],
+    srcs = ["//projects/monolith/knowledge:public_router_test.py"],
     imports = ["."],
     deps = [
         ":pkg_core",
@@ -8448,10 +7076,10 @@ py_test(
 # shaping, view-only queries, cache headers, conditional ETags, and failures.
 py_test(
     name = "agent_sessions_public_agent_activity_router_test",
-    srcs = ["agent_sessions/public_agent_activity_router_test.py"],
+    srcs = ["//projects/monolith/agent_sessions:public_agent_activity_router_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_public_backend",
+        "//projects/monolith/public_backend:monolith_public_backend",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -8464,10 +7092,10 @@ py_test(
 # conditional ETags, 404s before the first snapshot, and colon-bearing keys.
 py_test(
     name = "agent_sessions_public_factory_router_test",
-    srcs = ["agent_sessions/public_factory_router_test.py"],
+    srcs = ["//projects/monolith/agent_sessions:public_factory_router_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_public_backend",
+        "//projects/monolith/public_backend:monolith_public_backend",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -8479,7 +7107,7 @@ py_test(
 # missing endpoint, scheme guard, head-hit skip, auto-create bucket.
 py_test(
     name = "trips_s3_test",
-    srcs = ["trips/s3_test.py"],
+    srcs = ["//projects/monolith/trips:s3_test.py"],
     imports = ["."],
     deps = [
         ":pkg_trips",
@@ -8494,8 +7122,8 @@ py_test(
 py_test(
     name = "stars_backfill_cerra_test",
     srcs = [
-        "stars/grid_gen/backfill_cerra.py",
-        "stars/grid_gen/backfill_cerra_test.py",
+        "//projects/monolith/stars:grid_gen/backfill_cerra.py",
+        "//projects/monolith/stars:grid_gen/backfill_cerra_test.py",
     ],
     imports = ["stars/grid_gen"],
     deps = [
@@ -8508,8 +7136,8 @@ py_test(
 py_test(
     name = "stars_backfill_climatology_test",
     srcs = [
-        "stars/grid_gen/backfill_climatology.py",
-        "stars/grid_gen/backfill_climatology_test.py",
+        "//projects/monolith/stars:grid_gen/backfill_climatology.py",
+        "//projects/monolith/stars:grid_gen/backfill_climatology_test.py",
     ],
     imports = ["stars/grid_gen"],
     deps = ["@pip//pytest"],
@@ -8661,6 +7289,19 @@ py_test(
 semgrep_test(
     name = "recovery_network_test_semgrep_test",
     srcs = ["recovery_network_test.py"],
+    exclude_rules = [
+        "avoid-sqlalchemy-text",
+        "sqlmodel-datetime-without-factory",
+        "tainted-fastapi-http-request-httpx",
+        "tainted-path-traversal-pillow-fastapi",
+        "tainted-path-traversal-stdlib-fastapi",
+    ],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+semgrep_test(
+    name = "package_classification_test_semgrep_test",
+    srcs = ["package_classification_test.py"],
     exclude_rules = [
         "avoid-sqlalchemy-text",
         "sqlmodel-datetime-without-factory",

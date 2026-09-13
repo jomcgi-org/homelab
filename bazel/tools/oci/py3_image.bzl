@@ -14,9 +14,9 @@ def py3_image(name, binary, main = None, root = "/", layer_groups = {}, env = {}
     Args:
         name: The name of the image.
         binary: The Python binary to create the image from.
-        main: The main .py source file for the binary. Auto-derived as "{binary_name}.py"
-              for same-package binaries. Set explicitly for non-standard naming. Cross-package
-              binaries are skipped (their sources are in transitive deps).
+        main: The main .py source label for the binary. Auto-derived as
+              "{binary_name}.py" for same-package binaries. Set explicitly for
+              non-standard names or sources owned by another Bazel package.
         root: The root directory where everything will be put into
         layer_groups: The layer groups to use for the image.
         env: The environment variables to set in the image.
@@ -62,8 +62,12 @@ def py3_image(name, binary, main = None, root = "/", layer_groups = {}, env = {}
     if main == None and binary.package == native.package_name():
         main = binary.name + ".py"
     if main:
-        main_label = str(binary).rsplit(":", 1)[0] + ":" + main
-        source_dest = ".{}/{}/{}".format(workspace_root, binary.package, main)
+        main_label = native.package_relative_label(main)
+        source_dest = ".{}/{}/{}".format(
+            workspace_root,
+            main_label.package,
+            main_label.name,
+        )
         tar(
             name = name + "_srcs",
             srcs = [main_label],

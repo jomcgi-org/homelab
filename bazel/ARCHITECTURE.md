@@ -176,7 +176,7 @@ has the full text.
 | tooling/006 | Data-driven arch registry; per-arch toolchain registration gated on a verified executor pool | Accepted, executed; the arm64 pool was verified 2026-06-12 | deleted |
 | tooling/007 | A Gazelle extension generates first-party OCaml BUILD files | Accepted, unbuilt (#3925) | deleted |
 | tooling/008 | One graph, native execution platforms (cloud arm64, self-hosted darwin) for CLI releases; no cross-compilation, QEMU or wasm | Accepted, partly executed; native arm64 CI is restored, release work remains (#3926, #3928, #3929) | deleted |
-| tooling/009 | Per-package visibility and tags classify monolith packages; lint out central `gazelle:exclude` | Accepted, unbuilt; `projects/monolith/BUILD` still carries the central excludes (#3930, #3931, #3932) | deleted |
+| tooling/009 | Per-package visibility and tags classify monolith packages; lint out central `gazelle:exclude` | Package classification implemented by #3931; CI ratchet remains tracked by #3932 | deleted |
 | tooling/010 | Hermetic Bazel-native visual regression on an apko chromium image | Deprecated; the suite was removed 2026-08-09 | deleted |
 | tooling/011 | Two Semgrep scan tiers: a warm single-file `mcp --pro` server for MCP and PR, and a scheduled interfile full scan on main | Accepted; the warm tier lives on EmberVM, the full-scan tier was built on fc-invoke on 2026-07-11 and removed with it on 2026-07-28 | deleted |
 | security/001 | Hermetic Semgrep via Bazel: vendored engines, direct `semgrep-core`, cached tests, Gazelle-generated targets | Accepted, executed; the required-credentials decision is reversed (offline placeholder token, upload disabled, #3893) | deleted |
