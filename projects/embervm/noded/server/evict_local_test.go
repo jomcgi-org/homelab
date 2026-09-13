@@ -45,7 +45,7 @@ func (d *diskGroupMemberDriver) RemoveGroupMemberBundle(setID, memberName string
 // The remaining groupMemberDriver methods are never reached by these local
 // eviction tests (they never start or restore a member VM), so they return
 // Unimplemented / zero values to satisfy the interface.
-func (d *diskGroupMemberDriver) ClaimGroupMember(_ context.Context, _, _ string, _, _ int, _ substrate.NICSpec, _ map[string]string) (substrate.Handle, error) {
+func (d *diskGroupMemberDriver) ClaimGroupMember(_ context.Context, _, _, _ string, _, _ int, _ substrate.NICSpec, _ map[string]string) (substrate.Handle, error) {
 	return substrate.Handle{}, status.Error(codes.Unimplemented, "unused")
 }
 
@@ -53,7 +53,7 @@ func (d *diskGroupMemberDriver) SnapshotGroupMember(_ context.Context, _ substra
 	return substrate.SnapshotRef{}, status.Error(codes.Unimplemented, "unused")
 }
 
-func (d *diskGroupMemberDriver) RestoreGroupMember(_ context.Context, _, _ string) (substrate.Handle, error) {
+func (d *diskGroupMemberDriver) RestoreGroupMember(_ context.Context, _, _, _ string) (substrate.Handle, error) {
 	return substrate.Handle{}, status.Error(codes.Unimplemented, "unused")
 }
 

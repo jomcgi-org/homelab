@@ -21,6 +21,9 @@ import (
 // cold (boot fresh from the rootfs) or restored (from a base snapshot ref); which
 // path the driver takes is its own concern, keyed off BaseSnapshotRef.
 type ClaimSpec struct {
+	// Workload is the explicit workload identity used to attribute this guest's
+	// launcher output. It comes from the request trace, never a container tag.
+	Workload string
 	// ThreadID is the per-claim bundle identity that names the on-disk bundle dir
 	// and the vsock socket path. Empty means "assign a fresh one".
 	ThreadID string
@@ -130,6 +133,8 @@ type Stream interface {
 // SnapshotRef identifies a stored snapshot bundle (snapfile + memfile). It is a
 // value, not a handle: it survives the microVM and is restorable later.
 type SnapshotRef struct {
+	// Workload retains the explicit log attribution identity for generic restores.
+	Workload string
 	// ID is the snapshot identity; for a base it keys the bases/<ID> bundle dir
 	// under the snapshot root, and for a per-thread snapshot it is a fresh id.
 	ID string

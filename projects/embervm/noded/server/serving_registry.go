@@ -68,14 +68,14 @@ type servingDriver interface {
 	// artifact as a second read-only drive and tell the guest to import it before
 	// serving (D-R3.11.2, the zip lane). Empty/zero for an image-lane serving cold
 	// boot (whose handler is baked into the rootfs), so that path is unchanged.
-	ClaimServing(ctx context.Context, rootfsPath, harnessInit string, vcpus, memMib int, nic substrate.NICSpec, handlerDiskPath string, handlerZipBytes int64) (substrate.Handle, error)
+	ClaimServing(ctx context.Context, workload, rootfsPath, harnessInit string, vcpus, memMib int, nic substrate.NICSpec, handlerDiskPath string, handlerZipBytes int64) (substrate.Handle, error)
 	// SnapshotServing pauses a live serving VM and writes a self-contained serving
 	// bundle under serving/<ref> plus the pinned-IP sidecar; does not resume (the
 	// caller Releases). Mirrors SnapshotSession.
 	SnapshotServing(ctx context.Context, h substrate.Handle, snapshotRef, pinnedIP string) (substrate.SnapshotRef, error)
 	// RestoreServing launches a fresh VM from a banked serving bundle and resumes it,
 	// WITH the NIC captured at bank time. Mirrors RestoreSession.
-	RestoreServing(ctx context.Context, snapshotRef string) (substrate.Handle, error)
+	RestoreServing(ctx context.Context, workload, snapshotRef string) (substrate.Handle, error)
 	// ServingPinnedIP reads the tap IP a banked serving snapshot recorded (D-R3.4.1),
 	// or "" if absent.
 	ServingPinnedIP(snapshotRef string) string

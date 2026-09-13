@@ -247,7 +247,7 @@ func (f *fakeDriver) snapshotSessionCount() int {
 // banked (else it errors, exactly the unrestorable-ref case Relight maps to
 // FAILED_PRECONDITION), and the restored handle's threadID is bound to the banked
 // marker so a post-relight round-trip can echo the persisted state.
-func (f *fakeDriver) RestoreSession(_ context.Context, snapshotRef string, trackDirtyPages bool) (substrate.Handle, error) {
+func (f *fakeDriver) RestoreSession(_ context.Context, _, snapshotRef string, trackDirtyPages bool) (substrate.Handle, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	marker, ok := f.sessionBundles[snapshotRef]

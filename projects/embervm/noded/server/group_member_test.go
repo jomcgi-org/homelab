@@ -45,7 +45,7 @@ func newFakeGroupMemberDriver(dir string) *fakeGroupMemberDriver {
 	return &fakeGroupMemberDriver{banked: map[string]bool{}, groupSetsDir: dir + "/group"}
 }
 
-func (f *fakeGroupMemberDriver) ClaimGroupMember(_ context.Context, _ string, _ string, _ int, _ int, _ substrate.NICSpec, env map[string]string) (substrate.Handle, error) {
+func (f *fakeGroupMemberDriver) ClaimGroupMember(_ context.Context, _ string, _ string, _ string, _ int, _ int, _ substrate.NICSpec, env map[string]string) (substrate.Handle, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failClaim != nil {
@@ -68,7 +68,7 @@ func (f *fakeGroupMemberDriver) SnapshotGroupMember(_ context.Context, _ substra
 	return substrate.SnapshotRef{ID: ref, SizeBytes: 5120}, nil
 }
 
-func (f *fakeGroupMemberDriver) RestoreGroupMember(_ context.Context, setID, memberName string) (substrate.Handle, error) {
+func (f *fakeGroupMemberDriver) RestoreGroupMember(_ context.Context, _, setID, memberName string) (substrate.Handle, error) {
 	f.mu.Lock()
 	if !f.banked[setID+"/"+memberName] {
 		f.mu.Unlock()

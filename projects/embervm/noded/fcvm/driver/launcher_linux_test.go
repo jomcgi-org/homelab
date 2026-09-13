@@ -46,7 +46,7 @@ func TestExecLauncherJailerLifecycle(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(socket), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	process, err := launcher.Launch(context.Background(), LaunchSpec{VMID: "vm-test", SocketPath: socket, MemMib: 256})
+	process, err := launcher.Launch(context.Background(), LaunchSpec{VMID: "vm-test", SocketPath: socket, Workload: "test", Phase: guestPhaseVM, MemMib: 256})
 	if err != nil {
 		t.Fatalf("Launch: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestExecLauncherCgroupFailureCleansJailAndFallsBack(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(socket), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	process, err := launcher.Launch(context.Background(), LaunchSpec{VMID: "vm-fallback", SocketPath: socket, MemMib: 256})
+	process, err := launcher.Launch(context.Background(), LaunchSpec{VMID: "vm-fallback", SocketPath: socket, Workload: "test", Phase: guestPhaseVM, MemMib: 256})
 	if err != nil {
 		t.Fatalf("Launch fallback: %v", err)
 	}

@@ -237,6 +237,7 @@ type instance struct {
 	releaseMu sync.Mutex
 	released  bool
 	handle    substrate.Handle
+	workload  string
 	proc      Process
 	client    fcAPI
 	dir       string
@@ -905,30 +906,30 @@ func (d *Driver) servingMetafile(ref string) string {
 // loadInto launches a fresh Firecracker process for threadID and restores it
 // from the given snapfile + memfile (File backend, resume). Used by all restore
 // paths that do not need to rebind a snapshot drive.
-func (d *Driver) loadInto(ctx context.Context, threadID, snapPath, memPath, sockName string) (substrate.Handle, error) {
-	return d.loadPatchAndResumeWithDiff(ctx, threadID, snapPath, memPath, sockName, "", false, false, false)
+func (d *Driver) loadInto(ctx context.Context, workload, threadID, snapPath, memPath, sockName string) (substrate.Handle, error) {
+	return d.loadPatchAndResumeWithDiff(ctx, workload, threadID, snapPath, memPath, sockName, "", false, false, false)
 }
 
 // loadTrackedInto enables dirty logging for a memory-banking workload restored
 // from its pristine base. It deliberately does not set a bank base, so the first
 // session bank remains a full.
-func (d *Driver) loadTrackedInto(ctx context.Context, threadID, snapPath, memPath, sockName string) (substrate.Handle, error) {
-	return d.loadPatchAndResumeWithDiff(ctx, threadID, snapPath, memPath, sockName, "", false, true, false)
+func (d *Driver) loadTrackedInto(ctx context.Context, workload, threadID, snapPath, memPath, sockName string) (substrate.Handle, error) {
+	return d.loadPatchAndResumeWithDiff(ctx, workload, threadID, snapPath, memPath, sockName, "", false, true, false)
 }
 
 // loadBankingInto restores a committed session full and re-arms Firecracker's
 // dirty-page tracker. Dirty tracking does not survive snapshot load, so this must
 // be set on every relight whose next bank may be a diff.
-func (d *Driver) loadBankingInto(ctx context.Context, threadID, snapPath, memPath, sockName string, trackDirtyPages bool) (substrate.Handle, error) {
+func (d *Driver) loadBankingInto(ctx context.Context, workload, threadID, snapPath, memPath, sockName string, trackDirtyPages bool) (substrate.Handle, error) {
 	trackDirtyPages = d.diffBanking && trackDirtyPages
-	return d.loadPatchAndResumeWithDiff(ctx, threadID, snapPath, memPath, sockName, "", false, trackDirtyPages, trackDirtyPages)
+	return d.loadPatchAndResumeWithDiff(ctx, workload, threadID, snapPath, memPath, sockName, "", false, trackDirtyPages, trackDirtyPages)
 }
 
 // loadPatchAndResumeWithDiff restores a snapshot, optionally repoints its volume
 // drive, and resumes it. Firecracker requires the drive patch while the loaded VM
 // is still paused. enableDiffSnapshots re-arms dirty tracking; bankBase marks a
 // restored session full as the base for the next sequential diff.
-func (d *Driver) loadPatchAndResumeWithDiff(ctx context.Context, threadID, snapPath, memPath, sockName, volumeDiskPath string, patchVolume, enableDiffSnapshots, bankBase bool) (substrate.Handle, error) {
+func (d *Driver) loadPatchAndResumeWithDiff(ctx context.Context, workload, threadID, snapPath, memPath, sockName, volumeDiskPath string, patchVolume, enableDiffSnapshots, bankBase bool) (substrate.Handle, error) {
 	dir := d.threadDir(threadID)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return substrate.Handle{}, fmt.Errorf("driver: mkdir bundle: %w", err)
@@ -980,7 +981,10 @@ func (d *Driver) loadPatchAndResumeWithDiff(ctx context.Context, threadID, snapP
 		resources = append(resources, JailResource{Role: "volume-patch", HostPath: volumeDiskPath, JailPath: volumeDiskPath, Writable: true})
 	}
 
-	proc, err := d.launcher.Launch(ctx, LaunchSpec{VMID: vmID, SocketPath: sock, MemMib: memMib, Resources: resources, DirectExec: directExec})
+	proc, err := d.launcher.Launch(ctx, LaunchSpec{
+		VMID: vmID, SocketPath: sock, Workload: workload, Phase: guestPhaseVM,
+		MemMib: memMib, Resources: resources, DirectExec: directExec,
+	})
 	if err != nil {
 		return substrate.Handle{}, fmt.Errorf("driver: launch firecracker for restore: %w", err)
 	}
@@ -1021,6 +1025,7 @@ func (d *Driver) loadPatchAndResumeWithDiff(ctx context.Context, threadID, snapP
 	h := substrate.Handle{ThreadID: threadID, ID: vmID, Node: d.cfg.Node}
 	inst := &instance{
 		handle:             h,
+		workload:           workload,
 		proc:               proc,
 		client:             client,
 		dir:                dir,
@@ -1066,15 +1071,16 @@ func (d *Driver) Claim(ctx context.Context, spec substrate.ClaimSpec) (substrate
 			return substrate.Handle{}, fmt.Errorf("driver: base bundle missing for %q: %w", ref.ID, err)
 		}
 		if spec.VolumeDiskPath != "" {
-			return d.loadPatchAndResumeWithDiff(ctx, threadID, snap, d.baseMemfile(ref.ID), "api.sock", spec.VolumeDiskPath, true, trackDirtyPages, false)
+			return d.loadPatchAndResumeWithDiff(ctx, spec.Workload, threadID, snap, d.baseMemfile(ref.ID), "api.sock", spec.VolumeDiskPath, true, trackDirtyPages, false)
 		}
 		if trackDirtyPages {
-			return d.loadTrackedInto(ctx, threadID, snap, d.baseMemfile(ref.ID), "api.sock")
+			return d.loadTrackedInto(ctx, spec.Workload, threadID, snap, d.baseMemfile(ref.ID), "api.sock")
 		}
-		return d.loadInto(ctx, threadID, snap, d.baseMemfile(ref.ID), "api.sock")
+		return d.loadInto(ctx, spec.Workload, threadID, snap, d.baseMemfile(ref.ID), "api.sock")
 	}
 
 	return d.coldBoot(ctx, threadID, coldBootSpec{
+		workload: spec.Workload,
 		rootfsPath: func() string {
 			if spec.ColdBootRootfsPath != "" {
 				return spec.ColdBootRootfsPath
@@ -1097,6 +1103,7 @@ func (d *Driver) Claim(ctx context.Context, spec substrate.ClaimSpec) (substrate
 // means the task and serving cold boots are byte-identical except for the fields here,
 // so the serving addition cannot drift the task boot.
 type coldBootSpec struct {
+	workload   string
 	rootfsPath string
 	vcpus      int
 	memMib     int
@@ -1197,7 +1204,10 @@ func (d *Driver) coldBoot(ctx context.Context, threadID string, cb coldBootSpec)
 		driveResources = append(driveResources, JailResource{Role: "volume", HostPath: volumePath, JailPath: volumePath, Writable: true, PrivateCopy: privatePlaceholder})
 	}
 	launchResources := append([]JailResource{{Role: "kernel", HostPath: d.cfg.KernelImagePath, JailPath: "/kernel"}}, driveResources...)
-	proc, err := d.launcher.Launch(ctx, LaunchSpec{VMID: vmID, SocketPath: sock, MemMib: cb.memMib, Resources: launchResources})
+	proc, err := d.launcher.Launch(ctx, LaunchSpec{
+		VMID: vmID, SocketPath: sock, Workload: cb.workload, Phase: guestPhaseInit,
+		MemMib: cb.memMib, Resources: launchResources,
+	})
 	if err != nil {
 		return substrate.Handle{}, fmt.Errorf("driver: launch firecracker: %w", err)
 	}
@@ -1287,6 +1297,7 @@ func (d *Driver) coldBoot(ctx context.Context, threadID string, cb coldBootSpec)
 	h := substrate.Handle{ThreadID: threadID, ID: vmID, Node: d.cfg.Node}
 	d.track(&instance{
 		handle:             h,
+		workload:           cb.workload,
 		proc:               proc,
 		client:             client,
 		dir:                dir,
@@ -1353,7 +1364,7 @@ func (d *Driver) ensurePlaceholderVolume() (string, error) {
 // serving (D-R3.11.2, zip lane). They are empty/zero for an image-lane serving
 // cold boot (whose handler is already in the rootfs), keeping that boot path
 // unchanged.
-func (d *Driver) ClaimServing(ctx context.Context, rootfsPath, harnessInit string, vcpus, memMib int, nic substrate.NICSpec, handlerDiskPath string, handlerZipBytes int64) (substrate.Handle, error) {
+func (d *Driver) ClaimServing(ctx context.Context, workload, rootfsPath, harnessInit string, vcpus, memMib int, nic substrate.NICSpec, handlerDiskPath string, handlerZipBytes int64) (substrate.Handle, error) {
 	if nic.HostDevName == "" {
 		return substrate.Handle{}, fmt.Errorf("driver: ClaimServing requires a host tap device")
 	}
@@ -1366,6 +1377,7 @@ func (d *Driver) ClaimServing(ctx context.Context, rootfsPath, harnessInit strin
 	memMib = orDefault(memMib, d.cfg.MemMib)
 	nicCopy := nic
 	return d.coldBoot(ctx, newID("serv"), coldBootSpec{
+		workload:        workload,
 		rootfsPath:      rootfsPath,
 		vcpus:           vcpus,
 		memMib:          memMib,
@@ -1396,7 +1408,7 @@ func orDefault(v, def int) int {
 // mmdsEnv (R4, D-R4.PR-7.1: MMDS-lite over boot-args) is only meaningful on a
 // FRESH/COLD boot; callers on the RELIGHT path must pass nil/empty, since a
 // relight resumes a memory snapshot and never re-reads boot-args.
-func (d *Driver) ClaimStateful(ctx context.Context, rootfsPath, harnessInit string, vcpus, memMib int, nic substrate.NICSpec, handlerDiskPath string, handlerZipBytes int64, volumeDiskPath, volumeMount string, mmdsEnv map[string]string) (substrate.Handle, error) {
+func (d *Driver) ClaimStateful(ctx context.Context, workload, rootfsPath, harnessInit string, vcpus, memMib int, nic substrate.NICSpec, handlerDiskPath string, handlerZipBytes int64, volumeDiskPath, volumeMount string, mmdsEnv map[string]string) (substrate.Handle, error) {
 	if nic.HostDevName == "" {
 		return substrate.Handle{}, fmt.Errorf("driver: ClaimStateful requires a host tap device")
 	}
@@ -1407,6 +1419,7 @@ func (d *Driver) ClaimStateful(ctx context.Context, rootfsPath, harnessInit stri
 	memMib = orDefault(memMib, d.cfg.MemMib)
 	nicCopy := nic
 	return d.coldBoot(ctx, newID("state"), coldBootSpec{
+		workload:        workload,
 		rootfsPath:      rootfsPath,
 		vcpus:           vcpus,
 		memMib:          memMib,
@@ -1458,6 +1471,7 @@ func (d *Driver) Snapshot(ctx context.Context, h substrate.Handle) (substrate.Sn
 	sparse.BestEffort(memPath, "snapshot")
 
 	ref := substrate.SnapshotRef{
+		Workload:  inst.workload,
 		ID:        newID("snap"),
 		ThreadID:  h.ThreadID,
 		Node:      d.cfg.Node,
@@ -1493,7 +1507,7 @@ func (d *Driver) Restore(ctx context.Context, ref substrate.SnapshotRef) (substr
 	if _, err := os.Stat(snapPath); err != nil {
 		return substrate.Handle{}, fmt.Errorf("driver: snapshot bundle missing for thread %q: %w", threadID, err)
 	}
-	return d.loadInto(ctx, threadID, snapPath, d.memfilePath(threadID), "restore.sock")
+	return d.loadInto(ctx, ref.Workload, threadID, snapPath, d.memfilePath(threadID), "restore.sock")
 }
 
 // SnapshotBase captures a warmed microVM into a shared base bundle keyed by
@@ -1879,7 +1893,7 @@ func (d *Driver) SnapshotSession(ctx context.Context, h substrate.Handle, snapsh
 // just the new host bundle dir). A missing bundle is an error the caller maps to
 // FAILED_PRECONDITION (the control plane then decides; the snapshot is never
 // deleted on a failed restore).
-func (d *Driver) RestoreSession(ctx context.Context, snapshotRef string, trackDirtyPages bool) (substrate.Handle, error) {
+func (d *Driver) RestoreSession(ctx context.Context, workload, snapshotRef string, trackDirtyPages bool) (substrate.Handle, error) {
 	if snapshotRef == "" {
 		return substrate.Handle{}, fmt.Errorf("driver: RestoreSession requires a snapshot_ref")
 	}
@@ -1890,7 +1904,7 @@ func (d *Driver) RestoreSession(ctx context.Context, snapshotRef string, trackDi
 	// A restored session gets its own fresh thread (host bundle dir + vsock socket);
 	// the bundle's embedded config is re-bound into it by loadInto.
 	threadID := newID("sess")
-	return d.loadBankingInto(ctx, threadID, snapPath, d.sessionMemfile(snapshotRef), "restore.sock", trackDirtyPages)
+	return d.loadBankingInto(ctx, workload, threadID, snapPath, d.sessionMemfile(snapshotRef), "restore.sock", trackDirtyPages)
 }
 
 // RemoveSessionBundle deletes a banked session snapshot's on-disk bundle
@@ -1990,7 +2004,7 @@ func (d *Driver) SnapshotServing(ctx context.Context, h substrate.Handle, snapsh
 // so the resumed guest's baked eth0 IP still routes. A missing bundle is an error the
 // caller maps to FAILED_PRECONDITION (the snapshot is never deleted on a failed
 // restore).
-func (d *Driver) RestoreServing(ctx context.Context, snapshotRef string) (substrate.Handle, error) {
+func (d *Driver) RestoreServing(ctx context.Context, workload, snapshotRef string) (substrate.Handle, error) {
 	if snapshotRef == "" {
 		return substrate.Handle{}, fmt.Errorf("driver: RestoreServing requires a snapshot_ref")
 	}
@@ -1999,7 +2013,7 @@ func (d *Driver) RestoreServing(ctx context.Context, snapshotRef string) (substr
 		return substrate.Handle{}, fmt.Errorf("driver: serving bundle missing for %q: %w", snapshotRef, err)
 	}
 	threadID := newID("serv")
-	return d.loadInto(ctx, threadID, snapPath, d.servingMemfile(snapshotRef), "restore.sock")
+	return d.loadInto(ctx, workload, threadID, snapPath, d.servingMemfile(snapshotRef), "restore.sock")
 }
 
 // ServingPinnedIP reads the pinned tap IP a serving snapshot was banked with, for a
@@ -2379,7 +2393,7 @@ func (d *Driver) GCStatefulCheckpoints() int {
 // mirrors RestoreServing. Stateful relight preserves Firecracker's original
 // load-and-resume behavior: the banked volume path is staged inside a jail, but
 // the drive is not patched because its embedded path already names that volume.
-func (d *Driver) RestoreStateful(ctx context.Context, snapshotRef, volumeDiskPath string) (substrate.Handle, error) {
+func (d *Driver) RestoreStateful(ctx context.Context, workload, snapshotRef, volumeDiskPath string) (substrate.Handle, error) {
 	if snapshotRef == "" {
 		return substrate.Handle{}, fmt.Errorf("driver: RestoreStateful requires a snapshot_ref")
 	}
@@ -2388,7 +2402,7 @@ func (d *Driver) RestoreStateful(ctx context.Context, snapshotRef, volumeDiskPat
 		return substrate.Handle{}, fmt.Errorf("driver: stateful bundle missing for %q: %w", snapshotRef, err)
 	}
 	threadID := newID("state")
-	return d.loadPatchAndResumeWithDiff(ctx, threadID, snapPath, d.statefulMemfile(snapshotRef), "restore.sock", volumeDiskPath, false, false, false)
+	return d.loadPatchAndResumeWithDiff(ctx, workload, threadID, snapPath, d.statefulMemfile(snapshotRef), "restore.sock", volumeDiskPath, false, false, false)
 }
 
 // RemoveStatefulBundle deletes a banked stateful snapshot's on-disk bundle
@@ -2599,7 +2613,7 @@ func (d *Driver) groupMemberMemfile(setID, memberName string) string {
 // addition of mmdsEnv. env is only meaningful on a FRESH cold boot; a RELIGHT
 // resumes a memory snapshot via RestoreGroupMember and never re-reads boot-args, so
 // the resumed member keeps its BIRTH env.
-func (d *Driver) ClaimGroupMember(ctx context.Context, rootfsPath, harnessInit string, vcpus, memMib int, nic substrate.NICSpec, env map[string]string) (substrate.Handle, error) {
+func (d *Driver) ClaimGroupMember(ctx context.Context, workload, rootfsPath, harnessInit string, vcpus, memMib int, nic substrate.NICSpec, env map[string]string) (substrate.Handle, error) {
 	if nic.HostDevName == "" {
 		return substrate.Handle{}, fmt.Errorf("driver: ClaimGroupMember requires a host tap device")
 	}
@@ -2607,6 +2621,7 @@ func (d *Driver) ClaimGroupMember(ctx context.Context, rootfsPath, harnessInit s
 	memMib = orDefault(memMib, d.cfg.MemMib)
 	nicCopy := nic
 	return d.coldBoot(ctx, newID("grpm"), coldBootSpec{
+		workload:    workload,
 		rootfsPath:  rootfsPath,
 		vcpus:       vcpus,
 		memMib:      memMib,
@@ -2689,7 +2704,7 @@ func (d *Driver) SnapshotGroupMember(ctx context.Context, h substrate.Handle, se
 // eth0 still routes. A missing bundle is an error the caller
 // maps to FAILED_PRECONDITION (the bundle is NEVER deleted on a failed restore: a
 // lost member must surface loudly).
-func (d *Driver) RestoreGroupMember(ctx context.Context, setID, memberName string) (substrate.Handle, error) {
+func (d *Driver) RestoreGroupMember(ctx context.Context, workload, setID, memberName string) (substrate.Handle, error) {
 	if setID == "" || memberName == "" {
 		return substrate.Handle{}, fmt.Errorf("driver: RestoreGroupMember requires a set_id and member_name")
 	}
@@ -2698,7 +2713,7 @@ func (d *Driver) RestoreGroupMember(ctx context.Context, setID, memberName strin
 		return substrate.Handle{}, fmt.Errorf("driver: group member bundle missing for group/%s/%s: %w", setID, memberName, err)
 	}
 	threadID := newID("grpm")
-	return d.loadInto(ctx, threadID, snapPath, d.groupMemberMemfile(setID, memberName), "restore.sock")
+	return d.loadInto(ctx, workload, threadID, snapPath, d.groupMemberMemfile(setID, memberName), "restore.sock")
 }
 
 // RemoveGroupMemberBundle deletes a banked member snapshot's on-disk bundle

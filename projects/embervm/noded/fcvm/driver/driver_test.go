@@ -290,6 +290,50 @@ func TestDriverClaimBootsMicroVM(t *testing.T) {
 	}
 }
 
+func TestDriverThreadsWorkloadAndPhaseToLauncher(t *testing.T) {
+	launcher := &fakeLauncher{}
+	d := New(Config{
+		KernelImagePath: "/opt/kata/vmlinux",
+		RootfsPath:      "/dev/mapper/thread",
+		SnapshotRoot:    shortTempDir(t),
+	}, launcher, nil)
+
+	cold, err := d.Claim(context.Background(), substrate.ClaimSpec{
+		Workload: "build-workload",
+		ThreadID: "cold",
+	})
+	if err != nil {
+		t.Fatalf("cold Claim: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Release(context.Background(), cold) })
+
+	snapshotDir := shortTempDir(t)
+	snapPath := filepath.Join(snapshotDir, "snapfile")
+	memPath := filepath.Join(snapshotDir, "memfile")
+	if err := os.WriteFile(snapPath, []byte("snap"), 0o600); err != nil {
+		t.Fatalf("write snapfile: %v", err)
+	}
+	if err := os.WriteFile(memPath, []byte("memory"), 0o600); err != nil {
+		t.Fatalf("write memfile: %v", err)
+	}
+	restored, err := d.loadInto(context.Background(), "restored-workload", "restored", snapPath, memPath, "restore.sock")
+	if err != nil {
+		t.Fatalf("loadInto: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Release(context.Background(), restored) })
+
+	specs := launcher.specs()
+	if len(specs) != 2 {
+		t.Fatalf("launch specs = %d, want 2", len(specs))
+	}
+	if specs[0].Workload != "build-workload" || specs[0].Phase != guestPhaseInit {
+		t.Fatalf("cold launch attribution = (%q, %q), want (build-workload, init)", specs[0].Workload, specs[0].Phase)
+	}
+	if specs[1].Workload != "restored-workload" || specs[1].Phase != guestPhaseVM {
+		t.Fatalf("restore launch attribution = (%q, %q), want (restored-workload, vm)", specs[1].Workload, specs[1].Phase)
+	}
+}
+
 func TestDriverTracksDirtyPagesOnlyForBankingClaims(t *testing.T) {
 	launcher := &fakeLauncher{}
 	d := New(Config{
@@ -447,13 +491,13 @@ func TestDriverClaimedMibProjectsLiveMap(t *testing.T) {
 	handles = append(handles, h)
 	for _, claim := range []func() (substrate.Handle, error){
 		func() (substrate.Handle, error) {
-			return d.ClaimServing(ctx, "", "", 1, 200, substrate.NICSpec{HostDevName: "tap-serving"}, "", 0)
+			return d.ClaimServing(ctx, "serving", "", "", 1, 200, substrate.NICSpec{HostDevName: "tap-serving"}, "", 0)
 		},
 		func() (substrate.Handle, error) {
-			return d.ClaimStateful(ctx, "", "", 1, 300, substrate.NICSpec{HostDevName: "tap-stateful"}, "", 0, "/volume", "/data", nil)
+			return d.ClaimStateful(ctx, "stateful", "", "", 1, 300, substrate.NICSpec{HostDevName: "tap-stateful"}, "", 0, "/volume", "/data", nil)
 		},
 		func() (substrate.Handle, error) {
-			return d.ClaimGroupMember(ctx, "", "", 1, 400, substrate.NICSpec{HostDevName: "tap-group"}, nil)
+			return d.ClaimGroupMember(ctx, "group", "", "", 1, 400, substrate.NICSpec{HostDevName: "tap-group"}, nil)
 		},
 	} {
 		h, err := claim()
@@ -1279,7 +1323,7 @@ func TestDriverSessionSnapshotRestoreRoundTrip(t *testing.T) {
 	}
 
 	// Relight a fresh VM from the banked bundle: a new microVM id and a fresh thread.
-	h2, err := d.RestoreSession(ctx, "sref-abc123", false)
+	h2, err := d.RestoreSession(ctx, "test", "sref-abc123", false)
 	if err != nil {
 		t.Fatalf("RestoreSession: %v", err)
 	}
@@ -1300,7 +1344,7 @@ func TestDriverSessionSnapshotRestoreRoundTrip(t *testing.T) {
 	if _, err := os.Stat(d.sessionDir("sref-abc123")); !os.IsNotExist(err) {
 		t.Fatalf("session bundle dir should be gone after evict, stat err=%v", err)
 	}
-	if _, err := d.RestoreSession(ctx, "sref-abc123", false); err == nil {
+	if _, err := d.RestoreSession(ctx, "test", "sref-abc123", false); err == nil {
 		t.Fatal("relight of an evicted session bundle should error")
 	}
 	// Idempotent evict: removing an already-gone bundle is not an error.
@@ -1330,7 +1374,7 @@ func TestRestoreLegacyBundleWithoutJailResourcesUsesDirectExec(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	h, err := d.RestoreSession(ctx, "legacy-bank", false)
+	h, err := d.RestoreSession(ctx, "test", "legacy-bank", false)
 	if err != nil {
 		t.Fatalf("RestoreSession legacy bundle: %v", err)
 	}
@@ -1377,7 +1421,7 @@ func TestRestoreStatefulStagesEmbeddedVolumeWithoutPatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	h, err := d.RestoreStateful(ctx, "state-bank", volume)
+	h, err := d.RestoreStateful(ctx, "test", "state-bank", volume)
 	if err != nil {
 		t.Fatalf("RestoreStateful: %v", err)
 	}
@@ -1435,7 +1479,7 @@ func TestSessionBankSequenceFullThenDiff(t *testing.T) {
 		t.Fatalf("Release first bank: %v", err)
 	}
 
-	restored, err := d.RestoreSession(ctx, "bank-1", true)
+	restored, err := d.RestoreSession(ctx, "test", "bank-1", true)
 	if err != nil {
 		t.Fatalf("RestoreSession: %v", err)
 	}
@@ -1496,14 +1540,14 @@ func TestLoadEnablesDiffSnapshotsOnlyForSessionBanks(t *testing.T) {
 		}
 	}
 
-	session, err := d.RestoreSession(ctx, "session-bank", true)
+	session, err := d.RestoreSession(ctx, "test", "session-bank", true)
 	if err != nil {
 		t.Fatalf("RestoreSession: %v", err)
 	}
 	if err := d.Release(ctx, session); err != nil {
 		t.Fatalf("Release session: %v", err)
 	}
-	serving, err := d.RestoreServing(ctx, "serving-bank")
+	serving, err := d.RestoreServing(ctx, "test", "serving-bank")
 	if err != nil {
 		t.Fatalf("RestoreServing: %v", err)
 	}
@@ -1511,7 +1555,7 @@ func TestLoadEnablesDiffSnapshotsOnlyForSessionBanks(t *testing.T) {
 		t.Fatalf("Release serving: %v", err)
 	}
 	d.diffBanking = false
-	disabledSession, err := d.RestoreSession(ctx, "disabled-session-bank", true)
+	disabledSession, err := d.RestoreSession(ctx, "test", "disabled-session-bank", true)
 	if err != nil {
 		t.Fatalf("RestoreSession with knob disabled: %v", err)
 	}
@@ -1561,7 +1605,7 @@ func restoredDiffBankingSession(t *testing.T, launcher *fakeLauncher, baseRef st
 	if err := os.WriteFile(d.sessionMemfile(baseRef), []byte("base-full"), 0o600); err != nil {
 		t.Fatalf("write base memfile: %v", err)
 	}
-	h, err := d.RestoreSession(context.Background(), baseRef, true)
+	h, err := d.RestoreSession(context.Background(), "test", baseRef, true)
 	if err != nil {
 		t.Fatalf("RestoreSession: %v", err)
 	}
@@ -1984,7 +2028,7 @@ func TestPrefixLenToMask(t *testing.T) {
 // accepts PUT /network-interfaces, so a successful boot proves the NIC step ran.
 func TestClaimServingBootsWithNIC(t *testing.T) {
 	d := testDriver(t)
-	h, err := d.ClaimServing(context.Background(), "/rootfs/serve", "/init", 2, 512, substrate.NICSpec{
+	h, err := d.ClaimServing(context.Background(), "serving", "/rootfs/serve", "/init", 2, 512, substrate.NICSpec{
 		HostDevName: "emtap0002",
 		IP:          "172.31.0.2",
 		GatewayIP:   "172.31.0.1",
@@ -2003,7 +2047,7 @@ func TestClaimServingBootsWithNIC(t *testing.T) {
 
 func TestClaimServingRequiresTap(t *testing.T) {
 	d := testDriver(t)
-	if _, err := d.ClaimServing(context.Background(), "/rootfs", "", 1, 128, substrate.NICSpec{}, "", 0); err == nil {
+	if _, err := d.ClaimServing(context.Background(), "serving", "/rootfs", "", 1, 128, substrate.NICSpec{}, "", 0); err == nil {
 		t.Fatal("ClaimServing without a host tap device should error")
 	}
 }
@@ -2013,7 +2057,7 @@ func TestClaimServingRequiresTap(t *testing.T) {
 // API accepts every PUT /drives, so a successful boot proves the second-drive step ran.
 func TestClaimServingWithHandlerDiskBoots(t *testing.T) {
 	d := testDriver(t)
-	h, err := d.ClaimServing(context.Background(), "/rootfs/serve", "/init", 1, 256,
+	h, err := d.ClaimServing(context.Background(), "serving", "/rootfs/serve", "/init", 1, 256,
 		substrate.NICSpec{HostDevName: "emtap0003", IP: "172.31.0.3", GatewayIP: "172.31.0.1", PrefixLen: 24, ServingPort: 8080},
 		"/disks/bases/wl__abc/handler.zip", 4096)
 	if err != nil {
@@ -2112,7 +2156,7 @@ func TestScanServingHandlerArtifactsSkipsTransientBaseDirs(t *testing.T) {
 func TestServingSnapshotRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	d := testDriver(t)
-	h, err := d.ClaimServing(ctx, "/rootfs/serve", "/init", 1, 256, substrate.NICSpec{HostDevName: "emtap0002", IP: "172.31.0.2", GatewayIP: "172.31.0.1", PrefixLen: 24}, "", 0)
+	h, err := d.ClaimServing(ctx, "serving", "/rootfs/serve", "/init", 1, 256, substrate.NICSpec{HostDevName: "emtap0002", IP: "172.31.0.2", GatewayIP: "172.31.0.1", PrefixLen: 24}, "", 0)
 	if err != nil {
 		t.Fatalf("ClaimServing: %v", err)
 	}
@@ -2128,7 +2172,7 @@ func TestServingSnapshotRoundTrip(t *testing.T) {
 		t.Fatalf("ServingPinnedIP = %q want 172.31.0.2", got)
 	}
 	// Restore resumes from the bundle.
-	rh, err := d.RestoreServing(ctx, "servref-1")
+	rh, err := d.RestoreServing(ctx, "serving", "servref-1")
 	if err != nil {
 		t.Fatalf("RestoreServing: %v", err)
 	}
@@ -2142,7 +2186,7 @@ func TestServingSnapshotRoundTrip(t *testing.T) {
 	if d.ServingPinnedIP("servref-1") != "" {
 		t.Error("pinned IP should be gone after evict")
 	}
-	if _, err := d.RestoreServing(ctx, "servref-1"); err == nil {
+	if _, err := d.RestoreServing(ctx, "serving", "servref-1"); err == nil {
 		t.Fatal("restore of an evicted serving bundle should error")
 	}
 }
@@ -2158,7 +2202,7 @@ func TestDriverGroupMemberSnapshotRestoreRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	d := testDriver(t)
 
-	h, err := d.ClaimGroupMember(ctx, "/rootfs/member", "/init", 1, 256,
+	h, err := d.ClaimGroupMember(ctx, "group", "/rootfs/member", "/init", 1, 256,
 		substrate.NICSpec{HostDevName: "emgt0a1b2c", GuestMAC: "02:00:00:00:00:01", IP: "10.101.1.10", GatewayIP: "10.101.1.1", PrefixLen: 24}, map[string]string{"EMBER_GROUP_ROLE": "worker"})
 	if err != nil {
 		t.Fatalf("ClaimGroupMember: %v", err)
@@ -2184,7 +2228,7 @@ func TestDriverGroupMemberSnapshotRestoreRoundTrip(t *testing.T) {
 		t.Fatalf("Release banked member: %v", err)
 	}
 
-	h2, err := d.RestoreGroupMember(ctx, "set-abc", "worker-0")
+	h2, err := d.RestoreGroupMember(ctx, "group", "set-abc", "worker-0")
 	if err != nil {
 		t.Fatalf("RestoreGroupMember: %v", err)
 	}
@@ -2198,7 +2242,7 @@ func TestDriverGroupMemberSnapshotRestoreRoundTrip(t *testing.T) {
 	if err := d.RemoveGroupMemberBundle("set-abc", "worker-0"); err != nil {
 		t.Fatalf("RemoveGroupMemberBundle: %v", err)
 	}
-	if _, err := d.RestoreGroupMember(ctx, "set-abc", "worker-0"); err == nil {
+	if _, err := d.RestoreGroupMember(ctx, "group", "set-abc", "worker-0"); err == nil {
 		t.Fatal("relight of an evicted member bundle should error")
 	}
 	// Idempotent evict.
@@ -2211,7 +2255,7 @@ func TestDriverGroupMemberSnapshotRestoreRoundTrip(t *testing.T) {
 // no host tap (a member is always on the group bridge).
 func TestDriverClaimGroupMemberRequiresTap(t *testing.T) {
 	d := testDriver(t)
-	if _, err := d.ClaimGroupMember(context.Background(), "/rootfs/x", "/init", 1, 128, substrate.NICSpec{}, nil); err == nil {
+	if _, err := d.ClaimGroupMember(context.Background(), "group", "/rootfs/x", "/init", 1, 128, substrate.NICSpec{}, nil); err == nil {
 		t.Fatal("ClaimGroupMember without a host tap should error")
 	}
 }
@@ -2225,7 +2269,7 @@ func TestDriverScanGroupBundleSets(t *testing.T) {
 
 	// Bank two members under one set and one under another.
 	bank := func(setID, member string) {
-		h, err := d.ClaimGroupMember(ctx, "/rootfs/member", "/init", 1, 128,
+		h, err := d.ClaimGroupMember(ctx, "group", "/rootfs/member", "/init", 1, 128,
 			substrate.NICSpec{HostDevName: "emgt-" + member, IP: "10.101.1.10"}, nil)
 		if err != nil {
 			t.Fatalf("ClaimGroupMember %s/%s: %v", setID, member, err)

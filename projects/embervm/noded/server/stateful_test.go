@@ -68,7 +68,7 @@ func newFakeStatefulDriver(dir string) *fakeStatefulDriver {
 	}
 }
 
-func (f *fakeStatefulDriver) ClaimStateful(_ context.Context, _ string, _ string, _ int, _ int, _ substrate.NICSpec, _ string, _ int64, volumeDiskPath, volumeMount string, mmdsEnv map[string]string) (substrate.Handle, error) {
+func (f *fakeStatefulDriver) ClaimStateful(_ context.Context, _ string, _ string, _ string, _ int, _ int, _ substrate.NICSpec, _ string, _ int64, volumeDiskPath, volumeMount string, mmdsEnv map[string]string) (substrate.Handle, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failClaim != nil {
@@ -103,7 +103,7 @@ func (f *fakeStatefulDriver) StatefulAPISocketPath(_ substrate.Handle) string {
 	return f.apiSocketPath
 }
 
-func (f *fakeStatefulDriver) RestoreStateful(_ context.Context, snapshotRef, _ string) (substrate.Handle, error) {
+func (f *fakeStatefulDriver) RestoreStateful(_ context.Context, _, snapshotRef, _ string) (substrate.Handle, error) {
 	f.mu.Lock()
 	if _, ok := f.banked[snapshotRef]; !ok {
 		f.mu.Unlock()

@@ -172,7 +172,7 @@ func writeFile(t *testing.T, path, s string) {
 	}
 }
 
-func (f *fakeServingDriver) ClaimServing(_ context.Context, _ string, _ string, _ int, _ int, nic substrate.NICSpec, handlerDiskPath string, handlerZipBytes int64) (substrate.Handle, error) {
+func (f *fakeServingDriver) ClaimServing(_ context.Context, _ string, _ string, _ string, _ int, _ int, nic substrate.NICSpec, handlerDiskPath string, handlerZipBytes int64) (substrate.Handle, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failClaim != nil {
@@ -256,7 +256,7 @@ func (f *fakeServingDriver) SnapshotServing(_ context.Context, _ substrate.Handl
 	return substrate.SnapshotRef{ID: snapshotRef, SizeBytes: 4096}, nil
 }
 
-func (f *fakeServingDriver) RestoreServing(_ context.Context, snapshotRef string) (substrate.Handle, error) {
+func (f *fakeServingDriver) RestoreServing(_ context.Context, _, snapshotRef string) (substrate.Handle, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if _, ok := f.banked[snapshotRef]; !ok {
