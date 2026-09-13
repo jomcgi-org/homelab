@@ -22,6 +22,7 @@ Five workload classes ride one substrate:
 
 | Read | For |
 | ---- | --- |
+| [QUICKSTART.md](QUICKSTART.md) | A reproducible standalone path for one Linux host, one control plane, one noded, hello world, and session bank/relight continuity |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | The design, standalone: current state and decided future, the capability matrix, invariants, threat model, and platform contract |
 | [STPA.md](STPA.md) | The safety model: unsafe control actions and feedback that drive the system into a loss, with severity |
 | [deploy/README.md](deploy/README.md) | The reference deployment: fleet shape, node enrollment, warmth GC operations |
@@ -39,6 +40,7 @@ Five workload classes ride one substrate:
 | `runtimes/` | Guest runtimes (zip lane plus bazel, claude, k3s, postgres); vsock guest contract in its README |
 | `tokenbroker/`, `image/`, `scratch-prep/` | Token broker, base image build, scratch provisioning |
 | `xds/`      | Envoy endpoint publisher sidecar                                       |
+| `standalone/` | Single-host k3s values, local object store, fixtures, and checks      |
 | `chart/`, `deploy/` | Helm chart and ArgoCD wiring                                   |
 | `specs/`    | TLA+ models for the adoption, bank/relight, quota, and session-create protocols |
 

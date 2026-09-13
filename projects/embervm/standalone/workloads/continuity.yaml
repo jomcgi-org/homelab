@@ -1,0 +1,28 @@
+apiVersion: embervm.dev/v1alpha1
+kind: Workload
+metadata:
+  name: continuity
+spec:
+  class: session
+  source:
+    zip:
+      runtime: python312
+      codeUri: http://embervm-minio:9000/embervm-functions/continuity/bd12054be9fc385984157d27bba1847ab2ceb4a8167db26b3d0c0b99784f31d9.zip
+      sha256: bd12054be9fc385984157d27bba1847ab2ceb4a8167db26b3d0c0b99784f31d9
+      handler: app.handle
+      readyPath: /shim/ready
+      invokePath: /invoke
+  resources:
+    vcpus: 1
+    memMib: 512
+  concurrency:
+    floor: 0
+    cap: 1
+  session:
+    idleBankSeconds: 5
+    maxLifetimeSeconds: 3600
+    bankedTtlSeconds: 900
+    maxSessions: 2
+    invokeQueueCap: 2
+  invocation:
+    timeoutSeconds: 30
