@@ -147,8 +147,8 @@ graph TB
     API --> DISP -->|gRPC| NODED
     NODED -->|vsock| VM1
     GATEWAY["Gateway API HTTPRoute"] --> EDGE["cluster edge Envoy"]
-    EDGE -->|stable node-tier Service| ENVOY
     XDS --> EDGE & ENVOY
+    EDGE -->|global EDS, pod-IP DNAT| VM2
     ENVOY -->|DNAT into tap| VM2
     VM1 --> PROXY
     VM2 --> PROXY
@@ -161,11 +161,12 @@ graph TB
 Diagram edges: solid = request path; thick = facts; dotted = definitions.
 The Gateway API exposure is static and terminates at the cluster edge Envoy.
 Every edge replica shares one xDS node id and consumes a second, cluster-scoped
-snapshot whose `serve|<workload>` clusters resolve the stable node-tier Service.
-Each node Envoy consumes its node snapshot and routes to the globally routable
-noded pod-IP DNAT endpoint. Kubernetes removes unready node Envoy pods from the
-Service; VM health, bank, and wake churn changes only node xDS snapshots. Neither
-path writes runtime EndpointSlices or HTTPRoutes.
+snapshot whose `serve|<workload>` clusters carry every healthy, globally
+routable noded pod-IP DNAT endpoint. Each node Envoy consumes a node-local
+snapshot containing only endpoints owned by that node. VM health, bank, and wake
+churn changes the global edge snapshot and the owning node snapshot, but leaves
+unrelated node versions and payloads unchanged. Neither path writes runtime
+EndpointSlices or HTTPRoutes.
 
 **Division of labour** (each responsibility placed where it is cheapest to
 make correct):
@@ -200,11 +201,9 @@ involved at all:
 sequenceDiagram
     participant C as Caller
     participant E as cluster edge Envoy
-    participant N as node Envoy
     participant VM as Serving VM
     C->>E: static edge HTTPRoute
-    E->>N: stable node-tier Service
-    N->>VM: kernel DNAT into tap NIC
+    E->>VM: global EDS endpoint, kernel DNAT into tap NIC
     VM-->>C: response
 ```
 
@@ -216,17 +215,15 @@ its EndpointPublisher:
 sequenceDiagram
     participant C as Caller
     participant E as cluster edge Envoy
-    participant N as node Envoy
     participant A as Fallback activator
     participant CP as Control plane
     participant VM as Guest VM
     C->>E: request (workload scaled to zero)
-    E->>N: stable node-tier Service
-    N->>A: fallback endpoint, request parks
+    E->>A: fallback endpoint, request parks
     A->>CP: wake request
     CP->>VM: single-flighted restore or cold boot
-    CP-->>N: real endpoint published via node xDS
-    N->>VM: parked bytes splice through
+    CP-->>E: real endpoint published via edge xDS
+    A->>VM: parked bytes splice through
     VM-->>C: response
 ```
 

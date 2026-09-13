@@ -72,9 +72,8 @@ func TestStore_nodeAndEdgeSnapshotsRemainIndependent(t *testing.T) {
 	edge := &snapshot.Desired{
 		Version: "0000000001",
 		Clusters: []snapshot.Cluster{{
-			Name:          "serve|ping",
-			DiscoveryType: "strict_dns",
-			Endpoints:     []snapshot.Endpoint{{IP: "embervm-serving.embervm.svc", Port: 10000}},
+			Name:      "serve|ping",
+			Endpoints: []snapshot.Endpoint{{IP: "10.42.4.8", Port: 30011}},
 		}},
 		Routes: []snapshot.Route{{Host: "ping.embervm.internal", Cluster: "serve|ping"}},
 	}

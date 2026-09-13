@@ -6,11 +6,9 @@ metadata:
   labels:
     {{- include "embervm.servingEnvoy.labels" . | nindent 4 }}
 spec:
-  # Stable node-tier address for the cluster edge and internal L4 consumers.
-  # Kubernetes owns this Service's EndpointSlices. The cluster edge's STRICT_DNS
-  # upstream resolves it without any runtime API writes, then a selected node
-  # Envoy routes to the globally routable noded pod-IP DNAT endpoint in its own
-  # node-scoped xDS snapshot.
+  # Stable node-tier address for internal L4 consumers and stats collection.
+  # Kubernetes owns this Service's EndpointSlices. The cluster edge uses its own
+  # global EDS snapshot and does not select a random node Envoy for serving HTTP.
   type: ClusterIP
   selector:
     {{- include "embervm.servingEnvoy.selectorLabels" . | nindent 4 }}

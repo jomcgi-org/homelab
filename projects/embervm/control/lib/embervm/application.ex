@@ -1187,15 +1187,13 @@ defmodule Embervm.Application do
   end
 
   # The second, cluster-scoped xDS snapshot. The edge Envoy and publisher share
-  # one node id, while the upstream is the stable node-tier Service. Unset values
-  # disable the edge publication cleanly for recovery and half-rolled charts.
+  # one node id. An unset id disables edge publication cleanly for recovery and
+  # half-rolled charts.
   defp edge_publisher_opts do
     node_id = trimmed_env("EMBERVM_SERVING_EDGE_NODE_ID")
-    host = trimmed_env("EMBERVM_SERVING_EDGE_UPSTREAM_HOST")
-    port = trimmed_env("EMBERVM_SERVING_EDGE_UPSTREAM_PORT")
 
-    if node_id != "" and host != "" and port != "" do
-      [edge_node_id: node_id, edge_upstream: %{host: host, port: String.to_integer(port)}]
+    if node_id != "" do
+      [edge_node_id: node_id]
     else
       []
     end

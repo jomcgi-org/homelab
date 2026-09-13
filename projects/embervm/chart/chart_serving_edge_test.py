@@ -53,6 +53,19 @@ def _control_deployment(docs: list[dict]) -> dict:
     )
 
 
+def _edge_bootstrap(docs: list[dict]) -> dict:
+    rendered = _one(docs, "ConfigMap", "serving-edge")["data"][
+        "envoy-bootstrap.yaml"
+    ]
+    return yaml.safe_load(rendered)
+
+
+def _listener(config: dict, name: str) -> dict:
+    return next(
+        item for item in config["static_resources"]["listeners"] if item["name"] == name
+    )
+
+
 def test_edge_replicas_share_second_snapshot_and_span_nodes() -> None:
     docs = _render()
     edge = _one(docs, "Deployment", "serving-edge")
@@ -70,13 +83,64 @@ def test_edge_replicas_share_second_snapshot_and_span_nodes() -> None:
     )
     assert pod["topologySpreadConstraints"][0]["maxSkew"] == 1
 
-    config = _one(docs, "ConfigMap", "serving-edge")["data"]["envoy-bootstrap.yaml"]
-    assert "route_config_name: embervm-serving" in config
-    assert "cluster_name: xds_cluster" in config
-    assert ".svc.cluster.local" not in config
+    rendered = _one(docs, "ConfigMap", "serving-edge")["data"][
+        "envoy-bootstrap.yaml"
+    ]
+    assert "route_config_name: embervm-serving" in rendered
+    assert "cluster_name: xds_cluster" in rendered
+    assert ".svc.cluster.local" not in rendered
 
 
-def test_static_gateway_route_targets_edge_while_edge_targets_node_service() -> None:
+def test_cold_edge_waits_for_rds_before_becoming_ready() -> None:
+    docs = _render()
+    edge = _one(docs, "Deployment", "serving-edge")
+    container = edge["spec"]["template"]["spec"]["containers"][0]
+    config = _edge_bootstrap(docs)
+    listener = _listener(config, "serving_edge_listener")
+    manager = listener["filter_chains"][0]["filters"][0]["typed_config"]
+    source = manager["rds"]["config_source"]
+
+    # Envoy defines zero as no initial-fetch timeout. The data listener and
+    # admin /ready therefore remain warming until RDS has supplied a route table.
+    assert source["initial_fetch_timeout"] == "0s"
+    assert source["ads"] == {}
+    assert container["readinessProbe"]["httpGet"] == {
+        "path": "/ready",
+        "port": "health",
+    }
+
+
+def test_warmed_edge_keeps_liveness_separate_from_ads_readiness() -> None:
+    docs = _render()
+    edge = _one(docs, "Deployment", "serving-edge")
+    container = edge["spec"]["template"]["spec"]["containers"][0]
+    config = _edge_bootstrap(docs)
+    probe_listener = _listener(config, "serving_edge_probe_listener")
+    manager = probe_listener["filter_chains"][0]["filters"][0]["typed_config"]
+    routes = manager["route_config"]["virtual_hosts"][0]["routes"]
+
+    # /live is static and never depends on ADS. /ready delegates to Envoy's
+    # initialization state, which remains LIVE with the last ACKed RDS config if
+    # the ADS stream later disconnects.
+    assert routes[0] == {
+        "match": {"path": "/live"},
+        "direct_response": {"status": 200, "body": {"inline_string": "live\n"}},
+    }
+    assert routes[1] == {
+        "match": {"path": "/ready"},
+        "route": {"cluster": "admin_loopback"},
+    }
+    assert container["startupProbe"]["httpGet"] == {
+        "path": "/live",
+        "port": "health",
+    }
+    assert container["livenessProbe"]["httpGet"] == {
+        "path": "/live",
+        "port": "health",
+    }
+
+
+def test_static_gateway_route_targets_edge_while_node_service_remains_separate() -> None:
     docs = _render(
         "servingEnvoy.routes[0].enabled=true",
         "servingEnvoy.routes[0].name=ping",
@@ -114,10 +178,8 @@ def test_static_gateway_route_targets_edge_while_edge_targets_node_service() -> 
         if "value" in item
     }
     assert env["EMBERVM_SERVING_EDGE_NODE_ID"] == "embervm-serving-edge"
-    assert env["EMBERVM_SERVING_EDGE_UPSTREAM_HOST"] == (
-        f"{node_service['metadata']['name']}.ember-test.svc"
-    )
-    assert env["EMBERVM_SERVING_EDGE_UPSTREAM_PORT"] == "10000"
+    assert "EMBERVM_SERVING_EDGE_UPSTREAM_HOST" not in env
+    assert "EMBERVM_SERVING_EDGE_UPSTREAM_PORT" not in env
 
     # EndpointSlices remain owned by the Kubernetes Service controller. This
     # chart adds only static GitOps resources and no per-workload runtime object.

@@ -82,7 +82,7 @@ defmodule Embervm.EndpointPublisherGroupTest do
     running_group(stack, "g-1", "grp-a", "10.0.0.9", 30_010)
 
     ctx = build_ctx(stack, [])
-    desired = EndpointPublisher.desired_for_node(ctx, "v1")
+    desired = EndpointPublisher.desired_for_node(ctx, "v1", "node-4")
 
     cluster = Enum.find(desired.clusters, &(&1.name == "group|grp-a"))
     assert cluster.endpoints == [%{ip: "10.0.0.9", port: 30_010}]
@@ -98,7 +98,7 @@ defmodule Embervm.EndpointPublisherGroupTest do
     # No group instance at all (cold).
 
     ctx = build_ctx(stack, activator_ip: "10.2.2.2")
-    desired = EndpointPublisher.desired_for_node(ctx, "v1")
+    desired = EndpointPublisher.desired_for_node(ctx, "v1", "node-4")
 
     cluster = Enum.find(desired.clusters, &(&1.name == "group|grp-a"))
     # The activator fallback at the workload's OWN listen_port (5411), not a shared one.
@@ -113,7 +113,7 @@ defmodule Embervm.EndpointPublisherGroupTest do
     {:ok, _} = GroupStore.bank_ready(stack.group_store, "g-1", "set-1", [%{name: "leader", snapshot_ref: "snap-l"}])
 
     ctx = build_ctx(stack, activator_ip: "10.2.2.2")
-    desired = EndpointPublisher.desired_for_node(ctx, "v1")
+    desired = EndpointPublisher.desired_for_node(ctx, "v1", "node-4")
 
     cluster = Enum.find(desired.clusters, &(&1.name == "group|grp-a"))
     assert cluster.endpoints == [%{ip: "10.2.2.2", port: 5412}]
@@ -132,7 +132,7 @@ defmodule Embervm.EndpointPublisherGroupTest do
         node_facts: [%{configured_id: "node-4", activator_ip: "10.4.4.4"}]
       )
 
-    desired = EndpointPublisher.desired_for_node(ctx, "v1")
+    desired = EndpointPublisher.desired_for_node(ctx, "v1", "node-4")
     cluster = Enum.find(desired.clusters, &(&1.name == "group|grp-a"))
     assert cluster.endpoints == [%{ip: "10.4.4.4", port: 5412}]
   end
@@ -145,7 +145,7 @@ defmodule Embervm.EndpointPublisherGroupTest do
     {:ok, _} = GroupStore.bank_ready(stack.group_store, "g-1", "set-1", [%{name: "leader", snapshot_ref: "snap-l"}])
 
     ctx = build_ctx(stack, activator_ip: "10.2.2.2", node_facts: [%{configured_id: "node-4"}])
-    desired = EndpointPublisher.desired_for_node(ctx, "v1")
+    desired = EndpointPublisher.desired_for_node(ctx, "v1", "node-4")
     cluster = Enum.find(desired.clusters, &(&1.name == "group|grp-a"))
     assert cluster.endpoints == [%{ip: "10.2.2.2", port: 5412}]
   end
@@ -155,7 +155,7 @@ defmodule Embervm.EndpointPublisherGroupTest do
     composite_workload(stack, "grp-a", 5413)
 
     ctx = build_ctx(stack, activator_ip: nil)
-    desired = EndpointPublisher.desired_for_node(ctx, "v1")
+    desired = EndpointPublisher.desired_for_node(ctx, "v1", "node-4")
 
     refute Enum.any?(desired.clusters, &(&1.name == "group|grp-a"))
     # No composite listener; and with only this cold no-activator workload the
@@ -168,7 +168,7 @@ defmodule Embervm.EndpointPublisherGroupTest do
     serving_workload(stack, "svc-a", "svc-a.example.com")
 
     ctx = build_ctx(stack, [])
-    desired = EndpointPublisher.desired_for_node(ctx, "v1")
+    desired = EndpointPublisher.desired_for_node(ctx, "v1", "node-4")
 
     # The serving cluster is present; no composite (or stateful) clusters/listeners.
     assert Enum.any?(desired.clusters, &(&1.name == "serve|svc-a"))

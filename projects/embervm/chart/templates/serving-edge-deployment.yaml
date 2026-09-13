@@ -53,14 +53,27 @@ spec:
           ports:
             - name: http
               containerPort: {{ .Values.servingEnvoy.listenerPort }}
+            - name: health
+              containerPort: {{ .Values.servingEnvoy.edge.healthPort }}
           readinessProbe:
-            tcpSocket:
-              port: http
-            initialDelaySeconds: 2
-            periodSeconds: 5
+            # Envoy admin stays unready while the main listener waits for its
+            # first RDS response. After configuration is applied, ADS loss keeps
+            # the last ACKed routes and therefore preserves readiness.
+            httpGet:
+              path: /ready
+              port: health
+            periodSeconds: 2
+          startupProbe:
+            # Process startup is independent of dynamic route availability.
+            httpGet:
+              path: /live
+              port: health
+            periodSeconds: 2
+            failureThreshold: 30
           livenessProbe:
-            tcpSocket:
-              port: http
+            httpGet:
+              path: /live
+              port: health
             initialDelaySeconds: 5
             periodSeconds: 10
           resources:

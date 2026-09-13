@@ -235,8 +235,9 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end -}}
 
 {{/*
-The stable node-tier address the cluster-serving edge resolves. The name is
-release-derived like every other service name here (survives a release rename).
+The stable node-tier address for internal L4 consumers and stats collection. The
+name is release-derived like every other service name here (survives a release
+rename).
 */}}
 {{- define "embervm.serving.fullname" -}}
 {{- printf "%s-serving" (include "embervm.fullname" .) | trunc 63 | trimSuffix "-" -}}

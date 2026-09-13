@@ -135,9 +135,14 @@ defmodule Embervm.ServingStoreTest do
   test "published_endpoints is ordered by instance_id, deterministically", %{path: path} do
     {_op_log, store} = start_pair(path)
     # Insert out of id order to prove the sort.
-    {:ok, _} = start_instance(store, instance_id: "srv-c", vm_id: "vm-c", ip: "10.0.0.3")
-    {:ok, _} = start_instance(store, instance_id: "srv-a", vm_id: "vm-a", ip: "10.0.0.1")
-    {:ok, _} = start_instance(store, instance_id: "srv-b", vm_id: "vm-b", ip: "10.0.0.2")
+    {:ok, _} =
+      start_instance(store, instance_id: "srv-c", vm_id: "vm-c", ip: "10.0.0.3", node_id: "node-4")
+
+    {:ok, _} =
+      start_instance(store, instance_id: "srv-a", vm_id: "vm-a", ip: "10.0.0.1", node_id: "node-4")
+
+    {:ok, _} =
+      start_instance(store, instance_id: "srv-b", vm_id: "vm-b", ip: "10.0.0.2", node_id: "node-5")
 
     {:ok, _} = ServingStore.publish(store, "srv-c", "10.0.0.3", 8080, :started)
     {:ok, _} = ServingStore.publish(store, "srv-a", "10.0.0.1", 8080, :started)
@@ -147,6 +152,15 @@ defmodule Embervm.ServingStoreTest do
              %{ip: "10.0.0.1", port: 8080},
              %{ip: "10.0.0.2", port: 8080},
              %{ip: "10.0.0.3", port: 8080}
+           ]
+
+    assert ServingStore.published_endpoints_for_node(store, "wl-a", "node-4") == [
+             %{ip: "10.0.0.1", port: 8080},
+             %{ip: "10.0.0.3", port: 8080}
+           ]
+
+    assert ServingStore.published_endpoints_for_node(store, "wl-a", "node-5") == [
+             %{ip: "10.0.0.2", port: 8080}
            ]
   end
 

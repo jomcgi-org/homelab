@@ -80,6 +80,7 @@ def test_grpc_health_and_activator_ports_present(policy: str) -> None:
 def test_serving_dnat_range_tracks_serving_port_base(policy: str) -> None:
     assert f'port: "{_SERVING_PORT_BASE + 2}"' in policy
     assert f"endPort: {_SERVING_PORT_BASE + 254}" in policy
+    assert "app.kubernetes.io/component: serving-edge" in policy
 
 
 def test_stateful_and_composite_ranges_match_serving_envoy_values(policy: str) -> None:

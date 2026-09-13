@@ -205,6 +205,19 @@ defmodule Embervm.ServingStore do
   end
 
   @doc """
+  The node-local publisher fact: the healthy, `published` endpoints for
+  `workload` owned by `node_id`, in the same stable instance-id order as
+  `published_endpoints/2`. Node Envoys use this projection so endpoint churn on
+  one serving node cannot replace an unrelated node's EDS assignment.
+  """
+  @spec published_endpoints_for_node(GenServer.server(), String.t(), String.t()) :: [
+          %{ip: String.t(), port: non_neg_integer()}
+        ]
+  def published_endpoints_for_node(store \\ __MODULE__, workload, node_id) do
+    GenServer.call(store, {:published_endpoints_for_node, workload, node_id})
+  end
+
+  @doc """
   The publisher fact: every workload that has at least one LIVE serving instance
   (any non-terminal, non-banked state), so the publisher knows which clusters to
   render. A banked-only workload has no live VM but still needs an activator
@@ -470,20 +483,11 @@ defmodule Embervm.ServingStore do
   end
 
   def handle_call({:published_endpoints, workload}, _from, state) do
-    endpoints =
-      :ets.foldl(
-        fn {_id, instance}, acc ->
-          if publishable?(instance, workload), do: [instance | acc], else: acc
-        end,
-        [],
-        state.instances
-      )
-      # Stable order by instance_id so the rendered EDS assignment is deterministic
-      # across rebuilds (the byte-identical-rebuild property the publisher relies on).
-      |> Enum.sort_by(& &1.instance_id)
-      |> Enum.map(&%{ip: &1.ip, port: &1.port})
+    {:reply, published_endpoint_maps(state, workload, fn _instance -> true end), state}
+  end
 
-    {:reply, endpoints, state}
+  def handle_call({:published_endpoints_for_node, workload, node_id}, _from, state) do
+    {:reply, published_endpoint_maps(state, workload, &(&1.node_id == node_id)), state}
   end
 
   def handle_call(:serving_workloads, _from, state) do
@@ -879,6 +883,20 @@ defmodule Embervm.ServingStore do
   defp publishable?(instance, workload) do
     instance.workload == workload and instance.state == :published and instance.healthy and
       is_binary(instance.ip) and instance.ip != "" and is_integer(instance.port)
+  end
+
+  defp published_endpoint_maps(state, workload, owner?) do
+    :ets.foldl(
+      fn {_id, instance}, acc ->
+        if publishable?(instance, workload) and owner?.(instance), do: [instance | acc], else: acc
+      end,
+      [],
+      state.instances
+    )
+    # Stable order by instance_id so the rendered EDS assignment is deterministic
+    # across rebuilds (the byte-identical-rebuild property the publisher relies on).
+    |> Enum.sort_by(& &1.instance_id)
+    |> Enum.map(&%{ip: &1.ip, port: &1.port})
   end
 
   defp fetch(state, instance_id) do
