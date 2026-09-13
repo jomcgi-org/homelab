@@ -91,3 +91,45 @@ describe("reroute", () => {
     );
   });
 });
+
+describe("factory private routes", () => {
+  it.each([
+    ["/factory", "/private/factory"],
+    ["/factory/execution?session=42&mode=voice", "/private/factory/execution"],
+    ["/agents/factory?task=t-1", "/private/factory"],
+    [
+      "/agents/escalations/decisions/3",
+      "/private/factory/escalations/decisions/3",
+    ],
+    ["/agents?run=t-1&compose=1", "/private/factory/execution"],
+    [
+      "/agents/session/42/messages",
+      "/private/factory/execution/session/42/messages",
+    ],
+    ["/private/agents/vms/stream", "/private/factory/execution/vms/stream"],
+    ["/private/agents/factory?task=t-1", "/private/factory"],
+  ])("resolves %s without changing query parameters", (path, expected) => {
+    const target = url("private.jomcgi.dev", path);
+    const search = target.search;
+    expect(reroute({ url: target })).toBe(expected);
+    expect(target.search).toBe(search);
+  });
+
+  it.each(["jomcgi.dev", "public.jomcgi.dev", "friends.jomcgi.dev"])(
+    "does not expose private compatibility routes on %s",
+    (host) => {
+      expect(reroute({ url: url(host, "/agents/factory") })).not.toContain(
+        "/private/",
+      );
+      expect(
+        reroute({ url: url(host, "/private/agents/session/42") }),
+      ).not.toBe("/private/factory/execution/session/42");
+    },
+  );
+
+  it("does not alias an unrelated path prefix", () => {
+    expect(reroute({ url: url("private.jomcgi.dev", "/agents-other") })).toBe(
+      "/private/agents-other",
+    );
+  });
+});

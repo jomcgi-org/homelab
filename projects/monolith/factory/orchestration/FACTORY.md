@@ -10,14 +10,21 @@ only the read-only factory descriptor and published projections.
 
 The private registry composes `factory.module` once. Its lifecycle owns both
 the conductor/DBOS runtime and session maintenance, including partial-start
-cleanup and the process watchdog. The `swarm` and `agent_sessions` directories
-remain implementation packages during consolidation, not independently composed
-domains. Their durable workflow functions, database schemas, and existing route
-paths remain stable while ownership moves. Remaining consolidation work moves
-those internals and removes the competing session-facing product concepts.
+cleanup and the process watchdog. Implementations live in `factory.orchestration`
+and `factory.execution`. The old `swarm` and `agent_sessions` packages contain
+compatibility shims for durable exception identities and the existing Discord
+adapter. Database schemas and durable workflow identities remain stable.
 
-The public reader ships `factory.public_view` and excludes the entire
-`agent_sessions` implementation package. It reads only published public API
+The private interface starts at `/factory`, with decisions at
+`/factory/escalations` and run, session, and voice details at
+`/factory/execution`. The launcher presents one Factory entry. Legacy `/agents`
+links and browser API requests resolve internally to the corresponding factory
+routes on the private host, preserving query parameters and request methods.
+The backend `/api/agents` contracts remain stable. Both legacy and canonical
+prefixed VM stream paths retain the gateway's 600-second timeout.
+
+The public reader ships `factory.public_view` and excludes private execution,
+orchestration, access, and projection modules. It reads only published public API
 views and snapshots with the existing restricted database role.
 
 Discord integration is outside this consolidation. Existing integration behavior
@@ -576,8 +583,8 @@ intake.
 
 **Deciding.** `POST /api/swarm/factory/decisions/{receipt_id}` behind the same
 operator gate as `/control`, with `{"option_key": "...", "note": "..."}` or
-`{"action": "chat", "note": "..."}`. The private agents page at
-`/agents/escalations` reaches the same code through
+`{"action": "chat", "note": "..."}`. The private factory page at
+`/factory/escalations` reaches the same code through
 `POST /api/agents/factory/decisions/{receipt_id}`, which the browser can use
 because it is gated on `X-Auth-Email`, the address Envoy projected from the
 verified Access JWT and the gateway strips on ingress so it cannot be

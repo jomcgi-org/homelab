@@ -105,6 +105,9 @@ spec:
         - path:
             type: PathPrefix
             value: /private/agents/vms/stream
+        - path:
+            type: PathPrefix
+            value: /private/factory/execution/vms/stream
       timeouts:
         request: 600s
         backendRequest: 600s

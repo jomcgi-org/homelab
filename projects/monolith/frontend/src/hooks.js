@@ -59,6 +59,20 @@ export function reroute({ url }) {
   if (CHAT_PREFIX_MAP[url.pathname]) {
     return CHAT_PREFIX_MAP[url.pathname];
   }
+  // Preserve old bookmarks and BFF methods within the private tier. Rerouting
+  // changes only the route lookup; request bodies and query parameters survive.
+  if (url.hostname.startsWith("private.")) {
+    const path = url.pathname.replace(/^\/private(?=\/)/, "");
+    for (const [legacy, current] of [
+      ["/agents/factory", "/factory"],
+      ["/agents/escalations", "/factory/escalations"],
+      ["/agents", "/factory/execution"],
+    ]) {
+      if (path === legacy || path.startsWith(`${legacy}/`)) {
+        return `/private${current}${path.slice(legacy.length)}`;
+      }
+    }
+  }
   for (const [domain, prefix] of Object.entries(DOMAIN_PREFIX_MAP)) {
     if (
       url.hostname.startsWith(domain) &&
