@@ -21,6 +21,7 @@ exports_files(
     visibility = ["//projects/monolith:private_backend_consumers"],
 )
 
+# keep: the root trips_backfill compatibility target owns this executable.
 # Run-by-hand backfill, excluded from the server image.
 py_venv_binary(
     name = "trips_backfill",
@@ -28,6 +29,7 @@ py_venv_binary(
         ["**/*.py"],
         exclude = ["**/*_test.py"],
     ),
+    imports = [".."],
     main = "backfill/main.py",
     visibility = ["//projects/monolith:__pkg__"],
 )

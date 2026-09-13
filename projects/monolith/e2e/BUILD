@@ -1,5 +1,3 @@
-load("@aspect_rules_py//py:defs.bzl", "py_library")
-
 # Bazel-native package ownership. Classification is declared here, not in
 # projects/monolith/BUILD.
 # The root monolith Semgrep target already scans this package transitively.
@@ -8,6 +6,7 @@ load("@aspect_rules_py//py:defs.bzl", "py_library")
 # Gazelle from generating duplicate per-file py_test rules.
 # gazelle:exclude *_test.py
 # gazelle:exclude test_*.py
+# gazelle:exclude __init__.py
 # Nested sources remain owned by this package's recursive targets.
 # gazelle:exclude conftest.py
 
@@ -110,10 +109,4 @@ filegroup(
         ],
     ),
     visibility = ["//projects/monolith:__pkg__"],
-)
-
-py_library(
-    name = "e2e",
-    srcs = ["__init__.py"],
-    visibility = ["//:__subpackages__"],
 )
