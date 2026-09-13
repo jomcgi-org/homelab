@@ -85,7 +85,7 @@ case "${1:-}" in
 	;;
 esac
 
-if [ -n "$MENHIR_MODULES" ] && [ "$DRIVER_PROTOCOL" != "menhir-stream-v3" ]; then
+if [ -n "$MENHIR_MODULES" ] && [ "$DRIVER_PROTOCOL" != "menhir-stream-v4" ]; then
 	echo "ocaml_compile: unsupported Menhir driver protocol: $DRIVER_PROTOCOL" >&2
 	exit 2
 fi
@@ -191,6 +191,7 @@ export CAML_LD_LIBRARY_PATH="$S/lib/ocaml/stublibs${CAML_LD_LIBRARY_PATH:+:$CAML
 export PATH="$HBIN:$S/bin"
 
 OCAMLOPT="$S/bin/ocamlopt.opt"
+OCAMLC="$S/bin/ocamlc.opt"
 OCAMLDEP="$S/bin/ocamldep.opt"
 OCAMLLEX="$S/bin/ocamllex"
 OCAMLYACC="$S/bin/ocamlyacc"
@@ -380,7 +381,7 @@ if [ -n "$MENHIR_MODULES" ]; then
 	for f in $(cd "$SCRATCH" && "$OCAMLDEP" -sort $SIB 2>/dev/null || echo "$SIB"); do
 		# Best effort: a sibling that needs the not-yet-generated parser fails
 		# here and is simply absent from the inference context (it is not needed).
-		"$OCAMLOPT" $CFLAGS -I "$SCRATCH" $INCFLAGS -c "$SCRATCH/$f" 2>/dev/null || true
+		"$OCAMLC" $CFLAGS -I "$SCRATCH" $INCFLAGS -c "$SCRATCH/$f" 2>/dev/null || true
 	done
 	for g in $MENHIR_MODULES; do
 		GMLY="$WORK/$g.mly"
@@ -394,7 +395,7 @@ if [ -n "$MENHIR_MODULES" ]; then
 		# grammars such as OCaml's.
 		STAGE="Menhir type inference for $g"
 		"$MENHIR_TOOL" $MENHIR_FLAGS --infer-write-query "$SCRATCH/${g}__query.ml" "$GMLY"
-		if ! "$OCAMLOPT" $CFLAGS -I "$SCRATCH" $INCFLAGS -i "$SCRATCH/${g}__query.ml" >"$SCRATCH/${g}.inferred"; then
+		if ! "$OCAMLC" $CFLAGS -I "$SCRATCH" $INCFLAGS -i "$SCRATCH/${g}__query.ml" >"$SCRATCH/${g}.inferred"; then
 			echo "ocaml_compile: menhir type inference for $g failed" >&2
 			exit 2
 		fi
