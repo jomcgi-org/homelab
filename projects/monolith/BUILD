@@ -1122,6 +1122,7 @@ py_test(
     srcs = ["github_repo_slug_test.py"],
     data = glob(
         ["*.py"],
+        allow_empty = True,
         exclude = [
             "*_test.py",
             "test_*.py",
