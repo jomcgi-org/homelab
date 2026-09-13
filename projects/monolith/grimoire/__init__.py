@@ -26,17 +26,21 @@ def register_public(app: FastAPI) -> None:
 
 
 def on_startup_jobs(session: Session) -> None:
-    """Register grimoire ingest jobs (spec #4.2): a daily chunk loader and a
-    daily heavy entity-extraction pass.
+    """Register Grimoire ingest and quality jobs.
 
-    Both are idempotent batch jobs; ``register_job`` skips any that an Argo
+    All three are idempotent batch jobs; ``register_job`` skips any that an Argo
     CronWorkflow owns. Extraction is flagged ``heavy`` (LLM calls, long-running)
     so the dispatcher never co-schedules it with another memory-heavy job, and
-    gets a generous 25m deadline; the loader gets 10m.
+    gets a generous 25m deadline; the loader gets 10m. The evidence verifier is
+    a second heavy pass and resumes through its entity/version markers.
     """
     from scheduler.api import register_job
 
-    from grimoire.jobs import grimoire_extract_entities, grimoire_load_chunks
+    from grimoire.jobs import (
+        grimoire_extract_entities,
+        grimoire_load_chunks,
+        grimoire_verify_entities,
+    )
 
     register_job(
         session,
@@ -50,6 +54,14 @@ def on_startup_jobs(session: Session) -> None:
         name="grimoire.extract_entities",
         interval_secs=86_400,
         handler=grimoire_extract_entities,
+        ttl_secs=1_500,
+        heavy=True,
+    )
+    register_job(
+        session,
+        name="grimoire.verify_entities",
+        interval_secs=86_400,
+        handler=grimoire_verify_entities,
         ttl_secs=1_500,
         heavy=True,
     )

@@ -16,19 +16,27 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
+from core.db import get_session
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
+from knowledge.api import get_embedding_client
 from pydantic import BaseModel
+from shared.embedding import EmbeddingClient
 from sqlalchemy import func
 from sqlmodel import Session, or_, select
 
-from core.db import get_session
 from grimoire import library
+from grimoire.aliases import (
+    alias_review_report,
+    generate_alias_candidates,
+    merge_approved_aliases,
+    record_alias_decision,
+)
 from grimoire.models import (
-    Campaign,
     ENTITY_DETAIL_MODELS,
+    Campaign,
     Entity,
     EntityType,
     GameSession,
@@ -41,12 +49,87 @@ from grimoire.models import (
 )
 from grimoire.search import search_campaign
 from grimoire.visibility import project_entity, visible_entities_query
-from knowledge.api import get_embedding_client
-from shared.embedding import EmbeddingClient
 
 logger = logging.getLogger("monolith.grimoire.router")
 
 router = APIRouter(prefix="/api/grimoire", tags=["grimoire"])
+
+
+# --- Post-extraction quality review (private tier only) ---------------------
+
+
+class AliasDecisionRequest(BaseModel):
+    decision: Literal["approved", "rejected"]
+    reviewed_by: str
+    review_note: str | None = None
+
+
+class AliasMergeRequest(BaseModel):
+    survivor_id: str | None = None
+    twin_id: str | None = None
+    limit: int = 25
+
+
+@router.post("/quality/aliases/candidates")
+def refresh_alias_candidates(
+    session: Session = Depends(get_session),
+) -> list[dict[str, Any]]:
+    """Generate and persist reviewable, evidence-bearing alias candidates."""
+    return generate_alias_candidates(session)
+
+
+@router.get("/quality/aliases/candidates")
+def list_alias_candidates(
+    status: Literal["pending", "approved", "rejected", "merged"] | None = None,
+    session: Session = Depends(get_session),
+) -> list[dict[str, Any]]:
+    return alias_review_report(session, status=status)
+
+
+@router.patch("/quality/aliases/{survivor_id}/{twin_id}")
+def decide_alias_candidate(
+    survivor_id: str,
+    twin_id: str,
+    body: AliasDecisionRequest,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    try:
+        record_alias_decision(
+            session,
+            survivor_id,
+            twin_id,
+            body.decision,
+            body.reviewed_by,
+            body.review_note,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return alias_review_report(session, pairs=[(survivor_id, twin_id)])[0]
+
+
+@router.post("/quality/aliases/merge")
+async def merge_reviewed_aliases(
+    body: AliasMergeRequest,
+    session: Session = Depends(get_session),
+    embed_client: EmbeddingClient = Depends(get_embedding_client),
+) -> dict[str, Any]:
+    """Execute only separately approved pairs, one transaction per pair."""
+    if (body.survivor_id is None) != (body.twin_id is None):
+        raise HTTPException(
+            status_code=422,
+            detail="survivor_id and twin_id must be supplied together",
+        )
+    if body.limit < 1 or body.limit > 100:
+        raise HTTPException(status_code=422, detail="limit must be between 1 and 100")
+    return await merge_approved_aliases(
+        session,
+        embed_client,
+        survivor_id=body.survivor_id,
+        twin_id=body.twin_id,
+        limit=body.limit,
+    )
 
 
 # --- Campaigns --------------------------------------------------------

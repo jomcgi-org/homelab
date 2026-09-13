@@ -884,6 +884,28 @@ jobs:
           memory: 1Gi
         limits:
           memory: 1Gi
+    # grimoire.verify_entities: trailing ADR 014 quality pass over entities
+    # produced by extraction. It uses marker-bearing mention chunks only and is
+    # resumable by (entity_id, verifier_version). Like extraction it can spend
+    # hosted-model credits, so it ships suspended and is submitted explicitly
+    # after a corpus extraction completes.
+    - name: grimoire-verify-entities
+      replaces: grimoire.verify_entities
+      args: ["grimoire-verify-entities"]
+      schedule: "0 0 1 1 *" # inert; suspended, manual-only
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 1500
+      suspend: true
+      grimoire: true
+      env:
+        GRIMOIRE_VERIFIER_VERSION: "v1"
+        GRIMOIRE_VERIFY_LIMIT: "25"
+      resources:
+        requests:
+          cpu: 250m
+          memory: 512Mi
+        limits:
+          memory: 512Mi
     # grimoire.backfill_hierarchy: one-off metadata backfill (NOT a re-load). Some
     # books were loaded before marker.py emitted section_hierarchy, so their rows
     # have it NULL. This re-runs marker's chunking over each book's archived raw

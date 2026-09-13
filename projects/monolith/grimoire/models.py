@@ -19,6 +19,7 @@ from sqlalchemy import (
     Computed,
     DateTime,
     ForeignKey,
+    Integer,
     String,
     UniqueConstraint,
     text,
@@ -71,6 +72,8 @@ GrantScope = Literal["full", "partial", "name_only"]
 # Mirror of the CHECK constraint in
 # chart/migrations/20260703120000_grimoire_chunk_extraction.sql - keep in sync.
 ExtractionStatus = Literal["ok", "empty"]
+VerificationStatus = Literal["verified", "corrected", "unverifiable"]
+AliasReviewStatus = Literal["pending", "approved", "rejected", "merged"]
 
 # Postgres stores true UUIDs; SQLite (test fixtures) falls back to a plain
 # string column, matching the pattern in knowledge/models.py's _STRING_ARRAY
@@ -413,6 +416,124 @@ class ChunkExtraction(SQLModel, table=True):
         default_factory=lambda: datetime.now(timezone.utc),
         sa_column=Column(DateTime(timezone=True), nullable=False),
     )
+
+
+class EntityVerification(SQLModel, table=True):
+    """Durable result and provenance for one entity/verifier-version pass.
+
+    Presence is the resumability marker. Failed model calls deliberately write
+    no row, so the entity is selected again on the next run. ``corrections`` is
+    a JSON array of before/after values and their supporting chunk id.
+    """
+
+    __tablename__ = "entity_verification"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('verified', 'corrected', 'unverifiable')",
+            name="entity_verification_status_chk",
+        ),
+        {"schema": "grimoire", "extend_existing": True},
+    )
+
+    entity_id: str = Field(
+        sa_column=_uuid_column(
+            primary_key=True, nullable=False, fk="grimoire.entity.id"
+        )
+    )
+    verifier_version: str = Field(
+        sa_column=Column(String, primary_key=True, nullable=False)
+    )
+    model: str = Field(sa_column=Column(String, nullable=False))
+    status: VerificationStatus = Field(sa_column=Column(String, nullable=False))
+    evidence_chunk_ids: list[str] = Field(
+        default_factory=list, sa_column=Column(_JSONB, nullable=False)
+    )
+    corrections: list[dict] = Field(
+        default_factory=list, sa_column=Column(_JSONB, nullable=False)
+    )
+    verified_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+
+
+class EntityVerificationRetry(SQLModel, table=True):
+    """Retry schedule for a verifier failure that is not a success marker."""
+
+    __tablename__ = "entity_verification_retry"
+    __table_args__ = {"schema": "grimoire", "extend_existing": True}
+
+    entity_id: str = Field(
+        sa_column=_uuid_column(
+            primary_key=True, nullable=False, fk="grimoire.entity.id"
+        )
+    )
+    verifier_version: str = Field(
+        sa_column=Column(String, primary_key=True, nullable=False)
+    )
+    attempts: int = Field(default=1, sa_column=Column(Integer, nullable=False))
+    retry_after: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=False)
+    )
+    last_error: str = Field(sa_column=Column(String, nullable=False))
+
+
+class EntityAliasReview(SQLModel, table=True):
+    """Human decision and candidate evidence for one survivor/twin pair.
+
+    The ids intentionally are not foreign keys: the row remains as an audit
+    record after the approved twin is deleted. The longer, more specific entity
+    is always ``survivor_id``.
+    """
+
+    __tablename__ = "entity_alias_review"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'approved', 'rejected', 'merged')",
+            name="entity_alias_review_status_chk",
+        ),
+        CheckConstraint(
+            "survivor_id <> twin_id", name="entity_alias_review_distinct_chk"
+        ),
+        CheckConstraint(
+            "status = 'pending' OR (reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL)",
+            name="entity_alias_review_approval_chk",
+        ),
+        CheckConstraint(
+            "status <> 'merged' OR merged_at IS NOT NULL",
+            name="entity_alias_review_merged_chk",
+        ),
+        {"schema": "grimoire", "extend_existing": True},
+    )
+
+    survivor_id: str = Field(sa_column=_uuid_column(primary_key=True, nullable=False))
+    twin_id: str = Field(sa_column=_uuid_column(primary_key=True, nullable=False))
+    evidence_chunk_ids: list[str] = Field(
+        default_factory=list, sa_column=Column(_JSONB, nullable=False)
+    )
+    status: AliasReviewStatus = Field(
+        default="pending", sa_column=Column(String, nullable=False)
+    )
+    reviewed_by: str | None = None
+    review_note: str | None = None
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+    reviewed_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+    merged_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+    verification_history: list[dict] = Field(
+        default_factory=list, sa_column=Column(_JSONB, nullable=False)
+    )
+    merge_attempts: int = Field(default=0, sa_column=Column(Integer, nullable=False))
+    merge_retry_after: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+    merge_error: str | None = None
 
 
 class Relationship(SQLModel, table=True):
