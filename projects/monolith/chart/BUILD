@@ -23,7 +23,10 @@ filegroup(
         "charts/**/*",
         "migrations/**/*",
     ]),
-    visibility = ["//projects/monolith:__pkg__"],
+    visibility = [
+        "//projects/monolith:__pkg__",
+        "//projects/monolith/knowledge:__pkg__",
+    ],
 )
 
 sh_test(

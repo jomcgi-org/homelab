@@ -2,12 +2,13 @@
 # ci: local affected-target feedback on the same hosted Linux runner shape as PR CI.
 #
 # Steps:
-#   1. lint   format only files changed vs origin/main
-#   2. regen  generators only when their inputs changed (BUILD generation is CI-only)
-#   3. test   bb remote (Linux) affected Bazel tests with the PR Test flags
+#   1. lint     format only files changed vs origin/main
+#   2. regen    generators only when their inputs changed (BUILD generation is CI-only)
+#   3. ratchet  reject new central monolith BUILD enumeration
+#   4. test     bb remote (Linux) affected Bazel tests with the PR Test flags
 #
 # Usage:
-#   ci              # lint + regen + remote test
+#   ci              # lint + regen + ratchet + remote test
 #   ci lint         # format changed files only
 #   ci regen        # selective generators (gazelle itself runs only in CI)
 #   ci test         # bb remote affected tests only
@@ -227,6 +228,17 @@ cmd_regen() {
 	log "regen: done"
 }
 
+# ---------- central monolith BUILD ratchet ----------
+cmd_ratchet() {
+	local merge_base
+	if ! merge_base="$(git merge-base "$BASE_REF" HEAD)"; then
+		err "ratchet: cannot find the merge base of $BASE_REF and HEAD"
+		return 1
+	fi
+	log "ratchet: checking central monolith BUILD entries"
+	python3 ./bazel/tools/ci/central_build_ratchet.py "$merge_base" HEAD
+}
+
 # ---------- test (bb remote = Workflows backend, Linux) ----------
 cmd_test() {
 	# Parse args before requiring bb so unit tests can validate flag rejection
@@ -386,6 +398,7 @@ cmd_test() {
 cmd_all() {
 	cmd_lint
 	cmd_regen
+	cmd_ratchet
 	if [[ "${SKIP_REMOTE:-0}" == "1" ]]; then
 		log "test: skipped (SKIP_REMOTE=1)"
 		return 0

@@ -337,7 +337,7 @@ def _savings_db():
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
-    SQLModel.metadata.create_all(engine)
+    SQLModel.metadata.create_all(engine, tables=[BazelQuerySavings.__table__])
     with Session(engine) as session:
         yield session
 

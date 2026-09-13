@@ -8,7 +8,7 @@ load("@rules_oci//oci:defs.bzl", "oci_image", "oci_image_index", "oci_load", "oc
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("//bazel/tools/oci:providers.bzl", "oci_image_info")
 
-def py3_image(name, binary, main = None, root = "/", layer_groups = {}, env = {}, workdir = None, base = "@python_base", tars = [], multiarch_tars = [], bash_symlink = True, repository = None, visibility = ["//bazel/images:__pkg__"], multi_platform = False):
+def py3_image(name, binary, main = None, main_label = None, root = "/", layer_groups = {}, env = {}, workdir = None, base = "@python_base", tars = [], multiarch_tars = [], bash_symlink = True, repository = None, visibility = ["//bazel/images:__pkg__"], multi_platform = False):
     """Create a multi-platform Python 3 image from a Python binary.
 
     Args:
@@ -17,6 +17,9 @@ def py3_image(name, binary, main = None, root = "/", layer_groups = {}, env = {}
         main: The main .py source file for the binary. Auto-derived as "{binary_name}.py"
               for same-package binaries. Set explicitly for non-standard naming. Cross-package
               binaries are skipped (their sources are in transitive deps).
+        main_label: Optional source label for main when the file belongs to a
+                    different Bazel package. The main path remains its runfiles
+                    destination, preserving existing image layouts.
         root: The root directory where everything will be put into
         layer_groups: The layer groups to use for the image.
         env: The environment variables to set in the image.
@@ -62,7 +65,10 @@ def py3_image(name, binary, main = None, root = "/", layer_groups = {}, env = {}
     if main == None and binary.package == native.package_name():
         main = binary.name + ".py"
     if main:
-        main_label = str(binary).rsplit(":", 1)[0] + ":" + main
+        if main_label == None:
+            main_label = str(binary).rsplit(":", 1)[0] + ":" + main
+        else:
+            main_label = native.package_relative_label(main_label)
         source_dest = ".{}/{}/{}".format(workspace_root, binary.package, main)
         tar(
             name = name + "_srcs",
