@@ -66,6 +66,28 @@ Planning rounds still draw on `task_budget_usd`. The optional
 own and defaults to 2. Those, `reviewer_model`, `model_pools`, `quota_guard`,
 and `intake` are the only optional fields; every other field is required.
 
+### Updating policy while work runs
+
+`configure` accepts a new policy while tasks are admitted or uncertain. Each
+running task keeps its pinned policy, dispatch history, budget and deadline;
+only future admissions take the new policy. While tasks are active, a changed
+policy must supply a generation newer than the current control policy. An
+identical retry is accepted without another generation change. Queued receipts
+from older generations remain inert.
+
+Configuration preserves control state: enabled work continues, paused
+admissions stay paused, and initial configuration still needs `enable`.
+`stop` remains irreversible. The configure audit records
+`active_tasks_on_previous_policy` so the transition accounts for work left
+running under its old pins.
+
+Active tasks from every generation count against lane and chart capacity,
+including on the board. Lowering a limit waits for that work to finish rather
+than stopping it. Admission cannot start another task on the same repository
+and issue while an older task is active, even in another lane; autonomous
+intake skips such issues with `active_issue` evidence. Other eligible queued
+work can still fill the available capacity.
+
 ### Two lanes
 
 A task runs in one of two lanes and its lane follows its class, which is not

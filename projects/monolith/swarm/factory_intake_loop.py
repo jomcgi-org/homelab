@@ -66,6 +66,7 @@ _EXCLUSION_REASONS = (
     "escalated",
     "cooldown",
     "already_received",
+    "active_issue",
     "deferred",
     "refine_disabled",
     "lane_full",
@@ -380,6 +381,9 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                 for row in rows
             ):
                 exclude("delivered")
+                continue
+            if any(row.state in ("admitted", "uncertain") for row in rows):
+                exclude("active_issue")
                 continue
             # An escalated receipt is a question in front of a person. The
             # issue carries needs-human, which the default exclusion list

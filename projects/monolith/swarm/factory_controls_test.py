@@ -98,20 +98,26 @@ def grant(task_id, key="one", **kwargs):
 
 def test_policy_is_operator_only_and_pinned_for_active_task(db, policy):
     task = admitted(policy)
-    policy["task_budget_usd"] = 99
+    before = controls.task_snapshot(task)
+    policy.update(task_budget_usd=99, generation=1)
     result = controls.set_control("configure", "operator", policy=policy)
     assert result == {
-        "ok": False,
-        "reason": "active_task",
+        "ok": True,
+        "reason": None,
         "state": "enabled",
-        "version": 2,
+        "version": 3,
     }
+    assert controls.task_snapshot(task) == before
+    assert controls.can_start(task)["ok"]
     assert controls.task_snapshot(task)["policy"]["task_budget_usd"] == 5
     with Session(db) as session:
         audits = session.exec(
             select(FactoryAudit).where(FactoryAudit.action == "configure")
         ).all()
         assert len(audits) == 2 and all(a.actor == "operator" for a in audits)
+        assert (
+            json.loads(audits[-1].detail_json)["active_tasks_on_previous_policy"] == 1
+        )
 
 
 def test_pause_admissions_allows_admitted_work_and_task_pause_fences(db, policy):
@@ -1294,9 +1300,8 @@ def test_unsupported_evidence_keys_are_still_refused(db, policy):
         )
 
 
-def test_lane_usage_ignores_other_generations(monkeypatch):
-    """A receipt from a spent generation can never be admitted again, so
-    counting it showed a lane as fuller than anything could make it."""
+def test_lane_usage_counts_old_active_tasks_but_not_old_queues(monkeypatch):
+    """Reconfiguration leaves old tasks running while their queued peers are inert."""
     monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "4")
     receipts = [
         {"state": "admitted", "task_class": "bug-fix", "generation": 2},
@@ -1308,7 +1313,7 @@ def test_lane_usage_ignores_other_generations(monkeypatch):
         {"generation": 2, "max_tasks": {"delivery": 2, "advisory": 2}}, receipts
     )
     assert usage == {
-        "delivery": {"limit": 2, "active": 1, "queued": 0},
+        "delivery": {"limit": 2, "active": 2, "queued": 0},
         "advisory": {"limit": 2, "active": 0, "queued": 1},
     }
 
@@ -1330,3 +1335,50 @@ def test_auto_merge_defaults_off_and_only_true_enables_landing(policy):
 def test_auto_merge_refuses_a_non_boolean(policy, value):
     with pytest.raises(ValueError, match="auto_merge"):
         controls.validate_policy({**policy, "auto_merge": value})
+
+
+@pytest.mark.parametrize("generation", [0, 1])
+def test_active_reconfiguration_requires_a_new_generation(db, policy, generation):
+    task = admitted(policy)
+    assert controls.set_control(
+        "configure", "operator", policy={**policy, "generation": 1}
+    )["ok"]
+    before = controls.task_snapshot(task)
+    changed = {**policy, "generation": generation, "task_budget_usd": 99}
+    result = controls.set_control("configure", "operator", policy=changed)
+    assert result["reason"] == "generation_not_advanced"
+    assert controls.task_snapshot(task) == before
+    assert controls.status()["version"] == 3
+
+
+def test_identical_configure_retry_does_not_require_a_new_generation(db, policy):
+    task = admitted(policy)
+    assert controls.set_control("configure", "operator", policy=policy)["ok"]
+    assert controls.can_start(task)["ok"]
+
+
+def test_configure_preserves_paused_admissions_and_uncertain_accounting(db, policy):
+    task = admitted(policy)
+    grant(task)
+    controls.record_start_outcome(task, "one", "uncertain", "worker", session_id=7)
+    controls.set_control("pause_admissions", "operator")
+    before = controls.task_snapshot(task)
+    result = controls.set_control(
+        "configure", "operator", policy={**policy, "generation": 1}
+    )
+    assert result["ok"] and result["state"] == "paused"
+    assert controls.task_snapshot(task) == before
+    assert controls.can_start(task)["reason"] == "uncertain_outcome"
+    assert admit_next("scheduler")["reason"] == "paused"
+
+
+def test_new_policy_does_not_change_active_task_model_authority(db, policy):
+    task = admitted(policy)
+    changed = {
+        **policy,
+        "generation": 1,
+        "allowed_models": ["opus"],
+        "worker_model": "opus",
+    }
+    assert controls.set_control("configure", "operator", policy=changed)["ok"]
+    assert grant(task, model="luna")["ok"]

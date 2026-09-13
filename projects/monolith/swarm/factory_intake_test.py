@@ -533,3 +533,80 @@ def test_a_contended_ceiling_still_admits_advisory_work(db, policy, monkeypatch)
     first = admit_next("scheduler")
     assert first["ok"] and first["lane"] == "advisory"
     assert admit_next("scheduler")["lane"] == "delivery"
+
+
+def test_reconfigure_admits_new_policy_without_repinning_running_work(
+    db, policy, monkeypatch
+):
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "2")
+    enable(policy)
+    issue(1)
+    issue(2)
+    first = admit_next("scheduler")
+    before = controls.task_snapshot(first["task_id"])
+    changed = {**policy, "generation": 1, "task_budget_usd": 10}
+    assert controls.set_control("configure", "operator", policy=changed)["ok"]
+    # The old queued receipt is inert. A new one on the active issue also
+    # waits, but must not hide later eligible work in the same queue.
+    assert admit_next("scheduler")["reason"] == "no_eligible_issue"
+    issue(1, generation=1)
+    issue(2, generation=1)
+    second = admit_next("scheduler")
+    assert second["ok"]
+    new = controls.task_snapshot(second["task_id"])
+    assert new["issue_number"] == 2 and new["generation"] == 1
+    assert new["policy"]["task_budget_usd"] == 10
+    assert controls.task_snapshot(first["task_id"]) == before
+    assert admit_next("scheduler")["reason"] == "wip_limit"
+    assert controls.status()["lanes"]["delivery"]["active"] == 2
+
+
+def test_reconfigure_lower_lane_limit_waits_for_old_tasks_to_finish(db, policy):
+    enable(policy)
+    issue(1)
+    first = admit_next("scheduler")["task_id"]
+    changed = {**policy, "generation": 1, "max_tasks": 1}
+    assert controls.set_control("configure", "operator", policy=changed)["ok"]
+    issue(2, generation=1)
+    assert admit_next("scheduler")["reason"] == "wip_limit"
+    assert controls.can_start(first)["ok"]
+    assert controls.finish_task(first, "cancelled", "operator")["ok"]
+    assert admit_next("scheduler")["ok"]
+
+
+def test_configure_and_admission_serialize_at_one_policy_cutoff(
+    db, policy, monkeypatch
+):
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "2")
+    enable(policy)
+    issue(1)
+    issue(1, generation=1)
+    barrier = Barrier(2)
+
+    def configure():
+        barrier.wait(timeout=3)
+        return controls.set_control(
+            "configure",
+            "operator",
+            policy={**policy, "generation": 1, "task_budget_usd": 10},
+        )
+
+    def admit():
+        barrier.wait(timeout=3)
+        return admit_next("scheduler")
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        changed = pool.submit(configure)
+        admitted = pool.submit(admit)
+        assert changed.result(timeout=5)["ok"]
+        result = admitted.result(timeout=5)
+    assert result["ok"]
+    snapshot = controls.task_snapshot(result["task_id"])
+    assert snapshot["policy"]["generation"] == snapshot["generation"]
+    assert snapshot["policy"]["task_budget_usd"] == (
+        10 if snapshot["generation"] else 5
+    )
+    assert controls.status()["policy"]["generation"] == 1
+    assert not admit_next("scheduler")["ok"]
+    with Session(db) as session:
+        assert len(session.exec(select(SwarmTask)).all()) == 1

@@ -653,20 +653,19 @@ def lane_limits(policy: dict) -> dict:
 def lane_usage(policy: dict, receipts: list[dict]) -> dict:
     """Per-lane limits beside what is in flight and what is waiting.
 
-    Scoped to the policy's own generation. Receipts from an earlier generation
-    are history: they can no longer be admitted, so counting them showed a lane
-    as fuller than anything could make it.
+    Active tasks occupy capacity across policy generations. Only queued
+    receipts are generation-scoped, because older queues cannot be admitted.
     """
     limits = lane_limits(policy)
     generation = policy.get("generation", 0)
     usage = {lane: {"limit": limits[lane], "active": 0, "queued": 0} for lane in LANES}
     for receipt in receipts:
-        if receipt.get("generation") != generation:
-            continue
         lane = lane_for(receipt.get("task_class") or DEFAULT_TASK_CLASS)
         if receipt.get("state") in _ACTIVE:
             usage[lane]["active"] += 1
-        elif receipt.get("state") == "queued":
+        elif (
+            receipt.get("state") == "queued" and receipt.get("generation") == generation
+        ):
             usage[lane]["queued"] += 1
     return usage
 
@@ -1618,16 +1617,28 @@ def set_control(
             return resume_escalated(task_id, actor)
     with _locked_session(session) as (db, control):
         reason = None
+        configure_detail = {}
         if control.state == "stopped" and action != "stop":
             reason = "stopped"
         elif action == "configure":
-            if db.exec(
+            active = db.exec(
                 select(FactoryReceipt).where(FactoryReceipt.state.in_(_ACTIVE))
-            ).first():
-                reason = "active_task"
+            ).all()
+            previous = json.loads(control.policy_json or "{}")
+            configure_detail["active_tasks_on_previous_policy"] = len(active)
+            # An identical retry is harmless. A changed policy must advance
+            # generation while work is running, keeping the old queue inert.
+            if (
+                active
+                and configured != previous
+                and configured["generation"] <= previous.get("generation", -1)
+            ):
+                reason = "generation_not_advanced"
             else:
                 control.policy_json = _json(configured)
-                control.state = "disabled"
+                # Configuration does not change execution authority: enabled
+                # work continues, paused admissions stay paused, and initial
+                # configuration remains disabled until an explicit enable.
         elif action == "enable":
             if not json.loads(control.policy_json):
                 reason = "not_configured"
@@ -1679,6 +1690,7 @@ def set_control(
             ok=reason is None,
             reason=reason,
             policy=configured,
+            **configure_detail,
         )
         return {
             "ok": reason is None,
