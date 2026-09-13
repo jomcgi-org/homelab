@@ -71,6 +71,7 @@ GrantScope = Literal["full", "partial", "name_only"]
 # Mirror of the CHECK constraint in
 # chart/migrations/20260703120000_grimoire_chunk_extraction.sql - keep in sync.
 ExtractionStatus = Literal["ok", "empty"]
+VerificationStatus = Literal["verified", "corrected", "unverifiable"]
 
 # Postgres stores true UUIDs; SQLite (test fixtures) falls back to a plain
 # string column, matching the pattern in knowledge/models.py's _STRING_ARRAY
@@ -410,6 +411,40 @@ class ChunkExtraction(SQLModel, table=True):
     )
     status: ExtractionStatus = Field(sa_column=Column(String, nullable=False))
     extracted_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+
+
+class EntityVerification(SQLModel, table=True):
+    """Successful verifier marker keyed by entity and verifier version.
+
+    Corrections and this marker are committed in the same transaction. A missing
+    row therefore always means the entity is safe to retry for that version.
+    """
+
+    __tablename__ = "entity_verification"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('verified', 'corrected', 'unverifiable')",
+            name="entity_verification_status_chk",
+        ),
+        {"schema": "grimoire", "extend_existing": True},
+    )
+
+    entity_id: str = Field(
+        sa_column=_uuid_column(
+            primary_key=True, nullable=False, fk="grimoire.entity.id"
+        )
+    )
+    verifier_version: str = Field(
+        sa_column=Column(String, primary_key=True, nullable=False)
+    )
+    status: VerificationStatus = Field(sa_column=Column(String, nullable=False))
+    # Validated field outcomes, including correction values and cited mention
+    # chunk ids. Source text is not duplicated here.
+    result: dict = Field(default_factory=dict, sa_column=Column(_JSONB, nullable=False))
+    verified_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         sa_column=Column(DateTime(timezone=True), nullable=False),
     )

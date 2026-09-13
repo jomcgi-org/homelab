@@ -282,3 +282,51 @@ class TestExtractEntitiesHandler:
         _run(jobs.grimoire_extract_entities(session=None))
 
         assert captured["limit"] == jobs.DEFAULT_EXTRACT_LIMIT
+
+
+class TestVerifyEntitiesHandler:
+    def test_skips_hosted_provider_without_key(self, monkeypatch):
+        called = {"verify": False}
+
+        async def spy_verify_entities(session, client, limit, evidence_limit):
+            called["verify"] = True
+            return {}
+
+        monkeypatch.setattr("grimoire.verifier.verify_entities", spy_verify_entities)
+        monkeypatch.delenv("GRIMOIRE_VERIFY_API_KEY", raising=False)
+        monkeypatch.delenv("GRIMOIRE_EXTRACT_API_KEY", raising=False)
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("GRIMOIRE_VERIFY_BASE_URL", raising=False)
+        monkeypatch.delenv("GRIMOIRE_EXTRACT_BASE_URL", raising=False)
+
+        assert _run(jobs.grimoire_verify_entities(session=None)) is None
+        assert called["verify"] is False
+
+    def test_passes_bounded_run_settings_and_provider_key(self, monkeypatch):
+        captured = {}
+
+        class SpyClient:
+            def __init__(self, api_key):
+                captured["api_key"] = api_key
+
+        async def spy_verify_entities(session, client, limit, evidence_limit):
+            captured["session"] = session
+            captured["client"] = client
+            captured["limit"] = limit
+            captured["evidence_limit"] = evidence_limit
+            return {"processed": 0}
+
+        monkeypatch.setattr("grimoire.verifier.VerifierClient", SpyClient)
+        monkeypatch.setattr("grimoire.verifier.verify_entities", spy_verify_entities)
+        monkeypatch.setenv("GRIMOIRE_VERIFY_API_KEY", "verify-key")
+        monkeypatch.setenv("GRIMOIRE_VERIFY_LIMIT", "7")
+        monkeypatch.setenv("GRIMOIRE_VERIFY_EVIDENCE_LIMIT", "3")
+
+        assert _run(jobs.grimoire_verify_entities(session="session")) is None
+        assert captured == {
+            "api_key": "verify-key",
+            "session": "session",
+            "client": captured["client"],
+            "limit": 7,
+            "evidence_limit": 3,
+        }
