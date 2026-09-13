@@ -408,6 +408,20 @@ actions:
             fi
           fi
 
+          # Advisory STPA freshness. The checker reads the commit-stamp header
+          # emitted by .claude/skills/stpa/SKILL.md and compares only covered
+          # system files, excluding the generated STPA artifacts themselves.
+          # Capture its status through `||` so stale findings, incomplete git
+          # history, malformed metadata, and checker errors can never mask or
+          # block any of the existing fatal format checks above.
+          stpa_freshness_rc=0
+          python3 ./bazel/tools/format/check_stpa_freshness.py || stpa_freshness_rc=$?
+          case "$stpa_freshness_rc" in
+            0) ;;
+            1) echo "STPA FRESHNESS: advisory review nudge only; this check does not block merges" ;;
+            *) echo "STPA FRESHNESS: informational result unavailable (exit $stpa_freshness_rc); this check does not block merges" ;;
+          esac
+
           echo "DISK pr-checks end:"; df -h /
           workspace_breakdown "pr-checks end"
 
