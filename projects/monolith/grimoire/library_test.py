@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine
 
 from grimoire import library
-from grimoire.access import get_authenticated_email
+from grimoire.access import get_authenticated_email, get_grimoire_operator_email
 from grimoire.extract import current_extraction_key
 from grimoire.models import (
     Book,
@@ -60,6 +60,7 @@ def client_fixture(session):
         return request.headers.get("X-Test-Auth-Email", "dm@example.test")
 
     app.dependency_overrides[get_authenticated_email] = authenticated_email
+    app.dependency_overrides[get_grimoire_operator_email] = authenticated_email
     yield TestClient(app)
     app.dependency_overrides.clear()
 
