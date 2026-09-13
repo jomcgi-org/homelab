@@ -2054,7 +2054,7 @@ defmodule Embervm.SessionManager do
       |> Enum.filter(
         &(dormant_session_bound_to_node?(&1, node_id) and
             &1.state in [:banked, :parked] and
-            session_on_downed_instance?(state, &1, node_id, metadata))
+            dormant_session_on_downed_instance?(state, &1, node_id, metadata))
       )
 
     dormant_dials =
@@ -2122,6 +2122,36 @@ defmodule Embervm.SessionManager do
     dormant_session_owner_node(session) == node_id
   end
 
+  # A dormant row is owned by its exact wake artifact, not by any inventory row
+  # that happens to carry the same session id. After a manager restart loses the
+  # dial cache, only the current snapshot ref or volume placement can prove that
+  # a surviving co-located instance owns the row.
+  defp dormant_session_on_downed_instance?(_state, _session, _node_id, %{pod_uid: pod_uid})
+       when not is_binary(pod_uid) or pod_uid == "",
+       do: true
+
+  defp dormant_session_on_downed_instance?(state, session, node_id, %{pod_uid: pod_uid}) do
+    down_dial_id = node_id <> "/" <> pod_uid
+
+    case Map.get(state.session_dials, session.session_id) do
+      ^down_dial_id ->
+        true
+
+      dial_id when is_binary(dial_id) and dial_id != node_id ->
+        false
+
+      _missing_or_legacy_dial ->
+        state.capacity_table
+        |> NodeCapacity.all()
+        |> Enum.filter(
+          &(Map.get(&1, :configured_id) == node_id and fact_dial_id(&1) != down_dial_id)
+        )
+        |> Enum.all?(&(not dormant_artifact_reported?(state, &1, session)))
+    end
+  end
+
+  defp dormant_session_on_downed_instance?(_state, _session, _node_id, _metadata), do: true
+
   # Prefer the instance-qualified placement retained at dispatch/bank time. A
   # restarted manager may have lost that cache, in which case the expiry event's
   # pod UID is the strongest remaining identity. Bare node identity is the final
@@ -2179,11 +2209,15 @@ defmodule Embervm.SessionManager do
   end
 
   defp dormant_artifact_reported?(_state, fact, %{state: :banked} = session) do
-    Enum.any?(Map.get(fact, :session_snapshots, []) || [], fn snapshot ->
-      Map.get(snapshot, :session_id) == session.session_id and
-        (not is_binary(Map.get(session, :snapshot_ref)) or
-           Map.get(snapshot, :snapshot_ref) == session.snapshot_ref)
-    end)
+    snapshot_ref = Map.get(session, :snapshot_ref)
+
+    # Disk reconciliation can recover the ref before it recovers session
+    # metadata. WakeInstance resolves the same inventory by exact ref, so the
+    # departure path must accept that artifact on the same terms.
+    is_binary(snapshot_ref) and snapshot_ref != "" and
+      Enum.any?(Map.get(fact, :session_snapshots, []) || [], fn snapshot ->
+        Map.get(snapshot, :snapshot_ref) == snapshot_ref
+      end)
   end
 
   defp dormant_artifact_reported?(state, fact, %{state: :parked} = session) do

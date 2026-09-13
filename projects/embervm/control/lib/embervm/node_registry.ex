@@ -1677,6 +1677,11 @@ defmodule Embervm.NodeRegistry do
       nil ->
         add_instance(state, norm, now)
 
+      %{boot_id: boot_id} when boot_id != norm.boot_id ->
+        state
+        |> expire_instance(instance_id)
+        |> add_instance(norm, now)
+
       %{address: addr} = _rt when addr != norm.address ->
         Logger.info(
           "embervm node registry: instance #{instance_id} re-registered at new address #{norm.address}"
@@ -1684,11 +1689,6 @@ defmodule Embervm.NodeRegistry do
 
         state
         |> expire_instance(instance_id, sweep_sessions: false)
-        |> add_instance(norm, now)
-
-      %{boot_id: boot_id} when boot_id != norm.boot_id ->
-        state
-        |> expire_instance(instance_id)
         |> add_instance(norm, now)
 
       %{scratch_generation: generation} when generation != norm.scratch_generation ->
