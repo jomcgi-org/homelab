@@ -1,4 +1,13 @@
-"""The tool publisher: additive, union-preserving, and loud when it cannot tell."""
+"""The tool publisher: additive, union-preserving, and loud when it cannot tell.
+
+The fake here models the deployed gateway's wire shape rather than a tidy
+one. Every read schema extends BaseModelWithConfigDict, so fields arrive in
+camelCase; ServerRead carries tool NAMES in associatedTools and tool IDS in
+associatedToolIds; and a PUT to /servers/{id} replaces the association list,
+resolving strictly by id and silently dropping anything else. An earlier
+version of this fake returned ids under the names key and honoured the PUT
+verbatim, which is exactly how the real defects went unnoticed.
+"""
 
 from __future__ import annotations
 
@@ -8,9 +17,6 @@ from pathlib import Path
 
 import pytest
 
-# Mounted from the chart and run with the image's python3, so it is not an
-# importable package. Bazel passes its runfiles path; the fallback keeps the
-# file runnable straight from the source tree.
 SCRIPT = Path(
     os.environ.get(
         "RECONCILE_TOOLS_SCRIPT",
@@ -24,16 +30,43 @@ _SPEC.loader.exec_module(reconcile_tools)
 ReconcileError = reconcile_tools.ReconcileError
 
 
-class FakeApi:
-    """Records every write so a test can assert on what was actually sent."""
+def _tool(tool_id, name, visibility="team", gateway_id="g1"):
+    # camelCase, as the gateway serialises it.
+    return {
+        "id": tool_id,
+        "name": name,
+        "visibility": visibility,
+        "gatewayId": gateway_id,
+    }
 
-    def __init__(self, *, gateways=None, tools=None, servers=None):
+
+class FakeApi:
+    """A gateway that behaves like the real one on the paths this job uses."""
+
+    def __init__(self, *, gateways=None, tools=None, server_tool_ids=None, server=True):
         self.gateways = (
             gateways if gateways is not None else [{"id": "g1", "name": "monolith"}]
         )
         self.tools = tools if tools is not None else []
-        self.servers = servers if servers is not None else []
+        self.server_tool_ids = list(server_tool_ids or [])
+        self.has_server = server
         self.writes: list[tuple[str, str, dict]] = []
+        # Simulate an upstream that fails to retain some ids on write.
+        self.drop_on_write: set[str] = set()
+
+    def _server_read(self):
+        by_id = {
+            t["id"]: t for t in (self.tools if isinstance(self.tools, list) else [])
+        }
+        return {
+            "id": "s1",
+            "name": "homelab-admin",
+            # Names, enabled only, exactly like ServerRead.
+            "associatedTools": [
+                by_id[i]["name"] for i in self.server_tool_ids if i in by_id
+            ],
+            "associatedToolIds": list(self.server_tool_ids),
+        }
 
     def __call__(self, method, path, body=None):
         if method == "GET" and path == "/gateways":
@@ -41,24 +74,25 @@ class FakeApi:
         if method == "GET" and path == "/tools":
             return 200, self.tools
         if method == "GET" and path == "/servers":
-            return 200, self.servers
-        if method == "PUT":
+            return 200, ([self._server_read()] if self.has_server else [])
+        if method == "GET" and path == "/servers/s1":
+            return 200, self._server_read()
+        if method == "PUT" and path.startswith("/tools/"):
             self.writes.append((method, path, body))
             return 200, {}
+        if method == "PUT" and path == "/servers/s1":
+            self.writes.append((method, path, body))
+            # _update_server_associations: clear, then keep only ids that
+            # resolve. Names and unknown ids vanish without an error.
+            known = (
+                {t["id"] for t in self.tools} if isinstance(self.tools, list) else set()
+            )
+            sent = body.get("associated_tools", [])
+            self.server_tool_ids = [
+                i for i in sent if i in known and i not in self.drop_on_write
+            ]
+            return 200, {}
         raise AssertionError(f"unexpected call {method} {path}")
-
-
-def _tool(tool_id, name, visibility="team", gateway_id="g1"):
-    return {
-        "id": tool_id,
-        "name": name,
-        "visibility": visibility,
-        "gateway_id": gateway_id,
-    }
-
-
-def _server(tools):
-    return {"id": "s1", "name": "homelab-admin", "associated_tools": list(tools)}
 
 
 def _run(api):
@@ -71,64 +105,111 @@ def _run(api):
 
 
 def test_a_new_tool_is_raised_to_public_and_associated():
-    api = FakeApi(tools=[_tool("t1", "factory_status")], servers=[_server([])])
+    api = FakeApi(tools=[_tool("t1", "factory_status")])
     result = _run(api)
     assert result["published"] == ["factory_status"]
     assert result["associated"] == ["t1"]
     assert ("PUT", "/tools/t1", {"visibility": "public"}) in api.writes
     assert ("PUT", "/servers/s1", {"associated_tools": ["t1"]}) in api.writes
+    assert api.server_tool_ids == ["t1"]
 
 
 def test_an_already_public_and_associated_tool_writes_nothing():
     api = FakeApi(
         tools=[_tool("t1", "search_knowledge", visibility="public")],
-        servers=[_server(["t1"])],
+        server_tool_ids=["t1"],
     )
-    result = _run(api)
-    assert result == {"tools": 1, "published": [], "associated": []}
+    assert _run(api) == {"tools": 1, "published": [], "associated": []}
     assert api.writes == []
 
 
 def test_visibility_is_never_lowered():
     api = FakeApi(
-        tools=[_tool("t1", "already", visibility="public")], servers=[_server(["t1"])]
+        tools=[_tool("t1", "already", visibility="public")], server_tool_ids=["t1"]
     )
     _run(api)
     assert not [w for w in api.writes if w[1].startswith("/tools/")]
 
 
-# --- the association union, which is the dangerous one --------------------
+# --- the wire shape, which is where the real defects lived -----------------
 
 
-def test_existing_associations_are_preserved_not_replaced():
-    """A PUT replaces associated_tools, so a bare list would strip the rest."""
+def test_tools_are_matched_on_the_camel_case_gateway_key():
+    """The gateway serialises gateway_id as gatewayId. A filter on the
+    snake_case key finds nothing and the job refuses every run."""
+    api = FakeApi(tools=[_tool("t1", "x")])
+    assert _run(api)["tools"] == 1
+
+
+def test_snake_case_keys_are_accepted_too():
     api = FakeApi(
-        tools=[_tool("t1", "new_tool", visibility="public")],
-        servers=[_server(["old_a", "old_b"])],
+        tools=[{"id": "t1", "name": "x", "visibility": "team", "gateway_id": "g1"}]
+    )
+    assert _run(api)["tools"] == 1
+
+
+def test_existing_associations_come_from_ids_never_from_names():
+    """ServerRead.associatedTools is NAMES. Sending names to the update path
+    matches no id, and the server is left with only the new tool."""
+    api = FakeApi(
+        tools=[
+            _tool("old_a", "alpha", visibility="public"),
+            _tool("old_b", "beta", visibility="public"),
+            _tool("t1", "new", visibility="public"),
+        ],
+        server_tool_ids=["old_a", "old_b"],
     )
     _run(api)
     put = [w for w in api.writes if w[1] == "/servers/s1"]
     assert len(put) == 1
     assert put[0][2]["associated_tools"] == ["old_a", "old_b", "t1"]
+    # Nothing was stripped: the fake resolved every id it was sent.
+    assert api.server_tool_ids == ["old_a", "old_b", "t1"]
+
+
+def test_a_server_without_an_ids_field_is_refused_not_guessed():
+    api = FakeApi(tools=[_tool("t1", "x")])
+    original = api._server_read
+
+    def without_ids():
+        row = original()
+        del row["associatedToolIds"]
+        return row
+
+    api._server_read = without_ids
+    with pytest.raises(ReconcileError, match="associated_tool_ids"):
+        _run(api)
+    assert not [w for w in api.writes if w[1] == "/servers/s1"]
 
 
 def test_association_is_skipped_when_nothing_is_missing():
     api = FakeApi(
-        tools=[_tool("t1", "known", visibility="public")],
-        servers=[_server(["other", "t1"])],
+        tools=[
+            _tool("t1", "known", visibility="public"),
+            _tool("other", "o", visibility="public"),
+        ],
+        server_tool_ids=["other", "t1"],
     )
     _run(api)
     assert not [w for w in api.writes if w[1] == "/servers/s1"]
 
 
-def test_camel_case_association_key_is_understood():
+# --- verify after write ---------------------------------------------------
+
+
+def test_an_association_the_gateway_did_not_retain_is_an_error():
+    """The update path drops unresolved ids silently. Reading back is the
+    only point at which a stripped association can be noticed."""
     api = FakeApi(
-        tools=[_tool("t1", "new", visibility="public")],
-        servers=[{"id": "s1", "name": "homelab-admin", "associatedTools": ["old"]}],
+        tools=[
+            _tool("old", "o", visibility="public"),
+            _tool("t1", "new", visibility="public"),
+        ],
+        server_tool_ids=["old"],
     )
-    _run(api)
-    put = [w for w in api.writes if w[1] == "/servers/s1"][0]
-    assert put[2]["associated_tools"] == ["old", "t1"]
+    api.drop_on_write = {"old"}
+    with pytest.raises(ReconcileError, match="did not retain"):
+        _run(api)
 
 
 # --- scoping --------------------------------------------------------------
@@ -136,8 +217,7 @@ def test_camel_case_association_key_is_understood():
 
 def test_only_the_named_gateway_is_touched():
     api = FakeApi(
-        tools=[_tool("t1", "mine"), _tool("t2", "someone_elses", gateway_id="g2")],
-        servers=[_server([])],
+        tools=[_tool("t1", "mine"), _tool("t2", "someone_elses", gateway_id="g2")]
     )
     result = _run(api)
     assert result["published"] == ["mine"]
@@ -148,11 +228,7 @@ def test_only_the_named_gateway_is_touched():
 
 
 def test_an_empty_catalogue_refuses_rather_than_emptying_the_server():
-    """A refresh that has not run looks exactly like a gateway with no tools.
-
-    Writing the association list in that state would unpublish everything.
-    """
-    api = FakeApi(tools=[], servers=[_server(["a", "b"])])
+    api = FakeApi(tools=[], server_tool_ids=["a", "b"])
     with pytest.raises(ReconcileError, match="no tools"):
         _run(api)
     assert api.writes == []
@@ -165,31 +241,52 @@ def test_an_unregistered_gateway_is_an_error():
 
 
 def test_a_missing_virtual_server_is_an_error_not_a_creation():
-    api = FakeApi(tools=[_tool("t1", "x")], servers=[])
+    api = FakeApi(tools=[_tool("t1", "x")], server=False)
     with pytest.raises(ReconcileError, match="does not exist"):
         _run(api)
 
 
 def test_a_paginated_envelope_is_read_like_a_bare_list():
-    api = FakeApi(tools={"data": [_tool("t1", "paged")]}, servers=[_server([])])
-    assert _run(api)["published"] == ["paged"]
+    api = FakeApi(tools=[_tool("t1", "paged")])
+    api.tools_list = api.tools
+    envelope = {"data": api.tools}
+    original = api.__call__
+
+    def call(method, path, body=None):
+        if method == "GET" and path == "/tools":
+            return 200, envelope
+        return original(method, path, body)
+
+    assert reconcile_tools.reconcile(
+        call, gateway_name="monolith", server_name="homelab-admin"
+    )["published"] == ["paged"]
 
 
 def test_an_unreadable_payload_is_an_error():
-    api = FakeApi(tools="nonsense", servers=[_server([])])
+    api = FakeApi(tools=[_tool("t1", "x")])
+    original = api.__call__
+
+    def call(method, path, body=None):
+        if method == "GET" and path == "/tools":
+            return 200, "nonsense"
+        return original(method, path, body)
+
     with pytest.raises(ReconcileError, match="unreadable"):
-        _run(api)
+        reconcile_tools.reconcile(
+            call, gateway_name="monolith", server_name="homelab-admin"
+        )
 
 
 def test_an_http_error_is_surfaced():
-    api = FakeApi(tools=[_tool("t1", "x")], servers=[_server([])])
+    api = FakeApi(tools=[_tool("t1", "x")])
+    original = api.__call__
 
-    def failing(method, path, body=None):
+    def call(method, path, body=None):
         if method == "PUT":
             return 403, {"detail": "forbidden"}
-        return FakeApi.__call__(api, method, path, body)
+        return original(method, path, body)
 
     with pytest.raises(ReconcileError, match="403"):
         reconcile_tools.reconcile(
-            failing, gateway_name="monolith", server_name="homelab-admin"
+            call, gateway_name="monolith", server_name="homelab-admin"
         )

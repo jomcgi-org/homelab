@@ -90,6 +90,24 @@ def _items(payload: Any, what: str) -> list[dict]:
     raise ReconcileError(f"{what} returned an unreadable payload: {payload!r}")
 
 
+def _field(row: dict, snake: str):
+    """Read a field by either casing.
+
+    Every read schema in Context Forge extends BaseModelWithConfigDict, which
+    serialises snake_case names as camelCase, and FastAPI responds by alias. So
+    a tool's gateway id arrives as ``gatewayId`` and a server's associations as
+    ``associatedToolIds``. The snake_case spelling is accepted too, since the
+    base model takes either on input and a future upstream could serialise the
+    same way. A filter written against only the snake_case key matches nothing,
+    and this job would then refuse every run believing the gateway was empty.
+    """
+    camel = snake.split("_")[0] + "".join(part.title() for part in snake.split("_")[1:])
+    for key in (camel, snake):
+        if key in row:
+            return row[key]
+    return None
+
+
 def gateway_id(api: Api, name: str) -> str:
     status, payload = api("GET", "/gateways", None)
     _expect(status, payload, "GET /gateways")
@@ -108,7 +126,7 @@ def gateway_tools(api: Api, gid: str) -> list[dict]:
     return [
         row
         for row in _items(payload, "GET /tools")
-        if str(row.get("gateway_id")) == gid
+        if str(_field(row, "gateway_id")) == gid
     ]
 
 
@@ -136,25 +154,64 @@ def server_by_name(api: Api, name: str) -> dict:
     raise ReconcileError(f"virtual server {name!r} does not exist")
 
 
+def existing_tool_ids(server: dict) -> list[str]:
+    """The ids a server is associated with, read from the one field that holds ids.
+
+    ServerRead carries two lists that look alike: ``associatedTools`` is tool
+    NAMES and ``associatedToolIds`` is tool IDS. The update path resolves the
+    list it is sent strictly by id and silently drops anything that does not
+    match, so reading the names here would send a list that matches nothing and
+    strip every existing association on the first run. When the ids field is
+    absent this refuses rather than falling back to the names, for that reason.
+
+    Known limit: the field lists enabled tools only, as does GET /tools. A
+    disabled tool that is associated is invisible here and the replacing PUT
+    drops it. That is bounded to disabled tools, and the read-back check turns
+    any wider loss into a failed run rather than a quiet one.
+    """
+    ids = _field(server, "associated_tool_ids")
+    if ids is None:
+        raise ReconcileError(
+            f"virtual server {server.get('name')!r} carries no associated_tool_ids; "
+            "refusing to write associations from a shape this job does not understand"
+        )
+    return [str(tool_id) for tool_id in ids if tool_id]
+
+
+def server_by_id(api: Api, server_id: str) -> dict:
+    status, payload = api("GET", f"/servers/{server_id}", None)
+    _expect(status, payload, f"GET /servers/{server_id}")
+    if not isinstance(payload, dict):
+        raise ReconcileError(f"GET /servers/{server_id} returned an unreadable payload")
+    return payload
+
+
 def associate(api: Api, tools: list[dict], server: dict) -> list[str]:
-    """Add missing tools to the server, preserving every existing association."""
+    """Add missing tools to the server, preserving every existing association.
+
+    A PUT to /servers/{id} REPLACES the association list, so the write is the
+    union of what is there and what is missing. It is then read back and every
+    id that was sent must be present, because the update path drops unresolved
+    ids silently and this is the only point at which that would be noticed.
+    """
     server_id = server.get("id")
     if not server_id:
         raise ReconcileError(f"virtual server {server.get('name')!r} has no id")
-    existing = [
-        str(t)
-        for t in (server.get("associated_tools") or server.get("associatedTools") or [])
-    ]
+    existing = existing_tool_ids(server)
     wanted = [str(tool["id"]) for tool in tools if tool.get("id")]
     missing = [tool_id for tool_id in wanted if tool_id not in existing]
     if not missing:
         return []
-    # Union, never a replacement: a bare list here would drop every
-    # association this run did not compute.
-    status, payload = api(
-        "PUT", f"/servers/{server_id}", {"associated_tools": existing + missing}
-    )
+    sent = existing + missing
+    status, payload = api("PUT", f"/servers/{server_id}", {"associated_tools": sent})
     _expect(status, payload, f"PUT /servers/{server_id}")
+    after = set(existing_tool_ids(server_by_id(api, str(server_id))))
+    lost = [tool_id for tool_id in sent if tool_id not in after]
+    if lost:
+        raise ReconcileError(
+            f"PUT /servers/{server_id} did not retain {lost}; the association "
+            "list read back is not a superset of what was sent"
+        )
     return missing
 
 
