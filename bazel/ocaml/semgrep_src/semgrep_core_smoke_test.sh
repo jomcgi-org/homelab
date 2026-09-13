@@ -4,10 +4,14 @@ set -eu
 engine=$1
 rules=$2
 target=$3
+case "$target" in
+/*) ;;
+*) target="$PWD/$target" ;;
+esac
 targets_json="$TEST_TMPDIR/targets.json"
 
-printf '["Targets",[["CodeTarget",{"path":{"fpath":"%s","ppath":"semgrep_core_smoke_target.go"},"analyzer":"go","products":["sast"]}]]]\n' \
-	"$target" >"$targets_json"
+printf '["Targets",[["CodeTarget",{"path":{"fpath":"%s","ppath":"%s"},"analyzer":"go","products":["sast"]}]]]\n' \
+	"$target" "$target" >"$targets_json"
 
 output=$("$engine" "$rules" "$targets_json")
 if [ "$output" != "matches=1 errors=0" ]; then
