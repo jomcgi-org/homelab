@@ -61,7 +61,9 @@ BUILD generation therefore runs in CI's Format stage, via
 | `:image_linux_arm64`      | Single-arch `oci_image` for linux/arm64                                     |
 | `:image_darwin_arm64`     | Single-arch `oci_image` for darwin/arm64 (experimental)                     |
 | `:python_deps_test`       | `py_test` verifying that pip deps (`httpx`, `typer`) are importable         |
-| `:tools_image_test`       | Verifies the seven issue #3915 commands in all platform layers and executes the Linux commands from a relocated root |
+| `:tools_image_test`       | Inspects all three platform layers and executes the linux/amd64 commands from a relocated root |
+| `:tools_image_linux_arm64_test` | Executes and inspects the Linux ARM64 layer on the native ARM64 CI pool |
+| `:tools_image_darwin_arm64_test` | Local-only Darwin ARM64 runtime target; this repository has no macOS CI executor |
 | `:python_deps_semgrep_test` | SCA scan of the `python_deps` requirements against `//bazel/semgrep/rules:sca_python_rules` |
 
 `:image.push` is included in `//bazel/images:push_all` and runs on merge to main
@@ -89,6 +91,11 @@ relative path inside the same root.
 Bootstrap validates that `agent-run`, `hf2oci`, `bb`, `claude`, `buildifier`,
 `shellcheck`, and `eslint` are executable before recording the image digest.
 An incomplete cache is re-extracted even when its digest matches.
+
+The image includes the complete ESLint dependency closure plus the downloaded
+command binaries. Every image digest change makes bootstrap export the full
+filesystem again, so additions increase both the image size and the one-time
+download and extraction cost paid by each developer after an image update.
 
 ## Internal macros
 
@@ -196,6 +203,7 @@ developers and CI agents, not a deployed service.
 - The image push target is `//bazel/tools/image:image.push`. Do not run it
   locally; CI handles pushes on merge to main.
 - darwin/arm64 is built for local bootstrap parity but is experimental:
-  `py_image_layer` was designed for Linux OCI images.
+  `py_image_layer` was designed for Linux OCI images. Its native test target is
+  local-only because this repository has no macOS CI executor.
 - Add new pip packages to the `py_venv_binary` deps in `BUILD` (with a `# keep`
   comment to prevent gazelle pruning) and import them in `python_deps.py`.

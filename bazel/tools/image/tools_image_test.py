@@ -5,6 +5,7 @@ import json
 import os
 import pathlib
 import platform as host_platform
+import shutil
 import stat
 import struct
 import subprocess
@@ -30,10 +31,16 @@ TEST_PLATFORMS = [RUNTIME_PLATFORM] if RUNTIME_PLATFORM else SUPPORTED_PLATFORMS
 ARM64_CPU_TYPE = 0x0100000C
 
 
+@functools.cache
 def _runfile(name: str) -> pathlib.Path:
-    matches = list(pathlib.Path(os.environ["TEST_SRCDIR"]).rglob(name))
-    assert len(matches) == 1, f"expected one runfile named {name}, got {matches}"
-    return matches[0]
+    path = (
+        pathlib.Path(os.environ["TEST_SRCDIR"])
+        / os.environ["TEST_WORKSPACE"]
+        / "bazel/tools/image"
+        / name
+    )
+    assert path.is_file(), f"missing runfile: {path}"
+    return path
 
 
 def _layers(platform: str) -> list[pathlib.Path]:
@@ -122,29 +129,36 @@ def _extract_layers(layers: list[pathlib.Path], root: pathlib.Path) -> None:
             archive.extractall(root, filter="data")
 
 
-def _package_directory(
-    root: pathlib.Path, package_name: str, version: str
-) -> pathlib.Path:
-    package_parts = package_name.split("/")
-    store = root / "usr/local/lib/node_modules/.aspect_rules_js"
-    matches = []
-    for store_entry in store.iterdir():
-        package_dir = store_entry.joinpath("node_modules", *package_parts)
-        package_json = package_dir / "package.json"
-        if not package_json.is_file():
-            continue
-        metadata = json.loads(package_json.read_text())
-        if metadata.get("name") == package_name and metadata.get("version") == version:
-            matches.append(package_dir)
-    assert len(matches) == 1, (
-        f"expected one {package_name}@{version} package directory, got {matches}"
-    )
-    return matches[0]
-
-
 def _resolved_dependency_version(package_dir: pathlib.Path, name: str) -> str:
     dependency = (package_dir / "node_modules" / name).resolve(strict=True)
     return json.loads((dependency / "package.json").read_text())["version"]
+
+
+def _semver(version: str) -> tuple[int, int, int]:
+    core = version.split("-", 1)[0]
+    parts = core.split(".")
+    assert len(parts) == 3 and all(part.isdigit() for part in parts), version
+    return tuple(int(part) for part in parts)
+
+
+def _assert_caret_dependency_resolves(package_dir: pathlib.Path, name: str) -> str:
+    metadata = json.loads((package_dir / "package.json").read_text())
+    declared = metadata["dependencies"][name]
+    assert declared.startswith("^"), f"unsupported {name} range: {declared}"
+
+    lower = _semver(declared.removeprefix("^"))
+    if lower[0]:
+        upper = (lower[0] + 1, 0, 0)
+    elif lower[1]:
+        upper = (0, lower[1] + 1, 0)
+    else:
+        upper = (0, 0, lower[2] + 1)
+
+    resolved = _resolved_dependency_version(package_dir, name)
+    assert lower <= _semver(resolved) < upper, (
+        f"{metadata['name']} resolves {name}@{resolved} outside {declared}"
+    )
+    return resolved
 
 
 def _assert_loader_dependencies(root: pathlib.Path, platform: str) -> None:
@@ -152,9 +166,12 @@ def _assert_loader_dependencies(root: pathlib.Path, platform: str) -> None:
     binaries.append(root / "usr/bin/node")
 
     if platform.startswith("linux_"):
+        loader_tool = shutil.which("ldd")
+        if loader_tool is None:
+            pytest.skip("ldd is not available on this executor")
         for binary in binaries:
             result = subprocess.run(
-                ["/usr/bin/ldd", str(binary)],
+                [loader_tool, str(binary)],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -171,9 +188,12 @@ def _assert_loader_dependencies(root: pathlib.Path, platform: str) -> None:
                 ), f"{binary.name}: {result.stdout}"
         return
 
+    loader_tool = shutil.which("otool")
+    if loader_tool is None:
+        pytest.skip("otool is not available on this executor")
     for binary in binaries:
         result = subprocess.run(
-            ["/usr/bin/otool", "-L", str(binary)],
+            [loader_tool, "-L", str(binary)],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -223,15 +243,26 @@ def test_eslint_preserves_versioned_dependency_graph_and_lints() -> None:
         _extract_layers(_layers(platform), root)
 
         eslint = (root / "usr/local/lib/node_modules/eslint").resolve(strict=True)
-        eslint_utils = _package_directory(
-            root, "@eslint-community/eslint-utils", "4.9.1"
+        eslint_utils = (
+            eslint / "node_modules/@eslint-community/eslint-utils"
+        ).resolve(strict=True)
+        espree = (eslint / "node_modules/espree").resolve(strict=True)
+        resolved_versions = {
+            _assert_caret_dependency_resolves(consumer, "eslint-visitor-keys")
+            for consumer in (eslint, eslint_utils, espree)
+        }
+        assert len(resolved_versions) == 2, (
+            "expected two eslint-visitor-keys versions in the pnpm graph, got "
+            f"{resolved_versions}"
         )
-        espree = _package_directory(root, "espree", "10.4.0")
-        assert _resolved_dependency_version(eslint, "eslint-visitor-keys") == "4.2.1"
         assert (
-            _resolved_dependency_version(eslint_utils, "eslint-visitor-keys") == "3.4.3"
+            _resolved_dependency_version(eslint, "eslint-visitor-keys")
+            == _resolved_dependency_version(espree, "eslint-visitor-keys")
         )
-        assert _resolved_dependency_version(espree, "eslint-visitor-keys") == "4.2.1"
+        assert (
+            _resolved_dependency_version(eslint_utils, "eslint-visitor-keys")
+            != _resolved_dependency_version(eslint, "eslint-visitor-keys")
+        )
 
         (root / "home").mkdir()
         lint_target = root / "relocated-lint-target.js"
@@ -256,8 +287,7 @@ def test_eslint_preserves_versioned_dependency_graph_and_lints() -> None:
         assert result.returncode == 0, result.stdout
 
 
-def test_commands_execute_from_relocated_root_with_native_dependencies() -> None:
-    platform = RUNTIME_PLATFORM or "linux_amd64"
+def _assert_native_host(platform: str) -> None:
     expected_system, expected_machines = {
         "linux_amd64": ("Linux", {"x86_64", "amd64"}),
         "linux_arm64": ("Linux", {"aarch64", "arm64"}),
@@ -265,6 +295,11 @@ def test_commands_execute_from_relocated_root_with_native_dependencies() -> None
     }[platform]
     assert host_platform.system() == expected_system
     assert host_platform.machine().lower() in expected_machines
+
+
+def test_commands_execute_from_relocated_root() -> None:
+    platform = RUNTIME_PLATFORM or "linux_amd64"
+    _assert_native_host(platform)
 
     with tempfile.TemporaryDirectory() as temp:
         root = pathlib.Path(temp)
@@ -302,4 +337,12 @@ def test_commands_execute_from_relocated_root_with_native_dependencies() -> None
             )
             assert result.returncode == 0, f"{command}: {result.stdout}"
 
+
+def test_native_loader_dependencies() -> None:
+    platform = RUNTIME_PLATFORM or "linux_amd64"
+    _assert_native_host(platform)
+
+    with tempfile.TemporaryDirectory() as temp:
+        root = pathlib.Path(temp)
+        _extract_layers(_layers(platform), root)
         _assert_loader_dependencies(root, platform)
