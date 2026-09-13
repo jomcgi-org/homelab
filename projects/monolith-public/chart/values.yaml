@@ -1,7 +1,8 @@
 # Read-only public service (ADR 004 Phase 5). Isolation via
-# templates/cilium-policy.yaml (ADR platform/012). The SA token is mounted for
-# the FaaS invocation router to authenticate to EmberVM (identity-only; the SA
-# has no K8s RBAC, see serviceAccount below), and it connects to
+# templates/cilium-policy.yaml (ADR platform/012). The web component receives
+# one audience-scoped projected SA token for the FaaS invocation router to
+# authenticate to EmberVM (identity-only; the SA has no K8s RBAC, see
+# serviceAccount below), and it connects to
 # monolith-pg-ro as public_reader. The image tag is pinned by the Bazel
 # helm_images_values pipeline at build time; do not set a digest here.
 #
@@ -41,14 +42,11 @@ securityContext:
 
 serviceAccount:
   create: true
-  # Mount the SA token: the public FaaS invocation router (Task 13) authenticates
-  # to the in-cluster EmberVM control plane with this pod's SA token (EmberVM does
-  # a TokenReview against its allow-list). This is an IDENTITY-ONLY token: the
-  # monolith-public SA has ZERO Kubernetes RBAC (no Role/ClusterRoleBindings), so
-  # the token grants no K8s API power, it only proves "I am monolith-public" to
-  # EmberVM (which the /functions surface already trusts, quota-capped). A
-  # per-component audience-scoped projected token is a hardening follow-up.
-  automount: true
+  # Disable Kubernetes' default API-audience token. Only the web component gets
+  # the explicit embervm-public-faas projection below. This is an IDENTITY-ONLY
+  # token: the monolith-public SA has ZERO Kubernetes RBAC (no Role or
+  # ClusterRoleBinding), so it grants no Kubernetes API power.
+  automount: false
   annotations: {}
   name: ""
 
@@ -219,6 +217,23 @@ web:
     repository: ghcr.io/jomcgi/homelab/projects/monolith/public-backend
     tag: latest
     pullPolicy: IfNotPresent
+  # The public backend needs identity only for EmberVM's /v1 task submission.
+  # Kubelet rotates this projection before expiry; shared.k8s_auth rereads the
+  # file for every request. Keep the audience byte-identical to
+  # embervm.auth.tokenReviewAudience.
+  volumeMounts:
+    - name: embervm-public-faas-token
+      mountPath: /var/run/secrets/embervm-public-faas
+      readOnly: true
+  volumes:
+    - name: embervm-public-faas-token
+      projected:
+        defaultMode: 0440
+        sources:
+          - serviceAccountToken:
+              audience: embervm-public-faas
+              expirationSeconds: 3600
+              path: token
   containerPort: 8000
   portName: http
   # Inbound and egress isolation is expressed via templates/cilium-policy.yaml
@@ -262,6 +277,8 @@ web:
     # chart does.
     - name: EMBERVM_URL
       value: "http://embervm-embervm.embervm.svc.cluster.local:8080"
+    - name: K8S_AUTH_TOKEN_FILE
+      value: "/var/run/secrets/embervm-public-faas/token"
     # Demo-postgres DSN (ember_public router, /api/ember/postgres): the SAME
     # serving Service, port, and password the private monolith chart uses for
     # scratchPostgres.demoListenPort (5401), so both tiers wake the ONE demo

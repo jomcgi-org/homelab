@@ -145,7 +145,10 @@ defmodule Embervm.Application do
       # Finch (the shared HTTP pool, TLS-pinned to the K8s CA in-cluster) before
       # Embervm.Auth, whose TokenReview reviewer dials the API server over it.
       Embervm.K8s.finch_child_spec(),
-      {Embervm.Auth, allowed: allowed_service_accounts()},
+      {Embervm.Auth,
+       allowed: allowed_service_accounts(),
+       audience_bound: audience_bound_service_accounts(),
+       required_audience: token_review_audience()},
       # The base builder (Task 10): drives the node daemon's BuildBase RPC on
       # Workload admission / spec change and writes status.snapshotRef +
       # Ready/BaseBuilt conditions. Placed BEFORE the WorkloadWatcher on purpose:
@@ -1926,6 +1929,27 @@ defmodule Embervm.Application do
         |> String.split(",", trim: true)
         |> Enum.map(&String.trim/1)
         |> Enum.reject(&(&1 == ""))
+    end
+  end
+
+  # ServiceAccounts listed here must authenticate with the component audience,
+  # never through the Kubernetes API-audience compatibility review.
+  defp audience_bound_service_accounts do
+    case System.get_env("EMBERVM_AUDIENCE_BOUND_SERVICE_ACCOUNTS") do
+      nil -> []
+
+      raw ->
+        raw
+        |> String.split(",", trim: true)
+        |> Enum.map(&String.trim/1)
+        |> Enum.reject(&(&1 == ""))
+    end
+  end
+
+  defp token_review_audience do
+    case System.get_env("EMBERVM_TOKEN_REVIEW_AUDIENCE") do
+      audience when is_binary(audience) and byte_size(audience) > 0 -> audience
+      _ -> "embervm-public-faas"
     end
   end
 end

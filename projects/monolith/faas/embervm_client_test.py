@@ -58,6 +58,31 @@ async def test_submit_sets_guest_path_and_forwards_body_verbatim(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_public_submit_uses_configured_projected_token(monkeypatch, tmp_path):
+    token_file = tmp_path / "embervm-public-faas" / "token"
+    token_file.parent.mkdir()
+    token_file.write_text("public-component-token\n")
+    monkeypatch.setenv("K8S_AUTH_TOKEN_FILE", str(token_file))
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["authorization"] = request.headers.get("Authorization")
+        return httpx.Response(200, text="png")
+
+    _mock_client(monkeypatch, handler)
+
+    response = await embervm_client.submit(
+        "og-image",
+        body=b"",
+        guest_path="/invoke",
+        read_timeout=5.0,
+    )
+
+    assert response.status_code == 200
+    assert captured["authorization"] == "Bearer public-component-token"
+
+
+@pytest.mark.asyncio
 async def test_submit_returns_non_2xx_response_not_raise(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(500, text="ImportError")

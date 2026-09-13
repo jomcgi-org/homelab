@@ -23,3 +23,17 @@ def test_empty_token_file_is_treated_as_absent(tmp_path):
     token_file.write_text("   \n")
     assert service_account_token(str(token_file)) is None
     assert auth_headers(str(token_file)) == {}
+
+
+def test_configured_projected_token_file_is_read_fresh_for_rotation(
+    tmp_path, monkeypatch
+):
+    token_file = tmp_path / "embervm-public-faas" / "token"
+    token_file.parent.mkdir()
+    token_file.write_text("first-token\n")
+    monkeypatch.setenv("K8S_AUTH_TOKEN_FILE", str(token_file))
+
+    assert auth_headers() == {"Authorization": "Bearer first-token"}
+
+    token_file.write_text("rotated-token\n")
+    assert auth_headers() == {"Authorization": "Bearer rotated-token"}

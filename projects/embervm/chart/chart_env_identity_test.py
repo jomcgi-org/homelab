@@ -312,6 +312,29 @@ def _docs(rendered: str):
             yield kind.group(1), name.group(1), doc
 
 
+def test_production_wires_public_component_audience_binding() -> None:
+    rendered = _render(
+        "embervm",
+        [_chart_dir() / "values.yaml", Path(os.environ["PROD_VALUES"])],
+    )
+    deployments = [
+        doc
+        for doc in yaml.safe_load_all(rendered)
+        if isinstance(doc, dict) and doc.get("kind") == "Deployment"
+    ]
+    control_plane = [
+        doc for doc in deployments if doc["metadata"]["name"] == "embervm-embervm"
+    ]
+    assert len(control_plane) == 1
+    container = control_plane[0]["spec"]["template"]["spec"]["containers"][0]
+    env = {item["name"]: item.get("value") for item in container["env"]}
+
+    assert env["EMBERVM_TOKEN_REVIEW_AUDIENCE"] == "embervm-public-faas"
+    assert env["EMBERVM_AUDIENCE_BOUND_SERVICE_ACCOUNTS"] == (
+        "system:serviceaccount:monolith-public:monolith-public"
+    )
+
+
 def _application_name(application_yaml: Path) -> str:
     """Read the Application's metadata.name to infer the release name.
 

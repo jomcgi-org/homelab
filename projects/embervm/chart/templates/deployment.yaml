@@ -265,6 +265,16 @@ spec:
             - name: EMBERVM_ALLOWED_SERVICE_ACCOUNTS
               value: {{ join "," .Values.auth.allowedServiceAccounts | quote }}
             {{- end }}
+            # TokenReview component-audience contract. The bound list is kept
+            # separate from the identity allow-list so existing callers retain
+            # their Kubernetes API-audience credentials without creating a
+            # fallback path for monolith-public.
+            - name: EMBERVM_TOKEN_REVIEW_AUDIENCE
+              value: {{ required "auth.tokenReviewAudience is required" .Values.auth.tokenReviewAudience | quote }}
+            {{- if .Values.auth.audienceBoundServiceAccounts }}
+            - name: EMBERVM_AUDIENCE_BOUND_SERVICE_ACCOUNTS
+              value: {{ join "," .Values.auth.audienceBoundServiceAccounts | quote }}
+            {{- end }}
             # Fair dispatcher tuning (Task 11): per-principal queue-depth 429 cap
             # and the optional fixed per-principal in-flight share fraction.
             - name: EMBERVM_QUEUE_DEPTH_CAP

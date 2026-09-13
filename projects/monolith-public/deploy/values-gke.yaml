@@ -19,6 +19,8 @@ web:
         name: monolith-public-writer-db
   - name: EMBERVM_URL
     value: http://embervm-embervm.embervm.svc.cluster.local:8080
+  - name: K8S_AUTH_TOKEN_FILE
+    value: /var/run/secrets/embervm-public-faas/token
   - name: DEMO_PG_PASSWORD
     valueFrom:
       secretKeyRef:

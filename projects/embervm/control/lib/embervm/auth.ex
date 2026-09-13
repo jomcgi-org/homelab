@@ -5,6 +5,10 @@ defmodule Embervm.Auth do
 
   A token is authenticated by a Kubernetes `TokenReview` (via `Embervm.K8s`),
   then checked against an allow-list of ServiceAccount usernames from values.
+  Audience-bound ServiceAccounts must also return the configured TokenReview
+  audience evidence. Existing Kubernetes API-audience callers use the legacy
+  review fallback, but that fallback can never authorize an audience-bound
+  identity.
   Successful reviewed identities are cached keyed by `sha256(token)` with a 60s
   TTL and collapsed by singleflight, because without caching a saturating submit rate
   becomes an equal rate of TokenReview calls against the API server. That is the
@@ -84,13 +88,20 @@ defmodule Embervm.Auth do
 
   @impl true
   def init(opts) do
+    required_audience = Keyword.fetch!(opts, :required_audience)
+
     state = %{
       cache: %{},
       inflight: %{},
       ttl_ms: Keyword.get(opts, :ttl_ms, @default_ttl_ms),
       clock: Keyword.get(opts, :clock, &default_clock/0),
-      reviewer: Keyword.get(opts, :reviewer, &Embervm.K8s.review_token/1),
+      reviewer:
+        Keyword.get(opts, :reviewer, fn token ->
+          Embervm.K8s.review_token(token, required_audience)
+        end),
       allowed: MapSet.new(Keyword.get(opts, :allowed, [])),
+      audience_bound: MapSet.new(Keyword.get(opts, :audience_bound, [])),
+      required_audience: required_audience,
       max_entries: Keyword.get(opts, :max_entries, @max_entries)
     }
 
@@ -172,14 +183,30 @@ defmodule Embervm.Auth do
   end
 
   defp resolve(state, key, _token, {:ok, %Identity{} = identity}) do
-    if MapSet.member?(state.allowed, identity.username) do
-      now = state.clock.()
-      {{:ok, identity}, store(state, key, identity, now)}
-    else
-      # Surface the identity so callers can audit WHO was rejected. Still not
-      # cached (a pure success set, per the moduledoc).
-      {{:error, {:forbidden, identity}}, state}
+    cond do
+      audience_required?(state, identity) and
+          not valid_component_audience?(state, identity) ->
+        # Treat wrong or missing audience evidence as unauthenticated. This is
+        # checked before storage, so it cannot cross the success-cache boundary.
+        {{:error, :unauthenticated}, state}
+
+      MapSet.member?(state.allowed, identity.username) ->
+        now = state.clock.()
+        {{:ok, identity}, store(state, key, identity, now)}
+
+      true ->
+        # Surface the identity so callers can audit WHO was rejected. Still not
+        # cached (a pure success set, per the moduledoc).
+        {{:error, {:forbidden, identity}}, state}
     end
+  end
+
+  defp audience_required?(state, identity) do
+    MapSet.member?(state.audience_bound, identity.username)
+  end
+
+  defp valid_component_audience?(state, identity) do
+    identity.audience_validated and identity.audiences == [state.required_audience]
   end
 
   # -- cache -----------------------------------------------------------------
