@@ -5631,7 +5631,8 @@ def test_plan_refuses_a_stale_expected_version_whole(feedback_db):
     )
 
 
-def test_a_decision_cannot_set_the_server_owned_review_round_bound(feedback_db):
+@pytest.mark.parametrize("bound", ["max_review_rounds", "max_review_recovery_rounds"])
+def test_a_decision_cannot_set_the_server_owned_review_round_bound(feedback_db, bound):
     task, policy = feedback_task()
     run = complete_feedback_node(
         task,
@@ -5644,21 +5645,23 @@ def test_a_decision_cannot_set_the_server_owned_review_round_bound(feedback_db):
             "role": "implement",
             "prompt": "Fix it",
             "deps": [],
-            "max_review_rounds": 9,
+            bound: 9,
         },
     )
     conductor.apply_decision(task, policy, run, conductor.graph.node_runs(task["id"]))
     audits = feedback_audits(feedback_db, task["id"])
     assert audits[0]["refusal_code"] == "bound_exceeds_policy"
-    assert "max_review_rounds" in audits[0]["reason"]
+    assert bound in audits[0]["reason"]
     assert [n["node_key"] for n in conductor.graph.load_graph(task["id"])] == [
         "conductor_1"
     ]
 
 
-def reviewed_task(*, verdict="changes_requested", rounds=None, head=HEAD_ONE):
+def reviewed_task(
+    *, verdict="changes_requested", rounds=None, head=HEAD_ONE, **overrides
+):
     """One implementation and one independent review, with no planner node."""
-    task, policy = feedback_task()
+    task, policy = feedback_task(**overrides)
     if rounds is not None:
         policy["max_review_rounds"] = rounds
     complete_feedback_node(
@@ -8391,3 +8394,249 @@ def test_lost_before_guest_proof_refuses_or_raises_on_ownership(
             with pytest.raises(ValueError, match="invalid factory session identity"):
                 inspect_lost_before_guest_factory_attempt(db, pin, invalid)
     assert s.native_snapshot() == s.native_snapshot()
+
+
+def recovery_github(monkeypatch, task, *, state="success", context="success"):
+    """Serve one task-owned PR and its latest aggregate commit statuses."""
+    pr = {
+        "state": "open",
+        "draft": True,
+        "head": {
+            "sha": HEAD_TWO,
+            "ref": conductor.task_branch(task["id"]),
+            "repo": {"full_name": task["repo"]},
+        },
+        "base": {"ref": task["base_branch"]},
+    }
+    checks = {"state": state, "statuses": [{"context": "pr-checks", "state": context}]}
+    reads = []
+
+    def read(repo, path):
+        assert repo == task["repo"]
+        reads.append(path)
+        if path == "pulls/21":
+            return pr
+        if path == f"commits/{HEAD_TWO}/status":
+            return checks
+        pytest.fail(f"Unexpected GitHub read: {path}")
+
+    monkeypatch.setattr(conductor, "github_get", read)
+    return pr, checks, reads
+
+
+def recovery_task(**overrides):
+    task, policy = reviewed_task(
+        rounds=1, max_review_rounds=1, max_review_recovery_rounds=2, **overrides
+    )
+    conductor.reconcile_task(task["id"], policy, object())
+    run_correction_round(task, policy, 1, verdict="changes_requested", head=HEAD_TWO)
+    return task, policy
+
+
+def test_review_recovery_keeps_task_accounting_and_stops_at_its_durable_cap(
+    feedback_db, monkeypatch
+):
+    from swarm import factory_controls as controls
+    from sqlmodel import Session, select
+    from swarm.models import SwarmPlanVersion
+
+    task, policy = recovery_task()
+    _, _, reads = recovery_github(monkeypatch, task)
+    before = controls.task_snapshot(task["id"])
+    for ordinal in (2, 3):
+        starts = controls.task_snapshot(task["id"])["turns_used"]
+        conductor.reconcile_task(task["id"], policy, object())
+        nodes = {n["node_key"]: n for n in conductor.graph.load_graph(task["id"])}
+        assert f"correct_{ordinal}" in nodes and f"review_{ordinal}" in nodes
+        assert nodes[f"review_{ordinal}"]["deps"] == [f"correct_{ordinal}"]
+        assert nodes[f"review_{ordinal}"]["model"] == "opus"
+        with Session(feedback_db) as db:
+            reasons = db.exec(
+                select(SwarmPlanVersion.stated_reason).where(
+                    SwarmPlanVersion.task_id == task["id"],
+                    SwarmPlanVersion.cause_ref == f"factory-loop:review_{ordinal}",
+                )
+            ).all()
+            assert any(
+                f"pr-checks passed at {HEAD_TWO}" in reason for reason in reasons
+            )
+
+        assert not any(key.startswith("conductor_") for key in nodes)
+        assert controls.task_snapshot(task["id"])["turns_used"] == starts
+        run_correction_round(
+            task, policy, ordinal, verdict="changes_requested", head=HEAD_TWO
+        )
+    after = controls.task_snapshot(task["id"])
+    assert after["turns_used"] == before["turns_used"] + 4
+    assert after["committed_cost_usd"] == before["committed_cost_usd"] + 1.0
+    assert after["id"] == before["id"] and after["task_id"] == before["task_id"]
+    assert after["deadline_at"] == before["deadline_at"]
+    assert after["policy"] == before["policy"]
+    # Reconciliation re-reads persisted rounds; no in-process recovery counter.
+    conductor.reconcile_task(task["id"], policy, object())
+    nodes = {n["node_key"]: n for n in conductor.graph.load_graph(task["id"])}
+    assert "conductor_1" in nodes and "correct_4" not in nodes
+    assert conductor._review_rounds_used(task["id"]) == 3
+    assert len(reads) == 6
+
+
+def test_review_recovery_waits_for_ci_without_spending_a_planner_turn(
+    feedback_db, monkeypatch
+):
+    from swarm import factory_controls as controls
+
+    task, policy = recovery_task()
+    _, checks, _ = recovery_github(
+        monkeypatch, task, state="pending", context="pending"
+    )
+    before = controls.task_snapshot(task["id"])
+    revision = conductor.graph.current_version(task["id"])
+    for _ in range(2):
+        conductor.reconcile_task(task["id"], policy, object())
+    assert conductor.graph.current_version(task["id"]) == revision
+    assert controls.task_snapshot(task["id"])["turns_used"] == before["turns_used"]
+    checks["state"] = "success"
+    checks["statuses"][0]["state"] = "success"
+    conductor.reconcile_task(task["id"], policy, object())
+    assert "correct_2" in {
+        n["node_key"] for n in conductor.graph.load_graph(task["id"])
+    }
+
+
+@pytest.mark.parametrize(
+    "change", ["closed", "head", "branch", "repo", "base", "red", "other_red"]
+)
+def test_review_recovery_refuses_changed_pr_identity_or_failed_ci(
+    feedback_db, monkeypatch, change
+):
+    task, policy = recovery_task()
+    pr, checks, _ = recovery_github(monkeypatch, task)
+    if change == "closed":
+        pr["state"] = "closed"
+    elif change == "head":
+        pr["head"]["sha"] = HEAD_ONE
+    elif change == "branch":
+        pr["head"]["ref"] = "main"
+    elif change == "repo":
+        pr["head"]["repo"]["full_name"] = "other/repo"
+    elif change == "base":
+        pr["base"]["ref"] = "other"
+    elif change == "red":
+        checks["state"] = "failure"
+    else:
+        checks["statuses"].append({"context": "security", "state": "failure"})
+    conductor.reconcile_task(task["id"], policy, object())
+    nodes = {n["node_key"] for n in conductor.graph.load_graph(task["id"])}
+    assert "correct_2" not in nodes and "conductor_1" in nodes
+
+
+def test_review_recovery_does_not_treat_missing_ci_as_success(feedback_db, monkeypatch):
+    task, policy = recovery_task()
+    _, checks, _ = recovery_github(monkeypatch, task)
+    checks["statuses"] = []
+    conductor.reconcile_task(task["id"], policy, object())
+    nodes = {n["node_key"] for n in conductor.graph.load_graph(task["id"])}
+    assert "correct_2" not in nodes and "conductor_1" not in nodes
+
+
+def test_review_recovery_rechecks_head_after_ci(feedback_db, monkeypatch):
+    task, policy = recovery_task()
+    pr, checks, _ = recovery_github(monkeypatch, task)
+
+    def read(_repo, path):
+        if path.endswith("/status"):
+            pr["head"]["sha"] = HEAD_ONE
+            return checks
+        return pr
+
+    monkeypatch.setattr(conductor, "github_get", read)
+    conductor.reconcile_task(task["id"], policy, object())
+    nodes = {n["node_key"] for n in conductor.graph.load_graph(task["id"])}
+    assert "correct_2" not in nodes and "conductor_1" in nodes
+
+
+def test_review_recovery_transient_read_waits_and_retries(feedback_db, monkeypatch):
+    import httpx
+
+    task, policy = recovery_task()
+
+    def unavailable(*_args):
+        response = httpx.Response(
+            503, request=httpx.Request("GET", "https://example.test")
+        )
+        response.raise_for_status()
+
+    monkeypatch.setattr(conductor, "github_get", unavailable)
+    for _ in range(2):
+        conductor.reconcile_task(task["id"], policy, object())
+    assert conductor._review_rounds_used(task["id"]) == 1
+    assert not any(
+        n["node_key"].startswith("conductor_")
+        for n in conductor.graph.load_graph(task["id"])
+    )
+    recovery_github(monkeypatch, task)
+    conductor.reconcile_task(task["id"], policy, object())
+    assert conductor._review_rounds_used(task["id"]) == 2
+
+
+@pytest.mark.parametrize("envelope", [{"max_turns": 5}, {"task_budget_usd": 4.5}])
+def test_review_recovery_never_exceeds_the_task_envelope(
+    feedback_db, monkeypatch, envelope
+):
+    task, policy = recovery_task(**envelope)
+    recovery_github(monkeypatch, task)
+    conductor.reconcile_task(task["id"], policy, object())
+    assert conductor._review_rounds_used(task["id"]) == 1
+    assert any(
+        a["refusal_code"] == "envelope_exceeded"
+        for a in feedback_audits(feedback_db, task["id"])
+    )
+
+
+def test_review_recovery_disabled_by_zero_ordinary_rounds(feedback_db):
+    task, policy = reviewed_task(rounds=0, max_review_recovery_rounds=2)
+    conductor.reconcile_task(task["id"], policy, object())
+    assert conductor._review_rounds_used(task["id"]) == 0
+
+
+def test_review_recovery_does_not_reopen_failed_corrections(feedback_db):
+    task, policy = reviewed_task(rounds=1, max_review_recovery_rounds=2)
+    conductor.reconcile_task(task["id"], policy, object())
+    fail_round_node(task, "correct_1")
+    conductor.reconcile_task(task["id"], policy, object())
+    assert conductor._review_rounds_used(task["id"]) == 1
+
+
+def test_review_recovery_wait_never_holds_other_ready_work(feedback_db, monkeypatch):
+    task, policy = recovery_task()
+    assert conductor._add(
+        task,
+        policy,
+        "investigate_followup",
+        "Inspect",
+        [],
+        "luna",
+        "followup",
+        "Ready work",
+    ).ok
+    dispatched = []
+    monkeypatch.setattr(
+        conductor, "_dispatch_ready", lambda *args, **kwargs: dispatched.append(args)
+    )
+    conductor.reconcile_task(task["id"], policy, object())
+    assert len(dispatched) == 1
+    assert conductor._review_rounds_used(task["id"]) == 1
+
+
+def test_review_recovery_wait_keeps_the_original_deadline(feedback_db, monkeypatch):
+    from datetime import timedelta
+    from swarm import factory_controls as controls
+
+    task, policy = recovery_task()
+    recovery_github(monkeypatch, task, state="pending", context="pending")
+    conductor.reconcile_task(task["id"], policy, object())
+    now = controls._now()
+    monkeypatch.setattr(controls, "_now", lambda: now + timedelta(hours=2))
+    conductor.reconcile_task(task["id"], policy, object())
+    assert controls.task_snapshot(task["id"])["state"] == "failed"
+    assert conductor._review_rounds_used(task["id"]) == 1

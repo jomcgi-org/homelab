@@ -61,6 +61,7 @@ _POLICY_KEYS = {
     "task_timeout_seconds",
     "model_pools",
     "max_review_rounds",
+    "max_review_recovery_rounds",
     "intake",
     "quota_guard",
     "auto_merge",
@@ -70,6 +71,7 @@ _OPTIONAL_POLICY_KEYS = {
     "model_pools",
     "max_planner_turns",
     "max_review_rounds",
+    "max_review_recovery_rounds",
     "max_task_turns_hard",
     "max_turns_per_task",
     "max_parallel_nodes",
@@ -81,6 +83,9 @@ _OPTIONAL_POLICY_KEYS = {
 # it asks the planner. Absent from a live policy means this default, so the
 # server gains the bound without an operator re-post.
 DEFAULT_MAX_REVIEW_ROUNDS = 2
+# Extra rounds require explicit policy and fresh passing CI. They use the same
+# task envelope and never re-admit a receipt or reset its accounting.
+DEFAULT_MAX_REVIEW_RECOVERY_ROUNDS = 0
 # Autonomous intake is off until an operator turns it on. A policy that
 # predates the block reads these defaults, so the lane gains the shape
 # without gaining the behaviour.
@@ -459,6 +464,12 @@ def validate_policy(policy: dict) -> dict:
         "max_review_rounds",
         0,
         10,
+    )
+    result["max_review_recovery_rounds"] = _integer(
+        policy.get("max_review_recovery_rounds", DEFAULT_MAX_REVIEW_RECOVERY_ROUNDS),
+        "max_review_recovery_rounds",
+        0,
+        2,
     )
     for key in ("task_budget_usd", "turn_budget_usd"):
         result[key] = _money(policy[key], key)
