@@ -1,0 +1,29 @@
+{
+  "zone_name": "jomcgi.dev",
+  "public_hostname": "public.jomcgi.dev",
+  "zone_settings": {
+    "browser_cache_ttl": 0,
+    "always_online": "on"
+  },
+  "smart_tiered_cache": "on",
+  "cache_rule": {
+    "expression": "http.host wildcard r\"public.jomcgi.dev\"",
+    "action": "set_cache_settings",
+    "action_parameters": {
+      "cache": true,
+      "edge_ttl": {
+        "mode": "bypass_by_default"
+      },
+      "serve_stale": {
+        "disable_stale_while_updating": false
+      },
+      "respect_strong_etags": true
+    }
+  },
+  "miss_alert": {
+    "threshold_percent": 5,
+    "window_minutes": 15,
+    "data_lag_minutes": 2,
+    "minimum_requests": 20
+  }
+}

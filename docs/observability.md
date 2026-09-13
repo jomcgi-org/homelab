@@ -12,6 +12,8 @@ graph LR
     OC -->|OTLP| H[Honeycomb]
     UR[UptimeRobot] -->|direct HTTPRoute| HEALTH[collector health_check]
     DCGM[DCGM exporter] -->|direct scrape| STATS[public stats ticker]
+    CFA[Cloudflare Analytics] -.->|implemented, not scheduled| MON[cache monitor]
+    MON -.->|firing and recovery| ISSUE[GitHub alert issue]
 ```
 
 The collector's `http_check` receiver probes these public URLs every 60 seconds:
@@ -29,6 +31,15 @@ the path to `/`. The public frontend is not on this path.
 
 The public stats ticker gets GPU utilization and frame buffer usage by scraping
 the DCGM exporter directly. It does not use the collector or a telemetry store.
+
+The public CDN cache monitor is independent of the collector. It queries
+Cloudflare's `httpRequestsAdaptiveGroups` GraphQL dataset for real
+`cacheStatus: "miss"` traffic on `public.jomcgi.dev`. A rate above 5 percent
+over the full 15-minute window opens a GitHub issue, subject to the declared
+minimum request count. Desired settings, evaluation parameters, and regression
+tests live in `projects/platform/cloudflare-cache/`.
+No scheduler currently invokes the monitor, so this path is implemented but not
+operational.
 
 ## Trace admission is deny-by-default
 
