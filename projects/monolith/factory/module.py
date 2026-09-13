@@ -71,6 +71,7 @@ def _factory_liveness() -> dict:
 
 async def _start_session_maintenance(app):
     """Start leader-owned agent session maintenance loops."""
+    from factory.quota_probe import start_quota_probe_loop
     from factory.execution.kg_feed import start_kg_feed_loop
     from factory.execution.mcp import start_pending_message_sweep
     from factory.execution.permit_supervision import start_permit_supervision_loop
@@ -84,6 +85,7 @@ async def _start_session_maintenance(app):
         start_kg_feed_loop,
         start_permit_supervision_loop,
         start_receipt_retention_loop,
+        start_quota_probe_loop,
     ):
         started = start()
         register_leader_tasks(app, started)

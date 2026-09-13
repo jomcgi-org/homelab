@@ -6,6 +6,7 @@ import asyncio
 import logging
 import secrets
 from uuid import uuid4
+from sqlalchemy import func
 
 from core.db import get_engine
 from faas.embervm_client import EmberVMTransportError
@@ -98,7 +99,46 @@ def _persist_synthetic_binding_sync(
         )
 
 
-async def run_synthetic_session(prompt: str, model: str = "luna"):
+def _persist_synthetic_request(key: str, prompt: str, model: str, owner: str):
+    """Commit a new probe and its first turn together, with no orphan window."""
+    from factory.execution.models import PendingMessage
+
+    with Session(get_engine()) as db:
+        row = store.create_session(
+            db,
+            key,
+            "<guest>",
+            "main",
+            model,
+            admission_tier="probe",
+            commit=False,
+        )
+        assert row.id is not None
+        pending = PendingMessage(
+            session_id=row.id, seq=1, message_text=prompt, model=model
+        )
+        db.add(pending)
+        db.flush()
+        if not store.admission.claim_pending(db, row, pending, owner):
+            db.rollback()
+            raise EmberTurnNotInvoked("No immediate capacity for quota probe")
+        pending.claimed_by_replica = owner
+        pending.claimed_at = func.now()
+        pending.last_dispatch_at = func.now()
+        pending.dispatch_count = 1
+        db.add(pending)
+        db.commit()
+        db.refresh(row)
+        return row, 1
+
+
+async def run_synthetic_session(
+    prompt: str,
+    model: str = "luna",
+    *,
+    session_key: str | None = None,
+    read_timeout: float | None = None,
+):
     """Run and persist one short synthetic session through the normal path.
 
     This is intentionally a direct, awaited form of the session worker for
@@ -111,26 +151,42 @@ async def run_synthetic_session(prompt: str, model: str = "luna"):
 
     model = normalize_model(model)
     model_family(model)
-    row = await asyncio.to_thread(
-        _persist_session,
-        f"{SYNTHETIC_SESSION_PREFIX}{uuid4()}",
-        "<guest>",
-        "main",
-        model,
-        None,
-        admission_tier="probe",
-        # No prompt on purpose: the synthetic probes assert an exact reply and
-        # report lane latency, so they must not carry a recall block.
-    )
-    assert row.id is not None
-    turn_seq = await asyncio.to_thread(_persist_pending_message, row.id, prompt, model)
+    transport = _transport
+    if read_timeout is not None:
+        from factory.execution.transport import EmberVmShimTransport
+
+        transport = EmberVmShimTransport(
+            read_timeout=read_timeout, retry_create=session_key is None
+        )
+    claim_owner = f"{_REPLICA_ID}:{uuid4()}"
+    if session_key is not None:
+        row, turn_seq = await asyncio.to_thread(
+            _persist_synthetic_request, session_key, prompt, model, claim_owner
+        )
+    else:
+        row = await asyncio.to_thread(
+            _persist_session,
+            session_key or f"{SYNTHETIC_SESSION_PREFIX}{uuid4()}",
+            "<guest>",
+            "main",
+            model,
+            None,
+            admission_tier="probe",
+            # No prompt on purpose: the synthetic probes assert an exact reply and
+            # report lane latency, so they must not carry a recall block.
+        )
+        assert row.id is not None
+        turn_seq = await asyncio.to_thread(
+            _persist_pending_message, row.id, prompt, model
+        )
 
     # The monolith runs multiple replicas; an unclaimed pending message is fair
     # game for another replica's worker. Claiming it here ensures the prompt is
     # delivered at most once per probe run.
-    claim_owner = f"{_REPLICA_ID}:{uuid4()}"
-    claimed_seq = await asyncio.to_thread(
-        _claim_pending_message_sync, row.id, claim_owner
+    claimed_seq = (
+        turn_seq
+        if session_key is not None
+        else await asyncio.to_thread(_claim_pending_message_sync, row.id, claim_owner)
     )
     if claimed_seq is None:
         logger.warning(
@@ -173,13 +229,15 @@ async def run_synthetic_session(prompt: str, model: str = "luna"):
 
     refresh_task = asyncio.create_task(_refresh_heartbeat())
     ember = None
+    binding_persisted = False
     result_received = False
     result_persisted = False
     dispatch_count = None
     release_cause = "observer_released"
+    invocation_record: dict = {}
 
     async def persist_callback(created_ember, _cli_session_id):
-        nonlocal ember, claim_stolen
+        nonlocal ember, claim_stolen, binding_persisted
         # Remember the exact created guest, but a failed or stolen binding does
         # not authorize destroying it. Cleanup requires our persisted result.
         ember = created_ember
@@ -192,6 +250,7 @@ async def run_synthetic_session(prompt: str, model: str = "luna"):
                 dispatch_count,
                 created_ember,
             )
+            binding_persisted = True
         except (store.PendingClaimLost, store.SessionOutcomeUnknown):
             claim_stolen = True
             raise
@@ -224,7 +283,7 @@ async def run_synthetic_session(prompt: str, model: str = "luna"):
                 row.id,
                 turn_seq,
                 claim_owner,
-                _transport._workload_for(model),
+                transport._workload_for(model),
             ):
                 raise EmberVMTransportError("Shared execution admission is fenced")
 
@@ -233,7 +292,7 @@ async def run_synthetic_session(prompt: str, model: str = "luna"):
         receipt_kwargs = (
             {"receipt_claim_owner": claim_owner} if result_receipts.enabled() else {}
         )
-        turn, _returned_ember = await _transport.deliver(
+        turn, _returned_ember = await transport.deliver(
             None,
             None,
             prompt,
@@ -244,6 +303,11 @@ async def run_synthetic_session(prompt: str, model: str = "luna"):
             agent_session_id=row.id,
             dispatch_count=dispatch_count,
             **receipt_kwargs,
+            **(
+                {"invocation_record": invocation_record}
+                if session_key is not None
+                else {}
+            ),
         )
         ember = _returned_ember
         result_received = True
@@ -276,6 +340,25 @@ async def run_synthetic_session(prompt: str, model: str = "luna"):
         return turn
     except asyncio.CancelledError:
         release_cause = "executor_cancelled"
+        if (
+            session_key is not None
+            and invocation_record.get("attempted") is False
+            and ember is not None
+            and binding_persisted
+            and not claim_stolen
+            and not result_received
+        ):
+            # A known guest with no invocation can be cleaned up later. An
+            # interrupted create without its guest identity remains unknown.
+            await asyncio.to_thread(
+                _mark_turn_error_sync,
+                row.id,
+                claimed_seq,
+                "Quota probe deadline expired before invocation",
+                claim_owner,
+                invocation_not_attempted=True,
+                dispatch_count=dispatch_count,
+            )
         raise
     except (store.PendingClaimLost, store.SessionOutcomeUnknown):
         claim_stolen = True
@@ -343,11 +426,17 @@ async def run_synthetic_session(prompt: str, model: str = "luna"):
             # the ordinary completion cleanup.
             if turn.native_receipt is not None:
                 await _release_receipt_fence(turn.native_receipt)
+            confirmed = False
             try:
-                await _transport.destroy_session(ember.session_id)
+                destroyed = await transport.destroy_session(ember.session_id)
+                confirmed = (
+                    isinstance(destroyed, dict)
+                    and destroyed.get("state") in _REAP_TERMINAL_STATES
+                )
             except EmberSessionGone:
-                pass
-            finally:
+                confirmed = True
+            # A failed or asynchronous DELETE leaves a durable cleanup fence.
+            if confirmed:
                 await asyncio.to_thread(_clear_ember_bindings_for, ember.session_id)
 
 

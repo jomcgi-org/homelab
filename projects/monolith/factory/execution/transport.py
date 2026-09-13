@@ -729,6 +729,8 @@ class EmberVmShimTransport:
         self,
         workload: str = agent_sessions.DEFAULT_WORKLOAD,
         read_timeout: float = INVOKE_READ_TIMEOUT,
+        *,
+        retry_create: bool = True,
     ) -> None:
         """Initialize transport for a named EmberVM workload.
 
@@ -745,6 +747,7 @@ class EmberVmShimTransport:
         """
         self.workload = workload
         self.read_timeout = read_timeout
+        self.retry_create = retry_create
 
     def _workload_for(self, model: str | None) -> str:
         """Resolve the target workload for a session of this model.
@@ -844,6 +847,8 @@ class EmberVmShimTransport:
             # keeps the original short ladder, because a transient control
             # plane problem clears in seconds and there is no point holding a
             # caller for 19 minutes over one.
+            if not self.retry_create:
+                raise EmberVMTransportError(_status_error_detail(exc)) from exc
             if _capacity_denial(exc):
                 if _attempt < len(_CAPACITY_BACKOFF_SECONDS):
                     delay = _capacity_sleep_seconds(_attempt)

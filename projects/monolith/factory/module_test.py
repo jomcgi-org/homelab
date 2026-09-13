@@ -140,3 +140,33 @@ async def test_disabled_orchestration_still_starts_session_maintenance(monkeypat
     assert await module._leader_start(app) == []
     assert called == [True]
     assert not app.state.leader_singletons_dbos_launched
+
+
+@pytest.mark.asyncio
+async def test_quota_probe_is_owned_by_factory_leader(monkeypatch):
+    from factory import quota_probe
+    from factory.execution import (
+        kg_feed,
+        mcp,
+        permit_supervision,
+        result_receipts,
+        titles,
+    )
+
+    for owner, name in (
+        (mcp, "start_pending_message_sweep"),
+        (titles, "start_title_refresh_loop"),
+        (kg_feed, "start_kg_feed_loop"),
+        (permit_supervision, "start_permit_supervision_loop"),
+        (result_receipts, "start_receipt_retention_loop"),
+    ):
+        monkeypatch.setattr(owner, name, lambda: [])
+    task = asyncio.create_task(asyncio.Event().wait())
+    monkeypatch.setattr(quota_probe, "start_quota_probe_loop", lambda: [task])
+    app = SimpleNamespace(state=SimpleNamespace(singleton_tasks=[]))
+    try:
+        assert await module._start_session_maintenance(app) == [task]
+        assert app.state.singleton_tasks == [task]
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)

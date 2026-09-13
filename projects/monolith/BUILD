@@ -8708,6 +8708,8 @@ py_library(
         ":pkg_framework",
         ":pkg_knowledge",
         ":pkg_swarm",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
     ],
 )
 
@@ -8748,5 +8750,19 @@ py_test(
         ":factory_durable_identity",
         ":pkg_swarm",
         "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "factory_quota_probe_test",
+    srcs = ["factory/quota_probe_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_factory",
+        ":pkg_agent_sessions",
+        ":pkg_swarm",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
     ],
 )
