@@ -114,6 +114,10 @@ def _tool_files(ctx):
             files.append(tool)
     return files
 
+def _driver(ctx):
+    """Return the driver with its runfiles as declared action inputs."""
+    return ctx.attr._driver[DefaultInfo].files_to_run
+
 def _driver_args(ctx, tc, mode, include_dirs, opam_pkgs, srcs, c_srcs, cc = None):
     args = ctx.actions.args()
     # Large translated libraries can have hundreds of transitive include
@@ -195,7 +199,7 @@ def _ocaml_library_impl(ctx):
     args.add("--a-out", a_lib.path)
 
     ctx.actions.run(
-        executable = ctx.executable._driver,
+        executable = _driver(ctx),
         arguments = [args],
         inputs = depset(ctx.files.srcs + ctx.files.c_srcs + ctx.files.c_headers + ctx.files.preprocess_data + _tool_files(ctx), transitive = [dep.includes, dep.cmxa, dep.a, cc.headers, cc.archives, tc.sysroot_files, tc.bootstrap_files]),
         outputs = [objs_dir, cmxa, a_lib],
@@ -234,7 +238,7 @@ def _ocaml_binary_impl(ctx):
         args.add("--cmxa", c.path)
 
     ctx.actions.run(
-        executable = ctx.executable._driver,
+        executable = _driver(ctx),
         arguments = [args],
         inputs = depset(ctx.files.srcs + ctx.files.c_srcs + ctx.files.c_headers + ctx.files.preprocess_data + _tool_files(ctx), transitive = [dep.includes, dep.cmxa, dep.a, cc.headers, cc.archives, tc.sysroot_files, tc.bootstrap_files]),
         outputs = [exe],
@@ -416,7 +420,7 @@ def _ocaml_ppx_impl(ctx):
         args.add("--cmxa", c.path)
 
     ctx.actions.run(
-        executable = ctx.executable._driver,
+        executable = _driver(ctx),
         arguments = [args],
         inputs = depset([main], transitive = [dep.includes, dep.cmxa, dep.a, cc.headers, cc.archives, tc.sysroot_files, tc.bootstrap_files]),
         outputs = [exe],
