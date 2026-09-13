@@ -33,7 +33,7 @@ def _runfile(name: str) -> pathlib.Path:
 def _layers(platform: str) -> list[pathlib.Path]:
     return [
         _runfile(f"tools_tar_{platform}.tar"),
-        _runfile(f"source_tools_tar_untransitioned_{platform}.tar"),
+        _runfile(f"source_tools_tar_{platform}.tar"),
         _runfile(f"node_tar_{platform}.tar"),
         _runfile("eslint_node_modules.tar"),
         _runfile("eslint_wrapper.tar"),
