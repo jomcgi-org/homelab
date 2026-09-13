@@ -292,7 +292,10 @@ filegroup(
             "tests/**/*.py",
         ],
     ),
-    visibility = ["//projects/monolith:__pkg__"],
+    visibility = [
+        "//projects/monolith:__pkg__",
+        "//projects/monolith/app:__pkg__",
+    ],
 )
 
 filegroup(
