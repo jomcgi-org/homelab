@@ -1894,7 +1894,15 @@ defmodule Embervm.NodeRegistry do
         expired_at: state.clock.()
       }
 
-      put_in(state.instance_tombstones[instance_id], tombstone)
+      state = put_in(state.instance_tombstones[instance_id], tombstone)
+
+      # The first sweep runs when an instance merely ages to :down, while it is
+      # still registered. Run the same idempotent callback again after the
+      # registry has removed it and installed its tombstone. Dormant banked and
+      # parked sessions may only terminalize on this authoritative departure
+      # signal; transient sessions were already settled by the first sweep.
+      start_session_sweep(state.session_sweep_fun, rt.configured_id, rt.pod_uid)
+      state
     else
       state
     end
