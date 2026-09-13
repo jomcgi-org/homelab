@@ -1490,7 +1490,16 @@ def window_high(*, session: Session | None = None) -> bool:
     if row is None:
         return False
     try:
-        return bool(json.loads(row.detail_json).get("window_high", False))
+        detail = json.loads(row.detail_json)
+        reset = detail.get("resets_at")
+        if isinstance(reset, str):
+            try:
+                reset_at = datetime.fromisoformat(reset.replace("Z", "+00:00"))
+                if reset_at.tzinfo is not None and reset_at <= _now():
+                    return False
+            except ValueError:
+                pass
+        return bool(detail.get("window_high", False))
     except (TypeError, ValueError):
         return False
 
@@ -1519,11 +1528,33 @@ def review_routing_view(policy: dict, *, session: Session | None = None) -> dict
         if created.tzinfo is None:
             created = created.replace(tzinfo=timezone.utc)
         seen = created.isoformat()
+    # A routing decision can outlive its observation. Never present its old
+    # percentage as current after observation loss or a broker/window expiry.
+    used = detail.get("used_percent")
+    quota_status = "unavailable"
+    if verdict is not None and isinstance(used, (int, float)):
+        observed = verdict.created_at
+        if observed.tzinfo is None:
+            observed = observed.replace(tzinfo=timezone.utc)
+        age = detail.get("observation_age_seconds") or 0
+        age = age if isinstance(age, (int, float)) and math.isfinite(age) else 0
+        fresh = (_now() - observed).total_seconds() + age <= QUOTA_GUARD_MAX_AGE_SECONDS
+        unknown = last is not None and last.action == "quota_guard_unknown"
+        quota_status = "unavailable" if unknown else "fresh" if fresh else "stale"
+        reset = detail.get("resets_at")
+        if isinstance(reset, str):
+            try:
+                reset_at = datetime.fromisoformat(reset.replace("Z", "+00:00"))
+                if reset_at.tzinfo is not None and reset_at <= _now():
+                    quota_status = "expired"
+            except ValueError:
+                pass
     return {
         "action": verdict.action if verdict is not None else None,
         "window_high": bool(detail.get("window_high", False)),
         "model": detail.get("model"),
-        "used_percent": detail.get("used_percent"),
+        "used_percent": used if quota_status == "fresh" else None,
+        "quota_status": quota_status,
         "pause_percent": block["claude_7d_pause_percent"],
         "resume_percent": block["claude_7d_resume_percent"],
         "last_action": last.action if last is not None else None,

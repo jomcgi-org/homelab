@@ -275,7 +275,23 @@ describe("factory board page", () => {
     });
     const target = renderPage({ board: fallen, task: null, error: false });
     expect(target.querySelector(".policy-line").textContent).toContain(
-      "review on astra: claude 7d at 91% of 85%",
+      "review on astra: claude 7d 91% used (fallback threshold 85%)",
+    );
+  });
+
+  test("does not show a historical percentage when fallback has lost its reading", () => {
+    const stale = board({
+      review_routing: {
+        action: "reviewer_fallback",
+        model: "astra",
+        used_percent: 85,
+        pause_percent: 85,
+        last_action: "quota_guard_unknown",
+      },
+    });
+    const target = renderPage({ board: stale, task: null, error: false });
+    expect(target.querySelector(".policy-line .guard").textContent).toBe(
+      "review on astra: quota unavailable, retaining previous fallback",
     );
   });
 

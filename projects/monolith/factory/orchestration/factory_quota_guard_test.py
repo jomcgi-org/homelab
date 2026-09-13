@@ -137,7 +137,11 @@ def test_between_the_thresholds_the_fallback_holds(db, monkeypatch):
     observe(monkeypatch, 80.0)
     verdict = guard.observe(POLICY)
     assert verdict["model"] == "astra" and verdict["window_high"] is True
-    assert actions(db, *controls.REVIEWER_ROUTING_ACTIONS) == ["reviewer_fallback"]
+    assert controls.review_routing_view(POLICY)["used_percent"] == 80.0
+    assert actions(db, *controls.REVIEWER_ROUTING_ACTIONS) == [
+        "reviewer_fallback",
+        "reviewer_fallback",
+    ]
 
 
 def test_below_the_resume_threshold_opus_comes_back_once(db, monkeypatch):
@@ -294,3 +298,106 @@ def test_an_expired_window_is_ignored():
         )
         is None
     )
+
+
+def test_unknown_observation_hides_the_previous_percentage(db, monkeypatch):
+    open_quota(monkeypatch)
+    observe(monkeypatch, 85.0)
+    guard.observe(POLICY)
+    monkeypatch.setattr(guard, "reading", lambda **_kwargs: None)
+    guard.observe(POLICY)
+    view = controls.review_routing_view(POLICY)
+    assert view["model"] == "astra"
+    assert view["used_percent"] is None
+    assert view["quota_status"] == "unavailable"
+
+
+def test_old_verdict_does_not_masquerade_as_a_current_reading(db, monkeypatch):
+    open_quota(monkeypatch)
+    observe(monkeypatch, 85.0)
+    guard.observe(POLICY)
+    with Session(db) as session:
+        row = controls.latest_verdict(session)
+        row.created_at = controls._now() - timedelta(hours=2)
+        session.add(row)
+        session.commit()
+    view = controls.review_routing_view(POLICY)
+    assert view["used_percent"] is None
+    assert view["quota_status"] == "stale"
+
+
+def test_current_percentage_updates_without_a_reviewer_change(db, monkeypatch):
+    open_quota(monkeypatch)
+    observe(monkeypatch, 85.0)
+    guard.observe(POLICY)
+    observe(monkeypatch, 89.0)
+    guard.observe(POLICY)
+    assert controls.review_routing_view(POLICY)["used_percent"] == 89.0
+    assert controls.review_routing_view(POLICY)["model"] == "astra"
+
+
+def test_known_weekly_reset_releases_fallback_after_observation_loss(db, monkeypatch):
+    open_quota(monkeypatch)
+    now = controls._now()
+    reset = now + timedelta(minutes=10)
+    monkeypatch.setattr(
+        guard,
+        "reading",
+        lambda **_kwargs: {
+            "used_percent": 85.0,
+            "age_seconds": 1.0,
+            "resets_at": reset.isoformat(),
+        },
+    )
+    guard.observe(POLICY)
+    assert controls.window_high()
+    monkeypatch.setattr(guard, "reading", lambda **_kwargs: None)
+    monkeypatch.setattr(controls, "_now", lambda: reset + timedelta(seconds=1))
+    assert not controls.window_high()
+    verdict = guard.observe(POLICY)
+    assert verdict["model"] == "opus"
+    assert verdict["used_percent"] is None
+    assert not verdict["window_high"]
+
+
+def test_waiting_transition_keeps_the_high_windows_known_reset(db, monkeypatch):
+    open_quota(monkeypatch)
+    reset = controls._now() + timedelta(minutes=10)
+    monkeypatch.setattr(
+        guard,
+        "reading",
+        lambda **_kwargs: {
+            "used_percent": 85.0,
+            "age_seconds": 1.0,
+            "resets_at": reset.isoformat(),
+        },
+    )
+    assert guard.observe(POLICY)["model"] == "astra"
+    monkeypatch.setattr(guard, "reading", lambda **_kwargs: None)
+    open_quota(monkeypatch, codex={"exhausted": True, "age_seconds": 5.0})
+    waiting = guard.observe(POLICY)
+    assert waiting["action"] == "review_waiting"
+    assert waiting["resets_at"] == reset.isoformat()
+    monkeypatch.setattr(controls, "_now", lambda: reset + timedelta(seconds=1))
+    assert not controls.window_high()
+    assert guard.observe(POLICY)["model"] == "opus"
+
+
+def test_each_outage_after_recovery_invalidates_the_display_immediately(
+    db, monkeypatch
+):
+    open_quota(monkeypatch)
+    monkeypatch.setattr(guard, "reading", lambda **_kwargs: None)
+    guard.observe(POLICY)
+    observe(monkeypatch, 85.0)
+    guard.observe(POLICY)
+    assert controls.review_routing_view(POLICY)["used_percent"] == 85.0
+    monkeypatch.setattr(guard, "reading", lambda **_kwargs: None)
+    guard.observe(POLICY)
+    assert controls.review_routing_view(POLICY)["used_percent"] is None
+    assert len(actions(db, "quota_guard_unknown")) == 2
+    guard.observe(POLICY)
+    assert len(actions(db, "quota_guard_unknown")) == 2
+    observe(monkeypatch, 85.0)
+    guard.observe(POLICY)
+    assert controls.review_routing_view(POLICY)["used_percent"] == 85.0

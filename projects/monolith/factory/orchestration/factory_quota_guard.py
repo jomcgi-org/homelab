@@ -56,6 +56,8 @@ READING_TTL_SECONDS = 60.0
 # An unknown reading is the steady state of a broken broker, so its audit is
 # throttled the way the idle intake audit is rather than written every tick.
 UNKNOWN_AUDIT_SECONDS = 3600
+# Refresh evidence for an unchanged routing choice without writing every tick.
+OBSERVATION_AUDIT_SECONDS = 300
 
 _cache: tuple[float, dict | None] | None = None
 
@@ -122,7 +124,7 @@ def reading(*, force: bool = False) -> dict | None:
 
 
 def _audit_unknown(db: Session, reason: str, detail: dict) -> None:
-    """One unknown audit an hour, so a dead broker does not bury the ledger."""
+    """Record each loss of observations, then throttle a continuing outage."""
     cutoff = _now() - timedelta(seconds=UNKNOWN_AUDIT_SECONDS)
     last = db.exec(
         select(FactoryAudit)
@@ -133,7 +135,8 @@ def _audit_unknown(db: Session, reason: str, detail: dict) -> None:
         created = last.created_at
         if created.tzinfo is None:
             created = created.replace(tzinfo=timezone.utc)
-        if created >= cutoff:
+        known = latest_verdict(db)
+        if created >= cutoff and (known is None or last.id > known.id):
             return
     _audit(db, ACTOR, "quota_guard_unknown", reason=reason, **detail)
 
@@ -192,6 +195,16 @@ def observe(policy: dict, *, session: Session | None = None) -> dict:
         detail = {
             "window_high": state,
             "used_percent": used,
+            "observation_age_seconds": observed.get("age_seconds")
+            if used is not None
+            else None,
+            "resets_at": (
+                observed.get("resets_at")
+                if used is not None
+                else _detail(previous).get("resets_at")
+                if state and previous is not None
+                else None
+            ),
             "model": choice["model"],
             "pause_percent": block["claude_7d_pause_percent"],
             "resume_percent": block["claude_7d_resume_percent"],
@@ -203,6 +216,22 @@ def observe(policy: dict, *, session: Session | None = None) -> dict:
             and _detail_model(previous) == choice["model"]
             and _detail_window(previous) == state
         )
+        if unchanged and used is not None:
+            previous_detail = _detail(previous)
+            created = previous.created_at
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            last_unknown = db.exec(
+                select(FactoryAudit)
+                .where(FactoryAudit.action == "quota_guard_unknown")
+                .order_by(FactoryAudit.id.desc())
+            ).first()
+            unchanged = (
+                (last_unknown is None or last_unknown.id < previous.id)
+                and previous_detail.get("used_percent") == used
+                and previous_detail.get("resets_at") == detail["resets_at"]
+                and (_now() - created).total_seconds() < OBSERVATION_AUDIT_SECONDS
+            )
         # A first tick on a quiet window has restored nothing: the ledger stays
         # empty until something actually moves, so the board shows no routing
         # event rather than an event that did not happen.

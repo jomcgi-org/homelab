@@ -227,13 +227,23 @@ per node per window transition with the models it skipped and why.
 
 The routing reads the 7-day window the token broker already observes for the
 `claude` provider, once per tick behind a short cache. Transitions are audited
-`reviewer_fallback` and `reviewer_restored`, one row each, and the board renders
+`reviewer_fallback` and `reviewer_restored`; changed quota readings and a
+five-minute evidence refresh also update an existing routing choice. The board renders
 the state from that ledger without a broker call. An unknown reading, or one
 older than an hour, never starts a fallback: it audits `quota_guard_unknown` at
-most hourly and review stays where it is, because downgrading every review
+most hourly during a continuing outage, records each new outage after recovery,
+and review stays where it is, because downgrading every review
 whenever a broker read fails would turn one outage into two. It does not end a
 fallback either, so a fallback entered at 95 percent does not snap back to Opus
-the moment the broker goes down.
+the moment the broker goes down. A known weekly reset releases that window's
+high-usage latch even if the broker subsequently loses its observation. The
+reset is carried through waiting/fallback transitions. Legacy records without
+a known reset remain conservative rather than guessing a reset date.
+
+The board never presents the old decision's percentage as current after a newer
+unknown observation or more than an hour of age. It names retained fallback
+routing with unavailable quota instead. A current percentage is labelled as
+usage, separately from the fallback threshold.
 
 ### Model pools
 
