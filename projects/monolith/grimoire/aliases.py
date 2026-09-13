@@ -7,32 +7,35 @@ replacement embedding before mutation, and commits one candidate atomically.
 
 from __future__ import annotations
 
-from copy import deepcopy
-from dataclasses import dataclass
-from datetime import datetime, timezone
 import hashlib
 import json
 import re
+from copy import deepcopy
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import or_
+from sqlalchemy import or_, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import aliased
 from sqlmodel import Session, select
 
 from grimoire.models import (
+    ENTITY_DETAIL_MODELS,
     AliasCandidate,
     ChunkEntityMention,
     Embedding,
     Entity,
-    ENTITY_DETAIL_MODELS,
     KnowledgeChunk,
     KnowledgeGrant,
     Relationship,
 )
 
-SIGNAL_VERSION = "short-full-comention-v1"
+SIGNAL_VERSION = "short-full-comention-v2"
 MAX_EVIDENCE = 3
 SNIPPET_CHARS = 320
+MAX_CONFLICT_RETRIES = 3
+_SCAN_ADVISORY_LOCK = 6_503_913
 _MAP_KEY_PREFIX_RE = re.compile(r"^[A-Za-z]{0,2}\d+[A-Za-z]?[.:]\s+")
 _LEADING_ARTICLE_RE = re.compile(r"^(the|a|an)\s+", re.IGNORECASE)
 _QUOTE_NORMALIZE = {"‘": "'", "’": "'", "“": '"', "”": '"'}
@@ -52,6 +55,101 @@ class ApprovalRequired(AliasError):
 
 class StaleApproval(AliasError):
     pass
+
+
+def _retryable_conflict(exc: DBAPIError) -> bool:
+    code = getattr(exc.orig, "sqlstate", None) or getattr(exc.orig, "pgcode", None)
+    return code in {"40001", "40P01"}
+
+
+def _dialect_name(session: Session) -> str:
+    return session.get_bind().dialect.name
+
+
+def _lock_candidate(session: Session, candidate_id: str) -> AliasCandidate | None:
+    return session.exec(
+        select(AliasCandidate)
+        .where(AliasCandidate.id == candidate_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one_or_none()
+
+
+def _lock_review_state(
+    session: Session, entity_ids: list[str]
+) -> tuple[dict[str, Entity], list[ChunkEntityMention]]:
+    """Lock every row whose contents form the reviewed alias snapshot."""
+    ordered_ids = sorted(entity_ids)
+    entities = session.exec(
+        select(Entity)
+        .where(Entity.id.in_(ordered_ids))
+        .order_by(Entity.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).all()
+    by_id = {entity.id: entity for entity in entities}
+
+    for entity in entities:
+        detail_model = ENTITY_DETAIL_MODELS.get(entity.entity_type)
+        if detail_model is not None:
+            session.exec(
+                select(detail_model)
+                .where(detail_model.entity_id == entity.id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            ).all()
+
+    mentions = session.exec(
+        select(ChunkEntityMention)
+        .where(ChunkEntityMention.entity_id.in_(ordered_ids))
+        .order_by(ChunkEntityMention.chunk_id, ChunkEntityMention.entity_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).all()
+    chunk_ids = sorted({mention.chunk_id for mention in mentions})
+    if chunk_ids:
+        session.exec(
+            select(KnowledgeChunk)
+            .where(KnowledgeChunk.id.in_(chunk_ids))
+            .order_by(KnowledgeChunk.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).all()
+    return by_id, mentions
+
+
+def _lock_merge_children(session: Session, entity_ids: list[str]) -> None:
+    """Lock mutable merge inputs in a deterministic table and row order."""
+    ordered_ids = sorted(entity_ids)
+    session.exec(
+        select(Relationship)
+        .where(
+            or_(
+                Relationship.from_entity_id.in_(ordered_ids),
+                Relationship.to_entity_id.in_(ordered_ids),
+            )
+        )
+        .order_by(Relationship.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).all()
+    session.exec(
+        select(KnowledgeGrant)
+        .where(KnowledgeGrant.entity_id.in_(ordered_ids))
+        .order_by(KnowledgeGrant.player_character_id, KnowledgeGrant.entity_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).all()
+    session.exec(
+        select(Embedding)
+        .where(
+            Embedding.embeddable_kind == "entity",
+            Embedding.embeddable_id.in_(ordered_ids),
+        )
+        .order_by(Embedding.embeddable_id, Embedding.model, Embedding.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).all()
 
 
 def _tokens(name: str) -> tuple[str, ...]:
@@ -186,6 +284,7 @@ def _entity_snapshot(session: Session, entity: Entity) -> dict[str, Any]:
         "name": entity.name,
         "source_book": entity.source_book,
         "site": entity.site,
+        "temporality": entity.temporality,
         "source_type": entity.source_type,
         "is_global": entity.is_global,
         "detail": entity.detail,
@@ -248,14 +347,24 @@ def candidate_view(candidate: AliasCandidate) -> dict[str, Any]:
         "source_book": candidate.source_book,
         "short_entity_id": candidate.short_entity_id,
         "short_name": candidate.short_name,
+        "short_site": candidate.short_site,
+        "short_temporality": candidate.short_temporality,
         "full_entity_id": candidate.full_entity_id,
         "full_name": candidate.full_name,
+        "full_site": candidate.full_site,
+        "full_temporality": candidate.full_temporality,
         "survivor_entity_id": candidate.survivor_entity_id,
         "evidence_count": candidate.evidence_count,
         "evidence": candidate.evidence,
         "state_hash": candidate.state_hash,
+        "approved_state_hash": candidate.approved_state_hash,
         "approved_by": candidate.approved_by,
         "approved_at": candidate.approved_at,
+        "rejected_state_hash": candidate.rejected_state_hash,
+        "rejected_by": candidate.rejected_by,
+        "rejected_at": candidate.rejected_at,
+        "reopened_by": candidate.reopened_by,
+        "reopened_at": candidate.reopened_at,
         "merged_at": candidate.merged_at,
         "updated_at": candidate.updated_at,
     }
@@ -273,8 +382,19 @@ def list_candidates(
     return [candidate_view(row) for row in rows]
 
 
-def generate_candidates(session: Session) -> dict[str, Any]:
-    """Generate or refresh durable candidates and return the review report."""
+def _generate_candidates_once(session: Session) -> dict[str, Any]:
+    if _dialect_name(session) == "postgresql":
+        session.execute(
+            text("SELECT pg_advisory_xact_lock(:key)"),
+            {"key": _SCAN_ADVISORY_LOCK},
+        )
+    locked_candidates = session.exec(
+        select(AliasCandidate)
+        .order_by(AliasCandidate.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).all()
+
     left_entity = aliased(Entity)
     right_entity = aliased(Entity)
     left_mention = aliased(ChunkEntityMention)
@@ -329,8 +449,7 @@ def generate_candidates(session: Session) -> dict[str, Any]:
             )
 
     existing = {
-        (row.short_entity_id, row.full_entity_id): row
-        for row in session.exec(select(AliasCandidate)).all()
+        (row.short_entity_id, row.full_entity_id): row for row in locked_candidates
     }
     now = datetime.now(timezone.utc)
     created = updated = staled = 0
@@ -353,6 +472,8 @@ def generate_candidates(session: Session) -> dict[str, Any]:
                 full_name=full.name,
                 short_site=short.site,
                 full_site=full.site,
+                short_temporality=short.temporality,
+                full_temporality=full.temporality,
                 signal_version=SIGNAL_VERSION,
                 evidence=found["evidence"],
                 evidence_count=len(fingerprint),
@@ -370,6 +491,8 @@ def generate_candidates(session: Session) -> dict[str, Any]:
         candidate.full_name = full.name
         candidate.short_site = short.site
         candidate.full_site = full.site
+        candidate.short_temporality = short.temporality
+        candidate.full_temporality = full.temporality
         candidate.signal_version = SIGNAL_VERSION
         candidate.evidence = found["evidence"]
         candidate.evidence_count = len(fingerprint)
@@ -396,6 +519,18 @@ def generate_candidates(session: Session) -> dict[str, Any]:
     }
 
 
+def generate_candidates(session: Session) -> dict[str, Any]:
+    """Generate or refresh durable candidates and return the review report."""
+    for attempt in range(MAX_CONFLICT_RETRIES):
+        try:
+            return _generate_candidates_once(session)
+        except DBAPIError as exc:
+            session.rollback()
+            if not _retryable_conflict(exc) or attempt + 1 == MAX_CONFLICT_RETRIES:
+                raise
+    raise AssertionError("unreachable")
+
+
 def _mark_stale(
     session: Session, candidate: AliasCandidate, reason: StaleApproval
 ) -> None:
@@ -405,37 +540,58 @@ def _mark_stale(
     raise reason
 
 
-def approve_candidate(
-    session: Session, candidate_id: str, reviewer: str, survivor_id: str
+def _current_locked_state(
+    session: Session, candidate: AliasCandidate
+) -> tuple[list[dict[str, Any]], int, str, Entity, Entity]:
+    entities, _ = _lock_review_state(
+        session, [candidate.short_entity_id, candidate.full_entity_id]
+    )
+    short = entities.get(candidate.short_entity_id)
+    full = entities.get(candidate.full_entity_id)
+    evidence, evidence_count, current_hash = _validate_pair(session, short, full)
+    return evidence, evidence_count, current_hash, short, full
+
+
+def _require_expected_state(
+    session: Session, candidate: AliasCandidate, expected_state_hash: str
+) -> tuple[list[dict[str, Any]], int, str, Entity, Entity]:
+    if candidate.state_hash != expected_state_hash:
+        session.rollback()
+        raise StaleApproval("candidate report changed before the decision")
+    try:
+        state = _current_locked_state(session, candidate)
+    except StaleApproval as exc:
+        _mark_stale(session, candidate, exc)
+    if state[2] != expected_state_hash:
+        candidate.state_hash = state[2]
+        candidate.evidence = state[0]
+        candidate.evidence_count = state[1]
+        _mark_stale(session, candidate, StaleApproval("candidate changed since review"))
+    return state
+
+
+def _approve_candidate_once(
+    session: Session,
+    candidate_id: str,
+    reviewer: str,
+    survivor_id: str,
+    expected_state_hash: str,
 ) -> dict[str, Any]:
-    reviewer = reviewer.strip()
-    if not reviewer:
-        raise AliasError("reviewer must be non-empty")
-    candidate = session.exec(
-        select(AliasCandidate)
-        .where(AliasCandidate.id == candidate_id)
-        .with_for_update()
-    ).one_or_none()
+    candidate = _lock_candidate(session, candidate_id)
     if candidate is None:
         raise AliasNotFound("alias candidate not found")
     if candidate.status == "merged":
+        session.rollback()
         return candidate_view(candidate)
-    if candidate.status == "rejected":
-        raise AliasError("rejected candidates must be rescanned before approval")
     if survivor_id != candidate.full_entity_id:
+        session.rollback()
         raise AliasError("the longer full-name entity must be the survivor")
-
-    short = session.get(Entity, candidate.short_entity_id)
-    full = session.get(Entity, candidate.full_entity_id)
-    try:
-        evidence, evidence_count, current_hash = _validate_pair(session, short, full)
-    except StaleApproval as exc:
-        _mark_stale(session, candidate, exc)
-    if current_hash != candidate.state_hash:
-        candidate.state_hash = current_hash
-        candidate.evidence = evidence
-        candidate.evidence_count = evidence_count
-        _mark_stale(session, candidate, StaleApproval("candidate changed since review"))
+    _, _, current_hash, _, _ = _require_expected_state(
+        session, candidate, expected_state_hash
+    )
+    if candidate.status in {"rejected", "stale"}:
+        session.rollback()
+        raise AliasError("rejected or stale candidates must be explicitly reopened")
 
     if (
         candidate.status == "approved"
@@ -454,6 +610,124 @@ def approve_candidate(
     candidate.updated_at = now
     session.commit()
     return candidate_view(candidate)
+
+
+def approve_candidate(
+    session: Session,
+    candidate_id: str,
+    reviewer: str,
+    survivor_id: str,
+    expected_state_hash: str,
+) -> dict[str, Any]:
+    """Approve exactly the candidate state named in the human's report."""
+    for attempt in range(MAX_CONFLICT_RETRIES):
+        try:
+            return _approve_candidate_once(
+                session,
+                candidate_id,
+                reviewer,
+                survivor_id,
+                expected_state_hash,
+            )
+        except DBAPIError as exc:
+            session.rollback()
+            if not _retryable_conflict(exc) or attempt + 1 == MAX_CONFLICT_RETRIES:
+                raise
+    raise AssertionError("unreachable")
+
+
+def _reject_candidate_once(
+    session: Session,
+    candidate_id: str,
+    reviewer: str,
+    expected_state_hash: str,
+) -> dict[str, Any]:
+    candidate = _lock_candidate(session, candidate_id)
+    if candidate is None:
+        raise AliasNotFound("alias candidate not found")
+    if candidate.status == "merged":
+        session.rollback()
+        raise AliasError("merged candidates cannot be rejected")
+    _require_expected_state(session, candidate, expected_state_hash)
+    if (
+        candidate.status == "rejected"
+        and candidate.rejected_state_hash == expected_state_hash
+        and candidate.rejected_by == reviewer
+    ):
+        session.rollback()
+        return candidate_view(candidate)
+    now = datetime.now(timezone.utc)
+    candidate.status = "rejected"
+    candidate.rejected_state_hash = expected_state_hash
+    candidate.rejected_by = reviewer
+    candidate.rejected_at = now
+    candidate.updated_at = now
+    session.commit()
+    return candidate_view(candidate)
+
+
+def reject_candidate(
+    session: Session,
+    candidate_id: str,
+    reviewer: str,
+    expected_state_hash: str,
+) -> dict[str, Any]:
+    """Persist a human rejection without allowing scans to reopen it."""
+    for attempt in range(MAX_CONFLICT_RETRIES):
+        try:
+            return _reject_candidate_once(
+                session, candidate_id, reviewer, expected_state_hash
+            )
+        except DBAPIError as exc:
+            session.rollback()
+            if not _retryable_conflict(exc) or attempt + 1 == MAX_CONFLICT_RETRIES:
+                raise
+    raise AssertionError("unreachable")
+
+
+def _reopen_candidate_once(
+    session: Session,
+    candidate_id: str,
+    reviewer: str,
+    expected_state_hash: str,
+) -> dict[str, Any]:
+    candidate = _lock_candidate(session, candidate_id)
+    if candidate is None:
+        raise AliasNotFound("alias candidate not found")
+    if candidate.status not in {"rejected", "stale"}:
+        session.rollback()
+        raise AliasError("only rejected or stale candidates can be reopened")
+    _require_expected_state(session, candidate, expected_state_hash)
+    now = datetime.now(timezone.utc)
+    candidate.status = "pending"
+    candidate.survivor_entity_id = None
+    candidate.approved_state_hash = None
+    candidate.approved_by = None
+    candidate.approved_at = None
+    candidate.reopened_by = reviewer
+    candidate.reopened_at = now
+    candidate.updated_at = now
+    session.commit()
+    return candidate_view(candidate)
+
+
+def reopen_candidate(
+    session: Session,
+    candidate_id: str,
+    reviewer: str,
+    expected_state_hash: str,
+) -> dict[str, Any]:
+    """Deliberately put a rejected or stale current state back in review."""
+    for attempt in range(MAX_CONFLICT_RETRIES):
+        try:
+            return _reopen_candidate_once(
+                session, candidate_id, reviewer, expected_state_hash
+            )
+        except DBAPIError as exc:
+            session.rollback()
+            if not _retryable_conflict(exc) or attempt + 1 == MAX_CONFLICT_RETRIES:
+                raise
+    raise AssertionError("unreachable")
 
 
 def _mention_texts(session: Session, entity_id: str) -> list[str]:
@@ -477,12 +751,29 @@ def _embedding_text(name: str, mention_texts: list[str]) -> str:
 class _MergePlan:
     candidate_id: str
     state_hash: str
-    embedding_changed: bool
+    embedding_needed: bool
     embedding_text: str
     replay: bool = False
 
 
-def _prepare_merge(session: Session, candidate_id: str) -> _MergePlan:
+def _has_current_embedding(
+    session: Session, entity_id: str, embedding_model: str
+) -> bool:
+    return (
+        session.exec(
+            select(Embedding.id).where(
+                Embedding.embeddable_kind == "entity",
+                Embedding.embeddable_id == entity_id,
+                Embedding.model == embedding_model,
+            )
+        ).first()
+        is not None
+    )
+
+
+def _prepare_merge(
+    session: Session, candidate_id: str, embedding_model: str
+) -> _MergePlan:
     candidate = session.get(AliasCandidate, candidate_id)
     if candidate is None:
         raise AliasNotFound("alias candidate not found")
@@ -505,7 +796,10 @@ def _prepare_merge(session: Session, candidate_id: str) -> _MergePlan:
     after_texts = sorted(set(before_texts) | set(_mention_texts(session, short.id)))
     before = _embedding_text(full.name, before_texts)
     after = _embedding_text(full.name, after_texts)
-    return _MergePlan(candidate_id, current_hash, before != after, after)
+    embedding_needed = before != after or not _has_current_embedding(
+        session, full.id, embedding_model
+    )
+    return _MergePlan(candidate_id, current_hash, embedding_needed, after)
 
 
 def _merge_prefer_primary(primary: Any, secondary: Any) -> Any:
@@ -532,11 +826,29 @@ def _merge_properties(
     others: list[dict | None],
     chunk_ids: list[str],
 ) -> dict:
-    merged = deepcopy(primary or {})
+    all_properties = [primary or {}, *(properties or {} for properties in others)]
+    merged = {
+        key: deepcopy(value)
+        for key, value in (primary or {}).items()
+        if key not in {"_alias_merge_conflicts", "_alias_merge_chunk_ids"}
+    }
     conflicts: dict[str, list[Any]] = {}
+    for properties in all_properties:
+        history = properties.get("_alias_merge_conflicts")
+        if not isinstance(history, dict):
+            continue
+        for path, history_values in history.items():
+            if not isinstance(history_values, list):
+                continue
+            values = conflicts.setdefault(path, [])
+            for value in history_values:
+                if value not in values:
+                    values.append(deepcopy(value))
 
     def add(target: dict, incoming: dict, prefix: str = "") -> None:
         for key in sorted(incoming):
+            if key in {"_alias_merge_conflicts", "_alias_merge_chunk_ids"}:
+                continue
             value = incoming[key]
             path = f"{prefix}.{key}" if prefix else key
             if key not in target:
@@ -544,21 +856,26 @@ def _merge_properties(
             elif isinstance(target[key], dict) and isinstance(value, dict):
                 add(target[key], value, path)
             elif target[key] != value:
-                values = conflicts.setdefault(path, [deepcopy(target[key])])
+                values = conflicts.setdefault(path, [])
+                if target[key] not in values:
+                    values.append(deepcopy(target[key]))
                 if value not in values:
                     values.append(deepcopy(value))
 
     for properties in others:
         add(merged, properties or {})
     if conflicts:
-        previous = merged.get("_alias_merge_conflicts")
-        merged["_alias_merge_conflicts"] = _merge_prefer_primary(
-            previous if isinstance(previous, dict) else {}, conflicts
-        )
-    unique_chunks = sorted({chunk_id for chunk_id in chunk_ids if chunk_id})
+        merged["_alias_merge_conflicts"] = conflicts
+    prior_chunks = set()
+    for properties in all_properties:
+        history_chunks = properties.get("_alias_merge_chunk_ids")
+        if isinstance(history_chunks, list):
+            prior_chunks.update(chunk_id for chunk_id in history_chunks if chunk_id)
+    unique_chunks = sorted(
+        prior_chunks | {chunk_id for chunk_id in chunk_ids if chunk_id}
+    )
     if len(unique_chunks) > 1:
-        existing = merged.get("_alias_merge_chunk_ids", [])
-        merged["_alias_merge_chunk_ids"] = sorted(set(existing) | set(unique_chunks))
+        merged["_alias_merge_chunk_ids"] = unique_chunks
     return merged
 
 
@@ -704,11 +1021,7 @@ def _apply_merge(
     embedding_model: str,
     embedding_vector: list[float] | None,
 ) -> dict[str, Any]:
-    candidate = session.exec(
-        select(AliasCandidate)
-        .where(AliasCandidate.id == plan.candidate_id)
-        .with_for_update()
-    ).one_or_none()
+    candidate = _lock_candidate(session, plan.candidate_id)
     if candidate is None:
         raise AliasNotFound("alias candidate not found")
     if candidate.status == "merged":
@@ -718,12 +1031,9 @@ def _apply_merge(
         session.rollback()
         raise ApprovalRequired("alias candidate has no current explicit approval")
 
-    entities = session.exec(
-        select(Entity)
-        .where(Entity.id.in_([candidate.short_entity_id, candidate.full_entity_id]))
-        .with_for_update()
-    ).all()
-    by_id = {entity.id: entity for entity in entities}
+    entity_ids = [candidate.short_entity_id, candidate.full_entity_id]
+    by_id, _ = _lock_review_state(session, entity_ids)
+    _lock_merge_children(session, entity_ids)
     short = by_id.get(candidate.short_entity_id)
     full = by_id.get(candidate.full_entity_id)
     try:
@@ -744,18 +1054,25 @@ def _apply_merge(
     merged_texts = sorted(
         set(current_full_texts) | set(_mention_texts(session, short.id))
     )
-    current_embedding_changed = _embedding_text(
+    embedding_input_changed = _embedding_text(
         full.name, current_full_texts
     ) != _embedding_text(full.name, merged_texts)
-    if current_embedding_changed != plan.embedding_changed:
+    current_embedding_needed = embedding_input_changed or not _has_current_embedding(
+        session, full.id, embedding_model
+    )
+    if current_embedding_needed != plan.embedding_needed:
         _mark_stale(session, candidate, StaleApproval("embedding input changed"))
-    if current_embedding_changed and embedding_vector is None:
+    if current_embedding_needed and embedding_vector is None:
         session.rollback()
         raise AliasError("replacement embedding was not prepared")
 
     try:
         full.detail = _merge_prefer_primary(full.detail, short.detail)
         full.is_global = full.is_global or short.is_global
+        if full.entity_type == "location" and full.site is None:
+            full.site = short.site
+        if full.entity_type in {"event", "quest"} and full.temporality is None:
+            full.temporality = short.temporality
         _merge_typed_detail(session, short, full)
         _rewrite_mentions(session, short, full)
         _rewrite_relationships(session, short, full)
@@ -769,24 +1086,37 @@ def _apply_merge(
         ).all()
         for embedding in twin_embeddings:
             session.delete(embedding)
-        if current_embedding_changed:
+        if current_embedding_needed:
             survivor_embeddings = session.exec(
                 select(Embedding).where(
                     Embedding.embeddable_kind == "entity",
                     Embedding.embeddable_id == full.id,
                 )
             ).all()
+            current_embedding = next(
+                (
+                    embedding
+                    for embedding in survivor_embeddings
+                    if embedding.model == embedding_model
+                ),
+                None,
+            )
             for embedding in survivor_embeddings:
-                session.delete(embedding)
-            session.add(
-                Embedding(
+                if embedding is not current_embedding:
+                    session.delete(embedding)
+            if current_embedding is None:
+                session.flush()
+                current_embedding = Embedding(
                     embeddable_kind="entity",
                     embeddable_id=full.id,
                     model=embedding_model,
                     dim=len(embedding_vector),
                     vector=embedding_vector,
                 )
-            )
+                session.add(current_embedding)
+            else:
+                current_embedding.dim = len(embedding_vector)
+                current_embedding.vector = embedding_vector
 
         session.flush()
         session.delete(short)
@@ -803,7 +1133,7 @@ def _apply_merge(
         "candidate_id": candidate.id,
         "survivor_entity_id": full.id,
         "removed_entity_id": short.id,
-        "embedding_refreshed": current_embedding_changed,
+        "embedding_refreshed": current_embedding_needed,
         "replay": False,
     }
 
@@ -812,16 +1142,23 @@ async def execute_approved_candidate(
     session: Session, candidate_id: str, embed_client
 ) -> dict[str, Any]:
     """Execute one approved pair, with external embedding work before mutation."""
-    plan = _prepare_merge(session, candidate_id)
+    plan = _prepare_merge(session, candidate_id, embed_client.model)
     if plan.replay:
         session.rollback()
         return {"status": "merged", "candidate_id": candidate_id, "replay": True}
     session.rollback()
 
     vector = None
-    if plan.embedding_changed:
+    if plan.embedding_needed:
         vectors = await embed_client.embed_batch([plan.embedding_text])
         if len(vectors) != 1 or not vectors[0]:
             raise AliasError("embedding service returned no replacement vector")
         vector = vectors[0]
-    return _apply_merge(session, plan, embed_client.model, vector)
+    for attempt in range(MAX_CONFLICT_RETRIES):
+        try:
+            return _apply_merge(session, plan, embed_client.model, vector)
+        except DBAPIError as exc:
+            session.rollback()
+            if not _retryable_conflict(exc) or attempt + 1 == MAX_CONFLICT_RETRIES:
+                raise
+    raise AssertionError("unreachable")
