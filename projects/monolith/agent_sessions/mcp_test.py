@@ -2512,3 +2512,26 @@ def test_voice_ui_tools_stay_callable_without_an_identified_caller(tool_name):
     assert PUBLIC_TAG in tool.tags, (
         f"{tool_name} lost {PUBLIC_TAG}; the voice path would fail closed"
     )
+
+
+# Substrings Context Forge refuses in a tool description at catalogue refresh
+# (mcpgateway ToolCreate.validate_description). A tool that trips one is not
+# rejected loudly anywhere a caller can see: the gateway logs an ERROR and
+# drops the row, so the tool is served by the monolith and invisible to every
+# MCP client. session_start and session_send were lost that way to one ';'.
+CONTEXT_FORGE_FORBIDDEN_IN_DESCRIPTIONS = (";", "&&", "||", "$(")
+
+
+def test_tool_descriptions_survive_the_gateway_validator():
+    from core.mcp_app import mcp as shared
+
+    offenders = []
+    for tool in asyncio.run(shared.list_tools()):
+        description = tool.description or ""
+        hits = [p for p in CONTEXT_FORGE_FORBIDDEN_IN_DESCRIPTIONS if p in description]
+        if hits:
+            offenders.append((tool.name, hits))
+    assert not offenders, (
+        "Context Forge drops these tools at refresh, so no client would see "
+        f"them: {offenders}"
+    )
