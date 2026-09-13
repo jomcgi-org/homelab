@@ -44,6 +44,13 @@ Api = Callable[[str, str, Any], tuple[int, Any]]
 
 PUBLIC = "public"
 
+# Every gateway list endpoint pages at pagination_default_page_size (50) unless
+# told otherwise, with the cursor tucked away unless include_pagination is
+# set. limit=0 is the documented "all" on /tools, /servers and /gateways. The
+# first run of this job read exactly 50 tools out of 60 and reconciled a
+# truncated catalogue without noticing; the two beyond the page stayed hidden.
+UNPAGED = "?limit=0"
+
 
 class ReconcileError(RuntimeError):
     """A condition the job must surface as a failed run, never paper over."""
@@ -79,6 +86,14 @@ def _expect(status: int, payload: Any, what: str) -> None:
         raise ReconcileError(f"{what} failed with {status}: {payload!r}")
 
 
+def _reject_truncated(payload: Any, what: str) -> None:
+    """A page with a continuation is a partial catalogue, never reconcile it."""
+    if isinstance(payload, dict) and (
+        payload.get("nextCursor") or payload.get("next_cursor")
+    ):
+        raise ReconcileError(f"{what} returned a paginated response; expected all rows")
+
+
 def _items(payload: Any, what: str) -> list[dict]:
     """CF returns either a bare list or a paginated envelope, depending on
     whether the caller asked for a page. Accept both rather than pinning the
@@ -112,8 +127,9 @@ def _field(row: dict, snake: str):
 
 
 def gateway_id(api: Api, name: str) -> str:
-    status, payload = api("GET", "/gateways", None)
+    status, payload = api("GET", "/gateways" + UNPAGED, None)
     _expect(status, payload, "GET /gateways")
+    _reject_truncated(payload, "GET /gateways")
     for row in _items(payload, "GET /gateways"):
         if row.get("name") == name or row.get("slug") == name:
             found = row.get("id")
@@ -124,8 +140,9 @@ def gateway_id(api: Api, name: str) -> str:
 
 
 def gateway_tools(api: Api, gid: str) -> list[dict]:
-    status, payload = api("GET", "/tools", None)
+    status, payload = api("GET", "/tools" + UNPAGED, None)
     _expect(status, payload, "GET /tools")
+    _reject_truncated(payload, "GET /tools")
     return [
         row
         for row in _items(payload, "GET /tools")
@@ -149,8 +166,9 @@ def publish(api: Api, tools: list[dict]) -> list[str]:
 
 
 def server_by_name(api: Api, name: str) -> dict:
-    status, payload = api("GET", "/servers", None)
+    status, payload = api("GET", "/servers" + UNPAGED, None)
     _expect(status, payload, "GET /servers")
+    _reject_truncated(payload, "GET /servers")
     for row in _items(payload, "GET /servers"):
         if row.get("name") == name:
             return row
