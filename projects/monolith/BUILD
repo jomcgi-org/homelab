@@ -1320,7 +1320,12 @@ py_library(
 
 py_library(
     name = "pkg_agent_sessions",
-    srcs = glob(
+    # Keep the private view closure with its execution dependencies during
+    # consolidation; pkg_factory also composes swarm and cannot be a leaf.
+    srcs = [
+        "factory/private_view.py",
+        "factory/publication.py",
+    ] + glob(
         [
             "agent_sessions/**/*.py",
         ],
@@ -1342,6 +1347,7 @@ py_library(
     deps = [
         ":agent_sessions_admission",
         ":agent_sessions_rationale",
+        ":factory_access",
         # mcp.py and router.py read the request principal via auth.api.
         ":pkg_auth",
         ":pkg_core",
@@ -1420,6 +1426,7 @@ py_library(
     deps = [
         ":agent_sessions_admission",
         ":agent_sessions_rationale",
+        ":factory_access",
         ":pkg_agent_sessions",
         ":pkg_core",
         ":pkg_cyclegroup",
@@ -5157,7 +5164,7 @@ py_test(
 
 py_test(
     name = "agent_sessions_factory_view_test",
-    srcs = ["agent_sessions/factory_view_test.py"],
+    srcs = ["factory/private_view_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -5170,7 +5177,7 @@ py_test(
 # so this links no database and no swarm package.
 py_test(
     name = "agent_sessions_factory_public_test",
-    srcs = ["agent_sessions/factory_public_test.py"],
+    srcs = ["factory/publication_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -7797,7 +7804,7 @@ bdd_test(
 # half is agent_sessions_factory_public_test, which needs no database.
 bdd_test(
     name = "factory_public_writer_test",
-    srcs = ["agent_sessions/factory_public_writer_test.py"],
+    srcs = ["factory/publication_writer_test.py"],
 )
 
 # Real-Postgres test: the public_writer role can DML only the chat_public schema,
@@ -8680,10 +8687,16 @@ py_library(
     name = "pkg_factory",
     srcs = glob(
         ["factory/*.py"],
-        exclude = ["factory/*_test.py"],
+        exclude = [
+            "factory/*_test.py",
+            "factory/access.py",
+            "factory/private_view.py",
+            "factory/publication.py",
+        ],
     ),
     imports = ["."],
     deps = [
+        ":factory_access",
         ":pkg_agent_sessions",
         ":pkg_framework",
         ":pkg_knowledge",
@@ -8701,5 +8714,15 @@ py_test(
         "@pip//httpx",
         "@pip//pytest",
         "@pip//pytest_asyncio",
+    ],
+)
+
+py_library(
+    name = "factory_access",
+    srcs = ["factory/access.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_auth",
+        "@pip//fastapi",
     ],
 )

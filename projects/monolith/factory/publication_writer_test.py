@@ -1,6 +1,6 @@
 """Real-Postgres tests for the public factory snapshot writer.
 
-factory_public_test.py covers the shaping, which is all pure functions over
+publication_test.py covers the shaping, which is all pure functions over
 dicts. What only a real database can prove is the other half: that the upserts
 and the prune survive contact with Postgres types, that an empty factory
 publishes a valid empty board instead of raising, and that a task falling off
@@ -24,7 +24,7 @@ from swarm.factory_controls import validate_policy
 from swarm.factory_models import FactoryControl, FactoryReceipt
 from swarm.models import SwarmNodeRun, SwarmPlanNode, SwarmTask
 
-from agent_sessions.factory_public import write_public_snapshot
+from factory.publication import write_public_snapshot
 from agent_sessions.models import AgentSession, AgentTurn
 
 # Seeded on every identity-bearing column the snapshot must not republish, so

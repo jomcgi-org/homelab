@@ -2,7 +2,7 @@
 
 The jomcgi.dev factory pages cannot read the factory. public_reader has no
 grant on the swarm or agent_sessions schemas, and the public image is pruned of
-the factory code entirely, so there is nothing on that side that could assemble
+private execution and publication code, so there is nothing on that side that could assemble
 a board even if the rows were reachable. This module is the private half of the
 snapshot pattern that answers that: it reads the real tables with the real
 code, shapes three payload kinds, and writes them to public_api tables that
@@ -160,7 +160,7 @@ def flatten_max_tasks(value: object) -> int | None:
 def shape_policy(board_policy: dict | None, raw_policy: dict | None = None) -> dict:
     """The board's policy block plus the review-round cap the board omits.
 
-    ``board_policy`` is what ``factory_view.shape_policy`` already resolved (it
+    ``board_policy`` is what ``private_view.shape_policy`` already resolved (it
     folds the legacy ``max_turns_per_task`` into ``max_task_turns_hard``);
     ``raw_policy`` is the stored control policy, read only for the cap.
     """
@@ -507,7 +507,7 @@ def _board_task_ids(db: Session) -> tuple[set[str], dict[int, str]]:
     """
     from swarm.factory_models import FactoryReceipt
 
-    from agent_sessions.factory_view import ACTIVE_STATES, QUEUED_STATES, RECENT_LIMIT
+    from factory.private_view import ACTIVE_STATES, QUEUED_STATES, RECENT_LIMIT
 
     rows = db.exec(
         select(
@@ -596,7 +596,7 @@ def _sessions_and_turns(
 
 def build_public_snapshot(session: Session) -> PublicSnapshot:
     """Read the factory once and shape everything the public pages serve."""
-    from agent_sessions.factory_view import build_factory_view
+    from factory.private_view import build_factory_view
 
     snapshotted_at = _iso(datetime.now(timezone.utc))
     task_ids, bodies = _board_task_ids(session)

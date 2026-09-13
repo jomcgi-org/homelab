@@ -579,7 +579,7 @@ def factory_public_snapshot() -> None:
     own transaction."""
     from sqlmodel import Session
 
-    from agent_sessions.factory_public import write_public_snapshot
+    from factory.publication import write_public_snapshot
     from core.db import get_engine
 
     configure_logging()

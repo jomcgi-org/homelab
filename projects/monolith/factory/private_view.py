@@ -247,7 +247,7 @@ def build_factory_view(
     rather than every recent card carrying its whole graph.
 
     ``plan_tasks`` widens that set without a second pass over the board. The
-    public snapshot job (agent_sessions/factory_public.py) needs the plan for
+    public snapshot job (factory/publication.py) needs the plan for
     every task it publishes, and asking for them one board-read at a time
     would re-read the whole control state per task.
     """
