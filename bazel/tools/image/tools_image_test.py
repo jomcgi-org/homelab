@@ -49,7 +49,9 @@ def _members(layer: pathlib.Path) -> dict[str, tarfile.TarInfo]:
         }
 
 
-def _read_member(layer: pathlib.Path, name: str, limit: int | None = None) -> bytes | None:
+def _read_member(
+    layer: pathlib.Path, name: str, limit: int | None = None
+) -> bytes | None:
     with tarfile.open(layer, "r:*") as archive:
         for member in archive.getmembers():
             if member.name.removeprefix("./").lstrip("/") != name:
