@@ -16,6 +16,7 @@ from auth.principal import Authority, Principal, PrincipalKind
 from auth.settings import AuthSettings
 from auth.verifier import (
     AuthentikStandingVerifier,
+    CloudflareAccessVerifier,
     TokenResolver,
     build_default_resolver,
 )
@@ -439,6 +440,48 @@ def test_unconfigured_agent_provider_creates_single_verifier():
 
     assert len(single._verifiers) == 1
     assert len(configured._verifiers) == 2
+
+
+def test_configured_cloudflare_access_provider_extends_verifier_chain():
+    configured = build_default_resolver(
+        _settings(
+            cloudflare_access_jwks_url=(
+                "https://team.cloudflareaccess.com/cdn-cgi/access/certs"
+            ),
+            cloudflare_access_issuer="https://team.cloudflareaccess.com",
+        )
+    )
+
+    assert len(configured._verifiers) == 2
+    cloudflare = configured._verifiers[-1]
+    assert cloudflare._settings.authentik_issuer == (
+        "https://team.cloudflareaccess.com"
+    )
+    assert cloudflare._require_audience is False
+
+
+@pytest.mark.asyncio
+async def test_cloudflare_access_verifier_maps_signed_email_identity():
+    private_key, jwk = _key_and_jwk()
+    fetch, calls = _fetcher({"keys": [jwk]})
+    issuer = "https://team.cloudflareaccess.com"
+    jwks_url = f"{issuer}/cdn-cgi/access/certs"
+    verifier = CloudflareAccessVerifier(
+        _settings(
+            cloudflare_access_jwks_url=jwks_url,
+            cloudflare_access_issuer=issuer,
+        ),
+        fetch=fetch,
+    )
+
+    principal = await verifier.verify(
+        _token(private_key, iss=issuer, aud="opaque-access-application-tag")
+    )
+
+    assert principal is not None
+    assert principal.email == "person@example.com"
+    assert principal.authority is Authority.STANDING
+    assert calls == [jwks_url]
 
 
 @pytest.mark.asyncio

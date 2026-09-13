@@ -32,8 +32,10 @@ class AuthentikStandingVerifier:
         *,
         fetch: JwksFetcher = fetch_jwks,
         now: TimeFunction = time.monotonic,
+        require_audience: bool = True,
     ) -> None:
         self._settings = settings
+        self._require_audience = require_audience
         self._jwks = JwksCache(
             settings.authentik_jwks_url,
             settings.jwks_cache_ttl_s,
@@ -46,7 +48,15 @@ class AuthentikStandingVerifier:
         # An unconfigured verifier cannot know what it owns, so declining would
         # turn a deployment mistake into "no verifier recognized this token",
         # which renders 401 and hides an operator fault behind a caller one.
-        if not self._settings.identity_is_configured:
+        configured = (
+            self._settings.identity_is_configured
+            if self._require_audience
+            else bool(
+                self._settings.authentik_jwks_url
+                and self._settings.authentik_issuer
+            )
+        )
+        if not configured:
             raise AuthError(AuthErrorReason.UNCONFIGURED)
 
         # ── Ownership gate ───────────────────────────────────────────────────
@@ -108,18 +118,28 @@ class AuthentikStandingVerifier:
             raise AuthError(AuthErrorReason.JWKS_MALFORMED) from exc
 
         try:
+            required_claims = ["exp", "iss", "sub"]
+            if self._require_audience:
+                required_claims.append("aud")
             claims = jwt.decode(
                 token,
                 key=key,
                 algorithms=["RS256"],
-                audience=self._settings.authentik_audience,
+                audience=(
+                    self._settings.authentik_audience
+                    if self._require_audience
+                    else None
+                ),
                 issuer=self._settings.authentik_issuer,
                 # PyJWT validates exp only when the claim is PRESENT, so without
                 # this a token minted without an expiry would be accepted
                 # forever. iss and aud are already implied by passing issuer and
                 # audience, and sub is checked below, but state all four so the
                 # requirement survives a future edit to either.
-                options={"require": ["exp", "iss", "aud", "sub"]},
+                options={
+                    "require": required_claims,
+                    "verify_aud": self._require_audience,
+                },
             )
         except jwt.ExpiredSignatureError as exc:
             raise AuthError(AuthErrorReason.EXPIRED) from exc
@@ -164,6 +184,36 @@ class AuthentikStandingVerifier:
         )
 
 
+class CloudflareAccessVerifier(AuthentikStandingVerifier):
+    """Verify a signed Cloudflare Access identity assertion.
+
+    Access uses an opaque per-application audience tag. Campaign membership is
+    the resource authorization boundary here, so the shared verifier validates
+    the team issuer, signature, expiry, subject, and email identity without
+    treating an application tag as a campaign grant.
+    """
+
+    def __init__(
+        self,
+        settings: AuthSettings,
+        *,
+        fetch: JwksFetcher = fetch_jwks,
+        now: TimeFunction = time.monotonic,
+    ) -> None:
+        cloudflare_settings = replace(
+            settings,
+            authentik_jwks_url=settings.cloudflare_access_jwks_url,
+            authentik_issuer=settings.cloudflare_access_issuer,
+            authentik_audience="",
+        )
+        super().__init__(
+            cloudflare_settings,
+            fetch=fetch,
+            now=now,
+            require_audience=False,
+        )
+
+
 class TokenResolver:
     """Resolve bearer material against verifiers in registration order."""
 
@@ -192,5 +242,8 @@ def build_default_resolver(settings: AuthSettings | None = None) -> TokenResolve
             authentik_audience=configured.authentik_agent_audience,
         )
         verifiers.append(AuthentikStandingVerifier(agent_settings))
+
+    if configured.cloudflare_access_is_configured:
+        verifiers.append(CloudflareAccessVerifier(configured))
 
     return TokenResolver(verifiers)

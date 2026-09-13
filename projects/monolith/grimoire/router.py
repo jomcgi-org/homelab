@@ -29,7 +29,7 @@ from sqlalchemy import func
 from sqlmodel import Session, or_, select
 
 from grimoire import aliases, library
-from grimoire.access import get_authenticated_email
+from grimoire.access import get_authenticated_email, get_grimoire_operator_email
 from grimoire.models import (
     ENTITY_DETAIL_MODELS,
     AppUser,
@@ -229,16 +229,6 @@ def _require_dm(session: Session, campaign_id: str, email: str) -> CampaignMembe
     return member
 
 
-def _require_any_dm(session: Session, email: str) -> None:
-    member = session.exec(
-        select(CampaignMember)
-        .join(AppUser, AppUser.id == CampaignMember.app_user_id)
-        .where(AppUser.email == email, CampaignMember.role == "dm")
-    ).first()
-    if member is None:
-        raise HTTPException(status_code=403, detail="campaign DM role required")
-
-
 def _viewer_for_member(
     session: Session, campaign_id: str, member: CampaignMember
 ) -> Viewer:
@@ -377,6 +367,10 @@ class MemberCreateRequest(BaseModel):
     player_character_id: str | None = None
 
 
+class BootstrapDmRequest(BaseModel):
+    email: str
+
+
 class MemberView(BaseModel):
     id: str
     email: str
@@ -396,6 +390,51 @@ def _member_view(session: Session, member: CampaignMember) -> MemberView:
         player_character_id=member.player_character_id,
         created_at=member.created_at,
     )
+
+
+@router.post(
+    "/campaigns/{campaign_id}/bootstrap-dm",
+    response_model=MemberView,
+)
+def bootstrap_existing_campaign_dm(
+    campaign_id: str,
+    body: BootstrapDmRequest,
+    _operator_email: str = Depends(get_grimoire_operator_email),
+    session: Session = Depends(get_session),
+) -> MemberView:
+    """Explicitly attach the first DM to an upgraded existing campaign."""
+    _get_campaign_or_404(session, campaign_id)
+    existing_dm = session.exec(
+        select(CampaignMember).where(
+            CampaignMember.campaign_id == campaign_id,
+            CampaignMember.role == "dm",
+        )
+    ).first()
+    if existing_dm is not None:
+        raise HTTPException(status_code=409, detail="campaign already has a DM")
+
+    dm_email = body.email.strip().lower()
+    if not dm_email or len(dm_email) > 320:
+        raise HTTPException(status_code=422, detail="invalid DM email")
+    user = _get_or_create_user(session, dm_email)
+    existing_member = session.exec(
+        select(CampaignMember).where(
+            CampaignMember.campaign_id == campaign_id,
+            CampaignMember.app_user_id == user.id,
+        )
+    ).first()
+    if existing_member is not None:
+        raise HTTPException(status_code=409, detail="campaign member already exists")
+
+    member = CampaignMember(
+        campaign_id=campaign_id,
+        app_user_id=user.id,
+        role="dm",
+    )
+    session.add(member)
+    session.commit()
+    session.refresh(member)
+    return _member_view(session, member)
 
 
 @router.post("/campaigns/{campaign_id}/members", response_model=MemberView)
@@ -535,6 +574,10 @@ def create_grant(
         raise HTTPException(status_code=404, detail="entity not found")
     if not entity_belongs_to_campaign(session, campaign_id, entity):
         raise HTTPException(status_code=404, detail="entity not found")
+    if body.granted_in_session is not None:
+        game_session = session.get(GameSession, body.granted_in_session)
+        if game_session is None or game_session.campaign_id != campaign_id:
+            raise HTTPException(status_code=404, detail="session not found")
 
     existing = session.exec(
         select(KnowledgeGrant).where(
@@ -897,11 +940,10 @@ def list_books(session: Session = Depends(get_session)) -> list[dict[str, Any]]:
 def rename_book(
     book_id: str,
     body: BookRenameRequest,
-    email: str = Depends(get_authenticated_email),
+    _operator_email: str = Depends(get_grimoire_operator_email),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     """Rename a book (set its display_name) from the Library UI."""
-    _require_any_dm(session, email)
     display_name = body.display_name.strip()
     if not display_name:
         raise HTTPException(status_code=422, detail="display_name must not be empty")
