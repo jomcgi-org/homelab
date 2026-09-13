@@ -7,9 +7,9 @@ filegroup(
     srcs = [
         "Chart.lock",
         "Chart.yaml",
+        "values.yaml",
         "values-gke.yaml",
         "values-prod.yaml",
-        "values.yaml",
     ] + glob([
         "charts/**/*",
         "templates/**/*",
