@@ -1,13 +1,13 @@
-# @semgrep_src: pinned Semgrep CE source and native Spacegrep engine
+# @semgrep_src: pinned Semgrep CE source and native engine
 
 `repositories.bzl` clones the commit pinned in `source.bzl`, applies the
 `overlays/` files, and runs `opam/dune2bazel.py` over the dune dirs in
 `SEMGREP_SRC_DIRS`, resolving `(libraries ...)` against the opam lock plus
 the internal libraries translated so far. The translated frontier grows
 bottom-up, exactly like the opam universe; anything the translator does not
-model rejects loudly at fetch time. The first runnable engine target is
-`@semgrep_src//:spacegrep_exe`, the pinned tree's native generic-text matching
-engine.
+model rejects loudly at fetch time. `@semgrep_src//:semgrep-core` is the native
+Semgrep CE engine over the complete parser matrix at this pin. Spacegrep remains
+available separately as `@semgrep_src//:spacegrep_exe`.
 
 ## Translated today
 
@@ -58,17 +58,29 @@ engine.
 | `languages/jsonnet/generic`    | `:parser_jsonnet_ast_generic` | translated as-is (Phase 9 wave 7; parser_jsonnet.ast_generic); names commons/lib_parsing/parser_jsonnet.ast/ast_generic. Ast_jsonnet -> AST_generic glue                                                                                                                                            |
 | `libs/ojsonnet`                | `:ojsonnet`                | translated as-is (Phase 9 wave 7; ojsonnet, `(wrapped false)` so dune name == public name); the consumer that motivates the jsonnet grammar. Names logs/unix/commons/collections/parser_jsonnet.tree_sitter with a `(pps ppx_profiling ppx_deriving.show ppx_deriving.ord commons.ppx)` line, all locked/internal (`unix` is stdlib, the lib_map resolves it). Reaches commons' pcre and links the jsonnet grammar through parser_jsonnet.tree_sitter, so it rides `ladder_builds_cc` |
 | `src/spacegrep/src/bin`        | `:spacegrep_exe`           | native generic-text CE engine. The overlay rewrites upstream's plural one-program stanza to singular and selects its non-Alpine Linux dynamic link policy. The direct `spacegrep` and `cmdliner` dependencies are pinned, and commons supplies PCRE/PCRE2 through Bazel `cc_deps` |
+| `languages/*`                  | `:parser_*`                | complete all-language parser matrix named by `semgrep.parsing`; every ocaml-tree-sitter binding is checksum-locked to the matching submodule commit at `SEMGREP_COMMIT` |
+| `src/parsing`                  | `:semgrep_parsing`         | rule, pattern, and target parsing over the complete CE language matrix; both `Parsing_stats.atd` rules translate through the locked atdgen tool |
+| `src/{printing,reporting,matching,tainting,fixing,engine}` | `:semgrep_*` | production CE match pipeline. Engine/fixing overlays remove only inline-test declarations and their paired source patches remove the four `let%test` blocks |
+| `src/core_scan`                | `:semgrep_core_scan`       | upstream scan orchestration over parsing, matching, reporting, and the CE engine |
+| `src/main_core`                | `:semgrep-core`            | native CE entry point accepting the legacy rules YAML plus targets JSON protocol; the functional smoke gate verifies a Go AST match |
 
 ## Native engine target and boundary
 
-`@semgrep_src//:spacegrep_exe` builds the upstream `Space_main` entry point as a
-native OCaml executable. Spacegrep is Semgrep CE's generic-text matching
-engine, not a replacement program and not a downloaded binary. Its sources
-come from `SEMGREP_COMMIT`; every OCaml package comes from `opam/lock.json`;
-and its C dependencies are the repository's source-built PCRE and PCRE2
-targets. `//bazel/ocaml/semgrep_src:spacegrep_build_test` makes the link an
-explicit Linux CI target, while `:spacegrep_smoke_test` runs a metavariable
-match through the resulting executable.
+`@semgrep_src//:semgrep-core` links the pinned Semgrep CE parser, matcher,
+taint, fix, reporting, and core-scan libraries into a native OCaml executable.
+Its sources come from `SEMGREP_COMMIT`, every OCaml package comes from
+`opam/lock.json`, and all native dependencies are carried as declared Bazel
+inputs. `//bazel/ocaml/semgrep_src:semgrep_core_build_test` is the hermetic
+Linux link gate. `:semgrep_core_smoke_test` passes a normal Semgrep YAML rule
+and pysemgrep-compatible targets JSON to the binary and requires one Go AST
+match with no engine errors.
+
+Upstream `src/main` multiplexes legacy semgrep-core, the unfinished osemgrep
+CLI, and the legacy language server in one executable. The `src/main_core`
+overlay keeps the same CE `Core_scan.scan` rules/targets boundary without
+pulling those unrelated frontends into issue #3922. The generated repository
+also exposes a stable `:semgrep-core` alias for the translator's collision-safe
+`:semgrep-core_exe` binary target.
 
 The upstream bin dune is a plural `(executables)` stanza containing one program.
 Its checked-in overlay rewrites `executables`/`names`/`public_names` to the
@@ -83,11 +95,10 @@ through `cc_deps` and passed to the native link action, while Spacegrep has no
 language grammar dependency. Regression tests prove the translator rejects the
 removed `:include` forms, generic rules, plural stanzas, and unsupported fields.
 
-This target does not claim that `semgrep-core`, the full `osemgrep` CLI, or the
-all-language `src/parsing` matrix is complete. Those remain beyond the current
-frontier, as recorded below. The target supports Spacegrep's indentation-aware
-generic matching, metavariables, ellipses, comments, and file traversal, which
-is the complete upstream Spacegrep executable closure at this pin.
+Spacegrep remains independently buildable and smoke-tested for generic mode.
+It is no longer used as the issue-scope completion target: the native
+`semgrep-core` gate reaches `src/parsing`, `src/engine`, and every CE language
+binding.
 
 ## libs/commons rejection dispatch
 
@@ -318,14 +329,12 @@ recipe replayed through the real driver (including both stubgen genrules),
 an e2e binary parsed and re-emitted YAML through the driver-built chain,
 and src/core compiled with its full composed ppx driver against it.
 
-## src/parsing scoping (recorded, NOT landed)
+## src/parsing and engine closure dispatch
 
-`src/parsing` (Parse_target/Parse_pattern; `semgrep.parsing`, dune name
-`semgrep_parsing`) is the next consumer: its stanza names `semgrep_core`
-plus essentially the whole parser matrix. Its two `Parsing_stats.atd`
-atdgen rule pairs match the translated rule shape, and its pps line
-(ppx_profiling, ppx_deriving.show, telemetry.ppx) already resolves. The
-`(libraries ...)` decompose as:
+`src/parsing` (`Parse_target`/`Parse_pattern`, public name `semgrep.parsing`)
+names `semgrep_core` plus the whole CE parser matrix. Its two
+`Parsing_stats.atd` atdgen rules use the translated rule shape, and its pps
+line resolves from the existing lock. The closure landed as follows:
 
 | group                                                                                  | dispatch                                                                                                                                                                                                                                                                                          |
 | -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -340,16 +349,14 @@ atdgen rule pairs match the translated rule shape, and its pps line
 | `semgrep_targeting` (src/targeting)                                                    | internal, new dir (LANDED, wave 5): the first NEW external since yaml, `ppx_blob` (locked, a clean ppx_rewriter translate over the release tarball; its src/dune is `(kind ppx_rewriter) (libraries ppxlib)`, no codegen, so no override). `(preprocessor_deps (file default.semgrepignore))` dispatched as a TRANSLATOR FEATURE: dune2bazel models `(file X)` entries into a `preprocess_data` attr, the rule stages each file by basename into the ppx work dir, and the driver passes them as `--ppx-data`; ppx_blob's `[%blob "X"]` resolves X relative to the source file's dir (= the work dir), so the staged file is found at preprocess time. Other `(preprocessor_deps ...)` forms (glob_files, bare atoms, dune variables, parent escapes) reject loudly. examples/ppx_blob proves the path end to end |
 | `pfff-lang_GENERIC-naming` (src/naming)                                                | internal, new dir (LANDED, wave 6): commons + ast_generic + semgrep.core + semgrep.typing + parser_javascript.ast, all translated; (pps ppx_profiling ppx_deriving.show). Clean translate, no new externals                                                                                                                                                                                                  |
 | `ojsonnet` (libs/ojsonnet)                                                             | internal, new dir (LANDED, wave 7): names `parser_jsonnet.tree_sitter`, so the jsonnet grammar stamped into the lock first (the tree-sitter-go pattern, grammar dispatch below). The whole jsonnet chain (ast, tree-sitter, generic, ojsonnet) landed together                                    |
-| tree-sitter language chains (python, cpp, php, ocaml, typescript, scala, bash, dockerfile, java, jsonnet, terraform, ruby, ql, lisp) | each needs its grammar stamped from the submodule commit + the ast/tree-sitter/generic dirs translated; bash's grammar is already locked. scala's path is `recursive_descent` (plain OCaml, no grammar)                                                                                            |
-| direct-to-generic parsers (dart, cairo, solidity, csharp, rust, lua, kotlin, swift, julia, r, hack, fga, html, promql, protobuf, move_on_sui, move_on_aptos, circom) | `.ast_generic`-only names, but most wrap a tree-sitter CST under the hood -- scope each dir before assuming it is grammar-free                                                                                                                                                                    |
-| `parser_*.menhir` (go, ocaml, python, cpp, php, javascript, json)                      | the wrinkle: the legacy menhir parsers are named DIRECTLY in src/parsing's stanza, so "menhir parsers stay out" requires either landing them or measuring them out per dir. parser_json.menhir (which itself depends on parser_javascript.menhir) is the JSON path Parse_target actually uses, so the JSON menhir chain likely must land; the rest are overlay candidates after an ocamldep measurement |
+| tree-sitter language chains (python, cpp, php, ocaml, typescript, scala, bash, dockerfile, java, jsonnet, terraform, ruby, ql, lisp) | landed with grammar archives checksum-locked to the exact gitlink commit in the pinned Semgrep tree; the uniform repository generator compiles parser/scanner C or C++ plus the OCaml binding |
+| direct-to-generic parsers (dart, cairo, solidity, csharp, rust, lua, kotlin, swift, julia, r, hack, fga, html, promql, protobuf, move_on_sui, move_on_aptos, circom) | landed with the same pinned grammar treatment; these directories expose generic AST parsers directly |
+| `parser_*.menhir` (go, ocaml, python, cpp, php, javascript, json)                      | landed because upstream `semgrep.parsing` names them directly; the repository-pinned menhir tool handles their generated parsers |
 
-Suggested landing order: fast_json + typing (cheap, no new externals); the
-languages/yaml trio (validates the yaml lock from a second consumer);
-src/il + analyzing; prefiltering; targeting (ppx_blob lock +
-preprocessor_deps dispatch); naming; ojsonnet + the jsonnet grammar; then
-the per-language matrix in waves; the menhir question last, measured, with
-src/parsing itself closing the slice.
+After parsing, the translated frontier adds printing, reporting, matching,
+tainting, fixing, engine, and core_scan in dependency order. Calendar 3.0.0 is
+the only new opam library in that layer. Its source archive is checksum-locked;
+an override materializes dune's package-version-generated `Version.ml`.
 
 ## src/targeting dispatch (ppx_blob + preprocessor_deps, the wave 5 slice)
 

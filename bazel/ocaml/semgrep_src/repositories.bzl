@@ -13,6 +13,7 @@ loudly at fetch time.
 load(
     ":source.bzl",
     "OVERLAYS",
+    "PATCHES",
     "SEMGREP_COMMIT",
     "SEMGREP_GIT_URL",
     "SEMGREP_LIBS",
@@ -49,6 +50,10 @@ def _semgrep_src_impl(ctx):
         overlay = ctx.path(Label("//bazel/ocaml/semgrep_src:overlays/%s" % path))
         ctx.file(path, ctx.read(overlay))
 
+    for path in PATCHES:
+        patch = ctx.path(Label("//bazel/ocaml/semgrep_src:patches/%s" % path))
+        ctx.patch(patch, strip = 1)
+
     # lib_map: opam lock libs tables (same composition as opam/extension.bzl)
     # plus the internal libraries translated so far.
     lock = json.decode(ctx.read(ctx.path(Label("//bazel/ocaml/opam:lock.json"))))
@@ -82,7 +87,20 @@ def _semgrep_src_impl(ctx):
     if result.return_code != 0:
         fail("dune2bazel failed for semgrep_src:\n%s%s" % (result.stdout, result.stderr))
 
-    ctx.file("BUILD.bazel", result.stdout)
+    ctx.file(
+        "BUILD.bazel",
+        result.stdout + """
+
+# Stable issue #3922 target name. dune2bazel appends _exe to public executable
+# names to avoid collisions with same-named libraries, so expose the installed
+# semgrep-core name as an alias too.
+alias(
+    name = "semgrep-core",
+    actual = ":semgrep-core_exe",
+    visibility = ["//visibility:public"],
+)
+""",
+    )
 
 _semgrep_src_repo = repository_rule(
     implementation = _semgrep_src_impl,
