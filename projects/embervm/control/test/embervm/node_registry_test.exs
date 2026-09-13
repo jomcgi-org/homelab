@@ -283,6 +283,53 @@ defmodule Embervm.NodeRegistryTest do
     assert_receive {:sessions_swept, "node-4", ""}, 1_000
   end
 
+  test "an expired instance repeats the session sweep after installing its tombstone" do
+    {clock, advance} = new_clock()
+    test_pid = self()
+
+    {reg, _table} =
+      start_registry(
+        register_seams(
+          clock: clock,
+          watch_fun: silent_watch(),
+          session_sweep_fun: fn node_id, pod_uid ->
+            send(test_pid, {:sessions_swept, node_id, pod_uid})
+          end,
+          unknown_after_ms: 5_000,
+          down_after_ms: 15_000,
+          expire_after_ms: 20_000,
+          down_expire_after_ms: 20_000,
+          base_backoff_ms: 120_000,
+          max_backoff_ms: 120_000
+        )
+      )
+
+    :ok =
+      NodeRegistry.register(reg, %{
+        "node" => "node-expiring",
+        "pod_uid" => "pod-expiring",
+        "address" => "10.0.0.8:9090"
+      })
+
+    advance.(15_000)
+    :ok = NodeRegistry.tick(reg)
+    assert_receive {:sessions_swept, "node-expiring", "pod-expiring"}, 1_000
+    assert NodeRegistry.brick_status(reg, "node-expiring/pod-expiring").registered
+
+    advance.(5_000)
+    :ok = NodeRegistry.tick(reg)
+    assert_receive {:sessions_swept, "node-expiring", "pod-expiring"}, 1_000
+
+    assert %{
+             registered: false,
+             tombstoned: true,
+             health: :down,
+             pod_uid: "pod-expiring"
+           } = NodeRegistry.brick_status(reg, "node-expiring/pod-expiring")
+
+    refute_receive {:sessions_swept, "node-expiring", "pod-expiring"}, 50
+  end
+
   test "the registry answers status while a slow session sweep is in progress" do
     {clock, advance} = new_clock()
     test_pid = self()
@@ -966,6 +1013,20 @@ defmodule Embervm.NodeRegistryTest do
     on_exit(fn -> Embervm.TestProcess.stop_safely(dialed) end)
     {:ok, chan} = Agent.start_link(fn -> [] end)
     on_exit(fn -> Embervm.TestProcess.stop_safely(chan) end)
+    {:ok, session_sweeps} = Agent.start_link(fn -> [] end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(session_sweeps) end)
+    {:ok, live_session} =
+      Agent.start_link(fn ->
+        %{
+          state: :running,
+          node_id: "node-4",
+          pod_uid: "uid-1",
+          boot_id: "boot-stable",
+          vm_id: "vm-live"
+        }
+      end)
+
+    on_exit(fn -> Embervm.TestProcess.stop_safely(live_session) end)
 
     connect_fun = fn address ->
       Agent.update(dialed, &[address | &1])
@@ -976,12 +1037,17 @@ defmodule Embervm.NodeRegistryTest do
       start_registry(
         register_seams(
           connect_fun: connect_fun,
-          channel_updater_fun: fn id, addr -> Agent.update(chan, &[{id, addr} | &1]) end
+          channel_updater_fun: fn id, addr -> Agent.update(chan, &[{id, addr} | &1]) end,
+          session_sweep_fun: fn node_id, pod_uid ->
+            Agent.update(session_sweeps, &[{node_id, pod_uid} | &1])
+            Agent.update(live_session, &%{&1 | state: :failed})
+          end
         )
       )
 
     :ok = NodeRegistry.register(reg, %{"node" => "node-4", "pod_uid" => "uid-1", "address" => "old-ip:9090"})
     eventually(fn -> "old-ip:9090" in Agent.get(dialed, & &1) end, 200)
+    before = :sys.get_state(reg).node_runtime["node-4/uid-1"]
 
     # Same instance (node+pod_uid), NEW address.
     :ok = NodeRegistry.register(reg, %{"node" => "node-4", "pod_uid" => "uid-1", "address" => "new-ip:9090"})
@@ -991,6 +1057,28 @@ defmodule Embervm.NodeRegistryTest do
     # after a re-registration resolves the new address rather than the dead old endpoint.
     eventually(fn -> {"node-4/uid-1", "new-ip:9090"} in Agent.get(chan, & &1) end, 200)
     assert NodeRegistry.status(reg)["node-4/uid-1"].address == "new-ip:9090"
+
+    after_repoint = :sys.get_state(reg).node_runtime["node-4/uid-1"]
+    assert after_repoint.instance_id == before.instance_id
+    assert after_repoint.configured_id == before.configured_id
+    assert after_repoint.pod_uid == before.pod_uid
+    assert after_repoint.boot_id == before.boot_id
+
+    # Re-pointing the same instance never tells session lifecycle that the brick
+    # departed. The callback seam deliberately fails this representative live
+    # session, so its unchanged placement and running state prove more than the
+    # absence of a bookkeeping entry. Real expiry/unregister tests below retain
+    # the callback coverage.
+    Process.sleep(50)
+    assert Agent.get(session_sweeps, & &1) == []
+
+    assert Agent.get(live_session, & &1) == %{
+             state: :running,
+             node_id: "node-4",
+             pod_uid: "uid-1",
+             boot_id: "boot-stable",
+             vm_id: "vm-live"
+           }
   end
 
   test "dial-home registration keys NodeChannel ONLY by instance_id (node-name alias removed, PR-B0c)" do

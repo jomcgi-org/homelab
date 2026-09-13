@@ -107,6 +107,7 @@ defmodule Embervm.SessionManager do
   # NodeRegistry must never stall the sweep, and an unanswered lookup is no
   # evidence of departure.
   @brick_statuses_timeout_ms 1_000
+  @default_departure_retry_interval_ms 1_000
 
   # Three consecutive bank failures fail the session and destroy its VM: a session
   # that cannot bank must not squat live capacity forever.
@@ -297,7 +298,7 @@ defmodule Embervm.SessionManager do
     GenServer.call(server, {:brick_gone, session_id, metadata}, :infinity)
   end
 
-  @doc "Sweeps every live session bound to a node that the registry aged down."
+  @doc "Sweeps every session bound to a node that the registry aged down or expired."
   @spec node_down(String.t()) :: non_neg_integer()
   def node_down(node_id), do: node_down(__MODULE__, node_id, %{})
 
@@ -521,6 +522,13 @@ defmodule Embervm.SessionManager do
       # consistent, so keep the dial that actually created or restarted the VM for
       # bank and destroy when its live-vm fact is temporarily absent.
       session_dials: %{},
+      # session_id -> %{node_id, metadata} for a final-departure eviction whose
+      # durable op-log append failed. The registry runtime may already be gone,
+      # so the manager owns a bounded-cadence re-drive until the row terminalizes
+      # or fresh node evidence makes the departure inapplicable.
+      departure_retries: %{},
+      departure_retry_interval_ms:
+        Keyword.get(opts, :departure_retry_interval_ms, @default_departure_retry_interval_ms),
       # Snapshot-disk low watermark (bytes): when a node's snapshot_disk_free_bytes
       # is below this, disk-pressure eviction fires. nil = eviction disabled.
       disk_low_watermark_bytes: Keyword.get(opts, :disk_low_watermark_bytes, nil),
@@ -1004,6 +1012,19 @@ defmodule Embervm.SessionManager do
   # expiry), the bound expired, or the session went terminal while waiting.
   def handle_info({:relight_pressure_retry, session_id}, state) do
     {:noreply, resume_pressure_wait(state, session_id)}
+  end
+
+  def handle_info({:departure_terminalize_retry, session_id}, state) do
+    case Map.pop(state.departure_retries, session_id) do
+      {nil, _pending} ->
+        {:noreply, state}
+
+      {%{node_id: node_id, metadata: metadata}, pending} ->
+        {_count, state} =
+          sweep_brick_gone_node(%{state | departure_retries: pending}, node_id, metadata)
+
+        {:noreply, state}
+    end
   end
 
   def handle_info({:rejoin_done, session_id, outcome}, state) do
@@ -1999,26 +2020,209 @@ defmodule Embervm.SessionManager do
   end
 
   defp sweep_brick_gone_node(state, node_id, supplied_metadata) do
-    sessions =
+    metadata =
+      Map.merge(
+        %{node_id: node_id, health: :down, draining: false, tombstoned: false, pod_uid: nil},
+        supplied_metadata
+      )
+
+    transient =
       SessionStore.all(state.session_store)
       |> Enum.filter(
         &(session_bound_to_node?(&1, node_id) and
             &1.state in [:running, :banking, :relighting, :creating] and
-            session_on_downed_instance?(state, &1, node_id, supplied_metadata))
+            session_on_downed_instance?(state, &1, node_id, metadata))
       )
 
-    Enum.reduce(sessions, {0, state}, fn session, {count, acc} ->
-      metadata =
-        Map.merge(
-          %{node_id: node_id, health: :down, draining: false, tombstoned: false, pod_uid: nil},
-          supplied_metadata
-        )
-      {reply, acc} = brick_gone_outcome(acc, session.session_id, metadata)
-      if match?({:ok, _}, reply), do: notify_session_brick_gone(acc, session.session_id, metadata)
+    {transient_count, state} =
+      Enum.reduce(transient, {0, state}, fn session, {count, acc} ->
+        {reply, acc} = brick_gone_outcome(acc, session.session_id, metadata)
+        if match?({:ok, _}, reply), do: notify_session_brick_gone(acc, session.session_id, metadata)
 
-      acc = drain_relight_waiters(acc, session.session_id, {:error, :brick_gone})
-      {count + if(match?({:ok, _}, reply), do: 1, else: 0), acc}
+        acc = drain_relight_waiters(acc, session.session_id, {:error, :brick_gone})
+        {count + if(match?({:ok, _}, reply), do: 1, else: 0), acc}
+      end)
+
+    transient_ids = MapSet.new(transient, & &1.session_id)
+
+    # Re-read after settling transients. An explicit unregister can be the only
+    # callback for a running persistence session, and brick_gone_outcome moves it
+    # to parked during this very sweep. Evaluating resting states afterward makes
+    # that one authoritative callback converge all irrecoverable warmth.
+    dormant_candidates =
+      SessionStore.all(state.session_store)
+      |> Enum.filter(
+        &(dormant_session_bound_to_node?(&1, node_id) and
+            &1.state in [:banked, :parked] and
+            session_on_downed_instance?(state, &1, node_id, metadata))
+      )
+
+    dormant_dials =
+      Map.new(dormant_candidates, fn session ->
+        {session.session_id, dormant_departure_dial(state, session, node_id, metadata)}
+      end)
+
+    statuses =
+      dormant_dials
+      |> Map.values()
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+      |> case do
+        [] -> %{}
+        dials -> safe_brick_statuses(state, dials)
+      end
+
+    dormant =
+      Enum.filter(dormant_candidates, fn session ->
+        dial = Map.get(dormant_dials, session.session_id)
+
+        dormant_owner_departed?(state, dial, statuses) and
+          not dormant_relight_target?(state, session, node_id, metadata)
+      end)
+
+    Enum.reduce(dormant, {transient_count, state}, fn session, {count, acc} ->
+      {reply, acc} =
+        case session.state do
+          :banked -> evict_banked_with_reply(acc, session, :node_gone)
+          :parked -> evict_parked_with_reply(acc, session, :node_gone)
+        end
+
+      acc = departure_terminalization_result(acc, session, node_id, metadata, reply)
+
+      newly_counted = match?({:ok, _}, reply) and not MapSet.member?(transient_ids, session.session_id)
+      {count + if(newly_counted, do: 1, else: 0), acc}
     end)
+  end
+
+  # Resting states have different authoritative placement fields. A parked
+  # persistence session owns a workspace volume and therefore follows
+  # volume_node_id; a banked session owns a memory snapshot and follows node_id.
+  # The fallback handles legacy rows missing their canonical field, while making
+  # a stale conflicting secondary ID unable to evict recoverable warmth.
+  defp dormant_session_owner_node(%{state: :parked} = session) do
+    Map.get(session, :volume_node_id) || Map.get(session, :node_id)
+  end
+
+  defp dormant_session_owner_node(%{state: :banked} = session) do
+    Map.get(session, :node_id) || Map.get(session, :volume_node_id)
+  end
+
+  defp dormant_session_owner_node(_session), do: nil
+
+  defp dormant_session_bound_to_node?(session, node_id) do
+    dormant_session_owner_node(session) == node_id
+  end
+
+  # Prefer the instance-qualified placement retained at dispatch/bank time. A
+  # restarted manager may have lost that cache, in which case the expiry event's
+  # pod UID is the strongest remaining identity. Bare node identity is the final
+  # legacy fallback.
+  defp dormant_departure_dial(state, session, node_id, metadata) do
+    owner = dormant_session_owner_node(session)
+    remembered = Map.get(state.session_dials, session.session_id)
+    pod_uid = Map.get(metadata, :pod_uid)
+
+    cond do
+      dial_on_node?(remembered, owner) -> remembered
+      owner == node_id and is_binary(pod_uid) and pod_uid != "" -> node_id <> "/" <> pod_uid
+      is_binary(owner) -> owner
+      true -> nil
+    end
+  end
+
+  defp dial_on_node?(dial, node_id) when is_binary(dial) and is_binary(node_id) do
+    dial == node_id or String.starts_with?(dial, node_id <> "/")
+  end
+
+  defp dial_on_node?(_dial, _node_id), do: false
+
+  defp dormant_owner_departed?(_state, nil, _statuses), do: false
+
+  defp dormant_owner_departed?(state, dial, statuses) do
+    not node_reporting?(state, dial) and registry_confirms_gone?(Map.get(statuses, dial, %{}))
+  end
+
+  # Capacity contains only healthy, dispatchable peers. Preserve dormant warmth
+  # only when one of those peers positively reports the exact artifact needed to
+  # wake this session. Mere health, a remote archive attempt, or a conflicting
+  # stale ownership ID is not proof that relight can succeed.
+  defp dormant_relight_target?(state, session, node_id, metadata) do
+    down_dial_id =
+      case Map.get(metadata, :pod_uid) do
+        pod_uid when is_binary(pod_uid) and pod_uid != "" -> node_id <> "/" <> pod_uid
+        _ -> node_id
+      end
+
+    surviving_facts =
+      state.capacity_table
+      |> NodeCapacity.all()
+      |> Enum.filter(&(Map.get(&1, :configured_id) == node_id and fact_dial_id(&1) != down_dial_id))
+
+    Enum.any?(surviving_facts, &dormant_artifact_reported?(state, &1, session)) or
+      exported_bundle_relight_target?(state, session, surviving_facts)
+  end
+
+  defp dormant_artifact_reported?(_state, fact, %{state: :banked} = session) do
+    Enum.any?(Map.get(fact, :session_snapshots, []) || [], fn snapshot ->
+      Map.get(snapshot, :session_id) == session.session_id and
+        (not is_binary(Map.get(session, :snapshot_ref)) or
+           Map.get(snapshot, :snapshot_ref) == session.snapshot_ref)
+    end)
+  end
+
+  defp dormant_artifact_reported?(state, fact, %{state: :parked} = session) do
+    persistence_enabled_workload?(session_workload_entry(state, session.workload)) and
+      Enum.any?(Map.get(fact, :session_volumes, []) || [], fn volume ->
+        Map.get(volume, :lineage_id) == session.lineage_id and
+          Map.get(volume, :workload) == session.workload
+      end)
+  end
+
+  defp dormant_artifact_reported?(_state, _fact, _session), do: false
+
+  # A banked bundle need not still be local. The established wake path can
+  # restore its exact snapshot_ref from object storage, but only onto a brick
+  # that is actually eligible for the workload and positively reports store
+  # reachability. Reusing the restore target predicate here keeps departure
+  # preservation and invoke-time wake from making contradictory decisions.
+  defp exported_bundle_relight_target?(state, %{state: :banked} = session, surviving_facts) do
+    node_id = Map.get(session, :node_id)
+    snapshot_ref = Map.get(session, :snapshot_ref)
+    instance_facts =
+      Enum.filter(surviving_facts, fn fact ->
+        case Map.get(fact, :instance_id) do
+          instance_id when is_binary(instance_id) and instance_id != "" -> true
+          _ -> false
+        end
+      end)
+
+    is_binary(node_id) and node_id != "" and is_binary(snapshot_ref) and snapshot_ref != "" and
+      match?(
+        {:ok, _dial_id},
+        restorable_bundle_dial(state, session, node_id, snapshot_ref, instance_facts)
+      )
+  end
+
+  defp exported_bundle_relight_target?(_state, _session, _surviving_facts), do: false
+
+  defp departure_terminalization_result(state, session, _node_id, _metadata, {:ok, _}) do
+    state
+    |> update_in([:departure_retries], &Map.delete(&1, session.session_id))
+    |> drain_relight_waiters(session.session_id, {:error, {:gone, "node_gone"}})
+  end
+
+  defp departure_terminalization_result(state, session, node_id, metadata, _error) do
+    if Map.has_key?(state.departure_retries, session.session_id) do
+      state
+    else
+      Process.send_after(
+        self(),
+        {:departure_terminalize_retry, session.session_id},
+        state.departure_retry_interval_ms
+      )
+
+      put_in(state.departure_retries[session.session_id], %{node_id: node_id, metadata: metadata})
+    end
   end
 
   defp notify_session_brick_gone(state, session_id, metadata) do
@@ -2923,7 +3127,7 @@ defmodule Embervm.SessionManager do
               # the restore and the relight agree on.
               case restore_bundle(
                      state,
-                     session.node_id,
+                     restore_node_id,
                      restore_dial_id,
                      session,
                      restore_ref
@@ -2987,23 +3191,28 @@ defmodule Embervm.SessionManager do
     node_id = Map.get(session, :node_id)
     snapshot_ref = Map.get(session, :snapshot_ref)
 
-    if is_binary(node_id) and node_id != "" and is_binary(snapshot_ref) and snapshot_ref != "" and
-         not bundle_local?(state, node_id, snapshot_ref) and store_reachable?(state, node_id) do
-      # The co-located instance to restore onto AND then relight from. On a true
-      # local miss no instance reports the snapshot, so WakeInstance.select falls to a
-      # mem-eligible pick sized for the session's mem_mib (the owning-instance branch
-      # would apply only if an instance still reported it). Fail-open: no eligible
-      # instance leaves the bare node_id, byte-identical to pre-co-location behaviour.
-      {:restore, node_id, restore_dial_id(state, session, node_id, snapshot_ref), snapshot_ref}
+    with true <-
+           is_binary(node_id) and node_id != "" and is_binary(snapshot_ref) and snapshot_ref != "",
+         false <- bundle_local?(state, node_id, snapshot_ref),
+         {:ok, dial_id} <-
+           restorable_bundle_dial(
+             state,
+             session,
+             node_id,
+             snapshot_ref,
+             NodeCapacity.all(state.capacity_table)
+           ) do
+      {:restore, node_id, dial_id, snapshot_ref}
     else
-      :skip
+      _ -> :skip
     end
   end
 
-  # The instance key to restore the session bundle onto (and relight from). Prefers
-  # the instance still reporting the snapshot; else a mem-eligible pick (the true
-  # local-miss case), sized by the catalog mem_mib; else the bare node_id.
-  defp restore_dial_id(state, session, node_id, snapshot_ref) do
+  # Resolve one genuine restore target. WakeInstance supplies the actual
+  # base-ready, memory-eligible placement predicate, and the selected instance
+  # itself must report store reachability. This is stronger than generic node
+  # health and is shared with final-departure recovery qualification.
+  defp restorable_bundle_dial(state, session, node_id, snapshot_ref, candidate_facts) do
     need_mib =
       case WorkloadCatalog.fetch(state.catalog_table, Map.get(session, :workload)) do
         {:ok, entry} -> Map.get(entry, :mem_mib) || 512
@@ -3017,8 +3226,18 @@ defmodule Embervm.SessionManager do
            warmth_key: :session_snapshots,
            warmth_ref: snapshot_ref
          ) do
-      {:ok, dial_id} -> dial_id
-      {:error, _} -> node_id
+      {:ok, dial_id} ->
+        if Enum.any?(candidate_facts, fn fact ->
+             Map.get(fact, :configured_id) == node_id and fact_dial_id(fact) == dial_id and
+               Map.get(fact, :store_reachable, false) == true
+           end) do
+          {:ok, dial_id}
+        else
+          {:error, :store_unreachable}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -3034,18 +3253,6 @@ defmodule Embervm.SessionManager do
 
       :error ->
         false
-    end
-  end
-
-  # The node's latest object-store reachability verdict (R6). Absent/false (a node
-  # with no store configured, or one that never reported) reads as NOT reachable,
-  # so no restore is attempted and the relight degrades to node_for_relight's
-  # existing snapshot_lost path. This only gates the store consultation, never a
-  # local-state relight.
-  defp store_reachable?(state, node_id) do
-    case NodeCapacity.fetch(state.capacity_table, node_id) do
-      {:ok, fact} -> Map.get(fact, :store_reachable, false) == true
-      :error -> false
     end
   end
 
@@ -4515,6 +4722,11 @@ defmodule Embervm.SessionManager do
   # Evict a banked session: EvictSnapshot on its node, append session_evicted with
   # the reason. The session becomes terminal (evicted -> next invoke 410s).
   defp evict_banked(state, session, reason) do
+    {_reply, state} = evict_banked_with_reply(state, session, reason)
+    state
+  end
+
+  defp evict_banked_with_reply(state, session, reason) do
     _ = evict_snapshot(state, session)
 
     reply =
@@ -4534,7 +4746,8 @@ defmodule Embervm.SessionManager do
       reason: reason
     )
 
-    if match?({:ok, _}, reply), do: clear_session_tracking(state, session.session_id), else: state
+    state = if match?({:ok, _}, reply), do: clear_session_tracking(state, session.session_id), else: state
+    {reply, state}
   end
 
   # Evict a parked session: skips stop_session_process (park already tore down
@@ -4544,6 +4757,11 @@ defmodule Embervm.SessionManager do
   # mirroring expire_session's parked arm. Appends session_evicted with the
   # reason, same as evict_banked.
   defp evict_parked(state, session, reason) do
+    {_reply, state} = evict_parked_with_reply(state, session, reason)
+    state
+  end
+
+  defp evict_parked_with_reply(state, session, reason) do
     _ = evict_snapshot(state, session)
     retire_session_volume(state, session)
 
@@ -4564,7 +4782,8 @@ defmodule Embervm.SessionManager do
       reason: reason
     )
 
-    if match?({:ok, _}, reply), do: clear_session_tracking(state, session.session_id), else: state
+    state = if match?({:ok, _}, reply), do: clear_session_tracking(state, session.session_id), else: state
+    {reply, state}
   end
 
   # -- snapshot eviction RPC -------------------------------------------------
