@@ -1,11 +1,13 @@
-# @semgrep_src: the pinned Semgrep CE tree (Phase 8, wave D)
+# @semgrep_src: pinned Semgrep CE source and native Spacegrep engine
 
 `repositories.bzl` clones the commit pinned in `source.bzl`, applies the
 `overlays/` files, and runs `opam/dune2bazel.py` over the dune dirs in
 `SEMGREP_SRC_DIRS`, resolving `(libraries ...)` against the opam lock plus
 the internal libraries translated so far. The translated frontier grows
 bottom-up, exactly like the opam universe; anything the translator does not
-model rejects loudly at fetch time.
+model rejects loudly at fetch time. The first runnable engine target is
+`@semgrep_src//:spacegrep_exe`, the pinned tree's native generic-text matching
+engine.
 
 ## Translated today
 
@@ -55,6 +57,32 @@ model rejects loudly at fetch time.
 | `languages/jsonnet/tree-sitter` | `:parser_jsonnet_tree_sitter` | translated as-is (Phase 9 wave 7; parser_jsonnet.tree_sitter); CST -> Ast_jsonnet glue over the stamped grammar. Names commons/lib_parsing/lib_parsing_tree_sitter/parser_jsonnet.ast + `tree-sitter-lang.jsonnet` (the new lock entry, dispatch below). The grammar's external scanner puts it x86_64-only (examples/treesitter_jsonnet) |
 | `languages/jsonnet/generic`    | `:parser_jsonnet_ast_generic` | translated as-is (Phase 9 wave 7; parser_jsonnet.ast_generic); names commons/lib_parsing/parser_jsonnet.ast/ast_generic. Ast_jsonnet -> AST_generic glue                                                                                                                                            |
 | `libs/ojsonnet`                | `:ojsonnet`                | translated as-is (Phase 9 wave 7; ojsonnet, `(wrapped false)` so dune name == public name); the consumer that motivates the jsonnet grammar. Names logs/unix/commons/collections/parser_jsonnet.tree_sitter with a `(pps ppx_profiling ppx_deriving.show ppx_deriving.ord commons.ppx)` line, all locked/internal (`unix` is stdlib, the lib_map resolves it). Reaches commons' pcre and links the jsonnet grammar through parser_jsonnet.tree_sitter, so it rides `ladder_builds_cc` |
+| `src/spacegrep/src/bin`        | `:spacegrep_exe`           | selected native CE engine for issue #3922. The executable stanza translates to `ocaml_binary`; its direct `spacegrep` and `cmdliner` dependencies are already pinned, and commons supplies the pinned PCRE/PCRE2 native closure. A documented dune overlay drops only top-level semgrep-core language-link flags that Spacegrep does not use |
+
+## Native engine target and boundary
+
+`@semgrep_src//:spacegrep_exe` builds the upstream `Space_main` entry point as a
+native OCaml executable. Spacegrep is Semgrep CE's generic-text matching
+engine, not a replacement program and not a downloaded binary. Its sources
+come from `SEMGREP_COMMIT`; every OCaml package comes from `opam/lock.json`;
+and its C dependencies are the repository's source-built PCRE and PCRE2
+targets. `//bazel/ocaml/semgrep_src:spacegrep_build_test` makes the link an
+explicit Linux CI target, while `:spacegrep_smoke_test` runs a metavariable
+match through the resulting executable.
+
+The upstream bin dune includes `flags.sexp`, generated from the full language
+grammar inventory so the combined `semgrep-core` executable retains every
+grammar at link time. Spacegrep does not depend on those grammars. Its checked-in
+overlay preserves the upstream executable name, sources, package, and direct
+libraries, and removes only that unrelated link-flag rule. The translator still
+rejects `(:include ...)`, generic rules, plural `(executables ...)`, and every
+unsupported executable field.
+
+This target does not claim that `semgrep-core`, the full `osemgrep` CLI, or the
+all-language `src/parsing` matrix is complete. Those remain beyond the current
+frontier, as recorded below. The target supports Spacegrep's indentation-aware
+generic matching, metavariables, ellipses, comments, and file traversal, which
+is the complete upstream Spacegrep executable closure at this pin.
 
 ## libs/commons rejection dispatch
 

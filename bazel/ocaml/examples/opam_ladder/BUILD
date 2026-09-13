@@ -200,7 +200,7 @@ build_test(
         # Phase 8 semgrep_core closure frontier: src/core's own dependency
         # set minus src/core itself (gated on yaml/ctypes, see
         # semgrep_src/README.md). All reach commons, hence the cc bucket.
-        "@semgrep_src//:spacegrep",
+        "@semgrep_src//:spacegrep_exe",
         "@semgrep_src//:parser_javascript_ast",
         "@semgrep_src//:aliengrep",
         "@semgrep_src//:semgrep_interfaces",
@@ -255,5 +255,11 @@ build_test(
         "@semgrep_src//:parser_jsonnet_tree_sitter",
         "@semgrep_src//:parser_jsonnet_ast_generic",
         "@semgrep_src//:ojsonnet",
+        # Issue #3922: the first real native Semgrep CE engine target. This
+        # links the complete Spacegrep closure, including locked cmdliner and
+        # the PCRE/PCRE2 native libraries reached through commons. The
+        # functional invocation lives in //bazel/ocaml/semgrep_src:
+        # spacegrep_smoke_test.
+        "@semgrep_src//:spacegrep",
     ],
 )

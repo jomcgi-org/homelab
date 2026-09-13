@@ -1,0 +1,18 @@
+; OVERLAY (bazel/ocaml/semgrep_src/overlays) -- replaces the upstream dune.
+;
+; Keep the upstream Spacegrep executable and its complete direct dependency
+; list. Drop `(flags (:include flags.sexp))` and the adjacent generator rule:
+; flags.sexp is produced from src/main/tree-sitter-langs.dat to force every
+; language grammar into the combined semgrep-core/osemgrep link. Spacegrep is
+; a standalone generic-text engine and does not consume any language grammar,
+; so those whole-engine link flags are not part of this executable's closure.
+; The translator rejects `(:include ...)` and generic rules loudly; this source
+; overlay records the one proven-inert exception rather than weakening either
+; rejection.
+(executable
+ (name Space_main)
+ (public_name spacegrep)
+ (package spacegrep)
+ (libraries
+  spacegrep
+  cmdliner))

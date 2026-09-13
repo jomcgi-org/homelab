@@ -1,4 +1,4 @@
-"""Pinned source for the Semgrep CE tree (Phase 8, wave D).
+"""Pinned source for the Semgrep CE tree and native Spacegrep engine.
 
 Pinned by commit for reproducibility, like the compiler fork in
 toolchain/source.bzl. Rationale for this pin: the `develop` tip on the pin
@@ -138,6 +138,13 @@ SEMGREP_SRC_DIRS = [
     "languages/jsonnet/tree-sitter",
     "languages/jsonnet/generic",
     "libs/ojsonnet",
+    # Issue #3922 selects Spacegrep as the first native CE engine target. Its
+    # library closure is already complete above: the executable adds cmdliner
+    # (pinned in the opam lock) and unix (the compiler stdlib) and reaches the
+    # vendored PCRE/PCRE2 native libraries through commons. The overlay removes
+    # only Dune's generated whole-repository language-link flags, which are for
+    # the top-level semgrep-core binary and are not inputs to Spacegrep itself.
+    "src/spacegrep/src/bin",
 ]
 
 SEMGREP_LIBS = {
@@ -235,4 +242,5 @@ OVERLAYS = [
     "libs/git_wrapper/Git_wrapper.ml",
     "libs/git_wrapper/Git_wrapper.mli",
     "src/target/dune",
+    "src/spacegrep/src/bin/dune",
 ]

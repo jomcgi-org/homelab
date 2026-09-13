@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Translate a package's Dune `(library ...)` stanzas into a Bazel BUILD.
+"""Translate supported Dune library and executable stanzas into a Bazel BUILD.
 
 Run by the @ocaml_* repository rules (bazel/ocaml/opam/extension.bzl) via the
 host python3 during repo fetch -- NOT a Bazel py_binary. It reads the fetched
@@ -8,7 +8,10 @@ rules, so the dependency builds from its own dune metadata instead of a
 hand-transcribed target. Opam packages are themselves dune projects, so
 translating their dune files *is* resolving the dependency from source.
 
-Modeled today: multiple `(library)` stanzas across multiple dune dirs;
+Modeled today: multiple `(library)` stanzas across multiple dune dirs and
+single `(executable)` stanzas; executable translation supports `name`, an
+optional `public_name`, libraries, preprocessing, flags, and complete module
+lists with the same reject-loudly semantics as libraries;
 `wrapped` (dune defaults to wrapped); `(libraries ...)` resolving to stdlib
 archives, compiler-libs sublibraries, `re_export`, and other locked packages
 via the lib_map; `(preprocess no_preprocessing | future_syntax)` (the latter
@@ -98,6 +101,20 @@ _SUPPORTED_LIBRARY_FIELDS = {
     # catches a missing runtime package at fetch time instead of at the
     # first consumer's link.
     "ppx_runtime_libraries",
+}
+
+_SUPPORTED_EXECUTABLE_FIELDS = {
+    "name",
+    "public_name",
+    # Dune package ownership affects installation, not compilation. It is
+    # validated as a single atom and otherwise inert in a Bazel repository.
+    "package",
+    "libraries",
+    "preprocess",
+    "preprocessor_deps",
+    "flags",
+    "ocamlopt_flags",
+    "modules",
 }
 
 # Non-library stanzas that provably do not affect how the library compiles.
@@ -715,8 +732,133 @@ def gen_library(
     return "\n".join(lines) + "\n"
 
 
+def gen_executable(
+    stanza,
+    src_dir,
+    lib_map,
+    recursive=False,
+    ppx_runtime_map=None,
+    fs_dir=None,
+):
+    """Translate one Dune `(executable ...)` stanza into `ocaml_binary`.
+
+    This deliberately models the singular form only. `(executables (names
+    ...))` has per-program module ownership semantics that a shared source
+    glob cannot reproduce, so it remains an explicit unsupported frontier.
+    """
+    for item in stanza[1:]:
+        if not (isinstance(item, list) and item and isinstance(item[0], tuple)):
+            sys.exit("dune2bazel: unexpected item in (executable): %r" % (item,))
+        key = item[0][1]
+        if key not in _SUPPORTED_EXECUTABLE_FIELDS:
+            sys.exit(
+                "dune2bazel: unsupported (executable) field %r. This field "
+                "changes build or runtime semantics we do not model; extend "
+                "the translator or add a documented source overlay." % key
+            )
+
+    name_field = _field(stanza, "name")
+    if not name_field or len(name_field) != 1:
+        sys.exit("dune2bazel: (executable) needs exactly one (name ...)")
+    module_name = _atom(name_field[0])
+    if fs_dir is not None:
+        source_modules = set()
+        if recursive:
+            source_files = (
+                filename
+                for _root, _dirs, files in os.walk(fs_dir)
+                for filename in files
+            )
+        else:
+            source_files = (
+                filename
+                for filename in os.listdir(fs_dir)
+                if os.path.isfile(os.path.join(fs_dir, filename))
+            )
+        for filename in source_files:
+            if filename.endswith((".ml", ".mli", ".mll", ".mly")):
+                source_modules.add(_module_name(filename.rsplit(".", 1)[0]))
+        if _module_name(module_name) not in source_modules:
+            sys.exit(
+                "dune2bazel: executable main module %r has no source in %s"
+                % (module_name, src_dir)
+            )
+
+    public_field = _field(stanza, "public_name")
+    if public_field is not None and len(public_field) != 1:
+        sys.exit("dune2bazel: (executable (public_name ...)) needs one name")
+    public_name = _atom(public_field[0]) if public_field else None
+    if public_name and ("/" in public_name or public_name in (".", "..")):
+        sys.exit(
+            "dune2bazel: unsupported executable public_name %r; Bazel target "
+            "names cannot model an install path." % public_name
+        )
+    # A library and its installed command commonly share a public name
+    # (Spacegrep does). Dune has separate namespaces for those stanzas; Bazel
+    # does not, so public executables get a deterministic `_exe` suffix.
+    target_name = public_name + "_exe" if public_name else module_name
+
+    package_field = _field(stanza, "package")
+    if package_field is not None:
+        if len(package_field) != 1 or isinstance(package_field[0], list):
+            sys.exit("dune2bazel: (executable (package ...)) needs one atom")
+        _atom(package_field[0])
+
+    modules_field = _field(stanza, "modules")
+    if modules_field is not None:
+        _validate_modules(
+            modules_field,
+            fs_dir if fs_dir is not None else src_dir,
+            recursive,
+            None,
+            "%s/dune" % src_dir,
+        )
+
+    opam_deps, deps = _resolve_libraries(_field(stanza, "libraries") or [], lib_map)
+    flags = _resolve_flags(stanza)
+    ppx_lines, preprocess, runtime_deps = _resolve_preprocess(
+        stanza, target_name, lib_map, ppx_runtime_map or {}
+    )
+    preprocess_data = _resolve_preprocessor_deps(stanza, src_dir)
+    pat = "%s/**/*" % src_dir if recursive else "%s/*" % src_dir
+
+    lines = list(ppx_lines)
+    lines += [
+        "",
+        "ocaml_binary(",
+        '    name = "%s",' % target_name,
+        '    srcs = glob(["%s.ml", "%s.mli", "%s.mll", "%s.mly"], allow_empty = True),'
+        % (pat, pat, pat, pat),
+    ]
+    if preprocess:
+        lines.append('    preprocess = "%s",' % preprocess)
+    if preprocess_data:
+        lines.append(
+            "    preprocess_data = [%s],"
+            % ", ".join('"%s"' % d for d in preprocess_data)
+        )
+    if runtime_deps:
+        lines.append(
+            "    preprocess_runtime_deps = [%s],"
+            % ", ".join('"%s"' % d for d in sorted(runtime_deps))
+        )
+    if flags:
+        lines.append(
+            "    ocamlopt_flags = [%s]," % ", ".join('"%s"' % f for f in flags)
+        )
+    if deps:
+        lines.append("    deps = [%s]," % ", ".join('"%s"' % d for d in sorted(deps)))
+    if opam_deps:
+        lines.append("    opam_deps = [%s]," % ", ".join('"%s"' % d for d in opam_deps))
+    lines += [
+        '    visibility = ["//visibility:public"],',
+        ")",
+    ]
+    return "\n".join(lines) + "\n"
+
+
 def gen_dune_dir(dune_path, src_dir, lib_map, ppx_runtime_map=None):
-    """Translate every (library) stanza of one dune file; returns target text."""
+    """Translate supported build stanzas of one dune file; return target text."""
     with open(dune_path, "r") as f:
         stanzas = parse(tokenize(f.read()))
 
@@ -724,6 +866,7 @@ def gen_dune_dir(dune_path, src_dir, lib_map, ppx_runtime_map=None):
     # ocamllex modules are picked up by the library's *.mll glob, so the stanza
     # is informational. menhir modules attach to the library as a `menhir` attr.
     libraries = []
+    executables = []
     menhir_modules = []
     menhir_flags = []
     rule_lines = []
@@ -735,6 +878,8 @@ def gen_dune_dir(dune_path, src_dir, lib_map, ppx_runtime_map=None):
         head = _atom(s[0])
         if head == "library":
             libraries.append(s)
+        elif head == "executable":
+            executables.append(s)
         elif head == "rule":
             lines, gen = _parse_atdgen_rule(s, src_dir, dune_path)
             rule_lines += lines
@@ -759,11 +904,12 @@ def gen_dune_dir(dune_path, src_dir, lib_map, ppx_runtime_map=None):
         else:
             sys.exit(
                 "dune2bazel: unsupported stanza (%s ...) in %s. Generic (rule) "
-                "codegen and executable stanzas are not translated; packages "
-                "that need them get an opam/overrides/ BUILD." % (head, dune_path)
+                "codegen and plural executable stanzas are not translated; "
+                "packages that need them get an opam/overrides/ BUILD or a "
+                "documented source overlay." % (head, dune_path)
             )
-    if not libraries:
-        sys.exit("dune2bazel: no (library) stanza in %s" % dune_path)
+    if not libraries and not executables:
+        sys.exit("dune2bazel: no supported build stanza in %s" % dune_path)
     if menhir_modules and len(libraries) != 1:
         sys.exit(
             "dune2bazel: a (menhir ...) stanza needs exactly one (library) in "
@@ -796,13 +942,24 @@ def gen_dune_dir(dune_path, src_dir, lib_map, ppx_runtime_map=None):
                 fs_dir=os.path.dirname(dune_path),
             )
         )
+    for executable in executables:
+        out.append(
+            gen_executable(
+                executable,
+                src_dir,
+                lib_map,
+                recursive=recursive,
+                ppx_runtime_map=ppx_runtime_map,
+                fs_dir=os.path.dirname(dune_path),
+            )
+        )
     return "".join(out)
 
 
 _HEADER = """\
 # GENERATED by bazel/ocaml/opam/dune2bazel.py from this package's own
 # dune metadata -- do not edit. Re-fetch the repo to regenerate.
-load("@%s//bazel/ocaml:defs.bzl", "ocaml_library", "ocaml_ppx")
+load("@%s//bazel/ocaml:defs.bzl", "ocaml_binary", "ocaml_library", "ocaml_ppx")
 """
 
 

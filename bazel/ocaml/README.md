@@ -287,7 +287,7 @@ bazel/ocaml/
   platforms/BUILD          # per-arch platforms (from arches.bzl) + executor probe
   driver/ocaml_compile.sh  # staging + codegen pipeline + ocamldep -sort + compile/link
   semgrep_src/
-    source.bzl             # pinned Semgrep CE commit + translated frontier (wave D)
+    source.bzl             # pinned Semgrep CE commit + translated Spacegrep engine closure
     repositories.bzl       # module extension: clone + overlays + dune2bazel -> @semgrep_src
     overlays/              # tree paths replaced before translation (each documents why)
     README.md              # translated dirs + the libs/commons rejection dispatch
