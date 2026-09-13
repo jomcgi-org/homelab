@@ -15,9 +15,6 @@ import tempfile
 import pytest
 
 
-pytestmark = pytest.mark.skip(reason="temporary packaging-rule CI isolation")
-
-
 REQUIRED_COMMANDS = {
     "agent-run",
     "bb",
@@ -339,6 +336,7 @@ def test_commands_execute_from_relocated_root() -> None:
             assert result.returncode == 0, f"{command}: {result.stdout}"
 
 
+@pytest.mark.skip(reason="temporary loader-probe CI isolation")
 def test_native_loader_dependencies() -> None:
     platform = RUNTIME_PLATFORM or "linux_amd64"
     _assert_native_host(platform)
