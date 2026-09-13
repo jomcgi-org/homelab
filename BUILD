@@ -77,6 +77,15 @@ exports_files(
     visibility = ["//bazel/tools/ci:__pkg__"],
 )
 
+sh_test(
+    name = "bootstrap_test",
+    srcs = ["bootstrap_test.sh"],
+    data = [
+        ".tools-version",
+        "bootstrap.sh",
+    ],
+)
+
 # The EmberVM chart test that couples hypervisorEpoch to the vendored
 # Firecracker version (#4409) reads the kata_firecracker_archive pin from here.
 exports_files(

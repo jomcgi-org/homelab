@@ -7,7 +7,9 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 load("@aspect_bazel_lib//lib:expand_template.bzl", "expand_template")
 load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
 load("@rules_oci//oci:defs.bzl", "oci_image", "oci_image_index", "oci_push")
+load("//bazel/tools/js:node_modules_tar.bzl", "node_modules_tar")
 load("//bazel/tools/oci:providers.bzl", "oci_image_info")
+load(":go_tools_tar.bzl", "go_tools_tar")
 load(":multitool_tar.bzl", "multitool_tar")
 load(":node_tar.bzl", "node_tar")
 load(":python_tar.bzl", "python_tar")
@@ -26,7 +28,10 @@ multitool_tar(
     name = "tools_tar",
     tools = [
         "argocd",
+        "bb",
+        "buildifier",
         "buildozer",
+        "claude",
         "crane",
         "gh",
         "gofumpt",
@@ -34,14 +39,53 @@ multitool_tar(
         "kind",
         "op",
         "ruff",
+        "shellcheck",
         "shfmt",
     ],
+)
+
+# Build repository-owned commands once for each target platform. Applying the
+# platform transition to the tar target cross-compiles the go_binary and keeps
+# the resulting layer architecture aligned with its image manifest.
+go_tools_tar(
+    name = "source_tools_tar",
+    tools = {
+        "agent-run": "//bazel/tools/agent-run",
+        "hf2oci": "//bazel/tools/hf2oci/cmd/hf2oci",
+    },
 )
 
 # Per-platform Node.js binary tars.
 # Creates :node_tar_linux_amd64, :node_tar_linux_arm64, :node_tar_darwin_arm64
 # each containing /usr/bin/node for the target platform.
 node_tar(name = "node_tar")
+
+# ESLint is platform-independent JavaScript. Package its complete pnpm
+# lockfile-managed dependency closure and invoke it through the image's pinned
+# Node.js runtime. The wrapper derives the extraction root from argv[0], so it
+# works from ~/.cache/homelab-tools rather than assuming installation at /.
+node_modules_tar(
+    name = "eslint_node_modules",
+    deps = ["//:node_modules/eslint"],
+)
+
+genrule(
+    name = "eslint_wrapper_tar",
+    outs = ["eslint_wrapper.tar"],
+    cmd = """
+        set -e
+        WORK=$$(mktemp -d)
+        mkdir -p "$$WORK/usr/bin"
+        cat > "$$WORK/usr/bin/eslint" << 'WRAPPER'
+#!/usr/bin/env bash
+ROOT="$$(cd "$$(dirname "$$0")/../.." && pwd)"
+exec "$$ROOT/usr/bin/node" "$$ROOT/usr/local/lib/node_modules/eslint/bin/eslint.js" "$$@"
+WRAPPER
+        chmod 0755 "$$WORK/usr/bin/eslint"
+        tar -cf $@ -C "$$WORK" .
+        rm -rf "$$WORK"
+    """,
+)
 
 # Package pnpm from the aspect_rules_js-managed @pnpm repo.
 # pnpm is a JS script (cross-platform) that runs on Node.js.
@@ -205,7 +249,10 @@ oci_image(
     os = "linux",
     tars = [
         ":tools_tar_linux_amd64",
+        ":source_tools_tar_linux_amd64",
         ":node_tar_linux_amd64",
+        ":eslint_node_modules",
+        ":eslint_wrapper_tar",
         ":python_tar_linux_amd64",
         ":pnpm_tar",
         ":prettier_tar",
@@ -219,7 +266,10 @@ oci_image(
     os = "linux",
     tars = [
         ":tools_tar_linux_arm64",
+        ":source_tools_tar_linux_arm64",
         ":node_tar_linux_arm64",
+        ":eslint_node_modules",
+        ":eslint_wrapper_tar",
         ":python_tar_linux_arm64",
         ":pnpm_tar",
         ":prettier_tar",
@@ -233,7 +283,10 @@ oci_image(
     os = "darwin",
     tars = [
         ":tools_tar_darwin_arm64",
+        ":source_tools_tar_darwin_arm64",
         ":node_tar_darwin_arm64",
+        ":eslint_node_modules",
+        ":eslint_wrapper_tar",
         ":python_tar_darwin_arm64",
         ":pnpm_tar",
         ":prettier_tar",
@@ -305,11 +358,47 @@ py_test(
     ],
 )
 
+py_test(
+    name = "tools_image_test",
+    srcs = ["tools_image_test.py"],
+    data = [
+        ":eslint_node_modules",
+        ":eslint_wrapper_tar",
+        ":node_tar_darwin_arm64",
+        ":node_tar_linux_amd64",
+        ":node_tar_linux_arm64",
+        ":source_tools_tar_darwin_arm64",
+        ":source_tools_tar_linux_amd64",
+        ":source_tools_tar_linux_arm64",
+        ":tools_tar_darwin_arm64",
+        ":tools_tar_linux_amd64",
+        ":tools_tar_linux_arm64",
+    ],
+    deps = ["@pip//pytest"],
+)
+
+semgrep_test(
+    name = "tools_image_test_semgrep_test",
+    srcs = ["tools_image_test.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+    tags = ["semgrep"],
+)
+
 semgrep_test(
     name = "python_deps_test_semgrep_test",
     srcs = ["python_deps_test.py"],
     rules = ["//bazel/semgrep/rules:python_rules"],
     tags = ["semgrep"],
+)
+
+bzl_library(
+    name = "go_tools_tar",
+    srcs = ["go_tools_tar.bzl"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@aspect_bazel_lib//lib:tar",
+        "@aspect_bazel_lib//lib:transitions",
+    ],
 )
 
 bzl_library(
