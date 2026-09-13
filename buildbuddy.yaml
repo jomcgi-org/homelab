@@ -282,6 +282,8 @@ actions:
           # from the PCRE and tree-sitter binaries.
           bazel test \
             //bazel/ocaml/examples/pcre2:pcre2_test \
+            //bazel/ocaml/examples/toycaml:toycaml_capabilities_test \
+            //bazel/ocaml/examples/toycaml:toycaml_static_link_test \
             //bazel/ocaml/examples/treesitter:ts_test \
             //bazel/ocaml/examples/treesitter_bash:ts_bash_test \
             --config=ci \

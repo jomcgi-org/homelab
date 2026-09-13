@@ -14,6 +14,7 @@
 set -eu
 
 MODE="" NAME="" SYSROOT_TAR="" USE_FIND="0" WRAPPED="0" LINKALL="0"
+REQUIRE_FLAMBDA="0" STATIC_LINK="0"
 INCLUDES="" OPAM_PKGS="" SRCS="" CSRCS="" CHDRS="" CMXAS="" CFLAGS=""
 PP_TOOL="" PP_ARGS="" CPPO_TOOL="" PPX="" PPX_DATA=""
 MENHIR_TOOL="" MENHIR_MODULES="" MENHIR_FLAGS=""
@@ -28,6 +29,8 @@ while [ $# -gt 0 ]; do
 	--use-ocamlfind) USE_FIND="$2" && shift 2 ;;
 	--wrapped) WRAPPED="$2" && shift 2 ;;
 	--linkall) LINKALL="$2" && shift 2 ;;
+	--require-flambda) REQUIRE_FLAMBDA="$2" && shift 2 ;;
+	--static-link) STATIC_LINK="$2" && shift 2 ;;
 	--compile-flag) CFLAGS="$CFLAGS $2" && shift 2 ;;
 	--include) INCLUDES="$INCLUDES $2" && shift 2 ;;
 	--opam-pkg) OPAM_PKGS="$OPAM_PKGS $2" && shift 2 ;;
@@ -100,6 +103,15 @@ OCAMLOPT="$S/bin/ocamlopt.opt"
 OCAMLDEP="$S/bin/ocamldep.opt"
 OCAMLLEX="$S/bin/ocamllex"
 OCAMLYACC="$S/bin/ocamlyacc"
+
+if [ "$REQUIRE_FLAMBDA" = "1" ]; then
+	FLAMBDA="$($OCAMLOPT -config | awk '$1 == "flambda:" { print $2 }')"
+	if [ "$FLAMBDA" != "true" ]; then
+		echo "ocaml_compile: target $NAME requires flambda, compiler reports ${FLAMBDA:-missing}" >&2
+		exit 1
+	fi
+	echo "ocaml_compile: target $NAME verified flambda=true" >&2
+fi
 
 # Per-arch sysroots are built on the arch they target (ADR 006). If the
 # scheduler hands this action to an executor of a different arch than the one
@@ -463,5 +475,7 @@ else
 	# stub objects that reference their symbols (static link resolves L-to-R).
 	LINKFLAGS=""
 	[ "$LINKALL" = "1" ] && LINKFLAGS="-linkall"
-	"$OCAMLOPT" $CFLAGS $LINKFLAGS $INCFLAGS $PKG_LINK $CMXAS $CMX_LIST $STUB_OBJS $CC_ARCH_ABS $CC_CCLIB -o "$EXE_OUT"
+	STATICFLAGS=""
+	[ "$STATIC_LINK" = "1" ] && STATICFLAGS="-ccopt -static"
+	"$OCAMLOPT" $CFLAGS $LINKFLAGS $STATICFLAGS $INCFLAGS $PKG_LINK $CMXAS $CMX_LIST $STUB_OBJS $CC_ARCH_ABS $CC_CCLIB -o "$EXE_OUT"
 fi

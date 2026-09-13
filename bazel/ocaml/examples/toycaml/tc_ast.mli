@@ -2,10 +2,8 @@
    This mirrors the shape of a real engine's generic AST node type -- the thing
    patterns are matched against -- with none of the language-specific detail.
 
-   Module name is tc_-prefixed (not ast) deliberately: the ruleset has no
-   library wrapping yet (ADR 004 Phase 2), and `re` -- built unwrapped -- ships
-   a flat `Ast` unit, so an unprefixed `Ast` here would collide at link. The
-   prefix is the manual stand-in for dune-style wrapping. *)
+   The tc_ prefix keeps this unwrapped first-party library's public module
+   names stable and collision-free beside the wider opam universe. *)
 
 type expr =
   | Int of int
@@ -14,3 +12,9 @@ type expr =
 
 (* Render an expression back to source-like text (for demo output / tests). *)
 val to_string : expr -> string
+
+(* Implemented by the visitors-derived traversal over [expr]. *)
+val node_count : expr -> int
+
+(* Implemented by ppx_deriving.show in the same composed ppx pass. *)
+val debug_string : expr -> string
