@@ -2,7 +2,7 @@ apiVersion: v2
 name: kargo
 description: Kargo promotion controller, owning the monolith's chart version in dev and production
 type: application
-version: 1.0.0
+version: 1.0.1
 appVersion: "1.11.1"
 
 dependencies:

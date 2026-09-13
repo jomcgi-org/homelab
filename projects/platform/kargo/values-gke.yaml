@@ -1,0 +1,27 @@
+# GKE-only pipelines supplement the shared pipelines without enrolling these
+# Applications in the residual home cluster's Kargo controller.
+promotion:
+  additionalPipelines:
+    - name: loom
+      project: kargo-loom
+      warehouse: loom-chart
+      chartRepo: oci://ghcr.io/weave-hand/charts/loom
+      # Renovate advances the approved version via PR. Kargo discovers only
+      # this exact version, then verifies dev before promoting it to prod.
+      # renovate: datasource=docker depName=ghcr.io/weave-hand/charts/loom
+      semverConstraint: "0.2.0"
+      discoveryLimit: 5
+      appSourceRepo: ghcr.io/weave-hand/charts
+      appSourceChart: loom
+      desiredRevisionExpr: "${{ chartFrom('oci://ghcr.io/weave-hand/charts/loom').Version }}"
+      waitTimeout: 15m0s
+      stages:
+        - name: dev
+          application: loom-dev
+          upstream: []
+          autoPromotion: true
+        - name: prod
+          application: loom-prod
+          upstream: [dev]
+          requiredSoakTime: 10m0s
+          autoPromotion: true

@@ -111,6 +111,8 @@ promotion:
   # 10m0s would have failed that promotion on a healthy rollout, which is the
   # worst failure a gate can have: it teaches the operator that red means
   # nothing. Any new pipeline needs its own measurement, not this default.
+  # Cluster overlays can append pipelines without replacing this list.
+  additionalPipelines: []
   pipelines:
     - name: monolith
       # The Warehouse's own name, referenced by every Stage's requestedFreight.

@@ -1,0 +1,67 @@
+{{- range $index, $env := .Values.environments }}
+{{- if $index }}
+---
+{{- end }}
+apiVersion: onepassword.com/v1
+kind: OnePasswordItem
+type: kubernetes.io/basic-auth
+metadata:
+  name: {{ $env.namespace }}-db-owner
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    cnpg.io/reload: "true"
+spec:
+  itemPath: {{ $env.itemPath | quote }}
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: DatabaseRole
+metadata:
+  name: {{ $env.namespace }}-owner
+  namespace: {{ $.Release.Namespace }}
+spec:
+  cluster:
+    name: {{ $.Values.clusterName }}
+  name: {{ $env.role }}
+  ensure: present
+  databaseRoleReclaimPolicy: retain
+  login: true
+  superuser: false
+  createdb: false
+  createrole: false
+  replication: false
+  bypassrls: false
+  connectionLimit: 60
+  passwordSecret:
+    name: {{ $env.namespace }}-db-owner
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: {{ $env.namespace }}-database
+  namespace: {{ $.Release.Namespace }}
+spec:
+  cluster:
+    name: {{ $.Values.clusterName }}
+  name: {{ $env.database }}
+  owner: {{ $env.role }}
+  ensure: present
+  databaseReclaimPolicy: retain
+---
+# The same item supplies the owner password and the application's connection.
+apiVersion: onepassword.com/v1
+kind: OnePasswordItem
+metadata:
+  name: loom-db
+  namespace: {{ $env.namespace }}
+spec:
+  itemPath: {{ $env.itemPath | quote }}
+---
+apiVersion: onepassword.com/v1
+kind: OnePasswordItem
+type: kubernetes.io/dockerconfigjson
+metadata:
+  name: ghcr-imagepull-secret
+  namespace: {{ $env.namespace }}
+spec:
+  itemPath: {{ $.Values.imagePullItemPath | quote }}
+{{- end }}

@@ -49,6 +49,15 @@
         "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\s+tag: \\\"?(?<currentValue>[^\\s\\\"]+)\\\"?"
       ],
       "versioningTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "Advance the approved Loom OCI chart version; Kargo owns environment pins.",
+      "managerFilePatterns": ["/projects/platform/kargo/values-gke\\.yaml$/"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\s+semverConstraint: \"(?<currentValue>[^\"]+)\""
+      ],
+      "versioningTemplate": "semver"
     }
   ],
   "packageRules": [
@@ -130,6 +139,21 @@
       "matchUpdateTypes": ["major"],
       "addLabels": ["major-upgrade"],
       "automerge": false
+    },
+    {
+      "description": "Kargo owns Loom Application pins; Renovate updates its approved-version input only.",
+      "matchManagers": ["argocd"],
+      "matchFileNames": ["projects/gke-apps/loom-*/application.yaml"],
+      "enabled": false
+    },
+    {
+      "description": "Review stable Loom releases before the dev-to-prod promotion pipeline consumes them.",
+      "matchManagers": ["custom.regex"],
+      "matchPackageNames": ["ghcr.io/weave-hand/charts/loom"],
+      "allowedVersions": "/^\\d+\\.\\d+\\.\\d+$/",
+      "automerge": false,
+      "minimumReleaseAge": null,
+      "addLabels": ["upstream-chart"]
     }
   ]
 }

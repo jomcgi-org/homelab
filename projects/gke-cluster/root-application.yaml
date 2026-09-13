@@ -103,6 +103,16 @@ spec:
       name: embervm
       jsonPointers:
         - /spec/sources/0/targetRevision
+    - group: argoproj.io
+      kind: Application
+      name: loom-dev
+      jsonPointers:
+        - /spec/sources/0/targetRevision
+    - group: argoproj.io
+      kind: Application
+      name: loom-prod
+      jsonPointers:
+        - /spec/sources/0/targetRevision
   syncPolicy:
     automated:
       prune: true

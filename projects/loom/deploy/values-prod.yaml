@@ -1,0 +1,24 @@
+objectStore:
+  size: 10Gi
+ingest:
+  nodeSelector:
+    cloud.google.com/gke-nodepool: core-e2
+queryApi:
+  nodeSelector:
+    cloud.google.com/gke-nodepool: core-e2
+worker:
+  nodeSelector:
+    cloud.google.com/gke-nodepool: core-e2
+networkPolicy:
+  extraIngress:
+    - from:
+        - podSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monolith
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monolith-agents
+      ports:
+        - protocol: TCP
+          port: 8080

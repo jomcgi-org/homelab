@@ -24,7 +24,7 @@ all already exist holding live workloads. Adopting one would be the same class
 of collision that cost this repo three incidents in one evening: a name that
 looks descriptive and is already someone's identity. Hence `kargo-<workload>`.
 */}}
-{{- range $pipelineIndex, $pipeline := .Values.promotion.pipelines }}
+{{- range $pipelineIndex, $pipeline := concat .Values.promotion.pipelines (.Values.promotion.additionalPipelines | default list) }}
 {{- if $pipelineIndex }}
 ---
 {{- end }}

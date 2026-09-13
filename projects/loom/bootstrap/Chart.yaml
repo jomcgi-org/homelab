@@ -1,0 +1,5 @@
+apiVersion: v2
+name: loom-bootstrap
+description: Isolated Loom databases and 1Password credentials on the shared CNPG cluster
+type: application
+version: 0.1.0
