@@ -97,8 +97,8 @@ def test_every_platform_contains_executable_commands(platform: str) -> None:
 
     eslint_payload = _read_member(commands["eslint"], "usr/bin/eslint")
     assert eslint_payload is not None
-    assert b'../local/lib/node_modules/eslint/bin/eslint.js' in eslint_payload
     assert b'exec "$ROOT/usr/bin/node"' in eslint_payload
+    assert b'"$ROOT/usr/local/lib/node_modules/eslint/bin/eslint.js"' in eslint_payload
 
     combined_members = set().union(*(_members(layer) for layer in layers))
     assert "usr/bin/node" in combined_members
@@ -124,9 +124,9 @@ def test_linux_commands_execute_from_relocated_root() -> None:
         }
         invocations = {
             "agent-run": ["--help"],
-            # The bb-only version help path validates the CLI without asking
-            # its embedded Bazelisk to fetch the repository's Bazel version.
-            "bb": ["version", "--help"],
+            # --cli keeps version reporting inside bb instead of starting its
+            # embedded Bazelisk and downloading the repository's Bazel.
+            "bb": ["version", "--cli"],
             "buildifier": ["--version"],
             "claude": ["--version"],
             "eslint": ["--version"],
