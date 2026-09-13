@@ -460,6 +460,10 @@ defmodule Embervm.Application do
       # writer). Correctness (read-time TTLs) does not depend on it; it reclaims disk.
       {Embervm.OpLog.Compactor,
        op_log: op_log_mod(), op_log_mod: op_log_mod(), interval_ms: sweep_interval_ms()},
+      # Attach before Bandit starts accepting traffic. Observing at Bandit's
+      # listener boundary sees both ordinary Plug responses and the 500 response
+      # Bandit creates after a handler raises or exits.
+      Embervm.SessionApiObserver,
       # Bandit + the router last: its handlers call Auth, TaskStore, SyncWait, and
       # the dispatcher's admit? gate, so the HTTP surface must not accept requests
       # until all are up.

@@ -199,11 +199,11 @@ def test_metrics_pipeline_never_accepts_otlp_even_when_traces_are_on():
 
 
 def test_session_api_request_spans_are_retained_with_a_bounded_budget():
-    """Honeycomb request alerts need an unsampled denominator and percentile.
+    """Honeycomb request alerts need a complete or explicitly invalid signal.
 
-    The application emits these as isolated one-span traces, so a dedicated
-    bounded sampler slice retains complete request events without admitting
-    arbitrary OTLP metrics or letting a deep invoke consume the whole slice.
+    The application's rolling envelope includes the two pods possible during an
+    update. The marker has its own larger-than-possible allocation, so request
+    saturation cannot hide the fact that an alert window must be suppressed.
     """
     config = _collector_config(_render())
     composite = config["processors"]["tail_sampling"]["policies"][0]["composite"]
@@ -211,31 +211,79 @@ def test_session_api_request_spans_are_retained_with_a_bounded_budget():
     session_policy = next(
         policy for policy in policies if policy["name"] == "embervm-session-api"
     )
+    saturation_policy = next(
+        policy
+        for policy in policies
+        if policy["name"] == "embervm-session-api-saturation"
+    )
 
     assert session_policy["type"] == "string_attribute"
     assert session_policy["string_attribute"] == {
-        "key": "ember.surface",
-        "values": ["session_api"],
+        "key": "ember.observation.kind",
+        "values": ["request"],
     }
-    assert composite["policy_order"][0] == "embervm-session-api"
+    assert saturation_policy["string_attribute"] == {
+        "key": "ember.observation.kind",
+        "values": ["saturation"],
+    }
+    assert composite["policy_order"][:2] == [
+        "embervm-session-api-saturation",
+        "embervm-session-api",
+    ]
 
     allocations = {
         allocation["policy"]: allocation["percent"]
         for allocation in composite["rate_allocation"]
     }
     assert allocations == {
+        "embervm-session-api-saturation": 6,
         "embervm-session-api": 25,
         "errors": 25,
-        "slow-traces": 25,
-        "baseline": 25,
+        "slow-traces": 24,
+        "baseline": 20,
     }
     assert sum(allocations.values()) == 100
-    assert (
+    request_capacity = (
         composite["max_total_spans_per_second"]
         * allocations["embervm-session-api"]
         / 100
-        == 100
     )
+    marker_capacity = (
+        composite["max_total_spans_per_second"]
+        * allocations["embervm-session-api-saturation"]
+        / 100
+    )
+
+    assert request_capacity == 100
+    assert request_capacity > 88
+    assert marker_capacity == 24
+    assert marker_capacity > 22
+
+
+def test_documented_trigger_schedules_fit_the_honeycomb_api_bounds():
+    """Honeycomb requires frequency <= time_range <= 4 * frequency."""
+    contracts = {
+        "error-rate": {
+            "frequency": 120,
+            "time_range": 240,
+            "minimum_count": 20,
+            "consecutive": 2,
+        },
+        "p99-latency": {
+            "frequency": 300,
+            "time_range": 600,
+            "minimum_count": 10,
+            "consecutive": 2,
+        },
+    }
+
+    for contract in contracts.values():
+        frequency = contract["frequency"]
+        time_range = contract["time_range"]
+        assert frequency % 60 == 0
+        assert frequency <= time_range <= min(4 * frequency, 86_400)
+        assert contract["minimum_count"] > 0
+        assert contract["consecutive"] == 2
 
 
 # ---------------------------------------------------------------------------

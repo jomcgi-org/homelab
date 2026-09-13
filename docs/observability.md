@@ -64,29 +64,46 @@ admitted.
 
 ## EmberVM session API request telemetry
 
-The EmberVM control plane emits one root span named `embervm.http.request` for
-every request that reaches either session namespace. This happens inside the
-Bandit listener, so ClusterIP, pod-IP, and loopback traffic has the same signal.
-The span carries these query fields:
+The EmberVM control plane emits isolated root spans named
+`embervm.http.request` from Bandit's request lifecycle listener. This happens at
+the listener boundary, so ClusterIP, pod-IP, and loopback traffic has the same
+signal, including a 500 response Bandit creates after a handler raises or exits.
+Normal and exceptional completion consume the same ETS start record, which
+makes the observation exactly once. Request spans carry these query fields:
 
 | Field | Type and unit | Meaning |
 | ----- | ------------- | ------- |
 | `service.name` | string | `embervm-control` |
 | `deployment.environment` | string | Collector-stamped environment, `homelab-hub` on GKE |
 | `ember.surface` | string | `session_api` |
-| `ember.http.duration_ms` | number, milliseconds | Time from policy entry until the response is sent |
+| `ember.http.duration_ms` | number, milliseconds | Time from Bandit request start through normal or exceptional completion |
+| `ember.observation.kind` | string | `request`, or `saturation` on the marker described below |
+| `ember.observation.saturated` | boolean, optional | Present and `true` only on a saturation marker |
 | `ember.policy.allowed` | boolean | Whether the method and canonical path passed the session allow-list |
 | `http.request.method` | string | Uppercase HTTP method |
 | `http.response.status_code` | integer | Response status seen by the caller |
 | `http.route` | string | Low-cardinality route template, or `unmatched` for a policy denial |
 
-The collector retains these isolated request traces through the bounded
-`embervm-session-api` tail-sampling slice. This gives Honeycomb a complete
-request denominator and latency distribution without enabling the OTLP metrics
-receiver. The application and collector wiring is active in the GKE overlays:
-EmberVM exports with `OTEL_SERVICE_NAME=embervm-control`, the collector admits
-that exact service name, and the hub collector uses its proven OTLP/HTTP export
-path to Honeycomb.
+These spans are completion observations: their OpenTelemetry start timestamp is
+the completion time, while `ember.http.duration_ms` retains the full measured
+duration. A 15-minute create or multi-hour invoke therefore arrives inside the
+current Honeycomb query window rather than being indexed at request entry.
+
+The observer exports at most four request observations per 100 millisecond
+bucket per pod. The Deployment has one replica and Kubernetes can add one surge
+pod during a rolling update, so any rolling second contains at most 88 request
+spans. On the first overflow in a bucket the observer emits one saturation
+marker, with at most 22 markers per rolling second across two pods, and drops
+the remaining observations in that bucket. The collector reserves 100
+spans/second for request observations and 24 spans/second for markers. Below the
+envelope the request denominator and duration distribution are complete. Above
+it, every alert formula suppresses a window containing a marker instead of
+evaluating biased first-arrival data.
+
+The application and collector wiring is active in the GKE overlays: EmberVM
+exports with `OTEL_SERVICE_NAME=embervm-control`, the collector admits that exact
+service name, and the hub collector uses its proven OTLP/HTTP export path to
+Honeycomb. The metrics receiver remains closed to arbitrary OTLP metrics.
 
 ## Automatic injection is off
 

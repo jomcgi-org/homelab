@@ -29,28 +29,62 @@ public frontend.
 ## EmberVM session API alert contract
 
 The active request telemetry and its Honeycomb query contract are repository
-managed. Both queries select:
+managed. Honeycomb trigger queries with named calculations cannot combine those
+calculations with global filters, so every named calculation repeats these
+filters:
 
 - `service.name = embervm-control`
 - `deployment.environment = homelab-hub`
 - `ember.surface = session_api`
 - span name `embervm.http.request`
 
-The error-rate query evaluates a five-minute window every minute, requires at
-least 20 request spans, and alerts when the proportion with
-`http.response.status_code >= 500` is greater than `0.05` (5 percent) for two
-consecutive evaluations. Policy denials are 403 responses and intentionally do
-not count as server errors.
+The error-rate trigger contract is:
 
-The p99-latency query evaluates a ten-minute window every minute, requires at
-least 10 request spans, excludes
-`http.route = /v1/sessions/:id/invoke`, and alerts when
-`P99(ember.http.duration_ms) > 300000` milliseconds (five minutes) for two
-consecutive evaluations. Invoke duration includes the guest model turn and has
-a configured ceiling of 12 hours, so including it would page on legitimate
-work rather than control-plane latency. Five minutes is above ordinary cold
-session creation while remaining well below the caller's 30-minute create
-timeout.
+| Setting | Value |
+| ------- | ----- |
+| Query `time_range` | 240 seconds |
+| Trigger `frequency` | 120 seconds |
+| Named calculation `requests` | `COUNT(http.response.status_code)` |
+| Named calculation `errors` | `SUM(is_server_error)`, where the query-scoped field is 1 for status 500 or greater and 0 otherwise |
+| Named calculation `saturation` | `COUNT(ember.observation.saturated)` |
+| Formula | `($errors / $requests) / (($saturation * 1000000) + 1)` |
+| HAVING guard | `COUNT(http.response.status_code) >= 20` |
+| Threshold | greater than `0.05` for 2 consecutive evaluations |
+
+The status field is absent on saturation markers, so `requests` is the request
+denominator. A zero denominator makes the ratio nil and Honeycomb skips that
+evaluation. Policy denials are 403 responses and do not count as server errors.
+When a saturation marker exists, the formula's divisor makes the maximum result
+less than `0.000001`, explicitly suppressing the invalid window. At a two-minute
+frequency, two consecutive evaluations mean four minutes of sustained breach.
+
+The p99-latency trigger contract is:
+
+| Setting | Value |
+| ------- | ----- |
+| Query `time_range` | 600 seconds |
+| Trigger `frequency` | 300 seconds |
+| Named calculation `eligible_requests` | `COUNT(ember.http.duration_ms)` with invoke routes excluded |
+| Named calculation `latency` | `P99(ember.http.duration_ms)` with invoke routes excluded |
+| Named calculation `saturation` | `COUNT(ember.observation.saturated)` |
+| Formula | `$latency / (($saturation * 1000000) + 1)` |
+| HAVING guard | `COUNT(ember.http.duration_ms) >= 10`, with the same invoke exclusion |
+| Threshold | greater than `300000` milliseconds for 2 consecutive evaluations |
+
+The invoke exclusion is applied before both the percentile and its minimum-count
+guard. Invoke duration includes the guest model turn and has a configured
+ceiling of 12 hours, so including it would page on legitimate work rather than
+control-plane latency. Five minutes is above ordinary cold session creation
+while remaining below the caller's 30-minute create timeout. Saturation markers
+remain included in their named calculation, so an invoke burst conservatively
+suppresses the latency evaluation too. At a five-minute frequency, two
+consecutive evaluations mean ten minutes of sustained breach.
+
+Both pairs satisfy Honeycomb's current trigger constraint
+`frequency <= time_range <= min(4 * frequency, 86400)`, use minute-multiple
+frequencies, and stay within the API's maximum of five consecutive evaluations.
+The formulas use the single formula permitted by the trigger schema. The HAVING
+clause supplies the single permitted low-traffic guard.
 
 ## Alert delivery blocker
 

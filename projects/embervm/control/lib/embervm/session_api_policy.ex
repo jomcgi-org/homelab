@@ -15,8 +15,6 @@ defmodule Embervm.SessionApiPolicy do
 
   import Plug.Conn
 
-  require OpenTelemetry.Tracer, as: Tracer
-
   @session_segment ~r/\A[A-Za-z0-9][A-Za-z0-9._:-]*\z/
   @denial_body ~s({"error":"session API method or path not allowed","retryable":false})
 
@@ -29,12 +27,11 @@ defmodule Embervm.SessionApiPolicy do
       :outside ->
         conn
 
-      {:allowed, route} ->
-        observe(conn, route, true)
-
-      {:denied, route} ->
+      {:allowed, _route} ->
         conn
-        |> observe(route, false)
+
+      {:denied, _route} ->
+        conn
         |> put_resp_content_type("application/json")
         |> send_resp(403, @denial_body)
         |> halt()
@@ -105,46 +102,4 @@ defmodule Embervm.SessionApiPolicy do
 
   defp route_template(["v1", "sessions", _session_id]), do: "/v1/sessions/:id"
   defp route_template(_path_info), do: "unmatched"
-
-  defp observe(conn, route, allowed) do
-    started_at = :opentelemetry.timestamp()
-
-    register_before_send(conn, fn response ->
-      record_request(response, route, allowed, started_at)
-      response
-    end)
-  end
-
-  # Each observation is a one-span root trace. This keeps the tail sampler's
-  # session-api policy bounded and prevents a deep invoke trace from consuming
-  # the request policy's whole per-second allocation. start_time makes the span
-  # duration itself agree with ember.http.duration_ms.
-  defp record_request(conn, route, allowed, started_at) do
-    duration_ms =
-      started_at
-      |> elapsed_native()
-      |> System.convert_time_unit(:native, :microsecond)
-      |> Kernel./(1_000)
-
-    attributes = %{
-      "ember.http.duration_ms" => duration_ms,
-      "ember.policy.allowed" => allowed,
-      "ember.surface" => "session_api",
-      "http.request.method" => conn.method,
-      "http.response.status_code" => conn.status,
-      "http.route" => route
-    }
-
-    Tracer.with_span OpenTelemetry.Ctx.new(), "embervm.http.request", %{
-      kind: :server,
-      start_time: started_at,
-      attributes: attributes
-    } do
-      if conn.status >= 500 do
-        Tracer.set_status(:error, "HTTP #{conn.status}")
-      end
-    end
-  end
-
-  defp elapsed_native(started_at), do: max(:opentelemetry.timestamp() - started_at, 0)
 end
