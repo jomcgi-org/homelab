@@ -168,7 +168,7 @@ has the full text.
 
 | ADR | Decision | Status | Disposition |
 |---|---|---|---|
-| tooling/001 | Distribute developer tools as a multi-arch OCI image pulled by `crane export`; no local Bazel; all execution remote | Implemented. Standalone render, lint, and live ArgoCD diff scripts are built; Claude-in-cluster convergence is unbuilt (#3914, #3915, #3916, #3917) | deleted |
+| tooling/001 | Distribute developer tools as a multi-arch OCI image pulled by `crane export`; no local Bazel; all execution remote | Implemented. `bazel/helm/render.sh`, `bazel/helm/lint.sh`, and the live ArgoCD diff are built; Claude-in-cluster convergence is unbuilt (#3914, #3915, #3916) | deleted |
 | tooling/002 | Copier template that scaffolds a new service | Draft, never executed; the current recipe is to copy `projects/monolith/deploy/` (#3918) | deleted |
 | tooling/003 | Generate the `homelab` CLI and Claude skills from the FastAPI OpenAPI spec | Deprecated; `tools/cli` stays hand-written | deleted |
 | tooling/004 | Scale the custom `bazel/ocaml` ruleset rather than adopt obazl: ppx first, a locked opam universe, dune translation, per-arch native toolchains | Accepted, partly executed; CE translation remains open (#3921, #3922) | deleted |
