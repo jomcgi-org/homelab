@@ -281,14 +281,16 @@ def test_chat_provider_pin_is_rendered(chart_context):
     assert re.search(r'- name: CHAT_PROVIDER\n\s+value: "groq"', rendered)
 
 
-def test_backend_carries_both_authentik_issuers(chart_context):
-    """The monolith validates tokens from two authentik providers.
+def test_backend_carries_browser_and_bearer_identity_verifiers(chart_context):
+    """The monolith validates browser assertions and two bearer providers.
 
     The browser provider (mcp-friends) and the agent provider (mcp-agents) have
     different issuers, and `build_default_resolver` only registers the second
     verifier when all three agent settings are present. A missing one is silent:
     the resolver simply declines agent tokens and every agent call resolves
-    anonymous, so assert the wiring rather than trusting it.
+    anonymous. Cloudflare's signed browser assertion is verified again in the
+    backend for routes that are also reachable outside Envoy, so assert all of
+    the wiring rather than trusting it.
     """
 
     rendered = chart_context["rendered"]
@@ -299,5 +301,7 @@ def test_backend_carries_both_authentik_issuers(chart_context):
         "AUTH_AUTHENTIK_AGENT_JWKS_URL",
         "AUTH_AUTHENTIK_AGENT_ISSUER",
         "AUTH_AUTHENTIK_AGENT_AUDIENCE",
+        "AUTH_CLOUDFLARE_ACCESS_JWKS_URL",
+        "AUTH_CLOUDFLARE_ACCESS_ISSUER",
     ):
         assert f"name: {name}" in rendered, f"{name} missing from the rendered chart"

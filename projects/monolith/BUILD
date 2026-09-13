@@ -1133,6 +1133,7 @@ py_library(
     imports = ["."],
     visibility = ["//:__subpackages__"],
     deps = [
+        ":pkg_auth",
         ":pkg_core",
         ":pkg_framework",
         ":pkg_knowledge",
@@ -5791,6 +5792,7 @@ py_test(
     srcs = ["grimoire/acl_test.py"],
     imports = ["."],
     deps = [
+        ":pkg_auth",
         ":pkg_core",
         ":pkg_grimoire",
         ":pkg_knowledge",
