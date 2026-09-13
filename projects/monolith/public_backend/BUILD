@@ -2,8 +2,9 @@ load("@aspect_rules_py//py:defs.bzl", "py_library")
 
 package(default_visibility = ["//visibility:private"])
 
-# keep: this source-free target is the public tier's visibility-enforcing
-# aggregator, not a Gazelle-generated package library.
+# This source-free target is the public tier's visibility-enforcing aggregator,
+# not a Gazelle-generated package library.
+# keep
 py_library(
     name = "monolith_public_backend",
     visibility = ["//projects/monolith:__pkg__"],

@@ -53,7 +53,8 @@ py_library(
     ],
 )
 
-# keep: recursive sources and reviewed runtime dependencies are package-owned.
+# Recursive sources and reviewed runtime dependencies are package-owned.
+# keep
 py_library(
     name = "agent_sessions",
     srcs = glob(

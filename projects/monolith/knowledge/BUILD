@@ -31,7 +31,8 @@ exports_files(
     visibility = ["//projects/monolith:private_backend_consumers"],
 )
 
-# keep: recursive sources and reviewed runtime dependencies are package-owned.
+# Recursive sources and reviewed runtime dependencies are package-owned.
+# keep
 py_library(
     name = "knowledge",
     srcs = glob(

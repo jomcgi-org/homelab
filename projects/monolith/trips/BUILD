@@ -21,8 +21,9 @@ exports_files(
     visibility = ["//projects/monolith:private_backend_consumers"],
 )
 
-# keep: the root trips_backfill compatibility target owns this executable.
+# The root trips_backfill compatibility target owns this executable.
 # Run-by-hand backfill, excluded from the server image.
+# keep
 py_venv_binary(
     name = "trips_backfill",
     srcs = glob(
@@ -48,7 +49,8 @@ semgrep_target_test(
     target = ":trips_backfill",
 )
 
-# keep: recursive sources and reviewed runtime dependencies are package-owned.
+# Recursive sources and reviewed runtime dependencies are package-owned.
+# keep
 py_library(
     name = "trips",
     srcs = glob(
@@ -91,7 +93,8 @@ py_library(
     ],
 )
 
-# keep: recursive sources and reviewed runtime dependencies are package-owned.
+# Recursive sources and reviewed runtime dependencies are package-owned.
+# keep
 py_library(
     name = "trips_backfill_lib",
     srcs = glob(
