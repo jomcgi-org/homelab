@@ -586,6 +586,82 @@ def test_a_dead_guest_records_unknown_without_a_hold(database, monkeypatch):
     assert store.read_response_lost_hold_sync(sid) is None
 
 
+@pytest.mark.parametrize("outage", ["refused", "reset"])
+def test_control_plane_outage_holds_when_the_liveness_read_also_fails(
+    database, monkeypatch, outage
+):
+    from swarm import node_workflows
+
+    sid = queue(database)
+
+    async def handler(request):
+        if outage == "refused":
+            raise httpx.ConnectError(
+                "control plane refused connection", request=request
+            )
+        raise httpx.ReadError("control plane reset connection", request=request)
+
+    def unavailable():
+        raise httpx.ConnectError("control plane still unavailable")
+
+    requests = fake_http(monkeypatch, handler, unavailable)
+    asyncio.run(asyncio.wait_for(mcp._execute_pending_message(sid), 10))
+    assert len(requests) == 1
+    assert_held(database, sid, "control_plane_unavailable")
+    hold = hold_of(sid)
+    assert hold["generation"] is None
+    assert hold["invoke_started_at"] is None
+
+    observed = []
+
+    def recovered(guest_id):
+        observed.append(guest_id)
+        return working_guest(sid)()
+
+    monkeypatch.setattr(node_workflows, "_observe_held_guest", recovered)
+    assert node_workflows._recover_response_lost(
+        {"artifact_path": ARTIFACT_PATH}, sid
+    ) == {"status": "waiting", "seq": 1}
+    assert observed == [f"guest-{sid}"]
+    assert snapshot(database, sid)["pending"][0]["dispatch_count"] == 1
+    assert len(requests) == 1
+
+    publish(native_record(), requests[0])
+    assert (
+        node_workflows._recover_response_lost({"artifact_path": ARTIFACT_PATH}, sid)[
+            "status"
+        ]
+        == "adopted"
+    )
+    assert len(requests) == 1
+
+
+def test_guest_http_failure_is_not_reclassified_when_liveness_is_unavailable(
+    database, monkeypatch
+):
+    sid = queue(database)
+
+    async def handler(request):
+        return httpx.Response(
+            502,
+            json={"error": "guest process failed", "retryable": False},
+            request=request,
+        )
+
+    def unavailable():
+        raise httpx.ConnectError("control plane unavailable during follow-up")
+
+    requests = fake_http(monkeypatch, handler, unavailable)
+    asyncio.run(asyncio.wait_for(mcp._execute_pending_message(sid), 10))
+    state = snapshot(database, sid)
+    assert len(requests) == 1
+    assert state["pending"] == []
+    assert state["turns"][0]["terminal_reason"] == "error"
+    assert "guest process failed" in state["turns"][0]["result_text"]
+    assert state["turns"][0]["stop_reason"] is None
+    assert store.read_response_lost_hold_sync(sid) is None
+
+
 def test_recovery_disabled_records_unknown_exactly_as_before(database, monkeypatch):
     monkeypatch.setenv("AGENT_RESPONSE_LOST_RECOVERY_ENABLED", "false")
     sid, _requests = lose_the_response(database, monkeypatch, guest_state=None)
