@@ -1015,6 +1015,18 @@ defmodule Embervm.NodeRegistryTest do
     on_exit(fn -> Embervm.TestProcess.stop_safely(chan) end)
     {:ok, session_sweeps} = Agent.start_link(fn -> [] end)
     on_exit(fn -> Embervm.TestProcess.stop_safely(session_sweeps) end)
+    {:ok, live_session} =
+      Agent.start_link(fn ->
+        %{
+          state: :running,
+          node_id: "node-4",
+          pod_uid: "uid-1",
+          boot_id: "boot-stable",
+          vm_id: "vm-live"
+        }
+      end)
+
+    on_exit(fn -> Embervm.TestProcess.stop_safely(live_session) end)
 
     connect_fun = fn address ->
       Agent.update(dialed, &[address | &1])
@@ -1028,6 +1040,7 @@ defmodule Embervm.NodeRegistryTest do
           channel_updater_fun: fn id, addr -> Agent.update(chan, &[{id, addr} | &1]) end,
           session_sweep_fun: fn node_id, pod_uid ->
             Agent.update(session_sweeps, &[{node_id, pod_uid} | &1])
+            Agent.update(live_session, &%{&1 | state: :failed})
           end
         )
       )
@@ -1052,9 +1065,20 @@ defmodule Embervm.NodeRegistryTest do
     assert after_repoint.boot_id == before.boot_id
 
     # Re-pointing the same instance never tells session lifecycle that the brick
-    # departed. Real expiry/unregister tests below retain that callback coverage.
+    # departed. The callback seam deliberately fails this representative live
+    # session, so its unchanged placement and running state prove more than the
+    # absence of a bookkeeping entry. Real expiry/unregister tests below retain
+    # the callback coverage.
     Process.sleep(50)
     assert Agent.get(session_sweeps, & &1) == []
+
+    assert Agent.get(live_session, & &1) == %{
+             state: :running,
+             node_id: "node-4",
+             pod_uid: "uid-1",
+             boot_id: "boot-stable",
+             vm_id: "vm-live"
+           }
   end
 
   test "dial-home registration keys NodeChannel ONLY by instance_id (node-name alias removed, PR-B0c)" do
