@@ -5271,8 +5271,8 @@ py_test(
     deps = [
         ":pkg_agent_sessions",
         ":pkg_core",
-        ":pkg_factory",
         ":pkg_cyclegroup",
+        ":pkg_factory",
         ":pkg_knowledge",
         ":pkg_swarm",
         "@pip//httpx",
@@ -8759,8 +8759,8 @@ py_test(
     srcs = ["factory/quota_probe_test.py"],
     imports = ["."],
     deps = [
-        ":pkg_factory",
         ":pkg_agent_sessions",
+        ":pkg_factory",
         ":pkg_swarm",
         "@pip//pytest",
         "@pip//sqlalchemy",
