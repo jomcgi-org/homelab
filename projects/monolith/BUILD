@@ -4624,9 +4624,9 @@ py_test(
     srcs = ["swarm/factory_conductor_test.py"],
     imports = ["."],
     deps = [
-        ":pkg_factory",
         ":pkg_agent_sessions",
         ":pkg_auth",
+        ":pkg_factory",
         ":pkg_swarm",
         "@pip//fastapi",
         "@pip//httpx",
