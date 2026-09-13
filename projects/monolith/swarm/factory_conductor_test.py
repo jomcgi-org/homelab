@@ -5447,6 +5447,23 @@ def test_planner_prompt_names_only_the_judgment_floor(feedback_db):
     sentence = "every implementation node runs on an Opus-class model"
     assert sentence in judgment
     assert sentence not in machine
+    floor = "a below-floor fallback cannot approve judgment work"
+    assert floor in judgment
+    assert floor not in machine
+
+
+@pytest.mark.parametrize("task_class", ["bug-fix", "mechanical-refactor", "docs"])
+def test_planner_review_contract_accepts_pinned_fallback(feedback_db, task_class):
+    task, _policy = feedback_task(task_class=task_class)
+    prompt = conductor.planner_prompt(task, [], [], task_class=task_class)
+    assert "Review is a separate Opus guest" not in prompt
+    assert "a policy-permitted fallback such as Astra is a valid reviewer" in prompt
+    assert "run's immutable dispatch model evidence" in prompt
+    assert "separate session from every implementer" in prompt
+    assert "examine the exact PR head" in prompt
+    assert "Preserve any explicit model-specific acceptance requirement" in prompt
+    assert "does not require a posted GitHub approval unless" in prompt
+    assert "The server verifies delivery before accepting finish" in prompt
 
 
 def test_reconcile_passes_receipt_class_to_planner_prompt(feedback_db):

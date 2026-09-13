@@ -121,8 +121,8 @@ one candidate in total. A candidate whose lane is full is counted as
 
 ### Reviewer fallback while the Claude window is spent
 
-Every delivery task ends in an independent Opus review on the shared Claude
-subscription, and that window is the one input the factory can exhaust:
+Delivery review prefers Opus on the shared Claude subscription, and that
+window is one input the factory can exhaust:
 implementation autoscales and the cheap implementers bill elsewhere. The answer
 is to review on a cheaper model, not to stop delivering. The optional
 `quota_guard` block sets the thresholds:
@@ -155,6 +155,13 @@ The model is chosen when the review is dispatched, not when it was planned. A
 plan written while the window was quiet can reach its review hours later, so
 the node keeps the model the planner asked for and the pin records what really
 ran. A retry after the window moved is a new attempt and takes a new pin.
+
+The planner uses that dispatch evidence too. A permitted fallback does not
+require another review merely to obtain Opus provenance. The factory approval
+is the successful independent review run's structured artifact at the current
+PR head. A posted GitHub approval is a separate requirement only when an actual
+repository rule or explicit task acceptance requires it. Explicit model-specific
+acceptance criteria and the judgment capability floor still apply.
 
 Two things never fall back:
 
@@ -328,7 +335,7 @@ implementer floor, and gate (ADR agents/038 decision 5):
 
 | Class | Verification | Floor | Gate |
 |---|---|---|---|
-| `bug-fix`, `mechanical-refactor`, `docs` | machine-verified | the worker pool | independent Opus review plus required CI |
+| `bug-fix`, `mechanical-refactor`, `docs` | machine-verified | the worker pool | independent review from the pinned reviewer pool plus required CI |
 | `advisory-diagnosis`, `advisory-triage`, `refine` | advisory | the worker pool | none, because nothing merges |
 | `judgment-analysis` | judgment | Opus or better | independent Opus review plus a human spot check |
 
