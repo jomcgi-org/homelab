@@ -12,6 +12,9 @@ defmodule Embervm.AuthTest do
   alias Embervm.Auth
   alias Embervm.Auth.Identity
 
+  @required_audience "embervm-public-faas"
+  @public_principal "system:serviceaccount:monolith-public:monolith-public"
+
   # A reviewer whose call count is observable, so "how many times did the network
   # review actually run" is directly assertable. `map` is token ->
   # {:ok, %Identity{}} | {:error, reason}; `delay_ms` optionally stalls each call
@@ -31,8 +34,15 @@ defmodule Embervm.AuthTest do
   defp start_auth(reviewer, opts \\ []) do
     {:ok, pid} =
       Auth.start_link(
-        [name: nil, reviewer: reviewer, allowed: ["system:serviceaccount:embervm:embervm"]] ++
+        Keyword.merge(
+          [
+            name: nil,
+            reviewer: reviewer,
+            required_audience: @required_audience,
+            allowed: ["system:serviceaccount:embervm:embervm"]
+          ],
           opts
+        )
       )
 
     pid
@@ -67,6 +77,98 @@ defmodule Embervm.AuthTest do
     assert {:error, {:forbidden, "system:serviceaccount:other:sa"}} = Auth.authenticate(auth, "tok")
     # Denials are not cached: the reviewer runs each time.
     assert Agent.get(counter, & &1) == 2
+  end
+
+  test "accepts and caches an audience-bound public identity with matching evidence" do
+    {reviewer, counter} =
+      counting_reviewer(%{
+        "tok" =>
+          {:ok,
+           identity(@public_principal,
+             audiences: [@required_audience],
+             audience_validated: true
+           )}
+      })
+
+    auth =
+      start_auth(reviewer,
+        allowed: [@public_principal],
+        audience_bound: [@public_principal]
+      )
+
+    assert {:ok, @public_principal} = Auth.authenticate(auth, "tok")
+    assert {:ok, @public_principal} = Auth.authenticate(auth, "tok")
+    assert Agent.get(counter, & &1) == 1
+  end
+
+  test "rejects mismatched audience evidence before the cache boundary" do
+    {:ok, counter} = Agent.start_link(fn -> 0 end)
+    {:ok, result} = Agent.start_link(fn -> identity(@public_principal, audiences: ["other"]) end)
+
+    reviewer = fn _token ->
+      Agent.update(counter, &(&1 + 1))
+      {:ok, Agent.get(result, & &1)}
+    end
+
+    auth =
+      start_auth(reviewer,
+        allowed: [@public_principal],
+        audience_bound: [@public_principal]
+      )
+
+    assert {:error, :unauthenticated} = Auth.authenticate(auth, "tok")
+
+    Agent.update(result, fn _ ->
+      identity(@public_principal,
+        audiences: [@required_audience],
+        audience_validated: true
+      )
+    end)
+
+    assert {:ok, @public_principal} = Auth.authenticate(auth, "tok")
+    assert {:ok, @public_principal} = Auth.authenticate(auth, "tok")
+    assert Agent.get(counter, & &1) == 2
+  end
+
+  test "rejects missing audience evidence for the public identity" do
+    {reviewer, counter} = counting_reviewer(%{"tok" => {:ok, identity(@public_principal)}})
+
+    auth =
+      start_auth(reviewer,
+        allowed: [@public_principal],
+        audience_bound: [@public_principal]
+      )
+
+    assert {:error, :unauthenticated} = Auth.authenticate(auth, "tok")
+    assert {:error, :unauthenticated} = Auth.authenticate(auth, "tok")
+    assert Agent.get(counter, & &1) == 2
+  end
+
+  test "rejects matching text that came from the legacy review fallback" do
+    {reviewer, counter} =
+      counting_reviewer(%{
+        "tok" => {:ok, identity(@public_principal, audiences: [@required_audience])}
+      })
+
+    auth =
+      start_auth(reviewer,
+        allowed: [@public_principal],
+        audience_bound: [@public_principal]
+      )
+
+    assert {:error, :unauthenticated} = Auth.authenticate(auth, "tok")
+    assert {:error, :unauthenticated} = Auth.authenticate(auth, "tok")
+    assert Agent.get(counter, & &1) == 2
+  end
+
+  test "preserves an allowed legacy caller without audience evidence" do
+    principal = "system:serviceaccount:embervm:embervm"
+    {reviewer, counter} = counting_reviewer(%{"tok" => {:ok, identity(principal)}})
+    auth = start_auth(reviewer)
+
+    assert {:ok, ^principal} = Auth.authenticate(auth, "tok")
+    assert {:ok, ^principal} = Auth.authenticate(auth, "tok")
+    assert Agent.get(counter, & &1) == 1
   end
 
   test "transient review failures are never cached" do

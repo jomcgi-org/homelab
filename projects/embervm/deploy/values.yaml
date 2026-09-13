@@ -78,6 +78,9 @@ opLog:
 # real consumer SAs (the monolith semgrep scanner) are added at the Task 14/15
 # side-by-side/shadow cutover, not here.
 auth:
+  tokenReviewAudience: embervm-public-faas
+  audienceBoundServiceAccounts:
+    - system:serviceaccount:monolith-public:monolith-public
   # The control plane's own ServiceAccount is Helm-fullname-prefixed
   # (<release>-<chart> = embervm-embervm), so the principal TokenReview returns
   # is system:serviceaccount:embervm:embervm-embervm, not :embervm. This lets an

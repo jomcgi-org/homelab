@@ -11,6 +11,17 @@ defmodule Embervm.K8sTest do
   alias Embervm.K8s
   alias Embervm.Auth.Identity
 
+  @required_audience "embervm-public-faas"
+
+  test "TokenReview request requires the component audience" do
+    request = K8s.review_request("secret-token", @required_audience) |> :json.decode()
+
+    assert request["spec"] == %{
+             "token" => "secret-token",
+             "audiences" => [@required_audience]
+           }
+  end
+
   describe "parse_review/2" do
     test "returns the complete bound pod identity" do
       body =
@@ -55,6 +66,40 @@ defmodule Embervm.K8sTest do
                 pod_name: "embervm-brick-1",
                 node_name: "node-4"
               }} = K8s.parse_review(201, body)
+    end
+  end
+
+  describe "parse_review/3 audience evidence" do
+    test "accepts the exact requested audience" do
+      body = review_body(:absent, [@required_audience])
+
+      assert {:ok,
+              %Identity{
+                audiences: [@required_audience],
+                audience_validated: true
+              }} =
+               K8s.parse_review(201, body, @required_audience)
+    end
+
+    test "rejects a different returned audience" do
+      body = review_body(:absent, ["different-component"])
+
+      assert {:error, :audience_mismatch} =
+               K8s.parse_review(201, body, @required_audience)
+    end
+
+    test "rejects missing returned audience evidence" do
+      body = review_body(:absent)
+
+      assert {:error, :invalid_audience_evidence} =
+               K8s.parse_review(201, body, @required_audience)
+    end
+
+    test "rejects malformed returned audience evidence" do
+      body = review_body(:absent, "not-a-list")
+
+      assert {:error, :invalid_audience_evidence} =
+               K8s.parse_review(201, body, @required_audience)
     end
   end
 
@@ -124,11 +169,14 @@ defmodule Embervm.K8sTest do
     end
   end
 
-  defp review_body(extra) do
+  defp review_body(extra, audiences \\ :absent) do
     user = %{"username" => "system:serviceaccount:embervm:noded"}
     user = if extra == :absent, do: user, else: Map.put(user, "extra", extra)
 
-    :json.encode(%{"status" => %{"authenticated" => true, "user" => user}})
+    status = %{"authenticated" => true, "user" => user}
+    status = if audiences == :absent, do: status, else: Map.put(status, "audiences", audiences)
+
+    :json.encode(%{"status" => status})
     |> :erlang.iolist_to_binary()
   end
 end

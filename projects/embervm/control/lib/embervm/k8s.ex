@@ -11,8 +11,8 @@ defmodule Embervm.K8s do
   `do_request/4` is the shared low-level helper every public call builds on:
   it re-reads the SA token, sets the auth/accept headers, optionally sets
   content-type when a body is present, and maps Finch's own error shape to
-  ours. `review_token/1`'s request plumbing predates this refactor and now
-  routes through it too, with its return contract unchanged.
+  ours. `review_token/2` first requires the configured component audience and
+  uses a legacy review only so Auth can preserve non-bound API-audience callers.
 
   ## In-cluster config
 
@@ -153,18 +153,44 @@ defmodule Embervm.K8s do
   itself and applies NO allow-list (that is the Auth layer's job). Requires `create` on
   `tokenreviews.authentication.k8s.io` (granted in the chart RBAC).
   """
-  @spec review_token(String.t()) :: {:ok, Embervm.Auth.Identity.t()} | {:error, term()}
-  def review_token(token) do
-    body =
-      :json.encode(%{
-        "apiVersion" => "authentication.k8s.io/v1",
-        "kind" => "TokenReview",
-        "spec" => %{"token" => token}
-      })
-      |> :erlang.iolist_to_binary()
+  @spec review_token(String.t(), String.t()) ::
+          {:ok, Embervm.Auth.Identity.t()} | {:error, term()}
+  def review_token(token, required_audience)
+      when is_binary(required_audience) and byte_size(required_audience) > 0 do
+    case submit_token_review(token, required_audience) do
+      # Existing management and noded callers still use Kubernetes' default API
+      # audience. Give those tokens a legacy review, then let Auth reject this
+      # fallback for the audience-bound public ServiceAccount.
+      {:error, :unauthenticated} -> submit_token_review(token, nil)
+      result -> result
+    end
+  end
+
+  @doc false
+  @spec review_request(String.t(), String.t() | nil) :: binary()
+  def review_request(token, required_audience) do
+    spec = %{"token" => token}
+
+    spec =
+      if required_audience do
+        Map.put(spec, "audiences", [required_audience])
+      else
+        spec
+      end
+
+    :json.encode(%{
+      "apiVersion" => "authentication.k8s.io/v1",
+      "kind" => "TokenReview",
+      "spec" => spec
+    })
+    |> :erlang.iolist_to_binary()
+  end
+
+  defp submit_token_review(token, required_audience) do
+    body = review_request(token, required_audience)
 
     case do_request(:post, @tokenreview_path, body, "application/json") do
-      {:ok, status, resp_body} -> parse_review(status, resp_body)
+      {:ok, status, resp_body} -> parse_review(status, resp_body, required_audience)
       {:error, reason} -> {:error, reason}
     end
   end
@@ -524,9 +550,14 @@ defmodule Embervm.K8s do
 
   @doc false
   @spec parse_review(integer(), binary()) :: {:ok, Embervm.Auth.Identity.t()} | {:error, term()}
+  def parse_review(status, body), do: parse_review(status, body, nil)
+
+  @doc false
+  @spec parse_review(integer(), binary(), String.t() | nil) ::
+          {:ok, Embervm.Auth.Identity.t()} | {:error, term()}
   # TokenReview create returns 201 (some clusters 200); anything else is an
   # API-server error we surface without trusting the token.
-  def parse_review(status, body) when status in [200, 201] do
+  def parse_review(status, body, required_audience) when status in [200, 201] do
     decoded = :json.decode(body)
     review_status = Map.get(decoded, "status", %{})
 
@@ -539,31 +570,66 @@ defmodule Embervm.K8s do
 
       username = Map.get(user, "username")
 
-      case username do
+      with name when is_binary(name) and byte_size(name) > 0 <- username,
+           {:ok, audiences} <- review_audiences(review_status, required_audience) do
+        extra =
+          case Map.get(user, "extra") do
+            %{} = extra -> extra
+            _ -> %{}
+          end
+
+        {:ok,
+         %Embervm.Auth.Identity{
+           username: name,
+           pod_uid: first_extra(extra, "authentication.kubernetes.io/pod-uid"),
+           pod_name: first_extra(extra, "authentication.kubernetes.io/pod-name"),
+           node_name: first_extra(extra, "authentication.kubernetes.io/node-name"),
+           audiences: audiences,
+           audience_validated: required_audience != nil
+         }}
+      else
         nil -> {:error, :no_username}
-
-        name ->
-          extra =
-            case Map.get(user, "extra") do
-              %{} = extra -> extra
-              _ -> %{}
-            end
-
-          {:ok,
-           %Embervm.Auth.Identity{
-             username: name,
-             pod_uid: first_extra(extra, "authentication.kubernetes.io/pod-uid"),
-             pod_name: first_extra(extra, "authentication.kubernetes.io/pod-name"),
-             node_name: first_extra(extra, "authentication.kubernetes.io/node-name")
-           }}
+        "" -> {:error, :no_username}
+        {:error, reason} -> {:error, reason}
+        _ -> {:error, :no_username}
       end
     else
       {:error, :unauthenticated}
     end
   end
 
-  def parse_review(status, _body) do
+  def parse_review(status, _body, _required_audience) do
     {:error, {:apiserver_status, status}}
+  end
+
+  defp review_audiences(review_status, nil) do
+    case Map.get(review_status, "audiences") do
+      nil -> {:ok, []}
+      audiences when is_list(audiences) -> validate_audience_list(audiences)
+      _ -> {:error, :invalid_audience_evidence}
+    end
+  end
+
+  defp review_audiences(review_status, required_audience) do
+    case Map.get(review_status, "audiences") do
+      [^required_audience] -> {:ok, [required_audience]}
+      audiences when is_list(audiences) ->
+        case validate_audience_list(audiences) do
+          {:ok, _} -> {:error, :audience_mismatch}
+          error -> error
+        end
+
+      _ ->
+        {:error, :invalid_audience_evidence}
+    end
+  end
+
+  defp validate_audience_list(audiences) do
+    if Enum.all?(audiences, &(is_binary(&1) and byte_size(&1) > 0)) do
+      {:ok, audiences}
+    else
+      {:error, :invalid_audience_evidence}
+    end
   end
 
   defp first_extra(extra, key) do

@@ -53,6 +53,7 @@
 # gazelle:exclude chat_public_grants_test.py
 # gazelle:exclude public_httproute_chat_guard_test.py
 # gazelle:exclude public_faas_rate_limit_test.py
+# gazelle:exclude public_faas_token_projection_test.py
 # gazelle:exclude public_api_chunks_grants_test.py
 # gazelle:exclude public_turnstile_secret_isolation_test.py
 # gazelle:exclude ember_public_savings_grants_test.py
@@ -6592,6 +6593,28 @@ py_test(
         "@platforms//cpu:x86_64",
         "@platforms//os:linux",
     ],
+    deps = ["@pip//pyyaml"],
+)
+
+# Guard (#3956): render the real public GKE chart and pin the component-audience
+# token projection, disabled default automount, zero-RBAC ServiceAccount, and
+# retained public /functions route. Hand-written because this package is
+# gazelle-excluded.
+py_test(
+    name = "public_faas_token_projection_test",
+    srcs = ["public_faas_token_projection_test.py"],
+    data = [
+        "//projects/monolith-public/chart:chart_render_inputs",
+        "//projects/monolith-public/deploy:deploy_values",
+        "//projects/monolith-public/deploy:gke_values",
+        "@multitool//tools/helm",
+    ],
+    env = {
+        "DEPLOY_VALUES": "$(rootpath //projects/monolith-public/deploy:deploy_values)",
+        "GKE_VALUES": "$(rootpath //projects/monolith-public/deploy:gke_values)",
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+    },
+    imports = ["."],
     deps = ["@pip//pyyaml"],
 )
 

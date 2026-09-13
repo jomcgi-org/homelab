@@ -6,12 +6,21 @@ defmodule Embervm.Auth.Identity do
   addition to the ServiceAccount username.
   """
 
-  defstruct [:username, :pod_uid, :pod_name, :node_name]
+  defstruct [
+    :username,
+    :pod_uid,
+    :pod_name,
+    :node_name,
+    audiences: [],
+    audience_validated: false
+  ]
 
   @type t :: %__MODULE__{
           username: String.t() | nil,
           pod_uid: String.t() | nil,
           pod_name: String.t() | nil,
-          node_name: String.t() | nil
+          node_name: String.t() | nil,
+          audiences: [String.t()],
+          audience_validated: boolean()
         }
 end

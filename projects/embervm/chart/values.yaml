@@ -240,6 +240,11 @@ node:
 # TokenReview auth allow-list: ServiceAccount usernames permitted to submit tasks.
 auth:
   allowedServiceAccounts: []
+  # TokenReview first requests this component audience. Identities listed in
+  # audienceBoundServiceAccounts may never use the default API-audience
+  # compatibility review.
+  tokenReviewAudience: embervm-public-faas
+  audienceBoundServiceAccounts: []
 
 # Platform KEK root for Embervm.KeyService (ADR embervm/036, #4976). One
 # 1Password item holds the root (field "root", base64 of 32+ random bytes);
