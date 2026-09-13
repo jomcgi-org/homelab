@@ -619,9 +619,7 @@ def test_lease_expired_stale_unbound_settles_with_both_flags(database, monkeypat
         assert audit.settled_at is not None
 
 
-def test_both_flags_do_not_settle_fresh_non_error_legacy_probe(
-    database, monkeypatch
-):
+def test_both_flags_do_not_settle_fresh_non_error_legacy_probe(database, monkeypatch):
     monkeypatch.setenv("AGENT_PROBE_SUPERVISION_ENABLED", "true")
     monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(
