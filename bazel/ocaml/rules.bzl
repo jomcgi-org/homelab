@@ -118,6 +118,10 @@ def _driver(ctx):
     """Return the driver with its runfiles as declared action inputs."""
     return ctx.attr._driver[DefaultInfo].files_to_run
 
+def _driver_inputs(ctx):
+    """Inputs whose content must invalidate every driver action."""
+    return [ctx.file._driver_source]
+
 def _driver_args(ctx, tc, mode, include_dirs, opam_pkgs, srcs, c_srcs, cc = None):
     args = ctx.actions.args()
     # Large translated libraries can have hundreds of transitive include
@@ -201,7 +205,7 @@ def _ocaml_library_impl(ctx):
     ctx.actions.run(
         executable = _driver(ctx),
         arguments = [args],
-        inputs = depset(ctx.files.srcs + ctx.files.c_srcs + ctx.files.c_headers + ctx.files.preprocess_data + _tool_files(ctx), transitive = [dep.includes, dep.cmxa, dep.a, cc.headers, cc.archives, tc.sysroot_files, tc.bootstrap_files]),
+        inputs = depset(ctx.files.srcs + ctx.files.c_srcs + ctx.files.c_headers + ctx.files.preprocess_data + _tool_files(ctx) + _driver_inputs(ctx), transitive = [dep.includes, dep.cmxa, dep.a, cc.headers, cc.archives, tc.sysroot_files, tc.bootstrap_files]),
         outputs = [objs_dir, cmxa, a_lib],
         mnemonic = "OcamlLibrary",
         progress_message = "Compiling OCaml library %{label}",
@@ -240,7 +244,7 @@ def _ocaml_binary_impl(ctx):
     ctx.actions.run(
         executable = _driver(ctx),
         arguments = [args],
-        inputs = depset(ctx.files.srcs + ctx.files.c_srcs + ctx.files.c_headers + ctx.files.preprocess_data + _tool_files(ctx), transitive = [dep.includes, dep.cmxa, dep.a, cc.headers, cc.archives, tc.sysroot_files, tc.bootstrap_files]),
+        inputs = depset(ctx.files.srcs + ctx.files.c_srcs + ctx.files.c_headers + ctx.files.preprocess_data + _tool_files(ctx) + _driver_inputs(ctx), transitive = [dep.includes, dep.cmxa, dep.a, cc.headers, cc.archives, tc.sysroot_files, tc.bootstrap_files]),
         outputs = [exe],
         mnemonic = "OcamlBinary",
         progress_message = "Linking OCaml binary %{label}",
@@ -345,6 +349,10 @@ _COMMON_ATTRS = {
         executable = True,
         cfg = "exec",
     ),
+    "_driver_source": attr.label(
+        default = "//bazel/ocaml/driver:ocaml_compile.sh",
+        allow_single_file = True,
+    ),
 }
 
 # Runnable rules (binary/test) additionally take `data`; ocaml_library does not,
@@ -422,7 +430,7 @@ def _ocaml_ppx_impl(ctx):
     ctx.actions.run(
         executable = _driver(ctx),
         arguments = [args],
-        inputs = depset([main], transitive = [dep.includes, dep.cmxa, dep.a, cc.headers, cc.archives, tc.sysroot_files, tc.bootstrap_files]),
+        inputs = depset([main] + _driver_inputs(ctx), transitive = [dep.includes, dep.cmxa, dep.a, cc.headers, cc.archives, tc.sysroot_files, tc.bootstrap_files]),
         outputs = [exe],
         mnemonic = "OcamlPpxDriver",
         progress_message = "Linking ppx driver %{label}",
@@ -431,7 +439,7 @@ def _ocaml_ppx_impl(ctx):
 
 # ocaml_ppx takes no srcs (the main is generated) and no preprocessors of its
 # own; everything else mirrors the common attr set.
-_PPX_ATTRS = {k: v for k, v in _COMMON_ATTRS.items() if k in ("deps", "opam_deps", "ocamlopt_flags", "_driver")}
+_PPX_ATTRS = {k: v for k, v in _COMMON_ATTRS.items() if k in ("deps", "opam_deps", "ocamlopt_flags", "_driver", "_driver_source")}
 
 ocaml_ppx = rule(
     implementation = _ocaml_ppx_impl,
