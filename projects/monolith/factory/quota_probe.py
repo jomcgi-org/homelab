@@ -17,6 +17,7 @@ from sqlalchemy import or_
 from sqlmodel import select
 
 from factory.execution.models import AgentSession, PendingMessage
+from factory.execution import store
 from factory.orchestration import factory_controls as controls
 from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt
 from factory.orchestration.factory_quota_guard import _window
@@ -93,6 +94,7 @@ def claim(payload: dict) -> str | None:
                     AgentSession.status == "running",
                     AgentSession.ember_session_id.is_not(None),
                     pending,
+                    store._unknown_outcome_exists(AgentSession.id),
                 ),
             )
             .limit(1)
@@ -118,8 +120,6 @@ def _record(key: str, action: str, **details) -> None:
 
 def _cleanup_candidates() -> list[str]:
     """Only completed, known-outcome probe turns can release their guests."""
-    from factory.execution import store
-
     with controls._locked_session() as (db, _control):
         pending = (
             select(PendingMessage.id)
