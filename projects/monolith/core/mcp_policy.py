@@ -52,9 +52,8 @@ logger = logging.getLogger("monolith.mcp.policy")
 OPERATOR_GROUP = "operators"
 
 # A tool tagged this way is callable by anyone who reaches the surface,
-# anonymous included. Reserved for paths that have a recorded decision to work
-# without an identified caller: today that is the ADR 058 voice companion,
-# whose tools record principal facts but never gate on them.
+# anonymous included. Private factory interactions must not carry this tag;
+# its published viewer is served separately through the public reader.
 PUBLIC_TAG = "mcp:public"
 
 # Escape hatch. This gate sits in front of the tool surface an operator would
