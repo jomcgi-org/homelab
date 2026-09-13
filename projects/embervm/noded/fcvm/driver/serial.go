@@ -19,11 +19,11 @@
 //     uart.rate_limiter_dropped_bytes metric counts them) rather than
 //     buffering or blocking the guest, which keeps recent console output
 //     flowing: exactly the tail diagnostics need.
-//   - Memory: nothing is buffered in the daemon while the VM runs. Only on a
-//     boot/restore FAILURE does serialTail read at most serialTailBytes from
-//     the end of the sink, and that slice rides the returned error (which
-//     callers log and forward as gRPC status messages), so failure
-//     diagnostics carry the guest's last words without any steady-state cost.
+//   - Memory: a follower reads from the regular file without intercepting the
+//     UART write path. It retains at most one 64 KiB partial line and reads a
+//     fixed 32 KiB chunk at a time. If logging falls behind, it skips to a
+//     bounded recent window. On boot/restore failure serialTail separately
+//     reads at most serialTailBytes for the returned diagnostic.
 package driver
 
 import (
@@ -32,6 +32,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
+	"time"
 
 	"github.com/jomcgi/homelab/projects/embervm/noded/fcvm/fcclient"
 	"github.com/jomcgi/homelab/projects/embervm/noded/substrate"
@@ -57,7 +59,136 @@ const (
 	serialBurstBytes = 1024 * 1024
 	// serialTailBytes caps how much of the sink a failure diagnostic keeps.
 	serialTailBytes = 8 * 1024
+	// serialFollowBacklogBytes bounds how much delayed UART output one drain
+	// processes. When structured logging falls behind, the follower skips to the
+	// newest window while Firecracker continues writing its isolated sink.
+	serialFollowBacklogBytes = 1024 * 1024
 )
+
+// serialFollower observes the regular, rate-limited serial sink without sitting
+// between Firecracker and disk. Slow structured logging therefore cannot block
+// the guest UART or make Firecracker inherit daemon stdio again. Read buffers and
+// retained partial lines are both fixed-size.
+type serialFollower struct {
+	file   *os.File
+	writer *tagWriter
+	stop   chan struct{}
+	done   chan struct{}
+	once   sync.Once
+	mu     sync.Mutex
+	offset int64
+}
+
+func newSerialFollower(path string, logger *slog.Logger, workload, phase string) (*serialFollower, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("driver: open serial output router %q: %w", path, err)
+	}
+	f := &serialFollower{
+		file:   file,
+		writer: newTagWriter(logger.With("stream", "serial"), "guest", workload, phase),
+		stop:   make(chan struct{}),
+		done:   make(chan struct{}),
+	}
+	go f.follow()
+	return f, nil
+}
+
+func (f *serialFollower) follow() {
+	defer close(f.done)
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			f.drain()
+		case <-f.stop:
+			f.drain()
+			f.writer.Flush()
+			_ = f.file.Close()
+			return
+		}
+	}
+}
+
+func (f *serialFollower) drain() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.drainLocked()
+}
+
+func (f *serialFollower) drainLocked() {
+	if info, err := f.file.Stat(); err == nil {
+		if info.Size() < f.offset {
+			f.offset = 0
+		}
+		if backlog := info.Size() - f.offset; backlog > serialFollowBacklogBytes {
+			f.writer.Flush()
+			f.offset = info.Size() - serialFollowBacklogBytes
+			f.writer.MarkTruncated()
+		}
+	}
+	var buf [32 * 1024]byte
+	for {
+		n, err := f.file.ReadAt(buf[:], f.offset)
+		if n > 0 {
+			_, _ = f.writer.Write(buf[:n])
+			f.offset += int64(n)
+		}
+		if err != nil || n == 0 {
+			return
+		}
+	}
+}
+
+func (f *serialFollower) SetPhase(phase string) {
+	// Drain under the old phase before changing it. This is the exact boundary
+	// server readiness establishes between guest initialization and live VM work.
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.drainLocked()
+	f.writer.SetPhase(phase)
+}
+
+func (f *serialFollower) Stop() {
+	f.once.Do(func() { close(f.stop) })
+	<-f.done
+}
+
+type guestOutputProcess struct {
+	Process
+	follower *serialFollower
+	waitOnce sync.Once
+	waitErr  error
+}
+
+func (p *guestOutputProcess) Kill() error {
+	err := p.Process.Kill()
+	_ = p.Wait()
+	return err
+}
+
+func (p *guestOutputProcess) Wait() error {
+	p.waitOnce.Do(func() {
+		p.waitErr = p.Process.Wait()
+		p.follower.Stop()
+	})
+	return p.waitErr
+}
+
+func (p *guestOutputProcess) SetGuestPhase(phase string) {
+	p.follower.SetPhase(phase)
+	if process, ok := p.Process.(interface{ SetGuestPhase(string) }); ok {
+		process.SetGuestPhase(phase)
+	}
+}
+
+func (p *guestOutputProcess) Jail() *Jail {
+	if provider, ok := p.Process.(jailProvider); ok {
+		return provider.Jail()
+	}
+	return nil
+}
 
 // serialOutputPath is the guest console sink path for a thread's bundle dir.
 func (d *Driver) serialOutputPath(threadID string) string {

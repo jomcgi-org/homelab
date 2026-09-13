@@ -196,7 +196,8 @@ type fcAPI interface {
 
 // Driver implements substrate.Substrate and substrate.Snapshotable for FC-direct.
 type Driver struct {
-	cfg Config
+	cfg    Config
+	logger *slog.Logger
 	// diffBanking is the process-lifetime runtime gate. New clears it when the
 	// configured snapshot-editor is unavailable or not executable.
 	diffBanking bool
@@ -270,8 +271,13 @@ func New(cfg Config, launcher Launcher, newClient func(socketPath string) fcAPI)
 		cfg.SnapshotEditorPath = "/opt/fc/snapshot-editor"
 	}
 	cfg = cfg.withDefaults()
+	logger := slog.Default()
+	if execLauncher, ok := launcher.(*ExecLauncher); ok && execLauncher.Logger != nil {
+		logger = execLauncher.Logger
+	}
 	d := &Driver{
 		cfg:             cfg,
+		logger:          logger,
 		diffBanking:     cfg.DiffBanking,
 		launcher:        launcher,
 		newClient:       newClient,
@@ -988,6 +994,10 @@ func (d *Driver) loadPatchAndResumeWithDiff(ctx context.Context, workload, threa
 	if err != nil {
 		return substrate.Handle{}, fmt.Errorf("driver: launch firecracker for restore: %w", err)
 	}
+	proc, err = d.routeGuestOutput(proc, serialPath, workload, guestPhaseVM)
+	if err != nil {
+		return substrate.Handle{}, err
+	}
 	client := d.clientForProcess(sock, proc)
 	if err := d.bindJailedVsock(proc, threadID); err != nil {
 		return d.abortWithSerialDiag(proc, err, threadID)
@@ -1210,6 +1220,10 @@ func (d *Driver) coldBoot(ctx context.Context, threadID string, cb coldBootSpec)
 	})
 	if err != nil {
 		return substrate.Handle{}, fmt.Errorf("driver: launch firecracker: %w", err)
+	}
+	proc, err = d.routeGuestOutput(proc, serialPath, cb.workload, guestPhaseInit)
+	if err != nil {
+		return substrate.Handle{}, err
 	}
 	client := d.clientForProcess(sock, proc)
 	if err := d.bindJailedVsock(proc, threadID); err != nil {
@@ -2846,6 +2860,29 @@ func (d *Driver) track(inst *instance) {
 	d.mu.Lock()
 	d.live[inst.handle.ID] = inst
 	d.mu.Unlock()
+}
+
+// MarkGuestReady advances a cold guest from initialization attribution to its
+// live VM phase. Restored guests start in vm already, so the call is idempotent
+// for server paths shared by cold and restored starts.
+func (d *Driver) MarkGuestReady(h substrate.Handle) {
+	inst := d.get(h.ID)
+	if inst == nil {
+		return
+	}
+	if process, ok := inst.proc.(interface{ SetGuestPhase(string) }); ok {
+		process.SetGuestPhase(guestPhaseVM)
+	}
+}
+
+func (d *Driver) routeGuestOutput(proc Process, path, workload, phase string) (Process, error) {
+	follower, err := newSerialFollower(path, d.logger, workload, phase)
+	if err != nil {
+		_ = proc.Kill()
+		_ = proc.Wait()
+		return nil, err
+	}
+	return &guestOutputProcess{Process: proc, follower: follower}, nil
 }
 
 type jailProvider interface {

@@ -27,25 +27,28 @@ import (
 // the env each FRESH boot carried and the set/member each bank wrote under, mirroring
 // fakeStatefulDriver's shape.
 type fakeGroupMemberDriver struct {
-	mu                sync.Mutex
-	live              int
-	claims            int
-	restores          int
-	restoreOrder      []string
-	lastEnv           map[string]string
-	banked            map[string]bool // "set/member" -> banked
-	failClaim         error
-	groupSetsDir      string
-	restoreStarted    chan struct{}
-	releaseRestore    chan struct{}
-	failRestoreMember string
+	mu                  sync.Mutex
+	live                int
+	claims              int
+	restores            int
+	restoreOrder        []string
+	lastEnv             map[string]string
+	banked              map[string]bool // "set/member" -> banked
+	failClaim           error
+	groupSetsDir        string
+	restoreStarted      chan struct{}
+	releaseRestore      chan struct{}
+	failRestoreMember   string
+	lastWorkload        string
+	lastRestoreWorkload string
+	guestReady          int
 }
 
 func newFakeGroupMemberDriver(dir string) *fakeGroupMemberDriver {
 	return &fakeGroupMemberDriver{banked: map[string]bool{}, groupSetsDir: dir + "/group"}
 }
 
-func (f *fakeGroupMemberDriver) ClaimGroupMember(_ context.Context, _ string, _ string, _ string, _ int, _ int, _ substrate.NICSpec, env map[string]string) (substrate.Handle, error) {
+func (f *fakeGroupMemberDriver) ClaimGroupMember(_ context.Context, workload, _ string, _ string, _ int, _ int, _ substrate.NICSpec, env map[string]string) (substrate.Handle, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failClaim != nil {
@@ -53,8 +56,15 @@ func (f *fakeGroupMemberDriver) ClaimGroupMember(_ context.Context, _ string, _ 
 	}
 	f.claims++
 	f.live++
+	f.lastWorkload = workload
 	f.lastEnv = env
 	return substrate.Handle{ID: "grpm-vm-" + strconv.Itoa(f.claims), ThreadID: "t-" + strconv.Itoa(f.claims), Node: "node-4"}, nil
+}
+
+func (f *fakeGroupMemberDriver) MarkGuestReady(_ substrate.Handle) {
+	f.mu.Lock()
+	f.guestReady++
+	f.mu.Unlock()
 }
 
 func (f *fakeGroupMemberDriver) SnapshotGroupMember(_ context.Context, _ substrate.Handle, setID, memberName string) (substrate.SnapshotRef, error) {
@@ -68,8 +78,9 @@ func (f *fakeGroupMemberDriver) SnapshotGroupMember(_ context.Context, _ substra
 	return substrate.SnapshotRef{ID: ref, SizeBytes: 5120}, nil
 }
 
-func (f *fakeGroupMemberDriver) RestoreGroupMember(_ context.Context, _, setID, memberName string) (substrate.Handle, error) {
+func (f *fakeGroupMemberDriver) RestoreGroupMember(_ context.Context, workload, setID, memberName string) (substrate.Handle, error) {
 	f.mu.Lock()
+	f.lastRestoreWorkload = workload
 	if !f.banked[setID+"/"+memberName] {
 		f.mu.Unlock()
 		return substrate.Handle{}, status.Errorf(codes.FailedPrecondition, "no such banked member %s/%s", setID, memberName)
@@ -237,6 +248,7 @@ func startFreshMember(t *testing.T, s *Server, port uint32, member string, index
 		Source:          "src-a",
 		HealthPort:      port,
 		Env:             map[string]string{"EMBER_GROUP_ROLE": "worker"},
+		Trace:           &nodev1.Trace{Workload: "wl-group"},
 	})
 	if err != nil {
 		t.Fatalf("StartGroupMember(fresh): %v", err)
@@ -306,6 +318,12 @@ func TestStartGroupMemberFreshBootsOnGroupBridge(t *testing.T) {
 	}
 	if gmd.claims != 1 {
 		t.Errorf("ClaimGroupMember calls = %d want 1", gmd.claims)
+	}
+	if gmd.lastWorkload != "wl-group" {
+		t.Errorf("ClaimGroupMember workload = %q want wl-group", gmd.lastWorkload)
+	}
+	if gmd.guestReady != 1 {
+		t.Errorf("guest readiness transitions = %d want 1", gmd.guestReady)
 	}
 	if gmd.lastEnv["EMBER_GROUP_ROLE"] != "worker" {
 		t.Errorf("env not threaded into the FRESH boot: %v", gmd.lastEnv)
@@ -525,7 +543,7 @@ func TestStartGroupMemberFreshUnprovisionedImageFails(t *testing.T) {
 // resync BEFORE the health gate, and reports was_relight=true.
 func TestStartGroupMemberRelightResyncsClockAndPinsWorld(t *testing.T) {
 	port := tcpHealthServer(t)
-	s, gn, _, clock := newGroupMemberTestServer(t)
+	s, gn, gmd, clock := newGroupMemberTestServer(t)
 
 	fresh := startFreshMember(t, s, port, "worker-0", 0)
 	bankResp, err := s.StopGroupMember(context.Background(), &nodev1.StopGroupMemberRequest{
@@ -545,6 +563,7 @@ func TestStartGroupMemberRelightResyncsClockAndPinsWorld(t *testing.T) {
 		Mode:            nodev1.StartGroupMemberMode_START_GROUP_MEMBER_MODE_RELIGHT,
 		GroupInstanceId: "grp-A", MemberName: "worker-0", MemberIndex: 0,
 		Ip: "127.0.0.1", SnapshotRef: bankResp.GetSnapshotRef(), HealthPort: port,
+		Trace: &nodev1.Trace{Workload: "wl-group"},
 	})
 	if err != nil {
 		t.Fatalf("StartGroupMember(relight): %v", err)
@@ -554,6 +573,12 @@ func TestStartGroupMemberRelightResyncsClockAndPinsWorld(t *testing.T) {
 	}
 	if clock.calls != 1 {
 		t.Errorf("relight must clock-resync exactly once (calls=%d)", clock.calls)
+	}
+	if gmd.lastRestoreWorkload != "wl-group" {
+		t.Errorf("RestoreGroupMember workload = %q want wl-group", gmd.lastRestoreWorkload)
+	}
+	if gmd.guestReady != 2 {
+		t.Errorf("guest readiness transitions = %d want 2", gmd.guestReady)
 	}
 	// Pinned-world reconstruction: the relight re-pinned the SAME member + index.
 	gn.mu.Lock()

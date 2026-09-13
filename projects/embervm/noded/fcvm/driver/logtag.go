@@ -9,23 +9,29 @@ import (
 const (
 	guestPhaseInit = "init"
 	guestPhaseVM   = "vm"
+	// guestLogLineBytes bounds daemon memory retained for a guest-controlled
+	// unterminated line. Firecracker already rate-limits UART bytes on disk, and
+	// this second bound keeps structured routing from reintroducing an in-memory
+	// flood path.
+	guestLogLineBytes = 64 * 1024
 )
 
-// tagWriter turns a byte stream into one structured guest log record per line.
-// A writer belongs to one stdout or stderr stream. The mutex protects partial
-// line state because exec.Cmd and test muxes may call Write concurrently.
+// tagWriter turns a byte stream into one structured log record per line. A
+// writer belongs to one Firecracker stream or one guest serial follower. The
+// mutex protects partial line and lifecycle state from concurrent writers.
 type tagWriter struct {
-	mu      sync.Mutex
-	logger  *slog.Logger
-	partial []byte
+	mu        sync.Mutex
+	logger    *slog.Logger
+	phase     string
+	partial   []byte
+	truncated bool
 }
 
-func newTagWriter(logger *slog.Logger, workload, phase string) *tagWriter {
+func newTagWriter(logger *slog.Logger, source, workload, phase string) *tagWriter {
 	return &tagWriter{logger: logger.With(
-		"source", "guest",
+		"source", source,
 		"workload", workload,
-		"phase", phase,
-	)}
+	), phase: phase}
 }
 
 // Write implements io.Writer. slog has no write error to return, so every input
@@ -39,16 +45,17 @@ func (w *tagWriter) Write(p []byte) (int, error) {
 	for len(p) > 0 {
 		i := bytes.IndexByte(p, '\n')
 		if i < 0 {
-			w.partial = append(w.partial, p...)
+			w.appendPartial(p)
 			break
 		}
 
-		if len(w.partial) == 0 {
+		if len(w.partial) == 0 && !w.truncated && i <= guestLogLineBytes {
 			w.emit(p[:i])
 		} else {
-			w.partial = append(w.partial, p[:i]...)
+			w.appendPartial(p[:i])
 			w.emit(w.partial)
 			w.partial = w.partial[:0]
+			w.truncated = false
 		}
 		p = p[i+1:]
 	}
@@ -65,8 +72,47 @@ func (w *tagWriter) Flush() {
 	}
 	w.emit(w.partial)
 	w.partial = w.partial[:0]
+	w.truncated = false
+}
+
+// SetPhase closes any unterminated line under the old phase before advancing the
+// lifecycle boundary.
+func (w *tagWriter) SetPhase(phase string) {
+	w.mu.Lock()
+	if len(w.partial) > 0 {
+		w.emit(w.partial)
+		w.partial = w.partial[:0]
+		w.truncated = false
+	}
+	w.phase = phase
+	w.mu.Unlock()
+}
+
+func (w *tagWriter) MarkTruncated() {
+	w.mu.Lock()
+	w.partial = w.partial[:0]
+	w.truncated = true
+	w.mu.Unlock()
+}
+
+func (w *tagWriter) appendPartial(p []byte) {
+	if len(p) >= guestLogLineBytes {
+		w.partial = append(w.partial[:0], p[len(p)-guestLogLineBytes:]...)
+		w.truncated = true
+		return
+	}
+	if overflow := len(w.partial) + len(p) - guestLogLineBytes; overflow > 0 {
+		copy(w.partial, w.partial[overflow:])
+		w.partial = w.partial[:len(w.partial)-overflow]
+		w.truncated = true
+	}
+	w.partial = append(w.partial, p...)
 }
 
 func (w *tagWriter) emit(line []byte) {
-	w.logger.Info(string(line))
+	if w.truncated {
+		w.logger.Info(string(line), "phase", w.phase, "truncated", true)
+		return
+	}
+	w.logger.Info(string(line), "phase", w.phase)
 }

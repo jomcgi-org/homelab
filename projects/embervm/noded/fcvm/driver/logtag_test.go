@@ -10,7 +10,7 @@ import (
 
 func TestTagWriterPartialAndMultilineWrites(t *testing.T) {
 	var output bytes.Buffer
-	w := newTagWriter(slog.New(slog.NewJSONHandler(&output, nil)), "scratch-postgres", "init")
+	w := newTagWriter(slog.New(slog.NewJSONHandler(&output, nil)), "guest", "scratch-postgres", "init")
 
 	if n, err := w.Write([]byte("boot par")); err != nil || n != len("boot par") {
 		t.Fatalf("first Write = (%d, %v), want (%d, nil)", n, err, len("boot par"))
@@ -46,7 +46,7 @@ func TestTagWriterPartialAndMultilineWrites(t *testing.T) {
 
 func TestTagWriterPreservesGuestJSONAsOpaqueMessage(t *testing.T) {
 	var output bytes.Buffer
-	w := newTagWriter(slog.New(slog.NewJSONHandler(&output, nil)), "api", "vm")
+	w := newTagWriter(slog.New(slog.NewJSONHandler(&output, nil)), "guest", "api", "vm")
 	guestJSON := `{"level":"error","source":"inside","answer":42}`
 	if _, err := w.Write([]byte(guestJSON + "\n")); err != nil {
 		t.Fatalf("Write: %v", err)
@@ -67,7 +67,7 @@ func TestTagWriterPreservesGuestJSONAsOpaqueMessage(t *testing.T) {
 
 func TestTagWriterConcurrentWritesKeepCompleteLines(t *testing.T) {
 	var output lockedBuffer
-	w := newTagWriter(slog.New(slog.NewJSONHandler(&output, nil)), "muxed", "vm")
+	w := newTagWriter(slog.New(slog.NewJSONHandler(&output, nil)), "guest", "muxed", "vm")
 	const writers = 16
 	var wg sync.WaitGroup
 	for range writers {
@@ -87,6 +87,29 @@ func TestTagWriterConcurrentWritesKeepCompleteLines(t *testing.T) {
 	}
 	for _, record := range records {
 		assertGuestRecord(t, record, "complete", "muxed", "vm")
+	}
+}
+
+func TestTagWriterBoundsOversizedUnterminatedLine(t *testing.T) {
+	var output bytes.Buffer
+	w := newTagWriter(slog.New(slog.NewJSONHandler(&output, nil)), "guest", "noisy", "init")
+	line := append(bytes.Repeat([]byte("x"), guestLogLineBytes+4096), []byte("final-tail")...)
+	if n, err := w.Write(line); err != nil || n != len(line) {
+		t.Fatalf("Write = (%d, %v), want (%d, nil)", n, err, len(line))
+	}
+	if len(w.partial) != guestLogLineBytes {
+		t.Fatalf("retained partial = %d bytes, want bounded %d", len(w.partial), guestLogLineBytes)
+	}
+	w.Flush()
+	records := decodeLogRecords(t, output.Bytes())
+	if len(records) != 1 || records[0]["truncated"] != true {
+		t.Fatalf("oversized record = %#v, want one truncated record", records)
+	}
+	if got := len(records[0]["msg"].(string)); got != guestLogLineBytes {
+		t.Fatalf("message bytes = %d, want %d", got, guestLogLineBytes)
+	}
+	if got := []byte(records[0]["msg"].(string)); !bytes.HasSuffix(got, []byte("final-tail")) {
+		t.Fatalf("bounded message lost final output suffix")
 	}
 }
 
@@ -122,10 +145,14 @@ func decodeLogRecords(t *testing.T, output []byte) []map[string]any {
 }
 
 func assertGuestRecord(t *testing.T, record map[string]any, message, workload, phase string) {
+	assertTaggedRecord(t, record, message, "guest", workload, phase)
+}
+
+func assertTaggedRecord(t *testing.T, record map[string]any, message, source, workload, phase string) {
 	t.Helper()
 	want := map[string]string{
 		"msg":      message,
-		"source":   "guest",
+		"source":   source,
 		"workload": workload,
 		"phase":    phase,
 	}

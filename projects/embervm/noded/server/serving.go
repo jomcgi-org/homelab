@@ -183,6 +183,7 @@ func (s *Server) finishServingStart(ctx context.Context, h substrate.Handle, wor
 		s.reapServing(h, ip)
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: serving guest not ready over tap: %v", err)
 	}
+	markGuestReady(s.servingDriver, h)
 	// The guest is ready on its tap; expose it as a routable endpoint via noded's pod IP
 	// + a per-VM prerouting DNAT rule (D-R3.11.4). Readiness stayed on the tap IP, so a
 	// broken DNAT does not fail readiness; installing it here (before publish) means a

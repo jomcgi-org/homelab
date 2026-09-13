@@ -1,8 +1,10 @@
 package driver
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +13,114 @@ import (
 
 	"github.com/jomcgi/homelab/projects/embervm/noded/substrate"
 )
+
+func TestColdAndRestoredSerialOutputRouting(t *testing.T) {
+	var output lockedBuffer
+	launcher := &fakeLauncher{serialOutput: []byte("cold init")}
+	d := testDriverWithLauncher(t, launcher)
+	d.logger = slog.New(slog.NewJSONHandler(&output, nil))
+	ctx := context.Background()
+
+	cold, err := d.Claim(ctx, substrate.ClaimSpec{ThreadID: "routed-cold", Workload: "cold-workload"})
+	if err != nil {
+		t.Fatalf("Claim cold: %v", err)
+	}
+	d.MarkGuestReady(cold)
+	f, err := os.OpenFile(d.serialOutputPath(cold.ThreadID), os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = f.WriteString("runtime line\nruntime tail")
+	_ = f.Close()
+	if err := d.Release(ctx, cold); err != nil {
+		t.Fatalf("Release cold: %v", err)
+	}
+
+	snapDir := t.TempDir()
+	snapPath := filepath.Join(snapDir, "snapfile")
+	memPath := filepath.Join(snapDir, "memfile")
+	if err := os.WriteFile(snapPath, []byte("snap"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(memPath, bytes.Repeat([]byte{0}, 1024*1024), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	launcher.mu.Lock()
+	launcher.serialOutput = []byte("restored line\nrestored tail")
+	launcher.mu.Unlock()
+	restored, err := d.loadInto(ctx, "restored-workload", "routed-restored", snapPath, memPath, "restore.sock")
+	if err != nil {
+		t.Fatalf("loadInto: %v", err)
+	}
+	if err := d.Release(ctx, restored); err != nil {
+		t.Fatalf("Release restored: %v", err)
+	}
+
+	records := decodeLogRecords(t, output.Bytes())
+	want := []struct {
+		message  string
+		workload string
+		phase    string
+	}{
+		{"cold init", "cold-workload", "init"},
+		{"runtime line", "cold-workload", "vm"},
+		{"runtime tail", "cold-workload", "vm"},
+		{"restored line", "restored-workload", "vm"},
+		{"restored tail", "restored-workload", "vm"},
+	}
+	if len(records) != len(want) {
+		t.Fatalf("records = %d, want %d: %s", len(records), len(want), output.Bytes())
+	}
+	for i, expected := range want {
+		assertGuestRecord(t, records[i], expected.message, expected.workload, expected.phase)
+	}
+}
+
+func TestSerialReadinessFailureFlushesUnterminatedOutput(t *testing.T) {
+	var output lockedBuffer
+	launcher := &fakeLauncher{failPath: "/actions", serialOutput: []byte(`{"guest":true}`)}
+	d := testDriverWithLauncher(t, launcher)
+	d.logger = slog.New(slog.NewJSONHandler(&output, nil))
+
+	_, err := d.Claim(context.Background(), substrate.ClaimSpec{ThreadID: "failed-route", Workload: "failed-workload"})
+	if err == nil {
+		t.Fatal("Claim should fail")
+	}
+	records := decodeLogRecords(t, output.Bytes())
+	if len(records) != 1 {
+		t.Fatalf("records = %d, want 1: %s", len(records), output.Bytes())
+	}
+	assertGuestRecord(t, records[0], `{"guest":true}`, "failed-workload", "init")
+	if _, promoted := records[0]["guest"]; promoted {
+		t.Fatalf("guest JSON was promoted: %#v", records[0])
+	}
+}
+
+func TestRestoredSerialFailureFlushesUnterminatedOutput(t *testing.T) {
+	var output lockedBuffer
+	launcher := &fakeLauncher{failPath: "/snapshot/load", serialOutput: []byte("restore final")}
+	d := testDriverWithLauncher(t, launcher)
+	d.logger = slog.New(slog.NewJSONHandler(&output, nil))
+	snapDir := t.TempDir()
+	snapPath := filepath.Join(snapDir, "snapfile")
+	memPath := filepath.Join(snapDir, "memfile")
+	if err := os.WriteFile(snapPath, []byte("snap"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(memPath, []byte("memory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := d.loadInto(context.Background(), "restore-failure-workload", "failed-restore", snapPath, memPath, "restore.sock")
+	if err == nil {
+		t.Fatal("loadInto should fail")
+	}
+	records := decodeLogRecords(t, output.Bytes())
+	if len(records) != 1 {
+		t.Fatalf("records = %d, want 1: %s", len(records), output.Bytes())
+	}
+	assertGuestRecord(t, records[0], "restore final", "restore-failure-workload", "vm")
+}
 
 func TestColdBootPrecreatesSinkAndIssuesPutSerialBeforeStart(t *testing.T) {
 	launcher := &fakeLauncher{}
