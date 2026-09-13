@@ -1,6 +1,6 @@
 """Unit tests for grimoire/router.py: campaign/character/grant/session CRUD.
 
-In-memory SQLite + a minimal FastAPI app mounting only the grimoire router,
+File-backed SQLite + a minimal FastAPI app mounting only the grimoire router,
 mirroring the schema-stripping + ``app.dependency_overrides[get_session]``
 pattern in hikes/router_test.py.
 """
@@ -8,22 +8,21 @@ pattern in hikes/router_test.py.
 from __future__ import annotations
 
 import pytest
+from core.db import get_session
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine
-from sqlmodel.pool import StaticPool
 
-from core.db import get_session
+from grimoire.access import get_authenticated_email
 from grimoire.models import Entity
 from grimoire.router import router
 
 
 @pytest.fixture(name="session")
-def session_fixture():
+def session_fixture(tmp_path):
     engine = create_engine(
-        "sqlite://",
+        f"sqlite:///{tmp_path / 'grimoire-router.db'}",
         connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
     )
     # SQLite can't span schemas, so strip the Postgres-only schema= overrides so
     # SQLModel.metadata.create_all() lands every table in the default schema.
@@ -47,6 +46,7 @@ def client_fixture(session):
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[get_session] = lambda: session
+    app.dependency_overrides[get_authenticated_email] = lambda: "dm@example.test"
     yield TestClient(app)
     app.dependency_overrides.clear()
 

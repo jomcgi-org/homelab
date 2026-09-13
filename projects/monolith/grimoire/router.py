@@ -18,31 +18,40 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
+from core.db import get_session
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
+from knowledge.api import get_embedding_client
 from pydantic import BaseModel
+from shared.embedding import EmbeddingClient
 from sqlalchemy import func
 from sqlmodel import Session, or_, select
 
-from core.db import get_session
 from grimoire import library
+from grimoire.access import get_authenticated_email
 from grimoire.models import (
-    Campaign,
     ENTITY_DETAIL_MODELS,
+    AppUser,
+    Campaign,
+    CampaignMember,
     Entity,
     EntityType,
     GameSession,
     GrantScope,
     KnowledgeChunk,
     KnowledgeGrant,
+    MemberRole,
     PlayerCharacter,
     Relationship,
     SessionStatus,
 )
 from grimoire.search import search_campaign
-from grimoire.visibility import project_entity, visible_entities_query
-from knowledge.api import get_embedding_client
-from shared.embedding import EmbeddingClient
+from grimoire.visibility import (
+    Viewer,
+    entity_belongs_to_campaign,
+    project_entity,
+    visible_entities_query,
+)
 
 logger = logging.getLogger("monolith.grimoire.router")
 
@@ -71,25 +80,103 @@ def _get_campaign_or_404(session: Session, campaign_id: str) -> Campaign:
     return campaign
 
 
+def _get_member_or_404(
+    session: Session, campaign_id: str, email: str
+) -> CampaignMember:
+    """Read current membership without revealing whether the campaign exists."""
+    member = session.exec(
+        select(CampaignMember)
+        .join(AppUser, AppUser.id == CampaignMember.app_user_id)
+        .where(
+            CampaignMember.campaign_id == campaign_id,
+            AppUser.email == email,
+        )
+    ).first()
+    if member is None:
+        raise HTTPException(status_code=404, detail="campaign not found")
+    return member
+
+
+def _require_dm(session: Session, campaign_id: str, email: str) -> CampaignMember:
+    member = _get_member_or_404(session, campaign_id, email)
+    if member.role != "dm":
+        raise HTTPException(status_code=403, detail="campaign DM role required")
+    return member
+
+
+def _require_any_dm(session: Session, email: str) -> None:
+    member = session.exec(
+        select(CampaignMember)
+        .join(AppUser, AppUser.id == CampaignMember.app_user_id)
+        .where(AppUser.email == email, CampaignMember.role == "dm")
+    ).first()
+    if member is None:
+        raise HTTPException(status_code=403, detail="campaign DM role required")
+
+
+def _viewer_for_member(
+    session: Session, campaign_id: str, member: CampaignMember
+) -> Viewer:
+    if member.role == "dm":
+        return "dm"
+    if member.player_character_id is None:
+        return None
+    _get_character_in_campaign_or_404(session, campaign_id, member.player_character_id)
+    return member.player_character_id
+
+
+def _get_or_create_user(session: Session, email: str) -> AppUser:
+    user = session.exec(select(AppUser).where(AppUser.email == email)).first()
+    if user is None:
+        user = AppUser(email=email)
+        session.add(user)
+        session.flush()
+    return user
+
+
 @router.post("/campaigns", response_model=CampaignView)
 def create_campaign(
     body: CampaignCreateRequest,
+    email: str = Depends(get_authenticated_email),
     session: Session = Depends(get_session),
 ) -> Campaign:
+    user = _get_or_create_user(session, email)
     campaign = Campaign(name=body.name, dm_name=body.dm_name)
     session.add(campaign)
+    session.flush()
+    session.add(
+        CampaignMember(
+            campaign_id=campaign.id,
+            app_user_id=user.id,
+            role="dm",
+        )
+    )
     session.commit()
     session.refresh(campaign)
     return campaign
 
 
 @router.get("/campaigns", response_model=list[CampaignView])
-def list_campaigns(session: Session = Depends(get_session)) -> list[Campaign]:
-    return session.exec(select(Campaign).order_by(Campaign.created_at)).all()
+def list_campaigns(
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> list[Campaign]:
+    return session.exec(
+        select(Campaign)
+        .join(CampaignMember, CampaignMember.campaign_id == Campaign.id)
+        .join(AppUser, AppUser.id == CampaignMember.app_user_id)
+        .where(AppUser.email == email)
+        .order_by(Campaign.created_at)
+    ).all()
 
 
 @router.get("/campaigns/{campaign_id}", response_model=CampaignView)
-def get_campaign(campaign_id: str, session: Session = Depends(get_session)) -> Campaign:
+def get_campaign(
+    campaign_id: str,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> Campaign:
+    _get_member_or_404(session, campaign_id, email)
     return _get_campaign_or_404(session, campaign_id)
 
 
@@ -121,9 +208,10 @@ class CharacterView(BaseModel):
 def create_character(
     campaign_id: str,
     body: CharacterCreateRequest,
+    email: str = Depends(get_authenticated_email),
     session: Session = Depends(get_session),
 ) -> PlayerCharacter:
-    _get_campaign_or_404(session, campaign_id)
+    _require_dm(session, campaign_id, email)
     character = PlayerCharacter(
         campaign_id=campaign_id,
         character_name=body.character_name,
@@ -143,14 +231,126 @@ def create_character(
     response_model=list[CharacterView],
 )
 def list_characters(
-    campaign_id: str, session: Session = Depends(get_session)
+    campaign_id: str,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
 ) -> list[PlayerCharacter]:
-    _get_campaign_or_404(session, campaign_id)
-    return session.exec(
-        select(PlayerCharacter)
-        .where(PlayerCharacter.campaign_id == campaign_id)
-        .order_by(PlayerCharacter.character_name)
+    member = _get_member_or_404(session, campaign_id, email)
+    query = select(PlayerCharacter).where(PlayerCharacter.campaign_id == campaign_id)
+    if member.role != "dm":
+        if member.player_character_id is None:
+            return []
+        query = query.where(PlayerCharacter.id == member.player_character_id)
+    return session.exec(query.order_by(PlayerCharacter.character_name)).all()
+
+
+# --- Campaign membership -----------------------------------------------
+
+
+class MemberCreateRequest(BaseModel):
+    email: str
+    player_character_id: str | None = None
+
+
+class MemberView(BaseModel):
+    id: str
+    email: str
+    role: MemberRole
+    player_character_id: str | None
+    created_at: datetime
+
+
+def _member_view(session: Session, member: CampaignMember) -> MemberView:
+    user = session.get(AppUser, member.app_user_id)
+    if user is None:
+        raise HTTPException(status_code=500, detail="campaign member user missing")
+    return MemberView(
+        id=member.id,
+        email=user.email,
+        role=member.role,
+        player_character_id=member.player_character_id,
+        created_at=member.created_at,
+    )
+
+
+@router.post("/campaigns/{campaign_id}/members", response_model=MemberView)
+def provision_player(
+    campaign_id: str,
+    body: MemberCreateRequest,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> MemberView:
+    """Provision one player, optionally associating an existing character."""
+    _require_dm(session, campaign_id, email)
+    invited_email = body.email.strip().lower()
+    if not invited_email or len(invited_email) > 320:
+        raise HTTPException(status_code=422, detail="invalid member email")
+    if body.player_character_id is not None:
+        _get_character_in_campaign_or_404(
+            session, campaign_id, body.player_character_id
+        )
+        assigned = session.exec(
+            select(CampaignMember).where(
+                CampaignMember.campaign_id == campaign_id,
+                CampaignMember.player_character_id == body.player_character_id,
+            )
+        ).first()
+        if assigned is not None:
+            raise HTTPException(status_code=409, detail="character already assigned")
+
+    user = _get_or_create_user(session, invited_email)
+    existing = session.exec(
+        select(CampaignMember).where(
+            CampaignMember.campaign_id == campaign_id,
+            CampaignMember.app_user_id == user.id,
+        )
+    ).first()
+    if existing is not None:
+        raise HTTPException(status_code=409, detail="campaign member already exists")
+
+    member = CampaignMember(
+        campaign_id=campaign_id,
+        app_user_id=user.id,
+        role="player",
+        player_character_id=body.player_character_id,
+    )
+    session.add(member)
+    session.commit()
+    session.refresh(member)
+    return _member_view(session, member)
+
+
+@router.get("/campaigns/{campaign_id}/members", response_model=list[MemberView])
+def list_members(
+    campaign_id: str,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> list[MemberView]:
+    _require_dm(session, campaign_id, email)
+    members = session.exec(
+        select(CampaignMember)
+        .where(CampaignMember.campaign_id == campaign_id)
+        .order_by(CampaignMember.created_at)
     ).all()
+    return [_member_view(session, member) for member in members]
+
+
+@router.delete(
+    "/campaigns/{campaign_id}/members/{member_id}",
+    status_code=204,
+)
+def revoke_player(
+    campaign_id: str,
+    member_id: str,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> None:
+    _require_dm(session, campaign_id, email)
+    member = session.get(CampaignMember, member_id)
+    if member is None or member.campaign_id != campaign_id or member.role != "player":
+        raise HTTPException(status_code=404, detail="player membership not found")
+    session.delete(member)
+    session.commit()
 
 
 # --- Knowledge grants ----------------------------------------------------
@@ -196,15 +396,19 @@ def _get_character_in_campaign_or_404(
 def create_grant(
     campaign_id: str,
     body: GrantCreateRequest,
+    email: str = Depends(get_authenticated_email),
     session: Session = Depends(get_session),
 ) -> KnowledgeGrant:
-    _get_campaign_or_404(session, campaign_id)
+    _require_dm(session, campaign_id, email)
     _get_character_in_campaign_or_404(session, campaign_id, body.player_character_id)
     # Validate the entity exists before insert: knowledge_grant.entity_id is a
     # FK, so on Postgres a missing entity raises IntegrityError and surfaces as
     # an unhandled 500. (SQLite fixtures do not enforce FKs, so this guard is
     # what makes the 404 behavior consistent across both backends.)
-    if session.get(Entity, body.entity_id) is None:
+    entity = session.get(Entity, body.entity_id)
+    if entity is None:
+        raise HTTPException(status_code=404, detail="entity not found")
+    if not entity_belongs_to_campaign(session, campaign_id, entity):
         raise HTTPException(status_code=404, detail="entity not found")
 
     existing = session.exec(
@@ -235,9 +439,11 @@ def create_grant(
 
 @router.get("/campaigns/{campaign_id}/grants", response_model=list[GrantView])
 def list_grants(
-    campaign_id: str, session: Session = Depends(get_session)
+    campaign_id: str,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
 ) -> list[KnowledgeGrant]:
-    _get_campaign_or_404(session, campaign_id)
+    _require_dm(session, campaign_id, email)
     return session.exec(
         select(KnowledgeGrant)
         .where(KnowledgeGrant.campaign_id == campaign_id)
@@ -253,9 +459,10 @@ def update_grant(
     campaign_id: str,
     grant_id: str,
     body: GrantUpdateRequest,
+    email: str = Depends(get_authenticated_email),
     session: Session = Depends(get_session),
 ) -> KnowledgeGrant:
-    _get_campaign_or_404(session, campaign_id)
+    _require_dm(session, campaign_id, email)
     grant = session.get(KnowledgeGrant, grant_id)
     if grant is None or grant.campaign_id != campaign_id:
         raise HTTPException(status_code=404, detail="grant not found")
@@ -275,13 +482,14 @@ def update_grant(
 def delete_grant(
     campaign_id: str,
     grant_id: str,
+    email: str = Depends(get_authenticated_email),
     session: Session = Depends(get_session),
 ) -> None:
     """Revoke a grant (the grant editor's "none" scope). Idempotent-ish: a
     missing grant is a 404, matching update_grant's not-found semantics. Removing
     a grant on a non-global entity returns it to invisible for that character;
     on a global entity it drops the character back to the default full view."""
-    _get_campaign_or_404(session, campaign_id)
+    _require_dm(session, campaign_id, email)
     grant = session.get(KnowledgeGrant, grant_id)
     if grant is None or grant.campaign_id != campaign_id:
         raise HTTPException(status_code=404, detail="grant not found")
@@ -293,19 +501,6 @@ def delete_grant(
 
 # All read paths below build on visible_entities_query()/project_entity()
 # from visibility.py rather than reimplementing the grant predicate.
-
-
-def _resolve_viewer(session: Session, campaign_id: str, viewer_param: str) -> str:
-    """Validates the ``as`` query param and returns a visibility.Viewer.
-
-    "dm" passes straight through; anything else must be a player_character_id
-    that belongs to this campaign (404 otherwise, same as any other
-    campaign-scoped lookup).
-    """
-    if viewer_param == "dm":
-        return "dm"
-    _get_character_in_campaign_or_404(session, campaign_id, viewer_param)
-    return viewer_param
 
 
 def _aggregate_dm_rows(
@@ -338,7 +533,7 @@ def _aggregate_dm_rows(
 
 
 def _project_neighbor(
-    session: Session, campaign_id: str, viewer: str, neighbor_id: str
+    session: Session, campaign_id: str, viewer: Viewer, neighbor_id: str
 ) -> dict[str, Any] | None:
     """Projects a relationship neighbor in "relationship" context.
 
@@ -376,11 +571,11 @@ def _parse_offset(cursor: str | None) -> int:
 @router.get("/campaigns/{campaign_id}/entities")
 def list_entities(
     campaign_id: str,
-    as_: str = Query(alias="as"),
     entity_type: EntityType | None = Query(default=None, alias="type"),
     q: str | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
     cursor: str | None = Query(default=None),
+    email: str = Depends(get_authenticated_email),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     """Grant-filtered, paginated entity list, spine-level only (no typed detail).
@@ -398,8 +593,8 @@ def list_entities(
     would have to reconcile the DM view's one-row-per-grant fan-out and is not
     worth it yet.
     """
-    _get_campaign_or_404(session, campaign_id)
-    viewer = _resolve_viewer(session, campaign_id, as_)
+    member = _get_member_or_404(session, campaign_id, email)
+    viewer = _viewer_for_member(session, campaign_id, member)
 
     query = visible_entities_query(campaign_id, viewer).order_by(Entity.name)
     if entity_type is not None:
@@ -431,7 +626,7 @@ def list_entities(
 def get_entity(
     campaign_id: str,
     entity_id: str,
-    as_: str = Query(alias="as"),
+    email: str = Depends(get_authenticated_email),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     """Single entity, scope-projected, with typed detail hydrated.
@@ -441,8 +636,8 @@ def get_entity(
     returns None for name_only in lookup context, so both cases collapse to
     the same check below).
     """
-    _get_campaign_or_404(session, campaign_id)
-    viewer = _resolve_viewer(session, campaign_id, as_)
+    member = _get_member_or_404(session, campaign_id, email)
+    viewer = _viewer_for_member(session, campaign_id, member)
 
     rows = session.exec(
         visible_entities_query(campaign_id, viewer).where(Entity.id == entity_id)
@@ -469,7 +664,7 @@ def get_entity(
 def list_entity_relationships(
     campaign_id: str,
     entity_id: str,
-    as_: str = Query(alias="as"),
+    email: str = Depends(get_authenticated_email),
     session: Session = Depends(get_session),
 ) -> list[dict[str, Any]]:
     """1-hop relationship edges from/to entity_id, grant-filtered per neighbor.
@@ -480,8 +675,8 @@ def list_entity_relationships(
     name_only neighbor becomes a recognition stub instead of vanishing, while
     a wholly invisible neighbor (ungranted, non-global) drops its edge.
     """
-    _get_campaign_or_404(session, campaign_id)
-    viewer = _resolve_viewer(session, campaign_id, as_)
+    member = _get_member_or_404(session, campaign_id, email)
+    viewer = _viewer_for_member(session, campaign_id, member)
 
     center_rows = session.exec(
         visible_entities_query(campaign_id, viewer).where(Entity.id == entity_id)
@@ -526,7 +721,7 @@ def list_entity_relationships(
 def list_entity_mentions(
     campaign_id: str,
     entity_id: str,
-    as_: str = Query(alias="as"),
+    email: str = Depends(get_authenticated_email),
     session: Session = Depends(get_session),
 ) -> list[dict[str, Any]]:
     """Chunks that mention this entity (the "Sources" list on entity detail).
@@ -537,8 +732,8 @@ def list_entity_mentions(
     detail 404). Chunks themselves are corpus-global in v1, so once the gate
     passes every mention is returned.
     """
-    _get_campaign_or_404(session, campaign_id)
-    viewer = _resolve_viewer(session, campaign_id, as_)
+    member = _get_member_or_404(session, campaign_id, email)
+    viewer = _viewer_for_member(session, campaign_id, member)
 
     rows = session.exec(
         visible_entities_query(campaign_id, viewer).where(Entity.id == entity_id)
@@ -577,9 +772,11 @@ def list_books(session: Session = Depends(get_session)) -> list[dict[str, Any]]:
 def rename_book(
     book_id: str,
     body: BookRenameRequest,
+    email: str = Depends(get_authenticated_email),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     """Rename a book (set its display_name) from the Library UI."""
+    _require_any_dm(session, email)
     display_name = body.display_name.strip()
     if not display_name:
         raise HTTPException(status_code=422, detail="display_name must not be empty")
@@ -632,14 +829,14 @@ def read_book(
 def get_chunk(
     chunk_id: str,
     campaign: str = Query(),
-    as_: str = Query(alias="as"),
+    email: str = Depends(get_authenticated_email),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     """One chunk with full content, image URL, seq neighbours, and on-page
     entity chips projected for the (campaign, viewpoint). The campaign/viewpoint
     only shape the entity chips; the chunk body is corpus-global."""
-    _get_campaign_or_404(session, campaign)
-    viewer = _resolve_viewer(session, campaign, as_)
+    member = _get_member_or_404(session, campaign, email)
+    viewer = _viewer_for_member(session, campaign, member)
     chunk = library.get_chunk(session, campaign, viewer, chunk_id)
     if chunk is None:
         raise HTTPException(status_code=404, detail="chunk not found")
@@ -726,9 +923,9 @@ def get_chunk_image(
 @router.get("/campaigns/{campaign_id}/search")
 async def search_campaign_route(
     campaign_id: str,
-    as_: str = Query(alias="as"),
     q: str = Query(min_length=1),
     k: int = Query(default=10, ge=1, le=50),
+    email: str = Depends(get_authenticated_email),
     session: Session = Depends(get_session),
     embed_client: EmbeddingClient = Depends(get_embedding_client),
 ) -> list[dict[str, Any]]:
@@ -738,8 +935,8 @@ async def search_campaign_route(
     on the same visible_entities_query()/project_entity() helpers as the
     entity read paths above.
     """
-    _get_campaign_or_404(session, campaign_id)
-    viewer = _resolve_viewer(session, campaign_id, as_)
+    member = _get_member_or_404(session, campaign_id, email)
+    viewer = _viewer_for_member(session, campaign_id, member)
     return await search_campaign(session, embed_client, campaign_id, viewer, q, k=k)
 
 
@@ -764,9 +961,10 @@ class GameSessionView(BaseModel):
 )
 def create_game_session(
     campaign_id: str,
+    email: str = Depends(get_authenticated_email),
     session: Session = Depends(get_session),
 ) -> GameSession:
-    _get_campaign_or_404(session, campaign_id)
+    _require_dm(session, campaign_id, email)
 
     active = session.exec(
         select(GameSession).where(
@@ -795,9 +993,10 @@ def update_game_session(
     campaign_id: str,
     session_id: str,
     body: GameSessionUpdateRequest,
+    email: str = Depends(get_authenticated_email),
     session: Session = Depends(get_session),
 ) -> GameSession:
-    _get_campaign_or_404(session, campaign_id)
+    _require_dm(session, campaign_id, email)
     game_session = session.get(GameSession, session_id)
     if game_session is None or game_session.campaign_id != campaign_id:
         raise HTTPException(status_code=404, detail="game session not found")

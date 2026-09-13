@@ -20,7 +20,7 @@ from typing import Any, Protocol
 from sqlmodel import Session, select
 
 from grimoire.models import Book, Embedding, Entity, KnowledgeChunk
-from grimoire.visibility import project_entity, visible_entities_query
+from grimoire.visibility import Viewer, project_entity, visible_entities_query
 
 # How many extra candidates to pull past ``k`` before visibility filtering and
 # trimming, so grant-invisible hits do not starve the final result set.
@@ -89,7 +89,7 @@ def _resolve_chunk_hit(
 
 
 def _resolve_entity_hit(
-    session: Session, campaign_id: str, viewer: str, entity_id: str, distance: float
+    session: Session, campaign_id: str, viewer: Viewer, entity_id: str, distance: float
 ) -> dict[str, Any] | None:
     """Sync: apply the visibility predicate/projection to one entity hit.
 
@@ -139,7 +139,7 @@ def _resolve_entity_hit(
 def _resolve_hits(
     session: Session,
     campaign_id: str,
-    viewer: str,
+    viewer: Viewer,
     hits: list[tuple[Embedding, float]],
 ) -> list[dict[str, Any]]:
     """Sync: resolve raw kNN hits into scored, visibility-filtered result dicts."""
@@ -162,7 +162,7 @@ async def search_campaign(
     session: Session,
     embed_client: _Embedder,
     campaign_id: str,
-    viewer: str,
+    viewer: Viewer,
     q: str,
     k: int = 10,
 ) -> list[dict[str, Any]]:
