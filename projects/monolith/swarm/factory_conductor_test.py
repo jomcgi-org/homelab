@@ -3918,11 +3918,13 @@ def test_attempt_stop_preview_survives_original_observer_loss(
     original["factory"].pop("stop_events")
     assert after == original
     assert any(event["action"] == "attempt_stop_requested" for event in events)
-    assert stop.executor_stop_requested(s.sid, 1, owner, 1)
-    assert not stop.executor_stop_requested(s.sid, 1, owner, 2)
-    assert not stop.executor_stop_requested(s.sid, 1, "new-owner", 1)
+    from agent_sessions.factory_stop import executor_stop_requested
+
+    assert executor_stop_requested(s.sid, 1, owner, 1)
+    assert not executor_stop_requested(s.sid, 1, owner, 2)
+    assert not executor_stop_requested(s.sid, 1, "new-owner", 1)
     monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "false")
-    assert stop.executor_stop_requested(s.sid, 1, owner, 1)
+    assert executor_stop_requested(s.sid, 1, owner, 1)
     with Session(s.engine) as db:
         turn = db.exec(select(AgentTurn)).one()
         assert turn.stop_reason == UNKNOWN_INVOCATION

@@ -20,6 +20,11 @@ from agent_sessions.reconciliation import (
     settle_uncertain_factory_attempt as settle_uncertain_factory_attempt,
 )
 
+from agent_sessions.factory_stop import (
+    inspect_factory_attempt_stop as inspect_factory_attempt_stop,
+    fence_factory_attempt_stop as fence_factory_attempt_stop,
+)
+
 _EXECUTION_EXPORTS = frozenset(
     {
         "run_synthetic_session",

@@ -252,6 +252,20 @@ planner is called back only for a named deviation: no plan applied yet, a node
 that failed or escalated with no runnable retry, review rounds spent, a fan-in
 the engine could not open, or a settled graph with no verified delivery.
 
+An attempt stop crosses the factory/session boundary through public APIs.
+`swarm.factory_attempt_stop` owns task authority, run/start checks, idempotency
+and stop audits. `agent_sessions.factory_stop` owns session/permit identity,
+the UNKNOWN transition and the executor heartbeat check. The factory calls
+`agent_sessions.api` with immutable values and its current transaction; the
+session domain calls `swarm.api` to read committed stop authority and exact
+cessation evidence. Neither side imports the other's models or private helpers
+for this path. The lock order stays factory control, capacity pool, session,
+and the UNKNOWN transition commits or rolls back with the factory's stop intent.
+Ember still owns physical execution cessation; a cancellation acknowledgment
+alone never releases the permit.
+(see: /projects/monolith/agent_sessions/factory_stop.py)
+(see: /projects/monolith/swarm/factory_attempt_stop.py)
+
 The accepted plan sizes the task. Its allowance is the sum over live
 unsucceeded nodes of `max_attempts`, plus the work turns history already spent,
 plus what the engine may still insert on its own. Review rounds are reserved one

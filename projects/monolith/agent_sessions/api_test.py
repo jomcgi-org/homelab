@@ -933,10 +933,13 @@ import agent_sessions.api as public
 assert callable(public.lock_capacity_pool)
 assert callable(public.lock_cessation_session)
 assert callable(public.confirm_reconciled_guest_cessation)
+assert callable(public.inspect_factory_attempt_stop)
+assert callable(public.fence_factory_attempt_stop)
 assert public.KG_NODE_KEY == "kg-drain"
 for module in (
     "agent_sessions.execution_api", "agent_sessions.mcp", "agent_sessions.store",
     "agent_sessions.transport", "goosecracker.api",
+    "swarm.factory_attempt_stop", "swarm.factory_supervision",
 ):
     assert module not in sys.modules, module
 
