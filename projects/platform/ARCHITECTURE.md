@@ -337,7 +337,7 @@ Rationale only; these records describe decisions, not current state. This docume
 | GKE hub runs two node pools | platform/016 | Accepted, shipped; live pools match | deleted |
 | Cloudflare tunnel plus Envoy Gateway | networking/001 | Implemented | deleted |
 | Path-based ingress tiers with automatic DNS | networking/002 | Implemented; two tiers live | deleted |
-| Incremental Cilium capability adoption | networking/003 | Partly shipped at home, moot on the hub; #3873, #3824, #3875 | deleted |
+| Incremental Cilium capability adoption | networking/003 | Partly shipped at home; hub work requires feature-specific targeting, including the L7 restriction above; #3873, #3824, #3875 | deleted |
 | Monorepo structure and dotfile housekeeping | repo/001 | Accepted, shipped in both phases | deleted |
 | Static docs site (VitePress on Cloudflare Pages) | docs/001 | Superseded by docs/002 | deleted |
 | Retire standalone frontends, docs into the monolith | docs/002 | Accepted, shipped; docs render at `jomcgi.dev/docs` | deleted |
