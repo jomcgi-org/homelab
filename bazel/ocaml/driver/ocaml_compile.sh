@@ -506,9 +506,12 @@ fi
 # -no-alias-deps is harmless when unwrapped (OPENFLAG empty, no alias module).
 for f in $ORDER; do
 	STAGE="compiling $f"
-	if ! "$OCAMLOPT" $CFLAGS $INCFLAGS $OPENFLAG -no-alias-deps -c "$WORK/$f"; then
-		echo "ocaml_compile: failed to compile $f in $NAME" >&2
-		exit 2
+	if "$OCAMLOPT" $CFLAGS $INCFLAGS $OPENFLAG -no-alias-deps -c "$WORK/$f"; then
+		:
+	else
+		rc=$?
+		echo "ocaml_compile: failed to compile $f in $NAME (exit $rc)" >&2
+		exit "$rc"
 	fi
 	case "$f" in
 	*.ml) CMX_LIST="$CMX_LIST $WORK/${f%.ml}.cmx" ;;
