@@ -54,9 +54,7 @@ def _control_deployment(docs: list[dict]) -> dict:
 
 
 def _edge_bootstrap(docs: list[dict]) -> dict:
-    rendered = _one(docs, "ConfigMap", "serving-edge")["data"][
-        "envoy-bootstrap.yaml"
-    ]
+    rendered = _one(docs, "ConfigMap", "serving-edge")["data"]["envoy-bootstrap.yaml"]
     return yaml.safe_load(rendered)
 
 
@@ -83,9 +81,7 @@ def test_edge_replicas_share_second_snapshot_and_span_nodes() -> None:
     )
     assert pod["topologySpreadConstraints"][0]["maxSkew"] == 1
 
-    rendered = _one(docs, "ConfigMap", "serving-edge")["data"][
-        "envoy-bootstrap.yaml"
-    ]
+    rendered = _one(docs, "ConfigMap", "serving-edge")["data"]["envoy-bootstrap.yaml"]
     assert "route_config_name: embervm-serving" in rendered
     assert "cluster_name: xds_cluster" in rendered
     assert ".svc.cluster.local" not in rendered
@@ -140,7 +136,9 @@ def test_warmed_edge_keeps_liveness_separate_from_ads_readiness() -> None:
     }
 
 
-def test_static_gateway_route_targets_edge_while_node_service_remains_separate() -> None:
+def test_static_gateway_route_targets_edge_while_node_service_remains_separate() -> (
+    None
+):
     docs = _render(
         "servingEnvoy.routes[0].enabled=true",
         "servingEnvoy.routes[0].name=ping",
