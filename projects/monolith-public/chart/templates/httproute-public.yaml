@@ -163,10 +163,12 @@ spec:
 {{- include "cf-ingress.rate-limit" $rlParams }}
 ---
 # The public function route is intentionally different from the shared
-# cf-ingress.rate-limit helper above and below. Cloudflare overwrites
-# CF-Connecting-IP at the edge, and the origin Envoy Service is ClusterIP-only,
-# so this is the trustworthy internet-client identity at the gateway. The first
-# rule is a fail-safe bucket for a missing or malformed header. A valid address
+# cf-ingress.rate-limit helper above and below. The gateway chart's NetworkPolicy
+# admits the listener only from its cloudflared pods, and Cloudflare overwrites
+# CF-Connecting-IP on non-Worker edge requests. The SecurityPolicy below rejects
+# same-zone Worker subrequests (where a Worker can influence CF-Connecting-IP)
+# and Cloudflare's fixed cross-zone Worker address. The first rate-limit rule is
+# a fail-safe bucket for a missing or malformed header. A valid address
 # matches the Distinct descriptor in the second rule instead, and Envoy Gateway
 # 1.8.3 sets always_consume_default_token_bucket=false for descriptor rules, so
 # valid clients neither consume nor inherit that shared fallback budget.
@@ -203,6 +205,37 @@ spec:
           limit:
             requests: {{ .Values.cfIngress.public.functionsRateLimit.requests }}
             unit: {{ .Values.cfIngress.public.functionsRateLimit.unit }}
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: {{ include "monolith-public.fullname" . }}-functions-origin
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: {{ include "monolith-public.fullname" . }}-functions
+  authorization:
+    defaultAction: Allow
+    rules:
+      # Cloudflare documents that same-zone Workers can alter x-real-ip, which
+      # becomes CF-Connecting-IP. CF-Worker is added to every fetch subrequest.
+      - name: deny-same-zone-workers
+        action: Deny
+        principal:
+          headers:
+            - name: CF-Worker
+              values:
+                - {{ .Values.cfIngress.public.functionsRateLimit.cloudflareZone | quote }}
+      # Cross-zone Worker traffic receives this fixed address rather than the
+      # visitor address. Reject it instead of treating all Workers as one client.
+      - name: deny-cross-zone-workers
+        action: Deny
+        principal:
+          headers:
+            - name: {{ .Values.cfIngress.public.functionsRateLimit.clientHeader.name | quote }}
+              values:
+                - {{ .Values.cfIngress.public.functionsRateLimit.crossZoneWorkerAddress | quote }}
 ---
 {{- $emberRlParams := dict
   "name" (printf "%s-ember-reads" (include "monolith-public.fullname" .))
