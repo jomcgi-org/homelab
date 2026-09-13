@@ -49,7 +49,7 @@ ocaml_library(
     c_srcs = glob([
         "lib/*.c",
         "lib/*.cc",
-    ]),
+    ], allow_empty = True),
     cc_deps = [
         ":language_headers",
         "@ocaml_tree_sitter_c//:tree_sitter",
