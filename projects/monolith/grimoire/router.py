@@ -16,16 +16,16 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlmodel import Session, or_, select
 
 from core.db import get_session
-from grimoire import library
+from grimoire import aliases, library
 from grimoire.models import (
     Campaign,
     ENTITY_DETAIL_MODELS,
@@ -47,6 +47,69 @@ from shared.embedding import EmbeddingClient
 logger = logging.getLogger("monolith.grimoire.router")
 
 router = APIRouter(prefix="/api/grimoire", tags=["grimoire"])
+
+
+# --- Alias review ------------------------------------------------------
+
+
+class AliasApprovalRequest(BaseModel):
+    reviewer: str = Field(min_length=1, max_length=200)
+    survivor_entity_id: str
+
+
+def _alias_http_error(exc: aliases.AliasError) -> HTTPException:
+    status_code = 404 if isinstance(exc, aliases.AliasNotFound) else 409
+    return HTTPException(status_code=status_code, detail=str(exc))
+
+
+@router.post("/alias-candidates/scan")
+def scan_alias_candidates(
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """Refresh and publish the conservative candidate report for human review."""
+    return aliases.generate_candidates(session)
+
+
+@router.get("/alias-candidates")
+def get_alias_candidates(
+    status: Literal["pending", "approved", "rejected", "stale", "merged"] | None = None,
+    session: Session = Depends(get_session),
+) -> list[dict[str, Any]]:
+    """List durable candidates with bounded co-mention snippets and approvals."""
+    return aliases.list_candidates(session, status=status)
+
+
+@router.post("/alias-candidates/{candidate_id}/approve")
+def approve_alias_candidate(
+    candidate_id: str,
+    body: AliasApprovalRequest,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """Record explicit reviewer approval for the exact current candidate state."""
+    try:
+        return aliases.approve_candidate(
+            session,
+            candidate_id,
+            reviewer=body.reviewer,
+            survivor_id=body.survivor_entity_id,
+        )
+    except aliases.AliasError as exc:
+        raise _alias_http_error(exc) from exc
+
+
+@router.post("/alias-candidates/{candidate_id}/execute")
+async def execute_alias_candidate(
+    candidate_id: str,
+    session: Session = Depends(get_session),
+    embed_client: EmbeddingClient = Depends(get_embedding_client),
+) -> dict[str, Any]:
+    """Transactionally execute one still-current, explicitly approved pair."""
+    try:
+        return await aliases.execute_approved_candidate(
+            session, candidate_id, embed_client
+        )
+    except aliases.AliasError as exc:
+        raise _alias_http_error(exc) from exc
 
 
 # --- Campaigns --------------------------------------------------------

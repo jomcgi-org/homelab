@@ -5922,6 +5922,19 @@ py_test(
 )
 
 py_test(
+    name = "grimoire_aliases_test",
+    srcs = ["grimoire/aliases_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_grimoire",
+        "@pip//pgvector",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "ships_models_test",
     srcs = ["ships/models_test.py"],
     imports = ["."],

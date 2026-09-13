@@ -66,6 +66,7 @@ Category = Literal["lore", "gameplay", "mechanics"]
 Temporality = Literal["historical", "present", "future"]
 SourceType = Literal["extracted", "homebrew"]
 EmbeddableKind = Literal["entity", "chunk", "transcript"]
+AliasCandidateStatus = Literal["pending", "approved", "rejected", "stale", "merged"]
 SessionStatus = Literal["active", "paused", "ended"]
 GrantScope = Literal["full", "partial", "name_only"]
 # Mirror of the CHECK constraint in
@@ -481,6 +482,69 @@ class Embedding(SQLModel, table=True):
     model: str
     dim: int
     vector: list[float] = Field(sa_column=Column(Vector(1024), nullable=False))
+
+
+class AliasCandidate(SQLModel, table=True):
+    """Durable review record for one conservative short/full-name alias pair.
+
+    Entity ids deliberately are not foreign keys. A successfully merged candidate
+    remains an audit record after the short-name entity is deleted.
+    """
+
+    __tablename__ = "alias_candidate"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'approved', 'rejected', 'stale', 'merged')",
+            name="alias_candidate_status_chk",
+        ),
+        UniqueConstraint(
+            "short_entity_id",
+            "full_entity_id",
+            name="alias_candidate_short_entity_id_full_entity_id_key",
+        ),
+        {"schema": "grimoire", "extend_existing": True},
+    )
+
+    id: str | None = Field(
+        default_factory=lambda: str(uuid.uuid4()),
+        sa_column=_uuid_column(primary_key=True),
+    )
+    short_entity_id: str = Field(sa_column=_uuid_column(nullable=False))
+    full_entity_id: str = Field(sa_column=_uuid_column(nullable=False))
+    entity_type: str
+    source_book: str
+    short_name: str
+    full_name: str
+    short_site: str | None = None
+    full_site: str | None = None
+    signal_version: str
+    evidence: list = Field(
+        default_factory=list, sa_column=Column(_JSONB, nullable=False)
+    )
+    evidence_count: int = 0
+    state_hash: str
+    status: AliasCandidateStatus = Field(
+        default="pending", sa_column=Column(String, nullable=False)
+    )
+    survivor_entity_id: str | None = Field(
+        default=None, sa_column=_uuid_column(nullable=True)
+    )
+    approved_state_hash: str | None = None
+    approved_by: str | None = None
+    approved_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True))
+    )
+    merged_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True))
+    )
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True)),
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True)),
+    )
 
 
 class Campaign(SQLModel, table=True):
