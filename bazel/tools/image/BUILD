@@ -377,6 +377,46 @@ py_test(
     deps = ["@pip//pytest"],
 )
 
+# These targets are selected explicitly by matching native CI hosts. Keeping
+# their data platform-specific ensures the runtime smoke cannot accidentally
+# execute the amd64 layer while claiming ARM64 coverage.
+py_test(
+    name = "tools_image_linux_arm64_test",
+    srcs = ["tools_image_test.py"],
+    data = [
+        ":eslint_node_modules",
+        ":eslint_wrapper_tar",
+        ":node_tar_linux_arm64",
+        ":source_tools_tar_linux_arm64",
+        ":tools_tar_linux_arm64",
+    ],
+    env = {"TOOLS_IMAGE_RUNTIME_PLATFORM": "linux_arm64"},
+    exec_properties = {"Arch": "arm64"},
+    target_compatible_with = [
+        "@platforms//cpu:aarch64",
+        "@platforms//os:linux",
+    ],
+    deps = ["@pip//pytest"],
+)
+
+py_test(
+    name = "tools_image_darwin_arm64_test",
+    srcs = ["tools_image_test.py"],
+    data = [
+        ":eslint_node_modules",
+        ":eslint_wrapper_tar",
+        ":node_tar_darwin_arm64",
+        ":source_tools_tar_darwin_arm64",
+        ":tools_tar_darwin_arm64",
+    ],
+    env = {"TOOLS_IMAGE_RUNTIME_PLATFORM": "darwin_arm64"},
+    target_compatible_with = [
+        "@platforms//cpu:aarch64",
+        "@platforms//os:macos",
+    ],
+    deps = ["@pip//pytest"],
+)
+
 semgrep_test(
     name = "tools_image_test_semgrep_test",
     srcs = ["tools_image_test.py"],

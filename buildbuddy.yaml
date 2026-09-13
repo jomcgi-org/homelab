@@ -289,6 +289,18 @@ actions:
             --cache_test_results=no \
             --test_output=all
 
+          # Run the developer tools bundle on the native Linux ARM64 pool.
+          # The target asserts uname, executes every requested command from a
+          # relocated extraction, and inspects each native binary's loader
+          # dependencies. Disabling the test cache ties the evidence to this
+          # exact PR head.
+          bazel test \
+            //bazel/tools/image:tools_image_linux_arm64_test \
+            --config=ci \
+            --platforms=//bazel/tools/platforms:linux_aarch64 \
+            --cache_test_results=no \
+            --test_output=all
+
           # ---- 3. images build, and the missed-chart-bump guard -----------
           # PR branches publish nothing. `bazel build` proves the images build
           # while --remote_download_minimal leaves the layers at rest in CAS;
