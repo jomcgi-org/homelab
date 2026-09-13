@@ -12,21 +12,7 @@
 # extracted sysroot. The sysroot's OCaml is relocated via OCAMLLIB.
 set -eu
 
-# Bazel writes the action arguments one per line. Expanding them here keeps
-# very large transitive OCaml include closures off the process command line,
-# which leaves compiler diagnostics visible in failed-action output.
 echo "ocaml_compile: driver started" >&2
-case "${1:-}" in
---args-file=*)
-	ARGS_FILE="${1#--args-file=}"
-	shift
-	while IFS= read -r arg || [ -n "$arg" ]; do
-		set -- "$@" "$arg"
-	done <"$ARGS_FILE"
-	echo "ocaml_compile: response file loaded ($# arguments)" >&2
-	;;
-esac
-
 MODE="" NAME="" SYSROOT_TAR="" BOOTSTRAP_TOOL="" USE_FIND="0" WRAPPED="0" LINKALL="0"
 INCLUDES="" OPAM_PKGS="" SRCS="" CSRCS="" CHDRS="" CMXAS="" CFLAGS=""
 PP_TOOL="" PP_ARGS="" CPPO_TOOL="" PPX="" PPX_DATA=""
@@ -34,40 +20,69 @@ MENHIR_TOOL="" MENHIR_MODULES="" MENHIR_FLAGS=""
 CC_INCLUDES="" CC_ARCHIVES="" CC_LINKFLAGS=""
 OBJS_OUT="" CMXA_OUT="" A_OUT="" EXE_OUT=""
 
-while [ $# -gt 0 ]; do
+consume_arg() {
 	case "$1" in
-	--mode) MODE="$2" && shift 2 ;;
-	--name) NAME="$2" && shift 2 ;;
-	--sysroot-tar) SYSROOT_TAR="$2" && shift 2 ;;
-	--bootstrap-tool) BOOTSTRAP_TOOL="$2" && shift 2 ;;
-	--use-ocamlfind) USE_FIND="$2" && shift 2 ;;
-	--wrapped) WRAPPED="$2" && shift 2 ;;
-	--linkall) LINKALL="$2" && shift 2 ;;
-	--compile-flag) CFLAGS="$CFLAGS $2" && shift 2 ;;
-	--include) INCLUDES="$INCLUDES $2" && shift 2 ;;
-	--opam-pkg) OPAM_PKGS="$OPAM_PKGS $2" && shift 2 ;;
-	--src) SRCS="$SRCS $2" && shift 2 ;;
-	--c-src) CSRCS="$CSRCS $2" && shift 2 ;;
-	--c-header) CHDRS="$CHDRS $2" && shift 2 ;;
-	--cmxa) CMXAS="$CMXAS $2" && shift 2 ;;
-	--pp-tool) PP_TOOL="$2" && shift 2 ;;
-	--pp-arg) PP_ARGS="$PP_ARGS $2" && shift 2 ;;
-	--cppo-tool) CPPO_TOOL="$2" && shift 2 ;;
-	--ppx) PPX="$2" && shift 2 ;;
-	--ppx-data) PPX_DATA="$PPX_DATA $2" && shift 2 ;;
-	--menhir-tool) MENHIR_TOOL="$2" && shift 2 ;;
-	--menhir-module) MENHIR_MODULES="$MENHIR_MODULES $2" && shift 2 ;;
-	--menhir-flag) MENHIR_FLAGS="$MENHIR_FLAGS $2" && shift 2 ;;
-	--cc-include) CC_INCLUDES="$CC_INCLUDES $2" && shift 2 ;;
-	--cc-archive) CC_ARCHIVES="$CC_ARCHIVES $2" && shift 2 ;;
-	--cc-linkflag) CC_LINKFLAGS="$CC_LINKFLAGS $2" && shift 2 ;;
-	--objs-out) OBJS_OUT="$2" && shift 2 ;;
-	--cmxa-out) CMXA_OUT="$2" && shift 2 ;;
-	--a-out) A_OUT="$2" && shift 2 ;;
-	--exe-out) EXE_OUT="$2" && shift 2 ;;
+	--mode) MODE="$2" ;;
+	--name) NAME="$2" ;;
+	--sysroot-tar) SYSROOT_TAR="$2" ;;
+	--bootstrap-tool) BOOTSTRAP_TOOL="$2" ;;
+	--use-ocamlfind) USE_FIND="$2" ;;
+	--wrapped) WRAPPED="$2" ;;
+	--linkall) LINKALL="$2" ;;
+	--compile-flag) CFLAGS="$CFLAGS $2" ;;
+	--include) INCLUDES="$INCLUDES $2" ;;
+	--opam-pkg) OPAM_PKGS="$OPAM_PKGS $2" ;;
+	--src) SRCS="$SRCS $2" ;;
+	--c-src) CSRCS="$CSRCS $2" ;;
+	--c-header) CHDRS="$CHDRS $2" ;;
+	--cmxa) CMXAS="$CMXAS $2" ;;
+	--pp-tool) PP_TOOL="$2" ;;
+	--pp-arg) PP_ARGS="$PP_ARGS $2" ;;
+	--cppo-tool) CPPO_TOOL="$2" ;;
+	--ppx) PPX="$2" ;;
+	--ppx-data) PPX_DATA="$PPX_DATA $2" ;;
+	--menhir-tool) MENHIR_TOOL="$2" ;;
+	--menhir-module) MENHIR_MODULES="$MENHIR_MODULES $2" ;;
+	--menhir-flag) MENHIR_FLAGS="$MENHIR_FLAGS $2" ;;
+	--cc-include) CC_INCLUDES="$CC_INCLUDES $2" ;;
+	--cc-archive) CC_ARCHIVES="$CC_ARCHIVES $2" ;;
+	--cc-linkflag) CC_LINKFLAGS="$CC_LINKFLAGS $2" ;;
+	--objs-out) OBJS_OUT="$2" ;;
+	--cmxa-out) CMXA_OUT="$2" ;;
+	--a-out) A_OUT="$2" ;;
+	--exe-out) EXE_OUT="$2" ;;
 	*) echo "ocaml_compile: unknown arg: $1" >&2 && exit 2 ;;
 	esac
-done
+}
+
+# Bazel writes the action arguments one per line. Parse option/value pairs as a
+# stream so large transitive include closures stay off the process command line
+# without repeatedly copying an ever-growing positional-parameter vector.
+case "${1:-}" in
+--args-file=*)
+	ARGS_FILE="${1#--args-file=}"
+	ARG_COUNT=0
+	while IFS= read -r option || [ -n "$option" ]; do
+		if ! IFS= read -r value; then
+			echo "ocaml_compile: response file ends after $option without a value" >&2
+			exit 2
+		fi
+		consume_arg "$option" "$value"
+		ARG_COUNT=$((ARG_COUNT + 2))
+	done <"$ARGS_FILE"
+	echo "ocaml_compile: response file loaded ($ARG_COUNT arguments)" >&2
+	;;
+*)
+	while [ $# -gt 0 ]; do
+		[ $# -ge 2 ] || {
+			echo "ocaml_compile: $1 has no value" >&2
+			exit 2
+		}
+		consume_arg "$1" "$2"
+		shift 2
+	done
+	;;
+esac
 
 # Inputs are staged at exec-root-relative paths; later steps cd around, so
 # resolve anything we execute or read from another directory to an absolute path.
