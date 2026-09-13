@@ -341,9 +341,18 @@ if [ -n "$MENHIR_MODULES" ]; then
 			echo "ocaml_compile: menhir module $g has no $g.mly in srcs" >&2
 			exit 2
 		}
-		"$MENHIR_TOOL" $MENHIR_FLAGS --infer-write-query "$SCRATCH/${g}__query.ml" "$GMLY"
-		"$OCAMLOPT" $CFLAGS -I "$SCRATCH" $INCFLAGS -i "$SCRATCH/${g}__query.ml" >"$SCRATCH/${g}.inferred"
-		"$MENHIR_TOOL" $MENHIR_FLAGS --infer-read-reply "$SCRATCH/${g}.inferred" --base "$WORK/$g" "$GMLY"
+		# Menhir can generate directly when the grammar declares enough types.
+		# Prefer that path because it does not require unrelated parser siblings
+		# to compile just to answer an inference query. Fall back to the full
+		# inference protocol for grammars that leave types implicit.
+		DIRECT_LOG="$SCRATCH/${g}.direct.log"
+		if "$MENHIR_TOOL" $MENHIR_FLAGS --base "$WORK/$g" "$GMLY" 2>"$DIRECT_LOG"; then
+			cat "$DIRECT_LOG" >&2
+		else
+			"$MENHIR_TOOL" $MENHIR_FLAGS --infer-write-query "$SCRATCH/${g}__query.ml" "$GMLY"
+			"$OCAMLOPT" $CFLAGS -I "$SCRATCH" $INCFLAGS -i "$SCRATCH/${g}__query.ml" >"$SCRATCH/${g}.inferred"
+			"$MENHIR_TOOL" $MENHIR_FLAGS --infer-read-reply "$SCRATCH/${g}.inferred" --base "$WORK/$g" "$GMLY"
+		fi
 		rm -f "$GMLY"
 	done
 	rm -rf "$SCRATCH"
