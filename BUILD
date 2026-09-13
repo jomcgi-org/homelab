@@ -4,6 +4,7 @@
 # gazelle:build_file_name BUILD
 load("@gazelle//:def.bzl", "gazelle", "gazelle_binary")
 load("@npm//:defs.bzl", "npm_link_all_packages")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 # Python gazelle config moved to //bazel/tools/python to avoid eager-fetching all pip packages during CI analysis
 
 npm_link_all_packages(name = "node_modules")
