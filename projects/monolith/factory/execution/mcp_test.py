@@ -2496,22 +2496,52 @@ def test_probe_worker_path_retains_guest_on_unknown_outcome(monkeypatch, session
         "monolith_voice_ui_dismiss",
     ],
 )
-def test_voice_ui_tools_stay_callable_without_an_identified_caller(tool_name):
-    """ADR 058 keeps the voice companion working on an anonymous principal.
+@pytest.mark.parametrize(
+    "groups,allowed", [((), False), (("family",), False), (("operators",), True)]
+)
+def test_voice_ui_tools_require_private_factory_access(
+    tool_name, groups, allowed, monkeypatch
+):
+    """Registered companion tools pass through the same gate as other factory tools."""
+    from types import SimpleNamespace
 
-    The MCP group gate denies by default, so these four only keep working
-    because they carry the public tag. Losing the tag would fail closed and the
-    voice path would go quiet rather than error visibly, which is why this is
-    asserted rather than left to the reviewer to notice.
-    """
+    from auth.api import Authority, Principal, PrincipalKind
+    from auth.dependencies import reset_current_principal, set_current_principal
     from core.mcp_app import mcp as shared
-    from core.mcp_policy import PUBLIC_TAG
+    from core.mcp_policy import GroupPolicyMiddleware
+    from fastmcp.exceptions import AuthorizationError
 
-    tool = asyncio.run(shared.get_tool(tool_name))
-    assert tool is not None, f"{tool_name} is not registered"
-    assert PUBLIC_TAG in tool.tags, (
-        f"{tool_name} lost {PUBLIC_TAG}; the voice path would fail closed"
+    monkeypatch.setenv("MCP_GROUP_POLICY_ENFORCED", "true")
+    principal = Principal(
+        subject="operator:test" if groups else "anonymous",
+        actor=(),
+        scope=(),
+        groups=groups,
+        email=None,
+        kind=PrincipalKind.HUMAN,
+        authority=Authority.STANDING if groups else Authority.ANONYMOUS,
     )
+    context = SimpleNamespace(
+        message=SimpleNamespace(name=tool_name),
+        fastmcp_context=SimpleNamespace(fastmcp=shared),
+    )
+    dispatched = []
+
+    async def call_next(_context):
+        dispatched.append(tool_name)
+        return "called"
+
+    token = set_current_principal(principal)
+    try:
+        call = GroupPolicyMiddleware().on_call_tool(context, call_next)
+        if allowed:
+            assert asyncio.run(call) == "called"
+        else:
+            with pytest.raises(AuthorizationError):
+                asyncio.run(call)
+        assert dispatched == ([tool_name] if allowed else [])
+    finally:
+        reset_current_principal(token)
 
 
 # Substrings Context Forge refuses in a tool description at catalogue refresh

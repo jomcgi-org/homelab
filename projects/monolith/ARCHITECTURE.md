@@ -17,7 +17,10 @@ The private board and snapshot publisher live in `factory.private_view` and
 `factory.publication`. Factory bearer controls and MCP status tools share the
 standing human operator rule in `factory.access`; browser decisions retain the
 verified gateway email gate in that same module. None of these private modules
-ship in the public image.
+ship in the public image. Factory MCP interactions, including the voice
+companion, require the operator group. The earlier anonymous companion
+exception is retired; anonymous catalogue discovery remains available to the
+gateway, while anonymous tool calls are denied.
 
 Routine-job reconciliation and knowledge interventions use the narrow existing
 contracts in `factory.api`. The domain boundary test checks factory internals

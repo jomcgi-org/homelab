@@ -40,7 +40,7 @@ def _tool(name: str, *tags: str) -> SimpleNamespace:
 
 
 GATED = _tool("factory_status")
-PUBLIC = _tool("monolith_voice_ui_show", mcp_policy.PUBLIC_TAG)
+PUBLIC = _tool("public_fixture", mcp_policy.PUBLIC_TAG)
 
 
 def _run(principal: Principal, coro_factory):
