@@ -3897,6 +3897,125 @@ def test_factory_cessation_rejects_reinvoked_guest(uncertain_factory):
     assert supervisor._control_plane_cessation(s.cp, identity) is not None
 
 
+@pytest.mark.parametrize("evidence", ["generation", "invoke_stamp", "completed_reset"])
+def test_same_guest_restart_evidence_settles_the_old_invocation(
+    uncertain_factory, monkeypatch, evidence
+):
+    from swarm import factory_supervision as supervisor
+
+    s = uncertain_factory
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    # Commit the exact pre-restart operation identity first.
+    assert not supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    if evidence == "generation":
+        current = {
+            **s.precondition,
+            "generation": s.precondition["generation"] + 1,
+            "invoke_started_at": None,
+            "vm_id": "vm-relit",
+            "instance_id": "node-1/pod-relit",
+            "pod_uid": "pod-relit",
+            "boot_id": "boot-relit",
+        }
+    elif evidence == "invoke_stamp":
+        current = {
+            **s.precondition,
+            "invoke_started_at": s.precondition["invoke_started_at"] + 10_000,
+        }
+    else:
+        current = {**s.precondition, "invoke_started_at": None}
+    s.cp.update(
+        state="running",
+        generation=current["generation"],
+        invoke_started_at=current["invoke_started_at"],
+        last_invoke_at=(
+            s.precondition["invoke_started_at"] + 1
+            if evidence == "completed_reset"
+            else None
+        ),
+        stop_precondition=current,
+        stop_intent=None,
+        stop_completion=None,
+    )
+
+    assert supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    after = _uncertain_snapshot(s)
+    assert after["permits"][0]["state"] == "settled"
+    assert after["permits"][0]["outcome"] == "guest_cessation_confirmed"
+    proof = _stop_events(s)[-1]["completion"]
+    assert proof["session_id"] == "s-exact-factory"
+    assert (
+        proof["replacement_evidence"]
+        == {
+            "generation": "generation_advanced",
+            "invoke_stamp": "invoke_advanced",
+            "completed_reset": "invoke_completed",
+        }[evidence]
+    )
+    # Reconciliation observes only. It does not invoke or relight the guest.
+    assert len([call for call in s.calls if call[1] is not None]) == 1
+
+
+@pytest.mark.parametrize(
+    "mismatch,expected_error",
+    [
+        ("guest", "wrong_stop_observation"),
+        ("precondition_guest", "wrong_stop_session"),
+        ("older_invoke", "changed_stop_invocation"),
+        ("reset_unknown", "changed_stop_invocation"),
+    ],
+)
+def test_restart_evidence_refuses_foreign_or_nonmonotonic_invocations(
+    uncertain_factory, monkeypatch, mismatch, expected_error
+):
+    from swarm import factory_supervision as supervisor
+
+    s = uncertain_factory
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    assert not supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    current = dict(s.precondition)
+    if mismatch == "guest":
+        s.cp["session_id"] = "s-unrelated"
+    elif mismatch == "precondition_guest":
+        current["session_id"] = "s-unrelated"
+        current["invoke_started_at"] += 10_000
+        s.cp["invoke_started_at"] = current["invoke_started_at"]
+    elif mismatch == "older_invoke":
+        current["invoke_started_at"] -= 1
+        s.cp["invoke_started_at"] = current["invoke_started_at"]
+    else:
+        current["invoke_started_at"] = None
+        s.cp["invoke_started_at"] = None
+    s.cp.update(
+        state="running",
+        last_invoke_at=None,
+        stop_precondition=current,
+        stop_intent=None,
+        stop_completion=None,
+    )
+
+    before = _uncertain_snapshot(s)
+    assert not supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    after = _uncertain_snapshot(s)
+    for key in ("session", "turns", "pending", "permits", "runs"):
+        assert after[key] == before[key]
+    observations = [
+        event
+        for event in after["factory"]["stop_events"]
+        if event.get("reason") == "stop_evidence_or_ownership_changed"
+    ]
+    assert len(observations) == 1
+    assert observations[0]["error"] == expected_error
+
+
 @pytest.mark.parametrize("failure", ["permit", "graph", "start"])
 @pytest.mark.parametrize("cleanup_claim", [False, True])
 def test_stop_settlement_rollback_retains_all_original_holds(
@@ -4161,6 +4280,13 @@ def test_changed_local_owner_after_get_cannot_authorize_stop(
         s.run["pin"], s.sid, s.result, "SUCCESS"
     )
     assert _uncertain_snapshot(s)["permits"][0]["state"] == "uncertain"
+    observations = [
+        event
+        for event in _uncertain_snapshot(s)["factory"]["stop_events"]
+        if event.get("reason") == "stop_evidence_or_ownership_changed"
+    ]
+    assert len(observations) == 1
+    assert observations[0]["error"]
 
 
 @pytest.mark.parametrize(

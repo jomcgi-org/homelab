@@ -29,6 +29,7 @@ from agent_sessions.provider_quota import (
 )
 from agent_sessions.transport import (
     EmberBrickGone,
+    EmberControlPlaneUnavailable,
     EmberSession,
     EmberSessionGone,
     EmberTurnNotInvoked,
@@ -118,22 +119,22 @@ def invoke_in_progress(view: object) -> bool:
     return started > (finished or 0)
 
 
-async def _guest_still_invoking(guest_id: str) -> dict | None:
+async def _guest_invocation_state(guest_id: str) -> tuple[bool, dict | None]:
     """Fresh proof that this guest is still working the invoke we lost.
 
     Running, with an invoke in progress, is the exact shape of a turn whose
-    result has not been delivered yet. Anything else, including an unavailable
-    control plane, returns None so the caller stays on its ordinary failure
-    path. The generation and the invoke stamp travel onto the hold so a later
-    owner can tell a guest still working this invoke from one that has been
-    banked, relit or invoked again since.
+    result has not been delivered yet. The first return value distinguishes an
+    available control plane with negative guest evidence from an unavailable
+    control plane. The generation and invoke stamp travel onto the hold so a
+    later owner can tell a guest still working this invoke from one that has
+    been banked, relit or invoked again since.
     """
     try:
         view = await asyncio.wait_for(
             _transport.get_session(guest_id), GUEST_STATE_TIMEOUT_SECONDS
         )
-    except Exception:  # noqa: BLE001 - an unreadable guest is not a live one.
-        return None
+    except Exception:  # noqa: BLE001 - the caller decides how to handle outage.
+        return False, None
     if (
         not isinstance(view, dict)
         or view.get("session_id") != guest_id
@@ -142,8 +143,8 @@ async def _guest_still_invoking(guest_id: str) -> dict | None:
         or view["generation"] < 0
         or not invoke_in_progress(view)
     ):
-        return None
-    return {
+        return True, None
+    return True, {
         "generation": view["generation"],
         "invoke_started_at": view["invoke_started_at"],
     }
@@ -841,13 +842,22 @@ async def _execute_pending_message(session_id: int) -> None:
             and claimed_dispatch_count is not None
         )
 
-    async def _hold_response_lost(reason: str) -> bool:
+    async def _hold_response_lost(
+        reason: str, *, unavailable_reason: str | None = None
+    ) -> bool:
         """Hold only while the control plane still shows the guest invoking."""
         if not _response_lost_eligible():
             return False
-        state = await _guest_still_invoking(invocation_record["guest_id"])
+        available, state = await _guest_invocation_state(invocation_record["guest_id"])
         if state is None:
-            return False
+            if available or unavailable_reason is None:
+                return False
+            # The invoke connection and its immediate liveness read both lost
+            # the control plane. Persist an unstamped hold so a later owner can
+            # retry the read after the control plane returns. The exact receipt,
+            # guest, attempt, claim, and dispatch fences remain unchanged.
+            state = {}
+            reason = unavailable_reason
         return await asyncio.to_thread(_record_response_lost, reason, state)
 
     async def _refresh_heartbeat() -> None:
@@ -1083,7 +1093,14 @@ async def _execute_pending_message(session_id: int) -> None:
             # happened. While the control plane still shows the guest invoking
             # for this exact dispatch, hold the attempt so its committed result
             # can be adopted instead of the work being thrown away (#5938).
-            if await _hold_response_lost("invoke_response_lost"):
+            if isinstance(exc, EmberControlPlaneUnavailable):
+                held = await _hold_response_lost(
+                    "invoke_response_lost",
+                    unavailable_reason="control_plane_unavailable",
+                )
+            else:
+                held = await _hold_response_lost("invoke_response_lost")
+            if held:
                 return
             # Terminal failure: row is deleted by mark_turn_error_sync (noqa: BLE001)
             await asyncio.to_thread(

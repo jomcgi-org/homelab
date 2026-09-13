@@ -346,6 +346,71 @@ def _control_plane_cessation(view, identity, saved=None):
     }
 
 
+def _replacement_invocation_cessation(view, identity, saved):
+    """Prove that a same-guest control-plane record replaced the old invoke.
+
+    The saved stop intent was observed and committed after this attempt had
+    already failed. A later valid precondition for the same guest proves the
+    old invocation ceased only when its generation advanced, its monotonic
+    invoke stamp advanced on the same VM identity, or its completion stamp
+    covers the saved invoke. A restart with missing or rolled-back stamps is
+    absence of evidence and deliberately proves nothing.
+    """
+    if (
+        saved is None
+        or view.get("state") in {"evicted", "destroyed"}
+        or view.get("session_id") != identity["guest_id"]
+        or view.get("stop_precondition") is None
+    ):
+        return None
+    recorded = _precondition(saved.get("precondition"), identity["guest_id"])
+    current = _precondition(view.get("stop_precondition"), identity["guest_id"])
+    previous_generation = recorded["generation"]
+    current_generation = current["generation"]
+    previous_started = recorded["invoke_started_at"]
+    current_started = current["invoke_started_at"]
+    last_invoke = view.get("last_invoke_at")
+    if last_invoke is not None and (type(last_invoke) is not int or last_invoke < 1):
+        raise ValueError("invalid_replacement_completion")
+
+    reason = None
+    if current_generation > previous_generation:
+        reason = "generation_advanced"
+    elif current_generation == previous_generation:
+        stable_keys = _PRECONDITION_KEYS - {
+            "generation",
+            "invoke_started_at",
+            "session_id",
+        }
+        if any(current[key] != recorded[key] for key in stable_keys):
+            raise ValueError("replacement_identity_changed")
+        if (
+            type(previous_started) is int
+            and type(current_started) is int
+            and current_started > previous_started
+        ):
+            reason = "invoke_advanced"
+        elif (
+            type(previous_started) is int
+            and type(last_invoke) is int
+            and last_invoke >= previous_started
+            and current_started != previous_started
+        ):
+            reason = "invoke_completed"
+    if reason is None:
+        return None
+    return {
+        "session_id": identity["guest_id"],
+        "state": view.get("state"),
+        "replacement_evidence": reason,
+        "previous_generation": previous_generation,
+        "generation": current_generation,
+        "previous_invoke_started_at": previous_started,
+        "invoke_started_at": current_started,
+        "last_invoke_at": last_invoke,
+    }
+
+
 def _remember_observation(pin, sid, identity, expected, view):
     """Commit the first observed CP operation before attempting settlement.
 
@@ -403,22 +468,28 @@ def _http(guest_id, precondition=None):
     return asyncio.run(request())
 
 
-def _note(pin, reason):
-    # Fixed reason codes, once each per attempt; error text and repeated polling
-    # never create an unbounded audit stream or copy request/response bodies.
+def _note(pin, reason, *, error=None):
+    # Fixed reason codes, once each per attempt; repeated polling never creates
+    # an unbounded audit stream or copies request/response bodies. ValueError
+    # text is itself a fixed refusal code and is retained for diagnosis.
     with controls._locked_session() as (db, _control):
         previous = _records(db, pin)
         if not any(
             action == "stop_observation" and detail.get("reason") == reason
             for action, detail in previous
         ):
+            detail = {
+                "reason": reason,
+                "intervention_required": True,
+                "cessation_confirmed": False,
+            }
+            if error is not None:
+                detail["error"] = error
             _audit(
                 db,
                 pin,
                 "stop_observation",
-                reason=reason,
-                intervention_required=True,
-                cessation_confirmed=False,
+                **detail,
             )
 
 
@@ -467,7 +538,7 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
                 raise ValueError("factory_attempt_changed")
     except ValueError as exc:
         if str(exc) != "factory_stop_not_due":
-            _note(pin, "local_identity_unconfirmed")
+            _note(pin, "local_identity_unconfirmed", error=str(exc))
         return False
 
     try:
@@ -481,6 +552,8 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
         cessation = None
         if cessation_enabled:
             cessation = _control_plane_cessation(view, identity, saved)
+            if cessation is None:
+                cessation = _replacement_invocation_cessation(view, identity, saved)
         if cessation is not None:
             expected = None
             proof = cessation
@@ -632,5 +705,9 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
                 _note(pin, "node_completion_pending")
     except ValueError as exc:
         if not (cessation_enabled and str(exc) == "factory_stop_not_due"):
-            _note(pin, "stop_evidence_or_ownership_changed")
+            _note(
+                pin,
+                "stop_evidence_or_ownership_changed",
+                error=str(exc),
+            )
     return False
