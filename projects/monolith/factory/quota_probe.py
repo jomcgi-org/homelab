@@ -207,4 +207,8 @@ async def _loop() -> None:
 
 
 def start_quota_probe_loop() -> list[asyncio.Task]:
-    return [asyncio.create_task(_loop(), name="factory-quota-probe")]
+    from framework import log_task_exception
+
+    task = asyncio.create_task(_loop(), name="factory-quota-probe")
+    task.add_done_callback(log_task_exception)
+    return [task]
