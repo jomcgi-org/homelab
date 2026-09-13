@@ -319,6 +319,26 @@ if [ -n "$PP_TOOL" ]; then
 		mv "$f.pp" "$f"
 	done
 fi
+if [ -n "$PPX" ]; then
+	STAGE="ppx preprocessing"
+	# Rewriting in place keeps file/unit names stable so wrapping and ocamldep
+	# are untouched downstream. --dump-ast emits the marshalled AST (the same
+	# thing dune passes between ppx and the compiler; ocamldep/ocamlopt sniff
+	# the magic): a text print + reparse roundtrip is not semantics-preserving
+	# because ppxlib's printer drops `let x : t = e` constraints
+	# (pvb_constraint), which cost ppx_sexp_conv's expander its field
+	# disambiguation.
+	for f in "$WORK"/*.ml; do
+		[ -e "$f" ] || continue
+		"$PPX" --impl "$f" --dump-ast -o "$f.pp"
+		mv "$f.pp" "$f"
+	done
+	for f in "$WORK"/*.mli; do
+		[ -e "$f" ] || continue
+		"$PPX" --intf "$f" --dump-ast -o "$f.pp"
+		mv "$f.pp" "$f"
+	done
+fi
 # --- menhir grammars (with OCaml type inference) -----------------------------
 # menhir's --infer protocol needs the OCaml types of the semantic actions. We
 # (1) compile the library's other modules into a scratch dir (best effort;
@@ -365,28 +385,6 @@ if [ -n "$MENHIR_MODULES" ]; then
 		rm -f "$GMLY"
 	done
 	rm -rf "$SCRATCH"
-fi
-
-# Dune preprocesses generated modules as library modules too, so run the ppx
-# only after ocamllex, ocamlyacc, cppo, and Menhir have produced their sources.
-# Rewriting in place keeps file/unit names stable so wrapping and ocamldep are
-# untouched downstream. --dump-ast emits the marshalled AST (the same thing
-# dune passes between ppx and the compiler; ocamldep/ocamlopt sniff the magic):
-# a text print + reparse roundtrip is not semantics-preserving because ppxlib's
-# printer drops `let x : t = e` constraints (pvb_constraint), which cost
-# ppx_sexp_conv's expander its field disambiguation.
-if [ -n "$PPX" ]; then
-	STAGE="ppx preprocessing"
-	for f in "$WORK"/*.ml; do
-		[ -e "$f" ] || continue
-		"$PPX" --impl "$f" --dump-ast -o "$f.pp"
-		mv "$f.pp" "$f"
-	done
-	for f in "$WORK"/*.mli; do
-		[ -e "$f" ] || continue
-		"$PPX" --intf "$f" --dump-ast -o "$f.pp"
-		mv "$f.pp" "$f"
-	done
 fi
 
 # --- Recover compile order over the sources ---------------------------------
