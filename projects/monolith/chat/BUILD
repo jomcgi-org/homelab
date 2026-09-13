@@ -1,5 +1,7 @@
 # Bazel-native package ownership. Classification is declared here, not in
 # projects/monolith/BUILD.
+# This suite uses the BDD harness and is owned by the explicit bdd_test below.
+# gazelle:exclude tests/bdd_api_test.py
 
 load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("//bazel/tools/pytest:defs.bzl", "py_test")

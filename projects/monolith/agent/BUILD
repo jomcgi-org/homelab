@@ -1,5 +1,11 @@
 # Bazel-native package ownership. Classification is declared here, not in
 # projects/monolith/BUILD.
+# The BDD suite uses the real-Postgres harness and is owned by the explicit
+# bdd_test targets below, so Gazelle must not generate parallel py_test rules.
+# gazelle:exclude tests/bdd_checks_test.py
+# gazelle:exclude tests/bdd_drainer_test.py
+# gazelle:exclude tests/bdd_locks_test.py
+# gazelle:exclude tests/bdd_routine_jobs_test.py
 
 load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("//bazel/tools/pytest:defs.bzl", "py_test")

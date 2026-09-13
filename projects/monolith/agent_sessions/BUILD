@@ -1,5 +1,12 @@
 # Bazel-native package ownership. Classification is declared here, not in
 # projects/monolith/BUILD.
+# These tests use the BDD harness or share one process-crash driver target and
+# are owned explicitly below, so Gazelle must not generate parallel py_tests.
+# gazelle:exclude factory_public_writer_test.py
+# gazelle:exclude process_crash_driver_test.py
+# gazelle:exclude process_crash_test.py
+# gazelle:exclude public_agent_activity_views_test.py
+# gazelle:exclude store_postgres_test.py
 
 load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
