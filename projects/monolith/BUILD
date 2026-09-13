@@ -102,8 +102,7 @@ py_venv_binary(
         ":frontend_dist",
     ] + ["//projects/monolith/demos:loadtest_samples"],
     imports = ["."],  # keep
-    main = "app/main.py",
-    main_label = "//projects/monolith/app:main.py",
+    main = "//projects/monolith/app:main.py",
     visibility = ["//:__subpackages__"],
     deps = ["//projects/monolith:monolith_backend"],  # keep
 )
@@ -142,8 +141,7 @@ py_venv_binary(
         "//projects/monolith/campsites:runtime_data",
     ],
     imports = ["."],  # keep
-    main = "app/jobs_main.py",
-    main_label = "//projects/monolith/app:jobs_main.py",
+    main = "//projects/monolith/app:jobs_main.py",
     visibility = ["//:__subpackages__"],
     # typer is the jobs entrypoint's CLI framework but is NOT a serving dep, so
     # it is absent from :monolith_backend; the binary must depend on it directly
@@ -164,8 +162,7 @@ py_venv_binary(
     name = "progress",
     srcs = ["//projects/monolith/app:progress_main.py"],
     imports = ["."],  # keep
-    main = "app/progress_main.py",
-    main_label = "//projects/monolith/app:progress_main.py",
+    main = "//projects/monolith/app:progress_main.py",
     visibility = ["//:__subpackages__"],
     deps = ["//projects/monolith:monolith_backend"],  # keep
 )
@@ -395,7 +392,8 @@ py3_image(
         "SSL_CERT_FILE": "/projects/monolith/main.runfiles/_main/projects/monolith/.main/lib/python3.13/site-packages/certifi/cacert.pem",
         "REPO_DOCS_MANIFEST_PATH": "/etc/monolith/repo_docs_manifest.ndjson",
     },
-    main = "//projects/monolith/app:main.py",
+    main = "app/main.py",
+    main_label = "//projects/monolith/app:main.py",
     repository = "ghcr.io/jomcgi/homelab/projects/monolith/backend",
     tars = [":repo_docs_manifest_layer"],
 )
@@ -415,7 +413,8 @@ py3_image(
         "SSL_CERT_FILE": "/projects/monolith/jobs.runfiles/_main/projects/monolith/.jobs/lib/python3.13/site-packages/certifi/cacert.pem",
         "REPO_DOCS_MANIFEST_PATH": "/etc/monolith/repo_docs_manifest.ndjson",
     },
-    main = "//projects/monolith/app:jobs_main.py",
+    main = "app/jobs_main.py",
+    main_label = "//projects/monolith/app:jobs_main.py",
     repository = "ghcr.io/jomcgi/homelab/projects/monolith/jobs",
     tars = [":repo_docs_manifest_layer"],
 )
@@ -431,7 +430,8 @@ py3_image(
     env = {
         "PYTHONPATH": "/projects/monolith/progress.runfiles/_main:/projects/monolith/progress.runfiles/_main/projects/monolith",
     },
-    main = "//projects/monolith/app:progress_main.py",
+    main = "app/progress_main.py",
+    main_label = "//projects/monolith/app:progress_main.py",
     repository = "ghcr.io/jomcgi/homelab/projects/monolith/progress",
 )
 
@@ -537,8 +537,7 @@ py_venv_binary(
     name = "main_public",
     srcs = ["//projects/monolith/app:main_public.py"],
     imports = ["."],  # keep
-    main = "app/main_public.py",
-    main_label = "//projects/monolith/app:main_public.py",
+    main = "//projects/monolith/app:main_public.py",
     visibility = ["//:__subpackages__"],
     deps = ["//projects/monolith:monolith_public_backend"],  # keep
 )
@@ -555,7 +554,8 @@ py3_image(
         # at certifi's bundle so outbound HTTPS works.
         "SSL_CERT_FILE": "/projects/monolith/main_public.runfiles/_main/projects/monolith/.main_public/lib/python3.13/site-packages/certifi/cacert.pem",
     },
-    main = "//projects/monolith/app:main_public.py",
+    main = "app/main_public.py",
+    main_label = "//projects/monolith/app:main_public.py",
     repository = "ghcr.io/jomcgi/homelab/projects/monolith/public-backend",
 )
 
