@@ -4,6 +4,13 @@
 # Gazelle from generating duplicate per-file py_test rules.
 # gazelle:exclude *_test.py
 # gazelle:exclude test_*.py
+# Root deployable targets already own these entrypoints.
+# gazelle:exclude agents_main.py
+# gazelle:exclude jobs_main.py
+# gazelle:exclude main.py
+# gazelle:exclude main_domain.py
+# gazelle:exclude main_public.py
+# gazelle:exclude progress_main.py
 
 load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("//bazel/tools/pytest:defs.bzl", "py_test")

@@ -4,6 +4,8 @@
 # Gazelle from generating duplicate per-file py_test rules.
 # gazelle:exclude *_test.py
 # gazelle:exclude test_*.py
+# The explicit gen_catalog target owns this executable entrypoint.
+# gazelle:exclude gen_catalog.py
 
 load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("//bazel/tools/pytest:defs.bzl", "py_test")

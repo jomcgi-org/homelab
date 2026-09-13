@@ -4,6 +4,8 @@
 # Gazelle from generating duplicate per-file py_test rules.
 # gazelle:exclude *_test.py
 # gazelle:exclude test_*.py
+# The explicit preview-layout target owns this executable entrypoint.
+# gazelle:exclude preview-layout.py
 
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 

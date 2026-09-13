@@ -4,6 +4,8 @@
 # Gazelle from generating duplicate per-file py_test rules.
 # gazelle:exclude *_test.py
 # gazelle:exclude test_*.py
+# The explicit marker target owns this executable entrypoint.
+# gazelle:exclude marker.py
 # Nested sources remain owned by this package's recursive targets.
 # gazelle:exclude tools
 
