@@ -442,11 +442,15 @@ def test_stale_unbound_permit_settles_only_after_grace(
 )
 def test_probe_stale_unbound_settlement_requires_all_shape_gates(
     database,
+    monkeypatch,
     age_seconds,
     binding_evidence,
     status,
     expected_reason,
 ):
+    monkeypatch.delenv(
+        "AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", raising=False
+    )
     pid = seed(
         database,
         f"stale-probe-{age_seconds}-{binding_evidence}-{status}",
@@ -455,12 +459,15 @@ def test_probe_stale_unbound_settlement_requires_all_shape_gates(
     )
     with Session(database) as db, db.begin():
         permit = db.get(AgentCapacityReservation, pid)
-        permit.outcome = "unclassified_failure"
+        turn = db.exec(
+            select(AgentTurn).where(AgentTurn.session_id == permit.session_id)
+        ).one()
+        turn.usage_json = "{}"
         agent = db.get(AgentSession, permit.session_id)
         agent.status = status
         if binding_evidence:
             agent.prior_ember_lineage_id = "prior-binding"
-        db.add_all([permit, agent])
+        db.add_all([turn, agent])
 
     sweep(None)
 
@@ -480,6 +487,9 @@ def test_probe_stale_unbound_settlement_requires_all_shape_gates(
 def test_probe_stale_unbound_flag_is_revalidated_before_settlement(
     database, monkeypatch
 ):
+    monkeypatch.delenv(
+        "AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", raising=False
+    )
     pid = seed(
         database,
         "stale-probe-flag-race",
@@ -487,7 +497,12 @@ def test_probe_stale_unbound_flag_is_revalidated_before_settlement(
         created_at=datetime.now(timezone.utc) - timedelta(hours=2),
     )
     with Session(database) as db, db.begin():
-        db.get(AgentCapacityReservation, pid).outcome = "unclassified_failure"
+        permit = db.get(AgentCapacityReservation, pid)
+        turn = db.exec(
+            select(AgentTurn).where(AgentTurn.session_id == permit.session_id)
+        ).one()
+        turn.usage_json = "{}"
+        db.add(turn)
 
     monkeypatch.setenv("AGENT_PROBE_SUPERVISION_ENABLED", "false")
     assert pid not in supervision._candidates()
@@ -512,8 +527,11 @@ def test_probe_stale_unbound_flag_is_revalidated_before_settlement(
     ],
 )
 def test_lease_expired_settles_only_via_stale_unbound_shape(
-    database, age_seconds, guest_bound, expected_reason
+    database, monkeypatch, age_seconds, guest_bound, expected_reason
 ):
+    monkeypatch.delenv(
+        "AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", raising=False
+    )
     pid = seed(
         database,
         f"lease-expired-{age_seconds}-{guest_bound}",
@@ -539,6 +557,30 @@ def test_lease_expired_settles_only_via_stale_unbound_shape(
         else:
             assert audit.settled_at is None
             assert permit["state"] == "uncertain"
+
+
+def test_unrelated_probe_outcome_is_not_tolerated_by_stale_path(
+    database, monkeypatch
+):
+    monkeypatch.delenv(
+        "AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", raising=False
+    )
+    pid = seed(
+        database,
+        "stale-probe-unrelated-outcome",
+        guest_bound=False,
+        created_at=datetime.now(timezone.utc) - timedelta(hours=2),
+    )
+    with Session(database) as db, db.begin():
+        db.get(AgentCapacityReservation, pid).outcome = "unclassified_failure"
+
+    sweep(None)
+
+    assert before(database, pid)[0]["state"] == "uncertain"
+    with Session(database) as db:
+        audit = db.get(ProbeObservation, pid)
+        assert audit.reason == "unrecognised_outcome"
+        assert audit.settled_at is None
 
 
 def test_binding_evidence_prevents_stale_unbound_settlement(database, monkeypatch):

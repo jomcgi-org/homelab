@@ -81,6 +81,13 @@ def _stale_unbound_tier(permit):
     )
 
 
+def _stale_unbound_outcome(permit):
+    # Preserve the existing drainer behavior, whose stale path accepts an
+    # unclassified failure. Probes add only the observed lease-expiry shape;
+    # their other unknown outcomes still require operator attention.
+    return permit.tier in {"kg", "project"} or permit.outcome == "lease_expired"
+
+
 def _factory_owned(db, agent):
     if agent.local_session_id.startswith("factory:"):
         return True
@@ -306,7 +313,11 @@ def _identity(db, permit, *, allow_stale_unbound=False):
             except ValueError as exc:
                 if not tolerated:
                     raise ValueError(str(exc) or "malformed_recovery") from exc
-        elif not (allow_stale_unbound and stale_unbound_shape):
+        elif not (
+            allow_stale_unbound
+            and stale_unbound_shape
+            and _stale_unbound_outcome(permit)
+        ):
             raise ValueError("unrecognised_outcome")
     owners = (
         []
