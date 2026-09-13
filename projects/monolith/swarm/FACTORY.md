@@ -1,5 +1,26 @@
 # Bounded issue delivery lane
 
+## Domain ownership
+
+Factory is one domain inside the monolith. It owns private interactions and
+MCP, published public views, task orchestration, execution, budgets, and recovery.
+Shared authentication verifies caller identity; factory entry points enforce
+which operations and records that caller may access. Public composition loads
+only the read-only factory descriptor and published projections.
+
+The private registry composes `factory.module` once. Its lifecycle owns both
+the conductor/DBOS runtime and session maintenance, including partial-start
+cleanup and the process watchdog. The `swarm` and `agent_sessions` directories
+remain implementation packages during consolidation, not independently composed
+domains. Their durable workflow functions, database schemas, and existing route
+paths remain stable while ownership moves. Remaining consolidation work moves
+those internals and removes the competing session-facing product concepts.
+
+Discord integration is outside this consolidation. Existing integration behavior
+is preserved pending an explicit retirement or redesign. This change introduces
+no general-purpose cross-domain factory API or separate factory deployment.
+
+
 The first autonomous lane reads explicitly selected GitHub issues, records one
 durable receipt per repository/issue/generation, and admits up to the policy's
 per-lane `max_tasks` at a time, with the chart's
@@ -1155,7 +1176,7 @@ delivery gates; local tests are advisory.
 The factory owns task decisions and durable recovery state. Kubernetes owns
 process recovery through the existing backend `/healthz` liveness probe, so
 watchdog execution does not depend on the conductor, DBOS, a model grant, or
-the agent session queue. The swarm module supplies a process-local liveness
+the agent session queue. The factory module supplies a process-local liveness
 check through the framework's `register_liveness` hook. Public profiles do not
 run private liveness checks.
 

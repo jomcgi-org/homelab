@@ -1,5 +1,16 @@
 # Monolith Architecture
 
+Factory ownership is consolidated under `factory.module` within this application.
+The factory owns private interactions/MCP, its published public viewer, and the
+orchestration/session execution lifecycle. Its public descriptor is composed
+separately from private mutation and execution hooks. Legacy `swarm` and
+`agent_sessions` packages retain implementation and storage identities during
+consolidation; they no longer register as separate application domains.
+Discord integration is outside this consolidation.
+(see: /projects/monolith/factory/module.py)
+(see: /projects/monolith/factory/public_module.py)
+
+
 The monolith is the FastAPI and SvelteKit application suite for the knowledge
 graph, conversational agents, isolated agent sessions, and small public data
 products. It is deployed as separate private, public, and agent compositions
@@ -753,7 +764,7 @@ failing singleton resigns and retries rather than ending leader election, and a
 failed acquire backs off while followers keep serving.
 (see: /projects/monolith/framework/core.py)
 (see: /projects/monolith/chat/leader.py)
-(see: /projects/monolith/agent_sessions/module.py)
+(see: /projects/monolith/factory/module.py)
 
 **Why.** Terminal-lived runs and process-local queues could not survive a
 restart, support multiple frontends, or provide a queryable history (ADR

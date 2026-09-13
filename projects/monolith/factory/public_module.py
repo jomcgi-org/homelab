@@ -1,4 +1,4 @@
-"""Public-only FastMonolith module for aggregate agent activity."""
+"""Public-only FastMonolith module for published factory activity."""
 
 from framework import Module as _Module
 
@@ -10,6 +10,6 @@ def register_public(app) -> None:
 
 
 MODULE = _Module(
-    name="agent_activity",
+    name="factory",
     register_public=register_public,
 )

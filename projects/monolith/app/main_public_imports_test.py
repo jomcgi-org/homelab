@@ -29,6 +29,12 @@ import pytest  # noqa: F401  (keeps the gazelle pytest dep; see module docstring
 # is matched as a module name OR a dotted prefix (so "chat" also forbids
 # "chat.anything").
 FORBIDDEN_MODULES = [
+    # Factory public composition must never load mutation or execution code.
+    "factory.module",
+    "swarm",
+    "agent_sessions.mcp",
+    "agent_sessions.router",
+    "agent_sessions.store",
     # semgrep_scan: only .client (the fc-invoke HTTP client) is public-safe,
     # for the ember semgrep demo; the rest of the package is private-only.
     "semgrep_scan.mcp",

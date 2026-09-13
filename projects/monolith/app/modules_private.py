@@ -13,7 +13,7 @@ binary's file set. The public registry lives in app/modules_public.py.
 from __future__ import annotations
 
 import agent.module
-import agent_sessions.module
+import factory.module
 import artifact.module
 import campsites.module
 import chat.module
@@ -22,7 +22,6 @@ import demos.module
 import dr_jobs.module
 import ember_public.module
 import faas.module
-import swarm.module
 import grimoire.module
 import hikes.module
 import home.module
@@ -53,12 +52,11 @@ ALL_MODULES: tuple[Module, ...] = (
     trips.module.MODULE,
     dr_jobs.module.MODULE,
     campsites.module.MODULE,
-    agent_sessions.module.MODULE,
+    factory.module.MODULE,
     observability.module.MODULE,
     worldcup.module.MODULE,
     artifact.module.MODULE,
     faas.module.MODULE,
-    swarm.module.MODULE,
     demos.module.MODULE,
     ember_public.module.MODULE,
     moving.module.MODULE,
