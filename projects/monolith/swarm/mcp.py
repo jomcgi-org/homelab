@@ -21,10 +21,10 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 
-from auth.api import Authority, Principal, PrincipalKind, current_principal
+from auth.api import Principal, current_principal
 from core.mcp_app import mcp
 
-OPERATOR_GROUP = "operators"
+from factory.access import OPERATOR_GROUP, OPERATOR_REQUIRED, is_operator
 
 # Cloud sessions (claude.ai and Claude Code) hold no factory receipt, so an
 # empty active list means "nothing the factory admitted", never "nothing is
@@ -44,14 +44,10 @@ def _refuse(principal: Principal) -> dict | None:
     refusal here is usually a missing claim rather than a missing person, and
     that is not something the caller could otherwise tell apart.
     """
-    if (
-        principal.authority != Authority.STANDING
-        or principal.kind != PrincipalKind.HUMAN
-        or not principal.has_group(OPERATOR_GROUP)
-    ):
+    if not is_operator(principal):
         return {
             "ok": False,
-            "error": "standing operator authority is required",
+            "error": OPERATOR_REQUIRED,
             "presented": {
                 "authority": str(principal.authority),
                 "kind": str(principal.kind),
@@ -121,7 +117,7 @@ def _status_payload(include_recent: bool, session=None) -> dict:
     directly. The tool never passes one: a session is not safe across
     the thread boundary, and the composer opens its own.
     """
-    from agent_sessions.factory_view import build_factory_view
+    from factory.private_view import build_factory_view
 
     view = build_factory_view(session=session)
     if not view.get("ok"):

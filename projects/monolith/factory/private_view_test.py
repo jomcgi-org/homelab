@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from agent_sessions.factory_view import (
+from factory.private_view import (
     first_line,
     node_label,
     shape_node,
@@ -151,7 +151,7 @@ def test_shape_receipt_without_a_plan_carries_no_nodes():
 
 
 def test_shape_policy_keeps_the_board_keys_only():
-    from agent_sessions.factory_view import shape_policy
+    from factory.private_view import shape_policy
 
     shaped = shape_policy(
         {
@@ -188,7 +188,7 @@ def test_build_factory_view_reads_a_real_control_row(tmp_path):
     from sqlalchemy import event
     from sqlmodel import Session, SQLModel, create_engine
 
-    from agent_sessions.factory_view import build_factory_view
+    from factory.private_view import build_factory_view
     from swarm.factory_models import (
         FactoryAudit,
         FactoryControl,

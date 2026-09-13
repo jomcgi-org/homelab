@@ -5,20 +5,11 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
-from auth.api import Authority, Principal, PrincipalKind, get_principal
+from auth.api import Principal
+from factory.access import operator
 from goosecracker.api import REPO_CATALOG
 
 router = APIRouter(prefix="/api/swarm/factory", tags=["factory"])
-
-
-def operator(principal: Principal = Depends(get_principal)) -> Principal:
-    if (
-        principal.authority != Authority.STANDING
-        or principal.kind != PrincipalKind.HUMAN
-        or not principal.has_group("operators")
-    ):
-        raise HTTPException(403, "standing operator authority is required")
-    return principal
 
 
 class ControlRequest(BaseModel):

@@ -153,7 +153,7 @@ def test_status_payload_trims_the_board_and_stamps_coverage(monkeypatch):
         ],
     }
     monkeypatch.setattr(
-        "agent_sessions.factory_view.build_factory_view", lambda session=None: board
+        "factory.private_view.build_factory_view", lambda session=None: board
     )
 
     payload = mcp._status_payload(include_recent=False)
@@ -178,7 +178,7 @@ def test_status_payload_includes_recent_on_request(monkeypatch):
         "escalations": [],
     }
     monkeypatch.setattr(
-        "agent_sessions.factory_view.build_factory_view", lambda session=None: board
+        "factory.private_view.build_factory_view", lambda session=None: board
     )
 
     payload = mcp._status_payload(include_recent=True)
@@ -187,7 +187,7 @@ def test_status_payload_includes_recent_on_request(monkeypatch):
 
 def test_status_payload_passes_through_an_uninitialised_factory(monkeypatch):
     monkeypatch.setattr(
-        "agent_sessions.factory_view.build_factory_view",
+        "factory.private_view.build_factory_view",
         lambda session=None: {
             "ok": False,
             "reason": "not_initialized",

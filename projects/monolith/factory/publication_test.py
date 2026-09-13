@@ -1,14 +1,14 @@
 """Unit tests for the public factory snapshot shaping.
 
 Every helper under test takes plain dicts, so these run without a database and
-without linking the swarm package, the same split factory_view_test.py uses.
+without linking the swarm package, the same split private_view_test.py uses.
 """
 
 from __future__ import annotations
 
 import zlib
 
-from agent_sessions.factory_public import (
+from factory.publication import (
     DEFAULT_MAX_REVIEW_ROUNDS,
     DIFF_LIMIT,
     decode_diff,
@@ -532,7 +532,7 @@ def test_session_payload_has_a_null_cost_when_no_turn_recorded_one():
 
 
 def test_max_tasks_collapses_the_per_lane_dict_to_the_delivery_count():
-    from agent_sessions.factory_public import flatten_max_tasks, shape_policy
+    from factory.publication import flatten_max_tasks, shape_policy
 
     assert flatten_max_tasks({"delivery": 2, "advisory": 0}) == 2
     assert flatten_max_tasks(1) == 1
@@ -543,7 +543,7 @@ def test_max_tasks_collapses_the_per_lane_dict_to_the_delivery_count():
 
 
 def test_payload_encoding_keeps_non_ascii_as_utf8():
-    from agent_sessions.factory_public import _encode
+    from factory.publication import _encode
 
     assert "\\u00b7" not in _encode({"label": "implement \u00b7 fix"})
     assert "\u00b7" in _encode({"label": "implement \u00b7 fix"})

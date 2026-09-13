@@ -9,6 +9,11 @@ consolidation; they no longer register as separate application domains.
 The public reader ships `factory.public_view` and excludes the entire
 `agent_sessions` implementation package. It reads only published public API
 views and snapshots with the existing restricted database role.
+The private board and snapshot publisher live in `factory.private_view` and
+`factory.publication`. Factory bearer controls and MCP status tools share the
+standing human operator rule in `factory.access`; browser decisions retain the
+verified gateway email gate in that same module. None of these private modules
+ship in the public image.
 
 Discord integration is outside this consolidation.
 (see: /projects/monolith/factory/module.py)
@@ -541,7 +546,7 @@ ordinary session rather than a second chat surface. The launcher leads with a
 factory strip above the knowledge extraction queue strip.
 (see: /projects/monolith/frontend/src/routes/private/agents/+page.svelte)
 (see: /projects/monolith/frontend/src/routes/private/agents/factory/+page.svelte)
-(see: /projects/monolith/agent_sessions/factory_view.py)
+(see: /projects/monolith/factory/private_view.py)
 (see: /projects/monolith/agent_sessions/voice.py)
 (see: /projects/monolith/chart/values.yaml)
 

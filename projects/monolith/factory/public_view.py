@@ -1,7 +1,7 @@
 """Public, aggregate-only agent activity API, plus the read-only factory pages.
 
 The factory routes read public_api.factory_*_snapshot and nothing else. Those
-rows are built on the private side by agent_sessions/factory_public.py, because
+rows are built on the private side by factory/publication.py, because
 public_reader has no grant on the swarm or agent_sessions schemas and private
 factory execution code is not in the public image.
 """
