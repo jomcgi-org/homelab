@@ -77,6 +77,37 @@ class TestDatabaseUrlRewrite:
         assert db_module.DATABASE_URL.startswith("postgresql+psycopg://")
 
 
+class TestDatabaseIdentityGuard:
+    def test_accepts_public_reader_on_read_only_service(self):
+        with patch.dict(
+            os.environ,
+            {
+                "DATABASE_URL": (
+                    "postgresql://public_reader:secret@"
+                    "monolith-pg-ro.monolith.svc:5432/monolith"
+                )
+            },
+            clear=False,
+        ):
+            importlib.reload(db_module)
+            db_module.require_database_identity("monolith-pg-ro", "public_reader")
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "postgresql://public_reader:secret@monolith-pg-rw:5432/monolith",
+            "postgresql://app:secret@monolith-pg-ro:5432/monolith",
+        ],
+    )
+    def test_rejects_primary_or_private_role(self, url):
+        with patch.dict(os.environ, {"DATABASE_URL": url}, clear=False):
+            importlib.reload(db_module)
+            with pytest.raises(
+                RuntimeError, match="declared database service and role"
+            ):
+                db_module.require_database_identity("monolith-pg-ro", "public_reader")
+
+
 # ---------------------------------------------------------------------------
 # get_engine() — LRU caching
 # ---------------------------------------------------------------------------

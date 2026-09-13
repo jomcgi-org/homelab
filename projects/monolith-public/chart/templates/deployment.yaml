@@ -1,6 +1,13 @@
 {{- if .Values.otelEndpoint }}
 {{- $_ := set .Values.web "env" (append .Values.web.env (dict "name" "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT" "value" .Values.otelEndpoint)) }}
 {{- end }}
+{{- range $env := .Values.web.env }}
+{{- if eq $env.name "PUBLIC_READER_DATABASE_SERVICE" }}
+{{- $_ := set $env "value" $.Values.publicReaderDatabase.serviceName }}
+{{- else if eq $env.name "PUBLIC_READER_DATABASE_USER" }}
+{{- $_ := set $env "value" $.Values.publicReaderDatabase.username }}
+{{- end }}
+{{- end }}
 {{- include "homelab.deployment" (dict "context" . "component" "web") }}
 ---
 {{- range $env := .Values.frontend.env }}

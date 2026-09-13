@@ -37,6 +37,22 @@ spec:
       serviceAccountName: {{ include "monolith.fullname" . }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      # Each process gets its own writable temporary filesystem. The serving
+      # images launch packaged Python or Node binaries directly, so there is no
+      # runtime uv cache. Python tempfile users (including trip image ingest)
+      # and language caches are kept under /tmp without making /app or the
+      # packaged runfiles writable. Separate volumes prevent one container from
+      # using another container's temporary files as a communication channel.
+      volumes:
+        - name: backend-tmp
+          emptyDir:
+            sizeLimit: 512Mi
+        - name: progress-tmp
+          emptyDir:
+            sizeLimit: 32Mi
+        - name: frontend-tmp
+          emptyDir:
+            sizeLimit: 64Mi
       containers:
         - name: backend
           image: "{{ .Values.backend.image.repository }}@{{ .Values.backend.image.digest }}"
@@ -46,6 +62,10 @@ spec:
               containerPort: 8000
               protocol: TCP
           env:
+            - name: TMPDIR
+              value: /tmp
+            - name: XDG_CACHE_HOME
+              value: /tmp/.cache
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
@@ -691,6 +711,9 @@ spec:
             {{- toYaml .Values.backend.resources | nindent 12 }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: backend-tmp
+              mountPath: /tmp
         # ADR agents/051: the progress-ingest listener is its own image and
         # port so the EmberVM egress allowlist entry (host:port granular)
         # exposes exactly one write-only route, never the main API on 8000.
@@ -702,6 +725,10 @@ spec:
               containerPort: 8091
               protocol: TCP
           env:
+            - name: TMPDIR
+              value: /tmp
+            - name: XDG_CACHE_HOME
+              value: /tmp/.cache
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
@@ -729,6 +756,9 @@ spec:
               memory: "256Mi"
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: progress-tmp
+              mountPath: /tmp
         - name: frontend
           image: "{{ .Values.frontend.image.repository }}@{{ .Values.frontend.image.digest }}"
           imagePullPolicy: {{ .Values.frontend.image.pullPolicy }}
@@ -737,6 +767,8 @@ spec:
               containerPort: 3000
               protocol: TCP
           env:
+            - name: TMPDIR
+              value: /tmp
             - name: API_BASE
               value: "http://localhost:8000"
             - name: QWEN_FLASH_API_BASE
@@ -776,3 +808,6 @@ spec:
             {{- toYaml .Values.frontend.resources | nindent 12 }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: frontend-tmp
+              mountPath: /tmp

@@ -1217,10 +1217,15 @@ tailnet:
   hostname: monolith
 
 podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
   seccompProfile:
     type: RuntimeDefault
 
 securityContext:
+  readOnlyRootFilesystem: true
   runAsNonRoot: true
   runAsUser: 65532
   allowPrivilegeEscalation: false
@@ -1875,3 +1880,38 @@ ciliumPolicy:
     # tokenReplayDeny.gatewayPodLabel names the SAME pod; the chart test fails
     # if the two copies of that fact drift apart.
     mcpGatewayPodLabel: context-forge-gateway-mcp-stack-mcpgateway
+  # Destination-scoped egress for the private app pod. Setting enabled renders
+  # the allow rules in audit shape first. Setting enforce as well makes the
+  # selected endpoint default-deny for every destination not named by the
+  # policy. Keep both false until a representative Hubble window confirms the
+  # list, including periodic callers. GKE has no Cilium CRDs and forces both
+  # gates off in deploy/values-gke.yaml.
+  egress:
+    enabled: false
+    enforce: false
+    # External HTTPS and WSS dependencies used by the long-running backend.
+    # Every entry is an exact DNS name. Adding a wildcard would broaden the
+    # compromise blast radius and must be justified separately.
+    externalFqdns:
+      - 7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com
+      - api.deepseek.com
+      - api.github.com
+      - api.meta.ai
+      - api.met.no
+      - api.open-meteo.com
+      - apply.jobs.scot.nhs.uk
+      - camping.bcparks.ca
+      - cdn.discordapp.com
+      - discord.com
+      - gateway.discord.gg
+      - integrate.api.nvidia.com
+      - jomcgi.dev
+      - media.discordapp.net
+      - oauth2.googleapis.com
+      - openrouter.ai
+      - private.jomcgi.dev
+      - semgrep.dev
+      - stream.aisstream.io
+      - worldcup26.ir
+      - www.googleapis.com
+      - www.walkhighlands.co.uk

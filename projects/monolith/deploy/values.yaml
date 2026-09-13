@@ -461,6 +461,16 @@ scratchPostgres:
 ciliumPolicy:
   ingress:
     enabled: true
+  # The scoped egress policy is present but stays inert until a representative
+  # Cilium/Hubble audit covers interactive and periodic traffic. First set
+  # enabled true with enforce false and inspect policy verdicts for at least a
+  # full job cadence. Set enforce true only after every legitimate destination,
+  # including the secret-backed iCalendar feed hostname, is represented in the
+  # chart allowlist. GKE overrides both flags to false because it has no Cilium
+  # policy CRDs.
+  egress:
+    enabled: false
+    enforce: false
 
 # cd health chart-lag coverage (#4890): every Kargo-managed production app, so
 # embervm's lag is visible next to monolith's instead of invisible (#4884).

@@ -195,17 +195,22 @@ and reports `Encryption: Disabled`, so nothing on the wire is encrypted by
 the cluster and only Kubernetes `NetworkPolicy` can be expressed. Every
 Cilium policy template in this repo is gated off in the hub overlays:
 `ciliumPolicy.ingress` and `ciliumPolicy.egress` in
-`projects/monolith-public/deploy/values-gke.yaml`, `ciliumPolicy.ingress`
-and `tokenReplayDeny` in `projects/monolith/deploy/values-gke.yaml`,
+`projects/monolith-public/deploy/values-gke.yaml`, `ciliumPolicy.ingress`,
+`ciliumPolicy.egress` and `tokenReplayDeny` in
+`projects/monolith/deploy/values-gke.yaml`,
 `noded.networkPolicy` and `tokenBroker.networkPolicy` in
 `projects/embervm/deploy/values-gke.yaml`, `ciliumPolicy` in
 `projects/monolith-agents/deploy/values-gke.yaml`. The one live
 `NetworkPolicy` is the Context Forge redis rule from the upstream subchart
 (`kubectl get networkpolicies -A`). Every other pod is unrestricted in both
 directions: the public tier can dial any pod (#5276 and #5142 were closed on
-the chart, not the hub), and the private monolith has no egress policy
-(#5277, #3897). A chart that carries a `CiliumNetworkPolicy` is documenting
-an intent the hub does not enforce.
+the chart, not the hub), and the private monolith's destination-scoped egress
+policy is likewise gated off there. The private chart carries an
+off/audit/enforce ladder for Postgres, DNS, the API server, current service
+dependencies and exact external hosts. It can enforce default-deny on a Cilium
+cluster only after an audit window proves the list complete. A chart that
+carries a `CiliumNetworkPolicy` is documenting intent on the hub, not enforcing
+it.
 
 **Guest egress is brokered.** Task and session guests have no NIC. The only
 way out is the vsock egress port, which noded forwards unparsed to the
@@ -328,11 +333,14 @@ security/003 targeted container sandboxes that were replaced by Firecracker
 guests; #3894 stays open as its record.
 
 **Container security context is a convention, not a control.** The apko
-images build as uid 65532 (`bazel/tools/oci/go_image.bzl`) and most charts
-set the full hardened context (`readOnlyRootFilesystem`, `runAsNonRoot`,
-`allowPrivilegeEscalation: false`, `drop: [ALL]`, `seccompProfile:
-RuntimeDefault`). No admission policy enforces any of it. Kyverno runs two
-`ClusterPolicy` objects, both `Audit` (`kubectl get clusterpolicies`):
+images build as uid 65532 (`bazel/tools/oci/go_image.bzl`) and the monolith
+chart now sets the full hardened context (`readOnlyRootFilesystem`,
+`runAsNonRoot`, `allowPrivilegeEscalation: false`, `drop: [ALL]`,
+`seccompProfile: RuntimeDefault`). The private monolith gives its backend,
+progress listener and frontend separate size-limited `/tmp` `emptyDir` mounts,
+with no writable application or runfiles mount. No admission policy enforces
+any of it. Kyverno runs two `ClusterPolicy` objects, both `Audit`
+(`kubectl get clusterpolicies`):
 `require-resource-requests`, scoped to the `monolith` and `monolith-public`
 namespaces, and `clone-monolith-workflows-secrets`, which copies Secrets
 into the job namespace. The OTel injection policy is disabled. Nothing is
@@ -360,8 +368,11 @@ closure is pruned in `projects/monolith/BUILD` and asserted by
 
 - **Reads go through `public_reader` on the replica.** `monolith-pg` runs
   two instances on the hub; the public service reads `monolith-pg-ro` as a
-  `NOLOGIN` role created by CNPG `managed.roles`, and every public table
+  scoped login role created by CNPG `managed.roles`, and every public table
   needs an explicit grant (`projects/monolith/chart/migrations/*_public_reader_grant.sql`).
+  The public entrypoint validates both the `-ro` service name and
+  `public_reader` username from the 1Password-synced URI before serving, so a
+  mistaken primary or private-app URI fails closed.
   A PreToolUse hook (`bazel/tools/hooks/check-public-reader-grant.sh`)
   blocks a new `CREATE TABLE` in a public schema without one; it fires only
   for edits made through Claude Code.
@@ -525,7 +536,6 @@ this table when the work ships or the issue closes without it.
 | Public-tier egress scopes to its four documented destinations, enforced on the hub | Network | #5276 | not started |
 | Per-workload EmberVM egress allowlists replace the single allowlist shared across every workload | Network | #5320 | not started |
 | The monolith constructs delegated, attenuation-only authority instead of relying only on standing tokens | Identity | #4940, #4943, #4944 | not started |
-| The private monolith container gets a read-only root filesystem, matching every other hardened chart | Decision history (security/004) | #3898 | not started |
 | Semgrep findings reach the hosted App under required credentials, replacing the offline placeholder token | Static checks and review gates | #3893 | not started |
 
 ## Decision history
@@ -541,7 +551,7 @@ document carries what shipped.
 | security/001 Hermetic Semgrep via Bazel | vendor `semgrep-core` as an OCI artifact and run rules as cached Bazel tests | Accepted; every target passes without scanning (#4777, #3893) | deleted |
 | security/002 Semgrep rule generation via RL | RL-finetuned model generates rules from CVEs | Deprecated; nothing live | deleted |
 | security/003 gVisor RuntimeClass | `runsc` for agent sandbox pods | Accepted, never built (#3894); the sandboxes it targeted became Firecracker guests | deleted |
-| security/004 Public read-only service isolation | separate public composition, `public_reader` on a replica, default-deny egress | Accepted; composition, role, replica and imports test shipped; egress policy inert on the hub (#3897, #5277); read-only rootfs open (#3898); tracking #3895 | deleted |
+| security/004 Public read-only service isolation | separate public composition, `public_reader` on a replica, default-deny egress | Accepted; composition, role, replica, endpoint guard, imports test and read-only private root filesystems shipped; destination-scoped egress is implemented but gated off on the hub because its managed dataplane exposes no Cilium policy CRDs (#3897, #5277); tracking #3895 | deleted |
 | security/005 Public chat adversarial hardening | Turnstile sessions, reserved headroom, server-side limits, DB-confined retrieval | Implemented except the purge (#3899); inference moved off-cluster | deleted |
 | security/006 Friends authorization lane | `/moving` on `friends.jomcgi.dev` behind an authentik `family` group | Accepted, shipped (#4968) | deleted |
 | security/007 Aggregate threat model index | one ranked index over labelled issues, re-ranked by hand | Accepted; decisions 1, 2 and 4 live, decision 3 superseded by STPA lenses (#5294) | deleted |
