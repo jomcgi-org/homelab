@@ -57,6 +57,84 @@
       }
     ]
   },
+  "bb": {
+    "binaries": [
+      {
+        "kind": "file",
+        "url": "https://github.com/buildbuddy-io/bazel/releases/download/5.0.321/bazel-5.0.321-linux-arm64",
+        "sha256": "0d81fe62e060d6b8a862f1ea553afc571bba2aa2cbbff97c59ada3ea20b7d2bb",
+        "os": "linux",
+        "cpu": "arm64"
+      },
+      {
+        "kind": "file",
+        "url": "https://github.com/buildbuddy-io/bazel/releases/download/5.0.321/bazel-5.0.321-linux-x86_64",
+        "sha256": "54282799c6c2e4ca4e2589d8c9c23b7e7caa3a6faa87a53a06cbe990a353550e",
+        "os": "linux",
+        "cpu": "x86_64"
+      },
+      {
+        "kind": "file",
+        "url": "https://github.com/buildbuddy-io/bazel/releases/download/5.0.321/bazel-5.0.321-darwin-arm64",
+        "sha256": "37a249d779fa2c1259abccc467bd1fdbc5723073c2431753942a95261174b22f",
+        "os": "macos",
+        "cpu": "arm64"
+      }
+    ]
+  },
+  "buildifier": {
+    "binaries": [
+      {
+        "kind": "file",
+        "url": "https://github.com/bazel-contrib/buildtools/releases/download/v8.2.0/buildifier-linux-arm64",
+        "sha256": "c624a833bfa64d3a457ef0235eef0dbda03694768aab33f717a7ffd3f803d272",
+        "os": "linux",
+        "cpu": "arm64"
+      },
+      {
+        "kind": "file",
+        "url": "https://github.com/bazel-contrib/buildtools/releases/download/v8.2.0/buildifier-linux-amd64",
+        "sha256": "3e79e6c0401b5f36f8df4dfc686127255d25c7eddc9599b8779b97b7ef4cdda7",
+        "os": "linux",
+        "cpu": "x86_64"
+      },
+      {
+        "kind": "file",
+        "url": "https://github.com/bazel-contrib/buildtools/releases/download/v8.2.0/buildifier-darwin-arm64",
+        "sha256": "e08381a3ed1d59c0a17d1cee1d4e7684c6ce1fc3b5cfa1bd92a5fe978b38b47d",
+        "os": "macos",
+        "cpu": "arm64"
+      }
+    ]
+  },
+  "claude": {
+    "binaries": [
+      {
+        "kind": "archive",
+        "url": "https://registry.npmjs.org/@anthropic-ai/claude-code-linux-arm64/-/claude-code-linux-arm64-2.1.222.tgz",
+        "file": "package/claude",
+        "sha256": "1bb3c8364d652dd08a15856ee27c6600ecd1e45360243154fa846f240ce7a1df",
+        "os": "linux",
+        "cpu": "arm64"
+      },
+      {
+        "kind": "archive",
+        "url": "https://registry.npmjs.org/@anthropic-ai/claude-code-linux-x64/-/claude-code-linux-x64-2.1.222.tgz",
+        "file": "package/claude",
+        "sha256": "6680125b6f3baab47c84797cbeb3196e343c61bb4679cae15d138041a325c1ff",
+        "os": "linux",
+        "cpu": "x86_64"
+      },
+      {
+        "kind": "archive",
+        "url": "https://registry.npmjs.org/@anthropic-ai/claude-code-darwin-arm64/-/claude-code-darwin-arm64-2.1.222.tgz",
+        "file": "package/claude",
+        "sha256": "5c00056ae55c9a98ae63f66034be573c3f417bab4fc817612b34a1bb29a2dd09",
+        "os": "macos",
+        "cpu": "arm64"
+      }
+    ]
+  },
   "aspect": {
     "binaries": [
       {
@@ -401,6 +479,34 @@
         "kind": "file",
         "url": "https://github.com/mvdan/sh/releases/download/v3.12.0/shfmt_v3.12.0_darwin_arm64",
         "sha256": "d903802e0ce3ecbc82b98512f55ba370b0d37a93f3f78de394f5b657052b33dd",
+        "os": "macos",
+        "cpu": "arm64"
+      }
+    ]
+  },
+  "shellcheck": {
+    "binaries": [
+      {
+        "kind": "archive",
+        "url": "https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.aarch64.tar.gz",
+        "file": "shellcheck-v0.11.0/shellcheck",
+        "sha256": "68a8133197a50beb8803f8d42f9908d1af1c5540d4bb05fdfca8c1fa47decefc",
+        "os": "linux",
+        "cpu": "arm64"
+      },
+      {
+        "kind": "archive",
+        "url": "https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.gz",
+        "file": "shellcheck-v0.11.0/shellcheck",
+        "sha256": "b7af85e41cc99489dcc21d66c6d5f3685138f06d34651e6d34b42ec6d54fe6f6",
+        "os": "linux",
+        "cpu": "x86_64"
+      },
+      {
+        "kind": "archive",
+        "url": "https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.darwin.aarch64.tar.gz",
+        "file": "shellcheck-v0.11.0/shellcheck",
+        "sha256": "339b930feb1ea764467013cc1f72d09cd6b869ebf1013296ba9055ab2ffbd26f",
         "os": "macos",
         "cpu": "arm64"
       }
