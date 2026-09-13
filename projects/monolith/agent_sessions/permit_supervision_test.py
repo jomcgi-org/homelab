@@ -553,6 +553,103 @@ def test_lease_expired_settles_only_via_stale_unbound_shape(
             assert permit["state"] == "uncertain"
 
 
+def test_lease_expired_stale_unbound_requires_probe_flag(database, monkeypatch):
+    monkeypatch.setenv("AGENT_PROBE_SUPERVISION_ENABLED", "false")
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    pid = seed(
+        database,
+        "lease-expired-probe-disabled",
+        guest_bound=False,
+        created_at=datetime.now(timezone.utc) - timedelta(hours=2),
+    )
+    with Session(database) as db, db.begin():
+        db.get(AgentCapacityReservation, pid).outcome = "lease_expired"
+    original = before(database, pid)
+
+    sweep(None)
+
+    assert before(database, pid) == original
+    with Session(database) as db:
+        assert db.get(ProbeObservation, pid) is None
+
+
+def test_lease_expired_stale_unbound_rejects_binding_evidence(database, monkeypatch):
+    monkeypatch.setenv("AGENT_PROBE_SUPERVISION_ENABLED", "true")
+    monkeypatch.delenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", raising=False)
+    pid = seed(
+        database,
+        "lease-expired-prior-binding",
+        guest_bound=False,
+        created_at=datetime.now(timezone.utc) - timedelta(hours=2),
+    )
+    with Session(database) as db, db.begin():
+        permit = db.get(AgentCapacityReservation, pid)
+        permit.outcome = "lease_expired"
+        agent = db.get(AgentSession, permit.session_id)
+        agent.prior_ember_lineage_id = "prior-binding"
+        db.add(agent)
+
+    sweep(None)
+
+    assert before(database, pid)[0]["state"] == "uncertain"
+    with Session(database) as db:
+        audit = db.get(ProbeObservation, pid)
+        assert audit.reason == "prior_binding_evidence"
+        assert audit.settled_at is None
+
+
+def test_lease_expired_stale_unbound_settles_with_both_flags(database, monkeypatch):
+    monkeypatch.setenv("AGENT_PROBE_SUPERVISION_ENABLED", "true")
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    pid = seed(
+        database,
+        "lease-expired-both-flags",
+        guest_bound=False,
+        created_at=datetime.now(timezone.utc) - timedelta(hours=2),
+    )
+    with Session(database) as db, db.begin():
+        db.get(AgentCapacityReservation, pid).outcome = "lease_expired"
+
+    sweep(None)
+
+    assert before(database, pid)[0]["state"] == "settled"
+    with Session(database) as db:
+        audit = db.get(ProbeObservation, pid)
+        assert audit.reason == "stale_unbound_permit"
+        assert audit.settled_at is not None
+
+
+def test_both_flags_do_not_settle_fresh_non_error_legacy_probe(
+    database, monkeypatch
+):
+    monkeypatch.setenv("AGENT_PROBE_SUPERVISION_ENABLED", "true")
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    pid = seed(
+        database,
+        "fresh-non-error-both-flags",
+        legacy=True,
+        guest_bound=False,
+        created_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+    )
+    with Session(database) as db, db.begin():
+        permit = db.get(AgentCapacityReservation, pid)
+        turn = db.exec(
+            select(AgentTurn).where(AgentTurn.session_id == permit.session_id)
+        ).one()
+        turn.terminal_reason = None
+        db.add(turn)
+
+    sweep(None)
+
+    permit = before(database, pid)[0]
+    assert permit["state"] == "uncertain"
+    assert permit["outcome"] == "delivery_error"
+    with Session(database) as db:
+        audit = db.get(ProbeObservation, pid)
+        assert audit.reason == "stale_unbound_grace"
+        assert audit.settled_at is None
+
+
 def test_unrelated_probe_outcome_is_not_tolerated_by_stale_path(database, monkeypatch):
     monkeypatch.delenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", raising=False)
     pid = seed(

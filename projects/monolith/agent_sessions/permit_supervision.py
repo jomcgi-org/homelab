@@ -232,7 +232,8 @@ def _identity(db, permit, *, allow_stale_unbound=False):
         .limit(1)
     ).first()
     stale_unbound_shape = (
-        _stale_unbound_tier(permit)
+        allow_stale_unbound
+        and _stale_unbound_tier(permit)
         and permit.routine_job_name is None
         and agent.status in _TERMINAL_SESSION_STATUSES
         and agent.ember_session_id is None
