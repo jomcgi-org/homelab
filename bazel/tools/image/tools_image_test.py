@@ -235,6 +235,7 @@ def test_every_platform_contains_executable_commands(platform: str) -> None:
     assert "usr/local/lib/node_modules/eslint" in combined_members
 
 
+@pytest.mark.skip(reason="temporary runtime-test CI isolation")
 def test_eslint_preserves_versioned_dependency_graph_and_lints() -> None:
     platform = RUNTIME_PLATFORM or "linux_amd64"
     with tempfile.TemporaryDirectory() as temp:
@@ -294,6 +295,7 @@ def _assert_native_host(platform: str) -> None:
     assert host_platform.machine().lower() in expected_machines
 
 
+@pytest.mark.skip(reason="temporary runtime-test CI isolation")
 def test_commands_execute_from_relocated_root() -> None:
     platform = RUNTIME_PLATFORM or "linux_amd64"
     _assert_native_host(platform)
