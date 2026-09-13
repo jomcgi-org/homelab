@@ -118,19 +118,25 @@ func (f *serialFollower) drain() {
 }
 
 func (f *serialFollower) drainLocked() {
-	if info, err := f.file.Stat(); err == nil {
-		if info.Size() < f.offset {
-			f.offset = 0
-		}
-		if backlog := info.Size() - f.offset; backlog > serialFollowBacklogBytes {
-			f.writer.Flush()
-			f.offset = info.Size() - serialFollowBacklogBytes
-			f.writer.MarkTruncated()
-		}
+	// Capture the endpoint once so synchronous logging cannot make this drain
+	// chase bytes that Firecracker appends while the drain is in progress.
+	info, err := f.file.Stat()
+	if err != nil {
+		return
+	}
+	end := info.Size()
+	if end < f.offset {
+		f.offset = 0
+	}
+	if backlog := end - f.offset; backlog > serialFollowBacklogBytes {
+		f.writer.Flush()
+		f.offset = end - serialFollowBacklogBytes
+		f.writer.MarkTruncated()
 	}
 	var buf [32 * 1024]byte
-	for {
-		n, err := f.file.ReadAt(buf[:], f.offset)
+	for f.offset < end {
+		readBytes := min(int64(len(buf)), end-f.offset)
+		n, err := f.file.ReadAt(buf[:readBytes], f.offset)
 		if n > 0 {
 			_, _ = f.writer.Write(buf[:n])
 			f.offset += int64(n)

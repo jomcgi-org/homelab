@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jomcgi/homelab/projects/embervm/noded/substrate"
 )
@@ -121,6 +122,114 @@ func TestRestoredSerialFailureFlushesUnterminatedOutput(t *testing.T) {
 	}
 	assertGuestRecord(t, records[0], "restore final", "restore-failure-workload", "vm")
 }
+
+func TestSerialDrainStopsAtCapturedEndWhileLoggingAppends(t *testing.T) {
+	const line = "line\n"
+	operations := []struct {
+		name      string
+		run       func(*serialFollower)
+		wantPhase string
+	}{
+		{"drain", func(f *serialFollower) { f.drain() }, guestPhaseInit},
+		{"readiness phase transition", func(f *serialFollower) { f.SetPhase(guestPhaseVM) }, guestPhaseVM},
+	}
+
+	for _, operation := range operations {
+		t.Run(operation.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), serialOutputName)
+			if err := os.WriteFile(path, []byte(line), 0o640); err != nil {
+				t.Fatalf("seed serial output: %v", err)
+			}
+			reader, err := os.Open(path)
+			if err != nil {
+				t.Fatalf("open serial reader: %v", err)
+			}
+			t.Cleanup(func() { _ = reader.Close() })
+			appender, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+			if err != nil {
+				t.Fatalf("open serial appender: %v", err)
+			}
+			t.Cleanup(func() { _ = appender.Close() })
+
+			handler := &continuingSerialHandler{
+				appender: appender,
+				started:  make(chan struct{}),
+				proceed:  make(chan bool),
+			}
+			follower := &serialFollower{
+				file:   reader,
+				writer: newTagWriter(slog.New(handler), "guest", "bounded", guestPhaseInit),
+			}
+			done := make(chan struct{})
+			go func() {
+				operation.run(follower)
+				close(done)
+			}()
+
+			// Hold the first record in the deliberately slow handler, then append
+			// another complete line as logging progresses. A drain that chases a
+			// moving EOF enters the handler again instead of returning.
+			select {
+			case <-handler.started:
+			case <-time.After(time.Second):
+				t.Fatal("serial drain did not reach the log handler")
+			}
+			handler.proceed <- true
+			select {
+			case <-done:
+			case <-handler.started:
+				// Let an unbounded implementation unwind before failing the test.
+				handler.proceed <- false
+				<-done
+				t.Fatal("serial drain chased output appended after its captured end")
+			case <-time.After(time.Second):
+				t.Fatal("serial drain did not complete within the bounded interval")
+			}
+
+			if got, want := follower.offset, int64(len(line)); got != want {
+				t.Fatalf("drained offset = %d, want captured end %d", got, want)
+			}
+			info, err := appender.Stat()
+			if err != nil {
+				t.Fatalf("stat appended serial output: %v", err)
+			}
+			if got, want := info.Size(), int64(2*len(line)); got != want {
+				t.Fatalf("serial size = %d, want pending append at %d", got, want)
+			}
+			follower.writer.mu.Lock()
+			phase := follower.writer.phase
+			follower.writer.mu.Unlock()
+			if phase != operation.wantPhase {
+				t.Fatalf("phase = %q, want %q", phase, operation.wantPhase)
+			}
+		})
+	}
+}
+
+// continuingSerialHandler makes serial growth deterministic: each log record
+// pauses until the test allows it to finish, then optionally appends the next
+// record. Returning the same handler from WithAttrs preserves that behavior for
+// the attributes newTagWriter attaches to its logger.
+type continuingSerialHandler struct {
+	appender *os.File
+	started  chan struct{}
+	proceed  chan bool
+}
+
+func (h *continuingSerialHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *continuingSerialHandler) Handle(_ context.Context, _ slog.Record) error {
+	h.started <- struct{}{}
+	if appendNext := <-h.proceed; appendNext {
+		_, err := h.appender.WriteString("line\n")
+		return err
+	}
+	return nil
+}
+
+func (h *continuingSerialHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+
+func (h *continuingSerialHandler) WithGroup(string) slog.Handler { return h }
 
 func TestColdBootPrecreatesSinkAndIssuesPutSerialBeforeStart(t *testing.T) {
 	launcher := &fakeLauncher{}
