@@ -7,7 +7,6 @@ cessation. The existing factory supervisor consumes exact durable Ember proof.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -15,15 +14,7 @@ import re
 
 from sqlmodel import Session, select
 
-from agent_sessions import admission
-from agent_sessions.constants import INTERRUPTED_TERMINAL_REASONS, UNKNOWN_INVOCATION
-from agent_sessions.models import (
-    AgentCapacityReservation,
-    AgentSession,
-    AgentTurn,
-    PendingMessage,
-)
-from agent_sessions.reconciliation import _factory_owner, _locked_session
+from agent_sessions.api import inspect_factory_attempt_stop, fence_factory_attempt_stop
 from swarm import factory_controls as controls
 from swarm.factory_models import FactoryAudit, FactoryStart
 from swarm.models import SwarmNodeRun
@@ -35,16 +26,6 @@ MAX_CANCEL_REQUESTS = 2
 
 def enabled() -> bool:
     return os.environ.get("FACTORY_STOP_SUPERVISION_ENABLED", "false").lower() == "true"
-
-
-def _stamp(value) -> str:
-    if isinstance(value, str):
-        value = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    if not isinstance(value, datetime):
-        raise ValueError("missing_factory_dispatch_identity")
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
-    return value.isoformat()
 
 
 def _digest(value) -> str:
@@ -114,91 +95,14 @@ def _candidate(db, task_id, node_key, attempt, session_id):
         or start.max_cost_usd != pin["max_cost_usd"]
     ):
         raise ValueError("factory_start_changed")
-    admission.lock_pool(db)
-    agent = _factory_owner(db, pin, session_id)
-    if agent is None:
-        raise ValueError("missing_factory_owner")
-    agent = _locked_session(db, agent.id)
-    if not agent.ember_session_id or agent.result_receipt_fence_id is not None:
-        raise ValueError("pending_or_missing_factory_guest")
-    owners = db.exec(
-        select(AgentSession.id).where(
-            AgentSession.ember_session_id == agent.ember_session_id
-        )
-    ).all()
-    permits = db.exec(
-        select(AgentCapacityReservation).where(
-            AgentCapacityReservation.session_id == agent.id
-        )
-    ).all()
-    pending = db.exec(
-        select(PendingMessage).where(PendingMessage.session_id == agent.id)
-    ).all()
-    turns = db.exec(select(AgentTurn).where(AgentTurn.session_id == agent.id)).all()
-    if owners != [agent.id] or len(permits) != 1 or len(pending) > 1 or len(turns) > 1:
-        raise ValueError("ambiguous_factory_attempt")
-    permit = permits[0]
-    if (
-        permit.pending_seq != 1
-        or permit.local_session_id != agent.local_session_id
-        or permit.tier != "project"
-        or permit.routine_job_name is not None
-        or not permit.owner
-        or permit.state not in {"running", "uncertain"}
-    ):
-        raise ValueError("factory_attempt_not_uncertain_or_running")
-    if pending:
-        head = pending[0]
-        if (
-            head.seq != 1
-            or head.claimed_by_replica != permit.owner
-            or permit.state != "running"
-            or (turns and turns[0].terminal_reason not in INTERRUPTED_TERMINAL_REASONS)
-        ):
-            raise ValueError("factory_pending_owner_changed")
-        count, dispatched = head.dispatch_count, head.last_dispatch_at
-    else:
-        if (
-            len(turns) != 1
-            or turns[0].seq != 1
-            or turns[0].terminal_reason != "error"
-            or permit.state != "uncertain"
-            or not (
-                (
-                    agent.status == "failed"
-                    and turns[0].stop_reason == UNKNOWN_INVOCATION
-                )
-                or (
-                    agent.status == "warn"
-                    and turns[0].stop_reason is None
-                    and permit.outcome == "delivery_error"
-                )
-            )
-        ):
-            raise ValueError("factory_attempt_not_uncertain")
-        recovery = json.loads(turns[0].usage_json or "{}").get("recovery", {})
-        if recovery.get("claim_owner") != permit.owner:
-            raise ValueError("factory_pending_owner_changed")
-        count, dispatched = (
-            recovery.get("dispatch_count"),
-            recovery.get("last_dispatch_at"),
-        )
-    if type(count) is not int or count < 1:
-        raise ValueError("missing_factory_dispatch_identity")
+    session_identity, pending = inspect_factory_attempt_stop(db, pin, session_id)
     identity = {
         "task_id": task_id,
         "node_key": node_key,
         "attempt": attempt,
         "run_id": run.id,
         "start_id": start.id,
-        "session_id": agent.id,
-        "permit_id": permit.id,
-        "guest_id": agent.ember_session_id,
-        "workflow_id": pin["workflow_id"],
-        "seq": 1,
-        "dispatch_count": count,
-        "claim_owner": permit.owner,
-        "dispatched_at": _stamp(dispatched),
+        **session_identity,
         "pin_sha256": _digest(pin),
     }
     identity["identity_sha256"] = _digest(identity)
@@ -287,23 +191,7 @@ def request_attempt_stop(
             raise ValueError("attempt_stop_already_requested")
         if any(action == "stop_intent" for action, _ in supervisor._records(db, pin)):
             raise ValueError("attempt_stop_already_requested")
-        if pending:
-            from agent_sessions.store import finish_unknown_pending_in_session
-
-            if not finish_unknown_pending_in_session(
-                db,
-                session_id,
-                1,
-                identity["claim_owner"],
-                identity["dispatch_count"],
-                "factory_attempt_stop",
-                expected_guest_id=identity["guest_id"],
-                expected_workflow_id=identity["workflow_id"],
-            ):
-                raise ValueError("factory_attempt_changed")
-        from agent_sessions.api import read_uncertain_factory_attempt
-
-        terminal = read_uncertain_factory_attempt(db, pin, session_id)
+        terminal = fence_factory_attempt_stop(db, pin, session_id, identity)
         result = {
             "ok": True,
             "state": "requested",
@@ -357,68 +245,49 @@ def matching_request(db: Session, pin: dict, identity: dict) -> dict | None:
     return saved
 
 
-def executor_stop_requested(
-    session_id: int, seq: int, claim_owner: str, dispatch_count: int
-) -> bool:
-    """Read a committed exact request; never cancel another replica's attempt."""
-    from core.db import get_engine
+def read_factory_attempt_stop_request(
+    db: Session,
+    task_id: str,
+    session_id: int,
+    seq: int,
+    claim_owner: str,
+    dispatch_count: int,
+) -> dict | None:
+    """Project a committed request and exact cessation proof for its executor.
 
-    with Session(get_engine()) as db:
-        agent = db.get(AgentSession, session_id)
-        if agent is None or not agent.local_session_id.startswith("factory:"):
-            return False
-        fields = agent.local_session_id.split(":")
-        if len(fields) != 4:
-            return False
-        records = [
-            row
-            for row in _requests(db, fields[1])
-            if row["identity"]["session_id"] == session_id
-            and row["identity"]["seq"] == seq
-            and row["identity"]["claim_owner"] == claim_owner
-            and row["identity"]["dispatch_count"] == dispatch_count
-        ]
-        if len(records) != 1:
-            return False
-        saved = records[0]["identity"]
-        # The request itself and the original UNKNOWN writer committed together.
-        turn = db.exec(
-            select(AgentTurn).where(
-                AgentTurn.session_id == session_id,
-                AgentTurn.seq == seq,
-            )
-        ).one_or_none()
-        if turn is None or turn.stop_reason != UNKNOWN_INVOCATION:
-            return False
-        recovery = json.loads(turn.usage_json or "{}").get("recovery", {})
-        binding_matches = agent.ember_session_id == saved["guest_id"]
-        if agent.ember_session_id is None:
-            # The exact proof owner may finish before this heartbeat sees the
-            # request. Its settlement retires the binding, not the old observer.
-            from swarm.factory_supervision import _records
+    Factory owns these audits; the session domain independently matches them
+    against its turn and current binding. No session rows cross this boundary.
+    """
+    records = [
+        row
+        for row in _requests(db, task_id)
+        if row["identity"]["session_id"] == session_id
+        and row["identity"]["seq"] == seq
+        and row["identity"]["claim_owner"] == claim_owner
+        and row["identity"]["dispatch_count"] == dispatch_count
+    ]
+    if len(records) != 1:
+        return None
+    saved = records[0]["identity"]
+    from swarm.factory_supervision import _records
 
-            binding_matches = any(
-                action == "stop_settled"
-                and detail.get("cessation_confirmed") is True
-                and all(
-                    detail.get("identity", {}).get(key) == saved[key]
-                    for key in (
-                        "session_id",
-                        "guest_id",
-                        "permit_id",
-                        "seq",
-                        "claim_owner",
-                        "dispatch_count",
-                    )
-                )
-                for action, detail in _records(db, records[0]["pin"])
+    cessation_confirmed = any(
+        action == "stop_settled"
+        and detail.get("cessation_confirmed") is True
+        and all(
+            detail.get("identity", {}).get(key) == saved[key]
+            for key in (
+                "session_id",
+                "guest_id",
+                "permit_id",
+                "seq",
+                "claim_owner",
+                "dispatch_count",
             )
-        return (
-            recovery.get("claim_owner") == claim_owner
-            and recovery.get("dispatch_count") == saved["dispatch_count"]
-            and agent.workflow_id == saved["workflow_id"]
-            and binding_matches
         )
+        for action, detail in _records(db, records[0]["pin"])
+    )
+    return {"identity": saved, "cessation_confirmed": cessation_confirmed}
 
 
 def process_attempt_stop(

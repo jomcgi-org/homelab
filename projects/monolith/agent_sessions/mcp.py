@@ -859,7 +859,7 @@ async def _execute_pending_message(session_id: int) -> None:
             try:
                 await asyncio.sleep(10)  # one third of the 30s lease
                 if factory_owned and claimed_dispatch_count is not None:
-                    from swarm.factory_attempt_stop import executor_stop_requested
+                    from agent_sessions.factory_stop import executor_stop_requested
 
                     if await asyncio.to_thread(
                         executor_stop_requested,

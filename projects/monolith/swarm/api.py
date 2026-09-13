@@ -28,3 +28,17 @@ def get_decision_reference(session, decision_id: int) -> dict | None:
         "node_key": row.node_key,
         "state": "open" if row.decided_at is None else "decided",
     }
+
+
+def read_factory_attempt_stop_request(
+    session,
+    task_id: str,
+    session_id: int,
+    seq: int,
+    claim_owner: str,
+    dispatch_count: int,
+) -> dict | None:
+    """Read committed factory stop authority and exact cessation evidence."""
+    from swarm.factory_attempt_stop import read_factory_attempt_stop_request as read
+
+    return read(session, task_id, session_id, seq, claim_owner, dispatch_count)

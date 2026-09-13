@@ -580,6 +580,12 @@ def test_operator_stop_fences_real_executor_settles_exact_proof_and_continues_sa
     assert settled["permits"][0]["state"] == "settled"
     assert settled["permits"][0]["outcome"] == "guest_cessation_confirmed"
     assert settled["session"]["ember_session_id"] is None
+    from agent_sessions.factory_stop import executor_stop_requested
+
+    original_claim = s.original["pending"][0]
+    assert executor_stop_requested(
+        s.sid, 1, original_claim["claimed_by_replica"], original_claim["dispatch_count"]
+    )
     assert settled["session"]["prior_ember_lineage_id"] == "lineage-preserved"
     original_run = graph.node_runs(s.task_id)[0]
     assert original_run["pin"] == s.pin
@@ -905,3 +911,85 @@ def test_exact_attempt_stop_preserves_other_task_and_its_claimed_session(running
         len(audits(s, "attempt_stop_requested")) == len(audits(s, "stop_settled")) == 1
     )
     assert_limits_preserved(s)
+
+
+def test_attempt_stop_uses_public_domain_boundaries():
+    import ast
+    import inspect
+    from agent_sessions import factory_stop
+    from swarm import factory_attempt_stop
+
+    for module, other_domain in (
+        (factory_stop, "swarm"),
+        (factory_attempt_stop, "agent_sessions"),
+    ):
+        tree = ast.parse(inspect.getsource(module))
+        imports = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+                imports.append(node.module)
+            elif isinstance(node, ast.Import):
+                imports.extend(alias.name for alias in node.names)
+        assert all(
+            name == f"{other_domain}.api"
+            for name in imports
+            if name.split(".")[0] == other_domain
+        )
+
+
+def test_session_stop_inspection_returns_only_serializable_session_identity(running):
+    from agent_sessions.api import inspect_factory_attempt_stop
+
+    s = running
+    with controls._locked_session() as (db, _control):
+        identity, pending = inspect_factory_attempt_stop(db, s.pin, s.sid)
+        assert pending is True
+        assert set(identity) == {
+            "session_id",
+            "permit_id",
+            "guest_id",
+            "workflow_id",
+            "seq",
+            "dispatch_count",
+            "claim_owner",
+            "dispatched_at",
+        }
+        assert json.loads(json.dumps(identity)) == identity
+        assert identity["guest_id"] == "s-original"
+    assert snapshot(s.engine, s.sid) == s.original
+
+
+@pytest.mark.parametrize(
+    "field", ["claim_owner", "dispatch_count", "guest_id", "workflow_id"]
+)
+def test_session_stop_fence_rejects_stale_identity_without_writing(running, field):
+    from agent_sessions.api import (
+        inspect_factory_attempt_stop,
+        fence_factory_attempt_stop,
+    )
+
+    s = running
+    with pytest.raises(ValueError, match="factory_attempt_changed"):
+        with controls._locked_session() as (db, _control):
+            identity, _pending = inspect_factory_attempt_stop(db, s.pin, s.sid)
+            identity[field] = -1 if field == "dispatch_count" else "changed"
+            fence_factory_attempt_stop(db, s.pin, s.sid, identity)
+    assert snapshot(s.engine, s.sid) == s.original
+    assert audits(s, "attempt_stop_requested") == []
+
+
+def test_session_stop_fence_is_idempotent_for_the_same_unknown_turn(running):
+    from agent_sessions.api import (
+        inspect_factory_attempt_stop,
+        fence_factory_attempt_stop,
+    )
+
+    s = running
+    with controls._locked_session() as (db, _control):
+        identity, _pending = inspect_factory_attempt_stop(db, s.pin, s.sid)
+    post_stop(s, request_body(s))
+    before = snapshot(s.engine, s.sid)
+    with controls._locked_session() as (db, _control):
+        terminal = fence_factory_attempt_stop(db, s.pin, s.sid, identity)
+        assert terminal["session_id"] == s.sid
+    assert snapshot(s.engine, s.sid) == before
