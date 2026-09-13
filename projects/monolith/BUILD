@@ -5896,6 +5896,36 @@ py_test(
     ],
 )
 
+# Hand-registered because grimoire is gazelle-excluded: ADR 014 evidence
+# verification, including resumability, corrections, nulling, and failure retry.
+py_test(
+    name = "grimoire_verify_test",
+    srcs = ["grimoire/verify_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_grimoire",
+        "@pip//pgvector",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+# Hand-registered because grimoire is gazelle-excluded: ADR 014 report-first
+# alias approvals and the transactional graph merge executor.
+py_test(
+    name = "grimoire_aliases_test",
+    srcs = ["grimoire/aliases_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_grimoire",
+        "@pip//pgvector",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
 py_test(
     name = "grimoire_hierarchy_backfill_test",
     srcs = ["grimoire/hierarchy_backfill_test.py"],

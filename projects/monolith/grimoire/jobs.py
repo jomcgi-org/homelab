@@ -1,19 +1,22 @@
-"""Scheduled job handlers for the grimoire ingest pipeline (spec #4.2).
+"""Scheduled job handlers for the Grimoire ingest and quality pipeline.
 
-Two daily, idempotent batch jobs wrap the async orchestrators in ``ingest.py``
-and ``extract.py``:
+Three daily, idempotent batch jobs wrap the Grimoire orchestrators:
 
   - ``grimoire_load_chunks``: build an S3 client + embedding client, then run
     ``ingest.load_chunks`` over the ``grimoire`` bucket.
   - ``grimoire_extract_entities``: build an OpenRouter client (skipping the run
     with a warning when OPENROUTER_API_KEY is unset, never crashing the
     scheduler) + embedding client, then run ``extract.extract_chunks``.
+  - ``grimoire_verify_entities``: run the trailing evidence verifier over
+    extracted structured values, resuming by entity and verifier version.
 
-Both run off-pod as Argo CronWorkflows: ``app/jobs_main.py`` exposes the
-``grimoire-load-chunks`` and ``grimoire-extract-entities`` subcommands (via the
+All three run off-pod as Argo CronWorkflows: ``app/jobs_main.py`` exposes the
+``grimoire-load-chunks``, ``grimoire-extract-entities``, and
+``grimoire-verify-entities`` subcommands (via the
 shared ``_run_job`` helper), and the ``jobs.cronWorkflows`` registry in
 chart/values.yaml schedules them (loader daily; extraction suspended /
-manual-only, since it costs OpenRouter money). Each is an ``async def`` keeping
+manual-only, since it costs OpenRouter money; verification suspended and run
+after extraction). Each is an ``async def`` keeping
 the scheduler Handler contract (``scheduler.api.Handler``: receives a Session,
 returns an optional next-run override), so ``_run_job`` opens a Session and
 awaits it directly. This module is excluded from the public binary (grimoire is
@@ -28,10 +31,10 @@ import json
 import logging
 import os
 
+import shared.inference
 from sqlmodel import Session, select
 
 from grimoire.models import KnowledgeChunk
-import shared.inference
 
 logger = logging.getLogger("monolith.grimoire.jobs")
 
@@ -41,6 +44,7 @@ DEFAULT_BUCKET = "grimoire"
 # as a gzipped ``output.json``. Mirrors ingest.DEFAULT_PREFIX.
 _BOOKS_PREFIX = "books/"
 DEFAULT_EXTRACT_LIMIT = 25
+DEFAULT_VERIFY_LIMIT = 25
 # Concurrent extract calls. Extraction is asynchronous bulk work, so it gets the
 # async slot budget of one decode slot and never makes an interactive caller
 # queue. See shared.inference.ASYNC_SLOT_BUDGET and
@@ -94,6 +98,22 @@ def _extract_concurrency() -> int:
             DEFAULT_EXTRACT_CONCURRENCY,
         )
         return DEFAULT_EXTRACT_CONCURRENCY
+    return value
+
+
+def _verify_limit() -> int:
+    raw = os.environ.get("GRIMOIRE_VERIFY_LIMIT", str(DEFAULT_VERIFY_LIMIT))
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if value < 1:
+        logger.warning(
+            "grimoire_verify_entities: invalid GRIMOIRE_VERIFY_LIMIT %r, using %d",
+            raw,
+            DEFAULT_VERIFY_LIMIT,
+        )
+        return DEFAULT_VERIFY_LIMIT
     return value
 
 
@@ -155,6 +175,41 @@ async def grimoire_extract_entities(session: Session) -> None:
         session, or_client, embed_client, limit=limit, concurrency=concurrency
     )
     logger.info("grimoire_extract_entities done: %s", summary)
+    return None
+
+
+async def grimoire_verify_entities(session: Session) -> None:
+    """Run the resumable evidence verifier over extracted structured fields."""
+    from grimoire.verify import VerifierClient, verify_entities
+
+    base_url = os.environ.get("GRIMOIRE_VERIFY_BASE_URL") or os.environ.get(
+        "GRIMOIRE_EXTRACT_BASE_URL", ""
+    )
+    api_key = (
+        os.environ.get("GRIMOIRE_VERIFY_API_KEY")
+        or os.environ.get("GRIMOIRE_EXTRACT_API_KEY")
+        or os.environ.get("OPENROUTER_API_KEY", "")
+    )
+    needs_key = (
+        (not base_url)
+        or "openrouter.ai" in base_url
+        or ("api.deepseek.com" in base_url)
+    )
+    if needs_key and not api_key:
+        logger.warning(
+            "grimoire_verify_entities: hosted endpoint but no key, skipping run"
+        )
+        return None
+    model = os.environ.get("GRIMOIRE_VERIFY_MODEL") or os.environ.get(
+        "GRIMOIRE_EXTRACT_MODEL"
+    )
+    client = VerifierClient(
+        api_key=api_key,
+        base_url=base_url or None,
+        model=model,
+    )
+    summary = await verify_entities(session, client, limit=_verify_limit())
+    logger.info("grimoire_verify_entities done: %s", summary)
     return None
 
 
