@@ -2889,6 +2889,7 @@ defmodule Embervm.SessionManagerTest do
 
     ctx =
       start_stack(
+        prime_fun: fake_prime_fun("vm-node-departed"),
         store_clock: fn -> Agent.get(store_clock, & &1) end,
         brick_status_fun: fn _dial ->
           %{health: :down, draining: false, registered: false, tombstoned: true, pod_uid: "pod-dead"}
@@ -2936,6 +2937,7 @@ defmodule Embervm.SessionManagerTest do
   test "dormant ownership follows the state-specific canonical node id" do
     ctx =
       start_stack(
+        prime_fun: fake_prime_fun("vm-owner"),
         brick_status_fun: fn _dial ->
           %{health: :down, draining: false, registered: false, tombstoned: true, pod_uid: "pod-dead"}
         end
@@ -2976,6 +2978,7 @@ defmodule Embervm.SessionManagerTest do
   test "a down but still registered owner does not evict dormant sessions" do
     ctx =
       start_stack(
+        prime_fun: fake_prime_fun("vm-registered"),
         brick_status_fun: fn _dial ->
           %{health: :down, draining: false, registered: true, tombstoned: false, pod_uid: "pod-dead"}
         end
@@ -2999,6 +3002,7 @@ defmodule Embervm.SessionManagerTest do
   test "a live peer reporting the exact dormant artifact preserves relight" do
     ctx =
       start_stack(
+        prime_fun: fake_prime_fun("vm-peer"),
         brick_status_fun: fn _dial ->
           %{health: :down, draining: false, registered: false, tombstoned: true, pod_uid: "pod-dead"}
         end
@@ -3054,6 +3058,7 @@ defmodule Embervm.SessionManagerTest do
 
     ctx =
       start_stack(
+        prime_fun: fake_prime_fun("vm-archive-failed"),
         archive_volume_fun: fn _channel, request ->
           send(parent, {:archive_failed, request.lineage_id})
           {:error, :store_unavailable}
