@@ -85,7 +85,7 @@ case "${1:-}" in
 	;;
 esac
 
-if [ -n "$MENHIR_MODULES" ] && [ "$DRIVER_PROTOCOL" != "menhir-stream-v2" ]; then
+if [ -n "$MENHIR_MODULES" ] && [ "$DRIVER_PROTOCOL" != "menhir-stream-v3" ]; then
 	echo "ocaml_compile: unsupported Menhir driver protocol: $DRIVER_PROTOCOL" >&2
 	exit 2
 fi

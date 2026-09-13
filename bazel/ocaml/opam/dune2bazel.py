@@ -754,10 +754,11 @@ def gen_library(
         # Bazel merges them into the selected execution platform, where the
         # BuildBuddy executor consumes them. Large generated parsers can exceed
         # the default action timeout and memory allocation. A memory-only
-        # request leaves CPU sizing to the scheduler and fits the Linux pool.
+        # request leaves CPU sizing to the scheduler while giving the largest
+        # Semgrep grammar enough space to construct its automaton.
         lines += [
             "    exec_properties = {",
-            '        "EstimatedMemory": "4GB",',
+            '        "EstimatedMemory": "10GB",',
             '        "default-timeout": "15m",',
             "    },",
         ]
