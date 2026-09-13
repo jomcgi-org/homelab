@@ -15,13 +15,16 @@ they are `public`, which skips the team check entirely. So `visibility` here is
 a publishing switch, not an access control, and treating it as one would be a
 mistake in either direction.
 
-Additive by construction, and deliberately so. A PUT to /servers/{id} REPLACES
-associated_tools rather than appending to it, so a run that sent only the tools
-it just computed would silently strip every association it did not know about,
-which is the whole catalogue. Every write here sends the union of what is there
-and what is missing, never removes an association, and never lowers a
-visibility it did not raise. The worst a bug can do is publish something that
-was going to be published by hand anyway.
+Additive by intent, and checked rather than assumed. A PUT to /servers/{id}
+REPLACES associated_tools, resolving what it is sent strictly by id and
+dropping anything else without an error. So a run that sent the wrong list
+would strip associations silently, and "additive" cannot be a property of the
+write alone. Every write here sends the union of the ids that are there and
+the ids that are missing, never lowers a visibility, and then reads the list
+back and fails the run if anything it sent is gone. The read-back is detection,
+not prevention: it turns a stripped catalogue into a failed job that names what
+was lost, rather than a quiet success. See existing_tool_ids for the one known
+gap, which is bounded to disabled tools.
 
 Stdlib only, matching reconcile_team_mapping.py, so the unit test runs without
 the gateway image.
