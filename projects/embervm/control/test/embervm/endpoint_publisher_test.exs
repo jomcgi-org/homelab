@@ -204,11 +204,11 @@ defmodule Embervm.EndpointPublisherTest do
     assert cluster.health_check == @health_check
   end
 
-  test "ADR embervm/018: cold render prefers a READY node's advertised activator over the CP address" do
+  test "ADR embervm/018: node renders use local activators while the edge prefers a READY node" do
     # The CP-injected activator is 10.1.1.1:7000 (start_stack default). A node that
     # advertises its OWN activator must be preferred, so the wake target is a node
     # address that survives a CP Recreate rather than the dying CP pod IP.
-    ctx = start_stack()
+    ctx = start_stack(edge_node_id: "embervm-serving-edge")
     serving_workload(ctx, "wl-a", "wl-a.example")
 
     # node-4 advertises but its base is still BUILDING; node-5 advertises AND is
@@ -236,14 +236,20 @@ defmodule Embervm.EndpointPublisherTest do
 
     :ok = EndpointPublisher.flush(ctx.pub)
 
-    # Every serving node receives the SAME global fallback: node-5's READY
-    # activator, never the CP-injected 10.1.1.1:7000 nor node-4's non-READY one.
-    puts = last_puts(ctx)
-    assert length(puts) == 2
+    # Each node keeps its own activator, which prevents remote node facts from
+    # changing its snapshot. The global edge can choose the READY advertiser.
+    puts = Map.new(last_puts(ctx), fn {node_id, desired} -> {node_id, desired} end)
+    assert Map.keys(puts) |> Enum.sort() == ["embervm-serving-edge", "node-4", "node-5"]
 
-    for {_node, desired} <- puts do
-      assert [cluster] = desired.clusters
-      assert cluster.endpoints == [%{ip: "10.99.0.5", port: 8081, disable_active_health_check: true}]
+    expected = %{
+      "node-4" => "10.99.0.4",
+      "node-5" => "10.99.0.5",
+      "embervm-serving-edge" => "10.99.0.5"
+    }
+
+    for {node_id, ip} <- expected do
+      assert [cluster] = puts[node_id].clusters
+      assert cluster.endpoints == [%{ip: ip, port: 8081, disable_active_health_check: true}]
       assert cluster.health_check == @health_check
     end
   end
