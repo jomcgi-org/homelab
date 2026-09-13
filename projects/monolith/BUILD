@@ -793,7 +793,7 @@ py_test(
     srcs = ["package_classification_test.py"],
     data = [
         "BUILD",
-        +"//projects/monolith/agent:BUILD",
+        "//projects/monolith/agent:BUILD",
         "//projects/monolith/agent_sessions:BUILD",
         "//projects/monolith/app:BUILD",
         "//projects/monolith/artifact:BUILD",
