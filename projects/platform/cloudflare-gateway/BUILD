@@ -1,5 +1,13 @@
 load("//bazel/helm:defs.bzl", "argocd_app", "helm_chart")
 
+# Schema pin for focused consumers that must stay within the installed Envoy
+# Gateway API. This is the exact CRD bundle deployed by this chart.
+filegroup(
+    name = "gateway_crds",
+    srcs = ["charts/gateway-crds-helm-1.8.3.tgz"],
+    visibility = ["//projects/monolith:__pkg__"],
+)
+
 helm_chart(
     name = "chart",
     lint = False,
