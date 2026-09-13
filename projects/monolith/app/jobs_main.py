@@ -730,6 +730,18 @@ def grimoire_extract_entities() -> None:
     _run_job("grimoire-extract-entities", "grimoire.jobs", "grimoire_extract_entities")
 
 
+@app.command("grimoire-verify-entities")
+def grimoire_verify_entities() -> None:
+    """Verify extracted structured fields against marker-bearing evidence.
+
+    One-shot of the resumable ADR 014 quality pass. It reads the verifier
+    version and per-run limit from GRIMOIRE_VERIFIER_VERSION and
+    GRIMOIRE_VERIFY_LIMIT, and reuses the configured extraction endpoint unless
+    GRIMOIRE_VERIFY_BASE_URL / GRIMOIRE_VERIFY_MODEL override it.
+    """
+    _run_job("grimoire-verify-entities", "grimoire.jobs", "grimoire_verify_entities")
+
+
 @app.command("grimoire-backfill-hierarchy")
 def grimoire_backfill_hierarchy() -> None:
     """Backfill section_hierarchy onto already-loaded grimoire chunks.

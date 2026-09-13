@@ -25,6 +25,9 @@ prototype's Firestore and polymorphic JSON model:
   type-specific queryable fields.
 - `knowledge_chunk`, `chunk_entity_mention`, `chunk_extraction`, `relationship`,
   and `embedding` provide corpus, graph, extraction, and retrieval state.
+- `entity_verification` records one evidence-grounded result per entity and
+  verifier version; `entity_alias_review` retains candidate evidence, human
+  decisions, and completed merge provenance.
 - `book` and `adventure` organize source material.
 - `campaign`, `player_character`, `game_session`, and `knowledge_grant` hold
   mutable play state and per-player knowledge visibility.
@@ -49,10 +52,29 @@ Batch commands in `app/jobs_main.py` invoke the domain jobs:
   loads books, adventures, chunks, and embeddings.
 - `grimoire-extract-entities` produces typed entities, mentions, and graph
   relationships.
+- `grimoire-verify-entities` checks structured values against marker-bearing
+  mention chunks. Unsupported values are nulled, grounded corrections cite the
+  supporting chunk, and failed calls remain unmarked for a later retry.
 - `grimoire-backfill-hierarchy` repairs or derives entity hierarchy data.
 
 The jobs are discrete read, compute, and write stages with recorded provenance.
 Bad inputs fail or dead-letter without partially publishing a book.
+
+## Post-extraction quality
+
+The private `/api/grimoire/quality/aliases` surface separates candidate
+generation, review, and execution. Candidates require matching entity type and
+source book, a strict short/full-name relation, and a co-mention chunk. Location
+candidates also require equal site keys. A reviewer must persist an explicit
+approve or reject decision before the merge endpoint can act.
+
+Each approved pair is merged in its own transaction. Mentions and both edge
+directions move to the longer-name survivor, natural-key collisions retain the
+row already attached to the survivor, typed and JSON detail use existing-key
+wins, and the twin is deleted only after the survivor is re-embedded. An
+embedding error rolls back the entire pair. A twin with a knowledge grant is
+rejected because this derived-data pass is not allowed to mutate or silently
+revoke campaign visibility state.
 
 ## Loom compatibility
 

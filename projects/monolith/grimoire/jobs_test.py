@@ -282,3 +282,57 @@ class TestExtractEntitiesHandler:
         _run(jobs.grimoire_extract_entities(session=None))
 
         assert captured["limit"] == jobs.DEFAULT_EXTRACT_LIMIT
+
+
+class TestVerifyEntitiesHandler:
+    def test_skips_hosted_verifier_without_key(self, monkeypatch):
+        called = {"verify": False}
+
+        async def spy_verify(session, client, limit):
+            called["verify"] = True
+            return {}
+
+        monkeypatch.setattr("grimoire.verify.verify_entities", spy_verify)
+        monkeypatch.delenv("GRIMOIRE_VERIFY_API_KEY", raising=False)
+        monkeypatch.delenv("GRIMOIRE_EXTRACT_API_KEY", raising=False)
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("GRIMOIRE_VERIFY_BASE_URL", raising=False)
+        monkeypatch.delenv("GRIMOIRE_EXTRACT_BASE_URL", raising=False)
+
+        result = _run(jobs.grimoire_verify_entities(session=None))
+
+        assert result is None
+        assert called["verify"] is False
+
+    def test_runs_keyless_verifier_with_version_and_limit(self, monkeypatch):
+        captured: dict = {}
+
+        class SpyVerifierClient:
+            def __init__(self, **kwargs):
+                captured["client_kwargs"] = kwargs
+                self.verifier_version = "v9"
+                self.model = kwargs["model"]
+
+        async def spy_verify(session, client, limit):
+            captured["client"] = client
+            captured["limit"] = limit
+            return {"entities_checked": 0}
+
+        monkeypatch.setattr("grimoire.verify.VerifierClient", SpyVerifierClient)
+        monkeypatch.setattr("grimoire.verify.verify_entities", spy_verify)
+        monkeypatch.delenv("GRIMOIRE_VERIFY_API_KEY", raising=False)
+        monkeypatch.delenv("GRIMOIRE_EXTRACT_API_KEY", raising=False)
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.setenv("GRIMOIRE_VERIFY_BASE_URL", "http://verifier:8080/v1")
+        monkeypatch.setenv("GRIMOIRE_VERIFY_MODEL", "verify-model")
+        monkeypatch.setenv("GRIMOIRE_VERIFY_LIMIT", "7")
+
+        result = _run(jobs.grimoire_verify_entities(session=None))
+
+        assert result is None
+        assert captured["limit"] == 7
+        assert captured["client_kwargs"] == {
+            "api_key": "",
+            "base_url": "http://verifier:8080/v1",
+            "model": "verify-model",
+        }
