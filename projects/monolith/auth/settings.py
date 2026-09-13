@@ -40,9 +40,7 @@ class AuthSettings:
             authentik_agent_jwks_url=os.getenv("AUTH_AUTHENTIK_AGENT_JWKS_URL", ""),
             authentik_agent_issuer=os.getenv("AUTH_AUTHENTIK_AGENT_ISSUER", ""),
             authentik_agent_audience=os.getenv("AUTH_AUTHENTIK_AGENT_AUDIENCE", ""),
-            cloudflare_access_jwks_url=os.getenv(
-                "AUTH_CLOUDFLARE_ACCESS_JWKS_URL", ""
-            ),
+            cloudflare_access_jwks_url=os.getenv("AUTH_CLOUDFLARE_ACCESS_JWKS_URL", ""),
             cloudflare_access_issuer=os.getenv("AUTH_CLOUDFLARE_ACCESS_ISSUER", ""),
         )
 
@@ -68,6 +66,4 @@ class AuthSettings:
 
     @property
     def cloudflare_access_is_configured(self) -> bool:
-        return bool(
-            self.cloudflare_access_jwks_url and self.cloudflare_access_issuer
-        )
+        return bool(self.cloudflare_access_jwks_url and self.cloudflare_access_issuer)
