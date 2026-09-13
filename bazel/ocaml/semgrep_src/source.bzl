@@ -467,6 +467,7 @@ OVERLAYS = [
     "libs/git_wrapper/Git_wrapper.mli",
     "src/target/dune",
     "src/spacegrep/src/bin/dune",
+    "languages/ocaml/menhir/dune",
     "src/engine/dune",
     "src/fixing/dune",
     "src/main_core/dune",

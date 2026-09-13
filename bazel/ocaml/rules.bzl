@@ -194,9 +194,17 @@ def _ocaml_library_impl(ctx):
     args.add("--cmxa-out", cmxa.path)
     args.add("--a-out", a_lib.path)
 
+    # Generated parser modules can be large enough for ocamlopt to exceed the
+    # default remote allocation. Reserve four BuildBuddy compute units for
+    # Menhir libraries, which covers both generation and native compilation.
+    execution_requirements = {}
+    if ctx.attr.menhir:
+        execution_requirements["EstimatedComputeUnits"] = "4"
+
     ctx.actions.run(
         executable = ctx.executable._driver,
         arguments = [args],
+        execution_requirements = execution_requirements,
         inputs = depset(ctx.files.srcs + ctx.files.c_srcs + ctx.files.c_headers + ctx.files.preprocess_data + _tool_files(ctx), transitive = [dep.includes, dep.cmxa, dep.a, cc.headers, cc.archives, tc.sysroot_files, tc.bootstrap_files]),
         outputs = [objs_dir, cmxa, a_lib],
         mnemonic = "OcamlLibrary",
