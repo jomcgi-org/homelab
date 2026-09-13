@@ -10,7 +10,9 @@ exports_files([
     "check-missed-bump.sh",
     "helm-assert-annotations.sh",
     "helm-template-test.sh",
+    "lint.sh",
     "push.sh.tpl",
+    "render.sh",
     "render-manifests.sh",
     "write-back-versions.sh",
 ])
@@ -25,6 +27,18 @@ sh_test(
     name = "check_missed_bump_test",
     srcs = ["check-missed-bump_test.sh"],
     data = [":check-missed-bump.sh"],
+)
+
+sh_test(
+    name = "standalone_lint_test",
+    srcs = ["lint_test.sh"],
+    data = [":lint.sh"],
+)
+
+sh_test(
+    name = "standalone_render_test",
+    srcs = ["render_test.sh"],
+    data = [":render.sh"],
 )
 
 sh_test(
