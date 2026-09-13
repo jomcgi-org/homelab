@@ -522,10 +522,10 @@ defmodule Embervm.SessionManager do
       # consistent, so keep the dial that actually created or restarted the VM for
       # bank and destroy when its live-vm fact is temporarily absent.
       session_dials: %{},
-      # session_id -> %{node_id, metadata} for a final-departure eviction whose
-      # durable op-log append failed. The registry runtime may already be gone,
-      # so the manager owns a bounded-cadence re-drive until the row terminalizes
-      # or fresh node evidence makes the departure inapplicable.
+      # session_id -> %{node_id, metadata} for a final-departure check whose
+      # registry lookup or durable terminal append failed. The registry runtime
+      # may already be gone, so the manager owns a bounded-cadence re-drive until
+      # the row terminalizes or fresh node evidence makes departure inapplicable.
       departure_retries: %{},
       departure_retry_interval_ms:
         Keyword.get(opts, :departure_retry_interval_ms, @default_departure_retry_interval_ms),
@@ -2072,25 +2072,34 @@ defmodule Embervm.SessionManager do
         dials -> safe_brick_statuses(state, dials)
       end
 
-    dormant =
-      Enum.filter(dormant_candidates, fn session ->
-        dial = Map.get(dormant_dials, session.session_id)
+    Enum.reduce(dormant_candidates, {transient_count, state}, fn session, {count, acc} ->
+      dial = Map.get(dormant_dials, session.session_id)
 
-        dormant_owner_departed?(state, dial, statuses) and
-          not dormant_relight_target?(state, session, node_id, metadata)
-      end)
+      case dormant_departure_evidence(acc, dial, statuses) do
+        :unknown ->
+          {count, retain_departure_retry(acc, session, node_id, metadata)}
 
-    Enum.reduce(dormant, {transient_count, state}, fn session, {count, acc} ->
-      {reply, acc} =
-        case session.state do
-          :banked -> evict_banked_with_reply(acc, session, :node_gone)
-          :parked -> evict_parked_with_reply(acc, session, :node_gone)
-        end
+        :present ->
+          {count, clear_departure_retry(acc, session.session_id)}
 
-      acc = departure_terminalization_result(acc, session, node_id, metadata, reply)
+        :departed ->
+          if dormant_relight_target?(acc, session, node_id, metadata) do
+            {count, clear_departure_retry(acc, session.session_id)}
+          else
+            {reply, acc} =
+              case session.state do
+                :banked -> evict_banked_with_reply(acc, session, :node_gone)
+                :parked -> evict_parked_with_reply(acc, session, :node_gone)
+              end
 
-      newly_counted = match?({:ok, _}, reply) and not MapSet.member?(transient_ids, session.session_id)
-      {count + if(newly_counted, do: 1, else: 0), acc}
+            acc = departure_terminalization_result(acc, session, node_id, metadata, reply)
+
+            newly_counted =
+              match?({:ok, _}, reply) and not MapSet.member?(transient_ids, session.session_id)
+
+            {count + if(newly_counted, do: 1, else: 0), acc}
+          end
+      end
     end)
   end
 
@@ -2136,10 +2145,17 @@ defmodule Embervm.SessionManager do
 
   defp dial_on_node?(_dial, _node_id), do: false
 
-  defp dormant_owner_departed?(_state, nil, _statuses), do: false
+  defp dormant_departure_evidence(_state, nil, _statuses), do: :unknown
 
-  defp dormant_owner_departed?(state, dial, statuses) do
-    not node_reporting?(state, dial) and registry_confirms_gone?(Map.get(statuses, dial, %{}))
+  defp dormant_departure_evidence(state, dial, statuses) do
+    status = Map.get(statuses, dial, %{})
+
+    cond do
+      node_reporting?(state, dial) -> :present
+      registry_confirms_gone?(status) -> :departed
+      Map.get(status, :registered) == true -> :present
+      true -> :unknown
+    end
   end
 
   # Capacity contains only healthy, dispatchable peers. Preserve dormant warmth
@@ -2199,7 +2215,7 @@ defmodule Embervm.SessionManager do
     is_binary(node_id) and node_id != "" and is_binary(snapshot_ref) and snapshot_ref != "" and
       match?(
         {:ok, _dial_id},
-        restorable_bundle_dial(state, session, node_id, snapshot_ref, instance_facts)
+        restorable_bundle_dial(state, session, node_id, instance_facts)
       )
   end
 
@@ -2207,11 +2223,15 @@ defmodule Embervm.SessionManager do
 
   defp departure_terminalization_result(state, session, _node_id, _metadata, {:ok, _}) do
     state
-    |> update_in([:departure_retries], &Map.delete(&1, session.session_id))
+    |> clear_departure_retry(session.session_id)
     |> drain_relight_waiters(session.session_id, {:error, {:gone, "node_gone"}})
   end
 
   defp departure_terminalization_result(state, session, node_id, metadata, _error) do
+    retain_departure_retry(state, session, node_id, metadata)
+  end
+
+  defp retain_departure_retry(state, session, node_id, metadata) do
     if Map.has_key?(state.departure_retries, session.session_id) do
       state
     else
@@ -2223,6 +2243,10 @@ defmodule Embervm.SessionManager do
 
       put_in(state.departure_retries[session.session_id], %{node_id: node_id, metadata: metadata})
     end
+  end
+
+  defp clear_departure_retry(state, session_id) do
+    update_in(state.departure_retries, &Map.delete(&1, session_id))
   end
 
   defp notify_session_brick_gone(state, session_id, metadata) do
@@ -3195,13 +3219,7 @@ defmodule Embervm.SessionManager do
            is_binary(node_id) and node_id != "" and is_binary(snapshot_ref) and snapshot_ref != "",
          false <- bundle_local?(state, node_id, snapshot_ref),
          {:ok, dial_id} <-
-           restorable_bundle_dial(
-             state,
-             session,
-             node_id,
-             snapshot_ref,
-             NodeCapacity.all(state.capacity_table)
-           ) do
+           restorable_bundle_dial(state, session, node_id, NodeCapacity.all(state.capacity_table)) do
       {:restore, node_id, dial_id, snapshot_ref}
     else
       _ -> :skip
@@ -3212,28 +3230,27 @@ defmodule Embervm.SessionManager do
   # base-ready, memory-eligible placement predicate, and the selected instance
   # itself must report store reachability. This is stronger than generic node
   # health and is shared with final-departure recovery qualification.
-  defp restorable_bundle_dial(state, session, node_id, snapshot_ref, candidate_facts) do
+  defp restorable_bundle_dial(state, session, node_id, candidate_facts) do
     need_mib =
       case WorkloadCatalog.fetch(state.catalog_table, Map.get(session, :workload)) do
         {:ok, entry} -> Map.get(entry, :mem_mib) || 512
         _ -> 512
       end
 
-    case Embervm.WakeInstance.select(node_id,
+    case Embervm.WakeInstance.cold_candidates(node_id,
            table: state.capacity_table,
            workload: Map.get(session, :workload),
-           need_mib: need_mib,
-           warmth_key: :session_snapshots,
-           warmth_ref: snapshot_ref
+           need_mib: need_mib
          ) do
-      {:ok, dial_id} ->
-        if Enum.any?(candidate_facts, fn fact ->
-             Map.get(fact, :configured_id) == node_id and fact_dial_id(fact) == dial_id and
-               Map.get(fact, :store_reachable, false) == true
-           end) do
-          {:ok, dial_id}
-        else
-          {:error, :store_unreachable}
+      {:ok, dial_ids} ->
+        case Enum.find(dial_ids, fn dial_id ->
+               Enum.any?(candidate_facts, fn fact ->
+                 Map.get(fact, :configured_id) == node_id and fact_dial_id(fact) == dial_id and
+                   Map.get(fact, :store_reachable, false) == true
+               end)
+             end) do
+          nil -> {:error, :store_unreachable}
+          dial_id -> {:ok, dial_id}
         end
 
       {:error, reason} ->
