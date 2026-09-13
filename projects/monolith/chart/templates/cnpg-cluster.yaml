@@ -137,6 +137,22 @@ spec:
           name: {{ .Values.postgres.clientRoles.publicWriter.passwordSecret | quote }}
         {{- end }}
         comment: "Public-tier write role (ADR 005); GRANTs in Atlas migration"
+      # Routed Grimoire transactions SET LOCAL ROLE to this identity. The app
+      # remains the trusted schema/corpus owner but does not inherit this role;
+      # CNPG owns the membership because the app-role Atlas connection cannot
+      # create or grant database roles.
+      - name: grimoire_campaign_access
+        ensure: present
+        login: false
+        inherit: false
+        comment: "RLS-scoped Grimoire campaign request identity (#3909)"
+      - name: app
+        ensure: present
+        login: true
+        inherit: false
+        inRoles:
+          - grimoire_campaign_access
+        comment: "Trusted monolith schema owner and campaign provisioner"
   # Hosts the monolith database (plus the default postgres maintenance db);
   # the temporal/temporal_visibility/lakehouse databases were decommissioned
   # 2026-06-14. The prior 256Mi limit OOMKilled the instance 359 times. 1Gi

@@ -1,6 +1,7 @@
 """SQLModel definitions for the grimoire schema.
 
-Mirrors chart/migrations/20260703070000_grimoire_schema.sql - keep in sync.
+Mirrors chart/migrations/20260703070000_grimoire_schema.sql and the campaign
+split in 20260912110000_grimoire_campaign_schemas.sql, keep them in sync.
 CTI entity spine + typed detail tables per the Grimoire hot-tier schema
 (projects/monolith/ARCHITECTURE.md, section 6); jsonb reserved for
 irregular nested display-only payloads (speed/ability_scores/actions/traits,
@@ -494,6 +495,10 @@ class Campaign(SQLModel, table=True):
         default_factory=lambda: str(uuid.uuid4()),
         sa_column=_uuid_column(primary_key=True),
     )
+    # Trusted routing metadata. The database constrains this to the canonical
+    # ``grimoire_campaign_<uuid-without-dashes>`` value; model_post_init keeps
+    # direct constructors used by jobs/tests aligned with the HTTP create path.
+    schema_name: str = ""
     name: str
     dm_name: str | None = None
     created_at: datetime = Field(
@@ -501,10 +506,14 @@ class Campaign(SQLModel, table=True):
         sa_column=Column(DateTime(timezone=True)),
     )
 
+    def model_post_init(self, __context, /) -> None:
+        if not self.schema_name and self.id:
+            self.schema_name = f"grimoire_campaign_{uuid.UUID(self.id).hex}"
+
 
 class PlayerCharacter(SQLModel, table=True):
     __tablename__ = "player_character"
-    __table_args__ = {"schema": "grimoire", "extend_existing": True}
+    __table_args__ = {"schema": "campaign", "extend_existing": True}
 
     # Generated app-side (not relying on the migration's DEFAULT
     # gen_random_uuid(), which SQLite create_all fixtures cannot run) so the
@@ -531,7 +540,7 @@ class GameSession(SQLModel, table=True):
             "status IN ('active', 'paused', 'ended')",
             name="game_session_status_chk",
         ),
-        {"schema": "grimoire", "extend_existing": True},
+        {"schema": "campaign", "extend_existing": True},
     )
 
     # Generated app-side (not relying on the migration's DEFAULT
@@ -572,7 +581,7 @@ class KnowledgeGrant(SQLModel, table=True):
             "player_character_id",
             name="knowledge_grant_entity_id_player_character_id_key",
         ),
-        {"schema": "grimoire", "extend_existing": True},
+        {"schema": "campaign", "extend_existing": True},
     )
 
     # Generated app-side (not relying on the migration's DEFAULT
@@ -589,11 +598,40 @@ class KnowledgeGrant(SQLModel, table=True):
         sa_column=_uuid_column(nullable=False, fk="grimoire.entity.id"),
     )
     player_character_id: str = Field(
-        sa_column=_uuid_column(nullable=False, fk="grimoire.player_character.id"),
+        sa_column=_uuid_column(nullable=False, fk="campaign.player_character.id"),
     )
     grant_scope: GrantScope = Field(sa_column=Column(String, nullable=False))
     revealed_details: dict | None = Field(default=None, sa_column=Column(_JSONB))
     granted_in_session: str | None = Field(default=None, sa_column=_uuid_column())
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True)),
+    )
+
+
+class SessionTranscript(SQLModel, table=True):
+    """One server-authoritative message from a campaign game session."""
+
+    __tablename__ = "session_transcript"
+    __table_args__ = (
+        CheckConstraint(
+            "role IN ('player', 'dm', 'assistant', 'system')",
+            name="session_transcript_role_chk",
+        ),
+        CheckConstraint("tokens >= 0", name="session_transcript_tokens_nonneg_chk"),
+        {"schema": "campaign", "extend_existing": True},
+    )
+
+    id: str | None = Field(
+        default_factory=lambda: str(uuid.uuid4()),
+        sa_column=_uuid_column(primary_key=True),
+    )
+    game_session_id: str = Field(
+        sa_column=_uuid_column(nullable=False, fk="campaign.game_session.id"),
+    )
+    role: str = Field(sa_column=Column(String, nullable=False))
+    content: str
+    tokens: int = 0
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         sa_column=Column(DateTime(timezone=True)),
