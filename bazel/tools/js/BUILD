@@ -39,4 +39,5 @@ bzl_library(
     name = "node_modules_tar",
     srcs = ["node_modules_tar.bzl"],
     visibility = ["//visibility:public"],
+    deps = ["@aspect_rules_js//js:providers"],
 )
