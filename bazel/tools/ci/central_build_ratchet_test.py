@@ -136,6 +136,51 @@ def test_concatenated_list_variables_check_each_pattern():
 
 
 @pytest.mark.parametrize(
+    "mutation",
+    [
+        'PATTERNS.append("chat/**/*.py")',
+        'PATTERNS += ["chat/**/*.py"]',
+    ],
+)
+def test_mutated_glob_list_is_rejected(mutation):
+    additions = ratchet.new_findings(
+        LEGACY,
+        LEGACY
+        + 'PATTERNS = ["*.py"]\n'
+        + f"{mutation}\n"
+        + 'filegroup(name = "probe", srcs = glob(PATTERNS))\n',
+    )
+
+    assert [(finding.kind, finding.value) for finding in additions] == [
+        ("dynamic glob", mutation.replace('"', "'"))
+    ]
+
+
+def test_mutated_glob_list_alias_is_rejected():
+    additions = ratchet.new_findings(
+        LEGACY,
+        LEGACY
+        + 'PATTERNS = ["*.py"]\n'
+        + "ALIASED_PATTERNS = PATTERNS\n"
+        + 'PATTERNS.append("chat/**/*.py")\n'
+        + 'filegroup(name = "probe", srcs = glob(ALIASED_PATTERNS))\n',
+    )
+
+    assert [(finding.kind, finding.value) for finding in additions] == [
+        ("dynamic glob", "PATTERNS.append('chat/**/*.py')")
+    ]
+
+
+def test_later_mutation_does_not_change_an_earlier_glob():
+    _assert_allowed(
+        LEGACY
+        + 'PATTERNS = ["*.py"]\n'
+        + 'filegroup(name = "probe", srcs = glob(PATTERNS))\n'
+        + 'PATTERNS.append("chat/**/*.py")\n'
+    )
+
+
+@pytest.mark.parametrize(
     "setup",
     [
         "",

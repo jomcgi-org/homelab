@@ -28,6 +28,16 @@ from typing import Sequence
 
 CENTRAL_BUILD = "projects/monolith/BUILD"
 _GAZELLE_EXCLUDE = re.compile(r"^\s*#\s*gazelle:exclude(?:\s+(?P<pattern>.*?))?\s*$")
+_MUTATING_SEQUENCE_METHODS = {
+    "append",
+    "clear",
+    "extend",
+    "insert",
+    "pop",
+    "remove",
+    "reverse",
+    "sort",
+}
 
 
 class RatchetError(RuntimeError):
@@ -217,6 +227,35 @@ def _glob_findings(
     return findings
 
 
+def _invalidate_variable_and_aliases(
+    name: str,
+    mutation: ast.AST,
+    variables: dict[str, _ExpressionValue],
+) -> None:
+    """Fail closed for a mutated value and names assigned as direct aliases."""
+    previous = variables.get(name)
+    unresolved = _ExpressionValue(
+        kind=None,
+        unresolved=(_UnresolvedValue(ast.unparse(mutation), mutation.lineno),),
+    )
+    if previous is None:
+        variables[name] = unresolved
+        return
+    for variable_name, value in tuple(variables.items()):
+        if value is previous:
+            variables[variable_name] = unresolved
+
+
+def _mutated_variable(call: ast.Call) -> str | None:
+    if (
+        isinstance(call.func, ast.Attribute)
+        and isinstance(call.func.value, ast.Name)
+        and call.func.attr in _MUTATING_SEQUENCE_METHODS
+    ):
+        return call.func.value.id
+    return None
+
+
 def scan_central_build(content: str) -> list[Finding]:
     """Return forbidden-pattern occurrences from a central BUILD snapshot."""
     findings = []
@@ -240,27 +279,30 @@ def scan_central_build(content: str) -> list[Finding]:
     variables: dict[str, _ExpressionValue] = {}
     for statement in tree.body:
         if isinstance(statement, ast.Assign):
-            value = _expression_value(statement.value, variables)
-            for target in statement.targets:
-                if isinstance(target, ast.Name):
-                    variables[target.id] = value
-        elif isinstance(statement, ast.AnnAssign) and isinstance(
-            statement.target, ast.Name
-        ):
-            variables[statement.target.id] = _expression_value(
-                statement.value, variables
-            )
-
-    for statement in tree.body:
-        if isinstance(statement, ast.Assign):
             context = "assignment:" + ",".join(
                 _assignment_name(target) for target in statement.targets
             )
             findings.extend(_glob_findings(statement.value, context, variables))
+            value = _expression_value(statement.value, variables)
+            for target in statement.targets:
+                if isinstance(target, ast.Name):
+                    variables[target.id] = value
             continue
         if isinstance(statement, ast.AnnAssign):
             context = f"assignment:{_assignment_name(statement.target)}"
             findings.extend(_glob_findings(statement.value, context, variables))
+            if isinstance(statement.target, ast.Name):
+                variables[statement.target.id] = _expression_value(
+                    statement.value, variables
+                )
+            continue
+        if isinstance(statement, ast.AugAssign):
+            context = f"assignment:{_assignment_name(statement.target)}"
+            findings.extend(_glob_findings(statement.value, context, variables))
+            if isinstance(statement.target, ast.Name):
+                _invalidate_variable_and_aliases(
+                    statement.target.id, statement, variables
+                )
             continue
         if not isinstance(statement, ast.Expr) or not isinstance(
             statement.value, ast.Call
@@ -286,6 +328,9 @@ def scan_central_build(content: str) -> list[Finding]:
                 continue
             context = f"target:{rule_kind}:{target_name}:{keyword.arg}"
             findings.extend(_glob_findings(keyword.value, context, variables))
+        mutated_variable = _mutated_variable(call)
+        if mutated_variable is not None:
+            _invalidate_variable_and_aliases(mutated_variable, call, variables)
 
     return findings
 
