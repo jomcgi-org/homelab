@@ -1275,10 +1275,7 @@ defmodule Embervm.SessionManagerTest do
         {:ok, %{}}
       end
     )
-    created =
-      create_persistence_session(ctx,
-        persistence: %{memory: true, filesystem: %{enabled: false}}
-      )
+    created = create_persistence_session(ctx)
     session_id = created.session_id
 
     {:ok, created_row} = SessionStore.get(ctx.store, created.session_id)
@@ -2104,7 +2101,9 @@ defmodule Embervm.SessionManagerTest do
       create_persistence_session(ctx,
         persistence: %{memory: true, filesystem: %{enabled: false}}
       )
-    park_session(ctx, created)
+
+    assert :ok = SessionManager.bank(ctx.mgr, created.session_id)
+    _banked = wait_for_state(ctx, created.session_id, :banked)
 
     assert {:error, {:relight_failed, {:cpu_sku_mismatch, ^message}}} =
              SessionManager.invoke(ctx.mgr, created.session_id, %{body: "wake"})
@@ -2112,7 +2111,7 @@ defmodule Embervm.SessionManagerTest do
     assert_receive {:session_restore_sku,
                     %Embervm.Node.V1.CpuSku{vendor: "amd", template: "amd-default"}}
     assert Agent.get(relights, & &1) == 0
-    assert {:ok, %{state: :parked}} = SessionStore.get(ctx.store, created.session_id)
+    assert {:ok, %{state: :banked}} = SessionStore.get(ctx.store, created.session_id)
   end
 
   test "encrypted workspace restore carries a capability scoped by the manager" do

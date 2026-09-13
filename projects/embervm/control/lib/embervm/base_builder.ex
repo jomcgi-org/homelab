@@ -574,6 +574,7 @@ defmodule Embervm.BaseBuilder do
 
   @impl true
   def handle_cast({:reconcile, %{name: name} = desc}, state) do
+    state = record_admission(state, desc)
     state = put_in(state.admissions[name], desc)
 
     if state.admission_drain_scheduled do
@@ -732,6 +733,14 @@ defmodule Embervm.BaseBuilder do
   end
 
   def handle_call(:status, _from, state) do
+    # A caller can send a reconcile cast and then immediately issue this call.
+    # Messages from the caller are ordered with each other, but the drain that
+    # the server sent to itself can sit behind the call in the mailbox. Fold the
+    # standing queue into the status snapshot so the existing read-after-cast
+    # contract remains deterministic. The already-enqueued drain message then
+    # becomes a harmless empty pass.
+    state = drain_admissions(state)
+
     workloads =
       for {name, w} <- state.workloads, into: %{} do
         {name,
@@ -788,9 +797,7 @@ defmodule Embervm.BaseBuilder do
   # enqueue schedules its own drain, and the drain coalesces repeated updates to
   # the newest descriptor for a workload.
   def handle_info(:drain_admissions, state) do
-    admissions = state.admissions
-    state = %{state | admissions: %{}, admission_drain_scheduled: false}
-    {:noreply, Enum.reduce(admissions, state, fn {_name, desc}, acc -> reconcile_desc(acc, desc) end)}
+    {:noreply, drain_admissions(state)}
   end
 
   # Base-durability PR-2: a hydrate worker finished (hydrated, fell back, or
@@ -850,6 +857,31 @@ defmodule Embervm.BaseBuilder do
   end
 
   def handle_info(_msg, state), do: {:noreply, state}
+
+  defp drain_admissions(state) do
+    admissions = state.admissions
+    state = %{state | admissions: %{}, admission_drain_scheduled: false}
+    Enum.reduce(admissions, state, fn {_name, desc}, acc -> reconcile_desc(acc, desc) end)
+  end
+
+  # Record desired state synchronously with admission, but leave every
+  # preparation side effect to the standing queue. This preserves the existing
+  # read-after-cast and capacity-redrive contracts for callers that immediately
+  # inspect or update the workload before the server's self-sent drain is
+  # received. Node selection is an ETS-only projection and no store or daemon
+  # RPC is issued here.
+  defp record_admission(state, %{name: name} = desc) do
+    prev = Map.get(state.workloads, name)
+    node_id = placement(state, prev, Map.get(desc, :mem_mib) || 0)
+    w = merge_desc(prev, desc, node_id)
+    state = put_in(state.workloads[name], w)
+
+    if node_id == nil do
+      write_base_status(state, w, {:pending, :no_node})
+    else
+      state
+    end
+  end
 
   # Best-effort: stop orphaned build workers from outliving the GenServer that
   # owns their gRPC connections. Not load-bearing (a monitored worker exits when
@@ -2422,10 +2454,14 @@ defmodule Embervm.BaseBuilder do
     end
   end
 
-  # Is a build for this signature already queued or in flight on the node? Avoids
-  # enqueuing a duplicate while an identical build is pending.
+  # Is a build for this logical base key already queued or in flight on any
+  # builder with the target CPU SKU? Placement can move while a build is running
+  # (for example when a larger brick joins). A node-local check would then start
+  # the same base on the replacement even though the original builder still owns
+  # it. Different SKUs remain independent preparation keys and may build in
+  # parallel.
   defp already_targeting?(state, node_id, name, sig) do
-    case state.nodes[node_id] do
+    case {state.nodes[node_id], sku_id_for_instance(state, node_id)} do
       # No live node entry, so there is nothing this workload could already be
       # targeting: answer false and let the caller fall through to normal
       # placement. `retry_workload/2` reaches here with `w.node_id`, which is nil
@@ -2433,13 +2469,36 @@ defmodule Embervm.BaseBuilder do
       # departs, and a workload that has never placed starts nil), and the old
       # unguarded `state.nodes[node_id].building` raised KeyError on that, killing
       # the builder and wiping every snapshot_ref it held (issue #4105).
-      nil ->
+      {nil, _sku_id} ->
         false
 
-      n ->
+      {n, ""} ->
+        # Legacy/fact-less builders have no compatibility identity to compare
+        # globally. Preserve the safe historical node-local guard until a
+        # capacity fact supplies one.
         building_this = n.building == name and worker_signature(state, node_id) == sig
         queued = name in n.queue
         building_this or queued
+
+      {_n, sku_id} ->
+        worker_targeting? =
+          Enum.any?(state.workers, fn {_pid, meta} ->
+            meta.name == name and meta.signature == sig and meta.cpu_sku_id == sku_id
+          end)
+
+        queued_for_sku? =
+          Enum.any?(state.nodes, fn {queued_node_id, queued_node} ->
+            name in queued_node.queue and sku_id_for_instance(state, queued_node_id) == sku_id
+          end)
+
+        worker_targeting? or queued_for_sku?
+    end
+  end
+
+  defp sku_id_for_instance(state, node_id) do
+    case find_capacity_fact(state.capacity_table, node_id) do
+      {:ok, fact} -> cpu_sku_id(fact)
+      :error -> ""
     end
   end
 
@@ -2692,7 +2751,6 @@ defmodule Embervm.BaseBuilder do
          w,
          %{
            signature: built_sig,
-           cpu_vendor: vendor,
            cpu_sku_id: sku_id,
            node_id: build_node_id
          },
@@ -2750,8 +2808,7 @@ defmodule Embervm.BaseBuilder do
         Map.put(w.vendor_built, sku_id, %{
           signature: built_sig,
           ref: resp.snapshot_ref,
-          digest: resp.image_digest,
-          cpu_vendor: vendor
+          digest: resp.image_digest
         })
       end
 

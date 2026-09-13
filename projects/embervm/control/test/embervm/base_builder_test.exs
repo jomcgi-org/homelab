@@ -4517,6 +4517,58 @@ defmodule Embervm.BaseBuilderTest do
     assert length(Agent.get(calls, & &1)) == 2
   end
 
+  test "a same-SKU placement move does not start a second preparation" do
+    table = new_cap_table()
+    put_brick(table, "node-a", "pod-a", cpu_vendor: "amd", cpu_template: "amd-v1", mem_budget: 4_096)
+    test_pid = self()
+
+    build_fun = fn :fake_channel, req ->
+      send(test_pid, {:same_sku_build, req.cpu_sku, self()})
+
+      receive do
+        :finish -> {:ok, resp("base-amd-v1")}
+      end
+    end
+
+    builder =
+      start_builder(
+        nodes: [%{id: "node-a/pod-a", address: "a"}],
+        capacity_table: table,
+        build_fun: build_fun
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc())
+
+    assert_receive {:same_sku_build,
+                    %Embervm.Node.V1.CpuSku{vendor: "amd", template: "amd-v1"}, worker},
+                   1_000
+
+    # The larger same-SKU builder becomes the new placement target while the
+    # first build is still in flight. The preparation key is unchanged, so the
+    # standing queue must keep one owner rather than starting on both nodes.
+    put_brick(table, "node-b", "pod-b",
+      cpu_vendor: "amd",
+      cpu_template: "amd-v1",
+      mem_budget: 8_192
+    )
+
+    :ok = BaseBuilder.add_node(builder, "node-b/pod-b", "b")
+    :ok = BaseBuilder.reconcile(builder, desc(%{generation: 2}))
+    _ = :sys.get_state(builder)
+    refute_receive {:same_sku_build, _, _}, 100
+
+    send(worker, :finish)
+
+    assert_eventually(fn ->
+      match?(
+        %{ref: "base-amd-v1"},
+        BaseBuilder.status(builder).workloads["w"].vendor_built["amd/amd-v1"]
+      )
+    end)
+
+    refute_receive {:same_sku_build, _, _}, 100
+  end
+
   # -- per-vendor repair enqueue (arms coverage bookkeeping into build decisions) --
   #
   # PR #4993 added vendor_built/fleet_vendors/vendor_needs_build? and the
