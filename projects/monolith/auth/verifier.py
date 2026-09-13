@@ -52,8 +52,7 @@ class AuthentikStandingVerifier:
             self._settings.identity_is_configured
             if self._require_audience
             else bool(
-                self._settings.authentik_jwks_url
-                and self._settings.authentik_issuer
+                self._settings.authentik_jwks_url and self._settings.authentik_issuer
             )
         )
         if not configured:
