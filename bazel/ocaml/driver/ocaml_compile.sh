@@ -15,6 +15,7 @@ set -eu
 # Bazel writes the action arguments one per line. Expanding them here keeps
 # very large transitive OCaml include closures off the process command line,
 # which leaves compiler diagnostics visible in failed-action output.
+echo "ocaml_compile: driver started" >&2
 case "${1:-}" in
 --args-file=*)
 	ARGS_FILE="${1#--args-file=}"
@@ -22,6 +23,7 @@ case "${1:-}" in
 	while IFS= read -r arg || [ -n "$arg" ]; do
 		set -- "$@" "$arg"
 	done <"$ARGS_FILE"
+	echo "ocaml_compile: response file loaded ($# arguments)" >&2
 	;;
 esac
 
