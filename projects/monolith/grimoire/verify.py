@@ -405,11 +405,14 @@ def _speed_grounded(value: dict, text: str) -> bool:
             return False
         normalized_mode = str(mode).casefold()
         if normalized_mode in {"walk", "walking"}:
-            if re.search(
-                rf"\bwalk(?:ing)?(?:\s+speed)?\b\s*(?:[:=]\s*)?{speed_pattern}",
-                text,
-                re.IGNORECASE,
-            ) is not None:
+            if (
+                re.search(
+                    rf"\bwalk(?:ing)?(?:\s+speed)?\b\s*(?:[:=]\s*)?{speed_pattern}",
+                    text,
+                    re.IGNORECASE,
+                )
+                is not None
+            ):
                 continue
             base_speed_matches = re.finditer(
                 rf"\bspeed\b\s*(?:[:=]\s*)?{speed_pattern}", text, re.IGNORECASE
