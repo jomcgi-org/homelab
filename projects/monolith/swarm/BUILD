@@ -66,6 +66,7 @@ py_library(
     visibility = ["//projects/monolith:private_backend_consumers"],
     deps = [
         ":swarm_factory_controls",
+        ":swarm_rationale",
         "//projects/monolith:pkg_cyclegroup",
         "//projects/monolith/agent_sessions",
         "//projects/monolith/agent_sessions:agent_sessions_admission",

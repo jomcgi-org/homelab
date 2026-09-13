@@ -51,6 +51,11 @@ class Finding:
         if self.kind == "gazelle:exclude":
             rendered = f"# gazelle:exclude {self.value}".rstrip()
             return f"{CENTRAL_BUILD}:{self.line}: new central directive: {rendered}"
+        if self.kind == "dynamic glob":
+            return (
+                f"{CENTRAL_BUILD}:{self.line}: new dynamic glob expression "
+                f"{self.value!r} in {self.context} cannot be verified as broad"
+            )
         return (
             f"{CENTRAL_BUILD}:{self.line}: new central package glob "
             f"{self.value!r} in {self.context}"
@@ -116,6 +121,28 @@ def _is_package_pattern(pattern: str) -> bool:
     return first_component not in {"", ".", "..", "*", "**"}
 
 
+def _unresolved_string_expressions(
+    node: ast.AST,
+    variables: dict[str, tuple[_StringValue, ...]],
+) -> tuple[ast.AST, ...]:
+    """Return glob expressions that cannot be reduced to literal strings."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return ()
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        return tuple(
+            unresolved
+            for item in node.elts
+            for unresolved in _unresolved_string_expressions(item, variables)
+        )
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        if _string_values(node, variables):
+            return ()
+        return (node,)
+    if isinstance(node, ast.Name) and node.id in variables:
+        return ()
+    return (node,)
+
+
 def _glob_findings(
     node: ast.AST,
     context: str,
@@ -142,6 +169,15 @@ def _glob_findings(
                             line=string.line,
                         )
                     )
+            for unresolved in _unresolved_string_expressions(value_node, variables):
+                findings.append(
+                    Finding(
+                        kind="dynamic glob",
+                        context=f"{context} ({role})",
+                        value=ast.unparse(unresolved),
+                        line=unresolved.lineno,
+                    )
+                )
         return findings
 
     for child in ast.iter_child_nodes(node):

@@ -124,6 +124,28 @@ def test_concatenated_package_glob_is_rejected():
     )
 
 
+@pytest.mark.parametrize(
+    ("expression", "rendered"),
+    [
+        (
+            '[package + "/**/*.py" for package in PACKAGES]',
+            "[package + '/**/*.py' for package in PACKAGES]",
+        ),
+        ('["%s/**/*.py" % PACKAGE]', "'%s/**/*.py' % PACKAGE"),
+        ("CENTRAL_GLOB_PATTERNS", "CENTRAL_GLOB_PATTERNS"),
+    ],
+)
+def test_dynamic_central_glob_is_rejected(expression, rendered):
+    additions = ratchet.new_findings(
+        LEGACY,
+        LEGACY + f"filegroup(srcs = glob({expression}))\n",
+    )
+
+    assert [(finding.kind, finding.value) for finding in additions] == [
+        ("dynamic glob", rendered)
+    ]
+
+
 def test_broad_globs_are_not_per_package_enumeration():
     _assert_allowed(LEGACY.replace('"**/*_test.py",', '"**/*.py",'))
 

@@ -124,6 +124,28 @@ py_test(
     ],
 )
 
+py_test(
+    name = "agent_mcp_description_compliance_test",
+    srcs = ["mcp_description_compliance_test.py"],
+    imports = [".."],
+    deps = [
+        "//projects/monolith:monolith_backend",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+    ],
+)
+
+py_test(
+    name = "agent_mcp_test",
+    srcs = ["mcp_test.py"],
+    imports = [".."],
+    deps = [
+        "//projects/monolith:monolith_backend",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+    ],
+)
+
 bdd_test(
     name = "agent_bdd_locks_test",
     srcs = [

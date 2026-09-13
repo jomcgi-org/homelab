@@ -123,6 +123,18 @@ py_test(
 )
 
 py_test(
+    name = "semgrep_client_test",
+    srcs = ["client_test.py"],
+    imports = [".."],
+    deps = [
+        ":semgrep_scan",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+    ],
+)
+
+py_test(
     name = "semgrep_perf_store_test",
     srcs = ["perf_store_test.py"],
     imports = [".."],
