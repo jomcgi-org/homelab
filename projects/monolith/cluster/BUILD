@@ -1,7 +1,7 @@
-load("//bazel/semgrep/defs:defs.bzl", "semgrep_test")
-
 # Bazel-native package ownership. Classification is declared here, not in
 # projects/monolith/BUILD.
+# The root monolith Semgrep target already scans this package transitively.
+# gazelle:semgrep disabled
 # Every Python test in this package has an explicit target below. Keep
 # Gazelle from generating duplicate per-file py_test rules.
 # gazelle:exclude *_test.py
@@ -17,6 +17,7 @@ exports_files(
     visibility = ["//projects/monolith:private_backend_consumers"],
 )
 
+# keep: recursive sources and reviewed runtime dependencies are package-owned.
 py_library(
     name = "cluster",
     srcs = glob(
@@ -32,7 +33,28 @@ py_library(
     imports = [".."],
     tags = ["monolith-backend"],
     visibility = ["//projects/monolith:private_backend_consumers"],
-    deps = ["@pip//httpx"],
+    deps = [
+        "//projects/monolith/core",
+        "//projects/monolith/framework",
+        "@pip//certifi",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//kubernetes_asyncio",
+        "@pip//opentelemetry_exporter_otlp_proto_http",
+        "@pip//opentelemetry_instrumentation_fastapi",
+        "@pip//opentelemetry_instrumentation_httpx",
+        "@pip//opentelemetry_sdk",
+        "@pip//pgvector",
+        "@pip//psycopg",
+        "@pip//psycopg_binary",
+        "@pip//pydantic",
+        "@pip//python_multipart",
+        "@pip//pyyaml",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+        "@pip//tzdata",
+        "@pip//uvicorn",
+    ],
 )
 
 py_test(
@@ -118,108 +140,4 @@ filegroup(
         ],
     ),
     visibility = ["//projects/monolith:__pkg__"],
-)
-
-semgrep_test(
-    name = "__init___semgrep_test",
-    srcs = ["__init__.py"],
-    exclude_rules = [
-        "avoid-sqlalchemy-text",
-        "sqlmodel-datetime-without-factory",
-        "tainted-fastapi-http-request-httpx",
-        "tainted-path-traversal-pillow-fastapi",
-        "tainted-path-traversal-stdlib-fastapi",
-    ],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-)
-
-semgrep_test(
-    name = "api_semgrep_test",
-    srcs = ["api.py"],
-    exclude_rules = [
-        "avoid-sqlalchemy-text",
-        "sqlmodel-datetime-without-factory",
-        "tainted-fastapi-http-request-httpx",
-        "tainted-path-traversal-pillow-fastapi",
-        "tainted-path-traversal-stdlib-fastapi",
-    ],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-)
-
-semgrep_test(
-    name = "cd_health_semgrep_test",
-    srcs = ["cd_health.py"],
-    exclude_rules = [
-        "avoid-sqlalchemy-text",
-        "sqlmodel-datetime-without-factory",
-        "tainted-fastapi-http-request-httpx",
-        "tainted-path-traversal-pillow-fastapi",
-        "tainted-path-traversal-stdlib-fastapi",
-    ],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-)
-
-semgrep_test(
-    name = "cd_leader_semgrep_test",
-    srcs = ["cd_leader.py"],
-    exclude_rules = [
-        "avoid-sqlalchemy-text",
-        "sqlmodel-datetime-without-factory",
-        "tainted-fastapi-http-request-httpx",
-        "tainted-path-traversal-pillow-fastapi",
-        "tainted-path-traversal-stdlib-fastapi",
-    ],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-)
-
-semgrep_test(
-    name = "kubernetes_semgrep_test",
-    srcs = ["kubernetes.py"],
-    exclude_rules = [
-        "avoid-sqlalchemy-text",
-        "sqlmodel-datetime-without-factory",
-        "tainted-fastapi-http-request-httpx",
-        "tainted-path-traversal-pillow-fastapi",
-        "tainted-path-traversal-stdlib-fastapi",
-    ],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-)
-
-semgrep_test(
-    name = "mcp_semgrep_test",
-    srcs = ["mcp.py"],
-    exclude_rules = [
-        "avoid-sqlalchemy-text",
-        "sqlmodel-datetime-without-factory",
-        "tainted-fastapi-http-request-httpx",
-        "tainted-path-traversal-pillow-fastapi",
-        "tainted-path-traversal-stdlib-fastapi",
-    ],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-)
-
-semgrep_test(
-    name = "module_semgrep_test",
-    srcs = ["module.py"],
-    exclude_rules = [
-        "avoid-sqlalchemy-text",
-        "sqlmodel-datetime-without-factory",
-        "tainted-fastapi-http-request-httpx",
-        "tainted-path-traversal-pillow-fastapi",
-        "tainted-path-traversal-stdlib-fastapi",
-    ],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-)
-
-semgrep_test(
-    name = "summarize_semgrep_test",
-    srcs = ["summarize.py"],
-    exclude_rules = [
-        "avoid-sqlalchemy-text",
-        "sqlmodel-datetime-without-factory",
-        "tainted-fastapi-http-request-httpx",
-        "tainted-path-traversal-pillow-fastapi",
-        "tainted-path-traversal-stdlib-fastapi",
-    ],
-    rules = ["//bazel/semgrep/rules:python_rules"],
 )

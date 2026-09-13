@@ -1,5 +1,7 @@
 # Bazel-native package ownership. Classification is declared here, not in
 # projects/monolith/BUILD.
+# The root monolith Semgrep target already scans this package transitively.
+# gazelle:semgrep disabled
 
 package(default_visibility = ["//visibility:private"])
 

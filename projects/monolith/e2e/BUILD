@@ -1,8 +1,7 @@
-load("@aspect_rules_py//py:defs.bzl", "py_library")
-load("//bazel/semgrep/defs:defs.bzl", "semgrep_test")
-
 # Bazel-native package ownership. Classification is declared here, not in
 # projects/monolith/BUILD.
+# The root monolith Semgrep target already scans this package transitively.
+# gazelle:semgrep disabled
 # Every Python test in this package has an explicit target below. Keep
 # Gazelle from generating duplicate per-file py_test rules.
 # gazelle:exclude *_test.py
@@ -109,23 +108,4 @@ filegroup(
         ],
     ),
     visibility = ["//projects/monolith:__pkg__"],
-)
-
-semgrep_test(
-    name = "__init___semgrep_test",
-    srcs = ["__init__.py"],
-    exclude_rules = [
-        "avoid-sqlalchemy-text",
-        "sqlmodel-datetime-without-factory",
-        "tainted-fastapi-http-request-httpx",
-        "tainted-path-traversal-pillow-fastapi",
-        "tainted-path-traversal-stdlib-fastapi",
-    ],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-)
-
-py_library(
-    name = "e2e",
-    srcs = ["__init__.py"],
-    visibility = ["//:__subpackages__"],
 )
