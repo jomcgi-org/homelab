@@ -129,7 +129,7 @@ def test_concatenated_list_variables_check_each_pattern():
         LEGACY
         + 'COMMON = ["**/*.py"]\n'
         + 'PACKAGES = ["chat/**/*.py"]\n'
-        + 'filegroup(srcs = glob(COMMON + PACKAGES))\n',
+        + "filegroup(srcs = glob(COMMON + PACKAGES))\n",
         "package glob",
         "chat/**/*.py",
     )
