@@ -1,5 +1,11 @@
 # Bazel-native package ownership. Classification is declared here, not in
 # projects/monolith/BUILD.
+# Every Python test in this package has an explicit target below. Keep
+# Gazelle from generating duplicate per-file py_test rules.
+# gazelle:exclude *_test.py
+# gazelle:exclude test_*.py
+# Nested sources remain owned by this package's recursive targets.
+# gazelle:exclude functions
 
 load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("//bazel/tools/pytest:defs.bzl", "py_test")

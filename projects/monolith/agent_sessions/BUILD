@@ -1,5 +1,9 @@
 # Bazel-native package ownership. Classification is declared here, not in
 # projects/monolith/BUILD.
+# Every Python test in this package has an explicit target below. Keep
+# Gazelle from generating duplicate per-file py_test rules.
+# gazelle:exclude *_test.py
+# gazelle:exclude test_*.py
 # These tests use the BDD harness or share one process-crash driver target and
 # are owned explicitly below, so Gazelle must not generate parallel py_tests.
 # gazelle:exclude factory_public_writer_test.py

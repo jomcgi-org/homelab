@@ -1,5 +1,12 @@
 # Bazel-native package ownership. Classification is declared here, not in
 # projects/monolith/BUILD.
+# Every Python test in this package has an explicit target below. Keep
+# Gazelle from generating duplicate per-file py_test rules.
+# gazelle:exclude *_test.py
+# gazelle:exclude test_*.py
+# Nested sources remain owned by this package's recursive targets.
+# gazelle:exclude tests
+# gazelle:exclude tools
 # These suites use the BDD harness and are owned by explicit bdd_test targets.
 # gazelle:exclude tests/bdd_api_test.py
 # gazelle:exclude tests/bdd_health_kg_test.py
