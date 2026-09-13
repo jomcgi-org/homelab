@@ -46,6 +46,7 @@ package_group(
 exec_filegroup(
     name = "frontend_dist",
     src = "//projects/monolith/frontend:build",
+    visibility = ["//projects/monolith/e2e:__pkg__"],
 )
 
 # Module config.py files for chart validation test.
