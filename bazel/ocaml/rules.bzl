@@ -208,7 +208,10 @@ def _ocaml_library_impl(ctx):
     ctx.actions.run(
         executable = _driver(ctx),
         arguments = [args],
-        inputs = depset(ctx.files.srcs + ctx.files.c_srcs + ctx.files.c_headers + ctx.files.preprocess_data + _tool_files(ctx) + _driver_inputs(ctx), transitive = [dep.includes, dep.cmxa, dep.a, cc.headers, cc.archives, tc.sysroot_files, tc.bootstrap_files]),
+        # Library compilation consumes dependency interfaces from their object
+        # directories. Transitive OCaml archives are link inputs for binaries
+        # and PPX drivers, and staging them here duplicates the full closure.
+        inputs = depset(ctx.files.srcs + ctx.files.c_srcs + ctx.files.c_headers + ctx.files.preprocess_data + _tool_files(ctx) + _driver_inputs(ctx), transitive = [dep.includes, cc.headers, cc.archives, tc.sysroot_files, tc.bootstrap_files]),
         outputs = [objs_dir, cmxa, a_lib],
         mnemonic = "OcamlLibrary",
         progress_message = "Compiling OCaml library %{label}",
