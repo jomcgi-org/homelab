@@ -8720,10 +8720,10 @@ def test_disabled_factory_does_not_arm_watchdog(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_swarm_module_disarms_watchdog_before_runtime_shutdown(monkeypatch):
+async def test_factory_module_disarms_watchdog_before_runtime_shutdown(monkeypatch):
     from types import SimpleNamespace
 
-    from swarm import module
+    from factory import module
 
     class StoppedTask:
         def done(self):

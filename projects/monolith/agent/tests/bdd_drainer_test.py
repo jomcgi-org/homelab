@@ -15,7 +15,6 @@ from agent import routine_jobs
 from agent.config import DrainerSettings
 from agent_sessions import store
 from agent_sessions.transport import EmberSessionGone
-from swarm.module import MODULE
 
 
 class FakeDBOS:
@@ -105,11 +104,6 @@ def _register_health_job(
 
 def _health(session: Session) -> dict:
     return health._drainer_health_core(session, ["qwen-drain", "kg-drain"], 2700)
-
-
-def test_module_registers_private_drainer_advisory():
-    assert set(MODULE.register_health_advisory) == {"drainer", "kg"}
-    assert MODULE.register_public is None
 
 
 @pytest.mark.asyncio

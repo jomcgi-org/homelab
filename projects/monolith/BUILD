@@ -11,6 +11,7 @@
 # gazelle:exclude ember_public
 # gazelle:exclude e2e
 # gazelle:exclude framework
+# gazelle:exclude factory
 # gazelle:exclude swarm
 # gazelle:exclude knowledge
 # gazelle:exclude notes
@@ -106,6 +107,7 @@ _BACKEND_SRCS = glob(
         "app/**/*.py",
         "auth/**/*.py",
         "core/**/*.py",
+        "factory/**/*.py",
         "framework/**/*.py",
         "artifact/**/*.py",
         "chat/**/*.py",
@@ -1537,6 +1539,7 @@ py_library(
             "app/**/*.py",
             "auth/**/*.py",
             "core/**/*.py",
+            "factory/**/*.py",
             "framework/**/*.py",
             "artifact/**/*.py",
             "chat/**/*.py",
@@ -2021,7 +2024,8 @@ py_library(
     srcs = glob(
         [
             "agent_sessions/__init__.py",
-            "agent_sessions/public_module.py",
+            "factory/__init__.py",
+            "factory/public_module.py",
             "agent_sessions/public_router.py",
             "app/**/*.py",
             "core/**/*.py",
@@ -2103,7 +2107,8 @@ py_venv_binary(
     srcs = glob(
         [
             "agent_sessions/__init__.py",
-            "agent_sessions/public_module.py",
+            "factory/__init__.py",
+            "factory/public_module.py",
             "agent_sessions/public_router.py",
             "app/**/*.py",
             "core/**/*.py",
@@ -4619,6 +4624,7 @@ py_test(
     srcs = ["swarm/factory_conductor_test.py"],
     imports = ["."],
     deps = [
+        ":pkg_factory",
         ":pkg_agent_sessions",
         ":pkg_auth",
         ":pkg_swarm",
@@ -8670,4 +8676,32 @@ semgrep_test(
         "tainted-path-traversal-stdlib-fastapi",
     ],
     rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+py_library(
+    name = "pkg_factory",
+    srcs = glob(
+        ["factory/*.py"],
+        exclude = ["factory/*_test.py"],
+    ),
+    imports = ["."],
+    deps = [
+        ":pkg_agent_sessions",
+        ":pkg_framework",
+        ":pkg_knowledge",
+        ":pkg_swarm",
+    ],
+)
+
+py_test(
+    name = "factory_module_test",
+    srcs = ["factory/module_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+    ],
 )

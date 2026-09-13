@@ -8,7 +8,6 @@ from fastapi.testclient import TestClient
 from sqlmodel import create_engine
 
 from agent_sessions import provider_quota as quota
-from agent_sessions.module import MODULE
 from framework import PRIVATE_PROFILE, Module, build_app
 
 
@@ -395,12 +394,6 @@ def test_unknown_quota_does_not_degrade_aggregate_health(monkeypatch, tmp_path):
     assert body["status"] == "ok"
     assert body["components"]["provider_quota"]["status"] == "unknown"
     assert "provider_quota" not in body.get("degraded", [])
-
-
-def test_module_registers_provider_quota_as_advisory():
-    assert MODULE.register_health_advisory == {
-        "provider_quota": quota.provider_quota_health
-    }
 
 
 def test_available_result_keeps_grants_and_summarises_them():
