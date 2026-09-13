@@ -2188,11 +2188,18 @@ defmodule Embervm.SessionManager do
   defp exported_bundle_relight_target?(state, %{state: :banked} = session, surviving_facts) do
     node_id = Map.get(session, :node_id)
     snapshot_ref = Map.get(session, :snapshot_ref)
+    instance_facts =
+      Enum.filter(surviving_facts, fn fact ->
+        case Map.get(fact, :instance_id) do
+          instance_id when is_binary(instance_id) and instance_id != "" -> true
+          _ -> false
+        end
+      end)
 
     is_binary(node_id) and node_id != "" and is_binary(snapshot_ref) and snapshot_ref != "" and
       match?(
         {:ok, _dial_id},
-        restorable_bundle_dial(state, session, node_id, snapshot_ref, surviving_facts)
+        restorable_bundle_dial(state, session, node_id, snapshot_ref, instance_facts)
       )
   end
 
@@ -3120,7 +3127,7 @@ defmodule Embervm.SessionManager do
               # the restore and the relight agree on.
               case restore_bundle(
                      state,
-                     session.node_id,
+                     restore_node_id,
                      restore_dial_id,
                      session,
                      restore_ref
