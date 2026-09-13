@@ -1,23 +1,23 @@
-"""Scheduled job handlers for the grimoire ingest pipeline (spec #4.2).
+"""Batch job handlers for the Grimoire ingest and verification pipeline.
 
-Two daily, idempotent batch jobs wrap the async orchestrators in ``ingest.py``
-and ``extract.py``:
+The handlers wrap the async orchestrators in ``ingest.py``, ``extract.py``, and
+``verifier.py``:
 
   - ``grimoire_load_chunks``: build an S3 client + embedding client, then run
     ``ingest.load_chunks`` over the ``grimoire`` bucket.
   - ``grimoire_extract_entities``: build an OpenRouter client (skipping the run
     with a warning when OPENROUTER_API_KEY is unset, never crashing the
     scheduler) + embedding client, then run ``extract.extract_chunks``.
+  - ``grimoire_verify_entities``: verify supported entity details against
+    marker-bearing mention chunks and atomically store corrections and markers.
 
-Both run off-pod as Argo CronWorkflows: ``app/jobs_main.py`` exposes the
-``grimoire-load-chunks`` and ``grimoire-extract-entities`` subcommands (via the
-shared ``_run_job`` helper), and the ``jobs.cronWorkflows`` registry in
-chart/values.yaml schedules them (loader daily; extraction suspended /
-manual-only, since it costs OpenRouter money). Each is an ``async def`` keeping
-the scheduler Handler contract (``scheduler.api.Handler``: receives a Session,
-returns an optional next-run override), so ``_run_job`` opens a Session and
-awaits it directly. This module is excluded from the public binary (grimoire is
-private-tier only).
+``app/jobs_main.py`` exposes all three through the shared ``_run_job`` helper.
+The loader and extractor run off-pod as Argo CronWorkflows; verification is an
+explicit CLI pass so an operator chooses the verifier version and bounded run.
+Each handler is an ``async def`` keeping the scheduler Handler contract
+(``scheduler.api.Handler``: receives a Session, returns an optional next-run
+override), so ``_run_job`` opens a Session and awaits it directly. This module
+is excluded from the public binary (Grimoire is private-tier only).
 """
 
 from __future__ import annotations
@@ -41,6 +41,8 @@ DEFAULT_BUCKET = "grimoire"
 # as a gzipped ``output.json``. Mirrors ingest.DEFAULT_PREFIX.
 _BOOKS_PREFIX = "books/"
 DEFAULT_EXTRACT_LIMIT = 25
+DEFAULT_VERIFY_LIMIT = 25
+DEFAULT_VERIFY_EVIDENCE_LIMIT = 6
 # Concurrent extract calls. Extraction is asynchronous bulk work, so it gets the
 # async slot budget of one decode slot and never makes an interactive caller
 # queue. See shared.inference.ASYNC_SLOT_BUDGET and
@@ -94,6 +96,18 @@ def _extract_concurrency() -> int:
             DEFAULT_EXTRACT_CONCURRENCY,
         )
         return DEFAULT_EXTRACT_CONCURRENCY
+    return value
+
+
+def _positive_int_env(name: str, default: int, log_name: str) -> int:
+    raw = os.environ.get(name, str(default))
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if value < 1:
+        logger.warning("%s: invalid %s %r, using %d", log_name, name, raw, default)
+        return default
     return value
 
 
@@ -155,6 +169,51 @@ async def grimoire_extract_entities(session: Session) -> None:
         session, or_client, embed_client, limit=limit, concurrency=concurrency
     )
     logger.info("grimoire_extract_entities done: %s", summary)
+    return None
+
+
+async def grimoire_verify_entities(session: Session) -> None:
+    """Verify extracted numeric and structured details against mention evidence.
+
+    The pass uses the extraction provider settings by default, with optional
+    GRIMOIRE_VERIFY_* overrides. A missing hosted-provider key skips only this
+    run. Successful corrections and version markers persist atomically per
+    entity; failed calls and rejected output remain pending for a later run.
+    """
+    from grimoire.verifier import VerifierClient, verify_entities
+
+    base_url = os.environ.get("GRIMOIRE_VERIFY_BASE_URL") or os.environ.get(
+        "GRIMOIRE_EXTRACT_BASE_URL", ""
+    )
+    api_key = (
+        os.environ.get("GRIMOIRE_VERIFY_API_KEY")
+        or os.environ.get("GRIMOIRE_EXTRACT_API_KEY")
+        or os.environ.get("OPENROUTER_API_KEY", "")
+    )
+    needs_key = (
+        (not base_url) or "openrouter.ai" in base_url or "api.deepseek.com" in base_url
+    )
+    if needs_key and not api_key:
+        logger.warning(
+            "grimoire_verify_entities: hosted endpoint but no key "
+            "(GRIMOIRE_VERIFY_API_KEY / GRIMOIRE_EXTRACT_API_KEY / "
+            "OPENROUTER_API_KEY unset), skipping run"
+        )
+        return None
+
+    limit = _positive_int_env(
+        "GRIMOIRE_VERIFY_LIMIT", DEFAULT_VERIFY_LIMIT, "grimoire_verify_entities"
+    )
+    evidence_limit = _positive_int_env(
+        "GRIMOIRE_VERIFY_EVIDENCE_LIMIT",
+        DEFAULT_VERIFY_EVIDENCE_LIMIT,
+        "grimoire_verify_entities",
+    )
+    client = VerifierClient(api_key=api_key)
+    summary = await verify_entities(
+        session, client, limit=limit, evidence_limit=evidence_limit
+    )
+    logger.info("grimoire_verify_entities done: %s", summary)
     return None
 
 
