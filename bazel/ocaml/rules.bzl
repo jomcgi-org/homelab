@@ -116,6 +116,11 @@ def _tool_files(ctx):
 
 def _driver_args(ctx, tc, mode, include_dirs, opam_pkgs, srcs, c_srcs, cc = None):
     args = ctx.actions.args()
+    # Large translated libraries can have hundreds of transitive include
+    # directories. Keep those arguments out of the process command line so a
+    # compiler diagnostic is not displaced by Bazel's command display limit.
+    args.use_param_file(param_file_arg = "--args-file=%s", use_always = True)
+    args.set_param_file_format("multiline")
     args.add("--mode", mode)
     args.add("--name", ctx.label.name)
     args.add("--sysroot-tar", tc.sysroot_tar.path)

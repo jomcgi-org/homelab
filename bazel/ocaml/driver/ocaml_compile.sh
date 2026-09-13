@@ -12,6 +12,19 @@
 # extracted sysroot. The sysroot's OCaml is relocated via OCAMLLIB.
 set -eu
 
+# Bazel writes the action arguments one per line. Expanding them here keeps
+# very large transitive OCaml include closures off the process command line,
+# which leaves compiler diagnostics visible in failed-action output.
+case "${1:-}" in
+--args-file=*)
+	ARGS_FILE="${1#--args-file=}"
+	shift
+	while IFS= read -r arg || [ -n "$arg" ]; do
+		set -- "$@" "$arg"
+	done <"$ARGS_FILE"
+	;;
+esac
+
 MODE="" NAME="" SYSROOT_TAR="" BOOTSTRAP_TOOL="" USE_FIND="0" WRAPPED="0" LINKALL="0"
 INCLUDES="" OPAM_PKGS="" SRCS="" CSRCS="" CHDRS="" CMXAS="" CFLAGS=""
 PP_TOOL="" PP_ARGS="" CPPO_TOOL="" PPX="" PPX_DATA=""
@@ -480,7 +493,10 @@ fi
 # --- Compile each file in sorted order ---------------------------------------
 # -no-alias-deps is harmless when unwrapped (OPENFLAG empty, no alias module).
 for f in $ORDER; do
-	"$OCAMLOPT" $CFLAGS $INCFLAGS $OPENFLAG -no-alias-deps -c "$WORK/$f"
+	if ! "$OCAMLOPT" $CFLAGS $INCFLAGS $OPENFLAG -no-alias-deps -c "$WORK/$f"; then
+		echo "ocaml_compile: failed to compile $f in $NAME" >&2
+		exit 2
+	fi
 	case "$f" in
 	*.ml) CMX_LIST="$CMX_LIST $WORK/${f%.ml}.cmx" ;;
 	esac
