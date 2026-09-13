@@ -750,12 +750,14 @@ def gen_library(
             "    ocamlopt_flags = [%s]," % ", ".join('"%s"' % f for f in flags)
         )
     if menhir_modules:
-        # This is a target exec property, not an action execution requirement:
-        # Bazel merges it into the selected execution platform, where the
-        # BuildBuddy executor consumes it. Large generated parsers can exceed
-        # the default action timeout. Resource sizing remains scheduler-driven.
+        # These are target exec properties, not action execution requirements:
+        # Bazel merges them into the selected execution platform, where the
+        # BuildBuddy executor consumes them. Large generated parsers can exceed
+        # the default action timeout and memory allocation. Two compute units
+        # fit the Linux executor pool while providing 5 GB for Menhir.
         lines += [
             "    exec_properties = {",
+            '        "EstimatedComputeUnits": "2",',
             '        "default-timeout": "15m",',
             "    },",
         ]
