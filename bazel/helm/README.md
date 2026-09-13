@@ -134,6 +134,41 @@ ArgoCD `Application` manifests in `deploy/` directories. Recognized directives:
 | `# gazelle:argocd_generate_diff`      | Toggle the live `diff` target               |
 | `# gazelle:kubectl_context`           | kube context for live diffs                 |
 
+## Standalone render and lint
+
+Run `./bootstrap.sh` once, then use `direnv allow` or add
+`${XDG_CACHE_HOME:-$HOME/.cache}/homelab-tools/usr/bin` to `PATH`. The extracted
+tools image supplies the pinned `helm` binary. These entry points do not need a
+local Bazel installation and do not replace the Bazel-backed CI targets.
+
+Render one service by its path below `projects/`, or pass a chart directory:
+
+```bash
+./bazel/helm/render.sh monolith \
+  --release monolith \
+  --namespace monolith \
+  --values projects/monolith/deploy/values.yaml
+```
+
+The default output is `<chart>/manifests/all.yaml`, an ignored preview file. A
+nested service such as `mcp/context-forge-gateway` is also accepted. Use
+`--output -` for stdout, or `--output PATH` for another repository-local file.
+Run `./bazel/helm/render.sh --help` for all options. A missing chart, values
+file, Helm executable, or failed render is an error. A failed render does not
+replace a previous output file.
+
+Lint every chart containing a file changed from the merge base with `main`:
+
+```bash
+./bazel/helm/lint.sh
+./bazel/helm/lint.sh --base origin/main
+```
+
+The command includes committed, staged, unstaged, deleted, and untracked paths,
+filters out paths outside a chart, and runs `helm lint --strict` once per chart.
+Set `CI_BASE_REF` to change the default base. Missing tools, an invalid base,
+and Helm lint errors return nonzero.
+
 ## Tests
 
 `helm_template_test`, `helm_lint_test`, and `helm_annotation_test` are
@@ -161,6 +196,8 @@ helm_annotation_test(
 | `push.sh.tpl`                                     | Template for the `helm_push` runner (`{{HELM}}`, `{{CHART_TGZ}}`, ...)        |
 | `helm-template-test.sh`                           | `helm template` under the full values hierarchy; fails on render errors       |
 | `helm-assert-annotations.sh`                      | Render then assert `KEY:VALUE` annotations are present                        |
+| `render.sh`                                       | Standalone single-service render using the extracted Helm tool                |
+| `lint.sh`                                         | Standalone strict lint for charts changed from a Git base                      |
 | `ci-validate-manifests.sh`                        | CI gate: validate all rendered manifests                                      |
 | `ci-diff-manifests.sh`                            | CI gate: diff rendered manifests against the live cluster                     |
 | `render-manifests.sh` / `render-all-manifests.sh` | Pre-render manifests for inspection                                           |
