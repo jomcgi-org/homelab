@@ -102,7 +102,8 @@ py_venv_binary(
         ":frontend_dist",
     ] + ["//projects/monolith/demos:loadtest_samples"],
     imports = ["."],  # keep
-    main = "//projects/monolith/app:main.py",
+    main = "app/main.py",
+    main_label = "//projects/monolith/app:main.py",
     visibility = ["//:__subpackages__"],
     deps = ["//projects/monolith:monolith_backend"],  # keep
 )
@@ -141,7 +142,8 @@ py_venv_binary(
         "//projects/monolith/campsites:runtime_data",
     ],
     imports = ["."],  # keep
-    main = "//projects/monolith/app:jobs_main.py",
+    main = "app/jobs_main.py",
+    main_label = "//projects/monolith/app:jobs_main.py",
     visibility = ["//:__subpackages__"],
     # typer is the jobs entrypoint's CLI framework but is NOT a serving dep, so
     # it is absent from :monolith_backend; the binary must depend on it directly
@@ -162,7 +164,8 @@ py_venv_binary(
     name = "progress",
     srcs = ["//projects/monolith/app:progress_main.py"],
     imports = ["."],  # keep
-    main = "//projects/monolith/app:progress_main.py",
+    main = "app/progress_main.py",
+    main_label = "//projects/monolith/app:progress_main.py",
     visibility = ["//:__subpackages__"],
     deps = ["//projects/monolith:monolith_backend"],  # keep
 )
@@ -440,7 +443,8 @@ py3_image(
     env = {
         "PYTHONPATH": "/projects/monolith/main_agents.runfiles/_main:/projects/monolith/main_agents.runfiles/_main/projects/monolith",
     },
-    main = "//projects/monolith/app:agents_main.py",
+    main = "app/agents_main.py",
+    main_label = "//projects/monolith/app:agents_main.py",
     repository = "ghcr.io/jomcgi/homelab/projects/monolith/agents",
 )
 
@@ -533,7 +537,8 @@ py_venv_binary(
     name = "main_public",
     srcs = ["//projects/monolith/app:main_public.py"],
     imports = ["."],  # keep
-    main = "//projects/monolith/app:main_public.py",
+    main = "app/main_public.py",
+    main_label = "//projects/monolith/app:main_public.py",
     visibility = ["//:__subpackages__"],
     deps = ["//projects/monolith:monolith_public_backend"],  # keep
 )
@@ -588,7 +593,8 @@ monolith_domain_images(
     domains = MONOLITH_DOMAINS,
     extra_env = {"REPO_DOCS_MANIFEST_PATH": "/etc/monolith/repo_docs_manifest.ndjson"},
     extra_tars = [":repo_docs_manifest_layer"],
-    main = "//projects/monolith/app:main_domain.py",
+    main = "app/main_domain.py",
+    main_label = "//projects/monolith/app:main_domain.py",
 )
 
 # Reads every domain source file from disk (via rglob) to enforce that domains
