@@ -753,11 +753,11 @@ def gen_library(
         # These are target exec properties, not action execution requirements:
         # Bazel merges them into the selected execution platform, where the
         # BuildBuddy executor consumes them. Large generated parsers can exceed
-        # the default action timeout and memory allocation. Two compute units
-        # fit the Linux executor pool while providing 5 GB for Menhir.
+        # the default action timeout and memory allocation. A memory-only
+        # request leaves CPU sizing to the scheduler and fits the Linux pool.
         lines += [
             "    exec_properties = {",
-            '        "EstimatedComputeUnits": "2",',
+            '        "EstimatedMemory": "4GB",',
             '        "default-timeout": "15m",',
             "    },",
         ]
