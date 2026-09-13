@@ -2887,10 +2887,9 @@ defmodule Embervm.SessionManager do
     # the RESTORE RPC, when the decision says to attempt one, runs inside the
     # spawned worker below (before node_for_relight's placement check), so park
     # semantics are unchanged and a slow store round-trip never blocks the
-    # manager. A restore failure (or a genuinely unreachable store / a bundle
-    # that was never exported) is fail-open: node_for_relight then makes exactly
-    # the same call it always did, degrading to the daemon's existing
-    # snapshot_lost failure rather than blocking the relight on store state.
+    # manager. Ordinary restore failures remain fail-open through the existing
+    # snapshot_lost path. A CPU SKU mismatch is returned directly because a cold
+    # fallback would hide an incompatible durable artifact.
     restore = restore_plan(state, session)
 
     spawn(fn ->
@@ -2910,8 +2909,9 @@ defmodule Embervm.SessionManager do
         # must NOT re-consult node_for_relight after a restore: that guard checks the
         # CP's ETS session_snapshots fact, which the just-completed restore has not
         # yet refreshed (it updates on the next NodeStatus), so it would spuriously
-        # report snapshot_lost and skip the relight the restore just enabled. A
-        # restore FAILURE falls back to the normal node_for_relight path (fail-open).
+        # report snapshot_lost and skip the relight the restore just enabled.
+        # Ordinary restore failures fall back to node_for_relight. A CPU SKU
+        # mismatch remains an explicit failure.
         restore_target =
           case restore do
             {:restore, restore_node_id, restore_dial_id, restore_ref} ->
@@ -2929,6 +2929,7 @@ defmodule Embervm.SessionManager do
                      restore_ref
                    ) do
                 :ok -> {:ok, restore_dial_id}
+                {:error, reason} -> {:error, reason}
                 _ -> :none
               end
 
@@ -2974,6 +2975,7 @@ defmodule Embervm.SessionManager do
   # node_for_relight snapshot-presence guard which the fresh restore has not yet
   # reflected in the CP's ETS facts. Otherwise the normal placement check.
   defp relight_node({:ok, node_id}, _session, _capacity_table), do: {:ok, node_id}
+  defp relight_node({:error, reason}, _session, _capacity_table), do: {:error, reason}
   defp relight_node(:none, session, capacity_table), do: WakeInstance.node_for_relight(session, capacity_table)
 
   # Whether the session's bundle should be restored before the relight: the
@@ -3051,10 +3053,9 @@ defmodule Embervm.SessionManager do
 
   # Restore the SESSION bundle for `session_id` (implicit via workload/ref) from the
   # object store back onto `node_id`'s disk (RestoreArtifact, kind SESSION), then
-  # record :artifact_restored. Best-effort: a restore failure returns :error and the
-  # caller falls through to node_for_relight's existing check, which the daemon (or
-  # the placement layer) degrades to snapshot_lost exactly as it would without this
-  # feature (fail-open warmth). Idempotent on the daemon side.
+  # record :artifact_restored. Ordinary restore failures return :error and retain
+  # the existing fail-open path. A CPU SKU mismatch is preserved as a clear error.
+  # Idempotent on the daemon side.
   defp restore_bundle(state, node_id, dial_id, session, snapshot_ref) do
     workload = session.workload
     ref = %ArtifactRef{kind: :ARTIFACT_KIND_SESSION, workload: workload, ref: snapshot_ref}
@@ -3074,13 +3075,15 @@ defmodule Embervm.SessionManager do
         :ok
 
       other ->
-        Logger.warning("embervm session: bundle restore-on-miss failed, degrading to snapshot_lost path",
+        mismatch = Embervm.RestoreVendor.cpu_sku_mismatch_reason(other)
+
+        Logger.warning("embervm session: bundle restore-on-miss failed",
           workload: workload,
           snapshot_ref: snapshot_ref,
           reason: inspect(other)
         )
 
-        :error
+        if mismatch, do: {:error, mismatch}, else: :error
     end
   end
 

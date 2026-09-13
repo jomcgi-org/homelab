@@ -38,6 +38,8 @@ defmodule Embervm.NodeCapacity do
 
   @table :embervm_node_capacity
 
+  alias Embervm.Node.V1.CpuSku
+
   @doc "The ETS table name every function defaults to when none is given."
   @spec table() :: atom()
   def table, do: @table
@@ -143,15 +145,44 @@ defmodule Embervm.NodeCapacity do
   embervm/011). `key` is whatever the caller anchors on (a bare node-name string or
   an instance tuple), resolved through `fetch/2`; the vendor is a NODE-scoped fact
   shared across a node's instances. Returns `""` when the node is not dispatchable
-  (no facts) or its daemon reports no vendor (pre-R7): noded's resolveRestorePrefix
-  maps an empty vendor to the node-4 legacy alias, so an empty vendor still restores
-  the legacy un-vendored prefix rather than failing closed. Never raises.
+  (no facts) or its daemon reports no vendor (pre-R7). A CPU-bound restore with
+  that unresolved identity is refused by noded, so missing discovery never
+  bypasses compatibility. Never raises.
   """
   @spec vendor_for(atom(), {String.t(), String.t()} | String.t()) :: String.t()
   def vendor_for(table \\ @table, key) do
+    sku_for(table, key).vendor
+  end
+
+  @doc "The full CPU restore identity for an instance or node, empty when unknown."
+  @spec sku_for(atom(), {String.t(), String.t()} | String.t()) :: CpuSku.t()
+  def sku_for(table \\ @table, key) do
     case fetch(table, key) do
-      {:ok, facts} -> Map.get(facts, :cpu_vendor, "") || ""
-      :error -> ""
+      {:ok, %{cpu_sku: %CpuSku{} = sku}} -> normalize_sku(sku)
+      {:ok, facts} -> %CpuSku{vendor: Map.get(facts, :cpu_vendor, "") || "", template: ""}
+      :error -> %CpuSku{}
     end
   end
+
+  @doc "Stable map key for a CPU SKU. Legacy vendor-only facts keep their old key."
+  @spec sku_id(CpuSku.t() | map() | nil) :: String.t()
+  def sku_id(%{vendor: vendor, template: template}) do
+    vendor = normalize_part(vendor)
+    template = normalize_part(template)
+
+    cond do
+      vendor == "" -> ""
+      template == "" -> vendor
+      true -> vendor <> "/" <> template
+    end
+  end
+
+  def sku_id(_), do: ""
+
+  defp normalize_sku(%CpuSku{} = sku) do
+    %CpuSku{vendor: normalize_part(sku.vendor), template: normalize_part(sku.template)}
+  end
+
+  defp normalize_part(value) when is_binary(value), do: String.trim(value)
+  defp normalize_part(_), do: ""
 end

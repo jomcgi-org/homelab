@@ -235,6 +235,8 @@ defmodule Embervm.GroupWakeManagerTest do
     base = %{
       configured_id: "node-4",
       node_id: "node-4",
+      cpu_vendor: "amd",
+      cpu_sku: %Embervm.Node.V1.CpuSku{vendor: "amd", template: "amd-default"},
       serving_subnet_cidr: "10.200.0.0/24",
       max_live_vms: 10,
       live_vms: 0,
@@ -308,10 +310,12 @@ defmodule Embervm.GroupWakeManagerTest do
   # -- restore-on-miss (R6, Task 8) -------------------------------------------
 
   test "a complete exported set whose local bundles are gone RESTORES then relights" do
+    parent = self()
     {:ok, restore_calls} = Agent.start_link(fn -> [] end)
 
     restore_fun = fn _ch, req ->
       art = req.artifact
+      send(parent, {:group_restore_sku, req.cpu_sku})
       Agent.update(restore_calls, &[%{kind: art.kind, ref: art.ref, workload: art.workload} | &1])
       {:ok, %Embervm.Node.V1.RestoreArtifactResponse{bytes_moved: 8192, skipped: false}}
     end
@@ -331,12 +335,35 @@ defmodule Embervm.GroupWakeManagerTest do
 
     # RestoreArtifact was issued for the whole set, and the delegated relight ran.
     assert [%{kind: :ARTIFACT_KIND_GROUP_SET, ref: "set-r", workload: "grp-a"}] = Agent.get(restore_calls, & &1)
+    assert_receive {:group_restore_sku, %Embervm.Node.V1.CpuSku{vendor: "amd", template: "amd-default"}}
     {_creates, wakes, _adopts} = sup_counts()
     assert wakes == 1
 
     # The restore is auditable from the op-log alone.
     {:ok, ops} = SQLite.read_from(ctx.op_log, 0)
     assert Enum.any?(ops, &(&1.kind == :artifact_restored and &1.payload["ref"] == "set-r"))
+  end
+
+  test "group set SKU mismatch is returned clearly without relight or fresh fallback" do
+    message = "noded: cpu_sku mismatch on restore: artifact stamped amd/v2 != node amd/v1"
+
+    restore_fun = fn _channel, _req ->
+      {:error, %GRPC.RPCError{status: 9, message: message}}
+    end
+
+    ctx = start_stack(instance_id: "g-mismatch", restore_artifact_fun: restore_fun)
+    _ = seed_banked(ctx, "g-mismatch", "set-r")
+
+    seed_node(ctx, %{
+      group_bundle_sets: [],
+      store_reachable: true
+    })
+
+    assert {:error, {:wake_failed, {:cpu_sku_mismatch, ^message}}} =
+             GroupWakeManager.wake(ctx.mgr, "grp-a", "system:group:grp-a")
+
+    {_creates, wakes, _adopts} = sup_counts()
+    assert wakes == 0
   end
 
   test "an unreachable store on a set miss attempts no restore and relights (fresh-fallback) as before" do

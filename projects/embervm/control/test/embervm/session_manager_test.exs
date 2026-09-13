@@ -262,6 +262,8 @@ defmodule Embervm.SessionManagerTest do
       node_id: "node-4",
       pod_uid: "pod-node-4",
       configured_id: "node-4",
+      cpu_vendor: "amd",
+      cpu_sku: %Embervm.Node.V1.CpuSku{vendor: "amd", template: "amd-default"},
       workloads: %{
         wl => %{
           free_primed_slots: 1,
@@ -1273,7 +1275,10 @@ defmodule Embervm.SessionManagerTest do
         {:ok, %{}}
       end
     )
-    created = create_persistence_session(ctx)
+    created =
+      create_persistence_session(ctx,
+        persistence: %{memory: true, filesystem: %{enabled: false}}
+      )
     session_id = created.session_id
 
     {:ok, created_row} = SessionStore.get(ctx.store, created.session_id)
@@ -2076,6 +2081,38 @@ defmodule Embervm.SessionManagerTest do
 
     {:ok, session} = SessionStore.get(ctx.store, created.session_id)
     assert session.state == :running
+  end
+
+  test "session bundle SKU mismatch is returned clearly without relighting" do
+    parent = self()
+    {:ok, relights} = Agent.start_link(fn -> 0 end)
+    message = "noded: cpu_sku mismatch on restore: artifact stamped amd/v2 != node amd/v1"
+
+    ctx =
+      start_stack(
+        relight_fun: fn _channel, _req ->
+          Agent.update(relights, &(&1 + 1))
+          {:ok, %RelightResponse{vm_id: "should-not-relight"}}
+        end,
+        restore_artifact_fun: fn _channel, req ->
+          send(parent, {:session_restore_sku, req.cpu_sku})
+          {:error, %GRPC.RPCError{status: 9, message: message}}
+        end
+      )
+
+    created =
+      create_persistence_session(ctx,
+        persistence: %{memory: true, filesystem: %{enabled: false}}
+      )
+    park_session(ctx, created)
+
+    assert {:error, {:relight_failed, {:cpu_sku_mismatch, ^message}}} =
+             SessionManager.invoke(ctx.mgr, created.session_id, %{body: "wake"})
+
+    assert_receive {:session_restore_sku,
+                    %Embervm.Node.V1.CpuSku{vendor: "amd", template: "amd-default"}}
+    assert Agent.get(relights, & &1) == 0
+    assert {:ok, %{state: :parked}} = SessionStore.get(ctx.store, created.session_id)
   end
 
   test "encrypted workspace restore carries a capability scoped by the manager" do

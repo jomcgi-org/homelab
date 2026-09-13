@@ -14,7 +14,7 @@ defmodule Embervm.NodeRegistryTest do
 
   alias Embervm.{NodeRegistry, ServingStore, StatefulStore, WorkloadCatalog}
   alias Embervm.OpLog.SQLite
-  alias Embervm.Node.V1.{GroupMemberVm, NodeStatus, ServingVm, StatefulVm, WorkloadCapacity}
+  alias Embervm.Node.V1.{CpuSku, GroupMemberVm, NodeStatus, ServingVm, StatefulVm, WorkloadCapacity}
 
   # -- helpers ---------------------------------------------------------------
 
@@ -71,6 +71,7 @@ defmodule Embervm.NodeRegistryTest do
       draining: Keyword.get(opts, :draining, false),
       stateful_vms: Keyword.get(opts, :stateful_vms, []),
       cpu_vendor: Keyword.get(opts, :cpu_vendor, ""),
+      cpu_sku: Keyword.get(opts, :cpu_sku),
       scratch_generation: Keyword.get(opts, :scratch_generation, ""),
       build_error: ""
     }
@@ -146,6 +147,18 @@ defmodule Embervm.NodeRegistryTest do
 
     assert [facts] = NodeRegistry.capacity(table)
     assert facts.cpu_vendor == "amd"
+  end
+
+  test "registry preserves the full CPU SKU for placement and restore consumers" do
+    {clock, _advance} = new_clock()
+    {reg, table} = start_registry(clock: clock)
+    sku = %CpuSku{vendor: "amd", template: "amd-default"}
+
+    :ok = NodeRegistry.inject_status(reg, "node-4", node_status(cpu_vendor: "amd", cpu_sku: sku))
+
+    assert [facts] = NodeRegistry.capacity(table)
+    assert facts.cpu_vendor == "amd"
+    assert facts.cpu_sku == sku
   end
 
   test "registry projects budget facts (R0 PR-1: mem/cpu budget from the daemon's own cgroup)" do

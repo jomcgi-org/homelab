@@ -960,11 +960,11 @@ spec:
                   type: object
                   description: >-
                     Base refs the fleet currently reports for this workload,
-                    grouped by CPU vendor. Observability only: additive to
+                    grouped by full CPU SKU (vendor/template). Observability only: additive to
                     snapshotRef, which stays the single builder-advanced handle.
-                    A base ref is vendor-specific by construction (Firecracker
-                    snapshots cannot cross CPU vendors), so a mixed fleet holds
-                    one ref per vendor. Each value is a LIST because a vendor
+                    A base ref is SKU-specific by construction (Firecracker
+                    snapshots cannot cross CPU templates), so a mixed fleet holds
+                    one ref per SKU. Each value is a LIST because a SKU
                     legitimately holds two refs mid-rollout, while some nodes
                     still run the previous runtime image. Absent until at least
                     one node reports a base.

@@ -687,6 +687,11 @@ func (s *Server) BuildBase(ctx context.Context, req *nodev1.BuildBaseRequest) (*
 	if s.newBuildDriver == nil {
 		return nil, status.Error(codes.Unimplemented, "noded: base building not configured")
 	}
+	if expected := req.GetCpuSku(); expected != nil {
+		if mismatch, got, want := cpuSkuMismatch(expected.GetVendor(), expected.GetTemplate(), s.cfg.CpuVendor, s.cfg.CpuTemplate); mismatch {
+			return nil, status.Errorf(codes.FailedPrecondition, "noded: cpu_sku mismatch for BuildBase: request selected %q != node %q", got, want)
+		}
+	}
 	if req.GetZip() != nil {
 		return s.buildBaseZip(ctx, req)
 	}
@@ -709,12 +714,12 @@ func (s *Server) buildBaseImage(ctx context.Context, req *nodev1.BuildBaseReques
 	rootfsID, err := ext4UUID(img.RootfsPath)
 	if err != nil {
 		buildErr := fmt.Sprintf("read rootfs UUID for image %q (workload %q): %v", imageRef, workload, err)
-		failedKey := baseKeyFor(workload, imageRef, req.GetWorkloadRevision(), s.cfg.CpuVendor, "")
+		failedKey := baseKeyFor(workload, imageRef, req.GetWorkloadRevision(), s.cfg.CpuVendor, s.cfg.CpuTemplate, "")
 		s.bases.failBuild(failedKey, workload, img.RootfsPath, req.GetReadyPath(), buildErr)
 		s.signalChange()
 		return nil, status.Error(codes.FailedPrecondition, "noded: "+buildErr)
 	}
-	baseKey := baseKeyFor(workload, imageRef, req.GetWorkloadRevision(), s.cfg.CpuVendor, rootfsID)
+	baseKey := baseKeyFor(workload, imageRef, req.GetWorkloadRevision(), s.cfg.CpuVendor, s.cfg.CpuTemplate, rootfsID)
 	// The control plane records the resolved image identity; without an OCI pull
 	// the ref IS the identity for R0 (deploys are digest-pinned upstream). The image
 	// lane carries no archive and never hydrates (nil archive).
@@ -753,12 +758,12 @@ func (s *Server) buildBaseZip(ctx context.Context, req *nodev1.BuildBaseRequest)
 	rootfsID, err := ext4UUID(img.RootfsPath)
 	if err != nil {
 		buildErr := fmt.Sprintf("read rootfs UUID for runtime image %q (workload %q): %v", runtimeRef, workload, err)
-		failedKey := baseKeyForZip(workload, imageDigest, zip.GetArchiveSha256(), s.cfg.CpuVendor, "")
+		failedKey := baseKeyForZip(workload, imageDigest, zip.GetArchiveSha256(), s.cfg.CpuVendor, s.cfg.CpuTemplate, "")
 		s.bases.failBuild(failedKey, workload, img.RootfsPath, req.GetReadyPath(), buildErr)
 		s.signalChange()
 		return nil, status.Error(codes.FailedPrecondition, "noded: "+buildErr)
 	}
-	baseKey := baseKeyForZip(workload, imageDigest, zip.GetArchiveSha256(), s.cfg.CpuVendor, rootfsID)
+	baseKey := baseKeyForZip(workload, imageDigest, zip.GetArchiveSha256(), s.cfg.CpuVendor, s.cfg.CpuTemplate, rootfsID)
 
 	// Short-circuit on an already-built base BEFORE fetching the archive: an
 	// idempotent repeat must not re-download or re-attach.
@@ -769,7 +774,13 @@ func (s *Server) buildBaseZip(ctx context.Context, req *nodev1.BuildBaseRequest)
 			BaseSizeBytes: uint64(existing.sizeBytes),
 			Arch:          s.cfg.Arch,
 			AlreadyBuilt:  true,
+			CpuSku:        s.cpuSku(),
 		}, nil
+	}
+	// The archive may itself be a remote object. Check the complete base artifact
+	// first so a store hit never downloads source bytes or reaches build setup.
+	if resp, handled, err := s.restoreBaseBeforeBuild(ctx, req, baseKey, imageDigest); handled {
+		return resp, err
 	}
 
 	// Fetch + verify into memory BEFORE claiming the build guest so a bad archive
@@ -805,6 +816,7 @@ func (s *Server) driveBuild(ctx context.Context, req *nodev1.BuildBaseRequest, b
 			BaseSizeBytes: uint64(existing.sizeBytes),
 			Arch:          s.cfg.Arch,
 			AlreadyBuilt:  true,
+			CpuSku:        s.cpuSku(),
 		}, nil
 	}
 	// #4866: a co-located sibling brick shares this scratch dir but not this
@@ -834,6 +846,10 @@ func (s *Server) driveBuild(ctx context.Context, req *nodev1.BuildBaseRequest, b
 	// evidence and adopt it instead of deleting or rebuilding it.
 	if resp, ok := s.adoptSiblingBaseBundle(baseKey, workload, imageDigest, img.RootfsPath, readyPath); ok {
 		return resp, nil
+	}
+
+	if resp, handled, err := s.restoreBaseBeforeBuild(ctx, req, baseKey, imageDigest); handled {
+		return resp, err
 	}
 	if reclaimed, err := s.reclaimStaleBaseStaging(baseKey, existed); err != nil {
 		return nil, status.Errorf(codes.Internal, "noded: reclaim stale base staging for %q: %v", baseKey, err)
@@ -941,6 +957,7 @@ func (s *Server) driveBuild(ctx context.Context, req *nodev1.BuildBaseRequest, b
 		Arch:            s.cfg.Arch,
 		AlreadyBuilt:    false,
 		ServingImageRef: servingImageRef,
+		CpuSku:          s.cpuSku(),
 	}, nil
 }
 
@@ -1012,6 +1029,7 @@ func (s *Server) adoptSiblingBaseBundle(baseKey, workload, imageDigest, rootfsPa
 		BaseSizeBytes: uint64(size),
 		Arch:          s.cfg.Arch,
 		AlreadyBuilt:  true,
+		CpuSku:        s.cpuSku(),
 	}, true
 }
 
@@ -3906,15 +3924,15 @@ const defaultReadyPath = "/shim/ready"
 var baseKeyUnsafe = regexp.MustCompile(`[^A-Za-z0-9_-]`)
 
 // baseKeyFor derives the filesystem-safe base key (== the opaque snapshot_ref)
-// from the workload and the (image_ref, workload_revision, vendor, rootfs UUID)
+// from the workload and the (image_ref, workload_revision, CPU SKU, rootfs UUID)
 // identity inputs. Each rootfs bake has a random UUID. A base is therefore valid
 // only against the exact baked file or a byte-identical copy, and a rebake of the
 // same image gets a distinct key. Cross-node use requires distribution of the
-// baked file itself (#5772). Vendor is also hashed in (R7, standing decision 1),
-// so a Firecracker snapshot never crosses either restore boundary. The workload
+// baked file itself (#5772). Vendor and CPU template are hashed in, so a
+// Firecracker snapshot never crosses either restore boundary. The workload
 // prefix remains recoverable on startup for the capacity report.
-func baseKeyFor(workload, imageRef, revision, vendor, rootfsUUID string) string {
-	sum := sha256.Sum256([]byte(imageRef + "\x00" + revision + "\x00" + vendor + "\x00" + rootfsUUID))
+func baseKeyFor(workload, imageRef, revision, vendor, template, rootfsUUID string) string {
+	sum := sha256.Sum256([]byte(imageRef + "\x00" + revision + "\x00" + vendor + "\x00" + template + "\x00" + rootfsUUID))
 	sig := hex.EncodeToString(sum[:])[:12]
 	wl := baseKeyUnsafe.ReplaceAllString(workload, "_")
 	if wl == "" {
@@ -3924,12 +3942,12 @@ func baseKeyFor(workload, imageRef, revision, vendor, rootfsUUID string) string 
 }
 
 // baseKeyForZip derives the base key (== the opaque snapshot_ref) for a ZIP-lane
-// build. Its identity inputs are (runtime image digest, archive sha256, vendor,
+// build. Its identity inputs are (runtime image digest, archive sha256, CPU SKU,
 // rootfs UUID). The random per-bake UUID binds the snapshot to the exact baked
 // rootfs file or a byte-identical copy, just as baseKeyFor does. The workload
 // prefix is recoverable on startup for the capacity report.
-func baseKeyForZip(workload, imageDigest, archiveSha256, vendor, rootfsUUID string) string {
-	sum := sha256.Sum256([]byte("zip\x00" + imageDigest + "\x00" + archiveSha256 + "\x00" + vendor + "\x00" + rootfsUUID))
+func baseKeyForZip(workload, imageDigest, archiveSha256, vendor, template, rootfsUUID string) string {
+	sum := sha256.Sum256([]byte("zip\x00" + imageDigest + "\x00" + archiveSha256 + "\x00" + vendor + "\x00" + template + "\x00" + rootfsUUID))
 	sig := hex.EncodeToString(sum[:])[:12]
 	wl := baseKeyUnsafe.ReplaceAllString(workload, "_")
 	if wl == "" {

@@ -117,6 +117,8 @@ defmodule Embervm.ServingManagerTest do
     NodeCapacity.put(ctx.cap_table, node_id, %{
       configured_id: node_id,
       node_id: node_id,
+      cpu_vendor: "amd",
+      cpu_sku: %Embervm.Node.V1.CpuSku{vendor: "amd", template: "amd-default"},
       serving_subnet_cidr: "10.99.0.0/24",
       max_live_vms: 4,
       live_vms: 0,
@@ -841,10 +843,12 @@ defmodule Embervm.ServingManagerTest do
   # -- restore-on-miss (R6, Task 8) -------------------------------------------
 
   test "a banked instance whose snapshot is gone locally but exported RESTORES then relights" do
+    parent = self()
     {:ok, restore_calls} = Agent.start_link(fn -> [] end)
 
     restore_fun = fn _ch, req ->
       art = req.artifact
+      send(parent, {:serving_restore_sku, req.cpu_sku})
       Agent.update(restore_calls, &[%{kind: art.kind, ref: art.ref, workload: art.workload} | &1])
       {:ok, %Embervm.Node.V1.RestoreArtifactResponse{bytes_moved: 2048, skipped: false}}
     end
@@ -865,9 +869,36 @@ defmodule Embervm.ServingManagerTest do
     assert {:ok, _} = ServingManager.miss(ctx.mgr, "wl-a", req(), "serving:wl-a")
 
     assert [%{kind: :ARTIFACT_KIND_SERVING, ref: "serving/s-1", workload: "wl-a"}] = Agent.get(restore_calls, & &1)
+    assert_receive {:serving_restore_sku, %Embervm.Node.V1.CpuSku{vendor: "amd", template: "amd-default"}}
 
     {:ok, ops} = SQLite.read_from(ctx.op_log, 0)
     assert Enum.any?(ops, &(&1.kind == :artifact_restored and &1.payload["ref"] == "serving/s-1"))
+  end
+
+  test "serving bundle SKU mismatch is returned clearly without cold fallback" do
+    {:ok, starts} = Agent.start_link(fn -> 0 end)
+    message = "noded: cpu_sku mismatch on restore: artifact stamped amd/v2 != node amd/v1"
+
+    ctx =
+      start_stack(
+        start_serving_fun: fn _channel, _req ->
+          Agent.update(starts, &(&1 + 1))
+          {:error, :should_not_start}
+        end,
+        restore_artifact_fun: fn _channel, _req ->
+          {:error, %GRPC.RPCError{status: 9, message: message}}
+        end
+      )
+
+    serving_workload(ctx, "wl-a")
+    serving_node(ctx, "node-4", serving_snapshots: [], store_reachable: true)
+    seed_banked(ctx, "srv-1", "base-a", "serving/s-1", 30_002)
+
+    assert {:error, {:wake_failed, {:cpu_sku_mismatch, ^message}}} =
+             ServingManager.miss(ctx.mgr, "wl-a", req(), "serving:wl-a")
+
+    assert Agent.get(starts, & &1) == 0
+    assert {:ok, %{state: :banked}} = ServingStore.get(ctx.store, "srv-1")
   end
 
   test "a banked snapshot gone locally with an UNREACHABLE store attempts no restore and cold-boots" do

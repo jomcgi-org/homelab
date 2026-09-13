@@ -499,6 +499,11 @@ defmodule Embervm.BaseBuilder do
       node_addr: node_addr,
       nodes: node_runtime,
       workloads: %{},
+      # Admission only records the newest descriptor. A mailbox turn owned by
+      # this standing queue performs store inspection, placement, and build
+      # progress after the admission cast has returned.
+      admissions: %{},
+      admission_drain_scheduled: false,
       workload_sync_done: false,
       # Instance ids awaiting a fresh NodeStatus after registration reported a
       # new scratch generation. NodeRegistry's capacity projection notification
@@ -568,8 +573,15 @@ defmodule Embervm.BaseBuilder do
   end
 
   @impl true
-  def handle_cast({:reconcile, desc}, state) do
-    {:noreply, reconcile_desc(state, desc)}
+  def handle_cast({:reconcile, %{name: name} = desc}, state) do
+    state = put_in(state.admissions[name], desc)
+
+    if state.admission_drain_scheduled do
+      {:noreply, state}
+    else
+      send(self(), :drain_admissions)
+      {:noreply, %{state | admission_drain_scheduled: true}}
+    end
   end
 
   def handle_cast({:reconcile_force_rebuild, workload_name, signature_at_start}, state) do
@@ -635,9 +647,8 @@ defmodule Embervm.BaseBuilder do
     anchor_vendor =
       if is_binary(anchor_node) do
         state.capacity_table
-        |> Embervm.NodeCapacity.vendor_for(anchor_node)
-        |> to_string()
-        |> String.trim()
+        |> Embervm.NodeCapacity.sku_for(anchor_node)
+        |> Embervm.NodeCapacity.sku_id()
       else
         ""
       end
@@ -771,6 +782,15 @@ defmodule Embervm.BaseBuilder do
   # A backoff retry timer fired for a failed build.
   def handle_info({:retry, name}, state) do
     {:noreply, retry_workload(state, name)}
+  end
+
+  # The standing preparation queue is independent of future admissions. Every
+  # enqueue schedules its own drain, and the drain coalesces repeated updates to
+  # the newest descriptor for a workload.
+  def handle_info(:drain_admissions, state) do
+    admissions = state.admissions
+    state = %{state | admissions: %{}, admission_drain_scheduled: false}
+    {:noreply, Enum.reduce(admissions, state, fn {_name, desc}, acc -> reconcile_desc(acc, desc) end)}
   end
 
   # Base-durability PR-2: a hydrate worker finished (hydrated, fell back, or
@@ -969,9 +989,8 @@ defmodule Embervm.BaseBuilder do
 
     anchor_vendor =
       state.capacity_table
-      |> Embervm.NodeCapacity.vendor_for(node_id)
-      |> to_string()
-      |> String.trim()
+      |> Embervm.NodeCapacity.sku_for(node_id)
+      |> Embervm.NodeCapacity.sku_id()
 
     ref_to_use = if is_nil(w), do: nil, else: ref_for_vendor(state, w, anchor_vendor)
 
@@ -1201,9 +1220,8 @@ defmodule Embervm.BaseBuilder do
   # The CPU vendor of `node_id` (a placement instance), "" when unknown.
   defp pinned_vendor(state, node_id) do
     state.capacity_table
-    |> Embervm.NodeCapacity.vendor_for(node_name(node_id))
-    |> to_string()
-    |> String.trim()
+    |> Embervm.NodeCapacity.sku_for(node_name(node_id))
+    |> Embervm.NodeCapacity.sku_id()
   end
 
   # POSITIVE evidence that the STORE holds `ref` for `vendor`: either the
@@ -1280,9 +1298,8 @@ defmodule Embervm.BaseBuilder do
   defp pinned_vendor_ref(state, w, node_id) do
     vendor =
       state.capacity_table
-      |> Embervm.NodeCapacity.vendor_for(node_name(node_id))
-      |> to_string()
-      |> String.trim()
+      |> Embervm.NodeCapacity.sku_for(node_name(node_id))
+      |> Embervm.NodeCapacity.sku_id()
 
     cond do
       vendor == "" ->
@@ -1991,6 +2008,8 @@ defmodule Embervm.BaseBuilder do
           instance_id: instance_id,
           node_id: Map.get(f, :node_id) || instance_id,
           cpu_vendor: cpu_vendor(f),
+          cpu_sku: cpu_sku(f),
+          cpu_sku_id: cpu_sku_id(f),
           size_class: Map.get(f, :size_class, ""),
           mem_budget_mib: Map.get(f, :mem_budget_mib, 0)
         }
@@ -2007,13 +2026,22 @@ defmodule Embervm.BaseBuilder do
     |> String.trim()
   end
 
+  defp cpu_sku(fact) do
+    case Map.get(fact, :cpu_sku) do
+      %Embervm.Node.V1.CpuSku{} = sku -> sku
+      _ -> %Embervm.Node.V1.CpuSku{vendor: cpu_vendor(fact), template: ""}
+    end
+  end
+
+  defp cpu_sku_id(fact), do: fact |> cpu_sku() |> Embervm.NodeCapacity.sku_id()
+
   # Coverage considers only vendors reported by currently registered, build-eligible
   # instances. A missing capacity fact or blank vendor is still a reporting gap, not
   # evidence that a vendor lacks a base, so it contributes no vendor here.
   defp fleet_vendors(state, w) do
     state
     |> eligible_build_instances(w.mem_mib || 0)
-    |> Enum.map(& &1.cpu_vendor)
+    |> Enum.map(& &1.cpu_sku_id)
     |> Enum.reject(&(&1 == ""))
     |> MapSet.new()
   end
@@ -2090,7 +2118,7 @@ defmodule Embervm.BaseBuilder do
   defp build_instance_of_vendor(state, w, vendor) do
     state
     |> eligible_build_instances(Map.get(w, :mem_mib) || 0)
-    |> Enum.filter(fn i -> Map.get(i, :cpu_vendor) == vendor end)
+    |> Enum.filter(fn i -> Map.get(i, :cpu_sku_id) == vendor end)
     |> case do
       [] ->
         nil
@@ -2326,7 +2354,7 @@ defmodule Embervm.BaseBuilder do
   # The `workload_revision` we send the daemon: a stable digest of `signature/1`,
   # NOT the CR's `metadata.generation`.
   #
-  # noded keys a base as `sha256(image_ref, workload_revision, cpu_vendor)`, so
+  # noded keys a base as `sha256(image_ref, workload_revision, cpu_sku)`, so
   # whatever we put here IS the base's cache identity. Sending `generation` made
   # that identity change on EVERY spec edit, including edits `signature/1`
   # deliberately excludes because they cannot shape the base VM -- defeating this
@@ -2435,13 +2463,14 @@ defmodule Embervm.BaseBuilder do
   defp forget_workload(state, name) do
     case Map.get(state.workloads, name) do
       nil ->
-        state
+        update_in(state.admissions, &Map.delete(&1, name))
 
       w ->
         cancel_timer(w.retry_timer)
 
         state
         |> update_in([:workloads], &Map.delete(&1, name))
+        |> update_in([:admissions], &Map.delete(&1, name))
         |> update_in([:redrive_at], &Map.delete(&1, name))
         |> update_in([:dropped_at], fn dropped ->
           Map.reject(dropped, fn {{workload, _node_id}, _at} -> workload == name end)
@@ -2488,17 +2517,21 @@ defmodule Embervm.BaseBuilder do
   defp start_worker(state, node_id, w) do
     sig = signature(w)
 
-    vendor =
+    sku =
       case find_capacity_fact(state.capacity_table, node_id) do
-        {:ok, fact} -> cpu_vendor(fact)
-        :error -> ""
+        {:ok, fact} -> cpu_sku(fact)
+        :error -> %Embervm.Node.V1.CpuSku{}
       end
+
+    sku_id = Embervm.NodeCapacity.sku_id(sku)
 
     worker_meta = %{
       node_id: node_id,
       name: w.name,
       signature: sig,
-      cpu_vendor: vendor
+      cpu_vendor: sku.vendor,
+      cpu_sku: sku,
+      cpu_sku_id: sku_id
     }
 
     case Map.get(state.node_addr, node_id) do
@@ -2512,7 +2545,7 @@ defmodule Embervm.BaseBuilder do
         build_fun = state.build_fun
         connect_fun = state.connect_fun
         disconnect_fun = state.disconnect_fun
-        request = build_request(w, state.runtime_images)
+        request = build_request(w, state.runtime_images, sku)
 
         {pid, ref} =
           spawn_monitor(fn ->
@@ -2547,7 +2580,7 @@ defmodule Embervm.BaseBuilder do
   # and sets source.zip (the ZipSource: the resolved runtime image ref, the
   # archive url = codeUri, the archive sha256). reconcile_desc has already gated
   # a zip build on the runtime resolving, so runtime_images has the ref here.
-  defp build_request(%{zip: %{} = zip} = w, runtime_images) do
+  defp build_request(%{zip: %{} = zip} = w, runtime_images, sku) do
     %BuildBaseRequest{
       trace: %Trace{workload: w.name},
       workload_revision: base_revision(w),
@@ -2555,6 +2588,7 @@ defmodule Embervm.BaseBuilder do
       ready_path: w.ready_path,
       resources: %ResourceSpec{vcpus: w.vcpus || 0, mem_mib: w.mem_mib || 0},
       init_env: w.init_env,
+      cpu_sku: sku,
       # serving marks a serving-class zip base so noded ALSO writes the cold-boot
       # handler artifact (D-R3.11.2): a serving VM cold-boots with a NIC and cannot
       # resume the vsock-only base memory snapshot to get the handler, so it imports
@@ -2572,7 +2606,7 @@ defmodule Embervm.BaseBuilder do
     }
   end
 
-  defp build_request(w, _runtime_images) do
+  defp build_request(w, _runtime_images, sku) do
     %BuildBaseRequest{
       trace: %Trace{workload: w.name},
       image_ref: w.image_ref,
@@ -2581,6 +2615,7 @@ defmodule Embervm.BaseBuilder do
       ready_path: w.ready_path,
       resources: %ResourceSpec{vcpus: w.vcpus || 0, mem_mib: w.mem_mib || 0},
       init_env: w.init_env,
+      cpu_sku: sku,
       # serving marks a serving-class image base so noded registers the built
       # rootfs in the serving-images inventory (ADR embervm/038): an image-lane
       # entry has no handler archive, so noded stores handler_path "" and
@@ -2655,16 +2690,21 @@ defmodule Embervm.BaseBuilder do
   defp apply_result(
          state,
          w,
-         %{signature: built_sig, cpu_vendor: vendor, node_id: build_node_id},
+         %{
+           signature: built_sig,
+           cpu_vendor: vendor,
+           cpu_sku_id: sku_id,
+           node_id: build_node_id
+         },
          {:ok, %BuildBaseResponse{} = resp}
        ) do
     previous_ref =
-      if vendor == "" do
+      if sku_id == "" do
         w.snapshot_ref
       else
-        case Map.get(w.vendor_built, vendor) do
+        case Map.get(w.vendor_built, sku_id) do
           %{ref: ref} -> ref
-          nil -> if w.scalar_vendor in ["", vendor], do: w.snapshot_ref, else: nil
+          nil -> if w.scalar_vendor in ["", sku_id], do: w.snapshot_ref, else: nil
         end
       end
 
@@ -2704,13 +2744,14 @@ defmodule Embervm.BaseBuilder do
       end
 
     vendor_built =
-      if vendor == "" do
+      if sku_id == "" do
         w.vendor_built
       else
-        Map.put(w.vendor_built, vendor, %{
+        Map.put(w.vendor_built, sku_id, %{
           signature: built_sig,
           ref: resp.snapshot_ref,
-          digest: resp.image_digest
+          digest: resp.image_digest,
+          cpu_vendor: vendor
         })
       end
 
@@ -2728,19 +2769,18 @@ defmodule Embervm.BaseBuilder do
     pin_vendor =
       if is_binary(w.node_id) do
         state.capacity_table
-        |> Embervm.NodeCapacity.vendor_for(node_name(w.node_id))
-        |> to_string()
-        |> String.trim()
+        |> Embervm.NodeCapacity.sku_for(node_name(w.node_id))
+        |> Embervm.NodeCapacity.sku_id()
       else
         ""
       end
 
     adopts_scalar? =
-      vendor == "" or pin_vendor == "" or pin_vendor == vendor or is_nil(w.snapshot_ref)
+      sku_id == "" or pin_vendor == "" or pin_vendor == sku_id or is_nil(w.snapshot_ref)
 
     {scalar_ref, scalar_digest, scalar_vendor} =
       if adopts_scalar? do
-        {resp.snapshot_ref, resp.image_digest, vendor}
+        {resp.snapshot_ref, resp.image_digest, sku_id}
       else
         {w.snapshot_ref, w.snapshot_digest, w.scalar_vendor}
       end
@@ -2874,11 +2914,7 @@ defmodule Embervm.BaseBuilder do
           state
           |> representative_facts_by_node(name)
           |> Enum.reduce(w.store_confirmed, fn fact, acc ->
-            vendor =
-              fact
-              |> Map.get(:cpu_vendor, "")
-              |> to_string()
-              |> String.trim()
+            vendor = cpu_sku_id(fact)
 
             case get_in(fact, [:workloads, name]) do
               %{snapshot_ref: ref, base_state: :BASE_BUILD_STATE_READY, exported: true}
@@ -3047,7 +3083,7 @@ defmodule Embervm.BaseBuilder do
     state
     |> representative_facts_by_node(w.name)
     |> Enum.find(fn fact ->
-      fact |> Map.get(:cpu_vendor, "") |> to_string() |> String.trim() == vendor
+      cpu_sku_id(fact) == vendor
     end)
     |> case do
       nil -> :error
@@ -3064,7 +3100,13 @@ defmodule Embervm.BaseBuilder do
         case state.connect_fun.(address) do
           {:ok, channel} ->
             try do
-              state.list_fun.(channel, workload, vendor)
+              case state.list_fun.(channel, workload, sku_vendor(vendor)) do
+                {:ok, entries, truncated} ->
+                  {:ok, Enum.filter(entries, &entry_matches_sku?(&1, vendor)), truncated}
+
+                other ->
+                  other
+              end
             catch
               kind, reason -> {:error, {kind, reason}}
             after
@@ -3101,7 +3143,9 @@ defmodule Embervm.BaseBuilder do
             "#{MapSet.size(keep)} ref(s)#{trunc_note}: #{inspect(refs)}"
         )
 
-        Enum.each(refs, fn ref -> spawn_remote_evict(state, instance_id, workload, vendor, ref) end)
+        Enum.each(refs, fn ref ->
+          spawn_remote_evict(state, instance_id, workload, sku_vendor(vendor), vendor, ref)
+        end)
       else
         Logger.info(
           "embervm base builder: remote base retention (DRY RUN, gate off) WOULD evict " <>
@@ -3119,7 +3163,7 @@ defmodule Embervm.BaseBuilder do
   # harmless and a lost result just means the next tick retries. On success the
   # owner is told so the workload's store-fetchability ledger stops vouching for
   # the deleted object (#4893 site 1).
-  defp spawn_remote_evict(state, instance_id, workload, vendor, ref) do
+  defp spawn_remote_evict(state, instance_id, workload, vendor, sku_id, ref) do
     case Map.get(state.node_addr, instance_id) do
       nil ->
         :ok
@@ -3136,7 +3180,7 @@ defmodule Embervm.BaseBuilder do
               try do
                 case remote_evict_fun.(channel, workload, vendor, ref) do
                   {:ok, _} ->
-                    send(owner, {:store_evicted, workload, vendor, ref})
+                    send(owner, {:store_evicted, workload, sku_id, ref})
 
                   {:error, reason} ->
                     Logger.warning(
@@ -3161,6 +3205,18 @@ defmodule Embervm.BaseBuilder do
 
         :ok
     end
+  end
+
+  defp sku_vendor(sku_id) when is_binary(sku_id) do
+    sku_id |> String.split("/", parts: 2) |> hd()
+  end
+
+  defp entry_matches_sku?(entry, sku_id) do
+    vendor = Map.get(entry, :cpu_vendor, "") || ""
+    template = Map.get(entry, :cpu_template, "") || ""
+    entry_id = Embervm.NodeCapacity.sku_id(%{vendor: vendor, template: template})
+
+    entry_id == sku_id or (entry_id == "" and not String.contains?(sku_id, "/"))
   end
 
   # Compute the sweep plan (a per-node list of what to evict) AND apply the
@@ -4135,7 +4191,7 @@ defmodule Embervm.BaseBuilder do
     |> group_snapshot_refs_by_vendor(w)
   end
 
-  # The representative base refs, grouped by CPU vendor:
+  # The representative base refs, grouped by CPU SKU:
   #
   #     %{"amd" => ["bazel-query__426e..."], "intel" => ["bazel-query__00ad..."]}
   #
@@ -4159,7 +4215,7 @@ defmodule Embervm.BaseBuilder do
   defp group_snapshot_refs_by_vendor(facts, w) do
     facts
     |> Enum.reduce(%{}, fn fact, acc ->
-      vendor = fact |> Map.get(:cpu_vendor, "") |> to_string() |> String.trim()
+      vendor = cpu_sku_id(fact)
       ref = get_in(fact, [:workloads, w.name, :snapshot_ref])
 
       if vendor != "" and is_binary(ref) and ref != "" do

@@ -913,6 +913,10 @@ defmodule Embervm.NodeRegistry do
       # vendor alias (standing decision 11), so an unset vendor still restores the
       # legacy un-vendored prefix rather than failing closed.
       cpu_vendor: cpu_vendor_from_status(s),
+      # Preserve the full restore identity. Consumers use this pair for build
+      # deduplication and restore placement; cpu_vendor remains for wire and
+      # store-prefix compatibility with older daemons.
+      cpu_sku: cpu_sku_from_status(s),
       workloads: workloads,
       mem_headroom_mib: s.mem_headroom_mib,
       mem_reject_floor_mib: s.mem_reject_floor_mib,
@@ -1235,6 +1239,17 @@ defmodule Embervm.NodeRegistry do
   defp cpu_vendor_from_status(%NodeStatus{cpu_sku: %{vendor: v}}) when is_binary(v) and v != "", do: v
   defp cpu_vendor_from_status(%NodeStatus{cpu_vendor: v}) when is_binary(v), do: v
   defp cpu_vendor_from_status(_s), do: ""
+
+  defp cpu_sku_from_status(%NodeStatus{cpu_sku: %{vendor: v, template: t}} = status) do
+    %Embervm.Node.V1.CpuSku{
+      vendor: if(is_binary(v) and v != "", do: v, else: cpu_vendor_from_status(status)),
+      template: if(is_binary(t), do: t, else: "")
+    }
+  end
+
+  defp cpu_sku_from_status(%NodeStatus{} = status) do
+    %Embervm.Node.V1.CpuSku{vendor: cpu_vendor_from_status(status), template: ""}
+  end
 
   # -- age-out state machine --------------------------------------------------
 
