@@ -6844,6 +6844,12 @@ alias(
     visibility = ["//:__subpackages__"],
 )
 
+alias(
+    name = "trips_backfill_semgrep_test",
+    actual = "//projects/monolith/trips:trips_backfill_semgrep_test",
+    visibility = ["//:__subpackages__"],
+)
+
 # Backfill tests dep on :trips_backfill_lib (boto3/typer/httpx orchestration),
 # NOT :monolith_backend, since the backfill is excluded from the server image.
 py_test(

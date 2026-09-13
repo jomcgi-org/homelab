@@ -4,6 +4,7 @@
 
 load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
+load("//bazel/semgrep/defs:defs.bzl", "semgrep_target_test")
 
 package(default_visibility = ["//visibility:private"])
 
@@ -162,6 +163,26 @@ py_venv_binary(
     ),
     main = "backfill/main.py",
     visibility = ["//projects/monolith:package_consumers"],
+)
+
+semgrep_target_test(
+    name = "trips_backfill_semgrep_test",
+    exclude_rules = [
+        # main.py guards the SeaweedFS endpoint with a scheme check, but
+        # semgrep-core ignores the inline # nosemgrep (mirrors :main). The
+        # # keep stops gazelle from dropping it back to the file directive set.
+        "boto3-endpoint-url-missing-scheme",  # keep
+        # trips.models uses datetime fields for the migration's TIMESTAMPTZ
+        # columns; semgrep-core ignores the inline # nosemgrep (mirrors :main).
+        "sqlmodel-datetime-without-factory",
+        "avoid-sqlalchemy-text",
+        "tainted-fastapi-http-request-httpx",
+        "tainted-path-traversal-stdlib-fastapi",
+        # validate_image opens in-memory bytes, not a path; false positive (mirrors :main).
+        "tainted-path-traversal-pillow-fastapi",
+    ],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+    target = ":trips_backfill",
 )
 
 filegroup(
