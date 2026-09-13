@@ -926,3 +926,20 @@ def test_one_admission_buys_exactly_one_extra_sweep(db, monkeypatch):
     assert second > first
     intake_loop.intake_tick(wide_policy(), generation=0)
     assert len(calls) == second
+
+
+@pytest.mark.parametrize("state", ["admitted", "uncertain"])
+def test_intake_skips_active_issues_across_generations(db, monkeypatch, state):
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "4")
+    fake_pages(monkeypatch, [issue(6, ["agent-ready"])])
+    with Session(db) as session:
+        intake_receipt(session, 6, state=state)
+        session.commit()
+    configured = {**policy(), "max_tasks": {"delivery": 2, "advisory": 1}}
+    assert intake_loop.intake_tick(configured, generation=1) == []
+    with Session(db) as session:
+        assert len(session.exec(select(FactoryReceipt)).all()) == 1
+        idle = session.exec(
+            select(FactoryAudit).where(FactoryAudit.action == "intake_idle")
+        ).one()
+        assert json.loads(idle.detail_json)["excluded"] == {"active_issue": 1}

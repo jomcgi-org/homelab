@@ -257,10 +257,14 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
             # They are admissible only while intake is on, so turning intake off
             # leaves the allowlist exactly as it was.
             eligible = or_(eligible, FactoryReceipt.actor == INTAKE_ACTOR)
+        # A new generation may coexist with an older task. A direct receipt
+        # cannot start a second task on that same issue, even in another lane.
+        busy_issues = [row.issue_number for row in active if row.repo == policy["repo"]]
         row = db.exec(
             select(FactoryReceipt)
             .where(
                 FactoryReceipt.state == "queued",
+                FactoryReceipt.issue_number.not_in(busy_issues),
                 FactoryReceipt.repo == policy["repo"],
                 eligible,
                 in_lane,
