@@ -53,7 +53,10 @@
     routing?.action === "review_waiting"
       ? "review waiting: no reviewer has quota"
       : routing?.action === "reviewer_fallback"
-        ? `review on ${routing.model}: claude 7d at ${Math.round(routing.used_percent ?? 0)}% of ${routing.pause_percent}%`
+        ? routing.last_action === "quota_guard_unknown" ||
+          routing.used_percent == null
+          ? `review on ${routing.model}: quota unavailable, retaining previous fallback`
+          : `review on ${routing.model}: claude 7d ${Math.round(routing.used_percent)}% used (fallback threshold ${routing.pause_percent}%)`
         : routing?.last_action === "quota_guard_unknown"
           ? "review routing: no reading"
           : null,
