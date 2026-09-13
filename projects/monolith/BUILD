@@ -18,6 +18,10 @@
 # gazelle:exclude public_turnstile_secret_isolation_test.py
 # gazelle:exclude ember_public_savings_grants_test.py
 # gazelle:exclude ember_synthetic_probe_grants_test.py
+# Package-owned libraries use recursive source globs so nested modules stay in
+# one Bazel package. The Python plugin cannot index those expressions for its
+# import validator; Bazel analysis remains the dependency correctness gate.
+# gazelle:python_validate_import_statements false
 # gazelle:semgrep_exclude_rules avoid-sqlalchemy-text,sqlmodel-datetime-without-factory,tainted-fastapi-http-request-httpx,tainted-path-traversal-stdlib-fastapi,tainted-path-traversal-pillow-fastapi
 load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
