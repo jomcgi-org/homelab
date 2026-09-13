@@ -863,3 +863,49 @@ def test_named_probe_cancel_preserves_only_ambiguous_outcomes(
     assert (state["turns"][0]["stop_reason"] == UNKNOWN_INVOCATION) == (
         stage != "bound"
     )
+
+
+def test_cancelled_create_without_guest_blocks_next_hour_probe(database, monkeypatch):
+    from factory import quota_probe
+    from factory.orchestration.factory_models import (
+        FactoryAudit,
+        FactoryControl,
+        FactoryReceipt,
+    )
+
+    # Add the factory ledger to the same file-backed execution database.
+    engine = database.execution_options(
+        schema_translate_map={"agent_sessions": None, "swarm": None}
+    )
+    SQLModel.metadata.create_all(
+        engine,
+        tables=[m.__table__ for m in (FactoryControl, FactoryReceipt, FactoryAudit)],
+    )
+    with Session(engine) as db:
+        db.add(FactoryControl(id="factory", actor="test"))
+        db.commit()
+    monkeypatch.setattr(quota_probe.controls, "get_engine", lambda: engine)
+
+    async def handler(request):
+        raise asyncio.CancelledError()
+
+    _http(monkeypatch, handler)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            execution_api.run_synthetic_session(
+                "OK",
+                "haiku",
+                session_key=quota_probe.PREFIX + "lost-create",
+                read_timeout=120,
+            )
+        )
+    state = _snapshot(database, _synthetic_id(database))
+    assert state["session"]["status"] == "failed"
+    assert state["session"]["ember_session_id"] is None
+    assert state["pending"] == []
+    monkeypatch.setattr(
+        quota_probe.controls,
+        "_now",
+        lambda: datetime.now(timezone.utc) + timedelta(hours=2),
+    )
+    assert quota_probe.claim({"available": True, "providers": {}}) is None

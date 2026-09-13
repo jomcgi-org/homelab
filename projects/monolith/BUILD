@@ -5271,6 +5271,7 @@ py_test(
     deps = [
         ":pkg_agent_sessions",
         ":pkg_core",
+        ":pkg_factory",
         ":pkg_cyclegroup",
         ":pkg_knowledge",
         ":pkg_swarm",
