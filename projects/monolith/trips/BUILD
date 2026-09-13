@@ -183,6 +183,7 @@ semgrep_target_test(
     ],
     rules = ["//bazel/semgrep/rules:python_rules"],
     target = ":trips_backfill",
+    visibility = ["//projects/monolith:__pkg__"],
 )
 
 filegroup(
