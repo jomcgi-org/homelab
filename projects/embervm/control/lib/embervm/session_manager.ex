@@ -297,7 +297,7 @@ defmodule Embervm.SessionManager do
     GenServer.call(server, {:brick_gone, session_id, metadata}, :infinity)
   end
 
-  @doc "Sweeps every live session bound to a node that the registry aged down."
+  @doc "Sweeps every session bound to a node that the registry aged down or expired."
   @spec node_down(String.t()) :: non_neg_integer()
   def node_down(node_id), do: node_down(__MODULE__, node_id, %{})
 
@@ -1999,27 +1999,161 @@ defmodule Embervm.SessionManager do
   end
 
   defp sweep_brick_gone_node(state, node_id, supplied_metadata) do
-    sessions =
-      SessionStore.all(state.session_store)
+    metadata =
+      Map.merge(
+        %{node_id: node_id, health: :down, draining: false, tombstoned: false, pod_uid: nil},
+        supplied_metadata
+      )
+
+    sessions = SessionStore.all(state.session_store)
+
+    transient =
+      sessions
       |> Enum.filter(
         &(session_bound_to_node?(&1, node_id) and
             &1.state in [:running, :banking, :relighting, :creating] and
-            session_on_downed_instance?(state, &1, node_id, supplied_metadata))
+            session_on_downed_instance?(state, &1, node_id, metadata))
       )
 
-    Enum.reduce(sessions, {0, state}, fn session, {count, acc} ->
-      metadata =
-        Map.merge(
-          %{node_id: node_id, health: :down, draining: false, tombstoned: false, pod_uid: nil},
-          supplied_metadata
-        )
-      {reply, acc} = brick_gone_outcome(acc, session.session_id, metadata)
-      if match?({:ok, _}, reply), do: notify_session_brick_gone(acc, session.session_id, metadata)
+    dormant_candidates =
+      sessions
+      |> Enum.filter(
+        &(dormant_session_bound_to_node?(&1, node_id) and
+            &1.state in [:banked, :parked] and
+            session_on_downed_instance?(state, &1, node_id, metadata))
+      )
 
-      acc = drain_relight_waiters(acc, session.session_id, {:error, :brick_gone})
+    dormant_dials =
+      Map.new(dormant_candidates, fn session ->
+        {session.session_id, dormant_departure_dial(state, session, node_id, metadata)}
+      end)
+
+    statuses =
+      dormant_dials
+      |> Map.values()
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+      |> case do
+        [] -> %{}
+        dials -> safe_brick_statuses(state, dials)
+      end
+
+    dormant =
+      Enum.filter(dormant_candidates, fn session ->
+        dial = Map.get(dormant_dials, session.session_id)
+
+        dormant_owner_departed?(state, dial, statuses) and
+          not dormant_relight_target?(state, session, node_id, metadata)
+      end)
+
+    {transient_count, state} =
+      Enum.reduce(transient, {0, state}, fn session, {count, acc} ->
+        {reply, acc} = brick_gone_outcome(acc, session.session_id, metadata)
+        if match?({:ok, _}, reply), do: notify_session_brick_gone(acc, session.session_id, metadata)
+
+        acc = drain_relight_waiters(acc, session.session_id, {:error, :brick_gone})
+        {count + if(match?({:ok, _}, reply), do: 1, else: 0), acc}
+      end)
+
+    Enum.reduce(dormant, {transient_count, state}, fn session, {count, acc} ->
+      {reply, acc} =
+        case session.state do
+          :banked -> evict_banked_with_reply(acc, session, :node_gone)
+          :parked -> evict_parked_with_reply(acc, session, :node_gone)
+        end
+
+      acc =
+        if match?({:ok, _}, reply) do
+          drain_relight_waiters(acc, session.session_id, {:error, {:gone, "node_gone"}})
+        else
+          acc
+        end
+
       {count + if(match?({:ok, _}, reply), do: 1, else: 0), acc}
     end)
   end
+
+  # Resting states have different authoritative placement fields. A parked
+  # persistence session owns a workspace volume and therefore follows
+  # volume_node_id; a banked session owns a memory snapshot and follows node_id.
+  # The fallback handles legacy rows missing their canonical field, while making
+  # a stale conflicting secondary ID unable to evict recoverable warmth.
+  defp dormant_session_owner_node(%{state: :parked} = session) do
+    Map.get(session, :volume_node_id) || Map.get(session, :node_id)
+  end
+
+  defp dormant_session_owner_node(%{state: :banked} = session) do
+    Map.get(session, :node_id) || Map.get(session, :volume_node_id)
+  end
+
+  defp dormant_session_owner_node(_session), do: nil
+
+  defp dormant_session_bound_to_node?(session, node_id) do
+    dormant_session_owner_node(session) == node_id
+  end
+
+  # Prefer the instance-qualified placement retained at dispatch/bank time. A
+  # restarted manager may have lost that cache, in which case the expiry event's
+  # pod UID is the strongest remaining identity. Bare node identity is the final
+  # legacy fallback.
+  defp dormant_departure_dial(state, session, node_id, metadata) do
+    owner = dormant_session_owner_node(session)
+    remembered = Map.get(state.session_dials, session.session_id)
+    pod_uid = Map.get(metadata, :pod_uid)
+
+    cond do
+      dial_on_node?(remembered, owner) -> remembered
+      owner == node_id and is_binary(pod_uid) and pod_uid != "" -> node_id <> "/" <> pod_uid
+      is_binary(owner) -> owner
+      true -> nil
+    end
+  end
+
+  defp dial_on_node?(dial, node_id) when is_binary(dial) and is_binary(node_id) do
+    dial == node_id or String.starts_with?(dial, node_id <> "/")
+  end
+
+  defp dial_on_node?(_dial, _node_id), do: false
+
+  defp dormant_owner_departed?(_state, nil, _statuses), do: false
+
+  defp dormant_owner_departed?(state, dial, statuses) do
+    not node_reporting?(state, dial) and registry_confirms_gone?(Map.get(statuses, dial, %{}))
+  end
+
+  # Capacity contains only healthy, dispatchable peers. Preserve dormant warmth
+  # only when one of those peers positively reports the exact artifact needed to
+  # wake this session. Mere health, a remote archive attempt, or a conflicting
+  # stale ownership ID is not proof that relight can succeed.
+  defp dormant_relight_target?(state, session, node_id, metadata) do
+    down_dial_id =
+      case Map.get(metadata, :pod_uid) do
+        pod_uid when is_binary(pod_uid) and pod_uid != "" -> node_id <> "/" <> pod_uid
+        _ -> node_id
+      end
+
+    state.capacity_table
+    |> NodeCapacity.all()
+    |> Enum.filter(&(Map.get(&1, :configured_id) == node_id and fact_dial_id(&1) != down_dial_id))
+    |> Enum.any?(fn fact -> dormant_artifact_reported?(fact, session) end)
+  end
+
+  defp dormant_artifact_reported?(fact, %{state: :banked} = session) do
+    Enum.any?(Map.get(fact, :session_snapshots, []) || [], fn snapshot ->
+      Map.get(snapshot, :session_id) == session.session_id and
+        (not is_binary(Map.get(session, :snapshot_ref)) or
+           Map.get(snapshot, :snapshot_ref) == session.snapshot_ref)
+    end)
+  end
+
+  defp dormant_artifact_reported?(fact, %{state: :parked} = session) do
+    Enum.any?(Map.get(fact, :session_volumes, []) || [], fn volume ->
+      Map.get(volume, :lineage_id) == session.lineage_id and
+        Map.get(volume, :workload) == session.workload
+    end)
+  end
+
+  defp dormant_artifact_reported?(_fact, _session), do: false
 
   defp notify_session_brick_gone(state, session_id, metadata) do
     case Registry.lookup(state.registry, session_id) do
@@ -4515,6 +4649,11 @@ defmodule Embervm.SessionManager do
   # Evict a banked session: EvictSnapshot on its node, append session_evicted with
   # the reason. The session becomes terminal (evicted -> next invoke 410s).
   defp evict_banked(state, session, reason) do
+    {_reply, state} = evict_banked_with_reply(state, session, reason)
+    state
+  end
+
+  defp evict_banked_with_reply(state, session, reason) do
     _ = evict_snapshot(state, session)
 
     reply =
@@ -4534,7 +4673,8 @@ defmodule Embervm.SessionManager do
       reason: reason
     )
 
-    if match?({:ok, _}, reply), do: clear_session_tracking(state, session.session_id), else: state
+    state = if match?({:ok, _}, reply), do: clear_session_tracking(state, session.session_id), else: state
+    {reply, state}
   end
 
   # Evict a parked session: skips stop_session_process (park already tore down
@@ -4544,6 +4684,11 @@ defmodule Embervm.SessionManager do
   # mirroring expire_session's parked arm. Appends session_evicted with the
   # reason, same as evict_banked.
   defp evict_parked(state, session, reason) do
+    {_reply, state} = evict_parked_with_reply(state, session, reason)
+    state
+  end
+
+  defp evict_parked_with_reply(state, session, reason) do
     _ = evict_snapshot(state, session)
     retire_session_volume(state, session)
 
@@ -4564,7 +4709,8 @@ defmodule Embervm.SessionManager do
       reason: reason
     )
 
-    if match?({:ok, _}, reply), do: clear_session_tracking(state, session.session_id), else: state
+    state = if match?({:ok, _}, reply), do: clear_session_tracking(state, session.session_id), else: state
+    {reply, state}
   end
 
   # -- snapshot eviction RPC -------------------------------------------------

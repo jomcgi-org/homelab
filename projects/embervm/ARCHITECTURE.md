@@ -530,6 +530,14 @@ against them.
    terminalizes with its `stop_completion` left null rather than a synthesised
    tuple, so a caller holding the stop precondition can see that departure
    produced no proof and decide for itself whether that is acceptable.
+   The same registry-departure proof terminalizes dormant session warmth that
+   cannot wake: a `parked` row follows its `volume_node_id`, a `banked` row
+   follows its `node_id`, and an expired owner moves either row to `evicted`.
+   A stale conflicting secondary ID cannot override that state-specific owner.
+   The row remains non-terminal only when a healthy peer positively reports the
+   exact workspace volume or snapshot it needs, which is evidence that the
+   established relight path can still use it. Archival and node cleanup remain
+   best effort and never hold an irrecoverable row in `parked` or `banked`.
 
    **Why.** A replaced brick can never send the confirmation the gate waits
    for, so before #6004 the session sat in `destroying` forever and held every

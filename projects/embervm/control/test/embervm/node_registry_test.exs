@@ -283,6 +283,53 @@ defmodule Embervm.NodeRegistryTest do
     assert_receive {:sessions_swept, "node-4", ""}, 1_000
   end
 
+  test "an expired instance repeats the session sweep after installing its tombstone" do
+    {clock, advance} = new_clock()
+    test_pid = self()
+
+    {reg, _table} =
+      start_registry(
+        register_seams(
+          clock: clock,
+          watch_fun: silent_watch(),
+          session_sweep_fun: fn node_id, pod_uid ->
+            send(test_pid, {:sessions_swept, node_id, pod_uid})
+          end,
+          unknown_after_ms: 5_000,
+          down_after_ms: 15_000,
+          expire_after_ms: 20_000,
+          down_expire_after_ms: 20_000,
+          base_backoff_ms: 120_000,
+          max_backoff_ms: 120_000
+        )
+      )
+
+    :ok =
+      NodeRegistry.register(reg, %{
+        "node" => "node-expiring",
+        "pod_uid" => "pod-expiring",
+        "address" => "10.0.0.8:9090"
+      })
+
+    advance.(15_000)
+    :ok = NodeRegistry.tick(reg)
+    assert_receive {:sessions_swept, "node-expiring", "pod-expiring"}, 1_000
+    assert NodeRegistry.brick_status(reg, "node-expiring/pod-expiring").registered
+
+    advance.(5_000)
+    :ok = NodeRegistry.tick(reg)
+    assert_receive {:sessions_swept, "node-expiring", "pod-expiring"}, 1_000
+
+    assert %{
+             registered: false,
+             tombstoned: true,
+             health: :down,
+             pod_uid: "pod-expiring"
+           } = NodeRegistry.brick_status(reg, "node-expiring/pod-expiring")
+
+    refute_receive {:sessions_swept, "node-expiring", "pod-expiring"}, 50
+  end
+
   test "the registry answers status while a slow session sweep is in progress" do
     {clock, advance} = new_clock()
     test_pid = self()
