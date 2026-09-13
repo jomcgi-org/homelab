@@ -251,8 +251,8 @@ _COMMON_ATTRS = {
               "Compile order is recovered automatically via ocamldep -sort.",
     ),
     "c_srcs": attr.label_list(
-        allow_files = [".c"],
-        doc = "C stub sources (dune `foreign_stubs`/`c_names`). Compiled with ocamlopt " +
+        allow_files = [".c", ".cc"],
+        doc = "C and C++ stub sources (dune `foreign_stubs`/`c_names`). Compiled with the pinned native tool closure " +
               "(which supplies the caml/*.h headers) and folded into the library's .a, so " +
               "binaries that link this library pull in the stubs automatically. C stubs that " +
               "#include a third-party header (pcre2.h, tree_sitter/api.h) get that header's " +

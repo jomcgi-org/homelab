@@ -124,7 +124,12 @@ printf '%s\n' "#!$HBIN/bash" "exec \"$HBIN/zig\" cc -c \"\$@\"" >"$HBIN/as"
 # C library integration (cc_deps): absolute -I for the stub compile (which cds
 # into the work dir) and absolute archive paths for the final link.
 CCOPT_INC=""
-for d in $CC_INCLUDES; do CCOPT_INC="$CCOPT_INC -ccopt -I$(abspath "$d")"; done
+CXX_INC=""
+for d in $CC_INCLUDES; do
+	d="$(abspath "$d")"
+	CCOPT_INC="$CCOPT_INC -ccopt -I$d"
+	CXX_INC="$CXX_INC -I$d"
+done
 CC_ARCH_ABS=""
 for a in $CC_ARCHIVES; do CC_ARCH_ABS="$CC_ARCH_ABS $(abspath "$a")"; done
 CC_CCLIB=""
@@ -468,8 +473,9 @@ for f in $ORDER; do
 done
 
 # --- Compile C stub sources (if any) ----------------------------------------
-# ocamlopt compiles .c directly (it supplies caml/*.h) using the execution
-# host's C compiler; the .o lands next to the source in $WORK.
+# ocamlopt compiles .c directly (it supplies caml/*.h) using the staged C
+# compiler. C++ stubs use staged Zig directly so their standard library ABI and
+# the final link's declared -lc++ input agree. The .o lands in $WORK.
 # c_headers are the library's own headers (dune stages everything in the
 # library dir; `install_c_headers` names the public ones): staged by basename
 # next to the stubs so `#include "x.h"` resolves, never compiled.
@@ -480,9 +486,17 @@ STUB_OBJS=""
 for c in $CSRCS; do
 	cb="$(basename "$c")"
 	cp "$c" "$WORK/$cb"
-	# -ccopt -I<dir> lets a stub #include a cc_deps header (pcre2.h etc.).
-	(cd "$WORK" && "$OCAMLOPT" $CCOPT_INC -c "$cb")
-	STUB_OBJS="$STUB_OBJS $WORK/${cb%.c}.o"
+	obj="${cb%.*}.o"
+	case "$cb" in
+	*.cc)
+		(cd "$WORK" && "$HBIN/zig" c++ $CXX_INC -I"$OCAMLLIB" -c "$cb" -o "$obj")
+		;;
+	*)
+		# -ccopt -I<dir> lets a C stub include a cc_deps header.
+		(cd "$WORK" && "$OCAMLOPT" $CCOPT_INC -c "$cb")
+		;;
+	esac
+	STUB_OBJS="$STUB_OBJS $WORK/$obj"
 done
 
 # --- Produce the output -----------------------------------------------------
