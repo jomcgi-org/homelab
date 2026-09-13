@@ -83,7 +83,7 @@ def monolith_domain_images(
         name: Prefix for the shared targets; also the name of a filegroup
             aggregating every ``image_domain_<d>`` index (one-command build).
         binary: The shared ``py_venv_binary`` (app/main_domain.py entrypoint).
-        main: The entrypoint source file, layered in explicitly because
+        main: The entrypoint source label, layered in explicitly because
             ``py_venv_binary`` omits ``ctx.file.main`` from runfiles.
         domains: Domain package names; each must export ``MODULE``.
         base: Base image.
@@ -121,14 +121,15 @@ def monolith_domain_images(
 
     # py_venv_binary omits ctx.file.main from runfiles; layer the entrypoint
     # source at its runfiles path (same supplementary layer py3_image creates).
-    main_label = "//{}:{}".format(binary_label.package, main)
+    main_label = native.package_relative_label(main)
     tar(
         name = name + "_srcs",
         srcs = [main_label],
         mtree = [
-            ".{}/{} type=file content=$(execpath {})".format(
-                package_root,
-                main,
+            ".{}/{}/{} type=file content=$(execpath {})".format(
+                workspace_root,
+                main_label.package,
+                main_label.name,
                 main_label,
             ),
         ],
