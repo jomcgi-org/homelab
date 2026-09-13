@@ -1,9 +1,9 @@
 ; OVERLAY: generate the OCaml grammar with Menhir's table backend.
 ;
-; The code backend requires type inference for this grammar's implicit
-; nonterminal types. The table backend generates a substantially smaller
-; parser directly, as upstream already does for JavaScript, and requires the
-; corresponding checksum-locked menhirLib runtime dependency.
+; The table backend emits a substantially smaller parser for this large
+; grammar, as upstream already does for JavaScript, and requires the
+; corresponding checksum-locked menhirLib runtime dependency. The driver
+; retains Menhir's type-inference protocol for implicit nonterminal types.
 (library
  (public_name parser_ocaml.menhir)
  (name parser_ocaml_menhir)
