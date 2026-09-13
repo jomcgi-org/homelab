@@ -2,6 +2,7 @@
 load("@aspect_bazel_lib//lib:tar.bzl", "tar")
 load("@aspect_bazel_lib//lib:transitions.bzl", "platform_transition_filegroup")
 load("//bazel/tools/oci:apko_image.bzl", "apko_image")
+load(":transitions.bzl", "arm64_platform_transition_filegroup")
 
 # embervm-noded daemon container image. Built as an apko image (Wolfi base) rather
 # than a distroless go_image because it drives Firecracker guests as child
@@ -29,7 +30,7 @@ tar(
     ],
 )
 
-platform_transition_filegroup(
+arm64_platform_transition_filegroup(
     name = "noded_arm64_bin",
     srcs = ["//projects/embervm/noded/cmd:noded"],
     target_platform = "@rules_go//go/toolchain:linux_arm64",
@@ -47,12 +48,12 @@ apko_image(
     name = "image",
     config = "apko.yaml",
     contents = "@embervm_noded_lock//:contents",
-    # :noded_tar is the Go binary (multiarch_tars appends _amd64/_arm64 per arch);
-    # @kata_firecracker bakes firecracker, jailer, snapshot-editor, and the guest kernel
-    # into /opt/fc.
-    repository = "ghcr.io/jomcgi/homelab/projects/embervm/noded/image",
     multiarch_tars = [
         ":noded_tar",
         "@kata_firecracker//:tar",
     ],
+    # :noded_tar is the Go binary (multiarch_tars appends _amd64/_arm64 per arch);
+    # @kata_firecracker bakes firecracker, jailer, snapshot-editor, and the guest kernel
+    # into /opt/fc.
+    repository = "ghcr.io/jomcgi/homelab/projects/embervm/noded/image",
 )
