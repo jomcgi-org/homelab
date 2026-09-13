@@ -71,6 +71,23 @@ def _general_enabled():
     )
 
 
+def _probe_enabled():
+    return os.getenv("AGENT_PROBE_SUPERVISION_ENABLED", "false").lower() == "true"
+
+
+def _stale_unbound_tier(permit):
+    return permit.tier in {"kg", "project"} or (
+        permit.tier == "probe" and _probe_enabled()
+    )
+
+
+def _stale_unbound_outcome(permit):
+    # Preserve the existing drainer behavior, whose stale path accepts an
+    # unclassified failure. Probes add only the observed lease-expiry shape;
+    # their other unknown outcomes still require operator attention.
+    return permit.tier in {"kg", "project"} or permit.outcome == "lease_expired"
+
+
 def _factory_owned(db, agent):
     if agent.local_session_id.startswith("factory:"):
         return True
@@ -215,7 +232,8 @@ def _identity(db, permit, *, allow_stale_unbound=False):
         .limit(1)
     ).first()
     stale_unbound_shape = (
-        permit.tier in {"kg", "project"}
+        allow_stale_unbound
+        and _stale_unbound_tier(permit)
         and permit.routine_job_name is None
         and agent.status in _TERMINAL_SESSION_STATUSES
         and agent.ember_session_id is None
@@ -265,7 +283,11 @@ def _identity(db, permit, *, allow_stale_unbound=False):
     if permit.routine_job_name is not None and _routine_job_held(db, permit):
         raise ValueError("routine_job_held")
     if agent.ember_session_id is None:
-        if permit.tier == "probe" and not _general_enabled():
+        if (
+            permit.tier == "probe"
+            and not _general_enabled()
+            and not (allow_stale_unbound and stale_unbound_shape)
+        ):
             raise ValueError("no_guest_supervision_disabled")
         # store.clear_ember_bindings_by_ember_id now refuses a session holding
         # an unknown outcome, but a binding cleared before that guard, or by
@@ -292,7 +314,11 @@ def _identity(db, permit, *, allow_stale_unbound=False):
             except ValueError as exc:
                 if not tolerated:
                     raise ValueError(str(exc) or "malformed_recovery") from exc
-        elif not stale_unbound_shape:
+        elif not (
+            allow_stale_unbound
+            and stale_unbound_shape
+            and _stale_unbound_outcome(permit)
+        ):
             raise ValueError("unrecognised_outcome")
     owners = (
         []
@@ -345,7 +371,7 @@ def _identity(db, permit, *, allow_stale_unbound=False):
 
 def _candidates():
     tiers = []
-    if os.getenv("AGENT_PROBE_SUPERVISION_ENABLED", "false").lower() == "true":
+    if _probe_enabled():
         tiers.append("probe")
     if _general_enabled():
         tiers.extend(("kg", "project", "interactive"))
@@ -474,7 +500,7 @@ def _record_stale_unbound(candidate):
             agent, _turn, identity = _identity(db, permit, allow_stale_unbound=True)
             if (
                 permit.state != "uncertain"
-                or permit.tier not in {"kg", "project"}
+                or not _stale_unbound_tier(permit)
                 or permit.routine_job_name is not None
                 or agent.status not in _TERMINAL_SESSION_STATUSES
                 or agent.ember_session_id is not None
