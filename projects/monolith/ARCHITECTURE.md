@@ -719,6 +719,25 @@ observed response stays the honest health signal for how often the receipt is
 winning the race.
 (see: /projects/monolith/agent_sessions/result_receipts.py)
 
+Ownerless interactive sessions, including Discord, UI, and MCP sessions with no
+workflow, have no reaper or drainer to release a receipt-won fence. Their invoke
+observer therefore writes `response_observer_released_at` when the POST ends
+without a validated response. If that stamp commits before the receipt winner,
+`validate_active_result` suppresses the fence; if it commits after the winner,
+it releases the exact fence. A later interactive follow-up or operator destroy
+is the crash backstop: while holding the session lock it may release only after
+the observer-release stamp proves the observer is gone, or after `accept_until`
+proves no result can still arrive. Destroy checks cleanup ownership and unknown
+outcome before attempting this release, so rows skipped for either condition
+retain their fence, receipt, and guest binding. All release paths preserve the
+existing owner exclusions. When receipt metadata exists, they also preserve the
+receipt, local session, guest, turn, claim owner, dispatch count, supersession,
+and newer-work guards. If receipt retention has already removed the metadata,
+the matching ownerless fence itself is sufficient: there is no receipt left to
+validate or observe, while every live identity and newer-work guard that can
+still be checked remains enforced.
+(see: /projects/monolith/agent_sessions/result_receipts.py)
+
 Monolith batch work is rendered as Argo CronWorkflows in the workflows
 namespace, whose controller owns cadence, concurrency, deadlines, and history.
 Each entry runs the digest-pinned jobs image with one `jobs_main.py`

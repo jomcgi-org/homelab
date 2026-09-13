@@ -1153,6 +1153,39 @@ def test_binding_cleanup_waits_for_the_live_exact_observer(database):
         assert cleared.ember_session_id is None
 
 
+@pytest.mark.parametrize("skip_condition", ["cleanup_pending", "unknown_outcome"])
+def test_binding_cleanup_preserves_releasable_fence_on_skipped_row(
+    database, skip_condition
+):
+    make_ownerless_discord_session(database)
+    receipt = prepare()
+    capture(receipt)
+    with Session(database) as db, db.begin():
+        validate_active(db, receipt)
+        stored_receipt = db.get(AgentResultReceipt, receipt["id"])
+        stored_receipt.accept_until = datetime.now(timezone.utc) - timedelta(seconds=1)
+        db.add(stored_receipt)
+        if skip_condition == "cleanup_pending":
+            agent = db.get(AgentSession, 1)
+            agent.guest_cleanup_id = "cleanup-owner"
+            agent.guest_cleanup_guest_id = "guest-one"
+            db.add(agent)
+        else:
+            permit = db.exec(select(AgentCapacityReservation)).one()
+            permit.state = "uncertain"
+            db.add(permit)
+
+    with Session(database) as db:
+        receipt_before = db.get(AgentResultReceipt, receipt["id"]).model_dump()
+        assert store.clear_ember_bindings_by_ember_id(db, "guest-one") == []
+        db.expire_all()
+        agent = db.get(AgentSession, 1)
+        assert agent.result_receipt_fence_id == receipt["id"]
+        assert agent.ember_session_id == "guest-one"
+        assert agent.ember_session_token == "original-guest-token"
+        assert db.get(AgentResultReceipt, receipt["id"]).model_dump() == receipt_before
+
+
 @pytest.mark.parametrize("changed", ["fence", "binding", "newer_turn"])
 def test_released_old_observer_never_clears_newer_identity(database, changed):
     make_ownerless_discord_session(database)
