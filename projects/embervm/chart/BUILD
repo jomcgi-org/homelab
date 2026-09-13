@@ -225,10 +225,7 @@ py_test(
     env = {
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
     },
-    deps = [
-        "@pip//pytest",
-        "@pip//pyyaml",
-    ],
+    deps = ["@pip//pyyaml"],
 )
 
 py_test(
@@ -354,5 +351,11 @@ semgrep_test(
 semgrep_test(
     name = "chart_github_broker_test_semgrep_test",
     srcs = ["chart_github_broker_test.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+semgrep_test(
+    name = "chart_serving_edge_test_semgrep_test",
+    srcs = ["chart_serving_edge_test.py"],
     rules = ["//bazel/semgrep/rules:python_rules"],
 )
