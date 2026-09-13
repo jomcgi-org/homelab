@@ -757,7 +757,7 @@ def gen_library(
         # scheduler-driven because Menhir and ocamlopt are single-process here.
         lines += [
             "    exec_properties = {",
-            '        "EstimatedMemory": "10GB",',
+            '        "EstimatedMemory": "20GB",',
             '        "default-timeout": "15m",',
             "    },",
         ]
