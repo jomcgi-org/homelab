@@ -172,6 +172,9 @@ spec:
 # matches the Distinct descriptor in the second rule instead, and Envoy Gateway
 # 1.8.3 sets always_consume_default_token_bucket=false for descriptor rules, so
 # valid clients neither consume nor inherit that shared fallback budget.
+# The gateway chart also patches this route-specific LocalRateLimit to retain
+# up to 10,000 dynamic descriptors. Without that route-level capacity, Envoy's
+# default of 20 would let ordinary client cardinality evict exhausted buckets.
 #
 # Keep the regular-expression matcher alongside Distinct. Distinct alone would
 # give every arbitrary malformed value a fresh bucket if the tunnel contract

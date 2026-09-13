@@ -1,0 +1,26 @@
+{{- if .Values.gateway.enabled }}
+# Envoy Gateway 1.8.3 emits a route-specific LocalRateLimit for the public
+# functions policy. Envoy uses that configuration instead of the listener-level
+# filter configuration, so its omitted max_dynamic_descriptors would default to
+# 20 and evict exhausted client buckets under ordinary traffic cardinality.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyPatchPolicy
+metadata:
+  name: {{ .Values.gateway.name }}-functions-rate-limit-capacity
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "cloudflare-gateway.labels" . | nindent 4 }}
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: {{ .Values.gateway.name }}
+  type: JSONPatch
+  jsonPatches:
+    - type: type.googleapis.com/envoy.config.route.v3.RouteConfiguration
+      name: {{ .Release.Namespace }}/{{ .Values.gateway.name }}/http
+      operation:
+        op: add
+        jsonPath: {{ printf "..routes[?(@.name=~\"^httproute/%s/%s/\")]" .Values.gateway.publicFunctionsRateLimit.routeNamespace .Values.gateway.publicFunctionsRateLimit.routeName | quote }}
+        path: typed_per_filter_config/envoy.filters.http.local_ratelimit/max_dynamic_descriptors
+        value: {{ .Values.gateway.publicFunctionsRateLimit.maxDynamicDescriptors }}
+{{- end }}
