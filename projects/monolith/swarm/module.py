@@ -33,11 +33,19 @@ async def _leader_start(app):
 
 async def _leader_stop(app):
     from swarm import runtime
+    from swarm.factory_conductor import disarm_watchdog
 
+    disarm_watchdog()
     try:
         runtime.shutdown()
     finally:
         app.state.leader_singletons_dbos_launched = False
+
+
+def _factory_liveness() -> dict:
+    from swarm.factory_conductor import watchdog_health
+
+    return watchdog_health()
 
 
 MODULE = _Module(
@@ -48,4 +56,5 @@ MODULE = _Module(
     leader_start=_leader_start,
     leader_stop=_leader_stop,
     register_health_advisory={"drainer": drainer_health, "kg": kg_health},
+    register_liveness={"factory": _factory_liveness},
 )

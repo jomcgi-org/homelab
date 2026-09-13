@@ -161,6 +161,11 @@ class Module:
       into the deep ``/api/health`` response (see ``_add_health``). A check
       returns ``{"ok": bool, "detail": str}``; a crashing check is caught by
       the framework and reported not-ok rather than 500ing the whole handler.
+    - ``register_liveness``: optional ``{name: sync check}`` process-local
+      progress checks for the private ``/healthz`` kubelet probe. Checks must
+      be immediate and perform no I/O; dependency outages belong in deep
+      health. Return ``{"ok": bool, "detail": str}``. Public profiles ignore
+      these hooks. The domain owns its signal; the framework only composes it.
     - ``register_health_advisory``: optional ``{name: async check}`` components
       reported but never contributes to the 503 decision.
     - ``requires_secrets``: secret env names the module's PRIVATE surface
@@ -179,6 +184,7 @@ class Module:
     leader_stop: LeaderStopHook | None = None
     register_health: dict[str, HealthCheck] | None = None
     register_health_advisory: dict[str, HealthCheck] | None = None
+    register_liveness: dict[str, Callable[[], dict]] | None = None
     requires_secrets: frozenset[str] = frozenset()
     leader_priority: int = 100
 
@@ -282,8 +288,32 @@ async def stop_leader_singletons(app: FastAPI, modules: Sequence[Module]) -> Non
 
 
 def _add_health(app: FastAPI, profile: Profile, modules: Sequence[Module]) -> None:
+    liveness_checks = {
+        name: check
+        for module in modules
+        if profile.tier is not Tier.PUBLIC
+        for name, check in (module.register_liveness or {}).items()
+    }
+
     @app.get("/healthz")
-    def healthz():
+    async def healthz():
+        # These hooks inspect process-local state only. Run them directly so
+        # a stuck worker pool cannot starve the watchdog's own probe.
+        failures = {}
+        for name, check in liveness_checks.items():
+            try:
+                result = check()
+                if not result.get("ok"):
+                    failures[name] = result
+            except Exception:
+                failures[name] = {"ok": False, "detail": "liveness check failed"}
+        if failures:
+            from fastapi.responses import JSONResponse
+
+            return JSONResponse(
+                status_code=503,
+                content={"status": "unhealthy", "components": failures},
+            )
         return {"status": "ok"}
 
     if not profile.deep_health:

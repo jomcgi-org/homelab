@@ -8640,3 +8640,103 @@ def test_review_recovery_wait_keeps_the_original_deadline(feedback_db, monkeypat
     conductor.reconcile_task(task["id"], policy, object())
     assert controls.task_snapshot(task["id"])["state"] == "failed"
     assert conductor._review_rounds_used(task["id"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_watchdog_detects_blocked_tick_without_changing_task_authority(
+    monkeypatch,
+):
+    import asyncio
+
+    clock = [100.0]
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocked_tick(fn):
+        assert fn is conductor.tick
+        entered.set()
+        await release.wait()
+
+    monkeypatch.setenv("FACTORY_ENABLED", "true")
+    monkeypatch.setattr(conductor.asyncio, "to_thread", blocked_tick)
+    monkeypatch.setattr(conductor, "_watchdog_clock", lambda: clock[0])
+    conductor.disarm_watchdog()
+    task = conductor.start_loop()[0]
+    try:
+        await entered.wait()
+        assert conductor.watchdog_health()["ok"]
+        clock[0] += conductor.WATCHDOG_STALL_SECONDS
+        assert conductor.watchdog_health()["ok"]
+        clock[0] += 1
+        assert not conductor.watchdog_health()["ok"]
+        # A failed probe is observational: it cannot cancel or re-admit work.
+        assert not task.done()
+        release.set()
+        await asyncio.sleep(0)
+        assert conductor.watchdog_health()["ok"]
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert not conductor.watchdog_health()["ok"]
+        conductor.disarm_watchdog()
+        assert conductor.watchdog_health()["ok"]
+    finally:
+        task.cancel()
+        conductor.disarm_watchdog()
+
+
+@pytest.mark.asyncio
+async def test_watchdog_treats_retryable_tick_error_as_progress(monkeypatch):
+    import asyncio
+
+    clock = [100.0]
+    called = asyncio.Event()
+
+    async def failing_tick(fn):
+        clock[0] += conductor.WATCHDOG_STALL_SECONDS + 1
+        called.set()
+        raise OSError("dependency unavailable")
+
+    monkeypatch.setenv("FACTORY_ENABLED", "true")
+    monkeypatch.setattr(conductor.asyncio, "to_thread", failing_tick)
+    monkeypatch.setattr(conductor, "_watchdog_clock", lambda: clock[0])
+    conductor.disarm_watchdog()
+    task = conductor.start_loop()[0]
+    try:
+        await called.wait()
+        assert conductor.watchdog_health()["ok"]
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        conductor.disarm_watchdog()
+
+
+def test_disabled_factory_does_not_arm_watchdog(monkeypatch):
+    monkeypatch.setenv("FACTORY_ENABLED", "false")
+    conductor.disarm_watchdog()
+    assert conductor.start_loop() == []
+    assert conductor.watchdog_health()["ok"]
+
+
+@pytest.mark.asyncio
+async def test_swarm_module_disarms_watchdog_before_runtime_shutdown(monkeypatch):
+    from types import SimpleNamespace
+
+    from swarm import module
+
+    class StoppedTask:
+        def done(self):
+            return True
+
+    monkeypatch.setattr(conductor, "_loop_task", StoppedTask())
+    probe = module.MODULE.register_liveness["factory"]
+    assert not probe()["ok"]
+    observations = []
+    monkeypatch.setattr(
+        conductor.runtime, "shutdown", lambda: observations.append(probe()["ok"])
+    )
+    app = SimpleNamespace(state=SimpleNamespace(leader_singletons_dbos_launched=True))
+    await module._leader_stop(app)
+    assert observations == [True]
+    assert app.state.leader_singletons_dbos_launched is False
