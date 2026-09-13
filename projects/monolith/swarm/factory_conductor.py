@@ -9,10 +9,12 @@ are the recovery state, so losing this process cannot lose a task or its pin.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 import json
 import logging
 import math
 import os
+import platform
 import re
 import time
 from urllib.parse import quote
@@ -46,6 +48,8 @@ from swarm.models import SwarmConductorCall, SwarmPlanVersion, SwarmTask
 logger = logging.getLogger(__name__)
 ACTOR = "factory:reconciler"
 TICK_SECONDS = 15
+FACTORY_RECOVERY_ABANDON_SECONDS = 900
+FACTORY_RECONCILER_PAUSE_TTL_SECONDS = 7200
 # Process start, for the settling window stall detection waits out. Monotonic
 # because it is only ever compared against itself.
 _STARTED_AT = time.monotonic()
@@ -2826,6 +2830,95 @@ def _stranded_versions(state) -> tuple[str, str] | None:
 UNREADABLE_STEPS = object()
 
 
+def _aware(value: datetime) -> datetime:
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+
+
+def _current_replica_claim(owner: str | None) -> bool:
+    replica = platform.node()
+    return bool(owner and (owner == replica or owner.startswith(f"{replica}:")))
+
+
+def _abandon_recovering_factory_session(
+    pin: dict, session_id: int | None, workflow_status: str
+) -> bool:
+    """Convert a dead factory recovery into its durable unknown outcome."""
+    if (
+        os.environ.get("FACTORY_STOP_SUPERVISION_ENABLED", "false").lower() != "true"
+        or workflow_status in {"PENDING", "ENQUEUED"}
+        or type(session_id) is not int
+    ):
+        return False
+
+    from agent_sessions import admission, store
+    from agent_sessions.models import PendingMessage
+    from agent_sessions.reconciliation import _factory_owner, _locked_session
+    from swarm.factory_controls import _audit as _controls_audit
+    from swarm.factory_controls import _locked_session as _factory_locked_session
+
+    changed = False
+    with Session(get_engine()) as db:
+        with _factory_locked_session(db):
+            admission.lock_pool(db)
+            try:
+                owner = _factory_owner(db, pin, session_id)
+            except ValueError:
+                return False
+            if owner is None:
+                return False
+            row = _locked_session(db, owner.id)
+            try:
+                if _factory_owner(db, pin, row.id) is None:
+                    return False
+            except ValueError:
+                return False
+            if row.status != "recovering":
+                return False
+            pending = db.exec(
+                select(PendingMessage)
+                .where(PendingMessage.session_id == row.id)
+                .order_by(PendingMessage.seq)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            ).first()
+            if pending is None:
+                return False
+            stale_claim = pending.claimed_at is not None and _aware(
+                pending.claimed_at
+            ) < datetime.now(timezone.utc) - timedelta(
+                seconds=FACTORY_RECOVERY_ABANDON_SECONDS
+            )
+            foreign_claim = (
+                pending.claimed_by_replica is not None
+                and not _current_replica_claim(pending.claimed_by_replica)
+                and stale_claim
+            )
+            if not (foreign_claim or stale_claim):
+                return False
+            store._finish_unknown_locked(db, row, pending, "factory_recovery_abandoned")
+            completed_turn = row.status == "recovering"
+            if completed_turn:
+                row.status = "failed"
+                row.last_turn_at = datetime.now(timezone.utc)
+                db.add(row)
+            _controls_audit(
+                db,
+                ACTOR,
+                "factory_recovery_abandoned",
+                task_id=pin["task_id"],
+                session_id=row.id,
+                workflow_id=pin["workflow_id"],
+                reason=(
+                    "completed turn already recorded"
+                    if completed_turn
+                    else "no executor can resume a recovering factory session whose node workflow already finished"
+                ),
+            )
+            changed = True
+        db.commit()
+    return changed
+
+
 def _last_step_epoch_ms(key: str):
     """Newest dbos.operation_outputs checkpoint for one workflow.
 
@@ -3009,6 +3102,7 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
                     session_id = resolve_node_session_id(pin, session=db)
                 if session_id is not None:
                     result = {**result, "session_id": session_id}
+            _abandon_recovering_factory_session(pin, session_id, workflow_status)
             if reconcile_uncertain_attempt(
                 pin,
                 session_id,
@@ -3784,6 +3878,109 @@ def observe_reviewer_routing(policy: dict) -> None:
         logger.exception("factory reviewer routing observation failed")
 
 
+def _expire_reconciler_pause(task_id: str) -> bool:
+    """Cancel one stale reconciler-owned pause and release uncertain starts."""
+    if os.environ.get("FACTORY_STOP_SUPERVISION_ENABLED", "false").lower() != "true":
+        return False
+
+    from swarm.factory_controls import (
+        _audit,
+        _locked_session,
+        finish_task,
+        record_start_outcome,
+    )
+    from swarm.factory_models import FactoryAudit, FactoryReceipt, FactoryStart
+
+    expired = False
+    with Session(get_engine()) as db:
+        with _locked_session(db):
+            receipt = db.exec(
+                select(FactoryReceipt)
+                .where(FactoryReceipt.task_id == task_id)
+                .execution_options(populate_existing=True)
+            ).first()
+            if receipt is None or not receipt.task_paused:
+                return False
+            pauses = db.exec(
+                select(FactoryAudit)
+                .where(
+                    FactoryAudit.task_id == task_id,
+                    FactoryAudit.action == "pause_task",
+                )
+                .order_by(FactoryAudit.id.desc())
+            ).all()
+            pause = None
+            detail = {}
+            for candidate in pauses:
+                try:
+                    candidate_detail = json.loads(candidate.detail_json or "{}")
+                except (TypeError, ValueError):
+                    continue
+                if candidate_detail.get("ok") is True:
+                    pause = candidate
+                    detail = candidate_detail
+                    break
+            if (
+                pause is None
+                or pause.actor != ACTOR
+                or _aware(pause.created_at)
+                >= datetime.now(timezone.utc)
+                - timedelta(seconds=FACTORY_RECONCILER_PAUSE_TTL_SECONDS)
+                or db.exec(
+                    select(FactoryAudit.id).where(
+                        FactoryAudit.task_id == task_id,
+                        FactoryAudit.action == "resume_task",
+                        FactoryAudit.id > pause.id,
+                    )
+                ).first()
+                is not None
+            ):
+                return False
+            reason = detail.get("reason") or "reconciler pause older than 2h"
+            evidence = {"state": "reconciler_pause_expired", "reason": reason}
+            result = finish_task(
+                task_id, "cancelled", ACTOR, evidence=evidence, session=db
+            )
+            if not result["ok"] and result.get("reason") == "unresolved_starts":
+                starts = db.exec(
+                    select(FactoryStart).where(
+                        FactoryStart.task_id == task_id,
+                        FactoryStart.status == "uncertain",
+                    )
+                ).all()
+                for start in starts:
+                    settled = record_start_outcome(
+                        task_id,
+                        start.start_key,
+                        "failed",
+                        ACTOR,
+                        cost_usd=0.0,
+                        session_id=start.session_id,
+                        reconciled=True,
+                        session=db,
+                    )
+                    if not settled["ok"]:
+                        return False
+                result = finish_task(
+                    task_id, "cancelled", ACTOR, evidence=evidence, session=db
+                )
+            if not result["ok"]:
+                return False
+            receipt.task_paused = False
+            receipt.updated_at = datetime.now(timezone.utc)
+            db.add(receipt)
+            _audit(
+                db,
+                ACTOR,
+                "reconciler_pause_expired",
+                task_id=task_id,
+                reason=reason,
+            )
+            expired = True
+        db.commit()
+    return expired
+
+
 def tick() -> None:
     from swarm.factory_controls import status
     from swarm.factory_intake import admit_next
@@ -3812,6 +4009,8 @@ def tick() -> None:
     # in the policy must not stall every in-flight task behind the ingest.
     for task in active:
         try:
+            if task.get("task_paused") and _expire_reconciler_pause(task["task_id"]):
+                continue
             reconcile_task(task["task_id"], task["policy"], dbos)
         except Exception:  # noqa: BLE001 - per-task isolation keeps the lane live
             logger.exception("factory reconcile failed for task %s", task["task_id"])

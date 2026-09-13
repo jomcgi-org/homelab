@@ -1,9 +1,10 @@
 """Consume durable exact Ember stop proof through the existing factory owner.
 
-Each tick observes one guest and may issue one conditional stop. No network
-call holds a database lock; an immutable audit intent survives observer loss.
-Native completion is checked first by the conductor. This path preserves an
-unknown turn and settles failed execution only after positive teardown proof.
+Each tick observes one guest and may issue one conditional stop or one destroy
+for a guest stranded on a departed node. No network call holds a database lock;
+an immutable audit intent survives observer loss. Native completion is checked
+first by the conductor. This path preserves an unknown turn and settles failed
+execution only after positive teardown proof.
 """
 
 from __future__ import annotations
@@ -27,12 +28,14 @@ from swarm.models import SwarmNodeRun
 
 ACTOR = "factory:stop-supervision"
 MAX_STOP_REQUESTS = 3
+MAX_NODE_GONE_DESTROY_REQUESTS = 2
 HTTP_SECONDS = 5
 COMPLETION_ALARM_SECONDS = 120
 # How long after the attempt's failed turn the guest stop becomes due. Long
 # enough for the conductor's own native completion check to settle the attempt
 # first, short enough that a four-hour policy timeout never decides it.
 STOP_GRACE_SECONDS = 120
+NODE_GONE_GRACE_SECONDS = 600
 _ACTIONS = (
     "stop_intent",
     "stop_request",
@@ -422,6 +425,130 @@ def _note(pin, reason):
             )
 
 
+def _node_gone_note(
+    pin, reason, node_id, *, exception=None, intervention_required=True
+):
+    """Record one bounded node-loss intervention observation."""
+    with controls._locked_session() as (db, _control):
+        previous = _records(db, pin)
+        if any(
+            action == "stop_observation" and detail.get("reason") == reason
+            for action, detail in previous
+        ):
+            return
+        detail = {
+            "reason": reason,
+            "node_id": node_id,
+            "intervention_required": intervention_required,
+            "cessation_confirmed": False,
+        }
+        if exception is not None:
+            detail["exception"] = exception
+        _audit(db, pin, "stop_observation", **detail)
+
+
+def _reserve_node_gone_destroy(pin, node_id, precondition):
+    """Consume one durable request slot before contacting the control plane."""
+    with controls._locked_session() as (db, _control):
+        previous = _records(db, pin)
+        requests = sum(
+            action == "stop_observation"
+            and detail.get("reason") == "guest_node_gone_destroy_requested"
+            for action, detail in previous
+        )
+        if requests >= MAX_NODE_GONE_DESTROY_REQUESTS:
+            if not any(
+                action == "stop_observation"
+                and detail.get("reason") == "guest_node_gone_destroy_exhausted"
+                for action, detail in previous
+            ):
+                _audit(
+                    db,
+                    pin,
+                    "stop_observation",
+                    reason="guest_node_gone_destroy_exhausted",
+                    node_id=node_id,
+                    destroy_requests=requests,
+                    intervention_required=True,
+                    cessation_confirmed=False,
+                )
+            return False
+        _audit(
+            db,
+            pin,
+            "stop_observation",
+            reason="guest_node_gone_destroy_requested",
+            node_id=node_id,
+            request_number=requests + 1,
+            precondition=precondition,
+            intervention_required=False,
+            cessation_confirmed=False,
+        )
+        return True
+
+
+def _destroy_guest(guest_id, precondition):
+    from agent_sessions.transport import EmberVmShimTransport
+
+    async def request():
+        return await asyncio.wait_for(
+            # The precondition is recorded on the audit for the operator; it is
+            # not sent. The control plane accepts no precondition on a parked
+            # or banked session (#6091), and a guest on a departed node cannot
+            # be relit between the observation and this request (#5502).
+            EmberVmShimTransport().destroy_session(guest_id),
+            timeout=HTTP_SECONDS,
+        )
+
+    return asyncio.run(request())
+
+
+def _destroy_guest_on_departed_node(pin, identity, view):
+    """Request teardown for an old parked guest whose Kubernetes node is gone."""
+    node = view.get("node") or {}
+    node_id = node.get("node_id") if isinstance(node, dict) else None
+    updated_at = view.get("updated_at")
+    if (
+        view.get("state") not in {"parked", "banked"}
+        or not isinstance(node_id, str)
+        or not node_id
+        or type(updated_at) is not int
+        or updated_at <= 0
+        or int(_now().timestamp() * 1000) - updated_at <= NODE_GONE_GRACE_SECONDS * 1000
+    ):
+        return False
+
+    from cluster.kubernetes import cluster_node_names
+
+    node_names = asyncio.run(cluster_node_names())
+    if node_names is None or node_id in node_names:
+        return False
+    generation = view.get("generation")
+    if type(generation) is not int or generation < 0:
+        _node_gone_note(
+            pin,
+            "guest_node_gone_destroy_failed",
+            node_id,
+            intervention_required=True,
+        )
+        return True
+    precondition = {"generation": generation}
+    if not _reserve_node_gone_destroy(pin, node_id, precondition):
+        return True
+    try:
+        _destroy_guest(identity["guest_id"], precondition)
+    except Exception as exc:
+        _node_gone_note(
+            pin,
+            "guest_node_gone_destroy_failed",
+            node_id,
+            exception=type(exc).__name__,
+            intervention_required=True,
+        )
+        return True
+    return True
+
+
 def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_status):
     """One bounded supervision tick for an already terminal DBOS workflow.
 
@@ -478,6 +605,8 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
     try:
         if not isinstance(view, dict) or view.get("session_id") != identity["guest_id"]:
             raise ValueError("wrong_stop_observation")
+        if _destroy_guest_on_departed_node(pin, identity, view):
+            return False
         cessation = None
         if cessation_enabled:
             cessation = _control_plane_cessation(view, identity, saved)

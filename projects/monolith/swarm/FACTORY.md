@@ -711,6 +711,18 @@ forward. A strand or
 a stall caught early still holds its reservation until one of those deadlines
 passes rather than self-healing at the moment it is observed.
 
+Stop supervision also checks the Kubernetes node inventory. When an old parked
+or banked guest names a node that is no longer in the cluster, supervision asks
+Ember to destroy it and waits for the next observation to prove `destroyed`
+before settling the attempt. The destroy carries the observed generation and
+consumes one of two durable request slots before the network call. Exhaustion
+requires operator intervention. An unavailable inventory never counts as an
+empty cluster. If a factory session is still `recovering` after its DBOS
+workflow is terminal and its executor claim is older than fifteen minutes, the
+conductor records the turn as an unknown invocation first so the same stop
+supervision path can own the guest. Issue #6091 tracks the control-plane root
+cause.
+
 A replica lost mid-invoke used to cost the attempt outright. The rollout
 cancelled the executor watching the turn, the guest carried on working, and the
 executor recorded an unknown invocation that failed the session and left stop
@@ -1040,6 +1052,12 @@ including the shared pending-message sweep and transport creation/invoke retries
 The coordinator makes at most two recorded cancellation attempts per active node.
 Other operator-owned sessions are outside this control scope.
 
+A task pause written by the reconciler expires after two hours. The conductor
+settles any uncertain starts, cancels the task with
+`reconciler_pause_expired`, clears its paused flag, and releases its delivery
+slot. Only a successful reconciler pause audit is eligible. A pause written by
+an operator never expires automatically.
+
 A network operation already in flight can remain uncertain after stop. Status
 continues to show those reservations and cancellation requests; the stop flag
 does not assert that every guest has ceased. Stop is terminal for this first
@@ -1054,12 +1072,17 @@ Fresh sessions have a one-day lifetime, and an older session has only the time
 remaining before its absolute expiry. Idle parked sessions still expire after
 one hour.
 
-The current stop path fences admission and requests DBOS workflow cancellation.
-It does not yet guarantee termination of an external Ember guest. Issue #5922
-tracks the bridge to the exact owned invocation, cessation confirmation, ongoing
-run inspection and bounded resume. Until that is implemented, an uncertain
-attempt retains its capacity and cannot be restarted merely because its observer
-or workflow timed out.
+Permit supervision settles an hour-old unbound `kg` or `project` permit when
+its session is terminal and no durable binding evidence exists. For a bound
+non-factory guest parked or banked on a departed node, it requests destruction
+with the observed generation, at most twice, and keeps the permit uncertain
+until the control plane reports cessation.
+
+The stop path fences admission and requests DBOS workflow cancellation. An
+uncertain attempt retains its capacity until exact control-plane evidence proves
+that its owned guest ceased. A parked guest on a departed node is first asked to
+destroy, then settled only after the later `destroyed` view. Issue #6091 tracks
+the control-plane root cause that can otherwise leave this state stranded.
 
 ## Validation
 

@@ -2082,6 +2082,450 @@ def queued_factory(feedback_db, monkeypatch):
     )
 
 
+def _recovering_factory(queued_factory, monkeypatch, *, owner, old_claim):
+    from datetime import datetime, timedelta, timezone
+    from sqlmodel import Session, select
+    from agent_sessions import admission, store
+    from agent_sessions.models import AgentSession, PendingMessage
+    from swarm import factory_controls as controls
+
+    s = queued_factory
+    for module in (admission, store, controls):
+        monkeypatch.setattr(module, "get_engine", lambda: s.engine)
+    monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "true")
+    assert store.claim_pending_message_for_session_sync(s.sid, owner) == 1
+    assert admission.recheck(s.sid, 1, owner)
+    with Session(s.engine) as db:
+        agent = db.get(AgentSession, s.sid)
+        agent.status = "recovering"
+        agent.ember_session_id = "guest-recovering"
+        pending = db.exec(
+            select(PendingMessage).where(PendingMessage.session_id == s.sid)
+        ).one()
+        pending.claimed_at = datetime.now(timezone.utc) - timedelta(
+            seconds=conductor.FACTORY_RECOVERY_ABANDON_SECONDS + 1 if old_claim else 0
+        )
+        db.add_all([agent, pending])
+        db.commit()
+    return s
+
+
+def test_terminal_workflow_abandons_stale_factory_recovery_then_supervises(
+    queued_factory, monkeypatch
+):
+    import json
+    from sqlmodel import Session, select
+    from agent_sessions.constants import UNKNOWN_INVOCATION
+    from agent_sessions.models import AgentSession, AgentTurn, PendingMessage
+    from swarm import factory_supervision, node_workflows
+    from swarm.factory_models import FactoryAudit
+
+    s = _recovering_factory(
+        queued_factory, monkeypatch, owner="departed-replica:attempt", old_claim=True
+    )
+    s.run = {**s.run, "session_id": s.sid}
+    monkeypatch.setattr(node_workflows, "reconcile_completed_node", lambda *_a: None)
+    seen = []
+
+    def supervise(_pin, session_id, _result, workflow_status):
+        with Session(s.engine) as db:
+            agent = db.get(AgentSession, session_id)
+            turn = db.exec(
+                select(AgentTurn).where(AgentTurn.session_id == session_id)
+            ).one()
+            assert agent.status == "failed"
+            assert turn.stop_reason == UNKNOWN_INVOCATION
+            assert db.exec(select(PendingMessage)).first() is None
+        seen.append((session_id, workflow_status))
+        return False
+
+    monkeypatch.setattr(factory_supervision, "reconcile_uncertain_attempt", supervise)
+    dbos = SimpleNamespace(
+        get_workflow_status=lambda _key: SimpleNamespace(status="ERROR")
+    )
+    conductor._submit_or_reconcile(s.task, s.run, dbos)
+
+    assert seen == [(s.sid, "ERROR")]
+    with Session(s.engine) as db:
+        audit = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.action == "factory_recovery_abandoned"
+            )
+        ).one()
+        detail = json.loads(audit.detail_json)
+        assert detail == {
+            "reason": "no executor can resume a recovering factory session whose node workflow already finished",
+            "session_id": s.sid,
+            "workflow_id": s.run["pin"]["workflow_id"],
+        }
+
+
+def test_recovering_factory_session_with_live_local_claim_is_left_alone(
+    queued_factory, monkeypatch
+):
+    from sqlmodel import Session, select
+    from agent_sessions.models import AgentSession, PendingMessage
+
+    owner = f"{conductor.platform.node()}:attempt"
+    s = _recovering_factory(queued_factory, monkeypatch, owner=owner, old_claim=False)
+
+    assert not conductor._abandon_recovering_factory_session(
+        s.run["pin"], s.sid, "ERROR"
+    )
+    with Session(s.engine) as db:
+        assert db.get(AgentSession, s.sid).status == "recovering"
+        assert db.exec(select(PendingMessage)).one().claimed_by_replica == owner
+
+
+def test_recovering_factory_session_with_fresh_foreign_claim_is_left_alone(
+    queued_factory, monkeypatch
+):
+    from sqlmodel import Session, select
+    from agent_sessions.models import AgentSession, PendingMessage
+
+    owner = "other-live-replica:attempt"
+    s = _recovering_factory(queued_factory, monkeypatch, owner=owner, old_claim=False)
+
+    assert not conductor._abandon_recovering_factory_session(
+        s.run["pin"], s.sid, "ERROR"
+    )
+    with Session(s.engine) as db:
+        assert db.get(AgentSession, s.sid).status == "recovering"
+        assert db.exec(select(PendingMessage)).one().claimed_by_replica == owner
+
+
+def test_recovery_abandonment_fails_session_when_completed_turn_already_exists(
+    queued_factory, monkeypatch
+):
+    import json
+    from sqlmodel import Session, select
+    from agent_sessions.models import AgentSession, AgentTurn, PendingMessage
+    from swarm.factory_models import FactoryAudit
+
+    s = _recovering_factory(
+        queued_factory, monkeypatch, owner="departed-replica:attempt", old_claim=True
+    )
+    with Session(s.engine) as db, db.begin():
+        db.add(
+            AgentTurn(
+                session_id=s.sid,
+                seq=1,
+                prompt="queued planner",
+                result_text="completed elsewhere",
+                terminal_reason=None,
+            )
+        )
+
+    assert conductor._abandon_recovering_factory_session(s.run["pin"], s.sid, "ERROR")
+    with Session(s.engine) as db:
+        assert db.get(AgentSession, s.sid).status == "failed"
+        assert db.exec(select(PendingMessage)).first() is None
+        audits = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.action == "factory_recovery_abandoned"
+            )
+        ).all()
+        assert len(audits) == 1
+        assert json.loads(audits[0].detail_json)["reason"] == (
+            "completed turn already recorded"
+        )
+
+
+def test_recovery_abandonment_never_touches_non_factory_session(
+    queued_factory, monkeypatch
+):
+    from sqlmodel import Session, select
+    from agent_sessions.models import AgentSession, PendingMessage
+
+    s = _recovering_factory(
+        queued_factory, monkeypatch, owner="departed-replica:attempt", old_claim=True
+    )
+    with Session(s.engine) as db:
+        agent = db.get(AgentSession, s.sid)
+        agent.local_session_id = "manual-session"
+        db.add(agent)
+        db.commit()
+
+    assert not conductor._abandon_recovering_factory_session(
+        s.run["pin"], s.sid, "ERROR"
+    )
+    with Session(s.engine) as db:
+        assert db.get(AgentSession, s.sid).status == "recovering"
+        assert db.exec(select(PendingMessage)).one() is not None
+
+
+def _aged_pause(queued_factory, monkeypatch, actor, *, unresolved=False):
+    from datetime import datetime, timedelta, timezone
+    from sqlmodel import Session, select
+    from swarm import factory_controls as controls
+    from swarm.factory_models import FactoryAudit, FactoryStart
+
+    s = queued_factory
+    monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "true")
+    assert controls.set_control("pause_task", actor, task_id=s.task["id"])["ok"]
+    with Session(s.engine) as db:
+        pause = db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == "pause_task")
+        ).one()
+        pause.created_at = datetime.now(timezone.utc) - timedelta(
+            seconds=conductor.FACTORY_RECONCILER_PAUSE_TTL_SECONDS + 1
+        )
+        start = db.exec(select(FactoryStart)).one()
+        start.status = "uncertain" if unresolved else "failed"
+        start.session_id = s.sid
+        db.add_all([pause, start])
+        db.commit()
+    return s
+
+
+def test_reconciler_pause_older_than_ttl_cancels_task(queued_factory, monkeypatch):
+    import json
+    from sqlmodel import Session, select
+    from swarm import factory_controls as controls
+    from swarm.factory_models import FactoryAudit
+
+    s = _aged_pause(queued_factory, monkeypatch, conductor.ACTOR)
+
+    assert conductor._expire_reconciler_pause(s.task["id"])
+    assert controls.task_snapshot(s.task["id"])["state"] == "cancelled"
+    with Session(s.engine) as db:
+        audit = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.action == "reconciler_pause_expired"
+            )
+        ).one()
+        assert json.loads(audit.detail_json)["reason"] == (
+            "reconciler pause older than 2h"
+        )
+    assert controls.task_snapshot(s.task["id"])["task_paused"] is False
+
+
+def test_operator_pause_never_expires(queued_factory, monkeypatch):
+    from swarm import factory_controls as controls
+
+    s = _aged_pause(queued_factory, monkeypatch, "operator:test")
+
+    assert not conductor._expire_reconciler_pause(s.task["id"])
+    snapshot = controls.task_snapshot(s.task["id"])
+    assert snapshot["state"] == "admitted" and snapshot["task_paused"]
+
+
+def test_refused_reconciler_pause_does_not_expire_operator_pause(
+    queued_factory, monkeypatch
+):
+    from datetime import datetime, timedelta, timezone
+    from sqlmodel import Session, select
+    from swarm import factory_controls as controls
+    from swarm.factory_models import FactoryAudit
+
+    s = _aged_pause(queued_factory, monkeypatch, "operator:test")
+    with Session(s.engine) as db, db.begin():
+        receipt = db.exec(
+            select(controls.FactoryReceipt).where(
+                controls.FactoryReceipt.task_id == s.task["id"]
+            )
+        ).one()
+        receipt.cancellation_requested = True
+        db.add(receipt)
+    assert not controls.set_control(
+        "pause_task", conductor.ACTOR, task_id=s.task["id"]
+    )["ok"]
+    with Session(s.engine) as db, db.begin():
+        for pause in db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == "pause_task")
+        ).all():
+            pause.created_at = datetime.now(timezone.utc) - timedelta(
+                seconds=conductor.FACTORY_RECONCILER_PAUSE_TTL_SECONDS + 1
+            )
+            db.add(pause)
+
+    assert not conductor._expire_reconciler_pause(s.task["id"])
+    snapshot = controls.task_snapshot(s.task["id"])
+    assert snapshot["state"] == "admitted"
+    assert snapshot["task_paused"] is True
+
+
+def test_resume_audit_after_reconciler_pause_prevents_expiry(
+    queued_factory, monkeypatch
+):
+    from sqlmodel import Session
+    from swarm import factory_controls as controls
+
+    s = _aged_pause(queued_factory, monkeypatch, conductor.ACTOR)
+    with Session(s.engine) as db, db.begin():
+        controls._audit(
+            db,
+            "operator:test",
+            "resume_task",
+            task_id=s.task["id"],
+            ok=True,
+            reason=None,
+        )
+
+    assert not conductor._expire_reconciler_pause(s.task["id"])
+    snapshot = controls.task_snapshot(s.task["id"])
+    assert snapshot["state"] == "admitted"
+    assert snapshot["task_paused"] is True
+
+
+def test_pause_expiry_resolves_uncertain_starts_before_retrying_finish(
+    queued_factory, monkeypatch
+):
+    from swarm import factory_controls as controls
+
+    s = _aged_pause(queued_factory, monkeypatch, conductor.ACTOR, unresolved=True)
+
+    assert conductor._expire_reconciler_pause(s.task["id"])
+    snapshot = controls.task_snapshot(s.task["id"])
+    assert snapshot["state"] == "cancelled"
+    assert snapshot["starts"][0]["status"] == "failed"
+    assert snapshot["starts"][0]["cost_usd"] == 0.0
+
+
+def test_departed_node_destroy_request_settles_on_following_destroyed_view(
+    uncertain_factory, monkeypatch
+):
+    import json
+    from datetime import timedelta
+    from sqlmodel import Session, select
+    from cluster import kubernetes
+    from swarm import factory_supervision as supervisor
+    from swarm.factory_models import FactoryAudit
+
+    s = uncertain_factory
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    now = s.failed_turn_at + timedelta(seconds=800)
+    updated = int((s.failed_turn_at + timedelta(seconds=10)).timestamp() * 1000)
+    s.cp.update(
+        state="parked",
+        updated_at=updated,
+        node={"node_id": "departed-node"},
+    )
+    monkeypatch.setattr(supervisor, "_now", lambda: now)
+
+    async def node_names():
+        return {"present-node"}
+
+    monkeypatch.setattr(kubernetes, "cluster_node_names", node_names)
+    destroyed = []
+    monkeypatch.setattr(
+        supervisor,
+        "_destroy_guest",
+        lambda guest, precondition: destroyed.append((guest, precondition)),
+    )
+
+    for _ in range(4):
+        assert not supervisor.reconcile_uncertain_attempt(
+            s.run["pin"], s.sid, s.result, "SUCCESS"
+        )
+    assert destroyed == [
+        ("s-exact-factory", {"generation": 0}),
+        ("s-exact-factory", {"generation": 0}),
+    ]
+    with Session(s.engine) as db:
+        observations = db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == "stop_observation")
+        ).all()
+        details = [json.loads(row.detail_json) for row in observations]
+        requested = [
+            detail
+            for detail in details
+            if detail["reason"] == "guest_node_gone_destroy_requested"
+        ]
+        assert [detail["request_number"] for detail in requested] == [1, 2]
+        assert all(detail["precondition"] == {"generation": 0} for detail in requested)
+        exhausted = [
+            detail
+            for detail in details
+            if detail["reason"] == "guest_node_gone_destroy_exhausted"
+        ]
+        assert len(exhausted) == 1
+        assert exhausted[0]["intervention_required"] is True
+
+    s.cp["state"] = "destroyed"
+    s.cp["updated_at"] = int(
+        (s.failed_turn_at + timedelta(seconds=20)).timestamp() * 1000
+    )
+    assert supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    assert _uncertain_snapshot(s)["permits"][0]["state"] == "settled"
+
+
+def test_departed_node_destroy_failure_is_bounded_and_requires_intervention(
+    uncertain_factory, monkeypatch
+):
+    import json
+    from datetime import timedelta
+    from sqlmodel import Session, select
+    from cluster import kubernetes
+    from swarm import factory_supervision as supervisor
+    from swarm.factory_models import FactoryAudit
+
+    s = uncertain_factory
+    now = s.failed_turn_at + timedelta(seconds=800)
+    s.cp.update(
+        state="parked",
+        updated_at=int((s.failed_turn_at + timedelta(seconds=10)).timestamp() * 1000),
+        node={"node_id": "departed-node"},
+    )
+    monkeypatch.setattr(supervisor, "_now", lambda: now)
+
+    async def node_names():
+        return {"present-node"}
+
+    monkeypatch.setattr(kubernetes, "cluster_node_names", node_names)
+    calls = []
+
+    def reject(guest, precondition):
+        calls.append((guest, precondition))
+        with Session(s.engine) as db:
+            requested = [
+                json.loads(row.detail_json)
+                for row in db.exec(
+                    select(FactoryAudit).where(
+                        FactoryAudit.action == "stop_observation"
+                    )
+                ).all()
+                if json.loads(row.detail_json)["reason"]
+                == "guest_node_gone_destroy_requested"
+            ]
+            assert len(requested) == len(calls)
+        raise RuntimeError("409 precondition rejected")
+
+    monkeypatch.setattr(supervisor, "_destroy_guest", reject)
+    for _ in range(4):
+        assert not supervisor.reconcile_uncertain_attempt(
+            s.run["pin"], s.sid, s.result, "SUCCESS"
+        )
+
+    assert calls == [
+        ("s-exact-factory", {"generation": 0}),
+        ("s-exact-factory", {"generation": 0}),
+    ]
+    with Session(s.engine) as db:
+        details = [
+            json.loads(row.detail_json)
+            for row in db.exec(
+                select(FactoryAudit).where(FactoryAudit.action == "stop_observation")
+            ).all()
+        ]
+    failed = [
+        detail
+        for detail in details
+        if detail["reason"] == "guest_node_gone_destroy_failed"
+    ]
+    assert len(failed) == 1
+    assert failed[0]["intervention_required"] is True
+    exhausted = [
+        detail
+        for detail in details
+        if detail["reason"] == "guest_node_gone_destroy_exhausted"
+    ]
+    assert len(exhausted) == 1
+    assert exhausted[0]["intervention_required"] is True
+
+
 @pytest.fixture
 def not_invoked_factory(queued_factory, monkeypatch, request):
     import json
