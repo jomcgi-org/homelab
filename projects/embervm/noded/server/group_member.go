@@ -136,7 +136,7 @@ func (s *Server) startGroupMemberFresh(ctx context.Context, req *nodev1.StartGro
 	if len(env) > 0 {
 		s.logger.Info("noded: group member fresh boot carrying env", "group", groupInstanceID, "member", memberName, "keys", mmdsEnvKeyNamesSorted(env))
 	}
-	h, err := s.groupDriver.ClaimGroupMember(ctx, rootfsPath, harnessInit, int(res.GetVcpus()), int(res.GetMemMib()), nic, env)
+	h, err := s.groupDriver.ClaimGroupMember(ctx, req.GetTrace().GetWorkload(), rootfsPath, harnessInit, int(res.GetVcpus()), int(res.GetMemMib()), nic, env)
 	if err != nil {
 		s.groupNet.RemoveMemberTap(ctx, groupInstanceID, tap, ip)
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: cold-boot group member: %v", err)
@@ -184,7 +184,7 @@ func (s *Server) startGroupMemberRelight(ctx context.Context, req *nodev1.StartG
 	if err != nil {
 		return nil, err
 	}
-	h, err := s.groupDriver.RestoreGroupMember(ctx, setID, memberName)
+	h, err := s.groupDriver.RestoreGroupMember(ctx, req.GetTrace().GetWorkload(), setID, memberName)
 	if err != nil {
 		s.groupNet.RemoveMemberTap(ctx, groupInstanceID, tap, ip)
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: relight group member %q: %v", ref, err)

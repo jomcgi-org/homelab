@@ -117,12 +117,12 @@ func run(logger *slog.Logger) error {
 	// The shared restore driver serves Prime/Assign/Destroy: it only ever restores
 	// from a base snapshot, so its rootfs/sizing are irrelevant (the snapshot has
 	// them baked). Its in-memory live map is the authority for LiveCount.
-	restoreDriver := newDriver(cfg, self, driverExtras{})
+	restoreDriver := newDriver(cfg, self, logger, driverExtras{})
 
 	// Per-build drivers cold-boot one image's rootfs at its sizing, then snapshot;
 	// they are discarded after the base is written (the base lives on disk).
 	newBuild := func(spec server.BuildDriverSpec) server.BuildDriver {
-		return newDriver(cfg, self, driverExtras{
+		return newDriver(cfg, self, logger, driverExtras{
 			rootfsPath:  spec.RootfsPath,
 			harnessInit: spec.HarnessInit,
 			vcpus:       spec.VCPUs,
@@ -238,10 +238,7 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("health listen: %w", err)
 	}
-	health := &http.Server{
-		Handler:           healthHandler(srv),
-		ReadHeaderTimeout: 5 * time.Second,
-	}
+	health := nodedHTTPServer(logger, healthHandler(srv))
 	go func() {
 		logger.Info("health endpoint listening", "addr", cfg.HealthAddr)
 		if err := health.Serve(healthLis); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -340,10 +337,7 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	activatorHTTP := &http.Server{
-		Handler:           srv.ActivatorHandler(),
-		ReadHeaderTimeout: 5 * time.Second,
-	}
+	activatorHTTP := nodedHTTPServer(logger, srv.ActivatorHandler())
 	srv.EnableActivator()
 	var statefulActivatorListeners []net.Listener
 	if lo, hi := cfg.StatefulActivatorPortRange[0], cfg.StatefulActivatorPortRange[1]; lo != 0 && hi >= lo && cfg.VolumeRoot != "" {
@@ -464,7 +458,7 @@ type driverExtras struct {
 // newDriver builds an fcvm driver bound to the node's substrate paths. Cold-boot
 // fields (rootfs, sizing, harness init) are set only for build drivers; the
 // restore driver leaves them zero because restore ignores them.
-func newDriver(cfg config.Config, self string, x driverExtras) *driver.Driver {
+func newDriver(cfg config.Config, self string, logger *slog.Logger, x driverExtras) *driver.Driver {
 	return driver.New(driver.Config{
 		KernelImagePath:       cfg.KernelImagePath,
 		KernelBootArgs:        cfg.KernelBootArgs,
@@ -483,6 +477,7 @@ func newDriver(cfg config.Config, self string, x driverExtras) *driver.Driver {
 		WarmRestoreWithVolume: cfg.WarmRestoreWithVolume,
 		DiffBanking:           cfg.DiffBanking,
 	}, &driver.ExecLauncher{
+		Logger:          logger,
 		Bin:             cfg.BinPath,
 		JailerBin:       cfg.JailerBinPath,
 		JailerEnabled:   cfg.JailerEnabled,
@@ -498,6 +493,14 @@ func logBaseAdoptionRetry(logger *slog.Logger, err error) {
 		return
 	}
 	logger.Error("base adoption scan failed; retrying", "err", err)
+}
+
+func nodedHTTPServer(logger *slog.Logger, handler http.Handler) *http.Server {
+	return &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelError),
+	}
 }
 
 // healthHandler answers the kubelet probes. /healthz is LIVENESS: it is 200 as

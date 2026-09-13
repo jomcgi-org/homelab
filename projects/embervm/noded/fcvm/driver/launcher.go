@@ -27,6 +27,8 @@ const (
 type LaunchSpec struct {
 	VMID       string
 	SocketPath string
+	Workload   string
+	Phase      string
 	MemMib     int
 	Resources  []JailResource
 	DirectExec bool
@@ -36,6 +38,9 @@ type LaunchSpec struct {
 // Launcher; tests inject a fake. fc-agentd owns FC process supervision (crash
 // cleanup, orphan reaping), mirroring E2B's patterns.
 type ExecLauncher struct {
+	// Logger receives line-delimited Firecracker and guest output. It defaults to
+	// slog.Default when unset.
+	Logger *slog.Logger
 	// Bin is the firecracker binary (/opt/fc/firecracker in the noded image).
 	Bin string
 	// JailerBin is the matching jailer binary. It defaults to /opt/fc/jailer.
@@ -83,8 +88,11 @@ type execProcess struct {
 	cgroup    *vmCgroup
 	jail      *Jail
 	releaseID func()
+	stdout    *tagWriter
+	stderr    *tagWriter
 	waitOnce  sync.Once
 	waitErr   error
+	flushOnce sync.Once
 	cleanOnce sync.Once
 }
 
@@ -111,7 +119,13 @@ func (p *execProcess) Wait() error {
 }
 
 func (p *execProcess) wait() error {
-	p.waitOnce.Do(func() { p.waitErr = p.cmd.Wait() })
+	p.waitOnce.Do(func() {
+		p.waitErr = p.cmd.Wait()
+		p.flushOnce.Do(func() {
+			p.stdout.Flush()
+			p.stderr.Flush()
+		})
+	})
 	return p.waitErr
 }
 
@@ -157,6 +171,12 @@ func (l *ExecLauncher) Launch(ctx context.Context, spec LaunchSpec) (Process, er
 	}
 	if spec.VMID == "" || spec.SocketPath == "" {
 		return nil, fmt.Errorf("driver: launch requires vm id and API socket path")
+	}
+	if spec.Workload == "" {
+		return nil, fmt.Errorf("driver: launch requires workload")
+	}
+	if spec.Phase != guestPhaseInit && spec.Phase != guestPhaseVM {
+		return nil, fmt.Errorf("driver: launch phase must be %q or %q", guestPhaseInit, guestPhaseVM)
 	}
 	_ = os.Remove(spec.SocketPath)
 
@@ -227,12 +247,18 @@ func (l *ExecLauncher) Launch(ctx context.Context, spec LaunchSpec) (Process, er
 	} else {
 		cmd = exec.Command(l.Bin, buildDirectArgs(spec.VMID, spec.SocketPath)...)
 	}
-	// Firecracker's own startup/error messages ride the daemon's stdio. The
-	// GUEST console no longer does: the driver issues PUT /serial pre-Start and
-	// pre-LoadSnapshot (issue #4404), pointing the UART at the per-VM bundle
-	// file, so consoles cannot interleave into or flood the noded log.
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	// Firecracker's inherited stdout/stderr and any guest bytes emitted before
+	// PUT /serial are line-delimited into the daemon's structured log. The bounded
+	// serial file installed before guest start remains the steady-state console
+	// sink and failure-tail source (issue #4404).
+	logger := l.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	stdout := newTagWriter(logger, spec.Workload, spec.Phase)
+	stderr := newTagWriter(logger, spec.Workload, spec.Phase)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 	if err := cmd.Start(); err != nil {
 		if cg != nil {
 			_ = cg.Remove()
@@ -246,7 +272,10 @@ func (l *ExecLauncher) Launch(ctx context.Context, spec LaunchSpec) (Process, er
 		_ = os.Remove(spec.SocketPath)
 		return nil, fmt.Errorf("driver: start firecracker: %w", err)
 	}
-	proc := &execProcess{cmd: cmd, vmID: spec.VMID, cgroup: cg, jail: jail, releaseID: releaseID}
+	proc := &execProcess{
+		cmd: cmd, vmID: spec.VMID, cgroup: cg, jail: jail, releaseID: releaseID,
+		stdout: stdout, stderr: stderr,
+	}
 
 	if l.OOMScoreAdj > 0 {
 		if err := setOOMScoreAdj(cmd.Process.Pid, l.OOMScoreAdj); err != nil {

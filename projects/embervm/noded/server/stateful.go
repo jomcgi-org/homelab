@@ -279,7 +279,7 @@ func (s *Server) startStatefulRelight(ctx context.Context, req *nodev1.StartStat
 			return nil, status.Errorf(codes.ResourceExhausted, "noded: allocate stateful tap: %v", aerr)
 		}
 	}
-	h, err := s.statefulDriver.RestoreStateful(ctx, ref, s.volumes.VolumePath(workload))
+	h, err := s.statefulDriver.RestoreStateful(ctx, workload, ref, s.volumes.VolumePath(workload))
 	if err != nil {
 		s.servingNet.ReleaseTap(ctx, ip)
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: relight stateful snapshot %q: %v", ref, err)
@@ -367,7 +367,7 @@ func (s *Server) coldBootStateful(ctx context.Context, req *nodev1.StartStateful
 	// No handler artifact for an image-lane stateful base (drive 2 is omitted; the
 	// writable volume attaches as drive 2 -> /dev/vdb, which the driver signals to
 	// the guest dynamically). Pass an empty handler path / zero size.
-	h, err := s.statefulDriver.ClaimStateful(ctx, img.RootfsPath, harnessInit, int(res.GetVcpus()), int(res.GetMemMib()), nic, "", 0, s.volumes.VolumePath(workload), req.GetVolumeMount(), mmdsEnv)
+	h, err := s.statefulDriver.ClaimStateful(ctx, workload, img.RootfsPath, harnessInit, int(res.GetVcpus()), int(res.GetMemMib()), nic, "", 0, s.volumes.VolumePath(workload), req.GetVolumeMount(), mmdsEnv)
 	if err != nil {
 		s.servingNet.ReleaseTap(ctx, ip)
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: cold-boot stateful vm: %v", err)

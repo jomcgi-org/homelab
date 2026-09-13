@@ -75,14 +75,14 @@ type groupMemberDriver interface {
 	// ClaimGroupMember cold-boots a member VM from a per-member rootfs WITH the given
 	// tap NIC on the group bridge and its first-boot env (MMDS-lite over boot-args).
 	// No handler artifact and no writable volume: a member is a plain NIC guest.
-	ClaimGroupMember(ctx context.Context, rootfsPath, harnessInit string, vcpus, memMib int, nic substrate.NICSpec, env map[string]string) (substrate.Handle, error)
+	ClaimGroupMember(ctx context.Context, workload, rootfsPath, harnessInit string, vcpus, memMib int, nic substrate.NICSpec, env map[string]string) (substrate.Handle, error)
 	// SnapshotGroupMember pauses a live member VM and writes a self-contained member
 	// bundle under group/<set_id>/<member_name>/; does not resume (the caller Releases).
 	SnapshotGroupMember(ctx context.Context, h substrate.Handle, setID, memberName string) (substrate.SnapshotRef, error)
 	// RestoreGroupMember launches a fresh VM from a banked member bundle and resumes
 	// it, WITH the NIC captured at bank time. The caller has already recreated the
 	// pinned tap world before calling this.
-	RestoreGroupMember(ctx context.Context, setID, memberName string) (substrate.Handle, error)
+	RestoreGroupMember(ctx context.Context, workload, setID, memberName string) (substrate.Handle, error)
 	// RemoveGroupMemberBundle deletes a banked member bundle from disk (idempotent).
 	RemoveGroupMemberBundle(setID, memberName string) error
 	// ScanGroupBundleSets globs the group bundle dir on startup and returns each set

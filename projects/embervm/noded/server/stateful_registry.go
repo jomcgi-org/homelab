@@ -30,7 +30,7 @@ type statefulDriver interface {
 	// appended. mmdsEnv is meaningful only for FRESH/COLD; callers on a
 	// RELIGHT path never reach this method at all (relight resumes a memory
 	// snapshot via RestoreStateful instead).
-	ClaimStateful(ctx context.Context, rootfsPath, harnessInit string, vcpus, memMib int, nic substrate.NICSpec, handlerDiskPath string, handlerZipBytes int64, volumeDiskPath, volumeMount string, mmdsEnv map[string]string) (substrate.Handle, error)
+	ClaimStateful(ctx context.Context, workload, rootfsPath, harnessInit string, vcpus, memMib int, nic substrate.NICSpec, handlerDiskPath string, handlerZipBytes int64, volumeDiskPath, volumeMount string, mmdsEnv map[string]string) (substrate.Handle, error)
 	// SnapshotStateful pauses a live stateful VM and writes a self-contained
 	// stateful bundle stamped with the given volume generation and the pinnedIP the
 	// VM held; does not resume (the caller Releases). Mirrors SnapshotServing plus
@@ -63,7 +63,7 @@ type statefulDriver interface {
 	// workload's volume file the caller intends this restored VM to hold (see
 	// the driver method's doc for why the restore mechanic itself does not use
 	// it directly). Mirrors RestoreServing.
-	RestoreStateful(ctx context.Context, snapshotRef, volumeDiskPath string) (substrate.Handle, error)
+	RestoreStateful(ctx context.Context, workload, snapshotRef, volumeDiskPath string) (substrate.Handle, error)
 	// RemoveStatefulBundle deletes a banked stateful bundle from disk
 	// (idempotent). Never touches the volume file itself.
 	RemoveStatefulBundle(snapshotRef string) error
