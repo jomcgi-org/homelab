@@ -65,6 +65,7 @@ Category = Literal["lore", "gameplay", "mechanics"]
 # Temporality is set only for event/quest (nullable everywhere else).
 Temporality = Literal["historical", "present", "future"]
 SourceType = Literal["extracted", "homebrew"]
+MemberRole = Literal["dm", "player"]
 EmbeddableKind = Literal["entity", "chunk", "transcript"]
 AliasCandidateStatus = Literal["pending", "approved", "rejected", "stale", "merged"]
 SessionStatus = Literal["active", "paused", "ended"]
@@ -593,6 +594,28 @@ class AliasCandidate(SQLModel, table=True):
     )
 
 
+class AppUser(SQLModel, table=True):
+    __tablename__ = "app_user"
+    __table_args__ = (
+        CheckConstraint(
+            "email = lower(trim(email)) AND email <> ''",
+            name="app_user_email_normalized_chk",
+        ),
+        UniqueConstraint("email", name="app_user_email_key"),
+        {"schema": "grimoire", "extend_existing": True},
+    )
+
+    id: str | None = Field(
+        default_factory=lambda: str(uuid.uuid4()),
+        sa_column=_uuid_column(primary_key=True),
+    )
+    email: str = Field(sa_column=Column(String, nullable=False))
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True)),
+    )
+
+
 class Campaign(SQLModel, table=True):
     __tablename__ = "campaign"
     __table_args__ = {"schema": "grimoire", "extend_existing": True}
@@ -634,6 +657,54 @@ class PlayerCharacter(SQLModel, table=True):
 
 
 # nosemgrep: sqlmodel-datetime-without-factory (ended_at is intentionally NULL until the session ends)
+class CampaignMember(SQLModel, table=True):
+    __tablename__ = "campaign_member"
+    __table_args__ = (
+        CheckConstraint(
+            "role IN ('dm', 'player')",
+            name="campaign_member_role_chk",
+        ),
+        CheckConstraint(
+            "role = 'player' OR player_character_id IS NULL",
+            name="campaign_member_dm_character_chk",
+        ),
+        UniqueConstraint(
+            "campaign_id",
+            "app_user_id",
+            name="campaign_member_campaign_id_app_user_id_key",
+        ),
+        UniqueConstraint(
+            "campaign_id",
+            "player_character_id",
+            name="campaign_member_campaign_id_player_character_id_key",
+        ),
+        {"schema": "grimoire", "extend_existing": True},
+    )
+
+    id: str | None = Field(
+        default_factory=lambda: str(uuid.uuid4()),
+        sa_column=_uuid_column(primary_key=True),
+    )
+    campaign_id: str = Field(
+        sa_column=_uuid_column(nullable=False, fk="grimoire.campaign.id"),
+    )
+    app_user_id: str = Field(
+        sa_column=_uuid_column(nullable=False, fk="grimoire.app_user.id"),
+    )
+    role: MemberRole = Field(sa_column=Column(String, nullable=False))
+    player_character_id: str | None = Field(
+        default=None,
+        sa_column=_uuid_column(fk="grimoire.player_character.id"),
+    )
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True)),
+    )
+
+
+# nosemgrep: sqlmodel-datetime-without-factory (ended_at is intentionally NULL until the session ends)
+
+
 class GameSession(SQLModel, table=True):
     __tablename__ = "game_session"
     __table_args__ = (
