@@ -3009,7 +3009,65 @@ defmodule Embervm.SessionManagerTest do
                {:ok, %{state: :evicted, terminal_reason: "node_gone"}},
                SessionStore.get(ctx.store, created.session_id)
              )
+    end)
+  end
+
+  test "a final unregister or expiry lookup failure keeps dormant departure checks retrying" do
+    {:ok, store_clock} = Agent.start_link(fn -> 100 end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(store_clock) end)
+    {:ok, status_lookups} = Agent.start_link(fn -> 0 end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(status_lookups) end)
+
+    ctx =
+      start_stack(
+        prime_fun: fake_prime_fun("vm-lookup-retry"),
+        store_clock: fn -> Agent.get(store_clock, & &1) end,
+        departure_retry_interval_ms: 100,
+        brick_status_fun: fn _dial ->
+          case Agent.get_and_update(status_lookups, fn count -> {count, count + 1} end) do
+            0 -> raise "registry lookup unavailable"
+            _ -> %{health: :down, draining: false, registered: false, tombstoned: true, pod_uid: "pod-dead"}
+          end
+        end
+      )
+
+    parked =
+      ctx
+      |> create_persistence_session(workload: "wl-lookup-retry-parked", principal: "p1")
+      |> then(&park_session(ctx, &1))
+
+    put_session_workload(ctx, "wl-lookup-retry-banked")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-lookup-retry-banked", "p2")
+    assert :ok = SessionManager.bank(ctx.mgr, created.session_id)
+    banked = wait_for_state(ctx, created.session_id, :banked)
+
+    # This is the only departure notification. The final callback cannot read
+    # registry evidence, so both resting rows must retain their own retry tick.
+    assert SessionManager.node_down(ctx.mgr, "node-4", %{pod_uid: "pod-dead"}) == 0
+    assert {:ok, %{state: :parked}} = SessionStore.get(ctx.store, parked.session_id)
+    assert {:ok, %{state: :banked}} = SessionStore.get(ctx.store, banked.session_id)
+    assert map_size(:sys.get_state(ctx.mgr).departure_retries) == 2
+
+    Agent.update(store_clock, fn _ -> 200 end)
+
+    assert eventually(fn ->
+             Enum.all?([parked, banked], fn prior ->
+               match?(
+                 {:ok, %{state: :evicted, updated_at: 200, terminal_reason: "node_gone"}},
+                 SessionStore.get(ctx.store, prior.session_id)
+               )
+             end)
            end)
+
+    assert :sys.get_state(ctx.mgr).departure_retries == %{}
+    assert Agent.get(status_lookups, & &1) >= 2
+
+    {:ok, ops} = SQLite.read_from(ctx.op_log, 0)
+
+    for prior <- [parked, banked] do
+      assert Enum.count(ops, &(&1.kind == :session_evicted and &1.session_id == prior.session_id)) == 1
+      assert {:ok, %{state: :evicted, updated_at: 200}} = SessionStore.get(ctx.store, prior.session_id)
+    end
   end
 
   test "dormant ownership follows the state-specific canonical node id" do
@@ -3075,6 +3133,7 @@ defmodule Embervm.SessionManagerTest do
     assert SessionManager.node_down(ctx.mgr, "node-4", %{pod_uid: "pod-dead"}) == 0
     assert {:ok, %{state: :parked}} = SessionStore.get(ctx.store, parked.session_id)
     assert {:ok, %{state: :banked}} = SessionStore.get(ctx.store, banked.session_id)
+    assert :sys.get_state(ctx.mgr).departure_retries == %{}
   end
 
   test "a live peer reporting the exact dormant artifact preserves relight" do
@@ -3131,7 +3190,7 @@ defmodule Embervm.SessionManagerTest do
     assert {:ok, %{state: :banked}} = SessionStore.get(ctx.store, banked.session_id)
   end
 
-  test "a departed banked session restores its exported bundle on an eligible surviving instance" do
+  test "a departed banked session skips an unreachable preferred peer and restores on the next eligible peer" do
     parent = self()
 
     ctx =
@@ -3161,28 +3220,45 @@ defmodule Embervm.SessionManagerTest do
 
     :ets.delete_all_objects(ctx.cap_table)
 
-    NodeCapacity.put(ctx.cap_table, {"node-4", "pod-live"}, %{
-      node_id: "node-4",
-      configured_id: "node-4",
-      instance_id: "node-4/pod-live",
-      pod_uid: "pod-live",
-      workloads: %{
-        banked.workload => %{
-          base_state: :BASE_BUILD_STATE_READY,
-          snapshot_ref: "snap-#{banked.workload}",
-          free_primed_slots: 0
-        }
-      },
-      session_vms: [],
-      session_snapshots: [],
-      session_volumes: [],
-      live_vms: 0,
-      max_live_vms: 8,
-      mem_headroom_mib: 2_048,
-      mem_budget_mib: 4_096,
-      store_reachable: true,
-      updated_at: 5_000_001
-    })
+    for pod_uid <- ["pod-peer-a", "pod-peer-b"] do
+      NodeCapacity.put(ctx.cap_table, {"node-4", pod_uid}, %{
+        node_id: "node-4",
+        configured_id: "node-4",
+        instance_id: "node-4/#{pod_uid}",
+        pod_uid: pod_uid,
+        workloads: %{
+          banked.workload => %{
+            base_state: :BASE_BUILD_STATE_READY,
+            snapshot_ref: "snap-#{banked.workload}",
+            free_primed_slots: 0
+          }
+        },
+        session_vms: [],
+        session_snapshots: [],
+        session_volumes: [],
+        live_vms: 0,
+        max_live_vms: 8,
+        mem_headroom_mib: 2_048,
+        mem_budget_mib: 4_096,
+        store_reachable: true,
+        updated_at: 5_000_001
+      })
+    end
+
+    assert {:ok, [preferred_dial, reachable_dial]} =
+             Embervm.WakeInstance.cold_candidates("node-4",
+               table: ctx.cap_table,
+               workload: banked.workload,
+               need_mib: 512
+             )
+
+    for fact <- NodeCapacity.all(ctx.cap_table) do
+      NodeCapacity.put(
+        ctx.cap_table,
+        {fact.node_id, fact.pod_uid},
+        Map.put(fact, :store_reachable, fact.instance_id == reachable_dial)
+      )
+    end
 
     :sys.replace_state(ctx.mgr, fn state ->
       put_in(state.session_dials[banked.session_id], "node-4/pod-dead")
@@ -3194,9 +3270,10 @@ defmodule Embervm.SessionManagerTest do
     assert {:ok, %{body: "after-restore"}} =
              SessionManager.invoke(ctx.mgr, banked.session_id, %{body: "after-restore"})
 
-    assert_receive {:restore, {:channel, "node-4/pod-live"}, ref}, 1_000
+    assert_receive {:restore, {:channel, ^reachable_dial}, ref}, 1_000
     assert ref == banked.snapshot_ref
-    assert_receive {:relight, {:channel, "node-4/pod-live"}}, 1_000
+    assert_receive {:relight, {:channel, ^reachable_dial}}, 1_000
+    refute_receive {:channel, ^preferred_dial}, 50
     assert {:ok, %{state: :running, vm_id: "vm-restored-live"}} =
              SessionStore.get(ctx.store, banked.session_id)
   end
@@ -3297,6 +3374,8 @@ defmodule Embervm.SessionManagerTest do
   test "a failed departure eviction append is retried to one durable terminal timestamp" do
     {:ok, store_clock} = Agent.start_link(fn -> 100 end)
     on_exit(fn -> Embervm.TestProcess.stop_safely(store_clock) end)
+    {:ok, status_lookups} = Agent.start_link(fn -> 0 end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(status_lookups) end)
 
     ctx =
       start_stack(
@@ -3305,7 +3384,10 @@ defmodule Embervm.SessionManagerTest do
         store_op_log_mod: FailOnceEvictionOpLog,
         departure_retry_interval_ms: 100,
         brick_status_fun: fn _dial ->
-          %{health: :down, draining: false, registered: false, tombstoned: true, pod_uid: "pod-dead"}
+          case Agent.get_and_update(status_lookups, fn count -> {count, count + 1} end) do
+            1 -> raise "registry lookup unavailable after append failure"
+            _ -> %{health: :down, draining: false, registered: false, tombstoned: true, pod_uid: "pod-dead"}
+          end
         end
       )
 
@@ -3321,6 +3403,9 @@ defmodule Embervm.SessionManagerTest do
     assert eventually(fn ->
              match?({:ok, %{state: :evicted, updated_at: 200}}, SessionStore.get(ctx.store, parked.session_id))
            end)
+
+    assert Agent.get(status_lookups, & &1) >= 3
+    assert :sys.get_state(ctx.mgr).departure_retries == %{}
 
     {:ok, ops} = SQLite.read_from(ctx.op_log, 0)
     assert Enum.count(ops, &(&1.kind == :session_evicted and &1.session_id == parked.session_id)) == 1
