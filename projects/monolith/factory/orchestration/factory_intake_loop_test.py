@@ -582,6 +582,29 @@ def test_a_truncated_sweep_says_so(db, monkeypatch):
     assert detail["truncated"] is True
 
 
+def test_pull_listing_uses_fifty_item_pages_and_reads_after_a_full_page(
+    db, monkeypatch
+):
+    calls = []
+    full_pull_page = [{"number": number} for number in range(1, 51)]
+
+    def github_list(_repo, suffix):
+        calls.append(suffix)
+        if suffix.startswith("issues?"):
+            return []
+        return full_pull_page if suffix.endswith("page=1") else [{"number": 51}]
+
+    monkeypatch.setattr(intake_loop, "github_list", github_list)
+    assert intake_loop.intake_tick(policy(), generation=0) == []
+    assert calls == [
+        "issues?state=open&sort=created&direction=asc&per_page=100&page=1",
+        "pulls?state=open&sort=created&direction=asc&per_page=50&page=1",
+        "pulls?state=open&sort=created&direction=asc&per_page=50&page=2",
+    ]
+    detail = json.loads(audits(db, "intake_idle")[0].detail_json)
+    assert "truncated" not in detail
+
+
 def test_the_sweep_asks_for_the_oldest_first(db, monkeypatch):
     calls = fake_pages(monkeypatch, [])
     intake_loop.intake_tick(policy(), generation=0)

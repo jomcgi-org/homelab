@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 # module writes and the receipts admit_next will accept can never diverge.
 ACTOR = INTAKE_ACTOR
 PAGE_SIZE = 100
+PULL_PAGE_SIZE = 50
 MAX_PAGES = 5
 CANDIDATE_EVIDENCE_LIMIT = 20
 # Both the idle audit and the listing that precedes it run on this clock. A
@@ -89,11 +90,13 @@ def github_list(repo: str, suffix: str) -> list:
     return read(repo, suffix)
 
 
-def _pages(repo: str, endpoint: str) -> tuple[list, bool]:
+def _pages(
+    repo: str, endpoint: str, *, page_size: int = PAGE_SIZE
+) -> tuple[list, bool]:
     """Open rows oldest first, and whether the read hit the page cap.
 
     GitHub defaults to newest first, so a repository with more open rows than
-    MAX_PAGES * PAGE_SIZE would truncate exactly the oldest ones, which is the
+    MAX_PAGES * page_size would truncate exactly the oldest ones, which is the
     half ranking prefers. Asking for ascending order makes the truncation fall
     on the newest instead, and the flag says it happened so an operator reads
     a partial sweep as partial.
@@ -104,10 +107,10 @@ def _pages(repo: str, endpoint: str) -> tuple[list, bool]:
         rows = github_list(
             repo,
             f"{endpoint}?state=open&sort=created&direction=asc"
-            f"&per_page={PAGE_SIZE}&page={page}",
+            f"&per_page={page_size}&page={page}",
         )
         result.extend(rows)
-        if len(rows) < PAGE_SIZE:
+        if len(rows) < page_size:
             break
         truncated = page == MAX_PAGES
     return result, truncated
@@ -272,7 +275,7 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
             _audit(db, ACTOR, "intake_swept")
         try:
             issues, issues_cut = _pages(repo, "issues")
-            pulls, pulls_cut = _pages(repo, "pulls")
+            pulls, pulls_cut = _pages(repo, "pulls", page_size=PULL_PAGE_SIZE)
         except Exception as exc:  # noqa: BLE001 - recorded, never swallowed
             # A 403 from the shared rate limit, or any other read failure,
             # would otherwise leave intake silently dead: the blanket handler
