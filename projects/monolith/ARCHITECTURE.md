@@ -6,6 +6,10 @@ orchestration/session execution lifecycle. Its public descriptor is composed
 separately from private mutation and execution hooks. Legacy `swarm` and
 `agent_sessions` packages retain implementation and storage identities during
 consolidation; they no longer register as separate application domains.
+The public reader ships `factory.public_view` and excludes the entire
+`agent_sessions` implementation package. It reads only published public API
+views and snapshots with the existing restricted database role.
+
 Discord integration is outside this consolidation.
 (see: /projects/monolith/factory/module.py)
 (see: /projects/monolith/factory/public_module.py)

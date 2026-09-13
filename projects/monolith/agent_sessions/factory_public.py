@@ -6,7 +6,7 @@ the factory code entirely, so there is nothing on that side that could assemble
 a board even if the rows were reachable. This module is the private half of the
 snapshot pattern that answers that: it reads the real tables with the real
 code, shapes three payload kinds, and writes them to public_api tables that
-agent_sessions/public_router.py serves with plain SQL.
+factory/public_view.py serves with plain SQL.
 
 Three payload kinds, because the three pages differ by an order of magnitude in
 size:

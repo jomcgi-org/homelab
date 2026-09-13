@@ -4,7 +4,7 @@ from framework import Module as _Module
 
 
 def register_public(app) -> None:
-    from agent_sessions.public_router import router
+    from factory.public_view import router
 
     app.include_router(router)
 

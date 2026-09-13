@@ -2023,10 +2023,9 @@ py_library(
     name = "monolith_public_backend",
     srcs = glob(
         [
-            "agent_sessions/__init__.py",
             "factory/__init__.py",
             "factory/public_module.py",
-            "agent_sessions/public_router.py",
+            "factory/public_view.py",
             "app/**/*.py",
             "core/**/*.py",
             "framework/**/*.py",
@@ -2106,10 +2105,9 @@ py_venv_binary(
     name = "main_public",
     srcs = glob(
         [
-            "agent_sessions/__init__.py",
             "factory/__init__.py",
             "factory/public_module.py",
-            "agent_sessions/public_router.py",
+            "factory/public_view.py",
             "app/**/*.py",
             "core/**/*.py",
             "framework/**/*.py",
@@ -8451,11 +8449,11 @@ py_test(
     ],
 )
 
-# Hand-registered (agent_sessions is gazelle-excluded): aggregate response
+# Hand-registered (factory is gazelle-excluded): aggregate response
 # shaping, view-only queries, cache headers, conditional ETags, and failures.
 py_test(
-    name = "agent_sessions_public_agent_activity_router_test",
-    srcs = ["agent_sessions/public_agent_activity_router_test.py"],
+    name = "factory_public_activity_test",
+    srcs = ["factory/public_activity_test.py"],
     imports = ["."],
     deps = [
         ":monolith_public_backend",
@@ -8466,12 +8464,12 @@ py_test(
     ],
 )
 
-# Hand-registered (agent_sessions is gazelle-excluded): the public factory
+# Hand-registered (factory is gazelle-excluded): the public factory
 # routes read only the public_api snapshot tables, with cache headers,
 # conditional ETags, 404s before the first snapshot, and colon-bearing keys.
 py_test(
-    name = "agent_sessions_public_factory_router_test",
-    srcs = ["agent_sessions/public_factory_router_test.py"],
+    name = "factory_public_view_test",
+    srcs = ["factory/public_view_test.py"],
     imports = ["."],
     deps = [
         ":monolith_public_backend",

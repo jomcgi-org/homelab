@@ -2,8 +2,8 @@
 
 The factory routes read public_api.factory_*_snapshot and nothing else. Those
 rows are built on the private side by agent_sessions/factory_public.py, because
-public_reader has no grant on the swarm or agent_sessions schemas and the
-factory code is not in the public image at all.
+public_reader has no grant on the swarm or agent_sessions schemas and private
+factory execution code is not in the public image.
 """
 
 from __future__ import annotations
