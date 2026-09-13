@@ -82,6 +82,7 @@ def seed(
     recovery_updates=None,
     history=0,
     job_held=False,
+    created_at=None,
 ):
     at = datetime.now(timezone.utc) - timedelta(seconds=10)
     if routine_job_name is _DEFAULT_ROUTINE:
@@ -121,6 +122,7 @@ def seed(
             outcome="delivery_error" if legacy else "executor_cancelled",
             owner="worker" if claimed else None,
             routine_job_name=routine_job_name,
+            created_at=created_at or datetime.now(timezone.utc),
         )
         db.add(permit)
         if routine_job_name is not None:
@@ -359,6 +361,306 @@ def test_no_guest_without_claim_identity_remains_uncertain(database, monkeypatch
     original = before(database, pid)
     sweep(None)
     assert before(database, pid) == original
+
+
+def test_no_guest_delivery_is_validated_once_per_locked_identity_read(
+    database, monkeypatch
+):
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    pid = seed(
+        database,
+        "single-validation",
+        tier="kg",
+        guest_bound=False,
+        dispatch_count=1,
+    )
+    original = supervision._no_guest_delivery
+    calls = []
+
+    def counted(permit, recovery):
+        calls.append(permit.id)
+        return original(permit, recovery)
+
+    monkeypatch.setattr(supervision, "_no_guest_delivery", counted)
+    sweep(None)
+
+    assert calls == [pid, pid]
+    assert before(database, pid)[0]["state"] == "settled"
+
+
+def test_failed_kg_without_a_routine_job_is_a_candidate(database, monkeypatch):
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    pid = seed(
+        database,
+        "unbound-candidate",
+        tier="kg",
+        guest_bound=False,
+        routine_job_name=None,
+    )
+
+    assert pid in supervision._candidates()
+
+
+@pytest.mark.parametrize("age_seconds", [3599, 3601])
+def test_stale_unbound_permit_settles_only_after_grace(
+    database, monkeypatch, age_seconds
+):
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    pid = seed(
+        database,
+        f"stale-unbound-{age_seconds}",
+        tier="kg",
+        guest_bound=False,
+        routine_job_name=None,
+        created_at=datetime.now(timezone.utc) - timedelta(seconds=age_seconds),
+    )
+    with Session(database) as db, db.begin():
+        db.get(AgentCapacityReservation, pid).outcome = "unclassified_failure"
+
+    sweep(None)
+
+    permit = before(database, pid)[0]
+    if age_seconds > supervision.STALE_UNBOUND_SECONDS:
+        assert permit["state"] == "settled"
+        assert permit["outcome"] == "stale_unbound_permit"
+        with Session(database) as db:
+            audit = db.get(ProbeObservation, pid)
+            assert audit.reason == "stale_unbound_permit"
+            assert audit.settled_at is not None
+    else:
+        assert permit["state"] == "uncertain"
+
+
+def test_binding_evidence_prevents_stale_unbound_settlement(database, monkeypatch):
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    pid = seed(
+        database,
+        "stale-with-binding",
+        tier="project",
+        guest_bound=False,
+        routine_job_name=None,
+        created_at=datetime.now(timezone.utc) - timedelta(hours=2),
+    )
+    with Session(database) as db, db.begin():
+        permit = db.get(AgentCapacityReservation, pid)
+        permit.outcome = "unclassified_failure"
+        agent = db.get(AgentSession, permit.session_id)
+        agent.prior_ember_lineage_id = "prior-binding"
+        db.add_all([permit, agent])
+
+    sweep(None)
+
+    assert before(database, pid)[0]["state"] == "uncertain"
+    with Session(database) as db:
+        assert db.get(ProbeObservation, pid).reason == "prior_binding_evidence"
+
+
+@pytest.mark.parametrize(
+    ("workspace_loss", "settles"), [(True, False), (False, True), (None, True)]
+)
+def test_only_true_workspace_loss_blocks_stale_unbound_settlement(
+    database, monkeypatch, workspace_loss, settles
+):
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    pid = seed(
+        database,
+        f"stale-workspace-loss-{workspace_loss}",
+        tier="project",
+        guest_bound=False,
+        routine_job_name=None,
+        created_at=datetime.now(timezone.utc) - timedelta(hours=2),
+    )
+    with Session(database) as db, db.begin():
+        permit = db.get(AgentCapacityReservation, pid)
+        permit.outcome = "unclassified_failure"
+        agent = db.get(AgentSession, permit.session_id)
+        agent.recovery_workspace_loss = workspace_loss
+        db.add_all([permit, agent])
+
+    sweep(None)
+
+    permit = before(database, pid)[0]
+    if settles:
+        assert permit["state"] == "settled"
+        assert permit["outcome"] == "stale_unbound_permit"
+    else:
+        assert permit["state"] == "uncertain"
+        with Session(database) as db:
+            assert db.get(ProbeObservation, pid).reason == "prior_binding_evidence"
+
+
+def test_parked_guest_on_absent_node_requests_destroy_and_keeps_hold(
+    database, monkeypatch
+):
+    from cluster import kubernetes
+
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    pid = seed(database, "departed-node", tier="kg")
+    now = datetime.now(timezone.utc)
+    stamp = int(now.timestamp() * 1000)
+    observed = proof(
+        "guest-departed-node",
+        state="parked",
+        invoke_started_at=stamp - 800_000,
+        last_invoke_at=stamp - 750_000,
+        updated_at=stamp - 700_000,
+        node={"node_id": "node-gone"},
+    )
+    destroyed = []
+
+    async def node_names():
+        return {"node-present"}
+
+    async def get_session(_guest):
+        return observed
+
+    async def destroy_session(guest, *, stop_precondition=None):
+        destroyed.append((guest, stop_precondition))
+
+    monkeypatch.setattr(kubernetes, "cluster_node_names", node_names)
+    asyncio.run(
+        supervision.sweep_once(
+            SimpleNamespace(
+                get_session=get_session,
+                destroy_session=destroy_session,
+            )
+        )
+    )
+
+    assert destroyed == [("guest-departed-node", None)]
+    assert before(database, pid)[0]["state"] == "uncertain"
+    with Session(database) as db:
+        assert db.get(ProbeObservation, pid).reason == "node_gone_destroy_requested"
+
+
+def test_node_gone_destroy_is_bounded_and_records_exhaustion(database, monkeypatch):
+    from cluster import kubernetes
+
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    pid = seed(database, "bounded-departed-node", tier="kg")
+    now = datetime.now(timezone.utc)
+    stamp = int(now.timestamp() * 1000)
+    observed = proof(
+        "guest-bounded-departed-node",
+        state="parked",
+        generation=4,
+        invoke_started_at=stamp - 800_000,
+        last_invoke_at=stamp - 750_000,
+        updated_at=stamp - 700_000,
+        node={"node_id": "node-gone"},
+    )
+    destroys = []
+
+    async def node_names():
+        return {"node-present"}
+
+    async def get_session(_guest):
+        return observed
+
+    async def destroy_session(guest, *, stop_precondition=None):
+        destroys.append((guest, stop_precondition))
+        with Session(database) as db:
+            evidence = json.loads(db.get(ProbeObservation, pid).evidence_json)
+            assert evidence["node_gone_destroy_requests"] == len(destroys)
+        raise RuntimeError("409 precondition rejected")
+
+    monkeypatch.setattr(kubernetes, "cluster_node_names", node_names)
+    transport = SimpleNamespace(
+        get_session=get_session,
+        destroy_session=destroy_session,
+    )
+    for _ in range(4):
+        asyncio.run(supervision.sweep_once(transport))
+
+    assert destroys == [
+        ("guest-bounded-departed-node", None),
+        ("guest-bounded-departed-node", None),
+    ]
+    with Session(database) as db:
+        audit = db.get(ProbeObservation, pid)
+        evidence = json.loads(audit.evidence_json)
+        assert audit.reason == "guest_node_gone_destroy_exhausted"
+        assert evidence["node_gone_destroy_requests"] == 2
+        assert evidence["intervention_required"] is True
+
+
+def test_never_invoked_parked_guest_on_absent_node_requests_destroy(
+    database, monkeypatch
+):
+    from cluster import kubernetes
+
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    pid = seed(database, "never-invoked-departed", tier="kg")
+    now = datetime.now(timezone.utc)
+    observed = proof(
+        "guest-never-invoked-departed",
+        state="parked",
+        generation=3,
+        invoke_started_at=None,
+        last_invoke_at=None,
+        updated_at=int((now - timedelta(seconds=700)).timestamp() * 1000),
+        node={"node_id": "node-gone"},
+    )
+    destroys = []
+
+    async def node_names():
+        return {"node-present"}
+
+    async def get_session(_guest):
+        return observed
+
+    async def destroy_session(guest, *, stop_precondition=None):
+        destroys.append((guest, stop_precondition))
+
+    monkeypatch.setattr(kubernetes, "cluster_node_names", node_names)
+    asyncio.run(
+        supervision.sweep_once(
+            SimpleNamespace(
+                get_session=get_session,
+                destroy_session=destroy_session,
+            )
+        )
+    )
+
+    assert destroys == [("guest-never-invoked-departed", None)]
+    assert before(database, pid)[0]["state"] == "uncertain"
+
+
+def test_unknown_node_inventory_does_not_request_destroy(database, monkeypatch):
+    from cluster import kubernetes
+
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    pid = seed(database, "unknown-inventory", tier="kg")
+    now = datetime.now(timezone.utc)
+    observed = proof(
+        "guest-unknown-inventory",
+        state="parked",
+        invoke_started_at=int((now - timedelta(seconds=800)).timestamp() * 1000),
+        last_invoke_at=int((now - timedelta(seconds=750)).timestamp() * 1000),
+        updated_at=int((now - timedelta(seconds=700)).timestamp() * 1000),
+        node={"node_id": "node-unknown"},
+    )
+
+    async def node_names():
+        return None
+
+    async def get_session(_guest):
+        return observed
+
+    async def destroy_session(*_args, **_kwargs):
+        raise AssertionError("unknown inventory must not request destroy")
+
+    monkeypatch.setattr(kubernetes, "cluster_node_names", node_names)
+    asyncio.run(
+        supervision.sweep_once(
+            SimpleNamespace(
+                get_session=get_session,
+                destroy_session=destroy_session,
+            )
+        )
+    )
+
+    assert before(database, pid)[0]["state"] == "uncertain"
 
 
 @pytest.mark.parametrize("guest_bound", [False, True])
@@ -613,11 +915,15 @@ def test_residual_binding_evidence_blocks_a_no_guest_settlement(
     with Session(database) as db, db.begin():
         permit = db.get(AgentCapacityReservation, pid)
         agent = db.get(AgentSession, permit.session_id)
-        setattr(
-            agent,
-            field,
-            datetime.now(timezone.utc) if field.endswith("_at") else "residual",
-        )
+        if field == "recovery_workspace_loss":
+            value = True
+        elif field == "ember_session_expires_at":
+            value = int(datetime.now(timezone.utc).timestamp() * 1000)
+        elif field.endswith("_at"):
+            value = datetime.now(timezone.utc)
+        else:
+            value = "residual"
+        setattr(agent, field, value)
         db.add(agent)
     original = before(database, pid)
     sweep(None)
@@ -914,3 +1220,63 @@ def test_nonsettling_reasons_are_visible_without_secret_payloads(database, caplo
     assert f"Permit supervision permit {pid}: awaiting_cessation" in caplog.text
     assert "never-log-this" not in caplog.text
     assert "never-export-this-token" not in caplog.text
+
+
+def test_malformed_recovery_still_settles_once_stale_unbound(database, monkeypatch):
+    """A recognised outcome with no usable recovery blob is held only until the
+    stale unbound grace has passed; afterwards the shape alone settles it."""
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    pid = seed(
+        database,
+        "stale-malformed-recovery",
+        tier="kg",
+        guest_bound=False,
+        routine_job_name=None,
+        created_at=datetime.now(timezone.utc) - timedelta(hours=2),
+    )
+    with Session(database) as db, db.begin():
+        permit = db.get(AgentCapacityReservation, pid)
+        permit.outcome = "delivery_error"
+        turn = db.exec(
+            select(AgentTurn).where(
+                AgentTurn.session_id == permit.session_id,
+                AgentTurn.seq == permit.pending_seq,
+            )
+        ).one()
+        turn.usage_json = ""
+        db.add_all([permit, turn])
+
+    sweep(None)
+
+    permit = before(database, pid)[0]
+    assert permit["state"] == "settled"
+    assert permit["outcome"] == "stale_unbound_permit"
+
+
+def test_malformed_recovery_is_held_before_the_grace(database, monkeypatch):
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    pid = seed(
+        database,
+        "young-malformed-recovery",
+        tier="kg",
+        guest_bound=False,
+        routine_job_name=None,
+        created_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+    )
+    with Session(database) as db, db.begin():
+        permit = db.get(AgentCapacityReservation, pid)
+        permit.outcome = "delivery_error"
+        turn = db.exec(
+            select(AgentTurn).where(
+                AgentTurn.session_id == permit.session_id,
+                AgentTurn.seq == permit.pending_seq,
+            )
+        ).one()
+        turn.usage_json = ""
+        db.add_all([permit, turn])
+
+    sweep(None)
+
+    assert before(database, pid)[0]["state"] == "uncertain"
+    with Session(database) as db:
+        assert db.get(ProbeObservation, pid).reason == "stale_unbound_grace"

@@ -2,6 +2,8 @@
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from swarm import factory_supervision as supervisor
 
 
@@ -88,3 +90,152 @@ def test_a_naive_failure_stamp_is_read_as_utc():
     assert supervisor._stop_deadline(
         snapshot, identity, pin
     ) == DISPATCHED_AT + timedelta(seconds=360)
+
+
+def _departed_node_case(monkeypatch, inventory, *, age=700, state="parked"):
+    from cluster import kubernetes
+
+    now = datetime(2026, 9, 13, 3, 0, tzinfo=timezone.utc)
+    notes = []
+    destroys = []
+
+    async def node_names():
+        return inventory
+
+    monkeypatch.setattr(supervisor, "_now", lambda: now)
+    monkeypatch.setattr(kubernetes, "cluster_node_names", node_names)
+    monkeypatch.setattr(
+        supervisor,
+        "_destroy_guest",
+        lambda guest, precondition: destroys.append((guest, precondition)),
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "_node_gone_note",
+        lambda pin, reason, node_id, **detail: notes.append(
+            (pin, reason, node_id, detail)
+        ),
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "_reserve_node_gone_destroy",
+        lambda pin, node_id, precondition: (
+            notes.append(
+                (
+                    pin,
+                    "guest_node_gone_destroy_requested",
+                    node_id,
+                    {"precondition": precondition},
+                )
+            )
+            or True
+        ),
+    )
+    handled = supervisor._destroy_guest_on_departed_node(
+        {"task_id": "task-1", "workflow_id": "workflow-1"},
+        {"guest_id": "guest-1"},
+        {
+            "state": state,
+            "generation": 7,
+            "node": {"node_id": "node-gone"},
+            "updated_at": int((now - timedelta(seconds=age)).timestamp() * 1000),
+        },
+    )
+    return handled, destroys, notes
+
+
+def test_old_parked_guest_on_absent_node_requests_destroy_and_audits(monkeypatch):
+    handled, destroys, notes = _departed_node_case(monkeypatch, {"node-present"})
+
+    assert handled
+    assert destroys == [("guest-1", {"generation": 7})]
+    assert notes == [
+        (
+            {"task_id": "task-1", "workflow_id": "workflow-1"},
+            "guest_node_gone_destroy_requested",
+            "node-gone",
+            {"precondition": {"generation": 7}},
+        )
+    ]
+
+
+@pytest.mark.parametrize("inventory", [{"node-gone"}, None])
+def test_present_or_unknown_node_inventory_does_not_destroy(monkeypatch, inventory):
+    handled, destroys, notes = _departed_node_case(monkeypatch, inventory)
+
+    assert not handled
+    assert destroys == []
+    assert notes == []
+
+
+def test_node_gone_grace_prevents_a_young_guest_destroy(monkeypatch):
+    handled, destroys, notes = _departed_node_case(
+        monkeypatch, {"node-present"}, age=599
+    )
+
+    assert not handled
+    assert destroys == []
+    assert notes == []
+
+
+def test_only_parked_or_banked_guests_use_node_gone_destroy(monkeypatch):
+    handled, destroys, notes = _departed_node_case(
+        monkeypatch, {"node-present"}, state="running"
+    )
+
+    assert not handled
+    assert destroys == []
+    assert notes == []
+
+
+def test_node_gone_destroy_failure_audits_the_exception_class(monkeypatch):
+    _handled, _destroys, notes = _departed_node_case(monkeypatch, {"node-present"})
+
+    def fail(_guest, _precondition):
+        raise TimeoutError("control plane timeout")
+
+    monkeypatch.setattr(supervisor, "_destroy_guest", fail)
+    now = datetime(2026, 9, 13, 3, 0, tzinfo=timezone.utc)
+    handled = supervisor._destroy_guest_on_departed_node(
+        {"task_id": "task-1", "workflow_id": "workflow-1"},
+        {"guest_id": "guest-1"},
+        {
+            "state": "parked",
+            "generation": 7,
+            "node": {"node_id": "node-gone"},
+            "updated_at": int((now - timedelta(seconds=700)).timestamp() * 1000),
+        },
+    )
+
+    assert handled
+    assert notes[-1][1:] == (
+        "guest_node_gone_destroy_failed",
+        "node-gone",
+        {"exception": "TimeoutError", "intervention_required": True},
+    )
+
+
+def test_destroyed_view_after_node_gone_uses_existing_cessation_path():
+    failed_at = datetime(2026, 9, 13, 2, 30, tzinfo=timezone.utc)
+    started = int((failed_at - timedelta(minutes=5)).timestamp() * 1000)
+    updated = int((failed_at + timedelta(minutes=5)).timestamp() * 1000)
+    identity = {
+        "guest_id": "guest-1",
+        "dispatched_at": (failed_at - timedelta(minutes=6)).isoformat(),
+        "failed_turn_at": failed_at.isoformat(),
+    }
+
+    proof = supervisor._control_plane_cessation(
+        {
+            "session_id": "guest-1",
+            "state": "destroyed",
+            "generation": 0,
+            "invoke_started_at": started,
+            "last_invoke_at": started + 1,
+            "updated_at": updated,
+        },
+        identity,
+    )
+
+    assert proof is not None
+    assert proof["state"] == "destroyed"

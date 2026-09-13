@@ -1,16 +1,17 @@
 """Settle uncertain permits from exact control-plane cessation evidence.
 
-This loop never stops, invokes, or retries a guest. Factory-owned sessions have
-their own settlement path, and a permit whose routine job row is still parked on
-this attempt is left to the operator reconciliation path that re-arms that job.
-A terminal control-plane timestamp must follow the failed turn so a historical
-guest state cannot release a current permit.
+This loop never invokes or retries a guest. It requests destroy only for an old
+parked or banked guest whose Kubernetes node is known to be gone. Factory-owned
+sessions have their own settlement path, and a permit whose routine job row is
+still parked on this attempt is left to the operator reconciliation path that
+re-arms that job. A terminal control-plane timestamp must follow the failed turn
+so a historical guest state cannot release a current permit.
 """
 
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import logging
@@ -37,6 +38,10 @@ INTERVAL_SECONDS = 15
 BATCH_SIZE = 4
 GET_TIMEOUT_SECONDS = 5
 MAX_PROOF_AGE_SECONDS = 30
+STALE_UNBOUND_SECONDS = 3600
+NODE_GONE_GRACE_SECONDS = 600
+MAX_NODE_GONE_DESTROY_REQUESTS = 2
+_TERMINAL_SESSION_STATUSES = frozenset({"failed", "warn", "completed", "cancelled"})
 
 
 def _now():
@@ -86,6 +91,8 @@ def _factory_owned(db, agent):
 # turn never reached a guest, so any of these being set says a binding existed
 # and was cleared afterwards, which is not the same claim.
 _BINDING_EVIDENCE = (
+    "ember_session_token",
+    "ember_session_expires_at",
     "ember_lineage_id",
     "prior_ember_lineage_id",
     "cli_session_id",
@@ -96,6 +103,12 @@ _BINDING_EVIDENCE = (
     "guest_cleanup_dispatch_json",
     "guest_cleanup_started_at",
 )
+
+
+def _has_binding_evidence(agent):
+    return any(getattr(agent, name) is not None for name in _BINDING_EVIDENCE) or (
+        agent.recovery_workspace_loss is True
+    )
 
 
 def _routine_job_held(db, permit):
@@ -161,7 +174,7 @@ def _no_guest_delivery(permit, recovery):
         raise ValueError("guest_delivery_evidence")
 
 
-def _identity(db, permit):
+def _identity(db, permit, *, allow_stale_unbound=False):
     """Called under the capacity lock, before any observation or settlement."""
     agent = db.exec(
         select(AgentSession)
@@ -201,7 +214,17 @@ def _identity(db, permit):
         .where(AgentTurn.session_id == agent.id, AgentTurn.seq > permit.pending_seq)
         .limit(1)
     ).first()
-    if turn is None or later is not None or turn.terminal_reason != "error":
+    stale_unbound_shape = (
+        permit.tier in {"kg", "project"}
+        and permit.routine_job_name is None
+        and agent.status in _TERMINAL_SESSION_STATUSES
+        and agent.ember_session_id is None
+    )
+    if (
+        turn is None
+        or later is not None
+        or (turn.terminal_reason != "error" and not stale_unbound_shape)
+    ):
         raise ValueError("changed_attempt")
     if (
         permit.tier != "interactive"
@@ -229,7 +252,11 @@ def _identity(db, permit):
             or not (unknown or legacy)
         ):
             raise ValueError("ineligible_probe")
-    elif permit.tier in {"kg", "project"} and permit.routine_job_name is None:
+    elif (
+        permit.tier in {"kg", "project"}
+        and permit.routine_job_name is None
+        and agent.status not in _TERMINAL_SESSION_STATUSES
+    ):
         # A real drainer session keys on "<workflow>:<node_key>:<job_name>"
         # (swarm/drainer.py _session_key). "_drainer-worker:" is a routine job
         # NAME prefix and never leads a local_session_id, so the routine job
@@ -240,19 +267,33 @@ def _identity(db, permit):
     if agent.ember_session_id is None:
         if permit.tier == "probe" and not _general_enabled():
             raise ValueError("no_guest_supervision_disabled")
-        try:
-            usage = json.loads(turn.usage_json or "{}")
-        except (AttributeError, TypeError, ValueError):
-            raise ValueError("malformed_recovery") from None
-        if not isinstance(usage, dict):
-            raise ValueError("malformed_recovery")
         # store.clear_ember_bindings_by_ember_id now refuses a session holding
         # an unknown outcome, but a binding cleared before that guard, or by
         # another path, still leaves these traces. Without them a cleared
         # binding would read as "no guest was ever bound".
-        if any(getattr(agent, name) is not None for name in _BINDING_EVIDENCE):
+        if _has_binding_evidence(agent):
             raise ValueError("prior_binding_evidence")
-        _no_guest_delivery(permit, usage.get("recovery"))
+        if permit.outcome in {"delivery_error", "executor_cancelled"}:
+            # The delivery proof is the fast path. A recognised outcome whose
+            # recovery blob is missing or malformed is refused here for the
+            # exact no-guest settlement, but the stale unbound path may ask to
+            # tolerate that refusal: a terminal session with no binding
+            # evidence past its grace is the same claim, reached by time
+            # instead of by evidence. _record_stale_unbound applies the age.
+            tolerated = allow_stale_unbound and stale_unbound_shape
+            try:
+                usage = json.loads(turn.usage_json or "{}")
+                if not isinstance(usage, dict):
+                    raise ValueError("malformed_recovery")
+                _no_guest_delivery(permit, usage.get("recovery"))
+            except (AttributeError, TypeError) as exc:
+                if not tolerated:
+                    raise ValueError("malformed_recovery") from exc
+            except ValueError as exc:
+                if not tolerated:
+                    raise ValueError(str(exc) or "malformed_recovery") from exc
+        elif not stale_unbound_shape:
+            raise ValueError("unrecognised_outcome")
     owners = (
         []
         if agent.ember_session_id is None
@@ -334,6 +375,10 @@ def _candidates():
                     or_(
                         AgentCapacityReservation.tier.in_(("probe", "interactive")),
                         AgentCapacityReservation.routine_job_name.isnot(None),
+                        (
+                            AgentCapacityReservation.tier.in_(("kg", "project"))
+                            & AgentSession.status.in_(_TERMINAL_SESSION_STATUSES)
+                        ),
                     ),
                 )
                 .order_by(
@@ -360,7 +405,7 @@ def _prepare(permit_id):
             _reason(audit, "permit_missing")
             return None
         try:
-            agent, _, identity = _identity(db, permit)
+            agent, _, identity = _identity(db, permit, allow_stale_unbound=True)
         except ValueError as exc:
             _reason(audit, str(exc))
             return None
@@ -382,7 +427,7 @@ def _record_no_guest(candidate):
         admission.lock_pool(db)
         audit = db.get(ProbeObservation, candidate["permit_id"])
         if audit is None or audit.settled_at is not None:
-            return
+            return audit.reason if audit is not None else None
         audit.checked_at = _now()
         permit = db.get(AgentCapacityReservation, candidate["permit_id"])
         try:
@@ -395,10 +440,12 @@ def _record_no_guest(candidate):
                 or agent.ember_session_id is not None
             ):
                 raise ValueError("identity_changed")
+            if permit.outcome not in {"delivery_error", "executor_cancelled"}:
+                raise ValueError("unrecognised_outcome")
         except ValueError as exc:
             _reason(audit, str(exc))
             db.add(audit)
-            return
+            return audit.reason
         admission.settle(
             db,
             agent,
@@ -409,9 +456,54 @@ def _record_no_guest(candidate):
         audit.reason = "no_guest_bound"
         audit.settled_at = _now()
         db.add(audit)
+        return audit.reason
 
 
-def _record(candidate, observed, observed_at):
+def _record_stale_unbound(candidate):
+    """Settle an old terminal reservation with no trace of a guest binding."""
+    with Session(get_engine()) as db, db.begin():
+        admission.lock_pool(db)
+        audit = db.get(ProbeObservation, candidate["permit_id"])
+        if audit is None or audit.settled_at is not None:
+            return
+        audit.checked_at = _now()
+        permit = db.get(AgentCapacityReservation, candidate["permit_id"])
+        try:
+            if permit is None:
+                raise ValueError("permit_missing")
+            agent, _turn, identity = _identity(db, permit, allow_stale_unbound=True)
+            if (
+                permit.state != "uncertain"
+                or permit.tier not in {"kg", "project"}
+                or permit.routine_job_name is not None
+                or agent.status not in _TERMINAL_SESSION_STATUSES
+                or agent.ember_session_id is not None
+                or _has_binding_evidence(agent)
+            ):
+                raise ValueError("stale_unbound_proof_missing")
+            if _aware(permit.created_at) >= _now() - timedelta(
+                seconds=STALE_UNBOUND_SECONDS
+            ):
+                raise ValueError("stale_unbound_grace")
+            if identity != candidate["identity"] or identity != audit.identity_sha256:
+                raise ValueError("identity_changed")
+        except ValueError as exc:
+            _reason(audit, str(exc))
+            db.add(audit)
+            return
+        admission.settle(
+            db,
+            agent,
+            permit.pending_seq,
+            outcome="stale_unbound_permit",
+            cessation_confirmed=True,
+        )
+        audit.reason = "stale_unbound_permit"
+        audit.settled_at = _now()
+        db.add(audit)
+
+
+def _record(candidate, observed, observed_at, node_names=None):
     """Commit proof and exact permit settlement together, or retain the hold."""
     with Session(get_engine()) as db, db.begin():
         admission.lock_pool(db)
@@ -432,6 +524,81 @@ def _record(candidate, observed, observed_at):
                 raise ValueError("observation_unavailable")
             if observed.get("session_id") != candidate["guest_id"]:
                 raise ValueError("guest_mismatch")
+            generation, updated = observed.get("generation"), observed.get("updated_at")
+            if (
+                type(generation) is not int
+                or generation < 0
+                or type(updated) is not int
+                or updated < 0
+            ):
+                raise ValueError("malformed_identity")
+            if (audit.cp_updated_at is not None and updated < audit.cp_updated_at) or (
+                updated > int(observed_at.timestamp() * 1000)
+            ):
+                raise ValueError("reordered_observation")
+
+            try:
+                prior_evidence = json.loads(audit.evidence_json or "{}")
+            except (TypeError, ValueError):
+                prior_evidence = {}
+            if not isinstance(prior_evidence, dict):
+                prior_evidence = {}
+            destroy_requests = prior_evidence.get("node_gone_destroy_requests", 0)
+            if type(destroy_requests) is not int or destroy_requests < 0:
+                destroy_requests = 0
+            evidence = {
+                "session_id": candidate["guest_id"],
+                "generation": generation,
+                "invoke_started_at": observed.get("invoke_started_at"),
+                "updated_at": updated,
+                "observed_at": observed_at.isoformat(),
+                "response_sha256": _sha(observed),
+                "terminal_state": observed.get("state")
+                if observed.get("state") in {"evicted", "destroyed"}
+                else None,
+                "last_invoke_at": observed.get("last_invoke_at")
+                if type(observed.get("last_invoke_at")) is int
+                else None,
+                "node_gone_destroy_requests": destroy_requests,
+            }
+            node = observed.get("node") or {}
+            node_id = node.get("node_id") if isinstance(node, dict) else None
+            if (
+                observed.get("state") in {"parked", "banked"}
+                and isinstance(node_id, str)
+                and node_id
+                and node_names is not None
+                and node_id not in node_names
+                and int(observed_at.timestamp() * 1000) - updated
+                > NODE_GONE_GRACE_SECONDS * 1000
+            ):
+                audit.generation = generation
+                audit.invoke_started_at = (
+                    observed.get("invoke_started_at")
+                    if type(observed.get("invoke_started_at")) is int
+                    else None
+                )
+                audit.cp_updated_at = updated
+                if destroy_requests >= MAX_NODE_GONE_DESTROY_REQUESTS:
+                    evidence.update(
+                        reason="guest_node_gone_destroy_exhausted",
+                        intervention_required=True,
+                    )
+                    audit.evidence_json = json.dumps(evidence, sort_keys=True)
+                    _reason(audit, "guest_node_gone_destroy_exhausted")
+                    db.add(audit)
+                    return None
+                precondition = {"generation": generation}
+                evidence.update(
+                    node_gone_destroy_requests=destroy_requests + 1,
+                    destroy_precondition=precondition,
+                    intervention_required=False,
+                )
+                audit.evidence_json = json.dumps(evidence, sort_keys=True)
+                _reason(audit, "node_gone_destroy_requested")
+                db.add(audit)
+                return precondition
+
             # A guest that never completed an invoke carries NULL stamps: the
             # control plane initialises both nil and only the invoke path sets
             # them. A guest parked after a 409 on invoke is exactly that, and
@@ -454,7 +621,6 @@ def _record(candidate, observed, observed_at):
                 fields = ("generation", "invoke_started_at", "updated_at")
             if any(type(observed.get(k)) is not int or observed[k] < 0 for k in fields):
                 raise ValueError("malformed_identity")
-            generation, updated = observed["generation"], observed["updated_at"]
             started = None if never_invoked else observed["invoke_started_at"]
             # Control-plane milliseconds ordered against a monolith-side
             # timestamp. The gap asserted is an invocation's own length, which
@@ -473,32 +639,13 @@ def _record(candidate, observed, observed_at):
                 and started != audit.invoke_started_at
             ):
                 raise ValueError("invocation_changed")
-            if (audit.cp_updated_at is not None and updated < audit.cp_updated_at) or (
-                updated > int(observed_at.timestamp() * 1000)
-            ):
-                raise ValueError("reordered_observation")
             if not never_invoked and started > updated:
                 raise ValueError("reordered_observation")
             audit.generation = generation
             audit.invoke_started_at = started
             audit.cp_updated_at = updated
-            audit.evidence_json = json.dumps(
-                {
-                    "session_id": candidate["guest_id"],
-                    "generation": generation,
-                    "invoke_started_at": started,
-                    "updated_at": updated,
-                    "observed_at": observed_at.isoformat(),
-                    "response_sha256": _sha(observed),
-                    "terminal_state": observed.get("state")
-                    if observed.get("state") in {"evicted", "destroyed"}
-                    else None,
-                    "last_invoke_at": observed.get("last_invoke_at")
-                    if type(observed.get("last_invoke_at")) is int
-                    else None,
-                },
-                sort_keys=True,
-            )
+            evidence["invoke_started_at"] = started
+            audit.evidence_json = json.dumps(evidence, sort_keys=True)
             terminal_states = {"evicted"}
             if _general_enabled():
                 # Destroyed is trustworthy cessation proof only because
@@ -524,13 +671,36 @@ def _record(candidate, observed, observed_at):
         except ValueError as exc:
             _reason(audit, str(exc))
             db.add(audit)
-            return
+            return False
         admission.confirm_guest_cessation(db, agent)
         audit.reason = "guest_cessation_confirmed"
         audit.settled_at = _now()
         db.add(audit)
         # Keep the failed turn, cost, and session history unchanged. A later
         # turn receives a fresh guest identity through normal dispatch.
+
+
+def _record_destroy_failure(candidate, exception):
+    """Attach a bounded intervention marker to the already consumed request."""
+    with Session(get_engine()) as db, db.begin():
+        admission.lock_pool(db)
+        audit = db.get(ProbeObservation, candidate["permit_id"])
+        if audit is None or audit.settled_at is not None:
+            return
+        try:
+            evidence = json.loads(audit.evidence_json or "{}")
+        except (TypeError, ValueError):
+            evidence = {}
+        if not isinstance(evidence, dict):
+            evidence = {}
+        evidence.update(
+            reason="node_gone_destroy_failed",
+            exception=type(exception).__name__,
+            intervention_required=True,
+        )
+        audit.evidence_json = json.dumps(evidence, sort_keys=True)
+        _reason(audit, "node_gone_destroy_failed")
+        db.add(audit)
 
 
 async def sweep_once(transport):
@@ -540,7 +710,9 @@ async def sweep_once(transport):
             if candidate is None:
                 continue
             if candidate["guest_id"] is None:
-                await asyncio.to_thread(_record_no_guest, candidate)
+                reason = await asyncio.to_thread(_record_no_guest, candidate)
+                if reason != "no_guest_bound":
+                    await asyncio.to_thread(_record_stale_unbound, candidate)
                 continue
             try:
                 observed = await asyncio.wait_for(
@@ -548,7 +720,30 @@ async def sweep_once(transport):
                 )
             except Exception:  # A missing or unavailable guest is not cessation.
                 observed = None
-            await asyncio.to_thread(_record, candidate, observed, _now())
+            node_names = None
+            if isinstance(observed, dict) and observed.get("state") in {
+                "parked",
+                "banked",
+            }:
+                from cluster.kubernetes import cluster_node_names
+
+                node_names = await cluster_node_names()
+            destroy_precondition = await asyncio.to_thread(
+                _record, candidate, observed, _now(), node_names
+            )
+            if destroy_precondition:
+                try:
+                    await asyncio.wait_for(
+                        # Recorded on the observation, not sent: see
+                        # factory_supervision._destroy_guest (#6091, #5502).
+                        transport.destroy_session(candidate["guest_id"]),
+                        GET_TIMEOUT_SECONDS,
+                    )
+                except Exception as exc:
+                    await asyncio.to_thread(_record_destroy_failure, candidate, exc)
+                    logger.exception(
+                        "Failed node-gone destroy for permit %s", permit_id
+                    )
         except Exception:  # One failed candidate must not stop the bounded sweep.
             logger.exception("Failed permit observation for permit %s", permit_id)
 

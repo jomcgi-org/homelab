@@ -11,11 +11,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 
 from kubernetes_asyncio import client, config
 from kubernetes_asyncio.client import ApiClient
 
 logger = logging.getLogger(__name__)
+
+_node_names_cache: tuple[float, set[str]] | None = None
 
 
 _CPU_SUFFIXES = {"n": 1e-9, "u": 1e-6, "m": 1e-3}
@@ -95,6 +98,17 @@ class KubernetesClient:
         v1 = client.CoreV1Api(api)
         nodes = await v1.list_node()
         return len(nodes.items)
+
+    async def list_node_names(self) -> set[str]:
+        """Return the names from the existing cluster-scoped node list path."""
+        nodes = await self.list_resources("nodes")
+        return {
+            name
+            for item in nodes
+            if isinstance(item, dict)
+            and isinstance((item.get("metadata") or {}).get("name"), str)
+            and (name := item["metadata"]["name"])
+        }
 
     async def count_pods(self) -> int:
         api = await self._ensure_client()
@@ -492,3 +506,31 @@ class KubernetesClient:
         if self._api:
             await self._api.close()
             self._api = None
+
+
+async def cluster_node_names(*, max_age_seconds: float = 60.0) -> set[str] | None:
+    """Return a cached node inventory, or None when no inventory is available.
+
+    A stale successful inventory remains safer than treating an unavailable API
+    as an empty cluster. Callers use None as unknown and never as an empty set.
+    """
+    global _node_names_cache
+
+    now = time.monotonic()
+    if _node_names_cache is not None and now - _node_names_cache[0] <= max_age_seconds:
+        return set(_node_names_cache[1])
+
+    kubernetes = KubernetesClient()
+    try:
+        names = await kubernetes.list_node_names()
+    except Exception:
+        logger.warning("Kubernetes node inventory unavailable", exc_info=False)
+        return None if _node_names_cache is None else set(_node_names_cache[1])
+    finally:
+        try:
+            await kubernetes.close()
+        except Exception:
+            logger.warning("Kubernetes client close failed", exc_info=False)
+
+    _node_names_cache = (time.monotonic(), set(names))
+    return set(names)

@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from kubernetes_asyncio.client.exceptions import ApiException
 
+from cluster import kubernetes
 from cluster.kubernetes import (
     KubernetesClient,
     UnknownKindError,
@@ -52,6 +53,59 @@ async def test_count_nodes(k8s_client):
         count = await k8s_client.count_nodes()
 
     assert count == 3
+
+
+@pytest.mark.asyncio
+async def test_list_node_names_uses_the_node_list_path(k8s_client):
+    k8s_client.list_resources = AsyncMock(
+        return_value=[
+            {"metadata": {"name": "node-a"}},
+            {"metadata": {"name": "node-b"}},
+            {"metadata": {}},
+        ]
+    )
+
+    assert await k8s_client.list_node_names() == {"node-a", "node-b"}
+    k8s_client.list_resources.assert_awaited_once_with("nodes")
+
+
+@pytest.mark.asyncio
+async def test_cluster_node_names_caches_the_last_success(monkeypatch):
+    client_instance = MagicMock()
+    client_instance.list_node_names = AsyncMock(return_value={"node-a"})
+    client_instance.close = AsyncMock()
+    monkeypatch.setattr(kubernetes, "_node_names_cache", None)
+    monkeypatch.setattr(kubernetes, "KubernetesClient", lambda: client_instance)
+
+    assert await kubernetes.cluster_node_names(max_age_seconds=60) == {"node-a"}
+    assert await kubernetes.cluster_node_names(max_age_seconds=60) == {"node-a"}
+    client_instance.list_node_names.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_cluster_node_names_returns_none_on_failure_without_cache(monkeypatch):
+    client_instance = MagicMock()
+    client_instance.list_node_names = AsyncMock(side_effect=RuntimeError("offline"))
+    client_instance.close = AsyncMock()
+    monkeypatch.setattr(kubernetes, "_node_names_cache", None)
+    monkeypatch.setattr(kubernetes, "KubernetesClient", lambda: client_instance)
+
+    assert await kubernetes.cluster_node_names(max_age_seconds=0) is None
+
+
+@pytest.mark.asyncio
+async def test_cluster_node_names_returns_stale_cache_when_refresh_fails(monkeypatch):
+    client_instance = MagicMock()
+    client_instance.list_node_names = AsyncMock(side_effect=RuntimeError("offline"))
+    client_instance.close = AsyncMock()
+    monkeypatch.setattr(
+        kubernetes, "_node_names_cache", (0.0, {"node-from-last-success"})
+    )
+    monkeypatch.setattr(kubernetes, "KubernetesClient", lambda: client_instance)
+
+    assert await kubernetes.cluster_node_names(max_age_seconds=0) == {
+        "node-from-last-success"
+    }
 
 
 @pytest.mark.asyncio
