@@ -64,7 +64,8 @@ optional `max_planner_turns`, which inherits the envelope when it is omitted.
 Planning rounds still draw on `task_budget_usd`. The optional
 `max_review_rounds` bounds the review correction rounds the engine runs on its
 own and defaults to 2. Those, `reviewer_model`, `model_pools`, `quota_guard`,
-and `intake` are the only optional fields; every other field is required.
+and `intake` are optional. `max_review_recovery_rounds` is also optional and
+defaults to 0; it admits up to two extra rounds under the CI gate below.
 
 ### Updating policy while work runs
 
@@ -642,6 +643,31 @@ against `max_review_rounds`. One attempt is a deliberate trade: a correction or
 re-review that fails or stalls spends a round rather than retrying silently
 inside a round nobody sized for it, and the planner is asked once the rounds
 are spent.
+
+An operator can set `max_review_recovery_rounds` to 1 or 2 to continue a
+review that still requests changes after the ordinary round bound. The default
+is 0. Recovery requires an open PR on this task's branch in this repository,
+the configured base branch, the exact head recorded by the latest review,
+and both successful `pr-checks` and successful aggregate commit status. Draft
+PRs can be corrected. The PR identity is read again after CI to detect a head
+change during the observation. Missing/pending CI and transient GitHub reads
+wait on the same task without a planner turn; red checks or changed PR identity
+return to planning. Waiting remains subject to the original task deadline.
+
+Recovery is another engine-owned correction and independent re-review pair,
+not a new admission. Its starts and dollars count against the original task
+envelope, and its deadline, receipt, branch and history remain unchanged. The
+round count comes from the durable graph, so restarting the reconciler does
+not replenish it. The engine checks each pair against the remaining envelope
+when inserting it, without reserving conditional recovery before it qualifies.
+`review_recovery_observed` audits the evidence, and the inserted graph records
+the CI head in the correction's reason. Failed corrections do not qualify for
+these extra rounds, and `max_review_rounds: 0` still disables all corrections.
+Neither agents nor planner decisions can change either server-owned bound.
+After recovery is spent, the existing planner/escalation path applies. This
+field is pinned at admission along with the policy; enabling it affects future
+admissions and does not alter in-flight pins or resolve existing escalations.
+
 Reserving every remaining round up front instead priced a loop the task would
 probably never open, and it left a nine-turn envelope unable to hold a
 three-node plan at all.

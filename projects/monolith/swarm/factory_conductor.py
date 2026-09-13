@@ -2082,8 +2082,9 @@ def _apply_decision(
     from swarm.factory_controls import finish_task
 
     action = decision["action"]
-    if "max_review_rounds" in decision or any(
-        isinstance(edit, dict) and "max_review_rounds" in edit
+    review_bounds = {"max_review_rounds", "max_review_recovery_rounds"}
+    if review_bounds.intersection(decision) or any(
+        isinstance(edit, dict) and review_bounds.intersection(edit)
         for edit in (decision.get("edits") or [])
     ):
         _reject_decision(
@@ -2091,7 +2092,8 @@ def _apply_decision(
             cause,
             action,
             "bound_exceeds_policy",
-            "max_review_rounds is server policy and a decision cannot set it",
+            "max_review_rounds and max_review_recovery_rounds are server policy "
+            "and a decision cannot set them",
         )
         return
     if action == "plan":
@@ -2394,6 +2396,61 @@ def _correction_model(
     return choice["model"], ", with a pool-selected implement model"
 
 
+def _review_recovery_evidence(task: dict, review_run: dict) -> dict:
+    """Observe an open, task-owned PR with passing CI at the reviewed head.
+
+    Missing or pending CI and transient reads wait on this same task. A red
+    check or changed PR identity returns to planning. None of these reads
+    grants a start or an approval; the engine still checks the task envelope
+    and every inserted correction requires its own independent re-review.
+    """
+    artifact = _artifact(review_run)
+    head = artifact.get("head_sha")
+    number = artifact.get("pr_number")
+    if (
+        artifact.get("verdict") != "changes_requested"
+        or not isinstance(head, str)
+        or re.fullmatch(r"[0-9a-f]{40}", head) is None
+        or review_run.get("head_sha") != head
+        or type(number) is not int
+        or number <= 0
+    ):
+        return {"state": "refused", "reason": "review_identity_missing"}
+    evidence = {"head_sha": head, "pr_number": number}
+
+    def matches(pr: dict) -> bool:
+        return (
+            pr.get("state") == "open"
+            and pr.get("head", {}).get("sha") == head
+            and pr.get("head", {}).get("ref") == task_branch(task["id"])
+            and pr.get("head", {}).get("repo", {}).get("full_name") == task["repo"]
+            and pr.get("base", {}).get("ref") == task["base_branch"]
+        )
+
+    try:
+        if not matches(github_get(task["repo"], f"pulls/{number}")):
+            return {**evidence, "state": "refused", "reason": "pr_identity_changed"}
+        checks = github_get(task["repo"], f"commits/{head}/status")
+        contexts = {s["context"]: s["state"] for s in checks.get("statuses", [])}
+        if checks.get("state") in ("error", "failure") or any(
+            state in ("error", "failure") for state in contexts.values()
+        ):
+            return {**evidence, "state": "refused", "reason": "ci_failed"}
+        if contexts.get("pr-checks") != "success" or checks.get("state") != "success":
+            return {**evidence, "state": "waiting", "reason": "ci_pending"}
+        # Do not append work on stale review findings if the branch moved
+        # while its status was read. Dispatch pins its current head again.
+        if not matches(github_get(task["repo"], f"pulls/{number}")):
+            return {**evidence, "state": "refused", "reason": "pr_identity_changed"}
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code in (403, 429) or exc.response.status_code >= 500:
+            return {**evidence, "state": "waiting", "reason": "github_unavailable"}
+        return {**evidence, "state": "refused", "reason": "github_read_refused"}
+    except (httpx.HTTPError, ValueError):
+        return {**evidence, "state": "waiting", "reason": "github_unavailable"}
+    return {**evidence, "state": "ready", "reason": "reviewed_head_ci_passed"}
+
+
 def _insert_review_round(
     task: dict,
     policy: dict,
@@ -2405,6 +2462,7 @@ def _insert_review_round(
     expected_version: int,
     *,
     reopened: bool = False,
+    recovery_evidence: dict | None = None,
 ) -> tuple[bool, str | None]:
     """Append this task's next correction and re-review pair, atomically.
 
@@ -2571,6 +2629,11 @@ def _insert_review_round(
             "side_effects": True,
             "stated_reason": (
                 f"Engine-owned correction round {ordinal} of {max_rounds}{provenance}"
+                + (
+                    f"; recovery after pr-checks passed at {recovery_evidence['head_sha']}"
+                    if recovery_evidence
+                    else ""
+                )
             ),
             "turn_timeout_seconds": _sized(reviewed),
             **bounds,
@@ -3421,6 +3484,7 @@ def _audit_once(task_id: str, key: str, action: str, detail: dict) -> bool:
 def reconcile_task(task_id: str, policy: dict, dbos) -> None:
     from swarm.factory_controls import (
         DEFAULT_MAX_REVIEW_ROUNDS,
+        DEFAULT_MAX_REVIEW_RECOVERY_ROUNDS,
         can_start,
         operator_direction,
         parallel_limit,
@@ -3535,7 +3599,32 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
         pending = _failed_round(nodes, runs)
         reopened = pending is not None
     loop_refusal = None
-    if pending is not None and rounds_used < max_rounds:
+    recovery_evidence = None
+    recovery_rounds = policy.get(
+        "max_review_recovery_rounds", DEFAULT_MAX_REVIEW_RECOVERY_ROUNDS
+    )
+    # Recovery keeps the task and all spent starts. Count the durable graph's
+    # rounds so a restart, refused edit or repeated tick cannot refresh the cap.
+    # An explicit zero ordinary-round policy disables corrections altogether.
+    if (
+        pending is not None
+        and not ready
+        and not reopened
+        and max_rounds > 0
+        and max_rounds <= rounds_used < max_rounds + recovery_rounds
+    ):
+        recovery_evidence = _review_recovery_evidence(task, pending)
+        _audit_once(
+            task_id,
+            f"review-recovery:{rounds_used + 1}:{recovery_evidence['reason']}",
+            "review_recovery_observed",
+            recovery_evidence,
+        )
+        if recovery_evidence["state"] == "waiting":
+            return
+        if recovery_evidence["state"] != "ready":
+            recovery_evidence = None
+    if pending is not None and (rounds_used < max_rounds or recovery_evidence):
         inserted, loop_refusal = _insert_review_round(
             task,
             policy,
@@ -3543,9 +3632,10 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
             runs,
             pending,
             rounds_used + 1,
-            max_rounds,
+            max_rounds + recovery_rounds if recovery_evidence else max_rounds,
             insertion_revision,
             reopened=reopened,
+            recovery_evidence=recovery_evidence,
         )
         if inserted:
             return

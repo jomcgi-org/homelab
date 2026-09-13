@@ -1382,3 +1382,14 @@ def test_new_policy_does_not_change_active_task_model_authority(db, policy):
     }
     assert controls.set_control("configure", "operator", policy=changed)["ok"]
     assert grant(task, model="luna")["ok"]
+
+
+def test_review_recovery_is_opt_in_bounded_and_pinned(db, policy):
+    assert controls.validate_policy(policy)["max_review_recovery_rounds"] == 0
+    policy["max_review_recovery_rounds"] = 2
+    task = admitted(policy)
+    assert controls.task_snapshot(task)["policy"]["max_review_recovery_rounds"] == 2
+    for invalid in (-1, 3, 2.0, True, "2", None):
+        policy["max_review_recovery_rounds"] = invalid
+        with pytest.raises(ValueError, match="max_review_recovery_rounds"):
+            controls.validate_policy(policy)
