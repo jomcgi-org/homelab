@@ -28,7 +28,6 @@ py_venv_binary(
         ["**/*.py"],
         exclude = ["**/*_test.py"],
     ),
-    imports = [".."],
     main = "backfill/main.py",
     visibility = ["//projects/monolith:__pkg__"],
 )

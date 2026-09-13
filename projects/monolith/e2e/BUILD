@@ -1,3 +1,5 @@
+load("@aspect_rules_py//py:defs.bzl", "py_library")
+
 # Bazel-native package ownership. Classification is declared here, not in
 # projects/monolith/BUILD.
 # The root monolith Semgrep target already scans this package transitively.
@@ -108,4 +110,10 @@ filegroup(
         ],
     ),
     visibility = ["//projects/monolith:__pkg__"],
+)
+
+py_library(
+    name = "e2e",
+    srcs = ["__init__.py"],
+    visibility = ["//:__subpackages__"],
 )
