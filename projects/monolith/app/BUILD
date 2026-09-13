@@ -111,7 +111,7 @@ py_test(
 py_test(
     name = "main_domain_test",
     srcs = ["main_domain_test.py"],
-    data = ["domain_images.bzl"],
+    data = ["//projects/monolith:domain_images_test_data"],
     imports = [".."],
     deps = [
         "//projects/monolith:monolith_backend",

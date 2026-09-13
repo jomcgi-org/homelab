@@ -39,6 +39,12 @@ package_group(
     ],
 )
 
+filegroup(
+    name = "domain_images_test_data",
+    srcs = ["domain_images.bzl"],
+    visibility = ["//projects/monolith/app:__pkg__"],
+)
+
 # Pin the frontend build to the exec (host) platform. The vite output is
 # just static HTML/CSS/JS — it's arch-independent — but py3_image's
 # platform transitions would otherwise cause aspect_rules_js to select
