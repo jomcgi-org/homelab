@@ -1,6 +1,6 @@
 (* See tc_parse.mli. Tokenize with Tc_lexer, then consume tokens left to right. *)
 
-let parse (s : string) : Tc_ast.expr =
+let parse_expression (s : string) : Tc_ast.expr =
   let toks = ref (Tc_lexer.tokenize s) in
   let peek () = match !toks with t :: _ -> Some t | [] -> None in
   let advance () =
@@ -48,3 +48,14 @@ let parse (s : string) : Tc_ast.expr =
   | [] -> ()
   | _ -> failwith "toycaml: trailing tokens after expression");
   e
+
+let rec ast_of_wire : Tc_wire_t.expr -> Tc_ast.expr = function
+  | `Int n -> Int n
+  | `Var name -> Var name
+  | `Call (name, args) -> Call (name, List.map ast_of_wire args)
+
+let parse s =
+  let trimmed = String.trim s in
+  if String.length trimmed > 0 && trimmed.[0] = '[' then
+    Tc_wire_codec.decode trimmed |> ast_of_wire
+  else parse_expression trimmed

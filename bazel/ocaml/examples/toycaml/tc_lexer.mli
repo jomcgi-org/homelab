@@ -1,9 +1,9 @@
 (* Minimal hand-written tokenizer for the toy expression language: calls,
-   integer literals, identifiers, and '$'-prefixed metavariables. A real engine
-   lexes with ocamllex (see ADR 005 roadmap); this hand-rolled scanner keeps the
-   demonstrator buildable on today's ruleset while standing in for that stage.
-   The identifier shape is validated with the `re` opam library, so the fetched-
-   from-source dependency path is exercised by the matching engine itself. *)
+   integer literals, identifiers, and '$'-prefixed metavariables. This compact
+   syntax remains alongside the fetched-grammar JSON input path.
+   The identifier shape is validated by pcre2-ocaml against the vendored PCRE2
+   C archive, exercising both system-library vendoring and the hand-written
+   package override path in the matching engine itself. *)
 
 type token =
   | LPAREN

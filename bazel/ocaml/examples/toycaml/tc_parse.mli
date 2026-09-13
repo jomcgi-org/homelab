@@ -1,6 +1,6 @@
-(* Recursive-descent parser: source text -> AST. Grammar:
+(* Parse compact source text or a JSON variant array. Compact grammar:
      expr := INT | IDENT | IDENT '(' [ expr (',' expr)* ] ')'
-   A real engine parses with menhir over a tree-sitter CST (see ADR 005
-   roadmap); this hand-rolled parser keeps the demonstrator buildable today. *)
+   JSON first passes through the fetched tree-sitter grammar, then through the
+   atdgen-generated typed decoder. *)
 
 val parse : string -> Tc_ast.expr

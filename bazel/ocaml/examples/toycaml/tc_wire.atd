@@ -1,0 +1,7 @@
+(* A JSON wire representation for expressions. atdgen generates both the
+   recursive OCaml type and its checked decoder. *)
+type expr = [
+  | Int of int
+  | Var of string
+  | Call of (string * expr list)
+]

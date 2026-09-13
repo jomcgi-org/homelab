@@ -25,8 +25,9 @@ load("//bazel/ocaml:defs.bzl", "ocaml_library", "ocaml_binary", "ocaml_test", "o
   whose static archives binaries link (the path to pcre2 / tree-sitter); the
   header dir reaches the stub compile via `-ccopt -I` and the archives propagate
   transitively to the final link.
-- **`ocaml_binary(name, srcs, deps, opam_deps, data)`** — compiles + links a
-  runnable native executable.
+- **`ocaml_binary(name, srcs, deps, opam_deps, data, static_link)`** — compiles
+  and links a runnable native executable. `static_link = True` requests a fully
+  static final C link and is verified by the tOyCaml acceptance test.
 - **`ocaml_test(...)`** — a native test executable that exits 0 on success
   (Dune's `(test)` convention). The binary _is_ the test runner.
 - **`ocaml_ppx(name, deps)`** — links a **ppxlib standalone driver** from ppx
@@ -107,8 +108,9 @@ ocaml actions as hermetic inputs**:
    **Semgrep OCaml fork** (`source.bzl` — `github.com/semgrep/ocaml` branch
    `5.3.0-semgrep`, stock 5.3.0 + a thin patch set) and exposes its tree as
    `@ocaml_source//:srcs`. It does **not** build.
-2. `toolchain/compiler.bzl`'s `ocaml_compiler` rule runs `./configure && make &&
-make install` as a **build action on the RBE executor**, packaging the install
+2. `toolchain/compiler.bzl`'s `ocaml_compiler` rule runs `./configure
+   --enable-flambda && make && make install` as a **build action on the RBE
+   executor**, verifies `ocamlopt -config` reports flambda, and packages the install
    prefix as a single **tar** (`bin/`, `lib/ocaml/`). Building where the compiler
    will _run_ is what makes it portable: a from-source build in the repository rule
    links the _workflow runner's_ glibc, which is newer than the executor's and

@@ -1,7 +1,7 @@
-(* tOyCaml command line: a tiny "grep for code". Parses a pattern and a target
-   expression, then reports whether the pattern matches and what its
-   metavariables bind to. The CLI is the thin entry point; the matching engine
-   lives in the toycaml_lib library. *)
+(* tOyCaml command line. Cmdliner comes from a hand-written override because
+   the pinned opam package uses b0/topkg Makefiles rather than dune. *)
+
+open Cmdliner
 
 let run pattern_src target_src =
   let pattern = Tc_parse.parse pattern_src in
@@ -13,12 +13,22 @@ let run pattern_src target_src =
   | Some bindings ->
       print_endline "match!";
       List.iter
-        (fun (k, v) -> Printf.printf "  %s = %s\n" k (Tc_ast.to_string v))
+        (fun (name, value) ->
+          Printf.printf "  %s = %s\n" name (Tc_ast.to_string value))
         (List.rev bindings)
 
-let () =
-  (* Defaults make the binary self-demonstrating under `bazel run`; positional
-     args (pattern, target) override them. *)
-  match Array.to_list Sys.argv with
-  | _ :: pat :: tgt :: _ -> run pat tgt
-  | _ -> run "foo($X, 2)" "foo(bar(7), 2)"
+let pattern =
+  let doc = "Pattern expression, with optional dollar-prefixed metavariables." in
+  Arg.(value & pos 0 string "foo($X, 2)" & info [] ~doc ~docv:"PATTERN")
+
+let target =
+  let doc = "Target in compact expression syntax or the generated JSON wire format." in
+  Arg.(value & pos 1 string "foo(bar(7), 2)" & info [] ~doc ~docv:"TARGET")
+
+let command =
+  let info =
+    Cmd.info "toycaml" ~doc:"match a small structural pattern against an expression"
+  in
+  Cmd.v info Term.(const run $ pattern $ target)
+
+let () = exit (Cmd.eval command)

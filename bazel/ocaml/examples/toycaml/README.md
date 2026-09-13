@@ -1,51 +1,55 @@
-# tOyCaml -- a representative demonstrator for the OCaml ruleset
+# tOyCaml: a representative demonstrator for the OCaml ruleset
 
-A deliberately tiny "grep for code": parse a pattern and a target expression,
-then structurally match the pattern (with metavariables) against the target. It
-builds in seconds, but it is wired to mirror the *shape* of how a large OCaml
-analysis engine uses the ecosystem, so `bazel/ocaml` can be grown against a
-representative target instead of a generic hello-world.
+A deliberately small "grep for code": parse a pattern and a target expression,
+then structurally match the pattern, including metavariables, against the
+target. It mirrors the build shape of a larger OCaml analysis engine while
+remaining a focused acceptance target for `bazel/ocaml`.
 
-Why it exists, what public build it mirrors, and the features it is meant to
-drive out are recorded in the architecture document:
+The architecture decisions are recorded in `bazel/ARCHITECTURE.md`, Decision
+history entries tooling/005 (this demonstrator), tooling/006 (architectures),
+and tooling/007 (BUILD generation).
 
-- `bazel/ARCHITECTURE.md`, Decision history entry tooling/005 -- this demonstrator
-- `bazel/ARCHITECTURE.md`, Decision history entry tooling/006 -- arches
-- `bazel/ARCHITECTURE.md`, Decision history entry tooling/007 -- BUILD gen
+## Delivered components
 
-## What it is today (builds on the current ruleset)
+| Component | Behavior | Capability accepted |
+| --- | --- | --- |
+| `tc_ast.ml/.mli` | generic AST plus generated node traversal and debug rendering | a composed `visitors` and `ppx_deriving.show` driver |
+| `tc_wire.atd` | generates recursive wire types and JSON codec source in a Bazel action | real atdgen code generation |
+| `tc_wire_codec.ml` + `tc_wire_stubs.c` | validates JSON with tree-sitter before typed decoding | pinned fetched grammar in the tOyCaml parse path |
+| `tc_lexer.ml/.mli` | validates identifiers with pcre2-ocaml | vendored PCRE2 system library plus the hand-written override for its non-dune C source |
+| `tc_parse.ml/.mli` | accepts compact expressions or atdgen's JSON variant representation | hand-written parsing preserved alongside the fetched grammar path |
+| `tc_matcher.ml/.mli` | structural matching and metavariable binding | multi-library native compilation |
+| `tc_intern.ml/.mli` + `intern_stubs.c` | FNV-1a string hash in C | first-party C foreign stub |
+| `main.ml` | Cmdliner command-line entry point | non-dune opam override, flambda compiler, `-O3`, and a fully static final link |
 
-| File | Role | Build feature exercised |
-|------|------|-------------------------|
-| `tc_ast.ml/.mli` | generic AST node type | multi-module library, `.mli` interfaces |
-| `tc_pattern.ml/.mli` | a pattern is code with metavariables | intra-library dep on `Tc_ast` |
-| `tc_lexer.ml/.mli` | hand-written tokenizer | uses the fetched-from-source `re` opam lib |
-| `tc_parse.ml/.mli` | recursive-descent parser | inter-module compile ordering (`ocamldep -sort`) |
-| `tc_matcher.ml/.mli` | structural match + metavar binding | inter-library dep on `:toycaml_intern` |
-| `tc_intern.ml/.mli` + `intern_stubs.c` | FNV-1a string hash in C | `c_srcs` (C foreign stub) |
-| `main.ml` | CLI entry point | `ocaml_binary` + `build_test` |
-| `matcher_test.ml` | end-to-end checks | `ocaml_test` (exit 0 = pass) |
+Every tOyCaml OCaml target sets `require_flambda = True` and
+`ocamlopt_flags = ["-O3"]`. The rule driver checks the selected compiler's
+configuration before compiling, and the compiler sysroot build independently
+checks that `--enable-flambda` took effect.
+
+The final `:toycaml` executable sets `static_link = True`.
+`:toycaml_static_link_test` runs it and rejects an ELF `PT_INTERP` segment, so
+a dynamic fallback cannot pass. `:toycaml_capabilities_test` executes focused
+runtime checks for the atdgen decoder, fetched grammar rejection, generated
+visitor traversal, composed show deriver, and the vendored PCRE2 override. The
+static test also checks Cmdliner's generated help, proving the non-dune opam
+package is present at runtime. The original `:toycaml_test` and
+`:toycaml_build_test` remain in place.
 
 ```bash
-# No local test loop in this repo -- push the branch and watch BuildBuddy CI.
+# CI is the test loop for this repository. The required Linux pr-checks action
+# runs the focused tests explicitly on the native arm64 OCaml shard.
 bazel test //bazel/ocaml/examples/toycaml/...
-bazel run  //bazel/ocaml/examples/toycaml:toycaml -- 'foo($X, 2)' 'foo(bar(7), 2)'
+
+# Compact syntax remains supported.
+bazel run //bazel/ocaml/examples/toycaml:toycaml -- \
+  'foo($X, 2)' 'foo(bar(7), 2)'
+
+# A JSON target takes the fetched grammar plus atdgen path.
+bazel run //bazel/ocaml/examples/toycaml:toycaml -- \
+  'foo($X, 2)' '["Call",["foo",[["Call",["bar",[["Int",7]]]],["Int",2]]]]'
 ```
 
-## What it is meant to grow into
-
-The demonstrator is intentionally missing the load-bearing build features a real
-engine needs. Each is a planned ruleset capability that will land as its own
-component here (ADR 005 maps every item to the public engine's build):
-
-- a compiler built with flambda, and `-O3` on every compile;
-- a real codegen tool run as a build action (e.g. `atdgen`), not only
-  `ocamllex`/`menhir`;
-- a `visitors`-style ppx over the AST, plus the wider ppx set;
-- vendored system libraries (gmp, pcre, ...) and an escape hatch for opam
-  packages that are not dune projects;
-- a statically linked final binary;
-- per-architecture builds (ADR 006).
-
-As each lands, the matching toy component above is upgraded to use it, so the
-ruleset always has a representative, green target to build against.
+Per-architecture builds remain owned by tooling/006. They are intentionally
+outside issue #3924 even though required CI also exercises this demonstrator on
+the registered arm64 toolchain.

@@ -6,11 +6,11 @@ type token =
   | IDENT of string
 
 (* An identifier is an optional '$' (metavariable marker) then a letter or
-   underscore then word characters. We validate the shape with `re` -- a real,
-   fetched-from-source opam dependency -- to keep that code path live. *)
-let ident_re = Re.Pcre.re {|^\$?[A-Za-z_][A-Za-z0-9_]*$|} |> Re.compile
+   underscore then word characters. The pcre2 binding reaches the pinned PCRE2
+   C archive through its hand-written non-dune override. *)
+let ident_re = Pcre2.regexp {|^\$?[A-Za-z_][A-Za-z0-9_]*$|}
 
-let is_ident s = Re.execp ident_re s
+let is_ident s = Pcre2.pmatch ~rex:ident_re s
 let is_digit c = c >= '0' && c <= '9'
 
 let is_ident_char c =

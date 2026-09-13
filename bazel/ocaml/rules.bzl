@@ -134,6 +134,8 @@ def _driver_args(ctx, tc, mode, include_dirs, opam_pkgs, srcs, c_srcs, cc = None
     # Wrapping is a library concept; binary/test rules have no `wrapped` attr
     # and always pass 0. getattr keeps this helper shared across the rules.
     args.add("--wrapped", "1" if getattr(ctx.attr, "wrapped", False) else "0")
+    args.add("--require-flambda", "1" if getattr(ctx.attr, "require_flambda", False) else "0")
+    args.add("--static-link", "1" if getattr(ctx.attr, "static_link", False) else "0")
 
     for f in getattr(ctx.attr, "ocamlopt_flags", []):
         args.add("--compile-flag", f)
@@ -283,6 +285,10 @@ _COMMON_ATTRS = {
         doc = "Extra ocamlopt flags for this target's compiles (dune `(flags ...)` / " +
               "`(ocamlopt_flags ...)`, minus :standard).",
     ),
+    "require_flambda": attr.bool(
+        default = False,
+        doc = "Require the selected compiler's `ocamlopt -config` to report `flambda: true`.",
+    ),
     "pp": attr.label(
         executable = True,
         cfg = "exec",
@@ -339,10 +345,17 @@ _COMMON_ATTRS = {
 
 # Runnable rules (binary/test) additionally take `data`; ocaml_library does not,
 # since its implementation has no runfiles to put them in.
-_RUNNABLE_ATTRS = dict(_COMMON_ATTRS, data = attr.label_list(
-    allow_files = True,
-    doc = "Runtime files made available in the runfiles tree (test corpora etc.).",
-))
+_RUNNABLE_ATTRS = dict(
+    _COMMON_ATTRS,
+    data = attr.label_list(
+        allow_files = True,
+        doc = "Runtime files made available in the runfiles tree (test corpora etc.).",
+    ),
+    static_link = attr.bool(
+        default = False,
+        doc = "Link a fully static native executable (`ocamlopt -ccopt -static`).",
+    ),
+)
 
 # Library-only attrs: wrapping is meaningless for binaries/tests (their modules
 # are not a consumable namespace), so only ocaml_library carries it.
@@ -421,7 +434,7 @@ def _ocaml_ppx_impl(ctx):
 
 # ocaml_ppx takes no srcs (the main is generated) and no preprocessors of its
 # own; everything else mirrors the common attr set.
-_PPX_ATTRS = {k: v for k, v in _COMMON_ATTRS.items() if k in ("deps", "opam_deps", "ocamlopt_flags", "_driver")}
+_PPX_ATTRS = {k: v for k, v in _COMMON_ATTRS.items() if k in ("deps", "opam_deps", "ocamlopt_flags", "require_flambda", "_driver")}
 
 ocaml_ppx = rule(
     implementation = _ocaml_ppx_impl,
