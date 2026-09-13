@@ -9,8 +9,8 @@ Design (a deliberate toy, see bazel/ocaml/README.md):
     toy. The "real" version is a Gazelle/ocamldep BUILD generator emitting one
     target per module (the next step, called out in the README).
 
-  * The compiler is a hermetic sysroot (toolchain.bzl) staged as action inputs;
-    native linking uses the execution host's gcc/as/ld.
+  * The compiler and its checksum-locked Zig C/link tool closure are staged as
+    action inputs. Native linking never resolves tools from the executor PATH.
 
   * OcamlInfo carries the compiled output dir (cmi/cmx/.o), the .cmxa archive +
     its .a, transitive include dirs, and transitive opam/findlib package names
@@ -116,9 +116,15 @@ def _tool_files(ctx):
 
 def _driver_args(ctx, tc, mode, include_dirs, opam_pkgs, srcs, c_srcs, cc = None):
     args = ctx.actions.args()
+    # Large translated libraries can have hundreds of transitive include
+    # directories. Keep those arguments out of the process command line so a
+    # compiler diagnostic is not displaced by Bazel's command display limit.
+    args.use_param_file(param_file_arg = "--args-file=%s", use_always = True)
+    args.set_param_file_format("multiline")
     args.add("--mode", mode)
     args.add("--name", ctx.label.name)
     args.add("--sysroot-tar", tc.sysroot_tar.path)
+    args.add("--bootstrap-tool", tc.bootstrap_tool.path)
     args.add("--use-ocamlfind", "1" if tc.use_ocamlfind else "0")
 
     # C library integration (cc_deps): include dirs for the stub compile,
@@ -191,7 +197,7 @@ def _ocaml_library_impl(ctx):
     ctx.actions.run(
         executable = ctx.executable._driver,
         arguments = [args],
-        inputs = depset(ctx.files.srcs + ctx.files.c_srcs + ctx.files.c_headers + ctx.files.preprocess_data + _tool_files(ctx), transitive = [dep.includes, dep.cmxa, dep.a, cc.headers, cc.archives, tc.sysroot_files]),
+        inputs = depset(ctx.files.srcs + ctx.files.c_srcs + ctx.files.c_headers + ctx.files.preprocess_data + _tool_files(ctx), transitive = [dep.includes, dep.cmxa, dep.a, cc.headers, cc.archives, tc.sysroot_files, tc.bootstrap_files]),
         outputs = [objs_dir, cmxa, a_lib],
         mnemonic = "OcamlLibrary",
         progress_message = "Compiling OCaml library %{label}",
@@ -230,7 +236,7 @@ def _ocaml_binary_impl(ctx):
     ctx.actions.run(
         executable = ctx.executable._driver,
         arguments = [args],
-        inputs = depset(ctx.files.srcs + ctx.files.c_srcs + ctx.files.c_headers + ctx.files.preprocess_data + _tool_files(ctx), transitive = [dep.includes, dep.cmxa, dep.a, cc.headers, cc.archives, tc.sysroot_files]),
+        inputs = depset(ctx.files.srcs + ctx.files.c_srcs + ctx.files.c_headers + ctx.files.preprocess_data + _tool_files(ctx), transitive = [dep.includes, dep.cmxa, dep.a, cc.headers, cc.archives, tc.sysroot_files, tc.bootstrap_files]),
         outputs = [exe],
         mnemonic = "OcamlBinary",
         progress_message = "Linking OCaml binary %{label}",
@@ -250,8 +256,8 @@ _COMMON_ATTRS = {
               "Compile order is recovered automatically via ocamldep -sort.",
     ),
     "c_srcs": attr.label_list(
-        allow_files = [".c"],
-        doc = "C stub sources (dune `foreign_stubs`/`c_names`). Compiled with ocamlopt " +
+        allow_files = [".c", ".cc"],
+        doc = "C and C++ stub sources (dune `foreign_stubs`/`c_names`). Compiled with the pinned native tool closure " +
               "(which supplies the caml/*.h headers) and folded into the library's .a, so " +
               "binaries that link this library pull in the stubs automatically. C stubs that " +
               "#include a third-party header (pcre2.h, tree_sitter/api.h) get that header's " +
@@ -412,7 +418,7 @@ def _ocaml_ppx_impl(ctx):
     ctx.actions.run(
         executable = ctx.executable._driver,
         arguments = [args],
-        inputs = depset([main], transitive = [dep.includes, dep.cmxa, dep.a, cc.headers, cc.archives, tc.sysroot_files]),
+        inputs = depset([main], transitive = [dep.includes, dep.cmxa, dep.a, cc.headers, cc.archives, tc.sysroot_files, tc.bootstrap_files]),
         outputs = [exe],
         mnemonic = "OcamlPpxDriver",
         progress_message = "Linking ppx driver %{label}",

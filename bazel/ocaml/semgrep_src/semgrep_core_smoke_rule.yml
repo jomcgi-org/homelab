@@ -1,0 +1,6 @@
+rules:
+  - id: native-engine-smoke
+    languages: [go]
+    message: native CE engine matched Go
+    severity: ERROR
+    pattern: fmt.Println($VALUE)

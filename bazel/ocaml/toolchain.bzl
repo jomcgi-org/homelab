@@ -5,11 +5,10 @@ pinned Semgrep OCaml fork (5.3.0) source is cloned (toolchain/repositories.bzl)
 and built from source by the `ocaml_compiler` build action on the RBE executor
 (toolchain/compiler.bzl), producing a sysroot tar fed to every ocaml action as
 input; the driver extracts it and relocates the compiler with a single OCAMLLIB
-override. Native linking uses the execution host's gcc/as/ld (the same C toolchain
-the repo's C/C++ builds use) — so no C toolchain is bundled. Building from source
-(rather than fetching debs) matches Semgrep's compiler and ships compiler-libs,
-which unblocks ppx; building as an action (rather than in the repository rule)
-links the executor's glibc rather than the newer runner's.
+override. Native compilation and linking use the checksum-locked Zig tool and
+libc sysroot carried inside that tar, never the execution host's PATH. Building
+from source (rather than fetching debs) matches Semgrep's compiler and ships
+compiler-libs, which unblocks ppx.
 
 Why not a container image? BuildBuddy's RBE here does not honor the per-action
 `container-image` execution property (verified: actions land on the default
@@ -27,6 +26,8 @@ OcamlToolchainInfo = provider(
     fields = {
         "sysroot_files": "depset[File]: the OCaml compiler sysroot tar, staged as action inputs.",
         "sysroot_tar": "File: the sysroot tar (bin/, lib/ocaml/); the driver extracts it per action.",
+        "bootstrap_files": "depset[File]: the static archive extraction tool staged as an action input.",
+        "bootstrap_tool": "File: pinned static Toybox used before the sysroot is extracted.",
         "use_ocamlfind": "If True, drive compilation via ocamlfind and resolve opam_deps as findlib packages; else use the compiler directly with stdlib-shipped archives.",
         "extra_compile_flags": "Extra flags passed to every ocamlopt compile.",
     },
@@ -42,6 +43,8 @@ def _ocaml_toolchain_impl(ctx):
         ocaml = OcamlToolchainInfo(
             sysroot_files = depset(sysroot_files),
             sysroot_tar = tars[0],
+            bootstrap_files = depset([ctx.file.bootstrap_tool]),
+            bootstrap_tool = ctx.file.bootstrap_tool,
             use_ocamlfind = ctx.attr.use_ocamlfind,
             extra_compile_flags = ctx.attr.extra_compile_flags,
         ),
@@ -54,6 +57,11 @@ ocaml_toolchain = rule(
             default = "//bazel/ocaml/toolchain:ocaml_compiler",
             allow_files = True,
             doc = "The built OCaml compiler sysroot tar (an ocaml_compiler output).",
+        ),
+        "bootstrap_tool": attr.label(
+            mandatory = True,
+            allow_single_file = True,
+            doc = "Pinned static Toybox used to extract the sysroot without executor PATH tools.",
         ),
         "use_ocamlfind": attr.bool(default = False),
         "extra_compile_flags": attr.string_list(default = []),
@@ -80,6 +88,7 @@ def declare_ocaml_toolchains():
         ocaml_toolchain(
             name = "ocaml_tools_" + arch.name,
             sysroot = "//bazel/ocaml/toolchain:ocaml_compiler_" + arch.name,
+            bootstrap_tool = "@ocaml_native_toybox_%s//file" % arch.name,
             visibility = ["//visibility:public"],
         )
         native.toolchain(

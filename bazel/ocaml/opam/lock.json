@@ -1071,6 +1071,440 @@
       }
     },
     {
+      "name": "tree-sitter-c-sharp",
+      "version": "a20746f",
+      "repo": "ocaml_tree_sitter_c_sharp",
+      "url": "https://github.com/returntocorp/semgrep-c-sharp/archive/a20746f8fa5c155453f91d58d5bf3b736d1fbdb4.tar.gz",
+      "sha256": "68b7f18d7593529959b0ed3f2f8d4b613f6ceb0f4e43d86697379fb6ea276b45",
+      "strip_prefix": "semgrep-c-sharp-a20746f8fa5c155453f91d58d5bf3b736d1fbdb4",
+      "type": "tar.gz",
+      "opam": false,
+      "tree_sitter_target": "tree_sitter_c_sharp",
+      "libs": {
+        "tree-sitter-lang.c-sharp": "tree_sitter_c_sharp"
+      }
+    },
+    {
+      "name": "tree-sitter-cairo",
+      "version": "a8e2d5d",
+      "repo": "ocaml_tree_sitter_cairo",
+      "url": "https://github.com/returntocorp/semgrep-cairo/archive/a8e2d5d5dcf8345735b15268b76b24377103a188.tar.gz",
+      "sha256": "cc9a20f3b085c62b4bdb042f299393556cf6acbdb44bddbaae348f4eba73c824",
+      "strip_prefix": "semgrep-cairo-a8e2d5d5dcf8345735b15268b76b24377103a188",
+      "type": "tar.gz",
+      "opam": false,
+      "tree_sitter_target": "tree_sitter_cairo",
+      "libs": {
+        "tree-sitter-lang.cairo": "tree_sitter_cairo"
+      }
+    },
+    {
+      "name": "tree-sitter-circom",
+      "version": "4e1e82b",
+      "repo": "ocaml_tree_sitter_circom",
+      "url": "https://github.com/semgrep/semgrep-circom/archive/4e1e82bad56bccfe63e12cedd830b768789e239d.tar.gz",
+      "sha256": "db070b9d3d742c393b0ba65c4fe3cc634f299e83f0c35f3dc2d9d8495d325c34",
+      "strip_prefix": "semgrep-circom-4e1e82bad56bccfe63e12cedd830b768789e239d",
+      "type": "tar.gz",
+      "opam": false,
+      "tree_sitter_target": "tree_sitter_circom",
+      "libs": {
+        "tree-sitter-lang.circom": "tree_sitter_circom"
+      }
+    },
+    {
+      "name": "tree-sitter-clojure",
+      "version": "f56ba7e",
+      "repo": "ocaml_tree_sitter_clojure",
+      "url": "https://github.com/returntocorp/semgrep-clojure/archive/f56ba7e347cb078a40551a5b2657b1351d086922.tar.gz",
+      "sha256": "0904ce9166cfa59b1d193e5af37b4ebc42c3061f4cba7992bc50e13bd233f1d5",
+      "strip_prefix": "semgrep-clojure-f56ba7e347cb078a40551a5b2657b1351d086922",
+      "type": "tar.gz",
+      "opam": false,
+      "tree_sitter_target": "tree_sitter_clojure",
+      "libs": {
+        "tree-sitter-lang.clojure": "tree_sitter_clojure"
+      }
+    },
+    {
+      "name": "tree-sitter-cpp",
+      "version": "9186c38",
+      "repo": "ocaml_tree_sitter_cpp",
+      "url": "https://github.com/returntocorp/semgrep-cpp/archive/9186c38ddf4d16113209e344f1e5de3d1b30be83.tar.gz",
+      "sha256": "f61d92724c0bb8a754f1a9b22e78ead02caa516fc7cae32176bd03c299195b03",
+      "strip_prefix": "semgrep-cpp-9186c38ddf4d16113209e344f1e5de3d1b30be83",
+      "type": "tar.gz",
+      "opam": false,
+      "tree_sitter_target": "tree_sitter_cpp",
+      "libs": {
+        "tree-sitter-lang.cpp": "tree_sitter_cpp"
+      }
+    },
+    {
+      "name": "tree-sitter-dart",
+      "version": "0202e42",
+      "repo": "ocaml_tree_sitter_dart",
+      "url": "https://github.com/returntocorp/semgrep-dart/archive/0202e42a2bdcb53c324380246f80d374aaf76709.tar.gz",
+      "sha256": "d81ec15ecc3af0c83f236b382bf9c98a517dc0b29f2e3f9b7af29d76d0c604e1",
+      "strip_prefix": "semgrep-dart-0202e42a2bdcb53c324380246f80d374aaf76709",
+      "type": "tar.gz",
+      "opam": false,
+      "tree_sitter_target": "tree_sitter_dart",
+      "libs": {
+        "tree-sitter-lang.dart": "tree_sitter_dart"
+      }
+    },
+    {
+      "name": "tree-sitter-dockerfile",
+      "version": "88b70c9",
+      "repo": "ocaml_tree_sitter_dockerfile",
+      "url": "https://github.com/returntocorp/semgrep-dockerfile/archive/88b70c9520964c696f1c833b8e8fb9645d4233d6.tar.gz",
+      "sha256": "65bed10e6a7ccf409332746e5236c0f4d4f99abc45e6556a1f37f845fae77bf1",
+      "strip_prefix": "semgrep-dockerfile-88b70c9520964c696f1c833b8e8fb9645d4233d6",
+      "type": "tar.gz",
+      "opam": false,
+      "tree_sitter_target": "tree_sitter_dockerfile",
+      "libs": {
+        "tree-sitter-lang.dockerfile": "tree_sitter_dockerfile"
+      }
+    },
+    {
+      "name": "tree-sitter-fga",
+      "version": "05a4b6c",
+      "repo": "ocaml_tree_sitter_fga",
+      "url": "https://github.com/semgrep/semgrep-fga/archive/05a4b6c58299a290ad11af178568490af63f1d37.tar.gz",
+      "sha256": "3345d5672e998c4d3df4c75a52f8cded15137245f803f9fb3911b7a85d94ad1c",
+      "strip_prefix": "semgrep-fga-05a4b6c58299a290ad11af178568490af63f1d37",
+      "type": "tar.gz",
+      "opam": false,
+      "tree_sitter_target": "tree_sitter_fga",
+      "libs": {
+        "tree-sitter-lang.fga": "tree_sitter_fga"
+      }
+    },
+    {
+      "name": "tree-sitter-hack",
+      "version": "401a92b",
+      "repo": "ocaml_tree_sitter_hack",
+      "url": "https://github.com/returntocorp/semgrep-hack/archive/401a92b1ef61e526bad118f3c97119c714384519.tar.gz",
+      "sha256": "af47bde81b93bea4eb794b2e247138cb568fc22b7ad6246376a69fecea85fb02",
+      "strip_prefix": "semgrep-hack-401a92b1ef61e526bad118f3c97119c714384519",
+      "type": "tar.gz",
+      "opam": false,
+      "tree_sitter_target": "tree_sitter_hack",
+      "libs": {
+        "tree-sitter-lang.hack": "tree_sitter_hack"
+      }
+    },
+    {
+      "name": "tree-sitter-hcl",
+      "version": "51c3c26",
+      "repo": "ocaml_tree_sitter_hcl",
+      "url": "https://github.com/returntocorp/semgrep-hcl/archive/51c3c26af2b5e23d879fbefa61639254140adc0a.tar.gz",
+      "sha256": "d53c587b52ed635bd465d58b23674dd1f69f0545fe3678a1d77cd150850dd7ee",
+      "strip_prefix": "semgrep-hcl-51c3c26af2b5e23d879fbefa61639254140adc0a",
+      "type": "tar.gz",
+      "opam": false,
+      "tree_sitter_target": "tree_sitter_hcl",
+      "libs": {
+        "tree-sitter-lang.hcl": "tree_sitter_hcl"
+      }
+    },
+    {
+      "name": "tree-sitter-html",
+      "version": "2bde56b",
+      "repo": "ocaml_tree_sitter_html",
+      "url": "https://github.com/returntocorp/semgrep-html/archive/2bde56bff950da7984ae729c656e10c05ede3ddf.tar.gz",
+      "sha256": "1484032cb5a4faa9066550afc77dbf7d6f476b3a430384f8e36c46c2acdcf387",
+      "strip_prefix": "semgrep-html-2bde56bff950da7984ae729c656e10c05ede3ddf",
+      "type": "tar.gz",
+      "opam": false,
+      "tree_sitter_target": "tree_sitter_html",
+      "libs": {
+        "tree-sitter-lang.html": "tree_sitter_html"
+      }
+    },
+    {
+      "name": "tree-sitter-java",
+      "version": "75161f7",
+      "repo": "ocaml_tree_sitter_java",
+      "url": "https://github.com/returntocorp/semgrep-java/archive/75161f747b9342254c7a132bb0ca7458618cd0a7.tar.gz",
+      "sha256": "71aeaa03b10df210e6cb976f766e821356e5df402339b8e2576f24e9f2646726",
+      "strip_prefix": "semgrep-java-75161f747b9342254c7a132bb0ca7458618cd0a7",
+      "type": "tar.gz",
+      "opam": false,
+      "tree_sitter_target": "tree_sitter_java",
+      "libs": {
+        "tree-sitter-lang.java": "tree_sitter_java"
+      }
+    },
+    {
+      "name": "tree-sitter-julia",
+      "version": "3dabca2",
+      "repo": "ocaml_tree_sitter_julia",
+      "url": "https://github.com/returntocorp/semgrep-julia/archive/3dabca267d6565b1a5f50db3f654e5f837a8ea29.tar.gz",
+      "sha256": "e61ebcf3787111cf8a285966358edb1928510bcf5ac7e30dc6c22a02bbcde4b4",
+      "strip_prefix": "semgrep-julia-3dabca267d6565b1a5f50db3f654e5f837a8ea29",
+      "type": "tar.gz",
+      "opam": false,
+      "tree_sitter_target": "tree_sitter_julia",
+      "libs": {
+        "tree-sitter-lang.julia": "tree_sitter_julia"
+      }
+    },
+    {
+      "name": "tree-sitter-kotlin",
+      "version": "1bddb22",
+      "repo": "ocaml_tree_sitter_kotlin",
+      "url": "https://github.com/returntocorp/semgrep-kotlin/archive/1bddb22061147533add5a66bfe8530254ae81675.tar.gz",
+      "sha256": "cd680796d497dcc0005e5b33e03ba27570091f4a9cee4ac7b9a7d62f8bdb59aa",
+      "strip_prefix": "semgrep-kotlin-1bddb22061147533add5a66bfe8530254ae81675",
+      "type": "tar.gz",
+      "opam": false,
+      "tree_sitter_target": "tree_sitter_kotlin",
+      "libs": {
+        "tree-sitter-lang.kotlin": "tree_sitter_kotlin"
+      }
+    },
+    {
+      "name": "tree-sitter-lua",
+      "version": "49a7ed0",
+      "repo": "ocaml_tree_sitter_lua",
+      "url": "https://github.com/returntocorp/semgrep-lua/archive/49a7ed0d0c4859cc91ad0c43b0cf92d7448d007e.tar.gz",
+      "sha256": "e056cf846d1e1df6cebdccbb49809f1a4284dffbfcc5f001e1161836fa5a03a2",
+      "strip_prefix": "semgrep-lua-49a7ed0d0c4859cc91ad0c43b0cf92d7448d007e",
+      "type": "tar.gz",
+      "opam": false,
+      "tree_sitter_target": "tree_sitter_lua",
+      "libs": {
+        "tree-sitter-lang.lua": "tree_sitter_lua"
+      }
+    },
+    {
+      "name": "tree-sitter-move-on-aptos",
+      "version": "667944f",
+      "repo": "ocaml_tree_sitter_move_on_aptos",
+      "url": "https://github.com/semgrep/semgrep-move-on-aptos/archive/667944faf4c1d81299cc34e4f09f5ab34330df09.tar.gz",
+      "sha256": "209c1072ae386e96ffd9f488ee35c8045a56c77f70c7e3906d1791e222625f62",
+      "strip_prefix": "semgrep-move-on-aptos-667944faf4c1d81299cc34e4f09f5ab34330df09",
+      "type": "tar.gz",
+      "opam": false,
+      "tree_sitter_target": "tree_sitter_move_on_aptos",
+      "libs": {
+        "tree-sitter-lang.move-on-aptos": "tree_sitter_move_on_aptos"
+      }
+    },
+    {
+      "name": "tree-sitter-move-on-sui",
+      "version": "4fe01c0",
+      "repo": "ocaml_tree_sitter_move_on_sui",
+      "url": "https://github.com/semgrep/semgrep-move-on-sui/archive/4fe01c06c24ada6a9b0a99d49cc488964fa11046.tar.gz",
+      "sha256": "7db8bd2df2285d765f03beab721d5672006bf1e2bb0a6d8c17bad4713213c1a3",
+      "strip_prefix": "semgrep-move-on-sui-4fe01c06c24ada6a9b0a99d49cc488964fa11046",
+      "type": "tar.gz",
+      "opam": false,
+      "tree_sitter_target": "tree_sitter_move_on_sui",
+      "libs": {
+        "tree-sitter-lang.move-on-sui": "tree_sitter_move_on_sui"
+      }
+    },
+    {
+      "name": "tree-sitter-ocaml",
+      "version": "6246699",
+      "repo": "ocaml_tree_sitter_ocaml",
+      "url": "https://github.com/returntocorp/semgrep-ocaml/archive/62466992084e2b75c048ded706e3a9119f9ded2c.tar.gz",
+      "sha256": "662f8584619434bb45effd09ed45c76980db2c88019627e737f30b9e01891f51",
+      "strip_prefix": "semgrep-ocaml-62466992084e2b75c048ded706e3a9119f9ded2c",
+      "type": "tar.gz",
+      "opam": false,
+      "tree_sitter_target": "tree_sitter_ocaml",
+      "libs": {
+        "tree-sitter-lang.ocaml": "tree_sitter_ocaml"
+      }
+    },
+    {
+      "name": "tree-sitter-php",
+      "version": "507f87c",
+      "repo": "ocaml_tree_sitter_php",
+      "url": "https://github.com/returntocorp/semgrep-php/archive/507f87c239d00f0dc501cd4c9105fb35aee4c10b.tar.gz",
+      "sha256": "af9e6a4c0ff1c2f5ae080ec5e1a31901dd020ec3a991681b453f65e1f6de1001",
+      "strip_prefix": "semgrep-php-507f87c239d00f0dc501cd4c9105fb35aee4c10b",
+      "type": "tar.gz",
+      "opam": false,
+      "tree_sitter_target": "tree_sitter_php",
+      "libs": {
+        "tree-sitter-lang.php": "tree_sitter_php"
+      }
+    },
+    {
+      "name": "tree-sitter-promql",
+      "version": "3436085",
+      "repo": "ocaml_tree_sitter_promql",
+      "url": "https://github.com/returntocorp/semgrep-promql/archive/3436085e1638264516ce75c484adf45fc96382d1.tar.gz",
+      "sha256": "f130f8b06ca085dd175c8c751b6dd7561727f9c5f21bbb09f5109556f81296bf",
+      "strip_prefix": "semgrep-promql-3436085e1638264516ce75c484adf45fc96382d1",
+      "type": "tar.gz",
+      "opam": false,
+      "tree_sitter_target": "tree_sitter_promql",
+      "libs": {
+        "tree-sitter-lang.promql": "tree_sitter_promql"
+      }
+    },
+    {
+      "name": "tree-sitter-proto",
+      "version": "6754f93",
+      "repo": "ocaml_tree_sitter_proto",
+      "url": "https://github.com/returntocorp/semgrep-proto/archive/6754f93b8c89e9e62b48821081300460648f534f.tar.gz",
+      "sha256": "e3fffce332076b374f0ca906d299757ea79009e110d430913bd99145ea4139f5",
+      "strip_prefix": "semgrep-proto-6754f93b8c89e9e62b48821081300460648f534f",
+      "type": "tar.gz",
+      "opam": false,
+      "tree_sitter_target": "tree_sitter_proto",
+      "libs": {
+        "tree-sitter-lang.proto": "tree_sitter_proto"
+      }
+    },
+    {
+      "name": "tree-sitter-python",
+      "version": "647a20f",
+      "repo": "ocaml_tree_sitter_python",
+      "url": "https://github.com/returntocorp/semgrep-python/archive/647a20f8207740b0a76541bb27e1eaaf111dca7e.tar.gz",
+      "sha256": "cde5d4660287f5fab3e59794c52cb13f7c6f0013d3a2c36d5d266f451d6bf09b",
+      "strip_prefix": "semgrep-python-647a20f8207740b0a76541bb27e1eaaf111dca7e",
+      "type": "tar.gz",
+      "opam": false,
+      "tree_sitter_target": "tree_sitter_python",
+      "libs": {
+        "tree-sitter-lang.python": "tree_sitter_python"
+      }
+    },
+    {
+      "name": "tree-sitter-ql",
+      "version": "55749f3",
+      "repo": "ocaml_tree_sitter_ql",
+      "url": "https://github.com/semgrep/semgrep-ql/archive/55749f3c2124dfe1661453ab0790042035a16d41.tar.gz",
+      "sha256": "4d639ce2741a6d1e19ac8685e2d8a8dbb2dd337c40cfebf897f68e34b2117374",
+      "strip_prefix": "semgrep-ql-55749f3c2124dfe1661453ab0790042035a16d41",
+      "type": "tar.gz",
+      "opam": false,
+      "tree_sitter_target": "tree_sitter_ql",
+      "libs": {
+        "tree-sitter-lang.ql": "tree_sitter_ql"
+      }
+    },
+    {
+      "name": "tree-sitter-r",
+      "version": "d857664",
+      "repo": "ocaml_tree_sitter_r",
+      "url": "https://github.com/returntocorp/semgrep-r/archive/d8576644f8c813ea1ec4403866f661861e43969a.tar.gz",
+      "sha256": "ecdf6b46516b0f354ec8088caf180557f4e07934da12d279dea20cb0551284ec",
+      "strip_prefix": "semgrep-r-d8576644f8c813ea1ec4403866f661861e43969a",
+      "type": "tar.gz",
+      "opam": false,
+      "tree_sitter_target": "tree_sitter_r",
+      "libs": {
+        "tree-sitter-lang.r": "tree_sitter_r"
+      }
+    },
+    {
+      "name": "tree-sitter-ruby",
+      "version": "1167a18",
+      "repo": "ocaml_tree_sitter_ruby",
+      "url": "https://github.com/returntocorp/semgrep-ruby/archive/1167a189089c219496149e3823e8f5000141d3e7.tar.gz",
+      "sha256": "7172fc60246c5a1adc505256cd439f06c06e96180848f40ddb4f074b54116f75",
+      "strip_prefix": "semgrep-ruby-1167a189089c219496149e3823e8f5000141d3e7",
+      "type": "tar.gz",
+      "opam": false,
+      "tree_sitter_target": "tree_sitter_ruby",
+      "libs": {
+        "tree-sitter-lang.ruby": "tree_sitter_ruby"
+      }
+    },
+    {
+      "name": "tree-sitter-rust",
+      "version": "64fe5d0",
+      "repo": "ocaml_tree_sitter_rust",
+      "url": "https://github.com/returntocorp/semgrep-rust/archive/64fe5d06dfafad9c2a9764524db036cd31820e3c.tar.gz",
+      "sha256": "517032dc18e48c18e6b5b803d0eb3b58d38764d9fccb7c80481a43cc07e57bdc",
+      "strip_prefix": "semgrep-rust-64fe5d06dfafad9c2a9764524db036cd31820e3c",
+      "type": "tar.gz",
+      "opam": false,
+      "tree_sitter_target": "tree_sitter_rust",
+      "libs": {
+        "tree-sitter-lang.rust": "tree_sitter_rust"
+      }
+    },
+    {
+      "name": "tree-sitter-scala",
+      "version": "b89a80d",
+      "repo": "ocaml_tree_sitter_scala",
+      "url": "https://github.com/semgrep/semgrep-scala/archive/b89a80db4bb076e74f9059eb67f5af7d6195b32d.tar.gz",
+      "sha256": "904dd2c4073aaa1450da570908e4c4bcc5fb59504f90ecc026138920da9155cd",
+      "strip_prefix": "semgrep-scala-b89a80db4bb076e74f9059eb67f5af7d6195b32d",
+      "type": "tar.gz",
+      "opam": false,
+      "tree_sitter_target": "tree_sitter_scala",
+      "libs": {
+        "tree-sitter-lang.scala": "tree_sitter_scala"
+      }
+    },
+    {
+      "name": "tree-sitter-solidity",
+      "version": "e7aa37f",
+      "repo": "ocaml_tree_sitter_solidity",
+      "url": "https://github.com/returntocorp/semgrep-solidity/archive/e7aa37f9421a15b04f42676be7489a27ee455f0d.tar.gz",
+      "sha256": "fba6394bf71ffba26814cf71749de1311f45d19fe983a431e045841a1e9b6dda",
+      "strip_prefix": "semgrep-solidity-e7aa37f9421a15b04f42676be7489a27ee455f0d",
+      "type": "tar.gz",
+      "opam": false,
+      "tree_sitter_target": "tree_sitter_solidity",
+      "libs": {
+        "tree-sitter-lang.solidity": "tree_sitter_solidity"
+      }
+    },
+    {
+      "name": "tree-sitter-swift",
+      "version": "f62f0c1",
+      "repo": "ocaml_tree_sitter_swift",
+      "url": "https://github.com/returntocorp/semgrep-swift/archive/f62f0c1dffa87b84dd1513374687513e6e091de1.tar.gz",
+      "sha256": "77aa85996a2f8ea99e856ca396ed0e5d28200541c5de51307d8c9478860f1f3f",
+      "strip_prefix": "semgrep-swift-f62f0c1dffa87b84dd1513374687513e6e091de1",
+      "type": "tar.gz",
+      "opam": false,
+      "tree_sitter_target": "tree_sitter_swift",
+      "libs": {
+        "tree-sitter-lang.swift": "tree_sitter_swift"
+      }
+    },
+    {
+      "name": "tree-sitter-tsx",
+      "version": "6005de7",
+      "repo": "ocaml_tree_sitter_tsx",
+      "url": "https://github.com/returntocorp/semgrep-tsx/archive/6005de74ed9e2fb891785a3df8582dbb91e272bc.tar.gz",
+      "sha256": "dc846bac5fc054a980c10c8e513aba053d9a155ec294d568b7fd63fec4a32107",
+      "strip_prefix": "semgrep-tsx-6005de74ed9e2fb891785a3df8582dbb91e272bc",
+      "type": "tar.gz",
+      "opam": false,
+      "tree_sitter_target": "tree_sitter_tsx",
+      "libs": {
+        "tree-sitter-lang.tsx": "tree_sitter_tsx"
+      }
+    },
+    {
+      "name": "tree-sitter-typescript",
+      "version": "50fe6a5",
+      "repo": "ocaml_tree_sitter_typescript",
+      "url": "https://github.com/returntocorp/semgrep-typescript/archive/50fe6a5c46d3dee74d1d176b9767ffc520a1003e.tar.gz",
+      "sha256": "93a3405405765132edbe10f86529aaa0955869ded0b524cf9236297376e6a7c6",
+      "strip_prefix": "semgrep-typescript-50fe6a5c46d3dee74d1d176b9767ffc520a1003e",
+      "type": "tar.gz",
+      "opam": false,
+      "tree_sitter_target": "tree_sitter_typescript",
+      "libs": {
+        "tree-sitter-lang.typescript": "tree_sitter_typescript"
+      }
+    },
+    {
       "name": "base64",
       "version": "3.5.1",
       "repo": "ocaml_base64",
@@ -1153,6 +1587,19 @@
       "libs": {
         "ppx_blob": "ppx_blob"
       }
+    },
+    {
+      "name": "calendar",
+      "version": "3.0.0",
+      "repo": "ocaml_calendar",
+      "url": "https://github.com/ocaml-community/calendar/archive/refs/tags/v3.0.0.tar.gz",
+      "sha256": "ea04d31762d3f18837af0311cdbfe7b7788aa0f2e7e9f98d2b0decec1e506e9e",
+      "strip_prefix": "calendar-3.0.0",
+      "type": "tar.gz",
+      "libs": {
+        "calendar": "calendarLib"
+      },
+      "override": true
     }
   ]
 }
