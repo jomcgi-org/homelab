@@ -3,11 +3,11 @@ let check name condition =
     Printf.eprintf "FAIL: %s\n" name;
     exit 1)
 
-let raises f =
+let raises_failure expected f =
   try
     f ();
     false
-  with _ -> true
+  with Failure message -> String.equal message expected | _ -> false
 
 let () =
   let wire =
@@ -17,7 +17,8 @@ let () =
   check "fetched grammar plus atdgen decode"
     (Tc_ast.to_string ast = "foo(bar(7), 2)");
   check "fetched grammar rejects invalid JSON"
-    (raises (fun () -> ignore (Tc_parse.parse {|["Int",]|})));
+    (raises_failure "toycaml: fetched JSON grammar rejected input" (fun () ->
+         ignore (Tc_parse.parse {|["Int",]|})));
   check "visitors traversal" (Tc_ast.node_count ast = 4);
   check "composed ppx_deriving"
     (String.length (Tc_ast.debug_string ast) > String.length "Call");
