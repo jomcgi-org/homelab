@@ -258,9 +258,7 @@ def test_numeric_evidence_uses_complete_number_boundaries():
         {"walk": "30"},
     ],
 )
-def test_invalid_container_or_nested_correction_is_atomic(
-    session: Session, correction
-):
+def test_invalid_container_or_nested_correction_is_atomic(session: Session, correction):
     entity, chunk = _seed_creature(
         session,
         content="Speed 30 feet. Bite deals 9 piercing damage.",
@@ -383,9 +381,7 @@ def test_failed_entity_is_deferred_so_later_work_progresses(session: Session):
         [
             second,
             second_chunk,
-            EntityCreature(
-                entity_id=second.id, actions={"Claw": "7 slashing damage"}
-            ),
+            EntityCreature(entity_id=second.id, actions={"Claw": "7 slashing damage"}),
             ChunkEntityMention(chunk_id=second_chunk.id, entity_id=second.id),
         ]
     )

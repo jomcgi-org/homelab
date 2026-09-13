@@ -319,9 +319,10 @@ def _mapping_grounded(value: dict, text: str) -> bool:
                 )
             else:
                 pattern = _literal_pattern(item)
-                supported = pattern is not None and re.search(
-                    pattern, keyed_text, re.IGNORECASE
-                ) is not None
+                supported = (
+                    pattern is not None
+                    and re.search(pattern, keyed_text, re.IGNORECASE) is not None
+                )
             if supported:
                 break
         if not supported:
@@ -347,9 +348,12 @@ def _ability_scores_grounded(value: dict, text: str) -> bool:
         score_pattern = _literal_pattern(score)
         if label is None or score_pattern is None:
             return False
-        if re.search(
-            rf"\b{label}\b\s*(?:[:=]\s*)?{score_pattern}", text, re.IGNORECASE
-        ) is None:
+        if (
+            re.search(
+                rf"\b{label}\b\s*(?:[:=]\s*)?{score_pattern}", text, re.IGNORECASE
+            )
+            is None
+        ):
             return False
     return True
 
@@ -377,9 +381,12 @@ def _speed_grounded(value: dict, text: str) -> bool:
             if key_pattern is None:
                 return False
             label = key_pattern
-        if re.search(
-            rf"\b{label}\b\s*(?:[:=]\s*)?{speed_pattern}", text, re.IGNORECASE
-        ) is None:
+        if (
+            re.search(
+                rf"\b{label}\b\s*(?:[:=]\s*)?{speed_pattern}", text, re.IGNORECASE
+            )
+            is None
+        ):
             return False
     return True
 
@@ -399,7 +406,9 @@ def _same_json_shape(value: Any, expected: Any) -> bool:
     if isinstance(expected, str):
         return isinstance(value, str)
     if isinstance(expected, dict):
-        if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+        if not isinstance(value, dict) or not all(
+            isinstance(key, str) for key in value
+        ):
             return False
         for key, item in value.items():
             if key in expected:
@@ -429,18 +438,26 @@ def _valid_correction_shape(field: _Field, value: Any) -> bool:
             and math.isfinite(value)
         )
     if field.attribute == "ability_scores":
-        return isinstance(value, dict) and bool(value) and all(
-            str(key).casefold() in _ABILITY_LABELS
-            and isinstance(score, int)
-            and not isinstance(score, bool)
-            for key, score in value.items()
+        return (
+            isinstance(value, dict)
+            and bool(value)
+            and all(
+                str(key).casefold() in _ABILITY_LABELS
+                and isinstance(score, int)
+                and not isinstance(score, bool)
+                for key, score in value.items()
+            )
         )
     if field.attribute == "speed":
-        return isinstance(value, dict) and bool(value) and all(
-            isinstance(speed, (int, float))
-            and not isinstance(speed, bool)
-            and math.isfinite(speed)
-            for speed in value.values()
+        return (
+            isinstance(value, dict)
+            and bool(value)
+            and all(
+                isinstance(speed, (int, float))
+                and not isinstance(speed, bool)
+                and math.isfinite(speed)
+                for speed in value.values()
+            )
         )
     if field.attribute in {"actions", "traits", "classes"}:
         if not isinstance(value, dict):
@@ -458,7 +475,9 @@ def _value_grounded(field: _Field, value: Any, text: str) -> bool:
             return False
     if not isinstance(value, dict):
         pattern = _literal_pattern(value)
-        return pattern is not None and re.search(pattern, text, re.IGNORECASE) is not None
+        return (
+            pattern is not None and re.search(pattern, text, re.IGNORECASE) is not None
+        )
     if field.attribute == "speed":
         return _speed_grounded(value, text)
     if field.attribute == "ability_scores":

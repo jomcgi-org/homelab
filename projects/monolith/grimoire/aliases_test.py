@@ -312,9 +312,7 @@ def test_merge_archives_provenance_and_reverifies_survivor_same_version(
                 model="test-verifier",
                 status="corrected",
                 evidence_chunk_ids=[shared.id],
-                corrections=[
-                    {"field": "npc.race", "before": None, "after": "dwarf"}
-                ],
+                corrections=[{"field": "npc.race", "before": None, "after": "dwarf"}],
             ),
         ]
     )
@@ -352,9 +350,10 @@ def test_merge_archives_provenance_and_reverifies_survivor_same_version(
                 ]
             }
 
-    assert asyncio.run(verify_entities(session, ConfirmingVerifier()))[
-        "entities_checked"
-    ] == 1
+    assert (
+        asyncio.run(verify_entities(session, ConfirmingVerifier()))["entities_checked"]
+        == 1
+    )
     assert session.get(EntityVerification, (survivor.id, "v1")) is not None
 
 
@@ -377,7 +376,7 @@ def test_failed_approved_pair_is_deferred_so_later_pair_progresses(session: Sess
 
     assert first_run["failed"] == 1
     assert second_run["merged"] == 1
-    assert session.get(EntityAliasReview, (stale.survivor_id, stale.twin_id)).status == (
-        "approved"
-    )
+    assert session.get(
+        EntityAliasReview, (stale.survivor_id, stale.twin_id)
+    ).status == ("approved")
     assert session.get(Entity, twin.id) is None

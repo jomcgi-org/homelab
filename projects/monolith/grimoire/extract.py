@@ -1355,9 +1355,7 @@ def _grounded_numeric(chunk_text: str, field_name: str, value: Any) -> bool:
     if field_name == "cr":
         alts = "|".join(re.escape(v) for v in _cr_text_variants(float(value)))
         return bool(
-            re.search(
-                rf"\bChallenge[:\s]*(?:{alts})(?!\d|\.\d)", chunk_text, flags
-            )
+            re.search(rf"\bChallenge[:\s]*(?:{alts})(?!\d|\.\d)", chunk_text, flags)
             or re.search(rf"\bCR[:\s]*(?:{alts})(?!\d|\.\d)", chunk_text, flags)
         )
     if field_name == "level":

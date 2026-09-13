@@ -472,7 +472,9 @@ class EntityVerificationRetry(SQLModel, table=True):
         sa_column=Column(String, primary_key=True, nullable=False)
     )
     attempts: int = Field(default=1, sa_column=Column(Integer, nullable=False))
-    retry_after: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    retry_after: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=False)
+    )
     last_error: str = Field(sa_column=Column(String, nullable=False))
 
 
