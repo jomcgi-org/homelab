@@ -1,1 +1,1 @@
-"""Durable composition of agent sessions."""
+"""Legacy persisted identities; implementation belongs to factory."""

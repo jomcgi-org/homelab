@@ -161,7 +161,7 @@ Complete these steps before claiming isolated workload authority:
    `merge_group` commits before requiring the queue.
 
 The factory's existing independent session and head-SHA evidence in
-`projects/monolith/swarm/factory_conductor.py:verify_delivery` is the integration
+`projects/monolith/factory/orchestration/factory_conductor.py:verify_delivery` is the integration
 point. The gate and automatic merge are not implemented by this token provider.
 
 ## Validation and rollout

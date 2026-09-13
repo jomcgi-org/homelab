@@ -301,3 +301,24 @@ def list_tasks_daily(session: "Session") -> list[dict]:
 def list_tasks_weekly(session: "Session") -> list[dict]:
     """Tasks due this week (delegates to KnowledgeStore.list_tasks_weekly)."""
     return KnowledgeStore(session).list_tasks_weekly()
+
+
+# Narrow contracts used by the factory drainer. Resolve lazily to avoid
+# loading execution or writer code into read-only domain compositions.
+_FACTORY_EXPORTS = {
+    "find_reviewable_docfix_prs": "knowledge.docfix",
+    "prune_completed_docfix_reviews": "knowledge.docfix",
+    "schedule_docfix_review": "knowledge.docfix",
+    "kg_burst_state": "knowledge.burst",
+    "kg_effective_cap": "knowledge.burst",
+    "RawInput": "knowledge.models",
+}
+
+
+def __getattr__(name: str):
+    module = _FACTORY_EXPORTS.get(name)
+    if module is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    from importlib import import_module
+
+    return getattr(import_module(module), name)

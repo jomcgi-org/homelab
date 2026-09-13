@@ -51,7 +51,7 @@ DIFF_LIMIT = 262144
 # the tail is the interesting part, so keep the last 300.
 ACTIVITY_LIMIT = 300
 BRIEF_PARAGRAPHS = 6
-# swarm.factory_controls.DEFAULT_MAX_REVIEW_ROUNDS, duplicated rather than
+# factory.orchestration.factory_controls.DEFAULT_MAX_REVIEW_ROUNDS, duplicated rather than
 # imported so this module stays swarm-free for the unit tests. A policy written
 # before the cap existed carries no value and the engine assumes this one.
 DEFAULT_MAX_REVIEW_ROUNDS = 2
@@ -147,7 +147,7 @@ def flatten_max_tasks(value: object) -> int | None:
 
     A stored policy carries ``max_tasks`` either as a bare integer (older
     policies) or as a per-lane dict ``{"delivery": n, "advisory": m}``
-    (``swarm.factory_controls._validate_max_tasks``). The public pages talk
+    (``factory.orchestration.factory_controls._validate_max_tasks``). The public pages talk
     about delivery tasks only, so the dict collapses to its delivery count.
     """
     if isinstance(value, dict):
@@ -350,7 +350,7 @@ def shape_rationale(result_text: str | None) -> dict | None:
     time. ``paths`` and ``deviations`` stay private, so the public page gets
     the raw trailer and whether it parsed.
     """
-    from agent_sessions.rationale import parse_rationale
+    from factory.execution.rationale import parse_rationale
 
     parsed = parse_rationale(result_text)
     if parsed.get("parse_status") == "none":
@@ -505,7 +505,7 @@ def _board_task_ids(db: Session) -> tuple[set[str], dict[int, str]]:
     mirrors its split rather than inventing one: passing a task id that turns
     out not to be on the board only costs a plan read that nothing renders.
     """
-    from swarm.factory_models import FactoryReceipt
+    from factory.orchestration.factory_models import FactoryReceipt
 
     from factory.private_view import ACTIVE_STATES, QUEUED_STATES, RECENT_LIMIT
 
@@ -529,7 +529,7 @@ def _board_task_ids(db: Session) -> tuple[set[str], dict[int, str]]:
 
 def _raw_policy(db: Session) -> dict:
     """The stored control policy, read for the fields the board view drops."""
-    from swarm.factory_models import FactoryControl
+    from factory.orchestration.factory_models import FactoryControl
 
     control = db.exec(
         select(FactoryControl).where(FactoryControl.id == "factory")
@@ -574,7 +574,7 @@ def _sessions_and_turns(
     db: Session, ids: set[int]
 ) -> tuple[dict[int, dict], dict[int, list[dict]]]:
     """Every referenced session row and its turns, in two reads rather than 2N."""
-    from agent_sessions.models import AgentSession, AgentTurn
+    from factory.execution.models import AgentSession, AgentTurn
 
     if not ids:
         return {}, {}

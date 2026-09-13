@@ -9,12 +9,12 @@ import pytest
 from sqlalchemy import text
 from sqlmodel import Session
 
-import swarm.drainer as drainer
-import swarm.health as health
+import factory.orchestration.drainer as drainer
+import factory.orchestration.health as health
 from agent import routine_jobs
 from agent.config import DrainerSettings
-from agent_sessions import store
-from agent_sessions.transport import EmberSessionGone
+from factory.execution import store
+from factory.execution.transport import EmberSessionGone
 
 
 class FakeDBOS:
@@ -258,7 +258,7 @@ def test_destroy_drainer_session_without_ember_binding(agent_db: Session):
 def test_destroy_drainer_session_clears_ember_binding(
     monkeypatch, agent_db: Session, session_gone: bool
 ):
-    from agent_sessions import mcp
+    from factory.execution import mcp
 
     ember_session_id = f"ember-drainer-{session_gone}"
     local_session_id = f"drainer-with-ember-{session_gone}"

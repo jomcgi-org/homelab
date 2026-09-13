@@ -6,7 +6,7 @@ host:port granular, and this port must expose exactly one write-only ingest
 route, never the main private API.
 """
 
-from agent_sessions.progress_ingest import app
+from factory.execution.progress_ingest import app
 
 if __name__ == "__main__":
     import uvicorn

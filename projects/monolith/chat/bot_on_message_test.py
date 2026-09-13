@@ -13,11 +13,11 @@ from pydantic_ai import (
 from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
-from agent_sessions import execution_api as agent_session_api
-from agent_sessions import mcp as agent_session_mcp
-from agent_sessions import store as agent_session_store
-from agent_sessions.models import AgentSession, PendingMessage
-from agent_sessions.transport import Turn
+from factory.execution import execution_api as agent_session_api
+from factory.execution import mcp as agent_session_mcp
+from factory.execution import store as agent_session_store
+from factory.execution.models import AgentSession, PendingMessage
+from factory.execution.transport import Turn
 from chat.bot import ChatBot, create_bot, should_respond
 from chat.models import ReactionEvent
 
@@ -1673,7 +1673,7 @@ class TestStartAgentFlowOrchestrator:
         chart can produce (issue #4859). The filter is a pure function in
         bot.py, so each scenario runs without re-importing the module.
         """
-        from agent_sessions import SUPPORTED_MODELS, model_family, offered_models
+        from factory.execution import SUPPORTED_MODELS, model_family, offered_models
 
         from chat.bot import (
             AGENT_MODEL_CHOICES,

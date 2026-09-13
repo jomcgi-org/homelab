@@ -189,13 +189,13 @@ def test_build_factory_view_reads_a_real_control_row(tmp_path):
     from sqlmodel import Session, SQLModel, create_engine
 
     from factory.private_view import build_factory_view
-    from swarm.factory_models import (
+    from factory.orchestration.factory_models import (
         FactoryAudit,
         FactoryControl,
         FactoryReceipt,
         FactoryStart,
     )
-    from swarm.models import SwarmTask
+    from factory.orchestration.models import SwarmTask
 
     engine = create_engine(
         f"sqlite:///{tmp_path / 'view.db'}",

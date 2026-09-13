@@ -239,7 +239,7 @@
         "duplicate-agent-run",
         "split-brain-singletons"
       ],
-      "evidence": "projects/monolith/agent_sessions/store.py:791"
+      "evidence": "projects/monolith/factory/execution/store.py:791"
     },
     {
       "key": "chatpublic.write.providing",
@@ -396,7 +396,7 @@
       "hazards": [
         "kg-enqueue-swallowed"
       ],
-      "evidence": "projects/monolith/agent_sessions/kg_feed.py:258"
+      "evidence": "projects/monolith/factory/execution/kg_feed.py:258"
     },
     {
       "key": "kg-drainer.dispatch.not-providing",
@@ -408,7 +408,7 @@
       "hazards": [
         "kg-dead-letter-unreachable"
       ],
-      "evidence": "projects/monolith/swarm/drainer.py:483"
+      "evidence": "projects/monolith/factory/orchestration/drainer.py:483"
     }
   ],
   "unsafe_feedback": [
@@ -424,7 +424,7 @@
       "hazards": [
         "duplicate-agent-run"
       ],
-      "evidence": "projects/monolith/agent_sessions/store.py:794"
+      "evidence": "projects/monolith/factory/execution/store.py:794"
     },
     {
       "key": "grants-cache.stale",
@@ -480,7 +480,7 @@
       "hazards": [
         "duplicate-agent-run"
       ],
-      "evidence": "projects/monolith/agent_sessions/transport.py:646"
+      "evidence": "projects/monolith/factory/execution/transport.py:646"
     },
     {
       "key": "sandbox-dedupe.stale",
@@ -522,7 +522,7 @@
       "hazards": [
         "header-authz-drift"
       ],
-      "evidence": "projects/monolith/agent_sessions/router.py:546"
+      "evidence": "projects/monolith/factory/execution/router.py:546"
     },
     {
       "key": "disputed-flag.stale",
@@ -578,7 +578,7 @@
     },
     {
       "item": "two replicas racing to claim the same pending message",
-      "reason": "claim_pending_message_for_session_sync is a single atomic UPDATE ... WHERE claimed_by_replica IS NULL, so only one of two concurrent claimants can succeed (projects/monolith/agent_sessions/store.py:634)"
+      "reason": "claim_pending_message_for_session_sync is a single atomic UPDATE ... WHERE claimed_by_replica IS NULL, so only one of two concurrent claimants can succeed (projects/monolith/factory/execution/store.py:634)"
     },
     {
       "item": "apply_extraction re-running on a raw that already extracted successfully",
@@ -586,7 +586,7 @@
     },
     {
       "item": "the kg daily-cap deferral calling both finish_drainer_job and defer_drainer_job for the same one-shot job",
-      "reason": "complete_job's NULL next_run_at write for a one-shot row (interval_secs IS NULL) is immediately overwritten by defer_job's later write in the same call sequence, so the job still re-arms at +3600s despite the double write (projects/monolith/swarm/drainer.py:407)"
+      "reason": "complete_job's NULL next_run_at write for a one-shot row (interval_secs IS NULL) is immediately overwritten by defer_job's later write in the same call sequence, so the job still re-arms at +3600s despite the double write (projects/monolith/factory/orchestration/drainer.py:407)"
     },
     {
       "item": "report_distress's Discord notification failing without the reporting agent knowing",

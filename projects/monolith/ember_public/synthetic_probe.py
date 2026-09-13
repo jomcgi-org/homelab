@@ -278,8 +278,8 @@ async def probe_codex() -> dict:
     """Exercise a real Codex lane session through the Luna model."""
     started = perf_counter()
     try:
-        from agent_sessions.api import run_synthetic_session
-        from agent_sessions.constants import CODEX_SYNTHETIC_PROMPT
+        from factory.execution.api import run_synthetic_session
+        from factory.execution.constants import CODEX_SYNTHETIC_PROMPT
 
         turn = await run_synthetic_session(
             CODEX_SYNTHETIC_PROMPT,
@@ -321,8 +321,8 @@ async def probe_spark() -> dict:
     """Exercise a real Muse-family session on claude-runtime."""
     started = perf_counter()
     try:
-        from agent_sessions.api import run_synthetic_session
-        from agent_sessions.constants import SPARK_SYNTHETIC_PROMPT
+        from factory.execution.api import run_synthetic_session
+        from factory.execution.constants import SPARK_SYNTHETIC_PROMPT
 
         turn = await run_synthetic_session(
             SPARK_SYNTHETIC_PROMPT,

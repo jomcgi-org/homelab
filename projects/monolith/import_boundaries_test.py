@@ -29,7 +29,7 @@ DOMAINS = {
     "agent",
     "goosecracker",
     "worldcup",
-    "agent_sessions",
+    "factory",
     "moving",
 }
 

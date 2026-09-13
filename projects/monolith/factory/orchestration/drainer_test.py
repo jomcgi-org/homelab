@@ -1,0 +1,2700 @@
+from __future__ import annotations
+
+import asyncio
+import json
+
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.trace import StatusCode
+import pytest
+from sqlalchemy import text
+from sqlmodel import Session, create_engine
+
+from factory.execution import provider_quota
+import factory.orchestration.drainer as drainer
+
+# trace.get_tracer returns a ProxyTracer that resolves the provider lazily, at
+# the first span rather than at import, so installing this after importing the
+# module under test is what makes the spans land here. The provider is global
+# and can only be set once, which is fine: every py_test target is its own
+# process.
+_EXPORTER = InMemorySpanExporter()
+_PROVIDER = TracerProvider()
+_PROVIDER.add_span_processor(SimpleSpanProcessor(_EXPORTER))
+trace.set_tracer_provider(_PROVIDER)
+
+_QUOTA_SPAN_ATTRIBUTES_STEP = drainer._quota_span_attributes
+_DRAINER_WAIT_ENABLED_STEP = drainer.drainer_wait_enabled
+
+
+SETTINGS = {
+    "enabled": True,
+    "max_jobs_per_cycle": 3,
+    "turn_timeout_seconds": 1800,
+    "job_kinds": ("qwen-drain", "kg-drain"),
+    "kg_max_jobs_per_day": 40,
+    "repo": "jomcgi-org/homelab",
+    "branch": "main",
+    "reasoning": True,
+    "notify_failures": True,
+}
+
+
+class FakeDBOS:
+    workflow_id = "workflow-1"
+
+
+@pytest.fixture(autouse=True)
+def _clear_spans(monkeypatch):
+    _EXPORTER.clear()
+    monkeypatch.setattr(drainer, "IDLE_POLL_LIMIT", 0)
+    monkeypatch.setattr(drainer, "drainer_wait_enabled", lambda: True)
+
+    def require_explicit_database():
+        raise AssertionError("hermetic test requires an explicit local database")
+
+    monkeypatch.setattr("core.db.get_engine", require_explicit_database)
+    monkeypatch.setattr(drainer, "CLEANUP_CONFIRM_INTERVAL_SECONDS", 0.0)
+    monkeypatch.setattr(
+        drainer, "_turn_has_unknown_outcome_lookup", lambda _session_id, _seq: False
+    )
+    monkeypatch.setattr(drainer, "cancel_drainer_reservation", lambda *_: True)
+    monkeypatch.setattr(drainer, "sweep_kg_raws", lambda: 0)
+    monkeypatch.setattr(drainer, "kg_effective_cap", lambda base_cap: base_cap)
+    monkeypatch.setattr(
+        drainer,
+        "_quota_span_attributes",
+        lambda: {},
+    )
+    yield
+
+
+def _spans_named(name: str):
+    return [s for s in _EXPORTER.get_finished_spans() if s.name == name]
+
+
+def _run(
+    monkeypatch,
+    jobs,
+    await_turn=None,
+    start_session=None,
+    send_message=None,
+    settings=None,
+):
+    claims = []
+    starts = []
+    completions = []
+    notifications = []
+    destroys = []
+    queued = iter([{"routine_kind": "qwen-drain", **job} for job in jobs] + [None])
+
+    configured_settings = SETTINGS if settings is None else settings
+    monkeypatch.setattr(
+        drainer, "pin_drainer_settings", lambda: configured_settings.copy()
+    )
+    monkeypatch.setattr(drainer, "DBOS", FakeDBOS)
+
+    def claim(ttl_secs, kinds, _workflow_id, _base_cap, _index):
+        claims.append((ttl_secs, kinds))
+        return next(queued)
+
+    def start(*args, **kwargs):
+        starts.append(args)
+        if start_session is not None:
+            return start_session(*args, **kwargs)
+        return 100 + len(starts)
+
+    monkeypatch.setattr(drainer, "claim_drainer_job", claim)
+    monkeypatch.setattr(drainer, "increment_kg_job_attempt", lambda _name: 1)
+    monkeypatch.setattr(drainer, "start_agent_session", start)
+    monkeypatch.setattr(
+        drainer,
+        "send_agent_session_message",
+        send_message or (lambda *_args: 2),
+    )
+    monkeypatch.setattr(
+        drainer,
+        "_await_turn",
+        await_turn
+        or (lambda *_: {"result_text": "finished", "terminal_reason": "stop"}),
+    )
+    monkeypatch.setattr(
+        drainer,
+        "finish_drainer_job",
+        lambda *args: completions.append(args) or True,
+    )
+    monkeypatch.setattr(
+        drainer,
+        "notify_drainer_failure",
+        lambda *args: notifications.append(args),
+    )
+    monkeypatch.setattr(
+        drainer,
+        "destroy_drainer_session",
+        lambda *args: destroys.append(args) or True,
+    )
+
+    result = drainer.drain_cycle.__wrapped__()
+    return result, claims, starts, completions, notifications, destroys
+
+
+def test_kg_rejection_gets_exactly_one_correction_turn(monkeypatch):
+    monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 0)
+    monkeypatch.setattr(drainer, "build_kg_prompt", lambda _payload: "kg prompt")
+    monkeypatch.setattr(
+        drainer,
+        "build_kg_correction_prompt",
+        lambda rejected: f"correct {len(rejected)}",
+    )
+    applied = []
+
+    def apply(name, payload, output, correction=False):
+        applied.append((name, payload, output, correction))
+        if correction:
+            return {
+                "atoms": ["corrected-atom"],
+                "rejected": [],
+                "dispute": None,
+                "doc_drift": 0,
+                "docfix_jobs": 0,
+                "replayed": False,
+            }
+        return {
+            "atoms": ["first-atom"],
+            "rejected": [
+                {"title": "bare value", "reason_code": "value", "reason": "bare"}
+            ],
+            "dispute": None,
+            "doc_drift": 0,
+            "docfix_jobs": 0,
+            "replayed": False,
+        }
+
+    monkeypatch.setattr(drainer, "apply_kg_extraction", apply)
+    turns = iter(
+        [
+            {"seq": 1, "result_text": "first", "terminal_reason": "stop"},
+            {"seq": 2, "result_text": "second", "terminal_reason": "stop"},
+        ]
+    )
+    awaits = []
+
+    def await_turn(*args):
+        awaits.append(args)
+        return next(turns)
+
+    sends = []
+    job = {
+        "name": "kg:raw-1",
+        "routine_kind": "kg-drain",
+        "payload": {"raw_id": "raw-1"},
+    }
+
+    _, _, _, completions, _, _ = _run(
+        monkeypatch,
+        [job],
+        await_turn=await_turn,
+        send_message=lambda *args: sends.append(args) or 2,
+    )
+
+    assert sends == [(101, "correct 1")]
+    assert awaits == [(101, 0, 1800), (101, 1, 1800)]
+    assert [call[3] for call in applied] == [False, True]
+    assert completions == [
+        (
+            "kg:raw-1",
+            "ok",
+            "atoms=2 rejected=1 corrected=1 dispute=None doc_drift=0 docfix_jobs=0",
+            True,
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    "first_result",
+    [
+        {
+            "atoms": ["one"],
+            "rejected": [],
+            "dispute": None,
+            "doc_drift": 0,
+            "docfix_jobs": 0,
+            "replayed": False,
+        },
+        {
+            "atoms": ["one", "two", "three"],
+            "rejected": [{"reason_code": "value"}],
+            "dispute": None,
+            "doc_drift": 0,
+            "docfix_jobs": 0,
+            "replayed": False,
+        },
+    ],
+)
+def test_kg_correction_not_sent_without_both_triggers(monkeypatch, first_result):
+    monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 0)
+    monkeypatch.setattr(drainer, "build_kg_prompt", lambda _payload: "kg prompt")
+    monkeypatch.setattr(drainer, "apply_kg_extraction", lambda *_args: first_result)
+    sends = []
+    job = {
+        "name": "kg:raw-1",
+        "routine_kind": "kg-drain",
+        "payload": {"raw_id": "raw-1"},
+    }
+
+    _run(monkeypatch, [job], send_message=lambda *args: sends.append(args) or 2)
+
+    assert sends == []
+
+
+def test_kg_never_sends_a_third_turn_after_rejected_correction(monkeypatch):
+    monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 0)
+    monkeypatch.setattr(drainer, "build_kg_prompt", lambda _payload: "kg prompt")
+    monkeypatch.setattr(drainer, "build_kg_correction_prompt", lambda _items: "fix")
+    calls = []
+
+    def apply(_name, _payload, _output, correction=False):
+        calls.append(correction)
+        return {
+            "atoms": [],
+            "rejected": [{"reason_code": "value"}],
+            "dispute": None,
+            "doc_drift": 0,
+            "docfix_jobs": 0,
+            "replayed": False,
+        }
+
+    monkeypatch.setattr(drainer, "apply_kg_extraction", apply)
+    turns = iter(
+        [
+            {"seq": 1, "result_text": "first", "terminal_reason": "stop"},
+            {"seq": 2, "result_text": "second", "terminal_reason": "stop"},
+        ]
+    )
+    sends = []
+    job = {
+        "name": "kg:raw-1",
+        "routine_kind": "kg-drain",
+        "payload": {"raw_id": "raw-1"},
+    }
+
+    _run(
+        monkeypatch,
+        [job],
+        await_turn=lambda *_args: next(turns),
+        send_message=lambda *args: sends.append(args) or 2,
+    )
+
+    assert calls == [False, True]
+    assert sends == [(101, "fix")]
+
+
+def test_drain_cycle_claims_then_completes(monkeypatch):
+    job = {
+        "name": "job-1",
+        "payload": {"prompt": "do work", "reasoning": True},
+    }
+
+    result, claims, starts, completions, notifications, destroys = _run(
+        monkeypatch, [job]
+    )
+
+    assert result == {"status": "complete", "processed": 1}
+    assert claims == [
+        (2100, ("qwen-drain", "kg-drain")),
+        (2100, ("qwen-drain", "kg-drain")),
+    ]
+    assert starts == [
+        (
+            "workflow-1:qwen-drain:job-1",
+            "do work",
+            "luna",
+            "jomcgi-org/homelab",
+            "main",
+            "workflow-1",
+            "qwen-drain",
+            None,
+            True,
+        )
+    ]
+    assert completions == [("job-1", "ok", "finished")]
+    assert notifications == []
+    assert destroys == [(101, "workflow-1:qwen-drain:job-1")]
+
+
+def test_kg_job_builds_prompt_uses_kg_session_and_applies(monkeypatch):
+    monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 2)
+    prompts = []
+    applied = []
+    monkeypatch.setattr(
+        drainer,
+        "build_kg_prompt",
+        lambda payload: prompts.append(payload) or "kg prompt",
+    )
+    monkeypatch.setattr(
+        drainer,
+        "apply_kg_extraction",
+        lambda name, payload, output: (
+            applied.append((name, payload, output))
+            or {
+                "atoms": ["one", "two"],
+                "dispute": "narrowed",
+                "doc_drift": 1,
+                "docfix_jobs": 1,
+            }
+        ),
+    )
+    job = {
+        "name": "kg:raw-1",
+        "routine_kind": "kg-drain",
+        "payload": {"raw_id": "raw-1"},
+    }
+
+    result, _, starts, completions, notifications, destroys = _run(monkeypatch, [job])
+
+    assert result == {"status": "complete", "processed": 1}
+    assert prompts == [{"raw_id": "raw-1"}]
+    assert starts[0][0] == "workflow-1:kg-drain:kg:raw-1"
+    assert starts[0][1] == "kg prompt"
+    assert starts[0][6] == "kg-drain"
+    assert applied == [("kg:raw-1", {"raw_id": "raw-1"}, "finished")]
+    assert completions == [
+        (
+            "kg:raw-1",
+            "ok",
+            "atoms=2 rejected=0 corrected=0 dispute=narrowed doc_drift=1 docfix_jobs=1",
+            True,
+        )
+    ]
+    assert notifications == []
+    assert destroys == [(101, "workflow-1:kg-drain:kg:raw-1")]
+
+
+def test_kg_job_applies_full_output_beyond_summary_cap(monkeypatch):
+    monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 0)
+    monkeypatch.setattr(drainer, "build_kg_prompt", lambda _raw_id: "kg prompt")
+    applied = []
+    monkeypatch.setattr(
+        drainer,
+        "apply_kg_extraction",
+        lambda name, payload, output: (
+            applied.append((name, payload, output))
+            or {
+                "atoms": [],
+                "dispute": None,
+                "doc_drift": 0,
+                "docfix_jobs": 0,
+            }
+        ),
+    )
+    full_output = "x" * (drainer.SUMMARY_MAX_CHARS + 1)
+    job = {
+        "name": "kg:raw-1",
+        "routine_kind": "kg-drain",
+        "payload": {"raw_id": "raw-1"},
+    }
+
+    _run(
+        monkeypatch,
+        [job],
+        await_turn=lambda *_: {
+            "result_text": full_output,
+            "terminal_reason": "stop",
+        },
+    )
+
+    assert applied == [("kg:raw-1", {"raw_id": "raw-1"}, full_output)]
+
+
+def test_repo_diff_mode_dispatches_through_repo_apply(monkeypatch):
+    monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 0)
+    prompts = []
+    applied = []
+    monkeypatch.setattr(
+        drainer,
+        "build_kg_prompt",
+        lambda payload: prompts.append(payload) or "scout prompt",
+    )
+    monkeypatch.setattr(
+        drainer,
+        "apply_kg_extraction",
+        lambda name, payload, output: (
+            applied.append((name, payload, output)) or {"summary": "no changes"}
+        ),
+    )
+    payload = {"mode": "repo-diff", "last_sha": None}
+    job = {
+        "name": "kg-repo-diff",
+        "routine_kind": "kg-drain",
+        "interval_secs": 3600,
+        "payload": payload,
+    }
+
+    _, _, starts, completions, _, _ = _run(monkeypatch, [job])
+
+    assert prompts == [payload]
+    assert applied == [("kg-repo-diff", payload, "finished")]
+    assert starts[0][1] == "scout prompt"
+    assert completions == [("kg-repo-diff", "ok", "no changes", False)]
+
+
+def test_retry_uses_current_repo_diff_cursor(tmp_path, monkeypatch):
+    engine = create_engine(f"sqlite:///{tmp_path / 'retry.db'}")
+    with Session(engine) as session:
+        session.execute(
+            text(
+                """
+                CREATE TABLE routine_jobs (
+                    name TEXT PRIMARY KEY,
+                    payload TEXT NOT NULL
+                )
+                """
+            )
+        )
+        session.execute(
+            text("INSERT INTO routine_jobs (name, payload) VALUES (:name, :payload)"),
+            {
+                "name": "kg-repo-diff",
+                "payload": json.dumps(
+                    {"mode": "repo-diff", "last_sha": "b" * 40, "attempts": 1}
+                ),
+            },
+        )
+        session.commit()
+    monkeypatch.setattr("core.db.get_engine", lambda: engine)
+
+    attempt = drainer.increment_kg_job_attempt.__wrapped__("kg-repo-diff")
+
+    with Session(engine) as session:
+        payload = json.loads(
+            session.execute(
+                text("SELECT payload FROM routine_jobs WHERE name = 'kg-repo-diff'")
+            ).scalar_one()
+        )
+    assert attempt == 2
+    assert payload == {"mode": "repo-diff", "last_sha": "b" * 40, "attempts": 2}
+
+
+def test_completed_docfix_review_is_retained_for_debounce(monkeypatch):
+    job = {
+        "name": "docfix-review:current",
+        "routine_kind": "qwen-drain",
+        "payload": {"prompt": "review docs"},
+    }
+
+    _, _, _, completions, _, _ = _run(monkeypatch, [job])
+
+    assert completions == [("docfix-review:current", "ok", "finished")]
+
+
+def test_recurring_kg_job_is_not_deregistered_on_completion(monkeypatch):
+    monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 0)
+    monkeypatch.setattr(drainer, "build_kg_prompt", lambda _payload: "kg prompt")
+    monkeypatch.setattr(
+        drainer,
+        "apply_kg_extraction",
+        lambda *_args: {
+            "atoms": [],
+            "dispute": None,
+            "doc_drift": 0,
+            "docfix_jobs": 0,
+        },
+    )
+    job = {
+        "name": "kg:recurring",
+        "routine_kind": "kg-drain",
+        "interval_secs": 3600,
+        "payload": {"raw_id": "raw-1"},
+    }
+
+    _, _, _, completions, _, _ = _run(monkeypatch, [job])
+
+    assert completions == [
+        (
+            "kg:recurring",
+            "ok",
+            "atoms=0 rejected=0 corrected=0 dispute=None doc_drift=0 docfix_jobs=0",
+            False,
+        )
+    ]
+
+
+def test_kg_daily_cap_defers_without_processing_or_notification(monkeypatch):
+    monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 40)
+    deferred = []
+    monkeypatch.setattr(
+        drainer,
+        "defer_drainer_job",
+        lambda name, seconds: deferred.append((name, seconds)) or True,
+    )
+    job = {
+        "name": "kg:raw-1",
+        "routine_kind": "kg-drain",
+        "payload": {"raw_id": "raw-1"},
+    }
+
+    result, _, starts, completions, notifications, destroys = _run(monkeypatch, [job])
+
+    assert result == {"status": "complete", "processed": 0}
+    assert completions == [("kg:raw-1", "deferred", "kg daily cap reached")]
+    assert deferred == [("kg:raw-1", 3600)]
+    assert starts == []
+    assert notifications == []
+    assert destroys == []
+
+
+def test_invalid_kg_output_defers_on_bounded_retry_path(monkeypatch):
+    monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 0)
+    monkeypatch.setattr(drainer, "build_kg_prompt", lambda _raw_id: "kg prompt")
+
+    def invalid(*_args):
+        raise drainer.ExtractionOutputInvalid("invalid extraction")
+
+    monkeypatch.setattr(drainer, "apply_kg_extraction", invalid)
+    deferrals = []
+    monkeypatch.setattr(
+        drainer,
+        "defer_drainer_job",
+        lambda name, seconds: deferrals.append((name, seconds)) or True,
+    )
+    job = {
+        "name": "kg:raw-1",
+        "routine_kind": "kg-drain",
+        "payload": {"raw_id": "raw-1"},
+    }
+
+    _, _, _, completions, notifications, destroys = _run(monkeypatch, [job])
+
+    assert deferrals == [("kg:raw-1", 900)]
+    assert completions == []
+    assert notifications == [("kg:raw-1", "invalid extraction")]
+    assert destroys == [(101, "workflow-1:kg-drain:kg:raw-1")]
+
+
+@pytest.mark.parametrize(
+    ("payload_reasoning", "lane_default", "expected"),
+    [
+        # No key in the payload takes the lane default, which is what every
+        # registered job does today. Before this defaulted from settings the
+        # answer was always False, so the configured Luna lane default was lost.
+        (None, True, True),
+        (None, False, False),
+        # An explicit per-job value still wins over the lane default in both
+        # directions, so a job can opt out of a slow thinking run.
+        (False, True, False),
+        (True, False, True),
+    ],
+)
+def test_reasoning_defaults_from_settings_and_payload_overrides(
+    monkeypatch, payload_reasoning, lane_default, expected
+):
+    payload = {"prompt": "do work"}
+    if payload_reasoning is not None:
+        payload["reasoning"] = payload_reasoning
+
+    settings = SETTINGS | {"reasoning": lane_default}
+    monkeypatch.setattr(drainer, "pin_drainer_settings", lambda: settings.copy())
+
+    _prompt, _repo, _branch, reasoning = drainer._payload_values(payload, settings)
+
+    assert reasoning is expected
+
+
+def test_reasoning_survives_replayed_settings_without_the_key():
+    """A cycle recovered across this deploy replays settings pinned before it.
+
+    pin_drainer_settings is a checkpointed step, so the dict a recovered cycle
+    sees is the one written by the previous image, which has no "reasoning"
+    key. An eager subscript would raise KeyError, the per-job handler would
+    finish each claimed job as "error", and for a one-shot job that is
+    permanent. repo and branch never needed this because they predate pinning.
+    """
+    legacy_settings = {
+        "enabled": True,
+        "max_jobs_per_cycle": 3,
+        "turn_timeout_seconds": 1800,
+        "job_kinds": ("qwen-drain",),
+        "kg_max_jobs_per_day": 40,
+        "repo": "jomcgi-org/homelab",
+        "branch": "main",
+    }
+
+    _prompt, _repo, _branch, reasoning = drainer._payload_values(
+        {"prompt": "do work"}, legacy_settings
+    )
+    assert reasoning is False
+
+    _p, _r, _b, explicit = drainer._payload_values(
+        {"prompt": "do work", "reasoning": True}, legacy_settings
+    )
+    assert explicit is True
+
+
+def test_empty_queue_exits_immediately(monkeypatch):
+    result, claims, starts, completions, notifications, destroys = _run(monkeypatch, [])
+
+    assert result == {"status": "complete", "processed": 0}
+    assert claims == [(2100, ("qwen-drain", "kg-drain"))]
+    assert starts == []
+    assert completions == []
+    assert notifications == []
+    assert destroys == []
+
+
+def test_kg_sweep_runs_at_cycle_start_and_updates_health_value(monkeypatch):
+    health_updates = []
+    monkeypatch.setattr(drainer, "sweep_kg_raws", lambda: 4)
+    monkeypatch.setattr(
+        drainer,
+        "set_kg_swept_last_cycle",
+        lambda count: health_updates.append(count),
+    )
+
+    result, *_ = _run(monkeypatch, [])
+
+    assert result == {"status": "complete", "processed": 0}
+    assert health_updates == [4]
+
+
+def test_empty_job_kinds_pause_claims(monkeypatch):
+    claims = []
+    monkeypatch.setattr(
+        drainer,
+        "pin_drainer_settings",
+        lambda: SETTINGS | {"job_kinds": ()},
+    )
+    monkeypatch.setattr(drainer, "DBOS", FakeDBOS)
+    monkeypatch.setattr(
+        drainer,
+        "claim_drainer_job",
+        lambda *_args: claims.append(True),
+    )
+
+    assert drainer.drain_cycle.__wrapped__() == {
+        "status": "complete",
+        "processed": 0,
+    }
+    assert claims == []
+
+
+def test_kg_cap_defers_once_then_drains_qwen_jobs(monkeypatch):
+    settings = SETTINGS | {"max_jobs_per_cycle": 15, "kg_max_jobs_per_day": 40}
+    queue = [
+        {
+            "name": f"kg:raw-{index}",
+            "routine_kind": "kg-drain",
+            "payload": {"raw_id": f"raw-{index}"},
+        }
+        for index in range(20)
+    ] + [
+        {
+            "name": f"qwen-{index}",
+            "routine_kind": "qwen-drain",
+            "payload": {"prompt": "work"},
+        }
+        for index in range(2)
+    ]
+    claims = []
+    deferred = []
+    completions = []
+    starts = []
+
+    def claim(_ttl, kinds, _workflow_id, _base_cap, _index):
+        claims.append(tuple(kinds))
+        return next((job for job in queue if job["routine_kind"] in kinds), None)
+
+    def remove_claimed(*args, **kwargs):
+        starts.append(args)
+        name = args[0].split(":qwen-drain:", 1)[1]
+        queue[:] = [job for job in queue if job["name"] != name]
+        return len(starts)
+
+    monkeypatch.setattr(drainer, "pin_drainer_settings", lambda: settings)
+    monkeypatch.setattr(drainer, "DBOS", FakeDBOS)
+    monkeypatch.setattr(drainer, "claim_drainer_job", claim)
+    monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 40)
+    monkeypatch.setattr(
+        drainer,
+        "finish_drainer_job",
+        lambda *args: completions.append(args) or True,
+    )
+    monkeypatch.setattr(
+        drainer,
+        "defer_drainer_job",
+        lambda name, seconds: (
+            (
+                deferred.append((name, seconds)),
+                queue.remove(next(job for job in queue if job["name"] == name)),
+            )
+            and True
+        ),
+    )
+    monkeypatch.setattr(drainer, "start_agent_session", remove_claimed)
+    monkeypatch.setattr(
+        drainer,
+        "_await_turn",
+        lambda *_args: {"result_text": "done", "terminal_reason": "stop"},
+    )
+    monkeypatch.setattr(drainer, "destroy_drainer_session", lambda *_args: True)
+    monkeypatch.setattr(drainer, "chain_next_cycle", lambda: None)
+
+    result = drainer.drain_cycle.__wrapped__()
+
+    assert result == {"status": "complete", "processed": 2}
+    assert deferred == [("kg:raw-0", 3600)]
+    assert [args[0] for args in starts] == [
+        "workflow-1:qwen-drain:qwen-0",
+        "workflow-1:qwen-drain:qwen-1",
+    ]
+    assert claims[0] == ("qwen-drain", "kg-drain")
+    assert all(kinds == ("qwen-drain",) for kinds in claims[1:])
+
+
+def _run_transient_kg_failure(monkeypatch, attempts):
+    job = {
+        "name": "kg:raw-1",
+        "routine_kind": "kg-drain",
+        "payload": {"raw_id": "raw-1", "attempts": attempts},
+    }
+    queue = iter([job, None])
+    deferrals = []
+    completions = []
+    failures = []
+    monkeypatch.setattr(drainer, "pin_drainer_settings", lambda: SETTINGS.copy())
+    monkeypatch.setattr(drainer, "DBOS", FakeDBOS)
+    monkeypatch.setattr(drainer, "claim_drainer_job", lambda *_args: next(queue))
+    monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 0)
+    monkeypatch.setattr(drainer, "build_kg_prompt", lambda _raw_id: "kg prompt")
+    monkeypatch.setattr(drainer, "start_agent_session", lambda *_args, **_kwargs: 101)
+    monkeypatch.setattr(
+        drainer,
+        "_await_turn",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("ember unavailable")),
+    )
+    monkeypatch.setattr(drainer, "increment_kg_job_attempt", lambda _name: attempts + 1)
+    monkeypatch.setattr(
+        drainer,
+        "defer_drainer_job",
+        lambda name, seconds: deferrals.append((name, seconds)) or True,
+    )
+    monkeypatch.setattr(
+        drainer,
+        "finish_drainer_job",
+        lambda *args: completions.append(args) or True,
+    )
+    monkeypatch.setattr(
+        drainer,
+        "record_kg_failure",
+        lambda raw_id, error, attempt: failures.append((raw_id, error, attempt)),
+    )
+    monkeypatch.setattr(drainer, "notify_drainer_failure", lambda *_args: None)
+    monkeypatch.setattr(drainer, "destroy_drainer_session", lambda *_args: True)
+
+    drainer.drain_cycle.__wrapped__()
+    return deferrals, completions, failures
+
+
+def test_transient_kg_failure_defers_with_incremented_attempt(monkeypatch):
+    deferrals, completions, failures = _run_transient_kg_failure(monkeypatch, 0)
+
+    assert deferrals == [("kg:raw-1", 900)]
+    assert completions == []
+    assert failures == []
+
+
+def test_transient_kg_failure_gives_up_after_retry_ceiling(monkeypatch):
+    deferrals, completions, failures = _run_transient_kg_failure(monkeypatch, 2)
+
+    assert deferrals == []
+    assert completions == [("kg:raw-1", "error", "ember unavailable", True)]
+    assert failures == [("raw-1", "ember unavailable", 3)]
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        (None, "missing usable prompt in payload"),
+        ({"repo": "weave-hand/loom"}, "missing usable prompt in payload"),
+        ({"prompt": "work", "repo": ""}, "repo must be a non-empty string"),
+        ({"prompt": "work", "branch": 7}, "branch must be a non-empty string"),
+        ({"prompt": "work", "reasoning": "yes"}, "reasoning must be a boolean"),
+    ],
+)
+def test_malformed_payload_completes_error_without_notification(
+    monkeypatch, payload, message
+):
+    job = {"name": "bad-payload", "payload": payload}
+
+    result, _, starts, completions, notifications, destroys = _run(monkeypatch, [job])
+
+    assert result == {"status": "complete", "processed": 1}
+    assert completions == [("bad-payload", "error", message)]
+    assert starts == []
+    assert notifications == []
+    assert destroys == []
+
+
+def test_failure_notifies_when_notifications_enabled_and_destroys_session(monkeypatch):
+    job = {"name": "fails", "payload": {"prompt": "break"}}
+
+    def fail_await(*_args):
+        raise RuntimeError("turn failed")
+
+    result, _, _, completions, notifications, destroys = _run(
+        monkeypatch, [job], await_turn=fail_await
+    )
+
+    assert result == {"status": "complete", "processed": 1}
+    assert completions == [("fails", "error", "turn failed")]
+    assert notifications == [("fails", "turn failed")]
+    assert destroys == [(101, "workflow-1:qwen-drain:fails")]
+
+
+def test_failure_logs_without_notification_when_notifications_disabled(
+    monkeypatch, caplog
+):
+    job = {"name": "fails-quietly", "payload": {"prompt": "break"}}
+
+    def fail_await(*_args):
+        raise RuntimeError("turn failed")
+
+    with caplog.at_level("WARNING", logger="factory.orchestration.drainer"):
+        _, _, _, _, notifications, _ = _run(
+            monkeypatch,
+            [job],
+            await_turn=fail_await,
+            settings=SETTINGS | {"notify_failures": False},
+        )
+
+    assert notifications == []
+    assert "Luna drainer job fails-quietly failed: turn failed" in caplog.messages
+
+
+def test_start_failure_cleans_up_by_stable_session_key(monkeypatch):
+    job = {"name": "start-fails", "payload": {"prompt": "run"}}
+
+    def fail_start(*_args, **_kwargs):
+        raise RuntimeError("start failed")
+
+    result, _, _, completions, notifications, destroys = _run(
+        monkeypatch, [job], start_session=fail_start
+    )
+
+    assert result == {"status": "complete", "processed": 1}
+    assert completions == [("start-fails", "error", "start failed")]
+    assert notifications == [("start-fails", "start failed")]
+    assert destroys == [(None, "workflow-1:qwen-drain:start-fails")]
+
+
+def test_terminal_turn_error_notifies_once_and_destroys(monkeypatch):
+    job = {"name": "terminal-error", "payload": {"prompt": "run"}}
+
+    result, _, _, completions, notifications, destroys = _run(
+        monkeypatch,
+        [job],
+        await_turn=lambda *_: {
+            "result_text": "Error executing turn: transport failed",
+            "terminal_reason": "error",
+        },
+    )
+
+    assert result == {"status": "complete", "processed": 1}
+    assert completions == [
+        ("terminal-error", "error", "Error executing turn: transport failed")
+    ]
+    assert notifications == [
+        ("terminal-error", "Error executing turn: transport failed")
+    ]
+    assert destroys == [(101, "workflow-1:qwen-drain:terminal-error")]
+
+
+def test_interrupted_turn_is_never_treated_as_completed():
+    with pytest.raises(RuntimeError, match="interrupted turn cannot be completed"):
+        drainer._completed_output(
+            {"result_text": "preempted", "terminal_reason": "interrupted"}
+        )
+
+
+def test_timeout_completes_error_notifies_once_and_destroys(monkeypatch):
+    job = {"name": "slow", "payload": {"prompt": "take your time"}}
+
+    result, _, _, completions, notifications, destroys = _run(
+        monkeypatch, [job], await_turn=lambda *_: None
+    )
+
+    assert result == {"status": "complete", "processed": 1}
+    assert completions == [("slow", "error", "turn timed out after 1800 seconds")]
+    assert notifications == [("slow", "turn timed out after 1800 seconds")]
+    assert destroys == [(101, "workflow-1:qwen-drain:slow")]
+
+
+def test_disabled_cycle_is_noop(monkeypatch):
+    monkeypatch.setattr(
+        drainer.agent_config,
+        "drainer_enabled",
+        lambda: (_ for _ in ()).throw(AssertionError("env must not be re-read")),
+    )
+    settings = SETTINGS.copy()
+    settings["enabled"] = False
+    monkeypatch.setattr(drainer, "pin_drainer_settings", lambda: settings)
+
+    assert drainer.drain_cycle.__wrapped__() == {
+        "status": "disabled",
+        "processed": 0,
+    }
+
+
+def test_session_idempotency_key_is_stable():
+    assert drainer._session_key("workflow-1", "job-1") == (
+        "workflow-1:qwen-drain:job-1"
+    )
+
+
+def test_success_summary_is_capped(monkeypatch):
+    job = {"name": "verbose", "payload": {"prompt": "write"}}
+
+    _, _, _, completions, _, _ = _run(
+        monkeypatch,
+        [job],
+        await_turn=lambda *_: {
+            "result_text": "x" * 2500,
+            "terminal_reason": "stop",
+        },
+    )
+
+    assert completions == [("verbose", "ok", "x" * 2000)]
+
+
+def test_full_batch_chains_the_next_cycle(monkeypatch):
+    """Hitting max_jobs_per_cycle means work remains, so chain immediately.
+
+    Without this a deep backlog drains in bursts, idling at every cycle
+    boundary until the next */15 tick.
+    """
+    chained = []
+    monkeypatch.setattr(drainer, "chain_next_cycle", lambda: chained.append(True))
+
+    jobs = [
+        {"name": f"job-{i}", "payload": {"prompt": "work"}}
+        for i in range(SETTINGS["max_jobs_per_cycle"])
+    ]
+    result, _claims, _starts, _completions, _notifications, _destroys = _run(
+        monkeypatch, jobs
+    )
+
+    assert result == {
+        "status": "complete",
+        "processed": SETTINGS["max_jobs_per_cycle"],
+    }
+    assert chained == [True]
+
+
+def test_partial_batch_does_not_chain(monkeypatch):
+    """An empty queue must cost nothing, which is what stops this spinning."""
+    chained = []
+    monkeypatch.setattr(drainer, "chain_next_cycle", lambda: chained.append(True))
+
+    jobs = [{"name": "job-1", "payload": {"prompt": "work"}}]
+    result, _claims, _starts, _completions, _notifications, _destroys = _run(
+        monkeypatch, jobs
+    )
+
+    assert result == {"status": "complete", "processed": 1}
+    assert chained == []
+
+
+def test_empty_queue_does_not_chain(monkeypatch):
+    chained = []
+    monkeypatch.setattr(drainer, "chain_next_cycle", lambda: chained.append(True))
+
+    result, _claims, _starts, _completions, _notifications, _destroys = _run(
+        monkeypatch, []
+    )
+
+    assert result == {"status": "complete", "processed": 0}
+    assert chained == []
+
+
+def test_fully_failed_batch_does_not_chain(monkeypatch):
+    """An all-failing batch must fall back to tick pace, not accelerate.
+
+    When the downstream is sick every claimed job fails in seconds, and a
+    failed one-shot is permanently done because complete_job NULLs its
+    next_run_at whatever the status. Chaining through that destroys the
+    backlog at hundreds of dead jobs an hour. Falling back to the next tick
+    is a 15 minute backoff exactly when something is wrong.
+    """
+    chained = []
+    monkeypatch.setattr(drainer, "chain_next_cycle", lambda: chained.append(True))
+
+    def fail_turn(*_args):
+        raise RuntimeError("turn failed")
+
+    jobs = [
+        {"name": f"job-{i}", "payload": {"prompt": "work"}}
+        for i in range(SETTINGS["max_jobs_per_cycle"])
+    ]
+    result, _claims, _starts, _completions, _notifications, _destroys = _run(
+        monkeypatch, jobs, await_turn=fail_turn
+    )
+
+    assert result["processed"] == SETTINGS["max_jobs_per_cycle"]
+    assert chained == [], "a batch with zero successes must not chain"
+
+
+def test_zero_max_jobs_per_cycle_does_not_chain(monkeypatch):
+    """A bound of zero must not chain.
+
+    DRAINER_MAX_JOBS_PER_CYCLE is unvalidated int(env), so setting it to 0 as
+    a way to pause the lane is plausible. Without the processed guard, 0 >= 0
+    holds and every cycle chains an endless one-per-second no-op.
+    """
+    chained = []
+    monkeypatch.setattr(drainer, "chain_next_cycle", lambda: chained.append(True))
+    settings = SETTINGS | {"max_jobs_per_cycle": 0}
+    monkeypatch.setattr(drainer, "pin_drainer_settings", lambda: settings.copy())
+
+    result, _claims, _starts, _completions, _notifications, _destroys = _run(
+        monkeypatch, []
+    )
+
+    assert result == {"status": "complete", "processed": 0}
+    assert chained == []
+
+
+def test_drain_cycle_emits_a_cycle_span(monkeypatch):
+    job = {"name": "job-1", "payload": {"prompt": "work"}}
+
+    _run(monkeypatch, [job])
+
+    spans = _spans_named("drain.cycle")
+    assert len(spans) == 1
+    assert spans[0].attributes["drain.outcome"] == "queue_empty"
+    assert spans[0].attributes["drain.jobs_claimed"] == 1
+    assert spans[0].attributes["drain.jobs_succeeded"] == 1
+    assert spans[0].attributes["drain.chained"] is False
+    assert spans[0].attributes["drain.workflow_id"] == "workflow-1"
+
+
+def test_each_claimed_job_emits_a_job_span(monkeypatch):
+    monkeypatch.setattr(drainer, "chain_next_cycle", lambda: None)
+    jobs = [
+        {"name": f"job-{i}", "payload": {"prompt": "work"}}
+        for i in range(SETTINGS["max_jobs_per_cycle"])
+    ]
+
+    _run(monkeypatch, jobs)
+
+    spans = _spans_named("drain.job")
+    assert len(spans) == SETTINGS["max_jobs_per_cycle"]
+    assert [span.attributes["drain.job_name"] for span in spans] == [
+        job["name"] for job in jobs
+    ]
+
+
+def test_job_span_includes_observed_provider_quota(monkeypatch):
+    monkeypatch.setattr(
+        provider_quota,
+        "fetch_provider_quota_sync",
+        lambda: {
+            "available": True,
+            "providers": {
+                "codex": {
+                    "observed": True,
+                    "age_seconds": 42,
+                    "exhausted": False,
+                    "windows": [{"name": "primary", "used_percent": 24}],
+                },
+                "claude": {
+                    "observed": True,
+                    "age_seconds": 3,
+                    "exhausted": True,
+                    "windows": [{"name": "5h", "used_percent": 100}],
+                },
+            },
+        },
+    )
+    monkeypatch.setattr(
+        drainer,
+        "_quota_span_attributes",
+        _QUOTA_SPAN_ATTRIBUTES_STEP.__wrapped__,
+    )
+
+    result, *_rest = _run(
+        monkeypatch, [{"name": "job-1", "payload": {"prompt": "work"}}]
+    )
+
+    attributes = _spans_named("drain.job")[0].attributes
+    assert attributes["drain.quota.codex.used_percent"] == 24.0
+    assert attributes["drain.quota.codex.age_seconds"] == 42.0
+    assert attributes["drain.quota.codex.window"] == "primary"
+    assert attributes["drain.quota.codex.exhausted"] is False
+    assert attributes["drain.quota.claude.used_percent"] == 100.0
+    assert attributes["drain.quota.claude.age_seconds"] == 3.0
+    assert attributes["drain.quota.claude.window"] == "5h"
+    assert attributes["drain.quota.claude.exhausted"] is True
+    assert result == {"status": "complete", "processed": 1}
+
+
+def test_job_span_omits_quota_when_broker_is_unavailable(monkeypatch):
+    result, *_rest = _run(
+        monkeypatch, [{"name": "job-1", "payload": {"prompt": "work"}}]
+    )
+
+    attributes = _spans_named("drain.job")[0].attributes
+    assert not any(name.startswith("drain.quota.") for name in attributes)
+    assert result == {"status": "complete", "processed": 1}
+
+
+def test_quota_telemetry_exception_does_not_change_job_outcome(monkeypatch, caplog):
+    def fail():
+        raise RuntimeError("quota exploded")
+
+    monkeypatch.setattr(provider_quota, "fetch_provider_quota_sync", fail)
+    monkeypatch.setattr(
+        drainer,
+        "_quota_span_attributes",
+        _QUOTA_SPAN_ATTRIBUTES_STEP.__wrapped__,
+    )
+
+    with caplog.at_level("DEBUG", logger=drainer.__name__):
+        result, *_rest = _run(
+            monkeypatch, [{"name": "job-1", "payload": {"prompt": "work"}}]
+        )
+
+    attributes = _spans_named("drain.job")[0].attributes
+    assert not any(name.startswith("drain.quota.") for name in attributes)
+    assert result == {"status": "complete", "processed": 1}
+    assert "drain quota telemetry failed" in caplog.text
+
+
+def test_a_failing_job_still_ends_its_spans(monkeypatch):
+    job = {"name": "fails", "payload": {"prompt": "break"}}
+
+    def fail_await(*_args):
+        raise RuntimeError("turn failed")
+
+    _run(monkeypatch, [job], await_turn=fail_await)
+
+    job_spans = _spans_named("drain.job")
+    cycle_spans = _spans_named("drain.cycle")
+    assert len(job_spans) == 1
+    assert len(cycle_spans) == 1
+    assert "drain.outcome" not in job_spans[0].attributes
+    assert "drain.status" not in job_spans[0].attributes
+
+
+def test_full_batch_cycle_span_records_the_chain(monkeypatch):
+    monkeypatch.setattr(drainer, "chain_next_cycle", lambda: None)
+    jobs = [
+        {"name": f"job-{i}", "payload": {"prompt": "work"}}
+        for i in range(SETTINGS["max_jobs_per_cycle"])
+    ]
+
+    _run(monkeypatch, jobs)
+
+    spans = _spans_named("drain.cycle")
+    assert len(spans) == 1
+    assert spans[0].attributes["drain.outcome"] == "bound_reached"
+    assert spans[0].attributes["drain.chained"] is True
+
+
+def test_disabled_cycle_still_emits_a_cycle_span(monkeypatch):
+    settings = SETTINGS | {"enabled": False}
+    monkeypatch.setattr(drainer, "pin_drainer_settings", lambda: settings)
+
+    drainer.drain_cycle.__wrapped__()
+
+    spans = _spans_named("drain.cycle")
+    assert len(spans) == 1
+    assert spans[0].attributes["drain.outcome"] == "disabled"
+
+
+def test_claim_step_span_lives_inside_the_step_body(monkeypatch, admission_database):
+    import agent.routine_jobs as routine_jobs
+
+    claims = []
+
+    def claim(**kwargs):
+        claims.append(kwargs)
+        return {
+            "name": "job-1",
+            "routine_kind": "qwen-drain",
+            "payload": {"prompt": "work"},
+        }
+
+    monkeypatch.setattr(
+        routine_jobs,
+        "claim_job",
+        claim,
+    )
+
+    drainer.claim_drainer_job.__wrapped__(60, ["qwen-drain", "kg-drain"], "wf", 40, 0)
+    assert len(claims) == 1
+    assert claims[0]["holder"] == "luna-drainer:wf:0"
+    assert claims[0]["prefer_repo_freshness"] is True
+    assert claims[0]["recover_holder"] is True
+    assert claims[0]["exclude_names"] == set()
+    assert isinstance(claims[0]["session"], Session)
+
+    spans = _spans_named("drain.claim_job")
+    assert len(spans) == 1
+    assert spans[0].attributes["drain.claimed"] is True
+    assert spans[0].attributes["drain.job_name"] == "job-1"
+
+    _EXPORTER.clear()
+    # A replayed step emits nothing because its body does not execute again.
+    assert _spans_named("drain.claim_job") == []
+
+
+@pytest.mark.parametrize("outcome", ["ok", "final-failure", "early-failure"])
+def test_repo_scout_and_actual_derived_raw_get_bounded_validated_service(
+    monkeypatch, tmp_path, outcome
+):
+    from sqlmodel import SQLModel, select
+    from agent import routine_jobs
+    from knowledge.extraction import ExtractionOutputInvalid, enqueue_extraction
+    from knowledge.models import AtomRawProvenance, RawInput
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'freshness-roundtrip.db'}")
+    schemas = {table.name: table.schema for table in SQLModel.metadata.tables.values()}
+    for table in SQLModel.metadata.tables.values():
+        table.schema = None
+    try:
+        SQLModel.metadata.create_all(engine)
+        monkeypatch.setattr("core.db.get_engine", lambda: engine)
+        monkeypatch.setattr(routine_jobs, "get_engine", lambda: engine)
+        monkeypatch.setattr("knowledge.ingest_queue.upload_raw", lambda *_args: None)
+        with Session(engine) as session:
+            session.execute(
+                text("""
+                CREATE TABLE routine_jobs (
+                    name TEXT PRIMARY KEY, routine_kind TEXT, interval_secs INTEGER,
+                    next_run_at TEXT, last_run_at TEXT, last_status TEXT,
+                    last_summary TEXT, locked_by TEXT, locked_at TEXT,
+                    ttl_secs INTEGER, payload TEXT, created_by TEXT, created_at TEXT
+                )
+            """)
+            )
+            session.execute(
+                text("""
+                INSERT INTO routine_jobs (name, routine_kind, interval_secs, next_run_at, payload)
+                VALUES
+                    ('old-a', 'kg-drain', NULL, '2026-01-01', '{}'),
+                    ('old-b', 'kg-drain', NULL, '2026-01-01', '{}'),
+                    ('kg-repo-diff', 'kg-drain', 3600, '2026-01-02', '{"mode":"repo-diff"}')
+            """)
+            )
+            session.commit()
+
+        def claim():
+            return routine_jobs.claim_job(
+                holder="fairness",
+                ttl_secs=60,
+                kinds=["kg-drain"],
+                prefer_repo_freshness=True,
+            )
+
+        assert claim()["name"] == "kg-repo-diff"
+        scout = drainer.apply_kg_extraction.__wrapped__(
+            "kg-repo-diff",
+            {"mode": "repo-diff"},
+            "```json\n"
+            + json.dumps(
+                {
+                    "head_sha": "b" * 40,
+                    "base_sha": "a" * 40,
+                    "diff_stat": " file.py | 1 +",
+                    "diff": "diff --git a/file.py b/file.py\n+x = 1",
+                }
+            )
+            + "\n```",
+        )
+        assert routine_jobs.complete_job("kg-repo-diff", "ok")
+        assert claim()["name"] == "old-a"
+        assert drainer.finish_drainer_job.__wrapped__("old-a", "ok", "done", True)
+        with Session(engine) as session:
+            assert (
+                session.execute(
+                    text("SELECT name FROM routine_jobs WHERE name = 'old-a'")
+                ).first()
+                is None
+            )
+            raw = session.exec(select(RawInput)).one()
+            assert raw.raw_id == scout["raw_id"] and raw.source == "repo-diff"
+            payload = session.execute(
+                text("SELECT payload FROM routine_jobs WHERE name = 'kg-repo-diff'")
+            ).scalar_one()
+            assert json.loads(payload)["last_sha"] == "b" * 40
+            session.execute(
+                text("""
+                UPDATE routine_jobs SET last_run_at = datetime(CURRENT_TIMESTAMP, '-301 seconds')
+                 WHERE name = 'kg-repo-diff'
+            """)
+            )
+            session.commit()
+        derived = claim()
+        assert derived["name"] == f"kg:{scout['raw_id']}"
+        with Session(engine) as session:
+            session.add(
+                RawInput(
+                    raw_id="second-diff",
+                    path="raws/second-diff.md",
+                    content_hash="second-diff",
+                    source="repo-diff",
+                )
+            )
+            session.commit()
+            assert enqueue_extraction(session, "second-diff")
+        payload = json.loads(derived["payload"])
+        with pytest.raises(ExtractionOutputInvalid):
+            drainer.apply_kg_extraction.__wrapped__(derived["name"], payload, "invalid")
+        if outcome == "ok":
+            applied = drainer.apply_kg_extraction.__wrapped__(
+                derived["name"], payload, '```json\n{"assertions": []}\n```'
+            )
+            assert not applied["failed"] and not applied["replayed"]
+        elif outcome == "final-failure":
+            drainer.record_kg_failure.__wrapped__(scout["raw_id"], "invalid", 3)
+        # Production deletes ordinary one-shots here. Freshness evidence must
+        # survive this exact path, even when failure wrote no provenance.
+        status = "ok" if outcome == "ok" else "error"
+        assert drainer.finish_drainer_job.__wrapped__(
+            derived["name"], status, "finished", deregister=True
+        )
+        url = engine.url
+        engine.dispose()
+        engine = create_engine(url)
+        with Session(engine) as session:
+            retained = session.execute(
+                text("SELECT * FROM routine_jobs WHERE name = :name"),
+                {"name": derived["name"]},
+            ).one()
+            assert retained.last_status == status
+            assert retained.next_run_at is None and retained.locked_by is None
+            assert retained.last_run_at is not None
+            assert retained.payload == derived["payload"]
+            raw = session.exec(
+                select(RawInput).where(RawInput.raw_id == scout["raw_id"])
+            ).one()
+            if outcome == "ok":
+                assert raw.extra["extraction_passes"] == 1
+                assert (
+                    session.exec(select(AtomRawProvenance)).one().derived_note_id
+                    == "no-new-notes"
+                )
+            elif outcome == "final-failure":
+                assert (
+                    session.exec(select(AtomRawProvenance)).one().derived_note_id
+                    == "failed"
+                )
+            else:
+                assert session.exec(select(AtomRawProvenance)).all() == []
+        assert claim()["name"] == "old-b"
+        assert claim()["name"] == "kg:second-diff"
+    finally:
+        for table in SQLModel.metadata.tables.values():
+            table.schema = schemas.get(table.name)
+
+
+def test_finish_step_span_marks_error_status(monkeypatch):
+    import agent.routine_jobs as routine_jobs
+
+    monkeypatch.setattr(routine_jobs, "complete_job", lambda *_args, **_kwargs: True)
+
+    drainer.finish_drainer_job.__wrapped__("job-1", "error", "boom")
+
+    spans = _spans_named("drain.finish_job")
+    assert len(spans) == 1
+    assert spans[0].attributes["drain.status"] == "error"
+    assert spans[0].status.status_code is StatusCode.ERROR
+
+
+@pytest.mark.parametrize("stage", ["ordinary", "kg", "kg_correction", "recurring"])
+@pytest.mark.parametrize("hold", ["unknown", "delivery_error", "lookup_error"])
+def test_unknown_turn_holds_job_without_retry_apply_or_cleanup(
+    monkeypatch, stage, hold
+):
+    held, applied, deferred = [], [], []
+    monkeypatch.setattr(
+        drainer, "hold_drainer_job", lambda *args: held.append(args) or True
+    )
+    monkeypatch.setattr(
+        drainer, "defer_drainer_job", lambda *args: deferred.append(args)
+    )
+    monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 0)
+    monkeypatch.setattr(drainer, "build_kg_prompt", lambda _: "extract")
+    monkeypatch.setattr(drainer, "build_kg_correction_prompt", lambda _: "correct")
+
+    def apply(*args, **kwargs):
+        applied.append(args)
+        return {
+            "atoms": [],
+            "rejected": [{"reason": "correct"}],
+            "dispute": None,
+            "doc_drift": 0,
+            "docfix_jobs": 0,
+        }
+
+    monkeypatch.setattr(drainer, "apply_kg_extraction", apply)
+
+    def lookup(session_id, seq):
+        assert session_id == 101
+        if seq != 2:
+            return False
+        if hold == "lookup_error":
+            raise RuntimeError("hold store unavailable")
+        return hold == "delivery_error"
+
+    monkeypatch.setattr(drainer, "_turn_has_unknown_outcome_lookup", lookup)
+    monkeypatch.setattr(
+        drainer,
+        "increment_kg_job_attempt",
+        lambda *_args, **_kwargs: pytest.fail("must not consume another attempt"),
+    )
+    monkeypatch.setattr(
+        drainer,
+        "record_kg_failure",
+        lambda *_args, **_kwargs: pytest.fail("must not dead-letter partial output"),
+    )
+    unknown = {
+        "terminal_reason": "error",
+        "stop_reason": "invocation_outcome_unknown" if hold == "unknown" else None,
+        "result_text": "partial extraction",
+        "seq": 2,
+    }
+    turns = iter(
+        (
+            [{"terminal_reason": "stop", "result_text": "valid first result", "seq": 1}]
+            if stage == "kg_correction"
+            else []
+        )
+        + [unknown]
+    )
+    job = {
+        "name": "job-retain",
+        "routine_kind": "qwen-drain" if stage == "ordinary" else "kg-drain",
+        "payload": {"prompt": "work"}
+        if stage == "ordinary"
+        else {"raw_id": "raw-retain"},
+    }
+    if stage == "recurring":
+        job["interval_secs"] = 3600
+    _, _, starts, completed, _, destroys = _run(
+        monkeypatch, [job], await_turn=lambda *_: next(turns)
+    )
+    assert len(starts) == 1
+    assert held == [("job-retain", 101)]
+    assert deferred == []
+    assert completed == []
+    assert destroys == []
+    assert len(applied) == (1 if stage == "kg_correction" else 0)
+
+
+def test_delivery_error_turn_holds_job_without_retry_apply_or_cleanup(monkeypatch):
+    held, applied, deferred = [], [], []
+    monkeypatch.setattr(
+        drainer, "hold_drainer_job", lambda *args: held.append(args) or True
+    )
+    monkeypatch.setattr(
+        drainer, "defer_drainer_job", lambda *args: deferred.append(args)
+    )
+    monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 0)
+    monkeypatch.setattr(drainer, "build_kg_prompt", lambda _: "extract")
+    monkeypatch.setattr(
+        drainer, "apply_kg_extraction", lambda *args: applied.append(args)
+    )
+    monkeypatch.setattr(
+        drainer, "_turn_has_unknown_outcome_lookup", lambda _session_id, seq: seq == 1
+    )
+    job = {
+        "name": "job-delivery-error",
+        "routine_kind": "kg-drain",
+        "payload": {"raw_id": "raw-retain"},
+    }
+    turn = {
+        "terminal_reason": "error",
+        "stop_reason": None,
+        "result_text": "partial extraction",
+        "seq": 1,
+    }
+
+    _, _, starts, completed, _, destroys = _run(
+        monkeypatch, [job], await_turn=lambda *_: turn
+    )
+
+    assert len(starts) == 1
+    assert held == [("job-delivery-error", 101)]
+    assert deferred == []
+    assert completed == []
+    assert applied == []
+    assert destroys == []
+
+
+def test_cleanup_preserves_unknown_session_pending_and_guest(monkeypatch, tmp_path):
+    from sqlmodel import SQLModel
+    from factory.execution import store
+    from factory.execution.models import AgentSession, AgentTurn, PendingMessage
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'held-cleanup.db'}")
+    schemas = {table.name: table.schema for table in SQLModel.metadata.tables.values()}
+    for table in SQLModel.metadata.tables.values():
+        table.schema = None
+    try:
+        SQLModel.metadata.create_all(engine)
+        monkeypatch.setattr("core.db.get_engine", lambda: engine)
+        monkeypatch.setattr("factory.execution.mcp.get_engine", lambda: engine)
+        destroyed = []
+
+        async def destroy(guest_id):
+            destroyed.append(guest_id)
+
+        monkeypatch.setattr("factory.execution.mcp._transport.destroy_session", destroy)
+        with Session(engine) as session:
+            row = store.create_session(
+                session,
+                "held-drainer",
+                "<guest>",
+                "main",
+                workflow_id="workflow-held",
+            )
+            row.ember_session_id = "guest-retain"
+            row.ember_lineage_id = "lineage-retain"
+            session.add(row)
+            session.add(
+                AgentTurn(
+                    session_id=row.id,
+                    seq=1,
+                    prompt="original",
+                    result_text="partial",
+                    terminal_reason="error",
+                    stop_reason="invocation_outcome_unknown",
+                )
+            )
+            session.add(
+                PendingMessage(session_id=row.id, seq=2, message_text="held next")
+            )
+            session.commit()
+            session_id = row.id
+        assert (
+            drainer.destroy_drainer_session.__wrapped__(session_id, "held-drainer")
+            is False
+        )
+        assert destroyed == []
+        with Session(engine) as session:
+            row = session.get(AgentSession, session_id)
+            assert row.ember_session_id == "guest-retain"
+            assert row.ember_lineage_id == "lineage-retain"
+            assert (
+                store.get_pending_message(session, session_id, 2).message_text
+                == "held next"
+            )
+    finally:
+        for table in SQLModel.metadata.tables.values():
+            if table.name in schemas:
+                table.schema = schemas[table.name]
+
+
+def test_late_drainer_completion_cannot_deregister_held_job(monkeypatch):
+    from agent import routine_jobs
+
+    deleted = []
+    monkeypatch.setattr(routine_jobs, "complete_job", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        routine_jobs, "deregister_job", lambda name: deleted.append(name)
+    )
+    assert drainer.finish_drainer_job.__wrapped__("held", "ok", "late", True) is False
+    assert deleted == []
+
+
+@pytest.fixture
+def admission_database(tmp_path, monkeypatch):
+    from sqlmodel import SQLModel
+    from agent import routine_jobs
+    from factory.execution import admission
+    from factory.execution.models import (
+        AgentCapacityPool,
+        AgentCapacityReservation,
+        AgentResultReceipt,
+        AgentSession,
+        AgentTurn,
+        PendingMessage,
+    )
+    from knowledge import burst
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'drainer-admission.db'}",
+        connect_args={"check_same_thread": False, "timeout": 10},
+        execution_options={"schema_translate_map": {"agent_sessions": None}},
+    )
+    SQLModel.metadata.create_all(
+        engine,
+        tables=[
+            m.__table__
+            for m in (
+                AgentCapacityPool,
+                AgentCapacityReservation,
+                AgentResultReceipt,
+                AgentSession,
+                AgentTurn,
+                PendingMessage,
+            )
+        ],
+    )
+    with Session(engine) as db:
+        db.execute(
+            text("""CREATE TABLE routine_jobs (
+            name TEXT PRIMARY KEY, routine_kind TEXT, interval_secs INTEGER,
+            next_run_at TEXT, last_run_at TEXT, last_status TEXT,
+            last_summary TEXT, locked_by TEXT, locked_at TEXT,
+            ttl_secs INTEGER, payload TEXT, created_by TEXT, created_at TEXT)""")
+        )
+        db.execute(
+            text("CREATE TABLE raw_inputs (raw_id TEXT PRIMARY KEY, source TEXT)")
+        )
+        db.commit()
+    monkeypatch.setattr("core.db.get_engine", lambda: engine)
+    monkeypatch.setattr(routine_jobs, "get_engine", lambda: engine)
+    monkeypatch.setattr(admission, "get_engine", lambda: engine)
+    monkeypatch.setattr(burst, "kg_burst_state", lambda *_args: burst.KGBurstState())
+    yield engine
+    engine.dispose()
+
+
+def _queued_job(engine, name, kind="kg-drain", *, freshness=False):
+    with Session(engine) as db:
+        db.execute(
+            text("""INSERT INTO routine_jobs
+            (name,routine_kind,next_run_at,payload)
+            VALUES (:name,:kind,'2026-01-01',:payload)"""),
+            {"name": name, "kind": kind, "payload": json.dumps({"raw_id": name})},
+        )
+        if freshness:
+            db.execute(
+                text("INSERT INTO raw_inputs VALUES (:name,'repo-diff')"),
+                {"name": name},
+            )
+        db.commit()
+
+
+def _admitted_claim(workflow_id, *, cap=400, index=0):
+    return drainer.claim_drainer_job.__wrapped__(
+        2100,
+        ("kg-drain", "qwen-drain"),
+        workflow_id,
+        cap,
+        index,
+    )
+
+
+@pytest.mark.parametrize("burst_remaining", [None, 1])
+def test_parallel_kg_claims_cannot_spend_last_daily_or_grant_job(
+    admission_database,
+    monkeypatch,
+    burst_remaining,
+):
+    from concurrent.futures import ThreadPoolExecutor
+    from sqlmodel import select
+    from factory.execution.models import AgentCapacityReservation
+    from knowledge import burst
+
+    for name in ("a", "b"):
+        _queued_job(admission_database, name)
+    if burst_remaining is not None:
+        monkeypatch.setattr(
+            burst,
+            "kg_burst_state",
+            lambda *_: burst.KGBurstState(
+                active=True,
+                extra_jobs=10,
+                remaining_jobs=burst_remaining,
+            ),
+        )
+    with ThreadPoolExecutor(2) as workers:
+        results = list(
+            workers.map(lambda wid: _admitted_claim(wid, cap=1), ("wf-a", "wf-b"))
+        )
+    assert sum(result is not None for result in results) == 1
+    with Session(admission_database) as db:
+        assert len(db.exec(select(AgentCapacityReservation)).all()) == 1
+        jobs = db.execute(
+            text("SELECT locked_by FROM routine_jobs ORDER BY name")
+        ).all()
+        assert sum(row.locked_by is not None for row in jobs) == 1
+
+
+def test_two_kg_claims_leave_project_capacity_and_rejected_lease_untouched(
+    admission_database,
+):
+    from sqlmodel import select
+    from factory.execution.models import AgentCapacityReservation
+
+    for name in ("kg-a", "kg-b", "kg-c"):
+        _queued_job(admission_database, name)
+    _queued_job(admission_database, "project", "qwen-drain")
+    assert _admitted_claim("one")["name"] == "kg-a"
+    assert _admitted_claim("two")["name"] == "kg-b"
+    assert _admitted_claim("three")["name"] == "project"
+    assert _admitted_claim("four") is None
+    with Session(admission_database) as db:
+        reservations = db.exec(select(AgentCapacityReservation)).all()
+        assert sorted(row.tier for row in reservations) == ["kg", "kg", "project"]
+        assert {row.routine_job_name for row in reservations} == {
+            "kg-a",
+            "kg-b",
+            "project",
+        }
+        refused = db.execute(
+            text("SELECT locked_by, locked_at FROM routine_jobs WHERE name='kg-c'")
+        ).one()
+        assert refused.locked_by is None and refused.locked_at is None
+
+
+def test_claim_checkpoint_loss_reuses_identity_and_expired_lease_cannot_redispatch(
+    admission_database,
+):
+    from sqlmodel import select
+    from factory.execution.models import AgentCapacityReservation
+
+    _queued_job(admission_database, "only")
+    first = _admitted_claim("original")
+    assert _admitted_claim("original") == first
+    with Session(admission_database) as db:
+        db.execute(
+            text("UPDATE routine_jobs SET locked_at='2000-01-01' WHERE name='only'")
+        )
+        db.commit()
+    assert _admitted_claim("replacement") is None
+    replay = _admitted_claim("original")
+    assert replay["name"] == first["name"] and replay["locked_by"] == first["locked_by"]
+    with Session(admission_database) as db:
+        rows = db.exec(select(AgentCapacityReservation)).all()
+        assert len(rows) == 1
+        assert rows[0].local_session_id == "original:kg-drain:only"
+        assert rows[0].state == "reserved"
+
+
+def test_parallel_claims_share_persisted_freshness_cooldown(admission_database):
+    from concurrent.futures import ThreadPoolExecutor
+
+    _queued_job(admission_database, "fresh-a", freshness=True)
+    _queued_job(admission_database, "fresh-b", freshness=True)
+    _queued_job(admission_database, "ordinary")
+    with ThreadPoolExecutor(2) as workers:
+        results = list(workers.map(_admitted_claim, ("one", "two")))
+    assert {row["name"] for row in results} == {"fresh-a", "ordinary"}
+
+
+def test_chain_enqueues_recorded_ids_outside_preparation_step(monkeypatch):
+    from factory.orchestration import queues
+
+    events = []
+    queue = object()
+    monkeypatch.setattr(drainer, "DBOS", FakeDBOS)
+    monkeypatch.setattr(
+        drainer,
+        "prepare_next_cycle",
+        lambda wid: events.append(("prepare", wid)) or ["fixed-successor"],
+    )
+    monkeypatch.setattr(queues, "drainer_queue", lambda: queue)
+    monkeypatch.setattr(
+        queues,
+        "enqueue_drainer_workers",
+        lambda dbos, ids, **kw: events.append(("enqueue", ids, kw)),
+    )
+    drainer.chain_next_cycle()
+    assert events == [
+        ("prepare", "workflow-1"),
+        ("enqueue", ["fixed-successor"], {"queue": queue}),
+    ]
+
+
+@pytest.mark.parametrize("kind,tier", [("qwen-drain", "project"), ("kg-drain", "kg")])
+def test_drainer_start_sets_server_owned_admission_tier(monkeypatch, kind, tier):
+    seen = []
+    monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 0)
+    monkeypatch.setattr(drainer, "build_kg_prompt", lambda _: "extract")
+    monkeypatch.setattr(
+        drainer,
+        "apply_kg_extraction",
+        lambda *_args, **_kwargs: {
+            "atoms": [1, 2, 3],
+            "rejected": [],
+            "dispute": None,
+            "doc_drift": 0,
+            "docfix_jobs": 0,
+        },
+    )
+    _run(
+        monkeypatch,
+        [
+            {
+                "name": "job",
+                "routine_kind": kind,
+                "payload": {"prompt": "work", "raw_id": "raw"},
+            }
+        ],
+        start_session=lambda *_args, **kwargs: seen.append(kwargs) or 101,
+    )
+    assert seen == [{"admission_tier": tier}]
+
+
+def test_invalid_local_prompt_cancels_only_never_started_reservation(monkeypatch):
+    cancelled = []
+    monkeypatch.setattr(
+        drainer, "cancel_drainer_reservation", lambda key: cancelled.append(key) or True
+    )
+    result, _, starts, _, _, destroys = _run(
+        monkeypatch, [{"name": "bad", "payload": None}]
+    )
+    assert result["processed"] == 1
+    assert starts == [] and destroys == []
+    assert cancelled == ["workflow-1:qwen-drain:bad"]
+
+
+@pytest.mark.parametrize("initial", ["full", "empty"])
+def test_idle_worker_claims_after_capacity_release_or_arrival_without_cron(
+    admission_database,
+    monkeypatch,
+    initial,
+):
+    from factory.execution import admission
+
+    if initial == "full":
+        _queued_job(admission_database, "waiting")
+        with Session(admission_database) as db:
+            for key in ("busy-a", "busy-b"):
+                assert admission.reserve_start(db, key, tier="kg", model="luna")
+            db.commit()
+    sleeps = []
+
+    def wake(seconds):
+        sleeps.append(seconds)
+        if initial == "full":
+            with Session(admission_database) as db:
+                assert admission.cancel_unbound(db, "busy-a")
+                db.commit()
+        else:
+            _queued_job(admission_database, "waiting")
+
+    monkeypatch.setattr(drainer, "IDLE_POLL_LIMIT", 2)
+    monkeypatch.setattr(drainer, "drainer_wait_enabled", lambda: True)
+    monkeypatch.setattr(
+        drainer, "DBOS", type("DBOS", (), {"sleep": staticmethod(wake)})
+    )
+    job, rotate = drainer._claim_with_idle_wait(
+        2100,
+        ("kg-drain",),
+        "same-worker",
+        400,
+        0,
+        wait_allowed=True,
+    )
+    assert job["name"] == "waiting" and not rotate
+    assert job["locked_by"] == "luna-drainer:same-worker:0"
+    assert sleeps == [5]
+
+
+def test_idle_rotation_is_bounded_and_live_pause_prevents_next_claim(monkeypatch):
+    from types import SimpleNamespace
+
+    calls, sleeps = [], []
+    enabled = [True]
+    monkeypatch.setattr(drainer, "IDLE_POLL_LIMIT", 2)
+    monkeypatch.setattr(drainer, "claim_drainer_job", lambda *args: calls.append(args))
+    monkeypatch.setattr(
+        drainer.agent_config,
+        "load_drainer_settings",
+        lambda: SimpleNamespace(
+            enabled=enabled[0],
+            max_jobs_per_cycle=3,
+        ),
+    )
+    monkeypatch.setattr(
+        drainer, "drainer_wait_enabled", _DRAINER_WAIT_ENABLED_STEP.__wrapped__
+    )
+    monkeypatch.setattr(
+        drainer, "DBOS", type("DBOS", (), {"sleep": staticmethod(sleeps.append)})
+    )
+    args = (2100, ("kg-drain",), "idle", 400, 0)
+    assert drainer._claim_with_idle_wait(*args, wait_allowed=True) == (None, True)
+    assert len(calls) == 3 and sleeps == [5, 5]
+    calls.clear()
+    sleeps.clear()
+
+    def pause(seconds):
+        sleeps.append(seconds)
+        enabled[0] = False
+
+    monkeypatch.setattr(
+        drainer, "DBOS", type("DBOS", (), {"sleep": staticmethod(pause)})
+    )
+    assert drainer._claim_with_idle_wait(*args, wait_allowed=True) == (None, False)
+    assert len(calls) == 1 and sleeps == [5]
+
+
+def test_failed_batch_does_not_wait_or_rotate(monkeypatch):
+    monkeypatch.setattr(drainer, "IDLE_POLL_LIMIT", 180)
+    monkeypatch.setattr(drainer, "claim_drainer_job", lambda *_: None)
+    monkeypatch.setattr(
+        drainer,
+        "drainer_wait_enabled",
+        lambda: True,
+    )
+    assert drainer._claim_with_idle_wait(
+        2100, ("kg-drain",), "failed", 400, 0, wait_allowed=False
+    ) == (None, False)
+
+
+@pytest.mark.parametrize("attempted", [False, True])
+def test_cleanup_refunds_only_never_dispatched_pending(
+    admission_database, monkeypatch, attempted
+):
+    from sqlmodel import select
+    from factory.execution import admission, store
+    from factory.execution.models import AgentCapacityReservation, PendingMessage
+
+    monkeypatch.setattr("factory.execution.mcp.get_engine", lambda: admission_database)
+    with Session(admission_database) as db:
+        assert admission.reserve_start(
+            db, "cleanup", tier="kg", model="luna", routine_job_name="job"
+        )
+        row = store.create_session(
+            db, "cleanup", "<guest>", "main", "luna", admission_tier="kg"
+        )
+        sid = row.id
+        pending = PendingMessage(
+            session_id=sid, seq=1, message_text="work", dispatch_count=int(attempted)
+        )
+        db.add(pending)
+        db.commit()
+    assert not drainer.destroy_drainer_session.__wrapped__(sid, "cleanup")
+    with Session(admission_database) as db:
+        assert db.exec(select(PendingMessage)).all() == []
+        permit = db.exec(select(AgentCapacityReservation)).one()
+        assert permit.state == ("reserved" if attempted else "settled")
+        assert permit.outcome == (None if attempted else "cancelled_before_dispatch")
+
+
+@pytest.mark.parametrize("handoff", ["pending_receipt", "fenced", "stale_snapshot"])
+def test_cleanup_preserves_native_receipt_owner(
+    admission_database, monkeypatch, handoff
+):
+    from factory.execution import admission, mcp, result_receipts, store
+    from factory.execution.models import (
+        AgentCapacityReservation,
+        AgentResultReceipt,
+        AgentSession,
+        AgentTurn,
+        PendingMessage,
+    )
+    from sqlmodel import select
+
+    for module in (mcp, result_receipts, store):
+        monkeypatch.setattr(module, "get_engine", lambda: admission_database)
+    with Session(admission_database) as db:
+        row = store.create_session(
+            db,
+            "receipt-cleanup",
+            "<guest>",
+            "main",
+            "luna",
+            workflow_id="workflow-receipt",
+            admission_tier="kg",
+        )
+        sid = row.id
+        store.set_ember_session(db, sid, "receipt-guest", "guest-token", None)
+        store.create_pending_message(db, sid, "original", "luna")
+    assert store.claim_pending_message_for_session_sync(sid, "original-owner") == 1
+    assert admission.recheck(sid, 1, "original-owner")
+    receipt = result_receipts.prepare_receipt(
+        sid, "original-owner", 1, "receipt-guest", b'{"message":"original"}'
+    )
+    detached = mcp._load_session_row(sid)
+    assert detached.result_receipt_fence_id is None
+    if handoff != "pending_receipt":
+        # Reproduce the writer's atomic pending-to-fence handoff after an older
+        # cleanup snapshot was read. The integration test uses the real writer.
+        with Session(admission_database) as db, db.begin():
+            row = store._lock_session(db, sid)
+            db.delete(store.get_pending_message(db, sid, 1))
+            row.result_receipt_fence_id = receipt["id"]
+            db.add(row)
+            db.add(
+                AgentTurn(session_id=sid, seq=1, prompt="original", result_text="done")
+            )
+            permit = db.exec(select(AgentCapacityReservation)).one()
+            permit.state = "settled"
+            db.add(permit)
+        with Session(admission_database) as db:
+            assert store.create_pending_message(db, sid, "KG correction").seq == 2
+    if handoff == "stale_snapshot":
+        monkeypatch.setattr(mcp, "_load_session_row", lambda _sid: detached)
+
+    def snapshot():
+        with Session(admission_database) as db:
+            return {
+                model.__name__: [row.model_dump() for row in db.exec(select(model))]
+                for model in (
+                    AgentSession,
+                    PendingMessage,
+                    AgentTurn,
+                    AgentCapacityReservation,
+                    AgentResultReceipt,
+                )
+            }
+
+    async def unexpected_destroy(_guest):
+        pytest.fail("receipt ownership must prevent guest DELETE")
+
+    def unexpected_clear(_guest):
+        pytest.fail("receipt ownership must prevent binding cleanup")
+
+    monkeypatch.setattr(mcp._transport, "destroy_session", unexpected_destroy)
+    monkeypatch.setattr(mcp, "_clear_ember_bindings_for", unexpected_clear)
+    before = snapshot()
+    assert not drainer.destroy_drainer_session.__wrapped__(sid, "receipt-cleanup")
+    assert snapshot() == before
+
+
+def test_cleanup_uses_locked_guest_binding(admission_database, monkeypatch):
+    from factory.execution import mcp, store
+    from factory.execution.models import AgentSession
+
+    monkeypatch.setattr(mcp, "get_engine", lambda: admission_database)
+    with Session(admission_database) as db:
+        row = store.create_session(
+            db,
+            "rebound-cleanup",
+            "<guest>",
+            "main",
+            workflow_id="workflow-rebound",
+        )
+        sid = row.id
+        store.set_ember_session(db, sid, "old-guest", "old-token", None)
+    detached = mcp._load_session_row(sid)
+    with Session(admission_database) as db:
+        store.set_ember_session(db, sid, "current-guest", "current-token", None)
+    monkeypatch.setattr(mcp, "_load_session_row", lambda _sid: detached)
+    destroyed = []
+
+    async def destroy(guest_id):
+        destroyed.append(guest_id)
+
+    async def get_session(guest_id):
+        return {"session_id": guest_id, "state": "destroyed"}
+
+    monkeypatch.setattr(mcp._transport, "destroy_session", destroy)
+    monkeypatch.setattr(mcp._transport, "get_session", get_session)
+    assert drainer.destroy_drainer_session.__wrapped__(sid, "rebound-cleanup")
+    assert destroyed == ["current-guest"]
+    with Session(admission_database) as db:
+        assert db.get(AgentSession, sid).ember_session_id is None
+
+
+@pytest.mark.parametrize(
+    "outcome", ["exception", "cancelled", "nonterminal", "wrong_identity"]
+)
+def test_cleanup_resumes_exact_claim_until_terminal_confirmation(
+    admission_database, monkeypatch, outcome
+):
+    from factory.execution import mcp, store
+    from factory.execution.models import AgentSession, AgentTurn
+    from sqlmodel import select
+
+    monkeypatch.setattr(mcp, "get_engine", lambda: admission_database)
+    with Session(admission_database) as db:
+        row = store.create_session(
+            db,
+            "deferred-cleanup",
+            "<guest>",
+            "main",
+            workflow_id="workflow-deferred",
+        )
+        sid = row.id
+        store.set_ember_session(db, sid, "guest-exact", "token", None)
+        row = db.get(AgentSession, sid)
+        row.ember_lineage_id = "lineage-exact"
+        row.cli_session_id = "cli-exact"
+        db.add(row)
+        other = store.create_session(
+            db,
+            "same-workflow-other-job",
+            "<guest>",
+            "main",
+            workflow_id="workflow-deferred",
+        )
+        other_sid = other.id
+        store.set_ember_session(db, other_sid, "guest-other", "other-token", None)
+
+    phase = "retain"
+    cleanup_claims = []
+    original_begin = store.begin_guest_cleanup
+
+    def begin_guest_cleanup(*args):
+        result = original_begin(*args)
+        claimed = args[0].get(AgentSession, sid)
+        cleanup_claims.append(
+            (
+                result.get("claim_id"),
+                claimed.guest_cleanup_guest_id,
+                claimed.guest_cleanup_workflow_id,
+                claimed.guest_cleanup_dispatch_json,
+                claimed.guest_cleanup_started_at,
+            )
+        )
+        return result
+
+    async def destroy(_guest_id):
+        if phase == "retain" and outcome == "exception":
+            raise RuntimeError("transport unavailable")
+        if phase == "retain" and outcome == "cancelled":
+            raise asyncio.CancelledError
+
+    async def get_session(guest_id):
+        if phase != "retain":
+            return {"session_id": guest_id, "state": "destroyed"}
+        if outcome == "nonterminal":
+            return {"session_id": guest_id, "state": "destroying"}
+        return {"session_id": "different-guest", "state": "destroyed"}
+
+    async def unexpected_create(*_args, **_kwargs):
+        pytest.fail("cleanup retry must not create a model session")
+
+    monkeypatch.setattr(store, "begin_guest_cleanup", begin_guest_cleanup)
+    monkeypatch.setattr(mcp._transport, "destroy_session", destroy)
+    monkeypatch.setattr(mcp._transport, "get_session", get_session)
+    monkeypatch.setattr(mcp._transport, "create_session", unexpected_create)
+    if outcome == "cancelled":
+        with pytest.raises(asyncio.CancelledError):
+            drainer.destroy_drainer_session.__wrapped__(sid, "deferred-cleanup")
+    else:
+        assert not drainer.destroy_drainer_session.__wrapped__(sid, "deferred-cleanup")
+    with Session(admission_database) as db:
+        retained = db.get(AgentSession, sid)
+        assert retained.ember_session_id == "guest-exact"
+        retained_claim_id = retained.guest_cleanup_id
+        retained_started_at = retained.guest_cleanup_started_at
+        retained_dispatches = retained.guest_cleanup_dispatch_json
+        assert retained_claim_id
+        assert retained.guest_cleanup_guest_id == "guest-exact"
+        assert retained.guest_cleanup_workflow_id == "workflow-deferred"
+        assert db.exec(select(AgentTurn)).all() == []
+        # The held claim excludes a competitor from binding the same guest.
+        with pytest.raises(store.PendingClaimLost):
+            store.set_ember_session(db, other_sid, "guest-exact", "late", None)
+        db.rollback()
+
+    phase = "terminal"
+    assert drainer.destroy_drainer_session.__wrapped__(sid, "deferred-cleanup")
+    assert cleanup_claims == [
+        (
+            retained_claim_id,
+            "guest-exact",
+            "workflow-deferred",
+            retained_dispatches,
+            retained_started_at,
+        ),
+        (
+            retained_claim_id,
+            "guest-exact",
+            "workflow-deferred",
+            retained_dispatches,
+            retained_started_at,
+        ),
+    ]
+    with Session(admission_database) as db:
+        retired = db.get(AgentSession, sid)
+        assert retired.ember_session_id is None
+        assert retired.guest_cleanup_id is None
+        assert retired.prior_ember_lineage_id == "lineage-exact"
+        assert retired.prior_cli_session_id == "cli-exact"
+        other = db.get(AgentSession, other_sid)
+        assert other.ember_session_id == "guest-other"
+        assert other.ember_session_token == "other-token"
+        assert other.guest_cleanup_id is None
+        assert db.exec(select(AgentTurn)).all() == []
+    assert retained_started_at is not None
+    assert retained_dispatches == "[]"
+
+
+@pytest.mark.parametrize("gone_from", ["delete", "confirming_get"])
+def test_cleanup_retires_claim_when_exact_guest_is_gone(
+    admission_database, monkeypatch, gone_from
+):
+    from factory.execution import mcp, store
+    from factory.execution.models import AgentSession
+    from factory.execution.transport import EmberSessionGone
+
+    monkeypatch.setattr(mcp, "get_engine", lambda: admission_database)
+    with Session(admission_database) as db:
+        row = store.create_session(
+            db,
+            f"gone-{gone_from}",
+            "<guest>",
+            "main",
+            workflow_id=f"workflow-{gone_from}",
+        )
+        sid = row.id
+        store.set_ember_session(db, sid, f"guest-{gone_from}", "token", None)
+
+    calls = []
+
+    async def destroy(guest_id):
+        calls.append(("delete", guest_id))
+        if gone_from == "delete":
+            raise EmberSessionGone("exact guest disappeared before DELETE")
+
+    async def get_session(guest_id):
+        calls.append(("get", guest_id))
+        raise EmberSessionGone("exact guest disappeared before confirming GET")
+
+    monkeypatch.setattr(mcp._transport, "destroy_session", destroy)
+    monkeypatch.setattr(mcp._transport, "get_session", get_session)
+    assert drainer.destroy_drainer_session.__wrapped__(sid, f"gone-{gone_from}")
+    expected = [("delete", f"guest-{gone_from}")]
+    if gone_from == "confirming_get":
+        expected.append(("get", f"guest-{gone_from}"))
+    assert calls == expected
+    with Session(admission_database) as db:
+        retired = db.get(AgentSession, sid)
+        assert retired.ember_session_id is None
+        assert retired.guest_cleanup_id is None
+
+
+def test_cleanup_defers_legacy_workflowless_binding(admission_database, monkeypatch):
+    from factory.execution import mcp, store
+    from factory.execution.models import AgentSession
+
+    with Session(admission_database) as db:
+        row = store.create_session(db, "legacy-cleanup", "<guest>", "main")
+        sid = row.id
+        store.set_ember_session(db, sid, "legacy-guest", "token", None)
+
+    async def unexpected_destroy(_guest_id):
+        pytest.fail("workflow-less legacy binding must not be destroyed")
+
+    monkeypatch.setattr(mcp, "get_engine", lambda: admission_database)
+    monkeypatch.setattr(mcp._transport, "destroy_session", unexpected_destroy)
+    assert not drainer.destroy_drainer_session.__wrapped__(sid, "legacy-cleanup")
+    with Session(admission_database) as db:
+        retained = db.get(AgentSession, sid)
+        assert retained.ember_session_id == "legacy-guest"
+        assert retained.guest_cleanup_id is None
+
+
+@pytest.mark.parametrize("pause", ["enabled", "max_jobs_per_cycle"])
+def test_pause_between_successful_jobs_stops_before_second_claim(monkeypatch, pause):
+    from types import SimpleNamespace
+
+    live = SimpleNamespace(enabled=True, max_jobs_per_cycle=3)
+    monkeypatch.setattr(drainer.agent_config, "load_drainer_settings", lambda: live)
+    monkeypatch.setattr(
+        drainer, "drainer_wait_enabled", _DRAINER_WAIT_ENABLED_STEP.__wrapped__
+    )
+
+    def complete_then_pause(*_args):
+        setattr(live, pause, False if pause == "enabled" else 0)
+        return {"result_text": "finished", "terminal_reason": "stop"}
+
+    result, claims, starts, completions, _, _ = _run(
+        monkeypatch,
+        [{"name": f"job-{n}", "payload": {"prompt": "work"}} for n in range(2)],
+        await_turn=complete_then_pause,
+    )
+    assert result["processed"] == 1
+    assert len(claims) == len(starts) == len(completions) == 1
+
+
+def test_settled_turn_does_not_release_expired_job_lease_before_finalization(
+    admission_database,
+):
+    from agent import routine_jobs
+    from factory.execution import admission, store
+    from factory.execution.models import AgentTurn
+
+    _queued_job(admission_database, "postprocessing")
+    assert routine_jobs.update_job_payload("postprocessing", {"mode": "repo-diff"})
+    claim = _admitted_claim("owner")
+    with Session(admission_database) as db:
+        agent = store.create_session(
+            db,
+            "owner:kg-drain:postprocessing",
+            "<guest>",
+            "main",
+            "luna",
+            admission_tier="kg",
+        )
+        db.add(
+            AgentTurn(
+                session_id=agent.id,
+                seq=1,
+                prompt="work",
+                result_text="completed extraction",
+                terminal_reason="stop",
+            )
+        )
+        admission.settle(db, agent, 1, outcome="completed", cessation_confirmed=True)
+        db.execute(
+            text(
+                "UPDATE routine_jobs SET locked_at='2000-01-01' WHERE name='postprocessing'"
+            )
+        )
+        db.commit()
+    # The execution permit is free, but output application still owns this job.
+    assert _admitted_claim("competitor") is None
+    assert routine_jobs.claim_job("legacy", 60, name="postprocessing") is None
+    _queued_job(admission_database, "other-project", "qwen-drain")
+    # A replay cannot switch this claim identity to another job when the old
+    # execution settled but its finalization still owns the original lease.
+    assert _admitted_claim("owner") is None
+    applied = drainer.apply_kg_extraction.__wrapped__(
+        "postprocessing",
+        {"mode": "repo-diff"},
+        "```json\n"
+        + json.dumps(
+            {"head_sha": "b" * 40, "base_sha": None, "diff": "", "diff_stat": ""}
+        )
+        + "\n```",
+        expected_holder=claim["locked_by"],
+    )
+    assert applied["summary"] == "no changes"
+    assert drainer.finish_drainer_job.__wrapped__(
+        "postprocessing", "ok", "applied", expected_holder=claim["locked_by"]
+    )
+    with Session(admission_database) as db:
+        row = db.execute(
+            text(
+                "SELECT locked_by,last_status,payload FROM routine_jobs WHERE name='postprocessing'"
+            )
+        ).one()
+        assert row.locked_by is None and row.last_status == "ok"
+        assert json.loads(row.payload) == {"mode": "repo-diff", "last_sha": "b" * 40}
+
+
+@pytest.mark.parametrize("operation", ["apply", "attempt", "finish"])
+def test_stale_drainer_owner_cannot_apply_or_finalize(admission_database, operation):
+    _queued_job(admission_database, "changed-owner")
+    claim = _admitted_claim("old")
+    with Session(admission_database) as db:
+        db.execute(
+            text(
+                "UPDATE routine_jobs SET locked_by='luna-drainer:new:0' WHERE name='changed-owner'"
+            )
+        )
+        db.commit()
+        before = tuple(
+            db.execute(
+                text("SELECT * FROM routine_jobs WHERE name='changed-owner'")
+            ).one()
+        )
+    operations = {
+        "apply": lambda: drainer.apply_kg_extraction.__wrapped__(
+            "changed-owner",
+            {"mode": "repo-diff"},
+            "invalid output",
+            expected_holder=claim["locked_by"],
+        ),
+        "attempt": lambda: drainer.increment_kg_job_attempt.__wrapped__(
+            "changed-owner", expected_holder=claim["locked_by"]
+        ),
+        "finish": lambda: drainer.finish_drainer_job.__wrapped__(
+            "changed-owner",
+            "ok",
+            "stale",
+            deregister=True,
+            expected_holder=claim["locked_by"],
+        ),
+    }
+    with pytest.raises(RuntimeError, match="claim ownership changed"):
+        operations[operation]()
+    with Session(admission_database) as db:
+        assert (
+            tuple(
+                db.execute(
+                    text("SELECT * FROM routine_jobs WHERE name='changed-owner'")
+                ).one()
+            )
+            == before
+        )
+
+
+@pytest.mark.parametrize("correction", [False, True])
+@pytest.mark.parametrize("public_mutation", ["replace", "delete", None])
+def test_extraction_rechecks_claim_after_preparation_rollback(
+    tmp_path, monkeypatch, correction, public_mutation
+):
+    from sqlmodel import SQLModel, select
+    from agent import routine_jobs
+    from knowledge import extraction
+    from knowledge.models import AtomRawProvenance, RawInput
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'extraction-owner.db'}",
+        execution_options={
+            "schema_translate_map": {
+                table.schema: None
+                for table in SQLModel.metadata.tables.values()
+                if table.schema is not None
+            }
+        },
+    )
+    SQLModel.metadata.create_all(engine)
+    monkeypatch.setattr("core.db.get_engine", lambda: engine)
+    monkeypatch.setattr(routine_jobs, "get_engine", lambda: engine)
+    # Empty assertions require no embeddings. Any accidental network call fails.
+    monkeypatch.setattr(extraction, "EmbeddingClient", object)
+    with Session(engine) as db:
+        db.execute(
+            text("""CREATE TABLE routine_jobs (
+                name TEXT PRIMARY KEY, routine_kind TEXT, interval_secs INTEGER,
+                next_run_at TEXT, last_run_at TEXT, last_status TEXT,
+                last_summary TEXT, locked_by TEXT, locked_at TEXT,
+                ttl_secs INTEGER, payload TEXT, created_by TEXT, created_at TEXT)""")
+        )
+        db.execute(
+            text("""INSERT INTO routine_jobs
+                (name,routine_kind,next_run_at,locked_by,locked_at,ttl_secs,payload)
+                VALUES ('kg:raw-owner','kg-drain',CURRENT_TIMESTAMP,
+                'luna-drainer:old:0',CURRENT_TIMESTAMP,2100,
+                '{"raw_id":"raw-owner"}')""")
+        )
+        raw = RawInput(
+            raw_id="raw-owner",
+            path="raw-owner.md",
+            source="agent-report",
+            content_hash="raw-owner-hash",
+            extra={"extraction_passes": 1} if correction else {},
+        )
+        db.add(raw)
+        db.flush()
+        if correction:
+            db.add(
+                AtomRawProvenance(
+                    raw_fk=raw.id,
+                    derived_note_id="original-provenance",
+                    gardener_version=extraction.EXTRACTION_VERSION,
+                )
+            )
+        db.commit()
+        raw_before = db.exec(select(RawInput)).one().model_dump()
+        provenance_before = [
+            row.model_dump() for row in db.exec(select(AtomRawProvenance)).all()
+        ]
+
+    original_parse = extraction._parse_result
+    replacement_row = []
+
+    def mutate_after_rollback(output):
+        # These existing public MCP domain calls commit on another connection.
+        # They can run here only because preparation released the early lock.
+        if public_mutation == "replace":
+            assert routine_jobs.complete_job("kg:raw-owner", "ok", "other caller")
+            replacement = routine_jobs.claim_job(
+                "luna-drainer:new:0", 2100, name="kg:raw-owner"
+            )
+            assert replacement["locked_by"] == "luna-drainer:new:0"
+        elif public_mutation == "delete":
+            assert routine_jobs.deregister_job("kg:raw-owner")
+        with Session(engine) as db:
+            replacement_row[:] = db.execute(text("SELECT * FROM routine_jobs")).all()
+        return original_parse(output)
+
+    monkeypatch.setattr(extraction, "_parse_result", mutate_after_rollback)
+
+    def apply():
+        return drainer.apply_kg_extraction.__wrapped__(
+            "kg:raw-owner",
+            {"raw_id": "raw-owner"},
+            '```json\n{"assertions":[],"notes":"old worker output"}\n```',
+            correction=correction,
+            expected_holder="luna-drainer:old:0",
+        )
+
+    if public_mutation is not None:
+        with pytest.raises(RuntimeError, match="claim ownership changed"):
+            apply()
+    else:
+        assert apply()["failed"] is False
+
+    with Session(engine) as db:
+        assert db.execute(text("SELECT * FROM routine_jobs")).all() == replacement_row
+        raw = db.exec(select(RawInput)).one()
+        provenance = db.exec(select(AtomRawProvenance)).all()
+        if public_mutation is not None:
+            assert raw.model_dump() == raw_before
+            assert [row.model_dump() for row in provenance] == provenance_before
+        else:
+            assert raw.extra["extraction_passes"] == (2 if correction else 1)
+            assert raw.extra["extraction_notes"] == "old worker output"
+            assert len(provenance) == len(provenance_before) + 1
+    engine.dispose()
+
+
+def test_cleanup_confirms_after_bounded_destroying_reads(
+    admission_database, monkeypatch
+):
+    from factory.execution import mcp, store
+    from factory.execution.models import AgentSession
+
+    monkeypatch.setattr(mcp, "get_engine", lambda: admission_database)
+    monkeypatch.setattr(drainer, "CLEANUP_CONFIRM_ATTEMPTS", 3)
+    with Session(admission_database) as db:
+        row = store.create_session(
+            db, "slow-teardown", "<guest>", "main", workflow_id="workflow-slow"
+        )
+        sid = row.id
+        store.set_ember_session(db, sid, "guest-slow", "token", None)
+
+    reads = []
+
+    async def destroy(_guest_id):
+        return {"state": "destroying"}
+
+    async def get_session(guest_id):
+        reads.append(guest_id)
+        state = "destroying" if len(reads) < 3 else "destroyed"
+        return {"session_id": guest_id, "state": state}
+
+    monkeypatch.setattr(mcp._transport, "destroy_session", destroy)
+    monkeypatch.setattr(mcp._transport, "get_session", get_session)
+    assert drainer.destroy_drainer_session.__wrapped__(sid, "slow-teardown")
+    assert reads == ["guest-slow"] * 3
+    with Session(admission_database) as db:
+        retired = db.get(AgentSession, sid)
+        assert retired.ember_session_id is None
+        assert retired.guest_cleanup_id is None
+
+
+def test_cleanup_retains_claim_when_reads_exhaust_without_terminal_state(
+    admission_database, monkeypatch
+):
+    from factory.execution import mcp, store
+    from factory.execution.models import AgentSession
+
+    monkeypatch.setattr(mcp, "get_engine", lambda: admission_database)
+    monkeypatch.setattr(drainer, "CLEANUP_CONFIRM_ATTEMPTS", 2)
+    with Session(admission_database) as db:
+        row = store.create_session(
+            db, "stuck-teardown", "<guest>", "main", workflow_id="workflow-stuck"
+        )
+        sid = row.id
+        store.set_ember_session(db, sid, "guest-stuck", "token", None)
+
+    reads = []
+
+    async def destroy(_guest_id):
+        return {"state": "destroying"}
+
+    async def get_session(guest_id):
+        reads.append(guest_id)
+        return {"session_id": guest_id, "state": "destroying"}
+
+    monkeypatch.setattr(mcp._transport, "destroy_session", destroy)
+    monkeypatch.setattr(mcp._transport, "get_session", get_session)
+    assert not drainer.destroy_drainer_session.__wrapped__(sid, "stuck-teardown")
+    assert reads == ["guest-stuck"] * 2
+    with Session(admission_database) as db:
+        retained = db.get(AgentSession, sid)
+        assert retained.ember_session_id == "guest-stuck"
+        assert retained.guest_cleanup_id is not None
+
+
+def test_cycle_retries_stranded_drainer_claims_and_leaves_factory_rows(
+    admission_database, monkeypatch
+):
+    from factory.execution import mcp, store
+    from factory.execution.constants import DRAINER_NODE_KEY, KG_NODE_KEY
+    from factory.execution.models import AgentSession
+    from factory.execution.transport import EmberSessionGone
+
+    monkeypatch.setattr(mcp, "get_engine", lambda: admission_database)
+    with Session(admission_database) as db:
+        stranded = []
+        for local, guest in (
+            (f"wf-old:{DRAINER_NODE_KEY}:job-1", "guest-old-1"),
+            (f"wf-old:{KG_NODE_KEY}:job-2", "guest-old-2"),
+        ):
+            row = store.create_session(
+                db, local, "<guest>", "main", workflow_id="wf-old"
+            )
+            store.set_ember_session(db, row.id, guest, "token", None)
+            assert store.begin_guest_cleanup(db, row.id, guest, "wf-old").get(
+                "claim_id"
+            )
+            stranded.append(row.id)
+        factory = store.create_session(
+            db, "factory:t-1:implement:1", "<guest>", "main", workflow_id="wf-factory"
+        )
+        store.set_ember_session(db, factory.id, "guest-factory", "token", None)
+        assert store.begin_guest_cleanup(
+            db, factory.id, "guest-factory", "wf-factory"
+        ).get("claim_id")
+        factory_sid = factory.id
+
+    destroyed = []
+
+    async def destroy(guest_id):
+        destroyed.append(guest_id)
+        raise EmberSessionGone("gone")
+
+    monkeypatch.setattr(mcp._transport, "destroy_session", destroy)
+    listed = drainer.stranded_drainer_cleanups.__wrapped__()
+    assert [item["session_id"] for item in listed] == stranded
+    summary = drainer.retry_stranded_drainer_cleanups(
+        list_fn=drainer.stranded_drainer_cleanups.__wrapped__,
+        destroy_fn=drainer.destroy_drainer_session.__wrapped__,
+    )
+    assert summary == {"stranded": 2, "retired": 2}
+    assert sorted(destroyed) == ["guest-old-1", "guest-old-2"]
+    with Session(admission_database) as db:
+        for sid in stranded:
+            retired = db.get(AgentSession, sid)
+            assert retired.ember_session_id is None
+            assert retired.guest_cleanup_id is None
+        untouched = db.get(AgentSession, factory_sid)
+        assert untouched.ember_session_id == "guest-factory"
+        assert untouched.guest_cleanup_id is not None
+
+
+def test_provider_walled_is_only_positive_evidence(monkeypatch):
+    import factory.orchestration.model_pool as model_pool
+
+    monkeypatch.setattr(model_pool, "quota_summary", lambda: {})
+    assert drainer.provider_walled() == (False, "unobserved")
+    monkeypatch.setattr(
+        model_pool,
+        "quota_summary",
+        lambda: {"codex": {"exhausted": True, "age_seconds": 30.0}},
+    )
+    assert drainer.provider_walled() == (True, "exhausted")
+    monkeypatch.setattr(
+        model_pool,
+        "quota_summary",
+        lambda: {"codex": {"exhausted": True, "age_seconds": 4000.0}},
+    )
+    walled, reason = drainer.provider_walled()
+    assert walled is False and reason.startswith("stale_observation")
+
+
+def test_an_unreadable_quota_never_defers_a_claim(monkeypatch):
+    import factory.orchestration.model_pool as model_pool
+
+    def explode():
+        raise RuntimeError("broker down")
+
+    monkeypatch.setattr(model_pool, "quota_summary", explode)
+    assert drainer.provider_walled() == (False, "unreadable")
+
+
+def test_a_walled_provider_defers_the_claim_without_spending_a_lease(
+    admission_database, monkeypatch
+):
+    _queued_job(admission_database, "kg-one")
+    monkeypatch.setattr(drainer, "provider_walled", lambda: (True, "exhausted"))
+    assert _admitted_claim("wf-walled") is None
+    monkeypatch.setattr(drainer, "provider_walled", lambda: (False, "available"))
+    claimed = _admitted_claim("wf-open")
+    assert claimed is not None and claimed["name"] == "kg-one"

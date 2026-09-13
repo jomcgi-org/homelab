@@ -33,7 +33,7 @@ from knowledge.router import (
     router,
     submit_intervention_evidence,
 )
-from swarm.models import SwarmDecision
+from factory.orchestration.models import SwarmDecision
 
 
 @pytest.fixture(name="db")

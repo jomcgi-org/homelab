@@ -245,7 +245,7 @@
       "from": "leader-elector",
       "to": "agent-runner",
       "maturity": "built",
-      "evidence": "projects/monolith/agent_sessions/store.py:772"
+      "evidence": "projects/monolith/factory/execution/store.py:772"
     },
     {
       "key": "agent.submit",
@@ -272,7 +272,7 @@
       "from": "console-caller",
       "to": "agent-runner",
       "maturity": "built",
-      "evidence": "projects/monolith/agent_sessions/router.py:544"
+      "evidence": "projects/monolith/factory/execution/router.py:544"
     },
     {
       "key": "docs.publish",
@@ -443,7 +443,7 @@
       "from": "mcp-caller",
       "to": "agent-runner",
       "maturity": "built",
-      "evidence": "projects/monolith/agent_sessions/mcp.py:660"
+      "evidence": "projects/monolith/factory/execution/mcp.py:660"
     },
     {
       "key": "mcp.chat-pardon",
@@ -479,7 +479,7 @@
       "from": "kg-feed",
       "to": "pg-primary",
       "maturity": "built",
-      "evidence": "projects/monolith/agent_sessions/kg_feed.py:231"
+      "evidence": "projects/monolith/factory/execution/kg_feed.py:231"
     },
     {
       "key": "kg-drainer.dispatch",
@@ -488,7 +488,7 @@
       "from": "kg-drainer",
       "to": "agent-runner",
       "maturity": "built",
-      "evidence": "projects/monolith/swarm/drainer.py:404"
+      "evidence": "projects/monolith/factory/orchestration/drainer.py:404"
     }
   ],
   "feedback": [

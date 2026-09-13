@@ -1,0 +1,1263 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+import time
+from datetime import datetime, timedelta, timezone
+from uuid import uuid4
+
+import httpx
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import JSONResponse, Response, StreamingResponse
+from pydantic import BaseModel
+from sqlmodel import Session, func, select
+
+from factory.execution import (
+    SUPPORTED_MODELS,
+    mcp,
+    model_family,
+    normalize_model,
+    offered_models,
+    store,
+    voice_ui,
+)
+from factory.execution.codex_login import codex_login_gate, watch_for_login
+from factory.execution.constants import (
+    LEGACY_QWEN_SYNTHETIC_PROMPT,
+    SYNTHETIC_SESSION_PREFIX,
+)
+from factory.execution.models import AgentSession, AgentTurn, PendingMessage
+from factory.execution.mcp import (
+    _append_rationale_trailer,
+    _activate_session_after_enqueue,
+    _clear_ember_bindings_for,
+    _load_session_row,
+    _mark_ui_originated,
+    _persist_pending_message,
+    _persist_session,
+    _schedule_next_message,
+    _set_session_status,
+    _transport,
+)
+from core.db import get_session
+from faas.embervm_client import EmberVMTransportError
+from goosecracker.api import REPO_CATALOG
+from knowledge.api import attach_recall
+from factory.execution.rationale import parse_rationale
+from factory.access import factory_decider
+
+from auth.api import Principal, current_principal, get_principal
+
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/api/agents", tags=["agents"])
+_DEFAULT_BRANCH_CACHE: dict[str, tuple[float, str | None]] = {}
+_REPO_CACHE_TTL = 300.0
+_REPO_CACHE_FAILURE_TTL = 30.0
+_BRANCH_LIST_CACHE: dict[str, tuple[float, dict | None, str | None]] = {}
+_BRANCH_LIST_CACHE_TTL = 60.0
+_BRANCH_LIST_CACHE_FAILURE_TTL = 10.0
+_PREWARM_TTL = 10.0
+_prewarm_timestamps: dict[int, float] = {}
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _iso(value: datetime | None) -> str | None:
+    value = _as_utc(value)
+    return value.isoformat() if value is not None else None
+
+
+def _decode(value: str | None, default):
+    if not value:
+        return default
+    try:
+        decoded = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return default
+    return decoded
+
+
+def _aggregate_statement(status: str | None = None, session_id: int | None = None):
+    turns_statement = select(
+        AgentTurn.session_id,
+        func.count(AgentTurn.id).label("turn_count"),
+        func.coalesce(func.sum(AgentTurn.cost_usd), 0).label("total_cost_usd"),
+        func.coalesce(func.sum(AgentTurn.list_cost_usd), 0).label(
+            "total_list_cost_usd"
+        ),
+    )
+    if session_id is not None:
+        turns_statement = turns_statement.where(AgentTurn.session_id == session_id)
+    turns = turns_statement.group_by(AgentTurn.session_id).subquery()
+
+    pending_statement = select(
+        PendingMessage.session_id,
+        func.count(PendingMessage.id).label("pending_count"),
+    )
+    if session_id is not None:
+        pending_statement = pending_statement.where(
+            PendingMessage.session_id == session_id
+        )
+    pending = pending_statement.group_by(PendingMessage.session_id).subquery()
+    # The session list renders a human title (the first prompt) instead of
+    # the raw UUID; sessions whose first turn has not completed yet fall
+    # back to the first queued prompt. Truncated in SQL: the list is polled
+    # every 2s while a session is active, and _fallback_title only keeps
+    # 140 chars, so shipping whole prompt TEXT columns would be waste.
+    first_turn_prompt = (
+        select(func.substr(AgentTurn.prompt, 1, 200))
+        .where(AgentTurn.session_id == AgentSession.id)
+        .order_by(AgentTurn.seq)
+        .limit(1)
+        .scalar_subquery()
+    )
+    first_pending_prompt = (
+        select(func.substr(PendingMessage.message_text, 1, 200))
+        .where(PendingMessage.session_id == AgentSession.id)
+        .order_by(PendingMessage.seq)
+        .limit(1)
+        .scalar_subquery()
+    )
+    statement = (
+        select(
+            AgentSession,
+            func.coalesce(turns.c.turn_count, 0),
+            func.coalesce(turns.c.total_cost_usd, 0),
+            func.coalesce(turns.c.total_list_cost_usd, 0),
+            func.coalesce(pending.c.pending_count, 0),
+            first_turn_prompt,
+            first_pending_prompt,
+        )
+        .outerjoin(turns, turns.c.session_id == AgentSession.id)
+        .outerjoin(pending, pending.c.session_id == AgentSession.id)
+        .order_by(AgentSession.last_turn_at.desc())
+    )
+    if session_id is None:
+        # Persisted health probes are useful for diagnosis by id, but they are
+        # not operator work and should not consume the console's recent list.
+        # The prompt clause also hides rows created before the origin prefix
+        # was introduced.
+        statement = statement.where(
+            ~AgentSession.local_session_id.startswith(SYNTHETIC_SESSION_PREFIX),
+            (func.coalesce(AgentSession.model, "") != "qwen")
+            | (
+                func.coalesce(first_turn_prompt, first_pending_prompt, "")
+                != LEGACY_QWEN_SYNTHETIC_PROMPT
+            ),
+        )
+    if status is not None:
+        statement = statement.where(AgentSession.status == status)
+    return statement
+
+
+def _fallback_title(
+    first_turn_prompt: str | None, first_pending_prompt: str | None
+) -> str:
+    text = (first_turn_prompt or first_pending_prompt or "").strip()
+    return text.split("\n")[0][:140]
+
+
+def _session_payload(
+    row: AgentSession,
+    turn_count: int,
+    total_cost_usd: float,
+    total_list_cost_usd: float,
+    pending_count: int,
+    first_turn_prompt: str | None = None,
+    first_pending_prompt: str | None = None,
+) -> dict:
+    return {
+        "id": row.id,
+        "local_session_id": row.local_session_id,
+        "workspace": row.workspace,
+        "branch": row.branch,
+        "repo": row.repo,
+        "workflow_id": row.workflow_id,
+        "node_key": row.node_key,
+        "node_attempt": row.node_attempt,
+        "triggered_by": row.triggered_by,
+        "model": row.model,
+        "status": row.status,
+        "recovery_workspace_loss": (
+            row.recovery_workspace_loss if row.status == "recovering" else None
+        ),
+        "title": row.title or _fallback_title(first_turn_prompt, first_pending_prompt),
+        "ember_session_id": row.ember_session_id,
+        "guest_cleanup": (
+            {
+                "id": row.guest_cleanup_id,
+                "guest_id": row.guest_cleanup_guest_id,
+                "workflow_id": row.guest_cleanup_workflow_id,
+                "started_at": _iso(row.guest_cleanup_started_at),
+                "reason": "awaiting_terminal_confirmation",
+            }
+            if row.guest_cleanup_id is not None
+            else None
+        ),
+        "created_at": _iso(row.created_at),
+        "last_turn_at": _iso(row.last_turn_at),
+        "voice_summary": row.voice_summary,
+        "turn_count": int(turn_count),
+        "total_cost_usd": float(total_cost_usd or 0),
+        "total_list_cost_usd": float(total_list_cost_usd or 0),
+        "pending_count": int(pending_count),
+    }
+
+
+def _rows(session: Session, status: str | None = None, limit: int | None = None):
+    statement = _aggregate_statement(status, None)
+    if limit is not None:
+        statement = statement.limit(limit)
+    results = session.exec(statement).all()
+    return [_session_payload(*result) for result in results]
+
+
+class StartRequest(BaseModel):
+    prompt: str
+    model: str | None = None
+    # None means "decide from repo presence", resolved in start_session. A
+    # repo-attached session is doing multi-step work, and on the pi lane
+    # thinking off makes qwen repeat one identical tool call until the context
+    # window fills. An explicit true or false from the caller still wins.
+    reasoning: bool | None = None
+    workspace: str = "<guest>"
+    branch: str = "main"
+    repo: str | None = None
+
+
+def _resolve_reasoning(start_request: "StartRequest") -> bool:
+    """Thinking defaults on for a repo-attached session, off otherwise.
+
+    The console never sent this field, so every session it started ran with
+    thinking off, including repo-attached ones. On the pi lane that is what
+    makes qwen repeat one identical tool call until the context window fills:
+    measured on one drainer prompt, thinking off took 461 tool calls and
+    118790 input tokens to end at stopReason length with no answer, while
+    thinking on answered correctly in 8 and 12 calls across two runs.
+
+    A repo-less session is the case the pi lane's thinking-off default was
+    chosen for, so it keeps that default. An explicit value from the caller
+    wins in both directions.
+    """
+    if start_request.reasoning is not None:
+        return start_request.reasoning
+    return bool(start_request.repo)
+
+
+class MessageRequest(BaseModel):
+    prompt: str
+    model: str | None = None
+
+
+class CompanionRequest(BaseModel):
+    companion_id: str | None = None
+
+
+@router.post("/companion")
+async def register_voice_ui_companion(
+    companion_request: CompanionRequest | None = None,
+    _principal_context: Principal = Depends(get_principal),
+) -> dict:
+    principal = current_principal()
+    # Authentication is intentionally observational here. An anonymous MCP or
+    # HTTP principal is recorded per ADR 058 and is not rejected.
+    companion_id = await asyncio.to_thread(
+        voice_ui.register_companion,
+        companion_request.companion_id if companion_request is not None else None,
+        principal.subject,
+        str(principal.authority),
+    )
+    return {"companion_id": companion_id}
+
+
+@router.get("/companion/{companion_id}/ledger")
+async def poll_voice_ui_ledger(
+    companion_id: str, since: int = Query(default=0)
+) -> list[dict]:
+    rows = await asyncio.to_thread(voice_ui.poll_ledger, companion_id, since)
+    if rows is None:
+        raise HTTPException(status_code=404, detail="Unknown voice UI companion")
+    return rows
+
+
+@router.get("/sessions")
+def list_sessions(
+    status: str | None = None,
+    limit: int = Query(default=50, ge=1, le=500),
+    session: Session = Depends(get_session),
+) -> list[dict]:
+    return _rows(session, status, limit)
+
+
+@router.get("/factory")
+def factory_board(task: str | None = None) -> dict:
+    """Read-only board for the private agents page: control state, policy,
+    in-flight tasks with their plan and sessions, the queue, and recent
+    outcomes. Sits beside /sessions rather than under the operator-gated
+    /api/swarm/factory routes because the browser on the private tier carries
+    no bearer, and this is a view, not a control."""
+    from factory.private_view import build_factory_view
+
+    return build_factory_view(task)
+
+
+class FactoryDecisionBody(BaseModel):
+    option_key: str | None = None
+    action: str | None = None
+    note: str | None = None
+
+
+@router.post("/factory/decisions/{receipt_id}")
+def factory_decision(
+    receipt_id: int, body: FactoryDecisionBody, request: Request
+) -> dict:
+    """Answer one factory escalation from the private agents page."""
+    from factory.orchestration.factory_decisions import (
+        DecisionError,
+        apply_decision,
+        request_chat,
+    )
+
+    actor = factory_decider(request)
+    chat = body.action == "chat"
+    if body.action is not None and not chat:
+        raise HTTPException(status_code=422, detail="the only supported action is chat")
+    if chat == bool(body.option_key):
+        raise HTTPException(
+            status_code=422,
+            detail="supply exactly one of option_key or action=chat",
+        )
+    try:
+        if chat:
+            if not (body.note or "").strip():
+                raise HTTPException(
+                    status_code=422, detail="a chat request needs a note"
+                )
+            return request_chat(receipt_id, body.note or "", actor)
+        return apply_decision(receipt_id, body.option_key or "", actor, body.note)
+    except DecisionError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.reason) from exc
+
+
+@router.get("/drain-lane")
+def drain_lane_status() -> dict:
+    from agent.api import list_jobs, load_drainer_settings
+
+    settings = load_drainer_settings()
+    jobs = list_jobs(kinds=settings.job_kinds)
+    # This mirrors the due-and-claimable predicate factory.orchestration.health computes in
+    # SQL for the drainer health component; keep the two in agreement.
+    now = datetime.now(timezone.utc)
+    running = []
+    running_names = set()
+
+    for job in jobs:
+        locked_at = _as_utc(job["locked_at"])
+        if (
+            job["locked_by"] is not None
+            and locked_at is not None
+            and locked_at + timedelta(seconds=job["ttl_secs"] or 0) > now
+        ):
+            running.append({"name": job["name"], "locked_at": _iso(locked_at)})
+            running_names.add(job["name"])
+
+    due_count = sum(
+        1
+        for job in jobs
+        if job["name"] not in running_names
+        and (next_run_at := _as_utc(job["next_run_at"])) is not None
+        and next_run_at <= now
+    )
+    completed = [job for job in jobs if job["last_run_at"] is not None]
+    last_job = (
+        max(completed, key=lambda job: _as_utc(job["last_run_at"]))
+        if completed
+        else None
+    )
+    last = (
+        {
+            "name": last_job["name"],
+            "status": last_job["last_status"],
+            "last_run_at": _iso(last_job["last_run_at"]),
+        }
+        if last_job is not None
+        else None
+    )
+    return {
+        "enabled": settings.enabled,
+        "kinds": settings.job_kinds,
+        "running": running,
+        "due_count": due_count,
+        "last": last,
+    }
+
+
+@router.get("/models")
+def list_offered_models() -> dict:
+    """Model catalogue the console picker offers (issue #4859).
+
+    SUPPORTED_MODELS narrowed by the AGENT_MODELS env var, which the chart
+    wires from agents.values. The frontend has no built-in list: an empty
+    catalogue renders an empty picker rather than a bundled fallback, so a
+    misconfigured env is visible instead of silently masked. Entries carry
+    name and family for presentation. No auth dependency and no cluster reads,
+    matching GET /sessions next to which it ships.
+    """
+    return {
+        "models": [
+            {"name": model, "family": model_family(model)} for model in offered_models()
+        ]
+    }
+
+
+@router.get("/codex-login/status")
+async def codex_login_status(grant: str = Query(default="codex-cluster")):
+    try:
+        grant = mcp._grant_or_raise(grant)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="invalid grant name") from exc
+    try:
+        return await mcp._broker_request("GET", f"/grants/{grant}/login/status")
+    except Exception:
+        return JSONResponse(
+            status_code=502,
+            content={"error": "Codex login broker unavailable"},
+        )
+
+
+@router.post("/codex-login/start")
+async def codex_login_start(grant: str = Query(default="codex-cluster")):
+    try:
+        grant = mcp._grant_or_raise(grant)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="invalid grant name") from exc
+    try:
+        data = await mcp._broker_request("POST", f"/grants/{grant}/login/start")
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 409:
+            try:
+                pending_data = exc.response.json()
+            except Exception:
+                pending_data = {}
+            if isinstance(pending_data, dict):
+                reason = pending_data.get("reason")
+                has_code = bool(pending_data.get("user_code"))
+                has_code_fields = has_code or bool(pending_data.get("verification_url"))
+                if reason == "login_starting" and not has_code_fields:
+                    return {
+                        "retry_after": 10,
+                        "message": "Device flow is starting, try again shortly.",
+                        "pending": False,
+                    }
+                if has_code and reason in (None, "login_pending"):
+                    return {
+                        "verification_url": pending_data.get("verification_url"),
+                        "user_code": pending_data.get("user_code"),
+                        "expires_in": pending_data.get("expires_in"),
+                        "pending": True,
+                    }
+        return JSONResponse(
+            status_code=502,
+            content={"error": "Codex login broker unavailable"},
+        )
+    except Exception:
+        return JSONResponse(
+            status_code=502,
+            content={"error": "Codex login broker unavailable"},
+        )
+    return {
+        "verification_url": data.get("verification_url"),
+        "user_code": data.get("user_code"),
+        "expires_in": data.get("expires_in"),
+        "pending": False,
+    }
+
+
+# Control-plane session states collapsed to what the console renders. The
+# guest lifecycle is the control plane's truth, not the monolith's local
+# binding: a park (idleBankSeconds after the last invoke) happens without
+# the monolith noticing until the next send, so the UI polls this instead.
+_VM_AWAKE_STATES = {"creating", "running", "relighting"}
+_VM_ASLEEP_STATES = {"banking", "banked", "parking", "parked"}
+
+
+class _VmStateCache:
+    refresh_interval = 1.0
+    heartbeat_interval = 15.0
+
+    def __init__(self) -> None:
+        self.cache_map: dict[str, dict] = {}
+        self.last_refreshed_at = 0.0
+        self.subscriber_count = 0
+        self.task: asyncio.Task | None = None
+        self.change_event: asyncio.Event | None = None
+        self.generation = 0
+        self.initialized = False
+        self.last_error: str | None = None
+
+
+_vm_state_cache = _VmStateCache()
+
+
+def _coarse_vm_map(items: list[dict]) -> dict[str, dict]:
+    vms = {}
+    for item in items:
+        state = str(item.get("state", ""))
+        if state in _VM_AWAKE_STATES:
+            coarse = "awake"
+        elif state in _VM_ASLEEP_STATES:
+            coarse = "asleep"
+        else:
+            coarse = "off"
+        vms[item.get("session_id")] = {
+            "state": coarse,
+            "cp_state": state,
+            "invoke_started_at": item.get("invoke_started_at"),
+            "last_invoke_at": item.get("last_invoke_at"),
+            "expires_at": item.get("expires_at"),
+        }
+    return vms
+
+
+async def _lane_sessions(workload: str) -> tuple[list, bool]:
+    """Return one lane's sessions and whether its listing was complete."""
+    items = []
+    offset = 0
+    for _ in range(4):
+        page = await _transport.list_sessions(
+            limit=500, offset=offset, workload=workload
+        )
+        batch = page.get("items", [])
+        items.extend(batch)
+        offset += len(batch)
+        if page.get("total") is None:
+            return items, False
+        total = int(page["total"])
+        if offset >= total:
+            return items, True
+        if not batch:
+            return items, False
+    return items, False
+
+
+async def _refresh_cp_state() -> tuple[dict[str, dict], bool] | None:
+    # EVERY lane, not just the claude runtime. list_sessions is workload
+    # scoped, so a single-lane poll would leave persisted qwen sessions out of
+    # the published map entirely. The console reads an absent session_id as
+    # "off" (frontend status.js vmState), so a live legacy guest would render
+    # "vm off" and "waking vm" for its whole turn.
+    #
+    # Aggregating here does NOT contradict list_sessions defaulting to one
+    # lane: that default serves the operator tool, where the per-workload
+    # session CAP is the thing being managed. This map is keyed by session_id
+    # and wants the union.
+    lanes = list(
+        dict.fromkeys(_transport._workload_for(model) for model in SUPPORTED_MODELS)
+    )
+    items = []
+    complete = True
+    try:
+        for lane in lanes:
+            lane_items, lane_complete = await _lane_sessions(lane)
+            items.extend(lane_items)
+            complete = complete and lane_complete
+    except EmberVMTransportError as exc:
+        # Drop the map rather than serving the last known one. A stale entry
+        # renders as a confident "awake" chip for a guest that may be long
+        # gone, where an absent entry renders "off" alongside the error, which
+        # is what this endpoint promised before it was cached. Losing the CP
+        # means we do not know, and the honest rendering of not knowing is the
+        # one the console already had.
+        logger.warning("failed to refresh agent VM state: %s", exc)
+        _publish_vm_map({}, error=str(exc))
+        return None
+
+    vm_map = _coarse_vm_map(items)
+    _publish_vm_map(vm_map, error=None)
+    return vm_map, complete
+
+
+async def _fresh_vm_state_for_binding(
+    ember_session_id: str,
+) -> tuple[bool, dict | None]:
+    """Return a fresh CP answer for one binding.
+
+    The boolean is true when the binding is present or a complete listing
+    confirms its absence. Zombie recovery must fail closed for partial listings
+    and outages.
+    """
+    try:
+        snapshot = await _refresh_cp_state()
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - every oracle failure is fail closed
+        logger.exception("fresh agent VM state lookup failed")
+        _publish_vm_map({}, error=str(exc))
+        return False, None
+    if snapshot is None:
+        return False, None
+    vm_map, complete = snapshot
+    vm_state = vm_map.get(ember_session_id)
+    if vm_state is not None:
+        return True, vm_state
+    # Absence is authoritative only after every workload lane exhausted all
+    # pages against an explicit total. A capped or legacy response is partial.
+    return complete, None
+
+
+def _publish_vm_map(new_map: dict[str, dict], error: str | None) -> None:
+    """Store a map and wake subscribers only when it actually differs.
+
+    The generation counter, rather than a bare Event, is what lets each
+    subscriber tell whether it already saw a change: a single shared Event
+    cannot distinguish "woke for this change" from "woke for the previous
+    one", so a client waking between set and clear would double-send or miss
+    an update entirely.
+    """
+    cache = _vm_state_cache
+    # The error is part of what changed, not just the map. With no live
+    # sessions the map is already empty, so losing the control plane
+    # published an identical {} and woke nobody: subscribers kept a frame
+    # claiming a clean empty state while the snapshot endpoint reported the
+    # outage. Recovery was equally silent.
+    changed = new_map != cache.cache_map or error != cache.last_error
+    cache.cache_map = new_map
+    cache.last_refreshed_at = time.monotonic()
+    cache.last_error = error
+    cache.initialized = True
+    if not changed:
+        return
+    cache.generation += 1
+    old_event = cache.change_event
+    cache.change_event = asyncio.Event()
+    if old_event is not None:
+        old_event.set()
+
+
+async def _run_vm_refresher() -> None:
+    while True:
+        try:
+            await _refresh_cp_state()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - one bad poll must not end the loop
+            # A dead refresher is invisible: subscribers keep receiving the 15s
+            # heartbeat so the connection looks healthy, no message ever
+            # arrives so the client's fallback never engages, and the snapshot
+            # endpoint sees a non-None task and stops refreshing too. The chips
+            # freeze and every surface reports fine. Publishing the outage is
+            # what makes the failure look like a failure.
+            logger.exception("agent VM refresher iteration failed")
+            _publish_vm_map({}, error=str(exc))
+        await asyncio.sleep(_vm_state_cache.refresh_interval)
+
+
+async def _start_refresher() -> None:
+    cache = _vm_state_cache
+    cache.subscriber_count += 1
+    if cache.change_event is None:
+        cache.change_event = asyncio.Event()
+    # Create the task BEFORE awaiting anything. With the await first, the
+    # check and the set straddled a suspension point: two subscribers
+    # connecting together both saw task is None and both assigned, so the
+    # first task lost its only reference. Unreachable, uncancellable, and
+    # polling the control plane once a second until the pod restarts.
+    # Deployment is 1 replica with HPA to 3, so worst case is 3 refreshers.
+    if cache.task is None or cache.task.done():
+        cache.task = asyncio.create_task(_run_vm_refresher())
+    # Give a joining subscriber fresh data before it yields its snapshot.
+    # Staleness, not just initialization: `initialized` latches true on the
+    # first publish and never resets, so testing it alone meant a console
+    # reopened hours after the last viewer left got a frame built from the
+    # overnight map, rendering a confident "awake" chip for a guest that
+    # parked long ago. Costs nothing while a refresher is live, since
+    # last_refreshed_at is then always under one interval old.
+    stale = time.monotonic() - cache.last_refreshed_at >= cache.refresh_interval
+    if not cache.initialized or stale:
+        await _refresh_cp_state()
+
+
+async def _stop_refresher() -> None:
+    cache = _vm_state_cache
+    cache.subscriber_count = max(0, cache.subscriber_count - 1)
+    if cache.subscriber_count or cache.task is None:
+        return
+    task, cache.task = cache.task, None
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+def _vm_frame() -> str:
+    """One SSE data frame, carrying the same payload as the snapshot endpoint.
+
+    Kept identical to `/vms` on purpose: two surfaces describing the same
+    state with different fields is how a client ends up unable to tell an
+    empty map from an outage on one of them.
+    """
+    body: dict = {"vms": _vm_state_cache.cache_map}
+    if _vm_state_cache.last_error:
+        body["error"] = _vm_state_cache.last_error
+    return f"data: {json.dumps(body)}\n\n"
+
+
+@router.get("/vms/stream")
+async def stream_session_vms() -> StreamingResponse:
+    async def generate():
+        # Inside the try, not before it. _start_refresher increments the
+        # subscriber count as its first statement and then awaits, and
+        # Starlette cancels this generator at its innermost await on client
+        # disconnect. Started outside, a client that vanished during that
+        # first refresh (a wedged control plane can hold it ~20s) left the
+        # count permanently above zero, so every later stop returned early
+        # and the refresher polled forever with nobody watching.
+        cache = _vm_state_cache
+        try:
+            await _start_refresher()
+            last_generation = cache.generation
+            yield _vm_frame()
+            while True:
+                if cache.generation != last_generation:
+                    last_generation = cache.generation
+                    yield _vm_frame()
+                    continue
+                event = cache.change_event
+                try:
+                    await asyncio.wait_for(
+                        event.wait(), timeout=cache.heartbeat_interval
+                    )
+                except asyncio.TimeoutError:
+                    yield ": ping\n\n"
+                    continue
+                if cache.generation != last_generation:
+                    last_generation = cache.generation
+                    yield _vm_frame()
+        finally:
+            await _stop_refresher()
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.get("/vms")
+async def list_session_vms() -> dict:
+    """Return the shared VM snapshot, refreshing it when nothing is feeding it.
+
+    This is the console's fallback for a broken event stream, so it must NOT
+    depend on a stream subscriber having connected first. With no refresher
+    running, a cache-only read stays empty forever and the chip reads "off"
+    for every session, which is the opposite of the truth and precisely the
+    case the fallback exists to cover.
+
+    The refresh is skipped while a refresher owns the cache, and rate limited
+    to the same interval otherwise, so a fallback poll cannot reintroduce
+    per-request control-plane load.
+    """
+    cache = _vm_state_cache
+    stale = time.monotonic() - cache.last_refreshed_at >= cache.refresh_interval
+    # `task.done()` matters as much as `task is None`: a refresher that died
+    # is not None, so testing only for None let a crashed task freeze this
+    # endpoint too, and the fallback stopped falling back.
+    owned = cache.task is not None and not cache.task.done()
+    if not owned and (not cache.initialized or stale):
+        await _refresh_cp_state()
+    body = {"vms": cache.cache_map}
+    if cache.last_error:
+        body["error"] = cache.last_error
+    return body
+
+
+@router.get("/sessions/{session_id}")
+def get_session_detail(
+    session_id: int,
+    after_seq: int | None = Query(default=None, ge=0),
+    session: Session = Depends(get_session),
+) -> dict:
+    result = session.exec(
+        _aggregate_statement(session_id=session_id).where(AgentSession.id == session_id)
+    ).first()
+    if result is None:
+        raise HTTPException(status_code=404, detail="Agent session not found")
+    (
+        row,
+        turn_count,
+        total_cost_usd,
+        total_list_cost_usd,
+        pending_count,
+        first_turn,
+        first_pending,
+    ) = result
+    turns_statement = select(AgentTurn).where(AgentTurn.session_id == session_id)
+    if after_seq is not None:
+        turns_statement = turns_statement.where(AgentTurn.seq > after_seq)
+    turns = session.exec(turns_statement.order_by(AgentTurn.seq)).all()
+    pending = session.exec(
+        select(PendingMessage)
+        .where(PendingMessage.session_id == session_id)
+        .order_by(PendingMessage.seq)
+    ).all()
+    return {
+        "session": _session_payload(
+            row,
+            turn_count,
+            total_cost_usd,
+            total_list_cost_usd,
+            pending_count,
+            first_turn,
+            first_pending,
+        ),
+        "turns": [
+            {
+                "seq": turn.seq,
+                "prompt": turn.prompt,
+                "prompt_intent": turn.prompt_intent,
+                "model": turn.model,
+                "result_text": turn.result_text,
+                "rationale": parse_rationale(turn.result_text),
+                "voice_summary": turn.voice_summary,
+                "terminal_reason": turn.terminal_reason,
+                "stop_reason": turn.stop_reason,
+                "permission_denials": _decode(turn.permission_denials, []),
+                "commit_sha": turn.commit_sha,
+                "base_sha": turn.base_sha,
+                "usage": _decode(turn.usage_json, {}),
+                "cost_usd": turn.cost_usd,
+                "list_cost_usd": turn.list_cost_usd,
+                "created_at": _iso(turn.created_at),
+            }
+            for turn in turns
+        ],
+        "pending_queue": [
+            {
+                "seq": message.seq,
+                "prompt": message.message_text,
+                "partial_text": message.partial_text,
+                "partial_activities": _decode(message.partial_activities, None),
+                "claimed_by_replica": message.claimed_by_replica,
+                "claimed_at": _iso(message.claimed_at),
+                "created_at": _iso(message.created_at),
+            }
+            for message in pending
+        ],
+    }
+
+
+@router.post("/sessions")
+async def start_session(request: Request, start_request: StartRequest) -> dict:
+    triggered_by = request.headers.get("x-auth-email")
+    triggered_by = triggered_by.strip().lower() or None if triggered_by else None
+    return await _start_session(start_request, triggered_by)
+
+
+def _persist_task_session_start(
+    task_id: str,
+    start_request: StartRequest,
+    selected_model: str,
+    triggered_by: str | None,
+) -> tuple[int, int]:
+    """Create or recover the deterministic session for one launcher task."""
+    from core.db import get_engine
+    from sqlalchemy.exc import IntegrityError
+
+    local_session_id = f"swarm-task:{task_id}"
+    # Computed before the session opens: recall blocks on an embedding call,
+    # and holding a pooled connection through it starves other handlers.
+    system_prompt = attach_recall(
+        _append_rationale_trailer(None, start_request.repo),
+        start_request.prompt,
+        node_key=None,
+    )
+    with Session(get_engine()) as db_session:
+        row = store.get_session_by_local_id(db_session, local_session_id)
+        if row is None:
+            try:
+                row = store.create_session(
+                    db_session,
+                    local_session_id,
+                    start_request.workspace,
+                    start_request.branch,
+                    selected_model,
+                    start_request.repo,
+                    system_prompt=system_prompt,
+                    reasoning=_resolve_reasoning(start_request),
+                    triggered_by=triggered_by,
+                )
+            except IntegrityError:
+                db_session.rollback()
+                row = store.get_session_by_local_id(db_session, local_session_id)
+                if row is None:
+                    raise
+        row = db_session.exec(
+            select(AgentSession)
+            .where(AgentSession.local_session_id == local_session_id)
+            .with_for_update()
+        ).one()
+        pending = db_session.exec(
+            select(PendingMessage)
+            .where(PendingMessage.session_id == row.id)
+            .order_by(PendingMessage.seq)
+        ).first()
+        if pending is not None:
+            return row.id, pending.seq
+        completed = db_session.exec(
+            select(AgentTurn)
+            .where(AgentTurn.session_id == row.id)
+            .order_by(AgentTurn.seq)
+        ).first()
+        if completed is not None:
+            return row.id, completed.seq
+        message = store.create_pending_message(
+            db_session, row.id, start_request.prompt, selected_model
+        )
+        return row.id, message.seq
+
+
+async def start_session_for_task(
+    triggered_by: str | None,
+    task_id: str,
+    start_request: StartRequest,
+) -> dict:
+    """Start the UI session for a persisted swarm task idempotently."""
+    return await _start_session(
+        start_request,
+        triggered_by,
+        task_id=task_id,
+    )
+
+
+async def _start_session(
+    start_request: StartRequest,
+    triggered_by: str | None,
+    *,
+    task_id: str | None = None,
+) -> dict:
+    if start_request.repo is not None and start_request.repo not in REPO_CATALOG:
+        return {
+            "accepted": False,
+            "error": (
+                f"unknown repo {start_request.repo}; catalog: {', '.join(REPO_CATALOG)}"
+            ),
+        }
+    try:
+        selected_model = normalize_model(start_request.model)
+        model_family(selected_model)
+    except ValueError as exc:
+        return {"accepted": False, "error": str(exc)}
+    if task_id is None:
+        row = await asyncio.to_thread(
+            _persist_session,
+            str(uuid4()),
+            start_request.workspace,
+            start_request.branch,
+            selected_model,
+            start_request.repo,
+            system_prompt=_append_rationale_trailer(None, start_request.repo),
+            prompt=start_request.prompt,
+            reasoning=_resolve_reasoning(start_request),
+            triggered_by=triggered_by,
+        )
+        session_id = row.id
+        turn = await asyncio.to_thread(
+            _persist_pending_message, session_id, start_request.prompt, selected_model
+        )
+    else:
+        session_id, turn = await asyncio.to_thread(
+            _persist_task_session_start,
+            task_id,
+            start_request,
+            selected_model,
+            triggered_by,
+        )
+    # Queued from the UI, so its result does not get echoed to Discord.
+    _mark_ui_originated(session_id, turn)
+    login = await codex_login_gate(selected_model)
+    if login is not None:
+        await asyncio.to_thread(_set_session_status, session_id, "awaiting_login")
+
+        async def resume() -> None:
+            await asyncio.to_thread(_set_session_status, session_id, "running")
+            _schedule_next_message(session_id)
+
+        watch_for_login(login.get("grant", "codex-cluster"), resume)
+        return {"accepted": False, **login, "session_id": session_id, "turn": turn}
+    _schedule_next_message(session_id)
+    return {"accepted": True, "session_id": session_id, "turn": turn}
+
+
+async def _github_get(url: str) -> httpx.Response:
+    headers = {"Accept": "application/vnd.github+json"}
+    token = os.environ.get("GITHUB_API_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        response = await client.get(url, headers=headers)
+        response.raise_for_status()
+        return response
+
+
+@router.get("/repos")
+async def list_repos() -> dict:
+    now = time.monotonic()
+    uncached = []
+    for repo_id in REPO_CATALOG:
+        cached = _DEFAULT_BRANCH_CACHE.get(repo_id)
+        if cached is None or cached[0] <= now:
+            uncached.append(repo_id)
+
+    async def fetch_default_branch(repo_id: str) -> None:
+        try:
+            response = await _github_get(f"https://api.github.com/repos/{repo_id}")
+            default_branch = response.json().get("default_branch")
+            if not isinstance(default_branch, str):
+                default_branch = None
+        except Exception:
+            _DEFAULT_BRANCH_CACHE[repo_id] = (
+                time.monotonic() + _REPO_CACHE_FAILURE_TTL,
+                None,
+            )
+            return
+        _DEFAULT_BRANCH_CACHE[repo_id] = (
+            time.monotonic() + _REPO_CACHE_TTL,
+            default_branch,
+        )
+
+    await asyncio.gather(*(fetch_default_branch(repo_id) for repo_id in uncached))
+
+    repos = []
+    for repo_id, entry in REPO_CATALOG.items():
+        cached = _DEFAULT_BRANCH_CACHE.get(repo_id)
+        default_branch = cached[1] if cached is not None else None
+        repos.append(
+            {
+                "id": repo_id,
+                "description": entry.description,
+                "default_branch": default_branch,
+            }
+        )
+    return {"repos": repos}
+
+
+@router.get("/repos/{owner}/{repo}/branches")
+async def list_repo_branches(owner: str, repo: str) -> dict:
+    repo_id = f"{owner}/{repo}"
+    if repo_id not in REPO_CATALOG:
+        raise HTTPException(status_code=404, detail="Repository not in catalog")
+    if not os.environ.get("GITHUB_API_TOKEN"):
+        raise HTTPException(
+            status_code=503,
+            detail="GITHUB_API_TOKEN is not set",
+        )
+    cached = _BRANCH_LIST_CACHE.get(repo_id)
+    now = time.monotonic()
+    if cached is not None and cached[0] > now:
+        if cached[2] is not None:
+            raise HTTPException(status_code=502, detail=cached[2])
+        assert cached[1] is not None
+        return cached[1]
+    try:
+        repo_response = await _github_get(f"https://api.github.com/repos/{repo_id}")
+        default_branch = repo_response.json().get("default_branch")
+        if not isinstance(default_branch, str):
+            default_branch = None
+        branches = []
+        branches_url = f"https://api.github.com/repos/{repo_id}/branches?per_page=100"
+        for _ in range(10):
+            branches_response = await _github_get(branches_url)
+            page = branches_response.json()
+            if not isinstance(page, list):
+                raise HTTPException(
+                    status_code=502, detail="GitHub branches response was not a list"
+                )
+            branches.extend(
+                {"name": branch["name"]}
+                for branch in page
+                if isinstance(branch, dict) and isinstance(branch.get("name"), str)
+            )
+            next_link = branches_response.links.get("next")
+            if not next_link:
+                break
+            branches_url = next_link["url"]
+    except (httpx.HTTPError, ValueError, TypeError, HTTPException) as exc:
+        detail = (
+            str(exc.detail)
+            if isinstance(exc, HTTPException)
+            else f"GitHub API request failed: {exc}"
+        )
+        _BRANCH_LIST_CACHE[repo_id] = (
+            time.monotonic() + _BRANCH_LIST_CACHE_FAILURE_TTL,
+            None,
+            detail,
+        )
+        raise HTTPException(status_code=502, detail=detail) from exc
+    branches.sort(key=lambda branch: (branch["name"] != default_branch, branch["name"]))
+    result = {"branches": branches, "default_branch": default_branch}
+    _BRANCH_LIST_CACHE[repo_id] = (
+        time.monotonic() + _BRANCH_LIST_CACHE_TTL,
+        result,
+        None,
+    )
+    return result
+
+
+@router.post("/sessions/{session_id}/messages")
+async def send_message(session_id: int, request: MessageRequest) -> dict:
+    row = await asyncio.to_thread(_load_session_row, session_id)
+    if row is None:
+        return {"accepted": False, "error": f"Unknown agent session {session_id}"}
+    try:
+        session_model = normalize_model(row.model)
+        requested_model = normalize_model(request.model)
+        session_family = model_family(session_model)
+        requested_family = (
+            model_family(requested_model)
+            if requested_model is not None
+            else session_family
+        )
+    except ValueError as exc:
+        return {"accepted": False, "error": str(exc)}
+    if requested_family != session_family:
+        return {
+            "accepted": False,
+            "error": (
+                f"Model family mismatch: session family is {session_family}, "
+                f"requested model family is {requested_family}"
+            ),
+        }
+    effective_model = requested_model or session_model
+    try:
+        await mcp.recover_zombie_session_if_needed(session_id)
+    except Exception:  # noqa: BLE001 - recovery cannot reject or lose a send
+        logger.exception("Recovery check failed for session %s", session_id)
+    try:
+        turn = await asyncio.to_thread(
+            _persist_pending_message, session_id, request.prompt, effective_model
+        )
+    except store.SessionOutcomeUnknown as exc:
+        return {"accepted": False, "error": str(exc), "session_id": session_id}
+    except Exception:  # noqa: BLE001 - send gates return structured failures
+        logger.exception("Could not persist message for session %s", session_id)
+        return {
+            "accepted": False,
+            "error": "Could not queue message",
+            "session_id": session_id,
+        }
+    # Queued from the UI, so its result does not get echoed to Discord.
+    _mark_ui_originated(session_id, turn)
+    try:
+        activated = await asyncio.to_thread(_activate_session_after_enqueue, session_id)
+    except Exception:  # noqa: BLE001 - the durable queue remains the backstop
+        logger.exception("Could not activate queued session %s", session_id)
+        activated = False
+    if not activated:
+        return {"accepted": True, "session_id": session_id, "turn": turn}
+    login = await codex_login_gate(effective_model)
+    if login is not None:
+        await asyncio.to_thread(_set_session_status, session_id, "awaiting_login")
+
+        async def resume() -> None:
+            await asyncio.to_thread(_set_session_status, session_id, "running")
+            _schedule_next_message(session_id)
+
+        watch_for_login(login.get("grant", "codex-cluster"), resume)
+        return {
+            "accepted": False,
+            **login,
+            "session_id": session_id,
+            "turn": turn,
+        }
+    _schedule_next_message(session_id)
+    return {"accepted": True, "session_id": session_id, "turn": turn}
+
+
+@router.post("/sessions/{session_id}/prewarm", status_code=204)
+async def prewarm_session(session_id: int) -> Response:
+    """Best-effort wake for an existing guest binding."""
+    try:
+        row = await asyncio.to_thread(_load_session_row, session_id)
+        if row is None or not row.ember_session_id or not row.ember_session_token:
+            return Response(status_code=204)
+
+        now = time.monotonic()
+        last = _prewarm_timestamps.get(session_id)
+        if last is not None and now - last < _PREWARM_TTL:
+            return Response(status_code=204)
+
+        # Claim the TTL before awaiting so concurrent requests in this process
+        # cannot both start a relight.
+        _prewarm_timestamps[session_id] = now
+
+        async def admission_check() -> None:
+            from factory.execution import admission
+            from factory.orchestration.api import factory_session_allowed
+
+            if not await asyncio.to_thread(
+                factory_session_allowed, row.local_session_id
+            ):
+                raise RuntimeError("Factory admission is fenced")
+            if not await asyncio.to_thread(admission.recheck_prewarm, session_id):
+                raise RuntimeError("Prewarm requires an admitted execution")
+
+        await admission_check()
+        await _transport.prewarm_session(
+            row.ember_session_id,
+            row.ember_session_token,
+            admission_check=admission_check,
+        )
+    except Exception as exc:  # noqa: BLE001 - prewarm must swallow every failure
+        # Prewarm is an invisible latency optimization. It must never create a
+        # composer error channel or affect the real send that follows.
+        logger.debug("agent session prewarm failed for session %s: %s", session_id, exc)
+    return Response(status_code=204)
+
+
+@router.delete("/sessions/{session_id}")
+async def delete_session(session_id: int) -> dict:
+    try:
+        row = await asyncio.to_thread(_load_session_row, session_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Agent session not found")
+        if row.ember_session_id is None:
+            return {}
+        result = await _transport.destroy_session(row.ember_session_id)
+        result["cleared_bindings"] = await asyncio.to_thread(
+            _clear_ember_bindings_for, row.ember_session_id
+        )
+        return result
+    except EmberVMTransportError as exc:
+        return {"error": str(exc)}
+
+
+@router.get("/search")
+def search_sessions(
+    q: str = Query(...),
+    limit: int = Query(default=20, ge=1, le=500),
+    session: Session = Depends(get_session),
+) -> dict:
+    results = store.lexical_search(session, q, limit)
+    return {
+        "results": [
+            {
+                "session_id": result["session_id"],
+                "local_session_id": result["local_session_id"],
+                "workspace": result["workspace"],
+                "seq": result["seq"],
+                "created_at": _iso(result["created_at"]),
+                "rank": float(result["rank"]),
+                "snippet": result["snippet"],
+            }
+            for result in results
+        ]
+    }

@@ -1292,7 +1292,7 @@ py_library(
 
 py_library(
     name = "agent_sessions_rationale",
-    srcs = ["agent_sessions/rationale.py"],
+    srcs = ["factory/execution/rationale.py"],
     imports = ["."],
     visibility = ["//:__subpackages__"],
 )
@@ -1300,12 +1300,14 @@ py_library(
 py_library(
     name = "agent_sessions_admission",
     srcs = [
-        "agent_sessions/__init__.py",
-        "agent_sessions/admission.py",
-        "agent_sessions/api.py",
-        "agent_sessions/constants.py",
-        "agent_sessions/models.py",
-        "agent_sessions/reconciliation.py",
+        "factory/api.py",
+        "factory/execution/__init__.py",
+        "factory/execution/admission.py",
+        "factory/execution/api.py",
+        "factory/execution/constants.py",
+        "factory/execution/factory_stop.py",
+        "factory/execution/models.py",
+        "factory/execution/reconciliation.py",
     ],
     imports = ["."],
     visibility = ["//:__subpackages__"],
@@ -1322,24 +1324,25 @@ py_library(
     name = "pkg_agent_sessions",
     # Keep the private view closure with its execution dependencies during
     # consolidation; pkg_factory also composes swarm and cannot be a leaf.
-    srcs = [
+    srcs = glob(["agent_sessions/*.py"]) + [
         "factory/private_view.py",
         "factory/publication.py",
     ] + glob(
         [
-            "agent_sessions/**/*.py",
+            "factory/execution/**/*.py",
         ],
         exclude = [
             "**/*_test.py",
             "**/test_*.py",
             "*/tests/**/*.py",
-            "agent_sessions/rationale.py",
-            "agent_sessions/__init__.py",
-            "agent_sessions/admission.py",
-            "agent_sessions/api.py",
-            "agent_sessions/constants.py",
-            "agent_sessions/models.py",
-            "agent_sessions/reconciliation.py",
+            "factory/execution/rationale.py",
+            "factory/execution/__init__.py",
+            "factory/execution/admission.py",
+            "factory/execution/api.py",
+            "factory/execution/constants.py",
+            "factory/execution/factory_stop.py",
+            "factory/execution/models.py",
+            "factory/execution/reconciliation.py",
         ],
     ),
     imports = ["."],
@@ -1379,7 +1382,7 @@ py_library(
 
 py_library(
     name = "swarm_rationale",
-    srcs = ["swarm/rationale.py"],
+    srcs = ["factory/orchestration/rationale.py"],
     imports = ["."],
     visibility = ["//:__subpackages__"],
     deps = [":agent_sessions_rationale"],
@@ -1390,11 +1393,11 @@ py_library(
 py_library(
     name = "swarm_factory_controls",
     srcs = [
-        "swarm/__init__.py",
-        "swarm/api.py",
-        "swarm/factory_controls.py",
-        "swarm/factory_models.py",
-        "swarm/models.py",
+        "factory/orchestration/__init__.py",
+        "factory/orchestration/api.py",
+        "factory/orchestration/factory_controls.py",
+        "factory/orchestration/factory_models.py",
+        "factory/orchestration/models.py",
     ],
     imports = ["."],
     visibility = ["//:__subpackages__"],
@@ -1407,18 +1410,18 @@ py_library(
 
 py_library(
     name = "pkg_swarm",
-    srcs = glob(
-        ["swarm/**/*.py"],
+    srcs = glob(["swarm/*.py"]) + glob(
+        ["factory/orchestration/**/*.py"],
         exclude = [
             "**/*_test.py",
             "**/test_*.py",
             "*/tests/**/*.py",
-            "swarm/__init__.py",
-            "swarm/api.py",
-            "swarm/factory_controls.py",
-            "swarm/factory_models.py",
-            "swarm/models.py",
-            "swarm/rationale.py",
+            "factory/orchestration/__init__.py",
+            "factory/orchestration/api.py",
+            "factory/orchestration/factory_controls.py",
+            "factory/orchestration/factory_models.py",
+            "factory/orchestration/models.py",
+            "factory/orchestration/rationale.py",
         ],
     ),
     imports = ["."],
@@ -1427,6 +1430,7 @@ py_library(
         ":agent_sessions_admission",
         ":agent_sessions_rationale",
         ":factory_access",
+        ":factory_durable_identity",
         ":pkg_agent_sessions",
         ":pkg_core",
         ":pkg_cyclegroup",
@@ -1880,6 +1884,7 @@ _AGENTS_PRUNE_EXCLUDE = [
     # Whole private domains.
     "agent/**",
     "agent_sessions/**",
+    "factory/**",
     "cluster/**",
     "demos/**",
     "goosecracker/**",
@@ -2267,7 +2272,7 @@ py_test(
             "home/**/*.py",
             "scheduler/**/*.py",
             "agent/**/*.py",
-            "agent_sessions/**/*.py",
+            "factory/**/*.py",
             "auth/**/*.py",
             "goosecracker/**/*.py",
             "worldcup/**/*.py",
@@ -2285,7 +2290,7 @@ py_test(
 
 py_test(
     name = "view_test",
-    srcs = ["swarm/view_test.py"],
+    srcs = ["factory/orchestration/view_test.py"],
     imports = ["."],
     deps = [
         ":pkg_swarm",
@@ -2295,7 +2300,7 @@ py_test(
 
 py_test(
     name = "rows_test",
-    srcs = ["swarm/rows_test.py"],
+    srcs = ["factory/orchestration/rows_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
@@ -2305,7 +2310,7 @@ py_test(
 
 py_test(
     name = "models_test",
-    srcs = ["swarm/models_test.py"],
+    srcs = ["factory/orchestration/models_test.py"],
     imports = ["."],
     deps = [
         ":pkg_swarm",
@@ -2317,7 +2322,7 @@ py_test(
 
 py_test(
     name = "swarm_turn_artifact_test",
-    srcs = ["swarm/turn_artifact_test.py"],
+    srcs = ["factory/orchestration/turn_artifact_test.py"],
     imports = ["."],
     deps = [
         ":pkg_swarm",
@@ -2327,7 +2332,7 @@ py_test(
 
 py_test(
     name = "swarm_graph_test",
-    srcs = ["swarm/graph_test.py"],
+    srcs = ["factory/orchestration/graph_test.py"],
     imports = ["."],
     deps = [
         ":pkg_swarm",
@@ -2337,7 +2342,7 @@ py_test(
 
 py_test(
     name = "swarm_store_test",
-    srcs = ["swarm/store_test.py"],
+    srcs = ["factory/orchestration/store_test.py"],
     imports = ["."],
     deps = [
         ":pkg_swarm",
@@ -2348,7 +2353,7 @@ py_test(
 
 py_test(
     name = "rationale_test",
-    srcs = ["swarm/rationale_test.py"],
+    srcs = ["factory/orchestration/rationale_test.py"],
     imports = ["."],
     deps = [
         ":pkg_swarm",
@@ -2359,7 +2364,7 @@ py_test(
 
 py_test(
     name = "deviations_test",
-    srcs = ["swarm/deviations_test.py"],
+    srcs = ["factory/orchestration/deviations_test.py"],
     imports = ["."],
     deps = [
         ":pkg_swarm",
@@ -2369,7 +2374,7 @@ py_test(
 
 py_test(
     name = "budget_test",
-    srcs = ["swarm/budget_test.py"],
+    srcs = ["factory/orchestration/budget_test.py"],
     imports = ["."],
     deps = [
         ":pkg_swarm",
@@ -2379,7 +2384,7 @@ py_test(
 
 py_test(
     name = "tier_test",
-    srcs = ["swarm/tier_test.py"],
+    srcs = ["factory/orchestration/tier_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
@@ -4567,7 +4572,7 @@ py_test(
 
 py_test(
     name = "agent_sessions_router_test",
-    srcs = ["agent_sessions/router_test.py"],
+    srcs = ["factory/execution/router_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -4583,7 +4588,7 @@ py_test(
 
 py_test(
     name = "swarm_config_test",
-    srcs = ["swarm/config_test.py"],
+    srcs = ["factory/orchestration/config_test.py"],
     imports = ["."],
     deps = [
         ":pkg_swarm",
@@ -4593,7 +4598,7 @@ py_test(
 
 py_test(
     name = "swarm_runtime_test",
-    srcs = ["swarm/runtime_test.py"],
+    srcs = ["factory/orchestration/runtime_test.py"],
     imports = ["."],
     deps = [
         ":pkg_swarm",
@@ -4605,7 +4610,7 @@ py_test(
 
 py_test(
     name = "swarm_policy_test",
-    srcs = ["swarm/policy_test.py"],
+    srcs = ["factory/orchestration/policy_test.py"],
     imports = ["."],
     deps = [
         ":pkg_swarm",
@@ -4615,7 +4620,7 @@ py_test(
 
 py_test(
     name = "swarm_classifier_test",
-    srcs = ["swarm/classifier_test.py"],
+    srcs = ["factory/orchestration/classifier_test.py"],
     imports = ["."],
     deps = [
         ":pkg_swarm",
@@ -4626,7 +4631,7 @@ py_test(
 
 py_test(
     name = "swarm_factory_conductor_test",
-    srcs = ["swarm/factory_conductor_test.py"],
+    srcs = ["factory/orchestration/factory_conductor_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -4644,7 +4649,7 @@ py_test(
 
 py_test(
     name = "swarm_model_pool_test",
-    srcs = ["swarm/model_pool_test.py"],
+    srcs = ["factory/orchestration/model_pool_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -4655,7 +4660,7 @@ py_test(
 
 py_test(
     name = "swarm_factory_controls_test",
-    srcs = ["swarm/factory_controls_test.py"],
+    srcs = ["factory/orchestration/factory_controls_test.py"],
     imports = ["."],
     deps = [
         ":pkg_auth",
@@ -4670,7 +4675,7 @@ py_test(
 
 py_test(
     name = "swarm_mcp_test",
-    srcs = ["swarm/mcp_test.py"],
+    srcs = ["factory/orchestration/mcp_test.py"],
     imports = ["."],
     deps = [
         ":pkg_auth",
@@ -4683,7 +4688,7 @@ py_test(
 
 py_test(
     name = "swarm_factory_intake_test",
-    srcs = ["swarm/factory_intake_test.py"],
+    srcs = ["factory/orchestration/factory_intake_test.py"],
     imports = ["."],
     deps = [
         ":pkg_auth",
@@ -4698,7 +4703,7 @@ py_test(
 
 py_test(
     name = "swarm_factory_intake_loop_test",
-    srcs = ["swarm/factory_intake_loop_test.py"],
+    srcs = ["factory/orchestration/factory_intake_loop_test.py"],
     imports = ["."],
     deps = [
         ":pkg_auth",
@@ -4713,7 +4718,7 @@ py_test(
 
 py_test(
     name = "swarm_factory_landing_test",
-    srcs = ["swarm/factory_landing_test.py"],
+    srcs = ["factory/orchestration/factory_landing_test.py"],
     imports = ["."],
     deps = [
         ":pkg_auth",
@@ -4728,7 +4733,7 @@ py_test(
 
 py_test(
     name = "swarm_factory_quota_guard_test",
-    srcs = ["swarm/factory_quota_guard_test.py"],
+    srcs = ["factory/orchestration/factory_quota_guard_test.py"],
     imports = ["."],
     deps = [
         ":pkg_auth",
@@ -4743,7 +4748,7 @@ py_test(
 
 py_test(
     name = "swarm_factory_refine_test",
-    srcs = ["swarm/factory_refine_test.py"],
+    srcs = ["factory/orchestration/factory_refine_test.py"],
     imports = ["."],
     deps = [
         ":pkg_auth",
@@ -4758,7 +4763,7 @@ py_test(
 
 py_test(
     name = "swarm_factory_decisions_test",
-    srcs = ["swarm/factory_decisions_test.py"],
+    srcs = ["factory/orchestration/factory_decisions_test.py"],
     imports = ["."],
     deps = [
         ":pkg_auth",
@@ -4773,7 +4778,7 @@ py_test(
 
 py_test(
     name = "swarm_factory_escalation_test",
-    srcs = ["swarm/factory_escalation_test.py"],
+    srcs = ["factory/orchestration/factory_escalation_test.py"],
     imports = ["."],
     deps = [
         ":pkg_auth",
@@ -4788,7 +4793,7 @@ py_test(
 
 py_test(
     name = "swarm_factory_fence_test",
-    srcs = ["swarm/factory_fence_test.py"],
+    srcs = ["factory/orchestration/factory_fence_test.py"],
     imports = ["."],
     deps = [
         ":pkg_auth",
@@ -4803,7 +4808,7 @@ py_test(
 
 py_test(
     name = "swarm_factory_router_test",
-    srcs = ["swarm/factory_router_test.py"],
+    srcs = ["factory/orchestration/factory_router_test.py"],
     imports = ["."],
     deps = [
         ":pkg_auth",
@@ -4818,7 +4823,7 @@ py_test(
 
 py_test(
     name = "swarm_factory_integration_test",
-    srcs = ["swarm/factory_integration_test.py"],
+    srcs = ["factory/orchestration/factory_integration_test.py"],
     imports = ["."],
     deps = [
         ":pkg_auth",
@@ -4833,7 +4838,7 @@ py_test(
 
 py_test(
     name = "swarm_factory_supervision_test",
-    srcs = ["swarm/factory_supervision_test.py"],
+    srcs = ["factory/orchestration/factory_supervision_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -4849,7 +4854,7 @@ py_test(
 
 py_test(
     name = "swarm_factory_attempt_stop_test",
-    srcs = ["swarm/factory_attempt_stop_test.py"],
+    srcs = ["factory/orchestration/factory_attempt_stop_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -4867,7 +4872,7 @@ py_test(
 
 py_test(
     name = "swarm_node_workflows_test",
-    srcs = ["swarm/node_workflows_test.py"],
+    srcs = ["factory/orchestration/node_workflows_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -4883,7 +4888,7 @@ py_test(
 
 py_test(
     name = "agent_sessions_factory_transport_test",
-    srcs = ["agent_sessions/factory_transport_test.py"],
+    srcs = ["factory/execution/factory_transport_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -4894,7 +4899,7 @@ py_test(
 
 py_test(
     name = "swarm_router_test",
-    srcs = ["swarm/router_test.py"],
+    srcs = ["factory/orchestration/router_test.py"],
     imports = ["."],
     deps = [
         ":pkg_swarm",
@@ -4907,7 +4912,7 @@ py_test(
 
 py_test(
     name = "swarm_drainer_router_test",
-    srcs = ["swarm/drainer_router_test.py"],
+    srcs = ["factory/orchestration/drainer_router_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -4923,7 +4928,7 @@ py_test(
 
 py_test(
     name = "swarm_health_test",
-    srcs = ["swarm/health_test.py"],
+    srcs = ["factory/orchestration/health_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -4934,7 +4939,7 @@ py_test(
 
 py_test(
     name = "swarm_drainer_test",
-    srcs = ["swarm/drainer_test.py"],
+    srcs = ["factory/orchestration/drainer_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -5078,7 +5083,7 @@ py_test(
 
 py_test(
     name = "swarm_drain_console_test",
-    srcs = ["swarm/drain_console_test.py"],
+    srcs = ["factory/orchestration/drain_console_test.py"],
     imports = ["."],
     deps = [
         ":pkg_swarm",
@@ -5088,7 +5093,7 @@ py_test(
 
 py_test(
     name = "swarm_drain_console_router_test",
-    srcs = ["swarm/drain_console_router_test.py"],
+    srcs = ["factory/orchestration/drain_console_router_test.py"],
     imports = ["."],
     deps = [
         ":pkg_swarm",
@@ -5100,7 +5105,7 @@ py_test(
 
 py_test(
     name = "swarm_compare_router_test",
-    srcs = ["swarm/compare_router_test.py"],
+    srcs = ["factory/orchestration/compare_router_test.py"],
     imports = ["."],
     deps = [
         ":pkg_swarm",
@@ -5111,7 +5116,7 @@ py_test(
 
 py_test(
     name = "swarm_unified_diff_test",
-    srcs = ["swarm/unified_diff_test.py"],
+    srcs = ["factory/orchestration/unified_diff_test.py"],
     imports = ["."],
     deps = [
         ":pkg_swarm",
@@ -5121,7 +5126,7 @@ py_test(
 
 py_test(
     name = "swarm_walkthrough_composer_test",
-    srcs = ["swarm/walkthrough_composer_test.py"],
+    srcs = ["factory/orchestration/walkthrough_composer_test.py"],
     imports = ["."],
     deps = [
         ":pkg_swarm",
@@ -5131,7 +5136,7 @@ py_test(
 
 py_test(
     name = "swarm_workflows_test",
-    srcs = ["swarm/workflows_test.py"],
+    srcs = ["factory/orchestration/workflows_test.py"],
     imports = ["."],
     deps = [
         ":pkg_swarm",
@@ -5141,7 +5146,7 @@ py_test(
 
 py_test(
     name = "swarm_steps_test",
-    srcs = ["swarm/steps_test.py"],
+    srcs = ["factory/orchestration/steps_test.py"],
     imports = ["."],
     deps = [
         ":pkg_swarm",
@@ -5152,7 +5157,7 @@ py_test(
 
 py_test(
     name = "agent_sessions_permit_supervision_test",
-    srcs = ["agent_sessions/permit_supervision_test.py"],
+    srcs = ["factory/execution/permit_supervision_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -5188,7 +5193,7 @@ py_test(
 
 py_test(
     name = "agent_sessions_admission_test",
-    srcs = ["agent_sessions/admission_test.py"],
+    srcs = ["factory/execution/admission_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -5199,7 +5204,7 @@ py_test(
 
 py_test(
     name = "agent_sessions_store_test",
-    srcs = ["agent_sessions/store_test.py"],
+    srcs = ["factory/execution/store_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -5210,20 +5215,20 @@ py_test(
 
 bdd_test(
     name = "agent_sessions_store_postgres_test",
-    srcs = ["agent_sessions/store_postgres_test.py"],
+    srcs = ["factory/execution/store_postgres_test.py"],
 )
 
 bdd_test(
     name = "agent_sessions_process_crash_test",
     srcs = [
-        "agent_sessions/process_crash_driver_test.py",
-        "agent_sessions/process_crash_test.py",
+        "factory/execution/process_crash_driver_test.py",
+        "factory/execution/process_crash_test.py",
     ],
 )
 
 py_test(
     name = "agent_sessions_api_test",
-    srcs = ["agent_sessions/api_test.py"],
+    srcs = ["factory/execution/api_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -5234,7 +5239,7 @@ py_test(
 
 py_test(
     name = "agent_sessions_progress_ingest_test",
-    srcs = ["agent_sessions/progress_ingest_test.py"],
+    srcs = ["factory/execution/progress_ingest_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -5247,7 +5252,7 @@ py_test(
 
 py_test(
     name = "agent_sessions_result_receipts_test",
-    srcs = ["agent_sessions/result_receipts_test.py"],
+    srcs = ["factory/execution/result_receipts_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -5261,7 +5266,7 @@ py_test(
 
 py_test(
     name = "agent_sessions_preinvoke_test",
-    srcs = ["agent_sessions/preinvoke_test.py"],
+    srcs = ["factory/execution/preinvoke_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -5278,7 +5283,7 @@ py_test(
 
 py_test(
     name = "agent_sessions_receipt_capture_test",
-    srcs = ["agent_sessions/receipt_capture_test.py"],
+    srcs = ["factory/execution/receipt_capture_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -5293,7 +5298,7 @@ py_test(
 
 py_test(
     name = "agent_sessions_receipt_consumer_test",
-    srcs = ["agent_sessions/receipt_consumer_test.py"],
+    srcs = ["factory/execution/receipt_consumer_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -5308,7 +5313,7 @@ py_test(
 
 py_test(
     name = "agent_sessions_response_lost_test",
-    srcs = ["agent_sessions/response_lost_test.py"],
+    srcs = ["factory/execution/response_lost_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -7793,7 +7798,7 @@ bdd_test(
 # tolerate empty usage payloads, and grant public_reader only the views.
 bdd_test(
     name = "public_agent_activity_views_test",
-    srcs = ["agent_sessions/public_agent_activity_views_test.py"],
+    srcs = ["factory/execution/public_agent_activity_views_test.py"],
     deps = ["@pip//typer"],
 )
 
@@ -8049,7 +8054,7 @@ py_test(
 
 py_test(
     name = "agent_sessions_store_voice_test",
-    srcs = ["agent_sessions/store_voice_test.py"],
+    srcs = ["factory/execution/store_voice_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -8060,7 +8065,7 @@ py_test(
 
 py_test(
     name = "agent_sessions_titles_test",
-    srcs = ["agent_sessions/titles_test.py"],
+    srcs = ["factory/execution/titles_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -8072,7 +8077,7 @@ py_test(
 
 py_test(
     name = "agent_sessions_kg_feed_test",
-    srcs = ["agent_sessions/kg_feed_test.py"],
+    srcs = ["factory/execution/kg_feed_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -8084,7 +8089,7 @@ py_test(
 
 py_test(
     name = "agent_sessions_mcp_test",
-    srcs = ["agent_sessions/mcp_test.py"],
+    srcs = ["factory/execution/mcp_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -8097,7 +8102,7 @@ py_test(
 
 py_test(
     name = "agent_sessions_provider_quota_test",
-    srcs = ["agent_sessions/provider_quota_test.py"],
+    srcs = ["factory/execution/provider_quota_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -8112,7 +8117,7 @@ py_test(
 
 py_test(
     name = "agent_sessions_transport_test",
-    srcs = ["agent_sessions/transport_test.py"],
+    srcs = ["factory/execution/transport_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -8124,7 +8129,7 @@ py_test(
 
 py_test(
     name = "agent_sessions_voice_ui_test",
-    srcs = ["agent_sessions/voice_ui_test.py"],
+    srcs = ["factory/execution/voice_ui_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -8141,7 +8146,7 @@ py_test(
 
 py_test(
     name = "agent_sessions_swarm_decision_test",
-    srcs = ["agent_sessions/swarm_decision_test.py"],
+    srcs = ["factory/execution/swarm_decision_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -8690,6 +8695,8 @@ py_library(
         exclude = [
             "factory/*_test.py",
             "factory/access.py",
+            "factory/api.py",
+            "factory/durable_identity.py",
             "factory/private_view.py",
             "factory/publication.py",
         ],
@@ -8724,5 +8731,22 @@ py_library(
     deps = [
         ":pkg_auth",
         "@pip//fastapi",
+    ],
+)
+
+py_library(
+    name = "factory_durable_identity",
+    srcs = ["factory/durable_identity.py"],
+    imports = ["."],
+)
+
+py_test(
+    name = "factory_durable_identity_test",
+    srcs = ["factory/durable_identity_test.py"],
+    imports = ["."],
+    deps = [
+        ":factory_durable_identity",
+        ":pkg_swarm",
+        "@pip//pytest",
     ],
 )

@@ -41,3 +41,31 @@ __all__ = [
     "load_drainer_settings",
     "list_jobs",
 ]
+
+
+# Narrow contracts used by the factory drainer. Resolve lazily to avoid
+# loading execution or writer code into read-only domain compositions.
+_FACTORY_EXPORTS = {
+    "drainer_worker_intents": "agent.routine_jobs",
+    "reserve_drainer_workers": "agent.routine_jobs",
+    "DRAINER_WORKER_COUNT": "agent.routine_jobs",
+    "hold_job_for_unknown_outcome": "agent.routine_jobs",
+    "claim_job": "agent.routine_jobs",
+    "defer_job": "agent.routine_jobs",
+    "update_job_payload": "agent.routine_jobs",
+    "lock_claim": "agent.routine_jobs",
+    "complete_job": "agent.routine_jobs",
+    "deregister_job": "agent.routine_jobs",
+    "DrainerSettings": "agent.config",
+    "drainer_enabled": "agent.config",
+    "trigger_job": "agent.routine_jobs",
+}
+
+
+def __getattr__(name: str):
+    module = _FACTORY_EXPORTS.get(name)
+    if module is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    from importlib import import_module
+
+    return getattr(import_module(module), name)
