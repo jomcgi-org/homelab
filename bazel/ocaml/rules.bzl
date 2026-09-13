@@ -195,11 +195,13 @@ def _ocaml_library_impl(ctx):
     args.add("--a-out", a_lib.path)
 
     # Generated parser modules can be large enough for ocamlopt to exceed the
-    # default remote allocation. Reserve four BuildBuddy compute units for
-    # Menhir libraries, which covers both generation and native compilation.
+    # default remote allocation and action timeout. Reserve four BuildBuddy
+    # compute units and 15 minutes for Menhir libraries, which covers both
+    # generation and native compilation.
     execution_requirements = {}
     if ctx.attr.menhir:
         execution_requirements["EstimatedComputeUnits"] = "4"
+        execution_requirements["default-timeout"] = "15m"
 
     ctx.actions.run(
         executable = ctx.executable._driver,
