@@ -280,7 +280,7 @@ def _before_sibling_or_row_end(
     text: str, start: int, sibling_patterns: list[re.Pattern[str]]
 ) -> str:
     end = min(len(text), start + MAX_ASSOCIATION_CHARS)
-    separator = re.search(r"[;\n|]", text[start:])
+    separator = re.search(r"[;\n]", text[start:])
     if separator is not None:
         end = min(end, start + separator.start())
     for pattern in sibling_patterns:
@@ -288,6 +288,47 @@ def _before_sibling_or_row_end(
         if sibling is not None:
             end = min(end, sibling.start())
     return text[start:end]
+
+
+def _ordered_values_grounded(value: list, text: str) -> bool:
+    """Require every array element to occur in evidence order."""
+    if not value:
+        return False
+    position = 0
+    for item in value:
+        pattern = _literal_pattern(item)
+        if pattern is None:
+            return False
+        match = re.search(pattern, text[position:], re.IGNORECASE)
+        if match is None:
+            return False
+        position += match.end()
+    return True
+
+
+def _markdown_rows(text: str) -> list[list[str]]:
+    """Return cells from Markdown-style rows, including rows without edge pipes."""
+    rows: list[list[str]] = []
+    for line in text.splitlines():
+        if "|" not in line:
+            continue
+        cells = re.split(r"(?<!\\)\|", line.strip())
+        if cells and not cells[0]:
+            cells.pop(0)
+        if cells and not cells[-1]:
+            cells.pop()
+        if len(cells) >= 2:
+            rows.append([cell.replace(r"\|", "|").strip() for cell in cells])
+    return rows
+
+
+def _structured_value_grounded(value: Any, text: str) -> bool:
+    if isinstance(value, dict):
+        return _mapping_grounded(value, text)
+    if isinstance(value, list):
+        return _ordered_values_grounded(value, text)
+    pattern = _literal_pattern(value)
+    return pattern is not None and re.search(pattern, text, re.IGNORECASE) is not None
 
 
 def _mapping_grounded(value: dict, text: str) -> bool:
@@ -301,28 +342,25 @@ def _mapping_grounded(value: dict, text: str) -> bool:
             return False
         compiled_keys[key] = re.compile(pattern, re.IGNORECASE)
     for key, item in value.items():
+        supported = False
+        for cells in _markdown_rows(text):
+            for index, cell in enumerate(cells[:-1]):
+                if compiled_keys[key].fullmatch(cell) is None:
+                    continue
+                if _structured_value_grounded(item, " | ".join(cells[index + 1 :])):
+                    supported = True
+                    break
+            if supported:
+                break
+        if supported:
+            continue
         key_matches = list(compiled_keys[key].finditer(text))
         if not key_matches:
             return False
         siblings = [pattern for other, pattern in compiled_keys.items() if other != key]
-        supported = False
         for match in key_matches:
             keyed_text = _before_sibling_or_row_end(text, match.end(), siblings)
-            if isinstance(item, dict):
-                supported = _mapping_grounded(item, keyed_text)
-            elif isinstance(item, list):
-                patterns = [_literal_pattern(member) for member in item]
-                supported = bool(patterns) and all(
-                    pattern is not None
-                    and re.search(pattern, keyed_text, re.IGNORECASE) is not None
-                    for pattern in patterns
-                )
-            else:
-                pattern = _literal_pattern(item)
-                supported = (
-                    pattern is not None
-                    and re.search(pattern, keyed_text, re.IGNORECASE) is not None
-                )
+            supported = _structured_value_grounded(item, keyed_text)
             if supported:
                 break
         if not supported:
@@ -367,7 +405,26 @@ def _speed_grounded(value: dict, text: str) -> bool:
             return False
         normalized_mode = str(mode).casefold()
         if normalized_mode in {"walk", "walking"}:
-            label = r"speed"
+            if re.search(
+                rf"\bwalk(?:ing)?(?:\s+speed)?\b\s*(?:[:=]\s*)?{speed_pattern}",
+                text,
+                re.IGNORECASE,
+            ) is not None:
+                continue
+            base_speed_matches = re.finditer(
+                rf"\bspeed\b\s*(?:[:=]\s*)?{speed_pattern}", text, re.IGNORECASE
+            )
+            if any(
+                re.search(
+                    r"\b(?:burrow(?:ing)?|climb(?:ing)?|fly(?:ing)?|swim(?:ming)?)\s*$",
+                    text[: match.start()],
+                    re.IGNORECASE,
+                )
+                is None
+                for match in base_speed_matches
+            ):
+                continue
+            return False
         elif normalized_mode in {"fly", "flying"}:
             label = r"fly(?:ing)?(?:\s+speed)?"
         elif normalized_mode in {"swim", "swimming"}:
@@ -473,11 +530,10 @@ def _value_grounded(field: _Field, value: Any, text: str) -> bool:
             return _grounded_numeric(text, field.attribute, value)
         except (TypeError, ValueError):
             return False
+    if isinstance(value, list):
+        return _ordered_values_grounded(value, text)
     if not isinstance(value, dict):
-        pattern = _literal_pattern(value)
-        return (
-            pattern is not None and re.search(pattern, text, re.IGNORECASE) is not None
-        )
+        return _structured_value_grounded(value, text)
     if field.attribute == "speed":
         return _speed_grounded(value, text)
     if field.attribute == "ability_scores":

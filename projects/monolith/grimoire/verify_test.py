@@ -76,6 +76,31 @@ def _seed_creature(session: Session, *, content: str, speed: dict | None = None)
     return entity, chunk
 
 
+def _seed_table(session: Session):
+    entity = Entity(
+        id="55555555-5555-5555-5555-555555555555",
+        entity_type="table",
+        name="Random Encounters",
+        source_book="bestiary",
+        detail={
+            "columns": ["Roll", "Encounter"],
+            "rows": {"1": "fire", "2": "cold"},
+        },
+    )
+    chunk = KnowledgeChunk(
+        id="66666666-6666-6666-6666-666666666666",
+        book_id="bestiary",
+        chunk_ref="random-encounters",
+        content="| Roll | Encounter |\n| --- | --- |\n| 1 | fire |\n| 2 | cold |",
+        seq=1,
+    )
+    session.add_all(
+        [entity, chunk, ChunkEntityMention(chunk_id=chunk.id, entity_id=entity.id)]
+    )
+    session.commit()
+    return entity, chunk
+
+
 def test_correction_and_unverifiable_are_grounded_and_counted(session: Session):
     entity, chunk = _seed_creature(
         session,
@@ -242,12 +267,87 @@ def test_structured_evidence_accepts_complete_supported_correction():
     assert _value_grounded(field, field.value, "Table: 1 fire; 2 cold") is True
 
 
+def test_markdown_table_columns_and_rows_survive_verification(session: Session):
+    entity, chunk = _seed_table(session)
+    client = FakeVerifier(
+        {
+            "results": [
+                {
+                    "field": "detail.columns",
+                    "verdict": "confirmed",
+                    "correction": None,
+                    "evidence_chunk_id": chunk.id,
+                },
+                {
+                    "field": "detail.rows",
+                    "verdict": "confirmed",
+                    "correction": None,
+                    "evidence_chunk_id": chunk.id,
+                },
+            ]
+        }
+    )
+
+    summary = asyncio.run(verify_entities(session, client))
+
+    assert session.get(Entity, entity.id).detail == {
+        "columns": ["Roll", "Encounter"],
+        "rows": {"1": "fire", "2": "cold"},
+    }
+    assert session.get(EntityVerification, (entity.id, "v1")).status == "verified"
+    assert summary["entities_verified"] == 1
+    assert summary["values_nulled"] == 0
+
+
+def test_markdown_table_rows_reject_swapped_values():
+    field = _Field("detail.rows", None, "detail", {"1": "fire", "2": "cold"})
+    table = "| Roll | Encounter |\n| --- | --- |\n| 1 | cold |\n| 2 | fire |"
+
+    assert _value_grounded(field, field.value, table) is False
+
+
+def test_markdown_table_columns_require_extracted_order():
+    field = _Field("detail.columns", None, "detail", ["Roll", "Encounter"])
+
+    assert _value_grounded(field, field.value, "| Encounter | Roll |") is False
+
+
+@pytest.mark.parametrize(
+    ("value", "content", "expected"),
+    [
+        ({"walk": 30, "fly": 60}, "Speed 30 feet, flying speed 60 feet.", True),
+        ({"walk": 60}, "Speed 30 feet, flying speed 60 feet.", False),
+        ({"walk": 60}, "Walking speed 60 feet.", True),
+    ],
+)
+def test_walking_speed_does_not_use_other_movement_modes(value, content, expected):
+    field = _Field("creature.speed", None, "speed", value)
+
+    assert _value_grounded(field, value, content) is expected
+
+
 def test_numeric_evidence_uses_complete_number_boundaries():
     field = _Field("creature.ac", None, "ac", 13)
 
     assert _value_grounded(field, 13, "Armor Class 13.") is True
     assert _value_grounded(field, 13, "Armor Class 130.") is False
     assert _value_grounded(field, 13, "Armor Class 13.5.") is False
+
+
+@pytest.mark.parametrize("fraction", ["1/2", "1/4", "1/8"])
+def test_challenge_rating_rejects_fraction_numerator_prefix(fraction):
+    field = _Field("creature.cr", None, "cr", 1)
+
+    assert _value_grounded(field, 1, f"Challenge {fraction} (100 XP)") is False
+
+
+@pytest.mark.parametrize(
+    ("value", "fraction"), [(0.5, "1/2"), (0.25, "1/4"), (0.125, "1/8")]
+)
+def test_fractional_challenge_ratings_remain_grounded(value, fraction):
+    field = _Field("creature.cr", None, "cr", value)
+
+    assert _value_grounded(field, value, f"Challenge {fraction} (100 XP)") is True
 
 
 @pytest.mark.parametrize(
