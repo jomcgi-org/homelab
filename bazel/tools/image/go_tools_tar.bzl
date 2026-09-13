@@ -1,7 +1,7 @@
 """Package source-built Go tools into per-platform tar layers."""
 
 load("@aspect_bazel_lib//lib:tar.bzl", "tar")
-load("@rules_go//go:def.bzl", "go_binary")
+load("@rules_go//go:def.bzl", "go_binary", "go_reset_target")
 
 _PLATFORMS = {
     "linux_amd64": {"goos": "linux", "goarch": "amd64"},
@@ -22,6 +22,7 @@ def go_tools_tar(name, tools, package_dir = "/usr/bin", visibility = None):
         binaries = {}
         for command, library in tools.items():
             binary_name = "{}_{}_{}".format(name, command.replace("-", "_"), platform)
+            reset_name = binary_name + "_without_nogo"
             go_binary(
                 name = binary_name,
                 embed = [library],
@@ -30,7 +31,17 @@ def go_tools_tar(name, tools, package_dir = "/usr/bin", visibility = None):
                 pure = "on",
                 tags = ["manual"],
             )
-            binaries[command] = ":" + binary_name
+
+            # Cross-platform validation is redundant with the native source
+            # targets, and rules_go's nogo tool is built for the host. Reset
+            # it here so an arm64 target does not run an amd64 analyzer on the
+            # arm64 execution platform.
+            go_reset_target(
+                name = reset_name,
+                dep = ":" + binary_name,
+                tags = ["manual"],
+            )
+            binaries[command] = ":" + reset_name
 
         tar(
             name = name + "_" + platform,
