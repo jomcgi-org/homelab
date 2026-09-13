@@ -1,12 +1,12 @@
 """Package source-built Go tools into per-platform tar layers."""
 
 load("@aspect_bazel_lib//lib:tar.bzl", "tar")
-load("@aspect_bazel_lib//lib:transitions.bzl", "platform_transition_filegroup")
+load("@rules_go//go:def.bzl", "go_binary")
 
 _PLATFORMS = {
-    "linux_amd64": "@rules_go//go/toolchain:linux_amd64",
-    "linux_arm64": "@rules_go//go/toolchain:linux_arm64",
-    "darwin_arm64": "@rules_go//go/toolchain:darwin_arm64",
+    "linux_amd64": {"goos": "linux", "goarch": "amd64"},
+    "linux_arm64": {"goos": "linux", "goarch": "arm64"},
+    "darwin_arm64": {"goos": "darwin", "goarch": "arm64"},
 }
 
 def go_tools_tar(name, tools, package_dir = "/usr/bin", visibility = None):
@@ -14,15 +14,27 @@ def go_tools_tar(name, tools, package_dir = "/usr/bin", visibility = None):
 
     Args:
         name: Base name for generated targets.
-        tools: Dict from installed command name to a go_binary label.
+        tools: Dict from installed command name to a go_library label.
         package_dir: Image directory that receives the commands.
         visibility: Visibility of generated platform targets.
     """
-    for platform, target_platform in _PLATFORMS.items():
-        layer_name = name + "_untransitioned_" + platform
+    for platform, constraints in _PLATFORMS.items():
+        binaries = {}
+        for command, library in tools.items():
+            binary_name = "{}_{}_{}".format(name, command.replace("-", "_"), platform)
+            go_binary(
+                name = binary_name,
+                embed = [library],
+                goarch = constraints["goarch"],
+                goos = constraints["goos"],
+                pure = "on",
+                tags = ["manual"],
+            )
+            binaries[command] = ":" + binary_name
+
         tar(
-            name = layer_name,
-            srcs = tools.values(),
+            name = name + "_" + platform,
+            srcs = binaries.values(),
             tags = ["manual"],
             mtree = [
                 "./{package_dir}/{command} type=file mode=0755 content=$(execpath {target})".format(
@@ -30,12 +42,7 @@ def go_tools_tar(name, tools, package_dir = "/usr/bin", visibility = None):
                     command = command,
                     target = target,
                 )
-                for command, target in tools.items()
+                for command, target in binaries.items()
             ],
-        )
-        platform_transition_filegroup(
-            name = name + "_" + platform,
-            srcs = [":" + layer_name],
-            target_platform = target_platform,
             visibility = visibility,
         )

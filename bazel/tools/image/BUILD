@@ -44,14 +44,14 @@ multitool_tar(
     ],
 )
 
-# Build repository-owned commands once for each target platform. Applying the
-# platform transition to the tar target cross-compiles the go_binary and keeps
-# the resulting layer architecture aligned with its image manifest.
+# Build repository-owned commands once for each target platform. rules_go's
+# goos/goarch attributes cross-compile without moving nogo off its native
+# executor, and each resulting layer stays aligned with its image manifest.
 go_tools_tar(
     name = "source_tools_tar",
     tools = {
-        "agent-run": "//bazel/tools/agent-run",
-        "hf2oci": "//bazel/tools/hf2oci/cmd/hf2oci",
+        "agent-run": "//bazel/tools/agent-run:agent-run_lib",
+        "hf2oci": "//bazel/tools/hf2oci/cmd/hf2oci:hf2oci_lib",
     },
 )
 
@@ -397,7 +397,7 @@ bzl_library(
     visibility = ["//visibility:public"],
     deps = [
         "@aspect_bazel_lib//lib:tar",
-        "@aspect_bazel_lib//lib:transitions",
+        "@rules_go//go:def",
     ],
 )
 

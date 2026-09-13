@@ -97,10 +97,11 @@ load them elsewhere.
 
 ### `go_tools_tar`
 
-`go_tools_tar` applies the rules_go platform transition to repository
-`go_binary` targets before placing them under `/usr/bin` in per-platform tar
-layers. This keeps `agent-run` and `hf2oci` source-built while covering the
-same linux/amd64, linux/arm64, and darwin/arm64 matrix as downloaded tools.
+`go_tools_tar` creates pure-Go binaries from repository `go_library` targets
+with rules_go's `goos` and `goarch` attributes, then places them under
+`/usr/bin` in per-platform tar layers. This keeps `agent-run` and `hf2oci`
+source-built while analysis tools stay on their native executor, and covers
+the same linux/amd64, linux/arm64, and darwin/arm64 matrix as downloaded tools.
 
 ### `multitool_tar`
 
