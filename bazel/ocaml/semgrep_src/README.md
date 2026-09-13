@@ -57,7 +57,7 @@ engine.
 | `languages/jsonnet/tree-sitter` | `:parser_jsonnet_tree_sitter` | translated as-is (Phase 9 wave 7; parser_jsonnet.tree_sitter); CST -> Ast_jsonnet glue over the stamped grammar. Names commons/lib_parsing/lib_parsing_tree_sitter/parser_jsonnet.ast + `tree-sitter-lang.jsonnet` (the new lock entry, dispatch below). The grammar's external scanner puts it x86_64-only (examples/treesitter_jsonnet) |
 | `languages/jsonnet/generic`    | `:parser_jsonnet_ast_generic` | translated as-is (Phase 9 wave 7; parser_jsonnet.ast_generic); names commons/lib_parsing/parser_jsonnet.ast/ast_generic. Ast_jsonnet -> AST_generic glue                                                                                                                                            |
 | `libs/ojsonnet`                | `:ojsonnet`                | translated as-is (Phase 9 wave 7; ojsonnet, `(wrapped false)` so dune name == public name); the consumer that motivates the jsonnet grammar. Names logs/unix/commons/collections/parser_jsonnet.tree_sitter with a `(pps ppx_profiling ppx_deriving.show ppx_deriving.ord commons.ppx)` line, all locked/internal (`unix` is stdlib, the lib_map resolves it). Reaches commons' pcre and links the jsonnet grammar through parser_jsonnet.tree_sitter, so it rides `ladder_builds_cc` |
-| `src/spacegrep/src/bin`        | `:spacegrep_exe`           | selected native CE engine for issue #3922. The executable stanza translates to `ocaml_binary`; its direct `spacegrep` and `cmdliner` dependencies are already pinned, and commons supplies the pinned PCRE/PCRE2 native closure. A documented dune overlay drops only top-level semgrep-core language-link flags that Spacegrep does not use |
+| `src/spacegrep/src/bin`        | `:spacegrep_exe`           | native generic-text CE engine. The overlay rewrites upstream's plural one-program stanza to singular and selects its non-Alpine Linux dynamic link policy. The direct `spacegrep` and `cmdliner` dependencies are pinned, and commons supplies PCRE/PCRE2 through Bazel `cc_deps` |
 
 ## Native engine target and boundary
 
@@ -70,13 +70,18 @@ targets. `//bazel/ocaml/semgrep_src:spacegrep_build_test` makes the link an
 explicit Linux CI target, while `:spacegrep_smoke_test` runs a metavariable
 match through the resulting executable.
 
-The upstream bin dune includes `flags.sexp`, generated from the full language
-grammar inventory so the combined `semgrep-core` executable retains every
-grammar at link time. Spacegrep does not depend on those grammars. Its checked-in
-overlay preserves the upstream executable name, sources, package, and direct
-libraries, and removes only that unrelated link-flag rule. The translator still
-rejects `(:include ...)`, generic rules, plural `(executables ...)`, and every
-unsupported executable field.
+The upstream bin dune is a plural `(executables)` stanza containing one program.
+Its checked-in overlay rewrites `executables`/`names`/`public_names` to the
+translator's singular form while preserving `Space_main`, its package, and its
+direct libraries. It also removes `(:include flags.sexp)` and the rule invoking
+`src/main/flags.sh`. That script is an OS and environment policy selector: Nix
+and `FORCE_DYNLINK` emit no flags; static opam switches and Alpine add static
+SSL, crypto, and zlib flags; non-Alpine Linux emits no flags; macOS enumerates
+the broad native archive list and language grammars. This Bazel target supports
+the non-Alpine Linux dynamic case. Its required PCRE/PCRE2 archives are declared
+through `cc_deps` and passed to the native link action, while Spacegrep has no
+language grammar dependency. Regression tests prove the translator rejects the
+removed `:include` forms, generic rules, plural stanzas, and unsupported fields.
 
 This target does not claim that `semgrep-core`, the full `osemgrep` CLI, or the
 all-language `src/parsing` matrix is complete. Those remain beyond the current

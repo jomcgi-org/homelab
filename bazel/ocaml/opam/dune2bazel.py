@@ -207,6 +207,33 @@ def _field(stanza, key):
     return None
 
 
+def _validate_stanza_fields(stanza, kind, supported):
+    """Reject malformed, unknown, and repeated singleton stanza fields.
+
+    Every field modeled by this translator is a Dune singleton.  `_field`
+    intentionally returns one field, so validate uniqueness before any caller
+    uses it.  Otherwise a repeated field such as `(libraries ...)` would be
+    silently discarded instead of failing at repository fetch time.
+    """
+    seen = set()
+    for item in stanza[1:]:
+        if not (isinstance(item, list) and item and isinstance(item[0], tuple)):
+            sys.exit("dune2bazel: unexpected item in (%s): %r" % (kind, item))
+        key = item[0][1]
+        if key not in supported:
+            sys.exit(
+                "dune2bazel: unsupported (%s) field %r. This field changes "
+                "build or runtime semantics we do not model; extend the "
+                "translator or add a documented override." % (kind, key)
+            )
+        if key in seen:
+            sys.exit(
+                "dune2bazel: duplicate (%s (%s ...)) field; modeled fields "
+                "must occur exactly once." % (kind, key)
+            )
+        seen.add(key)
+
+
 def _resolve_libraries(libs, lib_map):
     """Map dune (libraries ...) names to (opam_deps, dep labels)."""
     opam_deps = []
@@ -307,7 +334,7 @@ def _validate_modules(field, fs_dir, recursive, extra_srcs, dune_path):
 
 
 def _resolve_flags(stanza):
-    """Collect (flags ...) + (ocamlopt_flags ...), dropping :standard."""
+    """Collect plain additive flags, dropping the optional `:standard`."""
     flags = []
     for key in ("flags", "ocamlopt_flags"):
         field = _field(stanza, key)
@@ -315,21 +342,41 @@ def _resolve_flags(stanza):
             continue
         for item in field:
             if isinstance(item, list):
-                # (:standard extra...) is additive, same as the flat form.
-                # Subtraction (\) and other set operators are not modeled.
-                for x in item:
-                    if isinstance(x, list) or _atom(x) == "\\":
+                # The only nested ordered-set form we can flatten faithfully is
+                # `(:standard FLAG...)`.  In particular, `(:include FILE)` must
+                # not leak its operator and filename into compiler arguments.
+                if (
+                    not item
+                    or isinstance(item[0], list)
+                    or _atom(item[0]) != ":standard"
+                ):
+                    sys.exit(
+                        "dune2bazel: unsupported (%s ...) form %r (only plain "
+                        "flags and additive (:standard FLAG...) are modeled)."
+                        % (key, item)
+                    )
+                for x in item[1:]:
+                    if isinstance(x, list):
                         sys.exit(
-                            "dune2bazel: unsupported (%s ...) form %r (only "
-                            "plain flags and additive :standard are modeled)."
-                            % (key, item)
+                            "dune2bazel: unsupported (%s ...) form %r (nested "
+                            "ordered-set expressions are not modeled)." % (key, item)
                         )
-                    if _atom(x) != ":standard":
-                        flags.append(_atom(x))
+                    flag = _atom(x)
+                    if flag == "\\" or flag.startswith(":"):
+                        sys.exit(
+                            "dune2bazel: unsupported (%s ...) operator %r in %r."
+                            % (key, flag, item)
+                        )
+                    flags.append(flag)
                 continue
             flag = _atom(item)
             if flag == ":standard":
                 continue
+            if flag == "\\" or flag.startswith(":"):
+                sys.exit(
+                    "dune2bazel: unsupported (%s ...) ordered-set operator %r."
+                    % (key, flag)
+                )
             flags.append(flag)
     return flags
 
@@ -613,17 +660,7 @@ def gen_library(
     extra_srcs=None,
     fs_dir=None,
 ):
-    for item in stanza[1:]:
-        if not (isinstance(item, list) and item and isinstance(item[0], tuple)):
-            sys.exit("dune2bazel: unexpected item in (library): %r" % (item,))
-        key = item[0][1]
-        if key not in _SUPPORTED_LIBRARY_FIELDS:
-            sys.exit(
-                "dune2bazel: unsupported (library) field %r. This field implies "
-                "a dune feature (C stubs, module filtering, codegen, ...) we do "
-                "not model yet; extend the translator or add an "
-                "opam/overrides/ BUILD." % key
-            )
+    _validate_stanza_fields(stanza, "library", _SUPPORTED_LIBRARY_FIELDS)
 
     # Dune derives the internal name from public_name when (name ...) is
     # omitted; that is only valid when the public name has no dots.
@@ -746,16 +783,7 @@ def gen_executable(
     ...))` has per-program module ownership semantics that a shared source
     glob cannot reproduce, so it remains an explicit unsupported frontier.
     """
-    for item in stanza[1:]:
-        if not (isinstance(item, list) and item and isinstance(item[0], tuple)):
-            sys.exit("dune2bazel: unexpected item in (executable): %r" % (item,))
-        key = item[0][1]
-        if key not in _SUPPORTED_EXECUTABLE_FIELDS:
-            sys.exit(
-                "dune2bazel: unsupported (executable) field %r. This field "
-                "changes build or runtime semantics we do not model; extend "
-                "the translator or add a documented source overlay." % key
-            )
+    _validate_stanza_fields(stanza, "executable", _SUPPORTED_EXECUTABLE_FIELDS)
 
     name_field = _field(stanza, "name")
     if not name_field or len(name_field) != 1:

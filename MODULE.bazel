@@ -65,6 +65,76 @@ bazel_dep(name = "toolchains_buildbuddy", version = "0.0.4")
 buildbuddy = use_extension("@toolchains_buildbuddy//:extensions.bzl", "buildbuddy")
 use_repo(buildbuddy, "buildbuddy_toolchain")
 
+# The OCaml compiler and every native OCaml link use this checksum-locked Linux
+# tool closure. Zig supplies the C compiler, assembler, linker, archiver, and
+# libc sysroot. Alpine supplies BusyBox plus GNU Make, while a static Bash and
+# Toybox bootstrap those archives without consulting the executor PATH.
+http_file = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_file")
+
+http_file(
+    name = "ocaml_native_zig_linux_x86_64",
+    sha256 = "24aeeec8af16c381934a6cd7d95c807a8cb2cf7df9fa40d359aa884195c4716c",
+    urls = ["https://ziglang.org/download/0.14.1/zig-x86_64-linux-0.14.1.tar.xz"],
+)
+
+http_file(
+    name = "ocaml_native_zig_linux_aarch64",
+    sha256 = "f7a654acc967864f7a050ddacfaa778c7504a0eca8d2b678839c21eea47c992b",
+    urls = ["https://ziglang.org/download/0.14.1/zig-aarch64-linux-0.14.1.tar.xz"],
+)
+
+http_file(
+    name = "ocaml_native_rootfs_linux_x86_64",
+    sha256 = "4b4daa9fe2fc696c4919c4412a4c3d3e770d8fb70292a004a2c72f5096175282",
+    urls = ["https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/x86_64/alpine-minirootfs-3.22.5-x86_64.tar.gz"],
+)
+
+http_file(
+    name = "ocaml_native_rootfs_linux_aarch64",
+    sha256 = "3fbc6285032ed46821b511292633d7b2a6306a2e254f590e92bdafff56cf2f70",
+    urls = ["https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/aarch64/alpine-minirootfs-3.22.5-aarch64.tar.gz"],
+)
+
+http_file(
+    name = "ocaml_native_make_linux_x86_64",
+    sha256 = "5b66eb4c2db0b0452f1c88d19909397f09e72425d1d9769a480d6370d8a9c310",
+    urls = ["https://dl-cdn.alpinelinux.org/alpine/v3.22/main/x86_64/make-4.4.1-r3.apk"],
+)
+
+http_file(
+    name = "ocaml_native_make_linux_aarch64",
+    sha256 = "5f9be4c947b967b060ea665907b7d0bf159baf78d6972c9e3e617f2061bbe4a7",
+    urls = ["https://dl-cdn.alpinelinux.org/alpine/v3.22/main/aarch64/make-4.4.1-r3.apk"],
+)
+
+http_file(
+    name = "ocaml_native_bash_linux_x86_64",
+    executable = True,
+    sha256 = "64469a9512a00199c85622ec56f870f97d50457a4e06e0cfa39bae7adf0cc8f2",
+    urls = ["https://github.com/robxu9/bash-static/releases/download/5.2.015-1.2.3-2/bash-linux-x86_64"],
+)
+
+http_file(
+    name = "ocaml_native_bash_linux_aarch64",
+    executable = True,
+    sha256 = "8877ad33344af461ed801066322fd9a7808cd73e4e81087da228e32e8fad54ca",
+    urls = ["https://github.com/robxu9/bash-static/releases/download/5.2.015-1.2.3-2/bash-linux-aarch64"],
+)
+
+http_file(
+    name = "ocaml_native_toybox_linux_x86_64",
+    executable = True,
+    sha256 = "836ba9d6821fb3bcd85f4e2c511115d677930796ef76418799e0df95526d4e65",
+    urls = ["https://landley.net/toybox/downloads/binaries/0.8.14/toybox-x86_64"],
+)
+
+http_file(
+    name = "ocaml_native_toybox_linux_aarch64",
+    executable = True,
+    sha256 = "223b5ff5929371225d0bc62fb3b99a148692295fb6f85ad86bb924f689a55ea4",
+    urls = ["https://landley.net/toybox/downloads/binaries/0.8.14/toybox-aarch64"],
+)
+
 # OCaml ruleset (bazel/ocaml) — thin native rules driving ocamlopt over a
 # hermetic OCaml sysroot. The extension fetches the Semgrep OCaml fork *source*;
 # //bazel/ocaml/toolchain:ocaml_compiler builds it as an RBE action (so binaries

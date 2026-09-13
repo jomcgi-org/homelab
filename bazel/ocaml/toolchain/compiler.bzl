@@ -6,52 +6,37 @@ there — fixing the `GLIBC_2.38 not found` mismatch you get when the compiler i
 built in a repository rule on the newer workflow runner.
 
 Output is a single **tar** of the `make install` prefix (`bin/`, `lib/ocaml/`,
-including `compiler-libs`), not a TreeArtifact: a TreeArtifact of the install does
-not survive RBE staging intact (the bin tools come up missing in consuming
-actions). A single File artifact always materializes whole and tar preserves the
-executable bit, so the driver extracts it per action. The build is hermetic
-(source is the only input; `gcc`/`make` come from the executor, like the repo's
-C/C++ builds) and is cached in the RBE action cache, so the compiler builds once.
+including `compiler-libs`) plus the native tool closure used to build it. Zig,
+an Alpine sysroot and GNU Make package, static Bash, and Toybox are all
+checksum-locked MODULE inputs. The same tools travel in the tar so later OCaml
+compile and link actions never resolve C tools from the executor PATH.
 """
 
 load(":arches.bzl", "OCAML_ARCHES")
 
 def _ocaml_compiler_impl(ctx):
     sysroot_tar = ctx.actions.declare_file(ctx.label.name + "_sysroot.tar")
-    src_root = ctx.file.configure.dirname
-
-    command = """
-set -eu
-# Absolute output path BEFORE we cd into the build dir (the path is exec-root
-# relative; Bazel has already created its parent directory).
-OUT="$(pwd)/{out}"
-WORK="$(mktemp -d)"
-cp -RL "{src_root}/." "$WORK/src"
-cd "$WORK/src"
-chmod +x configure
-log() {{ tail -80 "$1" >&2; }}
-./configure --prefix="$WORK/_install" > _cfg.log 2>&1 || {{ log _cfg.log; exit 1; }}
-make -j"$(nproc)" > _make.log 2>&1 || {{ log _make.log; exit 1; }}
-make install > _inst.log 2>&1 || {{ log _inst.log; exit 1; }}
-test -x "$WORK/_install/bin/ocamlopt.opt"
-test -f "$WORK/_install/lib/ocaml/compiler-libs/ocamlcommon.cmxa"
-# Stamp the arch this sysroot was built on (= the arch its binaries run on);
-# the compile driver asserts it against its own executor before invoking any
-# tool, so a cross-arch scheduling mistake fails with one clear line instead
-# of a cryptic "not found" from the missing foreign ELF interpreter.
-uname -m > "$WORK/_install/.ocaml-sysroot-arch"
-echo "ocaml_compiler: built sysroot on $(uname -m)" >&2
-tar -cf "$OUT" -C "$WORK/_install" .
-""".format(
-        src_root = src_root,
-        out = sysroot_tar.path,
-    )
-
-    ctx.actions.run_shell(
-        inputs = ctx.files.srcs,
+    ctx.actions.run(
+        executable = ctx.file.shell,
+        arguments = [
+            ctx.file._build_driver.path,
+            sysroot_tar.path,
+            ctx.file.configure.dirname,
+            ctx.file.zig_archive.path,
+            ctx.file.rootfs_archive.path,
+            ctx.file.make_apk.path,
+            ctx.file.bootstrap_tool.path,
+            ctx.file.shell.path,
+        ],
+        inputs = ctx.files.srcs + [
+            ctx.file._build_driver,
+            ctx.file.zig_archive,
+            ctx.file.rootfs_archive,
+            ctx.file.make_apk,
+            ctx.file.bootstrap_tool,
+            ctx.file.shell,
+        ],
         outputs = [sysroot_tar],
-        command = command,
-        use_default_shell_env = True,
         mnemonic = "OcamlCompilerBuild",
         progress_message = "Building OCaml compiler from source (%{label})",
     )
@@ -70,6 +55,15 @@ ocaml_compiler = rule(
             mandatory = True,
             allow_single_file = True,
             doc = "The source tree's ./configure script — its dir is the build root.",
+        ),
+        "zig_archive": attr.label(mandatory = True, allow_single_file = True),
+        "rootfs_archive": attr.label(mandatory = True, allow_single_file = True),
+        "make_apk": attr.label(mandatory = True, allow_single_file = True),
+        "shell": attr.label(mandatory = True, allow_single_file = True, cfg = "exec"),
+        "bootstrap_tool": attr.label(mandatory = True, allow_single_file = True, cfg = "exec"),
+        "_build_driver": attr.label(
+            default = "//bazel/ocaml/toolchain:ocaml_compiler_build.sh",
+            allow_single_file = True,
         ),
     },
     doc = "Builds the OCaml compiler from source into a relocatable sysroot tar.",
@@ -92,6 +86,11 @@ def declare_ocaml_sysroots():
             name = "ocaml_compiler_" + arch.name,
             srcs = "@ocaml_source//:srcs",
             configure = "@ocaml_source//:configure",
+            zig_archive = "@ocaml_native_zig_%s//file" % arch.name,
+            rootfs_archive = "@ocaml_native_rootfs_%s//file" % arch.name,
+            make_apk = "@ocaml_native_make_%s//file" % arch.name,
+            shell = "@ocaml_native_bash_%s//file" % arch.name,
+            bootstrap_tool = "@ocaml_native_toybox_%s//file" % arch.name,
             exec_compatible_with = [arch.os, arch.cpu],
             visibility = ["//visibility:public"],
         )

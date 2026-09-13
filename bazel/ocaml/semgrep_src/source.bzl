@@ -141,9 +141,10 @@ SEMGREP_SRC_DIRS = [
     # Issue #3922 selects Spacegrep as the first native CE engine target. Its
     # library closure is already complete above: the executable adds cmdliner
     # (pinned in the opam lock) and unix (the compiler stdlib) and reaches the
-    # vendored PCRE/PCRE2 native libraries through commons. The overlay removes
-    # only Dune's generated whole-repository language-link flags, which are for
-    # the top-level semgrep-core binary and are not inputs to Spacegrep itself.
+    # vendored PCRE/PCRE2 native libraries through commons. The overlay rewrites
+    # upstream's plural one-program stanza to the supported singular form and
+    # selects flags.sh's non-Alpine Linux dynamic policy (no extra flags). Bazel
+    # carries the required native archives explicitly through cc_deps.
     "src/spacegrep/src/bin",
 ]
 

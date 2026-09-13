@@ -561,6 +561,28 @@ class TestGenLibrary:
         with pytest.raises(SystemExit):
             gen_library(stanza, "src", LIB_MAP)
 
+    def test_flags_flat_subtraction_exits(self):
+        stanza = self._stanza("(library (name mylib) (flags :standard \\ -w))")
+        with pytest.raises(SystemExit):
+            gen_library(stanza, "src", LIB_MAP)
+
+    def test_flags_nested_include_exits(self):
+        stanza = self._stanza("(library (name mylib) (flags (:include flags.sexp)))")
+        with pytest.raises(SystemExit):
+            gen_library(stanza, "src", LIB_MAP)
+
+    def test_flags_flat_include_exits(self):
+        stanza = self._stanza("(library (name mylib) (flags :include flags.sexp))")
+        with pytest.raises(SystemExit):
+            gen_library(stanza, "src", LIB_MAP)
+
+    def test_duplicate_library_field_exits(self):
+        stanza = self._stanza(
+            "(library (name mylib) (libraries unix) (libraries missing_dependency))"
+        )
+        with pytest.raises(SystemExit):
+            gen_library(stanza, "src", LIB_MAP)
+
 
 # ---------------------------------------------------------------------------
 # gen_executable
@@ -600,6 +622,23 @@ class TestGenExecutable:
 
     def test_missing_name_exits(self):
         stanza = self._stanza("(executable (public_name tool))")
+        with pytest.raises(SystemExit):
+            gen_executable(stanza, "src", LIB_MAP)
+
+    def test_nested_flags_include_exits(self):
+        stanza = self._stanza("(executable (name Main) (flags (:include flags.sexp)))")
+        with pytest.raises(SystemExit):
+            gen_executable(stanza, "src", LIB_MAP)
+
+    def test_flat_flags_subtraction_exits(self):
+        stanza = self._stanza("(executable (name Main) (flags :standard \\ -w))")
+        with pytest.raises(SystemExit):
+            gen_executable(stanza, "src", LIB_MAP)
+
+    def test_duplicate_singleton_field_exits(self):
+        stanza = self._stanza(
+            "(executable (name Main) (libraries unix) (libraries missing_dependency))"
+        )
         with pytest.raises(SystemExit):
             gen_executable(stanza, "src", LIB_MAP)
 

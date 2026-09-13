@@ -8,12 +8,11 @@
 # wrapping, then archives the .cmx into a native .cmxa (library mode) or links
 # a native executable (binary mode).
 #
-# The compiler binaries come from the extracted sysroot; native code generation
-# and the final link use the execution host's as/gcc/ld (the same C toolchain the
-# repo's C/C++ builds use). The sysroot's OCaml is relocated via OCAMLLIB.
+# The compiler binaries and the pinned Zig native tool closure come from the
+# extracted sysroot. The sysroot's OCaml is relocated via OCAMLLIB.
 set -eu
 
-MODE="" NAME="" SYSROOT_TAR="" USE_FIND="0" WRAPPED="0" LINKALL="0"
+MODE="" NAME="" SYSROOT_TAR="" BOOTSTRAP_TOOL="" USE_FIND="0" WRAPPED="0" LINKALL="0"
 INCLUDES="" OPAM_PKGS="" SRCS="" CSRCS="" CHDRS="" CMXAS="" CFLAGS=""
 PP_TOOL="" PP_ARGS="" CPPO_TOOL="" PPX="" PPX_DATA=""
 MENHIR_TOOL="" MENHIR_MODULES="" MENHIR_FLAGS=""
@@ -25,6 +24,7 @@ while [ $# -gt 0 ]; do
 	--mode) MODE="$2" && shift 2 ;;
 	--name) NAME="$2" && shift 2 ;;
 	--sysroot-tar) SYSROOT_TAR="$2" && shift 2 ;;
+	--bootstrap-tool) BOOTSTRAP_TOOL="$2" && shift 2 ;;
 	--use-ocamlfind) USE_FIND="$2" && shift 2 ;;
 	--wrapped) WRAPPED="$2" && shift 2 ;;
 	--linkall) LINKALL="$2" && shift 2 ;;
@@ -67,10 +67,54 @@ abspath() {
 # lib/ocaml/ layout. A tar (single File artifact) survives RBE staging whole and
 # preserves the +x bit, unlike a TreeArtifact of the install.
 TAR="$(abspath "$SYSROOT_TAR")"
-S="$(mktemp -d)"
+BOOTSTRAP_TOOL="$(abspath "$BOOTSTRAP_TOOL")"
+S="$("$BOOTSTRAP_TOOL" mktemp -d)"
 TMP_WORK=""
 trap 'rm -rf "$S" $TMP_WORK' EXIT
-tar -xf "$TAR" -C "$S"
+"$BOOTSTRAP_TOOL" tar -xf "$TAR" -C "$S"
+"$BOOTSTRAP_TOOL" mkdir -p "$S/native/zig"
+"$BOOTSTRAP_TOOL" tar -xJf "$S/native/zig.tar.xz" -C "$S/native/zig" --strip-components=1
+"$BOOTSTRAP_TOOL" mkdir -p "$S/native/rootfs"
+"$BOOTSTRAP_TOOL" tar -xzf "$S/native/rootfs.tar.gz" -C "$S/native/rootfs"
+
+# Recreate the native tool wrappers after extraction so they contain paths for
+# this action, never paths from the compiler-build action. The tool payload is
+# checksum-locked in MODULE.bazel and is part of the sysroot tar input.
+HBIN="$S/native/bin"
+NATIVE_TOYBOX="$HBIN/toybox"
+case "$("$BOOTSTRAP_TOOL" uname -m)" in
+x86_64) MUSL_ARCH=x86_64 ;;
+aarch64) MUSL_ARCH=aarch64 ;;
+*)
+	echo "ocaml_compile: unsupported executor architecture" >&2
+	exit 2
+	;;
+esac
+LOADER="$S/native/rootfs/lib/ld-musl-$MUSL_ARCH.so.1"
+BUSYBOX="$S/native/rootfs/bin/busybox"
+for applet in $("$LOADER" --library-path "$S/native/rootfs/lib" "$BUSYBOX" --list); do
+	case "$applet" in
+	sh | bash | tsort | file | cc | gcc | clang | ar | ranlib | nm | objcopy | as | zig) continue ;;
+	esac
+	printf '%s\n' "#!$HBIN/bash" \
+		"exec \"$LOADER\" --library-path \"$S/native/rootfs/lib\" \"$BUSYBOX\" $applet \"\$@\"" \
+		>"$HBIN/$applet"
+	"$NATIVE_TOYBOX" chmod +x "$HBIN/$applet"
+done
+"$NATIVE_TOYBOX" ln -s "$HBIN/bash" "$HBIN/sh"
+"$NATIVE_TOYBOX" ln -s "$NATIVE_TOYBOX" "$HBIN/tsort"
+"$NATIVE_TOYBOX" ln -s "$NATIVE_TOYBOX" "$HBIN/file"
+"$NATIVE_TOYBOX" ln -s "$S/native/zig/zig" "$HBIN/zig"
+for tool in cc gcc clang; do
+	printf '%s\n' "#!$HBIN/bash" "exec \"$HBIN/zig\" cc \"\$@\"" >"$HBIN/$tool"
+	"$NATIVE_TOYBOX" chmod +x "$HBIN/$tool"
+done
+for tool in ar ranlib nm objcopy; do
+	printf '%s\n' "#!$HBIN/bash" "exec \"$HBIN/zig\" $tool \"\$@\"" >"$HBIN/$tool"
+	"$NATIVE_TOYBOX" chmod +x "$HBIN/$tool"
+done
+printf '%s\n' "#!$HBIN/bash" "exec \"$HBIN/zig\" cc -c \"\$@\"" >"$HBIN/as"
+"$NATIVE_TOYBOX" chmod +x "$HBIN/as"
 
 [ -n "$PP_TOOL" ] && PP_TOOL="$(abspath "$PP_TOOL")"
 [ -n "$CPPO_TOOL" ] && CPPO_TOOL="$(abspath "$CPPO_TOOL")"
@@ -89,12 +133,11 @@ for fl in $CC_LINKFLAGS; do CC_CCLIB="$CC_CCLIB -cclib $fl"; done
 # --- Relocate the OCaml toolchain -------------------------------------------
 # The compiler is built from source (semgrep/ocaml 5.3.0) with a baked-in
 # --prefix; relocate it to wherever Bazel staged the sysroot via OCAMLLIB. The
-# build configures plain `as`/`gcc` for native code generation and the final
-# link, so those resolve from the execution host's PATH (the same C toolchain
-# the repo's C/C++ builds use) — nothing is bundled.
+# build configures plain `as`/`cc` for native code generation and the final
+# link. PATH contains only the wrappers recreated above, backed by staged Zig.
 export OCAMLLIB="$S/lib/ocaml"
 export CAML_LD_LIBRARY_PATH="$S/lib/ocaml/stublibs${CAML_LD_LIBRARY_PATH:+:$CAML_LD_LIBRARY_PATH}"
-export PATH="$S/bin:$PATH"
+export PATH="$HBIN:$S/bin"
 
 OCAMLOPT="$S/bin/ocamlopt.opt"
 OCAMLDEP="$S/bin/ocamldep.opt"
@@ -113,7 +156,7 @@ if [ "$SYSROOT_ARCH" != "unknown" ] && [ "$SYSROOT_ARCH" != "$EXEC_ARCH" ]; then
 	exit 1
 fi
 
-echo "ocaml_compile: mode=$MODE arch=$EXEC_ARCH sysroot=$S ocamlopt=$([ -x "$OCAMLOPT" ] && echo ok || echo MISSING) cc=$(command -v cc gcc 2>/dev/null | head -1) as=$(command -v as 2>/dev/null)" >&2
+echo "ocaml_compile: mode=$MODE arch=$EXEC_ARCH sysroot=$S ocamlopt=$([ -x "$OCAMLOPT" ] && echo ok || echo MISSING) cc=$HBIN/cc as=$HBIN/as ar=$HBIN/ar" >&2
 
 # Version tokens for preprocessor arg substitution (see --pp-arg below).
 # %OCAML_VERSION% is the numeric version (5.3.0); %OCAML_AST_VERSION% is
