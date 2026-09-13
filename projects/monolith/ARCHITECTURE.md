@@ -901,11 +901,14 @@ The Grimoire ingest path converts extracted documents into ordered text and
 image-derived chunks, records section hierarchy and image references, embeds
 chunks, and extracts typed entities and relationships through a hosted model
 whose endpoint, model and concurrency are values. Chunk loading runs daily;
-extraction and hierarchy backfill are suspended, manual-only jobs.
-Post-extraction stat verification and alias merging remain accepted design
-work rather than current runtime passes (#3912, #3913).
+extraction and hierarchy backfill are suspended, manual-only jobs. A resumable
+post-extraction verifier checks numeric and structured details against
+marker-bearing mention chunks, applies only cited field-level corrections or
+nulls, and commits each result with an entity-and-version marker. Review-gated
+alias merging remains accepted design work rather than a runtime pass (#3913).
 (see: /projects/monolith/grimoire/ingest.py)
 (see: /projects/monolith/grimoire/extract.py)
+(see: /projects/monolith/grimoire/verifier.py)
 (see: /projects/monolith/deploy/values.yaml)
 
 **Why.** Postgres replaced the vault as the served-content authority because
@@ -1118,7 +1121,7 @@ this table when the work ships or the issue closes without it.
 | Autonomous intake selects bounded issue work and refines or escalates issues that are not delivery-ready | section 4 | #6002 | in progress: policy, intake selection, and the refine path are implemented behind disabled defaults |
 | Per-caller result scoping restricts what each MCP caller's tool calls can return | section 7 | #4569 | not started |
 | Discord chat automation gets persisted scheduled tasks, configurable message triggers, and per-channel memory notes | Decision history (services/002) | #3901 | not started |
-| Grimoire post-extraction quality passes (evidence-grounded stat verification, review-approved alias merges) ship | Decision history (services/014) | #3912 | not started |
+| Grimoire review-approved alias merging ships | Decision history (services/014) | #3913 | not started |
 | Public chat retention and takedown purge tooling ships | Decision history (security/005) | #3899 | not started |
 | A role-separated GitHub App review gate lets swarm merge autonomously | Decision history (agents/027) | #3835 | not started |
 
@@ -1207,7 +1210,7 @@ mismatch without silently rewriting the decision record.
 | `services/011` | Grimoire Hot-Tier Schema on Postgres | Accepted, shipped (see: /projects/monolith/grimoire/models.py) | deleted |
 | `services/012` | Grimoire Postgres-First, Loom-Shaped | Accepted, shipped (see: /projects/monolith/grimoire/ingest.py) | deleted |
 | `services/013` | Grimoire Knowledge Audiences: Corpus-Derived Character Knowledge as Compiled Grants | Accepted, shipped (see: /projects/monolith/grimoire/visibility.py) | deleted |
-| `services/014` | Grimoire post-extraction quality passes (stat verifier, alias merge) | Accepted, not shipped (#3912, #3913) | deleted |
+| `services/014` | Grimoire post-extraction quality passes (stat verifier, alias merge) | Partially shipped: stat verifier (see: /projects/monolith/grimoire/verifier.py); alias merge remains #3913 | deleted |
 
 ### Chat
 

@@ -746,6 +746,17 @@ def grimoire_backfill_hierarchy() -> None:
     )
 
 
+@app.command("grimoire-verify-entities")
+def grimoire_verify_entities() -> None:
+    """Verify extracted details against marker-bearing mention chunks.
+
+    Set GRIMOIRE_VERIFIER_VERSION to deliberately re-run a revised verifier.
+    GRIMOIRE_VERIFY_LIMIT and GRIMOIRE_VERIFY_EVIDENCE_LIMIT bound each run.
+    Provider settings default to the existing GRIMOIRE_EXTRACT_* values.
+    """
+    _run_job("grimoire-verify-entities", "grimoire.jobs", "grimoire_verify_entities")
+
+
 @app.command("stars-load-grid")
 def stars_load_grid() -> None:
     """Reload the stars site grid from S3 (one-shot of stars.load_grid)."""

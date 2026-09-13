@@ -5895,6 +5895,20 @@ py_test(
 )
 
 py_test(
+    name = "grimoire_verifier_test",
+    srcs = ["grimoire/verifier_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_grimoire",
+        "@pip//httpx",
+        "@pip//pgvector",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "grimoire_jobs_test",
     srcs = ["grimoire/jobs_test.py"],
     imports = ["."],
