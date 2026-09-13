@@ -6537,22 +6537,32 @@ py_test(
 )
 
 # Guard (#3957): only the public /functions/ route gets a client-IP keyed
-# budget. Render the shipping chart, check the exact pinned Envoy Gateway CRD,
-# and exercise the independent/fallback budget semantics in a focused model.
+# budget. On Linux, render active GKE values, translate them with Envoy Gateway
+# 1.8.3, and send requests through the matching Envoy 1.38.3 data plane.
 py_test(
     name = "public_faas_rate_limit_test",
     srcs = ["public_faas_rate_limit_test.py"],
     data = [
         "//projects/monolith-public/chart:chart_render_inputs",
         "//projects/monolith-public/deploy:deploy_values",
-        "//projects/platform/cloudflare-gateway:gateway_crds",
+        "//projects/monolith-public/deploy:gke_values",
+        "//projects/platform/cloudflare-gateway:gateway_test_inputs",
+        "@envoy_gateway_egctl//:binary",
+        "@envoy_proxy_test_bin//:binary",
         "@multitool//tools/helm",
     ],
     env = {
         "DEPLOY_VALUES": "$(rootpath //projects/monolith-public/deploy:deploy_values)",
+        "EGCTL_BIN": "$(rootpath @envoy_gateway_egctl//:binary)",
+        "ENVOY_BIN": "$(rootpath @envoy_proxy_test_bin//:binary)",
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+        "PUBLIC_GKE_VALUES": "$(rootpath //projects/monolith-public/deploy:gke_values)",
     },
     imports = ["."],
+    target_compatible_with = [
+        "@platforms//cpu:x86_64",
+        "@platforms//os:linux",
+    ],
     deps = ["@pip//pyyaml"],
 )
 

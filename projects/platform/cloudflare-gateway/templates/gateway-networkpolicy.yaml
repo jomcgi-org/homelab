@@ -1,0 +1,32 @@
+{{- if .Values.gateway.enabled }}
+# CF-Connecting-IP is trusted by public-route policies only across this boundary.
+# ClusterIP prevents internet exposure but does not restrict in-cluster callers.
+# This policy admits the public listener solely from this release's cloudflared
+# pods. Metrics and readiness stay reachable for monitoring and kubelet probes.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Values.gateway.name }}-trusted-origin
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "cloudflare-gateway.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      gateway.envoyproxy.io/owning-gateway-name: {{ .Values.gateway.name }}
+      gateway.envoyproxy.io/owning-gateway-namespace: {{ .Release.Namespace }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "cloudflare-gateway.tunnel.selectorLabels" . | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ add .Values.gateway.listener.port 10000 }}
+    - ports:
+        - protocol: TCP
+          port: 19001
+        - protocol: TCP
+          port: 19003
+{{- end }}

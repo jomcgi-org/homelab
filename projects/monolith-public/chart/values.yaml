@@ -701,16 +701,20 @@ cfIngress:
       unit: Minute
     # Rate limit for the public FaaS invocation route (/functions/*, Task 13).
     # Envoy Local coarse burst cap, keyed independently by the client address
-    # Cloudflare writes into CF-Connecting-IP. The gateway Service is ClusterIP,
-    # so internet traffic reaches it only through Cloudflare Tunnel and callers
-    # cannot choose this value. Missing or malformed identities use a separate
-    # fail-safe bucket and never consume a valid client's descriptor budget.
+    # Cloudflare writes into CF-Connecting-IP. The gateway chart enforces the
+    # cloudflared-to-listener hop with a NetworkPolicy. Worker subrequests are
+    # rejected because same-zone Workers can influence this header and cross-zone
+    # Workers do not carry the visitor address. Missing or malformed identities
+    # use a separate fail-safe bucket and never consume a valid client's budget.
     # This remains layered on top of the EmberVM per-principal daily quota.
     # og-image is low-volume (one fetch per social share), so 120/min is
     # generous; lower it if abuse appears.
     functionsRateLimit:
       requests: 120
       unit: Minute
+      cloudflareZone: jomcgi.dev
+      # Cloudflare's documented address for cross-zone Worker subrequests.
+      crossZoneWorkerAddress: 2a06:98c0:3600::103
       clientHeader:
         name: CF-Connecting-IP
         # RE2-compatible canonical IPv4 or IPv6. Keeping validation separate
