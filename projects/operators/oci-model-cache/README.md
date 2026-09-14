@@ -171,16 +171,3 @@ for the full spec and status fields.
   reference when a pod needs multiple models.
 - **TTL:** an optional `spec.ttl` expires the `ModelCache` resource based on its
   creation time. It does not delete the artifact from the OCI registry.
-
-## Code map
-
-| Path                                                                         | Responsibility                                             |
-| ---------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| [cmd](cmd)                                                                   | Operator entrypoint and hf2oci resolver adapter            |
-| [api](api)                                                                   | `ModelCache` API definitions                               |
-| [internal/webhook](internal/webhook)                                         | Pod admission, reference rewriting, and scheduling gates   |
-| [internal/controller](internal/controller)                                   | Reconciliation, sync Jobs, gate removal, and TTL cleanup   |
-| [internal/hfref](internal/hfref), [internal/naming](internal/naming)         | Parse Hugging Face references and derive resource names    |
-| [internal/statemachine](internal/statemachine)                               | Generated state machine with compiler-enforced transitions |
-| [internal/config](internal/config), [internal/telemetry](internal/telemetry) | Runtime configuration and OpenTelemetry tracing            |
-| [helm](helm), [deploy](deploy)                                               | Helm chart and this repository's deployment configuration  |
