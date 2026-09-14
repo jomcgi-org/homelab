@@ -6,6 +6,7 @@ go_binary(
     srcs = ["main_linux.go"],
     target_compatible_with = ["@platforms//os:linux"],
     deps = [
+        "//projects/embervm/noded/cmd/dev-smoke/synthetic",
         "//projects/embervm/noded/vsockproto",
         "@org_golang_x_sys//unix",
     ],

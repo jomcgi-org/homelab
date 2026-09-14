@@ -2,6 +2,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"sync"
 
+	"github.com/jomcgi/homelab/projects/embervm/noded/cmd/dev-smoke/synthetic"
 	"github.com/jomcgi/homelab/projects/embervm/noded/vsockproto"
 	"golang.org/x/sys/unix"
 )
@@ -37,6 +39,20 @@ func main() {
 	var memory string
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /shim/ready", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })
+	mux.HandleFunc("POST /scan", func(w http.ResponseWriter, r *http.Request) {
+		q, err := synthetic.Decode(http.MaxBytesReader(w, r.Body, 4096))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		result, err := synthetic.Run(r.Context(), "/tmp/scan", q)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(result)
+	})
 	mux.HandleFunc("/state", func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()

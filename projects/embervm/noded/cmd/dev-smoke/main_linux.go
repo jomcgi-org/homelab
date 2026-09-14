@@ -40,6 +40,8 @@ func run() (result error) {
 	fc := flag.String("firecracker", "", "Firecracker binary")
 	count := flag.Int("vms", 4, "number of simultaneously live guests")
 	mem := flag.Int("mem-mib", 1536, "memory per guest")
+	listen := flag.String("listen", "", "serve synthetic scans on this loopback address instead of running the probe")
+	session := flag.String("session", "", "development runner session ID")
 	flag.Parse()
 	if os.Geteuid() != 0 || runtime.GOARCH != "arm64" {
 		return errors.New("run as root inside the ARM Linux development VM")
@@ -63,9 +65,9 @@ func run() (result error) {
 	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		return errors.New("another development probe is running")
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	signalCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	ctx, cancel := context.WithTimeout(signalCtx, 3*time.Minute)
 	defer cancel()
 	self, err := os.Executable()
 	if err != nil {
@@ -157,6 +159,9 @@ func run() (result error) {
 			return err
 		}
 		log.Printf("cold boot + ready + snapshot: %s", time.Since(start))
+	}
+	if *listen != "" {
+		return serveScans(signalCtx, d, transport, ref, *count, *listen, *session)
 	}
 	request := func(h substrate.Handle, method, value, want string) error {
 		requestCtx, requestCancel := context.WithTimeout(ctx, 5*time.Second)
