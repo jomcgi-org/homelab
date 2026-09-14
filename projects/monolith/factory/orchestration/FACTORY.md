@@ -997,10 +997,11 @@ method, the equivalent of `gh pr merge --auto --rebase`, and the lane audits
 `merge_armed`. Exactly one factory pull request is armed at a time, because
 this repository merges through the GitHub merge queue and an ejection cascades
 across every candidate behind the one that failed. The holder is read from the
-lane's own audits and from GitHub: before arming anything, one page of open
-pull requests is listed and any pull request on a `factory/` branch with
+lane's own audits and from GitHub: before arming anything, up to five pages
+of 50 open pull requests are listed and any pull request on a `factory/` branch with
 auto-merge already set counts, so a pull request an operator armed by hand is
-not raced. A holder check that cannot be read arms nothing, because not knowing
+not raced. A holder check that cannot be read or exhausts five full pages arms nothing,
+because not knowing
 is not a licence. Every waiting delivery audits `merge_deferred`, once per
 blocking pull request, and is armed on a later tick.
 
