@@ -13,7 +13,6 @@ import tarfile
 import tempfile
 
 import pytest
-from python.runfiles import Runfiles
 
 
 REQUIRED_COMMANDS = {
@@ -29,16 +28,25 @@ NATIVE_COMMANDS = REQUIRED_COMMANDS - {"eslint"}
 SUPPORTED_PLATFORMS = ["linux_amd64", "linux_arm64", "darwin_arm64"]
 RUNTIME_PLATFORM = os.environ.get("TOOLS_IMAGE_RUNTIME_PLATFORM")
 TEST_PLATFORMS = [RUNTIME_PLATFORM] if RUNTIME_PLATFORM else SUPPORTED_PLATFORMS
-RUNFILES = Runfiles.Create()
 
 
 @functools.cache
 def _runfile(name: str) -> pathlib.Path:
-    resolved = RUNFILES.Rlocation(f"homelab/bazel/tools/image/{name}")
-    assert resolved is not None, f"unknown runfile: {name}"
-    path = pathlib.Path(resolved)
-    assert path.is_file(), f"missing runfile: {path}"
-    return path
+    root = pathlib.Path(os.environ["TEST_SRCDIR"])
+    workspace_names = (
+        os.environ.get("TEST_WORKSPACE", ""),
+        "_main",
+        "homelab",
+    )
+    candidates = []
+    for workspace in dict.fromkeys(workspace_names):
+        if not workspace:
+            continue
+        path = root / workspace / "bazel/tools/image" / name
+        candidates.append(path)
+        if path.is_file():
+            return path
+    raise AssertionError(f"missing runfile {name}; checked {candidates}")
 
 
 def _layers(platform: str) -> list[pathlib.Path]:
