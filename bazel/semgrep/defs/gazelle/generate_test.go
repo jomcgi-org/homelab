@@ -1125,43 +1125,65 @@ func TestGenerateRules_Py3ImageTargetKind(t *testing.T) {
 }
 
 func TestGenerateRules_Py3ImageLocalBinary(t *testing.T) {
-	// When both py_venv_binary and py3_image point to the same target,
-	// deduplicate by resolved label — only one semgrep_target_test.
-	c := configWithTargetKinds(map[string]string{
-		"py_venv_binary": "",
-		"py3_image":      "binary",
-	})
+	for _, tc := range []struct {
+		name        string
+		binaryLabel string
+		imageName   string
+	}{
+		{
+			name:        "relative label",
+			binaryLabel: ":update",
+			imageName:   "update_image",
+		},
+		{
+			name:        "absolute label with image sorted first",
+			binaryLabel: "//services/myapp:update",
+			imageName:   "image",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// When both py_venv_binary and py3_image point to the same target,
+			// deduplicate by canonical label, regardless of label spelling.
+			c := configWithTargetKinds(map[string]string{
+				"py_venv_binary": "",
+				"py3_image":      "binary",
+			})
 
-	binary := newPyBinary("update", "update.py")
-	image := newPy3Image("update_image", ":update")
-	buildFile := buildFileWithRules(binary, image)
+			binary := newPyBinary("update", "update.py")
+			image := newPy3Image(tc.imageName, tc.binaryLabel)
+			buildFile := buildFileWithRules(binary, image)
 
-	args := language.GenerateArgs{
-		Config:       c,
-		Dir:          "/tmp/test",
-		Rel:          "services/myapp",
-		RegularFiles: []string{"update.py"},
-		File:         buildFile,
-	}
-
-	result := generateRules(args)
-
-	// Expect: 1 semgrep_target_test (deduplicated) — both resolve to ":update"
-	targetTests := 0
-	for _, r := range result.Gen {
-		if r.Kind() == "semgrep_target_test" {
-			targetTests++
-			if r.AttrString("target") != ":update" {
-				t.Errorf("target = %q, want :update", r.AttrString("target"))
+			args := language.GenerateArgs{
+				Config:       c,
+				Dir:          "/tmp/test",
+				Rel:          "services/myapp",
+				RegularFiles: []string{"update.py"},
+				File:         buildFile,
 			}
-		}
-	}
-	if targetTests != 1 {
-		var names []string
-		for _, r := range result.Gen {
-			names = append(names, r.Kind()+"/"+r.Name()+"→"+r.AttrString("target"))
-		}
-		t.Fatalf("expected 1 semgrep_target_test (deduplicated), got %d: %v", targetTests, names)
+
+			result := generateRules(args)
+
+			// Expect: 1 semgrep_target_test (deduplicated) targeting the binary.
+			targetTests := 0
+			for _, r := range result.Gen {
+				if r.Kind() == "semgrep_target_test" {
+					targetTests++
+					if r.Name() != "update_semgrep_test" {
+						t.Errorf("name = %q, want update_semgrep_test", r.Name())
+					}
+					if r.AttrString("target") != ":update" {
+						t.Errorf("target = %q, want :update", r.AttrString("target"))
+					}
+				}
+			}
+			if targetTests != 1 {
+				var names []string
+				for _, r := range result.Gen {
+					names = append(names, r.Kind()+"/"+r.Name()+"→"+r.AttrString("target"))
+				}
+				t.Fatalf("expected 1 semgrep_target_test (deduplicated), got %d: %v", targetTests, names)
+			}
+		})
 	}
 }
 
