@@ -112,7 +112,7 @@ def _factory_context(receipt_id: int) -> dict:
 async def retrieve_knowledge(query: str, scope: str, limit: int) -> dict:
     """Shared bounded retrieval; callers derive scope from authorized records."""
     from core.db import get_engine
-    from knowledge.store import KnowledgeStore
+    from knowledge.api import KnowledgeStore
     from shared.embedding import EmbeddingClient
 
     try:
@@ -188,7 +188,6 @@ def maintain_request_knowledge(actor: str, request_key: str) -> dict:
     """
     from core.db import get_engine
     from knowledge.api import ingest_raw_with_status
-    from knowledge.mcp import _markdown_raw
 
     with controls._read_session() as db:
         item = _request_records(db).get((actor, request_key))
@@ -198,19 +197,30 @@ def maintain_request_knowledge(actor: str, request_key: str) -> dict:
         if row is None:
             return {"status": "unavailable"}
         scope, url = "repo:" + row.repo, row.url
-    content = _markdown_raw(
+    # JSON flow mappings are valid YAML frontmatter. Serialize values rather
+    # than interpolating operator-supplied strings into the header.
+    header = json.dumps(
         {
             "title": "Factory operator exchange " + item["request"]["decision_id"],
             "scope": scope,
             "proposed_scope": "repo",
             "reporter": actor,
         },
-        "A verified operator submitted this factory request. The recorded outcome, "
-        "not a model suggestion, is the evidence. Factory records remain authoritative "
-        "for current state.\n\n"
-        + json.dumps(item, sort_keys=True)
-        + "\n\nEvidence: "
-        + url,
+        sort_keys=True,
+    )
+    content = (
+        "---\n"
+        + header
+        + "\n---\n\n"
+        + (
+            "A verified operator submitted this factory request. The recorded outcome, "
+            "not a model suggestion, is the evidence. Factory records remain authoritative "
+            "for current state.\n\n"
+            + json.dumps(item, sort_keys=True)
+            + "\n\nEvidence: "
+            + url
+            + "\n"
+        )
     )
     with Session(get_engine()) as db:
         raw, created = ingest_raw_with_status(
