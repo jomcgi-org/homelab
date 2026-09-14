@@ -11,8 +11,13 @@ load(":compiler.bzl", "declare_ocaml_sysroots", "ocaml_compiler")
 ocaml_compiler(
     name = "ocaml_compiler",
     srcs = "@ocaml_source//:srcs",
+    bootstrap_tool = "@ocaml_native_toybox_linux_x86_64//file",
     configure = "@ocaml_source//:configure",
+    make_apk = "@ocaml_native_make_linux_x86_64//file",
+    rootfs_archive = "@ocaml_native_rootfs_linux_x86_64//file",
+    shell = "@ocaml_native_bash_linux_x86_64//file",
     visibility = ["//visibility:public"],
+    zig_archive = "@ocaml_native_zig_linux_x86_64//file",
 )
 
 # Per-arch sysroots (ADR 006): one exec-constrained ocaml_compiler per enabled

@@ -1,0 +1,15 @@
+--- a/src/fixing/Autofix.ml
++++ b/src/fixing/Autofix.ml
+@@ -83,12 +83,2 @@ let align_nonfirst_lines_at_column ~start_column text =
+   String.concat "\n" replacement_lines
+-
+-let%test _ =
+-  align_nonfirst_lines_at_column ~start_column:0 "foo\nbar" =*= "foo\nbar"
+-
+-let%test _ =
+-  align_nonfirst_lines_at_column ~start_column:1 "foo\nbar" =*= "foo\n bar"
+-
+-let%test _ =
+-  align_nonfirst_lines_at_column ~start_column:1 " foo\nbar" =*= " foo\n bar"
+-
+ (*****************************************************************************)

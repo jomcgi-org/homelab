@@ -8,51 +8,87 @@
 # wrapping, then archives the .cmx into a native .cmxa (library mode) or links
 # a native executable (binary mode).
 #
-# The compiler binaries come from the extracted sysroot; native code generation
-# and the final link use the execution host's as/gcc/ld (the same C toolchain the
-# repo's C/C++ builds use). The sysroot's OCaml is relocated via OCAMLLIB.
+# The compiler binaries and the pinned Zig native tool closure come from the
+# extracted sysroot. The sysroot's OCaml is relocated via OCAMLLIB.
 set -eu
 
-MODE="" NAME="" SYSROOT_TAR="" USE_FIND="0" WRAPPED="0" LINKALL="0"
+echo "ocaml_compile: driver started" >&2
+MODE="" NAME="" SYSROOT_TAR="" BOOTSTRAP_TOOL="" USE_FIND="0" WRAPPED="0" LINKALL="0"
 INCLUDES="" OPAM_PKGS="" SRCS="" CSRCS="" CHDRS="" CMXAS="" CFLAGS=""
 PP_TOOL="" PP_ARGS="" CPPO_TOOL="" PPX="" PPX_DATA=""
-MENHIR_TOOL="" MENHIR_MODULES="" MENHIR_FLAGS=""
+MENHIR_TOOL="" MENHIR_MODULES="" MENHIR_FLAGS="" DRIVER_PROTOCOL=""
 CC_INCLUDES="" CC_ARCHIVES="" CC_LINKFLAGS=""
 OBJS_OUT="" CMXA_OUT="" A_OUT="" EXE_OUT=""
 
-while [ $# -gt 0 ]; do
+consume_arg() {
 	case "$1" in
-	--mode) MODE="$2" && shift 2 ;;
-	--name) NAME="$2" && shift 2 ;;
-	--sysroot-tar) SYSROOT_TAR="$2" && shift 2 ;;
-	--use-ocamlfind) USE_FIND="$2" && shift 2 ;;
-	--wrapped) WRAPPED="$2" && shift 2 ;;
-	--linkall) LINKALL="$2" && shift 2 ;;
-	--compile-flag) CFLAGS="$CFLAGS $2" && shift 2 ;;
-	--include) INCLUDES="$INCLUDES $2" && shift 2 ;;
-	--opam-pkg) OPAM_PKGS="$OPAM_PKGS $2" && shift 2 ;;
-	--src) SRCS="$SRCS $2" && shift 2 ;;
-	--c-src) CSRCS="$CSRCS $2" && shift 2 ;;
-	--c-header) CHDRS="$CHDRS $2" && shift 2 ;;
-	--cmxa) CMXAS="$CMXAS $2" && shift 2 ;;
-	--pp-tool) PP_TOOL="$2" && shift 2 ;;
-	--pp-arg) PP_ARGS="$PP_ARGS $2" && shift 2 ;;
-	--cppo-tool) CPPO_TOOL="$2" && shift 2 ;;
-	--ppx) PPX="$2" && shift 2 ;;
-	--ppx-data) PPX_DATA="$PPX_DATA $2" && shift 2 ;;
-	--menhir-tool) MENHIR_TOOL="$2" && shift 2 ;;
-	--menhir-module) MENHIR_MODULES="$MENHIR_MODULES $2" && shift 2 ;;
-	--menhir-flag) MENHIR_FLAGS="$MENHIR_FLAGS $2" && shift 2 ;;
-	--cc-include) CC_INCLUDES="$CC_INCLUDES $2" && shift 2 ;;
-	--cc-archive) CC_ARCHIVES="$CC_ARCHIVES $2" && shift 2 ;;
-	--cc-linkflag) CC_LINKFLAGS="$CC_LINKFLAGS $2" && shift 2 ;;
-	--objs-out) OBJS_OUT="$2" && shift 2 ;;
-	--cmxa-out) CMXA_OUT="$2" && shift 2 ;;
-	--a-out) A_OUT="$2" && shift 2 ;;
-	--exe-out) EXE_OUT="$2" && shift 2 ;;
+	--mode) MODE="$2" ;;
+	--name) NAME="$2" ;;
+	--sysroot-tar) SYSROOT_TAR="$2" ;;
+	--bootstrap-tool) BOOTSTRAP_TOOL="$2" ;;
+	--use-ocamlfind) USE_FIND="$2" ;;
+	--wrapped) WRAPPED="$2" ;;
+	--linkall) LINKALL="$2" ;;
+	--compile-flag) CFLAGS="$CFLAGS $2" ;;
+	--include) INCLUDES="$INCLUDES $2" ;;
+	--opam-pkg) OPAM_PKGS="$OPAM_PKGS $2" ;;
+	--src) SRCS="$SRCS $2" ;;
+	--c-src) CSRCS="$CSRCS $2" ;;
+	--c-header) CHDRS="$CHDRS $2" ;;
+	--cmxa) CMXAS="$CMXAS $2" ;;
+	--pp-tool) PP_TOOL="$2" ;;
+	--pp-arg) PP_ARGS="$PP_ARGS $2" ;;
+	--cppo-tool) CPPO_TOOL="$2" ;;
+	--ppx) PPX="$2" ;;
+	--ppx-data) PPX_DATA="$PPX_DATA $2" ;;
+	--driver-protocol) DRIVER_PROTOCOL="$2" ;;
+	--menhir-tool) MENHIR_TOOL="$2" ;;
+	--menhir-module) MENHIR_MODULES="$MENHIR_MODULES $2" ;;
+	--menhir-flag) MENHIR_FLAGS="$MENHIR_FLAGS $2" ;;
+	--cc-include) CC_INCLUDES="$CC_INCLUDES $2" ;;
+	--cc-archive) CC_ARCHIVES="$CC_ARCHIVES $2" ;;
+	--cc-linkflag) CC_LINKFLAGS="$CC_LINKFLAGS $2" ;;
+	--objs-out) OBJS_OUT="$2" ;;
+	--cmxa-out) CMXA_OUT="$2" ;;
+	--a-out) A_OUT="$2" ;;
+	--exe-out) EXE_OUT="$2" ;;
 	*) echo "ocaml_compile: unknown arg: $1" >&2 && exit 2 ;;
 	esac
-done
+}
+
+# Bazel writes the action arguments one per line. Parse option/value pairs as a
+# stream so large transitive include closures stay off the process command line
+# without repeatedly copying an ever-growing positional-parameter vector.
+case "${1:-}" in
+--args-file=*)
+	ARGS_FILE="${1#--args-file=}"
+	ARG_COUNT=0
+	while IFS= read -r option || [ -n "$option" ]; do
+		if ! IFS= read -r value; then
+			echo "ocaml_compile: response file ends after $option without a value" >&2
+			exit 2
+		fi
+		consume_arg "$option" "$value"
+		ARG_COUNT=$((ARG_COUNT + 2))
+	done <"$ARGS_FILE"
+	echo "ocaml_compile: response file loaded ($ARG_COUNT arguments)" >&2
+	;;
+*)
+	while [ $# -gt 0 ]; do
+		[ $# -ge 2 ] || {
+			echo "ocaml_compile: $1 has no value" >&2
+			exit 2
+		}
+		consume_arg "$1" "$2"
+		shift 2
+	done
+	;;
+esac
+
+if [ -n "$MENHIR_MODULES" ] && [ "$DRIVER_PROTOCOL" != "menhir-stream-v4" ]; then
+	echo "ocaml_compile: unsupported Menhir driver protocol: $DRIVER_PROTOCOL" >&2
+	exit 2
+fi
 
 # Inputs are staged at exec-root-relative paths; later steps cd around, so
 # resolve anything we execute or read from another directory to an absolute path.
@@ -67,10 +103,64 @@ abspath() {
 # lib/ocaml/ layout. A tar (single File artifact) survives RBE staging whole and
 # preserves the +x bit, unlike a TreeArtifact of the install.
 TAR="$(abspath "$SYSROOT_TAR")"
-S="$(mktemp -d)"
+BOOTSTRAP_TOOL="$(abspath "$BOOTSTRAP_TOOL")"
+S="$("$BOOTSTRAP_TOOL" mktemp -d)"
 TMP_WORK=""
-trap 'rm -rf "$S" $TMP_WORK' EXIT
-tar -xf "$TAR" -C "$S"
+STAGE="sysroot setup"
+cleanup() {
+	rc=$?
+	trap - EXIT
+	if [ "$rc" -ne 0 ]; then
+		echo "ocaml_compile: $NAME failed during $STAGE (exit $rc)" >&2
+	fi
+	rm -rf "$S" $TMP_WORK
+	exit "$rc"
+}
+trap cleanup EXIT
+"$BOOTSTRAP_TOOL" tar -xf "$TAR" -C "$S"
+"$BOOTSTRAP_TOOL" mkdir -p "$S/native/zig"
+"$BOOTSTRAP_TOOL" tar -xJf "$S/native/zig.tar.xz" -C "$S/native/zig" --strip-components=1
+"$BOOTSTRAP_TOOL" mkdir -p "$S/native/rootfs"
+"$BOOTSTRAP_TOOL" tar -xzf "$S/native/rootfs.tar.gz" -C "$S/native/rootfs"
+
+# Recreate the native tool wrappers after extraction so they contain paths for
+# this action, never paths from the compiler-build action. The tool payload is
+# checksum-locked in MODULE.bazel and is part of the sysroot tar input.
+HBIN="$S/native/bin"
+NATIVE_TOYBOX="$HBIN/toybox"
+case "$("$BOOTSTRAP_TOOL" uname -m)" in
+x86_64) MUSL_ARCH=x86_64 ;;
+aarch64) MUSL_ARCH=aarch64 ;;
+*)
+	echo "ocaml_compile: unsupported executor architecture" >&2
+	exit 2
+	;;
+esac
+LOADER="$S/native/rootfs/lib/ld-musl-$MUSL_ARCH.so.1"
+BUSYBOX="$S/native/rootfs/bin/busybox"
+for applet in $("$LOADER" --library-path "$S/native/rootfs/lib" "$BUSYBOX" --list); do
+	case "$applet" in
+	sh | bash | tsort | file | cc | gcc | clang | ar | ranlib | nm | objcopy | as | zig) continue ;;
+	esac
+	printf '%s\n' "#!$HBIN/bash" \
+		"exec \"$LOADER\" --library-path \"$S/native/rootfs/lib\" \"$BUSYBOX\" $applet \"\$@\"" \
+		>"$HBIN/$applet"
+	"$NATIVE_TOYBOX" chmod +x "$HBIN/$applet"
+done
+"$NATIVE_TOYBOX" ln -s "$HBIN/bash" "$HBIN/sh"
+"$NATIVE_TOYBOX" ln -s "$NATIVE_TOYBOX" "$HBIN/tsort"
+"$NATIVE_TOYBOX" ln -s "$NATIVE_TOYBOX" "$HBIN/file"
+"$NATIVE_TOYBOX" ln -s "$S/native/zig/zig" "$HBIN/zig"
+for tool in cc gcc clang; do
+	printf '%s\n' "#!$HBIN/bash" "exec \"$HBIN/zig\" cc \"\$@\"" >"$HBIN/$tool"
+	"$NATIVE_TOYBOX" chmod +x "$HBIN/$tool"
+done
+for tool in ar ranlib nm objcopy; do
+	printf '%s\n' "#!$HBIN/bash" "exec \"$HBIN/zig\" $tool \"\$@\"" >"$HBIN/$tool"
+	"$NATIVE_TOYBOX" chmod +x "$HBIN/$tool"
+done
+printf '%s\n' "#!$HBIN/bash" "exec \"$HBIN/zig\" cc -c \"\$@\"" >"$HBIN/as"
+"$NATIVE_TOYBOX" chmod +x "$HBIN/as"
 
 [ -n "$PP_TOOL" ] && PP_TOOL="$(abspath "$PP_TOOL")"
 [ -n "$CPPO_TOOL" ] && CPPO_TOOL="$(abspath "$CPPO_TOOL")"
@@ -80,7 +170,12 @@ tar -xf "$TAR" -C "$S"
 # C library integration (cc_deps): absolute -I for the stub compile (which cds
 # into the work dir) and absolute archive paths for the final link.
 CCOPT_INC=""
-for d in $CC_INCLUDES; do CCOPT_INC="$CCOPT_INC -ccopt -I$(abspath "$d")"; done
+CXX_INC=""
+for d in $CC_INCLUDES; do
+	d="$(abspath "$d")"
+	CCOPT_INC="$CCOPT_INC -ccopt -I$d"
+	CXX_INC="$CXX_INC -I$d"
+done
 CC_ARCH_ABS=""
 for a in $CC_ARCHIVES; do CC_ARCH_ABS="$CC_ARCH_ABS $(abspath "$a")"; done
 CC_CCLIB=""
@@ -89,14 +184,14 @@ for fl in $CC_LINKFLAGS; do CC_CCLIB="$CC_CCLIB -cclib $fl"; done
 # --- Relocate the OCaml toolchain -------------------------------------------
 # The compiler is built from source (semgrep/ocaml 5.3.0) with a baked-in
 # --prefix; relocate it to wherever Bazel staged the sysroot via OCAMLLIB. The
-# build configures plain `as`/`gcc` for native code generation and the final
-# link, so those resolve from the execution host's PATH (the same C toolchain
-# the repo's C/C++ builds use) — nothing is bundled.
+# build configures plain `as`/`cc` for native code generation and the final
+# link. PATH contains only the wrappers recreated above, backed by staged Zig.
 export OCAMLLIB="$S/lib/ocaml"
 export CAML_LD_LIBRARY_PATH="$S/lib/ocaml/stublibs${CAML_LD_LIBRARY_PATH:+:$CAML_LD_LIBRARY_PATH}"
-export PATH="$S/bin:$PATH"
+export PATH="$HBIN:$S/bin"
 
 OCAMLOPT="$S/bin/ocamlopt.opt"
+OCAMLC="$S/bin/ocamlc.opt"
 OCAMLDEP="$S/bin/ocamldep.opt"
 OCAMLLEX="$S/bin/ocamllex"
 OCAMLYACC="$S/bin/ocamlyacc"
@@ -113,7 +208,7 @@ if [ "$SYSROOT_ARCH" != "unknown" ] && [ "$SYSROOT_ARCH" != "$EXEC_ARCH" ]; then
 	exit 1
 fi
 
-echo "ocaml_compile: mode=$MODE arch=$EXEC_ARCH sysroot=$S ocamlopt=$([ -x "$OCAMLOPT" ] && echo ok || echo MISSING) cc=$(command -v cc gcc 2>/dev/null | head -1) as=$(command -v as 2>/dev/null)" >&2
+echo "ocaml_compile: mode=$MODE arch=$EXEC_ARCH sysroot=$S ocamlopt=$([ -x "$OCAMLOPT" ] && echo ok || echo MISSING) cc=$HBIN/cc as=$HBIN/as ar=$HBIN/ar" >&2
 
 # Version tokens for preprocessor arg substitution (see --pp-arg below).
 # %OCAML_VERSION% is the numeric version (5.3.0); %OCAML_AST_VERSION% is
@@ -249,12 +344,14 @@ if [ -n "$PP_TOOL" ]; then
 	done
 fi
 if [ -n "$PPX" ]; then
+	STAGE="ppx preprocessing"
 	# Rewriting in place keeps file/unit names stable so wrapping and ocamldep
 	# are untouched downstream. --dump-ast emits the marshalled AST (the same
 	# thing dune passes between ppx and the compiler; ocamldep/ocamlopt sniff
-	# the magic): a text print + reparse roundtrip is NOT semantics-preserving
-	# -- ppxlib's printer drops `let x : t = e` constraints (pvb_constraint),
-	# which cost ppx_sexp_conv's expander its field disambiguation.
+	# the magic): a text print + reparse roundtrip is not semantics-preserving
+	# because ppxlib's printer drops `let x : t = e` constraints
+	# (pvb_constraint), which cost ppx_sexp_conv's expander its field
+	# disambiguation.
 	for f in "$WORK"/*.ml; do
 		[ -e "$f" ] || continue
 		"$PPX" --impl "$f" --dump-ast -o "$f.pp"
@@ -266,7 +363,6 @@ if [ -n "$PPX" ]; then
 		mv "$f.pp" "$f"
 	done
 fi
-
 # --- menhir grammars (with OCaml type inference) -----------------------------
 # menhir's --infer protocol needs the OCaml types of the semantic actions. We
 # (1) compile the library's other modules into a scratch dir (best effort;
@@ -285,7 +381,7 @@ if [ -n "$MENHIR_MODULES" ]; then
 	for f in $(cd "$SCRATCH" && "$OCAMLDEP" -sort $SIB 2>/dev/null || echo "$SIB"); do
 		# Best effort: a sibling that needs the not-yet-generated parser fails
 		# here and is simply absent from the inference context (it is not needed).
-		"$OCAMLOPT" $CFLAGS -I "$SCRATCH" $INCFLAGS -c "$SCRATCH/$f" 2>/dev/null || true
+		"$OCAMLC" $CFLAGS -I "$SCRATCH" $INCFLAGS -c "$SCRATCH/$f" 2>/dev/null || true
 	done
 	for g in $MENHIR_MODULES; do
 		GMLY="$WORK/$g.mly"
@@ -293,8 +389,16 @@ if [ -n "$MENHIR_MODULES" ]; then
 			echo "ocaml_compile: menhir module $g has no $g.mly in srcs" >&2
 			exit 2
 		}
+		# Dune's Menhir integration infers semantic-action types before parser
+		# generation. A direct generation attempt builds the full automaton only
+		# to discover an implicit type and is prohibitively expensive for large
+		# grammars such as OCaml's.
+		STAGE="Menhir type inference for $g"
 		"$MENHIR_TOOL" $MENHIR_FLAGS --infer-write-query "$SCRATCH/${g}__query.ml" "$GMLY"
-		"$OCAMLOPT" $CFLAGS -I "$SCRATCH" $INCFLAGS -i "$SCRATCH/${g}__query.ml" >"$SCRATCH/${g}.inferred"
+		if ! "$OCAMLC" $CFLAGS -I "$SCRATCH" $INCFLAGS -i "$SCRATCH/${g}__query.ml" >"$SCRATCH/${g}.inferred"; then
+			echo "ocaml_compile: menhir type inference for $g failed" >&2
+			exit 2
+		fi
 		"$MENHIR_TOOL" $MENHIR_FLAGS --infer-read-reply "$SCRATCH/${g}.inferred" --base "$WORK/$g" "$GMLY"
 		rm -f "$GMLY"
 	done
@@ -315,6 +419,7 @@ fi
 # the staged files (both `foo.ml` and `Foo.ml` spellings exist in the wild),
 # skip self-references, order x.mli before x.ml, and tsort. Real cycles
 # still fail loudly (tsort reports them and exits non-zero).
+STAGE="dependency ordering"
 ALLB="$(cd "$WORK" && ls -- *.ml *.mli 2>/dev/null || true)"
 DEPOUT="$(cd "$WORK" && "$OCAMLDEP" -modules $ALLB)"
 ORDER="$(
@@ -350,7 +455,7 @@ ORDER="$(
 		}' | tsort
 )"
 ORDER="$(printf '%s\n' "$ORDER" | tr '\n' ' ')"
-echo "ocaml_compile: compile order: $ORDER" >&2
+echo "ocaml_compile: compile order recovered for $NAME" >&2
 
 # --- Wrapping (dune scheme) --------------------------------------------------
 # Members become <lib>__<Module> behind a generated alias module; everything
@@ -418,15 +523,23 @@ fi
 # --- Compile each file in sorted order ---------------------------------------
 # -no-alias-deps is harmless when unwrapped (OPENFLAG empty, no alias module).
 for f in $ORDER; do
-	"$OCAMLOPT" $CFLAGS $INCFLAGS $OPENFLAG -no-alias-deps -c "$WORK/$f"
+	STAGE="compiling $f"
+	if "$OCAMLOPT" $CFLAGS $INCFLAGS $OPENFLAG -no-alias-deps -c "$WORK/$f"; then
+		:
+	else
+		rc=$?
+		echo "ocaml_compile: failed to compile $f in $NAME (exit $rc)" >&2
+		exit "$rc"
+	fi
 	case "$f" in
 	*.ml) CMX_LIST="$CMX_LIST $WORK/${f%.ml}.cmx" ;;
 	esac
 done
 
 # --- Compile C stub sources (if any) ----------------------------------------
-# ocamlopt compiles .c directly (it supplies caml/*.h) using the execution
-# host's C compiler; the .o lands next to the source in $WORK.
+# ocamlopt compiles .c directly (it supplies caml/*.h) using the staged C
+# compiler. C++ stubs use staged Zig directly so their standard library ABI and
+# the final link's declared -lc++ input agree. The .o lands in $WORK.
 # c_headers are the library's own headers (dune stages everything in the
 # library dir; `install_c_headers` names the public ones): staged by basename
 # next to the stubs so `#include "x.h"` resolves, never compiled.
@@ -437,15 +550,27 @@ STUB_OBJS=""
 for c in $CSRCS; do
 	cb="$(basename "$c")"
 	cp "$c" "$WORK/$cb"
-	# -ccopt -I<dir> lets a stub #include a cc_deps header (pcre2.h etc.).
-	(cd "$WORK" && "$OCAMLOPT" $CCOPT_INC -c "$cb")
-	STUB_OBJS="$STUB_OBJS $WORK/${cb%.c}.o"
+	obj="${cb%.*}.o"
+	case "$cb" in
+	*.cc)
+		(cd "$WORK" && "$HBIN/zig" c++ $CXX_INC -I"$OCAMLLIB" -c "$cb" -o "$obj")
+		;;
+	*)
+		# -ccopt -I<dir> lets a C stub include a cc_deps header.
+		(cd "$WORK" && "$OCAMLOPT" $CCOPT_INC -c "$cb")
+		;;
+	esac
+	STUB_OBJS="$STUB_OBJS $WORK/$obj"
 done
 
 # --- Produce the output -----------------------------------------------------
 if [ "$MODE" = "library" ]; then
 	# ocamlopt -o NAME.cmxa also writes NAME.a alongside it.
-	"$OCAMLOPT" -a -o "$CMXA_OUT" $CMX_LIST
+	STAGE="archiving"
+	if ! "$OCAMLOPT" -a -o "$CMXA_OUT" $CMX_LIST; then
+		echo "ocaml_compile: failed to archive $NAME" >&2
+		exit 2
+	fi
 	[ "$A_OUT" = "${CMXA_OUT%.cmxa}.a" ] || cp "${CMXA_OUT%.cmxa}.a" "$A_OUT"
 	# Fold C stub objects into the library archive (the .a ocamlopt auto-finds
 	# next to the .cmxa), so binaries linking this library resolve the externals.
@@ -463,5 +588,6 @@ else
 	# stub objects that reference their symbols (static link resolves L-to-R).
 	LINKFLAGS=""
 	[ "$LINKALL" = "1" ] && LINKFLAGS="-linkall"
+	STAGE="linking"
 	"$OCAMLOPT" $CFLAGS $LINKFLAGS $INCFLAGS $PKG_LINK $CMXAS $CMX_LIST $STUB_OBJS $CC_ARCH_ABS $CC_CCLIB -o "$EXE_OUT"
 fi

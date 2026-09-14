@@ -14,8 +14,11 @@
 ;     sexplib semver uri uuidm memtrace parmap eio eio.unix telemetry
 ;     parallelism (Common_metrics meters through Ometrics and
 ;     SharedCounterTable; UCmd spans through telemetry's Tracing). Dropped:
-;     atdgen-runtime ocolor logs.threaded alcotest alcotest-lwt testo-lwt
+;     atdgen-runtime ocolor logs.threaded alcotest-lwt testo-lwt
 ;     lwt eio_main ambient-context-lwt (unreferenced).
+;   * alcotest retained because the C++ and OCaml Menhir libraries package
+;     their Unit_parsing_* registries and reach it through commons, matching
+;     dune's implicit transitive dependency model.
 
 (library
  (public_name commons)
@@ -32,6 +35,7 @@
    ANSITerminal
    logs
    logs.fmt
+   alcotest
    testo
    timedesc
    cmdliner

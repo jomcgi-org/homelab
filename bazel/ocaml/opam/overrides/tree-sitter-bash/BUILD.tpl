@@ -1,28 +1,22 @@
+load("@homelab//bazel/ocaml:defs.bzl", "ocaml_library")
+
 # Override BUILD for tree-sitter-lang.bash (installed by extension.bzl).
 #
 # Not an opam release: semgrep-bash pinned to the commit Semgrep's submodule
-# references (lock version = short sha). The grammar's generated parser.c and
-# the C++ scanner build as a cc_library against the vendored tree-sitter
-# runtime (includes = ["lib"] resolves the repo-local tree_sitter/parser.h
-# copy, kept deliberately by upstream); the OCaml binding stub (bindings.c,
-# includes only tree_sitter/api.h) rides c_srcs with the archives via
-# cc_deps. CI compiles the library with a constrained native C/C++ toolchain
-# on both x86_64 and aarch64.
+# references (lock version = short sha). The grammar's generated parser.c,
+# C++ scanner, and OCaml binding stub all ride c_srcs so the pinned native
+# tool closure compiles them. The header-only cc_library preserves the
+# tree_sitter/parser.h include layout and propagates the declared libc++ link
+# input. CI compiles the library on both x86_64 and aarch64.
 load("@rules_cc//cc:defs.bzl", "cc_library")
-load("@homelab//bazel/ocaml:defs.bzl", "ocaml_library")
 
 cc_library(
-    name = "bash_grammar",
-    srcs = [
-        "lib/parser.c",
-        "lib/scanner.cc",
-    ] + glob(["lib/tree_sitter/*.h"]),
-    copts = ["-w"],
+    name = "bash_headers",
+    hdrs = glob(["lib/tree_sitter/*.h"]),
     includes = ["lib"],
-    # The C++ scanner needs the C++ runtime at the final OCaml link
-    # (upstream's c_library_flags say -lstdc++); user link flags propagate
-    # through cc_deps to every consuming binary.
-    linkopts = ["-lstdc++"],
+    # The C++ scanner is compiled with Zig libc++, so the final OCaml link must
+    # use the same pinned C++ runtime.
+    linkopts = ["-lc++"],
     visibility = ["//visibility:public"],
     deps = ["@ocaml_tree_sitter_c//:tree_sitter"],
 )
@@ -35,9 +29,13 @@ ocaml_library(
         "lib/Parse.ml",
         "lib/Parse.mli",
     ],
-    c_srcs = ["lib/bindings.c"],
+    c_srcs = [
+        "lib/bindings.c",
+        "lib/parser.c",
+        "lib/scanner.cc",
+    ],
     cc_deps = [
-        ":bash_grammar",
+        ":bash_headers",
         "@ocaml_tree_sitter_c//:tree_sitter",
     ],
     visibility = ["//visibility:public"],

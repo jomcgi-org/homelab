@@ -1,0 +1,18 @@
+; OVERLAY (bazel/ocaml/semgrep_src/overlays) -- replaces the upstream dune.
+;
+; Preserve the one upstream Space_main program and its direct libraries, while
+; rewriting plural `(executables)`/`names`/`public_names` to the translator's
+; supported singular form. Also remove `(flags (:include flags.sexp))` and its
+; generic generator rule. Upstream flags.sh selects link policy by OS, opam
+; switch, Alpine, Nix, and FORCE_DYNLINK. For the supported non-Alpine Linux
+; dynamic build that policy emits no extra flags. Bazel supplies Spacegrep's
+; actual PCRE/PCRE2 native archives through cc_deps; it has no language grammar
+; dependency. The translator rejects the removed include and plural stanza at
+; fetch time, so both changes stay explicit here.
+(executable
+ (name Space_main)
+ (public_name spacegrep)
+ (package spacegrep)
+ (libraries
+  spacegrep
+  cmdliner))

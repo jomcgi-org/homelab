@@ -1,0 +1,9 @@
+; OVERLAY: a focused native entry point for the CE core scan engine.
+; Upstream src/main links the unfinished osemgrep and legacy-LSP frontends into
+; the same executable. This entry point retains semgrep-core's rules/targets
+; protocol while keeping the issue #3922 closure at the CE engine boundary.
+(executable
+ (name Semgrep_core_main)
+ (public_name semgrep-core)
+ (package semgrep)
+ (libraries semgrep.core_scan))

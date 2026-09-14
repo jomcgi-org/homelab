@@ -1,0 +1,19 @@
+; OVERLAY: generate the C++ grammar with Menhir's table backend.
+;
+; The code backend produces a large parser whose native compilation exceeds
+; the remote executor's memory allocation. The table backend keeps the parser
+; compact and requires the checksum-locked menhirLib runtime dependency.
+(library
+ (public_name parser_cpp.menhir)
+ (name parser_cpp_menhir)
+ (wrapped false)
+ (libraries
+  menhirLib
+  commons
+  lib_parsing
+  parser_cpp.ast)
+ (preprocess (pps ppx_deriving.show)))
+(ocamllex lexer_cpp)
+(menhir
+ (modules parser_cpp)
+ (flags --unused-tokens --explain --table --fixed-exception))

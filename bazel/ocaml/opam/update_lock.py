@@ -9,8 +9,9 @@ is downloaded, its sha512 verified against opam's, and the sha256 computed
 locally -- so every lock entry is still pinned to exactly the artifact opam
 would install.
 
-Hand-maintained fields (repo, src_dirs, override, override_extra, libs, type,
-strip_prefix when set) are preserved on regeneration: they describe
+Hand-maintained fields (repo, src_dirs, override, override_extra,
+tree_sitter_target, libs, type, strip_prefix when set) are preserved on
+regeneration: they describe
 dune-project layout and our build strategy, not opam metadata.
 
 Usage:

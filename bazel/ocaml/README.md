@@ -108,20 +108,18 @@ ocaml actions as hermetic inputs**:
    `5.3.0-semgrep`, stock 5.3.0 + a thin patch set) and exposes its tree as
    `@ocaml_source//:srcs`. It does **not** build.
 2. `toolchain/compiler.bzl`'s `ocaml_compiler` rule runs `./configure && make &&
-make install` as a **build action on the RBE executor**, packaging the install
-   prefix as a single **tar** (`bin/`, `lib/ocaml/`). Building where the compiler
-   will _run_ is what makes it portable: a from-source build in the repository rule
-   links the _workflow runner's_ glibc, which is newer than the executor's and
-   fails at action time with `GLIBC_2.38 not found`. The action is cached in the
-   RBE action cache, so the compiler builds once. (A tar, not a TreeArtifact of the
-   install: a directory artifact does not survive RBE staging intact — the bin
-   tools come up missing — whereas a single File always materializes whole and tar
-   preserves the executable bit.)
-3. Every ocaml action stages that tar as input; the driver extracts it to a temp
-   sysroot, relocates the compiler with a single `OCAMLLIB` override, and calls
-   `ocamlopt.opt` / `ocamldep.opt` from `bin/`. **Native code generation and the
-   final link use the execution host's `as`/`gcc`/`ld`** — the same C toolchain
-   the repo's C/C++ builds already rely on. So no C toolchain is bundled.
+   make install` as a build action on the RBE executor. Its declared inputs are
+   the source plus checksum-locked Zig 0.14.1, Alpine 3.22.5 sysroot and GNU Make
+   packages, static Bash, and Toybox for each supported architecture. No compiler
+   construction step resolves `cc`, `as`, `ar`, `make`, or shell utilities from
+   the executor. The action packages the install prefix and native tool payload
+   as one tar, which materializes reliably through RBE and preserves executable
+   modes. The action is cached, so the compiler builds once per architecture.
+3. Every OCaml action stages that tar plus a checksum-locked static Toybox
+   bootstrap input. The driver extracts it, recreates relocation-safe wrappers,
+   and sets a closed PATH containing only the sysroot OCaml tools, Zig C
+   compiler, assembler, linker, archiver, and pinned utilities. Native stub
+   compilation and final links therefore use declared tool and libc inputs.
 
 **Why from source, not Debian debs?** Two reasons (see `source.bzl`):
 
@@ -131,9 +129,8 @@ make install` as a **build action on the RBE executor**, packaging the install
   ocaml-compiler-libs generators introspect), which the stripped Debian
   packages omitted — this is what unblocked ppx.
 
-Binaries link the execution host's glibc, so they run wherever the action ran.
-`OcamlToolchainInfo` (the Bazel toolchain) carries the sysroot files plus tool
-configuration (`use_ocamlfind`, extra flags).
+`OcamlToolchainInfo` carries the compiler/native sysroot tar, extraction tool,
+and compilation configuration (`use_ocamlfind`, extra flags).
 
 ## Multi-arch (linux x86_64 + arm64)
 
@@ -287,7 +284,7 @@ bazel/ocaml/
   platforms/BUILD          # per-arch platforms (from arches.bzl) + executor probe
   driver/ocaml_compile.sh  # staging + codegen pipeline + ocamldep -sort + compile/link
   semgrep_src/
-    source.bzl             # pinned Semgrep CE commit + translated frontier (wave D)
+    source.bzl             # pinned Semgrep CE commit + translated Spacegrep engine closure
     repositories.bzl       # module extension: clone + overlays + dune2bazel -> @semgrep_src
     overlays/              # tree paths replaced before translation (each documents why)
     README.md              # translated dirs + the libs/commons rejection dispatch

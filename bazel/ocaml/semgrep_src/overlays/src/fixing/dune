@@ -1,0 +1,16 @@
+; OVERLAY: remove production-inert inline tests from the native CE engine.
+; Autofix.ml's three let%test declarations are removed by the paired patch.
+(library
+ (public_name semgrep.fixing)
+ (name semgrep_fixing)
+ (wrapped false)
+ (libraries
+  commons
+  semgrep.parsing
+  semgrep.printing
+  semgrep.reporting)
+ (preprocess
+  (pps
+   ppx_deriving.show
+   ppx_profiling
+   commons.ppx)))

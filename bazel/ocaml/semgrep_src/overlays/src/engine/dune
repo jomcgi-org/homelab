@@ -1,0 +1,29 @@
+; OVERLAY: remove production-inert inline tests from the native CE engine.
+; Match_taint_spec.ml's sole let%test is removed by the paired source patch.
+(library
+ (public_name semgrep.engine)
+ (name semgrep_engine)
+ (wrapped false)
+ (libraries
+  pcre
+  calendar
+  commons
+  telemetry
+  parallelism
+  pfff-lang_GENERIC-analyze
+  parser_regexp
+  spacegrep
+  aliengrep
+  semgrep_core
+  semgrep_fixing
+  semgrep_matching
+  semgrep_tainting
+  semgrep_parsing
+  semgrep_targeting
+  semgrep_reporting)
+ (preprocess
+  (pps
+   ppx_deriving.show
+   ppx_profiling
+   telemetry.ppx
+   commons.ppx)))
