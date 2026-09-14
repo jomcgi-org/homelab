@@ -252,7 +252,6 @@ def test_eslint_preserves_versioned_dependency_graph_and_lints() -> None:
             eslint_utils, "eslint-visitor-keys", visitor_versions
         ) != _caret_dependency_match(eslint, "eslint-visitor-keys", visitor_versions)
 
-        pytest.skip("temporary relocated-lint CI isolation")
         (root / "home").mkdir()
         lint_target = root / "relocated-lint-target.js"
         lint_target.write_text("const answer = 42;\nconsole.log(answer);\n")
