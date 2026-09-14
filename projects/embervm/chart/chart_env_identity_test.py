@@ -626,6 +626,100 @@ def test_noded_max_live_vms_accepts_per_class_override(tmp_path: Path):
         assert max_live_vms(wildcard[0]) == fleet_value
 
 
+@pytest.mark.parametrize(
+    ("values_names", "expected_counts"),
+    [
+        pytest.param(
+            ["PROD_VALUES"],
+            {"1gi": 1, "2gi": 4, "4gi": 1, "8gi": 1, "16gi": 2},
+            id="home",
+        ),
+        pytest.param(
+            ["PROD_VALUES", "GKE_VALUES"],
+            {"1gi": 1, "2gi": 1, "4gi": 1, "8gi": 1, "16gi": 1},
+            id="gke",
+        ),
+    ],
+)
+def test_production_brick_caps_and_resources_survive_values_overlays(
+    values_names: list[str], expected_counts: dict[str, int]
+) -> None:
+    """Render the real overlays, where a classes list replaces chart defaults."""
+    chart = _chart_dir()
+    rendered = _render(
+        "embervm",
+        [chart / "values.yaml", *[Path(os.environ[n]) for n in values_names]],
+    )
+    documents = [doc for doc in yaml.safe_load_all(rendered) if isinstance(doc, dict)]
+    deployments = [
+        doc
+        for doc in documents
+        if doc.get("kind") == "Deployment"
+        and doc.get("metadata", {}).get("labels", {}).get("app.kubernetes.io/component")
+        == "noded-brick"
+    ]
+
+    expected_caps = {
+        "1gi": "6",
+        "2gi": "14",
+        "4gi": "16",
+        "8gi": "16",
+        "16gi": "16",
+    }
+    expected_resources = {
+        "1gi": {
+            "requests": {"cpu": "500m", "memory": "768Mi"},
+            "limits": {"memory": "1Gi"},
+        },
+        "2gi": {
+            "requests": {"cpu": "500m", "memory": "1536Mi"},
+            "limits": {"memory": "2Gi"},
+        },
+        "4gi": {
+            "requests": {"cpu": "1", "memory": "3Gi"},
+            "limits": {"memory": "4Gi"},
+        },
+        "8gi": {
+            "requests": {"cpu": "1", "memory": "6Gi"},
+            "limits": {"memory": "8Gi"},
+        },
+        "16gi": {
+            "requests": {"cpu": "2", "memory": "12Gi"},
+            "limits": {"memory": "16Gi"},
+        },
+    }
+
+    actual_counts = {name: 0 for name in expected_counts}
+    for deployment in deployments:
+        containers = deployment["spec"]["template"]["spec"]["containers"]
+        noded = next(
+            container for container in containers if container["name"] == "noded"
+        )
+        env = {entry["name"]: entry for entry in noded["env"]}
+        size_class = env["EMBERVM_NODED_SIZE_CLASS"]["value"]
+        actual_counts[size_class] += 1
+        assert env["EMBERVM_NODED_MAX_LIVE_VMS"]["value"] == expected_caps[size_class]
+        assert noded["resources"] == expected_resources[size_class]
+
+    assert actual_counts == expected_counts
+    for size_class in expected_counts:
+        dynamic = next(
+            deployment
+            for deployment in deployments
+            if deployment["metadata"]["name"].endswith(f"-brick-{size_class}")
+        )
+        if size_class == "1gi":
+            assert dynamic["spec"]["replicas"] == 0
+
+    wildcard = [
+        doc
+        for doc in documents
+        if doc.get("kind") == "DaemonSet"
+        and doc.get("metadata", {}).get("name", "").endswith("-embervm-noded")
+    ]
+    assert wildcard == [], "production must keep the wildcard noded DaemonSet disabled"
+
+
 def test_noded_onepassword_item_uses_default_shared_secret_name():
     chart = _chart_dir()
     rendered = _render(
