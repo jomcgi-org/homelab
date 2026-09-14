@@ -121,9 +121,21 @@ def try_grant(
         )
         if allowance["turns"] <= controls.task_turn_ceiling(policy):
             return False, "continuation_not_turn_exhausted"
-        if allowance["turns"] != budget["turns_used"] + 2:
-            # This final grant funds only the correction and its review. Other
-            # unfinished work would compete with the grant's dispatch scope.
+        terminal_keys = {
+            r["node_key"] for r in runs if r["status"] in ("succeeded", "escalated")
+        }
+        if any(
+            not n["node_key"].startswith("conductor_")
+            and n["node_key"] not in terminal_keys
+            and graph.attempts_spent(runs, n["node_key"]) < n["max_attempts"]
+            and sum(
+                r["accounted_cost_usd"] for r in runs if r["node_key"] == n["node_key"]
+            )
+            < n["max_cost_usd"]
+            for n in nodes
+        ):
+            # Exclude competing work, including nodes waiting on dependencies.
+            # An exhausted node budget cannot dispatch its unused attempt slot.
             return False, "continuation_scope_refused"
         if allowance["usd"] > policy["task_budget_usd"]:
             return False, "continuation_budget"

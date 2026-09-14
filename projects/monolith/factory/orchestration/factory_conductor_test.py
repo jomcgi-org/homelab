@@ -8823,7 +8823,10 @@ def test_continuation_keeps_task_limits_and_grants_only_one_exact_pair(
     assert controls.continuation_grant(task["id"]) == grant
 
 
-def test_continuation_refuses_older_unrelated_ready_work(feedback_db, monkeypatch):
+@pytest.mark.parametrize("exhausted_budget", [False, True])
+def test_continuation_excludes_competing_work_but_ignores_spent_node_budget(
+    feedback_db, monkeypatch, exhausted_budget
+):
     from factory.orchestration import factory_controls as controls
 
     task, policy = continuation_task(monkeypatch)
@@ -8837,7 +8840,27 @@ def test_continuation_refuses_older_unrelated_ready_work(feedback_db, monkeypatc
         "followup",
         "Unfinished work outside the final correction",
     ).ok
+    if exhausted_budget:
+        from sqlmodel import Session, select
+        from factory.orchestration.models import SwarmPlanNode
+
+        run_feedback_node(task, "investigate_followup", {}, status="failed")
+        with Session(conductor.get_engine()) as db:
+            node = db.exec(
+                select(SwarmPlanNode).where(
+                    SwarmPlanNode.task_id == task["id"],
+                    SwarmPlanNode.node_key == "investigate_followup",
+                )
+            ).one()
+            node.max_cost_usd = 0.25
+            db.add(node)
+            db.commit()
     conductor.reconcile_task(task["id"], policy, object())
+    if exhausted_budget:
+        grant = controls.continuation_grant(task["id"])
+        assert grant["work_turn_ceiling"] == 6
+        assert controls.task_snapshot(task["id"])["state"] == "admitted"
+        return
     assert controls.continuation_grant(task["id"]) is None
     assert controls.task_snapshot(task["id"])["state"] == "failed"
     assert not any(
