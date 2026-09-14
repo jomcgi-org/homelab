@@ -8048,6 +8048,24 @@ py_test(
     ],
 )
 
+# Context Forge silently drops any tool whose description trips its security
+# validator, so a violation ships green and only shows up as a missing tool in
+# the proxied catalogue. The test walks the real module registry, so it needs
+# the whole private composition rather than one domain package.
+py_test(
+    name = "agent_mcp_description_compliance_test",
+    srcs = ["agent/mcp_description_compliance_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//fastapi",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+        "@pip//sqlmodel",
+        "@pip//tzdata",
+    ],
+)
+
 bdd_test(
     name = "agent_bdd_locks_test",
     srcs = [
