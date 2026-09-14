@@ -30,19 +30,24 @@ spec:
       toPorts:
         - ports:
             - { port: {{ .Values.noded.healthPort | quote }}, protocol: TCP }
-    # Serving Envoy sends scaled-to-zero HTTP wakes to the node-local activator.
-    # The control plane also calls it during lifecycle orchestration.
+    # Node and edge Envoy send scaled-to-zero HTTP wakes to the node-local
+    # activator. The control plane also calls it during lifecycle orchestration.
     - fromEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: {{ .Release.Namespace | quote }}
             {{- include "embervm.servingEnvoy.selectorLabels" . | nindent 12 }}
+        {{- if and .Values.servingEnvoy.enabled .Values.servingEnvoy.edge.enabled }}
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Release.Namespace | quote }}
+            {{- include "embervm.servingEdge.selectorLabels" . | nindent 12 }}
+        {{- end }}
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: {{ .Release.Namespace | quote }}
             {{- include "embervm.selectorLabels" . | nindent 12 }}
       toPorts:
         - ports:
             - { port: {{ .Values.noded.activatorPort | quote }}, protocol: TCP }
-    # Serving Envoy reaches live serving VMs through noded's prerouting DNAT
+    # Node and edge Envoy reach live serving VMs through noded's prerouting DNAT
     # projection at servingPortBase + hostOffset, where hostOffset is 2..254.
     # One range entry: the Cilium CRD caps a toPorts.ports list at 40 items and
     # supports endPort (the platform chart pins Cilium 1.20.0), so enumerating the
@@ -51,6 +56,11 @@ spec:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: {{ .Release.Namespace | quote }}
             {{- include "embervm.servingEnvoy.selectorLabels" . | nindent 12 }}
+        {{- if and .Values.servingEnvoy.enabled .Values.servingEnvoy.edge.enabled }}
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Release.Namespace | quote }}
+            {{- include "embervm.servingEdge.selectorLabels" . | nindent 12 }}
+        {{- end }}
       toPorts:
         - ports:
             - port: {{ add .Values.noded.servingPortBase 2 | quote }}

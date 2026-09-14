@@ -315,6 +315,13 @@ spec:
             # port, so both derive from values.xds.httpPort.
             - name: EMBERVM_XDS_HTTP_PORT
               value: {{ .Values.xds.httpPort | quote }}
+            {{- if and .Values.servingEnvoy.enabled .Values.servingEnvoy.edge.enabled }}
+            # The cluster edge consumes a SECOND snapshot under one shared node
+            # id. It routes directly to the global set of routable noded pod-IP
+            # DNAT endpoints while node Envoys keep node-local EDS assignments.
+            - name: EMBERVM_SERVING_EDGE_NODE_ID
+              value: {{ .Values.servingEnvoy.edge.nodeId | quote }}
+            {{- end }}
             # Activator endpoint (R3, Task 8): the publisher renders THIS pod's
             # ip:port as the fallback endpoint of an empty serve|<workload> cluster,
             # so the node Envoy routes a miss to the activator route on this

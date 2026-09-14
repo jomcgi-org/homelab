@@ -83,7 +83,8 @@ defmodule Embervm.EndpointPublisherTest do
         # "cold + no activator => emit nothing" case is the default). A single IP,
         # NOT an {ip, port} pair (Task 8, D-R4.PR-4.1): each stateful workload's
         # fallback port is derived from its OWN catalog listen_port.
-        activator_ip: Keyword.get(opts, :activator_ip, nil)
+        activator_ip: Keyword.get(opts, :activator_ip, nil),
+        edge_node_id: Keyword.get(opts, :edge_node_id, nil)
       ]
 
     {:ok, pub} = EndpointPublisher.start_link(pub_opts)
@@ -143,14 +144,14 @@ defmodule Embervm.EndpointPublisherTest do
     NodeCapacity.put(ctx.cap_table, node_id, facts)
   end
 
-  defp start_published(ctx, instance_id, workload, ip, port) do
+  defp start_published(ctx, instance_id, workload, ip, port, node_id \\ "node-4") do
     {:ok, _} =
       ServingStore.start(ctx.store, %{
         instance_id: instance_id,
         tenant: "homelab",
         principal: "p1",
         workload: workload,
-        node_id: "node-4",
+        node_id: node_id,
         vm_id: "vm-" <> instance_id,
         ip: ip,
         port: port
@@ -203,11 +204,11 @@ defmodule Embervm.EndpointPublisherTest do
     assert cluster.health_check == @health_check
   end
 
-  test "ADR embervm/018: cold render prefers a READY node's advertised activator over the CP address" do
+  test "ADR embervm/018: node renders use local activators while the edge prefers a READY node" do
     # The CP-injected activator is 10.1.1.1:7000 (start_stack default). A node that
     # advertises its OWN activator must be preferred, so the wake target is a node
     # address that survives a CP Recreate rather than the dying CP pod IP.
-    ctx = start_stack()
+    ctx = start_stack(edge_node_id: "embervm-serving-edge")
     serving_workload(ctx, "wl-a", "wl-a.example")
 
     # node-4 advertises but its base is still BUILDING; node-5 advertises AND is
@@ -235,14 +236,20 @@ defmodule Embervm.EndpointPublisherTest do
 
     :ok = EndpointPublisher.flush(ctx.pub)
 
-    # Every serving node receives the SAME global fallback: node-5's READY
-    # activator, never the CP-injected 10.1.1.1:7000 nor node-4's non-READY one.
-    puts = last_puts(ctx)
-    assert length(puts) == 2
+    # Each node keeps its own activator, which prevents remote node facts from
+    # changing its snapshot. The global edge can choose the READY advertiser.
+    puts = Map.new(last_puts(ctx), fn {node_id, desired} -> {node_id, desired} end)
+    assert Map.keys(puts) |> Enum.sort() == ["embervm-serving-edge", "node-4", "node-5"]
 
-    for {_node, desired} <- puts do
-      assert [cluster] = desired.clusters
-      assert cluster.endpoints == [%{ip: "10.99.0.5", port: 8081, disable_active_health_check: true}]
+    expected = %{
+      "node-4" => "10.99.0.4",
+      "node-5" => "10.99.0.5",
+      "embervm-serving-edge" => "10.99.0.5"
+    }
+
+    for {node_id, ip} <- expected do
+      assert [cluster] = puts[node_id].clusters
+      assert cluster.endpoints == [%{ip: ip, port: 8081, disable_active_health_check: true}]
       assert cluster.health_check == @health_check
     end
   end
@@ -419,6 +426,89 @@ defmodule Embervm.EndpointPublisherTest do
     serving_node(ctx, "node-4")
     :ok = EndpointPublisher.flush(ctx.pub)
     assert [{"node-4", _desired}] = last_puts(ctx)
+  end
+
+  test "publishes global edge endpoints while remote node churn leaves unrelated snapshots unchanged" do
+    ctx = start_stack(edge_node_id: "embervm-serving-edge")
+
+    serving_workload(ctx, "wl-a", "wl-a.example")
+    serving_node(ctx, "node-4")
+    serving_node(ctx, "node-5")
+    start_published(ctx, "srv-a", "wl-a", "10.42.4.8", 30_011, "node-4")
+    start_published(ctx, "srv-b", "wl-a", "10.42.5.9", 30_017, "node-5")
+
+    :ok = EndpointPublisher.flush(ctx.pub)
+
+    initial = Map.new(last_puts(ctx), fn {node_id, desired} -> {node_id, desired} end)
+    assert Map.keys(initial) |> Enum.sort() == ["embervm-serving-edge", "node-4", "node-5"]
+    node_4_initial = initial["node-4"]
+
+    assert initial["node-4"].clusters |> hd() |> Map.fetch!(:endpoints) == [
+             %{ip: "10.42.4.8", port: 30_011, priority: 0},
+             %{ip: "10.1.1.1", port: 7000, priority: 1}
+           ]
+
+    assert initial["node-5"].clusters |> hd() |> Map.fetch!(:endpoints) == [
+             %{ip: "10.42.5.9", port: 30_017, priority: 0},
+             %{ip: "10.1.1.1", port: 7000, priority: 1}
+           ]
+
+    edge = initial["embervm-serving-edge"]
+
+    assert edge.clusters == [
+             %{
+               name: "serve|wl-a",
+               endpoints: [
+                 %{ip: "10.42.4.8", port: 30_011, priority: 0},
+                 %{ip: "10.42.5.9", port: 30_017, priority: 0},
+                 %{ip: "10.1.1.1", port: 7000, priority: 1}
+               ],
+               connect_timeout_ms: 1_000,
+               health_check: @health_check
+             }
+           ]
+
+    assert [%{cluster: "serve|wl-a", host: "wl-a.example"}] = edge.routes
+
+    # A health flip on node-5 updates only node-5 and the global edge. Node-4's
+    # canonical payload and version remain unchanged.
+    {:ok, _} = ServingStore.set_health(ctx.store, "srv-b", false)
+    :ok = EndpointPublisher.flush(ctx.pub)
+
+    puts = last_puts(ctx)
+    assert Enum.count(puts, fn {node_id, _} -> node_id == "node-4" end) == 1
+    assert Enum.count(puts, fn {node_id, _} -> node_id == "node-5" end) == 2
+    assert Enum.count(puts, fn {node_id, _} -> node_id == "embervm-serving-edge" end) == 2
+
+    assert [^node_4_initial] = for {"node-4", desired} <- puts, do: desired
+
+    node_5_latest = for {"node-5", desired} <- puts, do: desired
+
+    assert List.last(node_5_latest).clusters |> hd() |> Map.fetch!(:endpoints) == [
+             %{ip: "10.1.1.1", port: 7000, disable_active_health_check: true}
+           ]
+
+    edge_latest = for {"embervm-serving-edge", desired} <- puts, do: desired
+
+    assert List.last(edge_latest).clusters |> hd() |> Map.fetch!(:endpoints) == [
+             %{ip: "10.42.4.8", port: 30_011, priority: 0},
+             %{ip: "10.1.1.1", port: 7000, priority: 1}
+           ]
+
+    # Bank withdrawal is already reflected by the unhealthy projection and does
+    # not disturb node-4. A subsequent wake on node-5 updates node-5 and the edge
+    # while node-4 remains byte-for-byte and version stable.
+    {:ok, _} = ServingStore.unpublish(ctx.store, "srv-b", :bank)
+    :ok = EndpointPublisher.flush(ctx.pub)
+    assert Enum.count(last_puts(ctx), fn {node_id, _} -> node_id == "node-4" end) == 1
+
+    start_published(ctx, "srv-c", "wl-a", "10.42.5.10", 30_019, "node-5")
+    :ok = EndpointPublisher.flush(ctx.pub)
+    puts = last_puts(ctx)
+    assert Enum.count(puts, fn {node_id, _} -> node_id == "node-4" end) == 1
+    assert Enum.count(puts, fn {node_id, _} -> node_id == "node-5" end) == 3
+    assert Enum.count(puts, fn {node_id, _} -> node_id == "embervm-serving-edge" end) == 3
+    assert [^node_4_initial] = for {"node-4", desired} <- puts, do: desired
   end
 
   # -- debounce coalescing ----------------------------------------------------

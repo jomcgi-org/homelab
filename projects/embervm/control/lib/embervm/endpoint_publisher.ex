@@ -2,9 +2,9 @@ defmodule Embervm.EndpointPublisher do
   @moduledoc """
   The ONLY writer to the xDS sidecar's snapshot API. Holds the desired Envoy
   routing state as a PURE FUNCTION of `Embervm.ServingStore` + `Embervm.StatefulStore`
-  facts + the `Embervm.WorkloadCatalog`, and PUTs it (per serving node) to the
-  loopback snapshot API the sidecar serves as CDS/RDS/EDS/LDS to the node Envoys
-  (Task 6/7). Serving is the L7 (host/path) fan-out; stateful (R4) adds the L4
+  facts + the `Embervm.WorkloadCatalog`, and PUTs node snapshots plus one
+  cluster-edge snapshot to the loopback snapshot API the sidecar serves as
+  CDS/RDS/EDS/LDS. Serving is the L7 (host/path) fan-out; stateful (R4) adds the L4
   (raw TCP) singleton-sandbox listeners + clusters, both rendered from ETS facts.
 
   ## the sole-writer boundary (reviewer-enforced)
@@ -17,14 +17,15 @@ defmodule Embervm.EndpointPublisher do
 
   ## the pure-function projection
 
-  `desired_for_node/2` renders the snapshot for one node from facts alone:
+  `desired_for_node/3` renders the snapshot for one node from facts alone:
 
     * for each serving-class workload in the catalog: a cluster named
       `serve|<workload>`, whose EDS endpoints are that workload's HEALTHY
-      `published` instances (`ServingStore.published_endpoints/2`) at priority 0
-      and the single activator endpoint at priority 1. Active TCP health checks
-      move traffic to the activator when every live endpoint is unreachable. A
-      workload with no live endpoint keeps the activator-only assignment;
+      `published` instances owned by that node
+      (`ServingStore.published_endpoints_for_node/3`) at priority 0 and that
+      node's activator endpoint at priority 1. Active TCP health checks move
+      traffic to the activator when every local endpoint is unreachable. A
+      workload with no local endpoint keeps the activator-only assignment;
     * a route per workload: host from the catalog's `serving.host`, prefix `/`,
       injecting `x-ember-workload: <workload>` so the woken VM (and the activator)
       can resolve which workload a request targets;
@@ -185,7 +186,7 @@ defmodule Embervm.EndpointPublisher do
   end
 
   @doc """
-  The PURE desired-state document for one node at `version`, rendered from `ctx`,
+  The PURE desired-state document for `node_id` at `version`, rendered from `ctx`,
   a render context bundling the fact sources: `%{store, stateful_store,
   catalog_table, activator_endpoint, activator_ip, connect_timeout_ms,
   health_check}`
@@ -194,11 +195,11 @@ defmodule Embervm.EndpointPublisher do
   durable op-log. Exposed for the pure-function tests (facts in, snapshot map out)
   and used by the flush path.
   """
-  @spec desired_for_node(map(), String.t()) :: map()
-  def desired_for_node(ctx, version) do
+  @spec desired_for_node(map(), String.t(), String.t()) :: map()
+  def desired_for_node(ctx, version, node_id) do
     workloads = serving_catalog_workloads(ctx.catalog_table)
 
-    serving_clusters = Enum.map(workloads, &cluster_for(ctx, &1))
+    serving_clusters = Enum.map(workloads, &cluster_for(ctx, &1, node_id))
     routes = workloads |> Enum.map(&route_for(ctx, &1)) |> Enum.reject(&is_nil/1)
 
     # Stateful (L4) workloads (R4): for each stateful-class workload, a listener +
@@ -241,6 +242,23 @@ defmodule Embervm.EndpointPublisher do
     end
   end
 
+  @doc """
+  The PURE cluster-edge desired-state document. It contains the global healthy
+  serving endpoint set plus the activator fallback. The published endpoints are
+  routable noded pod-IP DNAT addresses, so the edge can reach every serving node
+  directly while each node Envoy retains a node-local EDS assignment.
+  """
+  @spec desired_for_edge(map(), String.t()) :: map()
+  def desired_for_edge(ctx, version) do
+    workloads = serving_catalog_workloads(ctx.catalog_table)
+
+    %{
+      version: version,
+      clusters: Enum.map(workloads, &cluster_for(ctx, &1, :all)),
+      routes: workloads |> Enum.map(&route_for(ctx, &1)) |> Enum.reject(&is_nil/1)
+    }
+  end
+
   # -- GenServer callbacks ---------------------------------------------------
 
   @impl true
@@ -279,6 +297,9 @@ defmodule Embervm.EndpointPublisher do
       # because the serving activator resolves the workload from the injected
       # x-ember-workload HTTP header instead).
       activator_ip: Keyword.get(opts, :activator_ip, nil),
+      # Cluster edge snapshot target. nil disables edge publication (tests and
+      # half-rolled charts); production supplies the shared Envoy node id.
+      edge_node_id: Keyword.get(opts, :edge_node_id, nil),
       connect_timeout_ms: Keyword.get(opts, :connect_timeout_ms, 1_000),
       health_check: %{
         timeout_ms: Keyword.get(opts, :health_check_timeout_ms, @default_health_check_timeout_ms),
@@ -398,7 +419,11 @@ defmodule Embervm.EndpointPublisher do
   defp do_flush(state) do
     state = cancel_debounce(state)
     ctx = render_ctx(state)
-    registrations = serving_registrations(ctx.node_facts)
+    registrations =
+      ctx.node_facts
+      |> serving_registrations()
+      |> add_edge_registration(state.edge_node_id)
+
     nodes = registrations |> Map.keys() |> Enum.sort()
     state = refresh_registrations(state, registrations)
     now_ms = state.clock.()
@@ -409,7 +434,12 @@ defmodule Embervm.EndpointPublisher do
 
     state =
       Enum.reduce(nodes, state, fn node_id, acc ->
-        canonical = desired_for_node(ctx, "")
+        canonical =
+          if node_id == state.edge_node_id do
+            desired_for_edge(ctx, "")
+          else
+            desired_for_node(ctx, "", node_id)
+          end
         hash = snapshot_hash(canonical)
 
         if push_required?(acc, node_id, hash, now_ms) do
@@ -542,7 +572,7 @@ defmodule Embervm.EndpointPublisher do
   end
 
   # The render context: the fact-source handles the pure projection reads against.
-  # Bundled so desired_for_node/2 takes one struct, not five loose args.
+  # Bundled so desired_for_node/3 takes one struct plus the target node id.
   defp render_ctx(state) do
     %{
       store: state.store,
@@ -597,6 +627,13 @@ defmodule Embervm.EndpointPublisher do
     is_binary(cidr) and cidr != ""
   end
 
+  defp add_edge_registration(registrations, node_id)
+       when is_binary(node_id) and node_id != "" do
+    Map.put(registrations, node_id, [{:cluster_edge, node_id}])
+  end
+
+  defp add_edge_registration(registrations, _node_id), do: registrations
+
   # -- pure projection -------------------------------------------------------
 
   # Every serving-class workload in the catalog, so the render enumerates clusters
@@ -631,17 +668,23 @@ defmodule Embervm.EndpointPublisher do
   # active checking. The health check is unconditional so wake and bank update EDS
   # without also replacing the CDS cluster. Live endpoints are already in stable
   # instance-id order, so the render is deterministic.
-  defp cluster_for(ctx, workload) do
-    live = ServingStore.published_endpoints(ctx.store, workload)
+  defp cluster_for(ctx, workload, node_id) do
+    live =
+      case node_id do
+        :all -> ServingStore.published_endpoints(ctx.store, workload)
+        node_id -> ServingStore.published_endpoints_for_node(ctx.store, workload, node_id)
+      end
 
     endpoints =
       case live do
         [] ->
-          Enum.map(activator_endpoints(ctx, workload), &disable_active_health_check/1)
+          Enum.map(activator_endpoints(ctx, workload, node_id), &disable_active_health_check/1)
 
         eps ->
           live_endpoints = Enum.map(eps, &priority_endpoint(&1, 0))
-          fallback_endpoints = Enum.map(activator_endpoints(ctx, workload), &priority_endpoint(&1, 1))
+          fallback_endpoints =
+            Enum.map(activator_endpoints(ctx, workload, node_id), &priority_endpoint(&1, 1))
+
           live_endpoints ++ fallback_endpoints
       end
 
@@ -682,8 +725,8 @@ defmodule Embervm.EndpointPublisher do
   # so a scaled-to-zero workload's first request survives a CP roll; the CP
   # address is the fallback for nodes that do not advertise one (pre-018 daemons),
   # which keeps a half-rolled fleet correct with no flag day.
-  defp activator_endpoints(ctx, workload) do
-    case node_advertised_activator(ctx, workload) do
+  defp activator_endpoints(ctx, workload, node_id) do
+    case node_advertised_activator(ctx, workload, node_id) do
       %{ip: ip, port: port} when is_binary(ip) and is_integer(port) ->
         [%{ip: ip, port: port}]
 
@@ -698,7 +741,7 @@ defmodule Embervm.EndpointPublisher do
   # wrong), falling back to any advertiser. Deterministic: candidates are sorted by
   # configured_id and the first is taken, so the rendered fallback is stable across
   # rebuilds (the byte-identical render property). nil when no node advertises one.
-  defp node_advertised_activator(ctx, workload) do
+  defp node_advertised_activator(ctx, workload, node_id) do
     advertisers =
       ctx
       # A ctx built by a path that predates node-local activators (e.g. the group
@@ -706,6 +749,7 @@ defmodule Embervm.EndpointPublisher do
       # CP-injected fallback is used and that render is unchanged.
       |> Map.get(:node_facts, [])
       |> Enum.filter(&is_map(Map.get(&1, :activator_endpoint)))
+      |> Enum.filter(fn fact -> node_id == :all or fact.configured_id == node_id end)
       |> Enum.sort_by(& &1.configured_id)
 
     ready = Enum.filter(advertisers, &workload_base_ready?(&1, workload))

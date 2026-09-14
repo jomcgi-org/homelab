@@ -1183,7 +1183,20 @@ defmodule Embervm.Application do
     [
       activator_endpoint: activator_endpoint(),
       activator_ip: stateful_activator_ip()
-    ] ++ repush_opt()
+    ] ++ edge_publisher_opts() ++ repush_opt()
+  end
+
+  # The second, cluster-scoped xDS snapshot. The edge Envoy and publisher share
+  # one node id. An unset id disables edge publication cleanly for recovery and
+  # half-rolled charts.
+  defp edge_publisher_opts do
+    node_id = trimmed_env("EMBERVM_SERVING_EDGE_NODE_ID")
+
+    if node_id != "" do
+      [edge_node_id: node_id]
+    else
+      []
+    end
   end
 
   defp node_registry_opts do

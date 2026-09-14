@@ -29,6 +29,7 @@ go_test(
     embed = [":server"],
     deps = [
         "//projects/embervm/xds/snapshot",
+        "@com_github_envoyproxy_go_control_plane//pkg/cache/v3:cache",
         "@com_github_envoyproxy_go_control_plane//pkg/resource/v3:resource",
         "@com_github_envoyproxy_go_control_plane_envoy//config/core/v3:core",
         "@com_github_envoyproxy_go_control_plane_envoy//service/discovery/v3:discovery",

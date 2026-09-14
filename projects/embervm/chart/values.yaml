@@ -496,6 +496,32 @@ servingEnvoy:
   listenerPort: 10000
   adminPort: 9901
   statsPort: 9902
+  # Cluster-serving edge tier (R4): a small Envoy Deployment between static
+  # Gateway API exposure and the node Envoy DaemonSet. Every replica shares one
+  # xDS node id and consumes the same second snapshot. Its serve|<workload>
+  # clusters carry the global set of routable noded pod-IP DNAT endpoints, while
+  # each node Envoy's EDS assignment contains only endpoints owned by that node.
+  edge:
+    enabled: true
+    nodeId: embervm-serving-edge
+    replicas: 2
+    adminPort: 9911
+    healthPort: 9912
+    nodeSelector: {}
+    tolerations: []
+    priorityClassName: homelab-disposable
+    resources:
+      requests:
+        cpu: 50m
+        memory: 48Mi
+      limits:
+        memory: 96Mi
+    healthResources:
+      requests:
+        cpu: 5m
+        memory: 16Mi
+      limits:
+        memory: 32Mi
   # The R4 stateful TCP listenerPort range, exposed as container ports on the node
   # Envoy DaemonSet and as TCP ports on the serving Service (named state-<port>).
   # This is CAPACITY: static GitOps config declaring which ports exist. The CRD

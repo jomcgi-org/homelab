@@ -193,6 +193,21 @@ app.kubernetes.io/component: serving-envoy
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end -}}
 
+{{- define "embervm.servingEdge.fullname" -}}
+{{- printf "%s-serving-edge" (include "embervm.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "embervm.servingEdge.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "embervm.servingEnvoy.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: serving-edge
+{{- end -}}
+
+{{- define "embervm.servingEdge.labels" -}}
+{{ include "embervm.servingEdge.selectorLabels" . }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end -}}
+
 {{/*
 Node-provisioning contract actuator (ADR embervm/012 storage-tiers amendment):
 the scratch-prep DaemonSet is a THIRD workload in this chart. Like noded and the
@@ -220,9 +235,9 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end -}}
 
 {{/*
-The stable per-node serving address the edge Envoy Gateway sees. v1 is one node
-so a ClusterIP Service suffices; the name is release-derived like every other
-service name here (survives a release rename).
+The stable node-tier address for internal L4 consumers and stats collection. The
+name is release-derived like every other service name here (survives a release
+rename).
 */}}
 {{- define "embervm.serving.fullname" -}}
 {{- printf "%s-serving" (include "embervm.fullname" .) | trunc 63 | trimSuffix "-" -}}
