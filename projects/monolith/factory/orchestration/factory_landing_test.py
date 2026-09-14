@@ -19,7 +19,7 @@ from factory.orchestration.factory_models import (
     FactoryReceipt,
     FactoryStart,
 )
-from factory.orchestration.models import SwarmTask
+from factory.orchestration.models import SwarmNodeRun, SwarmTask
 
 NOW = datetime(2026, 9, 11, 12, tzinfo=timezone.utc)
 POLICY = {"repo": "owner/repo", "auto_merge": True}
@@ -44,6 +44,7 @@ def db(tmp_path, monkeypatch):
             m.__table__
             for m in (
                 SwarmTask,
+                SwarmNodeRun,
                 FactoryControl,
                 FactoryReceipt,
                 FactoryStart,
@@ -268,6 +269,7 @@ def test_a_conflicting_delivery_reopens_the_task_without_arming(db, monkeypatch)
             "source": "delivered_pr",
             "reason": "merge_conflict",
             "deadline_at": (NOW + timedelta(hours=1)).isoformat(),
+            "run_id_floor": 0,
         }
     ]
     assert audits(db, "merge_armed") == []
@@ -465,6 +467,38 @@ def test_ejection_requests_assessment_and_releases_holder(db, monkeypatch):
     assert len(audits(db, "landing_recovery_requested", "t-1")) == 1
 
 
+def reviewed_recovery(db, head=HEAD):
+    """Model the assessment and fresh independent review before settlement."""
+    with Session(db) as session:
+        event = session.exec(
+            select(FactoryAudit)
+            .where(
+                FactoryAudit.task_id == "t-1",
+                FactoryAudit.action == "landing_recovery_requested",
+            )
+            .order_by(FactoryAudit.id.desc())
+        ).first()
+        session.add(
+            FactoryAudit(
+                actor="test",
+                task_id="t-1",
+                action="landing_recovery_round",
+                detail_json=json.dumps({"request_id": event.id}),
+            )
+        )
+        session.add(
+            SwarmNodeRun(
+                task_id="t-1",
+                node_key=f"review_recovery_{event.id}",
+                attempt=1,
+                status="succeeded",
+                session_id=12,
+                head_sha=head,
+            )
+        )
+        session.commit()
+
+
 def test_recovery_is_bounded_across_new_settlements(db, monkeypatch):
     delivered(db, "t-1", 11, 3)
     pulls = {3: pull(3)}
@@ -477,6 +511,7 @@ def test_recovery_is_bounded_across_new_settlements(db, monkeypatch):
         landing.landing_tick(POLICY)
         if ordinal < 2:
             assert receipt_state(db, "t-1") == "admitted"
+            reviewed_recovery(db)
             assert controls.finish_task(
                 "t-1",
                 "succeeded",
@@ -484,6 +519,7 @@ def test_recovery_is_bounded_across_new_settlements(db, monkeypatch):
                 evidence={
                     "pr_url": "https://github.com/owner/repo/pull/3",
                     "head_sha": HEAD,
+                    "review_session_id": 12,
                     "state": "ready_for_review",
                 },
             )["ok"]
@@ -584,6 +620,7 @@ def test_a_merge_conflict_ejection_reopens_for_correction_instead_of_rearming(
             "source": "merge_queue",
             "reason": "merge_conflict",
             "deadline_at": (NOW + timedelta(hours=1)).isoformat(),
+            "run_id_floor": 0,
         }
     ]
     assert audits(db, "merge_arm_refused", "t-1") == []
@@ -603,6 +640,7 @@ def test_a_corrected_merge_conflict_rearms_at_the_newly_approved_head(db, monkey
     landing.landing_tick(POLICY)
 
     corrected_head = "c" * 40
+    reviewed_recovery(db, corrected_head)
     assert controls.finish_task(
         "t-1",
         "succeeded",
@@ -651,6 +689,7 @@ def test_historical_refusal_is_recovered_once_and_rearmed_after_review(db, monke
     assert len(audits(db, "landing_recovery_requested", "t-1")) == 1
     assert calls["graphql"] == []
     new_head = "c" * 40
+    reviewed_recovery(db, new_head)
     assert controls.finish_task(
         "t-1",
         "succeeded",
@@ -658,6 +697,7 @@ def test_historical_refusal_is_recovered_once_and_rearmed_after_review(db, monke
         evidence={
             "pr_url": "https://github.com/owner/repo/pull/3",
             "head_sha": new_head,
+            "review_session_id": 12,
             "state": "ready_for_review",
         },
     )["ok"]
@@ -1117,3 +1157,40 @@ def test_historical_changed_head_is_skipped_once_without_blocking_next_refusal(
     landing.landing_tick(POLICY)
     assert calls["get"] == ["pulls/3", "pulls/4"]
     assert receipt_state(db, "t-2") == "admitted"
+
+
+def test_incomplete_recovery_resumes_without_new_episode_or_arming(db, monkeypatch):
+    delivered(db, "t-1", 11, 3)
+    assert controls.request_landing_recovery("t-1", 3, HEAD, "merge_queue", "test")[
+        "ok"
+    ]
+    original = audits(db, "landing_recovery_requested")
+    # Reproduce the old conductor replay: it settled without any recovery round.
+    with Session(db) as session:
+        row = session.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == "t-1")
+        ).one()
+        row.state = "succeeded"
+        session.add(row)
+        session.add(
+            FactoryAudit(
+                actor="old-conductor",
+                task_id="t-1",
+                action="finish_task",
+                detail_json=json.dumps(
+                    {
+                        "outcome": "succeeded",
+                        "evidence": {
+                            "pr_url": "https://github.com/owner/repo/pull/3",
+                            "head_sha": HEAD,
+                        },
+                    }
+                ),
+            )
+        )
+        session.commit()
+    calls = github(monkeypatch, pulls={3: pull(3)})
+    landing.landing_tick(POLICY)
+    assert receipt_state(db, "t-1") == "admitted"
+    assert audits(db, "landing_recovery_requested") == original
+    assert calls["graphql"] == []
