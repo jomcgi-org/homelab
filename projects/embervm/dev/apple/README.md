@@ -1,14 +1,16 @@
 # Apple Silicon development
 
-Run the real EmberVM Firecracker driver locally inside a persistent Linux VM.
-The host has 4 vCPUs and 10 GiB RAM. Each probe restores four ARM microVMs,
-each with 1 vCPU and 1536 MiB RAM, from one shared snapshot.
+Run a local HTTP scan server backed by the real EmberVM Firecracker driver.
+The persistent Linux host has 4 vCPUs and 10 GiB RAM. The server keeps four ARM
+microVM slots, each with 1 vCPU and 1536 MiB RAM, restored from one shared snapshot.
 
 This is the first development milestone of [#6132](https://github.com/jomcgi-org/homelab/issues/6132).
 It proves cold boot, snapshot/restore, HTTP over vsock, separate guest memory
-and tmpfs state, and teardown. It uses a tiny probe guest. The Semgrep warm
-scan-server still needs an ARM artifact, and the task library and scan HTTP
-service have not yet been extracted.
+and tmpfs state, and teardown. The synthetic server adds bounded admission,
+fresh guests per scan, pool replenishment, overload, cancellation and drain.
+The workload generates files, matches a fixed `TODO` marker and hashes the files
+repeatedly inside the guest. It is not Semgrep. The real warm scan-server still
+needs an ARM artifact, and the production task library has not been extracted.
 
 ## Run
 
@@ -21,7 +23,61 @@ brew install lima
 python3 projects/embervm/dev/apple/dev.py run
 ```
 
-Run from a dedicated worktree when editing code. The command:
+`run` performs lifecycle and state-separation checks, then exits. To keep the
+local HTTP server running for development:
+
+```sh
+python3 projects/embervm/dev/apple/dev.py serve
+```
+
+The server rebuilds the host and guest, primes four VM slots, and listens at
+`http://127.0.0.1:8080`. Use another terminal to inspect the pool or send a request:
+
+```sh
+curl -s http://127.0.0.1:8080/status | python3 -m json.tool
+curl -s http://127.0.0.1:8080/scan \
+  -H 'Content-Type: application/json' \
+  -d '{"seed":"example","files":64,"bytes_per_file":32768,"passes":64}' \
+  | python3 -m json.tool
+```
+
+Ctrl-C drains accepted requests, destroys the guests and closes the HTTP tunnel.
+The outer Linux host stays up. Stop the server before rebuilding it. `--port 8081`
+changes the Mac loopback port. Each Linux host allows one server or probe at a
+time; `--instance NAME` selects a separate host.
+
+An external Go module can supply its own development host and guest with
+`--binaries /absolute/path/to/build`. The directory must contain static Linux
+ARM64 binaries named `probe` and `guest`, implementing the same host flags and
+guest readiness protocol. This skips the Go build and uses the normal artifact
+verification, rootfs preparation, snapshot invalidation and cleanup paths.
+
+## API
+
+| Endpoint | Behaviour |
+| --- | --- |
+| `POST /scan` | JSON workload, defaults with `{}`. Claims a ready VM, runs the built-in workload, destroys the VM, then returns findings, checksum, VM ID and timing fields. Returns 503 when no primed guest is available or the server is draining. |
+| `GET /status` | Capacity, ready/active/priming/cleaning counts, peak active, cumulative request counters, and runner session. |
+| `GET /readyz` | 200 with a free primed guest, otherwise 503. |
+| `GET /healthz` | 200 while the HTTP server is serving. |
+
+Inputs are bounded: 1..256 files, 1024..65536 bytes/file, 1..1024 passes, a seed
+of at most 80 bytes, and optional `hold_ms` of 0..5000 for lifecycle checks.
+Each scan generates its own files, reads them, matches a fixed marker and hashes
+the contents. No caller-supplied source code or commands are accepted.
+
+The pool caps all ready, active, cleaning and restoring guests at four, with at
+most two simultaneous restores. Guests run one request each. Replacement starts
+after destruction. A disconnected client cancels its guest call and the VM is
+reaped. Requests have a 20-second deadline; shutdown allows 30 seconds to drain.
+
+Responses expose `scan_ms`, `guest_round_trip_ms`, `cleanup_ms` and `server_ms`
+for diagnostics. `scan_ms` excludes the optional hold. `restore_ms` describes
+the earlier restore of that guest, before request admission.
+
+## Lifecycle probe
+
+Run from a dedicated worktree when editing code. `dev.py run`:
 
 1. Creates or starts `embervm-dev`, an ARM Ubuntu Linux host with nested KVM.
 2. Cross-compiles the current worktree's host probe and guest for Linux ARM64.
@@ -64,12 +120,13 @@ probe. This is development sizing, not a throughput or exclusive-core claim.
 The tiny guest does not dirty its entire configured RAM, so these measurements
 do not establish Semgrep's memory or latency requirements.
 
-The probe intentionally runs with the jailer disabled and accepts only its
-built-in state checks. It does not establish adversarial isolation, per-VM OOM
+The probe and synthetic server run with the jailer disabled and accept only
+bounded built-in workloads. They do not establish adversarial isolation, per-VM OOM
 containment, CPU/PID limits, token handling, egress, or Kubernetes readiness.
 The microVMs have no network interface. No Mac directories or SSH agent are
-mounted/forwarded into the Linux host, and incidental guest ports are not
-published. Do not use this probe to execute untrusted workloads.
+mounted/forwarded into the Linux host. The synthetic API binds only to loopback
+inside Linux and on the Mac, using an explicit SSH tunnel while the runner lives.
+Do not use this development server to execute untrusted workloads.
 
 The Firecracker URL and checksum come from `MODULE.bazel`, matching the
 repository pin. The development kernel is an upstream Firecracker CI ARM
@@ -83,12 +140,15 @@ The complete most recent run is retained inside Linux:
 
 ```sh
 limactl shell --workdir=/ embervm-dev sudo cat /var/lib/embervm-dev/last-run.log
+limactl shell --workdir=/ embervm-dev sudo tail -100 /var/lib/embervm-dev/server.log
 limactl shell --workdir=/ embervm-dev sudo pgrep -a firecracker
 ```
 
-The second command should find no processes after a completed run. Failure
-prints the log tail. Each probe has a three-minute overall timeout, and its
-normal error and termination paths reap guests. Concurrent runs are refused.
+`pgrep` should find no processes after the probe or server has stopped. While
+serving, up to four Firecracker processes are expected. Failure prints the log
+tail. Each probe has a three-minute overall timeout; the server stays running
+until stopped. Normal error and termination paths reap guests. Concurrent runs
+are refused. The server logs each scan's VM ID, scan time, total time and error.
 
 Artifacts and snapshots live on the Linux disk under `/var/lib/embervm-dev`.
 Old bases and rootfs versions are retained for debugging and can accumulate

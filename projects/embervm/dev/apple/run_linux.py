@@ -1,5 +1,6 @@
 """Prepare checksum-verified artifacts and execute the probe inside Lima."""
 
+import argparse
 import fcntl
 import hashlib
 import json
@@ -41,8 +42,26 @@ def download(spec):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--serve", action="store_true")
+    parser.add_argument("--stop", action="store_true")
+    parser.add_argument("--session", default="")
+    args = parser.parse_args()
     if os.geteuid() != 0:
         raise RuntimeError("run inside the development VM with sudo")
+    session_file = ROOT / "server-session.json"
+    if args.stop:
+        if not args.session:
+            parser.error("--stop requires the owning runner's --session")
+        if session_file.exists():
+            owner = json.loads(session_file.read_text())
+            if owner["session"] == args.session:
+                try:
+                    if os.readlink(f"/proc/{owner['pid']}/exe") == str(ROOT / "probe"):
+                        os.kill(owner["pid"], signal.SIGTERM)
+                except FileNotFoundError:
+                    pass
+        return
     source = Path(__file__).resolve().parent
     ROOT.mkdir(mode=0o750, parents=True, exist_ok=True)
     # Serialize preparation as well as execution, so a second rebuild cannot
@@ -89,7 +108,12 @@ def main():
         probe = ROOT / "probe"
         shutil.copyfile(source / "probe", probe)
         probe.chmod(0o755)
-        log = ROOT / "last-run.log"
+        log = ROOT / ("server.log" if args.serve else "last-run.log")
+        extra = (
+            ["-listen", "127.0.0.1:8080", "-session", args.session]
+            if args.serve
+            else []
+        )
         with log.open("w") as output:
             process = subprocess.Popen(
                 [
@@ -104,28 +128,45 @@ def main():
                     "4",
                     "-mem-mib",
                     "1536",
+                    *extra,
                 ],
-                stdout=output,
+                stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
+                text=True,
             )
+            if args.serve:
+                session_file.write_text(
+                    json.dumps({"session": args.session, "pid": process.pid})
+                )
+                session_file.chmod(0o600)
             # Let the Go probe reap its VMs on terminal disconnect or Ctrl-C.
             for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
                 signal.signal(
                     sig, lambda _signum, _frame: process.send_signal(signal.SIGTERM)
                 )
+            for line in process.stdout:
+                output.write(line)
+                output.flush()
+                if any(
+                    label in line
+                    for label in (
+                        "reuse base ",
+                        "cold boot + ready",
+                        "wave ",
+                        "PASS:",
+                        "server:",
+                    )
+                ):
+                    print(line, end="", flush=True)
             status = process.wait()
+            if args.serve:
+                session_file.unlink(missing_ok=True)
         lines = log.read_text().splitlines()
         if status:
             print("\n".join(lines[-80:]), flush=True)
             raise RuntimeError(
                 f"probe failed (exit {status}); full guest-host log: {log}"
             )
-        for line in lines:
-            if any(
-                label in line
-                for label in ("reuse base ", "cold boot + ready", "wave ", "PASS:")
-            ):
-                print(line)
         print(f"Full log inside the Linux host: {log}")
 
 
