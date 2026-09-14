@@ -7,6 +7,7 @@ import pytest
 from reconcile_orphaned_iscsi import (
     CommandResult,
     CommandTimedOut,
+    DeviceMounted,
     Inventory,
     InventoryClient,
     IscsiClient,
@@ -18,12 +19,36 @@ from reconcile_orphaned_iscsi import (
     Usage,
     build_parser,
     parse_inventory,
+    parse_lsblk,
     parse_session_inspection,
     parse_sessions,
 )
 
 
 LONGHORN_PREFIX = "iqn.2019-10.io.longhorn:"
+
+# Captured from `kubectl get volumes.longhorn.io --output=json --chunk-size=0`.
+# kubectl flattens the server's VolumeList into a core v1 List and drops its
+# list metadata, so this shape cannot prove that an absence is authoritative.
+KUBECTL_GENERIC_LIST_CAPTURE = json.dumps(
+    {
+        "apiVersion": "v1",
+        "items": [
+            {
+                "apiVersion": "longhorn.io/v1beta2",
+                "kind": "Volume",
+                "metadata": {"name": "pvc-live"},
+            },
+            {
+                "apiVersion": "longhorn.io/v1beta2",
+                "kind": "Volume",
+                "metadata": {"name": "pvc-other"},
+            },
+        ],
+        "kind": "List",
+        "metadata": {"resourceVersion": ""},
+    }
+)
 
 
 def volume_document(*names: str, metadata: dict[str, object] | None = None) -> str:
@@ -74,7 +99,7 @@ class FakeInventory:
         self.reads += 1
         if not self.volume_sets:
             raise AssertionError("unexpected inventory read")
-        return Inventory(frozenset(self.volume_sets.pop(0)), str(self.reads))
+        return Inventory(frozenset(self.volume_sets.pop(0)))
 
 
 class FakeIscsi:
@@ -159,6 +184,11 @@ def test_inventory_command_failure_fails_closed() -> None:
         client.authoritative()
 
 
+def test_inventory_rejects_captured_kubectl_generic_list() -> None:
+    with pytest.raises(SafetyError, match="unsupported apiVersion"):
+        parse_inventory(KUBECTL_GENERIC_LIST_CAPTURE)
+
+
 def test_inventory_read_uses_selected_context_and_namespace() -> None:
     runner = QueueRunner([CommandResult(0, volume_document("pvc-live"))])
     client = InventoryClient(runner, "home-prod", "longhorn", 23, False)
@@ -169,15 +199,25 @@ def test_inventory_read_uses_selected_context_and_namespace() -> None:
             "kubectl",
             "--context",
             "home-prod",
-            "--namespace",
-            "longhorn",
             "get",
-            "volumes.longhorn.io",
-            "--output=json",
-            "--chunk-size=0",
+            "--raw",
+            "/apis/longhorn.io/v1beta2/namespaces/longhorn/volumes?limit=0",
             "--request-timeout=23s",
         )
     ]
+
+
+def test_lsblk_reports_mounts_with_a_distinct_exception() -> None:
+    raw = json.dumps(
+        {
+            "blockdevices": [
+                {"name": "/dev/sdc", "mountpoints": ["/data"]},
+            ]
+        }
+    )
+
+    with pytest.raises(DeviceMounted, match="/dev/sdc mounted at /data"):
+        parse_lsblk(raw, "sdc")
 
 
 def test_parser_defaults_to_deployed_longhorn_namespace() -> None:
