@@ -1,0 +1,37 @@
+# Local Linux host for the Apple Silicon development loop (M3 or newer).
+vmType: vz
+arch: aarch64
+nestedVirtualization: true
+cpus: 4
+memory: 10GiB
+disk: 30GiB
+images:
+  - location: https://cloud-images.ubuntu.com/releases/resolute/release-20260720/ubuntu-26.04-server-cloudimg-arm64.img
+    arch: aarch64
+    digest: sha256:7bcf159e29ad0000bfed9c57875908c39268f5ed1257f4958fa6a9f5f60edd54
+# Transfer just the development binaries. Guests do not need the Mac's home.
+mounts: []
+# The probe uses SSH/vsock only. Do not publish incidental guest services.
+portForwards:
+  - guestPortRange: [1, 65535]
+    proto: any
+    ignore: true
+containerd:
+  system: false
+  user: false
+provision:
+  - mode: system
+    script: |
+      #!/bin/sh
+      set -eu
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update
+      apt-get install -y --no-install-recommends ca-certificates curl e2fsprogs python3
+      test -c /dev/kvm
+probes:
+  - mode: readiness
+    description: nested KVM is available
+    script: |
+      #!/bin/sh
+      set -eu
+      test -c /dev/kvm
