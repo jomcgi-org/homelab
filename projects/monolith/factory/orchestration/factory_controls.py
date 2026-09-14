@@ -1792,6 +1792,82 @@ def set_control(
         }
 
 
+def request_control(
+    action: str,
+    actor: str,
+    *,
+    request_key: str,
+    expected_version: int,
+    task_id: str | None = None,
+) -> dict:
+    """Apply a version-bound operator request once through the control owner.
+
+    The control row serializes the request ledger and the existing mutation in
+    one transaction. A replay returns its original acknowledgement, even if a
+    newer command has since changed the factory. It never reapplies the action.
+    Task resume only unpauses active work here: selecting an escalation's
+    recommendation is a separate decision and needs its own exact identity.
+    """
+    if action not in (
+        "enable",
+        "pause_admissions",
+        "pause_task",
+        "resume_task",
+        "stop",
+    ):
+        raise ValueError("unsupported requested control")
+    request = {
+        "action": action,
+        "actor": _text(actor, "actor"),
+        "request_key": _text(request_key, "request_key"),
+        "expected_version": _integer(
+            expected_version, "expected_version", 0, 2**63 - 1
+        ),
+        "task_id": _text(task_id, "task_id") if task_id is not None else None,
+    }
+    if (action in ("pause_task", "resume_task")) != (task_id is not None):
+        raise ValueError("task_id is required only for task pause/resume")
+    with _locked_session() as (db, control):
+        previous = db.exec(
+            select(FactoryAudit.detail_json).where(
+                FactoryAudit.action == "control_request",
+                FactoryAudit.actor == actor,
+            )
+        ).all()
+        for raw in previous:
+            record = json.loads(raw)
+            if record["request"]["request_key"] == request_key:
+                if record["request"] != request:
+                    return {"ok": False, "reason": "conflicting_control_request"}
+                return record["result"]
+        if control.version != expected_version:
+            result = {
+                "ok": False,
+                "reason": "control_version_changed",
+                "state": control.state,
+                "version": control.version,
+            }
+        else:
+            # Supplying the locked session deliberately uses the active-task
+            # branch of set_control, never its automatic escalation decision.
+            result = set_control(action, actor, task_id=task_id, session=db)
+        result = {
+            **result,
+            "request_key": request_key,
+            "task_id": task_id,
+            "acknowledged_at": _now().isoformat(),
+        }
+        _audit(
+            db,
+            actor,
+            "control_request",
+            task_id=task_id,
+            request=request,
+            result=result,
+        )
+        return result
+
+
 def _can_start(
     db: Session, control: FactoryControl, task_id: str, start_key: str | None = None
 ) -> dict:

@@ -37,12 +37,11 @@ def _as(principal: Principal, coro_factory):
         reset_current_principal(token)
 
 
-@pytest.mark.asyncio
-async def test_factory_tools_are_registered():
+def test_factory_tools_are_registered():
     importlib.import_module("factory.orchestration.mcp")
     from core.mcp_app import mcp as shared
 
-    registered = {tool.name for tool in await shared.list_tools()}
+    registered = {tool.name for tool in asyncio.run(shared.list_tools())}
     assert {"factory_status", "factory_escalations"} <= registered, (
         f"factory tools not registered; got: {sorted(registered)}"
     )
@@ -232,3 +231,207 @@ def test_escalations_payload_passes_through_an_uninitialised_factory(monkeypatch
     payload = mcp._escalations_payload(include_resolved=False)
     assert payload["ok"] is False
     assert payload["escalations"] == []
+
+
+@pytest.mark.parametrize(
+    "principal",
+    [
+        _principal(authority=Authority.ANONYMOUS, groups=()),
+        _principal(authority=Authority.DELEGATED),
+        _principal(kind=PrincipalKind.WORKLOAD),
+        _principal(groups=()),
+    ],
+)
+@pytest.mark.parametrize(
+    "name,args",
+    [
+        ("factory_submit_issue", {"repo": "owner/repo", "issue_number": 7}),
+        (
+            "factory_control",
+            {"action": "stop", "request_key": "stop", "expected_version": 1},
+        ),
+        ("factory_task_detail", {"receipt_id": 1}),
+    ],
+)
+def test_operation_adapters_refuse_before_calling_owners(
+    principal, name, args, monkeypatch
+):
+    def explode(*_args, **_kwargs):
+        raise AssertionError("unauthorized caller reached an operation")
+
+    for seam in ("_submit_issue", "_request_control", "_detail_payload"):
+        monkeypatch.setattr(mcp, seam, explode)
+    result = _as(principal, lambda: getattr(mcp, name)(**args))
+    assert result["ok"] is False
+    assert result["error"] == "standing operator authority is required"
+
+
+def test_control_attributes_authenticated_actor_and_preserves_owner_result(monkeypatch):
+    calls = []
+    acknowledgement = {
+        "ok": True,
+        "version": 4,
+        "state": "stopped",
+        "request_key": "stop",
+    }
+
+    def request(action, actor, **kwargs):
+        calls.append((action, actor, kwargs))
+        return acknowledgement
+
+    monkeypatch.setattr(
+        "factory.orchestration.factory_controls.request_control", request
+    )
+    result = _as(
+        _principal(),
+        lambda: mcp.factory_control(
+            "stop",
+            "stop",
+            3,
+        ),
+    )
+    assert result == acknowledgement
+    assert calls == [
+        ("stop", "joe", {"request_key": "stop", "expected_version": 3, "task_id": None})
+    ]
+
+
+def test_submit_preserves_durable_receipt_identity_and_duplicate_result(monkeypatch):
+    calls = []
+
+    def receive(body, principal):
+        calls.append((body.model_dump(), principal.subject))
+        return {
+            "ok": True,
+            "created": False,
+            "receipt": {
+                "id": 42,
+                "repo": "owner/repo",
+                "issue_number": 7,
+                "generation": 2,
+                "state": "queued",
+                "task_id": None,
+            },
+        }
+
+    monkeypatch.setattr("factory.orchestration.factory_router.factory_receipt", receive)
+    result = _as(_principal(), lambda: mcp.factory_submit_issue("owner/repo", 7, 2))
+    assert result["created"] is False
+    assert result["receipt"]["receipt_id"] == 42
+    assert result["receipt"]["generation"] == 2
+    assert result["receipt"]["task_id"] is None
+    assert calls == [
+        ({"repo": "owner/repo", "issue_number": 7, "generation": 2}, "joe")
+    ]
+
+
+def test_submit_reports_ineligible_issue_without_claiming_acceptance(monkeypatch):
+    from fastapi import HTTPException
+
+    def refuse(body, principal):
+        raise HTTPException(409, "issue is not open eligible work")
+
+    monkeypatch.setattr("factory.orchestration.factory_router.factory_receipt", refuse)
+    result = _as(_principal(), lambda: mcp.factory_submit_issue("owner/repo", 7))
+    assert result == {
+        "ok": False,
+        "status": 409,
+        "reason": "issue is not open eligible work",
+    }
+
+
+def test_mcp_client_lists_and_calls_controls_with_schema_validation(monkeypatch):
+    from fastmcp import Client
+    from core.mcp_app import mcp as shared
+
+    calls = []
+
+    def request(*args):
+        calls.append(args)
+        return {"ok": True, "state": "paused", "version": 2}
+
+    monkeypatch.setattr(mcp, "_request_control", request)
+
+    async def exercise():
+        async with Client(shared) as client:
+            tools = {tool.name: tool for tool in await client.list_tools()}
+            assert {
+                "factory_control",
+                "factory_submit_issue",
+                "factory_task_detail",
+            } <= tools.keys()
+            assert "actor" not in tools["factory_control"].inputSchema["properties"]
+            result = await client.call_tool(
+                "factory_control",
+                {
+                    "action": "pause_admissions",
+                    "request_key": "pause",
+                    "expected_version": 1,
+                },
+            )
+            assert result.data["ok"]
+            invalid = await client.call_tool(
+                "factory_control",
+                {
+                    "action": "configure",
+                    "request_key": "bad",
+                    "expected_version": 1,
+                },
+                raise_on_error=False,
+            )
+            assert invalid.is_error
+            assert calls == [("pause_admissions", "pause", 1, None, "joe")]
+
+    _as(_principal(), exercise)
+
+
+def test_detail_pages_nodes_and_bounds_attempt_history(monkeypatch):
+    from contextlib import nullcontext
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    row = SimpleNamespace(
+        id=42, task_id="task", updated_at=datetime(2026, 9, 14, tzinfo=timezone.utc)
+    )
+    db = SimpleNamespace(get=lambda model, identity: row if identity == 42 else None)
+    monkeypatch.setattr(
+        "factory.orchestration.factory_controls._read_session", lambda: nullcontext(db)
+    )
+    monkeypatch.setattr(
+        "factory.orchestration.factory_controls._snapshot",
+        lambda db, row: {
+            "id": row.id,
+            "task_id": row.task_id,
+            "state": "admitted",
+        },
+    )
+    monkeypatch.setattr(
+        "factory.orchestration.graph.load_graph",
+        lambda task, session: [
+            {"node_key": f"node-{i}", "deps": ["node-0"] if i else []} for i in range(5)
+        ],
+    )
+    monkeypatch.setattr(
+        "factory.orchestration.graph.node_runs",
+        lambda task, session: [
+            {"node_key": "node-1", "attempt": i, "status": "failed", "session_id": i}
+            for i in range(1, 6)
+        ],
+    )
+    result = _as(
+        _principal(), lambda: mcp.factory_task_detail(42, node_offset=1, limit=2)
+    )
+    assert result["receipt"]["receipt_id"] == 42
+    assert result["node_count"] == 5
+    assert result["next_node_offset"] == 3
+    assert [n["node_key"] for n in result["nodes"]] == ["node-1", "node-2"]
+    node = result["nodes"][0]
+    assert node["deps"] == ["node-0"]
+    assert node["attempt_count"] == 5
+    assert [a["session_id"] for a in node["attempts"]] == [3, 4, 5]
+    assert node["state"] == "failed"
+    assert result["updated_at"] == "2026-09-14T00:00:00+00:00"
+    assert (
+        _as(_principal(), lambda: mcp.factory_task_detail(99))["reason"]
+        == "unknown_receipt"
+    )
