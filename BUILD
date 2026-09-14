@@ -36,7 +36,8 @@ npm_link_all_packages(name = "node_modules")
 # gazelle:exclude docs/runbooks
 # gazelle:exclude docs/posts/figures
 
-# gazelle:semgrep_target_kinds py_venv_binary
+# gazelle:semgrep_target_kinds py_venv_binary,py3_image=binary
+# gazelle:semgrep_languages py
 
 # Custom gazelle binary with ArgoCD extensions
 gazelle_binary(
