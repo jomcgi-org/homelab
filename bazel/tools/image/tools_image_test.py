@@ -216,9 +216,9 @@ def test_eslint_preserves_versioned_dependency_graph_and_lints() -> None:
 
         eslint = (root / "usr/local/lib/node_modules/eslint").resolve(strict=True)
         pytest.skip("temporary preserved-eslint-root CI isolation")
-        eslint_utils = (
-            eslint / "node_modules/@eslint-community/eslint-utils"
-        ).resolve(strict=True)
+        eslint_utils = (eslint / "node_modules/@eslint-community/eslint-utils").resolve(
+            strict=True
+        )
         espree = (eslint / "node_modules/espree").resolve(strict=True)
         pytest.skip("temporary eslint-dependency CI isolation")
         resolved_versions = {
