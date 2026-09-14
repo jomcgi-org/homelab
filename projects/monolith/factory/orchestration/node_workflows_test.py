@@ -1361,3 +1361,16 @@ def test_hour_scale_attempt_retains_absolute_task_deadline(harness, monkeypatch)
     assert calls[0][0]["turn_timeout_seconds"] == 36000
     assert calls[0][2].isoformat() == deadline
     assert harness.waits == []
+
+
+def test_start_guard_passes_exact_workflow_identity(monkeypatch):
+    from factory.orchestration import factory_controls
+
+    observed = []
+    monkeypatch.setattr(
+        factory_controls,
+        "start_guard",
+        lambda task, **kwargs: observed.append((task, kwargs)),
+    )
+    nodes._start_guard("task")
+    assert observed == [("task", {"start_key": None})]

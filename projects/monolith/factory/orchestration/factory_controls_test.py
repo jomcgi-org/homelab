@@ -1455,3 +1455,82 @@ def test_continuation_admission_excuses_capacity_denial_but_not_real_retry(db, p
         task, f"factory-node:{task}:correct_1:3", "test", model="luna", max_cost_usd=1
     )
     assert denied["reason"] == "continuation_scope_exhausted"
+
+
+def test_objective_budget_keeps_all_readmissions_beyond_display_history(
+    db, policy, monkeypatch
+):
+    from factory.orchestration import factory_funding_limits as funding
+
+    monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "true")
+    task = admitted(policy)
+    with Session(db) as session:
+        receipt = controls._receipt(session, task)
+        for i in range(12):
+            old = SwarmTask(
+                id=f"old-{i}",
+                task_text="same issue",
+                conductor_model="opus",
+                budget_usd=50,
+            )
+            session.add(old)
+            session.flush()
+            session.add(
+                FactoryStart(
+                    task_id=old.id,
+                    start_key=f"old:{i}",
+                    actor="factory",
+                    model="opus",
+                    max_cost_usd=20,
+                    cost_usd=16.6,
+                    status="succeeded",
+                )
+            )
+            controls._audit(
+                session,
+                "scheduler",
+                "admit_next",
+                task_id=old.id,
+                receipt_id=receipt.id,
+            )
+        session.commit()
+        total = funding.objective(session, task)
+        assert len(total["task_ids"]) == 13
+        assert total["committed_cost_usd"] == pytest.approx(199.2)
+    denied = grant(task, cost=1)
+    assert denied["reason"] == "objective_budget_limit"
+
+
+def test_concurrent_objective_reservations_cannot_cross_ceiling(
+    db, policy, monkeypatch
+):
+    monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "true")
+    task = admitted(policy)
+    with Session(db) as session:
+        receipt = controls._receipt(session, task)
+        old = SwarmTask(
+            id="old", task_text="same objective", conductor_model="opus", budget_usd=200
+        )
+        session.add(old)
+        session.flush()
+        session.add(
+            FactoryStart(
+                task_id="old",
+                start_key="old",
+                actor="factory",
+                model="opus",
+                max_cost_usd=199,
+                cost_usd=199,
+                status="succeeded",
+            )
+        )
+        controls._audit(
+            session, "scheduler", "admit_next", task_id="old", receipt_id=receipt.id
+        )
+        session.commit()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(
+            pool.map(lambda key: grant(task, key=key, cost=1), ["first", "second"])
+        )
+    assert sum(result["ok"] for result in results) == 1
+    assert any(result.get("reason") == "objective_budget_limit" for result in results)

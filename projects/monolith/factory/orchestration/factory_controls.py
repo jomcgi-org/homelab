@@ -993,12 +993,22 @@ def task_allowance(task_id: str, *, session: Session | None = None) -> dict:
         row = _receipt(db, task_id)
         if row is None or not row.policy_json:
             return {"turns": 0, "usd": 0.0, "graph_revision": None, "derived": False}
-        return _stored_allowance(row, json.loads(row.policy_json))
+        return _stored_allowance(row, _effective_policy(db, row))
+
+
+def _effective_policy(db, row):
+    from factory.orchestration.factory_funding_limits import effective_policy
+
+    return effective_policy(db, row)
 
 
 def continuation_grant(task_id: str, *, session: Session | None = None) -> dict | None:
     """Read the one permanent grant, independently of current rollout flags."""
     with _read_session(session) as db:
+        from factory.orchestration.factory_funding_limits import amendment
+
+        if amendment(db, task_id):
+            return None
         row = db.exec(
             select(FactoryAudit)
             .where(
@@ -1185,7 +1195,7 @@ def _snapshot(db: Session, row: FactoryReceipt, *, body: bool = False) -> dict:
         "attempts": len(result["previous_attempts"]),
     }
     result.update(
-        policy=json.loads(row.policy_json) if row.policy_json else None,
+        policy=_effective_policy(db, row) if row.policy_json else None,
         starts=[_start_dict(s) for s in starts],
         **_accounting(starts),
     )
@@ -1764,7 +1774,9 @@ def set_control(
         }
 
 
-def _can_start(db: Session, control: FactoryControl, task_id: str) -> dict:
+def _can_start(
+    db: Session, control: FactoryControl, task_id: str, start_key: str | None = None
+) -> dict:
     row = _receipt(db, task_id)
     reason = None
     if control.state == "stopped":
@@ -1788,13 +1800,43 @@ def _can_start(db: Session, control: FactoryControl, task_id: str) -> dict:
             if task.created_at.tzinfo is None
             else task.created_at
         )
-        timeout = json.loads(row.policy_json)["task_timeout_seconds"]
-        if _now() >= admitted + timedelta(seconds=timeout):
+        from factory.orchestration.factory_funding_limits import (
+            pending,
+            review_authority,
+            amendment,
+        )
+
+        request = pending(db, task_id)
+        oversight = review_authority(db, task_id, start_key)
+        timeout = _effective_policy(db, row)["task_timeout_seconds"]
+        matched = _START_KEY.match(start_key or "")
+        funding_key = matched and matched.group("node_key").startswith(
+            "conductor_funding_"
+        )
+        grant = amendment(db, task_id)
+        already_reserved = any(
+            s.start_key == start_key and s.status == "reserved"
+            for s in _starts(db, task_id)
+        )
+        if funding_key and not oversight:
+            reason = "funding_review_expired"
+        elif request and not oversight:
+            reason = "funding_review_pending"
+        elif (
+            grant
+            and not oversight
+            and not already_reserved
+            and _now() >= datetime.fromisoformat(grant["review_due_at"])
+        ):
+            reason = "funding_lease_due"
+        elif not oversight and _now() >= admitted + timedelta(seconds=timeout):
             reason = "task_deadline"
     return {"ok": reason is None, "reason": reason}
 
 
-def can_start(task_id: str, *, session: Session | None = None) -> dict:
+def can_start(
+    task_id: str, *, session: Session | None = None, start_key: str | None = None
+) -> dict:
     """Fresh read fence. Use start_guard to serialize it with session creation."""
     with _read_session(session) as db:
         control = db.exec(
@@ -1805,9 +1847,14 @@ def can_start(task_id: str, *, session: Session | None = None) -> dict:
         result = (
             {"ok": False, "reason": "not_initialized"}
             if control is None
-            else _can_start(db, control, task_id)
+            else _can_start(db, control, task_id, start_key)
         )
 
+        from factory.orchestration.factory_funding_limits import pending, amendment
+
+        funding = pending(db, task_id) or amendment(db, task_id)
+        if funding:
+            result["funding"] = funding
         if result["ok"]:
             grant = continuation_grant(task_id, session=db)
             if grant:
@@ -1816,7 +1863,9 @@ def can_start(task_id: str, *, session: Session | None = None) -> dict:
 
 
 @contextmanager
-def start_guard(task_id: str, *, session: Session | None = None) -> Iterator[dict]:
+def start_guard(
+    task_id: str, *, session: Session | None = None, start_key: str | None = None
+) -> Iterator[dict]:
     """Serialize stop with synchronous session persistence, never guest waits.
 
     Hold this guard only across the API that durably creates the session and
@@ -1824,7 +1873,7 @@ def start_guard(task_id: str, *, session: Session | None = None) -> Iterator[dic
     cancellation/reconciliation. A supplied session must commit before any wait.
     """
     with _locked_session(session) as (db, control):
-        yield _can_start(db, control, task_id)
+        yield _can_start(db, control, task_id, start_key)
 
 
 def authorize_start(
@@ -1841,17 +1890,33 @@ def authorize_start(
     model = _text(model, "model", 128)
     cost = _money(max_cost_usd, "max_cost_usd")
     with _locked_session(session) as (db, control):
-        check = _can_start(db, control, task_id)
+        check = _can_start(db, control, task_id, start_key)
         if not check["ok"]:
             return check
         row = _receipt(db, task_id)
-        policy = json.loads(row.policy_json)
+        policy = _effective_policy(db, row)
         starts = _starts(db, task_id)
         existing = next((s for s in starts if s.start_key == start_key), None)
         if existing:
             if existing.model != model or existing.max_cost_usd != cost:
                 return {"ok": False, "reason": "conflicting_start_pin"}
             return {"ok": True, "replayed": True, "start": _start_dict(existing)}
+        from factory.orchestration import factory_funding_limits as factory_funding
+
+        oversight = factory_funding.review_authority(db, task_id, start_key)
+        if oversight and (model != "astra" or cost != factory_funding.REVIEW_COST_USD):
+            return {"ok": False, "reason": "funding_review_pin_mismatch"}
+        if (
+            factory_funding.enabled()
+            or factory_funding.amendment(db, task_id)
+            or oversight
+        ):
+            total = factory_funding.objective(db, task_id)
+            if (
+                total["committed_cost_usd"] + cost
+                > factory_funding.OBJECTIVE_CEILING_USD
+            ):
+                return {"ok": False, "reason": "objective_budget_limit"}
         budget = _accounting(starts)
         planner = _planner_key(start_key)
         grant = continuation_grant(task_id, session=db)
@@ -1880,7 +1945,11 @@ def authorize_start(
         # A planning round is cheap enough that the task budget alone would
         # admit hundreds of them, and a refused decision can mint the next
         # planner every tick, so deliberation is bounded on its own count.
-        elif planner and budget["planner_turns_used"] >= planner_turn_cap(policy):
+        elif (
+            not oversight
+            and planner
+            and budget["planner_turns_used"] >= planner_turn_cap(policy)
+        ):
             reason = "planner_turn_limit"
         # The plan sizes the work, so the bound is the derived allowance rather
         # than a policy number. Nothing but an accepted plan edit moves it.
@@ -1890,7 +1959,7 @@ def authorize_start(
         ):
             reason = "turn_limit"
         # Both kinds of start still answer to the one task budget.
-        elif (
+        elif not oversight and (
             cost > policy["turn_budget_usd"]
             or budget["committed_cost_usd"] + cost > policy["task_budget_usd"]
         ):

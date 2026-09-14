@@ -13,6 +13,12 @@ programmer errors, such as an unknown task or invalid transition, raise.
 
 from __future__ import annotations
 
+from factory.orchestration.factory_funding_limits import (
+    graph_budget,
+    oversight_node,
+    dispatch_prompt,
+)
+
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -511,8 +517,11 @@ def _add_node_locked(
         return _refuse(
             db, task, "add_node", args, version, "legacy_reservation_conflict"
         )
-    if task.budget_usd is not None and (
-        _planned_cost(db, task_id, list(live.values())) + max_cost_usd > task.budget_usd
+    ceiling = graph_budget(db, task, node_key=node_key, model=model, cost=max_cost_usd)
+    if (
+        ceiling is not None
+        and not oversight_node(db, task_id, node_key, model, max_cost_usd)
+        and (_planned_cost(db, task_id, list(live.values())) + max_cost_usd > ceiling)
     ):
         return _refuse(db, task, "add_node", args, version, "budget_exceeded")
 
@@ -1156,17 +1165,16 @@ def budget_snapshot(task_id: str, *, session: Session | None = None) -> dict:
         active = [run for run in runs if run.status not in TERMINAL_RUN_STATUSES]
         active_cost = sum(_accounted_cost(run, budgets) for run in active)
         planned = _planned_cost(db, task_id, _visible_nodes(db, task_id, version))
+        ceiling = graph_budget(db, task)
         return {
             "graph_version": version,
-            "task_budget_usd": task.budget_usd,
+            "task_budget_usd": ceiling,
             "accounted_cost_usd": accounted,
             "settled_accounted_cost_usd": accounted - active_cost,
             "active_accounted_cost_usd": active_cost,
             "planned_cost_usd": planned,
             "unallocated_cost_usd": (
-                max(0.0, task.budget_usd - planned)
-                if task.budget_usd is not None
-                else None
+                max(0.0, ceiling - planned) if ceiling is not None else None
             ),
             "active_attempts": len(active),
             "uncertain_attempts": sum(run.status == "uncertain" for run in active),
@@ -1310,7 +1318,10 @@ def admit_dispatch(
         if remaining <= 0:
             return refuse("node_budget_exhausted")
         task_spent = sum(_accounted_cost(run, budgets) for run in all_runs)
-        if task_spent + remaining > task.budget_usd:
+        ceiling = graph_budget(
+            db, task, node_key=node_key, model=model or node.model, cost=remaining
+        )
+        if task_spent + remaining > ceiling:
             return refuse("task_budget_exhausted")
         attempt = max((run.attempt for run in runs), default=0) + 1
         # Attempt numbers count every row, excused denials included, so the
@@ -1324,7 +1335,7 @@ def admit_dispatch(
             "task_id": task_id,
             "node_key": node_key,
             "attempt": attempt,
-            "prompt": node.prompt,
+            "prompt": dispatch_prompt(db, task_id, node_key, node.prompt),
             "model": model or node.model,
             "max_cost_usd": remaining,
             "max_attempts": node.max_attempts + excused,
