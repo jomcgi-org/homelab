@@ -10,7 +10,7 @@ defmodule Embervm.CapacityObserver do
   require Logger
   require OpenTelemetry.Tracer, as: Tracer
 
-  alias Embervm.{Brick, BrickController, NodeCapacity}
+  alias Embervm.{Brick, BrickController, CapacityReport, NodeCapacity}
   alias Embervm.Scheduler.Reservation
 
   @default_interval_ms 60_000
@@ -74,6 +74,10 @@ defmodule Embervm.CapacityObserver do
 
   @impl true
   def init(opts) do
+    if Keyword.get(opts, :register_gauges, false) do
+      CapacityReport.register_gauges(Keyword.get(opts, :report_opts, []))
+    end
+
     state = %{
       capacity_table: Keyword.get(opts, :capacity_table, NodeCapacity.table()),
       reservation_table: Keyword.get(opts, :reservation_table, Reservation.table()),

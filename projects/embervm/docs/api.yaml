@@ -299,6 +299,29 @@ paths:
                     oneOf:
                       - { $ref: "#/components/schemas/DispatchSnapshot" }
                       - { type: "null" }
+  /v1/capacity:
+    get:
+      summary: Read-only fleet capacity and demand signals (management auth).
+      description: >-
+        Assembles current NodeCapacity instance facts, catalog concurrency floors,
+        primed occupancy, dispatcher queue depth, and cron firings inside the
+        configured horizon. This endpoint makes no placement or scaling decision.
+        Memory budget and headroom are MiB values read by noded from its own cgroup
+        v2. Budget is memory.max minus the daemon RSS reserve. Headroom subtracts
+        non-reclaimable memory.current, treating memory.stat file cache except
+        shmem as reclaimable. If memory.stat is unreadable, no cache is assumed
+        reclaimable. This is an allocation-oriented value, not kubelet working set
+        or kubectl top. Each instance remains distinct by instance_id and pod_uid
+        during a surge even when node_id is shared. Summed headroom and free slots
+        are descriptive only and never a placement guarantee.
+      responses:
+        "200":
+          description: Current capacity report.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CapacityReport" }
+        "401": { description: Missing or invalid bearer token. }
+        "403": { description: Authenticated ServiceAccount not in the allow-list. }
 components:
   securitySchemes:
     bearerAuth:
@@ -312,6 +335,110 @@ components:
         authenticates exactly one session id (verified by hash, constant-time) and
         never enters the guest. Distinct from the management ServiceAccount bearer.
   schemas:
+    CapacityReport:
+      type: object
+      required: [generated_at, horizon_seconds, semantics, instances, workloads, demand]
+      properties:
+        generated_at: { type: string, format: date-time }
+        horizon_seconds:
+          type: integer
+          minimum: 1
+          maximum: 86400
+          description: Future window used to count committed cron firings.
+        semantics: { $ref: "#/components/schemas/CapacitySemantics" }
+        instances:
+          type: array
+          items: { $ref: "#/components/schemas/InstanceCapacity" }
+        workloads:
+          type: array
+          items: { $ref: "#/components/schemas/WorkloadCapacityReport" }
+        demand: { $ref: "#/components/schemas/CapacityDemand" }
+    CapacitySemantics:
+      type: object
+      required: [memory, memory_detail, aggregation]
+      properties:
+        memory: { type: string }
+        memory_detail: { type: string }
+        aggregation: { type: string }
+    InstanceCapacity:
+      type: object
+      required:
+        - instance_id
+        - node_id
+        - pod_uid
+        - size_class
+        - mem_budget_mib
+        - mem_headroom_mib
+        - cpu_budget_millicores
+        - cpu_headroom_millicores
+        - live_vms
+        - max_live_vms
+        - free_vm_slots
+        - workloads
+      properties:
+        instance_id: { type: string, description: Stable node/pod instance identity. }
+        node_id: { type: string, description: Kubernetes node name, not unique during surge. }
+        pod_uid: { type: string }
+        size_class: { type: string }
+        mem_budget_mib: { type: integer, minimum: 0, description: Guest-schedulable cgroup memory.max minus daemon reserve, MiB. Zero means unknown. }
+        mem_headroom_mib: { type: integer, minimum: 0, description: Reclaimable-file-cache-aware cgroup headroom, MiB. Zero can mean none or unknown. }
+        cpu_budget_millicores: { type: integer, minimum: 0, description: cgroup cpu.max quota in millicores. Zero means unknown. }
+        cpu_headroom_millicores: { type: integer, minimum: 0, description: Budget minus sampled CPU usage rate in millicores. Zero can mean none, unknown, or an unseeded sample. }
+        live_vms: { type: integer, minimum: 0 }
+        max_live_vms: { type: integer, minimum: 0 }
+        free_vm_slots: { type: integer, minimum: 0 }
+        workloads:
+          type: array
+          items: { $ref: "#/components/schemas/InstanceWorkloadCapacity" }
+    InstanceWorkloadCapacity:
+      type: object
+      required: [workload, primed_occupancy]
+      properties:
+        workload: { type: string }
+        primed_occupancy: { type: integer, minimum: 0, description: Parked pristine VMs reported by this instance. }
+    WorkloadCapacityReport:
+      type: object
+      required: [workload, class, cap, primed_occupancy, free_slots, queue_depth, cron_firings, demand]
+      properties:
+        workload: { type: string }
+        class: { type: string }
+        cap: { type: integer, minimum: 0 }
+        primed_occupancy: { type: integer, minimum: 0, description: Parked pristine VMs summed across reporting instances. }
+        free_slots:
+          type: integer
+          minimum: 0
+          description: >-
+            Free live-VM slots summed only across instances reporting this workload.
+            Workloads can share an instance, so values across workload rows are
+            not additive and do not guarantee placement.
+        queue_depth: { type: integer, minimum: 0 }
+        cron_firings: { type: integer, minimum: 0, description: Matching firings strictly after generated_at and through the horizon endpoint. }
+        demand: { $ref: "#/components/schemas/WorkloadDemand" }
+    WorkloadDemand:
+      type: object
+      required: [floor, committed, observed]
+      properties:
+        floor: { type: integer, minimum: 0, description: Catalog concurrency floor. }
+        committed: { type: integer, minimum: 0, description: Cron firings inside the configured horizon. }
+        observed: { type: integer, minimum: 0, description: Dispatcher queue depth. }
+    CapacityDemand:
+      type: object
+      required: [floors, committed, observed]
+      properties:
+        floors: { $ref: "#/components/schemas/DemandTier" }
+        committed: { $ref: "#/components/schemas/DemandTier" }
+        observed: { $ref: "#/components/schemas/DemandTier" }
+    DemandTier:
+      type: object
+      required: [total, by_class, by_workload]
+      properties:
+        total: { type: integer, minimum: 0 }
+        by_class:
+          type: object
+          additionalProperties: { type: integer, minimum: 0 }
+        by_workload:
+          type: object
+          additionalProperties: { type: integer, minimum: 0 }
     TaskRef:
       type: object
       properties:

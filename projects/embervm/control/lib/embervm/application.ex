@@ -1631,7 +1631,7 @@ defmodule Embervm.Application do
   # start options are threaded here (the test suite injects its own).
   defp brick_controller_opts, do: []
 
-  defp capacity_observer_opts, do: []
+  defp capacity_observer_opts, do: [register_gauges: true]
 
   # Parse EMBERVM_BRICK_CLASSES (a JSON array of {"name","desired"} objects, plus
   # optional autoscale clamp fields "min"/"max") into a list of
