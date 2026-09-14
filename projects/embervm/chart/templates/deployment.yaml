@@ -5,12 +5,13 @@ metadata:
   labels:
     {{- include "embervm.labels" . | nindent 4 }}
 spec:
-  # Exactly one replica. The op-log PVC is RWO and SQLite is single-writer, so a
-  # second replica would either deadlock on the volume or run two writers.
+  # Exactly one replica. SQLite uses a single-writer RWO PVC. Postgres removes
+  # that volume constraint, but multi-replica still requires the
+  # single-writer-per-cell appender described by ADR embervm/007.
   replicas: 1
-  # Recreate, never RollingUpdate: a rolling update would briefly run the old and
-  # new pods together, contending for the RWO op-log volume (deadlock) or double-
-  # writing SQLite. Recreate tears the old pod down before starting the new one.
+  # Recreate, never RollingUpdate: both backends retain one logical appender.
+  # For SQLite this also prevents simultaneous access to its RWO volume.
+  # Recreate tears the old pod down before starting the new one.
   strategy:
     type: Recreate
   selector:

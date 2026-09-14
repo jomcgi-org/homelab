@@ -3,10 +3,11 @@ defmodule Embervm.OpLog do
   The op-log seam: every task-lifecycle transition in the control plane is
   appended as one `Op` before anything else observes it. This module defines
   the shared `Op` struct, the closed set of op kinds, and the behaviour that
-  a backend (the `SQLite` GenServer today, a Raft-replicated `ra` tier later)
-  must implement. Callers never talk to a backend module directly by name;
-  they go through whichever module is configured as the op-log, which is what
-  makes the backend swap in Task-later-than-6 a config change, not a rewrite.
+  the Postgres and SQLite GenServers implement. Callers never talk to a backend
+  module directly by name; they go through the module selected at boot from
+  `EMBERVM_OPLOG_DSN`. The reference deployment renders the DSN and therefore
+  selects Postgres. The chart default and isolated dev deployment omit it and
+  select SQLite.
 
   `read_from/2` and `load_tasks/1` exist for two different rebuild paths: a
   peer control-plane replica catching up from a seq (future), and a single

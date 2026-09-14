@@ -23,10 +23,20 @@ of the reference deployment in this monorepo.
   bases and node-4 holds the AMD tier's; labelling a node of a new vendor
   into the pool refuses cross-vendor restores loudly rather than
   mis-placing them.
-- The CP op-log shares the `monolith-pg` CNPG cluster: a second cluster
-  would cost ~1Gi of requests on a fleet at 99% of memory limits on
-  node-4, and the coupling is bounded because a CP outage is a
-  designed-for state.
+- The reference values configure the CP op-log on the `monolith-pg` CNPG
+  cluster (`opLog.postgres.enabled: true` in `values.yaml`). A second cluster
+  would cost ~1Gi of requests on a fleet at 99% of memory limits on node-4,
+  and the coupling is bounded because a CP outage is a designed-for state.
+  At runtime, `Embervm.Application.op_log_mod/0` selects Postgres only when
+  the rendered pod has a non-empty `EMBERVM_OPLOG_DSN`; the verification
+  command is documented in
+  [../../monolith/deploy/embervm-oplog-secret.md](../../monolith/deploy/embervm-oplog-secret.md#verifying-which-backend-is-live).
+- SQLite-WAL remains the chart-default, zero-dependency backend. The isolated
+  dev deployment uses it on a PVC, and the reference values retain the SQLite
+  size and storage settings for a backend flip that starts with an empty
+  op-log. These configured roles are defined in `../chart/values.yaml`,
+  `../dev/deploy/values.yaml`, and this directory's `values.yaml`; they do not
+  decide SQLite's future.
 - The Kubernetes node taint is recorded but not applied.
 - Platform services: SeaweedFS for the S3 store, the 1Password Operator
   for secrets, Cloudflare Tunnel for the zero-trust edge, SigNoz for

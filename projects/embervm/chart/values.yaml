@@ -104,12 +104,13 @@ controlPlaneLivenessProbe:
   # recovery. Readiness independently checks manager process presence every 5s.
   failureThreshold: 6
 
-# The op-log volume. persistentVolume is TRUE now that the SQLite-WAL op-log ships
-# (Task 6/7): the control plane's durable book-of-record (ops, tasks, results) lives
-# at EMBERVM_OPLOG_PATH on this RWO Longhorn PVC, which provides DURABILITY, not
-# availability. SQLite is single-writer and the Deployment is Recreate + 1 replica,
-# so a rolling update never runs two writers against one RWO volume, and a pod
-# restart replays the op-log into the ETS hot set on boot (recovery path).
+# Op-log backend settings. The chart default uses SQLite-WAL: the control
+# plane's durable book-of-record (ops, tasks, results) lives at
+# EMBERVM_OPLOG_PATH on this RWO Longhorn PVC, which provides DURABILITY, not
+# availability. The reference deployment overrides postgres.enabled to true;
+# the isolated dev deployment retains this SQLite path. SQLite is single-writer
+# and the Deployment is Recreate + 1 replica, so a pod restart replays its
+# op-log into the ETS hot set on boot (recovery path).
 opLog:
   # Postgres op-log tier (ADR embervm/007). Embervm.Application.op_log_mod/0
   # selects Embervm.OpLog.Postgres when EMBERVM_OPLOG_DSN is set and non-empty,
