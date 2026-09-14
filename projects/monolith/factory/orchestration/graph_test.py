@@ -1424,3 +1424,20 @@ def test_a_replay_keeps_its_original_pinned_model(db):
     )
     assert replay.ok and replay.pin["model"] == "worker-model"
     assert len(node_runs(task_id)) == 1
+
+
+def test_caller_transaction_can_rollback_an_entire_applied_plan(db):
+    from sqlalchemy import text
+
+    task = make_task(db)
+    with Session(db) as session:
+        # Start a real SQLite transaction before the graph's savepoint.
+        session.execute(
+            text("UPDATE swarm_task SET task_text=task_text WHERE id=:id"), {"id": task}
+        )
+        applied = apply_plan(task, [plan_add("first")], session=session)
+        assert applied.ok
+        assert graph.load_graph(task, session=session)
+        session.rollback()
+    assert graph.load_graph(task) == []
+    assert graph.current_version(task) == 0
