@@ -228,6 +228,8 @@ spec:
               value: {{ .Values.swarm.factoryEnabled | default false | quote }}
             - name: FACTORY_RESERVATION_REVIEW_ENABLED
               value: {{ .Values.swarm.factoryReservationReviewEnabled | default false | quote }}
+            - name: FACTORY_AUTONOMOUS_CONTINUATION_ENABLED
+              value: {{ .Values.swarm.factoryAutonomousContinuationEnabled | default false | quote }}
             - name: FACTORY_STOP_SUPERVISION_ENABLED
               value: {{ .Values.swarm.factoryStopSupervisionEnabled | default false | quote }}
             - name: FACTORY_LOST_BEFORE_GUEST_SETTLEMENT_ENABLED

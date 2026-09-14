@@ -2484,6 +2484,7 @@ def _insert_review_round(
     *,
     reopened: bool = False,
     recovery_evidence: dict | None = None,
+    recover_escalated: bool = False,
 ) -> tuple[bool, str | None]:
     """Append this task's next correction and re-review pair, atomically.
 
@@ -2685,6 +2686,18 @@ def _insert_review_round(
         fan_ins_remaining=0,
     )
     if excess is not None:
+        from factory.orchestration import factory_continuations
+
+        if factory_continuations.enabled():
+            return factory_continuations.try_grant(
+                task,
+                policy,
+                review_run,
+                edits,
+                cause,
+                expected_version,
+                recover_escalated=recover_escalated,
+            )
         _reject_decision(task["id"], cause, "plan", "envelope_exceeded", excess)
         return False, "envelope_exceeded"
     result = graph.apply_edits(
@@ -3584,6 +3597,11 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
                 },
             )
         return
+    if permission.get("continuation"):
+        from factory.orchestration.factory_continuations import terminal_grant
+
+        if terminal_grant(task, policy, runs):
+            return
     # Guard the graph snapshot, including the planner's own insertion, against
     # graph edits that race with reading nodes or constructing the prompt.
     insertion_revision = graph.current_version(task_id)
@@ -3666,6 +3684,16 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
             recovery_evidence=recovery_evidence,
         )
         if inserted:
+            return
+        if loop_refusal and loop_refusal.startswith("continuation_"):
+            if loop_refusal not in {
+                "continuation_waiting",
+                "continuation_changed",
+                "continuation_control_refused",
+            }:
+                from factory.orchestration.factory_continuations import finish_exhausted
+
+                finish_exhausted(task_id, loop_refusal)
             return
     # A ready node runs and an open review loop settles itself, so the planner
     # is asked only once neither applies, and then only about a named

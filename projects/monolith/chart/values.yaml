@@ -1473,6 +1473,7 @@ swarm:
   factoryEnabled: false
   # Consume exact durable Ember teardown proof for stopped/expired attempts.
   factoryReservationReviewEnabled: false
+  factoryAutonomousContinuationEnabled: false
   factoryStopSupervisionEnabled: false
   # Settle an attempt whose invoke was sent but whose guest was never bound, so
   # its reservation is refunded instead of held forever: stop supervision has no

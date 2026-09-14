@@ -8767,3 +8767,238 @@ def test_reservation_review_guidance_is_in_next_planner_context(monkeypatch):
         conductor._planner_context({"id": "task", "task_text": "Fix quota"}, [], [])
     )
     assert context["reservation_review_guidance"] == guidance
+
+
+def continuation_task(monkeypatch):
+    monkeypatch.setenv("FACTORY_AUTONOMOUS_CONTINUATION_ENABLED", "true")
+    task, policy = reviewed_after_three_turns(4)
+    from factory.orchestration.factory_controls import task_snapshot
+
+    policy = task_snapshot(task["id"])["policy"]
+    monkeypatch.setattr(
+        conductor,
+        "_review_recovery_evidence",
+        lambda *_: {
+            "state": "ready",
+            "reason": "reviewed_head_ci_passed",
+            "head_sha": HEAD_ONE,
+            "pr_number": 21,
+        },
+    )
+    return task, policy
+
+
+def test_continuation_keeps_task_limits_and_grants_only_one_exact_pair(
+    feedback_db, monkeypatch
+):
+    from factory.orchestration import factory_controls as controls
+
+    task, policy = continuation_task(monkeypatch)
+    before = controls.task_snapshot(task["id"])
+    conductor.reconcile_task(task["id"], policy, object())
+    grant = controls.continuation_grant(task["id"])
+    assert grant["node_keys"] == ["correct_1", "review_1"]
+    assert grant["original_turn_ceiling"] == 4
+    assert grant["work_turn_ceiling"] == 5
+    after = controls.task_snapshot(task["id"])
+    assert after["policy"] == before["policy"]
+    assert after["turns_used"] == before["turns_used"] == 3
+    assert after["allowance"]["turns"] == 5
+    assert after["task_id"] == before["task_id"]
+    denied = controls.authorize_start(
+        task["id"],
+        f"factory-node:{task['id']}:implement_unrelated:1",
+        "test",
+        model="luna",
+        max_cost_usd=1,
+    )
+    assert denied["reason"] == "continuation_scope_exhausted"
+    run_correction_round(task, policy, 1, verdict="changes_requested", head=HEAD_TWO)
+    conductor.reconcile_task(task["id"], policy, object())
+    assert controls.task_snapshot(task["id"])["state"] == "failed"
+    assert not any(
+        n["node_key"] in {"correct_2", "conductor_1"}
+        for n in conductor.graph.load_graph(task["id"])
+    )
+    assert controls.continuation_grant(task["id"]) == grant
+
+
+def test_continuation_refuses_older_unrelated_ready_work(feedback_db, monkeypatch):
+    from factory.orchestration import factory_controls as controls
+
+    task, policy = continuation_task(monkeypatch)
+    assert conductor._add(
+        task,
+        policy,
+        "investigate_followup",
+        "Inspect",
+        [],
+        "luna",
+        "followup",
+        "Unfinished work outside the final correction",
+    ).ok
+    conductor.reconcile_task(task["id"], policy, object())
+    assert controls.continuation_grant(task["id"]) is None
+    assert controls.task_snapshot(task["id"])["state"] == "failed"
+    assert not any(
+        n["node_key"] == "correct_1" for n in conductor.graph.load_graph(task["id"])
+    )
+
+
+def test_continuation_grant_rolls_back_with_refused_second_edit(
+    feedback_db, monkeypatch
+):
+    from factory.orchestration import factory_controls as controls
+
+    task, policy = continuation_task(monkeypatch)
+    original = conductor.graph._apply_one_edit
+
+    def refuse(db, task_row, task_id, edit, *args):
+        if edit["node_key"] == "review_1":
+            return conductor.graph.GraphOp(ok=False, refusal_code="test_refusal")
+        return original(db, task_row, task_id, edit, *args)
+
+    monkeypatch.setattr(conductor.graph, "_apply_one_edit", refuse)
+    conductor.reconcile_task(task["id"], policy, object())
+    assert controls.continuation_grant(task["id"]) is None
+    assert not any(
+        n["node_key"] in {"correct_1", "review_1"}
+        for n in conductor.graph.load_graph(task["id"])
+    )
+
+
+def test_continuation_recovers_same_escalated_task_without_new_budget(
+    feedback_db, monkeypatch
+):
+    from factory.orchestration import factory_controls as controls
+
+    task, policy = continuation_task(monkeypatch)
+    before = controls.task_snapshot(task["id"])
+    assert controls.finish_task(task["id"], "escalated", "test")["ok"]
+    runs = conductor.graph.node_runs(task["id"])
+    nodes = conductor.graph.load_graph(task["id"])
+    pending = conductor._pending_correction(nodes, runs)
+    result = conductor._insert_review_round(
+        task,
+        policy,
+        nodes,
+        runs,
+        pending,
+        1,
+        4,
+        conductor.graph.current_version(task["id"]),
+        recover_escalated=True,
+    )
+    assert result == (True, None)
+    after = controls.task_snapshot(task["id"])
+    assert after["state"] == "admitted"
+    assert after["task_id"] == before["task_id"]
+    assert after["policy"] == before["policy"]
+    assert after["starts"] == before["starts"]
+    assert after["turns_used"] == 3
+
+
+@pytest.mark.parametrize("observation", ["waiting", "refused"])
+def test_continuation_requires_current_reviewed_pr_evidence(
+    feedback_db, monkeypatch, observation
+):
+    from factory.orchestration import factory_controls as controls
+
+    task, policy = continuation_task(monkeypatch)
+    monkeypatch.setattr(
+        conductor,
+        "_review_recovery_evidence",
+        lambda *_: {"state": observation, "reason": "changed_or_pending"},
+    )
+    conductor.reconcile_task(task["id"], policy, object())
+    assert controls.continuation_grant(task["id"]) is None
+    assert not any(
+        n["node_key"] in {"correct_1", "conductor_1"}
+        for n in conductor.graph.load_graph(task["id"])
+    )
+
+
+def test_granted_approval_finishes_without_spending_a_planner_turn(
+    feedback_db, monkeypatch
+):
+    from factory.orchestration import factory_controls as controls
+
+    task, policy = continuation_task(monkeypatch)
+    conductor.reconcile_task(task["id"], policy, object())
+    run_correction_round(task, policy, 1, verdict="approve", head=HEAD_TWO)
+    checked = []
+
+    def verify(task, number, runs, models, **kwargs):
+        checked.append(number)
+        return {"state": "verified", "pr_url": "https://github.com/owner/repo/pull/21"}
+
+    monkeypatch.setattr(conductor, "verify_delivery", verify)
+    monkeypatch.setenv("FACTORY_AUTONOMOUS_CONTINUATION_ENABLED", "false")
+    conductor.reconcile_task(task["id"], policy, object())
+    assert checked == [21]
+    assert controls.task_snapshot(task["id"])["state"] == "succeeded"
+    assert not any(
+        n["node_key"].startswith("conductor_")
+        for n in conductor.graph.load_graph(task["id"])
+    )
+
+
+def test_failed_grant_settles_after_creation_flag_is_disabled(feedback_db, monkeypatch):
+    from factory.orchestration import factory_controls as controls
+
+    task, policy = continuation_task(monkeypatch)
+    conductor.reconcile_task(task["id"], policy, object())
+    fail_round_node(task, "correct_1")
+    monkeypatch.setenv("FACTORY_AUTONOMOUS_CONTINUATION_ENABLED", "false")
+    conductor.reconcile_task(task["id"], policy, object())
+    assert controls.task_snapshot(task["id"])["state"] == "failed"
+
+
+def test_continuation_is_not_granted_for_dollar_exhaustion(feedback_db, monkeypatch):
+    from factory.orchestration import factory_controls as controls
+    from sqlmodel import Session, select
+    from factory.orchestration.factory_models import FactoryReceipt
+    import json
+
+    task, policy = continuation_task(monkeypatch)
+    with Session(feedback_db) as db:
+        receipt = db.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == task["id"])
+        ).one()
+        policy["task_budget_usd"] = 3.0
+        receipt.policy_json = json.dumps(policy)
+        db.add(receipt)
+        db.commit()
+    conductor.reconcile_task(task["id"], policy, object())
+    assert controls.continuation_grant(task["id"]) is None
+    assert controls.task_snapshot(task["id"])["state"] == "failed"
+
+
+def test_duplicate_continuation_tick_replays_grant_without_failing_task(
+    feedback_db, monkeypatch
+):
+    from factory.orchestration import factory_controls as controls
+
+    task, policy = continuation_task(monkeypatch)
+    nodes = conductor.graph.load_graph(task["id"])
+    runs = conductor.graph.node_runs(task["id"])
+    pending = conductor._pending_correction(nodes, runs)
+    version = conductor.graph.current_version(task["id"])
+    first = conductor._insert_review_round(
+        task, policy, nodes, runs, pending, 1, 4, version
+    )
+    second = conductor._insert_review_round(
+        task, policy, nodes, runs, pending, 1, 4, version
+    )
+    assert first == second == (True, None)
+    assert controls.task_snapshot(task["id"])["state"] == "admitted"
+    assert (
+        len(
+            [
+                n
+                for n in conductor.graph.load_graph(task["id"])
+                if n["node_key"] == "correct_1"
+            ]
+        )
+        == 1
+    )

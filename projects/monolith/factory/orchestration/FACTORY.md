@@ -1251,3 +1251,19 @@ cessation proof; later queued user input is preserved. Never-started reservation
 use positive local cancellation proof. An explicit routine stop parks the job
 atomically and prevents ordinary retry from rearming it. Steering and replanning
 carry guidance into the next routine attempt only after confirmed cessation.
+
+
+### Autonomous correction continuation
+
+`FACTORY_AUTONOMOUS_CONTINUATION_ENABLED` allows the engine to grant one final
+correction and independent review when a genuine work-turn limit blocks that
+pair. The grant names both one-attempt nodes, the source review and current PR
+head. It commits with the graph edit and survives retries and restarts. Capacity
+denials use the existing bounded no-execution accounting rule.
+
+The task, branch, PR, original dollar budget, deadline, and spent history stay
+in place. Other work cannot borrow the grant, and it cannot create a successor
+grant. Approved delivery goes through the normal exact-head verification gate
+without spending another planner turn. Failure or another negative review ends
+the task with its PR and findings retained, without a human decision card.
+Human escalation remains available for actual missing decisions or authority.

@@ -1393,3 +1393,65 @@ def test_review_recovery_is_opt_in_bounded_and_pinned(db, policy):
         policy["max_review_recovery_rounds"] = invalid
         with pytest.raises(ValueError, match="max_review_recovery_rounds"):
             controls.validate_policy(policy)
+
+
+@pytest.mark.parametrize(
+    "denials",
+    [
+        0,
+        1,
+        controls.MAX_CAPACITY_DENIED_ATTEMPTS,
+        controls.MAX_CAPACITY_DENIED_ATTEMPTS + 1,
+    ],
+)
+def test_plan_allowance_excuses_only_bounded_capacity_denials(policy, denials):
+    plan = [graph_node("implement_fix", max_attempts=1)]
+    runs = [
+        dict(graph_run("implement_fix", status="failed", cost=0), capacity_denied=True)
+        for _ in range(denials)
+    ]
+    allowance = controls.allowance_from_graph(
+        plan, runs, policy, review_rounds_remaining=0, graph_revision=1
+    )
+    assert allowance["turns"] == max(1, denials - controls.MAX_CAPACITY_DENIED_ATTEMPTS)
+    succeeded = controls.allowance_from_graph(
+        plan,
+        runs + [graph_run("implement_fix")],
+        policy,
+        review_rounds_remaining=0,
+        graph_revision=1,
+    )
+    assert succeeded["turns"] == 1 + max(
+        0, denials - controls.MAX_CAPACITY_DENIED_ATTEMPTS
+    )
+
+
+def test_continuation_admission_excuses_capacity_denial_but_not_real_retry(db, policy):
+    task = admitted(policy)
+    with controls._locked_session() as (session, _):
+        controls._audit(
+            session,
+            "test",
+            "continuation_granted",
+            task_id=task,
+            node_keys=["correct_1", "review_1"],
+            work_turn_ceiling=3,
+        )
+    first = f"factory-node:{task}:correct_1:1"
+    second = f"factory-node:{task}:correct_1:2"
+    assert controls.authorize_start(task, first, "test", model="luna", max_cost_usd=1)[
+        "ok"
+    ]
+    assert controls.record_start_outcome(
+        task, first, "failed", "test", cost_usd=0, accounting_basis="capacity_denied"
+    )["ok"]
+    assert controls.authorize_start(task, second, "test", model="luna", max_cost_usd=1)[
+        "ok"
+    ]
+    assert controls.record_start_outcome(
+        task, second, "succeeded", "test", cost_usd=0.5
+    )["ok"]
+    denied = controls.authorize_start(
+        task, f"factory-node:{task}:correct_1:3", "test", model="luna", max_cost_usd=1
+    )
+    assert denied["reason"] == "continuation_scope_exhausted"

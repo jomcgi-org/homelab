@@ -840,6 +840,7 @@ def apply_edits(
     cause_ref: str | None,
     expected_version: int,
     edits: list[dict],
+    session: Session | None = None,
 ) -> GraphOp:
     """Apply an ordered batch of graph edits, or none of them.
 
@@ -849,7 +850,8 @@ def apply_edits(
     ``expected_version`` for the first edit and every later edit is checked
     against the revision its predecessor produced.
 
-    This call owns its transaction rather than joining a caller's. A refused
+    With a caller session the batch joins its transaction under a savepoint.
+    Otherwise this call owns its transaction. A refused
     edit abandons the whole batch before commit, and the refusal itself is
     recorded afterwards in a fresh transaction, so a partially applied plan can
     never reach the graph and a refusal can never be lost with it.
@@ -870,7 +872,7 @@ def apply_edits(
     detail = "plan edits are not a bounded list of graph operations"
     if rejection is None:
         try:
-            with Session(get_engine()) as db:
+            with _session(session) as db, db.begin_nested():
                 task = _lock_task(db, task_id)
                 live = {
                     node.node_key
@@ -902,7 +904,6 @@ def apply_edits(
                     expected_version,
                     GraphOp(ok=True, version=version),
                 )
-                db.commit()
                 return applied
         except _PlanRejected as exc:
             # The session closed without a commit, so every edit rolled back.
@@ -912,7 +913,7 @@ def apply_edits(
             )
             if exc.op.detail:
                 detail = f"{detail} ({exc.op.detail})"
-    with Session(get_engine()) as db:
+    with _session(session) as db, db.begin_nested():
         task = _lock_task(db, task_id)
         refused = _refuse(
             db,
@@ -923,7 +924,6 @@ def apply_edits(
             rejection,
             detail,
         )
-        db.commit()
         return refused
 
 

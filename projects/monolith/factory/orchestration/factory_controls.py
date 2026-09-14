@@ -872,12 +872,18 @@ def allowance_from_graph(
     succeeded: set[str] = set()
     work_turns_used = 0
     charged_total = 0.0
+    denied: dict[str, int] = {}
     for run in runs:
         key = run["node_key"]
         cost = float(run["accounted_cost_usd"])
-        attempts[key] = attempts.get(key, 0) + 1
         charged[key] = charged.get(key, 0.0) + cost
         charged_total += cost
+        if run.get("capacity_denied"):
+            seen = denied.get(key, 0)
+            denied[key] = seen + 1
+            if seen < MAX_CAPACITY_DENIED_ATTEMPTS:
+                continue
+        attempts[key] = attempts.get(key, 0) + 1
         if run["status"] == "succeeded":
             succeeded.add(key)
         if not key.startswith("conductor_"):
@@ -990,6 +996,20 @@ def task_allowance(task_id: str, *, session: Session | None = None) -> dict:
         return _stored_allowance(row, json.loads(row.policy_json))
 
 
+def continuation_grant(task_id: str, *, session: Session | None = None) -> dict | None:
+    """Read the one permanent grant, independently of current rollout flags."""
+    with _read_session(session) as db:
+        row = db.exec(
+            select(FactoryAudit)
+            .where(
+                FactoryAudit.task_id == task_id,
+                FactoryAudit.action == "continuation_granted",
+            )
+            .order_by(FactoryAudit.id)
+        ).first()
+        return json.loads(row.detail_json) if row else None
+
+
 def record_allowance(
     task_id: str,
     policy: dict,
@@ -1016,7 +1036,9 @@ def record_allowance(
         # Acceptance refuses an over-envelope plan, so this can only clamp a
         # graph that reached the server another way. Clamping never widens the
         # envelope after the fact.
-        allowance["turns"] = min(allowance["turns"], task_turn_ceiling(policy))
+        grant = continuation_grant(task_id, session=db)
+        ceiling = grant["work_turn_ceiling"] if grant else task_turn_ceiling(policy)
+        allowance["turns"] = min(allowance["turns"], ceiling)
         allowance["usd"] = min(allowance["usd"], policy["task_budget_usd"])
         row.allowance_json = _json(allowance)
         row.updated_at = _now()
@@ -1780,11 +1802,17 @@ def can_start(task_id: str, *, session: Session | None = None) -> dict:
             .where(FactoryControl.id == "factory")
             .execution_options(populate_existing=True)
         ).first()
-        return (
+        result = (
             {"ok": False, "reason": "not_initialized"}
             if control is None
             else _can_start(db, control, task_id)
         )
+
+        if result["ok"]:
+            grant = continuation_grant(task_id, session=db)
+            if grant:
+                result["continuation"] = grant
+        return result
 
 
 @contextmanager
@@ -1826,11 +1854,27 @@ def authorize_start(
             return {"ok": True, "replayed": True, "start": _start_dict(existing)}
         budget = _accounting(starts)
         planner = _planner_key(start_key)
+        grant = continuation_grant(task_id, session=db)
+        matched = _START_KEY.match(start_key)
+        node_key = matched.group("node_key") if matched else None
         reason = None
         # One reserved start per parallel slot. At the default limit of one
         # this is the original single-flight fence, unchanged.
         if sum(s.status == "reserved" for s in starts) >= parallel_limit(policy):
             reason = "start_pending"
+        elif (
+            grant
+            and not planner
+            and (
+                node_key not in grant["node_keys"]
+                or _accounting([s for s in starts if _start_node_key(s) == node_key])[
+                    "turns_used"
+                ]
+                >= 1
+                or budget["turns_used"] >= grant["work_turn_ceiling"]
+            )
+        ):
+            reason = "continuation_scope_exhausted"
         elif model not in policy["allowed_models"]:
             reason = "model_not_allowed"
         # A planning round is cheap enough that the task budget alone would
