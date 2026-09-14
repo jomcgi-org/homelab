@@ -56,9 +56,10 @@ LANDING_ERROR_SECONDS = 3600
 MAX_EJECTIONS = 2
 WRITE_TIMEOUT_SECONDS = 15
 RESPONSE_LIMIT_BYTES = 1_000_000
-# One page. A repository with more than this many open pull requests would
-# need paging, and the factory branch prefix is what this is looking for.
-OPEN_PULLS_PAGE = 100
+# Bound each response below the shared read cap at typical pull body sizes.
+# Exhausting the page budget cannot prove the arming slot is free.
+OPEN_PULLS_PAGE = 50
+OPEN_PULLS_MAX_PAGES = 5
 FACTORY_BRANCH_PREFIX = "factory/"
 _PR_URL = re.compile(r"/pull/([0-9]+)$")
 # Multi-row actions: a delivery can be armed, ejected and armed again, so the
@@ -384,16 +385,21 @@ def _armed_on_github(repo: str) -> dict | None:
     pull request by hand puts it in the same queue, and a second armed
     candidate is exactly what the one-at-a-time rule exists to prevent.
     """
-    pulls = github_list(
-        repo, f"pulls?state=open&sort=created&direction=asc&per_page={OPEN_PULLS_PAGE}"
-    )
-    for pull in pulls:
-        if not isinstance(pull, dict) or pull.get("auto_merge") is None:
-            continue
-        ref = (pull.get("head") or {}).get("ref")
-        if isinstance(ref, str) and ref.startswith(FACTORY_BRANCH_PREFIX):
-            return {"pr_number": pull.get("number"), "task_id": None}
-    return None
+    for page in range(1, OPEN_PULLS_MAX_PAGES + 1):
+        pulls = github_list(
+            repo,
+            f"pulls?state=open&sort=created&direction=asc"
+            f"&per_page={OPEN_PULLS_PAGE}&page={page}",
+        )
+        for pull in pulls:
+            if not isinstance(pull, dict) or pull.get("auto_merge") is None:
+                continue
+            ref = (pull.get("head") or {}).get("ref")
+            if isinstance(ref, str) and ref.startswith(FACTORY_BRANCH_PREFIX):
+                return {"pr_number": pull.get("number"), "task_id": None}
+        if len(pulls) < OPEN_PULLS_PAGE:
+            return None
+    raise ValueError("GitHub holder listing exceeds factory page limit")
 
 
 def _notify_stuck(task_id: str, number: int) -> None:
@@ -624,7 +630,7 @@ def landing_tick(policy: dict) -> None:
         if holder is None:
             # Nothing this lane armed is outstanding, but an operator may have
             # armed a factory pull request by hand and it sits in the same
-            # queue. One list read, and only when there is something to arm.
+            # queue. Bounded list reads, only when there is something to arm.
             try:
                 holder = _armed_on_github(repo)
             except (httpx.HTTPError, ValueError) as exc:
