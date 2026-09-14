@@ -10,11 +10,13 @@ from reconcile_orphaned_iscsi import (
     Inventory,
     InventoryClient,
     IscsiClient,
+    ReconcileReport,
     Reconciler,
     SafetyError,
     Session,
     SessionInspection,
     Usage,
+    build_parser,
     parse_inventory,
     parse_session_inspection,
     parse_sessions,
@@ -151,22 +153,49 @@ def test_inventory_rejects_malformed_and_incomplete_responses(
 
 def test_inventory_command_failure_fails_closed() -> None:
     runner = QueueRunner([CommandResult(1, stderr="forbidden")])
-    client = InventoryClient(runner, "home", "longhorn-system", 15, False)
+    client = InventoryClient(runner, "home", "longhorn", 15, False)
 
     with pytest.raises(SafetyError, match="forbidden"):
         client.authoritative()
 
 
+def test_inventory_read_uses_selected_context_and_namespace() -> None:
+    runner = QueueRunner([CommandResult(0, volume_document("pvc-live"))])
+    client = InventoryClient(runner, "home-prod", "longhorn", 23, False)
+
+    assert client._read_once().volume_names == frozenset({"pvc-live"})
+    assert runner.commands == [
+        (
+            "kubectl",
+            "--context",
+            "home-prod",
+            "--namespace",
+            "longhorn",
+            "get",
+            "volumes.longhorn.io",
+            "--output=json",
+            "--chunk-size=0",
+            "--request-timeout=23s",
+        )
+    ]
+
+
+def test_parser_defaults_to_deployed_longhorn_namespace() -> None:
+    args = build_parser().parse_args(["--context", "home", "--node", "node-4"])
+
+    assert args.namespace == "longhorn"
+
+
 def test_empty_inventory_requires_opt_in_and_two_complete_reads() -> None:
     rejected_runner = QueueRunner([CommandResult(0, volume_document())])
-    rejected = InventoryClient(rejected_runner, "home", "longhorn-system", 15, False)
+    rejected = InventoryClient(rejected_runner, "home", "longhorn", 15, False)
     with pytest.raises(SafetyError, match="--allow-empty-inventory"):
         rejected.authoritative()
 
     accepted_runner = QueueRunner(
         [CommandResult(0, volume_document()), CommandResult(0, volume_document())]
     )
-    accepted = InventoryClient(accepted_runner, "home", "longhorn-system", 15, True)
+    accepted = InventoryClient(accepted_runner, "home", "longhorn", 15, True)
     assert accepted.authoritative().volume_names == frozenset()
     assert len(accepted_runner.commands) == 2
 
@@ -178,7 +207,7 @@ def test_empty_inventory_confirmation_rejects_a_new_volume() -> None:
             CommandResult(0, volume_document("pvc-new")),
         ]
     )
-    client = InventoryClient(runner, "home", "longhorn-system", 15, True)
+    client = InventoryClient(runner, "home", "longhorn", 15, True)
 
     with pytest.raises(SafetyError, match="changed while confirming"):
         client.authoritative()
@@ -349,3 +378,26 @@ def test_session_still_present_after_successful_logout_is_reported_as_wedged() -
         "session=14 volume=pvc-orphan: targeted logout returned success but the "
         "session remains"
     ]
+
+
+def test_audit_is_streamed_before_an_unexpected_post_logout_failure() -> None:
+    class UnexpectedPostLogoutIscsi(FakeIscsi):
+        def sessions(self) -> tuple[Session, ...]:
+            if self.logouts:
+                raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+            return super().sessions()
+
+    orphan = longhorn_session(14, "pvc-orphan")
+    iscsi = UnexpectedPostLogoutIscsi([(orphan,), (orphan,), (orphan,)])
+    inventory = FakeInventory([{"pvc-live"}, {"pvc-live"}, {"pvc-live"}])
+    streamed: list[str] = []
+
+    with pytest.raises(UnicodeDecodeError):
+        Reconciler(inventory, iscsi, FakeUsage(), apply=True).run(
+            ReconcileReport(sink=streamed.append)
+        )
+
+    assert iscsi.logouts == [14]
+    assert any(line.startswith("CANDIDATE session=14") for line in streamed)
+    assert any(line.startswith("LOGOUT_ATTEMPT session=14") for line in streamed)
+    assert any(line.startswith("LOGOUT_RETURNED_SUCCESS session=14") for line in streamed)
