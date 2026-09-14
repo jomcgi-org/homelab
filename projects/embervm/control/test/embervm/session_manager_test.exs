@@ -82,6 +82,34 @@ defmodule Embervm.SessionManagerTest do
     def append(server, op), do: SQLite.append(server, op)
   end
 
+  defmodule FailOnceEvictionOpLog do
+    @table __MODULE__
+
+    def arm(server) do
+      if :ets.whereis(@table) == :undefined do
+        :ets.new(@table, [:named_table, :public, :set])
+      end
+
+      :ets.insert(@table, {server, true})
+      :ok
+    end
+
+    def load_sessions(server), do: SQLite.load_sessions(server)
+
+    def append(server, %Embervm.OpLog.Op{kind: :session_evicted} = op) do
+      if :ets.whereis(@table) == :undefined do
+        SQLite.append(server, op)
+      else
+        case :ets.take(@table, server) do
+          [{^server, true}] -> {:error, :unavailable}
+          [] -> SQLite.append(server, op)
+        end
+      end
+    end
+
+    def append(server, op), do: SQLite.append(server, op)
+  end
+
   defmodule CapabilityS3 do
     def get(agent, _key) do
       Agent.get_and_update(agent, fn state ->
@@ -226,6 +254,7 @@ defmodule Embervm.SessionManagerTest do
           :node_confirmed_destroy,
           :destroying_alarm_ms,
           :orphan_grace_ms,
+          :departure_retry_interval_ms,
           :pressure_retry_interval_ms,
           :pressure_wait_bound_ms
         ])
@@ -2883,6 +2912,424 @@ defmodule Embervm.SessionManagerTest do
            )
   end
 
+  test "node departure evicts parked and banked sessions with durable terminal evidence" do
+    {:ok, store_clock} = Agent.start_link(fn -> 100 end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(store_clock) end)
+
+    ctx =
+      start_stack(
+        prime_fun: fake_prime_fun("vm-node-departed"),
+        store_clock: fn -> Agent.get(store_clock, & &1) end,
+        brick_status_fun: fn _dial ->
+          %{health: :down, draining: false, registered: false, tombstoned: true, pod_uid: "pod-dead"}
+        end
+      )
+
+    parked_created = create_persistence_session(ctx, workload: "wl-node-departed-parked")
+    parked = park_session(ctx, parked_created)
+
+    put_session_workload(ctx, "wl-node-departed-banked")
+    {:ok, banked_created} = SessionManager.create(ctx.mgr, "wl-node-departed-banked", "p2")
+    assert :ok = SessionManager.bank(ctx.mgr, banked_created.session_id)
+    banked = wait_for_state(ctx, banked_created.session_id, :banked)
+
+    Agent.update(store_clock, fn _ -> 200 end)
+
+    assert SessionManager.node_down(ctx.mgr, "node-4", %{pod_uid: "pod-dead"}) == 2
+
+    for prior <- [parked, banked] do
+      assert {:ok,
+              %{
+                state: :evicted,
+                updated_at: 200,
+                terminal_reason: "node_gone",
+                stop_intent: nil,
+                stop_completion: nil
+              }} = SessionStore.get(ctx.store, prior.session_id)
+    end
+
+    rebuilt = start_supervised!({SessionStore, name: nil, op_log: ctx.op_log, op_log_mod: SQLite})
+
+    for prior <- [parked, banked] do
+      assert {:ok, %{state: :evicted, updated_at: 200, terminal_reason: "node_gone"}} =
+               SessionStore.get(rebuilt, prior.session_id)
+    end
+
+    # Registry expiry and explicit unregister can both repeat the notification.
+    # A terminal row is untouched, including its API-visible proof timestamp.
+    assert SessionManager.node_down(ctx.mgr, "node-4", %{pod_uid: "pod-dead"}) == 0
+
+    assert {:ok, %{state: :evicted, updated_at: 200}} =
+             SessionStore.get(ctx.store, parked.session_id)
+  end
+
+  test "explicit unregister alone settles and evicts a running persistence session" do
+    {:ok, registry_holder} = Agent.start_link(fn -> nil end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(registry_holder) end)
+
+    ctx =
+      start_stack(
+        prime_fun: fake_prime_fun("vm-unregister"),
+        brick_status_fun: fn dial_id ->
+          Agent.get(registry_holder, fn registry ->
+            Embervm.NodeRegistry.brick_status(registry, dial_id)
+          end)
+        end
+      )
+
+    {:ok, node_registry} =
+      Embervm.NodeRegistry.start_link(
+        name: nil,
+        table: ctx.cap_table,
+        nodes: [],
+        watch_startup: false,
+        registry_resync_ms: 0,
+        session_sweep_fun: fn node_id, pod_uid ->
+          SessionManager.node_down(ctx.mgr, node_id, %{pod_uid: pod_uid})
+        end
+      )
+
+    on_exit(fn -> Embervm.TestProcess.stop_safely(node_registry) end)
+    Agent.update(registry_holder, fn _ -> node_registry end)
+
+    :ok =
+      Embervm.NodeRegistry.register(node_registry, %{
+        "node" => "node-4",
+        "pod_uid" => "pod-dead",
+        "address" => "old-ip:9090"
+      })
+
+    created = create_persistence_session(ctx, workload: "wl-unregister")
+    assert {:ok, %{state: :running}} = SessionStore.get(ctx.store, created.session_id)
+
+    :ok = Embervm.NodeRegistry.unregister(node_registry, "node-4", "pod-dead")
+
+    assert eventually(fn ->
+             match?(
+               {:ok, %{state: :evicted, terminal_reason: "node_gone"}},
+               SessionStore.get(ctx.store, created.session_id)
+             )
+           end)
+  end
+
+  test "dormant ownership follows the state-specific canonical node id" do
+    ctx =
+      start_stack(
+        prime_fun: fake_prime_fun("vm-owner"),
+        brick_status_fun: fn _dial ->
+          %{health: :down, draining: false, registered: false, tombstoned: true, pod_uid: "pod-dead"}
+        end
+      )
+
+    parked_dead =
+      ctx
+      |> create_persistence_session(workload: "wl-owner-parked-dead", principal: "p1")
+      |> then(&park_session(ctx, &1))
+
+    parked_live =
+      ctx
+      |> create_persistence_session(workload: "wl-owner-parked-live", principal: "p2")
+      |> then(&park_session(ctx, &1))
+
+    put_session_workload(ctx, "wl-owner-banked-dead")
+    {:ok, banked_dead_created} = SessionManager.create(ctx.mgr, "wl-owner-banked-dead", "p3")
+    assert :ok = SessionManager.bank(ctx.mgr, banked_dead_created.session_id)
+    banked_dead = wait_for_state(ctx, banked_dead_created.session_id, :banked)
+
+    put_session_workload(ctx, "wl-owner-banked-live")
+    {:ok, banked_live_created} = SessionManager.create(ctx.mgr, "wl-owner-banked-live", "p4")
+    assert :ok = SessionManager.bank(ctx.mgr, banked_live_created.session_id)
+    banked_live = wait_for_state(ctx, banked_live_created.session_id, :banked)
+
+    rewrite_session(ctx, parked_dead.session_id, &%{&1 | node_id: "node-live", volume_node_id: "node-4"})
+    rewrite_session(ctx, parked_live.session_id, &%{&1 | node_id: "node-4", volume_node_id: "node-live"})
+    rewrite_session(ctx, banked_dead.session_id, &%{&1 | node_id: "node-4", volume_node_id: "node-live"})
+    rewrite_session(ctx, banked_live.session_id, &%{&1 | node_id: "node-live", volume_node_id: "node-4"})
+
+    assert SessionManager.node_down(ctx.mgr, "node-4", %{pod_uid: "pod-dead"}) == 2
+    assert {:ok, %{state: :evicted}} = SessionStore.get(ctx.store, parked_dead.session_id)
+    assert {:ok, %{state: :parked}} = SessionStore.get(ctx.store, parked_live.session_id)
+    assert {:ok, %{state: :evicted}} = SessionStore.get(ctx.store, banked_dead.session_id)
+    assert {:ok, %{state: :banked}} = SessionStore.get(ctx.store, banked_live.session_id)
+  end
+
+  test "a down but still registered owner does not evict dormant sessions" do
+    ctx =
+      start_stack(
+        prime_fun: fake_prime_fun("vm-registered"),
+        brick_status_fun: fn _dial ->
+          %{health: :down, draining: false, registered: true, tombstoned: false, pod_uid: "pod-dead"}
+        end
+      )
+
+    parked =
+      ctx
+      |> create_persistence_session(workload: "wl-registered-parked")
+      |> then(&park_session(ctx, &1))
+
+    put_session_workload(ctx, "wl-registered-banked")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-registered-banked", "p2")
+    assert :ok = SessionManager.bank(ctx.mgr, created.session_id)
+    banked = wait_for_state(ctx, created.session_id, :banked)
+
+    assert SessionManager.node_down(ctx.mgr, "node-4", %{pod_uid: "pod-dead"}) == 0
+    assert {:ok, %{state: :parked}} = SessionStore.get(ctx.store, parked.session_id)
+    assert {:ok, %{state: :banked}} = SessionStore.get(ctx.store, banked.session_id)
+  end
+
+  test "a live peer reporting the exact dormant artifact preserves relight" do
+    ctx =
+      start_stack(
+        prime_fun: fake_prime_fun("vm-peer"),
+        brick_status_fun: fn _dial ->
+          %{health: :down, draining: false, registered: false, tombstoned: true, pod_uid: "pod-dead"}
+        end
+      )
+
+    parked =
+      ctx
+      |> create_persistence_session(workload: "wl-peer-parked")
+      |> then(&park_session(ctx, &1))
+
+    put_session_workload(ctx, "wl-peer-banked")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-peer-banked", "p2")
+    assert :ok = SessionManager.bank(ctx.mgr, created.session_id)
+    banked = wait_for_state(ctx, created.session_id, :banked)
+
+    :ets.delete_all_objects(ctx.cap_table)
+
+    NodeCapacity.put(ctx.cap_table, {"node-4", "pod-live"}, %{
+      node_id: "node-4",
+      configured_id: "node-4",
+      instance_id: "node-4/pod-live",
+      pod_uid: "pod-live",
+      workloads: %{},
+      session_vms: [],
+      session_snapshots: [
+        %{session_id: banked.session_id, snapshot_ref: banked.snapshot_ref, workload: banked.workload}
+      ],
+      session_volumes: [
+        %{lineage_id: parked.lineage_id, workload: parked.workload}
+      ],
+      live_vms: 0,
+      max_live_vms: 8,
+      updated_at: 5_000_001
+    })
+
+    :sys.replace_state(ctx.mgr, fn state ->
+      %{
+        state
+        | session_dials:
+            state.session_dials
+            |> Map.put(parked.session_id, "node-4/pod-dead")
+            |> Map.put(banked.session_id, "node-4/pod-dead")
+      }
+    end)
+
+    assert SessionManager.node_down(ctx.mgr, "node-4", %{pod_uid: "pod-dead"}) == 0
+    assert {:ok, %{state: :parked}} = SessionStore.get(ctx.store, parked.session_id)
+    assert {:ok, %{state: :banked}} = SessionStore.get(ctx.store, banked.session_id)
+  end
+
+  test "a departed banked session restores its exported bundle on an eligible surviving instance" do
+    parent = self()
+
+    ctx =
+      start_stack(
+        prime_fun: fake_prime_fun("vm-exported"),
+        channel_fun: fn dial_id ->
+          send(parent, {:channel, dial_id})
+          {:ok, {:channel, dial_id}}
+        end,
+        restore_artifact_fun: fn channel, request ->
+          send(parent, {:restore, channel, request.artifact.ref})
+          {:ok, %{bytes_moved: 1_000, skipped: false}}
+        end,
+        relight_fun: fn channel, _request ->
+          send(parent, {:relight, channel})
+          {:ok, %RelightResponse{vm_id: "vm-restored-live"}}
+        end,
+        brick_status_fun: fn _dial ->
+          %{health: :down, draining: false, registered: false, tombstoned: true, pod_uid: "pod-dead"}
+        end
+      )
+
+    put_session_workload(ctx, "wl-exported", mem_mib: 512)
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-exported", "p1")
+    assert :ok = SessionManager.bank(ctx.mgr, created.session_id)
+    banked = wait_for_state(ctx, created.session_id, :banked)
+
+    :ets.delete_all_objects(ctx.cap_table)
+
+    NodeCapacity.put(ctx.cap_table, {"node-4", "pod-live"}, %{
+      node_id: "node-4",
+      configured_id: "node-4",
+      instance_id: "node-4/pod-live",
+      pod_uid: "pod-live",
+      workloads: %{
+        banked.workload => %{
+          base_state: :BASE_BUILD_STATE_READY,
+          snapshot_ref: "snap-#{banked.workload}",
+          free_primed_slots: 0
+        }
+      },
+      session_vms: [],
+      session_snapshots: [],
+      session_volumes: [],
+      live_vms: 0,
+      max_live_vms: 8,
+      mem_headroom_mib: 2_048,
+      mem_budget_mib: 4_096,
+      store_reachable: true,
+      updated_at: 5_000_001
+    })
+
+    :sys.replace_state(ctx.mgr, fn state ->
+      put_in(state.session_dials[banked.session_id], "node-4/pod-dead")
+    end)
+
+    assert SessionManager.node_down(ctx.mgr, "node-4", %{pod_uid: "pod-dead"}) == 0
+    assert {:ok, %{state: :banked}} = SessionStore.get(ctx.store, banked.session_id)
+
+    assert {:ok, %{body: "after-restore"}} =
+             SessionManager.invoke(ctx.mgr, banked.session_id, %{body: "after-restore"})
+
+    assert_receive {:restore, {:channel, "node-4/pod-live"}, ref}, 1_000
+    assert ref == banked.snapshot_ref
+    assert_receive {:relight, {:channel, "node-4/pod-live"}}, 1_000
+    assert {:ok, %{state: :running, vm_id: "vm-restored-live"}} =
+             SessionStore.get(ctx.store, banked.session_id)
+  end
+
+  test "a departed banked session is evicted when its bundle has no usable restore target" do
+    ctx =
+      start_stack(
+        prime_fun: fake_prime_fun("vm-unavailable-export"),
+        brick_status_fun: fn _dial ->
+          %{health: :down, draining: false, registered: false, tombstoned: true, pod_uid: "pod-dead"}
+        end
+      )
+
+    put_session_workload(ctx, "wl-unavailable-export", mem_mib: 512)
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-unavailable-export", "p1")
+    assert :ok = SessionManager.bank(ctx.mgr, created.session_id)
+    banked = wait_for_state(ctx, created.session_id, :banked)
+
+    :ets.delete_all_objects(ctx.cap_table)
+
+    NodeCapacity.put(ctx.cap_table, {"node-4", "pod-live"}, %{
+      node_id: "node-4",
+      configured_id: "node-4",
+      instance_id: "node-4/pod-live",
+      pod_uid: "pod-live",
+      workloads: %{
+        banked.workload => %{base_state: :BASE_BUILD_STATE_READY, snapshot_ref: "base", free_primed_slots: 0}
+      },
+      session_vms: [],
+      session_snapshots: [],
+      session_volumes: [],
+      live_vms: 0,
+      max_live_vms: 8,
+      mem_headroom_mib: 2_048,
+      mem_budget_mib: 4_096,
+      store_reachable: false,
+      updated_at: 5_000_001
+    })
+
+    :sys.replace_state(ctx.mgr, fn state ->
+      put_in(state.session_dials[banked.session_id], "node-4/pod-dead")
+    end)
+
+    assert SessionManager.node_down(ctx.mgr, "node-4", %{pod_uid: "pod-dead"}) == 1
+    assert {:ok, %{state: :evicted, terminal_reason: "node_gone"}} =
+             SessionStore.get(ctx.store, banked.session_id)
+  end
+
+  test "failed archival and a disabled persistence flag cannot strand a departed parked session" do
+    parent = self()
+
+    ctx =
+      start_stack(
+        prime_fun: fake_prime_fun("vm-archive-failed"),
+        archive_volume_fun: fn _channel, request ->
+          send(parent, {:archive_failed, request.lineage_id})
+          {:error, :store_unavailable}
+        end,
+        retire_volume_fun: fn _channel, request ->
+          send(parent, {:retire_attempted, request.lineage_id})
+          {:error, :node_gone}
+        end,
+        brick_status_fun: fn _dial ->
+          %{health: :down, draining: false, registered: false, tombstoned: true, pod_uid: "pod-dead"}
+        end
+      )
+
+    created = create_persistence_session(ctx, workload: "wl-archive-failed")
+    parked = park_session(ctx, created)
+    assert SessionManager.drain_node(ctx.mgr, "node-4") == 0
+    assert_receive {:archive_failed, lineage_id}, 1_000
+    assert lineage_id == parked.lineage_id
+
+    # A rollback may disable persistence after the volume was created. Cleanup
+    # follows the artifact, not the current flag, and terminalization still wins.
+    put_session_workload(ctx, parked.workload)
+
+    NodeCapacity.put(ctx.cap_table, {"node-4", "pod-live"}, %{
+      node_id: "node-4",
+      configured_id: "node-4",
+      instance_id: "node-4/pod-live",
+      pod_uid: "pod-live",
+      workloads: %{},
+      session_vms: [],
+      session_snapshots: [],
+      session_volumes: [%{lineage_id: parked.lineage_id, workload: parked.workload}],
+      live_vms: 0,
+      max_live_vms: 8,
+      updated_at: 5_000_001
+    })
+
+    assert SessionManager.node_down(ctx.mgr, "node-4", %{pod_uid: "pod-dead"}) == 1
+    assert {:ok, %{state: :evicted, terminal_reason: "node_gone"}} =
+             SessionStore.get(ctx.store, parked.session_id)
+    assert_receive {:retire_attempted, ^lineage_id}, 1_000
+  end
+
+  test "a failed departure eviction append is retried to one durable terminal timestamp" do
+    {:ok, store_clock} = Agent.start_link(fn -> 100 end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(store_clock) end)
+
+    ctx =
+      start_stack(
+        prime_fun: fake_prime_fun("vm-eviction-retry"),
+        store_clock: fn -> Agent.get(store_clock, & &1) end,
+        store_op_log_mod: FailOnceEvictionOpLog,
+        departure_retry_interval_ms: 100,
+        brick_status_fun: fn _dial ->
+          %{health: :down, draining: false, registered: false, tombstoned: true, pod_uid: "pod-dead"}
+        end
+      )
+
+    created = create_persistence_session(ctx, workload: "wl-eviction-retry")
+    parked = park_session(ctx, created)
+    :ok = FailOnceEvictionOpLog.arm(ctx.op_log)
+
+    assert SessionManager.node_down(ctx.mgr, "node-4", %{pod_uid: "pod-dead"}) == 0
+    assert {:ok, %{state: :parked}} = SessionStore.get(ctx.store, parked.session_id)
+
+    Agent.update(store_clock, fn _ -> 200 end)
+
+    assert eventually(fn ->
+             match?({:ok, %{state: :evicted, updated_at: 200}}, SessionStore.get(ctx.store, parked.session_id))
+           end)
+
+    {:ok, ops} = SQLite.read_from(ctx.op_log, 0)
+    assert Enum.count(ops, &(&1.kind == :session_evicted and &1.session_id == parked.session_id)) == 1
+
+    Agent.update(store_clock, fn _ -> 300 end)
+    assert SessionManager.node_down(ctx.mgr, "node-4", %{pod_uid: "pod-dead"}) == 0
+    assert {:ok, %{state: :evicted, updated_at: 200}} = SessionStore.get(ctx.store, parked.session_id)
+  end
+
   test "node-down sweep preserves a missing-dial session reported by a co-located sibling" do
     ctx = start_stack()
     put_session_workload(ctx, "wl-node-sibling")
@@ -4500,6 +4947,14 @@ defmodule Embervm.SessionManagerTest do
     ops
     |> Enum.filter(&(&1.session_id == session_id))
     |> Enum.map(& &1.kind)
+  end
+
+  defp rewrite_session(ctx, session_id, rewrite) do
+    :sys.replace_state(ctx.store, fn store_state ->
+      [{^session_id, session}] = :ets.lookup(store_state.sessions, session_id)
+      :ets.insert(store_state.sessions, {session_id, rewrite.(session)})
+      store_state
+    end)
   end
 
   defp index_of(list, elem), do: Enum.find_index(list, &(&1 == elem))
