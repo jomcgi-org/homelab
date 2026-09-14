@@ -63,8 +63,15 @@ This is a delivery slice of #5788, not the complete conductor interface.
 
 - `factory_escalations` reads pending questions. Conductor decision replies
   and requests for another brief still use the existing authenticated HTTP
-  surface. Receipt/option identity alone is insufficient for a stale reply
-  after a replacement brief, and the chat path needs durable request dedupe.
+  surface. Cards now carry `decision_id`, which identifies the complete brief,
+  including option effects and its source task. The operator page sends it as
+  `expected_decision_id` when answering an option. The shared decision owner
+  rejects a stale identity before GitHub writes and refuses to attach a result
+  to a brief replaced during those writes. The latter refusal explicitly says
+  effects may already have occurred; it is not a rollback acknowledgement.
+  Legacy HTTP callers may omit the expected identity. Concurrent identical
+  decisions and interrupted external writes still need durable retry handling
+  before exposing decision replies over MCP. Chat also needs request dedupe.
 - Free-form conductor requests, priority/direction edits, policy changes and
   exact-attempt stopping are not exposed by these new MCP tools.
 - Conductor conversations and fresh-session KG continuity remain #5787;

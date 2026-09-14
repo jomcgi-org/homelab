@@ -622,6 +622,100 @@ def test_the_board_shape_puts_open_escalations_first(db, github):
     assert "children" in view["options"][0]
 
 
+def current_decision_id():
+    return controls.escalations(controls.status()["receipts"])[0]["decision_id"]
+
+
+def test_exact_decision_replays_its_durable_resolution(db, github):
+    receipt_id = escalate(db, "close")
+    identity = current_decision_id()
+    first = decisions.apply_decision(
+        receipt_id, "close", "operator", expected_decision_id=identity
+    )
+    writes = list(github.writes)
+    db.dispose()  # A fresh connection still finds the persisted resolution.
+    replay = decisions.apply_decision(
+        receipt_id, "close", "operator", expected_decision_id=identity
+    )
+    assert replay["resolution"] == first["resolution"]
+    assert replay["resolution"]["decision_id"] == identity
+    assert replay["applied"] is False
+    assert github.writes == writes
+
+
+@pytest.mark.parametrize("change", ["effect_detail", "task", "chat", "receipt"])
+def test_stale_decision_is_refused_before_any_effect(db, github, change):
+    receipt_id = escalate(db, "close")
+    identity = current_decision_id()
+    with Session(db) as session:
+        row = session.get(FactoryReceipt, receipt_id)
+        document = json.loads(row.escalation_json)
+        if change == "effect_detail":
+            document["options"][0]["detail"]["comment"] = "New rationale"
+        elif change == "task":
+            document["task_id"] = "replacement-task"
+        elif change == "chat":
+            document["chat"] = [{"note": "Wait for my clarification"}]
+        else:
+            row.generation += 1
+        row.escalation_json = json.dumps(document)
+        session.add(row)
+        session.commit()
+    before = audit_actions(db)
+    with pytest.raises(decisions.DecisionError, match="brief changed") as raised:
+        decisions.apply_decision(
+            receipt_id, "close", "operator", expected_decision_id=identity
+        )
+    assert raised.value.status == 409
+    assert not github.writes
+    assert audit_actions(db) == before
+
+
+def test_replacement_during_effects_never_receives_the_old_resolution(
+    db, github, monkeypatch
+):
+    receipt_id = escalate(db, "close")
+    identity = current_decision_id()
+    apply = decisions._apply
+
+    def replace_after_effects(*args):
+        effects = apply(*args)
+        with Session(db) as session:
+            row = session.get(FactoryReceipt, receipt_id)
+            document = json.loads(row.escalation_json)
+            document["question"] = "A different decision"
+            row.escalation_json = json.dumps(document)
+            session.add(row)
+            session.commit()
+        return effects
+
+    monkeypatch.setattr(decisions, "_apply", replace_after_effects)
+    with pytest.raises(
+        decisions.DecisionError, match="GitHub effects may have occurred"
+    ):
+        decisions.apply_decision(
+            receipt_id, "close", "operator", expected_decision_id=identity
+        )
+    assert github.state == "closed"
+    assert escalation(db, receipt_id)["resolved"] is None
+    assert "decision_applied" not in audit_actions(db)
+
+
+def test_decision_identity_is_canonical_and_receipt_scoped():
+    original = {
+        "id": 1,
+        "repo": REPO,
+        "generation": 0,
+        "escalation": {"question": "Which?", "options": [], "resolved": None},
+    }
+    identity = controls.decision_identity(original)
+    reordered = {**original, "escalation": {"options": [], "question": "Which?"}}
+    assert controls.decision_identity(reordered) == identity
+    assert controls.decision_identity({**original, "id": 2}) != identity
+    assert controls.decision_identity({**original, "repo": "other/repo"}) != identity
+    assert controls.decision_identity({"id": 1}) is None
+
+
 def second_receipt(db, first="close"):
     """A second escalated receipt, so cross-receipt collisions are visible."""
     other = ISSUE + 1

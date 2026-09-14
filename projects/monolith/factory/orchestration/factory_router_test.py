@@ -153,6 +153,12 @@ def test_decisions_require_verified_standing_operator(authority, kind, groups):
         {"action": "chat"},
         {"action": "chat", "note": "   "},
         {"option_key": "close", "unexpected": 1},
+        {"option_key": "close", "expected_decision_id": "not-an-identity"},
+        {
+            "action": "chat",
+            "note": "more",
+            "expected_decision_id": "decision:" + "a" * 64,
+        },
     ],
 )
 def test_a_decision_names_exactly_one_of_an_option_or_a_chat(body):
@@ -167,16 +173,26 @@ def test_a_decision_carries_the_operator_subject_as_the_actor(monkeypatch):
 
     seen = {}
 
-    def apply_decision(receipt_id, option_key, actor, note=None):
+    def apply_decision(
+        receipt_id, option_key, actor, note=None, *, expected_decision_id=None
+    ):
         seen.update(
-            receipt_id=receipt_id, option_key=option_key, actor=actor, note=note
+            receipt_id=receipt_id,
+            option_key=option_key,
+            actor=actor,
+            note=note,
+            expected_decision_id=expected_decision_id,
         )
         return {"ok": True, "applied": True, "resolution": {}}
 
     monkeypatch.setattr(factory_decisions, "apply_decision", apply_decision)
     response = operator_client("operator:joe").post(
         "/api/swarm/factory/decisions/12",
-        json={"option_key": "close", "note": "agreed"},
+        json={
+            "option_key": "close",
+            "note": "agreed",
+            "expected_decision_id": "decision:" + "a" * 64,
+        },
     )
     assert response.status_code == 200
     assert seen == {
@@ -184,6 +200,7 @@ def test_a_decision_carries_the_operator_subject_as_the_actor(monkeypatch):
         "option_key": "close",
         "actor": "operator:joe",
         "note": "agreed",
+        "expected_decision_id": "decision:" + "a" * 64,
     }
 
 

@@ -505,6 +505,7 @@ def _record_escalation(
     than part of any one brief's answer.
     """
     document = _escalation_document(artifact, comment_url, downgraded)
+    document["task_id"] = task_id
     with _locked_session() as (db, _control):
         row = db.exec(
             select(FactoryReceipt)

@@ -164,7 +164,7 @@ describe("escalations page", () => {
     expect(target.querySelector(".stats").textContent).toContain("0");
   });
 
-  test("clicking an option posts it and re-reads the list", async () => {
+  test("clicking an option posts its brief identity and re-reads the list", async () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) })
@@ -185,7 +185,10 @@ describe("escalations page", () => {
         }),
       });
     vi.stubGlobal("fetch", fetchMock);
-    const target = renderPage({ escalations: [escalation()], error: false });
+    const target = renderPage({
+      escalations: [escalation({ decision_id: "decision:reviewed" })],
+      error: false,
+    });
 
     target.querySelector(".option").click();
     await settle();
@@ -193,6 +196,7 @@ describe("escalations page", () => {
     expect(fetchMock.mock.calls[0][0]).toBe("/factory/escalations/decisions/3");
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
       option_key: "split",
+      expected_decision_id: "decision:reviewed",
     });
     expect(fetchMock.mock.calls[1][0]).toBe("/factory/escalations");
     expect(target.querySelector(".none")).not.toBeNull();

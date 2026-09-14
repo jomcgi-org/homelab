@@ -175,4 +175,12 @@ describe("escalations view helpers", () => {
       note: "more please",
     });
   });
+
+  test("the answer carries the exact brief the operator reviewed", () => {
+    expect(decisionBody("close", " agreed ", "decision:abc")).toEqual({
+      option_key: "close",
+      note: "agreed",
+      expected_decision_id: "decision:abc",
+    });
+  });
 });
