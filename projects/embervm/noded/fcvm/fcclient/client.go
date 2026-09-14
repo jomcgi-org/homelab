@@ -57,10 +57,11 @@ func newWithControlTimeout(socketPath string, controlTimeout time.Duration) *Cli
 
 // MachineConfig is the body of PUT /machine-config.
 type MachineConfig struct {
-	VCPUCount       int  `json:"vcpu_count"`
-	MemSizeMib      int  `json:"mem_size_mib"`
-	SMT             bool `json:"smt"`
-	TrackDirtyPages bool `json:"track_dirty_pages,omitempty"`
+	VCPUCount       int    `json:"vcpu_count"`
+	MemSizeMib      int    `json:"mem_size_mib"`
+	SMT             bool   `json:"smt"`
+	TrackDirtyPages bool   `json:"track_dirty_pages,omitempty"`
+	HugePages       string `json:"huge_pages,omitempty"`
 }
 
 // BootSource is the body of PUT /boot-source.
