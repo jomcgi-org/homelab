@@ -1372,7 +1372,9 @@ def test_planner_keeps_completed_review_after_recursive_historical_prompts(monke
     # contract (#6041): roughly 1,000 characters, and cheap against the
     # planner round a refused pause costs. Move it again only for a rule the
     # planner cannot follow without being told, and say which rule.
-    assert len(prompt) < 17_000
+    # Funding reassessment adds a typed action and separates internal limits
+    # from human authority; keep that instruction within 200 extra characters.
+    assert len(prompt) < 17_200
     assert (task, nodes, runs) == before
 
 
@@ -7703,7 +7705,7 @@ def routed_dispatch(
 
     models = models or {}
     nodes = [_review_node(key, models.get(key, "opus")) for key in node_keys]
-    monkeypatch.setattr(conductor, "_ready_nodes", lambda *_a: list(nodes))
+    monkeypatch.setattr(conductor, "_ready_nodes", lambda *_a, **_k: list(nodes))
     monkeypatch.setattr(conductor, "hydration_branch", lambda _task: "main")
     monkeypatch.setattr(conductor, "branch_hydration", lambda *_a: "main")
     monkeypatch.setattr(conductor, "_dispatch_branch", lambda *_a: "factory/t-1")
@@ -9025,3 +9027,402 @@ def test_duplicate_continuation_tick_replays_grant_without_failing_task(
         )
         == 1
     )
+
+
+def funding_task(monkeypatch):
+    from factory.orchestration import factory_funding as funding
+    from factory.orchestration import factory_controls as controls
+
+    monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "true")
+    task, policy = reviewed_after_three_turns(4)
+    # The production policy includes Astra; preserve the fixture's other models.
+    from sqlmodel import Session
+
+    with Session(conductor.get_engine()) as db:
+        row = controls._receipt(db, task["id"])
+        original = json.loads(row.policy_json)
+        original["allowed_models"].append("astra")
+        row.policy_json = json.dumps(original)
+        db.add(row)
+        db.commit()
+    monkeypatch.setattr(
+        funding,
+        "_issue",
+        lambda _task: {
+            "number": 21,
+            "state": "open",
+            "title": "Fix retry",
+            "body": "Fix retry",
+            "updated_at": "now",
+        },
+    )
+    task["issue_number"] = 21
+    return task, controls.task_snapshot(task["id"])["policy"]
+
+
+def funding_decision(**changes):
+    return {
+        "action": "continue",
+        "reason": "Useful work remains and the review findings are focused.",
+        "next_plan": "Correct the retry bound, then independently review the same PR.",
+        "task_budget_usd": 20.0,
+        "additional_work_turns": 4,
+        "lease_minutes": 30,
+        **changes,
+    }
+
+
+def settle_funding(task, value):
+    from factory.orchestration import (
+        factory_funding as funding,
+        factory_controls as controls,
+    )
+
+    with controls._read_session() as db:
+        request = funding.pending(db, task["id"])
+    run = run_feedback_node(task, request["node_key"], value)
+    funding.settle(task, run, request)
+    return request
+
+
+def test_astra_decides_extensions_repeatedly_without_mutating_original_policy(
+    feedback_db, monkeypatch
+):
+    from factory.orchestration import (
+        factory_funding as funding,
+        factory_controls as controls,
+    )
+    from sqlmodel import Session
+
+    task, policy = funding_task(monkeypatch)
+    before = controls.task_snapshot(task["id"])
+    assert funding.request(task, "Review plan exceeds allocation")
+    with controls._read_session() as db:
+        pending = funding.pending(db, task["id"])
+    assert not controls.can_start(task["id"])["ok"]
+    assert controls.can_start(task["id"], start_key=pending["start_key"])["ok"]
+    assert not controls.authorize_start(
+        task["id"], pending["start_key"], "test", model="luna", max_cost_usd=1
+    )["ok"]
+    settle_funding(task, funding_decision())
+    after = controls.task_snapshot(task["id"])
+    assert after["policy"]["task_budget_usd"] == 20
+    assert conductor.graph.budget_snapshot(task["id"])["task_budget_usd"] == 20
+    assert after["policy"]["max_task_turns_hard"] == before["turns_used"] + 4
+    with Session(conductor.get_engine()) as db:
+        assert json.loads(controls._receipt(db, task["id"]).policy_json) == policy
+    assert funding.request(task, "New evidence justifies another small tranche")
+    settle_funding(
+        task,
+        funding_decision(task_budget_usd=25, additional_work_turns=3, action="steer"),
+    )
+    assert controls.task_snapshot(task["id"])["policy"]["task_budget_usd"] == 25
+    with controls._read_session() as db:
+        assert funding.amendment(db, task["id"])["next_plan"].startswith("Correct")
+
+
+def test_funding_can_stop_without_human_escalation(feedback_db, monkeypatch):
+    from factory.orchestration import (
+        factory_funding as funding,
+        factory_controls as controls,
+    )
+
+    task, _ = funding_task(monkeypatch)
+    assert funding.request(task, "Assess value")
+    settle_funding(
+        task,
+        funding_decision(
+            action="stop", task_budget_usd=0, additional_work_turns=0, lease_minutes=0
+        ),
+    )
+    assert controls.task_snapshot(task["id"])["state"] == "failed"
+
+
+def test_funding_review_outlives_only_its_exact_soft_deadline(feedback_db, monkeypatch):
+    from datetime import timedelta
+    from factory.orchestration import (
+        factory_funding as funding,
+        factory_controls as controls,
+    )
+
+    task, policy = funding_task(monkeypatch)
+    now = controls._now()
+    monkeypatch.setattr(
+        controls,
+        "_now",
+        lambda: now + timedelta(seconds=policy["task_timeout_seconds"] + 1),
+    )
+    assert controls.can_start(task["id"])["reason"] == "task_deadline"
+    assert funding.request(task, "Lease expired")
+    with controls._read_session() as db:
+        request = funding.pending(db, task["id"])
+    assert controls.can_start(task["id"], start_key=request["start_key"])["ok"]
+    assert not controls.can_start(task["id"], start_key=request["start_key"] + "0")[
+        "ok"
+    ]
+    controls.set_control("stop", "test")
+    assert not controls.can_start(task["id"], start_key=request["start_key"])["ok"]
+
+
+def test_funding_changed_issue_cannot_apply_stale_authority(feedback_db, monkeypatch):
+    from factory.orchestration import (
+        factory_funding as funding,
+        factory_controls as controls,
+    )
+
+    task, policy = funding_task(monkeypatch)
+    assert funding.request(task, "Assess correction")
+    monkeypatch.setattr(
+        funding, "_issue", lambda _task: {"number": 21, "state": "closed"}
+    )
+    settle_funding(task, funding_decision())
+    assert controls.task_snapshot(task["id"])["policy"] == policy
+    with controls._read_session() as db:
+        assert funding.amendment(db, task["id"]) is None
+
+
+def test_oversight_has_graph_and_start_headroom_after_task_budget_exhaustion(
+    feedback_db, monkeypatch
+):
+    from factory.orchestration import (
+        factory_funding as funding,
+        factory_controls as controls,
+    )
+    from sqlmodel import Session
+    from factory.orchestration.models import SwarmTask
+
+    task, policy = funding_task(monkeypatch)
+    with Session(conductor.get_engine()) as db:
+        row = controls._receipt(db, task["id"])
+        policy["task_budget_usd"] = 0.75
+        policy["max_planner_turns"] = 1
+        row.policy_json = json.dumps(policy)
+        stored = db.get(SwarmTask, task["id"])
+        stored.budget_usd = 0.75
+        db.add(row)
+        db.add(stored)
+        db.commit()
+    assert funding.request(task, "Budget exhausted")
+    settle_funding(task, funding_decision())
+    assert controls.task_snapshot(task["id"])["policy"]["task_budget_usd"] == 20
+
+
+def test_expired_unstarted_funding_review_is_retired_and_never_runs_normally(
+    feedback_db, monkeypatch
+):
+    from datetime import timedelta
+    from factory.orchestration import (
+        factory_funding as funding,
+        factory_controls as controls,
+    )
+
+    task, policy = funding_task(monkeypatch)
+    assert funding.request(task, "Need a decision")
+    with controls._read_session() as db:
+        request = funding.pending(db, task["id"])
+    nodes = conductor.graph.load_graph(task["id"])
+    runs = conductor.graph.node_runs(task["id"])
+    assert request["node_key"] not in {
+        n["node_key"] for n in conductor._ready_nodes(nodes, runs)
+    }
+    now = controls._now()
+    monkeypatch.setattr(controls, "_now", lambda: now + timedelta(minutes=6))
+    assert funding.reconcile(task, policy, runs, controls.can_start(task["id"]))
+    assert request["node_key"] not in {
+        n["node_key"] for n in conductor.graph.load_graph(task["id"])
+    }
+    assert (
+        controls.can_start(task["id"], start_key=request["start_key"])["reason"]
+        == "funding_review_expired"
+    )
+
+
+def test_funding_review_horizon_fences_new_work_without_killing_reserved_worker(
+    feedback_db, monkeypatch
+):
+    from datetime import timedelta
+    from factory.orchestration import (
+        factory_funding as funding,
+        factory_controls as controls,
+    )
+
+    task, policy = funding_task(monkeypatch)
+    assert funding.request(task, "Worth another tranche")
+    settle_funding(task, funding_decision())
+    key = f"factory-node:{task['id']}:implement_long:1"
+    assert controls.authorize_start(
+        task["id"], key, "test", model="luna", max_cost_usd=1
+    )["ok"]
+    now = controls._now()
+    monkeypatch.setattr(controls, "_now", lambda: now + timedelta(minutes=31))
+    assert controls.can_start(task["id"])["reason"] == "funding_lease_due"
+    assert controls.can_start(task["id"], start_key=key)["ok"]
+    assert (
+        controls.task_snapshot(task["id"])["policy"]["task_timeout_seconds"]
+        >= policy["task_timeout_seconds"]
+    )
+
+
+def test_funding_review_can_reassess_full_planned_budget(feedback_db, monkeypatch):
+    from factory.orchestration import factory_funding as funding
+    from factory.orchestration.models import SwarmTask
+    from sqlmodel import Session
+
+    task, policy = funding_task(monkeypatch)
+    with Session(conductor.get_engine()) as db:
+        stored = db.get(SwarmTask, task["id"])
+        stored.budget_usd = 200
+        db.add(stored)
+        db.commit()
+    assert conductor._add(
+        task,
+        policy,
+        "investigate_expensive",
+        "Large unused allocation",
+        [],
+        "luna",
+        "unused",
+        "Existing plan",
+        max_cost_usd=199,
+    ).ok
+    assert conductor.graph.budget_snapshot(task["id"])["planned_cost_usd"] > 199
+    assert funding.request(task, "Shrink or stop expensive unused plan")
+    settle_funding(
+        task,
+        funding_decision(
+            action="stop", task_budget_usd=0, additional_work_turns=0, lease_minutes=0
+        ),
+    )
+
+
+def test_steering_reaches_existing_ready_worker_before_dispatch(
+    feedback_db, monkeypatch
+):
+    from factory.orchestration import factory_funding as funding
+
+    task, policy = funding_task(monkeypatch)
+    assert conductor._add(
+        task,
+        policy,
+        "implement_pending",
+        "Original worker brief",
+        [],
+        "luna",
+        "pending",
+        "Existing ready work",
+    ).ok
+    assert funding.request(task, "Change the approach")
+    settle_funding(
+        task,
+        funding_decision(
+            action="steer",
+            next_plan="Reuse the broker and fix the existing validation path.",
+        ),
+    )
+    run = run_feedback_node(task, "implement_pending", {})
+    assert (
+        "Reuse the broker and fix the existing validation path." in run["pin"]["prompt"]
+    )
+
+
+def test_existing_funding_lifecycle_continues_after_creation_flag_disabled(
+    feedback_db, monkeypatch
+):
+    from datetime import timedelta
+    from factory.orchestration import (
+        factory_funding as funding,
+        factory_controls as controls,
+    )
+
+    task, policy = funding_task(monkeypatch)
+    assert funding.request(task, "Initial assessment")
+    settle_funding(task, funding_decision())
+    monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "false")
+    now = controls._now()
+    monkeypatch.setattr(controls, "_now", lambda: now + timedelta(minutes=31))
+    policy = controls.task_snapshot(task["id"])["policy"]
+    assert funding.reconcile(
+        task,
+        policy,
+        conductor.graph.node_runs(task["id"]),
+        controls.can_start(task["id"]),
+    )
+    with controls._read_session() as db:
+        assert funding.pending(db, task["id"])
+
+
+def test_completed_delivery_needs_no_new_funding_at_exhausted_limit(
+    feedback_db, monkeypatch
+):
+    from factory.orchestration import (
+        factory_funding as funding,
+        factory_controls as controls,
+    )
+
+    task, policy = funding_task(monkeypatch)
+    nodes = conductor.graph.load_graph(task["id"])
+    runs = conductor.graph.node_runs(task["id"])
+    review = next(r for r in runs if r["node_key"] == "review_fix")
+    original = conductor._artifact
+    monkeypatch.setattr(
+        conductor,
+        "_artifact",
+        lambda r: (
+            {**original(r), "verdict": "approve"}
+            if r["id"] == review["id"]
+            else original(r)
+        ),
+    )
+    monkeypatch.setattr(
+        conductor,
+        "verify_delivery",
+        lambda *_a, **_k: {
+            "state": "ready_for_review",
+            "pr_url": "https://github.com/owner/repo/pull/21",
+            "head_sha": HEAD_ONE,
+            "review_session_id": review["session_id"],
+        },
+    )
+    monkeypatch.setattr(
+        funding,
+        "request",
+        lambda *_a, **_k: pytest.fail("completed work needs no funding"),
+    )
+    assert funding.reconcile(
+        task, policy, runs, {"ok": False, "reason": "task_deadline"}
+    )
+    assert controls.task_snapshot(task["id"])["state"] == "succeeded"
+
+
+def test_refused_dispatch_requests_reassessment_instead_of_pausing(monkeypatch):
+    from factory.orchestration import (
+        factory_funding as funding,
+        factory_controls as controls,
+    )
+
+    monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "true")
+    requested = []
+    monkeypatch.setattr(
+        funding, "request", lambda *args, **kwargs: requested.append(args) or True
+    )
+    monkeypatch.setattr(
+        controls,
+        "set_control",
+        lambda *_a, **_k: pytest.fail("admission race must not pause task"),
+    )
+    monkeypatch.setattr(conductor, "_slot_budget", lambda: 1)
+    monkeypatch.setattr(conductor, "hydration_branch", lambda _task: "main")
+    monkeypatch.setattr(conductor, "branch_hydration", lambda *_a: "main")
+    monkeypatch.setattr(conductor, "_dispatch_branch", lambda *_a: "factory/task")
+    monkeypatch.setattr(conductor, "fan_out_wave", lambda *_a: [])
+    monkeypatch.setattr(conductor, "reserve_node", lambda *_a, **_k: False)
+    node = {
+        "node_key": "implement_race",
+        "deps": [],
+        "max_attempts": 1,
+        "max_cost_usd": 6,
+    }
+    assert not conductor._dispatch_ready(
+        {"id": "task", "repo": "owner/repo"}, [node], [], 1, fan_out=False, parallel=1
+    )
+    assert len(requested) == 1

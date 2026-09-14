@@ -1268,3 +1268,33 @@ grant. Approved delivery goes through the normal exact-head verification gate
 without spending another planner turn. Failure or another negative review ends
 the task with its PR and findings retained, without a human decision card.
 Human escalation remains available for actual missing decisions or authority.
+
+### Conductor funding decisions
+
+`FACTORY_CONDUCTOR_FUNDING_ENABLED` supersedes the fixed final correction pair.
+When a work allocation, review-round limit, or lease is exhausted, Astra judges
+whether the objective is still useful, what progress has been made, and whether
+the likely remaining cost is reasonable. Its typed decision can continue,
+steer, or stop. There is no fixed extension count. Each approval records a
+reason, concrete next plan, current-task dollar ceiling, additional work turns,
+and a funding review horizon of at most 30 minutes. The horizon fences new work;
+already-reserved workers retain their invocation deadlines and continue under
+the existing 30-minute reservation supervisor. Original receipt policy and prior
+charges remain intact; durable amendments supply the effective limits.
+
+All committed factory node execution and funding decisions for the same repository issue count toward a
+$200 automatic ceiling across tasks, generations, and advisory/delivery passes.
+Shared reservation supervision remains separately accounted operational overhead.
+Immutable admission audits retain task-to-receipt ownership after readmission;
+the truncated predecessor list used for display is not the accounting ledger.
+Reservations and unknown outcomes remain charged. Every new start rechecks the
+aggregate under the factory control lock. A new task cannot reset that budget.
+
+A funding review reserves one exact Astra dispatch with a $1 ceiling and a
+five-minute deadline through the existing durable node executor. That dispatch
+can assess an exhausted task allocation; other work remains fenced until the
+decision commits. Global stop, cancellation, unresolved execution, shared
+capacity, and the cumulative objective ceiling still apply. Failed or stale
+reviews wait five minutes before another bounded assessment. A stop decision
+retains the issue, PR, and findings without a human restart question. The
+normal independent exact-head delivery review remains required.

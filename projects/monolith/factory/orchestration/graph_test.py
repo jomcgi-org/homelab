@@ -1441,3 +1441,9 @@ def test_caller_transaction_can_rollback_an_entire_applied_plan(db):
         session.rollback()
     assert graph.load_graph(task) == []
     assert graph.current_version(task) == 0
+
+
+def test_conductor_funding_name_alone_cannot_bypass_graph_budget(db):
+    task = make_task(db, budget=0.5)
+    result = add_work(task, "conductor_funding_fake", 0, model="astra", max_cost_usd=1)
+    assert result.refusal_code == "budget_exceeded"

@@ -265,7 +265,11 @@ def _higher_priority_waiting(db: Session, tier: str) -> bool:
                 if len(fields) != 4 or not fields[3].isdigit():
                     continue
                 try:
-                    if not can_start(fields[1], session=db)["ok"]:
+                    if not can_start(
+                        fields[1],
+                        session=db,
+                        start_key="factory-node:" + ":".join(fields[1:]),
+                    )["ok"]:
                         continue
                 except (
                     Exception

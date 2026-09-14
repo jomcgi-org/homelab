@@ -411,7 +411,7 @@ def _session_api(*args, **kwargs) -> int:
 def _start_guard(task_id: str):
     from factory.orchestration.factory_controls import start_guard
 
-    return start_guard(task_id)
+    return start_guard(task_id, start_key=DBOS.workflow_id)
 
 
 @DBOS.step()
