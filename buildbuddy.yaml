@@ -431,7 +431,8 @@ actions:
             "origin/${GIT_REPO_DEFAULT_BRANCH:-main}" HEAD -- \
             .npmrc pnpm-lock.yaml pnpm-workspace.yaml package.json \
             ':(glob)**/package.json' | grep -q .; then
-            bazel run @pnpm//:pnpm --config=ci -- install --frozen-lockfile --ignore-scripts
+            bazel run @pnpm//:pnpm --config=ci -- \
+              --dir "$PWD" install --frozen-lockfile --ignore-scripts
           else
             echo "No pnpm inputs changed; skipping frozen-lockfile validation"
           fi
