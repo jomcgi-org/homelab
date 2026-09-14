@@ -9049,14 +9049,13 @@ def funding_task(monkeypatch):
         funding,
         "_issue",
         lambda _task: {
-            "number": 21,
+            "number": task["issue_number"],
             "state": "open",
             "title": "Fix retry",
             "body": "Fix retry",
             "updated_at": "now",
         },
     )
-    task["issue_number"] = 21
     return task, controls.task_snapshot(task["id"])["policy"]
 
 
@@ -9426,3 +9425,172 @@ def test_refused_dispatch_requests_reassessment_instead_of_pausing(monkeypatch):
         {"id": "task", "repo": "owner/repo"}, [node], [], 1, fan_out=False, parallel=1
     )
     assert len(requested) == 1
+
+
+@pytest.mark.parametrize(
+    "blocker", ["remaining_work", "task_paused", "cancellation_pending"]
+)
+def test_funding_completion_cannot_skip_plan_or_operator_controls(
+    feedback_db, monkeypatch, blocker
+):
+    from factory.orchestration import factory_funding as funding
+
+    task, policy = funding_task(monkeypatch)
+    if blocker == "remaining_work":
+        assert conductor._add(
+            task,
+            policy,
+            "implement_later",
+            "Still required",
+            ["review_fix"],
+            "luna",
+            "later",
+            "Required work",
+        ).ok
+    runs = conductor.graph.node_runs(task["id"])
+    original = conductor._artifact
+    monkeypatch.setattr(
+        conductor,
+        "_artifact",
+        lambda r: (
+            {**original(r), "verdict": "approve"}
+            if r["node_key"] == "review_fix"
+            else original(r)
+        ),
+    )
+    monkeypatch.setattr(
+        conductor,
+        "verify_delivery",
+        lambda *_a, **_k: pytest.fail("must not complete this task"),
+    )
+    permission = (
+        {"ok": True}
+        if blocker == "remaining_work"
+        else {"ok": False, "reason": blocker}
+    )
+    assert not funding.reconcile(task, policy, runs, permission)
+
+
+def test_failed_first_funding_review_retries_after_flag_disabled(
+    feedback_db, monkeypatch
+):
+    from datetime import timedelta
+    from factory.orchestration import (
+        factory_funding as funding,
+        factory_controls as controls,
+    )
+
+    task, policy = funding_task(monkeypatch)
+    assert funding.request(task, "Initial assessment")
+    with controls._read_session() as db:
+        request = funding.pending(db, task["id"])
+    run = run_feedback_node(task, request["node_key"], {}, status="failed")
+    funding.settle(task, run, request)
+    task = conductor._task(task["id"])
+    monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "false")
+    now = controls._now()
+    monkeypatch.setattr(controls, "_now", lambda: now + timedelta(minutes=6))
+    assert funding.reconcile(
+        task,
+        policy,
+        conductor.graph.node_runs(task["id"]),
+        controls.can_start(task["id"]),
+    )
+    with controls._read_session() as db:
+        assert funding.pending(db, task["id"])["node_key"] != request["node_key"]
+
+
+@pytest.mark.parametrize("race", ["graph_edit", "operator_pause"])
+def test_funding_completion_rechecks_after_github_verification(
+    feedback_db, monkeypatch, race
+):
+    from factory.orchestration import (
+        factory_funding as funding,
+        factory_controls as controls,
+    )
+
+    task, policy = funding_task(monkeypatch)
+    runs = conductor.graph.node_runs(task["id"])
+    original = conductor._artifact
+    monkeypatch.setattr(
+        conductor,
+        "_artifact",
+        lambda r: (
+            {**original(r), "verdict": "approve"}
+            if r["node_key"] == "review_fix"
+            else original(r)
+        ),
+    )
+
+    def verify(*_args, **_kwargs):
+        if race == "graph_edit":
+            assert conductor._add(
+                task,
+                policy,
+                "implement_new",
+                "New required work",
+                [],
+                "luna",
+                "new",
+                "New evidence",
+            ).ok
+        else:
+            assert controls.set_control("pause_task", "operator", task_id=task["id"])[
+                "ok"
+            ]
+        return {
+            "state": "ready_for_review",
+            "pr_url": "https://github.com/owner/repo/pull/21",
+            "head_sha": HEAD_ONE,
+            "review_session_id": 103,
+        }
+
+    monkeypatch.setattr(conductor, "verify_delivery", verify)
+    assert funding.reconcile(task, policy, runs, {"ok": True})
+    assert controls.task_snapshot(task["id"])["state"] == "admitted"
+
+
+def test_approved_delivery_waits_for_ci_without_buying_funding(
+    feedback_db, monkeypatch
+):
+    from factory.orchestration import (
+        factory_funding as funding,
+        factory_controls as controls,
+    )
+
+    task, policy = funding_task(monkeypatch)
+    runs = conductor.graph.node_runs(task["id"])
+    original = conductor._artifact
+    monkeypatch.setattr(
+        conductor,
+        "_artifact",
+        lambda r: (
+            {**original(r), "verdict": "approve"}
+            if r["node_key"] == "review_fix"
+            else original(r)
+        ),
+    )
+
+    def pending_ci(*_args, **_kwargs):
+        raise ValueError("integrated PR checks have not passed")
+
+    monkeypatch.setattr(conductor, "verify_delivery", pending_ci)
+    monkeypatch.setattr(
+        conductor,
+        "_review_recovery_evidence",
+        lambda *_a, **_k: {"state": "waiting", "reason": "ci_pending"},
+    )
+    monkeypatch.setattr(
+        funding,
+        "objective",
+        lambda *_a: pytest.fail("waiting completion needs no funding check"),
+    )
+    monkeypatch.setattr(
+        funding,
+        "request",
+        lambda *_a, **_k: pytest.fail("waiting completion needs no funding"),
+    )
+    assert funding.reconcile(
+        task, policy, runs, {"ok": False, "reason": "task_deadline"}
+    )
+    assert controls.task_snapshot(task["id"])["state"] == "admitted"

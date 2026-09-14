@@ -2148,9 +2148,13 @@ def _apply_decision(
     if action == "request_funding":
         from factory.orchestration import factory_funding
 
-        factory_funding.request(task, decision["reason"])
+        requested = factory_funding.request(task, decision["reason"])
         _reject_decision(
-            task["id"], cause, action, "funding_review_requested", decision["reason"]
+            task["id"],
+            cause,
+            action,
+            "funding_review_requested" if requested else "funding_review_unavailable",
+            decision["reason"],
         )
         return
     review_bounds = {"max_review_rounds", "max_review_recovery_rounds"}
@@ -2467,7 +2471,9 @@ def _correction_model(
     return choice["model"], ", with a pool-selected implement model"
 
 
-def _review_recovery_evidence(task: dict, review_run: dict) -> dict:
+def _review_recovery_evidence(
+    task: dict, review_run: dict, *, expected_verdict: str = "changes_requested"
+) -> dict:
     """Observe an open, task-owned PR with passing CI at the reviewed head.
 
     Missing or pending CI and transient reads wait on this same task. A red
@@ -2479,7 +2485,7 @@ def _review_recovery_evidence(task: dict, review_run: dict) -> dict:
     head = artifact.get("head_sha")
     number = artifact.get("pr_number")
     if (
-        artifact.get("verdict") != "changes_requested"
+        artifact.get("verdict") != expected_verdict
         or not isinstance(head, str)
         or re.fullmatch(r"[0-9a-f]{40}", head) is None
         or review_run.get("head_sha") != head
