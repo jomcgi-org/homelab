@@ -26,5 +26,5 @@ rules:
               $MOD = $EXPR
     paths:
       exclude:
-        - "*_test.py"
+        - "**/*_test.py"
         - "**/tests/**"

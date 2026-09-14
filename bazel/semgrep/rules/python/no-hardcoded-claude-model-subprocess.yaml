@@ -22,6 +22,6 @@ rules:
       description: hardcoded Claude model name in subprocess args — use an env var so the model can change without redeploy
     paths:
       exclude:
-        - "*_test.py"
-        - "test_*.py"
+        - "**/*_test.py"
+        - "**/test_*.py"
         - "**/tests/**"
