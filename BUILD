@@ -4,6 +4,7 @@
 # gazelle:build_file_name BUILD
 load("@gazelle//:def.bzl", "gazelle", "gazelle_binary")
 load("@npm//:defs.bzl", "npm_link_all_packages")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 # Python gazelle config moved to //bazel/tools/python to avoid eager-fetching all pip packages during CI analysis
 
 npm_link_all_packages(name = "node_modules")
@@ -75,6 +76,15 @@ exports_files(
 exports_files(
     ["buildbuddy.yaml"],
     visibility = ["//bazel/tools/ci:__pkg__"],
+)
+
+sh_test(
+    name = "bootstrap_test",
+    srcs = ["bootstrap_test.sh"],
+    data = [
+        ".tools-version",
+        "bootstrap.sh",
+    ],
 )
 
 # The EmberVM chart test that couples hypervisorEpoch to the vendored

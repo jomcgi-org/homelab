@@ -152,8 +152,7 @@ rebase.
 
 Tooling is vendored: `./bootstrap.sh` then `direnv allow` puts `ci`, `helm`,
 `crane`, `kind`, `go`, `python`, `pnpm`, `node`, and the formatters on PATH.
-`bb` is not in the tools image: install it from buildbuddy.io (`ci` says so
-when it is missing).
+The tools image also includes `bb`.
 
 ## Knowledge: two stores, different in kind
 

@@ -13,19 +13,23 @@ Python services, nginx frontends), those live in [`//bazel/tools/oci`](../oci/RE
 
 | Tool / group                           | Source                                                     |
 | -------------------------------------- | ---------------------------------------------------------- |
-| `argocd`, `buildozer`, `crane`, `gh`, `gofumpt`, `helm`, `kind`, `op`, `ruff`, `shfmt` | multitool lockfile (per-platform binary repos) |
+| `argocd`, `bb`, `buildifier`, `buildozer`, `claude`, `crane`, `gh`, `gofumpt`, `helm`, `kind`, `op`, `ruff`, `shellcheck`, `shfmt` | multitool lockfile (per-platform binary repos) |
+| `agent-run`, `hf2oci`                  | Repository `go_binary` targets, cross-built per platform |
 | `node`                                 | `@nodejs_{platform}//:node_bin` from rules_nodejs          |
+| `eslint`                               | `//:node_modules/eslint` dependency closure and root-relative wrapper |
 | Python runtime + stdlib + pip packages | `py_image_layer` from `@aspect_rules_py`, with platform transitions |
 | `pnpm`                                 | `@pnpm//:pkg` (aspect_rules_js)                            |
 | `prettier` (+ `prettier-plugin-svelte`, peer `svelte`) | `//:node_modules/*` (pnpm lockfile); wrapper sets `NODE_PATH` |
 | `homelab` CLI                          | Source from `//tools/cli:*`, wrapped in a bash exec script |
 
-All binaries land under `/usr/bin/`; Python's stdlib is in the runfiles tree
+All commands land under `/usr/bin/`; Python's stdlib is in the runfiles tree
 alongside the interpreter. pnpm and prettier (with the Svelte plugin) are
 installed under `/usr/local/lib/node_modules/`; `/usr/bin/prettier` is a
 wrapper that sets `NODE_PATH` so `require("prettier-plugin-svelte")` from
 `bazel/tools/format/prettier.config.cjs` resolves without a workspace
-`node_modules` tree.
+`node_modules` tree. ESLint and its dependency closure use the same package
+directory, and its wrapper resolves both Node and the JavaScript entry point
+relative to the extracted image root.
 
 ### What it deliberately does not contain
 
@@ -57,6 +61,9 @@ BUILD generation therefore runs in CI's Format stage, via
 | `:image_linux_arm64`      | Single-arch `oci_image` for linux/arm64                                     |
 | `:image_darwin_arm64`     | Single-arch `oci_image` for darwin/arm64 (experimental)                     |
 | `:python_deps_test`       | `py_test` verifying that pip deps (`httpx`, `typer`) are importable         |
+| `:tools_image_test`       | Inspects all three platform layers and executes the linux/amd64 commands from a relocated root |
+| `:tools_image_linux_arm64_test` | Native Linux ARM64 runtime target; no execution coverage is currently claimed |
+| `:tools_image_darwin_arm64_test` | Local-only Darwin ARM64 runtime target; this repository has no macOS CI executor |
 | `:python_deps_semgrep_test` | SCA scan of the `python_deps` requirements against `//bazel/semgrep/rules:sca_python_rules` |
 
 `:image.push` is included in `//bazel/images:push_all` and runs on merge to main
@@ -71,20 +78,37 @@ by hand.
 ## Local development
 
 After first clone, run `./bootstrap.sh`. It uses `crane export` to extract the
-full image filesystem into `.tools/`:
+full image filesystem into `~/.cache/homelab-tools/`:
 
 ```bash
-crane export ghcr.io/jomcgi/homelab/bazel/tools/image:latest - | tar -xf - -C .tools/
+crane export ghcr.io/jomcgi/homelab/bazel/tools/image:main - | tar -xf - -C ~/.cache/homelab-tools/
 ```
 
-`direnv` then adds `.tools/usr/bin` to `$PATH`. Full extraction (not a subtree)
+`direnv` then adds `~/.cache/homelab-tools/usr/bin` to `$PATH`. Full extraction (not a subtree)
 is intentional: Python and other tools depend on their stdlib being at a
 relative path inside the same root.
 
+Bootstrap validates that `agent-run`, `hf2oci`, `bb`, `claude`, `buildifier`,
+`shellcheck`, and `eslint` are executable before recording the image digest.
+An incomplete cache is re-extracted even when its digest matches.
+
+The image includes the complete ESLint dependency closure plus the downloaded
+command binaries. Every image digest change makes bootstrap export the full
+filesystem again, so additions increase both the image size and the one-time
+download and extraction cost paid by each developer after an image update.
+
 ## Internal macros
 
-These three macros are used only within this package's own `BUILD` file. Do not
+These four macros are used only within this package's own `BUILD` file. Do not
 load them elsewhere.
+
+### `go_tools_tar`
+
+`go_tools_tar` creates pure-Go binaries from repository `go_library` targets
+with rules_go's `goos` and `goarch` attributes, then places them under
+`/usr/bin` in per-platform tar layers. This keeps `agent-run` and `hf2oci`
+source-built while analysis tools stay on their native executor, and covers
+the same linux/amd64, linux/arm64, and darwin/arm64 matrix as downloaded tools.
 
 ### `multitool_tar`
 
@@ -179,6 +203,7 @@ developers and CI agents, not a deployed service.
 - The image push target is `//bazel/tools/image:image.push`. Do not run it
   locally; CI handles pushes on merge to main.
 - darwin/arm64 is built for local bootstrap parity but is experimental:
-  `py_image_layer` was designed for Linux OCI images.
+  `py_image_layer` was designed for Linux OCI images. Its native test target is
+  local-only because this repository has no macOS CI executor.
 - Add new pip packages to the `py_venv_binary` deps in `BUILD` (with a `# keep`
   comment to prevent gazelle pruning) and import them in `python_deps.py`.

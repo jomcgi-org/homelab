@@ -12,6 +12,16 @@ if [[ ! -f "$VERSION_FILE" ]]; then
 fi
 TOOLS_IMAGE="$(head -1 "$VERSION_FILE" | tr -d '[:space:]')"
 TOOLS_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/homelab-tools"
+REQUIRED_TOOLS=(agent-run hf2oci bb claude buildifier shellcheck eslint)
+
+tools_are_complete() {
+	local tool
+	for tool in "${REQUIRED_TOOLS[@]}"; do
+		if [[ ! -x "$TOOLS_DIR/usr/bin/$tool" ]]; then
+			return 1
+		fi
+	done
+}
 
 # Detect platform for multi-platform image
 case "$(uname -s)-$(uname -m)" in
@@ -43,7 +53,9 @@ REMOTE_DIGEST=$(crane digest --platform "$PLATFORM" "$TOOLS_IMAGE" 2>/dev/null) 
 }
 
 # Skip if already up to date
-if [[ -f "$TOOLS_DIR/.digest" ]] && [[ "$(cat "$TOOLS_DIR/.digest")" == "$REMOTE_DIGEST" ]]; then
+if [[ -f "$TOOLS_DIR/.digest" ]] &&
+	[[ "$(cat "$TOOLS_DIR/.digest")" == "$REMOTE_DIGEST" ]] &&
+	tools_are_complete; then
 	echo "Tools already up to date ($REMOTE_DIGEST)"
 	exit 0
 fi
@@ -53,6 +65,13 @@ rm -rf "$TOOLS_DIR"
 mkdir -p "$TOOLS_DIR"
 crane export --platform "$PLATFORM" "$TOOLS_IMAGE" - |
 	tar --no-same-owner -xf - -C "$TOOLS_DIR"
+if ! tools_are_complete; then
+	echo "ERROR: Extracted tools image is missing a required executable"
+	for tool in "${REQUIRED_TOOLS[@]}"; do
+		[[ -x "$TOOLS_DIR/usr/bin/$tool" ]] || echo "  missing: $tool"
+	done
+	exit 1
+fi
 echo "$REMOTE_DIGEST" >"$TOOLS_DIR/.digest"
 
 echo "Done. Run 'direnv allow' to add tools to PATH."

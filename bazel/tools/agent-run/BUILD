@@ -4,7 +4,7 @@ go_library(
     name = "agent-run_lib",
     srcs = ["main.go"],
     importpath = "github.com/jomcgi/homelab/bazel/tools/agent-run",
-    visibility = ["//visibility:private"],
+    visibility = ["//bazel/tools/image:__pkg__"],
     deps = [
         "@com_github_spf13_cobra//:cobra",
         "@io_k8s_api//core/v1:core",
