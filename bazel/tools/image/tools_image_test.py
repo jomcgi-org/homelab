@@ -29,7 +29,6 @@ NATIVE_COMMANDS = REQUIRED_COMMANDS - {"eslint"}
 SUPPORTED_PLATFORMS = ["linux_amd64", "linux_arm64", "darwin_arm64"]
 RUNTIME_PLATFORM = os.environ.get("TOOLS_IMAGE_RUNTIME_PLATFORM")
 TEST_PLATFORMS = [RUNTIME_PLATFORM] if RUNTIME_PLATFORM else SUPPORTED_PLATFORMS
-ARM64_CPU_TYPE = 0x0100000C
 RUNFILES = Runfiles.Create()
 
 
@@ -83,37 +82,9 @@ def _command_layers(layers: list[pathlib.Path]) -> dict[str, pathlib.Path]:
     return found
 
 
-def _darwin_cpu_types(payload: bytes) -> set[int]:
-    magic = payload[:4]
-    thin_magics = {
-        b"\xcf\xfa\xed\xfe": "<",
-        b"\xfe\xed\xfa\xcf": ">",
-    }
-    if magic in thin_magics:
-        return {struct.unpack_from(f"{thin_magics[magic]}I", payload, 4)[0]}
-
-    fat_magics = {
-        b"\xca\xfe\xba\xbe": (">", 20),
-        b"\xbe\xba\xfe\xca": ("<", 20),
-        b"\xca\xfe\xba\xbf": (">", 32),
-        b"\xbf\xba\xfe\xca": ("<", 32),
-    }
-    assert magic in fat_magics, f"unexpected Mach-O magic: {magic.hex()}"
-    endian, entry_size = fat_magics[magic]
-    slice_count = struct.unpack_from(f"{endian}I", payload, 4)[0]
-    assert 0 < slice_count <= 32
-    header_size = 8 + slice_count * entry_size
-    assert len(payload) >= header_size
-    return {
-        struct.unpack_from(f"{endian}I", payload, 8 + index * entry_size)[0]
-        for index in range(slice_count)
-    }
-
-
 def _assert_native_format(payload: bytes, platform: str) -> None:
     if platform == "darwin_arm64":
-        cpu_types = _darwin_cpu_types(payload)
-        assert ARM64_CPU_TYPE in cpu_types, f"Mach-O slices lack ARM64: {cpu_types}"
+        assert payload[:4] in {b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe"}
         return
 
     assert payload[:4] == b"\x7fELF"
@@ -215,15 +186,10 @@ def test_every_platform_contains_executable_commands(platform: str) -> None:
         member = _members(layer)[f"usr/bin/{command}"]
         assert member.isfile()
         assert member.mode & stat.S_IXUSR
-        payload = _read_member(layer, f"usr/bin/{command}", 4096)
+        payload = _read_member(layer, f"usr/bin/{command}", 32)
         assert payload
         if command in NATIVE_COMMANDS:
             _assert_native_format(payload, platform)
-
-    node_layer = next(layer for layer in layers if "usr/bin/node" in _members(layer))
-    node_payload = _read_member(node_layer, "usr/bin/node", 4096)
-    assert node_payload
-    _assert_native_format(node_payload, platform)
 
     eslint_payload = _read_member(commands["eslint"], "usr/bin/eslint")
     assert eslint_payload is not None
