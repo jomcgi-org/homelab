@@ -286,6 +286,7 @@ def test_commands_execute_from_relocated_root() -> None:
             "bb": ["version", "--cli"],
             "buildifier": ["--version"],
             "claude": ["--version"],
+            "eslint": ["--version"],
             "hf2oci": ["--help"],
             "shellcheck": ["--version"],
         }
