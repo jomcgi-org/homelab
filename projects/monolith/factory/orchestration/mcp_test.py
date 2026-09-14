@@ -297,6 +297,10 @@ def test_control_attributes_authenticated_actor_and_preserves_owner_result(monke
 
 
 def test_submit_preserves_durable_receipt_identity_and_duplicate_result(monkeypatch):
+    monkeypatch.setattr("goosecracker.api.REPO_CATALOG", {"owner/repo": {}})
+    monkeypatch.setattr(
+        "factory.orchestration.factory_intake.get_issue_receipt", lambda *args: None
+    )
     calls = []
 
     def receive(body, principal):
@@ -326,6 +330,10 @@ def test_submit_preserves_durable_receipt_identity_and_duplicate_result(monkeypa
 
 
 def test_submit_reports_ineligible_issue_without_claiming_acceptance(monkeypatch):
+    monkeypatch.setattr("goosecracker.api.REPO_CATALOG", {"owner/repo": {}})
+    monkeypatch.setattr(
+        "factory.orchestration.factory_intake.get_issue_receipt", lambda *args: None
+    )
     from fastapi import HTTPException
 
     def refuse(body, principal):
@@ -446,3 +454,26 @@ def test_detail_pages_nodes_and_bounds_attempt_history(monkeypatch):
         _as(_principal(), lambda: mcp.factory_task_detail(99))["reason"]
         == "unknown_receipt"
     )
+
+
+def test_submission_retry_reads_receipt_without_github(monkeypatch):
+    monkeypatch.setattr("goosecracker.api.REPO_CATALOG", {"owner/repo": {}})
+    monkeypatch.setattr(
+        "factory.orchestration.factory_intake.get_issue_receipt",
+        lambda *args: {
+            "ok": True,
+            "created": False,
+            "receipt": {"id": 42, "state": "succeeded", "repo": "owner/repo"},
+        },
+    )
+
+    def closed_or_offline(*args):
+        raise AssertionError("a durable retry must not depend on GitHub")
+
+    monkeypatch.setattr(
+        "factory.orchestration.factory_router.factory_receipt", closed_or_offline
+    )
+    result = _as(_principal(), lambda: mcp.factory_submit_issue("owner/repo", 7))
+    assert result["created"] is False
+    assert result["receipt"]["receipt_id"] == 42
+    assert result["receipt"]["state"] == "succeeded"

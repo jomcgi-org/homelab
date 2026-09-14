@@ -315,15 +315,23 @@ def _submit_issue(
     repo: str, issue_number: int, generation: int, principal: Principal
 ) -> dict:
     from fastapi import HTTPException
+    from factory.orchestration.factory_intake import get_issue_receipt
     from factory.orchestration.factory_router import ReceiptRequest, factory_receipt
+    from goosecracker.api import REPO_CATALOG
 
     # Reuse the HTTP adapter's repository eligibility and issue validation,
     # which ultimately calls the same durable intake owner as the scheduler.
     try:
-        result = factory_receipt(
-            ReceiptRequest(repo=repo, issue_number=issue_number, generation=generation),
-            principal,
-        )
+        if repo not in REPO_CATALOG:
+            raise HTTPException(422, "repository is not available to the executor")
+        result = get_issue_receipt(repo, issue_number, generation)
+        if result is None:
+            result = factory_receipt(
+                ReceiptRequest(
+                    repo=repo, issue_number=issue_number, generation=generation
+                ),
+                principal,
+            )
     except HTTPException as exc:
         return {"ok": False, "status": exc.status_code, "reason": exc.detail}
     return {
