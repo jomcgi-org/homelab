@@ -76,6 +76,16 @@ mutation ArmAutoMerge($pullRequestId: ID!) {
   }
 }
 """
+_QUEUE_ENTRIES = """
+query FactoryQueueEntries($ids: [ID!]!) {
+  nodes(ids: $ids) {
+    ... on PullRequest {
+      id
+      mergeQueueEntry { id }
+    }
+  }
+}
+"""
 _DISARM_AUTO_MERGE = """
 mutation DisarmAutoMerge($pullRequestId: ID!) {
   disablePullRequestAutoMerge(input: {pullRequestId: $pullRequestId}) {
@@ -378,6 +388,34 @@ def arm_eligible(item: dict) -> bool:
     )
 
 
+def _queued_ids(node_ids: list[str]) -> set[str]:
+    """Read queue membership separately from auto-merge, failing closed."""
+    if not node_ids:
+        return set()
+    data = github_graphql(_QUEUE_ENTRIES, {"ids": node_ids})
+    nodes = data.get("nodes")
+    if not isinstance(nodes, list) or len(nodes) != len(node_ids):
+        raise ValueError("GitHub returned incomplete queue membership")
+    seen = set()
+    queued = set()
+    for node in nodes:
+        if (
+            not isinstance(node, dict)
+            or node.get("id") not in node_ids
+            or "mergeQueueEntry" not in node
+        ):
+            raise ValueError("GitHub returned invalid queue membership")
+        seen.add(node["id"])
+        entry = node["mergeQueueEntry"]
+        if entry is not None:
+            if not isinstance(entry, dict) or not entry.get("id"):
+                raise ValueError("GitHub returned invalid queue entry")
+            queued.add(node["id"])
+    if seen != set(node_ids):
+        raise ValueError("GitHub omitted queue membership")
+    return queued
+
+
 def _armed_on_github(repo: str) -> dict | None:
     """A factory pull request somebody else armed, so it still counts as the holder.
 
@@ -391,11 +429,20 @@ def _armed_on_github(repo: str) -> dict | None:
             f"pulls?state=open&sort=created&direction=asc"
             f"&per_page={OPEN_PULLS_PAGE}&page={page}",
         )
+        candidates = []
         for pull in pulls:
-            if not isinstance(pull, dict) or pull.get("auto_merge") is None:
+            if not isinstance(pull, dict):
                 continue
             ref = (pull.get("head") or {}).get("ref")
             if isinstance(ref, str) and ref.startswith(FACTORY_BRANCH_PREFIX):
+                if pull.get("auto_merge") is not None:
+                    return {"pr_number": pull.get("number"), "task_id": None}
+                if not isinstance(pull.get("node_id"), str) or not pull["node_id"]:
+                    raise ValueError("GitHub holder has no node id")
+                candidates.append(pull)
+        queued = _queued_ids([pull["node_id"] for pull in candidates])
+        for pull in candidates:
+            if pull["node_id"] in queued:
                 return {"pr_number": pull.get("number"), "task_id": None}
         if len(pulls) < OPEN_PULLS_PAGE:
             return None
@@ -534,8 +581,16 @@ def _observe(repo: str, item: dict) -> None:
         return
     if pr.get("auto_merge") is not None:
         return
-    # Open, still unmerged, and GitHub has turned auto-merge off: the merge
-    # queue ejected it. Without this the holder wedged forever, because the
+    try:
+        node_id = pr.get("node_id")
+        if not isinstance(node_id, str) or not node_id:
+            raise ValueError("GitHub holder has no node id")
+        if node_id in _queued_ids([node_id]):
+            return
+    except (httpx.HTTPError, ValueError) as exc:
+        _error(item["task_id"], "observe_queue", exc)
+        return
+    # Open, unmerged, not queued, and auto-merge off: GitHub ejected it. Without this the holder wedged forever, because the
     # old observation only ever looked for a closed pull request.
     _append(
         item["task_id"],

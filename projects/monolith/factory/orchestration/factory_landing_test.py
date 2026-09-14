@@ -171,6 +171,18 @@ def github(monkeypatch, *, pulls=None, issues=None, refuse=None):
         return [dict(row) for row in pulls.values() if row["state"] == "open"]
 
     def graphql(query, variables):
+        if query == landing._QUEUE_ENTRIES:
+            return {
+                "nodes": [
+                    {
+                        "id": node_id,
+                        "mergeQueueEntry": pulls.get(
+                            int(node_id.removeprefix("PR_")), {}
+                        ).get("queue_entry"),
+                    }
+                    for node_id in variables["ids"]
+                ]
+            }
         calls["graphql"].append(variables)
         if refuse is not None:
             refuse()
@@ -764,3 +776,70 @@ def test_a_repeatable_action_is_never_written_through_the_once_only_fence():
     """The fence freezes a state machine that has to move more than once."""
     with pytest.raises(ValueError, match="repeatable"):
         landing._record("t-1", "merge_armed", pr_number=3)
+
+
+def test_queued_holder_without_auto_merge_is_not_ejected(db, monkeypatch):
+    delivered(db, "t-1", 11, 3)
+    delivered(db, "t-2", 12, 4)
+    pulls = {3: pull(3), 4: pull(4)}
+    calls = github(monkeypatch, pulls=pulls, issues={11: {"state": "closed"}})
+    landing.landing_tick(POLICY)
+    pulls[3].update(auto_merge=None, queue_entry={"id": "MQ_3"})
+    landing.landing_tick(POLICY)
+    landing.landing_tick(POLICY)
+    assert audits(db, "merge_ejected") == []
+    assert calls["graphql"] == [{"pullRequestId": "PR_3"}]
+    pulls[3] = pull(3, merged=True)
+    landing.landing_tick(POLICY)
+    assert audits(db, "merged", "t-1")[0]["armed_by_factory"] is True
+    assert calls["graphql"][-1] == {"pullRequestId": "PR_4"}
+
+
+def test_external_queue_entry_holds_the_lane(db, monkeypatch):
+    delivered(db, "t-1", 11, 3)
+    queued = {**pull(9), "queue_entry": {"id": "MQ_9"}}
+    calls = github(monkeypatch, pulls={3: pull(3), 9: queued})
+    landing.landing_tick(POLICY)
+    assert calls["graphql"] == []
+    assert audits(db, "merge_deferred", "t-1") == [
+        {"pr_number": 3, "blocked_by_pr": 9, "blocked_by_task_id": None}
+    ]
+
+
+@pytest.mark.parametrize("armed", [False, True])
+def test_unreadable_queue_membership_never_releases_slot(db, monkeypatch, armed):
+    delivered(db, "t-1", 11, 3)
+    delivered(db, "t-2", 12, 4)
+    pulls = {3: pull(3), 4: pull(4)}
+    calls = github(monkeypatch, pulls=pulls)
+    if armed:
+        landing.landing_tick(POLICY)
+        pulls[3]["auto_merge"] = None
+    original = landing.github_graphql
+
+    def unavailable(query, variables):
+        if query == landing._QUEUE_ENTRIES:
+            return {"nodes": [None for _ in variables["ids"]]}
+        return original(query, variables)
+
+    monkeypatch.setattr(landing, "github_graphql", unavailable)
+    landing.landing_tick(POLICY)
+    assert len(calls["graphql"]) == int(armed)
+    assert audits(db, "merge_ejected") == []
+    assert audits(db, "landing_error")
+
+
+def test_queue_entry_on_second_page_holds_the_lane(db, monkeypatch):
+    delivered(db, "t-1", 11, 3)
+    queued = {**pull(999), "queue_entry": {"id": "MQ_999"}}
+    calls = github(monkeypatch, pulls={3: pull(3), 999: queued})
+
+    def listing(_repo, suffix):
+        if suffix.endswith("page=1"):
+            return [pull(number) for number in range(100, 150)]
+        return [queued]
+
+    monkeypatch.setattr(landing, "github_list", listing)
+    landing.landing_tick(POLICY)
+    assert calls["graphql"] == []
+    assert audits(db, "merge_deferred", "t-1")[0]["blocked_by_pr"] == 999
