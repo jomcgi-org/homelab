@@ -4698,6 +4698,7 @@ py_test(
     deps = [
         ":pkg_auth",
         ":pkg_swarm",
+        "@pip//fastapi",
         "@pip//fastmcp",
         "@pip//pytest",
         "@pip//pytest_asyncio",

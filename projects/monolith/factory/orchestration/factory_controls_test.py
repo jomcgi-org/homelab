@@ -1534,3 +1534,127 @@ def test_concurrent_objective_reservations_cannot_cross_ceiling(
         )
     assert sum(result["ok"] for result in results) == 1
     assert any(result.get("reason") == "objective_budget_limit" for result in results)
+
+
+def test_control_request_replay_never_reapplies_after_a_newer_stop(db, policy):
+    task = admitted(policy)
+    version = controls.status()["version"]
+    first = controls.request_control(
+        "pause_task",
+        "operator",
+        task_id=task,
+        request_key="pause-one",
+        expected_version=version,
+    )
+    assert first["ok"]
+    stopped = controls.set_control("stop", "operator")
+    assert (
+        controls.request_control(
+            "pause_task",
+            "operator",
+            task_id=task,
+            request_key="pause-one",
+            expected_version=version,
+        )
+        == first
+    )
+    current = controls.status()
+    assert current["state"] == "stopped"
+    assert current["version"] == stopped["version"]
+    assert current["receipts"][0]["cancellation_requested"]
+
+
+def test_control_request_rejects_stale_version_and_key_reuse(db, policy):
+    admitted(policy)
+    version = controls.status()["version"]
+    controls.set_control("pause_admissions", "operator")
+    rejected = controls.request_control(
+        "enable",
+        "operator",
+        request_key="enable-one",
+        expected_version=version,
+    )
+    assert rejected["reason"] == "control_version_changed"
+    assert controls.status()["state"] == "paused"
+    conflict = controls.request_control(
+        "enable",
+        "operator",
+        request_key="enable-one",
+        expected_version=version + 1,
+    )
+    assert conflict["reason"] == "conflicting_control_request"
+    assert controls.status()["state"] == "paused"
+
+
+def test_duplicate_concurrent_control_requests_commit_one_transition(db, policy):
+    task = admitted(policy)
+    grant(task, "spent", cost=1.25)
+    before = controls.task_snapshot(task)
+    version = controls.status()["version"]
+
+    def pause():
+        return controls.request_control(
+            "pause_task",
+            "operator",
+            task_id=task,
+            request_key="same-pause",
+            expected_version=version,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: pause(), range(2)))
+    assert results[0] == results[1]
+    assert results[0]["ok"]
+    assert controls.status()["version"] == version + 1
+    after = controls.task_snapshot(task)
+    assert after["committed_cost_usd"] == before["committed_cost_usd"]
+    assert after["starts"] == before["starts"]
+    with Session(db) as session:
+        records = session.exec(
+            select(FactoryAudit).where(FactoryAudit.action == "control_request")
+        ).all()
+        assert len(records) == 1
+        assert records[0].actor == "operator"
+        assert records[0].task_id == task
+
+
+def test_requested_resume_never_selects_an_escalation_option(db, policy, monkeypatch):
+    task = admitted(policy)
+    with Session(db) as session:
+        row = session.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == task)
+        ).one()
+        row.state = controls.ESCALATED
+        session.add(row)
+        session.commit()
+
+    def explode(*args, **kwargs):
+        raise AssertionError("task resume must not answer an escalation")
+
+    monkeypatch.setattr(
+        "factory.orchestration.factory_decisions.resume_escalated", explode
+    )
+    result = controls.request_control(
+        "resume_task",
+        "operator",
+        task_id=task,
+        request_key="resume",
+        expected_version=controls.status()["version"],
+    )
+    assert result["reason"] == "task_not_active"
+
+
+@pytest.mark.parametrize(
+    "action,task_id", [("stop", "task"), ("pause_task", None), ("configure", None)]
+)
+def test_control_request_rejects_ambiguous_or_unsupported_actions(db, action, task_id):
+    with pytest.raises(ValueError):
+        controls.request_control(
+            action,
+            "operator",
+            task_id=task_id,
+            request_key="invalid",
+            expected_version=0,
+        )
+    with Session(db) as session:
+        assert session.exec(select(FactoryAudit)).all() == []
