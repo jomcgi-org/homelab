@@ -400,4 +400,6 @@ def test_audit_is_streamed_before_an_unexpected_post_logout_failure() -> None:
     assert iscsi.logouts == [14]
     assert any(line.startswith("CANDIDATE session=14") for line in streamed)
     assert any(line.startswith("LOGOUT_ATTEMPT session=14") for line in streamed)
-    assert any(line.startswith("LOGOUT_RETURNED_SUCCESS session=14") for line in streamed)
+    assert any(
+        line.startswith("LOGOUT_RETURNED_SUCCESS session=14") for line in streamed
+    )
