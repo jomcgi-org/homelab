@@ -445,6 +445,9 @@ def _arm(repo: str, item: dict) -> None:
         if pr.get("state") != "open" or pr.get("draft"):
             _refuse(item, "pull request is not open and ready")
             return
+        if pr.get("mergeable") is False:
+            _refuse(item, "merge_conflict")
+            return
         head = (pr.get("head") or {}).get("sha")
         node_id = pr.get("node_id")
         if not isinstance(node_id, str) or not node_id:
@@ -476,15 +479,17 @@ def _arm(repo: str, item: dict) -> None:
         item["head_sha"] = head
 
 
-def _disarm(repo: str, pr: dict) -> None:
-    """Turn auto-merge off again, best effort: the audit is the real record."""
+def _disarm(repo: str, pr: dict) -> bool:
+    """Return whether auto-merge was successfully disabled."""
     node_id = pr.get("node_id")
     if not isinstance(node_id, str) or not node_id:
-        return
+        return False
     try:
         github_graphql(_DISARM_AUTO_MERGE, {"pullRequestId": node_id})
     except (GraphQLRefused, httpx.HTTPError, ValueError):
         logger.warning("factory landing could not disarm pull request", exc_info=True)
+        return False
+    return True
 
 
 def _observe(repo: str, item: dict) -> None:
@@ -519,6 +524,13 @@ def _observe(repo: str, item: dict) -> None:
         # delivery goes back to a human rather than to the queue.
         _disarm(repo, pr)
         _refuse(item, "head_moved", armed_head_sha=item["head_sha"], head_sha=head)
+        return
+    if pr.get("mergeable") is False:
+        # GitHub accepts auto-merge on conflicting PRs without queueing them.
+        # Release the slot only after any outstanding auto-merge is disabled.
+        if pr.get("auto_merge") is not None and not _disarm(repo, pr):
+            return
+        _refuse(item, "merge_conflict")
         return
     if pr.get("auto_merge") is not None:
         return

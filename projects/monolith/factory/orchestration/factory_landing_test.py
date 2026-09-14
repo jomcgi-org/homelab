@@ -398,6 +398,61 @@ def test_a_second_ejection_hands_the_pull_request_to_a_human(db, monkeypatch):
     assert audits(db, "merge_armed", "t-2")
 
 
+def test_a_conflicting_delivery_is_refused_before_arming(db, monkeypatch):
+    delivered(db, "t-1", 11, 3)
+    conflicting = {**pull(3), "mergeable": False}
+    calls = github(monkeypatch, pulls={3: conflicting})
+    landing.landing_tick(POLICY)
+    assert calls["graphql"] == []
+    assert audits(db, "merge_arm_refused", "t-1") == [
+        {"pr_number": 3, "reason": "merge_conflict"}
+    ]
+
+
+def test_conflict_disarms_holder_and_advances_next_delivery(db, monkeypatch):
+    delivered(db, "t-1", 11, 3)
+    delivered(db, "t-2", 12, 4)
+    pulls = {3: pull(3), 4: pull(4)}
+    calls = github(monkeypatch, pulls=pulls)
+    landing.landing_tick(POLICY)
+    pulls[3]["mergeable"] = False
+    landing.landing_tick(POLICY)
+    assert pulls[3]["auto_merge"] is None
+    assert pulls[4]["auto_merge"] is not None
+    assert audits(db, "merge_arm_refused", "t-1") == [
+        {"pr_number": 3, "reason": "merge_conflict"}
+    ]
+    assert audits(db, "merge_ejected", "t-1") == []
+    assert calls["graphql"] == [
+        {"pullRequestId": "PR_3"},
+        {"pullRequestId": "PR_3"},
+        {"pullRequestId": "PR_4"},
+    ]
+
+
+def test_failed_conflict_disarm_keeps_slot_until_retry_succeeds(db, monkeypatch):
+    delivered(db, "t-1", 11, 3)
+    delivered(db, "t-2", 12, 4)
+    pulls = {3: pull(3), 4: pull(4)}
+    github(monkeypatch, pulls=pulls)
+    landing.landing_tick(POLICY)
+    pulls[3]["mergeable"] = False
+    original = landing.github_graphql
+
+    def refused(_query, _variables):
+        raise landing.GraphQLRefused("FORBIDDEN", "test refusal")
+
+    monkeypatch.setattr(landing, "github_graphql", refused)
+    landing.landing_tick(POLICY)
+    assert pulls[3]["auto_merge"] is not None
+    assert pulls[4]["auto_merge"] is None
+    assert audits(db, "merge_arm_refused", "t-1") == []
+    monkeypatch.setattr(landing, "github_graphql", original)
+    landing.landing_tick(POLICY)
+    assert pulls[3]["auto_merge"] is None
+    assert pulls[4]["auto_merge"] is not None
+
+
 def test_a_head_that_moves_under_an_armed_pull_request_is_disarmed(db, monkeypatch):
     """What the review approved is not what would merge, so it goes to a human."""
     delivered(db, "t-1", 11, 3)
