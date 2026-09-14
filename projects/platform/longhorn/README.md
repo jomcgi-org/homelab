@@ -171,8 +171,9 @@ The reconciler:
   hostname, and verifies that exact node object in the selected cluster;
 - accepts only strictly parsed `tcp` iSCSI sessions and the exact
   `iqn.2019-10.io.longhorn:<volume>` target form;
-- requires an unpaginated `VolumeList` with a resource version and validates
-  every item before treating any volume as absent;
+- reads the Longhorn v1beta2 API directly so kubectl preserves the server's
+  list metadata, then requires an unpaginated `VolumeList` with a resource
+  version and validates every item before treating any volume as absent;
 - treats volumes with a deletion timestamp as present until Kubernetes removes
   them from the inventory, so live and deleting volumes remain protected;
 - refuses an empty volume inventory by default. `--allow-empty-inventory`

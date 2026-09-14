@@ -14,6 +14,7 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, Protocol, Sequence
+from urllib.parse import quote
 
 
 LONGHORN_TARGET_PREFIX = "iqn.2019-10.io.longhorn:"
@@ -39,6 +40,10 @@ class SafetyError(RuntimeError):
 
 class CommandTimedOut(SafetyError):
     """A bounded subprocess exceeded its deadline."""
+
+
+class DeviceMounted(SafetyError):
+    """A block device or one of its descendants is mounted."""
 
 
 @dataclass(frozen=True)
@@ -77,7 +82,6 @@ class SubprocessRunner:
 @dataclass(frozen=True)
 class Inventory:
     volume_names: frozenset[str]
-    resource_version: str
 
 
 @dataclass(frozen=True)
@@ -177,7 +181,7 @@ def parse_inventory(raw: str) -> Inventory:
         if name in names:
             raise SafetyError(f"volume inventory contains duplicate volume {name}")
         names.add(name)
-    return Inventory(frozenset(names), resource_version)
+    return Inventory(frozenset(names))
 
 
 def parse_sessions(raw: str) -> tuple[Session, ...]:
@@ -313,7 +317,7 @@ def parse_lsblk(raw: str, requested_device: str) -> tuple[str, ...]:
     if len(paths) != len(set(paths)):
         raise SafetyError(f"lsblk repeated a path for {requested_device}")
     if mounted:
-        raise SafetyError("; ".join(mounted))
+        raise DeviceMounted("; ".join(mounted))
     return tuple(paths)
 
 
@@ -333,17 +337,18 @@ class InventoryClient:
         self.allow_empty = allow_empty
 
     def _read_once(self) -> Inventory:
+        raw_path = (
+            "/apis/longhorn.io/v1beta2/namespaces/"
+            f"{quote(self.namespace, safe='')}/volumes?limit=0"
+        )
         result = self.runner.run(
             [
                 "kubectl",
                 "--context",
                 self.context,
-                "--namespace",
-                self.namespace,
                 "get",
-                "volumes.longhorn.io",
-                "--output=json",
-                "--chunk-size=0",
+                "--raw",
+                raw_path,
                 f"--request-timeout={self.timeout_seconds}s",
             ]
         )
@@ -424,11 +429,9 @@ class SystemUsageChecker:
             raw = _require_clean_success(result, f"lsblk inspection of /dev/{device}")
             try:
                 paths = parse_lsblk(raw, device)
-            except SafetyError as exc:
-                if " mounted at " in str(exc):
-                    reasons.append(str(exc))
-                    continue
-                raise
+            except DeviceMounted as exc:
+                reasons.append(str(exc))
+                continue
             all_paths.update(paths)
 
         swap_result = self.runner.run(
