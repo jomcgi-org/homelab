@@ -431,7 +431,10 @@ actions:
             "origin/${GIT_REPO_DEFAULT_BRANCH:-main}" HEAD -- \
             .npmrc pnpm-lock.yaml pnpm-workspace.yaml package.json \
             ':(glob)**/package.json' | grep -q .; then
-            bazel run @pnpm//:pnpm -- install --frozen-lockfile --ignore-scripts
+            # A cold runner may fetch hundreds of tarballs. Five retries keep
+            # transient registry resets from making this gate flaky.
+            bazel run @pnpm//:pnpm -- install --frozen-lockfile --ignore-scripts \
+              --config.fetch-retries=5
           else
             echo "No pnpm inputs changed; skipping frozen-lockfile validation"
           fi
