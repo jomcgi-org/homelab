@@ -151,6 +151,118 @@ kubectl -n longhorn-system get backupvolumes
 kubectl -n longhorn-system get backups
 ```
 
+## Orphaned iSCSI session reconciliation
+
+`reconcile_orphaned_iscsi.py` is an operator-run safety tool for finding local
+iSCSI sessions whose exact Longhorn volume name is absent from a complete,
+current Longhorn volume inventory. It is a dry-run unless `--apply` is supplied.
+It is intentionally not deployed as a privileged CronJob or DaemonSet.
+
+This tool is preventive. It does not clear the historically wedged node-1
+session described in issue #4170, perform a drain or reboot, or verify current
+production state. A wedged kernel session can reject the targeted logout and
+must be handled manually in a separately approved maintenance window.
+
+### Safety contract
+
+The reconciler:
+
+- requires an explicit kubectl context and node name, checks the local short
+  hostname, and verifies that exact node object in the selected cluster;
+- accepts only strictly parsed `tcp` iSCSI sessions and the exact
+  `iqn.2019-10.io.longhorn:<volume>` target form;
+- requires an unpaginated `VolumeList` with a resource version and validates
+  every item before treating any volume as absent;
+- treats volumes with a deletion timestamp as present until Kubernetes removes
+  them from the inventory, so live and deleting volumes remain protected;
+- refuses an empty volume inventory by default. `--allow-empty-inventory`
+  requires two consecutive complete empty reads and should be used only after
+  an independent check confirms that the selected cluster truly has no
+  Longhorn volumes;
+- inspects attached devices, their descendants, mounts, swap use, sysfs
+  holders, and open users before considering a session safe;
+- rechecks device use, volume absence, and the unchanged session ID, target,
+  and portal immediately before each single-session logout;
+- never performs a blanket logout, removes a SCSI device or node record,
+  restarts a service, drains a node, or triggers a reboot;
+- gives every subprocess a deadline, never retries logout, and holds a
+  nonblocking host lock so overlapping runs fail safely; and
+- exits nonzero and prints `MANUAL` or `FATAL` for ambiguous, failed, timed out,
+  or still-present sessions. Repeated operator runs do not turn such failures
+  into an unbounded retry loop.
+
+There is still an unavoidable host-state race between observation and logout.
+Run the tool only during a quiet storage maintenance period after confirming no
+workload is about to attach or mount a candidate volume.
+
+### Prerequisites and context selection
+
+Run from a trusted checkout on the node being inspected. The host needs Python
+3, `kubectl`, `iscsiadm` from open-iscsi, `lsblk` and `swapon` from util-linux,
+and `fuser` from psmisc. The operator needs root access for local iSCSI
+inspection and logout, plus Kubernetes permission to get the selected node and
+list `volumes.longhorn.io` in `longhorn-system`.
+
+Choose and verify the context and node before every run:
+
+```bash
+kubectl config get-contexts
+hostname --short
+kubectl --context <home-cluster-context> get node <node-name>
+kubectl --context <home-cluster-context> --namespace longhorn-system \
+  get volumes.longhorn.io
+```
+
+Do not infer the context from the current-context marker. Pass the intended
+context explicitly. Preserve an explicit `KUBECONFIG` when elevating if root
+does not use the operator's kubeconfig.
+
+### Dry-run and apply
+
+Start with dry-run on one Longhorn node at a time:
+
+```bash
+sudo --preserve-env=KUBECONFIG python3 \
+  projects/platform/longhorn/reconcile_orphaned_iscsi.py \
+  --context <home-cluster-context> \
+  --node <node-name>
+```
+
+Review every `CANDIDATE`, `PROTECTED`, and `IGNORED` line. Resolve every
+`MANUAL` or `FATAL` result before considering apply. Then use explicit apply on
+that same node and context:
+
+```bash
+sudo --preserve-env=KUBECONFIG python3 \
+  projects/platform/longhorn/reconcile_orphaned_iscsi.py \
+  --context <home-cluster-context> \
+  --node <node-name> \
+  --apply
+```
+
+Apply still refetches the complete inventory and revalidates each candidate.
+It can therefore protect or skip a session that appeared in dry-run output.
+The default command deadline is 15 seconds and can be set from 1 through 60
+seconds with `--timeout-seconds`. A failed or timed-out logout is attempted
+once, reported for manual handling, and never escalated to a broader action.
+
+For periodic operator use, run dry-run during the regular storage review on
+each enrolled Longhorn node, serially. A weekly cadence is a reasonable
+starting point. Capture the output and alert on `CANDIDATE`, `MANUAL`, or
+`FATAL`. An operator should review current workload and Longhorn state before a
+separate `--apply` invocation. If a scheduler is used for visibility, schedule
+dry-run only. Do not schedule unattended apply.
+
+### Separate node-1 maintenance
+
+Joe's node-1 maintenance remains a separate operation. Before scheduling it,
+check present production state, confirm all etcd members and control-plane
+nodes are healthy, and confirm quorum will survive one member being offline.
+Drain and reboot node-1 only in Joe's selected window. Never drain or reboot
+another control-plane node at the same time. Do not use this reconciler, a
+service restart, SCSI deletion, or repeated logout as a fallback for the
+historically wedged session.
+
 ## Troubleshooting
 
 ### Volume Stuck in "Attaching"
