@@ -126,7 +126,7 @@ graph TB
         DISP["Admission + placement<br/>(dispatcher, class managers)"]
         POOL["Warm-pool refill<br/>(PoolManager)"]
         XDS["Serving endpoint publication<br/>(EndpointPublisher, sole xDS writer)"]
-        OPLOG[("op-log<br/>Postgres (default),<br/>SQLite-WAL fallback")]
+        OPLOG[("op-log<br/>Postgres in reference deployment,<br/>SQLite-WAL in chart/dev defaults")]
         ETS[("ETS hot set<br/>rebuilt on start")]
     end
 
