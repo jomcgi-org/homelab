@@ -29,6 +29,9 @@ from factory.orchestration.factory_models import (
 )
 from factory.orchestration.models import SwarmTask
 
+MAX_LANDING_RECOVERIES = 2
+LANDING_RECOVERY_TIMEOUT_SECONDS = 3600
+
 _ACTIVE = ("admitted", "uncertain")
 _TERMINAL = ("succeeded", "failed", "cancelled")
 # A receipt whose task asked a person for a decision and left the lane to wait
@@ -1141,6 +1144,20 @@ def _start_dict(row: FactoryStart) -> dict:
     }
 
 
+def _recovery_deadline(db: Session, task_id: str, ordinary: datetime) -> datetime:
+    event = db.exec(
+        select(FactoryAudit)
+        .where(
+            FactoryAudit.task_id == task_id,
+            FactoryAudit.action == "landing_recovery_requested",
+        )
+        .order_by(FactoryAudit.id.desc())
+        .limit(1)
+    ).first()
+    value = json.loads(event.detail_json).get("deadline_at") if event else None
+    return datetime.fromisoformat(value) if value else ordinary
+
+
 def _snapshot(db: Session, row: FactoryReceipt, *, body: bool = False) -> dict:
     starts = _starts(db, row.task_id) if row.task_id else []
     result = {
@@ -1255,6 +1272,7 @@ def _snapshot(db: Session, row: FactoryReceipt, *, body: bool = False) -> dict:
         deadline = admitted + timedelta(
             seconds=result["policy"]["task_timeout_seconds"]
         )
+        deadline = _recovery_deadline(db, row.task_id, deadline)
         allowance = _stored_allowance(row, result["policy"])
         result["allowance"] = allowance
         result.update(
@@ -1829,7 +1847,9 @@ def _can_start(
             and _now() >= datetime.fromisoformat(grant["review_due_at"])
         ):
             reason = "funding_lease_due"
-        elif not oversight and _now() >= admitted + timedelta(seconds=timeout):
+        elif not oversight and _now() >= _recovery_deadline(
+            db, task_id, admitted + timedelta(seconds=timeout)
+        ):
             reason = "task_deadline"
     return {"ok": reason is None, "reason": reason}
 
@@ -2145,6 +2165,104 @@ def finish_task(
             evidence=evidence,
         )
         return {"ok": True, "state": outcome}
+
+
+def request_landing_recovery(
+    task_id: str,
+    pr_number: int,
+    head_sha: str,
+    source: str,
+    actor: str,
+    *,
+    session: Session | None = None,
+    reason: str = "merge_conflict",
+) -> dict:
+    """Reopen one delivery for bounded assessment without resetting its spend.
+
+    One durable request is allowed per settlement, including unchanged-head
+    retries. The conductor can also request recovery before first settlement.
+    A request keeps its identity across retries and cannot extend its deadline.
+    """
+    actor = _text(actor, "actor")
+    if type(pr_number) is not int or pr_number <= 0:
+        raise ValueError("invalid pr_number")
+    if not isinstance(head_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", head_sha):
+        raise ValueError("invalid head_sha")
+    if source not in ("delivered_pr", "merge_queue"):
+        raise ValueError("invalid landing recovery source")
+    if reason not in ("merge_conflict", "queue_ejection"):
+        raise ValueError("invalid landing recovery reason")
+    with _locked_session(session) as (db, _control):
+        row = _receipt(db, task_id)
+        if row is None:
+            return {"ok": False, "reason": "unknown_task"}
+        events = db.exec(
+            select(FactoryAudit)
+            .where(
+                FactoryAudit.task_id == task_id,
+                FactoryAudit.action.in_(("landing_recovery_requested", "finish_task")),
+            )
+            .order_by(FactoryAudit.id)
+        ).all()
+        previous = [
+            event for event in events if event.action == "landing_recovery_requested"
+        ]
+        latest_finish = max(
+            (event.id for event in events if event.action == "finish_task"), default=0
+        )
+        if previous and previous[-1].id > latest_finish:
+            return {"ok": True, "replayed": True, "state": row.state}
+        if len(previous) >= MAX_LANDING_RECOVERIES:
+            return {"ok": False, "reason": "recovery_limit"}
+        if row.state not in ("admitted", "succeeded"):
+            return {"ok": False, "reason": "task_not_correctable"}
+        if row.task_paused or row.cancellation_requested:
+            return {"ok": False, "reason": "task_paused"}
+        if any(
+            start.status in ("reserved", "uncertain") for start in _starts(db, task_id)
+        ):
+            return {"ok": False, "reason": "unresolved_execution"}
+        if row.state == "succeeded":
+            live_policy = json.loads(_control.policy_json or "{}")
+            if _control.state != "enabled" or not auto_merge_enabled(live_policy):
+                return {"ok": False, "reason": "factory_disabled"}
+            active = db.exec(
+                select(FactoryReceipt).where(FactoryReceipt.state.in_(_ACTIVE))
+            ).all()
+            if any(
+                r.repo == row.repo
+                and r.issue_number == row.issue_number
+                and r.task_id != task_id
+                for r in active
+            ):
+                return {"ok": False, "reason": "issue_already_active"}
+            if (
+                sum(lane_for(receipt_task_class(r)) == "delivery" for r in active)
+                >= lane_limits(live_policy)["delivery"]
+            ):
+                return {"ok": False, "reason": "delivery_capacity"}
+            row.state = "admitted"
+            row.updated_at = _now()
+            db.add(row)
+            task = db.get(SwarmTask, task_id)
+            task.settled_at = None
+            task.start_state = "factory"
+            task.start_updated_at = _now()
+            db.add(task)
+        _audit(
+            db,
+            actor,
+            "landing_recovery_requested",
+            task_id=task_id,
+            pr_number=pr_number,
+            head_sha=head_sha,
+            source=source,
+            reason=reason,
+            deadline_at=(
+                _now() + timedelta(seconds=LANDING_RECOVERY_TIMEOUT_SECONDS)
+            ).isoformat(),
+        )
+        return {"ok": True, "replayed": False, "state": row.state}
 
 
 def settle_lost_attempt(

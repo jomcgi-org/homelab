@@ -82,6 +82,18 @@ def test_github_object_and_list_readers_enforce_response_shapes(monkeypatch):
         conductor.github_list("owner/repo", "issues")
 
 
+@pytest.mark.parametrize(
+    "pull",
+    [
+        {"mergeable": False},
+        {"mergeable": "CONFLICTING"},
+        {"mergeable_state": "dirty"},
+    ],
+)
+def test_pull_merge_conflict_accepts_rest_and_cli_shapes(pull):
+    assert conductor.pull_has_merge_conflict(pull)
+
+
 def test_refine_schema_and_boundary_are_separate_from_delivery():
     from factory.orchestration.factory_refine import REFINE_SCHEMA
 
@@ -5760,14 +5772,146 @@ def test_the_correction_round_costs_no_planner_turn_and_is_applied_once(
     assert controls.task_snapshot(task["id"])["turns_used"] == before + 1
 
 
-def test_an_approving_review_inserts_no_correction_round(feedback_db):
+def test_an_approving_review_inserts_no_correction_round(feedback_db, monkeypatch):
     task, policy = reviewed_task(verdict="approve")
+    monkeypatch.setattr(
+        conductor,
+        "github_get",
+        lambda *_args: {
+            "mergeable": True,
+            "mergeable_state": "clean",
+            "head": {"ref": f"factory/{task['id']}", "sha": HEAD_ONE},
+        },
+    )
     conductor.reconcile_task(task["id"], policy, object())
     keys = {n["node_key"] for n in conductor.graph.load_graph(task["id"])}
     assert "correct_1" not in keys and "review_1" not in keys
     # Delivery is still the planner's call, so it is asked to finish.
     assert "conductor_1" in keys
     assert conductor._review_rounds_used(task["id"]) == 0
+
+
+def conflicting_pull(task, *, head=HEAD_ONE):
+    return {
+        "state": "open",
+        "draft": False,
+        "mergeable": False,
+        "mergeable_state": "dirty",
+        "head": {"ref": f"factory/{task['id']}", "sha": head},
+    }
+
+
+def test_an_approved_conflicting_delivery_opens_a_rebase_and_re_review_round(
+    feedback_db, monkeypatch
+):
+    from sqlmodel import Session, select
+    from factory.orchestration.factory_models import FactoryAudit
+
+    task, policy = reviewed_task(verdict="approve")
+    monkeypatch.setattr(conductor, "github_get", lambda *_args: conflicting_pull(task))
+
+    conductor.reconcile_task(task["id"], policy, object())
+
+    nodes = {node["node_key"]: node for node in conductor.graph.load_graph(task["id"])}
+    assert nodes["correct_1"]["deps"] == ["review_fix"]
+    assert nodes["correct_1"]["model"] == "luna"
+    prompt = nodes["correct_1"]["prompt"]
+    for instruction in (
+        "Rebase the task branch onto origin/main",
+        "preserve the reviewed changes",
+        "resolve all conflicts",
+        "force-with-lease",
+        "report the new pull request head",
+    ):
+        assert instruction in prompt
+    assert nodes["review_1"]["deps"] == ["correct_1"]
+    assert "exact current head" in nodes["review_1"]["prompt"]
+    with Session(feedback_db) as db:
+        events = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == task["id"],
+                FactoryAudit.action == "landing_recovery_round",
+            )
+        ).all()
+        assert [
+            {
+                key: value
+                for key, value in json.loads(event.detail_json).items()
+                if key not in ("reason", "deadline_at", "request_id")
+            }
+            for event in events
+        ] == [
+            {
+                "pr_number": 21,
+                "head_sha": HEAD_ONE,
+                "source": "delivered_pr",
+                "round": 1,
+            }
+        ]
+
+    # The graph dependency and the audit identity independently fence retries.
+    version = conductor.graph.current_version(task["id"])
+    conductor.reconcile_task(task["id"], policy, object())
+    assert conductor.graph.current_version(task["id"]) == version
+
+
+def test_a_conflict_after_review_round_exhaustion_returns_to_the_planner(
+    feedback_db, monkeypatch
+):
+    task, policy = reviewed_task(verdict="approve", rounds=0)
+    monkeypatch.setattr(conductor, "github_get", lambda *_args: conflicting_pull(task))
+
+    conductor.reconcile_task(task["id"], policy, object())
+
+    nodes = {node["node_key"]: node for node in conductor.graph.load_graph(task["id"])}
+    assert "correct_1" not in nodes
+    deviation = node_planner_context(nodes["conductor_1"])["deviation"]
+    assert deviation["code"] == "review_rounds_exhausted"
+    assert "approved a head that now has a merge conflict" in deviation["text"]
+
+
+def test_a_settled_queue_conflict_is_reopened_and_consumed_once(
+    feedback_db, monkeypatch
+):
+    from factory.orchestration import factory_controls as controls
+
+    task, policy = reviewed_task(verdict="approve")
+    assert controls.finish_task(
+        task["id"],
+        "succeeded",
+        "test",
+        evidence={
+            "pr_url": "https://github.com/owner/repo/pull/21",
+            "head_sha": HEAD_ONE,
+            "review_session_id": 11,
+            "reviewer_model": "opus",
+            "state": "ready_for_review",
+        },
+    )["ok"]
+    with controls._locked_session() as (db, control):
+        control.state = "enabled"
+        control.policy_json = json.dumps({**policy, "auto_merge": True})
+        db.add(control)
+    first = controls.request_landing_recovery(
+        task["id"], 21, HEAD_ONE, "merge_queue", "factory:landing"
+    )
+    replay = controls.request_landing_recovery(
+        task["id"], 21, HEAD_ONE, "merge_queue", "factory:landing"
+    )
+    assert first == {"ok": True, "replayed": False, "state": "admitted"}
+    assert replay == {"ok": True, "replayed": True, "state": "admitted"}
+    assert controls.task_snapshot(task["id"])["state"] == "admitted"
+    monkeypatch.setattr(
+        conductor,
+        "github_get",
+        lambda *_args: pytest.fail("the durable queue marker supplies the conflict"),
+    )
+
+    conductor.reconcile_task(task["id"], policy, object())
+
+    nodes = {node["node_key"]: node for node in conductor.graph.load_graph(task["id"])}
+    assert nodes["correct_1"]["deps"] == ["review_fix"]
+    assert "force-with-lease" in nodes["correct_1"]["prompt"]
 
 
 def run_correction_round(task, policy, ordinal, *, verdict, head):
@@ -5958,6 +6102,85 @@ def fail_round_node(task, node_key):
         status="failed",
         reason="artifact_missing: the turn ended with no typed artifact",
     )
+
+
+def test_a_failed_merge_conflict_round_reuses_the_bound_then_exhausts(
+    feedback_db, monkeypatch
+):
+    from sqlmodel import Session, select
+    from factory.orchestration.factory_models import FactoryAudit
+
+    task, policy = reviewed_task(verdict="approve", rounds=2)
+    monkeypatch.setattr(conductor, "github_get", lambda *_args: conflicting_pull(task))
+    conductor.reconcile_task(task["id"], policy, object())
+    fail_round_node(task, "correct_1")
+    monkeypatch.setattr(
+        conductor, "github_get", lambda *_args: {"object": {"sha": HEAD_TWO}}
+    )
+
+    conductor.reconcile_task(task["id"], policy, object())
+
+    nodes = {node["node_key"]: node for node in conductor.graph.load_graph(task["id"])}
+    assert nodes["correct_2"]["deps"] == ["review_fix"]
+    assert nodes["correct_2"]["model"] == "luna"
+    assert "force-with-lease" in nodes["correct_2"]["prompt"]
+    assert f"has since moved to {HEAD_TWO}" in nodes["correct_2"]["prompt"]
+    assert nodes["review_2"]["deps"] == ["correct_2"]
+    assert conductor._review_rounds_used(task["id"]) == 2
+    with Session(feedback_db) as db:
+        events = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == task["id"],
+                FactoryAudit.action == "landing_recovery_round",
+            )
+        ).all()
+        assert [
+            __import__("json").loads(event.detail_json)["round"] for event in events
+        ] == [1, 2]
+
+    fail_round_node(task, "correct_2")
+    conductor.reconcile_task(task["id"], policy, object())
+
+    nodes = {node["node_key"]: node for node in conductor.graph.load_graph(task["id"])}
+    assert "correct_3" not in nodes and "review_3" not in nodes
+    deviation = node_planner_context(nodes["conductor_1"])["deviation"]
+    assert deviation["code"] == "review_rounds_exhausted"
+    assert "approved a head that now has a merge conflict" in deviation["text"]
+    assert "correct_2 delivered nothing" in deviation["text"]
+
+
+def test_a_direct_conflict_backfills_a_lost_correction_audit(feedback_db, monkeypatch):
+    from sqlmodel import Session, select
+    from factory.orchestration.factory_models import FactoryAudit
+
+    task, policy = reviewed_task(verdict="approve")
+    monkeypatch.setattr(conductor, "github_get", lambda *_args: conflicting_pull(task))
+    record = conductor._record_landing_recovery_round
+    calls = []
+
+    def lose_first_audit(task_id, conflict, ordinal):
+        calls.append(ordinal)
+        if len(calls) > 1:
+            record(task_id, conflict, ordinal)
+
+    monkeypatch.setattr(conductor, "_record_landing_recovery_round", lose_first_audit)
+    conductor.reconcile_task(task["id"], policy, object())
+    version = conductor.graph.current_version(task["id"])
+
+    # correct_1 is runnable, but the durable detection marker is still scanned
+    # to repair the missing audit without inserting another pair.
+    conductor.reconcile_task(task["id"], policy, object())
+
+    assert conductor.graph.current_version(task["id"]) == version
+    assert calls == [1, 1]
+    with Session(feedback_db) as db:
+        events = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == task["id"],
+                FactoryAudit.action == "landing_recovery_round",
+            )
+        ).all()
+        assert len(events) == 1
 
 
 def test_a_failed_correction_opens_the_next_round_against_the_same_review(
@@ -6266,7 +6489,7 @@ def test_a_discarded_round_is_not_a_failed_round(feedback_db):
         ).ok
     nodes = conductor.graph.load_graph(task["id"])
     runs = conductor.graph.node_runs(task["id"])
-    assert conductor._failed_round(nodes, runs) is None
+    assert conductor._failed_round(task["id"], nodes, runs) is None
     assert conductor._pending_correction(nodes, runs)["node_key"] == "review_fix"
 
     conductor.reconcile_task(task["id"], policy, object())
@@ -9359,7 +9582,6 @@ def test_completed_delivery_needs_no_new_funding_at_exhausted_limit(
     )
 
     task, policy = funding_task(monkeypatch)
-    nodes = conductor.graph.load_graph(task["id"])
     runs = conductor.graph.node_runs(task["id"])
     review = next(r for r in runs if r["node_key"] == "review_fix")
     original = conductor._artifact
@@ -9428,7 +9650,8 @@ def test_refused_dispatch_requests_reassessment_instead_of_pausing(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "blocker", ["remaining_work", "task_paused", "cancellation_pending"]
+    "blocker",
+    ["remaining_work", "landing_recovery", "task_paused", "cancellation_pending"],
 )
 def test_funding_completion_cannot_skip_plan_or_operator_controls(
     feedback_db, monkeypatch, blocker
@@ -9447,6 +9670,17 @@ def test_funding_completion_cannot_skip_plan_or_operator_controls(
             "later",
             "Required work",
         ).ok
+    if blocker == "landing_recovery":
+        from factory.orchestration import factory_controls as controls
+
+        assert controls.request_landing_recovery(
+            task["id"],
+            21,
+            HEAD_ONE,
+            "merge_queue",
+            "factory:landing",
+            reason="queue_ejection",
+        )["ok"]
     runs = conductor.graph.node_runs(task["id"])
     original = conductor._artifact
     monkeypatch.setattr(
@@ -9465,7 +9699,7 @@ def test_funding_completion_cannot_skip_plan_or_operator_controls(
     )
     permission = (
         {"ok": True}
-        if blocker == "remaining_work"
+        if blocker in {"remaining_work", "landing_recovery"}
         else {"ok": False, "reason": blocker}
     )
     assert not funding.reconcile(task, policy, runs, permission)
@@ -9500,7 +9734,7 @@ def test_failed_first_funding_review_retries_after_flag_disabled(
         assert funding.pending(db, task["id"])["node_key"] != request["node_key"]
 
 
-@pytest.mark.parametrize("race", ["graph_edit", "operator_pause"])
+@pytest.mark.parametrize("race", ["graph_edit", "operator_pause", "landing_recovery"])
 def test_funding_completion_rechecks_after_github_verification(
     feedback_db, monkeypatch, race
 ):
@@ -9534,6 +9768,15 @@ def test_funding_completion_rechecks_after_github_verification(
                 "new",
                 "New evidence",
             ).ok
+        elif race == "landing_recovery":
+            assert controls.request_landing_recovery(
+                task["id"],
+                21,
+                HEAD_ONE,
+                "merge_queue",
+                "factory:landing",
+                reason="queue_ejection",
+            )["ok"]
         else:
             assert controls.set_control("pause_task", "operator", task_id=task["id"])[
                 "ok"
@@ -9594,3 +9837,66 @@ def test_approved_delivery_waits_for_ci_without_buying_funding(
         task, policy, runs, {"ok": False, "reason": "task_deadline"}
     )
     assert controls.task_snapshot(task["id"])["state"] == "admitted"
+
+
+def test_queue_ejection_opens_evidence_assessment_and_independent_review(
+    feedback_db, monkeypatch
+):
+    from factory.orchestration import factory_controls as controls
+
+    task, policy = reviewed_task(verdict="approve")
+    result = controls.request_landing_recovery(
+        task["id"],
+        21,
+        HEAD_ONE,
+        "merge_queue",
+        "factory:landing",
+        reason="queue_ejection",
+    )
+    assert result["ok"]
+    monkeypatch.setattr(
+        conductor, "github_get", lambda *_: pytest.fail("durable request is sufficient")
+    )
+    conductor.reconcile_task(task["id"], policy, object())
+    nodes = {node["node_key"]: node for node in conductor.graph.load_graph(task["id"])}
+    prompt = nodes["correct_1"]["prompt"]
+    assert "queue timeline and failed required checks" in prompt
+    assert "transient infrastructure failure" in prompt
+    assert "unchanged head" in prompt
+    assert "Escalate ambiguous or out-of-scope failures" in prompt
+    assert nodes["review_1"]["deps"] == ["correct_1"]
+    assert conductor._landing_recovery_requests(task["id"]) == []
+
+
+def test_landing_recovery_has_a_fresh_bounded_deadline_without_resetting_spend(
+    feedback_db,
+):
+    from datetime import timedelta
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.models import SwarmTask
+
+    task, policy = reviewed_task(verdict="approve")
+    with controls._locked_session() as (db, control):
+        control.state = "enabled"
+        control.policy_json = json.dumps({**policy, "auto_merge": True})
+        db.add(control)
+        row = db.get(SwarmTask, task["id"])
+        row.created_at = controls._now() - timedelta(days=2)
+        db.add(row)
+    before = controls.task_snapshot(task["id"])
+    assert before["limits"]["deadline_expired"]
+    assert controls.finish_task(task["id"], "succeeded", "test")["ok"]
+    assert controls.request_landing_recovery(
+        task["id"], 21, HEAD_ONE, "merge_queue", "factory:landing"
+    )["ok"]
+    after = controls.task_snapshot(task["id"])
+    assert not after["limits"]["deadline_expired"]
+    assert controls.can_start(task["id"])["ok"]
+    for key in (
+        "admitted_at",
+        "turns_used",
+        "planner_turns_used",
+        "committed_cost_usd",
+    ):
+        assert after[key] == before[key]
+    assert after["policy"] == before["policy"]

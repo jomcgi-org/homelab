@@ -903,6 +903,15 @@ head and findings, and the failed round still counts, so a round that keeps
 failing spends the bound instead of looping inside it. A node that escalated is
 deliberately not reopened, because escalation asked for the planner.
 
+The same loop owns landing recovery. A delivered PR with a merge conflict or
+confirmed queue ejection returns to the same task for bounded assessment and
+correction. Conflict workers rebase onto the PR base; other ejections require
+reading queue and check evidence before choosing a retry, rebase, code repair,
+or escalation. Every round ends in an independent review of the resulting head.
+`landing_recovery_round` records the request and graph round. Exhausting the
+ordinary correction bound returns the evidence to the conductor's existing
+assessment, funding, and escalation path.
+
 Reopening cleans up after the round it replaces. The failed round's re-review
 never ran and never can, so it is discarded in the same atomic edit, which
 returns its attempt and its ceiling to the allowance; its correction stays,
@@ -994,12 +1003,14 @@ write access to pull requests and issues before the flag is worth turning on.
 With the flag on, a task that settled `succeeded` with pull request evidence
 has its merge armed through the GitHub auto-merge mutation with the rebase
 method, the equivalent of `gh pr merge --auto --rebase`, and the lane audits
-`merge_armed`. Exactly one factory pull request is armed at a time, because
+`merge_armed`. Landing first checks that the pull request is still at the exact
+approved head and has no computed merge conflict. Exactly one factory pull
+request is armed at a time, because
 this repository merges through the GitHub merge queue and an ejection cascades
 across every candidate behind the one that failed. The holder is read from the
 lane's own audits and from GitHub: before arming anything, up to five pages
 of 50 open pull requests are listed and any pull request on a `factory/` branch with
-auto-merge already set counts, so a pull request an operator armed by hand is
+auto-merge or a merge queue entry already set counts, so a pull request an operator armed by hand is
 not raced. A holder check that cannot be read or exhausts five full pages arms nothing,
 because not knowing
 is not a licence. Every waiting delivery audits `merge_deferred`, once per
@@ -1023,17 +1034,27 @@ Later ticks observe the armed pull request:
 | merged | audits `merged`, then closes the issue |
 | closed, not merged | audits `merge_arm_refused` and stops |
 | open, head moved off the armed SHA | turns auto-merge back off, audits `merge_arm_refused` with `head_moved` |
-| open, auto-merge gone | audits `merge_ejected` and re-arms |
-| open, still armed | waits |
+| open, computed merge conflict | disables auto-merge, then requests bounded recovery |
+| open, neither auto-merge nor queue membership | requests assessment of the ejection |
+| open, still armed or queued | waits |
 
-An open pull request whose auto-merge GitHub has turned off was ejected from the
-merge queue. Watching only for a closed pull request wedged the holder forever,
-so the ejection is named and the pull request is armed again: the queue analysis
-failure class is usually transient. After two ejections the lane audits
-`merge_arm_refused`, sends one Discord warning, and leaves the pull request for
-a human, because an invalid merge commit needs a rebase no node here can do. The
-head recheck is what stops a branch that moved under an armed pull request from
-merging something no reviewer approved.
+Queue membership is checked independently of auto-merge. GitHub clearing
+`autoMergeRequest` on queue admission is not an ejection. Failed or malformed
+membership reads retain the slot.
+
+Recovery preserves the same task, graph, PR, spent turns, and dollar accounting.
+It admits at most two recovery episodes per task, each with a fresh one-hour
+deadline, and respects current delivery capacity, task pauses, cancellation,
+and unresolved execution. It does not reset the correction-round or spending
+limits; any further funding uses the existing conductor assessment. A recovered
+settlement starts a fresh landing epoch, and arming requires its approved SHA
+to match GitHub. Exhausted recovery is left for a human with a warning.
+
+One historical `merge_conflict` or `ejected_from_merge_queue` refusal is
+reassessed per tick. Reopening supersedes that refusal without deleting history.
+Closed PRs, changed heads, active queue entries, and operator refusals are not
+blindly retried. A request that cannot acquire delivery capacity remains eligible
+for a later tick; it does not bypass the concurrency limit.
 
 A mutation GitHub refuses audits `merge_arm_refused` and is not retried; a
 GitHub read or write that fails audits `landing_error` by exception type and

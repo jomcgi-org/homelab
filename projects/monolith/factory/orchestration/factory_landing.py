@@ -32,6 +32,7 @@ from factory.orchestration.factory_controls import (
     _now,
     _read_session,
     auto_merge_enabled,
+    request_landing_recovery,
 )
 from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt
 
@@ -201,10 +202,25 @@ def _record(task_id: str, action: str, **detail: object) -> bool:
     if action in _REPEATABLE:
         raise ValueError(f"{action} is a repeatable landing action")
     with _locked_session() as (db, _control):
+        epoch = 0
+        if action == "merge_arm_refused":
+            epoch = (
+                db.exec(
+                    select(FactoryAudit.id)
+                    .where(
+                        FactoryAudit.task_id == task_id,
+                        FactoryAudit.action == "landing_recovery_requested",
+                    )
+                    .order_by(FactoryAudit.id.desc())
+                    .limit(1)
+                ).first()
+                or 0
+            )
         existing = db.exec(
             select(FactoryAudit.id).where(
                 FactoryAudit.task_id == task_id,
                 FactoryAudit.action == action,
+                FactoryAudit.id > epoch,
             )
         ).first()
         if existing is not None:
@@ -249,6 +265,8 @@ def _error(task_id: str, stage: str, exc: Exception) -> None:
 LANDING_ACTIONS = (
     "merge_armed",
     "merge_ejected",
+    "landing_recovery_requested",
+    "landing_recovery_skipped",
     "merge_arm_refused",
     "merged",
     "issue_closed",
@@ -271,6 +289,10 @@ def _landing_state(db, task_ids: list[str]) -> dict[str, dict]:
         .order_by(FactoryAudit.id)
     ).all()
     for row in rows:
+        if row.action == "landing_recovery_requested":
+            # A newly reviewed settlement starts a fresh arming epoch. Recovery
+            # requests retain their own durable cap and all historical audits.
+            state[row.task_id] = {action: [] for action in LANDING_ACTIONS}
         state[row.task_id][row.action].append(json.loads(row.detail_json))
     return state
 
@@ -307,7 +329,7 @@ def _delivery_prs(db, task_ids: list[str]) -> dict[str, tuple[int, str | None]]:
     return result
 
 
-def _deliveries(policy: dict) -> list[dict]:
+def _deliveries(policy: dict, *, include_refused: bool = False) -> list[dict]:
     """Every delivery whose landing is unfinished, oldest first.
 
     Selected on landing state, never on recency. Selecting the newest receipts
@@ -324,7 +346,7 @@ def _deliveries(policy: dict) -> list[dict]:
     cutoff = _now() - timedelta(hours=LANDING_WINDOW_HOURS)
     with _read_session() as db:
         terminal = select(FactoryAudit.task_id).where(
-            FactoryAudit.action.in_(("merge_arm_refused", "issue_closed")),
+            FactoryAudit.action == "issue_closed",
             FactoryAudit.task_id.is_not(None),
         )
         rows = db.exec(
@@ -352,8 +374,12 @@ def _deliveries(policy: dict) -> list[dict]:
         if delivery is None:
             continue
         audits = state[row.task_id]
+        if audits["merge_arm_refused"] and not include_refused:
+            continue
         armed, ejected = audits["merge_armed"], audits["merge_ejected"]
-        touched = bool(armed or ejected or audits["merged"])
+        touched = bool(
+            armed or ejected or audits["merged"] or audits["merge_arm_refused"]
+        )
         if not touched and _aware(row.updated_at) < cutoff:
             continue
         number, head = delivery
@@ -365,6 +391,11 @@ def _deliveries(policy: dict) -> list[dict]:
                 # The head the newest arming was measured against, so a branch
                 # that moves under an armed pull request can be caught.
                 "head_sha": armed[-1].get("head_sha") if armed else head,
+                "approved_head_sha": head,
+                "recovery_skipped": bool(audits["landing_recovery_skipped"]),
+                "refusal": audits["merge_arm_refused"][-1]
+                if audits["merge_arm_refused"]
+                else None,
                 "armed": len(armed),
                 "ejected": len(ejected),
                 "merged": bool(audits["merged"]),
@@ -456,8 +487,8 @@ def _notify_stuck(task_id: str, number: int) -> None:
 
         asyncio.run(
             notify(
-                f"Factory pull request #{number} on task {task_id} was ejected "
-                f"from the merge queue {MAX_EJECTIONS} times. Auto-merge is off "
+                f"Factory pull request #{number} on task {task_id} exhausted "
+                "its bounded landing recovery. Auto-merge is off "
                 "and the pull request is left for a human.",
                 level="warn",
             )
@@ -492,10 +523,20 @@ def _arm(repo: str, item: dict) -> None:
         if pr.get("state") != "open" or pr.get("draft"):
             _refuse(item, "pull request is not open and ready")
             return
-        if pr.get("mergeable") is False:
-            _refuse(item, "merge_conflict")
-            return
         head = (pr.get("head") or {}).get("sha")
+        approved = item.get("approved_head_sha", item["head_sha"])
+        if not isinstance(approved, str) or not re.fullmatch(r"[0-9a-f]{40}", approved):
+            _refuse(item, "approved_head_missing")
+            return
+        if not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{40}", head):
+            _refuse(item, "pull_request_head_missing", approved_head_sha=approved)
+            return
+        if head != approved:
+            _refuse(item, "head_moved", approved_head_sha=approved, head_sha=head)
+            return
+        if pr.get("mergeable") is False:
+            _recover_delivery(item, head, "delivered_pr")
+            return
         node_id = pr.get("node_id")
         if not isinstance(node_id, str) or not node_id:
             _refuse(item, "pull request has no node id")
@@ -539,6 +580,78 @@ def _disarm(repo: str, pr: dict) -> bool:
     return True
 
 
+def _recover_delivery(
+    item: dict, head: object, source: str, *, reason: str = "merge_conflict"
+) -> dict:
+    item["refused"] = True
+    if not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{40}", head):
+        _refuse(item, "pull_request_head_missing")
+        return {"ok": False, "reason": "pull_request_head_missing"}
+    result = request_landing_recovery(
+        item["task_id"],
+        item["pr_number"],
+        head,
+        source,
+        ACTOR,
+        reason=reason,
+    )
+    if result.get("reason") == "recovery_limit":
+        _refuse(item, "landing_recovery_exhausted")
+        _notify_stuck(item["task_id"], item["pr_number"])
+    return result
+
+
+def _recover_refused(policy: dict) -> None:
+    """Reassess one historical refusal per tick without touching other closures."""
+    for item in _deliveries(policy, include_refused=True):
+        if item.get("recovery_skipped"):
+            continue
+        refusal = item.get("refusal") or {}
+        if refusal.get("reason") not in ("merge_conflict", "ejected_from_merge_queue"):
+            continue
+        try:
+            pr = github_get(policy["repo"], f"pulls/{item['pr_number']}")
+            if pr.get("merged"):
+                _observe(policy["repo"], item)
+                _close_issue(policy["repo"], item)
+                return
+            if pr.get("state") != "open" or pr.get("draft"):
+                _record(
+                    item["task_id"],
+                    "landing_recovery_skipped",
+                    pr_number=item["pr_number"],
+                    reason="pull_request_not_ready",
+                )
+                return
+            head = (pr.get("head") or {}).get("sha")
+            if head != item["approved_head_sha"]:
+                _record(
+                    item["task_id"],
+                    "landing_recovery_skipped",
+                    pr_number=item["pr_number"],
+                    reason="head_moved",
+                )
+                return
+            if pr.get("auto_merge") is not None or pr.get("node_id") in _queued_ids(
+                [pr["node_id"]]
+            ):
+                return
+            _recover_delivery(
+                item,
+                head,
+                "merge_queue",
+                reason=(
+                    "merge_conflict"
+                    if pr.get("mergeable") is False
+                    else "queue_ejection"
+                ),
+            )
+            return
+        except (httpx.HTTPError, ValueError) as exc:
+            _error(item["task_id"], "recover", exc)
+            return
+
+
 def _observe(repo: str, item: dict) -> None:
     number = item["pr_number"]
     try:
@@ -573,11 +686,20 @@ def _observe(repo: str, item: dict) -> None:
         _refuse(item, "head_moved", armed_head_sha=item["head_sha"], head_sha=head)
         return
     if pr.get("mergeable") is False:
+        try:
+            node_id = pr.get("node_id")
+            if not isinstance(node_id, str) or not node_id:
+                raise ValueError("GitHub holder has no node id")
+            if node_id in _queued_ids([node_id]):
+                return
+        except (httpx.HTTPError, ValueError) as exc:
+            _error(item["task_id"], "observe_queue", exc)
+            return
         # GitHub accepts auto-merge on conflicting PRs without queueing them.
         # Release the slot only after any outstanding auto-merge is disabled.
         if pr.get("auto_merge") is not None and not _disarm(repo, pr):
             return
-        _refuse(item, "merge_conflict")
+        _recover_delivery(item, head, "merge_queue")
         return
     if pr.get("auto_merge") is not None:
         return
@@ -590,25 +712,9 @@ def _observe(repo: str, item: dict) -> None:
     except (httpx.HTTPError, ValueError) as exc:
         _error(item["task_id"], "observe_queue", exc)
         return
-    # Open, unmerged, not queued, and auto-merge off: GitHub ejected it. Without this the holder wedged forever, because the
-    # old observation only ever looked for a closed pull request.
-    _append(
-        item["task_id"],
-        "merge_ejected",
-        pr_number=number,
-        # The queue timeline would name the ejection class, but reading it is
-        # a paged request per ejection on a budget the whole lane shares, and
-        # the re-arm is the same either way.
-        reason="auto_merge_disabled",
-        attempt=item["armed"],
-    )
-    item["ejected"] += 1
-    if item["ejected"] >= MAX_EJECTIONS:
-        # Two ejections is the signal that the queue cannot take this candidate
-        # as it stands. An invalid merge commit needs a rebase no node here can
-        # do, so it goes to a human with one warning rather than round again.
-        _refuse(item, "ejected_from_merge_queue", ejections=item["ejected"])
-        _notify_stuck(item["task_id"], number)
+    # The worker assesses the actual queue/check evidence before deciding
+    # whether to retry, rebase, correct code, or escalate.
+    _recover_delivery(item, head, "merge_queue", reason="queue_ejection")
 
 
 def _close_issue(repo: str, item: dict) -> None:
@@ -682,6 +788,7 @@ def landing_tick(policy: dict) -> None:
         if not auto_merge_enabled(policy):
             return
         repo = policy["repo"]
+        _recover_refused(policy)
         deliveries = _deliveries(policy)
         for item in deliveries:
             item["refused"] = False
@@ -709,16 +816,18 @@ def landing_tick(policy: dict) -> None:
             for item in waiting:
                 _defer(item, holder)
             return
-        first, rest = waiting[0], waiting[1:]
-        _arm(repo, first)
-        if first["merged"] and not first["closed"]:
-            # Arming found it already merged by hand. Close the issue in this
-            # tick rather than holding it for another fifteen seconds behind a
-            # step that has already run.
-            _close_issue(repo, first)
-        if holding(first):
-            for item in rest:
-                _defer(item, first)
+        # A capacity-blocked recovery must not block unrelated ready PRs.
+        # Bound reads while allowing a refused candidate to release this tick.
+        for index, first in enumerate(waiting[:5]):
+            _arm(repo, first)
+            if first["merged"] and not first["closed"]:
+                _close_issue(repo, first)
+            if holding(first) and not first.get("refused"):
+                for item in waiting[index + 1 :]:
+                    _defer(item, first)
+                break
+            if not first.get("refused") and not first["merged"]:
+                break
     except Exception:  # noqa: BLE001 - landing is optional and never stops the lane
         logger.exception("factory landing failed")
 
