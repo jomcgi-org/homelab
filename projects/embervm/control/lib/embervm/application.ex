@@ -507,10 +507,9 @@ defmodule Embervm.Application do
   # The single source of truth for the op-log backend MODULE, threaded into every
   # store/manager/sweeper's `:op_log_mod` opt so none of them hardcodes the
   # concrete backend. EMBERVM_OPLOG_DSN set and non-empty selects
-  # Embervm.OpLog.Postgres (PR-4, #18/#27); unset (the default, and what every
-  # cluster runs today) keeps Embervm.OpLog.SQLite. This PR ships the Postgres
-  # module dormant: nothing in deploy values sets the DSN yet, so the selected
-  # backend never changes as a result of merging it. Public (@doc false) so
+  # Embervm.OpLog.Postgres; unset keeps Embervm.OpLog.SQLite. The chart default
+  # and isolated dev deployment leave the DSN unset, while the reference
+  # deployment enables Postgres and renders it. Public (@doc false) so
   # Embervm.ApplicationTest can assert the selection directly, matching how
   # configured_nodes/0 is exposed for its own boot-ordering test.
   @doc false
@@ -1081,17 +1080,17 @@ defmodule Embervm.Application do
   end
 
   # EMBERVM_ASYNC_LIFECYCLE_WRITES (ADR embervm/014 decision 2). UNSET or
-  # "0"/"false"/"" (the default, and what this PR ships) => the boot/wake lifecycle
-  # appends (:assigned/:started on dispatch, session_created/session_relit on session
-  # boot/wake) stay write-through: the durable oplog append blocks the hot-path caller
-  # before the instance is handed back, today's ordering. "1"/"true" => those four
+  # "0"/"false"/"" (the chart and reference-deployment setting) => the
+  # boot/wake lifecycle appends (:assigned/:started on dispatch,
+  # session_created/session_relit on session boot/wake) stay write-through: the
+  # durable oplog append blocks the hot-path caller
+  # before the instance is handed back. "1"/"true" => those four
   # appends are deferred to Embervm.AsyncWriter AFTER the in-memory state is advanced
   # (RPC already succeeded), taking the durable write off the hot path; a lost write
   # (CP crash before the async append) is repaired by the adoption backfill. Metering,
   # :submitted, destruction, and bank ops are NEVER deferred. Wired here so it flips
   # via a deploy values env change, no code change: the chart's `asyncLifecycleWrites`
-  # key (chart/values.yaml) renders this variable in deployment.yaml. Nothing sets
-  # it on in this PR.
+  # key (chart/values.yaml) renders this variable in deployment.yaml.
   defp async_lifecycle_writes_enabled do
     case trimmed_env("EMBERVM_ASYNC_LIFECYCLE_WRITES") do
       v when v in ["1", "true", "TRUE", "True"] -> true

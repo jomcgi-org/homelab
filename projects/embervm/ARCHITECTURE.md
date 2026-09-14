@@ -570,13 +570,16 @@ against them.
 
 **Why.** Worker runtime state changed faster than synchronous durable writes
 could support, while stale reports could otherwise resurrect destroyed VMs or
-regress a generation (ADR embervm/014). Writing every transition before the
-worker acts was rejected because it keeps Postgres on boot and wake paths;
-vocabulary-only conformance was also insufficient because a modeled action can
-exist in an enum and never be emitted (ADR embervm/034). Worker-authoritative
-runtime state, forward-only reconciliation, and model-checked invariants accept
-late durable records while keeping enforcement fail-closed and warmth
-discardable (ADR embervm/006, ADR embervm/014).
+regress a generation (ADR embervm/014). The optional async path avoids keeping
+Postgres on four boot and wake appends, but the reference deployment currently
+keeps `asyncLifecycleWrites: false`, so those appends remain write-through
+(see: /projects/embervm/deploy/values.yaml and
+/projects/embervm/chart/values.yaml). Vocabulary-only conformance was also
+insufficient because a modeled action can exist in an enum and never be emitted
+(ADR embervm/034). Worker-authoritative runtime state, forward-only
+reconciliation, and model-checked invariants support the async path's late
+durable records while keeping enforcement fail-closed and warmth discardable
+(ADR embervm/006, ADR embervm/014).
 
 ---
 
@@ -587,11 +590,15 @@ never stores or witnesses anything that scales with the fleet.
 
 - **State model**: hot working set in ETS (rebuilt on start, healed by
   adoption from node reports); durable book-of-record in the op-log behind
-  the `Embervm.OpLog` behaviour. Postgres is the default backend (CNPG in
-  the reference deployment); SQLite-WAL is the zero-dependency single-node
-  fallback, and
-  `Embervm.Application.op_log_mod/0` selects between them purely on
-  `EMBERVM_OPLOG_DSN` being set, so the pod spec names the current backend.
+  the `Embervm.OpLog` behaviour. The reference deployment configures Postgres
+  on the shared CNPG cluster; the chart default and isolated dev deployment use
+  SQLite-WAL. SQLite remains the zero-dependency single-node backend and the
+  reference deployment's rollback path. `Embervm.Application.op_log_mod/0`
+  selects between them purely on `EMBERVM_OPLOG_DSN` being set, so the rendered
+  pod spec names the runtime-selected backend (see:
+  /projects/embervm/deploy/values.yaml,
+  /projects/embervm/dev/deploy/values.yaml, and
+  /projects/embervm/chart/templates/deployment.yaml).
   Either adapter creates its own schema on boot, so there is nothing to
   migrate. The dispatch path never reads the durable store.
 - **Retention**: result TTLs enforced at read time; terminal tasks
@@ -1188,8 +1195,9 @@ S3-compatible object store.
   `noded.warmRestoreWithVolumeClasses` arms uniformly across the size
   classes, never partially, per the rollback contract; measured
   load-to-resume is 2.5ms on both vendor pools.
-- **The control plane runs one replica** with `strategy: Recreate`; its
-  op-log is a Postgres database (a shared cluster is acceptable: a CP
+- **The control plane runs one replica** with `strategy: Recreate`; the
+  reference deployment configures its op-log as a Postgres database (a shared
+  cluster is acceptable: a CP
   outage is a designed-for state, and CP rolls are the availability events
   the node-local activator exists to survive). Multi-replica needs the
   single-writer-per-cell appender.

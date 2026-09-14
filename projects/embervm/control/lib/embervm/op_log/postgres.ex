@@ -1,10 +1,11 @@
 defmodule Embervm.OpLog.Postgres do
   @moduledoc """
-  Postgres implementation of the `Embervm.OpLog` behaviour (PR-4, #18/#27): a
-  DSN-selected alternative to `Embervm.OpLog.SQLite`, dormant until an operator
-  sets `EMBERVM_OPLOG_DSN` (see `Embervm.Application.op_log_mod/0`). Mirrors the
-  SQLite adapter's schema, projection semantics, and single-writer GenServer
-  shape exactly, translating only the SQL dialect: postgrex numbered parameters
+  Postgres implementation of the `Embervm.OpLog` behaviour: the backend selected
+  when `EMBERVM_OPLOG_DSN` is set (see
+  `Embervm.Application.op_log_mod/0`). The reference deployment renders that
+  variable, while the chart default and isolated dev deployment select SQLite.
+  Mirrors the SQLite adapter's schema, projection semantics, and single-writer
+  GenServer shape exactly, translating only the SQL dialect: postgrex numbered parameters
   (`$1`, `$2`, ...) instead of `?`, `ON CONFLICT` the same way Postgres already
   supports it, `BYTEA` in place of SQLite's untyped BLOB column for the ETF
   payload, and `BIGSERIAL` in place of `INTEGER PRIMARY KEY AUTOINCREMENT` for
