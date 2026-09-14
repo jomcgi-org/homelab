@@ -141,6 +141,8 @@ def request_attempt_stop(
     expected_identity_sha256: str,
     reason: str,
     actor: str,
+    authorization_check=None,
+    expected_stop_precondition: dict | None = None,
 ) -> dict:
     """Persist authority and UNKNOWN atomically; no external cancellation here."""
     if not enabled():
@@ -160,6 +162,8 @@ def request_attempt_stop(
     ):
         raise ValueError("invalid_attempt_identity_digest")
     with controls._locked_session() as (db, _control):
+        if authorization_check is not None:
+            authorization_check(db)
         replay = _same_request(_requests(db, task_id), request)
         if replay is not None:
             return replay
@@ -177,10 +181,17 @@ def request_attempt_stop(
             key: view["stop_intent"].get(key) for key in supervisor._PRECONDITION_KEYS
         }
     precondition = supervisor._precondition(value, identity["guest_id"])
+    if (
+        expected_stop_precondition is not None
+        and precondition != expected_stop_precondition
+    ):
+        raise ValueError("reviewed_invocation_changed")
     if precondition["invoke_started_at"] is None:
         raise ValueError("factory_invocation_not_observed")
     supervisor._completion(view, precondition)
     with controls._locked_session() as (db, _control):
+        if authorization_check is not None:
+            authorization_check(db)
         records = _requests(db, task_id)
         replay = _same_request(records, request)
         if replay is not None:

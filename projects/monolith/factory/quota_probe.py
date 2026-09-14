@@ -17,6 +17,7 @@ from sqlalchemy import or_
 from sqlmodel import select
 
 from factory.execution.models import AgentSession, PendingMessage
+from factory.execution.review_leases import PREFIX as REVIEW_PREFIX
 from factory.execution import store
 from factory.orchestration import factory_controls as controls
 from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt
@@ -129,7 +130,10 @@ def _cleanup_candidates() -> list[str]:
         rows = db.exec(
             select(AgentSession)
             .where(
-                AgentSession.local_session_id.startswith(PREFIX),
+                or_(
+                    AgentSession.local_session_id.startswith(PREFIX),
+                    AgentSession.local_session_id.startswith(REVIEW_PREFIX),
+                ),
                 AgentSession.ember_session_id.is_not(None),
                 AgentSession.status != "running",
                 ~pending,

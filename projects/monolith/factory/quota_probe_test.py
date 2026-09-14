@@ -235,13 +235,16 @@ def test_total_deadline_cancels_stalled_creation(db, monkeypatch):
     assert probe.claim(payload(observed=False)) is None
 
 
-def test_unconfirmed_cleanup_blocks_until_exact_guest_confirmed(db, monkeypatch):
+@pytest.mark.parametrize("prefix", [probe.PREFIX, "synthetic:factory-review:"])
+def test_unconfirmed_cleanup_blocks_until_exact_guest_confirmed(
+    db, monkeypatch, prefix
+):
     from factory.execution import execution_api, mcp
 
     with Session(db) as session:
         session.add(
             AgentSession(
-                local_session_id=probe.PREFIX + "old",
+                local_session_id=prefix + "old",
                 workspace="<guest>",
                 branch="main",
                 status="idle",
@@ -268,7 +271,8 @@ def test_unconfirmed_cleanup_blocks_until_exact_guest_confirmed(db, monkeypatch)
     monkeypatch.setattr(mcp, "_clear_ember_bindings_for", clear)
     asyncio.run(probe._cleanup())
     assert deleted == []
-    assert probe.claim(payload(observed=False)) is None
+    if prefix == probe.PREFIX:
+        assert probe.claim(payload(observed=False)) is None
     asyncio.run(probe._cleanup())
     assert deleted == ["guest"]
     assert probe.claim(payload(observed=False))

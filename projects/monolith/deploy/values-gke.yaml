@@ -14,6 +14,7 @@ swarm:
   factoryEnabled: true
   # Exact operator requests and original deadlines retain the existing task
   # bounds. Capacity is released only after durable guest cessation proof.
+  factoryReservationReviewEnabled: true
   factoryStopSupervisionEnabled: true
   # Settle attempts lost between "invoke sent" and "guest bound" (#6025):
   # the template landed one PR earlier; this is the behaviour flip.

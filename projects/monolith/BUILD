@@ -1308,6 +1308,7 @@ py_library(
         "factory/execution/factory_stop.py",
         "factory/execution/models.py",
         "factory/execution/reconciliation.py",
+        "factory/execution/review_leases.py",
     ],
     imports = ["."],
     visibility = ["//:__subpackages__"],
@@ -1343,6 +1344,7 @@ py_library(
             "factory/execution/factory_stop.py",
             "factory/execution/models.py",
             "factory/execution/reconciliation.py",
+            "factory/execution/review_leases.py",
         ],
     ),
     imports = ["."],
@@ -7965,6 +7967,7 @@ py_test(
     deps = [
         ":pkg_agent_sessions",
         ":pkg_cyclegroup",
+        ":pkg_swarm",
         "@pip//pytest",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
@@ -8757,6 +8760,20 @@ py_test(
 py_test(
     name = "factory_quota_probe_test",
     srcs = ["factory/quota_probe_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_agent_sessions",
+        ":pkg_factory",
+        ":pkg_swarm",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "factory_reservation_reviews_test",
+    srcs = ["factory/reservation_reviews_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",

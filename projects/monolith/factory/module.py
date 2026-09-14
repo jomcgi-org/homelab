@@ -9,6 +9,7 @@ from framework import register_leader_tasks
 from factory.execution.provider_quota import provider_quota_health
 
 from knowledge.api import kg_health
+from factory.reservation_reviews import reservation_health
 from factory.orchestration.health import drainer_health
 
 
@@ -72,6 +73,7 @@ def _factory_liveness() -> dict:
 async def _start_session_maintenance(app):
     """Start leader-owned agent session maintenance loops."""
     from factory.quota_probe import start_quota_probe_loop
+    from factory.reservation_reviews import start_review_loop
     from factory.execution.kg_feed import start_kg_feed_loop
     from factory.execution.mcp import start_pending_message_sweep
     from factory.execution.permit_supervision import start_permit_supervision_loop
@@ -86,6 +88,7 @@ async def _start_session_maintenance(app):
         start_permit_supervision_loop,
         start_receipt_retention_loop,
         start_quota_probe_loop,
+        start_review_loop,
     ):
         started = start()
         register_leader_tasks(app, started)
@@ -114,6 +117,7 @@ MODULE = _Module(
     leader_start=_leader_start,
     leader_stop=_leader_stop,
     shutdown=_shutdown,
+    register_health={"factory_reservations": reservation_health},
     register_health_advisory={
         "drainer": drainer_health,
         "kg": kg_health,

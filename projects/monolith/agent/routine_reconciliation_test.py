@@ -1124,3 +1124,60 @@ def test_kg_reconciliation_refuses_mismatched_cleanup_claim(database, change):
         )
         assert db.exec(select(AgentCapacityReservation)).one().state == "uncertain"
         assert db.exec(select(RoutineReconciliation)).first() is None
+
+
+@pytest.mark.parametrize("applied", [False, True])
+def test_factory_supervision_atomically_reconciles_evicted_held_job(
+    database, monkeypatch, applied
+):
+    import asyncio
+    from factory.execution import permit_supervision as supervision
+    from factory.execution.models import ProbeObservation
+    from factory.orchestration.factory_models import FactoryStart
+    from factory.orchestration.models import SwarmTask, SwarmNodeRun
+
+    request, before = held(database, delivery_error=True, applied=applied)
+    engine = database.execution_options(
+        schema_translate_map={
+            "agent_sessions": None,
+            "claude_agent": None,
+            "swarm": None,
+        }
+    )
+    SQLModel.metadata.create_all(
+        engine,
+        tables=[
+            m.__table__
+            for m in (ProbeObservation, SwarmTask, FactoryStart, SwarmNodeRun)
+        ],
+    )
+    monkeypatch.setenv("FACTORY_RESERVATION_REVIEW_ENABLED", "true")
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    monkeypatch.setattr(supervision, "get_engine", lambda: engine)
+    now = datetime.now(timezone.utc)
+
+    class Transport:
+        async def get_session(self, guest):
+            assert guest == "guest"
+            return {
+                "session_id": guest,
+                "state": "evicted",
+                "generation": 0,
+                "invoke_started_at": int(
+                    (now - timedelta(seconds=90)).timestamp() * 1000
+                ),
+                "last_invoke_at": int((now - timedelta(seconds=30)).timestamp() * 1000),
+                "updated_at": int((now - timedelta(seconds=20)).timestamp() * 1000),
+            }
+
+    asyncio.run(supervision.sweep_once(Transport()))
+    with Session(engine) as db:
+        permit = db.exec(select(AgentCapacityReservation)).one()
+        assert permit.state == "settled"
+        after = reconciliation.read_reconciliation_state(
+            db, request["job_name"], request["session_id"]
+        )
+        assert after["job_status"] == "reconciled_unknown"
+        assert (after["next_run_at"] is None) == applied
+        assert after["turns_sha256"] == before["turns_sha256"]
+        assert db.get(ProbeObservation, permit.id).reason == "guest_cessation_confirmed"

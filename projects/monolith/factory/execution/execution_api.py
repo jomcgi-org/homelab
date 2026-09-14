@@ -99,7 +99,9 @@ def _persist_synthetic_binding_sync(
         )
 
 
-def _persist_synthetic_request(key: str, prompt: str, model: str, owner: str):
+def _persist_synthetic_request(
+    key: str, prompt: str, model: str, owner: str, admission_tier: str = "probe"
+):
     """Commit a new probe and its first turn together, with no orphan window."""
     from factory.execution.models import PendingMessage
 
@@ -110,7 +112,7 @@ def _persist_synthetic_request(key: str, prompt: str, model: str, owner: str):
             "<guest>",
             "main",
             model,
-            admission_tier="probe",
+            admission_tier=admission_tier,
             commit=False,
         )
         assert row.id is not None
@@ -121,7 +123,7 @@ def _persist_synthetic_request(key: str, prompt: str, model: str, owner: str):
         db.flush()
         if not store.admission.claim_pending(db, row, pending, owner):
             db.rollback()
-            raise EmberTurnNotInvoked("No immediate capacity for quota probe")
+            raise EmberTurnNotInvoked("No immediate capacity for synthetic probe")
         pending.claimed_by_replica = owner
         pending.claimed_at = func.now()
         pending.last_dispatch_at = func.now()
@@ -138,6 +140,7 @@ async def run_synthetic_session(
     *,
     session_key: str | None = None,
     read_timeout: float | None = None,
+    admission_tier: str = "probe",
 ):
     """Run and persist one short synthetic session through the normal path.
 
@@ -149,6 +152,12 @@ async def run_synthetic_session(
     """
     from factory.execution.mcp import _turn_status
 
+    if admission_tier not in {"probe", "interactive"}:
+        raise ValueError("Invalid synthetic admission tier")
+    if admission_tier != "probe" and not (session_key or "").startswith(
+        "synthetic:factory-review:"
+    ):
+        raise ValueError("Reserved capacity is only for factory supervision")
     model = normalize_model(model)
     model_family(model)
     transport = _transport
@@ -161,7 +170,12 @@ async def run_synthetic_session(
     claim_owner = f"{_REPLICA_ID}:{uuid4()}"
     if session_key is not None:
         row, turn_seq = await asyncio.to_thread(
-            _persist_synthetic_request, session_key, prompt, model, claim_owner
+            _persist_synthetic_request,
+            session_key,
+            prompt,
+            model,
+            claim_owner,
+            admission_tier,
         )
     else:
         row = await asyncio.to_thread(
