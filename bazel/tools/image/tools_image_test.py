@@ -223,7 +223,7 @@ def test_every_platform_contains_executable_commands(platform: str) -> None:
     assert "usr/bin/node" in combined_members
 
 
-def test_eslint_preserves_versioned_dependency_graph_and_lints() -> None:
+def test_eslint_preserves_versioned_dependency_graph() -> None:
     platform = RUNTIME_PLATFORM or "linux_amd64"
     with tempfile.TemporaryDirectory() as temp:
         root = pathlib.Path(temp)
@@ -252,28 +252,6 @@ def test_eslint_preserves_versioned_dependency_graph_and_lints() -> None:
             eslint_utils, "eslint-visitor-keys", visitor_versions
         ) != _caret_dependency_match(eslint, "eslint-visitor-keys", visitor_versions)
 
-        (root / "home").mkdir()
-        lint_target = root / "relocated-lint-target.js"
-        lint_target.write_text("const answer = 42;\nconsole.log(answer);\n")
-        result = subprocess.run(
-            [
-                str(root / "usr/bin/eslint"),
-                "--no-config-lookup",
-                str(lint_target),
-            ],
-            cwd=root,
-            env={
-                "HOME": str(root / "home"),
-                "PATH": f"{root / 'usr/bin'}:/usr/bin:/bin",
-            },
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-        assert result.returncode == 0, result.stdout
-
 
 def _assert_native_host(platform: str) -> None:
     expected_system, expected_machines = {
@@ -285,7 +263,6 @@ def _assert_native_host(platform: str) -> None:
     assert host_platform.machine().lower() in expected_machines
 
 
-@pytest.mark.skip(reason="temporary runtime-test CI isolation")
 def test_commands_execute_from_relocated_root() -> None:
     platform = RUNTIME_PLATFORM or "linux_amd64"
     _assert_native_host(platform)
