@@ -38,6 +38,7 @@ from factory.orchestration.factory_controls import (
     _locked_session,
     _now,
     _read_session,
+    decision_identity,
     intake_policy,
     is_advisory,
     terminal_effect,
@@ -136,7 +137,12 @@ def _option(escalation: dict, option_key: str) -> dict:
     raise DecisionError(422, "the escalation offers no such option")
 
 
-def _claim(receipt_id: int, option_key: str, actor: str) -> tuple[dict, dict, dict]:
+def _claim(
+    receipt_id: int,
+    option_key: str,
+    actor: str,
+    expected_decision_id: str | None = None,
+) -> tuple[dict, dict, dict]:
     """Reserve this escalation for this option, or say why it cannot be.
 
     Returns the receipt fields the effects need, the escalation document, and
@@ -149,8 +155,20 @@ def _claim(receipt_id: int, option_key: str, actor: str) -> tuple[dict, dict, di
         escalation = escalation_of(row)
         if escalation is None:
             raise DecisionError(409, "this receipt raised no escalation")
-        option = _option(escalation, option_key)
         resolved = escalation.get("resolved")
+        if (
+            expected_decision_id is not None
+            and resolved is not None
+            and resolved.get("decision_id") == expected_decision_id
+            and resolved.get("option_key") == option_key
+        ):
+            return _fields(row), escalation, resolved
+        if (
+            expected_decision_id is not None
+            and _fields(row)["decision_id"] != expected_decision_id
+        ):
+            raise DecisionError(409, "the decision brief changed; read it again")
+        option = _option(escalation, option_key)
         if resolved is not None and resolved.get("option_key") == option_key:
             return _fields(row), escalation, resolved
         if terminal_resolution(resolved):
@@ -180,6 +198,7 @@ def _claim(receipt_id: int, option_key: str, actor: str) -> tuple[dict, dict, di
             issue_number=row.issue_number,
             option_key=option_key,
             effect=option.get("effect"),
+            decision_id=_fields(row)["decision_id"],
         )
         return _fields(row), escalation, None
 
@@ -243,6 +262,14 @@ def _fields(row: FactoryReceipt) -> dict:
         "url": row.url,
         "task_id": row.task_id,
         "task_class": row.task_class,
+        "decision_id": decision_identity(
+            {
+                "id": row.id,
+                "repo": row.repo,
+                "generation": row.generation,
+                "escalation": escalation_of(row),
+            }
+        ),
     }
 
 
@@ -539,7 +566,13 @@ def _apply(fields: dict, option: dict, note: str | None) -> dict:
 
 
 def _resolve(
-    receipt_id: int, option: dict, actor: str, note: str | None, effects: dict
+    receipt_id: int,
+    option: dict,
+    actor: str,
+    note: str | None,
+    effects: dict,
+    *,
+    expected_decision_id: str,
 ) -> dict:
     """Write the resolution onto the escalation and audit what it did."""
     effects = dict(effects)
@@ -552,10 +585,17 @@ def _resolve(
         "note": (note or "").strip()[:MAX_NOTE] or None,
         "effects": effects,
         "decided_at": _iso(_now()),
+        "decision_id": expected_decision_id,
     }
     with _locked_session() as (db, _control):
         row = _receipt(db, receipt_id)
         escalation = escalation_of(row) or {}
+        if _fields(row)["decision_id"] != expected_decision_id:
+            raise DecisionError(
+                409,
+                "the decision brief changed while applying the answer; "
+                "GitHub effects may have occurred, inspect the issue before retrying",
+            )
         # Read before the branch below, because re-admitting clears task_id and
         # the audit has to name the task the decision was made against rather
         # than the null a re-queued receipt carries.
@@ -614,6 +654,7 @@ def _resolve(
             option_key=resolution["option_key"],
             effect=resolution["effect"],
             effects=resolution["effects"],
+            decision_id=expected_decision_id,
         )
     return resolution
 
@@ -649,10 +690,17 @@ def resume_escalated(task_id: str, actor: str) -> dict:
 
 
 def apply_decision(
-    receipt_id: int, option_key: str, actor: str, note: str | None = None
+    receipt_id: int,
+    option_key: str,
+    actor: str,
+    note: str | None = None,
+    *,
+    expected_decision_id: str | None = None,
 ) -> dict:
     """Answer one escalation with one of its options."""
-    fields, escalation, resolved = _claim(receipt_id, option_key, actor)
+    fields, escalation, resolved = _claim(
+        receipt_id, option_key, actor, expected_decision_id
+    )
     if resolved is not None:
         return {"ok": True, "applied": False, "resolution": resolved}
     option = _option(escalation, option_key)
@@ -674,7 +722,14 @@ def apply_decision(
         if isinstance(exc, DecisionError):
             raise
         raise DecisionError(502, "the decision could not be applied on GitHub") from exc
-    resolution = _resolve(receipt_id, option, actor, note, effects)
+    resolution = _resolve(
+        receipt_id,
+        option,
+        actor,
+        note,
+        effects,
+        expected_decision_id=fields["decision_id"],
+    )
     return {"ok": True, "applied": True, "resolution": resolution}
 
 

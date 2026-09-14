@@ -169,11 +169,12 @@ export function optionForKey(item, key) {
 }
 
 /** The request body for a decision, so the page never assembles one inline. */
-export function decisionBody(optionKey, note) {
+export function decisionBody(optionKey, note, decisionId) {
   const trimmed = (note ?? "").trim();
-  return trimmed
+  const body = trimmed
     ? { option_key: optionKey, note: trimmed }
     : { option_key: optionKey };
+  return decisionId ? { ...body, expected_decision_id: decisionId } : body;
 }
 
 export function chatBody(note) {

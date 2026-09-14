@@ -1606,6 +1606,7 @@ def test_a_re_brief_replaces_the_options_the_operator_sent_back(db, monkeypatch)
     run = settle_attempt(task, "succeeded", human_artifact(comment["html_url"]))
     refine.reconcile(task, policy, graph.load_graph(task["id"]), [run], 1)
     first = controls.task_snapshot(task["id"])["escalation"]
+    assert first["task_id"] == task["id"]
     assert [option["key"] for option in first["options"]] == ["split", "hold"]
 
     receipt_id = next(row.id for row in Session(db).exec(select(FactoryReceipt)).all())
@@ -1645,6 +1646,8 @@ def test_a_re_brief_replaces_the_options_the_operator_sent_back(db, monkeypatch)
         1,
     )
     second = controls.task_snapshot(second_task["id"])["escalation"]
+    assert second["task_id"] == second_task["id"]
+    assert second["task_id"] != first["task_id"]
     assert [option["key"] for option in second["options"]] == ["deliver", "hold"]
     assert second["question"] == "The friends tier is out of scope."
     assert second["recommendation"] == "deliver"

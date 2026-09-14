@@ -148,7 +148,11 @@
       return;
     }
     confirming = null;
-    return send(item, decisionBody(option.key, noteFor(item)), option.key);
+    return send(
+      item,
+      decisionBody(option.key, noteFor(item), item.decision_id),
+      option.key,
+    );
   }
 
   /**
@@ -169,7 +173,11 @@
       return;
     }
     confirming = null;
-    return send(item, decisionBody(option.key, noteFor(item)), option.key);
+    return send(
+      item,
+      decisionBody(option.key, noteFor(item), item.decision_id),
+      option.key,
+    );
   }
 
   function armed(item, option) {

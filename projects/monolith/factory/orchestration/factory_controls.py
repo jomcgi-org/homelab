@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 import math
 import os
@@ -1381,6 +1382,27 @@ def terminal_resolution(resolved: dict | None) -> bool:
     return resolved is not None and terminal_effect(resolved.get("effect"))
 
 
+def decision_identity(receipt: dict) -> str | None:
+    """Identify the exact brief, including hidden option effects and context.
+
+    Resolution is excluded so acknowledging an answer does not change its
+    identity. Brief writers retain their source task, even after re-admission
+    clears the receipt's task pointer. Legacy documents remain readable; their
+    next persisted brief gains that source identity without a data migration.
+    """
+    escalation = receipt.get("escalation")
+    if not escalation:
+        return None
+    payload = {
+        "receipt_id": receipt.get("id"),
+        "repo": receipt.get("repo"),
+        "generation": receipt.get("generation"),
+        "brief": {key: value for key, value in escalation.items() if key != "resolved"},
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return "decision:" + hashlib.sha256(encoded).hexdigest()
+
+
 def escalation_view(receipt: dict) -> dict | None:
     """One escalation as the operator page renders it, from a board snapshot.
 
@@ -1393,6 +1415,8 @@ def escalation_view(receipt: dict) -> dict | None:
     resolved = escalation.get("resolved")
     return {
         "receipt_id": receipt.get("id"),
+        "decision_id": decision_identity(receipt),
+        "repo": receipt.get("repo"),
         "issue_number": receipt.get("issue_number"),
         "title": receipt.get("title"),
         "url": receipt.get("url"),

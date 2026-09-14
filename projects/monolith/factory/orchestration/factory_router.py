@@ -37,6 +37,9 @@ class DecisionRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     option_key: str | None = Field(default=None, max_length=32)
+    expected_decision_id: str | None = Field(
+        default=None, pattern=r"^decision:[0-9a-f]{64}$"
+    )
     action: str | None = None
     note: str | None = Field(default=None, max_length=4000)
 
@@ -159,11 +162,19 @@ def factory_decision(
         raise HTTPException(422, "supply exactly one of option_key or action=chat")
     try:
         if chat:
+            if body.expected_decision_id is not None:
+                raise HTTPException(
+                    422, "exact decision identity is only supported for options"
+                )
             if not (body.note or "").strip():
                 raise HTTPException(422, "a chat request needs a note")
             return request_chat(receipt_id, body.note or "", principal.subject)
         return apply_decision(
-            receipt_id, body.option_key or "", principal.subject, body.note
+            receipt_id,
+            body.option_key or "",
+            principal.subject,
+            body.note,
+            expected_decision_id=body.expected_decision_id,
         )
     except DecisionError as exc:
         raise HTTPException(exc.status, exc.reason) from exc
