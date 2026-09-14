@@ -64,12 +64,12 @@ tunnel:
   # WHY NODE-4 SURVIVED IS UNEXPLAINED. This comment used to say node-4 had the
   # node-local CAKE shaper and node-1/2/3 did not. That explanation is
   # RETRACTED: measurements on 2026-07-30 recorded in #4171 found the shaper
-  # inert under Cilium's tcx datapath, and node-4 had no ingress qdisc at all
-  # during the stampede, so it was not shaped either. Untested candidates from
-  # that issue: node-4 has ~64 GB RAM against node-1's ~12 GB, it is the only
-  # node that is not a control-plane/etcd member, it hosts the 16gi brick
-  # rather than node-1's heavy cron-pod load, or it sits on a different switch
-  # port.
+  # inert under Cilium's tcx datapath and node-4's ingress qdisc absent
+  # entirely, and that issue concludes node-4 was not shaped during this
+  # stampede either. Untested candidates from that issue: node-4 has ~64 GB
+  # RAM against node-1's ~12 GB, it is the only node that is not a
+  # control-plane/etcd member, it hosts the 16gi brick rather than node-1's
+  # heavy cron-pod load, or it sits on a different switch port.
   #
   # So this is defence in depth, not the fix: no node is shaped, and any
   # replica can die in the same stampede. It buys 4 chances instead of 2. The
