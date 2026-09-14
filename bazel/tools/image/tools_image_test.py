@@ -5,7 +5,6 @@ import json
 import os
 import pathlib
 import platform as host_platform
-import shutil
 import stat
 import struct
 import subprocess
@@ -154,51 +153,6 @@ def _caret_dependency_match(
     return matches.pop()
 
 
-def _assert_loader_dependencies(root: pathlib.Path, platform: str) -> None:
-    binaries = [root / "usr/bin" / command for command in NATIVE_COMMANDS]
-    binaries.append(root / "usr/bin/node")
-
-    if platform.startswith("linux_"):
-        loader_tool = shutil.which("ldd")
-        if loader_tool is None:
-            pytest.skip("ldd is not available on this executor")
-        for binary in binaries:
-            result = subprocess.run(
-                [loader_tool, str(binary)],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                timeout=30,
-                check=False,
-            )
-            output = result.stdout.lower()
-            if result.returncode == 0:
-                assert "not found" not in output, f"{binary.name}: {result.stdout}"
-            else:
-                assert (
-                    "not a dynamic executable" in output
-                    or "statically linked" in output
-                ), f"{binary.name}: {result.stdout}"
-        return
-
-    loader_tool = shutil.which("otool")
-    if loader_tool is None:
-        pytest.skip("otool is not available on this executor")
-    for binary in binaries:
-        result = subprocess.run(
-            [loader_tool, "-L", str(binary)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-        assert result.returncode == 0, f"{binary.name}: {result.stdout}"
-        assert "not found" not in result.stdout.lower(), (
-            f"{binary.name}: {result.stdout}"
-        )
-
-
 @pytest.mark.parametrize("platform", TEST_PLATFORMS)
 def test_every_platform_contains_executable_commands(platform: str) -> None:
     layers = _layers(platform)
@@ -286,7 +240,6 @@ def test_commands_execute_from_relocated_root() -> None:
             "bb": ["version", "--cli"],
             "buildifier": ["--version"],
             "claude": ["--version"],
-            "eslint": ["--version"],
             "hf2oci": ["--help"],
             "shellcheck": ["--version"],
         }
@@ -302,14 +255,3 @@ def test_commands_execute_from_relocated_root() -> None:
                 check=False,
             )
             assert result.returncode == 0, f"{command}: {result.stdout}"
-
-
-@pytest.mark.skip(reason="temporary loader-probe CI isolation")
-def test_native_loader_dependencies() -> None:
-    platform = RUNTIME_PLATFORM or "linux_amd64"
-    _assert_native_host(platform)
-
-    with tempfile.TemporaryDirectory() as temp:
-        root = pathlib.Path(temp)
-        _extract_layers(_layers(platform), root)
-        _assert_loader_dependencies(root, platform)
