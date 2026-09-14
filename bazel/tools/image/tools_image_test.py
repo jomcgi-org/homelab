@@ -107,20 +107,20 @@ def _extract_layers(layers: list[pathlib.Path], root: pathlib.Path) -> None:
             archive.extractall(root, filter="data")
 
 
-def _package_directory(root: pathlib.Path, package_name: str) -> pathlib.Path:
+def _package_directories(root: pathlib.Path, package_name: str) -> list[pathlib.Path]:
     store = root / "usr/local/lib/node_modules/.aspect_rules_js"
     matches = []
     for package_json in store.rglob("package.json"):
         metadata = json.loads(package_json.read_text())
         if metadata.get("name") == package_name:
             matches.append(package_json.parent)
+    return matches
+
+
+def _package_directory(root: pathlib.Path, package_name: str) -> pathlib.Path:
+    matches = _package_directories(root, package_name)
     assert len(matches) == 1, f"expected one {package_name} directory, got {matches}"
     return matches[0]
-
-
-def _resolved_dependency_version(package_dir: pathlib.Path, name: str) -> str:
-    dependency = (package_dir / "node_modules" / name).resolve(strict=True)
-    return json.loads((dependency / "package.json").read_text())["version"]
 
 
 def _semver(version: str) -> tuple[int, int, int]:
@@ -130,7 +130,9 @@ def _semver(version: str) -> tuple[int, int, int]:
     return tuple(int(part) for part in parts)
 
 
-def _assert_caret_dependency_resolves(package_dir: pathlib.Path, name: str) -> str:
+def _caret_dependency_match(
+    package_dir: pathlib.Path, name: str, available_versions: set[str]
+) -> str:
     metadata = json.loads((package_dir / "package.json").read_text())
     declared = metadata["dependencies"][name]
     assert declared.startswith("^"), f"unsupported {name} range: {declared}"
@@ -143,11 +145,15 @@ def _assert_caret_dependency_resolves(package_dir: pathlib.Path, name: str) -> s
     else:
         upper = (0, 0, lower[2] + 1)
 
-    resolved = _resolved_dependency_version(package_dir, name)
-    assert lower <= _semver(resolved) < upper, (
-        f"{metadata['name']} resolves {name}@{resolved} outside {declared}"
+    matches = {
+        version
+        for version in available_versions
+        if lower <= _semver(version) < upper
+    }
+    assert len(matches) == 1, (
+        f"{metadata['name']} range {name}@{declared} matches {matches}"
     )
-    return resolved
+    return matches.pop()
 
 
 def _assert_loader_dependencies(root: pathlib.Path, platform: str) -> None:
@@ -228,20 +234,27 @@ def test_eslint_preserves_versioned_dependency_graph_and_lints() -> None:
         eslint = (root / "usr/local/lib/node_modules/eslint").resolve(strict=True)
         eslint_utils = _package_directory(root, "@eslint-community/eslint-utils")
         espree = _package_directory(root, "espree")
+        visitor_versions = {
+            json.loads((directory / "package.json").read_text())["version"]
+            for directory in _package_directories(root, "eslint-visitor-keys")
+        }
+        assert len(visitor_versions) == 2
         resolved_versions = {
-            _assert_caret_dependency_resolves(consumer, "eslint-visitor-keys")
+            _caret_dependency_match(
+                consumer, "eslint-visitor-keys", visitor_versions
+            )
             for consumer in (eslint, eslint_utils, espree)
         }
         assert len(resolved_versions) == 2, (
             "expected two eslint-visitor-keys versions in the pnpm graph, got "
             f"{resolved_versions}"
         )
-        assert _resolved_dependency_version(
-            eslint, "eslint-visitor-keys"
-        ) == _resolved_dependency_version(espree, "eslint-visitor-keys")
-        assert _resolved_dependency_version(
-            eslint_utils, "eslint-visitor-keys"
-        ) != _resolved_dependency_version(eslint, "eslint-visitor-keys")
+        assert _caret_dependency_match(
+            eslint, "eslint-visitor-keys", visitor_versions
+        ) == _caret_dependency_match(espree, "eslint-visitor-keys", visitor_versions)
+        assert _caret_dependency_match(
+            eslint_utils, "eslint-visitor-keys", visitor_versions
+        ) != _caret_dependency_match(eslint, "eslint-visitor-keys", visitor_versions)
 
         pytest.skip("temporary relocated-lint CI isolation")
         (root / "home").mkdir()
