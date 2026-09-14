@@ -12,19 +12,25 @@ This test asserts at CI time that no future MCP tool addition can
 sneak in a forbidden pattern and ship to production with silent
 discovery loss.
 
-Source of the rules (verified 2026-05-08 against the deployed gateway
-image): ``/app/mcpgateway/schemas.py`` ``ToolCreate.validate_description``
-plus ``MAX_DESCRIPTION_LENGTH`` from ``/app/mcpgateway/common/validators.py``.
-If Context Forge is upgraded and the rules change, update the
-``FORBIDDEN_PATTERNS`` and ``MAX_DESCRIPTION_LENGTH`` constants below.
+The deployed list lives in this repo, not just in the gateway image:
+``projects/mcp/context-forge-gateway/chart/charts/mcp-stack-1.0.7.tgz``
+-> ``mcp-stack/values.yaml`` ``TOOL_DESCRIPTION_FORBIDDEN_PATTERNS``, with
+``VALIDATION_STRICT: "true"`` alongside it, which is what makes the gateway
+raise rather than warn. Neither of this chart's own values files overrides
+either key. If Context Forge is upgraded and the rules change, update the
+constants below against that path.
 """
 
 from __future__ import annotations
 
 import pytest
 
-# From mcpgateway/schemas.py:436 — copied verbatim. Backticks are
-# explicitly allowed (commonly used for Markdown inline code).
+# A deliberate SUPERSET of the deployed list, which is
+# ["&&", ";", "||", "$(", "> ", "< "]. The bare "|" is ours: it is not
+# refused today, but a description carrying one is a pipe away from the
+# "> " and "< " that are, and nothing in the monolith needs it. Do not
+# "correct" this down to six. Backticks are explicitly allowed by the
+# gateway (commonly used for Markdown inline code).
 FORBIDDEN_PATTERNS = ["&&", ";", "||", "$(", "|", "> ", "< "]
 
 # From mcpgateway/common/validators.py — gateway default is 8192 (8KB).
@@ -54,6 +60,22 @@ def _register_all_tools() -> int:
     return registered
 
 
+# A non-zero module count proves only that some module declared a
+# register_mcp callable, not that any tool reached the shared instance.
+# register_mcp bodies are side-effect imports (factory/module.py registers
+# factory.execution.mcp AND factory.orchestration.mcp), so dropping one line
+# would take a whole domain out of this test's field of view while leaving
+# the count non-zero and the run green. These four span four separate
+# register_mcp bodies, including the orchestration module that carried the
+# semicolons this test was wired up for.
+SENTINEL_TOOLS = {
+    "factory_control",
+    "k8s_list_resources",
+    "monolith_agent_notify",
+    "search_knowledge",
+}
+
+
 @pytest.mark.asyncio
 async def test_all_mcp_tool_descriptions_pass_context_forge_validation():
     """Every registered tool's description must be Context Forge-safe."""
@@ -65,6 +87,14 @@ async def test_all_mcp_tool_descriptions_pass_context_forge_validation():
     from core.mcp_app import mcp
 
     tools = await mcp.list_tools()
+    names = {tool.name for tool in tools}
+    missing = sorted(SENTINEL_TOOLS - names)
+    assert not missing, (
+        f"registered {registered} module(s) but {missing} never reached "
+        "core.mcp_app.mcp, so this test is scanning a partial catalogue and "
+        "would pass while whole domains go unchecked"
+    )
+
     violations: list[str] = []
     for tool in tools:
         desc = tool.description or ""
@@ -80,5 +110,5 @@ async def test_all_mcp_tool_descriptions_pass_context_forge_validation():
         "These MCP tool descriptions will be silently dropped by Context Forge:\n"
         + "\n".join(violations)
         + "\n\nFix: rephrase the docstring to avoid the listed pattern. "
-        "See feedback_context_forge_description_sanitization.md memory entry."
+        "See the tool catalogue refresh section of projects/mcp/ARCHITECTURE.md."
     )

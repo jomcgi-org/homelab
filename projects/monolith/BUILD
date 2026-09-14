@@ -8058,11 +8058,7 @@ py_test(
     imports = ["."],
     deps = [
         ":monolith_backend",
-        "@pip//fastapi",
         "@pip//pytest",
-        "@pip//pytest_asyncio",
-        "@pip//sqlmodel",
-        "@pip//tzdata",
     ],
 )
 

@@ -2561,24 +2561,11 @@ def test_voice_ui_tools_require_private_factory_access(
         reset_current_principal(token)
 
 
-# Substrings Context Forge refuses in a tool description at catalogue refresh
-# (mcpgateway ToolCreate.validate_description). A tool that trips one is not
-# rejected loudly anywhere a caller can see: the gateway logs an ERROR and
-# drops the row, so the tool is served by the monolith and invisible to every
-# MCP client. session_start and session_send were lost that way to one ';'.
-CONTEXT_FORGE_FORBIDDEN_IN_DESCRIPTIONS = (";", "&&", "||", "$(")
-
-
-def test_tool_descriptions_survive_the_gateway_validator():
-    from core.mcp_app import mcp as shared
-
-    offenders = []
-    for tool in asyncio.run(shared.list_tools()):
-        description = tool.description or ""
-        hits = [p for p in CONTEXT_FORGE_FORBIDDEN_IN_DESCRIPTIONS if p in description]
-        if hits:
-            offenders.append((tool.name, hits))
-    assert not offenders, (
-        "Context Forge drops these tools at refresh, so no client would see "
-        f"them: {offenders}"
-    )
+# The Context Forge description check lives in
+# agent/mcp_description_compliance_test.py, which walks the whole module
+# registry. A copy used to sit here, but it only listed four of the six
+# refused patterns and ran in a process importing factory.execution alone,
+# so it never saw factory.orchestration's tools: five of them shipped with
+# semicolons and were dropped by the gateway while this file stayed green.
+# An in-domain copy answers "do we test this?" at the wrong scope, so do not
+# reintroduce one.

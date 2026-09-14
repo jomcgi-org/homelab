@@ -391,14 +391,32 @@ tool count check for an incomplete catalogue.
 **Refresh puts rows in `tools`; it does not make them visible.** A new
 monolith tool clears five gates before a caller sees it, and refresh covers
 only the first two: the monolith serves it; the health tick syncs it; Context
-Forge's XSS validator accepts the description (a bullet reading
-`- javascript: ...` is read as a URI scheme and the tool is dropped while the
-refresh still reports success); a `server_tool_association` row links it to
-the `homelab-admin` virtual server, which refresh never writes; and
-`visibility` is `public`, where refresh leaves a new tool at `team`. The last
-two are hand edits in Postgres after every new tool, and four tools are
-waiting on them as of 2026-09-05. #5636 keeps federation off this path
-entirely by mounting upstream servers on the agents tier.
+Forge's validator accepts the description; a `server_tool_association` row
+links it to the `homelab-admin` virtual server, which refresh never writes;
+and `visibility` is `public`, where refresh leaves a new tool at `team`. The
+last two stopped being hand edits when `teamMapping.publishTools` shipped:
+the 15-minute CronJob does both writes, additively, and refuses to act on an
+empty catalogue. #5636 keeps federation off this path entirely by mounting
+upstream servers on the agents tier.
+
+Gate three is the quiet one. The validator refuses a description containing
+any of `TOOL_DESCRIPTION_FORBIDDEN_PATTERNS`, which the chart sets to
+`["&&", ";", "||", "$(", "> ", "< "]`, and `VALIDATION_STRICT=true` makes
+that a refusal rather than a warning. A `- javascript: ...` bullet is read as
+a URI scheme and drops the same way. Either way the tool is dropped while the
+refresh still reports success, so the only evidence is an ERROR line in the
+gateway pod. A semicolon cost the catalogue five factory tools this way,
+served by the monolith and invisible to every caller until 2026-09-14.
+`projects/monolith/agent/mcp_description_compliance_test.py` is the CI gate
+for it now: it walks the real module registry and fails the build rather than
+letting the loss surface as a missing tool in production.
+
+**Why.** The guard is on the monolith side because the gateway's refusal is
+silent by construction and the chart cannot make it loud. Raising the
+gateway's log level was rejected as a fix: it detects the loss after the
+deploy instead of preventing it, and nothing reads those logs. Relaxing
+`TOOL_DESCRIPTION_FORBIDDEN_PATTERNS` was rejected as the wrong direction to
+push a security default for the sake of punctuation.
 
 **Why.** Context Forge's cached catalogue made new monolith tools invisible until
 a refresh, one of the standing costs used to justify its removal (ADR agents/020).
