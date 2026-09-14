@@ -146,9 +146,7 @@ def _caret_dependency_match(
         upper = (0, 0, lower[2] + 1)
 
     matches = {
-        version
-        for version in available_versions
-        if lower <= _semver(version) < upper
+        version for version in available_versions if lower <= _semver(version) < upper
     }
     assert len(matches) == 1, (
         f"{metadata['name']} range {name}@{declared} matches {matches}"
@@ -240,9 +238,7 @@ def test_eslint_preserves_versioned_dependency_graph_and_lints() -> None:
         }
         assert len(visitor_versions) == 2
         resolved_versions = {
-            _caret_dependency_match(
-                consumer, "eslint-visitor-keys", visitor_versions
-            )
+            _caret_dependency_match(consumer, "eslint-visitor-keys", visitor_versions)
             for consumer in (eslint, eslint_utils, espree)
         }
         assert len(resolved_versions) == 2, (
