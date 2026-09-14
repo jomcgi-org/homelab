@@ -48,6 +48,8 @@ defmodule Embervm.LogFormatter do
     :total_working_set_mib,
     :guest_free?,
     :cp_reserved_mib,
+    # Parsed, inert future-facing capacity configuration.
+    :desired_capacity,
     # StatefulSweeper pressure-state transitions.
     :brick_id,
     :from,

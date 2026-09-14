@@ -1005,6 +1005,19 @@ defmodule Embervm.RouterTest do
     assert is_integer(body["create_saturated_denials"])
   end
 
+  test "/v1/capacity needs management auth and returns the read-only report" do
+    assert req(:get, "/v1/capacity").status == 401
+
+    resp = req(:get, "/v1/capacity", auth("good"))
+    assert resp.status == 200
+
+    body = json(resp.body)
+    assert is_list(body["instances"])
+    assert is_list(body["workloads"])
+    assert Map.keys(body["demand"]) |> Enum.sort() == ["committed", "floors", "observed"]
+    assert body["semantics"]["memory_detail"] =~ "not kubectl top"
+  end
+
   # -- submit ----------------------------------------------------------------
 
   test "async submit returns 202 and creates a queued task backed by the op-log" do

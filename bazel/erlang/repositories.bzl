@@ -109,8 +109,9 @@ _HEX_DEPS = [
     ("googleapis", "0.1.0", "1989a7244fd17d3eb5f3de311a022b656c3736b39740db46506157c4604bd212"),
     ("jason", "1.4.5", "b0c823996102bcd0239b3c2444eb00409b72f6a140c1950bc8b457d836b30684"),
     ("protobuf", "0.17.0", "ca6c91f6f63e2c147b47f03eefd10b80538aa6fc55ff4b12b795efb786b0152f"),
-    #   4. OpenTelemetry tracing (Task 13) with OTLP/gRPC export. The API +
-    #      SDK (opentelemetry, opentelemetry_api, semantic_conventions) plus the
+    #   4. OpenTelemetry tracing (Task 13) and capacity metrics with OTLP/gRPC
+    #      export. The API + SDK (opentelemetry, opentelemetry_api,
+    #      semantic_conventions, and the separate experimental metrics pair) plus the
     #      OTLP exporter, whose transport is grpcbox -> {acceptor_pool, ctx, gproc,
     #      ts_chatterbox -> hpack_erl} with TLS cert checking via
     #      tls_certificate_check -> ssl_verify_fun. All pure Erlang/Elixir (no NIF),
@@ -122,6 +123,10 @@ _HEX_DEPS = [
     ("opentelemetry", "1.7.0", "a9173b058c4549bf824cbc2f1d2fa2adc5cdedc22aa3f0f826951187bbd53131"),
     ("opentelemetry_exporter", "1.10.0", "33a116ed7304cb91783f779dec02478f887c87988077bfd72840f760b8d4b952"),
     ("opentelemetry_semantic_conventions", "1.27.0", "9681ccaa24fd3d810b4461581717661fd85ff7019b082c2dff89c7d5b1fc2864"),
+    # Observable metrics API + SDK. These remain separate experimental
+    # packages in opentelemetry-erlang 1.x and are compatible with the pins above.
+    ("opentelemetry_api_experimental", "0.5.1", "10297057eada47267d4f832011becef07d25690e6bf91febccfc4e740dba1a6f"),
+    ("opentelemetry_experimental", "0.5.1", "a1ad941294f1d3623c33e151faa35613849a10cb468dbfc9ad16367f7ddf80bf"),
     ("grpcbox", "0.18.0", "5ec9f8fe664ab51201b32c117a61511a1f9d6316771e3891ba8a88d289a732ab"),
     ("acceptor_pool", "1.0.1", "f172f3d74513e8edd445c257d596fc84dbdd56d2c6fa287434269648ae5a421e"),
     ("ctx", "0.6.0", "a14ed2d1b67723dbebbe423b28d7615eb0bdcba6ff28f2d1f1b0a7e1d4aa5fc2"),
