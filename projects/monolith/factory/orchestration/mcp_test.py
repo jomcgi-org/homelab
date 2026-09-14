@@ -380,6 +380,17 @@ def test_mcp_client_lists_and_calls_controls_with_schema_validation(monkeypatch)
                 raise_on_error=False,
             )
             assert invalid.is_error
+            for version in (True, "1"):
+                invalid = await client.call_tool(
+                    "factory_control",
+                    {
+                        "action": "stop",
+                        "request_key": "bad-version",
+                        "expected_version": version,
+                    },
+                    raise_on_error=False,
+                )
+                assert invalid.is_error
             assert calls == [("pause_admissions", "pause", 1, None, "joe")]
 
     _as(_principal(), exercise)

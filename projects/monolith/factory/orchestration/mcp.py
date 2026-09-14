@@ -19,7 +19,7 @@ import asyncio
 from datetime import datetime, timezone
 from typing import Annotated, Literal
 
-from pydantic import Field
+from pydantic import BeforeValidator, Field
 
 from auth.api import Principal, current_principal
 from core.mcp_app import mcp
@@ -34,6 +34,17 @@ COVERAGE = {
     "factory_records": "covered",
     "cloud_sessions": "not_indexed",
 }
+
+
+def _exact_integer(value: object) -> int:
+    # FastMCP may explicitly request non-strict Pydantic validation, overriding
+    # Field(strict=True). Check the original JSON value before coercion.
+    if type(value) is not int:
+        raise ValueError("an integer is required without coercion")
+    return value
+
+
+MCPInteger = Annotated[int, BeforeValidator(_exact_integer)]
 
 
 def _refuse(principal: Principal) -> dict | None:
@@ -282,9 +293,9 @@ def _detail_payload(receipt_id: int, node_offset: int, limit: int) -> dict:
 
 @mcp.tool
 async def factory_task_detail(
-    receipt_id: Annotated[int, Field(gt=0)],
-    node_offset: Annotated[int, Field(ge=0)] = 0,
-    limit: Annotated[int, Field(ge=1, le=50)] = 20,
+    receipt_id: Annotated[MCPInteger, Field(gt=0)],
+    node_offset: Annotated[MCPInteger, Field(ge=0)] = 0,
+    limit: Annotated[MCPInteger, Field(ge=1, le=50)] = 20,
 ) -> dict:
     """Inspect an exact factory receipt and a bounded page of its plan nodes.
 
@@ -327,8 +338,8 @@ def _submit_issue(
 @mcp.tool
 async def factory_submit_issue(
     repo: str,
-    issue_number: Annotated[int, Field(gt=0, le=2**31 - 1)],
-    generation: Annotated[int, Field(ge=0, le=2**31 - 1)] = 0,
+    issue_number: Annotated[MCPInteger, Field(gt=0, le=2**31 - 1)],
+    generation: Annotated[MCPInteger, Field(ge=0, le=2**31 - 1)] = 0,
 ) -> dict:
     """Queue an existing open GitHub issue and return its durable factory receipt.
 
@@ -373,7 +384,7 @@ def _request_control(
 async def factory_control(
     action: Literal["enable", "pause_admissions", "pause_task", "resume_task", "stop"],
     request_key: Annotated[str, Field(min_length=1, max_length=256)],
-    expected_version: Annotated[int, Field(ge=0, le=2**63 - 1)],
+    expected_version: Annotated[MCPInteger, Field(ge=0, le=2**63 - 1)],
     task_id: Annotated[str | None, Field(min_length=1, max_length=256)] = None,
 ) -> dict:
     """Apply a supported factory control as an authenticated human operator.
