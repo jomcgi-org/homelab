@@ -19,7 +19,7 @@ This document provides an overview of all services running in the cluster.
 | **Atlas Operator**           | Declarative database schema migrations via Atlas CRDs                          | [projects/platform/atlas-operator](../../projects/platform/atlas-operator/)                                   |
 | **CloudNativePG**            | PostgreSQL operator for in-cluster databases                                   | [projects/platform/cloudnative-pg](../../projects/platform/cloudnative-pg/)                                   |
 | **KEDA**                     | Event-driven autoscaler, shared infrastructure                                 | [projects/platform/keda](../../projects/platform/keda/)                                                       |
-| **Node Traffic Shaper**      | Caps inbound node bandwidth with CAKE to protect control-plane traffic         | [projects/platform/node-traffic-shaper](../../projects/platform/node-traffic-shaper/)                         |
+| **Node Traffic Shaper**      | CAKE ingress qdisc for node uplinks; inert under Cilium `tcx` (#4171), decommission candidate | [projects/platform/node-traffic-shaper](../../projects/platform/node-traffic-shaper/)                         |
 | **1Password Operator**       | Secret management via OnePasswordItem CRDs                                     | External chart (Helm install, outside ArgoCD)                                                              |
 
 ## Production Services (prod)

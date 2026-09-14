@@ -1,3 +1,10 @@
+# INERT ON THE HOME CLUSTER, and pending decommission on node-4. Cilium's tcx
+# attachment runs before the legacy tc filters this unit installs, so the
+# 2026-07-30 measurements in #4171 recorded zero shaped bytes. The unit still
+# re-applies that inert configuration on every boot. Retirement is the Remove
+# block in README.md, run with sudo on node-4; it has not been performed. The
+# directives below are unchanged.
+
 [Unit]
 Description=Node ingress traffic shaper (CAKE on uplink)
 Documentation=https://github.com/jomcgi/homelab/tree/main/projects/platform/node-traffic-shaper
