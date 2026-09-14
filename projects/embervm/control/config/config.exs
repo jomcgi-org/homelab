@@ -24,3 +24,8 @@ config :logger, :default_handler,
 config :opentelemetry,
   span_processor: :batch,
   traces_exporter: :none
+
+# The metrics SDK is intentionally reader-less unless runtime.exs has an OTLP
+# endpoint. Observable gauges still register against the no-export reader set,
+# so endpoint-less tests and local runs stay inert.
+config :opentelemetry_experimental, readers: []

@@ -14,6 +14,7 @@ defmodule Embervm.Router do
     * `POST /v1/tasks/:id/redrive`     re-queue a dead-lettered task (audited).
     * `GET  /v1/nodes`                 read-only node health + dispatcher snapshot
       (operational introspection: capacity facts, inventory, denials).
+    * `GET  /v1/capacity`              read-only capacity and demand tiers.
     * `GET  /v1/health/durability`     both ADR 031 durability tiers (#4338):
       tier 1 export-failure streaks + tier 2 gc-manifests stall. 200 ok /
       503 not-ok / 404 while dark.
@@ -46,7 +47,7 @@ defmodule Embervm.Router do
   require Logger
   require OpenTelemetry.Tracer, as: Tracer
 
-  alias Embervm.{SessionTrace, SyncWait, TaskState, TaskStore}
+  alias Embervm.{CapacityReport, SessionTrace, SyncWait, TaskState, TaskStore}
 
   # Single tenant in v1 (the `homelab` tenant); the column is still carried on
   # every record so multi-tenant is a data change, not a schema change.
@@ -102,6 +103,10 @@ defmodule Embervm.Router do
 
   get "/v1/nodes" do
     handle_nodes(conn)
+  end
+
+  get "/v1/capacity" do
+    handle_capacity(conn)
   end
 
   get "/v1/conformance" do
@@ -586,6 +591,12 @@ defmodule Embervm.Router do
       create_concurrency: create_concurrency,
       create_saturated_denials: create_saturated_denials
     })
+  end
+
+  # The capacity surface only assembles existing ETS, dispatcher, catalog, and
+  # cron facts. It does not feed BrickController or any placement path.
+  defp handle_capacity(conn) do
+    send_json(conn, 200, CapacityReport.build())
   end
 
   defp handle_healthz(conn) do

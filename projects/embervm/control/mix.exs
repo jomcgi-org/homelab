@@ -106,6 +106,12 @@ defmodule Embervm.MixProject do
       {:opentelemetry_exporter, path: "deps/opentelemetry_exporter", override: true},
       {:opentelemetry_semantic_conventions,
        path: "deps/opentelemetry_semantic_conventions", override: true},
+      # The Erlang SDK's metrics signal is still packaged separately from its
+      # tracing API. It supplies the observable gauges exported by CapacityReport.
+      {:opentelemetry_api_experimental,
+       path: "deps/opentelemetry_api_experimental", override: true},
+      {:opentelemetry_experimental,
+       path: "deps/opentelemetry_experimental", override: true},
       {:grpcbox, path: "deps/grpcbox", override: true},
       {:acceptor_pool, path: "deps/acceptor_pool", override: true},
       {:ctx, path: "deps/ctx", override: true},
