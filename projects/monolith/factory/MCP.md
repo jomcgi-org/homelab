@@ -1,7 +1,7 @@
 # Factory MCP
 
 The shared monolith MCP surface supports operator status, existing-issue
-intake, receipt inspection and deterministic controls. A spoken or typed
+intake, receipt inspection, decision replies, conductor context and controls. A spoken or typed
 conversation can use these operations without waiting for a model turn.
 The external gateway is configured at `https://mcp.jomcgi.dev/mcp`, with
 Authentik OAuth. Calls require a standing human principal in `operators`;
@@ -57,26 +57,57 @@ also durable, so a retry cannot become effective after conditions change.
 These operations reuse the singleton control lock, mutation owner and audit
 records; spending and existing start records are preserved.
 
+## Decisions and conductor context
+
+1. Read `factory_escalations` and retain the exact `receipt_id` and `decision_id`.
+2. Use `factory_context` for that receipt to review current state, recorded
+   direction, recent operator exchanges and repository-scoped KG notes.
+3. Call `factory_decide` with an explicitly chosen `option_key` and a new
+   `request_key`. Use `factory_request_brief` with a note to ask a question or
+   provide direction instead of selecting an option.
+4. Retry identical arguments with the same key after a lost response. The
+   durable request ledger returns the original outcome without repeating
+   GitHub effects. A conflicting key or stale decision is refused.
+
+`completed` acknowledges the operation, not task delivery. For a clarification,
+check `requeued` and `blocked_by`: posting the question does not guarantee that
+the lane can run it. `accepted` means completion is unconfirmed, including a
+possibly interrupted process. `outcome_unknown` means GitHub effects may have
+occurred. These states retain the receipt's decision fence and require
+inspection and reconciliation, not a new key or an automatic retry of effects.
+Issue creation on GitHub cannot be made transactional with the factory database.
+
+The same decision owner serves HTTP and MCP. It checks the brief identity under
+the control lock before external writes and again before recording a resolution.
+Concurrent duplicate MCP calls share one accepted request. Request outcomes are
+append-only audit records, with completion committed alongside the resolution.
+The operator page sends the same brief identity; legacy HTTP callers can omit it.
+
+Successful answers and clarification requests are reported as unverified evidence
+through existing KG ingestion and extraction. Reporting is bounded and cannot
+undo a committed factory operation. The separate `knowledge` field reports
+`queued`, `duplicate`, `pending` or `unavailable`; repeating the same factory
+request also retries the deterministic knowledge report. No repeated factory
+effects are needed to recover from a KG outage.
+
+`factory_context` loads up to ten recorded operator exchanges and up to ten KG
+notes (five by default). It derives repository scope from the receipt, never a
+caller-supplied scope, and does not expand graph neighbours from other scopes.
+Notes include dispute, verification, validity and observation metadata. They
+are untrusted context, never execution authority. Factory records remain
+available when KG retrieval fails. This lets a fresh Claude conversation recover
+receipt-level context without selecting a worker session.
+
 ## Remaining integration
 
 This is a delivery slice of #5788, not the complete conductor interface.
 
-- `factory_escalations` reads pending questions. Conductor decision replies
-  and requests for another brief still use the existing authenticated HTTP
-  surface. Cards now carry `decision_id`, which identifies the complete brief,
-  including option effects and its source task. The operator page sends it as
-  `expected_decision_id` when answering an option. The shared decision owner
-  rejects a stale identity before GitHub writes and refuses to attach a result
-  to a brief replaced during those writes. The latter refusal explicitly says
-  effects may already have occurred; it is not a rollback acknowledgement.
-  Legacy HTTP callers may omit the expected identity. Concurrent identical
-  decisions and interrupted external writes still need durable retry handling
-  before exposing decision replies over MCP. Chat also needs request dedupe.
 - Free-form conductor requests, priority/direction edits, policy changes and
-  exact-attempt stopping are not exposed by these new MCP tools.
-- Conductor conversations and fresh-session KG continuity remain #5787;
-  planner context handoff remains #5849. General session recall is not proof
-  of that conversation contract.
+  exact-attempt stopping outside the existing receipt decision flow are not
+  exposed by these tools.
+- Standalone conductor conversations and private external-chat transcripts
+  remain outside the receipt-level contract. Broader conversation continuity
+  remains #5787; planner context handoff remains #5849.
 - Existing lower-level agent session tools are not conductor conversations.
 
 The targeted tests cover the operation owners and an in-process FastMCP

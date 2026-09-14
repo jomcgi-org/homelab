@@ -42,9 +42,13 @@ def test_factory_tools_are_registered():
     from core.mcp_app import mcp as shared
 
     registered = {tool.name for tool in asyncio.run(shared.list_tools())}
-    assert {"factory_status", "factory_escalations"} <= registered, (
-        f"factory tools not registered; got: {sorted(registered)}"
-    )
+    assert {
+        "factory_status",
+        "factory_escalations",
+        "factory_decide",
+        "factory_request_brief",
+        "factory_context",
+    } <= registered, f"factory tools not registered; got: {sorted(registered)}"
 
 
 @pytest.mark.parametrize(
@@ -251,6 +255,25 @@ def test_escalations_payload_passes_through_an_uninitialised_factory(monkeypatch
             {"action": "stop", "request_key": "stop", "expected_version": 1},
         ),
         ("factory_task_detail", {"receipt_id": 1}),
+        (
+            "factory_decide",
+            {
+                "receipt_id": 1,
+                "decision_id": "decision:" + "a" * 64,
+                "option_key": "close",
+                "request_key": "r",
+            },
+        ),
+        (
+            "factory_request_brief",
+            {
+                "receipt_id": 1,
+                "decision_id": "decision:" + "a" * 64,
+                "note": "why?",
+                "request_key": "r",
+            },
+        ),
+        ("factory_context", {"receipt_id": 1}),
     ],
 )
 def test_operation_adapters_refuse_before_calling_owners(
@@ -259,11 +282,119 @@ def test_operation_adapters_refuse_before_calling_owners(
     def explode(*_args, **_kwargs):
         raise AssertionError("unauthorized caller reached an operation")
 
-    for seam in ("_submit_issue", "_request_control", "_detail_payload"):
+    for seam in ("_submit_issue", "_request_control", "_detail_payload", "_decide"):
         monkeypatch.setattr(mcp, seam, explode)
     result = _as(principal, lambda: getattr(mcp, name)(**args))
     assert result["ok"] is False
     assert result["error"] == "standing operator authority is required"
+
+
+def test_mcp_client_decisions_preserve_identity_and_verified_actor(monkeypatch):
+    from fastmcp import Client
+    from core.mcp_app import mcp as shared
+
+    calls = []
+
+    def decide(*args):
+        calls.append(args)
+        return {"ok": True, "state": "completed"}
+
+    monkeypatch.setattr(mcp, "_decide", decide)
+    identity = "decision:" + "a" * 64
+
+    async def exercise():
+        async with Client(shared) as client:
+            args = dict(
+                receipt_id=7, decision_id=identity, option_key="close", request_key="r"
+            )
+            assert (await client.call_tool("factory_decide", args)).data["ok"]
+            for bad in (
+                dict(args, receipt_id=True),
+                dict(args, decision_id="stale"),
+                dict(args, actor="spoof"),
+            ):
+                assert (
+                    await client.call_tool("factory_decide", bad, raise_on_error=False)
+                ).is_error
+            assert (
+                await client.call_tool(
+                    "factory_request_brief",
+                    dict(
+                        receipt_id=7,
+                        decision_id=identity,
+                        note="Which scope?",
+                        request_key="q",
+                    ),
+                )
+            ).data["ok"]
+
+    _as(_principal(), exercise)
+    assert calls == [
+        (7, identity, "close", "r", None, "joe"),
+        (7, identity, "chat", "q", "Which scope?", "joe", "chat"),
+    ]
+
+
+def test_context_knowledge_is_scoped_and_does_not_expand_neighbours(monkeypatch):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+    from factory.orchestration import conductor_context as context
+
+    async def embed(text):
+        assert text == "query"
+        return [0.1]
+
+    def search(vector, **kwargs):
+        assert kwargs == {
+            "limit": 2,
+            "scope_filter": "repo:owner/repo",
+            "exclude_invalidated": True,
+        }
+        return [
+            {
+                "note_id": "allowed",
+                "scope": "repo:owner/repo",
+                "snippet": "context",
+                "verification_state": "disputed",
+                "disputed": True,
+                "edges": [{"target_id": "private-note"}],
+                "provenance": [{"raw_id": "raw", "secret": "do not expand"}],
+            },
+            {"note_id": "private", "scope": "personal:someone-else"},
+        ]
+
+    monkeypatch.setattr(
+        "shared.embedding.EmbeddingClient", lambda: SimpleNamespace(embed=embed)
+    )
+    monkeypatch.setattr("core.db.get_engine", lambda: object())
+    monkeypatch.setattr(context, "Session", lambda _: nullcontext(object()))
+    monkeypatch.setattr(
+        "knowledge.store.KnowledgeStore",
+        lambda _: SimpleNamespace(search_notes_with_context=search),
+    )
+    result = asyncio.run(context.retrieve_knowledge("query", "repo:owner/repo", 2))
+    assert [note["note_id"] for note in result["notes"]] == ["allowed"]
+    assert result["notes"][0]["disputed"] is True
+    assert result["notes"][0]["evidence_raw_ids"] == ["raw"]
+    assert "edges" not in result["notes"][0]
+
+
+def test_knowledge_failure_does_not_undo_a_completed_decision(monkeypatch):
+    from factory.orchestration import conductor_context as context
+
+    monkeypatch.setattr(
+        "factory.orchestration.factory_decisions.request_decision",
+        lambda *a, **kw: {"ok": True, "state": "completed"},
+    )
+
+    def unavailable(*args):
+        raise RuntimeError("KG unavailable")
+
+    monkeypatch.setattr(context, "maintain_request_knowledge", unavailable)
+    result = mcp._decide(1, "decision:abc", "close", "r", None, "joe")
+    assert result["ok"] is True
+    assert result["state"] == "completed"
+    assert result["knowledge"]["status"] == "unavailable"
 
 
 def test_control_attributes_authenticated_actor_and_preserves_owner_result(monkeypatch):

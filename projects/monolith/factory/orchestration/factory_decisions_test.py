@@ -626,6 +626,228 @@ def current_decision_id():
     return controls.escalations(controls.status()["receipts"])[0]["decision_id"]
 
 
+def durable_answer(
+    receipt_id, identity, *, key="request-1", actor="operator", option="close"
+):
+    return decisions.request_decision(
+        receipt_id, identity, option, actor, request_key=key
+    )
+
+
+def test_durable_answer_survives_receipt_replacement_and_rejects_key_reuse(db, github):
+    receipt_id = escalate(db, "close")
+    identity = current_decision_id()
+    first = durable_answer(receipt_id, identity)
+    assert first["state"] == "completed"
+    writes = list(github.writes)
+    with Session(db) as session:
+        row = session.get(FactoryReceipt, receipt_id)
+        row.escalation_json = json.dumps(
+            {"question": "New", "options": options("split")}
+        )
+        session.add(row)
+        session.commit()
+    db.dispose()
+    assert durable_answer(receipt_id, identity) == first
+    conflict = durable_answer(receipt_id, identity, option="split")
+    assert conflict["reason"] == "conflicting_decision_request"
+    assert github.writes == writes
+    # A genuinely new brief can choose a different option. Completed claims
+    # from the old brief must not fence the replacement forever.
+    new = durable_answer(
+        receipt_id, current_decision_id(), key="replacement", option="split"
+    )
+    assert new["state"] == "completed"
+    assert len(new["resolution"]["effects"]["children"]) == 2
+
+
+def test_concurrent_duplicate_answer_executes_effects_once(db, github, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    receipt_id = escalate(db, "close")
+    identity = current_decision_id()
+    started, release = Event(), Event()
+    apply = decisions._apply
+    calls = []
+
+    def blocked(*args):
+        calls.append(args)
+        started.set()
+        assert release.wait(5)
+        return apply(*args)
+
+    monkeypatch.setattr(decisions, "_apply", blocked)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(durable_answer, receipt_id, identity)
+        try:
+            assert started.wait(5)
+            pending = durable_answer(receipt_id, identity)
+            assert pending["state"] == "accepted"
+            assert (
+                durable_answer(receipt_id, identity, key="other")["state"] == "refused"
+            )
+            assert (
+                durable_answer(receipt_id, identity, actor="other")["state"]
+                == "refused"
+            )
+            with pytest.raises(decisions.DecisionError, match="unresolved outcome"):
+                decisions.apply_decision(receipt_id, "close", "browser")
+        finally:
+            release.set()
+        result = future.result()
+    assert result["state"] == "completed"
+    assert len(calls) == 1
+    assert durable_answer(receipt_id, identity) == result
+
+
+def test_interrupted_request_is_never_reexecuted(db, github, monkeypatch):
+    receipt_id = escalate(db, "close")
+    identity = current_decision_id()
+
+    class ProcessLost(BaseException):
+        pass
+
+    def lost(*_args):
+        raise ProcessLost()
+
+    monkeypatch.setattr(decisions, "_apply", lost)
+    with pytest.raises(ProcessLost):
+        durable_answer(receipt_id, identity)
+    db.dispose()
+    assert durable_answer(receipt_id, identity)["state"] == "accepted"
+    assert durable_answer(receipt_id, identity, key="new")["state"] == "refused"
+    assert not github.writes
+
+
+def test_partial_external_effect_is_durably_unknown(db, github, monkeypatch):
+    receipt_id = escalate(db, "close")
+    identity = current_decision_id()
+    write = github.write
+
+    def fail_close(repo, suffix, payload, **kwargs):
+        if kwargs.get("method") == "PATCH":
+            raise httpx.ReadTimeout("lost response")
+        return write(repo, suffix, payload, **kwargs)
+
+    monkeypatch.setattr(landing, "github_write", fail_close)
+    result = durable_answer(receipt_id, identity)
+    assert result["state"] == "outcome_unknown"
+    assert len(github.comments) == 1
+    assert durable_answer(receipt_id, identity) == result
+    assert durable_answer(receipt_id, identity, key="new")["state"] == "refused"
+    with pytest.raises(decisions.DecisionError):
+        decisions.request_chat(receipt_id, "try again", "browser")
+    assert len(github.comments) == 1
+
+
+def test_lost_completion_response_preserves_committed_result(db, github, monkeypatch):
+    receipt_id = escalate(db, "close")
+    identity = current_decision_id()
+    resolve = decisions._resolve
+
+    def lose_response(*args, **kwargs):
+        resolve(*args, **kwargs)
+        raise RuntimeError("response lost after commit")
+
+    monkeypatch.setattr(decisions, "_resolve", lose_response)
+    result = durable_answer(receipt_id, identity)
+    assert result["state"] == "completed"
+    assert durable_answer(receipt_id, identity) == result
+
+
+def test_stale_refusal_remains_refused_when_the_brief_changes_back(db, github):
+    receipt_id = escalate(db, "close")
+    identity = current_decision_id()
+    refused = durable_answer(receipt_id, "decision:" + "0" * 64)
+    assert refused["state"] == "refused"
+    assert (
+        durable_answer(receipt_id, identity)["reason"] == "conflicting_decision_request"
+    )
+    assert not github.writes
+
+
+def test_durable_chat_posts_and_requeues_once(db, github):
+    receipt_id = escalate(db, "close")
+    identity = current_decision_id()
+    configure()
+    args = (receipt_id, identity, "chat", "operator")
+    first = decisions.request_decision(
+        *args, request_key="q", note="Which tier?", action="chat"
+    )
+    assert first["state"] == "completed"
+    assert first["requeued"] is True
+    assert (
+        decisions.request_decision(
+            *args, request_key="q", note="Which tier?", action="chat"
+        )
+        == first
+    )
+    assert len(github.comments) == 1
+    assert len(escalation(db, receipt_id)["chat"]) == 1
+    with Session(db) as session:
+        assert session.get(FactoryReceipt, receipt_id).state == "queued"
+
+
+def test_durable_delivery_answer_does_not_block_its_own_readmission(db, github):
+    receipt_id = escalate(db, "deliver", state="escalated", task_class="bug-fix")
+    configure()
+    result = durable_answer(receipt_id, current_decision_id(), option="deliver")
+    assert result["state"] == "completed"
+    assert result["resolution"]["effects"]["readmitted"] is True
+
+
+def test_fresh_context_uses_durable_exchanges_even_when_knowledge_is_down(
+    db, github, monkeypatch
+):
+    import asyncio
+    from factory.orchestration import conductor_context as context
+
+    receipt_id = escalate(db, "close")
+    durable_answer(receipt_id, current_decision_id())
+    db.dispose()
+
+    async def unavailable(query, scope, limit):
+        assert scope == "repo:" + REPO
+        return {"status": "unavailable", "notes": []}
+
+    monkeypatch.setattr(context, "retrieve_knowledge", unavailable)
+    result = asyncio.run(context.read_context(receipt_id, None, 5))
+    assert result["receipt"]["state"] == "succeeded"
+    assert result["recent_exchanges"][0]["actor"] == "operator"
+    assert result["recent_exchanges"][0]["outcome"]["state"] == "completed"
+    assert result["knowledge"]["status"] == "unavailable"
+
+
+def test_committed_exchange_is_reported_deterministically_for_extraction(
+    db, github, monkeypatch
+):
+    from types import SimpleNamespace
+    from factory.orchestration import conductor_context as context
+
+    receipt_id = escalate(db, "close")
+    durable_answer(receipt_id, current_decision_id())
+    recorded = []
+
+    def ingest(session, **kwargs):
+        recorded.append(kwargs)
+        return SimpleNamespace(raw_id="raw-1"), len(recorded) == 1
+
+    monkeypatch.setattr("core.db.get_engine", lambda: db)
+    monkeypatch.setattr("knowledge.api.ingest_raw_with_status", ingest)
+    first = context.maintain_request_knowledge("operator", "request-1")
+    second = context.maintain_request_knowledge("operator", "request-1")
+    assert first["status"] == "queued"
+    assert second["status"] == "duplicate"
+    assert recorded[0] == recorded[1]
+    assert recorded[0]["extra"]["scope"] == "repo:" + REPO
+    assert recorded[0]["extra"]["reporter_subject"] == "operator"
+    assert (
+        context.maintain_request_knowledge("other", "request-1")["status"]
+        == "not_applicable"
+    )
+
+
 def test_exact_decision_replays_its_durable_resolution(db, github):
     receipt_id = escalate(db, "close")
     identity = current_decision_id()

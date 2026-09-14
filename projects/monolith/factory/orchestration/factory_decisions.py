@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+from contextlib import nullcontext
 from datetime import datetime, timezone
 
 import httpx
@@ -91,6 +92,11 @@ def _marker(receipt_id: int, option_key: str) -> str:
     return f"<!-- factory-decision:{receipt_id}:{option_key} -->"
 
 
+def _effect_marker(fields: dict, key: str) -> str:
+    scope = fields.get("effect_namespace")
+    return _marker(fields["id"], f"{scope}:{key}" if scope else key)
+
+
 def _iso(value: datetime) -> str:
     aware = value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
     return aware.astimezone(timezone.utc).isoformat()
@@ -142,6 +148,8 @@ def _claim(
     option_key: str,
     actor: str,
     expected_decision_id: str | None = None,
+    *,
+    session=None,
 ) -> tuple[dict, dict, dict]:
     """Reserve this escalation for this option, or say why it cannot be.
 
@@ -150,8 +158,13 @@ def _claim(
     option is not an error: it returns the stored resolution, so an operator
     who clicks twice sees the first click's outcome rather than a conflict.
     """
-    with _locked_session() as (db, _control):
+    context = _locked_session() if session is None else nullcontext((session, None))
+    with context as (db, _control):
         row = _receipt(db, receipt_id)
+        if _pending_request(db, receipt_id):
+            raise DecisionError(
+                409, "a durable decision request has an unresolved outcome"
+            )
         escalation = escalation_of(row)
         if escalation is None:
             raise DecisionError(409, "this receipt raised no escalation")
@@ -186,7 +199,7 @@ def _claim(
             raise DecisionError(
                 409, "a brief is running on this issue; decide when it settles"
             )
-        holder = _live_claim(db, receipt_id, option_key)
+        holder = _live_claim(db, receipt_id, option_key, _fields(row)["decision_id"])
         if holder is not None:
             raise DecisionError(409, f"a decision for {holder} is already in flight")
         _audit(
@@ -222,7 +235,9 @@ def _decision_audits(db, receipt_id: int, action: str) -> list[dict]:
     return [detail for detail in details if detail.get("receipt_id") == receipt_id]
 
 
-def _live_claim(db, receipt_id: int, option_key: str) -> str | None:
+def _live_claim(
+    db, receipt_id: int, option_key: str, identity: str | None = None
+) -> str | None:
     """The other option holding this escalation, when one still holds it.
 
     A claim is superseded by a later `decision_failed` for the same option.
@@ -230,26 +245,28 @@ def _live_claim(db, receipt_id: int, option_key: str) -> str | None:
     option that failed: the operator could neither retry it into a different
     answer nor pick another, and the only way out would be the database.
     """
-    failed = [
-        detail.get("option_key")
-        for detail in _decision_audits(db, receipt_id, "decision_failed")
-    ]
-    # A claim whose decision applied a dismiss is superseded the same way. The
-    # dismiss only cleared the card, so leaving its claim standing would lock
-    # the escalation against the real decision that follows it.
-    dismissed = [
-        detail.get("option_key")
-        for detail in _decision_audits(db, receipt_id, "decision_applied")
-        if not terminal_effect(detail.get("effect"))
-    ]
-    for detail in _decision_audits(db, receipt_id, "decision_claimed"):
-        held = detail.get("option_key")
-        if held == option_key:
+    held = set()
+    rows = db.exec(
+        select(FactoryAudit)
+        .where(
+            FactoryAudit.action.in_(
+                ("decision_claimed", "decision_failed", "decision_applied")
+            )
+        )
+        .order_by(FactoryAudit.id)
+    ).all()
+    for row in rows:
+        detail = json.loads(row.detail_json)
+        if detail.get("receipt_id") != receipt_id:
             continue
-        if held in failed or held in dismissed:
+        if identity is not None and detail.get("decision_id") not in (None, identity):
             continue
-        return held
-    return None
+        key = detail.get("option_key")
+        if row.action == "decision_claimed":
+            held.add(key)
+        else:
+            held.discard(key)
+    return next((key for key in sorted(held) if key != option_key), None)
 
 
 def _fields(row: FactoryReceipt) -> dict:
@@ -322,7 +339,7 @@ def _close(repo: str, number: int, reason: str) -> None:
     )
 
 
-def _children_done(receipt_id: int) -> dict[int, int]:
+def _children_done(receipt_id: int, decision_id: str | None = None) -> dict[int, int]:
     """Child issues this split already opened, by index, from the audit trail.
 
     Creating an issue is the one write here with no natural idempotency: there
@@ -334,6 +351,8 @@ def _children_done(receipt_id: int) -> dict[int, int]:
         details = _decision_audits(db, receipt_id, "decision_child_created")
     done: dict[int, int] = {}
     for detail in details:
+        if detail.get("decision_id") != decision_id:
+            continue
         index, number = detail.get("child_index"), detail.get("child_number")
         if isinstance(index, int) and isinstance(number, int):
             done[index] = number
@@ -341,7 +360,12 @@ def _children_done(receipt_id: int) -> dict[int, int]:
 
 
 def _record_child(
-    receipt_id: int, task_id: str | None, index: int, number: int, title: str
+    receipt_id: int,
+    task_id: str | None,
+    index: int,
+    number: int,
+    title: str,
+    decision_id: str | None = None,
 ) -> None:
     with _locked_session() as (db, _control):
         _audit(
@@ -353,6 +377,7 @@ def _record_child(
             child_index=index,
             child_number=number,
             title=title[:256],
+            decision_id=decision_id,
         )
 
 
@@ -360,7 +385,7 @@ def _apply_split(fields: dict, option: dict, marker: str) -> dict:
     repo, number = fields["repo"], fields["issue_number"]
     _get, _list, github_write = _github()
     children = (option.get("detail") or {}).get("children") or []
-    done = _children_done(fields["id"])
+    done = _children_done(fields["id"], fields.get("effect_namespace"))
     opened: list[int] = []
     for index, child in enumerate(children):
         if index in done:
@@ -387,6 +412,7 @@ def _apply_split(fields: dict, option: dict, marker: str) -> dict:
             index,
             child_number,
             str(child.get("title")),
+            fields.get("effect_namespace"),
         )
         opened.append(child_number)
     listed = "\n".join(f"- #{child}" for child in opened)
@@ -441,12 +467,12 @@ def _apply_supersede(fields: dict, option: dict, suffix: str) -> dict:
     for number in eligible:
         if number == own:
             continue
-        issue_marker = _marker(fields["id"], f"{option['key']}:{number}")
+        issue_marker = _effect_marker(fields, f"{option['key']}:{number}")
         _comment(repo, number, issue_marker, body + suffix)
         _label(repo, number, ["wontfix"], [])
         _close(repo, number, "not_planned")
 
-    own_marker = _marker(fields["id"], f"{option['key']}:{own}")
+    own_marker = _effect_marker(fields, f"{option['key']}:{own}")
     labels_removed: list[str] = []
     requeue_note = None
     if own in eligible:
@@ -484,7 +510,7 @@ def _apply(fields: dict, option: dict, note: str | None) -> dict:
     repo, number = fields["repo"], fields["issue_number"]
     effect = option.get("effect")
     detail = option.get("detail") or {}
-    marker = _marker(fields["id"], option["key"])
+    marker = _effect_marker(fields, option["key"])
     suffix = f"\n\nOperator note: {note.strip()}" if note and note.strip() else ""
     if effect == "hold":
         return {"held": True}
@@ -573,9 +599,11 @@ def _resolve(
     effects: dict,
     *,
     expected_decision_id: str,
+    request: dict | None = None,
 ) -> dict:
     """Write the resolution onto the escalation and audit what it did."""
     effects = dict(effects)
+    ignore_request = (actor, request["request_key"]) if request else None
     requeue_note = effects.pop("_requeue_refine_note", None)
     resolution = {
         "option_key": option["key"],
@@ -622,7 +650,9 @@ def _resolve(
                 if option["effect"] in READMITTING_EFFECTS:
                     resolution["effects"] = {
                         **resolution["effects"],
-                        **_readmit(db, row, escalation, option, actor, note),
+                        **_readmit(
+                            db, row, escalation, option, actor, note, ignore_request
+                        ),
                     }
                 elif terminal_effect(option["effect"]):
                     _settle_escalated(row, "cancelled")
@@ -633,7 +663,7 @@ def _resolve(
                 # already closed, split or labelled for delivery.
                 row.state = "succeeded"
             if requeue_note is not None:
-                blocker = _requeue_refine(db, row, requeue_note, actor)
+                blocker = _requeue_refine(db, row, requeue_note, actor, ignore_request)
                 resolution["effects"].update(
                     {"requeued": blocker is None, "blocked_by": blocker}
                 )
@@ -656,6 +686,8 @@ def _resolve(
             effects=resolution["effects"],
             decision_id=expected_decision_id,
         )
+        if request is not None:
+            _request_event(db, actor, request, _decision_result(request, resolution))
     return resolution
 
 
@@ -750,7 +782,7 @@ def _record_failure(
         )
 
 
-def _requeue_blocker(db, row: FactoryReceipt) -> str | None:
+def _requeue_blocker(db, row: FactoryReceipt, ignore_request=None) -> str | None:
     """Why this receipt cannot go back to the lane, in words an operator reads.
 
     Every one of these ends with the question posted on the issue and nothing
@@ -758,6 +790,8 @@ def _requeue_blocker(db, row: FactoryReceipt) -> str | None:
     a comment that reads like a request and a lane that never heard it is
     worse than a refusal.
     """
+    if _pending_request(db, row.id, ignore_request):
+        return "a durable decision request has an unresolved outcome"
     if row.state in _RUNNING_STATES:
         return "work is already running on this issue"
     if row.state == "queued":
@@ -883,6 +917,7 @@ def _readmit(
     option: dict,
     actor: str,
     note: str | None,
+    ignore_request=None,
 ) -> dict:
     """Put a decided delivery escalation back in the lane with its direction.
 
@@ -898,7 +933,7 @@ def _readmit(
     refuse itself on its own state.
     """
     queued = row.state == "queued"
-    blocker = None if queued else _requeue_blocker(db, row)
+    blocker = None if queued else _requeue_blocker(db, row, ignore_request)
     if blocker is not None:
         _settle_escalated(row, "cancelled")
         return {"readmitted": False, "blocked_by": blocker}
@@ -908,7 +943,9 @@ def _readmit(
     return {"readmitted": True, "blocked_by": None}
 
 
-def _requeue_refine(db, row: FactoryReceipt, note: str, actor: str) -> str | None:
+def _requeue_refine(
+    db, row: FactoryReceipt, note: str, actor: str, ignore_request=None
+) -> str | None:
     """Return this receipt to the queue so the lane runs it again.
 
     The same receipt rather than a new one, for the reason ``_requeue``
@@ -922,7 +959,7 @@ def _requeue_refine(db, row: FactoryReceipt, note: str, actor: str) -> str | Non
     """
     escalation = escalation_of(row) or {}
     chat = list(escalation.get("chat") or [])
-    blocker = _requeue_blocker(db, row)
+    blocker = _requeue_blocker(db, row, ignore_request)
     # The question is recorded whether or not the receipt can be re-queued, so
     # a second question asked while the first re-brief is still queued is not
     # silently dropped. The prompt reads the newest entry.
@@ -971,6 +1008,10 @@ def request_chat(receipt_id: int, note: str, actor: str) -> dict:
         raise DecisionError(422, "the note is too long")
     with _read_session() as db:
         row = _receipt(db, receipt_id)
+        if _pending_request(db, receipt_id):
+            raise DecisionError(
+                409, "a durable decision request has an unresolved outcome"
+            )
         escalation = escalation_of(row)
         fields = _fields(row)
     if escalation is None:
@@ -1021,10 +1062,245 @@ def request_chat(receipt_id: int, note: str, actor: str) -> dict:
     }
 
 
+def _request_records(db) -> dict[tuple[str, str], dict]:
+    rows = db.exec(
+        select(FactoryAudit)
+        .where(FactoryAudit.action == "decision_request")
+        .order_by(FactoryAudit.id)
+    ).all()
+    return {
+        (row.actor, detail["request"]["request_key"]): detail
+        for row in rows
+        if (detail := json.loads(row.detail_json)).get("request")
+    }
+
+
+def _pending_request(db, receipt_id: int, ignore=None) -> bool:
+    return any(
+        key != ignore
+        and detail["request"]["receipt_id"] == receipt_id
+        and detail["result"]["state"] in ("accepted", "outcome_unknown")
+        for key, detail in _request_records(db).items()
+    )
+
+
+def _request_event(db, actor: str, request: dict, result: dict) -> None:
+    _audit(db, actor, "decision_request", request=request, result=result)
+
+
+def _decision_result(request: dict, resolution: dict, *, applied=True) -> dict:
+    return {
+        "ok": True,
+        "state": "completed",
+        "request_key": request["request_key"],
+        "receipt_id": request["receipt_id"],
+        "decision_id": request["decision_id"],
+        "applied": applied,
+        "resolution": resolution,
+        "acknowledged_at": resolution["decided_at"],
+    }
+
+
+def _unsettled_legacy_claim(db, receipt_id: int, identity: str) -> bool:
+    # Failed writes may have partial effects. A new MCP request cannot take
+    # over an older HTTP attempt merely because that attempt returned 502.
+    held = set()
+    rows = db.exec(
+        select(FactoryAudit)
+        .where(FactoryAudit.action.in_(("decision_claimed", "decision_applied")))
+        .order_by(FactoryAudit.id)
+    ).all()
+    for row in rows:
+        detail = json.loads(row.detail_json)
+        if detail.get("receipt_id") != receipt_id:
+            continue
+        if detail.get("decision_id") not in (None, identity):
+            continue
+        key = detail.get("option_key")
+        if row.action == "decision_claimed":
+            held.add(key)
+        else:
+            held.discard(key)
+    return bool(held)
+
+
+def request_decision(
+    receipt_id: int,
+    decision_id: str,
+    option_key: str,
+    actor: str,
+    *,
+    request_key: str,
+    note: str | None = None,
+    action: str = "decide",
+) -> dict:
+    """Apply an exact decision once, with an append-only durable request receipt.
+
+    An accepted request whose process disappears is never automatically
+    re-executed. GitHub issue creation has no transactional idempotency key;
+    uncertainty must remain visible instead of duplicating external effects.
+    """
+    if not actor or not request_key.strip() or len(request_key) > 256:
+        raise ValueError("actor and a bounded request key are required")
+    if not decision_id or not option_key or len(note or "") > MAX_NOTE:
+        raise ValueError("an exact decision, option and bounded note are required")
+    if action not in ("decide", "chat") or (
+        action == "chat" and not (note or "").strip()
+    ):
+        raise ValueError("chat requires a non-empty note")
+    request = dict(
+        receipt_id=receipt_id,
+        decision_id=decision_id,
+        option_key=option_key,
+        request_key=request_key,
+        note=note,
+        action=action,
+    )
+    with _locked_session() as (db, _control):
+        prior = _request_records(db).get((actor, request_key))
+        if prior is not None:
+            if prior["request"] != request:
+                return {
+                    "ok": False,
+                    "state": "refused",
+                    "reason": "conflicting_decision_request",
+                }
+            return prior["result"]
+        try:
+            if _unsettled_legacy_claim(db, receipt_id, decision_id):
+                raise DecisionError(
+                    409, "an earlier decision attempt needs reconciliation"
+                )
+            if action == "decide":
+                fields, escalation, resolved = _claim(
+                    receipt_id, option_key, actor, decision_id, session=db
+                )
+            else:
+                row = _receipt(db, receipt_id)
+                fields, escalation, resolved = _fields(row), escalation_of(row), None
+                if fields["decision_id"] != decision_id or not escalation:
+                    raise DecisionError(
+                        409, "the decision brief changed; read it again"
+                    )
+                if _pending_request(db, receipt_id):
+                    raise DecisionError(
+                        409, "a durable decision request has an unresolved outcome"
+                    )
+                if terminal_resolution(escalation.get("resolved")):
+                    raise DecisionError(409, "this escalation was already decided")
+        except DecisionError as exc:
+            result = dict(
+                ok=False,
+                state="refused",
+                reason=exc.reason,
+                status=exc.status,
+                request_key=request_key,
+                receipt_id=receipt_id,
+                decision_id=decision_id,
+                acknowledged_at=_iso(_now()),
+            )
+            _request_event(db, actor, request, result)
+            return result
+        if resolved is not None:
+            result = _decision_result(request, resolved, applied=False)
+            _request_event(db, actor, request, result)
+            return result
+        accepted = dict(
+            ok=True,
+            state="accepted",
+            request_key=request_key,
+            receipt_id=receipt_id,
+            decision_id=decision_id,
+            acknowledged_at=_iso(_now()),
+            reason="completion unconfirmed; retry this same request to inspect its outcome",
+        )
+        _request_event(db, actor, request, accepted)
+
+    fields["effect_namespace"] = decision_id
+    try:
+        if action == "chat":
+            return _apply_chat_request(fields, request, actor)
+        option = _option(escalation, option_key)
+        effects = _apply(fields, option, note)
+        resolution = _resolve(
+            receipt_id,
+            option,
+            actor,
+            note,
+            effects,
+            expected_decision_id=decision_id,
+            request=request,
+        )
+        return _decision_result(request, resolution)
+    except Exception as exc:
+        logger.warning("durable factory decision outcome is uncertain", exc_info=True)
+        result = {
+            **accepted,
+            "ok": False,
+            "state": "outcome_unknown",
+            "reason": "GitHub effects may have occurred; inspect the issue before intervention",
+            "error_type": type(exc).__name__,
+        }
+        with _locked_session() as (db, _control):
+            prior = _request_records(db).get((actor, request_key))
+            if prior and prior["result"]["state"] == "completed":
+                return prior["result"]
+            _request_event(db, actor, request, result)
+        return result
+
+
+def _apply_chat_request(fields: dict, request: dict, actor: str) -> dict:
+    # The durable request fence, rather than a check-then-post marker, keeps
+    # concurrent retries from posting a second question.
+    import hashlib
+
+    marker = _effect_marker(
+        fields,
+        "chat:"
+        + hashlib.sha256((actor + ":" + request["request_key"]).encode()).hexdigest(),
+    )
+    note = request["note"].strip()
+    _comment(
+        fields["repo"],
+        fields["issue_number"],
+        marker,
+        f"{CHAT_PREFIX} {note}\n\nRequested another brief; the factory receipt records scheduling.",
+    )
+    with _locked_session() as (db, _control):
+        row = _receipt(db, request["receipt_id"])
+        if _fields(row)["decision_id"] != request["decision_id"]:
+            raise DecisionError(409, "the brief changed after the question was posted")
+        blocker = _requeue_refine(db, row, note, actor, (actor, request["request_key"]))
+        result = dict(
+            ok=True,
+            state="completed",
+            request_key=request["request_key"],
+            receipt_id=row.id,
+            decision_id=request["decision_id"],
+            requeued=blocker is None,
+            blocked_by=blocker,
+            acknowledged_at=_iso(_now()),
+        )
+        _audit(
+            db,
+            actor,
+            "decision_chat_requested",
+            receipt_id=row.id,
+            decision_id=request["decision_id"],
+            note=note,
+            requeued=blocker is None,
+            blocked_by=blocker,
+            request_key=request["request_key"],
+        )
+        _request_event(db, actor, request, result)
+    return result
+
+
 __all__ = [
     "DecisionError",
     "apply_decision",
     "request_chat",
+    "request_decision",
     "resume_escalated",
 ]
 
