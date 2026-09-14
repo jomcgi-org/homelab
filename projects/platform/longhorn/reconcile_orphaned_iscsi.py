@@ -22,8 +22,9 @@ SESSION_RE = re.compile(
     r"^tcp: \[(?P<sid>[1-9][0-9]*)\] "
     r"(?P<portal>(?:\[[0-9A-Fa-f:]+\]|[A-Za-z0-9.-]+):"
     r"(?P<port>[1-9][0-9]{0,4}),(?P<tpgt>[0-9]+)) "
-    r"(?P<target>\S+?)(?: \(non-flash\))?$"
+    r"(?P<target>\S+?)(?: \((?:non-flash|flash)\))?$"
 )
+SESSION_TYPE_SUFFIX_RE = re.compile(r" \((?:non-flash|flash)\)$")
 ATTACHED_DISK_RE = re.compile(
     r"^Attached scsi disk (?P<device>[A-Za-z0-9._-]+)\s+State: (?P<state>\S+)$"
 )
@@ -230,9 +231,10 @@ def parse_session_inspection(session: Session, raw: str) -> SessionInspection:
     for raw_line in raw.splitlines():
         line = raw_line.strip()
         if line.startswith("Target: "):
-            targets.append(line.removeprefix("Target: "))
-        elif line.startswith("Current Portal: "):
-            portals.append(line.removeprefix("Current Portal: "))
+            target = line.removeprefix("Target: ")
+            targets.append(SESSION_TYPE_SUFFIX_RE.sub("", target))
+        elif line.startswith("Persistent Portal: "):
+            portals.append(line.removeprefix("Persistent Portal: "))
         elif line.startswith("SID: "):
             value = line.removeprefix("SID: ")
             if not value.isdigit():

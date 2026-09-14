@@ -215,7 +215,7 @@ def test_empty_inventory_confirmation_rejects_a_new_volume() -> None:
 
 def test_session_parser_rejects_ambiguous_longhorn_and_accepts_non_longhorn() -> None:
     parsed = parse_sessions(
-        "tcp: [8] 10.0.0.8:3260,1 iqn.2020-01.example:database (non-flash)\n"
+        "tcp: [8] 10.0.0.8:3260,1 iqn.2020-01.example:database (flash)\n"
     )
     assert parsed[0].volume_name is None
 
@@ -230,8 +230,9 @@ def test_session_parser_rejects_ambiguous_longhorn_and_accepts_non_longhorn() ->
 def test_session_inspection_requires_unchanged_identity() -> None:
     session = longhorn_session(14, "pvc-orphan", "10.42.0.230:3260,1")
     raw = """
-Target: iqn.2019-10.io.longhorn:pvc-orphan
-    Current Portal: 10.42.0.230:3260,1
+Target: iqn.2019-10.io.longhorn:pvc-orphan (non-flash)
+    Current Portal: 10.42.0.231:3260,1
+    Persistent Portal: 10.42.0.230:3260,1
         SID: 14
         Attached scsi disk sdc          State: transport-offline
 """
@@ -239,7 +240,13 @@ Target: iqn.2019-10.io.longhorn:pvc-orphan
     assert inspection.devices == ("sdc",)
 
     with pytest.raises(SafetyError, match="portal changed"):
-        parse_session_inspection(session, raw.replace("10.42.0.230", "10.42.0.90"))
+        parse_session_inspection(
+            session,
+            raw.replace(
+                "Persistent Portal: 10.42.0.230",
+                "Persistent Portal: 10.42.0.90",
+            ),
+        )
 
 
 def test_dry_run_classifies_mixed_sessions_without_mutation() -> None:
