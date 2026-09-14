@@ -13,7 +13,7 @@ import stat
 import subprocess
 import sys
 from dataclasses import dataclass, field
-from typing import Iterable, Protocol, Sequence
+from typing import Callable, Iterable, Protocol, Sequence
 
 
 LONGHORN_TARGET_PREFIX = "iqn.2019-10.io.longhorn:"
@@ -105,6 +105,7 @@ class Usage:
 
 @dataclass
 class ReconcileReport:
+    sink: Callable[[str], None] | None = field(default=None, repr=False)
     lines: list[str] = field(default_factory=list)
     failures: list[str] = field(default_factory=list)
     logout_attempts: list[int] = field(default_factory=list)
@@ -112,9 +113,11 @@ class ReconcileReport:
 
     def emit(self, line: str) -> None:
         self.lines.append(line)
+        if self.sink is not None:
+            self.sink(line)
 
     def fail(self, line: str) -> None:
-        self.lines.append(f"MANUAL {line}")
+        self.emit(f"MANUAL {line}")
         self.failures.append(line)
 
 
@@ -548,6 +551,10 @@ class Reconciler:
             if final_session.identity != original.identity:
                 raise SafetyError("session identity changed during final revalidation")
 
+            report.emit(
+                f"LOGOUT_ATTEMPT session={original.sid} volume={original.volume_name} "
+                f"target={original.target} portal={original.portal}"
+            )
             report.logout_attempts.append(original.sid)
             logout = self.iscsi.logout(final_session)
             if logout.returncode != 0:
@@ -555,6 +562,10 @@ class Reconciler:
                 raise SafetyError(
                     f"targeted logout failed with exit {logout.returncode}: {detail}"
                 )
+            report.emit(
+                f"LOGOUT_RETURNED_SUCCESS session={original.sid} "
+                f"volume={original.volume_name} verification=pending"
+            )
             remaining = self._by_sid(self.iscsi.sessions()).get(original.sid)
             if remaining is not None and remaining.identity == original.identity:
                 raise SafetyError(
@@ -568,8 +579,9 @@ class Reconciler:
         except SafetyError as exc:
             report.fail(f"session={original.sid} volume={original.volume_name}: {exc}")
 
-    def run(self) -> ReconcileReport:
-        report = ReconcileReport()
+    def run(self, report: ReconcileReport | None = None) -> ReconcileReport:
+        if report is None:
+            report = ReconcileReport()
         initial_inventory = self.inventory.authoritative()
         sessions = self.iscsi.sessions()
         candidates: list[Session] = []
@@ -694,7 +706,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--node", required=True, help="exact local Kubernetes node name"
     )
-    parser.add_argument("--namespace", default="longhorn-system")
+    parser.add_argument("--namespace", default="longhorn")
     parser.add_argument(
         "--apply",
         action="store_true",
@@ -720,6 +732,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("FATAL --timeout-seconds must be between 1 and 60", file=sys.stderr)
         return 2
     runner = SubprocessRunner(args.timeout_seconds)
+    report = ReconcileReport(sink=lambda line: print(line, flush=True))
     try:
         with RunLock(args.lock_file):
             validate_node(runner, args.context, args.node, args.timeout_seconds)
@@ -736,12 +749,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 iscsi,
                 SystemUsageChecker(runner),
                 args.apply,
-            ).run()
+            ).run(report)
     except SafetyError as exc:
         print(f"FATAL {exc}", file=sys.stderr)
         return 2
-    for line in report.lines:
-        print(line)
     return 2 if report.failures else 0
 
 

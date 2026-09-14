@@ -122,7 +122,7 @@ spec:
 ### Check Volume Health
 
 ```bash
-kubectl -n longhorn-system get volumes
+kubectl -n longhorn get volumes
 ```
 
 **Volume states:**
@@ -135,7 +135,7 @@ kubectl -n longhorn-system get volumes
 ### Replica Status
 
 ```bash
-kubectl -n longhorn-system get replicas
+kubectl -n longhorn get replicas
 ```
 
 **Replica states:**
@@ -147,8 +147,8 @@ kubectl -n longhorn-system get replicas
 ### Check Backup Status
 
 ```bash
-kubectl -n longhorn-system get backupvolumes
-kubectl -n longhorn-system get backups
+kubectl -n longhorn get backupvolumes
+kubectl -n longhorn get backups
 ```
 
 ## Orphaned iSCSI session reconciliation
@@ -185,8 +185,9 @@ The reconciler:
   and portal immediately before each single-session logout;
 - never performs a blanket logout, removes a SCSI device or node record,
   restarts a service, drains a node, or triggers a reboot;
-- gives every subprocess a deadline, never retries logout, and holds a
-  nonblocking host lock so overlapping runs fail safely; and
+- gives every subprocess a deadline, streams audit records before host
+  mutation, never retries logout, and holds a nonblocking host lock so
+  overlapping runs fail safely; and
 - exits nonzero and prints `MANUAL` or `FATAL` for ambiguous, failed, timed out,
   or still-present sessions. Repeated operator runs do not turn such failures
   into an unbounded retry loop.
@@ -198,10 +199,13 @@ workload is about to attach or mount a candidate volume.
 ### Prerequisites and context selection
 
 Run from a trusted checkout on the node being inspected. The host needs Python
-3, `kubectl`, `iscsiadm` from open-iscsi, `lsblk` and `swapon` from util-linux,
-and `fuser` from psmisc. The operator needs root access for local iSCSI
-inspection and logout, plus Kubernetes permission to get the selected node and
-list `volumes.longhorn.io` in `longhorn-system`.
+3, `kubectl`, `iscsiadm` from open-iscsi, `lsblk` and `swapon` from util-linux
+2.37 or newer, and `fuser` from psmisc. The util-linux minimum is required for
+the JSON `MOUNTPOINTS` column. On each node, confirm `lsblk --version` meets the
+minimum and confirm that `fuser -- /dev/KNOWN_UNUSED_BLOCK_DEVICE` exits 1 with
+no stdout or stderr before apply. The operator needs root access for local
+iSCSI inspection and logout, plus Kubernetes permission to get the selected
+node and list `volumes.longhorn.io` in `longhorn`.
 
 Choose and verify the context and node before every run:
 
@@ -209,7 +213,7 @@ Choose and verify the context and node before every run:
 kubectl config get-contexts
 hostname --short
 kubectl --context <home-cluster-context> get node <node-name>
-kubectl --context <home-cluster-context> --namespace longhorn-system \
+kubectl --context <home-cluster-context> --namespace longhorn \
   get volumes.longhorn.io
 ```
 
@@ -273,10 +277,10 @@ historically wedged session.
 
 ```bash
 # Check Longhorn manager logs
-kubectl -n longhorn-system logs deploy/longhorn-manager
+kubectl -n longhorn logs deploy/longhorn-manager
 
 # Force detach and reattach
-kubectl -n longhorn-system annotate volume/<volume-name> \
+kubectl -n longhorn annotate volume/<volume-name> \
   longhorn.io/force-detach=true
 ```
 
@@ -288,10 +292,10 @@ kubectl -n longhorn-system annotate volume/<volume-name> \
 
 ```bash
 # Check instance-manager logs
-kubectl -n longhorn-system logs deploy/instance-manager-<node>
+kubectl -n longhorn logs deploy/instance-manager-<node>
 
 # Delete stuck replica
-kubectl -n longhorn-system delete replica <replica-name>
+kubectl -n longhorn delete replica <replica-name>
 ```
 
 ### Out of Space
@@ -303,14 +307,14 @@ kubectl -n longhorn-system delete replica <replica-name>
 1. Check node storage:
 
    ```bash
-   kubectl -n longhorn-system get nodes -o wide
+   kubectl -n longhorn get nodes -o wide
    ```
 
 2. Increase node disk size or add new nodes
 
 3. Clean up old backups/snapshots:
    ```bash
-   kubectl -n longhorn-system delete backups --all
+   kubectl -n longhorn delete backups --all
    ```
 
 ## Configuration
@@ -335,7 +339,7 @@ former `longhorn.jomcgi.dev` tunnel route was retired in PR #2534.
 For local access without going through the ingress:
 
 ```bash
-kubectl -n longhorn-system port-forward svc/longhorn-frontend 8080:80
+kubectl -n longhorn port-forward svc/longhorn-frontend 8080:80
 ```
 
 Navigate to http://localhost:8080
