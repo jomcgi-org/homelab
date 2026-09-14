@@ -4,6 +4,7 @@ The factory's HTTP and MCP controls remain its private interaction surface.
 These functions preserve the routine-job and knowledge intervention contracts.
 """
 
+from factory.execution import SUPPORTED_MODELS as SUPPORTED_MODELS
 from factory.execution.api import (
     DRAINER_NODE_KEY as DRAINER_NODE_KEY,
     KG_NODE_KEY as KG_NODE_KEY,
