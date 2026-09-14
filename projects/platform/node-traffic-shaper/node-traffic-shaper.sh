@@ -3,6 +3,17 @@
 # bulk download (model-weight image pulls, hf2oci) cannot starve latency-sensitive
 # control-plane traffic (etcd, kubelet, SSH).
 #
+# INERT ON THE HOME CLUSTER. Measurements on 2026-07-30 recorded in #4171 found
+# this script shapes nothing there: Cilium attaches to the uplink with tcx
+# (BPF-link TC, kernel 6.8), which runs before legacy tc filters, so
+# cil_from_netdev consumes the packet and the mirred redirect below never sees
+# it. The mirred action reported `Sent 0 bytes 0 pkt` after 193s installed while
+# the NIC took +26.5 MB in 20s. A large cumulative `tc -s qdisc show dev ifb0`
+# counter does NOT prove otherwise: only a delta, or the mirred action's own
+# Sent, does. See projects/platform/node-traffic-shaper/README.md. The code
+# below is unchanged and still does what it says; the datapath just never
+# reaches it.
+#
 # Ingress cannot be shaped directly, so we redirect the uplink's ingress onto an
 # intermediate functional block (ifb0) and run CAKE on ifb0's egress. CAKE's
 # per-flow fairness is what protects control traffic during a saturating pull.

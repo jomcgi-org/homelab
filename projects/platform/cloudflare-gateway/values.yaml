@@ -56,16 +56,27 @@ tunnel:
   # tunnel spent most of that time one blip away from having no origin at all.
   # All 5 full outages in the window were exactly that overlap.
   #
-  # The asymmetry is not node-1 being broken: an EmberVM rollout applies all its
+  # The trigger is not node-1 being broken: an EmberVM rollout applies all its
   # brick Deployments in the same sync wave, and the resulting rootfs-build plus
   # image-pull stampede saturates the shared uplink (observed 2026-07-30 06:06,
-  # whole wired LAN at 100% loss while the gateway answered in 3ms). node-4
-  # survives it because it has the node-local CAKE shaper and node-1/2/3 do not.
+  # whole wired LAN at 100% loss while the gateway answered in 3ms).
   #
-  # So this is defence in depth, not the fix: node-2 and node-3 are unshaped too,
-  # and their replicas can die in the same stampede. It buys 4 chances instead of
-  # 2. The root fix is sequencing the rollout; the durable one is shaping every
-  # node. Each replica costs 25m CPU / 64Mi, so the headroom is free.
+  # WHY NODE-4 SURVIVED IS UNEXPLAINED. This comment used to say node-4 had the
+  # node-local CAKE shaper and node-1/2/3 did not. That explanation is
+  # RETRACTED: measurements on 2026-07-30 recorded in #4171 found the shaper
+  # inert under Cilium's tcx datapath, and node-4 had no ingress qdisc at all
+  # during the stampede, so it was not shaped either. Untested candidates from
+  # that issue: node-4 has ~64 GB RAM against node-1's ~12 GB, it is the only
+  # node that is not a control-plane/etcd member, it hosts the 16gi brick
+  # rather than node-1's heavy cron-pod load, or it sits on a different switch
+  # port.
+  #
+  # So this is defence in depth, not the fix: no node is shaped, and any
+  # replica can die in the same stampede. It buys 4 chances instead of 2. The
+  # root fix is sequencing the rollout (#4169). Whether replacement shaping is
+  # wanted at all, and whether it belongs on the router/gateway or in Cilium,
+  # is open at #4171. Each replica costs 25m CPU / 64Mi, so the headroom is
+  # free.
   # WINDOW: home connectors drained for the GKE cutover; the hub overlay
   # carries the connectors now. Revert to bring home ingress back.
   replicaCount: 0
