@@ -775,6 +775,62 @@ func TestMinterMintsSignedLeaf(t *testing.T) {
 	}
 }
 
+func TestMinterRenewsCachedLeaf(t *testing.T) {
+	for _, elapsed := range []time.Duration{24*time.Hour - 5*time.Minute, 24 * time.Hour, 25 * time.Hour, -6 * time.Minute} {
+		t.Run(elapsed.String(), func(t *testing.T) {
+			certFile, keyFile := writeTestCA(t)
+			m, err := newCAMinter(certFile, keyFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			now := time.Now().Truncate(time.Second)
+			hello := &tls.ClientHelloInfo{ServerName: "github.com"}
+			original, err := m.getCertificateAt(hello, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cached, err := m.getCertificateAt(hello, now.Add(time.Hour))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cached != original {
+				t.Fatal("valid leaf was not cached")
+			}
+			renewalTime := now.Add(elapsed)
+			renewed, err := m.getCertificateAt(hello, renewalTime)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if renewed == original {
+				t.Fatal("unusable or expiring leaf was reused")
+			}
+			leaf, err := x509.ParseCertificate(renewed.Certificate[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if renewalTime.Before(leaf.NotBefore) || !renewalTime.Before(leaf.NotAfter) {
+				t.Fatal("renewed leaf is not currently valid")
+			}
+			if err := leaf.VerifyHostname("github.com"); err != nil {
+				t.Fatal(err)
+			}
+			if err := leaf.CheckSignatureFrom(m.caCert); err != nil {
+				t.Fatal(err)
+			}
+			if leaf.SerialNumber.Cmp(original.Leaf.SerialNumber) == 0 {
+				t.Fatal("renewal reused the serial number")
+			}
+			cached, err = m.getCertificateAt(hello, renewalTime)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cached != renewed {
+				t.Fatal("renewed leaf was not cached")
+			}
+		})
+	}
+}
+
 // writeTestCA generates a throwaway CA and writes its cert + key to temp PEM files.
 func writeTestCA(t *testing.T) (certFile, keyFile string) {
 	t.Helper()
