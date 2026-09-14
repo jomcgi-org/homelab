@@ -7,9 +7,15 @@ CREATE TABLE agent_sessions.reservation_reviews (
     review_session_key text,
     evidence_sha256 text,
     approved_evidence_sha256 text,
+    stop_intent_json text,
     guidance text,
     verdict text,
     rationale text,
     state text NOT NULL DEFAULT 'pending',
     attempts integer NOT NULL DEFAULT 0
 );
+
+ALTER TABLE claude_agent.routine_reconciliations
+    DROP CONSTRAINT routine_reconciliations_disposition_check,
+    ADD CONSTRAINT routine_reconciliations_disposition_check
+        CHECK (disposition IN ('rearm', 'retain_applied', 'stop'));

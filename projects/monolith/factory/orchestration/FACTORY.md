@@ -1244,3 +1244,10 @@ The permit observer reconciles held routine jobs only after fresh, exact guest
 cessation evidence. It atomically settles the reservation and either rearms an
 unprocessed job or retains an already-applied extraction. Missing guest identity
 remains unhealthy and requires evidence; elapsed time is not a no-guest proof.
+
+Non-graph execution sessions use a durable conditional stop intent and the same
+unknown-outcome fence. The observer accepts only the reviewed invocation's
+cessation proof; later queued user input is preserved. Never-started reservations
+use positive local cancellation proof. An explicit routine stop parks the job
+atomically and prevents ordinary retry from rearming it. Steering and replanning
+carry guidance into the next routine attempt only after confirmed cessation.

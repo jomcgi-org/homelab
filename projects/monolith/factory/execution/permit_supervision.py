@@ -192,13 +192,20 @@ def _identity(db, permit, *, allow_stale_unbound=False):
         raise ValueError("ineligible_permit")
     if _factory_owned(db, agent):
         raise ValueError("factory_owned")
-    if (
-        admission.cleanup_pending(db, agent)
-        or db.exec(
-            select(PendingMessage.id).where(PendingMessage.session_id == agent.id)
-        ).first()
-        is not None
-    ):
+    queued = db.exec(
+        select(PendingMessage).where(PendingMessage.session_id == agent.id)
+    ).all()
+    reviewed_stop = permit.outcome == "reservation_review_stop"
+    safe_queue = reviewed_stop and all(
+        p.seq > permit.pending_seq
+        and p.dispatch_count == 0
+        and p.claimed_by_replica is None
+        and p.last_dispatch_at is None
+        and not p.partial_text
+        and not p.partial_activities
+        for p in queued
+    )
+    if admission.cleanup_pending(db, agent) or (queued and not safe_queue):
         raise ValueError("pending_executor")
     turn = db.exec(
         select(AgentTurn).where(
@@ -228,6 +235,7 @@ def _identity(db, permit, *, allow_stale_unbound=False):
         raise ValueError("changed_attempt")
     if (
         permit.tier != "interactive"
+        and not (reviewed_stop and permit.routine_job_name is not None)
         and db.exec(
             select(AgentTurn.seq)
             .where(AgentTurn.session_id == agent.id, AgentTurn.seq < permit.pending_seq)
@@ -314,13 +322,21 @@ def _identity(db, permit, *, allow_stale_unbound=False):
             )
         )
     ).all()
-    if permit.tier == "interactive":
+    if permit.tier == "interactive" or (
+        reviewed_stop and permit.routine_job_name is not None
+    ):
         # admission.claim_pending reserves a start for every turn and a settled
         # reservation is never deleted, so a third-turn conversation owns three
         # rows. Earlier settled rows are ordinary history. A second live row,
         # or any row at this seq or past it, is a different attempt.
         ambiguous = any(
             row.id != permit.id
+            and not (
+                safe_queue
+                and row.state == "reserved"
+                and row.owner is None
+                and any(p.seq == row.pending_seq for p in queued)
+            )
             and (row.state != "settled" or row.pending_seq >= permit.pending_seq)
             for row in reservations
         )
@@ -341,6 +357,7 @@ def _identity(db, permit, *, allow_stale_unbound=False):
             "last_turn_at": agent.last_turn_at,
             "status": agent.status,
             "turn": turn.model_dump(),
+            "queued": [p.model_dump() for p in queued] if reviewed_stop else [],
         }
     )
     return agent, turn, identity
@@ -659,7 +676,42 @@ def _record(candidate, observed, observed_at, node_names=None):
                 terminal_states.add("destroyed")
             if observed.get("state") not in terminal_states:
                 raise ValueError("awaiting_cessation")
-            if not never_invoked:
+            stop_completion = None
+            if permit.outcome == "reservation_review_stop":
+                from factory.execution.review_leases import ReservationReview
+                from factory.orchestration.factory_supervision import (
+                    _completion,
+                    _precondition,
+                )
+
+                review = db.get(ReservationReview, permit.id)
+                intent = (
+                    json.loads(review.stop_intent_json or "null") if review else None
+                )
+                if not intent or review.state != "stopping":
+                    raise ValueError("missing_reviewed_stop")
+                before = intent["snapshot"]
+                recovery = json.loads(turn.usage_json or "{}").get("recovery", {})
+                if (
+                    before["session_id"] != agent.id
+                    or before["guest_id"] != agent.ember_session_id
+                    or before["seq"] != permit.pending_seq
+                    or before["owner"] != permit.owner
+                    or before["workflow_id"] != agent.workflow_id
+                    or before["dispatch_count"] != recovery.get("dispatch_count")
+                ):
+                    raise ValueError("reviewed_stop_changed")
+                expected = _precondition(intent["precondition"], agent.ember_session_id)
+                if (
+                    observed["generation"] != expected["generation"]
+                    or observed.get("invoke_started_at")
+                    != expected["invoke_started_at"]
+                ):
+                    raise ValueError("reviewed_invocation_changed")
+                stop_completion = _completion(observed, expected)
+                evidence["reviewed_stop_completion"] = stop_completion
+                audit.evidence_json = json.dumps(evidence, sort_keys=True)
+            if not never_invoked and stop_completion is None:
                 last_invoke = observed.get("last_invoke_at")
                 if (
                     type(last_invoke) is not int
@@ -675,7 +727,9 @@ def _record(candidate, observed, observed_at, node_names=None):
             _reason(audit, str(exc))
             db.add(audit)
             return False
-        if permit.routine_job_name is not None and _routine_job_held(db, permit):
+        if permit.routine_job_name is not None and (
+            _routine_job_held(db, permit) or permit.outcome == "reservation_review_stop"
+        ):
             try:
                 with db.begin_nested():
                     _reconcile_routine(
@@ -700,6 +754,12 @@ def _reconcile_routine(db, permit, candidate, observed, observed_at, evidence):
 
     state = read_reconciliation_state(db, permit.routine_job_name, permit.session_id)
     disposition = "retain_applied" if state["applied_count"] else "rearm"
+    from factory.execution.review_leases import ReservationReview, enabled
+
+    if enabled():
+        review = db.get(ReservationReview, permit.id)
+        if review and review.state == "stopping" and review.verdict == "stop":
+            disposition = "stop"
     reconcile_held_job(
         reconciliation_key=f"factory-permit:{permit.id}:{candidate['identity']}",
         actor="factory:permit-supervision",

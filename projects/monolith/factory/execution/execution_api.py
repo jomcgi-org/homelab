@@ -217,12 +217,20 @@ async def run_synthetic_session(
     # claim every 10 seconds against the 30 second lease, reusing the same
     # mechanism as the worker path (mcp.py:416-440).
     claim_stolen = False
+    executor_task = asyncio.current_task()
 
     async def _refresh_heartbeat() -> None:
         nonlocal claim_stolen
         while not claim_stolen:
             try:
                 await asyncio.sleep(10)
+                from factory.execution.review_leases import stop_requested
+
+                if dispatch_count is not None and await asyncio.to_thread(
+                    stop_requested, row.id, turn_seq, claim_owner, dispatch_count
+                ):
+                    executor_task.cancel()
+                    return
                 still_held = await asyncio.to_thread(
                     _refresh_claim_sync, row.id, turn_seq, claim_owner
                 )

@@ -2698,3 +2698,18 @@ def test_a_walled_provider_defers_the_claim_without_spending_a_lease(
     monkeypatch.setattr(drainer, "provider_walled", lambda: (False, "available"))
     claimed = _admitted_claim("wf-open")
     assert claimed is not None and claimed["name"] == "kg-one"
+
+
+def test_replanned_routine_receives_supervisor_guidance(monkeypatch):
+    monkeypatch.setenv("FACTORY_RESERVATION_REVIEW_ENABLED", "true")
+    from factory import reservation_reviews
+
+    monkeypatch.setattr(
+        reservation_reviews,
+        "routine_guidance",
+        lambda name: "\nUse the corrected schema" if name == "job-1" else "",
+    )
+    _, _, starts, _, _, _ = _run(
+        monkeypatch, [{"name": "job-1", "payload": {"prompt": "do work"}}]
+    )
+    assert starts[0][1] == "do work\nUse the corrected schema"

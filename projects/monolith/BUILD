@@ -4946,6 +4946,7 @@ py_test(
     deps = [
         ":pkg_agent_sessions",
         ":pkg_cyclegroup",
+        ":pkg_factory",
         ":pkg_knowledge",
         ":pkg_swarm",
         "@pip//opentelemetry_sdk",
@@ -7967,6 +7968,7 @@ py_test(
     deps = [
         ":pkg_agent_sessions",
         ":pkg_cyclegroup",
+        ":pkg_factory",
         ":pkg_swarm",
         "@pip//pytest",
         "@pip//sqlalchemy",

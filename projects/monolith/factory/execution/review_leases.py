@@ -33,6 +33,7 @@ class ReservationReview(SQLModel, table=True):
     review_session_key: str | None = None
     evidence_sha256: str | None = None
     approved_evidence_sha256: str | None = None
+    stop_intent_json: str | None = None
     guidance: str | None = None
     verdict: str | None = None
     rationale: str | None = None
@@ -87,3 +88,57 @@ def may_dispatch(db, permit) -> bool:
     if not enabled() or permit.local_session_id.startswith(PREFIX):
         return True
     return now() < deadline(db, permit)
+
+
+def stop_requested(session_id: int, seq: int, owner: str, dispatch_count: int) -> bool:
+    if not enabled():
+        return False
+    from core.db import get_engine
+    from sqlmodel import Session, select
+    from factory.execution.models import (
+        AgentCapacityReservation,
+        AgentSession,
+        AgentTurn,
+    )
+    from factory.execution.constants import UNKNOWN_INVOCATION
+
+    with Session(get_engine()) as db:
+        rows = db.exec(
+            select(ReservationReview)
+            .join(
+                AgentCapacityReservation,
+                AgentCapacityReservation.id == ReservationReview.permit_id,
+            )
+            .where(
+                AgentCapacityReservation.session_id == session_id,
+                AgentCapacityReservation.pending_seq == seq,
+                ReservationReview.state == "stopping",
+            )
+        ).all()
+        agent = db.get(AgentSession, session_id)
+        turn = db.exec(
+            select(AgentTurn).where(
+                AgentTurn.session_id == session_id, AgentTurn.seq == seq
+            )
+        ).first()
+        for row in rows:
+            intent = json.loads(row.stop_intent_json or "null")
+            if (
+                not intent
+                or not agent
+                or not turn
+                or turn.stop_reason != UNKNOWN_INVOCATION
+            ):
+                continue
+            before = intent["snapshot"]
+            recovery = json.loads(turn.usage_json or "{}").get("recovery", {})
+            if (
+                before["owner"] == owner
+                and before["dispatch_count"] == dispatch_count
+                and recovery.get("claim_owner") == owner
+                and recovery.get("dispatch_count") == dispatch_count
+                and agent.workflow_id == before["workflow_id"]
+                and agent.ember_session_id in (None, before["guest_id"])
+            ):
+                return True
+    return False

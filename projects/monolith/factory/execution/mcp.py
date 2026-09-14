@@ -857,7 +857,7 @@ async def _execute_pending_message(session_id: int) -> None:
         while not claim_stolen or factory_owned:
             try:
                 await asyncio.sleep(10)  # one third of the 30s lease
-                if factory_owned and claimed_dispatch_count is not None:
+                if claimed_dispatch_count is not None:
                     from factory.execution.factory_stop import executor_stop_requested
 
                     if await asyncio.to_thread(

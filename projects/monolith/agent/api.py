@@ -46,6 +46,7 @@ __all__ = [
 # Narrow contracts used by the factory drainer. Resolve lazily to avoid
 # loading execution or writer code into read-only domain compositions.
 _FACTORY_EXPORTS = {
+    "stop_unattempted_job": "agent.routine_jobs",
     "read_reconciliation_state": "agent.routine_reconciliation",
     "reconcile_held_job": "agent.routine_reconciliation",
     "drainer_worker_intents": "agent.routine_jobs",

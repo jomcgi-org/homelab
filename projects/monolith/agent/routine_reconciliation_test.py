@@ -1127,12 +1127,15 @@ def test_kg_reconciliation_refuses_mismatched_cleanup_claim(database, change):
 
 
 @pytest.mark.parametrize("applied", [False, True])
-def test_factory_supervision_atomically_reconciles_evicted_held_job(
-    database, monkeypatch, applied
+@pytest.mark.parametrize("guest_state", ["evicted", "destroyed"])
+@pytest.mark.parametrize("review_mode", ["legacy", "stop", "correction"])
+def test_factory_supervision_atomically_reconciles_terminal_held_job(
+    database, monkeypatch, applied, guest_state, review_mode
 ):
     import asyncio
     from factory.execution import permit_supervision as supervision
     from factory.execution.models import ProbeObservation
+    from factory.execution.review_leases import ReservationReview
     from factory.orchestration.factory_models import FactoryStart
     from factory.orchestration.models import SwarmTask, SwarmNodeRun
 
@@ -1148,7 +1151,13 @@ def test_factory_supervision_atomically_reconciles_evicted_held_job(
         engine,
         tables=[
             m.__table__
-            for m in (ProbeObservation, SwarmTask, FactoryStart, SwarmNodeRun)
+            for m in (
+                ProbeObservation,
+                SwarmTask,
+                FactoryStart,
+                SwarmNodeRun,
+                ReservationReview,
+            )
         ],
     )
     monkeypatch.setenv("FACTORY_RESERVATION_REVIEW_ENABLED", "true")
@@ -1156,12 +1165,88 @@ def test_factory_supervision_atomically_reconciles_evicted_held_job(
     monkeypatch.setattr(supervision, "get_engine", lambda: engine)
     now = datetime.now(timezone.utc)
 
+    started = int((now - timedelta(seconds=90)).timestamp() * 1000)
+    if review_mode != "legacy":
+        from factory.execution import review_leases
+
+        with Session(engine) as db:
+            permit = db.exec(select(AgentCapacityReservation)).one()
+            agent = db.get(AgentSession, permit.session_id)
+            agent.status = "failed"
+            turn = db.exec(select(AgentTurn)).one()
+            turn.stop_reason = UNKNOWN_INVOCATION
+            turn.usage_json = json.dumps(
+                {"recovery": {"claim_owner": permit.owner, "dispatch_count": 1}}
+            )
+            permit.outcome = "reservation_review_stop"
+            if review_mode == "correction":
+                turn.seq = 2
+                permit.pending_seq = 2
+                db.add(
+                    AgentTurn(
+                        session_id=agent.id,
+                        seq=1,
+                        prompt="first",
+                        result_text="needs correction",
+                        terminal_reason="completed",
+                    )
+                )
+                db.add(
+                    AgentCapacityReservation(
+                        local_session_id=agent.local_session_id,
+                        session_id=agent.id,
+                        pending_seq=1,
+                        tier="kg",
+                        state="settled",
+                        routine_job_name=permit.routine_job_name,
+                    )
+                )
+            db.add(turn)
+            db.add(permit)
+            db.add(agent)
+            db.flush()
+            db.add(
+                ReservationReview(
+                    permit_id=permit.id,
+                    identity_sha256=review_leases.identity(permit),
+                    lease_expires_at=now,
+                    state="stopping",
+                    verdict="stop" if review_mode == "stop" else "steer",
+                    stop_intent_json=json.dumps(
+                        {
+                            "snapshot": {
+                                "session_id": agent.id,
+                                "guest_id": "guest",
+                                "seq": permit.pending_seq,
+                                "owner": permit.owner,
+                                "workflow_id": agent.workflow_id,
+                                "dispatch_count": 1,
+                            },
+                            "precondition": dict(
+                                session_id="guest",
+                                generation=0,
+                                invoke_started_at=started,
+                                vm_id="vm",
+                                node_id="node",
+                                pod_uid="pod",
+                                instance_id="node/pod",
+                                boot_id="boot",
+                            ),
+                        }
+                    ),
+                )
+            )
+            db.commit()
+            before = reconciliation.read_reconciliation_state(
+                db, request["job_name"], request["session_id"]
+            )
+
     class Transport:
         async def get_session(self, guest):
             assert guest == "guest"
             return {
                 "session_id": guest,
-                "state": "evicted",
+                "state": guest_state,
                 "generation": 0,
                 "invoke_started_at": int(
                     (now - timedelta(seconds=90)).timestamp() * 1000
@@ -1172,12 +1257,80 @@ def test_factory_supervision_atomically_reconciles_evicted_held_job(
 
     asyncio.run(supervision.sweep_once(Transport()))
     with Session(engine) as db:
-        permit = db.exec(select(AgentCapacityReservation)).one()
+        permit = db.exec(
+            select(AgentCapacityReservation).order_by(
+                AgentCapacityReservation.pending_seq.desc()
+            )
+        ).first()
         assert permit.state == "settled"
         after = reconciliation.read_reconciliation_state(
             db, request["job_name"], request["session_id"]
         )
         assert after["job_status"] == "reconciled_unknown"
-        assert (after["next_run_at"] is None) == applied
+        assert (after["next_run_at"] is None) == (applied or review_mode == "stop")
         assert after["turns_sha256"] == before["turns_sha256"]
         assert db.get(ProbeObservation, permit.id).reason == "guest_cessation_confirmed"
+
+
+def test_explicit_stop_reconciles_without_rearming_unprocessed_raw(database):
+    request, before = held(database)
+    request["disposition"] = "stop"
+    result = reconciliation.reconcile_held_job(**request)
+    assert result["next_run_at"] is None
+    with Session(database) as db:
+        after = reconciliation.read_reconciliation_state(
+            db, request["job_name"], request["session_id"]
+        )
+        assert after["next_run_at"] is None
+        assert after["provenance_sha256"] == before["provenance_sha256"]
+        assert after["turns_sha256"] == before["turns_sha256"]
+
+
+def test_predispatch_review_stop_prevents_routine_failure_retry_and_next_claim(
+    database, monkeypatch
+):
+    from factory import reservation_reviews as reviews
+    from factory.execution import review_leases as leases
+
+    SQLModel.metadata.create_all(database, tables=[leases.ReservationReview.__table__])
+    monkeypatch.setattr(reviews, "get_engine", lambda: database)
+    monkeypatch.setenv("FACTORY_RESERVATION_REVIEW_ENABLED", "true")
+    with Session(database) as db:
+        db.execute(
+            text(
+                "INSERT INTO routine_jobs (name,routine_kind,interval_secs,next_run_at,locked_by,locked_at,ttl_secs,payload) VALUES ('kg:pending','kg-drain',900,CURRENT_TIMESTAMP,'worker',CURRENT_TIMESTAMP,2100,'{}')"
+            )
+        )
+        db.add(
+            AgentCapacityReservation(
+                local_session_id="cycle:kg-drain:kg:pending",
+                pending_seq=1,
+                tier="kg",
+                model="luna",
+                routine_job_name="kg:pending",
+                created_at=datetime.now(timezone.utc) - timedelta(hours=1),
+            )
+        )
+        db.commit()
+    candidate = reviews.claim_review()
+    reviews.apply_decision(
+        candidate,
+        {"action": "stop", "reason": "Do not retry this approach", "guidance": ""},
+    )
+    assert not routine_jobs.complete_job(
+        "kg:pending", "error", expected_holder="worker", defer_seconds=300
+    )
+    assert not routine_jobs.defer_job("kg:pending", 300)
+    assert (
+        routine_jobs.claim_job("next-worker", ttl_secs=2100, kinds=("kg-drain",))
+        is None
+    )
+    with Session(database) as db:
+        row = db.execute(
+            text(
+                "SELECT last_status,next_run_at FROM routine_jobs WHERE name='kg:pending'"
+            )
+        ).one()
+        assert row.last_status == "factory_stopped"
+        assert row.next_run_at is None
+        assert db.exec(select(AgentCapacityReservation)).one().state == "settled"

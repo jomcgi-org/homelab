@@ -165,6 +165,10 @@ def executor_stop_requested(
     from core.db import get_engine
     from factory.orchestration.api import read_factory_attempt_stop_request
 
+    from factory.execution.review_leases import stop_requested
+
+    if stop_requested(session_id, seq, claim_owner, dispatch_count):
+        return True
     with Session(get_engine()) as db:
         agent = db.get(AgentSession, session_id)
         if agent is None or not agent.local_session_id.startswith("factory:"):
