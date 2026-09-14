@@ -107,6 +107,22 @@ def _extract_layers(layers: list[pathlib.Path], root: pathlib.Path) -> None:
             archive.extractall(root, filter="data")
 
 
+def _package_directory(root: pathlib.Path, package_name: str) -> pathlib.Path:
+    package_parts = package_name.split("/")
+    store = root / "usr/local/lib/node_modules/.aspect_rules_js"
+    matches = []
+    for store_entry in store.iterdir():
+        package_dir = store_entry.joinpath("node_modules", *package_parts)
+        package_json = package_dir / "package.json"
+        if not package_json.is_file():
+            continue
+        metadata = json.loads(package_json.read_text())
+        if metadata.get("name") == package_name:
+            matches.append(package_dir)
+    assert len(matches) == 1, f"expected one {package_name} directory, got {matches}"
+    return matches[0]
+
+
 def _resolved_dependency_version(package_dir: pathlib.Path, name: str) -> str:
     dependency = (package_dir / "node_modules" / name).resolve(strict=True)
     return json.loads((dependency / "package.json").read_text())["version"]
@@ -215,10 +231,8 @@ def test_eslint_preserves_versioned_dependency_graph_and_lints() -> None:
         _extract_layers(_layers(platform), root)
 
         eslint = (root / "usr/local/lib/node_modules/eslint").resolve(strict=True)
-        eslint_utils = (eslint / "node_modules/@eslint-community/eslint-utils").resolve(
-            strict=True
-        )
-        espree = (eslint / "node_modules/espree").resolve(strict=True)
+        eslint_utils = _package_directory(root, "@eslint-community/eslint-utils")
+        espree = _package_directory(root, "espree")
         resolved_versions = {
             _assert_caret_dependency_resolves(consumer, "eslint-visitor-keys")
             for consumer in (eslint, eslint_utils, espree)
