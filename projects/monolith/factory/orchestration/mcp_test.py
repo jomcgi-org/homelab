@@ -369,7 +369,7 @@ def test_context_knowledge_is_scoped_and_does_not_expand_neighbours(monkeypatch)
     monkeypatch.setattr("core.db.get_engine", lambda: object())
     monkeypatch.setattr(context, "Session", lambda _: nullcontext(object()))
     monkeypatch.setattr(
-        "knowledge.store.KnowledgeStore",
+        "knowledge.api.KnowledgeStore",
         lambda _: SimpleNamespace(search_notes_with_context=search),
     )
     result = asyncio.run(context.retrieve_knowledge("query", "repo:owner/repo", 2))
