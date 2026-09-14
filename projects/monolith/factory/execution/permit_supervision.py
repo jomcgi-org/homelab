@@ -263,7 +263,10 @@ def _identity(db, permit, *, allow_stale_unbound=False):
         # is the only selector that reaches these rows.
         raise ValueError("ineligible_drainer")
     if permit.routine_job_name is not None and _routine_job_held(db, permit):
-        raise ValueError("routine_job_held")
+        from factory.execution.review_leases import enabled
+
+        if not enabled():
+            raise ValueError("routine_job_held")
     if agent.ember_session_id is None:
         if permit.tier == "probe" and not _general_enabled():
             raise ValueError("no_guest_supervision_disabled")
@@ -672,12 +675,49 @@ def _record(candidate, observed, observed_at, node_names=None):
             _reason(audit, str(exc))
             db.add(audit)
             return False
-        admission.confirm_guest_cessation(db, agent)
+        if permit.routine_job_name is not None and _routine_job_held(db, permit):
+            try:
+                with db.begin_nested():
+                    _reconcile_routine(
+                        db, permit, candidate, observed, observed_at, evidence
+                    )
+            except ValueError:
+                _reason(audit, "routine_reconciliation_refused")
+                db.add(audit)
+                return False
+        else:
+            admission.confirm_guest_cessation(db, agent)
         audit.reason = "guest_cessation_confirmed"
         audit.settled_at = _now()
         db.add(audit)
         # Keep the failed turn, cost, and session history unchanged. A later
         # turn receives a fresh guest identity through normal dispatch.
+
+
+def _reconcile_routine(db, permit, candidate, observed, observed_at, evidence):
+    """A ceased held job and its permit change owners in one transaction."""
+    from agent.api import read_reconciliation_state, reconcile_held_job
+
+    state = read_reconciliation_state(db, permit.routine_job_name, permit.session_id)
+    disposition = "retain_applied" if state["applied_count"] else "rearm"
+    reconcile_held_job(
+        reconciliation_key=f"factory-permit:{permit.id}:{candidate['identity']}",
+        actor="factory:permit-supervision",
+        job_name=permit.routine_job_name,
+        session_id=permit.session_id,
+        expected_state_sha256=state["state_sha256"],
+        cessation={
+            "session_id": candidate["guest_id"],
+            "state": observed["state"],
+            "generation": observed["generation"],
+            "observed_at": observed_at.isoformat(),
+            "updated_at": observed["updated_at"],
+            "last_invoke_at": observed.get("last_invoke_at"),
+            "evidence_sha256": _sha(evidence),
+        },
+        disposition=disposition,
+        session=db,
+    )
 
 
 def _record_destroy_failure(candidate, exception):

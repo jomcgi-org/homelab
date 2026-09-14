@@ -993,3 +993,43 @@ def test_session_stop_fence_is_idempotent_for_the_same_unknown_turn(running):
         terminal = fence_factory_attempt_stop(db, s.pin, s.sid, identity)
         assert terminal["session_id"] == s.sid
     assert snapshot(s.engine, s.sid) == before
+
+
+def test_review_authority_is_rechecked_after_guest_observation(running):
+    from factory.orchestration.factory_attempt_stop import request_attempt_stop
+
+    s = running
+    body = request_body(s)
+    body.pop("action")
+    checked = []
+
+    def authorize(db):
+        checked.append(True)
+        if len(checked) == 2:
+            raise ValueError("Review expired during guest observation")
+
+    with pytest.raises(ValueError, match="Review expired"):
+        request_attempt_stop(
+            **body, actor="factory:reservation-review", authorization_check=authorize
+        )
+    assert len(checked) == 2
+    assert audits(s, "attempt_stop_requested") == []
+    current = snapshot(s.engine, s.sid)
+    assert current["pending"]
+    assert current["permits"][0]["state"] == "running"
+
+
+def test_review_cannot_stop_a_replacement_physical_invocation(running):
+    from factory.orchestration.factory_attempt_stop import request_attempt_stop
+
+    s = running
+    body = request_body(s)
+    body.pop("action")
+    with pytest.raises(ValueError, match="reviewed_invocation_changed"):
+        request_attempt_stop(
+            **body,
+            actor="factory:reservation-review",
+            expected_stop_precondition={"invoke_started_at": 1},
+        )
+    assert audits(s, "attempt_stop_requested") == []
+    assert snapshot(s.engine, s.sid) == s.original

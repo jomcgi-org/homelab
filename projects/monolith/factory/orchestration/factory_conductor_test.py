@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -8752,3 +8753,17 @@ async def test_factory_module_disarms_watchdog_before_runtime_shutdown(monkeypat
     await module._leader_stop(app)
     assert observations == [True]
     assert app.state.leader_singletons_dbos_launched is False
+
+
+def test_reservation_review_guidance_is_in_next_planner_context(monkeypatch):
+    from factory import reservation_reviews
+
+    monkeypatch.setenv("FACTORY_RESERVATION_REVIEW_ENABLED", "true")
+    monkeypatch.setattr(conductor, "_decision_evidence", lambda _task: [])
+    monkeypatch.setattr(conductor, "_budget_evidence", lambda _task: {})
+    guidance = [{"action": "steer", "guidance": "Reuse the existing broker"}]
+    monkeypatch.setattr(reservation_reviews, "planner_guidance", lambda _task: guidance)
+    context = json.loads(
+        conductor._planner_context({"id": "task", "task_text": "Fix quota"}, [], [])
+    )
+    assert context["reservation_review_guidance"] == guidance

@@ -1116,7 +1116,15 @@ def _planner_context(
         for item in _decision_evidence(task["id"])
     ]
     budget_evidence = _budget_evidence(task["id"])
+    from factory.execution.review_leases import enabled as review_enabled
+
+    review_guidance = []
+    if review_enabled():
+        from factory.reservation_reviews import planner_guidance
+
+        review_guidance = planner_guidance(task["id"])
     context = {
+        "reservation_review_guidance": review_guidance,
         # What a person decided when the previous attempt on this issue asked
         # them. Untrusted text and never on the drop list: it is the answer
         # this task was re-admitted to act on.

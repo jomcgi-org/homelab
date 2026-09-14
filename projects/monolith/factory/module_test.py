@@ -44,6 +44,7 @@ def test_private_surface_preserves_existing_routes_and_health():
         "kg",
         "provider_quota",
     }
+    assert set(module.MODULE.register_health) == {"factory_reservations"}
     assert set(module.MODULE.register_liveness) == {"factory"}
 
 
@@ -143,8 +144,9 @@ async def test_disabled_orchestration_still_starts_session_maintenance(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_quota_probe_is_owned_by_factory_leader(monkeypatch):
-    from factory import quota_probe
+@pytest.mark.parametrize("loop", ["quota", "review"])
+async def test_supervision_is_owned_by_factory_leader(monkeypatch, loop):
+    from factory import quota_probe, reservation_reviews
     from factory.execution import (
         kg_feed,
         mcp,
@@ -162,7 +164,14 @@ async def test_quota_probe_is_owned_by_factory_leader(monkeypatch):
     ):
         monkeypatch.setattr(owner, name, lambda: [])
     task = asyncio.create_task(asyncio.Event().wait())
-    monkeypatch.setattr(quota_probe, "start_quota_probe_loop", lambda: [task])
+    monkeypatch.setattr(
+        quota_probe, "start_quota_probe_loop", lambda: [task] if loop == "quota" else []
+    )
+    monkeypatch.setattr(
+        reservation_reviews,
+        "start_review_loop",
+        lambda: [task] if loop == "review" else [],
+    )
     app = SimpleNamespace(state=SimpleNamespace(singleton_tasks=[]))
     try:
         assert await module._start_session_maintenance(app) == [task]

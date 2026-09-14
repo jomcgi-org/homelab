@@ -463,6 +463,10 @@ def recheck(
             or (workload is not None and row.workload not in (None, workload))
         ):
             return False
+        from factory.execution.review_leases import may_dispatch
+
+        if not may_dispatch(db, row):
+            return False
         row.state = "running"
         if workload is not None:
             row.workload = workload

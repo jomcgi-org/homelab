@@ -1216,3 +1216,31 @@ re-admit issues, settle uncertain outcomes, raise budgets, or make model calls.
 After replacement, normal workflow recovery and reconciliation use the existing
 receipt, attempt, session, and accounting identities. HTTP responsiveness alone
 no longer hides a conductor that has stopped making progress.
+
+### Reviewed reservation leases
+
+With `FACTORY_RESERVATION_REVIEW_ENABLED`, every execution reservation starts
+with a 30-minute work-review lease. The existing executor heartbeat remains an
+ownership mechanism; it never renews the work-review lease. The factory begins
+an Astra review five minutes before expiry and bounds the review to four minutes.
+One durable review runs at a time, using reserved interactive headroom so a full
+background pool cannot starve supervision.
+
+The review sees the task objective, exact attempt, bounded progress, previous
+review, and a fresh control-plane guest observation. Approval renews the exact
+dispatch for 30 minutes. Repeated approval requires new substantive evidence.
+Unknown outcomes cannot be approved. A stop, replan, or steering decision uses
+the existing exact-attempt stop protocol. Steering reaches the next conductor
+plan after cessation confirmation; it does not inject concurrent input into a
+running model turn. Original results and unknown costs remain intact.
+
+`/api/health` reports the critical `factory_reservations` component unhealthy
+for overdue or blocked reviews, pending stops, held routine jobs, and active
+factory attempts missing reservation coverage. `/healthz` remains process
+liveness, so a blocked job does not restart the monolith repeatedly. Expiry
+fences subsequent dispatch but never refunds capacity or proves guest cessation.
+
+The permit observer reconciles held routine jobs only after fresh, exact guest
+cessation evidence. It atomically settles the reservation and either rearms an
+unprocessed job or retains an already-applied extraction. Missing guest identity
+remains unhealthy and requires evidence; elapsed time is not a no-guest proof.

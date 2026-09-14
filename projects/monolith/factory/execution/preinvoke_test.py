@@ -909,3 +909,50 @@ def test_cancelled_create_without_guest_blocks_next_hour_probe(database, monkeyp
         lambda: datetime.now(timezone.utc) + timedelta(hours=2),
     )
     assert quota_probe.claim({"available": True, "providers": {}}) is None
+
+
+def test_factory_review_can_use_headroom_when_background_capacity_is_full(
+    database, monkeypatch
+):
+    monkeypatch.setenv("AGENT_ADMISSION_TOTAL", "2")
+    monkeypatch.setenv("AGENT_ADMISSION_BACKGROUND", "1")
+    with Session(database) as db:
+        db.add(
+            AgentCapacityReservation(
+                local_session_id="blocked-project",
+                pending_seq=1,
+                tier="project",
+                model="sol",
+                state="uncertain",
+            )
+        )
+        db.commit()
+    requests = []
+
+    async def handler(request):
+        requests.append(request.method)
+        return _probe_response(request)
+
+    _http(monkeypatch, handler)
+    turn = asyncio.run(
+        execution_api.run_synthetic_session(
+            "review",
+            "astra",
+            session_key="synthetic:factory-review:headroom",
+            read_timeout=240,
+            admission_tier="interactive",
+        )
+    )
+    assert turn.result == "synthetic ok"
+    assert requests == ["POST", "POST", "DELETE"]
+    with Session(database) as db:
+        row = db.exec(select(AgentSession)).one()
+        assert row.admission_tier == "interactive"
+        assert row.ember_session_id is None
+
+
+def test_ordinary_probe_cannot_take_supervisor_headroom():
+    with pytest.raises(ValueError, match="Reserved capacity"):
+        asyncio.run(
+            execution_api.run_synthetic_session("probe", admission_tier="interactive")
+        )
