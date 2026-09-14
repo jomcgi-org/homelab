@@ -1120,9 +1120,26 @@ def test_failed_guest_delivery_does_not_clear_reused_session(monkeypatch, sessio
 
 
 @pytest.mark.parametrize("failure_mode", ["persist_callback", "gone", "generic"])
+@pytest.mark.parametrize("review_enabled", [False, True])
 def test_stolen_executor_error_paths_write_nothing(
-    monkeypatch, session, caplog, failure_mode
+    monkeypatch, session, caplog, failure_mode, review_enabled
 ):
+    from factory.execution import factory_stop
+
+    monkeypatch.setenv(
+        "FACTORY_RESERVATION_REVIEW_ENABLED", str(review_enabled).lower()
+    )
+    monkeypatch.setattr(
+        factory_stop,
+        "executor_stop_requested",
+        lambda *_: (
+            False
+            if review_enabled
+            else pytest.fail(
+                "disabled review must not inspect this nonfactory executor"
+            )
+        ),
+    )
     row = store.create_session(session, f"stolen-{failure_mode}", "/workspace", "main")
     if failure_mode != "persist_callback":
         store.set_ember_session(session, row.id, "ember-owned", "token-owned", None)
