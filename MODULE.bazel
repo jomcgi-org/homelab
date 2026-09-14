@@ -996,6 +996,8 @@ use_repo(
     "hex_hpack_erl",
     "hex_opentelemetry",
     "hex_opentelemetry_api",
+    "hex_opentelemetry_api_experimental",
+    "hex_opentelemetry_experimental",
     "hex_opentelemetry_exporter",
     "hex_opentelemetry_semantic_conventions",
     "hex_ssl_verify_fun",
