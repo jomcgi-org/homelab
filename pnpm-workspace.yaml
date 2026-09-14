@@ -4,3 +4,21 @@ packages:
   - bazel/tools
   - projects/design-system
   - projects/monolith/frontend
+
+# Dependency admission policy for new resolutions:
+# - Delay new registry releases for three days, matching Renovate.
+# - Reject a release if an earlier-published version had stronger npm trusted
+#   publisher or provenance evidence.
+# - No cooldown or trust exceptions are configured. Any future exception must
+#   be narrowly reviewed and version-scoped.
+# - Block git and direct-tarball sources in transitive dependencies. pnpm still
+#   permits them as direct dependencies, where package.json review is required.
+#
+# pnpm 10.34.5 enforces these checks during dependency resolution. A frozen
+# lockfile install skips resolution, so it does not re-evaluate the age, trust
+# metadata, or source type of packages already recorded in pnpm-lock.yaml.
+minimumReleaseAge: 4320
+minimumReleaseAgeExclude: []
+trustPolicy: no-downgrade
+trustPolicyExclude: []
+blockExoticSubdeps: true
