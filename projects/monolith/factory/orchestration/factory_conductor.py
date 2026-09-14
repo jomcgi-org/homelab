@@ -3925,6 +3925,11 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
         and not r["node_key"].startswith("conductor_funding_")
         and r["status"] == "succeeded"
     ]
+    from factory.orchestration.factory_controls import landing_recovery_barrier
+
+    barrier = landing_recovery_barrier(task_id)
+    if barrier is not None:
+        planners = [r for r in planners if r["id"] > barrier["run_id_floor"]]
     if planners:
         latest = max(planners, key=lambda r: r["id"])
         cause = f"factory-decision:{latest['node_key']}:{latest['attempt']}"

@@ -9900,3 +9900,101 @@ def test_landing_recovery_has_a_fresh_bounded_deadline_without_resetting_spend(
     ):
         assert after[key] == before[key]
     assert after["policy"] == before["policy"]
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_recovery_supersedes_completed_conductor_finish(
+    feedback_db, monkeypatch, legacy
+):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryAudit
+    from factory.orchestration.models import SwarmNodeRun
+    from sqlmodel import select
+    from datetime import timedelta
+
+    task, policy = reviewed_task(verdict="approve", auto_merge=True)
+    complete_feedback_node(
+        task,
+        policy,
+        "conductor_1",
+        {"action": "finish", "pr_number": 21, "reason": "Approved delivery"},
+    )
+    old_review = next(
+        r
+        for r in conductor.graph.node_runs(task["id"])
+        if r["node_key"] == "review_fix"
+    )
+    evidence = {
+        "pr_url": "https://github.com/owner/repo/pull/21",
+        "head_sha": HEAD_ONE,
+        "review_session_id": old_review["session_id"],
+        "state": "ready_for_review",
+    }
+    assert controls.finish_task(task["id"], "succeeded", "test", evidence=evidence)[
+        "ok"
+    ]
+    assert controls.request_landing_recovery(
+        task["id"], 21, HEAD_ONE, "merge_queue", "test", reason="queue_ejection"
+    )["ok"]
+    if legacy:
+        with controls._locked_session() as (db, _):
+            event = db.exec(
+                select(FactoryAudit).where(
+                    FactoryAudit.task_id == task["id"],
+                    FactoryAudit.action == "landing_recovery_requested",
+                )
+            ).one()
+            detail = json.loads(event.detail_json)
+            detail.pop("run_id_floor")
+            event.detail_json = json.dumps(detail)
+            db.add(event)
+            for run in db.exec(
+                select(SwarmNodeRun).where(SwarmNodeRun.task_id == task["id"])
+            ):
+                run.created_at = event.created_at - timedelta(seconds=1)
+                db.add(run)
+    monkeypatch.setattr(
+        conductor,
+        "verify_delivery",
+        lambda *_a, **_k: pytest.fail("old finish must not replay"),
+    )
+    conductor.reconcile_task(task["id"], policy, object())
+    assert controls.task_snapshot(task["id"])["state"] == "admitted"
+    assert "correct_1" in {
+        n["node_key"] for n in conductor.graph.load_graph(task["id"])
+    }
+    # Even after the round audit exists, a racing finish cannot reuse the old approval.
+    assert controls.finish_task(task["id"], "succeeded", "test", evidence=evidence) == {
+        "ok": False,
+        "reason": "landing_recovery_pending",
+    }
+    monkeypatch.setattr(conductor, "_dispatch_ready", lambda *_a, **_k: False)
+    conductor.reconcile_task(task["id"], policy, object())
+    run_feedback_node(
+        task,
+        "correct_1",
+        {
+            "status": "complete",
+            "summary": "Transient queue failure; retry same head",
+            "pr_number": 21,
+            "head_sha": HEAD_ONE,
+        },
+        head=HEAD_ONE,
+    )
+    fresh = run_feedback_node(
+        task,
+        "review_1",
+        {
+            "verdict": "approve",
+            "summary": "Independently assessed retry evidence",
+            "pr_number": 21,
+            "head_sha": HEAD_ONE,
+        },
+        head=HEAD_ONE,
+    )
+    assert controls.finish_task(
+        task["id"],
+        "succeeded",
+        "test",
+        evidence={**evidence, "review_session_id": fresh["session_id"]},
+    )["ok"]

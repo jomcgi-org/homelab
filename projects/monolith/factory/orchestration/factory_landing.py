@@ -266,6 +266,7 @@ LANDING_ACTIONS = (
     "merge_armed",
     "merge_ejected",
     "landing_recovery_requested",
+    "landing_recovery_round",
     "landing_recovery_skipped",
     "merge_arm_refused",
     "merged",
@@ -392,6 +393,10 @@ def _deliveries(policy: dict, *, include_refused: bool = False) -> list[dict]:
                 # that moves under an armed pull request can be caught.
                 "head_sha": armed[-1].get("head_sha") if armed else head,
                 "approved_head_sha": head,
+                "recovery_pending": bool(
+                    audits["landing_recovery_requested"]
+                    and not audits["landing_recovery_round"]
+                ),
                 "recovery_skipped": bool(audits["landing_recovery_skipped"]),
                 "refusal": audits["merge_arm_refused"][-1]
                 if audits["merge_arm_refused"]
@@ -534,7 +539,7 @@ def _arm(repo: str, item: dict) -> None:
         if head != approved:
             _refuse(item, "head_moved", approved_head_sha=approved, head_sha=head)
             return
-        if pr.get("mergeable") is False:
+        if item.get("recovery_pending") or pr.get("mergeable") is False:
             _recover_delivery(item, head, "delivered_pr")
             return
         node_id = pr.get("node_id")
@@ -607,7 +612,10 @@ def _recover_refused(policy: dict) -> None:
         if item.get("recovery_skipped"):
             continue
         refusal = item.get("refusal") or {}
-        if refusal.get("reason") not in ("merge_conflict", "ejected_from_merge_queue"):
+        if not item.get("recovery_pending") and refusal.get("reason") not in (
+            "merge_conflict",
+            "ejected_from_merge_queue",
+        ):
             continue
         try:
             pr = github_get(policy["repo"], f"pulls/{item['pr_number']}")
