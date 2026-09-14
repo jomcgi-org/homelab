@@ -35,6 +35,11 @@ def _snapshot(db, permit):
     ).first()
     return {
         "permit_id": permit.id,
+        "seq": permit.pending_seq,
+        "owner": permit.owner,
+        "routine_job_name": permit.routine_job_name,
+        "local_session_id": permit.local_session_id,
+        "last_dispatch_at": str(pending.last_dispatch_at) if pending else None,
         "identity": leases.identity(permit),
         "tier": permit.tier,
         "state": permit.state,
@@ -65,6 +70,8 @@ def _same_attempt(before, after):
             "node_key",
             "node_attempt",
             "dispatch_count",
+            "last_dispatch_at",
+            "session_id",
         )
     )
 
@@ -248,11 +255,7 @@ def apply_decision(candidate, decision):
         row.rationale = decision["reason"]
         row.completed_at = leases.now()
         if decision["action"] == "approve":
-            waiting = (
-                permit.state == "reserved"
-                and not current["guest_id"]
-                and current["session_id"] is not None
-            )
+            waiting = permit.state == "reserved" and not current["guest_id"]
             running = (
                 permit.state == "running"
                 and current["session_status"] == "running"
@@ -280,6 +283,64 @@ def apply_decision(candidate, decision):
         ):
             row.state = "blocked"
             row.rationale = "Progress changed while the stop decision was reviewed"
+            db.add(row)
+            return
+        if candidate.get("stop_identity") is None:
+            from factory.execution import store
+
+            if permit.state == "reserved" and permit.session_id is None:
+                if not admission.cancel_unbound(
+                    db, permit.local_session_id, permit.pending_seq
+                ):
+                    raise ValueError("Unbound reservation changed")
+                if permit.routine_job_name and decision["action"] == "stop":
+                    from agent.api import stop_unattempted_job
+
+                    stop_unattempted_job(db, permit.routine_job_name)
+                row.state = "stopping"
+                db.add(row)
+                return
+            if permit.state == "reserved" and permit.session_id is not None:
+                agent = store._lock_session(db, permit.session_id)
+                pending = store.get_pending_message(
+                    db, permit.session_id, permit.pending_seq
+                )
+                if (
+                    agent
+                    and pending
+                    and admission.cancel_unattempted(db, agent, pending)
+                ):
+                    if permit.routine_job_name and decision["action"] == "stop":
+                        from agent.api import stop_unattempted_job
+
+                        stop_unattempted_job(db, permit.routine_job_name)
+                    # Preserve queued user input. The failed session cannot auto-dispatch it.
+                    agent.status = "failed"
+                    db.add(agent)
+                    row.state = "stopping"
+                    db.add(row)
+                    return
+            if not candidate.get("stop_precondition"):
+                raise ValueError("Missing reviewed stop precondition")
+            if not store.finish_unknown_pending_in_session(
+                db,
+                permit.session_id,
+                permit.pending_seq,
+                permit.owner,
+                before["dispatch_count"],
+                "reservation_review_stop",
+                expected_guest_id=before["guest_id"],
+                expected_workflow_id=before["workflow_id"],
+            ):
+                raise ValueError("Reviewed execution changed")
+            row.stop_intent_json = json.dumps(
+                {
+                    "snapshot": before,
+                    "precondition": candidate["stop_precondition"],
+                },
+                sort_keys=True,
+            )
+            row.state = "stopping"
             db.add(row)
             return
         row.state = "applying"
@@ -341,7 +402,7 @@ def _failed(candidate, reason):
         if (
             row
             and row.review_session_key == candidate["key"]
-            and row.state != "approved"
+            and row.state not in {"approved", "stopping"}
         ):
             row.state = "blocked"
             row.rationale = reason
@@ -397,7 +458,7 @@ async def observe_guest(candidate):
             for key in ("session_id", "generation", "invoke_started_at")
         ):
             raise ValueError("Reviewed guest invocation changed")
-        if candidate.get("stop_identity"):
+        if view.get("stop_precondition") is not None or candidate.get("stop_identity"):
             from factory.orchestration.factory_supervision import _precondition
 
             precondition = _precondition(view.get("stop_precondition"), guest)
@@ -490,6 +551,22 @@ def health_snapshot():
                         "review_state": review.state if review else "missing",
                     }
                 )
+        uncovered_sessions = db.exec(
+            select(PendingMessage.session_id)
+            .join(AgentSession)
+            .where(
+                AgentSession.status.in_(["running", "recovering"]),
+                PendingMessage.created_at
+                < now - timedelta(seconds=leases.INTERVAL_SECONDS),
+                ~select(AgentCapacityReservation.id)
+                .where(
+                    AgentCapacityReservation.session_id == PendingMessage.session_id,
+                    AgentCapacityReservation.pending_seq == PendingMessage.seq,
+                    AgentCapacityReservation.state != "settled",
+                )
+                .exists(),
+            )
+        ).all()
         retained_reviewers = db.exec(
             select(AgentSession.id).where(
                 AgentSession.local_session_id.startswith(leases.PREFIX),
@@ -540,13 +617,100 @@ def health_snapshot():
             )
         ]
         return {
-            "ok": not overdue and not held and not uncovered and not retained_reviewers,
+            "ok": not overdue
+            and not held
+            and not uncovered
+            and not retained_reviewers
+            and not uncovered_sessions,
             "detail": "Reservation review coverage",
             "overdue": overdue,
             "held_jobs": held,
             "uncovered_attempts": uncovered,
             "retained_reviewers": retained_reviewers,
+            "uncovered_sessions": uncovered_sessions,
         }
+
+
+async def process_execution_stops():
+    """Retry only committed conditional stops; the permit observer owns settlement."""
+    from factory.execution.transport import EmberVmShimTransport
+    from factory.execution import store
+
+    def candidates():
+        with Session(get_engine()) as db, db.begin():
+            admission.lock_pool(db)
+            rows = db.exec(
+                select(ReservationReview, AgentCapacityReservation)
+                .join(
+                    AgentCapacityReservation,
+                    AgentCapacityReservation.id == ReservationReview.permit_id,
+                )
+                .where(
+                    ReservationReview.state == "stopping",
+                    ReservationReview.stop_intent_json.is_not(None),
+                    AgentCapacityReservation.state == "uncertain",
+                )
+            ).all()
+            result = []
+            for row, permit in rows:
+                intent = json.loads(row.stop_intent_json)
+                before = intent["snapshot"]
+                agent = store._lock_session(db, permit.session_id)
+                turn = store.get_turn(db, permit.session_id, permit.pending_seq)
+                recovery = (
+                    json.loads(turn.usage_json or "{}").get("recovery", {})
+                    if turn
+                    else {}
+                )
+                if (
+                    leases.identity(permit) != before["identity"]
+                    or agent is None
+                    or agent.ember_session_id != before["guest_id"]
+                    or agent.workflow_id != before["workflow_id"]
+                    or recovery.get("claim_owner") != before["owner"]
+                    or recovery.get("dispatch_count") != before["dispatch_count"]
+                ):
+                    continue
+                result.append(intent)
+            return result
+
+    for intent in await asyncio.to_thread(candidates):
+        try:
+            await asyncio.wait_for(
+                EmberVmShimTransport().destroy_session(
+                    intent["snapshot"]["guest_id"],
+                    stop_precondition=intent["precondition"],
+                ),
+                5,
+            )
+        except Exception as exc:
+            logger.warning("Reviewed execution stop pending: %s", type(exc).__name__)
+
+
+def routine_guidance(job_name):
+    if not leases.enabled():
+        return ""
+    with Session(get_engine()) as db:
+        row = db.exec(
+            select(ReservationReview)
+            .join(
+                AgentCapacityReservation,
+                AgentCapacityReservation.id == ReservationReview.permit_id,
+            )
+            .where(
+                AgentCapacityReservation.routine_job_name == job_name,
+                AgentCapacityReservation.state == "settled",
+                ReservationReview.state == "stopping",
+                ReservationReview.verdict.in_(["steer", "replan"]),
+            )
+            .order_by(ReservationReview.completed_at.desc())
+            .limit(1)
+        ).first()
+        if row is None:
+            return ""
+        return "\nFactory supervisor guidance after confirmed prior cessation:\n" + (
+            row.guidance or row.rationale or ""
+        )
 
 
 def planner_guidance(task_id):
@@ -595,8 +759,12 @@ async def reservation_health():
 
 
 async def _loop():
+    from factory.quota_probe import _cleanup
+
     while True:
         try:
+            await _cleanup()
+            await process_execution_stops()
             await review_once()
         except asyncio.CancelledError:
             raise

@@ -319,7 +319,11 @@ def _reconcile(db, request):
             state["provenance_count"] or state["extraction_passes"] != 0
         ):
             raise ValueError("Rearm requires an unprocessed raw or unchanged scout")
-    elif routine_kind == KG_NODE_KEY and not state["applied_count"]:
+    elif (
+        request["disposition"] == "retain_applied"
+        and routine_kind == KG_NODE_KEY
+        and not state["applied_count"]
+    ):
         raise ValueError("Retain-applied requires existing extraction provenance")
     if (
         not 0
@@ -412,7 +416,7 @@ def reconcile_held_job(
     if (
         type(session_id) is not int
         or session_id <= 0
-        or disposition not in {"rearm", "retain_applied"}
+        or disposition not in {"rearm", "retain_applied", "stop"}
     ):
         raise ValueError("Invalid reconciliation identity or disposition")
     required = {
@@ -427,11 +431,11 @@ def reconcile_held_job(
     if not isinstance(cessation, dict) or set(cessation) != required:
         raise ValueError("Exact cessation evidence fields are required")
     if (
-        cessation["state"] not in {"parked", "evicted"}
+        cessation["state"] not in {"parked", "evicted", "destroyed"}
         or type(cessation["generation"]) is not int
         or cessation["generation"] < 0
     ):
-        raise ValueError("Cessation requires a parked or evicted guest")
+        raise ValueError("Cessation requires a parked, evicted, or destroyed guest")
     observed = _proof_time(cessation)
     updated_at = cessation["updated_at"]
     last_invoke_at = cessation["last_invoke_at"]

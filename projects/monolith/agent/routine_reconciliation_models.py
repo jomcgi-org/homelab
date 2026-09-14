@@ -11,7 +11,7 @@ class RoutineReconciliation(SQLModel, table=True):
     __table_args__ = (
         UniqueConstraint("session_id", "unknown_turn_seq"),
         CheckConstraint("unknown_turn_seq > 0"),
-        CheckConstraint("disposition IN ('rearm', 'retain_applied')"),
+        CheckConstraint("disposition IN ('rearm', 'retain_applied', 'stop')"),
         {"schema": "claude_agent"},
     )
 

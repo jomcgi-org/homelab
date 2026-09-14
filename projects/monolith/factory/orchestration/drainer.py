@@ -1144,6 +1144,14 @@ def drain_cycle() -> dict:
                     quota_attributes = _quota_span_attributes()
                     if quota_attributes:
                         set_attributes(job_span, quota_attributes)
+                    from factory.execution.review_leases import (
+                        enabled as review_enabled,
+                    )
+
+                    if review_enabled():
+                        from factory.reservation_reviews import routine_guidance
+
+                        prompt += routine_guidance(name)
                     start_attempted = True
                     session_id = start_agent_session(
                         local_session_id,

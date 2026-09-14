@@ -464,7 +464,7 @@ def complete_job(
                    ELSE NULL
                END
          WHERE name = :name AND routine_kind != '_drainer-worker'
-           AND (last_status IS NULL OR last_status != :unknown_outcome)
+           AND (last_status IS NULL OR last_status NOT IN (:unknown_outcome, 'factory_stopped'))
         """
     )
     with Session(get_engine()) as session:
@@ -582,7 +582,7 @@ def trigger_job(name: str) -> bool:
     table = "routine_jobs" if sqlite else "claude_agent.routine_jobs"
     now_expr = "CURRENT_TIMESTAMP" if sqlite else "now()"
     sql = text(f"""
-        UPDATE {table} SET next_run_at = {now_expr} WHERE name = :name AND routine_kind != '_drainer-worker'
+        UPDATE {table} SET next_run_at = {now_expr}, last_status = CASE WHEN last_status='factory_stopped' THEN 'factory_resumed' ELSE last_status END WHERE name = :name AND routine_kind != '_drainer-worker'
           AND (last_status IS NULL OR last_status != :unknown_outcome)
     """)
     with Session(engine) as session:
@@ -609,7 +609,7 @@ def defer_job(name: str, seconds: int, *, expected_holder: str | None = None) ->
                locked_by = NULL,
                locked_at = NULL
          WHERE name = :name AND routine_kind != '_drainer-worker'
-           AND (last_status IS NULL OR last_status != :unknown_outcome)
+           AND (last_status IS NULL OR last_status NOT IN (:unknown_outcome, 'factory_stopped'))
         """
     )
     with Session(get_engine()) as session:
@@ -775,3 +775,25 @@ def reserve_drainer_workers(
             retry.append(wid)
         session.commit()
         return retry
+
+
+def stop_unattempted_job(session: Session, name: str) -> None:
+    """Park a job in the caller's atomic cancellation transaction.
+
+    The execution owner holds the capacity pool and has positively cancelled
+    its never-started reservation. That pool prevents another drainer claim
+    before this job disposition commits with the cancellation and review.
+    """
+    table = (
+        "routine_jobs"
+        if session.get_bind().dialect.name == "sqlite"
+        else "claude_agent.routine_jobs"
+    )
+    result = session.execute(
+        text(
+            f"UPDATE {table} SET last_status='factory_stopped', next_run_at=NULL, locked_by=NULL, locked_at=NULL WHERE name=:name AND routine_kind != '_drainer-worker'"
+        ),
+        {"name": name},
+    )
+    if result.rowcount != 1:
+        raise ValueError("Missing routine job for reviewed cancellation")

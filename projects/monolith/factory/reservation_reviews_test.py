@@ -20,6 +20,8 @@ from factory.execution.models import (
 )
 from factory.execution.review_leases import ReservationReview
 from factory.orchestration.models import SwarmNodeRun, SwarmTask
+from factory.orchestration.factory_models import FactoryStart
+from factory.execution.models import ProbeObservation
 
 NOW = datetime(2026, 9, 14, tzinfo=timezone.utc)
 
@@ -47,6 +49,8 @@ def db(tmp_path, monkeypatch):
                 ReservationReview,
                 SwarmTask,
                 SwarmNodeRun,
+                FactoryStart,
+                ProbeObservation,
             )
         ],
     )
@@ -70,6 +74,7 @@ def seed(db, *, age=1600, state="running", guest="guest", key="work", tier="proj
             workspace="guest",
             branch="main",
             status="running",
+            admission_tier=tier,
             ember_session_id=guest,
             workflow_id=key,
         )
@@ -95,6 +100,7 @@ def seed(db, *, age=1600, state="running", guest="guest", key="work", tier="proj
                 claimed_by_replica="executor",
                 dispatch_count=1,
                 claimed_at=NOW,
+                last_dispatch_at=NOW - timedelta(seconds=age),
             )
         )
         session.commit()
@@ -438,3 +444,199 @@ def test_settled_reviewer_with_retained_guest_blocks_and_fails_health(db):
     health = reviews.health_snapshot()
     assert not health["ok"]
     assert health["retained_reviewers"] == [sid]
+
+
+def test_active_session_without_exact_permit_is_unhealthy(db):
+    seed(db, state="settled")
+    with Session(db) as session:
+        pending = session.exec(select(PendingMessage)).one()
+        pending.created_at = NOW - timedelta(seconds=1801)
+        session.add(pending)
+        session.commit()
+        sid = pending.session_id
+    health = reviews.health_snapshot()
+    assert not health["ok"]
+    assert health["uncovered_sessions"] == [sid]
+
+
+def test_unbound_reservation_can_be_cancelled_with_positive_local_proof(db):
+    with Session(db) as session:
+        permit = AgentCapacityReservation(
+            local_session_id="unbound",
+            pending_seq=1,
+            tier="project",
+            model="sol",
+            created_at=NOW - timedelta(seconds=1801),
+        )
+        session.add(permit)
+        session.commit()
+        pid = permit.id
+    candidate = reviews.claim_review()
+    reviews.apply_decision(candidate, decision("stop"))
+    with Session(db) as session:
+        permit = session.get(AgentCapacityReservation, pid)
+        assert permit.state == "settled"
+        assert permit.outcome == "cancelled_before_session"
+
+
+def test_nonfactory_stop_fences_exact_turn_and_retries_conditional_destroy(
+    db, monkeypatch
+):
+    import asyncio
+    from core import db as core_db
+    from factory.execution.transport import EmberVmShimTransport
+
+    pid, candidate = ready(db)
+    candidate["stop_precondition"] = {
+        "session_id": "guest",
+        "generation": 1,
+        "invoke_started_at": 100,
+    }
+    monkeypatch.setattr(core_db, "get_engine", lambda: db)
+    reviews.apply_decision(candidate, decision("steer"))
+    with Session(db) as session:
+        permit = session.get(AgentCapacityReservation, pid)
+        sid = permit.session_id
+        assert permit.state == "uncertain"
+        assert session.exec(select(PendingMessage)).first() is None
+        assert session.exec(select(AgentTurn)).one().cost_usd is None
+        assert session.get(ReservationReview, pid).state == "stopping"
+    assert leases.stop_requested(sid, 1, "executor", 1)
+    assert not leases.stop_requested(sid, 1, "replacement", 1)
+    assert not leases.stop_requested(sid, 1, "executor", 2)
+    calls = []
+
+    async def destroy(self, guest, *, stop_precondition):
+        calls.append((guest, stop_precondition))
+        return {"state": "destroying"}
+
+    monkeypatch.setattr(EmberVmShimTransport, "destroy_session", destroy)
+    asyncio.run(reviews.process_execution_stops())
+    asyncio.run(reviews.process_execution_stops())
+    assert calls == [("guest", candidate["stop_precondition"])] * 2
+    reviews._failed(candidate, "Cancelled after committing stop")
+    with Session(db) as session:
+        assert session.get(ReservationReview, pid).state == "stopping"
+        assert session.get(AgentCapacityReservation, pid).state == "uncertain"
+        agent = session.get(AgentSession, sid)
+        agent.ember_session_id = "replacement"
+        session.add(agent)
+        session.commit()
+    asyncio.run(reviews.process_execution_stops())
+    assert len(calls) == 2
+
+
+def test_routine_steering_is_available_only_after_cessation(db):
+    pid, candidate = ready(db)
+    candidate["stop_precondition"] = {"session_id": "guest"}
+    reviews.apply_decision(candidate, decision("steer"))
+    with Session(db) as session:
+        permit = session.get(AgentCapacityReservation, pid)
+        permit.routine_job_name = "kg:source"
+        session.add(permit)
+        session.commit()
+    assert reviews.routine_guidance("kg:source") == ""
+    with Session(db) as session:
+        permit = session.get(AgentCapacityReservation, pid)
+        permit.state = "settled"
+        session.add(permit)
+        session.commit()
+    assert "Check the schema" in reviews.routine_guidance("kg:source")
+
+
+def test_bound_unattempted_stop_preserves_queued_input(db):
+    pid = seed(db, state="reserved", guest=None)
+    with Session(db) as session:
+        permit = session.get(AgentCapacityReservation, pid)
+        permit.owner = None
+        pending = session.exec(select(PendingMessage)).one()
+        pending.dispatch_count = 0
+        pending.claimed_by_replica = None
+        pending.last_dispatch_at = None
+        pending.partial_text = None
+        session.add(permit)
+        session.add(pending)
+        session.commit()
+    reviews.apply_decision(reviews.claim_review(), decision("stop"))
+    with Session(db) as session:
+        assert session.get(AgentCapacityReservation, pid).state == "settled"
+        assert (
+            session.exec(select(PendingMessage)).one().message_text
+            == "Implement the feature"
+        )
+        assert session.exec(select(AgentSession)).one().status == "failed"
+
+
+@pytest.mark.parametrize("later_claimed", [False, True])
+def test_reviewed_interactive_stop_settles_only_with_safe_preserved_queue(
+    db, monkeypatch, later_claimed
+):
+    import asyncio
+    from factory.execution import permit_supervision as observer
+
+    pid, candidate = ready(db, tier="interactive")
+    started = int((NOW - timedelta(seconds=1600)).timestamp() * 1000)
+    precondition = dict(
+        session_id="guest",
+        generation=1,
+        invoke_started_at=started,
+        vm_id="vm",
+        node_id="node",
+        instance_id="node/pod",
+        pod_uid="pod",
+        boot_id="boot",
+    )
+    candidate["stop_precondition"] = precondition
+    reviews.apply_decision(candidate, decision("stop"))
+    with Session(db) as session:
+        permit = session.get(AgentCapacityReservation, pid)
+        sid = permit.session_id
+        turn = session.exec(select(AgentTurn)).one()
+        turn.created_at = NOW - timedelta(seconds=10)
+        session.add(turn)
+        session.add(
+            PendingMessage(
+                session_id=sid,
+                seq=2,
+                message_text="Keep this user input",
+                claimed_by_replica="other" if later_claimed else None,
+                dispatch_count=1 if later_claimed else 0,
+            )
+        )
+        session.commit()
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    monkeypatch.setattr(observer, "get_engine", lambda: db)
+    monkeypatch.setattr(observer, "_now", lambda: NOW)
+    intent = dict(
+        precondition,
+        operation_id="stop-1",
+        requested_at_unix_ms=int((NOW - timedelta(seconds=5)).timestamp() * 1000),
+    )
+
+    class Transport:
+        async def get_session(self, guest):
+            return dict(
+                session_id=guest,
+                state="destroyed",
+                generation=1,
+                invoke_started_at=started,
+                last_invoke_at=None,
+                updated_at=int((NOW - timedelta(seconds=1)).timestamp() * 1000),
+                stop_intent=intent,
+                stop_completion=dict(
+                    intent,
+                    completed_at_unix_ms=int(
+                        (NOW - timedelta(seconds=1)).timestamp() * 1000
+                    ),
+                ),
+            )
+
+    asyncio.run(observer.sweep_once(Transport()))
+    with Session(db) as session:
+        assert session.get(AgentCapacityReservation, pid).state == (
+            "uncertain" if later_claimed else "settled"
+        )
+        assert (
+            session.exec(select(PendingMessage)).one().message_text
+            == "Keep this user input"
+        )
