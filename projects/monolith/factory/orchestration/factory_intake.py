@@ -12,6 +12,7 @@ from factory.orchestration.factory_controls import (
     _integer,
     _json,
     _locked_session,
+    _read_session,
     _now,
     _snapshot,
     _text,
@@ -31,6 +32,27 @@ from factory.orchestration.factory_controls import (
 )
 from factory.orchestration.factory_models import FactoryReceipt
 from factory.orchestration.models import SwarmTask, mint_task_id
+
+
+def get_issue_receipt(repo: str, issue_number: int, generation: int) -> dict | None:
+    """Read an existing delivery receipt without depending on GitHub availability."""
+    repo = normalize_repo(repo)
+    issue_number = _integer(issue_number, "issue_number", 1, 2**31 - 1)
+    generation = _integer(generation, "generation", 0, 2**31 - 1)
+    with _read_session() as db:
+        row = db.exec(
+            select(FactoryReceipt).where(
+                FactoryReceipt.repo == repo,
+                FactoryReceipt.issue_number == issue_number,
+                FactoryReceipt.generation == generation,
+                FactoryReceipt.task_class == DEFAULT_TASK_CLASS,
+            )
+        ).one_or_none()
+        return (
+            {"ok": True, "created": False, "receipt": _snapshot(db, row)}
+            if row
+            else None
+        )
 
 
 def receive_issue(

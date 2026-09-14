@@ -145,6 +145,7 @@ def shape_receipt(
         key: receipt.get(key)
         for key in (
             "id",
+            "repo",
             "issue_number",
             "generation",
             "title",

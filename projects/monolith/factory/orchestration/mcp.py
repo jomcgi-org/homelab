@@ -1,9 +1,8 @@
-"""MCP tools that read factory conductor state.
+"""Operator MCP adapters over existing factory records and operation owners.
 
-Two read-only tools over the composers the operator board already uses, so a
-chat session can answer "what is the factory doing, and what needs Joe"
-without opening the board. Nothing here writes: every mutation stays on the
-authenticated HTTP control surface in ``swarm/factory_router.py``.
+Status, issue intake and deterministic controls work without a model turn.
+Escalation decisions and conductor conversation continuity are separate
+contracts; these adapters never infer either from a worker session.
 
 The authorization gate matches that router's ``operator`` dependency exactly,
 because these tools return the same records it serves. Tool-level entitlement
@@ -11,15 +10,16 @@ at the gateway is a separate and coarser control (see
 `projects/mcp/ARCHITECTURE.md`), so the floor is enforced here rather than
 assumed from the catalogue a caller was shown.
 
-Read shape only. A trimmed row per task keeps a status call answerable in one
-message, and the escalation tool carries the detail for the few tasks that
-are actually waiting on a person.
+Trimmed results keep ordinary calls usable in a voice conversation.
 """
 
 from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+from typing import Annotated, Literal
+
+from pydantic import BeforeValidator, Field
 
 from auth.api import Principal, current_principal
 from core.mcp_app import mcp
@@ -34,6 +34,17 @@ COVERAGE = {
     "factory_records": "covered",
     "cloud_sessions": "not_indexed",
 }
+
+
+def _exact_integer(value: object) -> int:
+    # FastMCP may explicitly request non-strict Pydantic validation, overriding
+    # Field(strict=True). Check the original JSON value before coercion.
+    if type(value) is not int:
+        raise ValueError("an integer is required without coercion")
+    return value
+
+
+MCPInteger = Annotated[int, BeforeValidator(_exact_integer)]
 
 
 def _refuse(principal: Principal) -> dict | None:
@@ -87,6 +98,9 @@ def _task_row(receipt: dict) -> dict:
     escalation = receipt.get("escalation") or {}
     limits = receipt.get("limits") or {}
     return {
+        "receipt_id": receipt.get("id"),
+        "repo": receipt.get("repo"),
+        "generation": receipt.get("generation"),
         "issue_number": receipt.get("issue_number"),
         "title": receipt.get("title"),
         "url": receipt.get("url"),
@@ -241,3 +255,172 @@ async def factory_escalations(include_resolved: bool = False) -> dict:
     if refusal is not None:
         return refusal
     return await asyncio.to_thread(_escalations_payload, include_resolved)
+
+
+def _detail_payload(receipt_id: int, node_offset: int, limit: int) -> dict:
+    from factory.orchestration import factory_controls as controls, graph
+    from factory.orchestration.factory_models import FactoryReceipt
+    from factory.private_view import _iso, shape_node
+
+    with controls._read_session() as db:
+        row = db.get(FactoryReceipt, receipt_id)
+        if row is None:
+            return {"ok": False, "reason": "unknown_receipt", "observed_at": _now()}
+        snapshot = controls._snapshot(db, row)
+        nodes = graph.load_graph(row.task_id, session=db) if row.task_id else []
+        runs = graph.node_runs(row.task_id, session=db) if row.task_id else []
+        shaped = [
+            shape_node(node, [r for r in runs if r["node_key"] == node["node_key"]], {})
+            for node in nodes
+        ]
+        page = shaped[node_offset : node_offset + limit]
+        for node in page:
+            node["attempt_count"] = len(node["attempts"])
+            node["attempts"] = node["attempts"][-3:]
+        return {
+            "ok": True,
+            "observed_at": _now(),
+            "updated_at": _iso(row.updated_at),
+            "receipt": _task_row({**snapshot, "nodes": shaped}),
+            "nodes": page,
+            "node_count": len(shaped),
+            "next_node_offset": node_offset + limit
+            if node_offset + limit < len(shaped)
+            else None,
+            "coverage": COVERAGE,
+        }
+
+
+@mcp.tool
+async def factory_task_detail(
+    receipt_id: Annotated[MCPInteger, Field(gt=0)],
+    node_offset: Annotated[MCPInteger, Field(ge=0)] = 0,
+    limit: Annotated[MCPInteger, Field(ge=1, le=50)] = 20,
+) -> dict:
+    """Inspect an exact factory receipt and a bounded page of its plan nodes.
+
+    Use receipt_id from factory_status or factory_submit_issue, including for
+    queued work without a task_id. Nodes include dependencies, current state
+    and their last three attempts with session IDs for further inspection.
+    Follow next_node_offset for more nodes. Node success alone is not evidence
+    of accepted delivery or deployment. This read requires a human operator.
+    """
+    refusal = _refuse(current_principal())
+    if refusal is not None:
+        return refusal
+    return await asyncio.to_thread(_detail_payload, receipt_id, node_offset, limit)
+
+
+def _submit_issue(
+    repo: str, issue_number: int, generation: int, principal: Principal
+) -> dict:
+    from fastapi import HTTPException
+    from factory.orchestration.factory_intake import get_issue_receipt
+    from factory.orchestration.factory_router import ReceiptRequest, factory_receipt
+    from goosecracker.api import REPO_CATALOG
+
+    # Reuse the HTTP adapter's repository eligibility and issue validation,
+    # which ultimately calls the same durable intake owner as the scheduler.
+    try:
+        if repo not in REPO_CATALOG:
+            raise HTTPException(422, "repository is not available to the executor")
+        result = get_issue_receipt(repo, issue_number, generation)
+        if result is None:
+            result = factory_receipt(
+                ReceiptRequest(
+                    repo=repo, issue_number=issue_number, generation=generation
+                ),
+                principal,
+            )
+    except HTTPException as exc:
+        return {"ok": False, "status": exc.status_code, "reason": exc.detail}
+    return {
+        "ok": result["ok"],
+        "created": result["created"],
+        "receipt": _task_row(result["receipt"]),
+        "observed_at": _now(),
+        "coverage": COVERAGE,
+    }
+
+
+@mcp.tool
+async def factory_submit_issue(
+    repo: str,
+    issue_number: Annotated[MCPInteger, Field(gt=0, le=2**31 - 1)],
+    generation: Annotated[MCPInteger, Field(ge=0, le=2**31 - 1)] = 0,
+) -> dict:
+    """Queue an existing open GitHub issue and return its durable factory receipt.
+
+    Requires a standing human operator. The issue must belong to a repository
+    available to the executor. A retry with the same repository, issue and
+    generation returns the existing receipt without replacing its request.
+    Keep generation unchanged on retries; changing it requests a new recurrence.
+    Receipt creation does not start a worker or override paused admissions,
+    policy eligibility, capacity or budgets. Check factory_status for admission.
+    """
+    principal = current_principal()
+    refusal = _refuse(principal)
+    if refusal is not None:
+        return refusal
+    return await asyncio.to_thread(
+        _submit_issue, repo, issue_number, generation, principal
+    )
+
+
+def _request_control(
+    action: str,
+    request_key: str,
+    expected_version: int,
+    task_id: str | None,
+    actor: str,
+) -> dict:
+    from factory.orchestration.factory_controls import request_control
+
+    try:
+        return request_control(
+            action,
+            actor,
+            request_key=request_key,
+            expected_version=expected_version,
+            task_id=task_id,
+        )
+    except ValueError as exc:
+        return {"ok": False, "reason": str(exc)}
+
+
+@mcp.tool
+async def factory_control(
+    action: Literal["enable", "pause_admissions", "pause_task", "resume_task", "stop"],
+    request_key: Annotated[str, Field(min_length=1, max_length=256)],
+    expected_version: Annotated[MCPInteger, Field(ge=0, le=2**63 - 1)],
+    task_id: Annotated[str | None, Field(min_length=1, max_length=256)] = None,
+) -> dict:
+    """Apply a supported factory control as an authenticated human operator.
+
+    Read factory_status first and pass its version. Supply a new request_key
+    for each intended command; retry with the same key and identical arguments
+    after a lost response. An acknowledgement describes that command's outcome,
+    not current state: read status again after a replay or version conflict.
+
+    pause_admissions stops admitting new tasks; existing tasks keep running.
+    enable resumes admissions under the existing policy. pause_task fences new
+    starts for the exact active task_id without stopping its running workers;
+    resume_task removes that fence. Neither task action answers an escalation.
+    stop permanently fences this factory and requests cancellation of its work.
+    It cannot be undone by enable and is not an acknowledgement of cessation.
+    Inspect status for unresolved starts; cancellation does not undo effects.
+    Only pause_task and resume_task take task_id. These controls do not alter
+    priorities, task direction, policy or budgets and need no conductor turn.
+    """
+    principal = current_principal()
+    refusal = _refuse(principal)
+    if refusal is not None:
+        return refusal
+    return await asyncio.to_thread(
+        _request_control,
+        action,
+        request_key,
+        expected_version,
+        task_id,
+        principal.subject,
+    )

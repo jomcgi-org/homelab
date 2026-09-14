@@ -27,7 +27,7 @@ from factory.orchestration.factory_models import (
     FactoryStart,
     MAX_CAPACITY_DENIED_ATTEMPTS,
 )
-from factory.orchestration.models import SwarmTask
+from factory.orchestration.models import SwarmNodeRun, SwarmTask
 
 MAX_LANDING_RECOVERIES = 2
 LANDING_RECOVERY_TIMEOUT_SECONDS = 3600
@@ -1792,6 +1792,82 @@ def set_control(
         }
 
 
+def request_control(
+    action: str,
+    actor: str,
+    *,
+    request_key: str,
+    expected_version: int,
+    task_id: str | None = None,
+) -> dict:
+    """Apply a version-bound operator request once through the control owner.
+
+    The control row serializes the request ledger and the existing mutation in
+    one transaction. A replay returns its original acknowledgement, even if a
+    newer command has since changed the factory. It never reapplies the action.
+    Task resume only unpauses active work here: selecting an escalation's
+    recommendation is a separate decision and needs its own exact identity.
+    """
+    if action not in (
+        "enable",
+        "pause_admissions",
+        "pause_task",
+        "resume_task",
+        "stop",
+    ):
+        raise ValueError("unsupported requested control")
+    request = {
+        "action": action,
+        "actor": _text(actor, "actor"),
+        "request_key": _text(request_key, "request_key"),
+        "expected_version": _integer(
+            expected_version, "expected_version", 0, 2**63 - 1
+        ),
+        "task_id": _text(task_id, "task_id") if task_id is not None else None,
+    }
+    if (action in ("pause_task", "resume_task")) != (task_id is not None):
+        raise ValueError("task_id is required only for task pause/resume")
+    with _locked_session() as (db, control):
+        previous = db.exec(
+            select(FactoryAudit.detail_json).where(
+                FactoryAudit.action == "control_request",
+                FactoryAudit.actor == actor,
+            )
+        ).all()
+        for raw in previous:
+            record = json.loads(raw)
+            if record["request"]["request_key"] == request_key:
+                if record["request"] != request:
+                    return {"ok": False, "reason": "conflicting_control_request"}
+                return record["result"]
+        if control.version != expected_version:
+            result = {
+                "ok": False,
+                "reason": "control_version_changed",
+                "state": control.state,
+                "version": control.version,
+            }
+        else:
+            # Supplying the locked session deliberately uses the active-task
+            # branch of set_control, never its automatic escalation decision.
+            result = set_control(action, actor, task_id=task_id, session=db)
+        result = {
+            **result,
+            "request_key": request_key,
+            "task_id": task_id,
+            "acknowledged_at": _now().isoformat(),
+        }
+        _audit(
+            db,
+            actor,
+            "control_request",
+            task_id=task_id,
+            request=request,
+            result=result,
+        )
+        return result
+
+
 def _can_start(
     db: Session, control: FactoryControl, task_id: str, start_key: str | None = None
 ) -> dict:
@@ -2089,6 +2165,51 @@ def record_start_outcome(
         return {"ok": True, "replayed": False, "start": _start_dict(start)}
 
 
+def landing_recovery_barrier(task_id: str, *, session=None) -> dict | None:
+    """Runs at or below this durable boundary predate the latest recovery."""
+    with _read_session(session) as db:
+        event = db.exec(
+            select(FactoryAudit)
+            .where(
+                FactoryAudit.task_id == task_id,
+                FactoryAudit.action == "landing_recovery_requested",
+            )
+            .order_by(FactoryAudit.id.desc())
+            .limit(1)
+        ).first()
+        if event is None:
+            return None
+        detail = json.loads(event.detail_json)
+        floor = detail.get("run_id_floor")
+        if floor is None:
+            # Requests from the first rollout predate the explicit run fence.
+            floor = (
+                db.exec(
+                    select(SwarmNodeRun.id)
+                    .where(
+                        SwarmNodeRun.task_id == task_id,
+                        SwarmNodeRun.created_at <= event.created_at,
+                    )
+                    .order_by(SwarmNodeRun.id.desc())
+                    .limit(1)
+                ).first()
+                or 0
+            )
+        rounds = db.exec(
+            select(FactoryAudit.detail_json).where(
+                FactoryAudit.task_id == task_id,
+                FactoryAudit.action == "landing_recovery_round",
+            )
+        ).all()
+        return {
+            "request_id": event.id,
+            "run_id_floor": floor,
+            "round_recorded": any(
+                json.loads(raw).get("request_id") == event.id for raw in rounds
+            ),
+        }
+
+
 def finish_task(
     task_id: str,
     outcome: str,
@@ -2139,6 +2260,25 @@ def finish_task(
                 and json.loads(last.detail_json).get("evidence") == evidence
             )
             return {"ok": same, "reason": None if same else "conflicting_outcome"}
+        if outcome == "succeeded":
+            barrier = landing_recovery_barrier(task_id, session=db)
+            if barrier is not None:
+                review = (
+                    db.exec(
+                        select(SwarmNodeRun.id).where(
+                            SwarmNodeRun.task_id == task_id,
+                            SwarmNodeRun.id > barrier["run_id_floor"],
+                            SwarmNodeRun.node_key.startswith("review_"),
+                            SwarmNodeRun.status == "succeeded",
+                            SwarmNodeRun.session_id
+                            == (evidence or {}).get("review_session_id"),
+                        )
+                    ).first()
+                    if (evidence or {}).get("review_session_id")
+                    else None
+                )
+                if not barrier["round_recorded"] or review is None:
+                    return {"ok": False, "reason": "landing_recovery_pending"}
         if (
             outcome != "uncertain"
             and _accounting(_starts(db, task_id))["unresolved_starts"]
@@ -2210,9 +2350,14 @@ def request_landing_recovery(
         latest_finish = max(
             (event.id for event in events if event.action == "finish_task"), default=0
         )
-        if previous and previous[-1].id > latest_finish:
+        barrier = landing_recovery_barrier(task_id, session=db) if previous else None
+        replaying = bool(
+            previous
+            and (previous[-1].id > latest_finish or not barrier["round_recorded"])
+        )
+        if replaying and row.state == "admitted":
             return {"ok": True, "replayed": True, "state": row.state}
-        if len(previous) >= MAX_LANDING_RECOVERIES:
+        if not replaying and len(previous) >= MAX_LANDING_RECOVERIES:
             return {"ok": False, "reason": "recovery_limit"}
         if row.state not in ("admitted", "succeeded"):
             return {"ok": False, "reason": "task_not_correctable"}
@@ -2249,11 +2394,25 @@ def request_landing_recovery(
             task.start_state = "factory"
             task.start_updated_at = _now()
             db.add(task)
+        if replaying:
+            return {"ok": True, "replayed": True, "state": row.state}
+        run_floor = (
+            db.exec(
+                select(SwarmNodeRun.id)
+                .where(
+                    SwarmNodeRun.task_id == task_id,
+                )
+                .order_by(SwarmNodeRun.id.desc())
+                .limit(1)
+            ).first()
+            or 0
+        )
         _audit(
             db,
             actor,
             "landing_recovery_requested",
             task_id=task_id,
+            run_id_floor=run_floor,
             pr_number=pr_number,
             head_sha=head_sha,
             source=source,
