@@ -11,7 +11,7 @@ packages:
 #   publisher or provenance evidence.
 # - No cooldown or trust exceptions are configured. Any future exception must
 #   be narrowly reviewed and version-scoped.
-# - Block git and direct-tarball sources in transitive dependencies. pnpm still
+# - Block exotic (non-registry) sources in transitive dependencies. pnpm still
 #   permits them as direct dependencies, where package.json review is required.
 #
 # pnpm 10.34.5 enforces these checks during dependency resolution. A frozen
