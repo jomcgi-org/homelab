@@ -17,7 +17,7 @@ rules:
     severity: WARNING
     paths:
       include:
-        - "*_test.go"
+        - "**/*_test.go"
     metadata:
       category: correctness
       subcategory: testing

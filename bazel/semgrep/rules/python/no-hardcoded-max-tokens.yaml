@@ -23,6 +23,6 @@ rules:
       description: ModelSettings max_tokens is hardcoded — use an env var so limits can change without redeploy
     paths:
       exclude:
-        - "*_test.py"
-        - "test_*.py"
+        - "**/*_test.py"
+        - "**/test_*.py"
         - "**/tests/**"

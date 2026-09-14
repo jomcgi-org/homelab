@@ -6,7 +6,7 @@ rules:
           - pattern: $VAR, _ = json.Marshal(...)
     paths:
       exclude:
-        - "*_test.go"
+        - "**/*_test.go"
     message: >
       Discarding the error from `json.Marshal` risks sending nil or empty bytes
       downstream. `json.Marshal` can fail (e.g. unsupported types, cyclic

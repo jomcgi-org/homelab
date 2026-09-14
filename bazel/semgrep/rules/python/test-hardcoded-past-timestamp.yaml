@@ -15,8 +15,8 @@ rules:
     severity: WARNING
     paths:
       include:
-        - "*_test.py"
-        - "test_*.py"
+        - "**/*_test.py"
+        - "**/test_*.py"
     metadata:
       category: correctness
       subcategory: testing
