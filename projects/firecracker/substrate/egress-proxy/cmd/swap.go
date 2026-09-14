@@ -762,22 +762,25 @@ func newCAMinter(certFile, keyFile string) (*caMinter, error) {
 }
 
 // getCertificate is the tls.Config.GetCertificate callback: it returns a leaf for
-// the requested SNI host, minting and caching it on first use.
+// the requested SNI host, renewing cached leaves before they expire.
 func (m *caMinter) getCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+	return m.getCertificateAt(hello, time.Now())
+}
+
+func (m *caMinter) getCertificateAt(hello *tls.ClientHelloInfo, now time.Time) (*tls.Certificate, error) {
 	host := hello.ServerName
 	if host == "" {
 		return nil, fmt.Errorf("no SNI in ClientHello")
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if c, ok := m.cache[host]; ok {
+	if c, ok := m.cache[host]; ok && c.Leaf != nil && !now.Before(c.Leaf.NotBefore) && now.Add(5*time.Minute).Before(c.Leaf.NotAfter) {
 		return c, nil
 	}
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 	if err != nil {
 		return nil, err
 	}
-	now := time.Now()
 	tmpl := &x509.Certificate{
 		SerialNumber: serial,
 		Subject:      pkix.Name{CommonName: host},
@@ -791,7 +794,11 @@ func (m *caMinter) getCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate,
 	if err != nil {
 		return nil, fmt.Errorf("mint leaf for %s: %w", host, err)
 	}
-	cert := &tls.Certificate{Certificate: [][]byte{der, m.caCert.Raw}, PrivateKey: m.leafKey}
+	leaf, err := x509.ParseCertificate(der)
+	if err != nil {
+		return nil, fmt.Errorf("parse minted leaf for %s: %w", host, err)
+	}
+	cert := &tls.Certificate{Certificate: [][]byte{der, m.caCert.Raw}, PrivateKey: m.leafKey, Leaf: leaf}
 	m.cache[host] = cert
 	return cert, nil
 }
