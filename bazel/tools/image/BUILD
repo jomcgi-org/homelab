@@ -374,10 +374,7 @@ py_test(
         ":tools_tar_linux_amd64",
         ":tools_tar_linux_arm64",
     ],
-    deps = [
-        "@pip//pytest",
-        "@rules_python//python/runfiles",
-    ],
+    deps = ["@pip//pytest"],
 )
 
 # These targets are selected explicitly by matching native CI hosts. Keeping
@@ -399,10 +396,7 @@ py_test(
         "@platforms//cpu:aarch64",
         "@platforms//os:linux",
     ],
-    deps = [
-        "@pip//pytest",
-        "@rules_python//python/runfiles",
-    ],
+    deps = ["@pip//pytest"],
 )
 
 py_test(
@@ -420,10 +414,7 @@ py_test(
         "@platforms//cpu:aarch64",
         "@platforms//os:macos",
     ],
-    deps = [
-        "@pip//pytest",
-        "@rules_python//python/runfiles",
-    ],
+    deps = ["@pip//pytest"],
 )
 
 semgrep_test(
