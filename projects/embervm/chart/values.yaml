@@ -1562,14 +1562,13 @@ noded:
 # as drift and selfHeal never fights it; the `replicas` here is only the value at
 # first create.
 #
-# Sizing ladder (Joe-decided): memory request==limit at 2/4/8/16 GiB (a brick's
-# memory is a hard reservation, so the kube-scheduler bin-packs honestly and the
-# guest OOM-kills before the node), CPU request only at 1/2/2/2 cores with NO cpu
-# limit (bricks burst into idle headroom; noded's advertised live-VM ceiling,
-# not a cpu cap, bounds concurrency). Each noded pod uses the fleet maxLiveVMs
-# ceiling unless its brick class overrides it. The large class must hold the
-# scratch-k8s composite group (a ~10 GiB single-brick group whose bridge lives
-# in one pod's netns), which the 16Gi class covers.
+# Sizing ladder: 1/2/4/8/16 GiB memory limits with requests at about 75% of each
+# limit, and CPU requests only with no CPU limits. Guest RAM is demand-faulted,
+# so requests model expected residency while limits and observed cgroup headroom
+# govern admission. Each noded pod uses the fleet maxLiveVMs count backstop
+# unless its brick class overrides it. The large class must hold the scratch-k8s
+# composite group (a ~10 GiB single-brick group whose bridge lives in one pod's
+# netns), which the 16Gi class covers.
 bricks:
   enabled: false
   # First ArgoCD sync-wave handed out to a brick Deployment. Brick wave groups
