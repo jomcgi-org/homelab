@@ -5,6 +5,8 @@ import hashlib
 import json
 import math
 
+import httpx
+
 from sqlmodel import select
 
 from factory.orchestration import factory_controls as controls, graph
@@ -84,6 +86,8 @@ def request(task, reason, *, recover=False):
         row = controls._receipt(db, task["id"])
         if (
             row is None
+            or row.repo != task["repo"]
+            or row.issue_number != task["issue_number"]
             or control.state not in ("enabled", "paused")
             or row.cancellation_requested
             or row.task_paused
@@ -367,7 +371,11 @@ def reconcile(task, policy, runs, permission):
     """Run oversight through the existing durable conductor executor."""
     from factory.orchestration import factory_conductor as c
 
-    if not enabled() and not permission.get("funding"):
+    if (
+        not enabled()
+        and not permission.get("funding")
+        and not task.get("funding_enrolled", False)
+    ):
         return False
     with controls._read_session() as db:
         review = pending(db, task["id"])
@@ -434,6 +442,11 @@ def reconcile(task, policy, runs, permission):
         return True
     if not enabled() and not grant and not last:
         return False
+    if not permission["ok"] and permission["reason"] not in {
+        "task_deadline",
+        "funding_lease_due",
+    }:
+        return False
     # A completed delivery needs no new allocation or planning turn.
     reviews = [
         r
@@ -441,7 +454,14 @@ def reconcile(task, policy, runs, permission):
         if r["node_key"].startswith("review_") and r["status"] == "succeeded"
     ]
     review = max(reviews, key=lambda r: r["id"]) if reviews else None
-    if review and c._artifact(review).get("verdict") == "approve":
+    completion_revision = graph.current_version(task["id"])
+    completion_runs = _runs_digest(runs)
+    succeeded = {r["node_key"] for r in runs if r["status"] == "succeeded"}
+    unfinished = any(
+        not n["node_key"].startswith("conductor_") and n["node_key"] not in succeeded
+        for n in graph.load_graph(task["id"])
+    )
+    if review and not unfinished and c._artifact(review).get("verdict") == "approve":
         from factory.orchestration.factory_refine import task_class_for
 
         try:
@@ -454,15 +474,34 @@ def reconcile(task, policy, runs, permission):
                 issue_number=task.get("issue_number"),
             )
         except (ValueError, c._EditRefused):
-            pass
-        else:
-            controls.finish_task(task["id"], "succeeded", ACTOR, evidence=evidence)
+            readiness = c._review_recovery_evidence(
+                task, review, expected_verdict="approve"
+            )
+            if readiness["state"] == "waiting":
+                return True
+        except httpx.HTTPError:
+            # A failed read spends no new allocation and does not disprove
+            # a completed delivery. Re-observe the same head on the next tick.
             return True
-    if not permission["ok"] and permission["reason"] not in {
-        "task_deadline",
-        "funding_lease_due",
-    }:
-        return False
+        else:
+            with controls._locked_session() as (db, control):
+                graph._lock_task(db, task["id"])
+                fresh = controls._can_start(db, control, task["id"])
+                permitted = fresh["ok"] or fresh["reason"] in {
+                    "task_deadline",
+                    "funding_lease_due",
+                }
+                if (
+                    permitted
+                    and graph.current_version(task["id"], session=db)
+                    == completion_revision
+                    and _runs_digest(graph.node_runs(task["id"], session=db))
+                    == completion_runs
+                ):
+                    controls.finish_task(
+                        task["id"], "succeeded", ACTOR, evidence=evidence, session=db
+                    )
+            return True
     if last and last.get("refusal"):
         if controls._now() < datetime.fromisoformat(last["retry_after"]):
             return True
