@@ -83,6 +83,7 @@ def test_node_without_runs_is_pending_and_retired_wins():
 def test_shape_receipt_joins_nodes_runs_and_sessions():
     receipt = {
         "id": 11,
+        "repo": "x/y",
         "issue_number": 5980,
         "generation": 3,
         "title": "probes park their guest",
@@ -124,6 +125,7 @@ def test_shape_receipt_joins_nodes_runs_and_sessions():
     ]
     runs = [_run("conductor_1", 1, "succeeded", 3)]
     shaped = shape_receipt(receipt, nodes, runs, {3: {"id": 3, "model": "spark"}})
+    assert shaped["repo"] == "x/y"
     assert shaped["policy"] == {
         "conductor_model": "spark",
         "worker_model": "sonnet",

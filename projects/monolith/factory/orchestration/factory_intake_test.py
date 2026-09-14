@@ -610,3 +610,16 @@ def test_configure_and_admission_serialize_at_one_policy_cutoff(
     assert not admit_next("scheduler")["ok"]
     with Session(db) as session:
         assert len(session.exec(select(SwarmTask)).all()) == 1
+
+
+def test_receipt_lookup_preserves_identity_and_requires_exact_generation(db):
+    from factory.orchestration.factory_intake import get_issue_receipt
+
+    first = issue(generation=2)
+    db.dispose()
+    result = get_issue_receipt("OWNER/REPO", 1, 2)
+    assert result["created"] is False
+    assert result["receipt"]["id"] == first["receipt"]["id"]
+    assert get_issue_receipt("owner/repo", 1, 3) is None
+    assert get_issue_receipt("other/repo", 1, 2) is None
+    assert get_issue_receipt("owner/repo", 2, 2) is None
