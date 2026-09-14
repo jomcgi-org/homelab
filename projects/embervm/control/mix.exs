@@ -56,7 +56,7 @@ defmodule Embervm.MixProject do
   defp deps do
     [
       {:exqlite, path: "deps/exqlite"},
-      # Embervm.OpLog.Postgres: selected when EMBERVM_OPLOG_DSN is set
+      # Embervm.OpLog.Postgres: selected for a non-empty EMBERVM_OPLOG_DSN
       # (see Embervm.Application.op_log_mod/0). Reuses db_connection/telemetry
       # already vendored for exqlite; decimal is the one new leaf postgrex pulls
       # in for its NUMERIC decoding.
