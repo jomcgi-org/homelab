@@ -99,6 +99,10 @@ type Config struct {
 	// VCPUs and MemMib size the guest.
 	VCPUs  int
 	MemMib int
+	// HugePages optionally selects Firecracker's guest memory backing, such as
+	// "2M". Huge-page snapshots require a client with a UFFD restore backend.
+	// Empty retains the ordinary Firecracker memory configuration.
+	HugePages string
 	// SnapshotRoot is the directory holding per-thread bundles (/disks/nvme-02).
 	// Node-SHARED base rootfs snapshots (SnapshotRoot/bases) always live here.
 	SnapshotRoot string
@@ -177,9 +181,10 @@ type Launcher interface {
 	Launch(ctx context.Context, spec LaunchSpec) (Process, error)
 }
 
-// fcAPI is the subset of the Firecracker client the driver uses, kept as an
-// interface so tests can supply a fake. *fcclient.Client satisfies it.
-type fcAPI interface {
+// API is the Firecracker control interface used by Driver. Custom clients can
+// provide externally managed snapshot memory while retaining driver lifecycle
+// management. *fcclient.Client implements the ordinary file-backed behavior.
+type API interface {
 	PutMachineConfig(ctx context.Context, m fcclient.MachineConfig) error
 	PutBootSource(ctx context.Context, b fcclient.BootSource) error
 	PutDrive(ctx context.Context, d fcclient.Drive) error
@@ -193,6 +198,9 @@ type fcAPI interface {
 	CreateSnapshot(ctx context.Context, s fcclient.SnapshotCreate) error
 	LoadSnapshot(ctx context.Context, s fcclient.SnapshotLoad) error
 }
+
+// Keep the internal alias for embedded wrappers and existing package tests.
+type fcAPI = API
 
 // Driver implements substrate.Substrate and substrate.Snapshotable for FC-direct.
 type Driver struct {
@@ -261,7 +269,7 @@ var (
 
 // New builds a Driver. launcher must not be nil. If newClient is nil the real
 // fcclient is used.
-func New(cfg Config, launcher Launcher, newClient func(socketPath string) fcAPI) *Driver {
+func New(cfg Config, launcher Launcher, newClient func(socketPath string) API) *Driver {
 	if newClient == nil {
 		newClient = func(sock string) fcAPI { return fcclient.New(sock) }
 	}
@@ -1215,6 +1223,7 @@ func (d *Driver) coldBoot(ctx context.Context, threadID string, cb coldBootSpec)
 			VCPUCount:       cb.vcpus,
 			MemSizeMib:      cb.memMib,
 			TrackDirtyPages: cb.trackDirtyPages,
+			HugePages:       d.cfg.HugePages,
 		}); err != nil {
 			return err
 		}

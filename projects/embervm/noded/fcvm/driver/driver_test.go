@@ -290,6 +290,23 @@ func TestDriverClaimBootsMicroVM(t *testing.T) {
 	}
 }
 
+func TestDriverForwardsHugePageConfiguration(t *testing.T) {
+	launcher := &fakeLauncher{}
+	d := New(Config{
+		KernelImagePath: "/kernel", RootfsPath: "/rootfs", SnapshotRoot: shortTempDir(t),
+		HugePages: "2M", MemMib: 2048,
+	}, launcher, nil)
+	h, err := d.Claim(context.Background(), substrate.ClaimSpec{ThreadID: "huge-pages"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Release(context.Background(), h) })
+	configs := launcher.machineConfigBodies()
+	if len(configs) != 1 || configs[0]["huge_pages"] != "2M" {
+		t.Fatalf("huge-page machine configuration was not forwarded: %v", configs)
+	}
+}
+
 func TestDriverTracksDirtyPagesOnlyForBankingClaims(t *testing.T) {
 	launcher := &fakeLauncher{}
 	d := New(Config{

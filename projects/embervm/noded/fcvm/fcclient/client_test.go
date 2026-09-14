@@ -153,6 +153,30 @@ func TestClientMachineConfigTrackDirtyPages(t *testing.T) {
 	}
 }
 
+func TestClientMachineConfigHugePages(t *testing.T) {
+	for _, mode := range []string{"", "2M"} {
+		t.Run("mode="+mode, func(t *testing.T) {
+			fake, sock := startFakeFC(t)
+			err := New(sock).PutMachineConfig(context.Background(), MachineConfig{
+				VCPUCount: 1, MemSizeMib: 2048, HugePages: mode,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			fake.mu.Lock()
+			defer fake.mu.Unlock()
+			value, present := fake.requests[0].Body["huge_pages"]
+			if mode == "" {
+				if present {
+					t.Fatalf("default memory unexpectedly emits huge_pages: %v", value)
+				}
+			} else if value != mode {
+				t.Fatalf("huge_pages = %v, want %q", value, mode)
+			}
+		})
+	}
+}
+
 func TestClientSnapshotLifecycle(t *testing.T) {
 	fake, sock := startFakeFC(t)
 	c := New(sock)
