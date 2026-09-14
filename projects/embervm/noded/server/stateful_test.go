@@ -51,6 +51,8 @@ type fakeStatefulDriver struct {
 	restoreStarted chan struct{}
 	releaseRestore chan struct{}
 	apiSocketPath  string
+	releaseStarted chan struct{}
+	blockRelease   <-chan struct{}
 }
 
 type fakeCheckpoint struct {
@@ -225,6 +227,18 @@ func (a statefulVMDriverAdapter) Claim(_ context.Context, _ substrate.ClaimSpec)
 }
 
 func (a statefulVMDriverAdapter) Release(_ context.Context, _ substrate.Handle) error {
+	a.fakeStatefulDriver.mu.Lock()
+	started, blocked := a.fakeStatefulDriver.releaseStarted, a.fakeStatefulDriver.blockRelease
+	a.fakeStatefulDriver.mu.Unlock()
+	if started != nil {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+	}
+	if blocked != nil {
+		<-blocked
+	}
 	a.fakeStatefulDriver.mu.Lock()
 	if a.fakeStatefulDriver.live > 0 {
 		a.fakeStatefulDriver.live--
@@ -464,6 +478,63 @@ func TestStartStatefulAttachLockRefusesSecondAttach(t *testing.T) {
 	})
 	if status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("second attach of an already-attached workload: got %v want FailedPrecondition", err)
+	}
+}
+
+func TestStopStatefulDestroyRetainsOwnershipUntilProcessStops(t *testing.T) {
+	port := tcpHealthServer(t)
+	s, _, fsd := newStatefulTestServer(t)
+	started := startFreshStateful(t, s, port, "wl-state")
+
+	releaseStarted := make(chan struct{}, 1)
+	allowRelease := make(chan struct{})
+	fsd.mu.Lock()
+	fsd.releaseStarted = releaseStarted
+	fsd.blockRelease = allowRelease
+	fsd.mu.Unlock()
+	var unblock sync.Once
+	t.Cleanup(func() { unblock.Do(func() { close(allowRelease) }) })
+
+	destroyed := make(chan error, 1)
+	go func() {
+		_, err := s.StopStateful(context.Background(), &nodev1.StopStatefulRequest{
+			VmId: started.GetVmId(), Mode: nodev1.StopStatefulMode_STOP_STATEFUL_MODE_DESTROY,
+		})
+		destroyed <- err
+	}()
+
+	select {
+	case <-releaseStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("destroy did not enter process release")
+	}
+	if got := fsd.liveCount(); got != 1 {
+		t.Fatalf("live VMs during delayed release = %d, want 1", got)
+	}
+
+	_, err := s.StartStateful(context.Background(), &nodev1.StartStatefulRequest{
+		Trace:              &nodev1.Trace{Workload: "wl-state"},
+		Mode:               nodev1.StartStatefulMode_START_STATEFUL_MODE_COLD,
+		BootImageRef:       "img-a",
+		Port:               port,
+		VolumeMount:        "/data",
+		BlessedGeneration:  2,
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("wake during uncertain cessation = %v, want FailedPrecondition", err)
+	}
+	if got := fsd.liveCount(); got != 1 {
+		t.Fatalf("live VMs after racing wake = %d, want 1", got)
+	}
+
+	unblock.Do(func() { close(allowRelease) })
+	select {
+	case err := <-destroyed:
+		if err != nil {
+			t.Fatalf("destroy after release: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("destroy did not complete after process release")
 	}
 }
 
