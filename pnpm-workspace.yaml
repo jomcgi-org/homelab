@@ -13,8 +13,9 @@ packages:
 #   vulnerabilityAlerts path intentionally skips its own cooldown, but it does
 #   not automatically bypass pnpm's independent check during lockfile updates.
 #   For a narrowly reviewed, one-off security fix, run that lockfile update with
-#   `pnpm install --minimum-release-age=0`. This CLI override applies only to
-#   that invocation; review the resulting lockfile without changing this default.
+#   `pnpm install --config.minimum-release-age=0`. This CLI override applies
+#   only to that invocation; review the resulting lockfile without changing
+#   this default.
 # - Block exotic (non-registry) sources in transitive dependencies. pnpm still
 #   permits them as direct dependencies, where package.json review is required.
 #
