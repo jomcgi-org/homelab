@@ -198,7 +198,11 @@ def test_every_platform_contains_executable_commands(platform: str) -> None:
 
     combined_members = set().union(*(_members(layer) for layer in layers))
     assert "usr/bin/node" in combined_members
-    assert "usr/local/lib/node_modules/eslint" in combined_members
+    assert any(
+        member.startswith("usr/local/lib/node_modules/.aspect_rules_js/")
+        and member.endswith("/node_modules/eslint/package.json")
+        for member in combined_members
+    )
 
 
 @pytest.mark.skip(reason="temporary runtime-test CI isolation")
