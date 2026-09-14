@@ -422,6 +422,21 @@ actions:
             *) echo "STPA FRESHNESS: informational result unavailable (exit $stpa_freshness_rc); this check does not block merges" ;;
           esac
 
+          # ---- 6. pnpm frozen-lockfile validation -----------------------
+          # Keep this after every bazel invocation. pnpm materializes a root
+          # node_modules directory, which is not excluded by .bazelignore and
+          # must not change the workspace Bazel analyses earlier in this run.
+          git fetch origin "${GIT_REPO_DEFAULT_BRANCH:-main}" --quiet
+          if git diff --name-only \
+            "origin/${GIT_REPO_DEFAULT_BRANCH:-main}" HEAD -- \
+            .npmrc pnpm-lock.yaml pnpm-workspace.yaml package.json bazel/patches/ \
+            ':(glob)**/package.json' | grep -q .; then
+            bazel run @pnpm//:pnpm --config=ci -- \
+              --dir "$PWD" install --frozen-lockfile --ignore-scripts
+          else
+            echo "No pnpm inputs changed; skipping frozen-lockfile validation"
+          fi
+
           echo "DISK pr-checks end:"; df -h /
           workspace_breakdown "pr-checks end"
 

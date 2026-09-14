@@ -4,3 +4,26 @@ packages:
   - bazel/tools
   - projects/design-system
   - projects/monolith/frontend
+
+# Dependency admission policy for new resolutions:
+# - Delay new registry releases for three days, matching Renovate's default.
+# - Reject a release if an earlier-published version had stronger npm trusted
+#   publisher or provenance evidence.
+# - No package-name cooldown or trust exceptions are configured. Renovate's
+#   vulnerabilityAlerts path intentionally skips its own cooldown, but it does
+#   not automatically bypass pnpm's independent check during lockfile updates.
+#   For a narrowly reviewed, one-off security fix, run that lockfile update with
+#   `pnpm install --config.minimum-release-age=0`. This CLI override applies
+#   only to that invocation; review the resulting lockfile without changing
+#   this default.
+# - Block exotic (non-registry) sources in transitive dependencies. pnpm still
+#   permits them as direct dependencies, where package.json review is required.
+#
+# pnpm 10.34.5 enforces these checks during dependency resolution. A frozen
+# lockfile install skips resolution, so it does not re-evaluate the age, trust
+# metadata, or source type of packages already recorded in pnpm-lock.yaml.
+minimumReleaseAge: 4320
+minimumReleaseAgeExclude: []
+trustPolicy: no-downgrade
+trustPolicyExclude: []
+blockExoticSubdeps: true
