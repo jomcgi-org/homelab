@@ -457,7 +457,8 @@ def reconcile(task, policy, runs, permission):
     completion_revision = graph.current_version(task["id"])
     completion_runs = _runs_digest(runs)
     succeeded = {r["node_key"] for r in runs if r["status"] == "succeeded"}
-    unfinished = any(
+    pending_recovery = c._landing_recovery_requests(task["id"])
+    unfinished = bool(pending_recovery) or any(
         not n["node_key"].startswith("conductor_") and n["node_key"] not in succeeded
         for n in graph.load_graph(task["id"])
     )
@@ -493,6 +494,7 @@ def reconcile(task, policy, runs, permission):
                 }
                 if (
                     permitted
+                    and not c._landing_recovery_requests(task["id"], session=db)
                     and graph.current_version(task["id"], session=db)
                     == completion_revision
                     and _runs_digest(graph.node_runs(task["id"], session=db))
@@ -522,7 +524,11 @@ def reconcile(task, policy, runs, permission):
         or (legacy and not grant)
     ):
         return request(task, "Task allocation or lease needs conductor reassessment")
-    if c._pending_correction(nodes, runs) or c._failed_round(nodes, runs):
+    if (
+        pending_recovery
+        or c._pending_correction(nodes, runs)
+        or c._failed_round(task["id"], nodes, runs)
+    ):
         if c._review_rounds_used(task["id"]) >= policy.get("max_review_rounds", 0):
             return request(
                 task,
