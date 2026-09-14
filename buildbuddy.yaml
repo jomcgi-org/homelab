@@ -429,7 +429,7 @@ actions:
           git fetch origin "${GIT_REPO_DEFAULT_BRANCH:-main}" --quiet
           if git diff --name-only \
             "origin/${GIT_REPO_DEFAULT_BRANCH:-main}" HEAD -- \
-            .npmrc pnpm-lock.yaml pnpm-workspace.yaml package.json \
+            .npmrc pnpm-lock.yaml pnpm-workspace.yaml package.json bazel/patches/ \
             ':(glob)**/package.json' | grep -q .; then
             bazel run @pnpm//:pnpm --config=ci -- \
               --dir "$PWD" install --frozen-lockfile --ignore-scripts
