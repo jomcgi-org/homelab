@@ -218,7 +218,7 @@ def validate_action(
     # Keep durable trigger configuration aligned with the model tiers accepted
     # by agent sessions. The import stays local to avoid loading that package
     # for respond and crosspost validation.
-    from agent_sessions import SUPPORTED_MODELS
+    from factory.execution import SUPPORTED_MODELS
 
     if not isinstance(model, str) or model not in SUPPORTED_MODELS:
         raise TriggerValidationError("agent_run model is invalid")

@@ -832,7 +832,7 @@ channel and user filters, then dispatch a response, crosspost, or owner-gated
 agent run. A conditional database update claims each trigger's cooldown before
 the action runs, and trigger dispatch stays off the normal chat response path.
 (see: /projects/monolith/chat/triggers.py)
-(see: /projects/monolith/chart/migrations/20260912120000_chat_triggers.sql)
+(see: /projects/monolith/chart/migrations/20260914120000_chat_triggers.sql)
 
 **Why.** Multiple bot replicas can observe the same eligible trigger, so the
 cooldown claim is a conditional database write committed before dispatch. The
