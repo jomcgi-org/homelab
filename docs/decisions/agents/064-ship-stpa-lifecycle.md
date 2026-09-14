@@ -21,10 +21,11 @@ Feature delivery follows five ordered phases:
 
 1. **Plan.** Clarify scope, success criteria, affected systems, and work items.
    Persist the active ledger in the tracking issue.
-2. **Architecture rationale.** Record what was decided and why before behavior
-   is specified. At adoption this was an ADR phase using the repository `adr`
-   skill. The repository retired that skill and the ADR workflow under #4667;
-   current `/ship` runs this phase in the affected domain's `ARCHITECTURE.md`.
+2. **ADR.** Record the architecture rationale, including what was decided and
+   why, before behavior is specified. At adoption this phase used the repository
+   `adr` skill. The repository retired that skill and the ADR workflow under
+   #4667; current `/ship` records this phase in the affected domain's
+   `ARCHITECTURE.md`.
 3. **Future BDD.** Add executable specifications with
    `bdd_test(future = True, ...)` before implementation. The macro adds the
    `future` tag. The required Test path excludes `future` tests because an
@@ -53,7 +54,7 @@ The required Test path continues to exclude the `future` tag.
 ## Rationale
 
 The sequence turns intent into progressively stronger evidence. Planning fixes
-scope, architecture rationale preserves why, BDD defines externally observable
+scope, the ADR preserves why, BDD defines externally observable
 completion before code is written, human review checks the completed
 implementation, and STPA reassesses the control structure that actually shipped.
 

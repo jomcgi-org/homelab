@@ -13,6 +13,6 @@ the retired workflow.
 
 | ADR | Decision | Status |
 | --- | --- | --- |
-| [064 - Ship and STPA lifecycle][ship-stpa-lifecycle] | Plan, architecture rationale, future-tagged BDD, implementation with human review, then STPA refresh | Superseded in part by #4667 |
+| [064 - Ship and STPA lifecycle][ship-stpa-lifecycle] | Plan, ADR, future-tagged BDD, implementation with human review, then STPA refresh | Superseded in part by #4667 |
 
 [ship-stpa-lifecycle]: agents/064-ship-stpa-lifecycle.md
