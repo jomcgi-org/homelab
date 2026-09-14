@@ -47,15 +47,19 @@ before mounting it. The operator does not preload weights onto every node.
   Sync Jobs need push credentials; private images also need pull credentials
   on the consuming pods or nodes.
 
-Install the [Helm chart](helm/oci-model-cache-operator) from this repository.
+## Install
+
+Install the published Helm chart from GHCR. It deploys the operator image at
+`ghcr.io/jomcgi/homelab/projects/operators/oci-model-cache` and configures the
+CRD, permissions, and webhook. No repository checkout or local build is needed.
+
 Replace the registry below with your own. `model-registry-push` must already exist
 in the operator namespace and contain a `.dockerconfigjson` key with push access
 (for example, provisioned through the 1Password Operator).
 
 ```bash
-# Run from the repository root.
 helm upgrade --install oci-model-cache \
-  ./projects/operators/oci-model-cache/helm/oci-model-cache-operator \
+  oci://ghcr.io/jomcgi/homelab/charts/oci-model-cache-operator \
   --namespace oci-model-cache --create-namespace \
   --set controllerManager.env.ociRegistry=ghcr.io/YOUR_ORG/models \
   --set registryPushSecret=model-registry-push
