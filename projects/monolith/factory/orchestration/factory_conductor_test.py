@@ -9998,3 +9998,110 @@ def test_recovery_supersedes_completed_conductor_finish(
         "test",
         evidence={**evidence, "review_session_id": fresh["session_id"]},
     )["ok"]
+
+
+def _wedged_backstop_task(queued_factory, monkeypatch):
+    """A task past its deadline with one uncertain start and nothing running.
+
+    The shape that wedged the delivery lane on 2026-09-14: the guest ran, its
+    start never settled, and no cessation proof can release it.
+    """
+    from datetime import datetime, timedelta, timezone
+    from sqlmodel import Session, select
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryStart
+
+    s = queued_factory
+    for module in (controls,):
+        monkeypatch.setattr(module, "get_engine", lambda: s.engine)
+    monkeypatch.setenv("FACTORY_DEADLINE_BACKSTOP_ENABLED", "true")
+    with Session(s.engine) as db:
+        start = db.exec(select(FactoryStart)).first()
+        start.status = "uncertain"
+        db.add(start)
+        db.commit()
+        start_key = start.start_key
+    task = {
+        "task_id": s.task["id"],
+        "repo": s.task["repo"],
+        "issue_number": s.task.get("issue_number"),
+        "limits": {"deadline_expired": True},
+        "deadline_at": (
+            datetime.now(timezone.utc)
+            - timedelta(seconds=conductor.FACTORY_DEADLINE_BACKSTOP_GRACE_SECONDS + 60)
+        ).isoformat(),
+    }
+    # GitHub and Discord are the only outward effects; neither is under test.
+    monkeypatch.setattr(conductor, "_post_decision_card", lambda *a, **kw: "card-url")
+    monkeypatch.setattr(conductor, "_notify_escalation", lambda *a, **kw: None)
+    monkeypatch.setattr(conductor, "_warn_deadline_tripped", lambda task: None)
+    monkeypatch.setattr(
+        "factory.orchestration.factory_landing.github_write", lambda *a, **kw: {}
+    )
+    return s, task, start_key
+
+
+def test_the_deadline_backstop_persists_its_settlement(queued_factory, monkeypatch):
+    """The settlement must survive the session, not just flush inside it.
+
+    _locked_session only flushes a supplied session, deliberately, so a
+    backstop that never commits rolls its own release back on close while
+    still posting the card: the slot stays held and every tick re-posts.
+    Asserted from a FRESH session so a flush-only write cannot pass.
+    """
+    from sqlmodel import Session, select
+    from factory.orchestration.factory_models import FactoryReceipt, FactoryStart
+
+    s, task, start_key = _wedged_backstop_task(queued_factory, monkeypatch)
+
+    assert conductor._expire_task_deadline(task) is True
+
+    with Session(s.engine) as db:
+        start = db.exec(
+            select(FactoryStart).where(FactoryStart.start_key == start_key)
+        ).one()
+        assert start.status == "failed"
+        # Unknown rather than zero, so _committed_cost keeps the ceiling this
+        # start had already committed instead of under-reporting the receipt.
+        assert start.cost_usd is None
+        receipt = db.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == s.task["id"])
+        ).one()
+        assert receipt.state == "escalated"
+
+
+def test_the_deadline_backstop_is_idempotent_across_ticks(queued_factory, monkeypatch):
+    """A second tick finds nothing stranded and must not settle again."""
+    s, task, _key = _wedged_backstop_task(queued_factory, monkeypatch)
+
+    assert conductor._expire_task_deadline(task) is True
+    assert conductor._expire_task_deadline(task) is False
+
+
+def test_the_deadline_backstop_leaves_a_reserved_start_alone(
+    queued_factory, monkeypatch
+):
+    """A reserved start is live work, so nothing is released and nothing posts."""
+    from sqlmodel import Session, select
+    from factory.orchestration.factory_models import FactoryReceipt, FactoryStart
+
+    s, task, start_key = _wedged_backstop_task(queued_factory, monkeypatch)
+    with Session(s.engine) as db:
+        start = db.exec(
+            select(FactoryStart).where(FactoryStart.start_key == start_key)
+        ).one()
+        start.status = "reserved"
+        db.add(start)
+        db.commit()
+
+    assert conductor._expire_task_deadline(task) is False
+
+    with Session(s.engine) as db:
+        start = db.exec(
+            select(FactoryStart).where(FactoryStart.start_key == start_key)
+        ).one()
+        assert start.status == "reserved"
+        receipt = db.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == s.task["id"])
+        ).one()
+        assert receipt.state != "escalated"
