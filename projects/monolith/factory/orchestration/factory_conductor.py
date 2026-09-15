@@ -4955,6 +4955,14 @@ def _expire_task_deadline(task: dict) -> bool:
     from factory.orchestration.factory_landing import github_write
     from factory.orchestration.factory_refine import HUMAN_LABEL
 
+    # An operator pause is a deliberate hold, and settling through it leaves the
+    # receipt outside _ACTIVE so resume_task answers task_not_active: the pause
+    # could not be undone. _expire_reconciler_pause refuses any pause it did not
+    # set itself for the same reason; this refuses all of them, because the
+    # backstop never sets one.
+    if task.get("task_paused"):
+        return False
+
     task_id = task["task_id"]
     number = task.get("issue_number")
     repo = task.get("repo")
@@ -4969,9 +4977,14 @@ def _expire_task_deadline(task: dict) -> bool:
 
     with Session(get_engine()) as db:
         with _locked_session(db):
-            if stranded(db) is None:
+            eligible = stranded(db)
+            if eligible is None:
                 return False
+            permits = sorted(
+                {row.session_id for row in eligible if row.session_id is not None}
+            )
 
+    pr_number = _latest_pr(graph.node_runs(task_id))
     question = (
         "This task passed its deadline holding a start that no cessation "
         "proof could settle, so its lane slot was released by the backstop "
@@ -5001,6 +5014,22 @@ def _expire_task_deadline(task: dict) -> bool:
             "supervision could not prove the guest had ceased, so the "
             "reservation was released on the deadline instead. Nothing here "
             "destroyed the guest or established that it stopped."
+            + (
+                # The one step this cannot take. admission.settle frees a
+                # permit only when cessation_confirmed is true, which is
+                # exactly what the backstop does not have, so the capacity
+                # reservation stays uncertain and keeps counting against
+                # background_limit even though the lane slot came back.
+                # Unnamed, that reads as a healthy lane that cannot start
+                # anything, which is harder to see than the hold was.
+                " The admission permit(s) for session(s) "
+                + ", ".join(str(value) for value in permits)
+                + " are still uncertain and still count against the capacity "
+                "pool. Releasing them needs the guest confirmed gone and is a "
+                "separate operator step."
+                if permits
+                else ""
+            )
         ),
         "options": [
             {
@@ -5015,8 +5044,15 @@ def _expire_task_deadline(task: dict) -> bool:
             },
         ],
         "branch": task_branch(task_id),
-        "pr_number": None,
-        "pr_url": None,
+        # Carried, not dropped. _decision_direction warns that a fresh graph
+        # which cannot find the existing PR starts the branch again, and a
+        # backstopped attempt has usually already pushed and opened one.
+        "pr_number": pr_number,
+        "pr_url": (
+            f"https://github.com/{repo}/pull/{pr_number}"
+            if pr_number and isinstance(repo, str)
+            else None
+        ),
         "comment_url": None,
         "downgraded": False,
         "resolved": None,

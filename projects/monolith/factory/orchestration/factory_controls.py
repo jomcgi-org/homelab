@@ -1234,6 +1234,10 @@ def _snapshot(db: Session, row: FactoryReceipt, *, body: bool = False) -> dict:
                         # slot that is on its way to releasing, so the board
                         # shows "absent, 2 of 3" rather than nothing at all.
                         "stop_absence",
+                        # Its counterpart. Without this the board renders one
+                        # unbroken absence run where the guest actually
+                        # answered in between.
+                        "stop_presence",
                         "stop_settled",
                         "attempt_stop_requested",
                         "attempt_stop_cancel",
