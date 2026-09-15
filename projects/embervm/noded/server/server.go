@@ -778,16 +778,14 @@ func (s *Server) buildBaseZip(ctx context.Context, req *nodev1.BuildBaseRequest)
 	}
 	baseKey := baseKeyForZip(workload, imageDigest, zip.GetArchiveSha256(), s.cfg.CpuVendor, rootfsID)
 
-	// Short-circuit on an already-built base BEFORE fetching the archive: an
-	// idempotent repeat must not re-download or re-attach.
-	if existing, ok := s.bases.get(baseKey); ok && existing.state == nodev1.BaseBuildState_BASE_BUILD_STATE_READY {
-		return &nodev1.BuildBaseResponse{
-			SnapshotRef:   existing.snapshotRef,
-			ImageDigest:   existing.imageDigest,
-			BaseSizeBytes: uint64(existing.sizeBytes),
-			Arch:          s.cfg.Arch,
-			AlreadyBuilt:  true,
-		}, nil
+	// Short-circuit on an already-built base BEFORE fetching the archive, but
+	// only after the registry claim has been revalidated against the bundle on
+	// disk. A READY registry row is process memory, not artifact evidence: the
+	// underlying scratch may have disappeared while noded stayed alive.
+	if resp, ok, err := s.verifiedReadyBase(baseKey, workload, imageDigest, img.RootfsPath); err != nil {
+		return nil, err
+	} else if ok {
+		return resp, nil
 	}
 
 	// Fetch + verify into memory BEFORE claiming the build guest so a bad archive
@@ -815,15 +813,14 @@ func (s *Server) driveBuild(ctx context.Context, req *nodev1.BuildBaseRequest, b
 		readyPath = defaultReadyPath
 	}
 
-	// Idempotency: an already-built base is a no-op hit.
-	if existing, ok := s.bases.get(baseKey); ok && existing.state == nodev1.BaseBuildState_BASE_BUILD_STATE_READY {
-		return &nodev1.BuildBaseResponse{
-			SnapshotRef:   existing.snapshotRef,
-			ImageDigest:   existing.imageDigest,
-			BaseSizeBytes: uint64(existing.sizeBytes),
-			Arch:          s.cfg.Arch,
-			AlreadyBuilt:  true,
-		}, nil
+	// Idempotency: an already-built base is a no-op hit only while the complete,
+	// restorable bundle still exists on disk. Returning a signature-derived ref
+	// from the in-memory registry alone lets the control plane publish BaseReady
+	// for an artifact that exists nowhere (#4400).
+	if resp, ok, err := s.verifiedReadyBase(baseKey, workload, imageDigest, img.RootfsPath); err != nil {
+		return nil, err
+	} else if ok {
+		return resp, nil
 	}
 	// #4866: a co-located sibling brick shares this scratch dir but not this
 	// per-process registry, so ITS completed build is invisible above. Adopt a
@@ -960,6 +957,115 @@ func (s *Server) driveBuild(ctx context.Context, req *nodev1.BuildBaseRequest, b
 		AlreadyBuilt:    false,
 		ServingImageRef: servingImageRef,
 	}, nil
+}
+
+// verifiedReadyBase turns an in-memory READY entry into an idempotent BuildBase
+// success only after the same disk, rootfs-identity, and snapshot-format gates
+// used for sibling and startup adoption accept it. A failed verification removes
+// the stale registry claim before the caller rebuilds, so NodeStatus cannot keep
+// advertising READY in the check-to-build window. The cause may be definitive
+// absence or a transient read/probe failure; both are unsafe as positive artifact
+// evidence, while the ordinary BuildBase result preserves the distinction by
+// either rebuilding successfully or returning its concrete error.
+func (s *Server) verifiedReadyBase(baseKey, workload, imageDigest, rootfsPath string) (*nodev1.BuildBaseResponse, bool, error) {
+	existing, ok := s.bases.get(baseKey)
+	if !ok || existing.state != nodev1.BaseBuildState_BASE_BUILD_STATE_READY {
+		return nil, false, nil
+	}
+
+	usable, verifyErr := s.verifyReadyBaseBundle(baseKey, rootfsPath)
+	if usable {
+		return &nodev1.BuildBaseResponse{
+			SnapshotRef:   existing.snapshotRef,
+			ImageDigest:   imageDigest,
+			BaseSizeBytes: uint64(existing.sizeBytes),
+			Arch:          s.cfg.Arch,
+			AlreadyBuilt:  true,
+		}, true, nil
+	}
+
+	s.bases.remove(baseKey)
+	s.servingImage.remove(baseKey)
+	s.signalChange()
+	if verifyErr != nil {
+		s.logger.Warn("noded: invalidated READY base after artifact verification error",
+			"base", baseKey, "workload", workload, "err", verifyErr)
+		return nil, false, status.Errorf(codes.Unavailable,
+			"noded: verify ready base %q: %v", baseKey, verifyErr)
+	}
+	s.logger.Warn("noded: invalidated unverified READY base before idempotent BuildBase",
+		"base", baseKey, "workload", workload)
+	return nil, false, nil
+}
+
+// verifyReadyBaseBundle distinguishes a definitely absent or unusable bundle
+// (false, nil), which may be rebuilt immediately, from an unknown read failure
+// (false, err), which is retryable and must not trigger a competing publish over
+// storage whose state could not be inspected.
+func (s *Server) verifyReadyBaseBundle(baseKey, rootfsPath string) (bool, error) {
+	dir := filepath.Join(s.cfg.SnapshotRoot, "bases", baseKey)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read base bundle: %w", err)
+	}
+
+	seen := make(map[string]bool, 4)
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if strings.HasSuffix(name, ".tmp") {
+			return false, nil
+		}
+		switch name {
+		case "imageref", "memfile", "rootfsid", "snapfile":
+			seen[name] = true
+		}
+	}
+	for _, name := range []string{"imageref", "memfile", "rootfsid", "snapfile"} {
+		if !seen[name] {
+			return false, nil
+		}
+	}
+
+	if rootfsPath == "" {
+		return false, nil
+	}
+	if _, err := os.Stat(rootfsPath); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("stat base rootfs: %w", err)
+	}
+	recordedRootfsID, err := os.ReadFile(filepath.Join(dir, "rootfsid"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read base rootfs identity: %w", err)
+	}
+	wantRootfsID := strings.TrimSpace(string(recordedRootfsID))
+	if wantRootfsID == "" {
+		return false, nil
+	}
+	gotRootfsID, err := ext4UUID(rootfsPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read base rootfs identity: %w", err)
+	}
+	if wantRootfsID != gotRootfsID {
+		return false, nil
+	}
+	if refusal := s.snapshotFormatRefusal(filepath.Join(dir, "snapfile")); refusal != "" {
+		return false, nil
+	}
+	return true, nil
 }
 
 // adoptSiblingBaseBundle adopts a COMPLETE base bundle published on shared
