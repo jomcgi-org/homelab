@@ -20,6 +20,7 @@ from factory.orchestration.factory_controls import (
     MIN_OPTIONS,
     OPTION_SCHEMA,
     intake_policy,
+    issue_body_hash,
     terminal_resolution,
     _audit,
     _locked_session,
@@ -484,7 +485,12 @@ def _escalation_document(artifact: dict, comment_url: str, downgraded: bool) -> 
 
 
 def _record_escalation(
-    task_id: str, artifact: dict, comment_url: str, *, downgraded: bool
+    task_id: str,
+    artifact: dict,
+    comment_url: str,
+    issue_body: object,
+    *,
+    downgraded: bool,
 ) -> dict:
     """Write the escalation document onto the receipt.
 
@@ -514,6 +520,7 @@ def _record_escalation(
         ).first()
         if row is None:
             return document
+        document["issue_body_sha256"] = issue_body_hash(issue_body)
         stored = json.loads(row.escalation_json) if row.escalation_json else None
         # A dismiss is the one resolution a fresh brief replaces. It wrote
         # nothing to GitHub, so preserving it would leave an operator who
@@ -522,6 +529,10 @@ def _record_escalation(
         if stored is not None and terminal_resolution(stored.get("resolved")):
             return stored
         if stored is not None:
+            if stored.get("task_id") == task_id:
+                document["issue_body_sha256"] = (
+                    stored.get("issue_body_sha256") or document["issue_body_sha256"]
+                )
             document["chat"] = stored.get("chat") or []
         row.escalation_json = json.dumps(document)
         db.add(row)
@@ -923,6 +934,7 @@ def _settle(task: dict, run: dict, policy: dict) -> None:
             task["id"],
             artifact,
             match["html_url"],
+            issue.get("body"),
             downgraded=downgrade is not None,
         )
         _notify_once(

@@ -1683,6 +1683,7 @@ def test_a_dismissed_escalation_is_replaced_by_the_next_brief(db, monkeypatch):
         task["id"],
         human_artifact(comment["html_url"], "deliver"),
         comment["html_url"],
+        "Untrusted issue body.",
         downgraded=False,
     )
 
@@ -1710,6 +1711,7 @@ def test_a_resolved_escalation_is_never_overwritten(db, monkeypatch):
         task["id"],
         human_artifact(comment["html_url"], "deliver"),
         comment["html_url"],
+        "Untrusted issue body.",
         downgraded=False,
     )
     assert controls.task_snapshot(task["id"])["escalation"]["resolved"] == {

@@ -1372,6 +1372,13 @@ ESCAPE_OPTIONS = (
 NON_TERMINAL_EFFECTS = ("escape-dismiss",)
 
 
+def issue_body_hash(body: object) -> str:
+    """Hash issue text after collapsing changes that carry no new words."""
+    text = body if isinstance(body, str) else ""
+    normalized = " ".join(text.split())
+    return hashlib.sha256(normalized.encode()).hexdigest()
+
+
 def terminal_effect(effect: str | None) -> bool:
     """Whether an effect closes the escalation for good."""
     return effect not in NON_TERMINAL_EFFECTS
