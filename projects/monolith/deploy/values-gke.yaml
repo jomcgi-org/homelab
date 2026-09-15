@@ -21,6 +21,23 @@ swarm:
   # Settle attempts lost between "invoke sent" and "guest bound" (#6025):
   # the template landed one PR earlier; this is the behaviour flip.
   factoryLostBeforeGuestSettlementEnabled: true
+  # Retire escalation cards their own issue has already answered (#6164): the
+  # template landed one PR earlier, this is the behaviour flip. A sweep on
+  # 2026-09-15 found 47 of 103 open cards stale, most of them because a card
+  # snapshots its issue at admission and never re-reads it, so an operator
+  # decision written into the issue body was invisible to the card still
+  # asking the question. Revalidation paces itself at 15 minutes and makes no
+  # GitHub call while this is false.
+  factoryEscalationRevalidationEnabled: true
+  # Stop an attempt at its cost ceiling rather than judging it afterwards
+  # (#6169): the template landed one PR earlier, this is the behaviour flip.
+  # max_cost_usd was a post-mortem verdict, so a node ran to completion, the
+  # money was spent, and the result was then discarded as failed: three nodes
+  # on one task spent $14.44 and delivered nothing, one of them 34 percent
+  # over its $4 ceiling. An overrunning node is failed either way, so stopping
+  # at the ceiling discards nothing that is currently kept. Only
+  # provider-measured spend can trigger it; a list price is an estimate.
+  factoryEnforceCostCeilingEnabled: true
   # Per-class floors on remaining quota percent (#5974). A floor only bites
   # for a role whose stored factory policy carries a model_pools entry with
   # somewhere to spill to (policy v41 has worker [sol, sonnet] and conductor

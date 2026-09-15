@@ -111,6 +111,13 @@ web:
   # the public site down with nothing alerting on it.
   autoscaling:
     enabled: true
+    # Floor of 2, above the chart default of 1. The HPA scales on CPU and an
+    # OOMKill is not CPU pressure, so at a floor of 1 a kill is a full public
+    # outage until the pod reschedules, which is what happened at 12:03 on
+    # 2026-09-15. Two replicas make that a degraded tier instead, and the PDB
+    # (maxUnavailable 1) then keeps a drain to one pod at a time. Costs one
+    # permanently running 384Mi pod.
+    minReplicas: 2
 
 frontend:
   replicas: "1"
