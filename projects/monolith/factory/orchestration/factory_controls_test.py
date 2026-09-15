@@ -96,6 +96,17 @@ def grant(task_id, key="one", **kwargs):
     )
 
 
+def test_issue_body_hash_ignores_whitespace_only_changes():
+    original = "First line\n\nSecond\tline"
+    whitespace_only = "  First line   Second line\n"
+    assert controls.issue_body_hash(original) == controls.issue_body_hash(
+        whitespace_only
+    )
+    assert controls.issue_body_hash(original) != controls.issue_body_hash(
+        "First line, changed Second line"
+    )
+
+
 def test_policy_is_operator_only_and_pinned_for_active_task(db, policy):
     task = admitted(policy)
     before = controls.task_snapshot(task)

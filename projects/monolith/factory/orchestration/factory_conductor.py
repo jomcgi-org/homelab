@@ -34,6 +34,8 @@ from factory.orchestration.factory_controls import (
     MAX_OPTIONS,
     MIN_OPTIONS,
     OPTION_SCHEMA,
+    decision_identity,
+    issue_body_hash,
     is_advisory,
     verify_option_list,
 )
@@ -56,8 +58,17 @@ _loop_task: asyncio.Task | None = None
 _last_loop_progress: float | None = None
 _watchdog_clock = time.monotonic
 
+# Escalation revalidation reads GitHub, and tick() runs every TICK_SECONDS, so
+# it is paced separately. A card goes stale when a person closes or rewrites its
+# issue, which is a human-speed event: checking every 15 seconds would spend
+# thousands of GraphQL calls a day to notice something minutes later at best.
+ESCALATION_REVALIDATION_INTERVAL_SECONDS = 900
+_last_escalation_revalidation: float | None = None
+
 FACTORY_RECOVERY_ABANDON_SECONDS = 900
 FACTORY_RECONCILER_PAUSE_TTL_SECONDS = 7200
+ESCALATION_REVALIDATION_BATCH_SIZE = 50
+ESCALATION_REVALIDATION_ACTOR = "factory:escalation-revalidation"
 # Process start, for the settling window stall detection waits out. Monotonic
 # because it is only ever compared against itself.
 _STARTED_AT = time.monotonic()
@@ -389,6 +400,14 @@ def lost_before_guest_settlement_enabled() -> bool:
     """
     return (
         os.environ.get("FACTORY_LOST_BEFORE_GUEST_SETTLEMENT_ENABLED", "false").lower()
+        == "true"
+    )
+
+
+def escalation_revalidation_enabled() -> bool:
+    """Whether open escalation cards may be checked against GitHub."""
+    return (
+        os.environ.get("FACTORY_ESCALATION_REVALIDATION_ENABLED", "false").lower()
         == "true"
     )
 
@@ -1678,7 +1697,7 @@ def _post_decision_card(repo: str, number: int, marker: str, body: str) -> str |
     return created.get("html_url") if isinstance(created, dict) else None
 
 
-def _record_escalation(task_id: str, document: dict) -> None:
+def _record_escalation(task_id: str, document: dict, issue_body: object) -> None:
     """Write the escalation document onto the receipt, superseding the last.
 
     A document an operator already resolved is not discarded: it moves to
@@ -1698,11 +1717,15 @@ def _record_escalation(task_id: str, document: dict) -> None:
         ).first()
         if row is None:
             return
+        document["issue_body_sha256"] = issue_body_hash(issue_body)
         stored = json.loads(row.escalation_json) if row.escalation_json else None
         if stored is not None:
             if stored.get("resolved") is None and stored.get("task_id") == task_id:
                 # The same task re-reaching its own settlement. Replacing the
                 # document with an identical one is the no-op it looks like.
+                document["issue_body_sha256"] = (
+                    stored.get("issue_body_sha256") or (document["issue_body_sha256"])
+                )
                 document["history"] = stored.get("history") or []
                 document["chat"] = stored.get("chat") or []
             else:
@@ -1746,6 +1769,213 @@ def _notify_escalation(task_id: str, repo: str, number: int, question: str) -> N
         )
     except Exception:  # noqa: BLE001 - notification is best effort
         logger.warning("factory escalation notification failed", exc_info=True)
+
+
+def _github_issue_batch(repo: str, numbers: list[int]) -> dict[int, dict]:
+    """Read up to one GraphQL page of issues in a single API request."""
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
+        raise ValueError("invalid repository")
+    unique = list(dict.fromkeys(numbers))
+    if not unique or len(unique) > ESCALATION_REVALIDATION_BATCH_SIZE:
+        raise ValueError("invalid escalation revalidation batch")
+    if any(type(number) is not int or number < 1 for number in unique):
+        raise ValueError("invalid issue number")
+    owner, name = repo.split("/", 1)
+    selections = "\n".join(
+        f"i{index}: issue(number: {number}) {{ number state body closedAt }}"
+        for index, number in enumerate(unique)
+    )
+    query = (
+        "query EscalationIssues($owner: String!, $name: String!) {\n"
+        "  repository(owner: $owner, name: $name) {\n"
+        f"{selections}\n"
+        "  }\n"
+        "}"
+    )
+    from factory.orchestration.factory_landing import github_graphql
+
+    data = github_graphql(query, {"owner": owner, "name": name})
+    repository = data.get("repository")
+    if not isinstance(repository, dict):
+        return {}
+    result = {}
+    for index, number in enumerate(unique):
+        issue = repository.get(f"i{index}")
+        if isinstance(issue, dict) and issue.get("number") == number:
+            result[number] = issue
+    return result
+
+
+def revalidate_escalations() -> dict[str, int]:
+    """Dismiss cards made stale by their issue, using batched GitHub reads."""
+    global _last_escalation_revalidation
+
+    counts = {"cards": 0, "checked": 0, "resolved": 0, "batches": 0}
+    if not escalation_revalidation_enabled():
+        return counts
+    now = _watchdog_clock()
+    if (
+        _last_escalation_revalidation is not None
+        and now - _last_escalation_revalidation
+        < ESCALATION_REVALIDATION_INTERVAL_SECONDS
+    ):
+        return counts
+    _last_escalation_revalidation = now
+    from factory.orchestration.factory_controls import _read_session
+    from factory.orchestration.factory_decisions import DecisionError
+    from factory.orchestration.factory_decisions import apply_decision as decide
+    from factory.orchestration.factory_models import FactoryReceipt
+
+    by_repo: dict[str, list[dict]] = {}
+    with _read_session() as db:
+        rows = db.exec(
+            select(FactoryReceipt).where(FactoryReceipt.escalation_json.is_not(None))
+        ).all()
+        for row in rows:
+            escalation = json.loads(row.escalation_json or "null")
+            if (
+                not isinstance(escalation, dict)
+                or escalation.get("resolved") is not None
+            ):
+                continue
+            snapshot = {
+                "id": row.id,
+                "repo": row.repo,
+                "generation": row.generation,
+                "escalation": escalation,
+            }
+            by_repo.setdefault(row.repo, []).append(
+                {
+                    "receipt_id": row.id,
+                    "issue_number": row.issue_number,
+                    "body_hash": escalation.get("issue_body_sha256")
+                    or issue_body_hash(row.body),
+                    "decision_id": decision_identity(snapshot),
+                }
+            )
+    counts["cards"] = sum(len(cards) for cards in by_repo.values())
+    for repo, cards in by_repo.items():
+        for offset in range(0, len(cards), ESCALATION_REVALIDATION_BATCH_SIZE):
+            batch = cards[offset : offset + ESCALATION_REVALIDATION_BATCH_SIZE]
+            try:
+                issues = _github_issue_batch(
+                    repo, [card["issue_number"] for card in batch]
+                )
+                counts["batches"] += 1
+            except Exception:  # noqa: BLE001 - one repository cannot stop the lane
+                logger.warning(
+                    "factory escalation revalidation failed for %s",
+                    repo,
+                    exc_info=True,
+                )
+                continue
+            for card in batch:
+                issue = issues.get(card["issue_number"])
+                if issue is None:
+                    continue
+                counts["checked"] += 1
+                state = str(issue.get("state") or "").lower()
+                if state == "closed":
+                    closed_at = issue.get("closedAt")
+                    when = (
+                        closed_at
+                        if isinstance(closed_at, str) and closed_at
+                        else datetime.now(timezone.utc).isoformat()
+                    )
+                    note = (
+                        f"GitHub issue closed at {when}; the escalation was "
+                        "dismissed automatically."
+                    )
+                elif (
+                    state == "open"
+                    and issue_body_hash(issue.get("body")) != card["body_hash"]
+                ):
+                    note = (
+                        "GitHub issue body changed after the card was raised; "
+                        "this escalation is superseded."
+                    )
+                else:
+                    continue
+                try:
+                    result = decide(
+                        card["receipt_id"],
+                        "escape:dismiss",
+                        ESCALATION_REVALIDATION_ACTOR,
+                        note,
+                        expected_decision_id=card["decision_id"],
+                    )
+                except DecisionError:
+                    logger.info(
+                        "factory escalation changed during revalidation for receipt %s",
+                        card["receipt_id"],
+                    )
+                    continue
+                counts["resolved"] += int(result["applied"])
+    return counts
+
+
+def _notify_intervention_required(
+    task_id: str, workflow_id: str, reason: str, node_id: str | None
+) -> None:
+    """One best-effort warning for an attempt supervision could not settle."""
+    context = f" on node {node_id}" if node_id else ""
+    try:
+        from agent.api import notify
+
+        asyncio.run(
+            notify(
+                f"Factory attempt {workflow_id} on task {task_id} requires "
+                f"operator intervention{context}: {reason[:500]}",
+                level="warn",
+            )
+        )
+    except Exception:  # noqa: BLE001 - notification is best effort
+        logger.warning(
+            "factory intervention notification failed for %s",
+            workflow_id,
+            exc_info=True,
+        )
+
+
+def _consume_intervention_notifications(task_id: str) -> None:
+    """Notify once per attempt whose durable supervision record asks for help."""
+    from factory.orchestration.factory_models import FactoryAudit
+
+    try:
+        with Session(get_engine()) as db:
+            rows = db.exec(
+                select(FactoryAudit)
+                .where(
+                    FactoryAudit.task_id == task_id,
+                    FactoryAudit.action == "stop_observation",
+                )
+                .order_by(FactoryAudit.id)
+            ).all()
+        required = {}
+        for row in rows:
+            detail = json.loads(row.detail_json)
+            workflow_id = detail.get("workflow_id")
+            if detail.get("intervention_required") is True and isinstance(
+                workflow_id, str
+            ):
+                required[workflow_id] = detail
+        for workflow_id, detail in required.items():
+            reason = str(detail.get("reason") or "supervision could not settle attempt")
+            node_id = detail.get("node_id")
+            node_id = node_id if isinstance(node_id, str) else None
+            if _audit_once(
+                task_id,
+                workflow_id,
+                "intervention_required_notified",
+                {"reason": reason, **({"node_id": node_id} if node_id else {})},
+            ):
+                _notify_intervention_required(task_id, workflow_id, reason, node_id)
+    except Exception:  # noqa: BLE001 - notification cannot block reconciliation
+        logger.warning(
+            "factory intervention notification reconciliation failed for %s",
+            task_id,
+            exc_info=True,
+        )
 
 
 def _escalate_task(task: dict, decision: dict, cause: str, runs: list[dict]) -> None:
@@ -1810,6 +2040,7 @@ def _escalate_task(task: dict, decision: dict, cause: str, runs: list[dict]) -> 
         "downgraded": False,
         "resolved": None,
     }
+    issue = github_get(task["repo"], f"issues/{number}")
     # The label first. A card posted onto an issue that intake can still pick
     # up is the one ordering that can have the lane re-admit the work while a
     # person is reading the question.
@@ -1820,7 +2051,7 @@ def _escalate_task(task: dict, decision: dict, cause: str, runs: list[dict]) -> 
         _escalation_marker(task_id),
         _decision_card(document),
     )
-    _record_escalation(task_id, document)
+    _record_escalation(task_id, document, issue.get("body"))
     settled = finish_task(
         task_id,
         "escalated",
@@ -3840,6 +4071,7 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
         set_control,
     )
 
+    _consume_intervention_notifications(task_id)
     task = _task(task_id)
     runs = graph.node_runs(task_id)
     # A crash may fall between graph settlement and the factory reservation
@@ -4513,6 +4745,10 @@ def tick() -> None:
     dbos = runtime.init_dbos()
     if not runtime.is_launched() or dbos is None:
         return
+    try:
+        revalidate_escalations()
+    except Exception:  # noqa: BLE001 - card checks cannot stop task reconciliation
+        logger.exception("factory escalation revalidation failed")
     active = list(snapshot["active_tasks"])
     if snapshot["state"] == "stopped":
         for task in active:

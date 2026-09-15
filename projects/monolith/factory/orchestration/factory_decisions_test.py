@@ -15,7 +15,7 @@ from factory.orchestration import factory_controls as controls
 from factory.orchestration import factory_decisions as decisions
 from factory.orchestration import factory_landing as landing
 from factory.orchestration import factory_refine as refine
-from factory.orchestration.factory_intake import receive_issue
+from factory.orchestration.factory_intake import admit_next, receive_issue
 from factory.orchestration.factory_models import (
     FactoryAudit,
     FactoryControl,
@@ -268,6 +268,36 @@ def escalation(db, receipt_id):
     with Session(db) as session:
         row = session.get(FactoryReceipt, receipt_id)
         return json.loads(row.escalation_json)
+
+
+def test_refine_escalation_stores_the_normalized_issue_body_hash(db, monkeypatch):
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "2")
+    configure()
+    receive_issue(
+        REPO,
+        ISSUE,
+        "Clarify delivery",
+        "The first line.\n\n  The second line.",
+        f"https://github.com/{REPO}/issues/{ISSUE}",
+        "factory:intake",
+        task_class="refine",
+    )
+    task_id = admit_next("test")["task_id"]
+    document = refine._record_escalation(
+        task_id,
+        {
+            "recommendation": "split",
+            "question": "Which target is required?",
+            "summary": "Two targets.",
+            "options": options("split"),
+        },
+        f"https://github.com/{REPO}/issues/{ISSUE}#c1",
+        "The first line.\n\n  The second line.",
+        downgraded=False,
+    )
+    assert document["issue_body_sha256"] == controls.issue_body_hash(
+        "The first line. The second line."
+    )
 
 
 def test_agent_ready_moves_the_labels_and_comments_the_scope(db, github):

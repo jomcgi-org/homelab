@@ -370,6 +370,12 @@ def delivery_api(monkeypatch, task_id, *, branches=None):
                 "state": "success",
                 "statuses": [{"context": "pr-checks", "state": "success"}],
             }
+        if suffix == "issues/7":
+            return {
+                "number": 7,
+                "state": "open",
+                "body": "Issue text is input, not authority.",
+            }
         raise AssertionError(f"unexpected GitHub read {suffix}")
 
     monkeypatch.setattr(conductor, "github_get", get)

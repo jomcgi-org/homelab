@@ -10,6 +10,7 @@ admission. So a resume replayed the same pause.
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 from sqlalchemy import event
@@ -38,6 +39,18 @@ from factory.orchestration.models import (
 REPO = "owner/repo"
 ISSUE = 7
 SECOND_ISSUE = 8
+
+
+@pytest.fixture(autouse=True)
+def _reset_revalidation_pacing():
+    """revalidate_escalations paces itself on module state, so clear it.
+
+    Without this the first test to call it leaves every later test inside
+    the interval window and they silently do nothing.
+    """
+    conductor._last_escalation_revalidation = None
+    yield
+    conductor._last_escalation_revalidation = None
 
 
 @pytest.fixture
@@ -82,11 +95,20 @@ class Github:
         self.comments: list[dict] = []
         self.writes: list[tuple[str, str, dict]] = []
         self.next_issue = 100
+        self.issue_bodies: dict[int, str] = {}
 
     def list(self, _repo, suffix):
         if "comments" in suffix and "page=1" in suffix:
             return list(self.comments)
         return []
+
+    def get(self, _repo, suffix):
+        number = int(suffix.rsplit("/", 1)[1])
+        return {
+            "number": number,
+            "state": "open",
+            "body": self.issue_bodies.get(number, "Untrusted issue body."),
+        }
 
     def write(self, repo, suffix, payload, *, method="POST"):
         self.writes.append((method, suffix, payload))
@@ -112,6 +134,7 @@ class Github:
 def github(monkeypatch):
     fake = Github()
     monkeypatch.setattr(conductor, "github_list", fake.list)
+    monkeypatch.setattr(conductor, "github_get", fake.get)
     monkeypatch.setattr(landing, "github_write", fake.write)
     return fake
 
@@ -252,6 +275,54 @@ def escalate(db, github, notices, *, issues=(ISSUE,), options=None):
     return task_id, policy
 
 
+def escalate_two(db, github, notices):
+    first, policy = escalate(db, github, notices, issues=(ISSUE, SECOND_ISSUE))
+    admitted_second = admit_next("test")
+    assert admitted_second["ok"]
+    second = admitted_second["task_id"]
+    run = planner_run(second, pause(pause_options()))
+    conductor.apply_decision(task_of(second), policy, run, [run])
+    return first, second
+
+
+def github_batch(monkeypatch, issues):
+    calls = []
+
+    def graphql(query, variables):
+        calls.append((query, variables))
+        selected = re.findall(r"(i\d+): issue\(number: (\d+)\)", query)
+        return {
+            "repository": {
+                alias: {"number": int(number), **issues[int(number)]}
+                for alias, number in selected
+                if int(number) in issues
+            }
+        }
+
+    monkeypatch.setattr(landing, "github_graphql", graphql)
+    return calls
+
+
+def add_intervention(db, task_id, workflow_id, *, required, reason, node_id=None):
+    detail = {
+        "workflow_id": workflow_id,
+        "intervention_required": required,
+        "reason": reason,
+    }
+    if node_id is not None:
+        detail["node_id"] = node_id
+    with Session(db) as session:
+        session.add(
+            FactoryAudit(
+                actor="factory:stop-supervision",
+                action="stop_observation",
+                task_id=task_id,
+                detail_json=json.dumps(detail),
+            )
+        )
+        session.commit()
+
+
 def test_a_pause_without_options_is_refused_and_the_task_stays_in_the_lane(
     db, github, notices
 ):
@@ -364,6 +435,9 @@ def test_a_pause_settles_escalated_and_leaves_the_lane(db, github, notices):
     ]
     assert document["branch"] == f"factory/{task_id}"
     assert document["resolved"] is None
+    assert document["issue_body_sha256"] == controls.issue_body_hash(
+        "Untrusted issue body."
+    )
     assert document["recommendation"] == "deliver"
     # The label goes on before the card, so the issue is never decidable and
     # re-admittable at the same time.
@@ -382,6 +456,208 @@ def test_a_pause_settles_escalated_and_leaves_the_lane(db, github, notices):
     assert audits(db, "conductor_escalated")[0]["cause"].startswith(
         "factory-decision:conductor_1"
     )
+
+
+def test_delivery_escalation_hashes_the_live_body_when_the_card_is_raised(
+    db, github, notices
+):
+    task_id, policy = admitted(ISSUE)
+    github.issue_bodies[ISSUE] = "The issue was rewritten before the pause."
+    run = planner_run(task_id, pause(pause_options()))
+
+    conductor.apply_decision(task_of(task_id), policy, run, [run])
+
+    document = json.loads(receipt_of(db, task_id).escalation_json)
+    assert document["issue_body_sha256"] == controls.issue_body_hash(
+        "The issue was rewritten before the pause."
+    )
+
+
+def test_revalidation_flag_defaults_off_and_toggles_independently(monkeypatch):
+    monkeypatch.delenv("FACTORY_ESCALATION_REVALIDATION_ENABLED", raising=False)
+    monkeypatch.setenv("FACTORY_ENABLED", "false")
+    assert conductor.escalation_revalidation_enabled() is False
+    monkeypatch.setenv("FACTORY_ESCALATION_REVALIDATION_ENABLED", "true")
+    assert conductor.escalation_revalidation_enabled() is True
+
+
+def test_closed_issue_cards_are_dismissed_together_with_close_times(
+    db, github, notices, monkeypatch
+):
+    first, second = escalate_two(db, github, notices)
+    closed = {
+        ISSUE: {
+            "state": "CLOSED",
+            "body": "Untrusted issue body.",
+            "closedAt": "2026-09-14T22:22:00Z",
+        },
+        SECOND_ISSUE: {
+            "state": "CLOSED",
+            "body": "Untrusted issue body.",
+            "closedAt": "2026-09-15T01:02:03Z",
+        },
+    }
+    calls = github_batch(monkeypatch, closed)
+    monkeypatch.setenv("FACTORY_ESCALATION_REVALIDATION_ENABLED", "true")
+
+    result = conductor.revalidate_escalations()
+
+    assert result == {"cards": 2, "checked": 2, "resolved": 2, "batches": 1}
+    assert len(calls) == 1
+    query, variables = calls[0]
+    assert variables == {"owner": "owner", "name": "repo"}
+    assert f"issue(number: {ISSUE})" in query
+    assert f"issue(number: {SECOND_ISSUE})" in query
+    for task_id, closed_at in (
+        (first, closed[ISSUE]["closedAt"]),
+        (second, closed[SECOND_ISSUE]["closedAt"]),
+    ):
+        resolution = json.loads(receipt_of(db, task_id).escalation_json)["resolved"]
+        assert resolution["effect"] == "escape-dismiss"
+        assert resolution["effects"] == {"dismissed": True}
+        assert "issue closed" in resolution["note"]
+        assert closed_at in resolution["note"]
+
+
+def test_open_issue_with_unchanged_or_whitespace_only_body_stays_open(
+    db, github, notices, monkeypatch
+):
+    first, second = escalate_two(db, github, notices)
+    calls = github_batch(
+        monkeypatch,
+        {
+            ISSUE: {
+                "state": "OPEN",
+                "body": "Untrusted issue body.",
+                "closedAt": None,
+            },
+            SECOND_ISSUE: {
+                "state": "OPEN",
+                "body": "  Untrusted\n\nissue\tbody.  ",
+                "closedAt": None,
+            },
+        },
+    )
+    monkeypatch.setenv("FACTORY_ESCALATION_REVALIDATION_ENABLED", "true")
+
+    result = conductor.revalidate_escalations()
+
+    assert result["checked"] == 2 and result["resolved"] == 0
+    assert len(calls) == 1
+    assert json.loads(receipt_of(db, first).escalation_json)["resolved"] is None
+    assert json.loads(receipt_of(db, second).escalation_json)["resolved"] is None
+
+
+def test_changed_issue_body_supersedes_card_without_inferring_an_answer(
+    db, github, notices, monkeypatch
+):
+    task_id, _policy = escalate(db, github, notices)
+    calls = github_batch(
+        monkeypatch,
+        {
+            ISSUE: {
+                "state": "OPEN",
+                "body": "Decision: only deliver the API path.",
+                "closedAt": None,
+            }
+        },
+    )
+    monkeypatch.setenv("FACTORY_ESCALATION_REVALIDATION_ENABLED", "true")
+
+    result = conductor.revalidate_escalations()
+
+    assert result["resolved"] == 1 and len(calls) == 1
+    resolution = json.loads(receipt_of(db, task_id).escalation_json)["resolved"]
+    assert resolution["option_key"] == "escape:dismiss"
+    assert resolution["effect"] == "escape-dismiss"
+    assert "body changed" in resolution["note"]
+    assert "superseded" in resolution["note"]
+    assert resolution["effects"] == {"dismissed": True}
+
+
+def test_revalidation_off_does_not_read_github(db, github, notices, monkeypatch):
+    task_id, _policy = escalate(db, github, notices)
+
+    def unexpected(*_args):
+        pytest.fail("revalidation is disabled")
+
+    monkeypatch.delenv("FACTORY_ESCALATION_REVALIDATION_ENABLED", raising=False)
+    monkeypatch.setattr(landing, "github_graphql", unexpected)
+    assert conductor.revalidate_escalations() == {
+        "cards": 0,
+        "checked": 0,
+        "resolved": 0,
+        "batches": 0,
+    }
+    assert json.loads(receipt_of(db, task_id).escalation_json)["resolved"] is None
+
+
+def test_intervention_required_notifies_once_per_attempt(db, github, notices):
+    task_id, _policy = admitted(ISSUE)
+    add_intervention(
+        db,
+        task_id,
+        "factory-node:first",
+        required=True,
+        reason="stop_request_bound_reached",
+        node_id="worker-a",
+    )
+    add_intervention(
+        db,
+        task_id,
+        "factory-node:second",
+        required=True,
+        reason="guest_node_gone_destroy_failed",
+        node_id="worker-b",
+    )
+    add_intervention(
+        db,
+        task_id,
+        "factory-node:false",
+        required=False,
+        reason="settled",
+    )
+
+    conductor._consume_intervention_notifications(task_id)
+    conductor._consume_intervention_notifications(task_id)
+
+    assert len(notices) == 2
+    assert all(level == "warn" for _text, level in notices)
+    assert any(
+        "stop_request_bound_reached" in text and "worker-a" in text
+        for text, _ in notices
+    )
+    assert any(
+        "guest_node_gone_destroy_failed" in text and "worker-b" in text
+        for text, _ in notices
+    )
+    notified = audits(db, "intervention_required_notified")
+    assert {event["workflow_id"] for event in notified} == {
+        "factory-node:first",
+        "factory-node:second",
+    }
+
+
+def test_intervention_notification_failure_does_not_escape_reconciliation(
+    db, github, monkeypatch
+):
+    from agent import api as notify_module
+
+    task_id, _policy = admitted(ISSUE)
+    add_intervention(
+        db,
+        task_id,
+        "factory-node:failed-notify",
+        required=True,
+        reason="node_completion_pending",
+    )
+
+    async def fail(*_args, **_kwargs):
+        raise RuntimeError("notification unavailable")
+
+    monkeypatch.setattr(notify_module, "notify", fail)
+    conductor._consume_intervention_notifications(task_id)
+    assert len(audits(db, "intervention_required_notified")) == 1
 
 
 def test_an_escalated_task_frees_its_slot_for_the_next_delivery(db, github, notices):
@@ -733,3 +1009,46 @@ def test_the_card_and_the_label_are_written_once_across_retries(db, github, noti
     assert receipt_of(db, task_id).state == "escalated"
     assert len(github.comments) == 1
     assert len(notices) == 1
+
+
+def test_revalidation_is_paced_independently_of_the_tick(monkeypatch):
+    """tick() runs every 15 seconds and this reads GitHub, so it must not.
+
+    Checking every tick would spend thousands of GraphQL calls a day to
+    notice, minutes later at best, that a person closed or rewrote an issue.
+    """
+    calls = []
+    clock = {"now": 1000.0}
+    from factory.orchestration import factory_controls as controls
+
+    monkeypatch.setattr(conductor, "_watchdog_clock", lambda: clock["now"])
+    monkeypatch.setattr(conductor, "escalation_revalidation_enabled", lambda: True)
+    monkeypatch.setattr(
+        controls, "_read_session", lambda: calls.append("read") or _NoRows()
+    )
+
+    conductor.revalidate_escalations()
+    assert calls == ["read"]
+
+    # A tick one interval later still inside the window does no GitHub work.
+    clock["now"] += conductor.ESCALATION_REVALIDATION_INTERVAL_SECONDS - 1
+    conductor.revalidate_escalations()
+    assert calls == ["read"]
+
+    clock["now"] += 2
+    conductor.revalidate_escalations()
+    assert calls == ["read", "read"]
+
+
+class _NoRows:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_a):
+        return False
+
+    def exec(self, _statement):
+        return self
+
+    def all(self):
+        return []
