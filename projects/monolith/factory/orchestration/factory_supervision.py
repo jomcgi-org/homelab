@@ -36,11 +36,39 @@ COMPLETION_ALARM_SECONDS = 120
 # first, short enough that a four-hour policy timeout never decides it.
 STOP_GRACE_SECONDS = 120
 NODE_GONE_GRACE_SECONDS = 600
+# A guest the control plane answers 404/410 for is authoritatively absent: it
+# deletes the session record only after teardown, so absence orders the guest
+# after its own process the way a stop completion does. One reading is still
+# not enough to release the reservation. A control-plane restore, a replica
+# mid-rollout serving a stale table, or a route briefly answering for the wrong
+# shard can each 404 a guest that is still running, and releasing then would
+# let a second writer start against a live process. So absence settles nothing
+# until it has held across this many separate observations spanning this long.
+MIN_ABSENCE_OBSERVATIONS = 3
+ABSENCE_CONFIRM_SECONDS = 900
+# One observation per this interval, so the run actually samples the window.
+# Recording on every tick instead would take the whole count in one 45 second
+# burst and then wait out the rest of the span blind, which proves only that
+# the guest was absent for 45 seconds.
+ABSENCE_OBSERVATION_INTERVAL_SECONDS = 300
+# Two intervals. A longer gap than this means the run was broken by something
+# that was not absence: a live guest answering in between, or an observer that
+# was not running. Evidence then starts again rather than accumulating across
+# unrelated episodes, which is what makes an intermittent 404 during a rollout
+# unable to add up to a release over hours.
+ABSENCE_MAX_GAP_SECONDS = 600
+# How long one absence run may grow before it is treated as an anomaly. A run
+# normally settles at four observations, so passing this means settlement is
+# being refused for some other reason, which is noted once. It bounds a run,
+# not an attempt: a run broken by presence starts again.
+MAX_ABSENCE_OBSERVATIONS = 8
 _ACTIONS = (
     "stop_intent",
     "stop_request",
     "stop_accepted",
     "stop_observation",
+    "stop_absence",
+    "stop_presence",
     "stop_settled",
 )
 _PRECONDITION_KEYS = frozenset(
@@ -549,6 +577,266 @@ def _destroy_guest_on_departed_node(pin, identity, view):
     return True
 
 
+def _settle_failed_attempt(
+    db,
+    pin,
+    session_id,
+    identity,
+    run,
+    original_result,
+    *,
+    reason,
+    evidence_key,
+    evidence,
+):
+    """Record one uncertain attempt as failed, under a lock the caller holds.
+
+    Shared by the two proofs that release a guest which was actually bound:
+    exact control-plane cessation, and sustained absence of the guest record.
+    Both settle at the unknown cost the attempt already carries rather than
+    refunding it, because a bound guest did run; only the never-bound proofs
+    settle at a measured zero. The caller owns the lock, the identity
+    recheck and the proof. This owns the four writes that have to land in one
+    transaction, so a settlement can never leave the run and the start
+    disagreeing about whether the reservation was released.
+    """
+    known_costs = [
+        cost
+        for cost in (
+            run.cost_usd,
+            identity["cost_usd"],
+            original_result.get("cost_usd"),
+        )
+        if cost is not None
+    ]
+    if any(
+        type(cost) not in (int, float) or not math.isfinite(cost) or cost < 0
+        for cost in known_costs
+    ):
+        raise ValueError("invalid_original_cost")
+    chosen = max(known_costs) if known_costs else None
+    result = {
+        **original_result,
+        "status": "failed",
+        "session_id": session_id,
+        "cost_usd": chosen,
+        **_settlement_accounting(chosen, original_result),
+        "reason": reason,
+        "previous_outcome": json.loads(run.outcome_json or "{}"),
+        evidence_key: evidence,
+    }
+    settle_uncertain_factory_attempt(db, pin, identity)
+    if run.session_id is None:
+        bound = graph.record_dispatch(
+            pin["task_id"],
+            pin["node_key"],
+            pin["attempt"],
+            session_id,
+            run.base_sha,
+            session=db,
+        )
+        if not bound.ok:
+            raise ValueError("factory_dispatch_refused")
+    settled = graph.record_outcome(
+        pin["task_id"],
+        pin["node_key"],
+        pin["attempt"],
+        "failed",
+        result["cost_usd"],
+        run.head_sha,
+        json.dumps(result),
+        session=db,
+    )
+    if not settled.ok:
+        raise ValueError("factory_outcome_refused")
+    charged = controls.record_start_outcome(
+        pin["task_id"],
+        pin["workflow_id"],
+        "failed",
+        ACTOR,
+        cost_usd=result["cost_usd"],
+        session_id=session_id,
+        reconciled=True,
+        session=db,
+    )
+    if not charged["ok"]:
+        raise ValueError("factory_start_outcome_refused")
+    return result
+
+
+def _absence_run(records, identity):
+    """The unbroken tail of absence observations for this exact attempt.
+
+    Walked newest first and stopped at the first thing that is not this
+    attempt's absence, so only a continuous episode counts. Counting every
+    absence record ever written for the identity instead would let a 404 from
+    one rollout and two from another, hours apart, add up to a release: each
+    reading would be real, but "absent now, and absent twice before" is not
+    the same claim as "absent throughout", and only the second one orders the
+    guest after its process.
+    """
+    run = []
+    previous = None
+    for action, detail in reversed(records):
+        if (
+            action != "stop_absence"
+            or detail.get("identity_sha256") != identity["identity_sha256"]
+        ):
+            break
+        stamp = _timestamp(detail["recorded_at"])
+        if (
+            previous is not None
+            and (previous - stamp).total_seconds() > ABSENCE_MAX_GAP_SECONDS
+        ):
+            break
+        run.append(stamp)
+        previous = stamp
+    run.reverse()
+    return run
+
+
+def _record_presence(pin, identity):
+    """Break the absence run when the control plane answers for this guest.
+
+    Without this the run has nothing to break on. Every other record the
+    guest-visible path writes is deduplicated: _remember_observation writes
+    stop_intent and stop_accepted once each, stop_request is capped at
+    MAX_STOP_REQUESTS, and _note writes one row per reason code. So after the
+    first few ticks a successful 200 read leaves no trace, and a control plane
+    that 404s intermittently but at least once inside every gap window would
+    look exactly like one that had torn the guest down. This writes the trace,
+    so a single observed guest resets the evidence.
+
+    Written only while an absence run is actually open, and capped, so a
+    healthy attempt never accumulates rows.
+    """
+    with controls._locked_session() as (db, _control):
+        records = _records(db, pin)
+        if not records or records[-1][0] != "stop_absence":
+            return
+        # Deliberately uncapped. Presence is the only record that can break an
+        # absence run once the other actions have deduplicated themselves, so a
+        # cap on it would restore exactly the blindness it exists to remove: a
+        # guest answering 200 would stop leaving a trace and a flapping control
+        # plane could accumulate a release again. The open-run guard above is
+        # the bound that matters, and it already keeps a healthy attempt at
+        # zero rows.
+        _audit(
+            db,
+            pin,
+            "stop_presence",
+            identity_sha256=identity["identity_sha256"],
+            guest_id=identity["guest_id"],
+            cessation_confirmed=False,
+            intervention_required=False,
+        )
+
+
+def _absence_settled(pin, session_id, identity, original_result):
+    """Record one authoritative absence, and settle once absence has held.
+
+    The control plane answers 404/410 only for a session it no longer holds,
+    and it removes the record after teardown, so absence orders the guest
+    after its own process. What it cannot do on a single reading is
+    distinguish a torn-down guest from a control plane that has briefly lost
+    sight of a live one, so this samples the window: one observation per
+    ABSENCE_OBSERVATION_INTERVAL_SECONDS, and settlement only once an unbroken
+    run of at least MIN_ABSENCE_OBSERVATIONS of them spans
+    ABSENCE_CONFIRM_SECONDS end to end.
+
+    Every observation is pinned to identity_sha256, so an attempt that changes
+    underneath supervision starts its evidence again rather than inheriting a
+    previous attempt's count. The audit stream is bounded twice over: one row
+    per interval, and never more than MAX_ABSENCE_OBSERVATIONS per attempt.
+    The settlement itself is fenced by the stop_settled record the cessation
+    path already uses.
+    """
+    now = _now()
+    with controls._locked_session() as (db, control):
+        current, run = _locked_attempt(
+            db, control, pin, session_id, require_stop_due=True
+        )
+        if current != identity:
+            raise ValueError("factory_attempt_changed")
+        records = _records(db, pin)
+        if any(action == "stop_settled" for action, _ in records):
+            return True
+        seen = _absence_run(records, identity)
+        newest = seen[-1] if seen else None
+        due = (
+            newest is None
+            or (now - newest).total_seconds() >= ABSENCE_OBSERVATION_INTERVAL_SECONDS
+        )
+        if due:
+            # Sampling never stops while absence holds. Suppressing the write
+            # past a cap would freeze the newest reading, and the freshness
+            # guard below would then refuse this run forever. A run that grows
+            # past the expected length is an anomaly worth seeing rather than a
+            # reason to stop looking, so it is noted once and keeps sampling.
+            if len(seen) >= MAX_ABSENCE_OBSERVATIONS:
+                _note(pin, "absence_run_unsettled")
+            _audit(
+                db,
+                pin,
+                "stop_absence",
+                identity_sha256=identity["identity_sha256"],
+                observation=len(seen) + 1,
+                guest_id=identity["guest_id"],
+                cessation_confirmed=False,
+                intervention_required=False,
+            )
+            return False
+        if len(seen) < MIN_ABSENCE_OBSERVATIONS:
+            return False
+        # Below the cap this is implied, because settlement can only be reached
+        # on a tick where no observation was due. At the cap the write is
+        # skipped, so without this a run whose last reading is hours old would
+        # settle on evidence that stopped being refreshed: the guest could have
+        # been answering for all of it. The freshest reading has to be as
+        # recent as the run's own gap rule demands.
+        if (now - seen[-1]).total_seconds() > ABSENCE_MAX_GAP_SECONDS:
+            return False
+        first = seen[0]
+        # Measured between observations, never up to now: the span has to be
+        # one this actually watched, not one it inferred from a single old
+        # reading and the clock.
+        held = (newest - first).total_seconds()
+        if held < ABSENCE_CONFIRM_SECONDS:
+            return False
+        proof = {
+            "guest_id": identity["guest_id"],
+            "observations": len(seen),
+            "first_observed_at": first.isoformat(),
+            "last_observed_at": newest.isoformat(),
+            "confirmed_at": now.isoformat(),
+            "held_seconds": int(held),
+        }
+        _settle_failed_attempt(
+            db,
+            pin,
+            session_id,
+            identity,
+            run,
+            original_result,
+            reason=(
+                "guest_absent_confirmed: the control plane has reported this "
+                f"guest absent since {first.isoformat()}"
+            ),
+            evidence_key="absence",
+            evidence=proof,
+        )
+        _audit(
+            db,
+            pin,
+            "stop_settled",
+            identity=identity,
+            absence=proof,
+            cessation_confirmed=True,
+            intervention_required=False,
+        )
+        return True
+
+
 def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_status):
     """One bounded supervision tick for an already terminal DBOS workflow.
 
@@ -597,14 +885,32 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
             _note(pin, "local_identity_unconfirmed")
         return False
 
+    from factory.execution.transport import EmberSessionGone
+
     try:
         view = _http(identity["guest_id"])
+    except EmberSessionGone:
+        # Separated from the blanket failure below because the status code is
+        # the whole distinction: get_session raises this only for 404/410,
+        # which the control plane returns for a session it does not have.
+        # 403, 500 and every timeout stay plain failures and fall through to
+        # stop_observation_unavailable, so an unreachable control plane can
+        # never be read as a torn-down guest.
+        try:
+            return _absence_settled(pin, session_id, identity, original_result)
+        except ValueError as exc:
+            if str(exc) != "factory_stop_not_due":
+                _note(pin, "stop_evidence_or_ownership_changed")
+            return False
     except Exception:
         _note(pin, "stop_observation_unavailable")
         return False
     try:
         if not isinstance(view, dict) or view.get("session_id") != identity["guest_id"]:
             raise ValueError("wrong_stop_observation")
+        # The control plane answered for this exact guest, so any absence run
+        # in progress is over. Recorded before anything else acts on the view.
+        _record_presence(pin, identity)
         if _destroy_guest_on_departed_node(pin, identity, view):
             return False
         cessation = None
@@ -654,69 +960,17 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
                 if not existing:
                     raise ValueError("missing_committed_stop_intent")
             if proof is not None:
-                known_costs = [
-                    cost
-                    for cost in (
-                        run.cost_usd,
-                        identity["cost_usd"],
-                        original_result.get("cost_usd"),
-                    )
-                    if cost is not None
-                ]
-                if any(
-                    type(cost) not in (int, float)
-                    or not math.isfinite(cost)
-                    or cost < 0
-                    for cost in known_costs
-                ):
-                    raise ValueError("invalid_original_cost")
-                chosen = max(known_costs) if known_costs else None
-                result = {
-                    **original_result,
-                    "status": "failed",
-                    "session_id": session_id,
-                    "cost_usd": chosen,
-                    **_settlement_accounting(chosen, original_result),
-                    "reason": "guest_cessation_confirmed: exact control-plane cessation after factory dispatch",
-                    "previous_outcome": json.loads(run.outcome_json or "{}"),
-                    "cessation": proof,
-                }
-                settle_uncertain_factory_attempt(db, pin, identity)
-                if run.session_id is None:
-                    bound = graph.record_dispatch(
-                        pin["task_id"],
-                        pin["node_key"],
-                        pin["attempt"],
-                        session_id,
-                        run.base_sha,
-                        session=db,
-                    )
-                    if not bound.ok:
-                        raise ValueError("factory_dispatch_refused")
-                settled = graph.record_outcome(
-                    pin["task_id"],
-                    pin["node_key"],
-                    pin["attempt"],
-                    "failed",
-                    result["cost_usd"],
-                    run.head_sha,
-                    json.dumps(result),
-                    session=db,
+                _settle_failed_attempt(
+                    db,
+                    pin,
+                    session_id,
+                    identity,
+                    run,
+                    original_result,
+                    reason="guest_cessation_confirmed: exact control-plane cessation after factory dispatch",
+                    evidence_key="cessation",
+                    evidence=proof,
                 )
-                if not settled.ok:
-                    raise ValueError("factory_outcome_refused")
-                charged = controls.record_start_outcome(
-                    pin["task_id"],
-                    pin["workflow_id"],
-                    "failed",
-                    ACTOR,
-                    cost_usd=result["cost_usd"],
-                    session_id=session_id,
-                    reconciled=True,
-                    session=db,
-                )
-                if not charged["ok"]:
-                    raise ValueError("factory_start_outcome_refused")
                 _audit(
                     db,
                     pin,

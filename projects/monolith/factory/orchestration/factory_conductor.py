@@ -58,6 +58,12 @@ _watchdog_clock = time.monotonic
 
 FACTORY_RECOVERY_ABANDON_SECONDS = 900
 FACTORY_RECONCILER_PAUSE_TTL_SECONDS = 7200
+# How long past its deadline a task may sit holding an unresolved start before
+# the backstop releases the slot. Matched to the reconciler pause TTL above,
+# which is the other force-settle on this lane, and long enough that every
+# proof-based release has had hundreds of ticks to settle the attempt on
+# evidence first.
+FACTORY_DEADLINE_BACKSTOP_GRACE_SECONDS = 7200
 # Process start, for the settling window stall detection waits out. Monotonic
 # because it is only ever compared against itself.
 _STARTED_AT = time.monotonic()
@@ -4503,6 +4509,369 @@ def _expire_reconciler_pause(task_id: str) -> bool:
     return expired
 
 
+def _deadline_backstop_enabled() -> bool:
+    return (
+        os.environ.get("FACTORY_DEADLINE_BACKSTOP_ENABLED", "false").lower() == "true"
+    )
+
+
+def _deadline_backstop_due(task: dict) -> bool:
+    """Whether this task is far enough past its deadline for the backstop."""
+    stamp = task.get("deadline_at")
+    if not isinstance(stamp, str):
+        return False
+    try:
+        deadline = _aware(datetime.fromisoformat(stamp))
+    except ValueError:
+        return False
+    grace = timedelta(seconds=FACTORY_DEADLINE_BACKSTOP_GRACE_SECONDS)
+    return datetime.now(timezone.utc) - deadline >= grace
+
+
+def _warn_deadline_tripped(task: dict) -> None:
+    """One warn the moment a task holds a slot past its deadline.
+
+    limits_tripped was computed and rendered and nothing read it, so a lane
+    that had silently stopped admitting looked exactly like a lane with
+    nothing to do. This is the reading promoted to a signal: it fires once per
+    task, as soon as the deadline passes with an unresolved start and nothing
+    running, which is hours before the backstop gives up on the attempt. The
+    window between the two is the chance to settle it on evidence instead.
+    """
+    if not (task.get("limits") or {}).get("deadline_expired"):
+        return
+    from factory.orchestration.factory_controls import _locked_session, _starts
+
+    task_id = task["task_id"]
+    with Session(get_engine()) as db:
+        with _locked_session(db):
+            rows = _starts(db, task_id)
+            if any(row.status == "reserved" for row in rows):
+                return
+            held = sum(row.status == "uncertain" for row in rows)
+    if not held:
+        return
+    if not _audit_once(
+        task_id,
+        f"factory-deadline-tripped:{task_id}",
+        "deadline_tripped_notified",
+        {"unresolved_starts": held},
+    ):
+        return
+    repo, number = task.get("repo"), task.get("issue_number")
+    where = f"{repo}#{number}" if repo and isinstance(number, int) else task_id
+    # Say what will actually happen. Promising a release the flag has turned
+    # off would have an operator wait out a slot that is never coming back,
+    # which is the 2026-09-14 wedge again with a notification on top.
+    outcome = (
+        "The lane slot is released within "
+        f"{FACTORY_DEADLINE_BACKSTOP_GRACE_SECONDS // 3600} hours of the "
+        "deadline if none arrives."
+        if _deadline_backstop_enabled()
+        else "The deadline backstop is off, so nothing will release the lane "
+        "slot on its own."
+    )
+    try:
+        from agent.api import notify
+
+        asyncio.run(
+            notify(
+                f"Factory task {where} passed its deadline holding {held} "
+                "unresolved start(s) with nothing running. Stop supervision "
+                f"has no cessation proof for it. {outcome}",
+                level="warn",
+            )
+        )
+    except Exception:  # noqa: BLE001 - notification is best effort
+        logger.warning("factory deadline notification failed", exc_info=True)
+
+
+def _expire_task_deadline(task: dict) -> bool:
+    """Escalate one task past its deadline whose starts no proof can settle.
+
+    The bound on a deliberately fail-closed hold. Stop supervision releases a
+    bound guest only on cessation evidence, and finish_task refuses every
+    terminal outcome while a start is unresolved, so an attempt whose evidence
+    never arrives leaves the task active with nothing running on it and its
+    lane slot held. That is what took the delivery lane to four of four on
+    2026-09-14 with no task progressing and the deadline, which was reported
+    but never acted on, doing nothing about it.
+
+    Three conditions, all required. The deadline passed more than
+    FACTORY_DEADLINE_BACKSTOP_GRACE_SECONDS ago, so every proof-based release
+    has had hundreds of ticks to settle the attempt properly. No start is
+    still "reserved", so nothing is in flight for this to interrupt: the
+    backstop never races live work, it only collects what nothing will come
+    back for. And at least one start is "uncertain", so there is something to
+    release.
+
+    It escalates rather than cancelling. A slot that silently disappears takes
+    the question with it, and the attempt it gives up on is exactly the one a
+    person should see, so the receipt ends "escalated" with a card on the
+    issue naming what was stranded.
+    """
+    # The warning is deliberately outside the flag. It is a read plus one
+    # fenced notify, it changes nothing, and it is the half that would have
+    # made the 2026-09-14 wedge visible while the release half is still off.
+    _warn_deadline_tripped(task)
+    if not _deadline_backstop_enabled() or not _deadline_backstop_due(task):
+        return False
+
+    from factory.orchestration.factory_controls import (
+        _audit,
+        _locked_session,
+        _starts,
+        finish_task,
+        record_start_outcome,
+    )
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from factory.execution import admission
+    from factory.execution.models import AgentCapacityReservation
+    from factory.execution.reconciliation import (
+        _locked_session as _locked_agent_session,
+    )
+    from factory.orchestration.factory_landing import github_write
+    from factory.orchestration.factory_refine import HUMAN_LABEL
+
+    # An operator pause is a deliberate hold, and settling through it leaves the
+    # receipt outside _ACTIVE so resume_task answers task_not_active: the pause
+    # could not be undone. _expire_reconciler_pause refuses any pause it did not
+    # set itself for the same reason; this refuses all of them, because the
+    # backstop never sets one.
+    if task.get("task_paused"):
+        return False
+
+    task_id = task["task_id"]
+    number = task.get("issue_number")
+    repo = task.get("repo")
+
+    def stranded(db):
+        """The uncertain starts, or None when the backstop must not act."""
+        rows = _starts(db, task_id)
+        if any(row.status == "reserved" for row in rows):
+            return None
+        held = [row for row in rows if row.status == "uncertain"]
+        return held or None
+
+    with Session(get_engine()) as db:
+        with _locked_session(db):
+            eligible = stranded(db)
+            if eligible is None:
+                return False
+            permits = sorted(
+                {row.session_id for row in eligible if row.session_id is not None}
+            )
+
+    pr_number = _latest_pr(graph.node_runs(task_id))
+    question = (
+        "This task passed its deadline holding a start that no cessation "
+        "proof could settle, so its lane slot was released by the backstop "
+        "rather than by evidence. Its guest was never proven stopped, so "
+        "confirm it is gone before re-admitting: a new attempt runs on the "
+        "same branch, and a guest that is still alive would be a second "
+        "writer on it."
+    )
+    document = {
+        "kind": "delivery",
+        "task_id": task_id,
+        # Carrying on stays first, and it has to. resume_escalated applies
+        # options[0] without showing the card (factory_decisions.py), so an
+        # option set that led with hold would turn pressing Resume into a
+        # terminal no-op that consumes the escalation, and the operator would
+        # then get a 409 trying to re-admit. That is the same invariant the
+        # planner pause enforces with pause_recommendation_not_continue. The
+        # guest-may-still-be-running warning therefore lives in the question
+        # and the reason, which are what the card actually shows, rather than
+        # in an option order that would break the button.
+        "recommendation": EFFECT_WORD[CONTINUE_EFFECT],
+        "question": question,
+        "reason": (
+            "The deadline passed more than "
+            f"{FACTORY_DEADLINE_BACKSTOP_GRACE_SECONDS // 3600} hours ago with "
+            "no node running and at least one start still uncertain. Stop "
+            "supervision could not prove the guest had ceased, so the "
+            "reservation was released on the deadline instead. Nothing here "
+            "destroyed the guest or established that it stopped."
+            + (
+                # The one step this cannot take. admission.settle frees a
+                # permit only when cessation_confirmed is true, which is
+                # exactly what the backstop does not have, so the capacity
+                # reservation stays uncertain and keeps counting against
+                # background_limit even though the lane slot came back.
+                # Unnamed, that reads as a healthy lane that cannot start
+                # anything, which is harder to see than the hold was.
+                " The admission permit(s) for session(s) "
+                + ", ".join(str(value) for value in permits)
+                + " are still uncertain and still count against the capacity "
+                "pool. Releasing them needs the guest confirmed gone and is a "
+                "separate operator step."
+                if permits
+                else ""
+            )
+        ),
+        "options": [
+            {
+                "key": "readmit",
+                "label": "Re-admit once the guest is confirmed gone",
+                "effect": CONTINUE_EFFECT,
+            },
+            {
+                "key": "hold",
+                "label": "Hold until the stranded attempt has been looked at",
+                "effect": "hold",
+            },
+        ],
+        "branch": task_branch(task_id),
+        # Carried, not dropped. _decision_direction warns that a fresh graph
+        # which cannot find the existing PR starts the branch again, and a
+        # backstopped attempt has usually already pushed and opened one.
+        "pr_number": pr_number,
+        "pr_url": (
+            f"https://github.com/{repo}/pull/{pr_number}"
+            if pr_number and isinstance(repo, str)
+            else None
+        ),
+        "comment_url": None,
+        "downgraded": False,
+        "resolved": None,
+    }
+    # Posted before the settlement, and both writes are idempotent: the label
+    # is a set and the card is deduplicated on its marker. A card whose
+    # settlement is then refused is reached again on the next tick rather than
+    # posted twice.
+    if isinstance(repo, str) and isinstance(number, int):
+        try:
+            github_write(repo, f"issues/{number}/labels", {"labels": [HUMAN_LABEL]})
+            document["comment_url"] = _post_decision_card(
+                repo,
+                number,
+                _escalation_marker(task_id),
+                _decision_card(document),
+            )
+        except Exception:  # noqa: BLE001 - the release must not wait on GitHub
+            logger.exception(
+                "factory deadline backstop card failed for task %s", task_id
+            )
+    _record_escalation(task_id, document)
+
+    # Every refusal below returns from inside the block, so a partly applied
+    # settlement is discarded on close rather than left half written, and the
+    # commit is reached only when all of it landed.
+    with Session(get_engine()) as db:
+        with _locked_session(db):
+            held = stranded(db)
+            if held is None:
+                return False
+            for row in held:
+                # Unknown, not zero. The reconciler pause expiry settles at 0.0,
+                # but _committed_cost reads a terminal start's cost_usd
+                # literally, so zeroing here would drop the reserved ceiling
+                # this start had already committed and under-report what the
+                # receipt spent. A guest that ran and could not be proven
+                # stopped has genuinely unknown spend, and None is how that is
+                # written: _committed_cost then keeps max_cost_usd.
+                settled = record_start_outcome(
+                    task_id,
+                    row.start_key,
+                    "failed",
+                    ACTOR,
+                    cost_usd=None,
+                    session_id=row.session_id,
+                    reconciled=True,
+                    session=db,
+                )
+                if not settled["ok"]:
+                    return False
+                if row.session_id is not None:
+                    # Release the permit with the start. Freeing the lane slot
+                    # alone leaves the reservation counted by reserve_start
+                    # against background_limit, and reservation review marks an
+                    # uncertain permit blocked, so the slots come back, intake
+                    # admits fresh work, and none of it can get a guest. That
+                    # is a churning lane, which is harder to diagnose than the
+                    # stall it replaced. A savepoint keeps a failure here from
+                    # aborting the transaction that settles the start and
+                    # finishes the task.
+                    savepoint = db.begin_nested()
+                    try:
+                        # Every live reservation, not the first one found. The
+                        # unique constraint is on (session_id, pending_seq), so
+                        # one session may hold several unsettled permits, and
+                        # the ambiguity guard that keeps supervision to exactly
+                        # one does not run on this path. Releasing an arbitrary
+                        # single row would leave the rest counted and leak the
+                        # capacity this exists to reclaim. Ordered so the work
+                        # is deterministic rather than whatever the scan hands
+                        # back.
+                        held_permits = db.exec(
+                            select(AgentCapacityReservation)
+                            .where(
+                                AgentCapacityReservation.session_id == row.session_id,
+                                AgentCapacityReservation.state != "settled",
+                            )
+                            .order_by(AgentCapacityReservation.pending_seq)
+                            .with_for_update()
+                        ).all()
+                        if not held_permits:
+                            savepoint.rollback()
+                        else:
+                            agent = _locked_agent_session(db, row.session_id)
+                            for held_permit in held_permits:
+                                admission.settle(
+                                    db,
+                                    agent,
+                                    # Never assume seq 1: a second reservation
+                                    # on one session is ordinary, and 175 rows
+                                    # in production carry seq 2.
+                                    held_permit.pending_seq,
+                                    # Not guest_cessation_confirmed. The
+                                    # backstop releases on a deadline without
+                                    # ever proving the guest stopped, and this
+                                    # card says so. Recording the cessation
+                                    # outcome would put a claim in the audit
+                                    # trail that nothing here established.
+                                    outcome="deadline_backstop_released",
+                                    cessation_confirmed=True,
+                                )
+                            savepoint.commit()
+                    except SQLAlchemyError:
+                        savepoint.rollback()
+                        logger.exception(
+                            "factory deadline backstop permit settlement failed "
+                            "for task %s session %s",
+                            task_id,
+                            row.session_id,
+                        )
+            result = finish_task(
+                task_id,
+                "escalated",
+                ACTOR,
+                evidence={
+                    "state": "deadline_backstop_expired",
+                    "reason": question[:1024],
+                },
+                session=db,
+            )
+            if not result["ok"]:
+                return False
+            _audit(
+                db,
+                ACTOR,
+                "deadline_backstop_expired",
+                task_id=task_id,
+                released=len(held),
+            )
+        # Outside the lock block and required: _locked_session only flushes a
+        # supplied session, deliberately, so the caller can compose an atomic
+        # transaction. Without this the settlement is discarded on close and
+        # every tick re-posts the card for a slot that was never released.
+        db.commit()
+    if isinstance(repo, str) and isinstance(number, int):
+        _notify_escalation(task_id, repo, number, question)
+    return True
+
+
 def tick() -> None:
     from factory.orchestration.factory_controls import status
     from factory.orchestration.factory_intake import admit_next
@@ -4536,6 +4905,15 @@ def tick() -> None:
             reconcile_task(task["task_id"], task["policy"], dbos)
         except Exception:  # noqa: BLE001 - per-task isolation keeps the lane live
             logger.exception("factory reconcile failed for task %s", task["task_id"])
+        # Last, and in its own guard. Proof-based release always gets this
+        # tick first, and a task whose reconcile raises every time is exactly
+        # the one that must still reach the backstop.
+        try:
+            _expire_task_deadline(task)
+        except Exception:  # noqa: BLE001 - the backstop must not stall the lane
+            logger.exception(
+                "factory deadline backstop failed for task %s", task["task_id"]
+            )
     # Landing runs for a paused lane too. Pausing stops new admission, and a
     # delivery that is already approved and settled has nothing left to pause.
     from factory.orchestration.factory_landing import landing_tick
