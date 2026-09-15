@@ -1471,9 +1471,7 @@ def test_deliver_brick_gone_restore_error_does_not_create_blank(monkeypatch):
     with pytest.raises(EmberVMTransportError, match="pending retirement export"):
         asyncio.run(
             client.deliver(
-                transport.EmberSession(
-                    "s1", "t1", None, lineage_id="lineage-1"
-                ),
+                transport.EmberSession("s1", "t1", None, lineage_id="lineage-1"),
                 "cli-1",
                 "hello",
                 model="luna",
@@ -1833,9 +1831,7 @@ def test_deliver_workspace_recovery_restore_error_does_not_fallback(monkeypatch)
     client = transport.EmberVmShimTransport()
     monkeypatch.setattr(client, "create_session", create_session)
     with pytest.raises(EmberVMTransportError, match="restore denied"):
-        asyncio.run(
-            client.deliver(None, "cli-1", "hello", restore_from="lineage-1")
-        )
+        asyncio.run(client.deliver(None, "cli-1", "hello", restore_from="lineage-1"))
 
     assert requests == []
 
