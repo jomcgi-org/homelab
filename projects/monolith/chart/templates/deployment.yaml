@@ -236,6 +236,8 @@ spec:
               value: {{ .Values.swarm.factoryStopSupervisionEnabled | default false | quote }}
             - name: FACTORY_LOST_BEFORE_GUEST_SETTLEMENT_ENABLED
               value: {{ .Values.swarm.factoryLostBeforeGuestSettlementEnabled | default false | quote }}
+            - name: FACTORY_DEADLINE_BACKSTOP_ENABLED
+              value: {{ .Values.swarm.factoryDeadlineBackstopEnabled | default false | quote }}
             - name: FACTORY_MAX_CONCURRENT_TASKS
               value: {{ .Values.swarm.factoryMaxConcurrentTasks | default 1 | quote }}
             - name: FACTORY_BACKGROUND_RESERVE

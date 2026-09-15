@@ -58,6 +58,12 @@ _watchdog_clock = time.monotonic
 
 FACTORY_RECOVERY_ABANDON_SECONDS = 900
 FACTORY_RECONCILER_PAUSE_TTL_SECONDS = 7200
+# How long past its deadline a task may sit holding an unresolved start before
+# the backstop releases the slot. Matched to the reconciler pause TTL above,
+# which is the other force-settle on this lane, and long enough that every
+# proof-based release has had hundreds of ticks to settle the attempt on
+# evidence first.
+FACTORY_DEADLINE_BACKSTOP_GRACE_SECONDS = 7200
 # Process start, for the settling window stall detection waits out. Monotonic
 # because it is only ever compared against itself.
 _STARTED_AT = time.monotonic()
@@ -4503,6 +4509,232 @@ def _expire_reconciler_pause(task_id: str) -> bool:
     return expired
 
 
+def _deadline_backstop_enabled() -> bool:
+    return (
+        os.environ.get("FACTORY_DEADLINE_BACKSTOP_ENABLED", "false").lower() == "true"
+    )
+
+
+def _deadline_backstop_due(task: dict) -> bool:
+    """Whether this task is far enough past its deadline for the backstop."""
+    stamp = task.get("deadline_at")
+    if not isinstance(stamp, str):
+        return False
+    try:
+        deadline = _aware(datetime.fromisoformat(stamp))
+    except ValueError:
+        return False
+    grace = timedelta(seconds=FACTORY_DEADLINE_BACKSTOP_GRACE_SECONDS)
+    return datetime.now(timezone.utc) - deadline >= grace
+
+
+def _warn_deadline_tripped(task: dict) -> None:
+    """One warn the moment a task holds a slot past its deadline.
+
+    limits_tripped was computed and rendered and nothing read it, so a lane
+    that had silently stopped admitting looked exactly like a lane with
+    nothing to do. This is the reading promoted to a signal: it fires once per
+    task, as soon as the deadline passes with an unresolved start and nothing
+    running, which is hours before the backstop gives up on the attempt. The
+    window between the two is the chance to settle it on evidence instead.
+    """
+    if not (task.get("limits") or {}).get("deadline_expired"):
+        return
+    from factory.orchestration.factory_controls import _locked_session, _starts
+
+    task_id = task["task_id"]
+    with Session(get_engine()) as db:
+        with _locked_session(db):
+            rows = _starts(db, task_id)
+            if any(row.status == "reserved" for row in rows):
+                return
+            held = sum(row.status == "uncertain" for row in rows)
+    if not held:
+        return
+    if not _audit_once(
+        task_id,
+        f"factory-deadline-tripped:{task_id}",
+        "deadline_tripped_notified",
+        {"unresolved_starts": held},
+    ):
+        return
+    repo, number = task.get("repo"), task.get("issue_number")
+    where = f"{repo}#{number}" if repo and isinstance(number, int) else task_id
+    try:
+        from agent.api import notify
+
+        asyncio.run(
+            notify(
+                f"Factory task {where} passed its deadline holding {held} "
+                "unresolved start(s) with nothing running. Stop supervision "
+                "has no cessation proof for it; the lane slot is released "
+                f"in {FACTORY_DEADLINE_BACKSTOP_GRACE_SECONDS // 3600} hours "
+                "if none arrives.",
+                level="warn",
+            )
+        )
+    except Exception:  # noqa: BLE001 - notification is best effort
+        logger.warning("factory deadline notification failed", exc_info=True)
+
+
+def _expire_task_deadline(task: dict) -> bool:
+    """Escalate one task past its deadline whose starts no proof can settle.
+
+    The bound on a deliberately fail-closed hold. Stop supervision releases a
+    bound guest only on cessation evidence, and finish_task refuses every
+    terminal outcome while a start is unresolved, so an attempt whose evidence
+    never arrives leaves the task active with nothing running on it and its
+    lane slot held. That is what took the delivery lane to four of four on
+    2026-09-14 with no task progressing and the deadline, which was reported
+    but never acted on, doing nothing about it.
+
+    Three conditions, all required. The deadline passed more than
+    FACTORY_DEADLINE_BACKSTOP_GRACE_SECONDS ago, so every proof-based release
+    has had hundreds of ticks to settle the attempt properly. No start is
+    still "reserved", so nothing is in flight for this to interrupt: the
+    backstop never races live work, it only collects what nothing will come
+    back for. And at least one start is "uncertain", so there is something to
+    release.
+
+    It escalates rather than cancelling. A slot that silently disappears takes
+    the question with it, and the attempt it gives up on is exactly the one a
+    person should see, so the receipt ends "escalated" with a card on the
+    issue naming what was stranded.
+    """
+    if not _deadline_backstop_enabled():
+        return False
+    if not _deadline_backstop_due(task):
+        _warn_deadline_tripped(task)
+        return False
+
+    from factory.orchestration.factory_controls import (
+        _audit,
+        _locked_session,
+        _starts,
+        finish_task,
+        record_start_outcome,
+    )
+    from factory.orchestration.factory_landing import github_write
+    from factory.orchestration.factory_refine import HUMAN_LABEL
+
+    task_id = task["task_id"]
+    number = task.get("issue_number")
+    repo = task.get("repo")
+
+    def stranded(db):
+        """The uncertain starts, or None when the backstop must not act."""
+        rows = _starts(db, task_id)
+        if any(row.status == "reserved" for row in rows):
+            return None
+        held = [row for row in rows if row.status == "uncertain"]
+        return held or None
+
+    with Session(get_engine()) as db:
+        with _locked_session(db):
+            if stranded(db) is None:
+                return False
+
+    question = (
+        "This task passed its deadline holding a start that no cessation "
+        "proof could settle, so its lane slot was released by the backstop "
+        "rather than by evidence. Should the work be re-admitted from its "
+        "branch, or held for someone to look at the stranded attempt first?"
+    )
+    document = {
+        "kind": "delivery",
+        "task_id": task_id,
+        "recommendation": EFFECT_WORD[CONTINUE_EFFECT],
+        "question": question,
+        "reason": (
+            "The deadline passed more than "
+            f"{FACTORY_DEADLINE_BACKSTOP_GRACE_SECONDS // 3600} hours ago with "
+            "no node running and at least one start still uncertain. Stop "
+            "supervision could not prove the guest had ceased, so the "
+            "reservation was released on the deadline instead."
+        ),
+        "options": [
+            {
+                "key": "readmit",
+                "label": "Re-admit the task and carry on from its branch",
+                "effect": CONTINUE_EFFECT,
+            },
+            {
+                "key": "hold",
+                "label": "Hold until the stranded attempt has been looked at",
+                "effect": "hold",
+            },
+        ],
+        "branch": task_branch(task_id),
+        "pr_number": None,
+        "pr_url": None,
+        "comment_url": None,
+        "downgraded": False,
+        "resolved": None,
+    }
+    # Posted before the settlement, and both writes are idempotent: the label
+    # is a set and the card is deduplicated on its marker. A card whose
+    # settlement is then refused is reached again on the next tick rather than
+    # posted twice.
+    if isinstance(repo, str) and isinstance(number, int):
+        try:
+            github_write(repo, f"issues/{number}/labels", {"labels": [HUMAN_LABEL]})
+            document["comment_url"] = _post_decision_card(
+                repo,
+                number,
+                _escalation_marker(task_id),
+                _decision_card(document),
+            )
+        except Exception:  # noqa: BLE001 - the release must not wait on GitHub
+            logger.exception(
+                "factory deadline backstop card failed for task %s", task_id
+            )
+    _record_escalation(task_id, document)
+
+    with Session(get_engine()) as db:
+        with _locked_session(db):
+            held = stranded(db)
+            if held is None:
+                return False
+            for row in held:
+                # Zero, matching the reconciler pause expiry: this path has no
+                # measured spend to report, and the committed cost the start
+                # already carries stays on the receipt either way.
+                settled = record_start_outcome(
+                    task_id,
+                    row.start_key,
+                    "failed",
+                    ACTOR,
+                    cost_usd=0.0,
+                    session_id=row.session_id,
+                    reconciled=True,
+                    session=db,
+                )
+                if not settled["ok"]:
+                    return False
+            result = finish_task(
+                task_id,
+                "escalated",
+                ACTOR,
+                evidence={
+                    "state": "deadline_backstop_expired",
+                    "reason": question[:1024],
+                },
+                session=db,
+            )
+            if not result["ok"]:
+                return False
+            _audit(
+                db,
+                ACTOR,
+                "deadline_backstop_expired",
+                task_id=task_id,
+                released=len(held),
+            )
+    if isinstance(repo, str) and isinstance(number, int):
+        _notify_escalation(task_id, repo, number, question)
+    return True
+
+
 def tick() -> None:
     from factory.orchestration.factory_controls import status
     from factory.orchestration.factory_intake import admit_next
@@ -4536,6 +4768,15 @@ def tick() -> None:
             reconcile_task(task["task_id"], task["policy"], dbos)
         except Exception:  # noqa: BLE001 - per-task isolation keeps the lane live
             logger.exception("factory reconcile failed for task %s", task["task_id"])
+        # Last, and in its own guard. Proof-based release always gets this
+        # tick first, and a task whose reconcile raises every time is exactly
+        # the one that must still reach the backstop.
+        try:
+            _expire_task_deadline(task)
+        except Exception:  # noqa: BLE001 - the backstop must not stall the lane
+            logger.exception(
+                "factory deadline backstop failed for task %s", task["task_id"]
+            )
     # Landing runs for a paused lane too. Pausing stops new admission, and a
     # delivery that is already approved and settled has nothing left to pause.
     from factory.orchestration.factory_landing import landing_tick
