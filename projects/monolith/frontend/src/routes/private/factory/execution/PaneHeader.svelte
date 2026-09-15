@@ -26,6 +26,9 @@
     onBackToRun = () => {},
     onChangeView = () => {},
     onDestroy = () => {},
+    onStop = () => {},
+    canStop = false,
+    stopBusy = false,
     onCancel = () => {},
     onVoice = () => {},
   } = $props();
@@ -33,6 +36,7 @@
   let menuOpen = $state(false);
   let destroyArmed = $state(false);
   let cancelArmed = $state(false);
+  let stopArmed = $state(false);
   let copied = $state(false);
   let activeMenuItem = $state("copy");
   let menuEl = $state(null);
@@ -44,6 +48,7 @@
     menuOpen = false;
     destroyArmed = false;
     cancelArmed = false;
+    stopArmed = false;
     if (returnFocus) menuButtonEl?.focus({ preventScroll: true });
   }
 
@@ -116,6 +121,7 @@
   async function copyId() {
     destroyArmed = false;
     cancelArmed = false;
+    stopArmed = false;
     copied = false;
     clearTimeout(copiedTimer);
     if (!navigator.clipboard?.writeText) return;
@@ -130,6 +136,7 @@
 
   function confirmDestroy() {
     cancelArmed = false;
+    stopArmed = false;
     if (!destroyArmed) {
       destroyArmed = true;
       return;
@@ -140,6 +147,7 @@
 
   function confirmCancel() {
     destroyArmed = false;
+    stopArmed = false;
     if (!cancelArmed) {
       cancelArmed = true;
       return;
@@ -148,9 +156,21 @@
     closeMenu(false);
   }
 
+  function confirmStop() {
+    destroyArmed = false;
+    cancelArmed = false;
+    if (!stopArmed) {
+      stopArmed = true;
+      return;
+    }
+    onStop();
+    closeMenu(false);
+  }
+
   function chooseAlternateView() {
     destroyArmed = false;
     cancelArmed = false;
+    stopArmed = false;
     onChangeView(
       sessionView === SESSION_VIEW_CONVERSATION
         ? SESSION_VIEW_WALKTHROUGH
@@ -162,6 +182,7 @@
   function backToRun() {
     destroyArmed = false;
     cancelArmed = false;
+    stopArmed = false;
     onBackToRun();
     closeMenu();
   }
@@ -169,6 +190,7 @@
   function openVoice() {
     destroyArmed = false;
     cancelArmed = false;
+    stopArmed = false;
     onVoice();
     closeMenu(false);
   }
@@ -283,6 +305,20 @@
                 {String(reviewedCommitSha || "").slice(0, 8)}</a
               >{/if}
           {:else}
+            <button
+              type="button"
+              role="menuitem"
+              data-menu-item="stop"
+              disabled={!canStop || stopBusy}
+              tabindex={activeMenuItem === "stop" ? 0 : -1}
+              onfocus={() => (activeMenuItem = "stop")}
+              onclick={confirmStop}
+              >{stopBusy
+                ? P.labels.stoppingTurnMenu
+                : stopArmed
+                  ? P.labels.stopTurnConfirmMenu
+                  : P.labels.stopTurnMenu}</button
+            >
             <button
               class="mobile-view-item"
               type="button"

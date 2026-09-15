@@ -967,6 +967,8 @@ async def _execute_pending_message(session_id: int) -> None:
                 "on_create": persist_callback,
                 "progress_token": session_row.progress_token,
                 "agent_session_id": session_id,
+                "turn_seq": claimed_seq,
+                "claim_owner": claim_owner,
                 "dispatch_count": row.dispatch_count,
                 "invocation_record": invocation_record,
             }

@@ -101,6 +101,7 @@ LIST_SESSIONS_READ_TIMEOUT = 5.0
 # must never inherit the turn-sized read timeout either: three sessions behind
 # a wedged control plane must not inherit the long invoke budget.
 DESTROY_SESSION_READ_TIMEOUT = 30.0
+INTERRUPT_SESSION_READ_TIMEOUT = 30.0
 
 # A composer prewarm only needs to hand the request to the control plane. The
 # relight continues there if this client gives up before the guest answers.
@@ -111,6 +112,20 @@ PREWARM_SESSION_TIMEOUT = 2.0
 # provisioning or other control operations into twelve-hour waits.
 INVOKE_READ_TIMEOUT = 43500.0
 CREATE_SESSION_READ_TIMEOUT = 1800.0
+
+
+def exact_dispatch_id(
+    agent_session_id: int,
+    guest_id: str,
+    turn_seq: int,
+    claim_owner: str,
+    dispatch_count: int,
+) -> str:
+    """Opaque identity shared by invoke, stop validation, and every relay hop."""
+    fields = [agent_session_id, guest_id, turn_seq, claim_owner, dispatch_count]
+    return hashlib.sha256(
+        json.dumps(fields, separators=(",", ":"), ensure_ascii=True).encode()
+    ).hexdigest()
 
 
 def _retryable_from_response(exc: httpx.HTTPStatusError) -> bool:
@@ -295,6 +310,12 @@ class EmberBrickGone(EmberVMTransportError):
         self.lineage_id = lineage_id
         self.session_state = session_state
         self.node_id = node_id
+
+
+class EmberDispatchStale(EmberVMTransportError):
+    """The requested dispatch completed or was replaced before signaling."""
+
+    pass
 
 
 def _brick_gone_event(
@@ -685,6 +706,10 @@ class EmberSession(NamedTuple):
 
 
 class ShimTransport(Protocol):
+    async def interrupt_session(
+        self, ember_session_id: str, ember_session_token: str, dispatch_id: str
+    ) -> dict: ...
+
     async def deliver(
         self,
         ember: EmberSession | None,
@@ -700,6 +725,8 @@ class ShimTransport(Protocol):
         reasoning: bool = False,
         artifact_path: str | None = None,
         agent_session_id: int | None = None,
+        turn_seq: int | None = None,
+        claim_owner: str | None = None,
         dispatch_count: int = 0,
         admission_check: Callable[[], Awaitable[None]] | None = None,
         receipt_claim_owner: str | None = None,
@@ -1004,6 +1031,42 @@ class EmberVmShimTransport:
             )
             raise EmberVMTransportError(str(exc)) from exc
 
+    async def interrupt_session(
+        self, ember_session_id: str, ember_session_token: str, dispatch_id: str
+    ) -> dict:
+        """Request an exact active turn interrupt through the session capability.
+
+        A 200 response acknowledges signaling only. The caller must still
+        observe the original turn's durable terminal result before releasing
+        capacity or permitting a successor.
+        """
+        if not EMBERVM_URL:
+            raise EmberVMTransportError("EMBERVM_URL is not configured")
+        url = f"{EMBERVM_URL}/v1/sessions/{ember_session_id}/interrupt"
+        headers = {"Authorization": f"Bearer {ember_session_token}"}
+        timeout = httpx.Timeout(
+            INTERRUPT_SESSION_READ_TIMEOUT, connect=SUBMIT_CONNECT_TIMEOUT
+        )
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(
+                    url, headers=headers, json={"dispatch_id": dispatch_id}
+                )
+                response.raise_for_status()
+                return response.json()
+        except ValueError as exc:
+            raise EmberVMTransportError(
+                "session interrupt returned invalid JSON"
+            ) from exc
+        except httpx.TimeoutException as exc:
+            raise EmberVMTimeout(str(exc)) from exc
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in (409, 410):
+                raise EmberDispatchStale(_status_error_detail(exc)) from exc
+            raise EmberVMTransportError(_status_error_detail(exc)) from exc
+        except httpx.TransportError as exc:
+            raise EmberVMTransportError(str(exc)) from exc
+
     async def get_session(self, ember_session_id: str) -> dict:
         """Read one control plane session by its EmberVM session id (management auth).
 
@@ -1118,6 +1181,8 @@ class EmberVmShimTransport:
         reasoning: bool = False,
         artifact_path: str | None = None,
         agent_session_id: int | None = None,
+        turn_seq: int | None = None,
+        claim_owner: str | None = None,
         dispatch_count: int = 0,
         admission_check: Callable[[], Awaitable[None]] | None = None,
         receipt_claim_owner: str | None = None,
@@ -1145,6 +1210,8 @@ class EmberVmShimTransport:
                     reasoning=reasoning,
                     artifact_path=artifact_path,
                     agent_session_id=agent_session_id,
+                    turn_seq=turn_seq,
+                    claim_owner=claim_owner,
                     dispatch_count=dispatch_count,
                     receipt_claim_owner=receipt_claim_owner,
                 )
@@ -1180,6 +1247,8 @@ class EmberVmShimTransport:
         reasoning: bool = False,
         artifact_path: str | None = None,
         agent_session_id: int | None = None,
+        turn_seq: int | None = None,
+        claim_owner: str | None = None,
         dispatch_count: int = 0,
         receipt_claim_owner: str | None = None,
     ) -> tuple[Turn, EmberSession]:
@@ -1273,6 +1342,21 @@ class EmberVmShimTransport:
                 "session_id": current_cli_session_id,
                 "thinking": "high" if reasoning else "off",
             }
+            dispatch_id = None
+            if (
+                agent_session_id is not None
+                and turn_seq is not None
+                and claim_owner
+                and dispatch_count > 0
+            ):
+                dispatch_id = exact_dispatch_id(
+                    agent_session_id,
+                    current.session_id,
+                    turn_seq,
+                    claim_owner,
+                    dispatch_count,
+                )
+                payload["dispatch_id"] = dispatch_id
             if model is not None:
                 payload["model"] = model
             if repo is not None:
@@ -1290,6 +1374,8 @@ class EmberVmShimTransport:
                 "Authorization": f"Bearer {current.session_token}",
                 "X-Ember-Guest-Path": "/shim/turn",
             }
+            if dispatch_id is not None:
+                headers["X-Ember-Dispatch-Id"] = dispatch_id
             try:
                 await _check_delivery_admission()
                 receipt = None

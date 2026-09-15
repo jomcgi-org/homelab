@@ -32,10 +32,11 @@
         BuildBase
       )a ++
         # R2 sessions: the remaining bank/relight lifecycle verbs bank_relight.tla
-        # does not model as distinct actions. SessionAssign (the warm session claim)
-        # and EvictSnapshot (the snapshot-only GC verb) are out of the protocol-2
-        # generation-pairing subset; Bank and Relight moved to `modeled` above.
-        ~w(SessionAssign EvictSnapshot)a ++
+        # does not model as distinct actions. SessionAssign (the warm session claim),
+        # SessionInterrupt (an exact active-turn signal), and EvictSnapshot (the
+        # snapshot-only GC verb) are out of the protocol-2 generation-pairing
+        # subset; Bank and Relight moved to `modeled` above.
+        ~w(SessionAssign SessionInterrupt EvictSnapshot)a ++
         # R3 serving: long-lived HTTP-over-tap VMs, out of scope.
         ~w(StartServing StopServing)a ++
         # R4 explicit data deletion is outside stateful.tla's instance lifecycle.

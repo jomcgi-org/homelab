@@ -312,6 +312,8 @@ type fakeTransport struct {
 	waitReadyStarted  chan string
 	waitReadyContinue <-chan struct{}
 	roundTripErr      error
+	interruptErr      error
+	interruptBodies   []string
 	// hydrate capture: hydrates counts the calls, hydrateBytes records the last
 	// archive delivered so a zip test can assert the exact bytes were hydrated, and
 	// hydrateErr injects a hydrate failure (a bad archive) to fail the build.
@@ -397,9 +399,26 @@ func (f *fakeTransport) RoundTrip(ctx context.Context, udsPath string, req *http
 	f.mu.Lock()
 	f.roundTrips++
 	rtErr := f.roundTripErr
+	interruptErr := f.interruptErr
 	block := f.blockRoundTrip
 	stateSource := f.stateSource
 	f.mu.Unlock()
+	if req.URL.Path == interruptPath {
+		body, _ := io.ReadAll(req.Body)
+		f.mu.Lock()
+		f.interruptBodies = append(f.interruptBodies, string(body))
+		f.mu.Unlock()
+		if interruptErr != nil {
+			return nil, interruptErr
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(bytes.NewReader([]byte(
+				`{"terminal_reason":"user_interrupt","killed":false,"timeout":false}`,
+			))),
+		}, nil
+	}
 
 	// Hold the call "in flight" if a test gated it, so a concurrent SessionAssign can
 	// prove the per-vm serialization guard rejects it.
@@ -438,6 +457,12 @@ func (f *fakeTransport) roundTripCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.roundTrips
+}
+
+func (f *fakeTransport) interruptCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.interruptBodies)
 }
 
 // newTestServer wires the Server behind a real in-process gRPC dial (bufconn),
@@ -2611,6 +2636,131 @@ func TestSessionInFlightGuard(t *testing.T) {
 	close(gate) // release the first
 	if err := <-firstDone; err != nil {
 		t.Fatalf("first SessionAssign: %v", err)
+	}
+}
+
+func TestSessionInterruptExactDispatchAndLaterReuse(t *testing.T) {
+	drv := &fakeDriver{}
+	firstGate := make(chan struct{})
+	tr := &fakeTransport{blockRoundTrip: firstGate}
+	client, srv := newSessionTestServer(t, drv, tr, 8)
+	vmID := primeSessionVM(t, srv, drv, "s-interrupt", "echo", "sref-interrupt", "")
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := client.SessionAssign(context.Background(), &nodev1.SessionAssignRequest{
+			VmId: vmID, SessionId: "s-interrupt", DispatchId: "dispatch-1",
+			Request: &nodev1.GuestRequest{Body: []byte("first")}, TimeoutMs: 5000,
+		})
+		firstDone <- err
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for tr.roundTripCount() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("first dispatch never reached the guest")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	interrupt := &nodev1.SessionInterruptRequest{
+		VmId: vmID, SessionId: "s-interrupt", DispatchId: "dispatch-1", TimeoutMs: 30000,
+	}
+	for i := 0; i < 2; i++ {
+		response, err := client.SessionInterrupt(context.Background(), interrupt)
+		if err != nil {
+			t.Fatalf("SessionInterrupt %d: %v", i, err)
+		}
+		if response.GetTerminalReason() != "user_interrupt" || response.GetTimeout() {
+			t.Fatalf("SessionInterrupt %d response = %+v", i, response)
+		}
+	}
+	_, err := client.SessionAssign(context.Background(), &nodev1.SessionAssignRequest{
+		VmId: vmID, SessionId: "s-interrupt", DispatchId: "dispatch-2",
+		Request: &nodev1.GuestRequest{Body: []byte("too early")}, TimeoutMs: 5000,
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("successor before terminal assign code = %v, want FailedPrecondition", status.Code(err))
+	}
+
+	close(firstGate)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first SessionAssign: %v", err)
+	}
+
+	secondGate := make(chan struct{})
+	tr.mu.Lock()
+	tr.blockRoundTrip = secondGate
+	tr.mu.Unlock()
+	secondDone := make(chan error, 1)
+	go func() {
+		_, err := client.SessionAssign(context.Background(), &nodev1.SessionAssignRequest{
+			VmId: vmID, SessionId: "s-interrupt", DispatchId: "dispatch-2",
+			Request: &nodev1.GuestRequest{Body: []byte("second")}, TimeoutMs: 5000,
+		})
+		secondDone <- err
+	}()
+	deadline = time.Now().Add(2 * time.Second)
+	for tr.roundTripCount() < 4 {
+		if time.Now().After(deadline) {
+			t.Fatal("successor dispatch never reached the guest")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	before := tr.interruptCount()
+	for _, stale := range []*nodev1.SessionInterruptRequest{
+		{VmId: vmID, SessionId: "s-interrupt", DispatchId: "dispatch-1", TimeoutMs: 30000},
+		{VmId: vmID, SessionId: "s-other", DispatchId: "dispatch-2", TimeoutMs: 30000},
+	} {
+		_, err := client.SessionInterrupt(context.Background(), stale)
+		if status.Code(err) != codes.FailedPrecondition {
+			t.Fatalf("stale/cross-session interrupt code = %v, want FailedPrecondition", status.Code(err))
+		}
+	}
+	if tr.interruptCount() != before {
+		t.Fatal("stale interrupt reached the successor guest")
+	}
+	close(secondGate)
+	if err := <-secondDone; err != nil {
+		t.Fatalf("successor SessionAssign: %v", err)
+	}
+	if drv.LiveCount() != 1 {
+		t.Fatalf("interrupted session was not preserved: live=%d", drv.LiveCount())
+	}
+}
+
+func TestSessionInterruptTimeoutDoesNotReleaseDispatch(t *testing.T) {
+	drv := &fakeDriver{}
+	gate := make(chan struct{})
+	tr := &fakeTransport{blockRoundTrip: gate, interruptErr: context.DeadlineExceeded}
+	client, srv := newSessionTestServer(t, drv, tr, 8)
+	vmID := primeSessionVM(t, srv, drv, "s-timeout", "echo", "sref-timeout", "")
+	done := make(chan error, 1)
+	go func() {
+		_, err := client.SessionAssign(context.Background(), &nodev1.SessionAssignRequest{
+			VmId: vmID, SessionId: "s-timeout", DispatchId: "dispatch-timeout",
+			Request: &nodev1.GuestRequest{Body: []byte("slow")}, TimeoutMs: 5000,
+		})
+		done <- err
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for tr.roundTripCount() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("dispatch never reached the guest")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	_, err := client.SessionInterrupt(context.Background(), &nodev1.SessionInterruptRequest{
+		VmId: vmID, SessionId: "s-timeout", DispatchId: "dispatch-timeout", TimeoutMs: 30000,
+	})
+	if status.Code(err) != codes.DeadlineExceeded {
+		t.Fatalf("interrupt code = %v, want DeadlineExceeded", status.Code(err))
+	}
+	if drv.LiveCount() != 1 {
+		t.Fatal("interrupt timeout released the session VM")
+	}
+	close(gate)
+	if err := <-done; err != nil {
+		t.Fatalf("original SessionAssign after interrupt timeout: %v", err)
 	}
 }
 

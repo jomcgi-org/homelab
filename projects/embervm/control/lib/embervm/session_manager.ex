@@ -286,6 +286,12 @@ defmodule Embervm.SessionManager do
     GenServer.call(server, {:route_invoke, session_id, req}, :infinity)
   end
 
+  @doc "Interrupt one exact active session dispatch without relighting or destroying it."
+  @spec interrupt(GenServer.server(), String.t(), String.t()) :: {:ok, map()} | {:error, term()}
+  def interrupt(server \\ __MODULE__, session_id, dispatch_id) do
+    GenServer.call(server, {:route_interrupt, session_id, dispatch_id}, :infinity)
+  end
+
   @doc "Records brick loss and moves a session to its safest durable resting state."
   @spec brick_gone(String.t()) :: {:ok, atom()} | {:error, term()}
   def brick_gone(session_id), do: brick_gone(__MODULE__, session_id, %{})
@@ -844,6 +850,20 @@ defmodule Embervm.SessionManager do
 
       {:error, _reason} = error ->
         {:reply, error, state}
+    end
+  end
+
+  def handle_call({:route_interrupt, session_id, dispatch_id}, from, state) do
+    case resolve_interrupt_route(state, session_id) do
+      {:live, pid} ->
+        _ = spawn_interrupt_forward(pid, dispatch_id, from)
+        {:noreply, state}
+
+      {:error, _reason} = error ->
+        {:reply, error, state}
+
+      _ ->
+        {:reply, {:error, :not_active}, state}
     end
   end
 
@@ -1948,6 +1968,41 @@ defmodule Embervm.SessionManager do
 
       GenServer.reply(from, reply)
     end)
+  end
+
+  defp spawn_interrupt_forward(pid, dispatch_id, from) do
+    spawn(fn ->
+      reply =
+        try do
+          Embervm.Session.interrupt(pid, dispatch_id)
+        catch
+          :exit, reason -> {:error, {:session_down, reason}}
+        end
+
+      GenServer.reply(from, reply)
+    end)
+  end
+
+  # Interrupt is deliberately lookup-only. Invoke routing can expire, relight,
+  # or park a session, but a stop acknowledgment must never become a second
+  # lifecycle or cleanup owner.
+  defp resolve_interrupt_route(state, session_id) do
+    case SessionStore.get(state.session_store, session_id) do
+      {:ok, %{state: :running}} ->
+        case Registry.lookup(state.registry, session_id) do
+          [{pid, _}] -> {:live, pid}
+          [] -> {:error, :not_active}
+        end
+
+      {:ok, %{state: session_state}} when session_state in [:failed, :destroyed, :expired] ->
+        {:error, {:gone, terminal_reason(state, session_id, session_state)}}
+
+      {:ok, _session} ->
+        {:error, :not_active}
+
+      :error ->
+        {:error, :not_found}
+    end
   end
 
   # -- bank (Task 7) ---------------------------------------------------------
