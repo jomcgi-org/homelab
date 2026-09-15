@@ -2,13 +2,17 @@
 
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
-def bdd_test(name, srcs, playwright = False, future = False, size = "large", timeout = "moderate", **kwargs):
+# No `playwright` knob any more (issue #4219). It used to add the frontend_dist
+# data dep plus `playwright` and `manual` tags, and `manual` is what kept the
+# browser specs out of wildcard expansion: they never ran anywhere, so the
+# tests themselves were deleted rather than left implying coverage. Re-adding a
+# browser lane means solving hermetic Chromium for the Bazel sandbox first.
+def bdd_test(name, srcs, future = False, size = "large", timeout = "moderate", **kwargs):
     """BDD test target with shared testing fixtures and data deps.
 
     Args:
         name: Target name.
         srcs: Test source files (include the domain's tests/conftest.py).
-        playwright: If True, adds frontend_dist data dep and playwright tag.
         future: If True, tags the target `future`: an executable spec for a
             feature that is not built yet. The gating `Test` CI action excludes
             `-future`, so a red future spec can merge; the non-required
@@ -29,11 +33,6 @@ def bdd_test(name, srcs, playwright = False, future = False, size = "large", tim
         # Not `manual`: the future lane selects these via --test_tag_filters=future
         # over //..., and `manual` would drop them from wildcard expansion.
         tags.append("future")
-
-    if playwright:
-        data.append("//projects/monolith:frontend_dist")
-        tags.append("playwright")
-        tags.append("manual")  # playwright dep not yet in pip lockfile
 
     # Register the shared testing plugin via env var instead of conftest.py.
     # pytest rootdir in Bazel is _main (workspace root), so a conftest.py

@@ -195,6 +195,13 @@ class TestBDDCoverage:
         )
 
     def test_all_pages_covered(self):
+        # Currently vacuous, in two independent ways, and issue #4219 did not
+        # change either: frontend/src/routes is not in this target's runfiles,
+        # so _discover_pages() sees nothing, and after #4219 deleted the
+        # unexecutable browser suites no test carries @covers_page at all.
+        # Left in place rather than deleted so a future browser lane has a gate
+        # to switch on; making it real means adding the routes tree as data,
+        # which fails today on 61 uncovered pages.
         discovered = _discover_pages() - _PAGE_EXCLUSIONS
         _, covered, _ = _collect_markers_from_tests()
         uncovered = discovered - covered
