@@ -678,9 +678,23 @@ def _task(*, expired=True, past_seconds=7200):
     }
 
 
-def _backstop_harness(monkeypatch, *, starts, task=None, enabled=True, finish_ok=True):
+def _backstop_harness(
+    monkeypatch,
+    *,
+    starts,
+    task=None,
+    enabled=True,
+    finish_ok=True,
+    permit_seq=1,
+    permit_missing=False,
+    permit_error=False,
+):
     import contextlib
+    from types import SimpleNamespace
 
+    from sqlalchemy.exc import OperationalError
+
+    from factory.execution import admission, reconciliation
     from factory.orchestration import factory_conductor as conductor
     from factory.orchestration import factory_controls as controls
 
@@ -688,12 +702,26 @@ def _backstop_harness(monkeypatch, *, starts, task=None, enabled=True, finish_ok
     outcomes = []
     escalations = []
     notifies = []
+    settled_permits = []
 
     @contextlib.contextmanager
     def locked(*_args, **_kwargs):
         yield ("db", "control")
 
     commits = []
+
+    class _Savepoint:
+        def commit(self):
+            pass
+
+        def rollback(self):
+            pass
+
+    class _Result:
+        def first(self):
+            if permit_missing:
+                return None
+            return SimpleNamespace(pending_seq=permit_seq)
 
     class _Db:
         def __enter__(self):
@@ -704,6 +732,24 @@ def _backstop_harness(monkeypatch, *, starts, task=None, enabled=True, finish_ok
 
         def commit(self):
             commits.append(True)
+
+        def begin_nested(self):
+            return _Savepoint()
+
+        def exec(self, _statement):
+            return _Result()
+
+    def settle_permit(_db, _agent, seq, *, outcome, cessation_confirmed):
+        if permit_error:
+            raise OperationalError("settle", {}, Exception("permit unavailable"))
+        settled_permits.append({"seq": seq, "outcome": outcome})
+
+    monkeypatch.setattr(admission, "settle", settle_permit)
+    monkeypatch.setattr(
+        reconciliation,
+        "_locked_session",
+        lambda _db, session_id: {"session_id": session_id},
+    )
 
     monkeypatch.setenv(
         "FACTORY_DEADLINE_BACKSTOP_ENABLED", "true" if enabled else "false"
@@ -740,12 +786,22 @@ def _backstop_harness(monkeypatch, *, starts, task=None, enabled=True, finish_ok
         "factory.orchestration.factory_landing.github_write", lambda *a, **kw: {}
     )
     released = conductor._expire_task_deadline(task or _task())
-    return released, finishes, outcomes, escalations, notifies, commits
+    return (
+        released,
+        finishes,
+        outcomes,
+        escalations,
+        notifies,
+        commits,
+        settled_permits,
+    )
 
 
 def test_the_backstop_releases_a_stranded_start_and_escalates(monkeypatch):
-    released, finishes, outcomes, escalations, notifies, commits = _backstop_harness(
-        monkeypatch, starts=[_Start("uncertain"), _Start("failed", start_key="s-0")]
+    released, finishes, outcomes, escalations, notifies, commits, _p = (
+        _backstop_harness(
+            monkeypatch, starts=[_Start("uncertain"), _Start("failed", start_key="s-0")]
+        )
     )
 
     assert released is True
@@ -770,7 +826,7 @@ def test_the_backstop_releases_a_stranded_start_and_escalates(monkeypatch):
 
 def test_the_backstop_never_interrupts_a_reserved_start(monkeypatch):
     """A reserved start is live work. The backstop only collects the dead."""
-    released, finishes, outcomes, escalations, _n, commits = _backstop_harness(
+    released, finishes, outcomes, escalations, _n, commits, _p = _backstop_harness(
         monkeypatch, starts=[_Start("reserved"), _Start("uncertain")]
     )
 
@@ -781,7 +837,7 @@ def test_the_backstop_never_interrupts_a_reserved_start(monkeypatch):
 
 
 def test_the_backstop_does_nothing_with_no_uncertain_start(monkeypatch):
-    released, finishes, outcomes, _e, _n, commits = _backstop_harness(
+    released, finishes, outcomes, _e, _n, commits, _p = _backstop_harness(
         monkeypatch, starts=[_Start("succeeded"), _Start("failed")]
     )
 
@@ -795,7 +851,7 @@ def test_the_backstop_waits_out_the_grace_after_the_deadline(monkeypatch):
     from factory.orchestration import factory_conductor as conductor
 
     monkeypatch.setattr(conductor, "_deadline_backstop_due", lambda task: False)
-    released, finishes, outcomes, _e, _n, commits = _backstop_harness(
+    released, finishes, outcomes, _e, _n, commits, _p = _backstop_harness(
         monkeypatch, starts=[_Start("uncertain")]
     )
 
@@ -805,7 +861,7 @@ def test_the_backstop_waits_out_the_grace_after_the_deadline(monkeypatch):
 
 
 def test_the_backstop_is_off_by_default(monkeypatch):
-    released, finishes, outcomes, _e, _n, commits = _backstop_harness(
+    released, finishes, outcomes, _e, _n, commits, _p = _backstop_harness(
         monkeypatch, starts=[_Start("uncertain")], enabled=False
     )
 
@@ -815,7 +871,7 @@ def test_the_backstop_is_off_by_default(monkeypatch):
 
 
 def test_a_refused_finish_leaves_the_task_for_the_next_tick(monkeypatch):
-    released, finishes, _o, _e, notifies, commits = _backstop_harness(
+    released, finishes, _o, _e, notifies, commits, _p = _backstop_harness(
         monkeypatch, starts=[_Start("uncertain")], finish_ok=False
     )
 
@@ -987,7 +1043,7 @@ def test_the_backstop_refuses_an_operator_paused_task(monkeypatch):
     refuses any pause it did not set; the backstop never sets one, so it
     refuses all of them.
     """
-    released, finishes, outcomes, escalations, _n, commits = _backstop_harness(
+    released, finishes, outcomes, escalations, _n, commits, _p = _backstop_harness(
         monkeypatch,
         starts=[_Start("uncertain")],
         task=dict(_task(), task_paused=True),
@@ -1008,10 +1064,62 @@ def test_the_escalation_names_the_permits_it_cannot_release(monkeypatch):
     counting against the pool. Unnamed, that reads as a healthy lane that
     cannot start anything.
     """
-    _released, _f, _o, escalations, _n, _c = _backstop_harness(
+    _released, _f, _o, escalations, _n, _c, _p = _backstop_harness(
         monkeypatch,
         starts=[_Start("uncertain", session_id=5381)],
     )
 
     assert "5381" in escalations[0]["reason"]
     assert "separate operator step" in escalations[0]["reason"]
+
+
+def test_the_backstop_settles_the_permit_at_its_own_sequence(monkeypatch):
+    """The lane slot and the admission permit have to be released together.
+
+    Freeing the start alone leaves the reservation counted by reserve_start,
+    so intake admits fresh work that can never get a guest: a churning lane
+    rather than a visibly stuck one.
+    """
+    released, _f, _o, _e, _n, _c, permits = _backstop_harness(
+        monkeypatch, starts=[_Start("uncertain")], permit_seq=2
+    )
+
+    assert released is True
+    # Never seq 1 by assumption: a second reservation on one session is
+    # ordinary, and hardcoding it settles the wrong permit.
+    assert permits == [{"seq": 2, "outcome": "deadline_backstop_released"}]
+
+
+def test_the_backstop_does_not_claim_cessation_it_never_proved(monkeypatch):
+    """The permit outcome must not read as confirmed cessation.
+
+    The backstop releases on a deadline without proving the guest stopped,
+    and its own escalation card says so.
+    """
+    _r, _f, _o, _e, _n, _c, permits = _backstop_harness(
+        monkeypatch, starts=[_Start("uncertain")]
+    )
+
+    assert [p["outcome"] for p in permits] == ["deadline_backstop_released"]
+
+
+def test_the_backstop_finishes_when_the_permit_cannot_be_settled(monkeypatch):
+    """A permit failure must not abort the start settlement or the finish."""
+    released, finishes, _o, _e, _n, commits, permits = _backstop_harness(
+        monkeypatch, starts=[_Start("uncertain")], permit_error=True
+    )
+
+    assert released is True
+    assert permits == []
+    assert finishes and commits
+
+
+def test_the_backstop_skips_a_session_with_no_unsettled_permit(monkeypatch):
+    """A start whose permit is already settled still releases the lane slot."""
+    released, finishes, _o, _e, _n, commits, permits = _backstop_harness(
+        monkeypatch, starts=[_Start("uncertain")], permit_missing=True
+    )
+
+    assert released is True
+    assert permits == []
+    assert finishes and commits

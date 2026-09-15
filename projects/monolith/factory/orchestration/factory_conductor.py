@@ -4952,6 +4952,13 @@ def _expire_task_deadline(task: dict) -> bool:
         finish_task,
         record_start_outcome,
     )
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from factory.execution import admission
+    from factory.execution.models import AgentCapacityReservation
+    from factory.execution.reconciliation import (
+        _locked_session as _locked_agent_session,
+    )
     from factory.orchestration.factory_landing import github_write
     from factory.orchestration.factory_refine import HUMAN_LABEL
 
@@ -5104,6 +5111,54 @@ def _expire_task_deadline(task: dict) -> bool:
                 )
                 if not settled["ok"]:
                     return False
+                if row.session_id is not None:
+                    # Release the permit with the start. Freeing the lane slot
+                    # alone leaves the reservation counted by reserve_start
+                    # against background_limit, and reservation review marks an
+                    # uncertain permit blocked, so the slots come back, intake
+                    # admits fresh work, and none of it can get a guest. That
+                    # is a churning lane, which is harder to diagnose than the
+                    # stall it replaced. A savepoint keeps a failure here from
+                    # aborting the transaction that settles the start and
+                    # finishes the task.
+                    savepoint = db.begin_nested()
+                    try:
+                        held_permit = db.exec(
+                            select(AgentCapacityReservation)
+                            .where(
+                                AgentCapacityReservation.session_id == row.session_id,
+                                AgentCapacityReservation.state != "settled",
+                            )
+                            .with_for_update()
+                        ).first()
+                        if held_permit is None:
+                            savepoint.rollback()
+                        else:
+                            admission.settle(
+                                db,
+                                _locked_agent_session(db, row.session_id),
+                                # Never assume seq 1: a second reservation on
+                                # one session is ordinary, and 175 rows in
+                                # production carry seq 2.
+                                held_permit.pending_seq,
+                                # Not guest_cessation_confirmed. The backstop
+                                # releases on a deadline without ever proving
+                                # the guest stopped, and this card says so.
+                                # Recording the cessation outcome would put a
+                                # claim in the audit trail that nothing here
+                                # established.
+                                outcome="deadline_backstop_released",
+                                cessation_confirmed=True,
+                            )
+                            savepoint.commit()
+                    except SQLAlchemyError:
+                        savepoint.rollback()
+                        logger.exception(
+                            "factory deadline backstop permit settlement failed "
+                            "for task %s session %s",
+                            task_id,
+                            row.session_id,
+                        )
             result = finish_task(
                 task_id,
                 "escalated",
