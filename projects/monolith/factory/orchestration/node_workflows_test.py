@@ -2,6 +2,7 @@
 
 from contextlib import contextmanager
 from datetime import datetime, timezone
+import json
 from types import SimpleNamespace
 import zlib
 
@@ -1129,11 +1130,22 @@ def queued_attempt(reconciliation_db):
     return state
 
 
-def test_queued_cancellation_is_atomic_explicit_and_idempotent(queued_attempt):
+def test_queued_cancellation_is_atomic_explicit_and_idempotent(
+    queued_attempt, monkeypatch
+):
     from factory.execution.api import cancel_queued_factory_attempt
+    from factory.execution import reconciliation
     from factory.execution.models import PendingMessage
     from sqlmodel import select
 
+    monkeypatch.setattr(
+        reconciliation,
+        "_cancelled_before_dispatch_usage",
+        lambda: {
+            "source": "factory\x00_reconciliation",
+            "reason": "cancelled_before\x00_dispatch",
+        },
+    )
     state = queued_attempt
     with Session(state.engine) as db:
         assert cancel_queued_factory_attempt(db, state.pin, 7) == 7
@@ -1149,7 +1161,11 @@ def test_queued_cancellation_is_atomic_explicit_and_idempotent(queued_attempt):
         assert turn.prompt == "exact queued prompt"
         assert turn.model is None and turn.cost_usd is None
         assert turn.stop_reason == "cancelled_before_dispatch"
-        assert '"source": "factory_reconciliation"' in turn.usage_json
+        assert "\x00" not in turn.usage_json
+        assert json.loads(turn.usage_json) == {
+            "source": "factory_reconciliation",
+            "reason": "cancelled_before_dispatch",
+        }
         assert cancel_queued_factory_attempt(db, state.pin, 7) is None
 
 

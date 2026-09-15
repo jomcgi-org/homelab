@@ -1302,6 +1302,13 @@ py_library(
 )
 
 py_library(
+    name = "factory_utils",
+    srcs = ["factory/utils.py"],
+    imports = ["."],
+    visibility = ["//:__subpackages__"],
+)
+
+py_library(
     name = "agent_sessions_admission",
     srcs = [
         "factory/api.py",
@@ -1317,6 +1324,7 @@ py_library(
     imports = ["."],
     visibility = ["//:__subpackages__"],
     deps = [
+        ":factory_utils",
         ":pkg_core",
         ":pkg_shared",
         ":swarm_factory_controls",
@@ -1357,6 +1365,7 @@ py_library(
         ":agent_sessions_admission",
         ":agent_sessions_rationale",
         ":factory_access",
+        ":factory_utils",
         # mcp.py and router.py read the request principal via auth.api.
         ":pkg_auth",
         ":pkg_core",
@@ -8838,6 +8847,7 @@ py_library(
             "factory/durable_identity.py",
             "factory/private_view.py",
             "factory/publication.py",
+            "factory/utils.py",
         ],
     ),
     imports = ["."],

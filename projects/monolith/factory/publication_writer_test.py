@@ -26,7 +26,8 @@ from factory.orchestration.factory_models import FactoryControl, FactoryReceipt
 from factory.orchestration.models import SwarmNodeRun, SwarmPlanNode, SwarmTask
 
 from factory import publication
-from factory.publication import _encode, _sanitize_payload, write_public_snapshot
+from factory.publication import _encode, write_public_snapshot
+from factory.utils import sanitize_payload
 from factory.execution.models import AgentSession, AgentTurn
 
 # Seeded on every identity-bearing column the snapshot must not republish, so
@@ -215,7 +216,7 @@ def test_nul_byte_in_nested_string_is_sanitized(session):
         },
     }
 
-    sanitized = _sanitize_payload(payload)
+    sanitized = sanitize_payload(payload)
 
     assert sanitized["task"]["turns"][0]["prompt"] == (
         "run: gh releases --paginate -q '.[] | .tag_name + \"end\"'"
@@ -233,7 +234,7 @@ def test_nul_sanitisation_reaches_dict_keys_and_list_elements(session):
         "tuple": ("tuple\x00item1", "tuple_item2"),
     }
 
-    sanitized = _sanitize_payload(payload)
+    sanitized = sanitize_payload(payload)
 
     assert "keyswithnul" in sanitized
     assert sanitized["normal_key"] == "valuewithnul"

@@ -42,6 +42,8 @@ from sqlalchemy import Integer, String, bindparam
 from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, select, text
 
+from factory.utils import sanitize_payload
+
 logger = logging.getLogger(__name__)
 
 # One turn's diff, decompressed. 256 KiB is the same ceiling the guest shim
@@ -724,29 +726,6 @@ _SESSION_PRUNE = text(
 ).bindparams(bindparam("keep", expanding=True, type_=String()))
 
 
-def _sanitize_payload(obj: object) -> object:
-    """Remove NUL bytes from all strings in a payload tree.
-
-    NUL bytes (``\\x00``) cannot be represented in Postgres text or jsonb. This
-    sanitiser recurses through dicts, lists, and tuples, removing NUL from
-    every string while leaving the rest of the structure and content intact.
-
-    Non-string, non-container objects pass through unchanged.
-    """
-    if isinstance(obj, str):
-        return obj.replace("\x00", "")
-    if isinstance(obj, dict):
-        return {
-            _sanitize_payload(key): _sanitize_payload(value)
-            for key, value in obj.items()
-        }
-    if isinstance(obj, list):
-        return [_sanitize_payload(item) for item in obj]
-    if isinstance(obj, tuple):
-        return tuple(_sanitize_payload(item) for item in obj)
-    return obj
-
-
 def _encode(payload: dict) -> str:
     """JSON for a jsonb parameter, with non-ASCII sent as UTF-8 bytes.
 
@@ -755,7 +734,7 @@ def _encode(payload: dict) -> str:
     those inside jsonb. Raw UTF-8 is accepted by both that server and the UTF-8
     production cluster.
     """
-    sanitized = _sanitize_payload(payload)
+    sanitized = sanitize_payload(payload)
     return json.dumps(sanitized, ensure_ascii=False)
 
 

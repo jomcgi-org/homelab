@@ -189,6 +189,34 @@ def test_daily_view_aggregates_json_and_guards_empty_values(session):
     assert tuple(unknown_row) == ("unknown", 1, 1, 1, 2, 0, 0, None, None)
 
 
+def test_daily_view_skips_nul_escape_but_keeps_literal_escape_text(session):
+    agent = _insert_session(session, "activity-nul-guard", "luna-nul-guard")
+    _insert_turn(
+        session,
+        agent,
+        1,
+        json.dumps({"input_tokens": 99, "command": "printf 'bad\x00command'"}),
+    )
+    _insert_turn(
+        session,
+        agent,
+        2,
+        json.dumps({"input_tokens": 7, "command": r"printf '\u0000'"}),
+    )
+
+    row = session.execute(
+        text(
+            """
+            SELECT sessions, turns, input_tokens
+            FROM public_api.agent_activity_daily
+            WHERE model = 'luna-nul-guard'
+            """
+        )
+    ).one()
+
+    assert tuple(row) == (1, 1, 7)
+
+
 def test_public_reader_can_select_views_but_not_agent_tables(pg):
     engine = create_engine(pg.url)
     try:
