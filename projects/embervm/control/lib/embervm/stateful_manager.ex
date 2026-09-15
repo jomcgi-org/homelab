@@ -1129,9 +1129,8 @@ defmodule Embervm.StatefulManager do
       # Restore-on-miss (R6): the local bundle is gone but its store copy is
       # recoverable. Restore the STATEFUL bundle inside the wake worker FIRST (so
       # park/single-flight semantics are unchanged), then relight exactly as the
-      # warm path. The restore failing (store unreachable mid-wake, or the copy
-      # vanished) degrades to the daemon's cold-boot fallback via the boot_image_ref
-      # that rides the relight request (fail-open warmth).
+      # warm path. Ordinary restore failures degrade to the daemon's cold-boot
+      # fallback. A CPU SKU mismatch is returned without a cold fallback.
       {:restore_then_relight, instance, node_id, snapshot_ref} ->
         # A restore-on-miss relight targets the SAME instance a warm relight would:
         # the bundle-owning instance when one still reports it, else a mem-eligible
@@ -1150,8 +1149,12 @@ defmodule Embervm.StatefulManager do
                   # node-name alias: PR-2.5 made banked bundles per-instance ON DISK,
                   # so restoring onto an arbitrary co-located instance while the boot
                   # runs on another leaves the boot's local disk empty (cold-fails).
-                  _ = restore_bundle(state, dial_id, node_id, instance, snapshot_ref)
-                  run_relight(state, instance, node_id, dial_id, req)
+                  case restore_bundle(state, dial_id, node_id, instance, snapshot_ref) do
+                    {:error, {:cpu_sku_mismatch, _message} = reason} ->
+                      {:error, {:relight_failed, instance.instance_id, reason}}
+
+                    _ -> run_relight(state, instance, node_id, dial_id, req)
+                  end
                 end)
 
               {:error, reason} ->
@@ -3888,10 +3891,9 @@ defmodule Embervm.StatefulManager do
 
   # Restore the STATEFUL bundle for `workload` from the object store back onto the
   # anchor node's disk (RestoreArtifact, kind STATEFUL), then record :artifact_restored.
-  # Best-effort: a restore failure returns :error and the caller (the wake worker)
-  # falls through to the relight, which the daemon degrades to a cold boot via the
-  # boot_image_ref that rides the request (fail-open warmth). Idempotent on the
-  # daemon side, so a re-run of a partially-restored artifact is safe.
+  # Ordinary restore failures return :error and retain the fail-open cold path.
+  # A CPU SKU mismatch is preserved as a clear error. Idempotent on the daemon
+  # side, so a re-run of a partially-restored artifact is safe.
   # `dial_id` is the SELECTED instance's dial key (Step 4): the restore RPC must land
   # the bundle on the same instance the subsequent boot dials, since bundles are
   # per-instance on disk (PR-2.5). `node_id` is the node-name anchor kept only for the
@@ -3914,13 +3916,15 @@ defmodule Embervm.StatefulManager do
         :ok
 
       other ->
-        Logger.warning("embervm stateful: bundle restore-on-miss failed, degrading to cold",
+        mismatch = Embervm.RestoreVendor.cpu_sku_mismatch_reason(other)
+
+        Logger.warning("embervm stateful: bundle restore-on-miss failed",
           workload: workload,
           snapshot_ref: snapshot_ref,
           reason: inspect(other)
         )
 
-        :error
+        if mismatch, do: {:error, mismatch}, else: :error
     end
   end
 

@@ -395,8 +395,8 @@ defmodule Embervm.ServingManager do
       # Restore-on-miss (R6): the local snapshot is gone but its store copy is
       # recoverable. Restore the SERVING bundle inside the wake worker FIRST (so
       # park/single-flight semantics are unchanged), then relight exactly as the warm
-      # path. The restore failing (store unreachable mid-wake, or the copy vanished)
-      # degrades to the daemon's own cold-boot fallback (fail-open warmth).
+      # path. Ordinary restore failures retain the daemon's cold-boot fallback.
+      # A CPU SKU mismatch is returned without a cold fallback.
       {:restore_then_relight, instance, node_id} ->
         # The local snapshot is gone, so no instance reports it: selection falls to a
         # mem-eligible instance the restore lands the bundle onto.
@@ -411,8 +411,12 @@ defmodule Embervm.ServingManager do
                   # node-name alias: serving snapshots are per-instance ON DISK
                   # (PR-2.5), so restoring onto an arbitrary co-located instance while
                   # the boot runs on another leaves the boot's local disk empty.
-                  _ = restore_bundle(state, dial_id, node_id, instance)
-                  run_relight(state, instance, node_id, dial_id, req)
+                  case restore_bundle(state, dial_id, node_id, instance) do
+                    {:error, {:cpu_sku_mismatch, _message} = reason} ->
+                      {:error, {:relight_failed, instance.instance_id, reason}}
+
+                    _ -> run_relight(state, instance, node_id, dial_id, req)
+                  end
                 end)
 
               {:error, reason} ->
@@ -1511,10 +1515,9 @@ defmodule Embervm.ServingManager do
 
   # Restore the SERVING bundle for `workload` from the object store back onto the
   # node's disk (RestoreArtifact, kind SERVING), then record :artifact_restored.
-  # Best-effort: a restore failure returns :error and the caller (the wake worker)
-  # falls through to the relight, which the daemon degrades to a cold boot on a
-  # truly-missing snapshot (fail-open warmth). Idempotent on the daemon side, so a
-  # re-run of a partially-restored artifact is safe.
+  # Ordinary restore failures return :error and retain the fail-open cold path.
+  # A CPU SKU mismatch is preserved as a clear error. Idempotent on the daemon
+  # side, so a re-run of a partially-restored artifact is safe.
   # `dial_id` is the SELECTED instance's dial key (Step 4): the restore RPC must land
   # the bundle on the same instance the subsequent relight dials, since serving
   # snapshots are per-instance on disk (PR-2.5). `node_id` is the node-name anchor
@@ -1537,13 +1540,15 @@ defmodule Embervm.ServingManager do
         :ok
 
       other ->
-        Logger.warning("embervm serving: bundle restore-on-miss failed, degrading to cold",
+        mismatch = Embervm.RestoreVendor.cpu_sku_mismatch_reason(other)
+
+        Logger.warning("embervm serving: bundle restore-on-miss failed",
           workload: workload,
           snapshot_ref: snapshot_ref,
           reason: inspect(other)
         )
 
-        :error
+        if mismatch, do: {:error, mismatch}, else: :error
     end
   end
 

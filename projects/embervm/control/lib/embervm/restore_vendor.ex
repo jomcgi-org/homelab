@@ -1,13 +1,13 @@
 defmodule Embervm.RestoreVendor do
   @moduledoc """
-  Stamps the CPUID vendor onto a restore-on-miss `RestoreArtifactRequest`
-  (R7, ADR embervm/011).
+  Stamps the full CPU SKU onto a restore-on-miss `RestoreArtifactRequest`.
 
   noded's `resolveRestorePrefix` composes the store read prefix for a restore as
   `<kind>/<vendor>/<workload>/<ref>` for every vendor-bound artifact kind, and
   REJECTS the restore with `InvalidArgument: "vendor required to restore this
   artifact kind"` when the vendor is empty. The vendor rides the REQUEST, not the
-  `ArtifactRef`: the proto is `RestoreArtifactRequest{artifact, trace, vendor}`
+  `ArtifactRef`: the proto is
+  `RestoreArtifactRequest{artifact, trace, vendor, cpu_sku}`
   (`vendor = 3`), and noded reads `req.GetVendor()` (server/store.go), never
   `ref.vendor` (the `ArtifactRef` has no `vendor` field). Every restore-on-miss
   call site in the control plane (stateful/serving/session/group wake planners)
@@ -22,35 +22,45 @@ defmodule Embervm.RestoreVendor do
   `artifactVendorSegment` mirrors this). These two restores leave `vendor`
   empty; every other kind gets the anchor node's reported vendor.
 
-  ## empty vendor is safe, not fatal
+  ## empty identity fails closed
 
   When the anchor node reports no vendor (a pre-R7 daemon, or a node not currently
-  dispatchable), the resolved vendor is `""`. For a vendor-bound kind that would
-  reproduce the bug this module fixes, EXCEPT that noded maps the node-4 vendor
-  alias to the legacy un-vendored prefix (standing decision 11), so today's
-  single-vendor fleet still restores. The stamp is best-effort by design: the wake
-  path already degrades a failed restore to a cold boot (fail-open warmth), so a
-  missing vendor is never worse than the pre-fix behaviour, and on a vendor-reporting
-  fleet it is correct.
+  dispatchable), the resolved vendor is `""`. noded refuses a CPU-bound restore
+  with that unresolved target. This keeps legacy discovery from silently crossing
+  a compatibility boundary. An artifact whose own metadata has no SKU remains
+  grandfathered only after the target node has supplied a usable identity.
   """
 
   alias Embervm.NodeCapacity
 
   @doc """
-  Return `req` with its `vendor` set to the anchor `node_key`'s reported CPU vendor
-  when the request's artifact kind is vendor-bound, or unchanged (empty vendor) for a
-  `VOLUME`. The kind is read off `req.artifact.kind`. `node_key` is whatever the
+  Return `req` with its `vendor` and `cpu_sku` set to the anchor `node_key`'s
+  reported identity when the request's artifact kind is CPU-bound, or unchanged
+  for portable filesystem artifacts. The kind is read off `req.artifact.kind`. `node_key` is whatever the
   caller anchors the restore on (a node-name string or an instance tuple), resolved
   through `NodeCapacity.fetch/2`. `table` is the capacity table the caller holds.
   """
   @spec stamp(atom(), String.t() | {String.t(), String.t()}, struct()) :: struct()
   def stamp(table, node_key, %{artifact: %{kind: kind}} = req) do
     if vendor_bound?(kind) do
-      %{req | vendor: NodeCapacity.vendor_for(table, node_key)}
+      sku = NodeCapacity.sku_for(table, node_key)
+      %{req | vendor: sku.vendor, cpu_sku: sku}
     else
       req
     end
   end
+
+  @doc "Extract a clear CPU SKU mismatch reason from a restore RPC failure."
+  @spec cpu_sku_mismatch_reason(term()) :: {:cpu_sku_mismatch, String.t()} | nil
+  def cpu_sku_mismatch_reason({:error, error}), do: cpu_sku_mismatch_reason(error)
+
+  def cpu_sku_mismatch_reason(%{status: 9, message: message}) when is_binary(message) do
+    if String.contains?(message, "cpu_sku mismatch"),
+      do: {:cpu_sku_mismatch, message},
+      else: nil
+  end
+
+  def cpu_sku_mismatch_reason(_), do: nil
 
   @doc "Whether an artifact kind is vendor-bound (except VOLUME and SESSION_WORKSPACE)."
   @spec vendor_bound?(atom()) :: boolean()

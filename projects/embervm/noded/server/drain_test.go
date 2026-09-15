@@ -386,7 +386,7 @@ func TestWaitForBuildsOrAbortDeadline(t *testing.T) {
 
 	// The base is left re-queueable: a later BuildBase can rebuild it, so its state
 	// is not READY.
-	baseKey := baseKeyFor("echo", "img:1", "r1", s.cfg.CpuVendor, testRootfsUUIDA)
+	baseKey := baseKeyFor("echo", "img:1", "r1", s.cfg.CpuVendor, s.cfg.CpuTemplate, testRootfsUUIDA)
 	if e, ok := s.bases.get(baseKey); ok && e.state == nodev1.BaseBuildState_BASE_BUILD_STATE_READY {
 		t.Errorf("aborted base %q is READY; want re-queueable", baseKey)
 	}

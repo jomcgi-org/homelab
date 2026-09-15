@@ -192,9 +192,13 @@ defmodule Embervm.StatefulManagerTest do
     fact = %{
       configured_id: node_id,
       node_id: node_id,
-      # CPU-vendor fact (Bug B): stamped onto a vendor-bound restore ref (STATEFUL),
-      # left off a VOLUME restore (vendor-portable).
+      # Full CPU SKU is stamped onto memory-bearing restores. VOLUME remains
+      # portable and leaves both request fields empty.
       cpu_vendor: Keyword.get(opts, :cpu_vendor, "amd"),
+      cpu_sku: %Embervm.Node.V1.CpuSku{
+        vendor: Keyword.get(opts, :cpu_vendor, "amd"),
+        template: Keyword.get(opts, :cpu_template, "amd-default")
+      },
       serving_subnet_cidr: "10.88.0.0/24",
       max_live_vms: 4,
       live_vms: 0,
@@ -3154,7 +3158,13 @@ defmodule Embervm.StatefulManagerTest do
   end
 
   test "a local-bundle miss with an exported pair RESTORES the bundle then relights" do
-    {restore_fun, restore_calls} = recording_restore_fun()
+    parent = self()
+    {record_restore, restore_calls} = recording_restore_fun()
+
+    restore_fun = fn channel, req ->
+      send(parent, {:stateful_restore_sku, req.cpu_sku})
+      record_restore.(channel, req)
+    end
 
     relit_fun = fn _ch, _req ->
       {:ok, %StartStatefulResponse{vm_id: "vm-relit", ip: "10.88.0.5", port: 5432, generation: 3, was_relight: true}}
@@ -3185,6 +3195,9 @@ defmodule Embervm.StatefulManagerTest do
     assert [%{kind: :ARTIFACT_KIND_STATEFUL, ref: "stateful/stf-banked", workload: "wl-a", vendor: "amd"}] =
              Agent.get(restore_calls, & &1)
 
+    assert_receive {:stateful_restore_sku,
+                    %Embervm.Node.V1.CpuSku{vendor: "amd", template: "amd-default"}}
+
     # The SAME banked instance relit in place (a warm relight, not a fresh boot).
     {:ok, relit} = StatefulStore.get(ctx.store, "stf-banked")
     assert relit.state == :serving
@@ -3195,6 +3208,38 @@ defmodule Embervm.StatefulManagerTest do
     assert restored, "expected an artifact_restored op"
     assert restored.payload["kind"] == "stateful"
     assert restored.payload["ref"] == "stateful/stf-banked"
+  end
+
+  test "stateful bundle SKU mismatch is returned clearly without cold fallback" do
+    {:ok, starts} = Agent.start_link(fn -> 0 end)
+    message = "noded: cpu_sku mismatch on restore: artifact stamped amd/v2 != node amd/v1"
+
+    ctx =
+      start_stack(
+        start_stateful_fun: fn _channel, _req ->
+          Agent.update(starts, &(&1 + 1))
+          {:error, :should_not_start}
+        end,
+        restore_artifact_fun: fn _channel, _req ->
+          {:error, %GRPC.RPCError{status: 9, message: message}}
+        end
+      )
+
+    stateful_workload(ctx, "wl-a")
+
+    stateful_node(ctx, "node-4",
+      stateful_bundles: [],
+      volumes: [%{workload: "wl-a", node_id: "node-4", generation: 3, size_bytes: 100, allocated_bytes: 10, exported_generation: 3}],
+      store_reachable: true
+    )
+
+    seed_banked_with_pair(ctx, "stf-banked", "node-4", 3, 3)
+
+    assert {:error, {:wake_failed, {:cpu_sku_mismatch, ^message}}} =
+             StatefulManager.wake(ctx.mgr, "wl-a", "p")
+
+    assert Agent.get(starts, & &1) == 0
+    assert {:ok, %{state: :banked}} = StatefulStore.get(ctx.store, "stf-banked")
   end
 
   test "a local-volume miss with an exported (vol, gen) pair RESTORES the volume then cold-boots at that generation" do

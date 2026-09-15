@@ -10,7 +10,7 @@ defmodule Embervm.RestoreVendorTest do
   use ExUnit.Case, async: true
 
   alias Embervm.{NodeCapacity, RestoreVendor}
-  alias Embervm.Node.V1.{ArtifactRef, RestoreArtifactRequest, Trace}
+  alias Embervm.Node.V1.{ArtifactRef, CpuSku, RestoreArtifactRequest, Trace}
 
   defp table do
     t = :"rv_test_#{System.unique_integer([:positive])}"
@@ -19,12 +19,13 @@ defmodule Embervm.RestoreVendorTest do
     t
   end
 
-  defp put_node(t, node_id, vendor) do
+  defp put_node(t, node_id, vendor, template \\ "") do
     NodeCapacity.put(t, {node_id, ""}, %{
       node_id: node_id,
       pod_uid: "",
       instance_id: node_id,
       cpu_vendor: vendor,
+      cpu_sku: %CpuSku{vendor: vendor, template: template},
       updated_at: 1
     })
   end
@@ -60,10 +61,28 @@ defmodule Embervm.RestoreVendorTest do
 
   test "stamp sets the anchor vendor on the REQUEST for a vendor-bound kind" do
     t = table()
-    put_node(t, "node-4", "amd")
+    put_node(t, "node-4", "amd", "amd-default")
 
     stamped = RestoreVendor.stamp(t, "node-4", request(:ARTIFACT_KIND_STATEFUL))
-    assert %RestoreArtifactRequest{vendor: "amd"} = stamped
+    assert %RestoreArtifactRequest{vendor: "amd", cpu_sku: %CpuSku{vendor: "amd", template: "amd-default"}} = stamped
+  end
+
+  test "stamp carries the full SKU for every memory-bearing durable lane" do
+    t = table()
+    put_node(t, "node-4", "amd", "amd-v2")
+
+    for kind <- [
+          :ARTIFACT_KIND_BASE,
+          :ARTIFACT_KIND_SESSION,
+          :ARTIFACT_KIND_STATEFUL,
+          :ARTIFACT_KIND_SERVING,
+          :ARTIFACT_KIND_GROUP_SET
+        ] do
+      assert %RestoreArtifactRequest{
+               vendor: "amd",
+               cpu_sku: %CpuSku{vendor: "amd", template: "amd-v2"}
+             } = RestoreVendor.stamp(t, "node-4", request(kind))
+    end
   end
 
   test "stamp leaves a VOLUME request's vendor empty (vendor-portable)" do
@@ -79,7 +98,16 @@ defmodule Embervm.RestoreVendorTest do
     put_node(t, "node-4", "")
 
     stamped = RestoreVendor.stamp(t, "node-4", request(:ARTIFACT_KIND_SERVING))
-    # noded maps an empty vendor to the node-4 legacy alias, so this still restores.
+    # noded refuses this CPU-bound restore, so missing discovery fails closed.
     assert %RestoreArtifactRequest{vendor: ""} = stamped
+  end
+
+  test "cpu_sku mismatch extraction preserves the daemon's clear failure" do
+    message = "noded: cpu_sku mismatch on restore: artifact stamped amd/v2 != node amd/v1"
+
+    assert RestoreVendor.cpu_sku_mismatch_reason({:error, %{status: 9, message: message}}) ==
+             {:cpu_sku_mismatch, message}
+
+    assert RestoreVendor.cpu_sku_mismatch_reason({:error, %{status: 9, message: "other precondition"}}) == nil
   end
 end

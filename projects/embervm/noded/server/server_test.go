@@ -1296,6 +1296,80 @@ func TestBuildBaseIdempotent(t *testing.T) {
 	}
 }
 
+func TestBuildBaseRestoresCompleteStoreHitWithoutBuilding(t *testing.T) {
+	fs := newFakeStore()
+	s := newStoreTestServerWithSku(t, fs, "amd", "amd-default")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.StartStoreLoops(ctx)
+	build := &fakeDriver{snapshotRoot: s.cfg.SnapshotRoot}
+	s.newBuildDriver = func(BuildDriverSpec) BuildDriver { return build }
+	rootfs := writeExt4Rootfs(t, t.TempDir(), "rootfs.ext4", testRootfsUUIDA)
+	s.registry.sync([]workloadEntry{{Workload: "echo", ImageRef: "img:1", RootfsRef: rootfs}})
+	key := baseKeyFor("echo", "img:1", "r1", "amd", "amd-default", testRootfsUUIDA)
+	fs.seedArtifact("base/amd/echo/"+key, map[string]string{
+		"imageref": "img:1", "memfile": "mem", "rootfsid": testRootfsUUIDA,
+		"rootfspath": rootfs, "snapfile": "snap",
+	}, 0, "amd", "amd-default")
+
+	req := &nodev1.BuildBaseRequest{
+		Trace: &nodev1.Trace{Workload: "echo"}, ImageRef: "img:1", WorkloadRevision: "r1",
+		CpuSku: &nodev1.CpuSku{Vendor: "amd", Template: "amd-default"},
+	}
+	resp, err := s.BuildBase(ctx, req)
+	if status.Code(err) != codes.Aborted || resp != nil {
+		t.Fatalf("BuildBase(store hit while restore queues) = %#v, %v, want Aborted", resp, err)
+	}
+	waitForBaseOnDisk(t, s, key)
+
+	resp, err = s.BuildBase(ctx, req)
+	if err != nil || !resp.GetAlreadyBuilt() || resp.GetSnapshotRef() != key {
+		t.Fatalf("BuildBase(restored store hit) = %#v, %v, want already-built %q", resp, err, key)
+	}
+	if build.snapshots != 0 {
+		t.Fatalf("BuildBase(store hit) snapshots = %d, want zero", build.snapshots)
+	}
+}
+
+func TestBuildBaseRejectsSelectedCpuSkuMismatchBeforeStoreOrBuild(t *testing.T) {
+	fs := newFakeStore()
+	s := newStoreTestServerWithSku(t, fs, "amd", "amd-default")
+	build := &fakeDriver{snapshotRoot: s.cfg.SnapshotRoot}
+	s.newBuildDriver = func(BuildDriverSpec) BuildDriver { return build }
+
+	_, err := s.BuildBase(context.Background(), &nodev1.BuildBaseRequest{
+		Trace:  &nodev1.Trace{Workload: "echo"},
+		CpuSku: &nodev1.CpuSku{Vendor: "amd", Template: "amd-v2"},
+	})
+	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "cpu_sku mismatch") {
+		t.Fatalf("BuildBase(cpu_sku mismatch) = %v, want clear FailedPrecondition", err)
+	}
+	if build.snapshots != 0 {
+		t.Fatalf("BuildBase(cpu_sku mismatch) snapshots = %d, want zero", build.snapshots)
+	}
+}
+
+func TestBuildBaseStoreErrorDoesNotAuthorizeBuild(t *testing.T) {
+	fs := newFakeStore()
+	fs.artifactInfoErr = errors.New("store unavailable")
+	s := newStoreTestServerWithSku(t, fs, "amd", "amd-default")
+	build := &fakeDriver{snapshotRoot: s.cfg.SnapshotRoot}
+	s.newBuildDriver = func(BuildDriverSpec) BuildDriver { return build }
+	rootfs := writeExt4Rootfs(t, t.TempDir(), "rootfs.ext4", testRootfsUUIDA)
+	s.registry.sync([]workloadEntry{{Workload: "echo", ImageRef: "img:1", RootfsRef: rootfs}})
+
+	_, err := s.BuildBase(context.Background(), &nodev1.BuildBaseRequest{
+		Trace: &nodev1.Trace{Workload: "echo"}, ImageRef: "img:1", WorkloadRevision: "r1",
+		CpuSku: &nodev1.CpuSku{Vendor: "amd", Template: "amd-default"},
+	})
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("BuildBase(store error) code = %v, want Unavailable; err = %v", status.Code(err), err)
+	}
+	if build.snapshots != 0 {
+		t.Fatalf("BuildBase(store error) snapshots = %d, want zero", build.snapshots)
+	}
+}
+
 // TestBuildBaseUnknownImage rejects a build for an image the node has no rootfs for.
 func TestBuildBaseUnknownImage(t *testing.T) {
 	s := New(Options{
@@ -1337,7 +1411,7 @@ func TestBuildBaseAdoptsSiblingBundleFromDisk(t *testing.T) {
 		NewBuildDriver: func(BuildDriverSpec) BuildDriver { return build },
 		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
-	baseKey := baseKeyFor("echo", "img:1", "r1", s.cfg.CpuVendor, testRootfsUUIDA)
+	baseKey := baseKeyFor("echo", "img:1", "r1", s.cfg.CpuVendor, s.cfg.CpuTemplate, testRootfsUUIDA)
 	dir := filepath.Join(s.cfg.SnapshotRoot, "bases", baseKey)
 	memBytes := strings.Repeat("m", 100)
 	snapBytes := strings.Repeat("s", 50)
@@ -1418,7 +1492,7 @@ func TestBuildBaseIncompleteBundleFallsThroughToBuild(t *testing.T) {
 		NewBuildDriver: func(BuildDriverSpec) BuildDriver { return build },
 		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
-	baseKey := baseKeyFor("echo", "img:1", "r1", s.cfg.CpuVendor, testRootfsUUIDA)
+	baseKey := baseKeyFor("echo", "img:1", "r1", s.cfg.CpuVendor, s.cfg.CpuTemplate, testRootfsUUIDA)
 	dir := filepath.Join(s.cfg.SnapshotRoot, "bases", baseKey)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		t.Fatalf("mkdir stale dir: %v", err)
@@ -1462,7 +1536,7 @@ func TestBuildBaseReclaimsStaleBuildingDirectory(t *testing.T) {
 		NewBuildDriver: func(BuildDriverSpec) BuildDriver { return build },
 		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
-	baseKey := baseKeyFor("echo", "img:1", "r1", s.cfg.CpuVendor, testRootfsUUIDA)
+	baseKey := baseKeyFor("echo", "img:1", "r1", s.cfg.CpuVendor, s.cfg.CpuTemplate, testRootfsUUIDA)
 	stagingDir := filepath.Join(snapshotRoot, "bases", baseKey+".building")
 	if err := os.MkdirAll(stagingDir, 0o750); err != nil {
 		t.Fatalf("mkdir stale staging: %v", err)
@@ -1509,7 +1583,7 @@ func TestBuildBaseReturnsRetryLaterForSiblingOwnedBuildingDirectory(t *testing.T
 		NewBuildDriver: func(BuildDriverSpec) BuildDriver { return build },
 		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
-	baseKey := baseKeyFor("echo", "img:1", "r1", s.cfg.CpuVendor, testRootfsUUIDA)
+	baseKey := baseKeyFor("echo", "img:1", "r1", s.cfg.CpuVendor, s.cfg.CpuTemplate, testRootfsUUIDA)
 
 	owner, acquired, existed, err := s.acquireBaseBuildOwnership(baseKey)
 	if err != nil || !acquired {
@@ -1570,7 +1644,7 @@ func TestBuildBasePreservesStagingWithoutExistingLock(t *testing.T) {
 		},
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
-	baseKey := baseKeyFor("echo", "img:1", "r1", s.cfg.CpuVendor, testRootfsUUIDA)
+	baseKey := baseKeyFor("echo", "img:1", "r1", s.cfg.CpuVendor, s.cfg.CpuTemplate, testRootfsUUIDA)
 	stagingDir := filepath.Join(snapshotRoot, "bases", baseKey+".building")
 	if err := os.MkdirAll(stagingDir, 0o750); err != nil {
 		t.Fatal(err)
@@ -3562,20 +3636,23 @@ func TestPrimeReadyTimeoutUsesBootBudgetForSessionVolume(t *testing.T) {
 	}
 }
 
-// TestBaseKeyForIncludesVendorAndRootfsUUID proves CPU compatibility and rootfs
+// TestBaseKeyForIncludesSkuAndRootfsUUID proves CPU compatibility and rootfs
 // byte identity both participate in the key, while identical node state remains
 // deterministic.
-func TestBaseKeyForIncludesVendorAndRootfsUUID(t *testing.T) {
-	amdKey := baseKeyFor("echo", "img:1", "r1", "amd", testRootfsUUIDA)
-	intelKey := baseKeyFor("echo", "img:1", "r1", "intel", testRootfsUUIDA)
+func TestBaseKeyForIncludesSkuAndRootfsUUID(t *testing.T) {
+	amdKey := baseKeyFor("echo", "img:1", "r1", "amd", "amd-default", testRootfsUUIDA)
+	intelKey := baseKeyFor("echo", "img:1", "r1", "intel", "t2-conservative", testRootfsUUIDA)
 	if amdKey == intelKey {
 		t.Fatalf("baseKeyFor should differ across vendor, both = %q", amdKey)
 	}
+	if otherTemplate := baseKeyFor("echo", "img:1", "r1", "amd", "amd-v2", testRootfsUUIDA); otherTemplate == amdKey {
+		t.Fatalf("baseKeyFor should differ across templates, both = %q", amdKey)
+	}
 	// Same vendor, same inputs: still deterministic (idempotency depends on it).
-	if again := baseKeyFor("echo", "img:1", "r1", "amd", testRootfsUUIDA); again != amdKey {
+	if again := baseKeyFor("echo", "img:1", "r1", "amd", "amd-default", testRootfsUUIDA); again != amdKey {
 		t.Fatalf("baseKeyFor should be deterministic for the same inputs: %q != %q", again, amdKey)
 	}
-	if otherRootfs := baseKeyFor("echo", "img:1", "r1", "amd", testRootfsUUIDB); otherRootfs == amdKey {
+	if otherRootfs := baseKeyFor("echo", "img:1", "r1", "amd", "amd-default", testRootfsUUIDB); otherRootfs == amdKey {
 		t.Fatalf("baseKeyFor should differ across rootfs UUIDs, both = %q", amdKey)
 	}
 }
@@ -3583,8 +3660,8 @@ func TestBaseKeyForIncludesVendorAndRootfsUUID(t *testing.T) {
 // TestBaseKeyForZipDiffersAcrossVendor mirrors the vendor half of the image-lane
 // key test for the ZIP-lane key function.
 func TestBaseKeyForZipDiffersAcrossVendor(t *testing.T) {
-	amdKey := baseKeyForZip("echo", "digest:1", "sha:1", "amd", testRootfsUUIDA)
-	intelKey := baseKeyForZip("echo", "digest:1", "sha:1", "intel", testRootfsUUIDA)
+	amdKey := baseKeyForZip("echo", "digest:1", "sha:1", "amd", "amd-default", testRootfsUUIDA)
+	intelKey := baseKeyForZip("echo", "digest:1", "sha:1", "intel", "t2-conservative", testRootfsUUIDA)
 	if amdKey == intelKey {
 		t.Fatalf("baseKeyForZip should differ across vendor, both = %q", amdKey)
 	}

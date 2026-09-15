@@ -178,6 +178,35 @@ defmodule Embervm.BaseBuilderTest do
     assert %{"status" => "True", "reason" => "BaseBuilt"} = condition(status_map, "BaseBuilt")
   end
 
+  test "cold admission only enqueues and the standing queue makes progress" do
+    test_pid = self()
+
+    builder =
+      start_builder(
+        build_fun: fn :fake_channel, _req ->
+          send(test_pid, {:standing_queue_started, self()})
+
+          receive do
+            :finish -> {:ok, resp("queued-base")}
+          end
+        end
+      )
+
+    initial = :sys.get_state(builder)
+    GenServer.stop(builder)
+    {:noreply, queued} = BaseBuilder.handle_cast({:reconcile, desc()}, initial)
+    {:noreply, queued} = BaseBuilder.handle_cast({:reconcile, desc()}, queued)
+    refute_receive {:standing_queue_started, _}
+    assert queued.admissions["w"] == desc()
+
+    assert_receive :drain_admissions
+    refute_receive :drain_admissions
+    {:noreply, progressing} = BaseBuilder.handle_info(:drain_admissions, queued)
+    assert progressing.admissions == %{}
+    assert_receive {:standing_queue_started, worker}
+    send(worker, :finish)
+  end
+
   test "an already-built base is not rebuilt on a redundant reconcile (idempotent)" do
     agent = start_recorder()
     {:ok, count} = Agent.start_link(fn -> 0 end)
@@ -227,7 +256,9 @@ defmodule Embervm.BaseBuilderTest do
       # observable directly, without sleeping or polling a running GenServer.
       initial = :sys.get_state(builder)
       GenServer.stop(builder)
-      {:noreply, building} = BaseBuilder.handle_cast({:reconcile, desc()}, initial)
+      {:noreply, queued} = BaseBuilder.handle_cast({:reconcile, desc()}, initial)
+      assert_receive :drain_admissions
+      {:noreply, building} = BaseBuilder.handle_info(:drain_admissions, queued)
       assert_receive {:build_attempt, worker}
       assert_receive {:build_result, ^worker, {:error, %GRPC.RPCError{status: 10}} = result}
       building = put_in(building.workloads["w"].backoff_ms, previous_backoff)
@@ -2135,11 +2166,15 @@ defmodule Embervm.BaseBuilderTest do
   end
 
   defp put_brick(table, node_id, pod_uid, opts) do
+    vendor = Keyword.get(opts, :cpu_vendor, "amd")
+    template = Keyword.get(opts, :cpu_template, "")
+
     NodeCapacity.put(table, {node_id, pod_uid}, %{
       node_id: node_id,
       configured_id: node_id,
       instance_id: "#{node_id}/#{pod_uid}",
-      cpu_vendor: Keyword.get(opts, :cpu_vendor, "amd"),
+      cpu_vendor: vendor,
+      cpu_sku: %Embervm.Node.V1.CpuSku{vendor: vendor, template: template},
       size_class: Keyword.get(opts, :size_class, "8gi"),
       mem_budget_mib: Keyword.get(opts, :mem_budget, 8_192),
       mem_headroom_mib: Keyword.get(opts, :mem_headroom, 8_000),
@@ -4441,6 +4476,99 @@ defmodule Embervm.BaseBuilderTest do
     assert %{"status" => "True"} = condition(latest(agent, "w"), "BaseVendorCoverage")
   end
 
+  test "same-vendor templates are separate preparation keys and each build once" do
+    table = new_cap_table()
+    put_brick(table, "node-a", "pod-a", cpu_vendor: "amd", cpu_template: "amd-v1")
+    {:ok, calls} = Agent.start_link(fn -> [] end)
+
+    build_fun = fn :fake_channel, req ->
+      sku = req.cpu_sku
+      Agent.update(calls, &[{sku.vendor, sku.template} | &1])
+      {:ok, resp("base-#{sku.template}")}
+    end
+
+    builder =
+      start_builder(
+        nodes: [%{id: "node-a/pod-a", address: "a"}],
+        capacity_table: table,
+        build_fun: build_fun
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc())
+
+    assert_eventually(fn ->
+      Agent.get(calls, & &1) == [{"amd", "amd-v1"}]
+    end)
+
+    put_brick(table, "node-b", "pod-b", cpu_vendor: "amd", cpu_template: "amd-v2")
+    :ok = BaseBuilder.add_node(builder, "node-b/pod-b", "b")
+    :ok = BaseBuilder.reconcile(builder, desc(%{generation: 2}))
+
+    assert_eventually(fn ->
+      Agent.get(calls, &Enum.sort/1) == [{"amd", "amd-v1"}, {"amd", "amd-v2"}]
+    end)
+
+    built = BaseBuilder.status(builder).workloads["w"].vendor_built
+    assert built["amd/amd-v1"].ref == "base-amd-v1"
+    assert built["amd/amd-v2"].ref == "base-amd-v2"
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{generation: 3}))
+    Process.sleep(50)
+    assert length(Agent.get(calls, & &1)) == 2
+  end
+
+  test "a same-SKU placement move does not start a second preparation" do
+    table = new_cap_table()
+    put_brick(table, "node-a", "pod-a", cpu_vendor: "amd", cpu_template: "amd-v1", mem_budget: 4_096)
+    test_pid = self()
+
+    build_fun = fn :fake_channel, req ->
+      send(test_pid, {:same_sku_build, req.cpu_sku, self()})
+
+      receive do
+        :finish -> {:ok, resp("base-amd-v1")}
+      end
+    end
+
+    builder =
+      start_builder(
+        nodes: [%{id: "node-a/pod-a", address: "a"}],
+        capacity_table: table,
+        build_fun: build_fun
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc())
+
+    assert_receive {:same_sku_build,
+                    %Embervm.Node.V1.CpuSku{vendor: "amd", template: "amd-v1"}, worker},
+                   1_000
+
+    # The larger same-SKU builder becomes the new placement target while the
+    # first build is still in flight. The preparation key is unchanged, so the
+    # standing queue must keep one owner rather than starting on both nodes.
+    put_brick(table, "node-b", "pod-b",
+      cpu_vendor: "amd",
+      cpu_template: "amd-v1",
+      mem_budget: 8_192
+    )
+
+    :ok = BaseBuilder.add_node(builder, "node-b/pod-b", "b")
+    :ok = BaseBuilder.reconcile(builder, desc(%{generation: 2}))
+    _ = :sys.get_state(builder)
+    refute_receive {:same_sku_build, _, _}, 100
+
+    send(worker, :finish)
+
+    assert_eventually(fn ->
+      match?(
+        %{ref: "base-amd-v1"},
+        BaseBuilder.status(builder).workloads["w"].vendor_built["amd/amd-v1"]
+      )
+    end)
+
+    refute_receive {:same_sku_build, _, _}, 100
+  end
+
   # -- per-vendor repair enqueue (arms coverage bookkeeping into build decisions) --
   #
   # PR #4993 added vendor_built/fleet_vendors/vendor_needs_build? and the
@@ -5618,7 +5746,7 @@ defmodule Embervm.BaseBuilderTest do
   end
 
   describe "base_revision/1 (the daemon's base cache key)" do
-    # noded keys a base as sha256(image_ref, workload_revision, cpu_vendor), so this
+    # noded keys a base as sha256(image_ref, workload_revision, cpu_sku), so this
     # token IS the base's cache identity. It used to be the CR's metadata.generation,
     # which changes on ANY spec edit -- so a flag that cannot touch a guest rootfs
     # re-keyed the base and took the public demo offline for the rebuild (2026-07-27,

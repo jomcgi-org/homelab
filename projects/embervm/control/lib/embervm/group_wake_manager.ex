@@ -468,10 +468,13 @@ defmodule Embervm.GroupWakeManager do
         # are gone is restored FIRST, then the delegated relight resumes it warm. A
         # partial local set that is NOT fully exported, or an unreachable store, skips
         # the restore and the GroupManager wake evicts + fresh-boots as it does today
-        # (fail-open warmth, standing decision 7). The restore runs inside this wake
-        # worker so single-flight/park semantics are unchanged.
-        _ = maybe_restore_set(state, workload, instance_id)
-        run_group_wake(state, workload, instance_id)
+        # (fail-open warmth, standing decision 7). A CPU SKU mismatch is returned
+        # directly. The restore runs inside this wake worker so single-flight and
+        # parked-caller semantics are unchanged.
+        case maybe_restore_set(state, workload, instance_id) do
+          {:error, {:cpu_sku_mismatch, _message} = reason} -> {:error, reason}
+          _ -> run_group_wake(state, workload, instance_id)
+        end
 
       {:fresh, instance_id} ->
         run_group_wake(state, workload, instance_id)
@@ -484,8 +487,8 @@ defmodule Embervm.GroupWakeManager do
   # bundles are missing but the store holds a complete set and the store is
   # reachable. Best-effort: any gap (no set_id, set already local, store
   # unreachable, or not exported) is a clean skip that leaves the relight to the
-  # existing GroupManager fresh-fallback path. The restore RPC failing degrades the
-  # same way.
+  # existing GroupManager fresh-fallback path. Ordinary restore failures degrade
+  # the same way, while a CPU SKU mismatch is returned directly.
   defp maybe_restore_set(state, workload, instance_id) do
     # The group instance_id IS the group_instance_id the node keys its bundle sets by
     # (GroupStore rows carry no separate group_instance_id column; the instance id is
@@ -510,8 +513,10 @@ defmodule Embervm.GroupWakeManager do
          # cold pick). A no-eligible-instance result skips the restore (the delegated
          # wake fails/fresh-boots as it would without a restore).
          {:ok, dial_id} <- select_restore_instance(state, node_id, workload) do
-      restore_set(state, dial_id, node_id, workload, set_id, instance_id)
-      :ok
+      case restore_set(state, dial_id, node_id, workload, set_id, instance_id) do
+        {:error, {:cpu_sku_mismatch, _message} = reason} -> {:error, reason}
+        _ -> :ok
+      end
     else
       _ -> :ok
     end
@@ -590,13 +595,15 @@ defmodule Embervm.GroupWakeManager do
         :ok
 
       other ->
-        Logger.warning("embervm group: set restore-on-miss failed, degrading to fresh",
+        mismatch = Embervm.RestoreVendor.cpu_sku_mismatch_reason(other)
+
+        Logger.warning("embervm group: set restore-on-miss failed",
           workload: workload,
           set_id: set_id,
           reason: inspect(other)
         )
 
-        :error
+        if mismatch, do: {:error, mismatch}, else: :error
     end
   end
 

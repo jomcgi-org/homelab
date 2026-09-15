@@ -43,6 +43,7 @@ type fakeStore struct {
 	dataKeyCalls    map[string]int
 	rewrapCh        chan fakeRewrapCall
 	artifactFileErr error
+	artifactInfoErr error
 	restoreCalls    int
 	// dataKeyErr simulates the error returned by the store's data-key provider
 	// before any encrypted artifact bytes are uploaded.
@@ -207,6 +208,9 @@ func (f *fakeStore) ListRefs(_ context.Context, prefix string, limit int) ([]str
 func (f *fakeStore) ArtifactInfo(_ context.Context, prefix string) (bool, int64, uint64, string, string, string, string, uint64, []byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.artifactInfoErr != nil {
+		return false, 0, 0, "", "", "", "", 0, nil, f.artifactInfoErr
+	}
 	art, ok := f.arts[prefix]
 	if !ok {
 		return false, 0, 0, "", "", "", "", 0, nil, nil
@@ -1513,6 +1517,54 @@ func TestRestoreArtifactBaseAlreadyLocalSkips(t *testing.T) {
 	}
 	if resp.GetAccepted() {
 		t.Fatal("an already-local base restore must NOT enqueue an async download")
+	}
+}
+
+// TestRestoreArtifactBaseAlreadyLocalSurvivesStoreOutage proves a remote
+// metadata failure cannot turn valid local warmth into a cold miss.
+func TestRestoreArtifactBaseAlreadyLocalSurvivesStoreOutage(t *testing.T) {
+	fs := newFakeStore()
+	fs.artifactInfoErr = errors.New("store unavailable")
+	s := newStoreTestServerWithSku(t, fs, "amd", "amd-default")
+	workload := "bazel-query"
+	ref := "bazel-query__localwarm001"
+	rootfs := writeExt4Rootfs(t, t.TempDir(), "rootfs.ext4", testRootfsUUIDA)
+	s.registry.sync([]workloadEntry{{Workload: workload, ImageRef: "sha256:runtime-bazel", RootfsRef: rootfs}})
+	writeBundleFiles(t, filepath.Join(s.cfg.SnapshotRoot, "bases", ref), map[string]string{
+		"imageref": "sha256:runtime-bazel", "memfile": "mem", "rootfsid": testRootfsUUIDA,
+		"rootfspath": rootfs, "snapfile": "snap",
+	})
+
+	resp, err := s.RestoreArtifact(context.Background(), &nodev1.RestoreArtifactRequest{
+		Artifact: &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_BASE, Workload: workload, Ref: ref},
+		Vendor:   "amd",
+		CpuSku:   &nodev1.CpuSku{Vendor: "amd", Template: "amd-default"},
+	})
+	if err != nil || !resp.GetSkipped() {
+		t.Fatalf("RestoreArtifact(local warmth during outage) = %#v, %v, want skipped", resp, err)
+	}
+	if base, ok := s.bases.get(ref); !ok || base.state != nodev1.BaseBuildState_BASE_BUILD_STATE_READY {
+		t.Fatalf("RestoreArtifact(local warmth during outage) did not retain READY base: %#v", base)
+	}
+}
+
+func TestRestoreArtifactRejectsSelectedCpuSkuMismatchBeforeLocalOrStore(t *testing.T) {
+	fs := newFakeStore()
+	s := newStoreTestServerWithSku(t, fs, "amd", "amd-default")
+	ref := &nodev1.ArtifactRef{
+		Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SERVING, Workload: "echo", Ref: "serving-1",
+	}
+
+	_, err := s.RestoreArtifact(context.Background(), &nodev1.RestoreArtifactRequest{
+		Artifact: ref,
+		Vendor:   "amd",
+		CpuSku:   &nodev1.CpuSku{Vendor: "amd", Template: "amd-v2"},
+	})
+	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "cpu_sku mismatch") {
+		t.Fatalf("RestoreArtifact(cpu_sku mismatch) = %v, want clear FailedPrecondition", err)
+	}
+	if fs.restoreCalls != 0 {
+		t.Fatalf("RestoreArtifact(cpu_sku mismatch) store restores = %d, want zero", fs.restoreCalls)
 	}
 }
 

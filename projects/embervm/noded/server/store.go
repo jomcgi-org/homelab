@@ -612,6 +612,54 @@ func (s *Server) ExportArtifact(ctx context.Context, req *nodev1.ExportArtifactR
 	return &nodev1.ExportArtifactResponse{BytesMoved: uint64(moved), Skipped: skipped, Generation: generation}, nil
 }
 
+// restoreBaseBeforeBuild checks the complete store marker for the exact base key
+// while the caller holds the node-shared build lock. A present compatible base
+// is restored and the build is deferred; absence alone permits a new build.
+// Store errors and mismatched metadata are not absence and therefore never
+// authorize duplicate construction.
+func (s *Server) restoreBaseBeforeBuild(ctx context.Context, buildReq *nodev1.BuildBaseRequest, baseKey, imageDigest string) (*nodev1.BuildBaseResponse, bool, error) {
+	if s.store == nil {
+		return nil, false, nil
+	}
+	workload := buildReq.GetTrace().GetWorkload()
+	ref := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_BASE, Workload: workload, Ref: baseKey}
+	prefix := artifactPrefix(ref, s.cfg.CpuVendor)
+	present, _, _, vendor, template, _, _, _, _, err := s.store.ArtifactInfo(ctx, prefix)
+	if err != nil {
+		return nil, true, status.Errorf(codes.Unavailable, "noded: inspect stored base %q before build: %v", prefix, err)
+	}
+	if !present {
+		return nil, false, nil
+	}
+	if mismatch, got, want := cpuSkuMismatch(vendor, template, s.cfg.CpuVendor, s.cfg.CpuTemplate); mismatch {
+		return nil, true, status.Errorf(codes.FailedPrecondition, "noded: cpu_sku mismatch for stored base: artifact stamped %q != node %q", got, want)
+	}
+
+	restored, err := s.RestoreArtifact(ctx, &nodev1.RestoreArtifactRequest{
+		Artifact: ref,
+		Trace:    buildReq.GetTrace(),
+		Vendor:   s.cfg.CpuVendor,
+		CpuSku:   s.cpuSku(),
+	})
+	if err != nil {
+		return nil, true, err
+	}
+	if restored.GetAccepted() {
+		return nil, true, status.Errorf(codes.Aborted, "noded: compatible stored base %q restore queued; retry later", baseKey)
+	}
+	if existing, ok := s.bases.get(baseKey); ok && existing.state == nodev1.BaseBuildState_BASE_BUILD_STATE_READY {
+		return &nodev1.BuildBaseResponse{
+			SnapshotRef:   existing.snapshotRef,
+			ImageDigest:   imageDigest,
+			BaseSizeBytes: uint64(existing.sizeBytes),
+			Arch:          s.cfg.Arch,
+			AlreadyBuilt:  true,
+			CpuSku:        s.cpuSku(),
+		}, true, nil
+	}
+	return nil, true, status.Errorf(codes.Aborted, "noded: compatible stored base %q restore is converging; retry later", baseKey)
+}
+
 // RestoreArtifact fetches an artifact from the store back onto local disk into
 // the correct per-kind dir, verifying every file's checksum, then re-registers
 // it via the same reconcile helpers a rescan uses so a later wake sees it.
@@ -634,17 +682,31 @@ func (s *Server) ExportArtifact(ctx context.Context, req *nodev1.ExportArtifactR
 // with accepted=true. The caller polls NodeStatus for the base to appear READY.
 // Every other (small) kind still restores inline.
 func (s *Server) RestoreArtifact(ctx context.Context, req *nodev1.RestoreArtifactRequest) (*nodev1.RestoreArtifactResponse, error) {
-	if s.store == nil {
-		return nil, status.Error(codes.FailedPrecondition, "noded: object store not configured; restore unavailable")
-	}
 	ref := req.GetArtifact()
-	prefix, err := s.resolveRestorePrefix(ctx, ref, req.GetVendor())
-	if err != nil {
-		return nil, err
-	}
 	localDir := s.artifactLocalDir(ref)
 	if localDir == "" {
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: artifact kind %s not restorable on this node", ref.GetKind())
+	}
+	if expected := req.GetCpuSku(); expected != nil {
+		if mismatch, got, want := cpuSkuMismatch(expected.GetVendor(), expected.GetTemplate(), s.cfg.CpuVendor, s.cfg.CpuTemplate); mismatch {
+			return nil, status.Errorf(codes.FailedPrecondition, "noded: cpu_sku mismatch for RestoreArtifact target: request selected %q != node %q", got, want)
+		}
+	}
+	// Local plaintext warmth remains usable while the store is unavailable. The
+	// bytes were created or admitted through the local SKU gate, so a redundant
+	// restore is an idempotent inventory refresh and needs no remote metadata.
+	if !isPrincipalKind(ref.GetKind()) {
+		if local, err := enumerateArtifactFiles(localDir); err == nil && len(local) > 0 {
+			s.reregisterRestored(ref)
+			return &nodev1.RestoreArtifactResponse{Skipped: true, Generation: s.artifactGeneration(ref)}, nil
+		}
+	}
+	if s.store == nil {
+		return nil, status.Error(codes.FailedPrecondition, "noded: object store not configured; restore unavailable")
+	}
+	prefix, err := s.resolveRestorePrefix(ctx, ref, req.GetVendor())
+	if err != nil {
+		return nil, err
 	}
 	// Sku gate (PR-E, grandfather rule): read the stamped meta.json BEFORE moving
 	// any bytes and refuse a PRESENT-BUT-MISMATCHED cpu_sku loudly. A stamp

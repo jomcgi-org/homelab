@@ -586,6 +586,11 @@ message BuildBaseRequest {
   // startServingFresh boots the image entrypoint directly. Task/session-only
   // workloads leave it false and their build path is byte-unchanged.
   bool serving = 9;
+  // cpu_sku is the control plane's expected builder identity. The daemon
+  // compares it with its local identity before consulting the store or
+  // starting a build, so stale discovery cannot create a base for the wrong
+  // template. Unset keeps compatibility with pre-SKU control planes.
+  CpuSku cpu_sku = 10;
 }
 
 message BuildBaseResponse {
@@ -607,6 +612,8 @@ message BuildBaseResponse {
   // field; overloading snapshot_ref for both was the root of the serving
   // "not provisioned" bug. Empty for a non-serving build.
   string serving_image_ref = 6;
+  // cpu_sku is the identity that built or restored this base.
+  CpuSku cpu_sku = 7;
 }
 
 // ---- Prime -----------------------------------------------------------------
@@ -1866,6 +1873,10 @@ message RestoreArtifactRequest {
   // The MAC is HMAC-SHA256 over the label embervm-restore-cap-v1 followed by
   // every preceding capability byte.
   bytes capability = 4;
+  // cpu_sku is the target identity selected by the control plane. The daemon
+  // verifies it against its own identity before any store transfer. Unset is
+  // accepted for wire compatibility; artifact metadata remains authoritative.
+  CpuSku cpu_sku = 5;
 }
 
 // RestoreArtifactResponse reports the outcome. bytes_moved is 0 when the artifact
