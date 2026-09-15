@@ -11,9 +11,22 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"syscall"
 	"testing"
 	"time"
 )
+
+func TestSetUnshareMountNSPreservesOtherCloneFlags(t *testing.T) {
+	cmd := exec.Command("true")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Cloneflags: syscall.CLONE_NEWUSER}
+	setUnshareMountNS(cmd)
+	if cmd.SysProcAttr.Cloneflags != syscall.CLONE_NEWUSER {
+		t.Fatalf("clone flags changed to %#x", cmd.SysProcAttr.Cloneflags)
+	}
+	if cmd.SysProcAttr.Unshareflags&syscall.CLONE_NEWNS == 0 {
+		t.Fatalf("unshare flags %#x do not contain CLONE_NEWNS", cmd.SysProcAttr.Unshareflags)
+	}
+}
 
 func TestExecLauncherJailerLifecycle(t *testing.T) {
 	t.Setenv("EMBER_JAILER_HELPER", "1")
