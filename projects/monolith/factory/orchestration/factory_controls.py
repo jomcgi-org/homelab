@@ -1261,6 +1261,10 @@ def _snapshot(db: Session, row: FactoryReceipt, *, body: bool = False) -> dict:
                         for key in (
                             "reason",
                             "request_number",
+                            # Which absence reading this is, so a held slot on
+                            # its way to releasing reads as "2 of 3" rather
+                            # than as a row with no detail at all.
+                            "observation",
                             "cessation_confirmed",
                             "intervention_required",
                         )
