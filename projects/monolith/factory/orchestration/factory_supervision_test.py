@@ -735,6 +735,7 @@ def _backstop_harness(monkeypatch, *, starts, task=None, enabled=True, finish_ok
         conductor, "_notify_escalation", lambda *a, **kw: notifies.append(a)
     )
     monkeypatch.setattr(conductor, "_warn_deadline_tripped", lambda task: None)
+    monkeypatch.setattr(conductor.graph, "node_runs", lambda *a, **kw: [])
     monkeypatch.setattr(
         "factory.orchestration.factory_landing.github_write", lambda *a, **kw: {}
     )
@@ -853,7 +854,22 @@ def test_an_unusable_deadline_never_triggers_the_backstop(stamp):
     assert conductor._deadline_backstop_due({"deadline_at": stamp}) is False
 
 
-def test_a_stale_run_at_the_cap_does_not_settle(monkeypatch):
+def test_a_long_run_keeps_sampling_rather_than_freezing(monkeypatch):
+    """Suppressing the write past the cap froze the newest reading, and the
+    freshness guard then refused that run forever."""
+    settled, audits, settlements = _absence_harness(
+        monkeypatch,
+        records=[_absence_record(7200 + 300 * (7 - n)) for n in range(8)],
+    )
+
+    assert settled is False
+    assert settlements == []
+    # The observation is still written, so the newest reading keeps moving and
+    # the freshness guard can be satisfied again.
+    assert "stop_absence" in [action for action, _ in audits]
+
+
+def test_a_stale_run_does_not_settle(monkeypatch):
     """The freshest reading has to be recent, or the evidence stopped moving.
 
     Below the cap this is implied: settlement is only reached on a tick where
@@ -871,17 +887,18 @@ def test_a_stale_run_at_the_cap_does_not_settle(monkeypatch):
     assert settlements == []
 
 
-def test_the_absence_audit_trail_is_capped(monkeypatch):
-    """A run at the cap writes no further observation however long it lasts."""
+def test_an_overlong_run_is_noted_once(monkeypatch):
+    """Past the expected length the run is an anomaly, flagged but still sampled."""
     assert supervisor.MAX_ABSENCE_OBSERVATIONS == 8
-    # Newest is older than the interval, so a write would be due but for the cap.
-    settled, audits, _s = _absence_harness(
+    notes = []
+    monkeypatch.setattr(supervisor, "_note", lambda pin, reason: notes.append(reason))
+    settled, _audits, _s = _absence_harness(
         monkeypatch,
         records=[_absence_record(7200 + 300 * (7 - n)) for n in range(8)],
     )
 
     assert settled is False
-    assert not [entry for entry in audits if entry[0] == "stop_absence"]
+    assert notes == ["absence_run_unsettled"]
 
 
 def _presence_harness(monkeypatch, *, records):
@@ -928,14 +945,21 @@ def test_presence_is_not_recorded_with_no_absence_run_open(monkeypatch):
     assert audits == []
 
 
-def test_presence_rows_are_capped(monkeypatch):
+def test_presence_is_never_suppressed_by_a_cap(monkeypatch):
+    """The live defect round three found.
+
+    Presence is the only record that can break an absence run once the other
+    actions have deduplicated themselves. Capping it meant that after enough
+    alternations a guest answering 200 stopped leaving a trace, and a flapping
+    control plane could accumulate a release against a running guest again.
+    """
     audits = _presence_harness(
         monkeypatch,
-        records=[("stop_presence", {"recorded_at": _stamp(99)})] * 8
+        records=[("stop_presence", {"recorded_at": _stamp(99)})] * 20
         + [_absence_record(10)],
     )
 
-    assert audits == []
+    assert [action for action, _ in audits] == ["stop_presence"]
 
 
 def test_a_presence_record_resets_the_absence_run(monkeypatch):
@@ -953,3 +977,41 @@ def test_a_presence_record_resets_the_absence_run(monkeypatch):
 
     assert settled is False
     assert settlements == []
+
+
+def test_the_backstop_refuses_an_operator_paused_task(monkeypatch):
+    """A pause is a deliberate hold, and settling through it is irreversible.
+
+    Once the receipt leaves _ACTIVE, resume_task answers task_not_active, so
+    the operator could not undo their own pause. _expire_reconciler_pause
+    refuses any pause it did not set; the backstop never sets one, so it
+    refuses all of them.
+    """
+    released, finishes, outcomes, escalations, _n, commits = _backstop_harness(
+        monkeypatch,
+        starts=[_Start("uncertain")],
+        task=dict(_task(), task_paused=True),
+    )
+
+    assert released is False
+    assert outcomes == []
+    assert finishes == []
+    assert escalations == []
+    assert commits == []
+
+
+def test_the_escalation_names_the_permits_it_cannot_release(monkeypatch):
+    """The backstop frees the lane slot but cannot free the capacity permit.
+
+    admission.settle only frees a reservation on confirmed cessation, which is
+    exactly what the backstop lacks, so the permit stays uncertain and keeps
+    counting against the pool. Unnamed, that reads as a healthy lane that
+    cannot start anything.
+    """
+    _released, _f, _o, escalations, _n, _c = _backstop_harness(
+        monkeypatch,
+        starts=[_Start("uncertain", session_id=5381)],
+    )
+
+    assert "5381" in escalations[0]["reason"]
+    assert "separate operator step" in escalations[0]["reason"]

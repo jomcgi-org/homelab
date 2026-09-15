@@ -57,8 +57,10 @@ ABSENCE_OBSERVATION_INTERVAL_SECONDS = 300
 # unrelated episodes, which is what makes an intermittent 404 during a rollout
 # unable to add up to a release over hours.
 ABSENCE_MAX_GAP_SECONDS = 600
-# Hard cap on rows per attempt, so a settlement that keeps being refused can
-# never turn this into an unbounded audit stream.
+# How long one absence run may grow before it is treated as an anomaly. A run
+# normally settles at four observations, so passing this means settlement is
+# being refused for some other reason, which is noted once. It bounds a run,
+# not an attempt: a run broken by presence starts again.
 MAX_ABSENCE_OBSERVATIONS = 8
 _ACTIONS = (
     "stop_intent",
@@ -712,11 +714,13 @@ def _record_presence(pin, identity):
         records = _records(db, pin)
         if not records or records[-1][0] != "stop_absence":
             return
-        if (
-            sum(action == "stop_presence" for action, _ in records)
-            >= MAX_ABSENCE_OBSERVATIONS
-        ):
-            return
+        # Deliberately uncapped. Presence is the only record that can break an
+        # absence run once the other actions have deduplicated themselves, so a
+        # cap on it would restore exactly the blindness it exists to remove: a
+        # guest answering 200 would stop leaving a trace and a flapping control
+        # plane could accumulate a release again. The open-run guard above is
+        # the bound that matters, and it already keeps a healthy attempt at
+        # zero rows.
         _audit(
             db,
             pin,
@@ -763,7 +767,14 @@ def _absence_settled(pin, session_id, identity, original_result):
             newest is None
             or (now - newest).total_seconds() >= ABSENCE_OBSERVATION_INTERVAL_SECONDS
         )
-        if due and len(seen) < MAX_ABSENCE_OBSERVATIONS:
+        if due:
+            # Sampling never stops while absence holds. Suppressing the write
+            # past a cap would freeze the newest reading, and the freshness
+            # guard below would then refuse this run forever. A run that grows
+            # past the expected length is an anomaly worth seeing rather than a
+            # reason to stop looking, so it is noted once and keeps sampling.
+            if len(seen) >= MAX_ABSENCE_OBSERVATIONS:
+                _note(pin, "absence_run_unsettled")
             _audit(
                 db,
                 pin,
@@ -775,8 +786,6 @@ def _absence_settled(pin, session_id, identity, original_result):
                 intervention_required=False,
             )
             return False
-        # Past the cap the run stops growing, but a span that is already long
-        # enough still settles rather than stalling on a full audit trail.
         if len(seen) < MIN_ABSENCE_OBSERVATIONS:
             return False
         # Below the cap this is implied, because settlement can only be reached
