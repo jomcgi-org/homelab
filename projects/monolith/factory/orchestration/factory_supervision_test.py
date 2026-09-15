@@ -686,6 +686,7 @@ def _backstop_harness(
     enabled=True,
     finish_ok=True,
     permit_seq=1,
+    permit_seqs=None,
     permit_missing=False,
     permit_error=False,
 ):
@@ -717,11 +718,18 @@ def _backstop_harness(
         def rollback(self):
             pass
 
+    live_seqs = [permit_seq] if permit_seqs is None else list(permit_seqs)
+
     class _Result:
         def first(self):
-            if permit_missing:
+            if permit_missing or not live_seqs:
                 return None
-            return SimpleNamespace(pending_seq=permit_seq)
+            return SimpleNamespace(pending_seq=live_seqs[0])
+
+        def all(self):
+            if permit_missing:
+                return []
+            return [SimpleNamespace(pending_seq=seq) for seq in live_seqs]
 
     class _Db:
         def __enter__(self):
@@ -1123,3 +1131,20 @@ def test_the_backstop_skips_a_session_with_no_unsettled_permit(monkeypatch):
     assert released is True
     assert permits == []
     assert finishes and commits
+
+
+def test_the_backstop_releases_every_live_permit_on_the_session(monkeypatch):
+    """One session can hold more than one unsettled permit.
+
+    The unique constraint is on (session_id, pending_seq), and the ambiguity
+    guard that holds supervision to exactly one permit does not run on this
+    path. Releasing only the first row found would leave the rest counted
+    against background_limit and leak the capacity this exists to reclaim.
+    """
+    released, _f, _o, _e, _n, _c, permits = _backstop_harness(
+        monkeypatch, starts=[_Start("uncertain")], permit_seqs=[1, 2]
+    )
+
+    assert released is True
+    assert [entry["seq"] for entry in permits] == [1, 2]
+    assert {entry["outcome"] for entry in permits} == {"deadline_backstop_released"}
