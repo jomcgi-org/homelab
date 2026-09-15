@@ -1157,10 +1157,10 @@ defmodule Embervm.SessionManagerTest do
   end
 
   test "create worker timeout stays between cold prime and client call deadlines" do
-    # A cold prime may use 120 seconds, while SessionManager.create/4 waits 180.
+    # A restore may wait 60 seconds and cold-prime for 120, while create/5 waits 240.
     timeout = SessionManager.create_worker_timeout_ms()
-    assert timeout > 120_000
-    assert timeout < 180_000
+    assert timeout > 180_000
+    assert timeout < 240_000
   end
 
   test "orphan snapshot eviction does not block session creates" do
@@ -2255,6 +2255,41 @@ defmodule Embervm.SessionManagerTest do
 
     {:ok, row} = SessionStore.get(ctx.store, restored.session_id)
     assert row.lineage_id == original.session_id
+  end
+
+  test "a restoring create preserves a pending-export restore error" do
+    parent = self()
+    {:ok, prime_calls} = Agent.start_link(fn -> 0 end)
+
+    ctx =
+      start_stack(
+        prime_fun: fn _ch, _req ->
+          call = Agent.get_and_update(prime_calls, fn count -> {count, count + 1} end)
+
+          if call == 0 do
+            {:ok, %PrimeResponse{vm_id: "vm-original"}}
+          else
+            send(parent, :unexpected_prime)
+            {:ok, %PrimeResponse{vm_id: "vm-must-not-start"}}
+          end
+        end,
+        channel_fun: fake_channel_fun(),
+        restore_artifact_fun: fn _ch, _req ->
+          {:error, %GRPC.RPCError{status: 14, message: "pending retirement export"}}
+        end
+      )
+
+    original = create_persistence_session(ctx)
+    {:ok, _} = SessionManager.destroy(ctx.mgr, original.session_id)
+    assert wait_for_state(ctx, original.session_id, :destroyed).state == :destroyed
+
+    assert {:error,
+            {:denied,
+             {:session_workspace_restore_failed,
+              %GRPC.RPCError{status: 14, message: "pending retirement export"}}}} =
+             SessionManager.create(ctx.mgr, "wl-persist", "p1", original.session_id)
+
+    refute_receive :unexpected_prime
   end
 
   test "restore_lineage validation: unknown lineage is denied, not a normal create" do

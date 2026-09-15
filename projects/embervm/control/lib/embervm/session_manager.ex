@@ -99,7 +99,11 @@ defmodule Embervm.SessionManager do
   # lever; excess relights get 429 WITHOUT touching the node.
   @default_wake_max 30
   @default_wake_window_ms 60_000
-  @create_worker_timeout_ms 130_000
+  # A restoring create may spend up to 60s waiting for a pending retirement
+  # export before the inherited lineage can cold boot (up to 120s). Keep the
+  # worker bound above both operations so the manager does not manufacture a
+  # create timeout while noded is still inside its documented budgets.
+  @create_worker_timeout_ms 190_000
   @destroy_worker_timeout_ms 30_000
   @destroy_rpc_timeout_ms 15_000
   # Node-gone lookups run on the manager process during reconcile, so they carry
@@ -272,7 +276,7 @@ defmodule Embervm.SessionManager do
       server,
       {:create, workload, principal, normalize_restore_lineage(restore_lineage),
        normalize_idempotency_key(Keyword.get(opts, :idempotency_key))},
-      180_000
+      240_000
     )
   end
 

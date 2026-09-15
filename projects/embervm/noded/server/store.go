@@ -105,6 +105,11 @@ func isRewrappableKind(kind nodev1.ArtifactKind) bool {
 
 const lazyEnvelopeRewrapTimeout = 15 * time.Second
 
+const (
+	defaultRetirementExportWaitTimeout = 60 * time.Second
+	retirementExportPollInterval       = 10 * time.Millisecond
+)
+
 // rewrapEnvelopeAfterAccess detaches the best-effort metadata update from the
 // request that proved access. Restore and export latency therefore never waits
 // for KMS or a second object-store round trip, while the timeout bounds the
@@ -638,6 +643,9 @@ func (s *Server) RestoreArtifact(ctx context.Context, req *nodev1.RestoreArtifac
 		return nil, status.Error(codes.FailedPrecondition, "noded: object store not configured; restore unavailable")
 	}
 	ref := req.GetArtifact()
+	if err := s.waitForRetirementExport(ctx, ref); err != nil {
+		return nil, err
+	}
 	prefix, err := s.resolveRestorePrefix(ctx, ref, req.GetVendor())
 	if err != nil {
 		return nil, err
@@ -752,6 +760,47 @@ func (s *Server) RestoreArtifact(ctx context.Context, req *nodev1.RestoreArtifac
 		s.rewrapEnvelopeAfterAccess(ref, prefix)
 	}
 	return &nodev1.RestoreArtifactResponse{BytesMoved: uint64(moved), Generation: generation}, nil
+}
+
+// waitForRetirementExport prevents a restore from racing the asynchronous
+// export-then-delete started by RetireVolume. The on-disk intent is the durable
+// signal: unlike process memory it survives a daemon restart, and its path is
+// scoped to the exact workload and lineage. Waiting before the store presence
+// probe is essential because an older export may already exist at the stable
+// workspace key; presence alone does not prove that it contains the retiring
+// generation's bytes.
+//
+// The wait never holds an export or volume lock. The export worker can publish,
+// delete the local workspace, and clear the intent independently. Request
+// cancellation wins promptly, and the server-owned bound returns Unavailable so
+// the control plane can fail the create loudly and the caller can retry.
+func (s *Server) waitForRetirementExport(ctx context.Context, ref *nodev1.ArtifactRef) error {
+	if ref.GetKind() != nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE || s.volumes == nil ||
+		!s.volumes.HasRetirementIntent(ref.GetWorkload(), ref.GetRef()) {
+		return nil
+	}
+
+	timeout := s.retirementExportWaitTimeout
+	if timeout <= 0 {
+		timeout = defaultRetirementExportWaitTimeout
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(retirementExportPollInterval)
+	defer ticker.Stop()
+
+	for s.volumes.HasRetirementIntent(ref.GetWorkload(), ref.GetRef()) {
+		select {
+		case <-ctx.Done():
+			return status.FromContextError(ctx.Err()).Err()
+		case <-timer.C:
+			return status.Errorf(codes.Unavailable,
+				"noded: restore artifact %q: pending retirement export did not complete within %s",
+				artifactPrefix(ref, s.cfg.CpuVendor), timeout)
+		case <-ticker.C:
+		}
+	}
+	return nil
 }
 
 func (s *Server) restoreDataKey(raw []byte, ref *nodev1.ArtifactRef, generation uint64) ([]byte, error) {

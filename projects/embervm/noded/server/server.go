@@ -364,6 +364,10 @@ type Server struct {
 	restoreCh       chan restoreJob
 	restoreDedupeMu sync.Mutex
 	restoreDedupe   map[string]struct{}
+	// retirementExportWaitTimeout bounds RestoreArtifact while the exact session
+	// lineage still carries a durable retirement intent. Defaulted in New and
+	// shortened by tests that exercise timeout behavior.
+	retirementExportWaitTimeout time.Duration
 	// storeReachable is the latest object-store reachability verdict from the
 	// probe loop, surfaced in NodeStatus.store_reachable.
 	storeMu        sync.RWMutex
@@ -526,6 +530,7 @@ func New(opts Options) *Server {
 	s.fcSupportedVersionFn = fcSnapshotSupportedVersion
 	s.fcDescribeVersionFn = fcDescribeSnapshotVersion
 	s.statefulResolveTimeout = defaultStatefulResolveTimeout
+	s.retirementExportWaitTimeout = defaultRetirementExportWaitTimeout
 	// Re-seed the serving-images inventory from disk so a daemon restart re-discovers
 	// the cold-boot handler artifacts it built before (mirroring the banked-snapshot
 	// rescan). Only when serving is configured; task/session-only builds skip it.
