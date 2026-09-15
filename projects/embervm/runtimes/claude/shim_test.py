@@ -360,6 +360,8 @@ initialized = json.loads(sys.stdin.readline())
 record(initialized)
 assert initialized["method"] == "initialized"
 
+resumed = False
+turn_number = 0
 for line in sys.stdin:
     request = json.loads(line)
     record(request)
@@ -378,9 +380,14 @@ for line in sys.stdin:
         else:
             response(request, {"thread": {"id": thread_id}, "model": "gpt-5.6-luna", "cwd": "/workspace"})
             emit({"jsonrpc": "2.0", "method": "thread/resumed", "params": {"thread": {"id": thread_id}}})
+            resumed = True
+            if scenario == "resume-usage-replay":
+                emit({"jsonrpc": "2.0", "method": "thread/tokenUsage/updated", "params": {"threadId": thread_id, "turnId": "turn-before-resume", "tokenUsage": {"last": {"inputTokens": 91, "outputTokens": 92, "cachedInputTokens": 0, "cacheWriteInputTokens": 0, "reasoningOutputTokens": 0, "totalTokens": 183}}}})
     elif method == "turn/start":
         params = request.get("params", {})
-        emit({"jsonrpc": "2.0", "method": "turn/started", "params": {"turn": {"id": "turn-1"}}})
+        turn_number += 1
+        turn_id = "turn-%s" % turn_number
+        emit({"jsonrpc": "2.0", "method": "turn/started", "params": {"threadId": "codex-thread", "turn": {"id": turn_id}}})
         if scenario == "death-mid-turn":
             print("fake codex died mid-turn", file=sys.stderr, flush=True)
             sys.exit(17)
@@ -389,8 +396,9 @@ for line in sys.stdin:
         if os.environ.get("FAKE_CODEX_SLEEP"):
             time.sleep(float(os.environ["FAKE_CODEX_SLEEP"]))
         emit({"jsonrpc": "2.0", "method": "item/completed", "params": {"item": {"type": "agentMessage", "text": "Done <voice>Codex completed the work.</voice>"}}})
-        emit({"jsonrpc": "2.0", "method": "thread/tokenUsage/updated", "params": {"tokenUsage": {"last": {"inputTokens": 3, "outputTokens": 4, "cachedInputTokens": 0, "cacheWriteInputTokens": 0, "reasoningOutputTokens": 0, "totalTokens": 7}}}})
-        emit({"jsonrpc": "2.0", "method": "turn/completed", "params": {"turn": {"id": "turn-1"}}})
+        if scenario != "resume-usage-replay" or not resumed:
+            emit({"jsonrpc": "2.0", "method": "thread/tokenUsage/updated", "params": {"threadId": "codex-thread", "turnId": turn_id, "tokenUsage": {"last": {"inputTokens": 3, "outputTokens": 4, "cachedInputTokens": 0, "cacheWriteInputTokens": 0, "reasoningOutputTokens": 0, "totalTokens": 7}}}})
+        emit({"jsonrpc": "2.0", "method": "turn/completed", "params": {"threadId": "codex-thread", "turn": {"id": turn_id}}})
     elif method == "turn/interrupt":
         emit({"jsonrpc": "2.0", "method": "turn/completed", "params": {"turn": {"id": "turn-1"}}})
     else:
@@ -2066,6 +2074,30 @@ def test_codex_app_server_second_turn_no_respawn(tmp_path, monkeypatch):
     assert manager.process is first_process
     assert manager.process.poll() is None
     assert record["usage"]["input_tokens"] == 3
+    manager._close_process()
+
+
+def test_codex_resume_usage_replay_does_not_bill_the_next_turn(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_CODEX_SCENARIO", "resume-usage-replay")
+    manager = _codex_manager(tmp_path, monkeypatch)
+    first = manager.turn("first", model="luna")
+    session_id = manager.session_id
+
+    # Codex 0.146.0 responds to thread/resume, then replays the last completed
+    # turn's usage. _request returns on the response, so that replay is the
+    # first notification consumed by the next turn's read loop.
+    manager._close_process(kill=True)
+    manager.session_id = None
+    second = manager.turn("second", session_id=session_id, model="luna")
+
+    assert first["usage"] == {
+        "input_tokens": 3,
+        "output_tokens": 4,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+    }
+    assert second["terminal_reason"] == "completed"
+    assert second["usage"] == {}
     manager._close_process()
 
 

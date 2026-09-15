@@ -3146,7 +3146,15 @@ url = %s
                         if event_type == "item/completed" and isinstance(item, dict):
                             if item.get("type") in ("agentMessage", "agent_message"):
                                 result_text = item.get("text", "")
-                    elif event_type == "thread/tokenUsage/updated":
+                    elif (
+                        event_type == "thread/tokenUsage/updated"
+                        and params.get("turnId") == self._turn_id
+                    ):
+                        # Codex 0.146.0 replays the prior completed turn's
+                        # usage after thread/resume returns. _request leaves
+                        # that notification queued for this loop, so only the
+                        # turn id captured from turn/started may contribute to
+                        # the current turn's bill.
                         last = params.get("tokenUsage", {}).get("last", {})
                         usage = {
                             "input_tokens": last.get("inputTokens", 0),
