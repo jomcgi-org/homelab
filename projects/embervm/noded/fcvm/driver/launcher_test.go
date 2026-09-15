@@ -2,16 +2,114 @@ package driver
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/jomcgi/homelab/projects/embervm/noded/fcvm/fcclient"
 	"github.com/jomcgi/homelab/projects/embervm/noded/vsockproto"
 )
+
+func apiSocketPath(t *testing.T) string {
+	t.Helper()
+	// Keep below the Unix socket path limit even in a long Bazel sandbox path.
+	dir, err := os.MkdirTemp("/tmp", "fc-api-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return filepath.Join(dir, "api.sock")
+}
+
+func TestWaitForSocketReadyAfterFirstAttempt(t *testing.T) {
+	socket := apiSocketPath(t)
+	synctest.Test(t, func(t *testing.T) {
+		done := make(chan error, 1)
+		go func() { done <- waitForSocket(t.Context(), socket, time.Second) }()
+		synctest.Wait()
+		listener, err := net.Listen("unix", socket)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer listener.Close()
+		// Virtual time makes this retry check independent of CI scheduling.
+		time.Sleep(time.Millisecond)
+		synctest.Wait()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+		default:
+			t.Fatal("connectable socket was not discovered on the next retry")
+		}
+	})
+}
+
+func TestWaitForSocketCancellationInterruptsRetry(t *testing.T) {
+	socket := apiSocketPath(t)
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		done := make(chan error, 1)
+		go func() { done <- waitForSocket(ctx, socket, time.Second) }()
+		synctest.Wait()
+		cancel()
+		synctest.Wait()
+		select {
+		case err := <-done:
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("error = %v, want context cancellation", err)
+			}
+		default:
+			t.Fatal("cancellation did not interrupt the retry wait")
+		}
+	})
+}
+
+func TestWaitForSocketDeadline(t *testing.T) {
+	for _, parentDeadline := range []bool{false, true} {
+		t.Run(fmt.Sprint(parentDeadline), func(t *testing.T) {
+			socket := apiSocketPath(t)
+			// A pathname alone must never count as a connectable API socket.
+			if err := os.WriteFile(socket, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			synctest.Test(t, func(t *testing.T) {
+				ctx := t.Context()
+				timeout := 5 * time.Millisecond
+				if parentDeadline {
+					var cancel context.CancelFunc
+					ctx, cancel = context.WithTimeout(ctx, timeout)
+					defer cancel()
+					timeout = time.Second
+				}
+				done := make(chan error, 1)
+				go func() { done <- waitForSocket(ctx, socket, timeout) }()
+				time.Sleep(5 * time.Millisecond)
+				synctest.Wait()
+				select {
+				case err := <-done:
+					if !errors.Is(err, context.DeadlineExceeded) {
+						t.Fatalf("error = %v, want deadline exceeded", err)
+					}
+					if !parentDeadline && !strings.Contains(err.Error(), socket) {
+						t.Fatalf("timeout error omitted socket path: %v", err)
+					}
+				default:
+					t.Fatal("socket wait exceeded its deadline")
+				}
+			})
+		})
+	}
+}
 
 type driveRecordingAPI struct {
 	fcAPI

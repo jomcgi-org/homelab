@@ -358,19 +358,26 @@ func setOOMScoreAdj(pid, score int) error {
 }
 
 func waitForSocket(ctx context.Context, socketPath string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		conn, err := net.DialTimeout("unix", socketPath, 200*time.Millisecond)
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	dialer := net.Dialer{Timeout: 200 * time.Millisecond}
+	for waitCtx.Err() == nil {
+		conn, err := dialer.DialContext(waitCtx, "unix", socketPath)
 		if err == nil {
 			_ = conn.Close()
 			return nil
 		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("driver: firecracker API socket %q not ready after %s", socketPath, timeout)
+		// Socket startup can finish within a few milliseconds. A short retry
+		// avoids imposing a 20 ms floor while still yielding between attempts.
+		timer := time.NewTimer(time.Millisecond)
+		select {
+		case <-waitCtx.Done():
+			timer.Stop()
+		case <-timer.C:
 		}
-		time.Sleep(20 * time.Millisecond)
 	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return fmt.Errorf("driver: firecracker API socket %q not ready after %s: %w", socketPath, timeout, waitCtx.Err())
 }
