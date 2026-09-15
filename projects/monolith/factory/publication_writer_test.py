@@ -19,12 +19,14 @@ import json
 import zlib
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import text
 from factory.orchestration.factory_controls import validate_policy
 from factory.orchestration.factory_models import FactoryControl, FactoryReceipt
 from factory.orchestration.models import SwarmNodeRun, SwarmPlanNode, SwarmTask
 
-from factory.publication import write_public_snapshot
+from factory import publication
+from factory.publication import _encode, _sanitize_payload, write_public_snapshot
 from factory.execution.models import AgentSession, AgentTurn
 
 # Seeded on every identity-bearing column the snapshot must not republish, so
@@ -195,6 +197,126 @@ def _seed_board(session, *, state: str = "admitted") -> FactoryReceipt:
     )
     session.flush()
     return receipt
+
+
+def test_nul_byte_in_nested_string_is_sanitized(session):
+    """A task payload containing a literal NUL in a nested string is sanitized."""
+    payload = {
+        "task": {
+            "title": "Fix something",
+            "turns": [
+                {
+                    "prompt": (
+                        "run: gh releases --paginate -q '.[] | .tag_name + \"\x00end\"'"
+                    ),
+                    "result": "ok",
+                }
+            ],
+        },
+    }
+
+    sanitized = _sanitize_payload(payload)
+
+    assert sanitized["task"]["turns"][0]["prompt"] == (
+        "run: gh releases --paginate -q '.[] | .tag_name + \"end\"'"
+    )
+    assert sanitized["task"]["title"] == "Fix something"
+    assert sanitized["task"]["turns"][0]["result"] == "ok"
+
+
+def test_nul_sanitisation_reaches_dict_keys_and_list_elements(session):
+    """NUL sanitisation reaches dict keys, values, lists, and tuples."""
+    payload = {
+        "keys\x00with\x00nul": "value",
+        "normal_key": "value\x00with\x00nul",
+        "list": ["item1\x00bad", "item2", {"nested\x00key": "nested\x00value"}],
+        "tuple": ("tuple\x00item1", "tuple_item2"),
+    }
+
+    sanitized = _sanitize_payload(payload)
+
+    assert "keyswithnul" in sanitized
+    assert sanitized["normal_key"] == "valuewithnul"
+    assert sanitized["list"][0] == "item1bad"
+    assert sanitized["list"][2] == {"nestedkey": "nestedvalue"}
+    assert sanitized["tuple"] == ("tupleitem1", "tuple_item2")
+
+
+def test_literal_unicode_escape_sequence_round_trips_unchanged(session):
+    """Literal text containing a backslash-u escape is not corrupted."""
+    payload = {
+        "command": "echo '\\u0000'",
+        "description": "does not contain a NUL byte",
+    }
+
+    encoded = _encode(payload)
+
+    assert "\\\\u0000" in encoded
+    decoded = json.loads(encoded)
+    assert decoded["command"] == "echo '\\u0000'"
+
+
+def test_task_upsert_failure_does_not_abort_other_tasks(session, monkeypatch):
+    """A failed task upsert is skipped while other tasks are committed."""
+    _seed_board(session)
+    session.add(
+        SwarmTask(
+            id="task-two",
+            task_text="publish another factory task",
+            repo="owner/repo",
+            base_branch="main",
+            conductor_model="opus",
+        )
+    )
+    session.flush()
+    session.add(
+        FactoryReceipt(
+            repo="owner/repo",
+            issue_number=6015,
+            generation=3,
+            title="Second task",
+            body="task body",
+            url="https://github.com/owner/repo/issues/6015",
+            actor=SEEDED_EMAIL,
+            state="admitted",
+            task_id="task-two",
+            policy_json=json.dumps(POLICY),
+        )
+    )
+    session.flush()
+
+    original_execute = session.execute
+
+    def fail_one_task(statement, params=None, *args, **kwargs):
+        if statement is publication._TASK_UPSERT and params["issue_number"] == 6015:
+            raise SQLAlchemyError("poisoned task payload")
+        return original_execute(statement, params, *args, **kwargs)
+
+    monkeypatch.setattr(session, "execute", fail_one_task)
+
+    report = write_public_snapshot(session)
+
+    assert report["tasks"] == 2
+    assert report["tasks_skipped"] == 1
+    assert report["sessions_skipped"] == 0
+    assert list(_task_payloads(session)) == [ISSUE_NUMBER]
+    assert list(_session_rows(session)) == [SESSION_KEY]
+
+
+def test_non_ascii_characters_round_trip_after_sanitisation(session):
+    """Non-ASCII text is preserved with ensure_ascii disabled."""
+    payload = {
+        "node": "implement · apply · review",
+        "description": "Café with Unicode",
+        "emoji": "The task is running 🚀",
+    }
+
+    encoded = _encode(payload)
+    decoded = json.loads(encoded)
+
+    assert decoded["node"] == "implement · apply · review"
+    assert decoded["description"] == "Café with Unicode"
+    assert decoded["emoji"] == "The task is running 🚀"
 
 
 def test_writer_publishes_an_empty_board_for_a_factory_never_configured(session):

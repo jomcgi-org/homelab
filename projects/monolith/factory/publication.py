@@ -39,6 +39,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from sqlalchemy import Integer, String, bindparam
+from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, select, text
 
 logger = logging.getLogger(__name__)
@@ -723,6 +724,29 @@ _SESSION_PRUNE = text(
 ).bindparams(bindparam("keep", expanding=True, type_=String()))
 
 
+def _sanitize_payload(obj: object) -> object:
+    """Remove NUL bytes from all strings in a payload tree.
+
+    NUL bytes (\x00) cannot be represented in Postgres text or jsonb. This
+    sanitiser recurses through dicts, lists, and tuples, removing NUL from
+    every string while leaving the rest of the structure and content intact.
+
+    Non-string, non-container objects pass through unchanged.
+    """
+    if isinstance(obj, str):
+        return obj.replace("\x00", "")
+    if isinstance(obj, dict):
+        return {
+            _sanitize_payload(key): _sanitize_payload(value)
+            for key, value in obj.items()
+        }
+    if isinstance(obj, list):
+        return [_sanitize_payload(item) for item in obj]
+    if isinstance(obj, tuple):
+        return tuple(_sanitize_payload(item) for item in obj)
+    return obj
+
+
 def _encode(payload: dict) -> str:
     """JSON for a jsonb parameter, with non-ASCII sent as UTF-8 bytes.
 
@@ -731,37 +755,75 @@ def _encode(payload: dict) -> str:
     those inside jsonb. Raw UTF-8 is accepted by both that server and the UTF-8
     production cluster.
     """
-    return json.dumps(payload, ensure_ascii=False)
+    sanitized = _sanitize_payload(payload)
+    return json.dumps(sanitized, ensure_ascii=False)
 
 
 def write_public_snapshot(session: Session) -> dict:
-    """Build the snapshot and replace what the public tables hold with it."""
+    """Build the snapshot and replace what the public tables hold with it.
+
+    Write the activity payload first (fail loudly if it fails, no partial board).
+    Write each task and session inside its own savepoint to isolate failures:
+    one bad row no longer takes down the whole snapshot.
+    """
     snapshot = build_public_snapshot(session)
     at = snapshot.activity["snapshotted_at"]
 
+    # Write activity first; if this fails, the job fails loudly.
     session.execute(
         _ACTIVITY_UPSERT,
         {"payload": _encode(snapshot.activity), "snapshotted_at": at},
     )
+
+    tasks_skipped = 0
     for issue_number, payload in snapshot.tasks.items():
-        session.execute(
-            _TASK_UPSERT,
-            {
-                "issue_number": issue_number,
-                "payload": _encode(payload),
-                "snapshotted_at": at,
-            },
-        )
+        savepoint = session.begin_nested()
+        try:
+            session.execute(
+                _TASK_UPSERT,
+                {
+                    "issue_number": issue_number,
+                    "payload": _encode(payload),
+                    "snapshotted_at": at,
+                },
+            )
+            savepoint.commit()
+        except SQLAlchemyError as exc:
+            savepoint.rollback()
+            logger.warning(
+                "factory_public.task_upsert_failed",
+                extra={
+                    "issue_number": issue_number,
+                    "exception_type": type(exc).__name__,
+                },
+            )
+            tasks_skipped += 1
+
+    sessions_skipped = 0
     for key, payload in snapshot.sessions.items():
-        session.execute(
-            _SESSION_UPSERT,
-            {
-                "session_key": key,
-                "issue_number": snapshot.session_issues.get(key),
-                "payload": _encode(payload),
-                "snapshotted_at": at,
-            },
-        )
+        savepoint = session.begin_nested()
+        try:
+            session.execute(
+                _SESSION_UPSERT,
+                {
+                    "session_key": key,
+                    "issue_number": snapshot.session_issues.get(key),
+                    "payload": _encode(payload),
+                    "snapshotted_at": at,
+                },
+            )
+            savepoint.commit()
+        except SQLAlchemyError as exc:
+            savepoint.rollback()
+            logger.warning(
+                "factory_public.session_upsert_failed",
+                extra={
+                    "session_key": key,
+                    "exception_type": type(exc).__name__,
+                },
+            )
+            sessions_skipped += 1
+
     session.execute(_TASK_PRUNE, {"keep": list(snapshot.tasks)})
     session.execute(_SESSION_PRUNE, {"keep": list(snapshot.sessions)})
     session.commit()
@@ -769,5 +831,7 @@ def write_public_snapshot(session: Session) -> dict:
     return {
         "tasks": len(snapshot.tasks),
         "sessions": len(snapshot.sessions),
+        "tasks_skipped": tasks_skipped,
+        "sessions_skipped": sessions_skipped,
         "snapshotted_at": at,
     }
