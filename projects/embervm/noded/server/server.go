@@ -23,6 +23,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -63,7 +64,9 @@ const (
 	defaultInvokePath = "/invoke"
 	// defaultAssignTimeout bounds a guest round-trip when the AssignRequest sets
 	// timeout_ms to zero.
-	defaultAssignTimeout = 90 * time.Second
+	defaultAssignTimeout    = 90 * time.Second
+	defaultInterruptTimeout = 30 * time.Second
+	interruptPath           = "/shim/interrupt"
 	// livenessInterval is how often WatchNode re-sends NodeStatus absent any
 	// material change. It is below the control plane's 5s "unknown" ageing window
 	// so a healthy node never looks stale.
@@ -1604,7 +1607,7 @@ func (s *Server) slotsExhausted() bool {
 // assigned/adopted, destroyed), which the caller maps to FAILED_PRECONDITION. The
 // physical VM is already a session-base VM (restored from the session workload's
 // base, running the persistent kernel); only its registry bookkeeping changes.
-func (s *Server) adoptPrimedSession(vmID, sessionID, workload string) (*sessionEntry, bool) {
+func (s *Server) adoptPrimedSession(vmID, sessionID, workload, dispatchID string) (*sessionEntry, bool) {
 	s.vmLifecycleMu.Lock()
 	defer s.vmLifecycleMu.Unlock()
 	ve, ok := s.vms.claimForSession(vmID, workload)
@@ -1622,8 +1625,9 @@ func (s *Server) adoptPrimedSession(vmID, sessionID, workload string) (*sessionE
 		// registry bookkeeping changes here, so opening a second forwarder would
 		// collide on the same unix socket, and dropping the cancel would leak the
 		// goroutine past the session's teardown.
-		egressCancel: ve.egressCancel,
-		inFlight:     true, // held for the operation that triggered this adoption
+		egressCancel:   ve.egressCancel,
+		inFlight:       true, // held for the operation that triggered this adoption
+		activeDispatch: dispatchID,
 	}
 	s.sessionVMs.add(se)
 	s.signalChange() // the VM moved primed -> session-live; refresh NodeStatus
@@ -1640,7 +1644,7 @@ func (s *Server) adoptPrimedSession(vmID, sessionID, workload string) (*sessionE
 // control plane decides whether to destroy it.
 func (s *Server) SessionAssign(ctx context.Context, req *nodev1.SessionAssignRequest) (*nodev1.SessionAssignResponse, error) {
 	vmID := req.GetVmId()
-	e, ok := s.sessionVMs.beginInFlight(vmID)
+	e, ok := s.sessionVMs.beginSessionAssign(vmID, req.GetSessionId(), req.GetDispatchId())
 	if !ok {
 		// Not (yet) in the session registry. A freshly CREATED session's VM was
 		// primed/claimed through the shared warm pool, so it still lives in the task
@@ -1649,7 +1653,7 @@ func (s *Server) SessionAssign(ctx context.Context, req *nodev1.SessionAssignReq
 		// already here, so this branch only runs once per session's lifetime. A
 		// genuinely unknown, already-adopted, mid-bank, or in-flight vm_id still
 		// fails FAILED_PRECONDITION.
-		adopted, ok2 := s.adoptPrimedSession(vmID, req.GetSessionId(), req.GetTrace().GetWorkload())
+		adopted, ok2 := s.adoptPrimedSession(vmID, req.GetSessionId(), req.GetTrace().GetWorkload(), req.GetDispatchId())
 		if !ok2 {
 			return nil, status.Errorf(codes.FailedPrecondition, "noded: session vm %q not assignable (unknown, task-class, mid-bank, or a call is already in flight)", vmID)
 		}
@@ -1723,6 +1727,63 @@ func (s *Server) SessionAssign(ctx context.Context, req *nodev1.SessionAssignReq
 	}, nil
 }
 
+// SessionInterrupt relays one exact active session dispatch to the guest shim.
+// It never changes VM lifecycle or releases the SessionAssign guard. The
+// original SessionAssign response remains the sole terminal outcome and usage
+// carrier, while this response reports only whether signaling completed.
+func (s *Server) SessionInterrupt(ctx context.Context, req *nodev1.SessionInterruptRequest) (*nodev1.SessionInterruptResponse, error) {
+	if req.GetVmId() == "" || req.GetSessionId() == "" || req.GetDispatchId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "noded: interrupt requires vm_id, session_id, and dispatch_id")
+	}
+	handle, ok := s.sessionVMs.interruptTarget(req.GetVmId(), req.GetSessionId(), req.GetDispatchId())
+	if !ok {
+		return nil, status.Error(codes.FailedPrecondition, "noded: exact session dispatch is no longer active")
+	}
+	timeout := time.Duration(req.GetTimeoutMs()) * time.Millisecond
+	if timeout <= 0 || timeout > defaultInterruptTimeout {
+		timeout = defaultInterruptTimeout
+	}
+	rtCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	body, _ := json.Marshal(map[string]string{"dispatch_id": req.GetDispatchId()})
+	httpReq, err := http.NewRequestWithContext(rtCtx, http.MethodPost, "http://vsock"+interruptPath, bytes.NewReader(body))
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "noded: build interrupt request: %v", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := s.transport.RoundTrip(rtCtx, s.driver.VsockUDSPath(handle.ThreadID), httpReq)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || rtCtx.Err() == context.DeadlineExceeded {
+			return nil, status.Error(codes.DeadlineExceeded, "noded: guest interrupt did not finish within 30s")
+		}
+		return nil, status.Errorf(codes.Unavailable, "noded: guest interrupt transport failed: %v", err)
+	}
+	defer resp.Body.Close()
+	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if err != nil {
+		return nil, status.Errorf(codes.Unavailable, "noded: read guest interrupt response: %v", err)
+	}
+	if resp.StatusCode == http.StatusConflict {
+		return nil, status.Error(codes.FailedPrecondition, "noded: exact guest dispatch is no longer active")
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, status.Errorf(codes.Unavailable, "noded: guest interrupt returned HTTP %d", resp.StatusCode)
+	}
+	var outcome struct {
+		TerminalReason string `json:"terminal_reason"`
+		Killed         bool   `json:"killed"`
+		Timeout        bool   `json:"timeout"`
+	}
+	if err := json.Unmarshal(responseBody, &outcome); err != nil {
+		return nil, status.Errorf(codes.Unavailable, "noded: invalid guest interrupt response: %v", err)
+	}
+	return &nodev1.SessionInterruptResponse{
+		TerminalReason: outcome.TerminalReason,
+		Killed:         outcome.Killed,
+		Timeout:        outcome.Timeout,
+	}, nil
+}
+
 // Bank pauses a live session VM, writes a full self-contained snapshot bundle
 // (memfile + rootfs state, the same format bases use) under the sessions/ prefix,
 // destroys the VM, and returns the opaque {snapshot_ref, size_bytes}. It refuses
@@ -1745,7 +1806,7 @@ func (s *Server) Bank(ctx context.Context, req *nodev1.BankRequest) (*nodev1.Ban
 		// adopt the VM into the session registry now. adoptPrimedSession returns with
 		// the in-flight guard already held; Bank must not acquire it again, and its
 		// existing success and failure paths both remove the guarded entry.
-		adopted, ok2 := s.adoptPrimedSession(vmID, req.GetSessionId(), req.GetTrace().GetWorkload())
+		adopted, ok2 := s.adoptPrimedSession(vmID, req.GetSessionId(), req.GetTrace().GetWorkload(), "")
 		if !ok2 {
 			return nil, status.Errorf(codes.FailedPrecondition, "noded: session vm %q not bankable (unknown, task-class, or a call is already in flight)", vmID)
 		}

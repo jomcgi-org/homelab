@@ -160,6 +160,10 @@ defmodule Embervm.Router do
     handle_session_invoke(conn, id)
   end
 
+  post "/v1/sessions/:id/interrupt" do
+    handle_session_interrupt(conn, id)
+  end
+
   get "/v1/sessions/:id" do
     handle_get_session(conn, id)
   end
@@ -259,10 +263,11 @@ defmodule Embervm.Router do
   defp fetch_query(conn, _opts), do: fetch_query_params(conn)
 
   # Auth is scoped to /v1: /healthz and /livez stay open for kubelet probes. The
-  # session routes that take a SESSION token (invoke, and the session-token-or-management
-  # GET) authenticate in their handler, not here, because the bearer token they
-  # carry is a per-session capability, not a ServiceAccount token TokenReview would
-  # recognize. Running management auth on them would 401 every valid session token.
+  # session routes that take a SESSION token (invoke, interrupt, and the
+  # session-token-or-management GET) authenticate in their handler, not here,
+  # because the bearer token they carry is a per-session capability, not a
+  # ServiceAccount token TokenReview would recognize. Running management auth on
+  # them would 401 every valid session token.
   # So this plug runs management auth on every /v1 path EXCEPT those, which
   # `session_token_route?/1` names explicitly (a closed allow-list, not a prefix,
   # so a new management route is never accidentally opened).
@@ -285,10 +290,14 @@ defmodule Embervm.Router do
 
   # The routes whose bearer token is a SESSION token (verified in-handler against
   # Embervm.SessionStore), NOT a management ServiceAccount token: POST
-  # /v1/sessions/:id/invoke (session token ONLY) and GET /v1/sessions/:id
-  # (management OR session token). Matched structurally on path_info so a query
-  # string or trailing content cannot smuggle a management route past the gate.
+  # /v1/sessions/:id/invoke and /interrupt (session token ONLY), and GET
+  # /v1/sessions/:id (management OR session token). Matched structurally on
+  # path_info so a query string or trailing content cannot smuggle a management
+  # route past the gate.
   defp session_token_route?(%Plug.Conn{method: "POST", path_info: ["v1", "sessions", _id, "invoke"]}),
+    do: true
+
+  defp session_token_route?(%Plug.Conn{method: "POST", path_info: ["v1", "sessions", _id, "interrupt"]}),
     do: true
 
   defp session_token_route?(%Plug.Conn{method: "GET", path_info: ["v1", "sessions", _id]}), do: true
@@ -1457,6 +1466,7 @@ defmodule Embervm.Router do
           path: guest_path(conn),
           headers: guest_headers(conn),
           body: body,
+          dispatch_id: header_value(conn, "x-ember-dispatch-id"),
           # Serialize the invoke ROOT span so the downstream queue_wait/relight/
           # guest_exec spans (which run in other processes across GenServer.call and
           # spawn boundaries, where the OTel process context does not follow) nest
@@ -1521,6 +1531,46 @@ defmodule Embervm.Router do
       {:error, :too_large} ->
         send_json(conn, 413, %{error: "request body exceeds 8 MiB", retryable: false})
     end
+  end
+
+  # POST /v1/sessions/:id/interrupt uses the same exact session capability as
+  # invoke, then binds the request to the dispatch identity carried by that
+  # invoke. The response is only a signaling acknowledgment; the original
+  # invoke remains the terminal outcome and usage authority.
+  defp handle_session_interrupt(conn, session_id) do
+    with {:ok, token} <- bearer_token(conn),
+         {:ok, _session} <- verify_session_token_span(session_id, token),
+         {:ok, body, conn} <- read_capped_body(conn),
+         %{"dispatch_id" => dispatch_id} = decoded <- :json.decode(body),
+         true <- map_size(decoded) == 1 and is_binary(dispatch_id) and dispatch_id != "" do
+      case session_manager().interrupt(session_manager_server(), session_id, dispatch_id) do
+        {:ok, outcome} ->
+          send_json(conn, 200, Map.put(outcome, :status, "requested"))
+
+        {:error, reason} when reason in [:stale_dispatch, :not_active] ->
+          send_json(conn, 409, %{error: "session dispatch is no longer active", retryable: false})
+
+        {:error, {:gone, reason}} ->
+          send_json(conn, 410, %{error: "session is gone", reason: inspect(reason), retryable: false})
+
+        {:error, reason} ->
+          send_json(conn, 502, %{error: "session interrupt failed", reason: inspect(reason), retryable: true})
+      end
+    else
+      {:error, :no_token} ->
+        halt_json(conn, 401, %{error: "missing session token", retryable: false})
+
+      {:error, :terminal} ->
+        session_gone(conn, session_id)
+
+      {:error, _} ->
+        halt_json(conn, 403, %{error: "invalid session token", session_id: session_id, retryable: false})
+
+      _ ->
+        send_json(conn, 400, %{error: "invalid interrupt request", retryable: false})
+    end
+  rescue
+    _ -> send_json(conn, 400, %{error: "invalid interrupt request", retryable: false})
   end
 
   # Memory pressure is inherent to the claude fleet (4096 MiB VMs, single 16gi brick host); idle sessions park/evict on TTL, so RESOURCE_EXHAUSTED is transient and retryable.

@@ -93,6 +93,8 @@ defmodule Embervm.Session do
     GuestResponse,
     SessionAssignRequest,
     SessionAssignResponse,
+    SessionInterruptRequest,
+    SessionInterruptResponse,
     Trace
   }
 
@@ -102,6 +104,7 @@ defmodule Embervm.Session do
   # the dispatcher's @assign_watchdog_margin_ms; overridable per deploy through
   # EMBERVM_SESSION_INVOKE_WATCHDOG_MARGIN_MS.
   @invoke_watchdog_margin_ms 15_000
+  @interrupt_timeout_ms 30_000
 
   # -- Client API ------------------------------------------------------------
 
@@ -126,6 +129,12 @@ defmodule Embervm.Session do
   @spec invoke(GenServer.server(), map(), timeout()) :: {:ok, map()} | {:error, term()}
   def invoke(server, req, _timeout \\ :infinity) do
     GenServer.call(server, {:invoke, req}, :infinity)
+  end
+
+  @doc "Interrupt one exact active dispatch without ending the session."
+  @spec interrupt(GenServer.server(), String.t()) :: {:ok, map()} | {:error, term()}
+  def interrupt(server, dispatch_id) when is_binary(dispatch_id) do
+    GenServer.call(server, {:interrupt, dispatch_id}, @interrupt_timeout_ms + 5_000)
   end
 
   @doc "The session id this process serves (for supervision/debug)."
@@ -209,6 +218,7 @@ defmodule Embervm.Session do
       channel_fun: Keyword.get(opts, :channel_fun, &Embervm.NodeChannel.get/1),
       invalidate_fun: Keyword.get(opts, :invalidate_fun, &Embervm.NodeChannel.invalidate/2),
       assign_fun: Keyword.get(opts, :assign_fun, &default_session_assign/2),
+      interrupt_fun: Keyword.get(opts, :interrupt_fun, &default_session_interrupt/2),
       destroy_fun: Keyword.get(opts, :destroy_fun, &default_destroy/2),
       rejoin_failure_fun: Keyword.get(opts, :rejoin_failure_fun),
       brick_status_fun: Keyword.get(opts, :brick_status_fun, &default_brick_status/1),
@@ -218,6 +228,8 @@ defmodule Embervm.Session do
       # invoke, or nil.
       queue: :queue.new(),
       worker: nil,
+      dispatch_id: nil,
+      interrupt: nil,
       # The armed idle-bank timer ref (nil when disarmed).
       idle_timer: nil
     }
@@ -259,6 +271,27 @@ defmodule Embervm.Session do
     end
   end
 
+  def handle_call({:interrupt, dispatch_id}, from, state) do
+    cond do
+      not is_binary(dispatch_id) or dispatch_id == "" ->
+        {:reply, {:error, :invalid_dispatch}, state}
+
+      state.dispatch_id != dispatch_id or is_nil(state.worker) ->
+        {:reply, {:error, :stale_dispatch}, state}
+
+      match?({^dispatch_id, _}, state.interrupt) ->
+        {^dispatch_id, waiters} = state.interrupt
+        {:noreply, %{state | interrupt: {dispatch_id, [from | waiters]}}}
+
+      not is_nil(state.interrupt) ->
+        {:reply, {:error, :stale_dispatch}, state}
+
+      true ->
+        spawn_interrupt_worker(state, dispatch_id)
+        {:noreply, %{state | interrupt: {dispatch_id, [from]}}}
+    end
+  end
+
   defp enqueue(state, from, req) do
     # Stamp the enqueue time (native units) so the worker can emit a `queue_wait`
     # span covering park -> dispatch (Task 9: the FIFO wait is a latency phase the
@@ -280,7 +313,7 @@ defmodule Embervm.Session do
     # Defensive cancellation: a late {:invoke_timeout, ref} is harmless because
     # the handler compares the ref against the live worker.
     _ = Process.cancel_timer(timer)
-    state = %{state | worker: nil}
+    state = %{state | worker: nil, dispatch_id: nil}
 
     case outcome do
       {:ok, result, usage} ->
@@ -312,7 +345,7 @@ defmodule Embervm.Session do
   # a transport failure, same as a reported error (same durable-before-reply order).
   def handle_info({:DOWN, ref, :process, pid, down_reason}, %{worker: {pid, ref, from, timer}} = state) do
     _ = Process.cancel_timer(timer)
-    state = %{state | worker: nil}
+    state = %{state | worker: nil, dispatch_id: nil}
     status = safe_brick_status(state)
     %{reason: reason} = classify_invoke_error({:worker_down, down_reason}, status)
     handle_invoke_error(state, reason, status, from)
@@ -346,7 +379,7 @@ defmodule Embervm.Session do
     )
 
     Process.exit(pid, :kill)
-    state = %{state | worker: nil}
+    state = %{state | worker: nil, dispatch_id: nil}
     status = safe_brick_status(state)
     %{reason: reason} = classify_invoke_error(:invoke_timeout, status)
 
@@ -359,6 +392,13 @@ defmodule Embervm.Session do
   end
 
   def handle_info({:invoke_timeout, _stale_ref}, state), do: {:noreply, state}
+
+  def handle_info({:interrupt_done, dispatch_id, outcome}, %{interrupt: {dispatch_id, waiters}} = state) do
+    Enum.each(waiters, &GenServer.reply(&1, outcome))
+    {:noreply, %{state | interrupt: nil}}
+  end
+
+  def handle_info({:interrupt_done, _dispatch_id, _outcome}, state), do: {:noreply, state}
 
   # The idle-bank timer fired. ASK the manager to bank ONLY if still quiescent (no
   # worker, empty queue); a stale timer (idle_timer already cleared) is ignored. On
@@ -446,7 +486,7 @@ defmodule Embervm.Session do
             # Last-resort wall clock (#4434): must fire AFTER the gRPC deadline the
             # server enforces, so the normal DEADLINE_EXCEEDED path gets first shot.
             timer = Process.send_after(self(), {:invoke_timeout, ref}, invoke_watchdog_ms(state))
-            %{state | queue: rest, worker: {pid, ref, from, timer}}
+            %{state | queue: rest, worker: {pid, ref, from, timer}, dispatch_id: Map.get(req, :dispatch_id)}
 
           {:error, reason} ->
             GenServer.reply(from, {:error, {:invoke_start_not_recorded, reason}})
@@ -532,6 +572,46 @@ defmodule Embervm.Session do
     end)
   end
 
+  defp spawn_interrupt_worker(state, dispatch_id) do
+    owner = self()
+    dial_id = state.dial_id
+    vm_id = state.vm_id
+    session_id = state.session_id
+    channel_fun = state.channel_fun
+    interrupt_fun = state.interrupt_fun
+
+    spawn(fn ->
+      outcome =
+        case channel_fun.(dial_id) do
+          {:ok, channel} ->
+            request = %SessionInterruptRequest{
+              vm_id: vm_id,
+              session_id: session_id,
+              dispatch_id: dispatch_id,
+              timeout_ms: @interrupt_timeout_ms
+            }
+
+            case interrupt_fun.(channel, request) do
+              {:ok, %SessionInterruptResponse{} = response} ->
+                {:ok,
+                 %{
+                   terminal_reason: response.terminal_reason,
+                   killed: response.killed,
+                   timeout: response.timeout
+                 }}
+
+              {:error, reason} ->
+                {:error, normalize_interrupt_error(reason)}
+            end
+
+          {:error, reason} ->
+            {:error, {:no_channel, reason}}
+        end
+
+      send(owner, {:interrupt_done, dispatch_id, outcome})
+    end)
+  end
+
   # The worker body (off this GenServer): acquire the shared channel, SessionAssign,
   # and classify the result. A clean guest response (even a 4xx/5xx) is `{:ok, ...}`:
   # unlike a task, a session invoke's guest error is the guest's answer, not a VM
@@ -555,7 +635,8 @@ defmodule Embervm.Session do
           vm_id: ctx.vm_id,
           request: guest_req,
           timeout_ms: ctx.timeout_ms,
-          session_id: ctx.session_id
+          session_id: ctx.session_id,
+          dispatch_id: Map.get(ctx.req, :dispatch_id)
         }
 
         case ctx.assign_fun.(channel, assign_req) do
@@ -605,6 +686,11 @@ defmodule Embervm.Session do
   defp normalize_invoke_error(%GRPC.RPCError{status: 4}), do: :deadline_exceeded
   defp normalize_invoke_error(%GRPC.RPCError{} = e), do: {:rpc, e.status}
   defp normalize_invoke_error(reason), do: reason
+
+  # FAILED_PRECONDITION means noded or the guest rechecked the identity after
+  # the control-plane validation and found that the exact dispatch had ended.
+  defp normalize_interrupt_error(%GRPC.RPCError{status: 9}), do: :stale_dispatch
+  defp normalize_interrupt_error(reason), do: normalize_invoke_error(reason)
 
   defp handle_invoke_error(state, :brick_gone, status, from) do
     _ = record_brick_gone_outcome(state, Map.put(status, :node_id, state.node_id))
@@ -779,6 +865,12 @@ defmodule Embervm.Session do
 
   defp default_session_assign(channel, %SessionAssignRequest{timeout_ms: timeout_ms} = req) do
     Embervm.Node.V1.NodeService.Stub.session_assign(channel, req, timeout: transport_timeout(timeout_ms))
+  end
+
+  defp default_session_interrupt(channel, %SessionInterruptRequest{} = req) do
+    Embervm.Node.V1.NodeService.Stub.session_interrupt(channel, req,
+      timeout: @interrupt_timeout_ms + 5_000
+    )
   end
 
   defp default_destroy(channel, vm_id) do

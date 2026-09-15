@@ -22,7 +22,13 @@ from factory.execution.constants import (
     LEGACY_QWEN_SYNTHETIC_PROMPT,
     SYNTHETIC_SESSION_PREFIX,
 )
-from factory.execution.models import AgentSession, AgentTurn, PendingMessage
+from factory.execution.models import (
+    AgentCapacityReservation,
+    AgentSession,
+    AgentTurn,
+    PendingMessage,
+)
+from factory.execution.transport import EmberDispatchStale, exact_dispatch_id
 from factory.execution.router import router
 from core.db import get_session
 from faas.embervm_client import EmberVMTransportError
@@ -894,7 +900,12 @@ def test_vm_stream_heartbeats_when_idle(monkeypatch):
 
 
 def test_get_session_detail(client, session):
-    row = _session(session, "detail")
+    row = _session(
+        session,
+        "detail",
+        ember_session_id="guest-detail",
+        ember_session_token="token-detail",
+    )
     other_row = _session(session, "other")
     session.add_all(
         [
@@ -913,6 +924,8 @@ def test_get_session_detail(client, session):
                 message_text="next",
                 partial_text="in progress",
                 partial_activities='[{"type": "tool", "name": "shell"}]',
+                claimed_by_replica="replica:detail",
+                dispatch_count=1,
             ),
             AgentTurn(
                 session_id=other_row.id,
@@ -945,6 +958,10 @@ def test_get_session_detail(client, session):
     assert body["pending_queue"][0]["partial_activities"] == [
         {"type": "tool", "name": "shell"}
     ]
+    assert body["pending_queue"][0]["dispatch_count"] == 1
+    assert body["pending_queue"][0]["dispatch_id"] == exact_dispatch_id(
+        row.id, "guest-detail", 3, "replica:detail", 1
+    )
 
     newer = client.get(f"/api/agents/sessions/{row.id}?after_seq=1").json()
     assert [turn["seq"] for turn in newer["turns"]] == [2]
@@ -1867,6 +1884,261 @@ def test_delete_session(client, session, monkeypatch):
 def test_delete_session_not_found(client, monkeypatch):
     monkeypatch.setattr("factory.execution.router._load_session_row", lambda _: None)
     assert client.delete("/api/agents/sessions/999").status_code == 404
+
+
+def test_stop_snapshot_binds_guest_turn_owner_and_dispatch(session, monkeypatch):
+    row = _session(
+        session,
+        "stop-exact",
+        ember_session_id="guest-1",
+        ember_session_token="token-1",
+    )
+    pending = PendingMessage(
+        session_id=row.id,
+        seq=1,
+        message_text="work",
+        claimed_by_replica="replica:attempt",
+        dispatch_count=2,
+        claimed_at=datetime.now(timezone.utc),
+        last_dispatch_at=datetime.now(timezone.utc),
+    )
+    session.add(pending)
+    session.add(
+        AgentCapacityReservation(
+            local_session_id=row.local_session_id,
+            pending_seq=1,
+            session_id=row.id,
+            tier="interactive",
+            owner="replica:attempt",
+            state="running",
+        )
+    )
+    session.commit()
+    dispatch_id = exact_dispatch_id(row.id, "guest-1", 1, "replica:attempt", 2)
+    monkeypatch.setattr(agent_router, "get_engine", lambda: session.get_bind())
+
+    snapshot = agent_router._stop_dispatch_snapshot(
+        row.id,
+        agent_router.StopRequest(guest_id="guest-1", seq=1, dispatch_id=dispatch_id),
+    )
+    assert snapshot == {
+        "guest_id": "guest-1",
+        "token": "token-1",
+        "dispatch_id": dispatch_id,
+    }
+    assert agent_router._stop_dispatch_snapshot(
+        row.id,
+        agent_router.StopRequest(
+            guest_id="other-guest", seq=1, dispatch_id=dispatch_id
+        ),
+    ) == {"error": "stale"}
+
+    # The old identity cannot name the successor even when both attempts use
+    # the same session and guest.
+    session.delete(pending)
+    session.add(
+        PendingMessage(
+            session_id=row.id,
+            seq=2,
+            message_text="successor",
+            claimed_by_replica="replica:successor",
+            dispatch_count=1,
+            claimed_at=datetime.now(timezone.utc),
+            last_dispatch_at=datetime.now(timezone.utc),
+        )
+    )
+    session.commit()
+    assert agent_router._stop_dispatch_snapshot(
+        row.id,
+        agent_router.StopRequest(guest_id="guest-1", seq=1, dispatch_id=dispatch_id),
+    ) == {"error": "stale"}
+
+
+def test_stop_acknowledgment_does_not_settle_or_imply_terminal(
+    client, session, monkeypatch
+):
+    row = _session(
+        session,
+        "stop-ack-only",
+        ember_session_id="guest-ack",
+        ember_session_token="token-ack",
+    )
+    session.add(
+        PendingMessage(
+            session_id=row.id,
+            seq=1,
+            message_text="still running",
+            claimed_by_replica="replica:ack",
+            dispatch_count=1,
+            claimed_at=datetime.now(timezone.utc),
+            last_dispatch_at=datetime.now(timezone.utc),
+        )
+    )
+    session.add(
+        AgentCapacityReservation(
+            local_session_id=row.local_session_id,
+            pending_seq=1,
+            session_id=row.id,
+            tier="interactive",
+            owner="replica:ack",
+            state="running",
+        )
+    )
+    session.commit()
+    dispatch_id = exact_dispatch_id(row.id, "guest-ack", 1, "replica:ack", 1)
+
+    async def interrupt(*_args):
+        return {
+            "status": "requested",
+            "terminal_reason": "user_interrupt",
+            "killed": False,
+            "timeout": False,
+        }
+
+    monkeypatch.delenv("FACTORY_OPERATOR_EMAILS", raising=False)
+    monkeypatch.setattr(agent_router, "get_engine", lambda: session.get_bind())
+    monkeypatch.setattr(agent_router._transport, "interrupt_session", interrupt)
+    monkeypatch.setattr(agent_router, "_STOP_TERMINAL_OBSERVE_SECONDS", 0.0)
+    response = client.post(
+        f"/api/agents/sessions/{row.id}/stop",
+        json={"guest_id": "guest-ack", "seq": 1, "dispatch_id": dispatch_id},
+        headers={"X-Auth-Email": "operator@example.com"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "requested"
+    assert response.json()["outcome"] == "awaiting_terminal_confirmation"
+    session.expire_all()
+    permit = session.exec(
+        select(AgentCapacityReservation).where(
+            AgentCapacityReservation.session_id == row.id,
+            AgentCapacityReservation.pending_seq == 1,
+        )
+    ).one()
+    assert permit.state == "running"
+    assert store.get_pending_message(session, row.id, 1) is not None
+
+
+def test_stop_endpoint_requires_verified_browser_operator(client, monkeypatch):
+    called = []
+    monkeypatch.setattr(
+        agent_router,
+        "_stop_dispatch_snapshot",
+        lambda *_: called.append(True),
+    )
+    response = client.post(
+        "/api/agents/sessions/1/stop",
+        json={"guest_id": "guest", "seq": 1, "dispatch_id": "a" * 64},
+    )
+    assert response.status_code == 403
+    assert called == []
+
+
+def test_stop_endpoint_confirms_interrupt_and_duplicate_completion(client, monkeypatch):
+    snapshots = [
+        {"guest_id": "guest", "token": "token", "dispatch_id": "a" * 64},
+        {
+            "terminal": {
+                "status": "completed",
+                "outcome": "interrupted",
+                "terminal_reason": "user_interrupt",
+            }
+        },
+    ]
+    calls = []
+
+    async def interrupt(*args):
+        calls.append(args)
+        return {"status": "requested", "terminal_reason": "user_interrupt"}
+
+    monkeypatch.delenv("FACTORY_OPERATOR_EMAILS", raising=False)
+    monkeypatch.setattr(
+        agent_router, "_stop_dispatch_snapshot", lambda *_: snapshots.pop(0)
+    )
+    monkeypatch.setattr(
+        agent_router,
+        "_read_terminal_stop_result",
+        lambda *_: {
+            "status": "completed",
+            "outcome": "interrupted",
+            "terminal_reason": "user_interrupt",
+        },
+    )
+    monkeypatch.setattr(agent_router._transport, "interrupt_session", interrupt)
+    request = {"guest_id": "guest", "seq": 1, "dispatch_id": "a" * 64}
+    headers = {"X-Auth-Email": "operator@example.com"}
+
+    first = client.post("/api/agents/sessions/1/stop", json=request, headers=headers)
+    second = client.post("/api/agents/sessions/1/stop", json=request, headers=headers)
+    assert first.json()["outcome"] == "interrupted"
+    assert second.json()["outcome"] == "interrupted"
+    assert calls == [("guest", "token", "a" * 64)]
+
+
+def test_stop_endpoint_preserves_completion_that_wins_race(client, monkeypatch):
+    async def stale(*_args):
+        raise EmberDispatchStale("completed")
+
+    monkeypatch.delenv("FACTORY_OPERATOR_EMAILS", raising=False)
+    monkeypatch.setattr(
+        agent_router,
+        "_stop_dispatch_snapshot",
+        lambda *_: {"guest_id": "guest", "token": "token", "dispatch_id": "b" * 64},
+    )
+    monkeypatch.setattr(agent_router._transport, "interrupt_session", stale)
+    monkeypatch.setattr(
+        agent_router,
+        "_read_terminal_stop_result",
+        lambda *_: {
+            "status": "completed",
+            "outcome": "completion_won",
+            "terminal_reason": "completed",
+        },
+    )
+    response = client.post(
+        "/api/agents/sessions/1/stop",
+        json={"guest_id": "guest", "seq": 1, "dispatch_id": "b" * 64},
+        headers={"X-Auth-Email": "operator@example.com"},
+    )
+    assert response.status_code == 200
+    assert response.json()["outcome"] == "completion_won"
+
+
+def test_stop_endpoint_retains_unknown_state_and_destroy_fallback(
+    client, session, monkeypatch
+):
+    row = _session(session, "stop-timeout", ember_session_id="guest")
+    destroyed = []
+
+    async def timeout(*_args):
+        raise EmberVMTransportError("interrupt timed out")
+
+    async def destroy(guest_id):
+        destroyed.append(guest_id)
+        return {"session_id": guest_id, "state": "destroyed"}
+
+    monkeypatch.delenv("FACTORY_OPERATOR_EMAILS", raising=False)
+    monkeypatch.setattr(
+        agent_router,
+        "_stop_dispatch_snapshot",
+        lambda *_: {"guest_id": "guest", "token": "token", "dispatch_id": "c" * 64},
+    )
+    monkeypatch.setattr(agent_router._transport, "interrupt_session", timeout)
+    monkeypatch.setattr(agent_router, "_load_session_row", lambda *_: row)
+    monkeypatch.setattr(agent_router._transport, "destroy_session", destroy)
+    monkeypatch.setattr(agent_router, "_clear_ember_bindings_for", lambda *_: [row.id])
+    response = client.post(
+        f"/api/agents/sessions/{row.id}/stop",
+        json={"guest_id": "guest", "seq": 1, "dispatch_id": "c" * 64},
+        headers={"X-Auth-Email": "operator@example.com"},
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "unknown"
+    assert response.json()["outcome"] == "cessation_unconfirmed"
+    fallback = client.delete(f"/api/agents/sessions/{row.id}")
+    assert fallback.status_code == 200
+    assert destroyed == ["guest"]
+    assert fallback.json()["cleared_bindings"] == [row.id]
 
 
 def test_search_empty_query(client):

@@ -156,6 +156,7 @@
   let prompt = $state("");
   let composerModelOverride = $state(null);
   let sending = $state(false);
+  let stoppingTurn = $state(false);
   let codexLoginHint = $state(null);
   let creating = $state(false);
   let needsInputState = $state(false);
@@ -254,6 +255,12 @@
     terminal_reason: latestSelectedTurn?.terminal_reason,
     stop_reason: latestSelectedTurn?.stop_reason,
   });
+  const activeStopDispatch = $derived(
+    detail?.pending_queue?.find(
+      (entry) => entry.claimed_by_replica && entry.dispatch_id,
+    ) ?? null,
+  );
+  const activeStopGuestId = $derived(detail?.session?.ember_session_id ?? null);
   // Runs and sessions are two collections, not one list with runs bolted on.
   // A session a run spawned is a detail of that run, reachable through it,
   // never a peer of a session you started yourself. Previously a run appeared
@@ -1234,6 +1241,69 @@
     }
   }
 
+  async function stopActiveTurn() {
+    if (
+      !selectedId ||
+      !activeStopGuestId ||
+      !activeStopDispatch ||
+      stoppingTurn
+    )
+      return;
+    const targetSessionId = selectedId;
+    const targetGuestId = activeStopGuestId;
+    const targetDispatch = activeStopDispatch;
+    stoppingTurn = true;
+    errorMessage = null;
+    noticeMessage = "Stop requested; waiting for the active turn to finish.";
+    try {
+      const response = await fetch(
+        `/factory/execution/session/${encodeURIComponent(targetSessionId)}/stop`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            guest_id: targetGuestId,
+            seq: targetDispatch.seq,
+            dispatch_id: targetDispatch.dispatch_id,
+          }),
+        },
+      );
+      const body = await response.json();
+      if (!response.ok && body.status !== "unknown") {
+        throw new Error(
+          body.outcome === "stale_dispatch"
+            ? "That turn already finished or was replaced; no newer turn was stopped."
+            : "The stop request failed.",
+        );
+      }
+      if (body.status === "completed" && body.outcome === "interrupted") {
+        noticeMessage =
+          "The turn stopped. This session is ready for another turn.";
+      } else if (
+        body.status === "completed" &&
+        body.outcome === "completion_won"
+      ) {
+        noticeMessage = "The turn completed before the stop took effect.";
+      } else if (body.status === "requested") {
+        noticeMessage =
+          "Stop requested; terminal confirmation is still pending.";
+      } else {
+        noticeMessage = null;
+        errorMessage =
+          "The stop outcome is unknown. Capacity remains held until execution is reconciled.";
+      }
+      await Promise.all([
+        loadSessions(),
+        loadDetail(targetSessionId, requestSequence, true),
+      ]);
+    } catch (error) {
+      noticeMessage = null;
+      errorMessage = error.message;
+    } finally {
+      stoppingTurn = false;
+    }
+  }
+
   async function cancelRun(id) {
     if (!id || !window.confirm(P.labels.cancelRunConfirm)) return;
     try {
@@ -2195,6 +2265,9 @@
               {sessionView}
               onBackToRun={returnToRun}
               onChangeView={(view) => (sessionView = view)}
+              canStop={Boolean(activeStopDispatch && activeStopGuestId)}
+              stopBusy={stoppingTurn}
+              onStop={stopActiveTurn}
               onDestroy={destroySession}
               onVoice={openVoiceMode}
             >

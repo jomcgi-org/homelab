@@ -11,7 +11,7 @@ from uuid import uuid4
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlmodel import Session, func, select
 
 from factory.execution import (
@@ -27,8 +27,10 @@ from factory.execution.codex_login import codex_login_gate, watch_for_login
 from factory.execution.constants import (
     LEGACY_QWEN_SYNTHETIC_PROMPT,
     SYNTHETIC_SESSION_PREFIX,
+    UNKNOWN_INVOCATION,
 )
 from factory.execution.models import AgentSession, AgentTurn, PendingMessage
+from factory.execution.transport import EmberDispatchStale, exact_dispatch_id
 from factory.execution.mcp import (
     _append_rationale_trailer,
     _activate_session_after_enqueue,
@@ -41,7 +43,7 @@ from factory.execution.mcp import (
     _set_session_status,
     _transport,
 )
-from core.db import get_session
+from core.db import get_engine, get_session
 from faas.embervm_client import EmberVMTransportError
 from goosecracker.api import REPO_CATALOG
 from knowledge.api import attach_recall
@@ -59,6 +61,7 @@ _BRANCH_LIST_CACHE: dict[str, tuple[float, dict | None, str | None]] = {}
 _BRANCH_LIST_CACHE_TTL = 60.0
 _BRANCH_LIST_CACHE_FAILURE_TTL = 10.0
 _PREWARM_TTL = 10.0
+_STOP_TERMINAL_OBSERVE_SECONDS = 2.0
 _prewarm_timestamps: dict[int, float] = {}
 
 
@@ -255,6 +258,14 @@ def _resolve_reasoning(start_request: "StartRequest") -> bool:
 class MessageRequest(BaseModel):
     prompt: str
     model: str | None = None
+
+
+class StopRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    guest_id: str
+    seq: int
+    dispatch_id: str
 
 
 class CompanionRequest(BaseModel):
@@ -848,6 +859,21 @@ def get_session_detail(
                 "partial_activities": _decode(message.partial_activities, None),
                 "claimed_by_replica": message.claimed_by_replica,
                 "claimed_at": _iso(message.claimed_at),
+                "dispatch_count": message.dispatch_count,
+                "dispatch_id": (
+                    exact_dispatch_id(
+                        row.id,
+                        row.ember_session_id,
+                        message.seq,
+                        message.claimed_by_replica,
+                        message.dispatch_count,
+                    )
+                    if row.ember_session_id
+                    and row.ember_session_token
+                    and message.claimed_by_replica
+                    and message.dispatch_count > 0
+                    else None
+                ),
                 "created_at": _iso(message.created_at),
             }
             for message in pending
@@ -1180,6 +1206,145 @@ async def send_message(session_id: int, request: MessageRequest) -> dict:
         }
     _schedule_next_message(session_id)
     return {"accepted": True, "session_id": session_id, "turn": turn}
+
+
+def _terminal_stop_result(db: Session, session_id: int, seq: int) -> dict | None:
+    pending = store.get_pending_message(db, session_id, seq)
+    turn = store.get_turn(db, session_id, seq)
+    if pending is not None or turn is None:
+        return None
+    if turn.terminal_reason == "user_interrupt":
+        return {
+            "status": "completed",
+            "outcome": "interrupted",
+            "terminal_reason": turn.terminal_reason,
+        }
+    if turn.terminal_reason in {"completed", "end_turn", "stop"}:
+        return {
+            "status": "completed",
+            "outcome": "completion_won",
+            "terminal_reason": turn.terminal_reason,
+        }
+    if turn.stop_reason == UNKNOWN_INVOCATION:
+        return {
+            "status": "unknown",
+            "outcome": "cessation_unconfirmed",
+            "terminal_reason": turn.terminal_reason,
+        }
+    return {
+        "status": "failed",
+        "outcome": "terminal_error",
+        "terminal_reason": turn.terminal_reason,
+    }
+
+
+def _stop_dispatch_snapshot(session_id: int, request: StopRequest) -> dict:
+    """Validate one browser stop under the session and capacity locks."""
+    with Session(get_engine()) as db:
+        store.admission.lock_pool(db)
+        row = store._lock_session(db, session_id)
+        if row is None:
+            return {"error": "not_found"}
+        completed = _terminal_stop_result(db, session_id, request.seq)
+        if completed is not None:
+            return {"terminal": completed}
+        pending = store.get_pending_message(db, session_id, request.seq)
+        if (
+            pending is None
+            or pending.claimed_by_replica is None
+            or pending.dispatch_count < 1
+            or row.ember_session_id != request.guest_id
+            or not row.ember_session_token
+        ):
+            return {"error": "stale"}
+        current = exact_dispatch_id(
+            row.id,
+            row.ember_session_id,
+            pending.seq,
+            pending.claimed_by_replica,
+            pending.dispatch_count,
+        )
+        permit = store.admission.reservation(db, row.local_session_id, pending.seq)
+        if (
+            current != request.dispatch_id
+            or permit is None
+            or permit.session_id != row.id
+            or permit.owner != pending.claimed_by_replica
+            or permit.state != "running"
+        ):
+            return {"error": "stale"}
+        return {
+            "guest_id": row.ember_session_id,
+            "token": row.ember_session_token,
+            "dispatch_id": current,
+        }
+
+
+def _read_terminal_stop_result(session_id: int, seq: int) -> dict | None:
+    with Session(get_engine()) as db:
+        return _terminal_stop_result(db, session_id, seq)
+
+
+@router.post("/sessions/{session_id}/stop")
+async def stop_session_turn(
+    session_id: int, request_body: StopRequest, request: Request
+) -> dict | JSONResponse:
+    """Stop one exact active turn while preserving a successfully interrupted session."""
+    factory_decider(request)
+    if (
+        request_body.seq < 1
+        or not request_body.guest_id
+        or len(request_body.dispatch_id) != 64
+    ):
+        raise HTTPException(status_code=400, detail="Invalid stop identity")
+    snapshot = await asyncio.to_thread(
+        _stop_dispatch_snapshot, session_id, request_body
+    )
+    if "terminal" in snapshot:
+        return snapshot["terminal"]
+    if snapshot.get("error") == "not_found":
+        raise HTTPException(status_code=404, detail="Agent session not found")
+    if "error" in snapshot:
+        return JSONResponse(
+            {"status": "failed", "outcome": "stale_dispatch"}, status_code=409
+        )
+    try:
+        acknowledgment = await _transport.interrupt_session(
+            snapshot["guest_id"], snapshot["token"], snapshot["dispatch_id"]
+        )
+    except EmberDispatchStale:
+        terminal = await asyncio.to_thread(
+            _read_terminal_stop_result, session_id, request_body.seq
+        )
+        if terminal is not None:
+            return terminal
+        return JSONResponse(
+            {"status": "failed", "outcome": "stale_dispatch"}, status_code=409
+        )
+    except EmberVMTransportError as exc:
+        return {
+            "status": "unknown",
+            "outcome": "cessation_unconfirmed",
+            "error": str(exc),
+        }
+
+    # Signaling acknowledgment is not terminal evidence. Give the ordinary
+    # executor a short window to commit the original response, usage, receipt,
+    # and permit settlement, then report requested if it has not done so yet.
+    deadline = asyncio.get_running_loop().time() + _STOP_TERMINAL_OBSERVE_SECONDS
+    while True:
+        terminal = await asyncio.to_thread(
+            _read_terminal_stop_result, session_id, request_body.seq
+        )
+        if terminal is not None:
+            return terminal
+        if asyncio.get_running_loop().time() >= deadline:
+            return {
+                "status": "requested",
+                "outcome": "awaiting_terminal_confirmation",
+                "signal": acknowledgment,
+            }
+        await asyncio.sleep(0.05)
 
 
 @router.post("/sessions/{session_id}/prewarm", status_code=204)

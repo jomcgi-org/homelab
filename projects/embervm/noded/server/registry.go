@@ -204,8 +204,9 @@ type sessionEntry struct {
 	// travels with the VM across that registry move.
 	egressCancel func()
 
-	mu       sync.Mutex // guards inFlight
-	inFlight bool
+	mu             sync.Mutex // guards inFlight and activeDispatch
+	inFlight       bool
+	activeDispatch string
 }
 
 // sessionRegistry is the daemon's inventory of LIVE session microVMs, keyed by the
@@ -249,12 +250,52 @@ func (r *sessionRegistry) beginInFlight(id string) (*sessionEntry, bool) {
 	return e, true
 }
 
+// beginSessionAssign marks one exact session dispatch active. A missing
+// dispatch identity remains compatible with legacy invokes, but such an invoke
+// cannot be interrupted. A supplied session identity must match the registry
+// owner so a cross-session request cannot borrow another VM id.
+func (r *sessionRegistry) beginSessionAssign(id, sessionID, dispatchID string) (*sessionEntry, bool) {
+	r.mu.Lock()
+	e, ok := r.vms[id]
+	r.mu.Unlock()
+	if !ok {
+		return nil, false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.inFlight || e.teardown.started.Load() || (sessionID != "" && e.sessionID != sessionID) {
+		return nil, false
+	}
+	e.inFlight = true
+	e.activeDispatch = dispatchID
+	return e, true
+}
+
+// interruptTarget returns the exact live dispatch target without changing the
+// ordinary in-flight guard. The guest performs the final identity check at the
+// signaling point, closing the race after this lock is released.
+func (r *sessionRegistry) interruptTarget(id, sessionID, dispatchID string) (substrate.Handle, bool) {
+	r.mu.Lock()
+	e, ok := r.vms[id]
+	r.mu.Unlock()
+	if !ok || sessionID == "" || dispatchID == "" {
+		return substrate.Handle{}, false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if !e.inFlight || e.teardown.started.Load() || e.sessionID != sessionID || e.activeDispatch != dispatchID {
+		return substrate.Handle{}, false
+	}
+	return e.handle, true
+}
+
 // endInFlight clears the in-flight guard for a session VM that is still live
 // (after a SessionAssign returns). A Bank instead remove()s the entry, so it never
 // calls this.
 func (e *sessionEntry) endInFlight() {
 	e.mu.Lock()
 	e.inFlight = false
+	e.activeDispatch = ""
 	e.mu.Unlock()
 }
 
