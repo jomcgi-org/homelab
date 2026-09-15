@@ -57,16 +57,10 @@ type ExecLauncher struct {
 	// under ancestor memory pressure, never the daemon. The jailed path also has
 	// its own hard memory.max. Best-effort: a write failure is logged, not fatal.
 	OOMScoreAdj int
-	// VsockBindTarget, when set, launches firecracker in its own mount namespace
-	// with the VM's bundle dir bind-mounted over this canonical vsock dir (the path
-	// the base snapshot embeds). This gives every microVM restored from one warm
-	// base its own host-reachable vsock socket. Empty preserves the plain launch
-	// (fc-agentd's cold-boot path). Requires Self to be set.
-	VsockBindTarget string
-	// Self is the path to the current executable, which must handle the "__fcmount"
-	// trampoline subcommand (via ExecMountTrampoline). Required iff VsockBindTarget
-	// is set.
-	Self string
+	// MountNamespace keeps direct-exec guests in the private mount namespace the
+	// retired canonical-vsock bind used. It preserves that containment without
+	// requiring a bind mount or self-reexec trampoline.
+	MountNamespace bool
 	// cgroups is an injected cgroup hierarchy for tests. Production uses the
 	// process-wide manager so all launches share one delegated parent.
 	cgroups *cgroupManager
@@ -239,19 +233,11 @@ func (l *ExecLauncher) Launch(ctx context.Context, spec LaunchSpec) (Process, er
 		} else {
 			cmd = exec.Command(l.jailerBin(), buildJailerArgs(l.Bin, spec.VMID, uid, gid, jail.BaseDir, cg.ParentArg(), jail.APISocketPath())...)
 		}
-	} else if l.VsockBindTarget != "" {
-		// Per-instance vsock isolation: re-exec our own __fcmount trampoline in a
-		// fresh mount namespace, bind-mounting this VM's bundle dir (the api socket's
-		// dir) over the canonical vsock dir embedded in the base snapshot, then exec
-		// firecracker. See ExecMountTrampoline.
-		if l.Self == "" {
-			return nil, fmt.Errorf("driver: ExecLauncher.Self required when VsockBindTarget is set")
-		}
-		bindSrc := filepath.Dir(spec.SocketPath)
-		cmd = exec.Command(l.Self, "__fcmount", bindSrc, l.VsockBindTarget, l.Bin, "--api-sock", spec.SocketPath, "--id", spec.VMID)
-		setUnshareMountNS(cmd)
 	} else {
 		cmd = exec.Command(l.Bin, buildDirectArgs(spec.VMID, spec.SocketPath)...)
+		if l.MountNamespace {
+			setUnshareMountNS(cmd)
+		}
 	}
 	// Firecracker's own inherited stdout/stderr are line-delimited into the
 	// daemon's structured log. Guest UART bytes never use these streams: the

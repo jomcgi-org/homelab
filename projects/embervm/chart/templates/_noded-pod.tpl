@@ -285,16 +285,14 @@ containers:
       # PortForIP. noded defaults this to 30000 when unset (config.go).
       - name: EMBERVM_NODED_SERVING_PORT_BASE
         value: {{ $ctx.Values.noded.servingPortBase | quote }}
-      # Per-invoke FC bundle snapshots and the fixed vsock dir the snapshot
-      # embeds both derive from nvmeRoot so the scratch disk is one knob.
+      # Per-invoke FC bundle snapshots derive from nvmeRoot so the scratch disk
+      # is one knob.
       - name: EMBERVM_NODED_SNAPSHOT_ROOT
         value: {{ printf "%s/embervm-noded/snapshots" $ctx.Values.noded.firecracker.nvmeRoot | quote }}
       {{- if $scratchGate }}
       - name: EMBERVM_NODED_SCRATCH_GENERATION_PATH
         value: {{ printf "%s/.scratch-generation" $ctx.Values.noded.firecracker.nvmeRoot | quote }}
       {{- end }}
-      - name: EMBERVM_NODED_CANONICAL_VSOCK_DIR
-        value: {{ printf "%s/embervm-noded-vsock" $ctx.Values.noded.firecracker.nvmeRoot | quote }}
       - name: EMBERVM_NODED_GUEST_OOM_SCORE_ADJ
         value: {{ $ctx.Values.noded.firecracker.guestOomScoreAdj | quote }}
       - name: EMBERVM_NODED_JAILER_ENABLED

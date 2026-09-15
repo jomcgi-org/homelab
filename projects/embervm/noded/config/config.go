@@ -191,10 +191,6 @@ type Config struct {
 	// HarnessInit is the daemon-global in-guest PID-1 init path, used when an
 	// Image entry does not override it.
 	HarnessInit string
-	// CanonicalVsockDir is the fixed dir whose vsock.sock the base snapshot
-	// embeds; the launcher bind-mounts each microVM's bundle over it per instance
-	// so concurrent restores each get their own host-reachable socket.
-	CanonicalVsockDir string
 	// GuestOomScoreAdj is written to each firecracker child's oom_score_adj so a
 	// guest, never the daemon, is the kernel's first OOM victim. Default 1000.
 	GuestOomScoreAdj int
@@ -486,7 +482,6 @@ func Load() (Config, error) {
 		KernelImagePath:         getenvDefault("EMBERVM_NODED_KERNEL_IMAGE", "/opt/fc/vmlinux.container"),
 		KernelBootArgs:          os.Getenv("EMBERVM_NODED_KERNEL_BOOT_ARGS"),
 		HarnessInit:             getenvDefault("EMBERVM_NODED_HARNESS_INIT", "/usr/local/bin/fc-shim-init"),
-		CanonicalVsockDir:       getenvDefault("EMBERVM_NODED_CANONICAL_VSOCK_DIR", "/disks/nvme-02/embervm-noded-vsock"),
 		GuestOomScoreAdj:        atoiDefault("EMBERVM_NODED_GUEST_OOM_SCORE_ADJ", 1000),
 		BootReadyTimeout:        60 * time.Second,
 		RestoreReadyTimeout:     2 * time.Second,

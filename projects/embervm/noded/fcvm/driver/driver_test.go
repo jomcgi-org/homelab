@@ -551,6 +551,114 @@ func TestDriverClaimClearsStaleVsockUDS(t *testing.T) {
 	}
 }
 
+func TestDriverWarmRestoreClearsStaleVsockUDS(t *testing.T) {
+	launcher := &fakeLauncher{}
+	root := shortTempDir(t)
+	d := New(Config{SnapshotRoot: root, Arch: "amd64"}, launcher, nil)
+	if err := os.MkdirAll(d.baseDir("base"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	for path, data := range map[string][]byte{
+		d.baseSnapfile("base"): []byte("snapshot"),
+		d.baseMemfile("base"):  []byte("memory"),
+	} {
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	threadID := "restored-orphan"
+	if err := os.MkdirAll(d.threadDir(threadID), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	stale := d.VsockUDSPath(threadID)
+	for _, path := range []string{stale, stale + "_1025"} {
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	h, err := d.Claim(context.Background(), substrate.ClaimSpec{
+		ThreadID:        threadID,
+		BaseSnapshotRef: substrate.SnapshotRef{ID: "base", Arch: "amd64"},
+	})
+	if err != nil {
+		t.Fatalf("Claim from base over stale vsock UDS: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Release(context.Background(), h) })
+	for _, path := range []string{stale, stale + "_1025"} {
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			t.Fatalf("stale restore socket %q survived cleanup: %v", path, err)
+		}
+	}
+}
+
+func TestConcurrentWarmRestoresUseDistinctVsockOverrides(t *testing.T) {
+	launcher := &fakeLauncher{}
+	root := shortTempDir(t)
+	d := New(Config{SnapshotRoot: root, Arch: "amd64"}, launcher, nil)
+	if err := os.MkdirAll(d.baseDir("base"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	for path, data := range map[string][]byte{
+		d.baseSnapfile("base"): []byte("snapshot"),
+		d.baseMemfile("base"):  []byte("memory"),
+	} {
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	threadIDs := []string{"clone-a", "clone-b"}
+	type result struct {
+		h   substrate.Handle
+		err error
+	}
+	results := make(chan result, len(threadIDs))
+	start := make(chan struct{})
+	for _, threadID := range threadIDs {
+		threadID := threadID
+		go func() {
+			<-start
+			h, err := d.Claim(context.Background(), substrate.ClaimSpec{
+				ThreadID:        threadID,
+				BaseSnapshotRef: substrate.SnapshotRef{ID: "base", Arch: "amd64"},
+			})
+			results <- result{h: h, err: err}
+		}()
+	}
+	close(start)
+	for range threadIDs {
+		result := <-results
+		if result.err != nil {
+			t.Fatalf("concurrent Claim: %v", result.err)
+		}
+		t.Cleanup(func() { _ = d.Release(context.Background(), result.h) })
+	}
+
+	wantPaths := map[string]bool{
+		d.VsockUDSPath("clone-a"): true,
+		d.VsockUDSPath("clone-b"): true,
+	}
+	loads := launcher.snapshotLoadBodies()
+	if len(loads) != len(wantPaths) {
+		t.Fatalf("snapshot loads = %d, want %d", len(loads), len(wantPaths))
+	}
+	for _, load := range loads {
+		override, ok := load["vsock_override"].(map[string]any)
+		if !ok {
+			t.Fatalf("snapshot load has no vsock override: %#v", load)
+		}
+		path, _ := override["uds_path"].(string)
+		if !wantPaths[path] {
+			t.Fatalf("unexpected or colliding vsock override %q, want one of %#v", path, wantPaths)
+		}
+		delete(wantPaths, path)
+	}
+	if len(wantPaths) != 0 {
+		t.Fatalf("missing per-clone vsock overrides: %#v", wantPaths)
+	}
+}
+
 // TestDriverSnapshotRestoreContinuity is the Phase 1 done-criterion in unit
 // form: boot -> snapshot -> release the original microVM -> restore a fresh
 // microVM that keeps the stable ThreadID (continues, not a new identity).
