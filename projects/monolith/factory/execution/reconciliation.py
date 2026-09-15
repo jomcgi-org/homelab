@@ -11,6 +11,7 @@ from sqlmodel import Session, select
 
 from factory.execution import admission
 from factory.execution.models import AgentCapacityReservation, AgentSession
+from factory.utils import sanitize_payload
 
 
 _CLEANUP_FIELDS = (
@@ -636,12 +637,7 @@ def cancel_queued_factory_attempt(db: Session, pin: dict, session_id: int | None
             terminal_reason="error",
             stop_reason="cancelled_before_dispatch",
             result_text="Factory reconciliation cancelled this queued attempt after its workflow timed out. No agent invocation was dispatched.",
-            usage_json=json.dumps(
-                {
-                    "source": "factory_reconciliation",
-                    "reason": "cancelled_before_dispatch",
-                }
-            ),
+            usage_json=json.dumps(sanitize_payload(_cancelled_before_dispatch_usage())),
         )
     )
     owner.status = "warn"
@@ -650,6 +646,13 @@ def cancel_queued_factory_attempt(db: Session, pin: dict, session_id: int | None
     db.delete(row)
     db.flush()
     return owner.id
+
+
+def _cancelled_before_dispatch_usage() -> dict:
+    return {
+        "source": "factory_reconciliation",
+        "reason": "cancelled_before_dispatch",
+    }
 
 
 # Every permit outcome an observer can write for an attempt that lost its

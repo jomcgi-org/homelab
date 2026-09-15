@@ -34,6 +34,7 @@ from factory.execution.models import (
     VoiceUILedger,
 )
 from factory.execution.transport import Turn, parse_native_turn
+from factory.utils import sanitize_payload
 from core.db import get_engine
 from shared.pricing import price_usage
 
@@ -946,7 +947,7 @@ def _finish_unknown_locked(
             terminal_reason="error",
             stop_reason=UNKNOWN_INVOCATION,
             permission_denials="[]",
-            usage_json=json.dumps(usage),
+            usage_json=json.dumps(sanitize_payload(usage)),
             cost_usd=None,
         )
     )
@@ -1415,7 +1416,7 @@ def create_turn(
         artifact_path=artifact_path,
         artifact_blob=artifact_blob,
         artifact_outcome=artifact_outcome,
-        usage_json=json.dumps(usage or {}),
+        usage_json=json.dumps(sanitize_payload(usage or {})),
         cost_usd=cost_usd,
     )
     if cost_usd is None:

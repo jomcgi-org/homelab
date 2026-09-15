@@ -223,6 +223,34 @@ def test_create_turn_keeps_reported_and_list_costs_separate(
         _restore_schemas(schemas)
 
 
+def test_create_turn_sanitizes_nul_from_usage(monkeypatch, tmp_path):
+    engine, schemas = _database(monkeypatch, tmp_path)
+    try:
+        with Session(engine) as session:
+            agent = store.create_session(session, "nul-usage", "<guest>", "main")
+            turn = store.create_turn(
+                session,
+                session_id=agent.id,
+                seq=1,
+                prompt="record this usage",
+                voice_summary=None,
+                result_text="done",
+                terminal_reason="success",
+                stop_reason=None,
+                permission_denials=None,
+                commit_sha=None,
+                usage={"activities": [{"command": "printf 'bad\x00command'"}]},
+                cost_usd=0.1,
+            )
+
+            assert "\x00" not in turn.usage_json
+            assert json.loads(turn.usage_json) == {
+                "activities": [{"command": "printf 'badcommand'"}]
+            }
+    finally:
+        _restore_schemas(schemas)
+
+
 def test_create_session_persists_normalized_triggered_by(monkeypatch, tmp_path):
     engine, schemas = _database(monkeypatch, tmp_path)
     try:
@@ -949,6 +977,25 @@ def test_unknown_release_preserves_evidence_and_holds_session(uncertain_lane):
     )
     with Session(engine) as session:
         assert store.get_pending_message(session, session_id, 2).partial_text is None
+
+
+def test_unknown_release_sanitizes_nul_from_progress_usage(uncertain_lane):
+    engine, session_id = uncertain_lane
+    assert (
+        store.write_progress_sync(
+            "old-progress", "partial review", [{"command": "printf 'bad\x00command'"}]
+        )
+        == "ok"
+    )
+
+    store.release_pending_message_claim_sync(session_id, 1, "owner-1")
+
+    with Session(engine) as session:
+        turn = store.get_turn(session, session_id, 1)
+        assert "\x00" not in turn.usage_json
+        assert json.loads(turn.usage_json)["activities"] == [
+            {"command": "printf 'badcommand'"}
+        ]
 
 
 def test_unknown_hold_blocks_claim_even_if_status_was_reopened(uncertain_lane):
