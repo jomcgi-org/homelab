@@ -28,6 +28,20 @@ spec:
     - repoURL: https://github.com/jomcgi-org/homelab.git
       targetRevision: HEAD
       ref: values
+  # The web HPA owns the live replica count, and the shared deployment template
+  # renders `replicas:` unconditionally, so without this ArgoCD reads every
+  # scale-out as drift and selfHeal scales it straight back. Scoped to the one
+  # Deployment that has a controller: projects/platform/argocd/values.yaml
+  # records why a fleet-wide replica ignore was removed, namely that a chart
+  # which DOES render replicas had its value silently dropped while the
+  # Application still reported Synced.
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      name: monolith-public-web
+      namespace: monolith-public
+      jsonPointers:
+        - /spec/replicas
   destination:
     server: https://kubernetes.default.svc
     namespace: monolith-public
@@ -37,6 +51,10 @@ spec:
       selfHeal: true
     syncOptions:
       - CreateNamespace=true
+      # Suppressing the diff is not the same as not applying the value: without
+      # this ArgoCD keeps stamping the rendered replicas back on every sync and
+      # the HPA's scale-out is undone within a sync interval.
+      - RespectIgnoreDifferences=true
     retry:
       limit: 5
       backoff:

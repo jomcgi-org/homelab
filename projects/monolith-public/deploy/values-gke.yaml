@@ -1,4 +1,5 @@
-# GKE cutover destination. Disable HPAs so zero replicas remain authoritative.
+# GKE cutover destination. HPAs were disabled here so zero replicas stayed
+# authoritative during the cutover; web has since been re-enabled (see below).
 # WINDOW: the web env list is a literal in chart values (Helm values cannot
 # self-reference), so pointing public chat at Meta Spark while retaining the
 # in-cluster embedding service means overriding the WHOLE list here. Fold this
@@ -99,9 +100,17 @@ web:
     value: artifacts
   # The shared chart helper treats numeric zero as empty and defaults it to one.
   # A string still renders as the numeric YAML scalar `replicas: 0`.
+  # Kept as the floor the HPA starts from, and as the count if autoscaling is
+  # turned off again: the deployment template stops rendering replicas while an
+  # HPA owns the component, so this value is inert until then.
   replicas: "1"
+  # Re-enabled 2026-09-15. The cutover comment at the top of this file disabled
+  # HPAs so zero replicas stayed authoritative while the app was dormant; the
+  # tier has served live traffic since and the single replica makes any restart
+  # a full public outage, which is how an OOMKill at 12:03 on 2026-09-15 took
+  # the public site down with nothing alerting on it.
   autoscaling:
-    enabled: false
+    enabled: true
 
 frontend:
   replicas: "1"
