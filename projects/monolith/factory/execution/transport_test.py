@@ -246,7 +246,6 @@ def test_preinvoke_recovery_create_failure_keeps_model_post_uncertainty(monkeypa
     assert [request.url.path for request in requests] == [
         "/v1/sessions/existing/invoke",
         "/v1/workloads/claude-runtime/sessions",
-        "/v1/workloads/claude-runtime/sessions",
     ]
 
 
@@ -2065,13 +2064,12 @@ def test_deliver_pi_spark_restore_denial_remains_an_error(
     )
 
 
-def test_deliver_session_gone_recreates_pi_spark_on_pi_workload(monkeypatch):
-    """The 403/410 mid-conversation recovery arm must recreate on the PI lane.
+def test_deliver_session_gone_restores_pi_spark_on_pi_workload(monkeypatch):
+    """The 403/410 mid-conversation recovery arm must restore on the PI lane.
 
     This arm is the one that fails silently if the model is not threaded: the
     turn still succeeds, it just runs on the 4 GiB claude-runtime lane, so
-    nothing surfaces the escape. Both of its create_session calls (the restore
-    and the degrade-to-blank fallback) are covered here.
+    nothing surfaces the escape.
     """
     requests = []
     turn_codes = [410, 200]
@@ -2081,10 +2079,19 @@ def test_deliver_session_gone_recreates_pi_spark_on_pi_workload(monkeypatch):
         if str(request.url).endswith("/sessions"):
             body = json.loads(request.content) if request.content else {}
             if body.get("restore_lineage"):
-                return _error_response(request, 403, False)
+                return httpx.Response(
+                    201,
+                    json={
+                        "session_id": "s-pi-new",
+                        "session_token": "t-pi-new",
+                        "lineage_id": "s1",
+                        "restored": True,
+                    },
+                    request=request,
+                )
             return httpx.Response(
                 201,
-                json={"session_id": "s-pi-new", "session_token": "t-pi-new"},
+                json={"session_id": "unexpected", "session_token": "unexpected"},
                 request=request,
             )
         return _turn_response(request, turn_codes.pop(0))
@@ -2100,15 +2107,10 @@ def test_deliver_session_gone_recreates_pi_spark_on_pi_workload(monkeypatch):
         )
     )
 
-    first_invoke, denied_create, blank_create, retry_invoke = requests
+    first_invoke, restore_create, retry_invoke = requests
     assert str(first_invoke.url) == "https://ember.test/v1/sessions/s1/invoke"
-    # Both creates on the recovery arm must target pi-runtime, not the
-    # claude-runtime default the transport instance carries.
     assert (
-        str(denied_create.url) == "https://ember.test/v1/workloads/pi-runtime/sessions"
-    )
-    assert (
-        str(blank_create.url) == "https://ember.test/v1/workloads/pi-runtime/sessions"
+        str(restore_create.url) == "https://ember.test/v1/workloads/pi-runtime/sessions"
     )
     # The lane choice must not leak into the session-scoped invoke URL.
     assert str(retry_invoke.url) == "https://ember.test/v1/sessions/s-pi-new/invoke"
