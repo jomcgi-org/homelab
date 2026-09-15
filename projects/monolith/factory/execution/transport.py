@@ -1222,32 +1222,14 @@ class EmberVmShimTransport:
         workspace_recovery = None
         if ember is None:
             if restore_from:
-                try:
-                    ember = await self.create_session(
-                        restore_from=restore_from, model=model
-                    )
-                except EmberVMTransportError as restore_exc:
-                    # Same degrade as the 410/403 arm below: the restore
-                    # create was itself DENIED or timed out, so fall back to
-                    # a BLANK session rather than failing the turn outright.
-                    logger.warning(
-                        "embervm restore create denied for lineage %s, "
-                        "falling back to a blank session: %s",
-                        restore_from,
-                        restore_exc,
-                    )
-                    ember = await self.create_session(model=model)
-                    workspace_recovery = {
-                        "created": True,
-                        "restored": False,
-                        "degraded": "restore_denied",
-                    }
-                else:
-                    workspace_recovery = {
-                        "created": True,
-                        "restored": bool(ember.restored),
-                        "degraded": None,
-                    }
+                ember = await self.create_session(
+                    restore_from=restore_from, model=model
+                )
+                workspace_recovery = {
+                    "created": True,
+                    "restored": bool(ember.restored),
+                    "degraded": None,
+                }
                 # Only resume the CLI transcript when the workspace was
                 # ACTUALLY recovered; a blank session has nothing for
                 # --resume to find (mirrors the 410 arm's cli gating below).
@@ -1438,17 +1420,9 @@ class EmberVmShimTransport:
 
             new_ember = None
             if lineage_id:
-                try:
-                    new_ember = await self.create_session(
-                        restore_from=lineage_id, model=model
-                    )
-                except EmberVMTransportError as restore_exc:
-                    logger.warning(
-                        "embervm preemption restore denied for lineage %s, "
-                        "creating a blank session: %s",
-                        lineage_id,
-                        restore_exc,
-                    )
+                new_ember = await self.create_session(
+                    restore_from=lineage_id, model=model
+                )
 
             if new_ember is not None and new_ember.restored:
                 cli_for_binding = cli_session_id
@@ -1499,19 +1473,12 @@ class EmberVmShimTransport:
                     restore_from=restore_from, model=model
                 )
             except EmberVMTransportError as restore_exc:
-                # The restore create was itself DENIED (unknown_lineage, a
-                # workload/principal mismatch, a live heir, or a concurrent
-                # restore of the same lineage already in flight) or timed
-                # out: the workspace is not recoverable right now. Degrade
-                # to a BLANK session rather than bricking the turn; losing
-                # the transcript/workspace is better than failing outright.
                 logger.warning(
-                    "embervm restore create denied for lineage %s, "
-                    "falling back to a blank session: %s",
+                    "embervm restore create failed for lineage %s: %s",
                     restore_from,
                     restore_exc,
                 )
-                new_ember = await self.create_session(model=model)
+                raise
 
             cli_for_binding = cli_session_id if new_ember.restored else None
             if on_create is not None:

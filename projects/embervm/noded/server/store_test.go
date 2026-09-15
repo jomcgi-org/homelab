@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -44,6 +45,11 @@ type fakeStore struct {
 	rewrapCh        chan fakeRewrapCall
 	artifactFileErr error
 	restoreCalls    int
+	// Optional gates let retirement tests hold an asynchronous export at a
+	// deterministic boundary without sleeping or touching the real store.
+	exportStarted chan string
+	exportRelease chan struct{}
+	exportErr     error
 	// dataKeyErr simulates the error returned by the store's data-key provider
 	// before any encrypted artifact bytes are uploaded.
 	dataKeyErr error
@@ -91,10 +97,33 @@ func (f *fakeStore) RewrapEnvelope(_ context.Context, prefix string, options sto
 	return true, nil
 }
 
-func (f *fakeStore) Export(_ context.Context, prefix, localDir string, files []string, generation uint64, nowMs int64, cpuVendor, cpuTemplate string, options ...store.ExportOptions) (int64, bool, error) {
+func (f *fakeStore) Export(ctx context.Context, prefix, localDir string, files []string, generation uint64, nowMs int64, cpuVendor, cpuTemplate string, options ...store.ExportOptions) (int64, bool, error) {
+	f.mu.Lock()
+	f.exportCalls[prefix]++
+	started := f.exportStarted
+	release := f.exportRelease
+	exportErr := f.exportErr
+	f.mu.Unlock()
+
+	if started != nil {
+		select {
+		case started <- prefix:
+		default:
+		}
+	}
+	if release != nil {
+		select {
+		case <-ctx.Done():
+			return 0, false, ctx.Err()
+		case <-release:
+		}
+	}
+	if exportErr != nil {
+		return 0, false, exportErr
+	}
+
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.exportCalls[prefix]++
 	overwrite := len(options) > 0 && options[0].Overwrite
 	if overwrite {
 		f.overwriteCalls[prefix]++
@@ -2314,6 +2343,157 @@ func TestRetireVolumeFastACKDeletesOnlyAfterDurableExport(t *testing.T) {
 	if s.volumes.HasRetirementIntent("sbx", "lineage-retire") {
 		t.Fatal("retirement intent remained after durable export")
 	}
+}
+
+func TestRestoreSessionWorkspaceWaitsForPendingRetirementExport(t *testing.T) {
+	fs := newFakeStore()
+	fs.exportStarted = make(chan string, 1)
+	fs.exportRelease = make(chan struct{})
+	s := newStoreTestServer(t, fs)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.startExportQueue(ctx)
+
+	const workload = "sbx"
+	const lineage = "lineage-pending"
+	ref := &nodev1.ArtifactRef{
+		Kind:     nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE,
+		Workload: workload,
+		Ref:      lineage,
+	}
+	prefix := artifactPrefix(ref, s.cfg.CpuVendor)
+	if err := s.volumes.CreateSession(workload, lineage, 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(s.volumes.SessionVolumePath(workload, lineage), []byte("current workspace"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The stable store key may already hold an older retirement export. Restore
+	// must wait for the pending export instead of accepting this stale copy.
+	fs.seedArtifact(prefix, map[string]string{"workspace.img": "stale workspace"}, 0, "", "")
+
+	if _, err := s.RetireVolume(ctx, &nodev1.RetireVolumeRequest{Workload: workload, LineageId: lineage}); err != nil {
+		t.Fatalf("RetireVolume: %v", err)
+	}
+	select {
+	case got := <-fs.exportStarted:
+		if got != prefix {
+			t.Fatalf("started export = %q, want %q", got, prefix)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("retirement export did not start")
+	}
+
+	type restoreResult struct {
+		resp *nodev1.RestoreArtifactResponse
+		err  error
+	}
+	restored := make(chan restoreResult, 1)
+	go func() {
+		resp, err := s.RestoreArtifact(ctx, &nodev1.RestoreArtifactRequest{Artifact: ref})
+		restored <- restoreResult{resp: resp, err: err}
+	}()
+
+	select {
+	case result := <-restored:
+		t.Fatalf("restore completed while retirement export was pending: %#v, %v", result.resp, result.err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// A pending export for one lineage must not serialize an unrelated restore.
+	otherRef := &nodev1.ArtifactRef{
+		Kind:     nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE,
+		Workload: workload,
+		Ref:      "lineage-other",
+	}
+	otherPrefix := artifactPrefix(otherRef, s.cfg.CpuVendor)
+	fs.seedArtifact(otherPrefix, map[string]string{"workspace.img": "other workspace"}, 0, "", "")
+	if _, err := s.RestoreArtifact(ctx, &nodev1.RestoreArtifactRequest{Artifact: otherRef}); err != nil {
+		t.Fatalf("unrelated RestoreArtifact: %v", err)
+	}
+
+	close(fs.exportRelease)
+	select {
+	case result := <-restored:
+		if result.err != nil || result.resp == nil {
+			t.Fatalf("RestoreArtifact after export = %#v, %v", result.resp, result.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("restore did not finish after retirement export was released")
+	}
+
+	got, err := os.ReadFile(s.volumes.SessionVolumePath(workload, lineage))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "current workspace" {
+		t.Fatalf("restored workspace = %q, want current retiring bytes", got)
+	}
+}
+
+func TestRestoreSessionWorkspacePendingRetirementFailureAndCancellation(t *testing.T) {
+	t.Run("export failure times out loudly and retains workspace", func(t *testing.T) {
+		fs := newFakeStore()
+		fs.exportStarted = make(chan string, 1)
+		fs.exportErr = errors.New("injected export failure")
+		s := newStoreTestServer(t, fs)
+		s.retirementExportWaitTimeout = 30 * time.Millisecond
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		s.startExportQueue(ctx)
+
+		const workload = "sbx"
+		const lineage = "lineage-export-failed"
+		if err := s.volumes.CreateSession(workload, lineage, 1<<20); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.RetireVolume(ctx, &nodev1.RetireVolumeRequest{Workload: workload, LineageId: lineage}); err != nil {
+			t.Fatalf("RetireVolume: %v", err)
+		}
+		select {
+		case <-fs.exportStarted:
+		case <-time.After(time.Second):
+			t.Fatal("retirement export did not start")
+		}
+
+		_, err := s.RestoreArtifact(ctx, &nodev1.RestoreArtifactRequest{Artifact: &nodev1.ArtifactRef{
+			Kind:     nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE,
+			Workload: workload,
+			Ref:      lineage,
+		}})
+		if status.Code(err) != codes.Unavailable {
+			t.Fatalf("RestoreArtifact code = %v, want Unavailable: %v", status.Code(err), err)
+		}
+		if !s.volumes.HasRetirementIntent(workload, lineage) {
+			t.Fatal("failed export cleared retirement intent")
+		}
+		if _, statErr := os.Stat(s.volumes.SessionVolumePath(workload, lineage)); statErr != nil {
+			t.Fatalf("failed export removed local workspace: %v", statErr)
+		}
+	})
+
+	t.Run("request cancellation stops wait", func(t *testing.T) {
+		s := newStoreTestServer(t, newFakeStore())
+		const workload = "sbx"
+		const lineage = "lineage-cancelled"
+		if err := s.volumes.CreateSession(workload, lineage, 1<<20); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.volumes.WriteRetirementIntent(workload, lineage); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		_, err := s.RestoreArtifact(ctx, &nodev1.RestoreArtifactRequest{Artifact: &nodev1.ArtifactRef{
+			Kind:     nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE,
+			Workload: workload,
+			Ref:      lineage,
+		}})
+		if status.Code(err) != codes.Canceled {
+			t.Fatalf("RestoreArtifact code = %v, want Canceled: %v", status.Code(err), err)
+		}
+	})
 }
 
 func TestRunExportJob404WrapRefusalIsTerminalAndRetiresWorkspace(t *testing.T) {
