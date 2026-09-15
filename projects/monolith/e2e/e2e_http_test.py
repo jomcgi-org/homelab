@@ -10,6 +10,25 @@ in this file was deleted with issue #4219: it could never run, because
 ``playwright`` is absent from ``bazel/requirements/all.txt`` and a
 module-level ``pytest.importorskip`` turned that into a silent skip of the
 whole module. See the issue for the hermetic-Chromium tradeoff.
+
+The first CI run after that guard came off showed the HTTP half had rotted
+too: 9 of 15 tests 404'd because they addressed endpoints the monolith no
+longer serves. A skipped test cannot fail, so nothing flagged the drift as
+the API moved underneath it. What the run found, and what was done:
+
+- ``GET/PUT /api/home``, ``POST /api/home/reset/{daily,weekly}``,
+  ``GET /api/home/{dates,weekly}``: a todo/task API that exists nowhere in
+  the repo. ``home.register`` mounts exactly three routers (schedule,
+  observability, dashboard) and no prefix serves those paths. There is no
+  endpoint to repoint these at, so the six tests are deleted and replaced
+  with ``TestHomeDashboard``, which covers the ``/api/home`` route that does
+  exist.
+- ``POST /api/notes``: moved under the knowledge router as
+  ``POST /api/knowledge/notes``. Repointed.
+- ``GET /api/knowledge/notes/{id}``: the endpoint is fine; the test seeded
+  a vault markdown file, which ADR 006 retired. The body of record is the
+  Postgres ``notes.content`` column, so ``resolve_note_body(None)`` returned
+  ``None`` and the endpoint 404'd. The seed helper now sets ``content``.
 """
 
 import httpx
@@ -26,142 +45,32 @@ class TestLiveServerSmoke:
         assert r.status_code == 200
         assert r.json() == {"status": "ok"}
 
-    def test_home_api_returns_todo_structure(self, live_server):
-        """GET /api/home returns the expected weekly + daily shape."""
-        r = httpx.get(f"{live_server}/api/home")
+
+# ---------------------------------------------------------------------------
+# Home dashboard: the /api/home route the monolith actually serves
+# ---------------------------------------------------------------------------
+
+
+class TestHomeDashboard:
+    """Cover ``GET /api/home/dashboard`` (home/dashboard_router.py).
+
+    This replaces the deleted todo/task tests. ``build_dashboard`` gathers its
+    three sections concurrently and maps a raised exception to
+    ``{"error": ...}`` for that section rather than failing the response, so a
+    200 with all three keys present is the contract even here, where the
+    ``github`` collector has no credentials to reach the network with.
+    """
+
+    def test_dashboard_returns_every_section(self, live_server):
+        # One request, not one per assertion: `health` re-scans the cluster on
+        # every call when no snapshot row exists, which is the case here.
+        r = httpx.get(f"{live_server}/api/home/dashboard", timeout=30.0)
         assert r.status_code == 200
         data = r.json()
-        assert "weekly" in data
-        assert "daily" in data
-        assert "task" in data["weekly"]
-        assert isinstance(data["daily"], list)
-
-
-# ---------------------------------------------------------------------------
-# Task editing flow (what the Svelte UI does via form actions)
-# ---------------------------------------------------------------------------
-
-
-class TestTaskEditFlow:
-    """Simulate the browser's save flow: PUT /api/home with JSON body."""
-
-    def test_edit_and_persist_tasks(self, live_server):
-        """PUT tasks, then GET to verify persistence (mirrors auto-save debounce)."""
-        payload = {
-            "weekly": {"task": "Ship the release", "done": False},
-            "daily": [
-                {"task": "Write tests", "done": False},
-                {"task": "Review PRs", "done": False},
-                {"task": "Deploy to staging", "done": False},
-            ],
-        }
-        put = httpx.put(f"{live_server}/api/home", json=payload)
-        assert put.status_code == 200
-
-        get = httpx.get(f"{live_server}/api/home")
-        assert get.status_code == 200
-        data = get.json()
-        assert data["weekly"]["task"] == "Ship the release"
-        assert data["daily"][0]["task"] == "Write tests"
-        assert data["daily"][1]["task"] == "Review PRs"
-        assert data["daily"][2]["task"] == "Deploy to staging"
-
-    def test_toggle_done_state(self, live_server):
-        """Toggle a task's done state and verify it persists."""
-        # Set initial state
-        payload = {
-            "weekly": {"task": "Weekly goal", "done": False},
-            "daily": [
-                {"task": "Task one", "done": False},
-                {"task": "Task two", "done": False},
-                {"task": "Task three", "done": False},
-            ],
-        }
-        httpx.put(f"{live_server}/api/home", json=payload)
-
-        # Toggle done state (simulates clicking a task in the UI)
-        payload["daily"][0]["done"] = True
-        payload["weekly"]["done"] = True
-        put = httpx.put(f"{live_server}/api/home", json=payload)
-        assert put.status_code == 200
-
-        data = httpx.get(f"{live_server}/api/home").json()
-        assert data["weekly"]["done"] is True
-        assert data["daily"][0]["done"] is True
-        assert data["daily"][1]["done"] is False
-
-    def test_overwrite_tasks(self, live_server):
-        """Subsequent saves overwrite previous values (like re-typing in the UI)."""
-        first = {
-            "weekly": {"task": "First goal", "done": False},
-            "daily": [{"task": "First daily", "done": False}],
-        }
-        httpx.put(f"{live_server}/api/home", json=first)
-
-        second = {
-            "weekly": {"task": "Updated goal", "done": False},
-            "daily": [{"task": "Updated daily", "done": True}],
-        }
-        httpx.put(f"{live_server}/api/home", json=second)
-
-        data = httpx.get(f"{live_server}/api/home").json()
-        assert data["weekly"]["task"] == "Updated goal"
-        assert data["daily"][0]["task"] == "Updated daily"
-        assert data["daily"][0]["done"] is True
-
-
-# ---------------------------------------------------------------------------
-# Daily reset flow
-# ---------------------------------------------------------------------------
-
-
-class TestDailyResetFlow:
-    def test_reset_daily_clears_and_archives(self, live_server):
-        """POST /api/home/reset/daily clears daily tasks and creates an archive."""
-        payload = {
-            "weekly": {"task": "Preserved weekly", "done": False},
-            "daily": [
-                {"task": "Done task", "done": True},
-                {"task": "Pending task", "done": False},
-                {"task": "", "done": False},
-            ],
-        }
-        httpx.put(f"{live_server}/api/home", json=payload)
-
-        reset = httpx.post(f"{live_server}/api/home/reset/daily")
-        assert reset.status_code == 200
-
-        # Daily tasks should be cleared
-        data = httpx.get(f"{live_server}/api/home").json()
-        assert all(d["task"] == "" for d in data["daily"])
-        # Weekly task preserved
-        assert data["weekly"]["task"] == "Preserved weekly"
-
-        # Archive date should exist
-        dates = httpx.get(f"{live_server}/api/home/dates").json()
-        assert len(dates) >= 1
-
-
-# ---------------------------------------------------------------------------
-# Weekly reset flow
-# ---------------------------------------------------------------------------
-
-
-class TestWeeklyResetFlow:
-    def test_reset_weekly_clears_goal(self, live_server):
-        """POST /api/home/reset/weekly clears the weekly goal."""
-        payload = {
-            "weekly": {"task": "Goal to clear", "done": True},
-            "daily": [{"task": "Keep this", "done": False}],
-        }
-        httpx.put(f"{live_server}/api/home", json=payload)
-
-        reset = httpx.post(f"{live_server}/api/home/reset/weekly")
-        assert reset.status_code == 200
-
-        data = httpx.get(f"{live_server}/api/home/weekly").json()
-        assert data["task"] == ""
-        assert data["done"] is False
+        assert set(data) >= {"health", "github", "today", "cached_at"}
+        # Each section is a dict: either its payload or the {"error": ...} map.
+        for section in ("health", "github", "today"):
+            assert isinstance(data[section], dict)
 
 
 # ---------------------------------------------------------------------------
@@ -183,20 +92,30 @@ class TestScheduleAPI:
 
 
 class TestNotesAPI:
-    def test_create_note(self, live_server):
-        """POST /api/notes creates a note (vault mocked at server level)."""
-        r = httpx.post(
-            f"{live_server}/api/notes",
-            json={"content": "Playwright e2e note"},
-        )
-        # 201 if vault mock works, 500 if vault is unreachable (no mock at server level)
-        # Since the live server doesn't have vault mocked, this tests the real path
-        assert r.status_code in (201, 500)
+    """Cover ``POST /api/knowledge/notes`` (the path ``/api/notes`` moved to).
+
+    Only the request-validation half is exercised over HTTP. A successful
+    capture runs ``ingest_raw``, which uploads the body to
+    ``s3://knowledge/raws/<raw_id>.md``, and this server has no S3 to reach,
+    so a happy-path assertion here could only be satisfied by accepting a 500
+    alongside the 201, which is what the old test did, and it would have
+    passed against any broken endpoint. Both rejections below are decided
+    before the upload, so they are deterministic. ``knowledge/notes_crud_test``
+    covers the 201 with ``ingest_raw`` patched.
+    """
 
     def test_empty_note_returns_400(self, live_server):
-        """POST /api/notes with empty content returns 400."""
-        r = httpx.post(f"{live_server}/api/notes", json={"content": ""})
+        """Whitespace-only content is rejected with 400."""
+        r = httpx.post(
+            f"{live_server}/api/knowledge/notes", json={"content": "   \n  "}
+        )
         assert r.status_code == 400
+        assert "content" in r.json()["detail"].lower()
+
+    def test_missing_content_returns_422(self, live_server):
+        """A body with no ``content`` field fails Pydantic validation with 422."""
+        r = httpx.post(f"{live_server}/api/knowledge/notes", json={"title": "No body"})
+        assert r.status_code == 422
 
 
 # ---------------------------------------------------------------------------
@@ -213,11 +132,19 @@ def _seed_knowledge_note(
     note_type: str = "note",
     tags: list[str] | None = None,
     chunk_texts: list[str],
+    content: str | None = None,
 ) -> None:
     """Insert a note + chunks with deterministic embeddings into the test DB.
 
     Uses a fresh engine+session per call so the data is committed and visible
     to the live server (which uses its own connection pool).
+
+    ``content`` is the note body. Per ADR 006 it is the source of record:
+    ``GET /api/knowledge/notes/{id}`` resolves the body from this column and
+    404s when it is NULL, so any caller that asserts on the body must pass it.
+    It stays optional because the search tests assert on chunk hits and
+    frontmatter only, and leaving it NULL there keeps them covering the
+    body-less rows the backfill has not reached yet.
     """
     from shared.testing.plugin import deterministic_embedding
     from sqlmodel import Session as SMSession
@@ -232,6 +159,7 @@ def _seed_knowledge_note(
             path=path,
             title=title,
             content_hash="e2e-test-hash",
+            content=content,
             type=note_type,
             tags=tags or [],
         )
@@ -350,22 +278,17 @@ class TestKnowledgeSearchHttp:
 
         _cleanup_knowledge(pg)
 
-    def test_knowledge_note_returns_content(
-        self, live_server_with_fake_embedding, pg, tmp_path_factory
-    ):
-        """Seed a note whose vault file exists, GET it by id, expect content."""
+    def test_knowledge_note_returns_content(self, live_server_with_fake_embedding, pg):
+        """Seed a note body, GET it by id, expect that body back.
+
+        The body lives in ``knowledge.notes.content`` (ADR 006). This test
+        used to write a markdown file and point ``VAULT_ROOT`` at it, which
+        stopped meaning anything when Obsidian was decommissioned and
+        ``resolve_note_body`` became an identity over the column.
+        """
         _cleanup_knowledge(pg)
 
-        vault_dir = tmp_path_factory.mktemp("vault")
-        md_file = vault_dir / "notes" / "e2e-content.md"
-        md_file.parent.mkdir(parents=True, exist_ok=True)
-        md_file.write_text("# E2E Content\n\nThis is the vault file content.")
-
-        import os
-
-        old_vault_root = os.environ.get("VAULT_ROOT")
-        os.environ["VAULT_ROOT"] = str(vault_dir)
-
+        body = "# E2E Content\n\nThis is the note body of record."
         try:
             _seed_knowledge_note(
                 pg,
@@ -373,6 +296,7 @@ class TestKnowledgeSearchHttp:
                 title="E2E Content Note",
                 path="notes/e2e-content.md",
                 chunk_texts=["E2E content for testing."],
+                content=body,
             )
 
             base = live_server_with_fake_embedding
@@ -381,13 +305,35 @@ class TestKnowledgeSearchHttp:
             data = r.json()
             assert data["note_id"] == "e2e-content-001"
             assert data["title"] == "E2E Content Note"
-            assert "content" in data
-            assert "E2E Content" in data["content"]
+            assert data["content"] == body
+            assert data["edges"] == []
         finally:
-            if old_vault_root is None:
-                os.environ.pop("VAULT_ROOT", None)
-            else:
-                os.environ["VAULT_ROOT"] = old_vault_root
+            _cleanup_knowledge(pg)
+
+    def test_knowledge_note_without_body_returns_404(
+        self, live_server_with_fake_embedding, pg
+    ):
+        """A row whose ``content`` is NULL has no body to serve, so 404.
+
+        This is the exact shape that made the pre-#4219 version of
+        ``test_knowledge_note_returns_content`` fail once it was allowed to
+        run, so it is pinned rather than left implicit.
+        """
+        _cleanup_knowledge(pg)
+        try:
+            _seed_knowledge_note(
+                pg,
+                note_id="e2e-bodyless-001",
+                title="Body-less Note",
+                path="notes/e2e-bodyless.md",
+                chunk_texts=["Indexed but not backfilled."],
+            )
+
+            base = live_server_with_fake_embedding
+            r = httpx.get(f"{base}/api/knowledge/notes/e2e-bodyless-001")
+            assert r.status_code == 404
+            assert r.json()["detail"] == "note has no body"
+        finally:
             _cleanup_knowledge(pg)
 
     def test_knowledge_note_missing_returns_404(self, live_server_with_fake_embedding):
@@ -395,3 +341,4 @@ class TestKnowledgeSearchHttp:
         base = live_server_with_fake_embedding
         r = httpx.get(f"{base}/api/knowledge/notes/nonexistent")
         assert r.status_code == 404
+        assert r.json()["detail"] == "note not found"
