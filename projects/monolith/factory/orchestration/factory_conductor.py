@@ -73,6 +73,7 @@ ESCALATION_REVALIDATION_ACTOR = "factory:escalation-revalidation"
 # because it is only ever compared against itself.
 _STARTED_AT = time.monotonic()
 DECISION_EVIDENCE_LIMIT = 20
+CONSECUTIVE_REFUSAL_THRESHOLD = 2
 PLANNER_CONTEXT_CHARS = 48_000
 PLANNER_RECORD_LIMIT = 32
 PLANNER_TEXT_CHARS = 1_000
@@ -473,16 +474,104 @@ def _reject_decision(
         ).all()
         if any(json.loads(raw).get("cause") == cause for raw in previous):
             return
+        detail = {
+            "cause": cause,
+            "decision_action": action,
+            "refusal_code": code,
+            "reason": reason[:1000],
+        }
+        prefix = "envelope exceeded: "
+        if reason.startswith(prefix):
+            try:
+                deficit = json.loads(reason.removeprefix(prefix))
+            except json.JSONDecodeError:
+                deficit = None
+            if isinstance(deficit, dict):
+                detail["deficit"] = deficit
         _audit(
             db,
             ACTOR,
             "conductor_rejected",
             task_id=task_id,
-            cause=cause,
-            decision_action=action,
-            refusal_code=code,
-            reason=reason[:1000],
+            **detail,
         )
+
+
+def _check_consecutive_refusals(task_id: str, refusal_code: str) -> bool:
+    """Return whether the same refusal recurred without a useful graph edit."""
+    from factory.orchestration.factory_models import FactoryAudit
+
+    with Session(get_engine()) as db:
+        refusals = db.exec(
+            select(FactoryAudit)
+            .where(
+                FactoryAudit.task_id == task_id,
+                FactoryAudit.action == "conductor_rejected",
+            )
+            .order_by(FactoryAudit.id.desc())
+            .limit(CONSECUTIVE_REFUSAL_THRESHOLD)
+        ).all()
+        if len(refusals) < CONSECUTIVE_REFUSAL_THRESHOLD:
+            return False
+        if any(
+            json.loads(row.detail_json).get("refusal_code") != refusal_code
+            for row in refusals
+        ):
+            return False
+        earlier, later = refusals[-1], refusals[0]
+        versions = db.exec(
+            select(SwarmPlanVersion).where(
+                SwarmPlanVersion.task_id == task_id,
+                SwarmPlanVersion.created_at > earlier.created_at,
+                SwarmPlanVersion.created_at <= later.created_at,
+            )
+        ).all()
+        return not any(
+            not str(json.loads(version.change_json).get("node_key") or "").startswith(
+                "conductor_"
+            )
+            for version in versions
+        )
+
+
+def _reject_plan_decision(
+    task: dict,
+    cause: str,
+    action: str,
+    code: str,
+    reason: str,
+    runs: list[dict],
+) -> None:
+    """Reject a graph decision and escalate a repeated no-progress refusal."""
+    _reject_decision(task["id"], cause, action, code, reason)
+    if not _check_consecutive_refusals(task["id"], code):
+        return
+    prefix = "envelope exceeded: "
+    deficit = reason.removeprefix(prefix) if reason.startswith(prefix) else reason
+    question = (
+        f"Planning was refused {CONSECUTIVE_REFUSAL_THRESHOLD} consecutive times "
+        f"with {code}. The unresolved deficit is {deficit}. Should the exact "
+        "deficit be funded and the task resumed, or should the task remain on hold?"
+    )
+    _escalate_task(
+        task,
+        {
+            "action": "pause",
+            "reason": f"Repeated {code} refusal without a successful graph edit.",
+            "question": question,
+            "options": [
+                {
+                    "key": "fund-and-resume",
+                    "label": "Fund deficit and resume",
+                    "effect": CONTINUE_EFFECT,
+                    "detail": {"scope": question[:2000]},
+                },
+                {"key": "hold", "label": "Hold for review", "effect": "hold"},
+            ],
+        },
+        cause,
+        runs,
+    )
 
 
 def _decision_evidence(task_id: str) -> list[dict]:
@@ -2444,12 +2533,13 @@ def _apply_decision(
             except ValueError as exc:
                 code = getattr(exc, "code", "validation_failed")
                 reason = getattr(exc, "reason", str(exc))
-                _reject_decision(
-                    task["id"],
+                _reject_plan_decision(
+                    task,
                     cause,
                     action,
                     code,
                     f"edit {index} ({item.get('node_key')}): {reason}",
+                    runs,
                 )
                 return
         live = graph.load_graph(task["id"])
@@ -2461,7 +2551,9 @@ def _apply_decision(
         projected = _projected_nodes(resolved, live)
         excess = _envelope_refusal(task["id"], policy, projected)
         if excess is not None:
-            _reject_decision(task["id"], cause, action, "envelope_exceeded", excess)
+            _reject_plan_decision(
+                task, cause, action, "envelope_exceeded", excess, runs
+            )
             return
         result = graph.apply_edits(
             task["id"],
@@ -2484,23 +2576,26 @@ def _apply_decision(
         if result.ok:
             _record_allowance(task["id"], policy, cause)
         else:
-            _reject_decision(
-                task["id"],
+            _reject_plan_decision(
+                task,
                 cause,
                 action,
                 result.refusal_code,
                 result.detail or "graph plan refused",
+                runs,
             )
     elif action == "add_node":
         try:
             edit = _prepare_add(task, policy, decision)
         except _EditRefused as exc:
-            _reject_decision(task["id"], cause, action, exc.code, exc.reason)
+            _reject_plan_decision(task, cause, action, exc.code, exc.reason, runs)
             return
         projected = _projected_nodes([edit], graph.load_graph(task["id"]))
         excess = _envelope_refusal(task["id"], policy, projected)
         if excess is not None:
-            _reject_decision(task["id"], cause, action, "envelope_exceeded", excess)
+            _reject_plan_decision(
+                task, cause, action, "envelope_exceeded", excess, runs
+            )
             return
         result = _add(
             task,
@@ -2520,12 +2615,13 @@ def _apply_decision(
         if result.ok:
             _record_allowance(task["id"], policy, cause)
         else:
-            _reject_decision(
-                task["id"],
+            _reject_plan_decision(
+                task,
                 cause,
                 action,
                 result.refusal_code,
                 result.detail or "graph operation refused",
+                runs,
             )
     elif action == "discard_node":
         observed_head = _observed_branch_head(task)
