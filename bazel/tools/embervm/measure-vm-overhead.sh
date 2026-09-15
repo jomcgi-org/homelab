@@ -22,7 +22,7 @@
 
 set -uo pipefail
 
-readonly DEFAULT_CONTEXT="gke_h0melab_europe-west2-a_homelab-hub"
+readonly DEFAULT_CONTEXT="tailscale-operator.tail33e678.ts.net"
 readonly DEFAULT_NAMESPACE="embervm"
 readonly FIRECRACKER_COMM="firecracker"
 

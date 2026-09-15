@@ -21,7 +21,7 @@ Look at `status.sync.status`, `status.operationState` (phase, message, startedAt
 **Fix:** force a fresh sync via the `monolith-k8s-sync-argocd-app` MCP tool (name=`<app>`), or a hard refresh. Note (third documented occurrence, 2026-07-04): the MCP sync can report `synced: true` while changing nothing; the reliable escalation is a hard-refresh annotation, which forces the repo-server to re-pull and re-render:
 
 ```bash
-kubectl --context local-homelab -n argocd annotate application <app> argocd.argoproj.io/refresh=hard --overwrite
+kubectl -n argocd annotate application <app> argocd.argoproj.io/refresh=hard --overwrite
 ```
 
 This has recurred at least three times: whenever git values and the OCI chart digest both look correct but the live manifest disagrees, suspect this first before digging further.

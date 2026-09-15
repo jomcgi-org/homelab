@@ -11,10 +11,11 @@ set -euo pipefail
 # Usage: argocd-api.sh <api-path> [curl-args...]
 # Example: argocd-api.sh /api/v1/applications/monolith/managed-resources
 #
-# Uses `kubectl --context local-homelab` -- that context is the one that
-# reaches this cluster. Override with ARGOCD_KUBE_CONTEXT if needed.
+# Uses the Tailscale operator context, which is how this cluster is reached.
+# The old local-homelab and ssh-homelab contexts pointed at the home k3s
+# cluster and an SSH tunnel, both retired. Override with ARGOCD_KUBE_CONTEXT.
 
-KUBE_CONTEXT="${ARGOCD_KUBE_CONTEXT:-local-homelab}"
+KUBE_CONTEXT="${ARGOCD_KUBE_CONTEXT:-tailscale-operator.tail33e678.ts.net}"
 CANDIDATE_PORTS=(8080 8081 8090 18080)
 READY_TIMEOUT_SECS=15
 
