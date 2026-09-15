@@ -4888,6 +4888,17 @@ def _warn_deadline_tripped(task: dict) -> None:
         return
     repo, number = task.get("repo"), task.get("issue_number")
     where = f"{repo}#{number}" if repo and isinstance(number, int) else task_id
+    # Say what will actually happen. Promising a release the flag has turned
+    # off would have an operator wait out a slot that is never coming back,
+    # which is the 2026-09-14 wedge again with a notification on top.
+    outcome = (
+        "The lane slot is released within "
+        f"{FACTORY_DEADLINE_BACKSTOP_GRACE_SECONDS // 3600} hours of the "
+        "deadline if none arrives."
+        if _deadline_backstop_enabled()
+        else "The deadline backstop is off, so nothing will release the lane "
+        "slot on its own."
+    )
     try:
         from agent.api import notify
 
@@ -4895,10 +4906,7 @@ def _warn_deadline_tripped(task: dict) -> None:
             notify(
                 f"Factory task {where} passed its deadline holding {held} "
                 "unresolved start(s) with nothing running. Stop supervision "
-                "has no cessation proof for it; the lane slot is released "
-                "within "
-                f"{FACTORY_DEADLINE_BACKSTOP_GRACE_SECONDS // 3600} hours of "
-                "the deadline if none arrives.",
+                f"has no cessation proof for it. {outcome}",
                 level="warn",
             )
         )
@@ -4975,12 +4983,16 @@ def _expire_task_deadline(task: dict) -> bool:
     document = {
         "kind": "delivery",
         "task_id": task_id,
-        # Hold is first, and so is the recommendation. Every other escalation
-        # recommends carrying on, but this one is raised precisely because
-        # cessation could not be proven, and re-admitting is the one action
-        # that could put a second writer on the branch. The operator can still
-        # choose it; the card must not be what suggests it.
-        "recommendation": EFFECT_WORD["hold"],
+        # Carrying on stays first, and it has to. resume_escalated applies
+        # options[0] without showing the card (factory_decisions.py), so an
+        # option set that led with hold would turn pressing Resume into a
+        # terminal no-op that consumes the escalation, and the operator would
+        # then get a 409 trying to re-admit. That is the same invariant the
+        # planner pause enforces with pause_recommendation_not_continue. The
+        # guest-may-still-be-running warning therefore lives in the question
+        # and the reason, which are what the card actually shows, rather than
+        # in an option order that would break the button.
+        "recommendation": EFFECT_WORD[CONTINUE_EFFECT],
         "question": question,
         "reason": (
             "The deadline passed more than "
@@ -4992,14 +5004,14 @@ def _expire_task_deadline(task: dict) -> bool:
         ),
         "options": [
             {
-                "key": "hold",
-                "label": "Hold until the stranded attempt has been looked at",
-                "effect": "hold",
-            },
-            {
                 "key": "readmit",
                 "label": "Re-admit once the guest is confirmed gone",
                 "effect": CONTINUE_EFFECT,
+            },
+            {
+                "key": "hold",
+                "label": "Hold until the stranded attempt has been looked at",
+                "effect": "hold",
             },
         ],
         "branch": task_branch(task_id),
@@ -5028,9 +5040,9 @@ def _expire_task_deadline(task: dict) -> bool:
             )
     _record_escalation(task_id, document)
 
-    # Every refusal below returns before the commit, so a partly applied
-    # settlement is discarded rather than left half written.
-    released = False
+    # Every refusal below returns from inside the block, so a partly applied
+    # settlement is discarded on close rather than left half written, and the
+    # commit is reached only when all of it landed.
     with Session(get_engine()) as db:
         with _locked_session(db):
             held = stranded(db)
@@ -5075,14 +5087,11 @@ def _expire_task_deadline(task: dict) -> bool:
                 task_id=task_id,
                 released=len(held),
             )
-            released = True
         # Outside the lock block and required: _locked_session only flushes a
         # supplied session, deliberately, so the caller can compose an atomic
         # transaction. Without this the settlement is discarded on close and
         # every tick re-posts the card for a slot that was never released.
         db.commit()
-    if not released:
-        return False
     if isinstance(repo, str) and isinstance(number, int):
         _notify_escalation(task_id, repo, number, question)
     return True

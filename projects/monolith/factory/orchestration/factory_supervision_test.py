@@ -404,6 +404,7 @@ def test_sustained_absence_settles_the_attempt_failed(monkeypatch):
     assert settlements[0]["evidence"]["guest_id"] == "guest-9"
     assert audits[-1][0] == "stop_settled"
     assert audits[-1][1]["cessation_confirmed"] is True
+    assert audits[-1][1]["intervention_required"] is False
 
 
 def test_an_intermittent_404_cannot_add_up_to_a_release(monkeypatch):
@@ -446,12 +447,12 @@ def test_a_live_observation_between_absences_breaks_the_run(monkeypatch):
     assert settlements == []
 
 
-def test_the_absence_audit_trail_is_capped(monkeypatch):
-    """A settlement that keeps being refused must not write a row per tick."""
+def test_a_full_audit_trail_still_settles(monkeypatch):
+    """At the cap no further row is written, and a fresh good span settles."""
     assert supervisor.MAX_ABSENCE_OBSERVATIONS == 8
     settled, audits, settlements = _absence_harness(
         monkeypatch,
-        records=[_absence_record(3000 - 300 * n) for n in range(8)],
+        records=[_absence_record(2200 - 300 * n) for n in range(8)],
     )
 
     assert settled is True
@@ -750,10 +751,16 @@ def test_the_backstop_releases_a_stranded_start_and_escalates(monkeypatch):
     assert outcomes[0]["reconciled"] is True
     assert finishes[0][0] == "escalated"
     assert finishes[0][1]["evidence"]["state"] == "deadline_backstop_expired"
-    # Hold is offered and recommended first: the backstop releases without
-    # cessation proof, so re-admitting could put a second writer on the branch.
-    assert escalations[0]["options"][0]["effect"] == "hold"
-    assert escalations[0]["recommendation"] == "hold"
+    # Carrying on must stay first: resume_escalated applies options[0] without
+    # showing the card, so leading with hold would make Resume a terminal
+    # no-op that consumes the escalation. The guest warning lives in the text.
+    assert escalations[0]["options"][0]["effect"] == "agent-ready"
+    assert escalations[0]["recommendation"] == "deliver"
+    assert [option["effect"] for option in escalations[0]["options"]] == [
+        "agent-ready",
+        "hold",
+    ]
+    assert "confirm it is gone" in escalations[0]["question"]
     assert [kw["cost_usd"] for kw in outcomes] == [None]
     assert len(notifies) == 1
     # The settlement is only real if it committed.
@@ -844,3 +851,105 @@ def test_an_unusable_deadline_never_triggers_the_backstop(stamp):
     from factory.orchestration import factory_conductor as conductor
 
     assert conductor._deadline_backstop_due({"deadline_at": stamp}) is False
+
+
+def test_a_stale_run_at_the_cap_does_not_settle(monkeypatch):
+    """The freshest reading has to be recent, or the evidence stopped moving.
+
+    Below the cap this is implied: settlement is only reached on a tick where
+    no observation was due. At the cap the write is skipped, so without the
+    guard a run whose newest reading is hours old would settle on evidence
+    that had stopped being refreshed, over a window the guest may have spent
+    answering.
+    """
+    settled, _audits, settlements = _absence_harness(
+        monkeypatch,
+        records=[_absence_record(7200 + 300 * (7 - n)) for n in range(8)],
+    )
+
+    assert settled is False
+    assert settlements == []
+
+
+def test_the_absence_audit_trail_is_capped(monkeypatch):
+    """A run at the cap writes no further observation however long it lasts."""
+    assert supervisor.MAX_ABSENCE_OBSERVATIONS == 8
+    # Newest is older than the interval, so a write would be due but for the cap.
+    settled, audits, _s = _absence_harness(
+        monkeypatch,
+        records=[_absence_record(7200 + 300 * (7 - n)) for n in range(8)],
+    )
+
+    assert settled is False
+    assert not [entry for entry in audits if entry[0] == "stop_absence"]
+
+
+def _presence_harness(monkeypatch, *, records):
+    """Drive _record_presence with the lock and audit stubbed out."""
+    import contextlib
+
+    audits = []
+
+    @contextlib.contextmanager
+    def locked(*_args, **_kwargs):
+        yield ("db", "control")
+
+    monkeypatch.setattr(supervisor.controls, "_locked_session", locked)
+    monkeypatch.setattr(supervisor, "_records", lambda db, pin: records)
+    monkeypatch.setattr(
+        supervisor,
+        "_audit",
+        lambda db, pin, action, **detail: audits.append((action, detail)),
+    )
+    supervisor._record_presence({"task_id": "task-1"}, dict(ABSENT_IDENTITY))
+    return audits
+
+
+def test_an_observed_guest_breaks_an_open_absence_run(monkeypatch):
+    """The live defect the gap rule alone does not close.
+
+    Every other record the guest-visible path writes is deduplicated, so after
+    the first few ticks a successful 200 read leaves no trace. A control plane
+    404ing intermittently but at least once inside every gap window would then
+    be indistinguishable from one that had torn the guest down.
+    """
+    audits = _presence_harness(monkeypatch, records=[_absence_record(10)])
+
+    assert [action for action, _ in audits] == ["stop_presence"]
+
+
+def test_presence_is_not_recorded_with_no_absence_run_open(monkeypatch):
+    """A healthy attempt never accumulates presence rows."""
+    audits = _presence_harness(
+        monkeypatch,
+        records=[("stop_observation", {"recorded_at": _stamp(10), "reason": "x"})],
+    )
+
+    assert audits == []
+
+
+def test_presence_rows_are_capped(monkeypatch):
+    audits = _presence_harness(
+        monkeypatch,
+        records=[("stop_presence", {"recorded_at": _stamp(99)})] * 8
+        + [_absence_record(10)],
+    )
+
+    assert audits == []
+
+
+def test_a_presence_record_resets_the_absence_run(monkeypatch):
+    """An absence run that straddles a presence row starts again after it."""
+    settled, _audits, settlements = _absence_harness(
+        monkeypatch,
+        records=[
+            _absence_record(1800),
+            _absence_record(1500),
+            ("stop_presence", {"recorded_at": _stamp(1200)}),
+            _absence_record(900),
+            _absence_record(600),
+        ],
+    )
+
+    assert settled is False
+    assert settlements == []
