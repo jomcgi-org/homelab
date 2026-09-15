@@ -20,7 +20,7 @@ from factory.execution.models import (
 )
 from factory.execution.review_leases import ReservationReview
 from factory.orchestration.models import SwarmNodeRun, SwarmTask
-from factory.orchestration.factory_models import FactoryStart
+from factory.orchestration.factory_models import FactoryAudit, FactoryStart
 from factory.execution.models import ProbeObservation
 
 NOW = datetime(2026, 9, 14, tzinfo=timezone.utc)
@@ -50,6 +50,7 @@ def db(tmp_path, monkeypatch):
                 SwarmTask,
                 SwarmNodeRun,
                 FactoryStart,
+                FactoryAudit,
                 ProbeObservation,
             )
         ],
@@ -121,6 +122,164 @@ def decision(action="approve"):
         "reason": "Useful implementation progress",
         "guidance": "Check the schema" if action == "steer" else "",
     }
+
+
+def seed_cost_attempt(db, *, provider_cost=None, list_cost=None, ceiling=2.0):
+    workflow = "factory-node:task:work:1"
+    pid = seed(db, key=workflow)
+    pin = {
+        "task_id": "task",
+        "node_key": "work",
+        "attempt": 1,
+        "workflow_id": workflow,
+        "model": "sol",
+        "max_cost_usd": ceiling,
+    }
+    with Session(db) as session:
+        permit = session.get(AgentCapacityReservation, pid)
+        agent = session.get(AgentSession, permit.session_id)
+        agent.node_key = "work"
+        agent.node_attempt = 1
+        session.add(agent)
+        session.add(SwarmTask(id="task", task_text="work", conductor_model="astra"))
+        session.add(
+            SwarmNodeRun(
+                task_id="task",
+                node_key="work",
+                attempt=1,
+                dispatch_key=workflow,
+                pin_json=json.dumps(pin),
+                session_id=agent.id,
+                status="dispatched",
+            )
+        )
+        session.add(
+            FactoryStart(
+                task_id="task",
+                start_key=workflow,
+                actor="test",
+                model="sol",
+                max_cost_usd=ceiling,
+                status="reserved",
+                session_id=agent.id,
+            )
+        )
+        session.add(
+            AgentTurn(
+                session_id=agent.id,
+                seq=1,
+                prompt="work",
+                result_text="progress",
+                cost_usd=provider_cost,
+                list_cost_usd=list_cost,
+            )
+        )
+        session.commit()
+        return {
+            "permit_id": pid,
+            "session_id": agent.id,
+            "workflow_id": workflow,
+        }
+
+
+def install_cost_stop_fakes(db, monkeypatch, *, persist=False):
+    from factory.orchestration import factory_attempt_stop as stops
+
+    calls = []
+
+    def read(task_id, node_key, attempt, session_id):
+        assert (task_id, node_key, attempt) == ("task", "work", 1)
+        return {"identity_sha256": "a" * 64, "session_id": session_id}
+
+    def stop(**kwargs):
+        calls.append(kwargs)
+        with Session(db) as session:
+            kwargs["authorization_check"](session)
+            if persist:
+                session.add(
+                    FactoryAudit(
+                        actor=kwargs["actor"],
+                        action=stops.REQUEST_ACTION,
+                        task_id=kwargs["task_id"],
+                        detail_json=json.dumps(
+                            {"identity": {"workflow_id": "factory-node:task:work:1"}}
+                        ),
+                    )
+                )
+                session.commit()
+        return {"ok": True}
+
+    monkeypatch.setattr(stops, "read_attempt_stop", read)
+    monkeypatch.setattr(stops, "request_attempt_stop", stop)
+    return calls
+
+
+def test_provider_cost_above_ceiling_requests_distinct_stop(db, monkeypatch):
+    attempt = seed_cost_attempt(db, provider_cost=1.01)
+    with Session(db) as session:
+        session.add(
+            AgentTurn(
+                session_id=attempt["session_id"],
+                seq=2,
+                prompt="continue",
+                result_text="more progress",
+                cost_usd=1.0,
+            )
+        )
+        session.commit()
+    monkeypatch.setenv("FACTORY_ENFORCE_COST_CEILING_ENABLED", "true")
+    calls = install_cost_stop_fakes(db, monkeypatch)
+
+    reviews.enforce_cost_ceilings()
+
+    assert len(calls) == 1
+    assert calls[0]["session_id"] == attempt["session_id"]
+    assert calls[0]["reason"] == reviews.COST_CEILING_REASON
+    assert calls[0]["actor"] == reviews.COST_CEILING_ACTOR
+    assert calls[0]["request_key"] == "cost-ceiling:" + "a" * 64
+
+
+def test_repeated_cost_checks_do_not_request_a_second_stop(db, monkeypatch):
+    seed_cost_attempt(db, provider_cost=3.0)
+    monkeypatch.setenv("FACTORY_ENFORCE_COST_CEILING_ENABLED", "true")
+    calls = install_cost_stop_fakes(db, monkeypatch, persist=True)
+
+    reviews.enforce_cost_ceilings()
+    reviews.enforce_cost_ceilings()
+
+    assert len(calls) == 1
+
+
+def test_provider_cost_under_ceiling_is_not_stopped(db, monkeypatch):
+    seed_cost_attempt(db, provider_cost=1.99)
+    monkeypatch.setenv("FACTORY_ENFORCE_COST_CEILING_ENABLED", "true")
+    calls = install_cost_stop_fakes(db, monkeypatch)
+
+    reviews.enforce_cost_ceilings()
+
+    assert calls == []
+
+
+def test_list_price_above_ceiling_is_not_stopped(db, monkeypatch):
+    seed_cost_attempt(db, provider_cost=None, list_cost=3.0)
+    monkeypatch.setenv("FACTORY_ENFORCE_COST_CEILING_ENABLED", "true")
+    calls = install_cost_stop_fakes(db, monkeypatch)
+
+    reviews.enforce_cost_ceilings()
+
+    assert calls == []
+
+
+def test_disabled_cost_ceiling_does_not_look_up_spend(db, monkeypatch):
+    seed_cost_attempt(db, provider_cost=3.0)
+    monkeypatch.setenv("FACTORY_ENFORCE_COST_CEILING_ENABLED", "false")
+    monkeypatch.setattr(
+        reviews,
+        "get_engine",
+        lambda: pytest.fail("disabled enforcement must not query spend"),
+    )
+
+    reviews.enforce_cost_ceilings()
 
 
 def test_review_is_due_before_30_minute_expiry(db, monkeypatch):

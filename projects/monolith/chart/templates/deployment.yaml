@@ -234,6 +234,8 @@ spec:
               value: {{ .Values.swarm.factoryAutonomousContinuationEnabled | default false | quote }}
             - name: FACTORY_STOP_SUPERVISION_ENABLED
               value: {{ .Values.swarm.factoryStopSupervisionEnabled | default false | quote }}
+            - name: FACTORY_ENFORCE_COST_CEILING_ENABLED
+              value: {{ .Values.swarm.factoryEnforceCostCeilingEnabled | default false | quote }}
             - name: FACTORY_LOST_BEFORE_GUEST_SETTLEMENT_ENABLED
               value: {{ .Values.swarm.factoryLostBeforeGuestSettlementEnabled | default false | quote }}
             - name: FACTORY_ESCALATION_REVALIDATION_ENABLED

@@ -6,9 +6,10 @@ import asyncio
 from datetime import timedelta
 import json
 import logging
+import os
 from uuid import uuid4
 
-from sqlalchemy import text
+from sqlalchemy import func, text
 from sqlmodel import Session, select
 
 from core.db import get_engine
@@ -16,6 +17,7 @@ from factory.execution import admission
 from factory.execution.models import (
     AgentCapacityReservation,
     AgentSession,
+    AgentTurn,
     PendingMessage,
 )
 from factory.execution import review_leases as leases
@@ -23,6 +25,173 @@ from factory.execution.review_leases import ReservationReview
 
 logger = logging.getLogger(__name__)
 ACTOR = "factory:reservation-review"
+COST_CEILING_ACTOR = "factory:cost-ceiling"
+COST_CEILING_REASON = (
+    "cost_ceiling_exceeded: provider-measured spend exceeded the attempt max_cost_usd"
+)
+
+
+def cost_ceiling_enabled() -> bool:
+    return (
+        os.environ.get("FACTORY_ENFORCE_COST_CEILING_ENABLED", "false").lower()
+        == "true"
+    )
+
+
+def _stopped_workflows(db, task_ids: set[str]) -> set[str]:
+    from factory.orchestration.factory_attempt_stop import REQUEST_ACTION
+    from factory.orchestration.factory_models import FactoryAudit
+
+    workflows = set()
+    rows = db.exec(
+        select(FactoryAudit.detail_json).where(
+            FactoryAudit.task_id.in_(task_ids),
+            FactoryAudit.action == REQUEST_ACTION,
+        )
+    ).all()
+    for raw in rows:
+        try:
+            detail = json.loads(raw)
+            workflow_id = detail["identity"]["workflow_id"]
+        except (KeyError, TypeError, json.JSONDecodeError):
+            continue
+        if isinstance(workflow_id, str):
+            workflows.add(workflow_id)
+    return workflows
+
+
+def _cost_ceiling_candidates(db) -> list[dict]:
+    from factory.orchestration.factory_models import FactoryStart
+    from factory.orchestration.models import SwarmNodeRun
+
+    totals = (
+        select(
+            AgentTurn.session_id,
+            func.sum(AgentTurn.cost_usd).label("provider_cost_usd"),
+        )
+        .where(AgentTurn.cost_usd.is_not(None))
+        .group_by(AgentTurn.session_id)
+        .subquery()
+    )
+    rows = db.exec(
+        select(
+            AgentCapacityReservation,
+            AgentSession,
+            SwarmNodeRun,
+            FactoryStart,
+            totals.c.provider_cost_usd,
+        )
+        .join(AgentSession, AgentSession.id == AgentCapacityReservation.session_id)
+        .join(SwarmNodeRun, SwarmNodeRun.dispatch_key == AgentSession.workflow_id)
+        .join(
+            FactoryStart,
+            (FactoryStart.task_id == SwarmNodeRun.task_id)
+            & (FactoryStart.start_key == SwarmNodeRun.dispatch_key),
+        )
+        .join(totals, totals.c.session_id == AgentSession.id)
+        .where(
+            AgentCapacityReservation.state == "running",
+            SwarmNodeRun.status.in_(["admitted", "dispatched", "uncertain"]),
+            FactoryStart.status.in_(["reserved", "uncertain"]),
+            totals.c.provider_cost_usd > FactoryStart.max_cost_usd,
+        )
+    ).all()
+    if not rows:
+        return []
+    stopped = _stopped_workflows(db, {run.task_id for _, _, run, _, _ in rows})
+    return [
+        {
+            "permit_id": permit.id,
+            "session_id": agent.id,
+            "workflow_id": run.dispatch_key,
+            "run_id": run.id,
+            "start_id": start.id,
+            "task_id": run.task_id,
+            "node_key": run.node_key,
+            "attempt": run.attempt,
+            "max_cost_usd": start.max_cost_usd,
+            "provider_cost_usd": float(provider_cost),
+        }
+        for permit, agent, run, start, provider_cost in rows
+        if run.dispatch_key not in stopped
+    ]
+
+
+def _authorize_cost_ceiling(db, candidate: dict) -> None:
+    from factory.orchestration.factory_models import FactoryStart
+    from factory.orchestration.models import SwarmNodeRun
+
+    if not cost_ceiling_enabled():
+        raise ValueError("cost_ceiling_enforcement_disabled")
+    admission.lock_pool(db)
+    permit = db.get(
+        AgentCapacityReservation, candidate["permit_id"], populate_existing=True
+    )
+    agent = db.get(AgentSession, candidate["session_id"], populate_existing=True)
+    run = db.get(SwarmNodeRun, candidate["run_id"], populate_existing=True)
+    start = db.get(FactoryStart, candidate["start_id"], populate_existing=True)
+    if (
+        permit is None
+        or permit.state != "running"
+        or permit.session_id != candidate["session_id"]
+        or agent is None
+        or agent.workflow_id != candidate["workflow_id"]
+        or run is None
+        or run.task_id != candidate["task_id"]
+        or run.node_key != candidate["node_key"]
+        or run.attempt != candidate["attempt"]
+        or run.dispatch_key != candidate["workflow_id"]
+        or run.status not in {"admitted", "dispatched", "uncertain"}
+        or start is None
+        or start.task_id != candidate["task_id"]
+        or start.start_key != candidate["workflow_id"]
+        or start.status not in {"reserved", "uncertain"}
+        or start.max_cost_usd != candidate["max_cost_usd"]
+    ):
+        raise ValueError("cost_ceiling_attempt_changed")
+    provider_cost = db.exec(
+        select(func.sum(AgentTurn.cost_usd)).where(
+            AgentTurn.session_id == candidate["session_id"],
+            AgentTurn.cost_usd.is_not(None),
+        )
+    ).one()
+    if provider_cost is None or provider_cost <= start.max_cost_usd:
+        raise ValueError("cost_ceiling_not_exceeded")
+
+
+def enforce_cost_ceilings() -> None:
+    """Request one fenced stop for each live attempt over provider spend."""
+    if not cost_ceiling_enabled():
+        return
+    from factory.orchestration import factory_attempt_stop as stops
+
+    with Session(get_engine()) as db:
+        candidates = _cost_ceiling_candidates(db)
+    for candidate in candidates:
+        try:
+            identity = stops.read_attempt_stop(
+                candidate["task_id"],
+                candidate["node_key"],
+                candidate["attempt"],
+                candidate["session_id"],
+            )
+
+            def authorize(db, candidate=candidate):
+                _authorize_cost_ceiling(db, candidate)
+
+            stops.request_attempt_stop(
+                task_id=candidate["task_id"],
+                node_key=candidate["node_key"],
+                attempt=candidate["attempt"],
+                session_id=candidate["session_id"],
+                request_key="cost-ceiling:" + identity["identity_sha256"],
+                expected_identity_sha256=identity["identity_sha256"],
+                reason=COST_CEILING_REASON,
+                actor=COST_CEILING_ACTOR,
+                authorization_check=authorize,
+            )
+        except Exception as exc:
+            logger.warning("Cost ceiling stop pending: %s", type(exc).__name__)
 
 
 def _snapshot(db, permit):
@@ -763,9 +932,12 @@ async def _loop():
 
     while True:
         try:
-            await _cleanup()
-            await process_execution_stops()
-            await review_once()
+            if cost_ceiling_enabled():
+                await asyncio.to_thread(enforce_cost_ceilings)
+            if leases.enabled():
+                await _cleanup()
+                await process_execution_stops()
+                await review_once()
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -774,7 +946,7 @@ async def _loop():
 
 
 def start_review_loop():
-    if not leases.enabled():
+    if not leases.enabled() and not cost_ceiling_enabled():
         return []
     from framework import log_task_exception
 
