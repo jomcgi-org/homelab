@@ -126,8 +126,22 @@ data:
             type: composite
             composite:
               max_total_spans_per_second: {{ .Values.sampling.maxTotalSpansPerSecond }}
-              policy_order: [errors, slow-traces, baseline]
+              # EmberVM bounds request observations below their slice and emits
+              # a separate marker when the bound saturates. Keeping the marker
+              # in its own allocation lets alert formulas suppress an invalid
+              # window even when request traffic fills the request slice.
+              policy_order: [embervm-session-api-saturation, embervm-session-api, errors, slow-traces, baseline]
               composite_sub_policy:
+                - name: embervm-session-api-saturation
+                  type: string_attribute
+                  string_attribute:
+                    key: ember.observation.kind
+                    values: [saturation]
+                - name: embervm-session-api
+                  type: string_attribute
+                  string_attribute:
+                    key: ember.observation.kind
+                    values: [request]
                 - name: errors
                   type: status_code
                   status_code:
@@ -141,6 +155,10 @@ data:
                   probabilistic:
                     sampling_percentage: {{ .Values.sampling.probabilisticPercentage }}
               rate_allocation:
+                - policy: embervm-session-api-saturation
+                  percent: {{ .Values.sampling.rateAllocation.sessionApiSaturationPercent }}
+                - policy: embervm-session-api
+                  percent: {{ .Values.sampling.rateAllocation.sessionApiPercent }}
                 - policy: errors
                   percent: {{ .Values.sampling.rateAllocation.errorsPercent }}
                 - policy: slow-traces
