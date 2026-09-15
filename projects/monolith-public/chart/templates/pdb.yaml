@@ -2,11 +2,11 @@
 {{- $vals := index $.Values $component }}
 {{- if and $vals.enabled $vals.pdb $vals.pdb.enabled }}
 # PodDisruptionBudget for the {{ $component }} component. maxUnavailable (NOT
-# minAvailable) is deliberate: web and frontend sit at a 1-replica floor (HPA
-# minReplicas: 1), and a minAvailable:1 budget would block node drains entirely
-# there (the only pod could never be evicted). maxUnavailable:1 lets a drain
-# evict-and-reschedule the single pod, and caps voluntary disruption to one pod
-# at a time once the HPA has scaled out (or, for imgproxy, across its 2 replicas).
+# minAvailable) is deliberate: frontend still sits at a 1-replica floor, and a
+# minAvailable:1 budget would block node drains entirely there (the only pod
+# could never be evicted). maxUnavailable:1 lets a drain evict-and-reschedule
+# the single pod, and caps voluntary disruption to one pod at a time above that
+# floor: web now runs an HPA floor of 2 on GKE, so a drain leaves one serving.
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
