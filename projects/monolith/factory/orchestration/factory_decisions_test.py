@@ -13,6 +13,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from factory.orchestration import factory_conductor as conductor
 from factory.orchestration import factory_controls as controls
 from factory.orchestration import factory_decisions as decisions
+from factory.orchestration import factory_funding as funding
 from factory.orchestration import factory_landing as landing
 from factory.orchestration import factory_refine as refine
 from factory.orchestration.factory_intake import admit_next, receive_issue
@@ -61,7 +62,7 @@ def db(tmp_path, monkeypatch):
     with Session(engine) as session:
         session.add(FactoryControl(id="factory", actor="migration"))
         session.commit()
-    for module in (conductor, controls):
+    for module in (conductor, conductor.graph, controls):
         monkeypatch.setattr(module, "get_engine", lambda: engine)
     yield engine
     engine.dispose()
@@ -1339,3 +1340,359 @@ def test_a_dismiss_repeated_returns_the_first_one_rather_than_a_second(db, githu
     assert second["applied"] is False
     assert second["resolution"]["decided_at"] == first["resolution"]["decided_at"]
     assert audit_actions(db).count("decision_applied") == 1
+
+
+def envelope_task(*, max_turns=6, max_attempts=1):
+    policy = {
+        "repo": REPO,
+        "issue_numbers": [ISSUE],
+        "generation": 0,
+        "max_tasks": {"delivery": 1, "advisory": 1},
+        "max_turns_per_task": max_turns,
+        "task_budget_usd": 30.0,
+        "turn_budget_usd": 2.0,
+        "allowed_models": ["opus", "astra", "luna"],
+        "conductor_model": "opus",
+        "worker_model": "luna",
+        "base_branch": "main",
+        "turn_timeout_seconds": 60,
+        "task_timeout_seconds": 3600,
+        "max_attempts": max_attempts,
+        "intake": {"enabled": True, "refine_enabled": True},
+    }
+    assert controls.set_control("configure", "operator", policy=policy)["ok"]
+    assert controls.set_control("enable", "operator")["ok"]
+    receive_issue(
+        REPO,
+        ISSUE,
+        "Fix conductor livelock",
+        "Keep funding bounded and closeable.",
+        f"https://github.com/{REPO}/issues/{ISSUE}",
+        "factory:intake",
+        task_class="bug-fix",
+    )
+    task_id = admit_next("test")["task_id"]
+    return conductor._task(task_id), policy
+
+
+def add_spent_turns(db, task, count=3):
+    for ordinal in range(1, count + 1):
+        node_key = f"implement_spent_{ordinal}"
+        assert conductor.graph.add_node(
+            task["id"],
+            author_kind="engine",
+            author="test",
+            cause_kind="test",
+            cause_ref=f"spent:{ordinal}",
+            stated_reason="settled fixture work",
+            expected_version=conductor.graph.current_version(task["id"]),
+            node_key=node_key,
+            kind="work",
+            prompt="Settled work",
+            model="luna",
+            deps=[],
+            max_cost_usd=1.0,
+            side_effects=True,
+            max_attempts=1,
+            turn_timeout_seconds=60,
+        ).ok
+        start_key = f"factory-node:{task['id']}:{node_key}:1"
+        with Session(db) as session:
+            session.add(
+                SwarmNodeRun(
+                    task_id=task["id"],
+                    node_key=node_key,
+                    attempt=1,
+                    dispatch_key=start_key,
+                    pin_json=json.dumps({"model": "luna"}),
+                    reserved_cost_usd=1.0,
+                    status="succeeded",
+                    cost_usd=0.1,
+                    outcome_json="{}",
+                )
+            )
+            session.add(
+                FactoryStart(
+                    task_id=task["id"],
+                    start_key=start_key,
+                    actor="test",
+                    model="luna",
+                    max_cost_usd=1.0,
+                    status="succeeded",
+                    cost_usd=0.1,
+                )
+            )
+            session.commit()
+
+
+def plan_for_five_more():
+    return {
+        "action": "plan",
+        "reason": "Complete the remaining five bounded steps.",
+        "edits": [
+            {
+                "action": "add_node",
+                "reason": f"step {ordinal} remains",
+                "node_key": f"remaining_{ordinal}",
+                "role": "implement",
+                "prompt": f"Complete step {ordinal}",
+                "deps": [],
+                "max_attempts": 1,
+            }
+            for ordinal in range(1, 6)
+        ],
+    }
+
+
+def funding_decision(**changes):
+    return {
+        "action": "continue",
+        "reason": "The exact remaining plan is still worthwhile.",
+        "next_plan": "Complete the five refused steps, then review the result.",
+        "task_budget_usd": 30.0,
+        "additional_work_turns": 1,
+        "lease_minutes": 30,
+        **changes,
+    }
+
+
+def settle_funding_request(task, request, decision):
+    run = {
+        "id": 900,
+        "node_key": request["node_key"],
+        "attempt": 1,
+        "status": "succeeded",
+        "pin": {"model": "astra"},
+        "dispatch_key": request["start_key"],
+        "outcome_json": json.dumps({"value": decision}),
+    }
+    funding.settle(task, run, request)
+
+
+def test_envelope_rejection_stores_structured_deficit(db):
+    task, _policy = envelope_task()
+    deficit = {"turns": {"needed": 8, "allowed": 6}, "spare_turns": 3}
+    conductor._reject_decision(
+        task["id"],
+        "decision:1",
+        "plan",
+        "envelope_exceeded",
+        "envelope exceeded: " + json.dumps(deficit),
+    )
+    with Session(db) as session:
+        row = session.exec(
+            select(FactoryAudit).where(FactoryAudit.action == "conductor_rejected")
+        ).one()
+    detail = json.loads(row.detail_json)
+    assert detail["deficit"] == deficit
+    assert detail["reason"].startswith("envelope exceeded: ")
+
+
+def test_two_matching_refusals_escalate_with_the_deficit(db, monkeypatch):
+    task, policy = envelope_task()
+    deficit = {
+        "turns": {"needed": 8, "allowed": 6},
+        "spare_turns": 3,
+    }
+    monkeypatch.setattr(
+        conductor,
+        "_envelope_refusal",
+        lambda *_args, **_kwargs: "envelope exceeded: " + json.dumps(deficit),
+    )
+    escalations = []
+    monkeypatch.setattr(
+        conductor,
+        "_escalate_task",
+        lambda _task, decision, _cause, _runs: escalations.append(decision),
+    )
+    decision = plan_for_five_more()
+    conductor._apply_decision(task, policy, decision, "decision:1", [])
+    assert escalations == []
+    conductor._apply_decision(task, policy, decision, "decision:2", [])
+    assert len(escalations) == 1
+    assert '"needed": 8' in escalations[0]["question"]
+    assert '"allowed": 6' in escalations[0]["question"]
+
+
+def test_two_different_refusal_codes_do_not_escalate(db, monkeypatch):
+    task, policy = envelope_task()
+    escalations = []
+    monkeypatch.setattr(
+        conductor,
+        "_escalate_task",
+        lambda *_args: escalations.append(True),
+    )
+    first = {
+        "action": "add_node",
+        "reason": "invalid bound",
+        "node_key": "first",
+        "role": "implement",
+        "prompt": "First",
+        "deps": [],
+        "max_attempts": 2,
+    }
+    second = {
+        "action": "add_node",
+        "reason": "invalid model",
+        "node_key": "second",
+        "role": "implement",
+        "prompt": "Second",
+        "deps": [],
+        "model": "terra",
+    }
+    conductor._apply_decision(task, policy, first, "decision:1", [])
+    conductor._apply_decision(task, policy, second, "decision:2", [])
+    assert escalations == []
+
+
+def test_successful_graph_edit_resets_matching_refusals(db, monkeypatch):
+    task, policy = envelope_task()
+    escalations = []
+    monkeypatch.setattr(
+        conductor,
+        "_escalate_task",
+        lambda *_args: escalations.append(True),
+    )
+    refused = {
+        "action": "add_node",
+        "reason": "invalid bound",
+        "node_key": "refused",
+        "role": "implement",
+        "prompt": "Refused",
+        "deps": [],
+        "max_attempts": 2,
+    }
+    conductor._apply_decision(task, policy, refused, "decision:1", [])
+    assert conductor.graph.add_node(
+        task["id"],
+        author_kind="engine",
+        author="test",
+        cause_kind="test",
+        cause_ref="progress",
+        stated_reason="useful graph progress",
+        expected_version=conductor.graph.current_version(task["id"]),
+        node_key="implement_progress",
+        kind="work",
+        prompt="Useful progress",
+        model="luna",
+        deps=[],
+        max_cost_usd=1.0,
+        side_effects=True,
+        max_attempts=1,
+        turn_timeout_seconds=60,
+    ).ok
+    conductor._apply_decision(task, policy, refused, "decision:2", [])
+    assert escalations == []
+
+
+def test_funding_grant_uses_the_recorded_turn_deficit(db, monkeypatch):
+    task, _policy = envelope_task()
+    add_spent_turns(db, task)
+    conductor._reject_decision(
+        task["id"],
+        "decision:1",
+        "plan",
+        "envelope_exceeded",
+        'envelope exceeded: {"turns": {"allowed": 6, "needed": 8}}',
+    )
+    monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "true")
+    monkeypatch.setattr(
+        funding,
+        "_issue",
+        lambda _task: {
+            "number": ISSUE,
+            "state": "open",
+            "title": "Fix conductor livelock",
+            "body": "Keep funding bounded and closeable.",
+            "updated_at": "now",
+        },
+    )
+    assert funding.request(task, "Fund the recorded deficit")
+    with controls._read_session() as session:
+        request = funding.pending(session, task["id"])
+    assert request["deficit"]["turns"] == {"allowed": 6, "needed": 8}
+    settle_funding_request(task, request, funding_decision())
+    with controls._read_session() as session:
+        grant = funding.amendment(session, task["id"])
+    assert grant["policy_overlay"]["max_task_turns_hard"] == 8
+
+
+def test_deficit_grant_still_obeys_the_objective_ceiling(db, monkeypatch):
+    task, _policy = envelope_task()
+    add_spent_turns(db, task)
+    conductor._reject_decision(
+        task["id"],
+        "decision:1",
+        "plan",
+        "envelope_exceeded",
+        'envelope exceeded: {"turns": {"allowed": 6, "needed": 8}}',
+    )
+    monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "true")
+    monkeypatch.setattr(
+        funding,
+        "_issue",
+        lambda _task: {
+            "number": ISSUE,
+            "state": "open",
+            "title": "Fix conductor livelock",
+            "body": "Keep funding bounded and closeable.",
+            "updated_at": "now",
+        },
+    )
+    monkeypatch.setattr(
+        funding,
+        "objective",
+        lambda _db, _task_id: {
+            "repo": REPO,
+            "issue_number": ISSUE,
+            "task_ids": [task["id"]],
+            "committed_cost_usd": 10.0,
+            "ceiling_usd": funding.OBJECTIVE_CEILING_USD,
+        },
+    )
+    assert funding.request(task, "Fund the recorded deficit")
+    with controls._read_session() as session:
+        request = funding.pending(session, task["id"])
+    settle_funding_request(task, request, funding_decision(task_budget_usd=195.0))
+    with controls._read_session() as session:
+        assert funding.amendment(session, task["id"]) is None
+        settled = funding.latest(session, task["id"], "funding_review_settled")
+    assert settled["refusal"] == "extension exceeds objective budget"
+
+
+def test_refused_eight_turn_plan_is_funded_without_a_third_refusal(db, monkeypatch):
+    task, policy = envelope_task()
+    add_spent_turns(db, task)
+    decision = plan_for_five_more()
+    conductor._apply_decision(task, policy, decision, "decision:1", [])
+    with Session(db) as session:
+        first = funding.latest(session, task["id"], "conductor_rejected")
+    assert first["deficit"]["turns"] == {"allowed": 6, "needed": 8}
+    monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "true")
+    monkeypatch.setattr(
+        funding,
+        "_issue",
+        lambda _task: {
+            "number": ISSUE,
+            "state": "open",
+            "title": "Fix conductor livelock",
+            "body": "Keep funding bounded and closeable.",
+            "updated_at": "now",
+        },
+    )
+    assert funding.request(task, "Fund the exact deficit")
+    with controls._read_session() as session:
+        request = funding.pending(session, task["id"])
+    settle_funding_request(task, request, funding_decision())
+    funded_policy = controls.task_snapshot(task["id"])["policy"]
+    conductor._apply_decision(task, funded_policy, decision, "decision:2", [])
+    keys = {node["node_key"] for node in conductor.graph.load_graph(task["id"])}
+    assert {f"implement_remaining_{ordinal}" for ordinal in range(1, 6)} <= keys
+    with Session(db) as session:
+        refusals = session.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == task["id"],
+                FactoryAudit.action == "conductor_rejected",
+            )
+        ).all()
+    assert len(refusals) == 1
