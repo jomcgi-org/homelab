@@ -586,12 +586,23 @@ def factory_public_snapshot() -> None:
     logger.info("factory-public-snapshot: starting")
     with Session(get_engine()) as session:
         report = write_public_snapshot(session)
-    logger.info(
-        "factory-public-snapshot: wrote %d task(s), %d session(s) at %s",
+
+    log_level = (
+        logging.WARNING
+        if report.get("tasks_skipped") or report.get("sessions_skipped")
+        else logging.INFO
+    )
+    logger.log(
+        log_level,
+        "factory-public-snapshot: wrote %d task(s), %d session(s), "
+        "skipped %d task(s), %d session(s) at %s",
         report["tasks"],
         report["sessions"],
+        report.get("tasks_skipped", 0),
+        report.get("sessions_skipped", 0),
         report["snapshotted_at"],
     )
+    # Skipped rows are reported, but do not keep the public board stale.
 
 
 @app.command("snapshot-merged-prs")
