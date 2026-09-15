@@ -727,7 +727,7 @@ _SESSION_PRUNE = text(
 def _sanitize_payload(obj: object) -> object:
     """Remove NUL bytes from all strings in a payload tree.
 
-    NUL bytes (\x00) cannot be represented in Postgres text or jsonb. This
+    NUL bytes (``\\x00``) cannot be represented in Postgres text or jsonb. This
     sanitiser recurses through dicts, lists, and tuples, removing NUL from
     every string while leaving the rest of the structure and content intact.
 
@@ -791,11 +791,9 @@ def write_public_snapshot(session: Session) -> dict:
         except SQLAlchemyError as exc:
             savepoint.rollback()
             logger.warning(
-                "factory_public.task_upsert_failed",
-                extra={
-                    "issue_number": issue_number,
-                    "exception_type": type(exc).__name__,
-                },
+                "factory_public.task_upsert_failed: issue %s skipped (%s)",
+                issue_number,
+                type(exc).__name__,
             )
             tasks_skipped += 1
 
@@ -816,11 +814,9 @@ def write_public_snapshot(session: Session) -> dict:
         except SQLAlchemyError as exc:
             savepoint.rollback()
             logger.warning(
-                "factory_public.session_upsert_failed",
-                extra={
-                    "session_key": key,
-                    "exception_type": type(exc).__name__,
-                },
+                "factory_public.session_upsert_failed: session %s skipped (%s)",
+                key,
+                type(exc).__name__,
             )
             sessions_skipped += 1
 
