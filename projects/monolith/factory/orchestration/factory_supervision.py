@@ -46,6 +46,20 @@ NODE_GONE_GRACE_SECONDS = 600
 # until it has held across this many separate observations spanning this long.
 MIN_ABSENCE_OBSERVATIONS = 3
 ABSENCE_CONFIRM_SECONDS = 900
+# One observation per this interval, so the run actually samples the window.
+# Recording on every tick instead would take the whole count in one 45 second
+# burst and then wait out the rest of the span blind, which proves only that
+# the guest was absent for 45 seconds.
+ABSENCE_OBSERVATION_INTERVAL_SECONDS = 300
+# Two intervals. A longer gap than this means the run was broken by something
+# that was not absence: a live guest answering in between, or an observer that
+# was not running. Evidence then starts again rather than accumulating across
+# unrelated episodes, which is what makes an intermittent 404 during a rollout
+# unable to add up to a release over hours.
+ABSENCE_MAX_GAP_SECONDS = 600
+# Hard cap on rows per attempt, so a settlement that keeps being refused can
+# never turn this into an unbounded audit stream.
+MAX_ABSENCE_OBSERVATIONS = 8
 _ACTIONS = (
     "stop_intent",
     "stop_request",
@@ -647,6 +661,37 @@ def _settle_failed_attempt(
     return result
 
 
+def _absence_run(records, identity):
+    """The unbroken tail of absence observations for this exact attempt.
+
+    Walked newest first and stopped at the first thing that is not this
+    attempt's absence, so only a continuous episode counts. Counting every
+    absence record ever written for the identity instead would let a 404 from
+    one rollout and two from another, hours apart, add up to a release: each
+    reading would be real, but "absent now, and absent twice before" is not
+    the same claim as "absent throughout", and only the second one orders the
+    guest after its process.
+    """
+    run = []
+    previous = None
+    for action, detail in reversed(records):
+        if (
+            action != "stop_absence"
+            or detail.get("identity_sha256") != identity["identity_sha256"]
+        ):
+            break
+        stamp = _timestamp(detail["recorded_at"])
+        if (
+            previous is not None
+            and (previous - stamp).total_seconds() > ABSENCE_MAX_GAP_SECONDS
+        ):
+            break
+        run.append(stamp)
+        previous = stamp
+    run.reverse()
+    return run
+
+
 def _absence_settled(pin, session_id, identity, original_result):
     """Record one authoritative absence, and settle once absence has held.
 
@@ -654,15 +699,17 @@ def _absence_settled(pin, session_id, identity, original_result):
     and it removes the record after teardown, so absence orders the guest
     after its own process. What it cannot do on a single reading is
     distinguish a torn-down guest from a control plane that has briefly lost
-    sight of a live one, so this accumulates observations against the exact
-    attempt identity and settles only once MIN_ABSENCE_OBSERVATIONS of them
-    span ABSENCE_CONFIRM_SECONDS.
+    sight of a live one, so this samples the window: one observation per
+    ABSENCE_OBSERVATION_INTERVAL_SECONDS, and settlement only once an unbroken
+    run of at least MIN_ABSENCE_OBSERVATIONS of them spans
+    ABSENCE_CONFIRM_SECONDS end to end.
 
     Every observation is pinned to identity_sha256, so an attempt that changes
     underneath supervision starts its evidence again rather than inheriting a
-    previous attempt's count. The audit stream is bounded: once the threshold
-    is reached no further observations are written, and the settlement itself
-    is fenced by the stop_settled record the cessation path already uses.
+    previous attempt's count. The audit stream is bounded twice over: one row
+    per interval, and never more than MAX_ABSENCE_OBSERVATIONS per attempt.
+    The settlement itself is fenced by the stop_settled record the cessation
+    path already uses.
     """
     now = _now()
     with controls._locked_session() as (db, control):
@@ -674,13 +721,13 @@ def _absence_settled(pin, session_id, identity, original_result):
         records = _records(db, pin)
         if any(action == "stop_settled" for action, _ in records):
             return True
-        seen = [
-            detail
-            for action, detail in records
-            if action == "stop_absence"
-            and detail.get("identity_sha256") == identity["identity_sha256"]
-        ]
-        if len(seen) < MIN_ABSENCE_OBSERVATIONS:
+        seen = _absence_run(records, identity)
+        newest = seen[-1] if seen else None
+        due = (
+            newest is None
+            or (now - newest).total_seconds() >= ABSENCE_OBSERVATION_INTERVAL_SECONDS
+        )
+        if due and len(seen) < MAX_ABSENCE_OBSERVATIONS:
             _audit(
                 db,
                 pin,
@@ -692,14 +739,22 @@ def _absence_settled(pin, session_id, identity, original_result):
                 intervention_required=False,
             )
             return False
-        first = _timestamp(seen[0]["recorded_at"])
-        held = (now - first).total_seconds()
+        # Past the cap the run stops growing, but a span that is already long
+        # enough still settles rather than stalling on a full audit trail.
+        if len(seen) < MIN_ABSENCE_OBSERVATIONS:
+            return False
+        first = seen[0]
+        # Measured between observations, never up to now: the span has to be
+        # one this actually watched, not one it inferred from a single old
+        # reading and the clock.
+        held = (newest - first).total_seconds()
         if held < ABSENCE_CONFIRM_SECONDS:
             return False
         proof = {
             "guest_id": identity["guest_id"],
             "observations": len(seen),
             "first_observed_at": first.isoformat(),
+            "last_observed_at": newest.isoformat(),
             "confirmed_at": now.isoformat(),
             "held_seconds": int(held),
         }

@@ -4568,8 +4568,9 @@ def _warn_deadline_tripped(task: dict) -> None:
                 f"Factory task {where} passed its deadline holding {held} "
                 "unresolved start(s) with nothing running. Stop supervision "
                 "has no cessation proof for it; the lane slot is released "
-                f"in {FACTORY_DEADLINE_BACKSTOP_GRACE_SECONDS // 3600} hours "
-                "if none arrives.",
+                "within "
+                f"{FACTORY_DEADLINE_BACKSTOP_GRACE_SECONDS // 3600} hours of "
+                "the deadline if none arrives.",
                 level="warn",
             )
         )
@@ -4601,10 +4602,11 @@ def _expire_task_deadline(task: dict) -> bool:
     person should see, so the receipt ends "escalated" with a card on the
     issue naming what was stranded.
     """
-    if not _deadline_backstop_enabled():
-        return False
-    if not _deadline_backstop_due(task):
-        _warn_deadline_tripped(task)
+    # The warning is deliberately outside the flag. It is a read plus one
+    # fenced notify, it changes nothing, and it is the half that would have
+    # made the 2026-09-14 wedge visible while the release half is still off.
+    _warn_deadline_tripped(task)
+    if not _deadline_backstop_enabled() or not _deadline_backstop_due(task):
         return False
 
     from factory.orchestration.factory_controls import (
@@ -4637,31 +4639,39 @@ def _expire_task_deadline(task: dict) -> bool:
     question = (
         "This task passed its deadline holding a start that no cessation "
         "proof could settle, so its lane slot was released by the backstop "
-        "rather than by evidence. Should the work be re-admitted from its "
-        "branch, or held for someone to look at the stranded attempt first?"
+        "rather than by evidence. Its guest was never proven stopped, so "
+        "confirm it is gone before re-admitting: a new attempt runs on the "
+        "same branch, and a guest that is still alive would be a second "
+        "writer on it."
     )
     document = {
         "kind": "delivery",
         "task_id": task_id,
-        "recommendation": EFFECT_WORD[CONTINUE_EFFECT],
+        # Hold is first, and so is the recommendation. Every other escalation
+        # recommends carrying on, but this one is raised precisely because
+        # cessation could not be proven, and re-admitting is the one action
+        # that could put a second writer on the branch. The operator can still
+        # choose it; the card must not be what suggests it.
+        "recommendation": EFFECT_WORD["hold"],
         "question": question,
         "reason": (
             "The deadline passed more than "
             f"{FACTORY_DEADLINE_BACKSTOP_GRACE_SECONDS // 3600} hours ago with "
             "no node running and at least one start still uncertain. Stop "
             "supervision could not prove the guest had ceased, so the "
-            "reservation was released on the deadline instead."
+            "reservation was released on the deadline instead. Nothing here "
+            "destroyed the guest or established that it stopped."
         ),
         "options": [
-            {
-                "key": "readmit",
-                "label": "Re-admit the task and carry on from its branch",
-                "effect": CONTINUE_EFFECT,
-            },
             {
                 "key": "hold",
                 "label": "Hold until the stranded attempt has been looked at",
                 "effect": "hold",
+            },
+            {
+                "key": "readmit",
+                "label": "Re-admit once the guest is confirmed gone",
+                "effect": CONTINUE_EFFECT,
             },
         ],
         "branch": task_branch(task_id),
@@ -4690,21 +4700,28 @@ def _expire_task_deadline(task: dict) -> bool:
             )
     _record_escalation(task_id, document)
 
+    # Every refusal below returns before the commit, so a partly applied
+    # settlement is discarded rather than left half written.
+    released = False
     with Session(get_engine()) as db:
         with _locked_session(db):
             held = stranded(db)
             if held is None:
                 return False
             for row in held:
-                # Zero, matching the reconciler pause expiry: this path has no
-                # measured spend to report, and the committed cost the start
-                # already carries stays on the receipt either way.
+                # Unknown, not zero. The reconciler pause expiry settles at 0.0,
+                # but _committed_cost reads a terminal start's cost_usd
+                # literally, so zeroing here would drop the reserved ceiling
+                # this start had already committed and under-report what the
+                # receipt spent. A guest that ran and could not be proven
+                # stopped has genuinely unknown spend, and None is how that is
+                # written: _committed_cost then keeps max_cost_usd.
                 settled = record_start_outcome(
                     task_id,
                     row.start_key,
                     "failed",
                     ACTOR,
-                    cost_usd=0.0,
+                    cost_usd=None,
                     session_id=row.session_id,
                     reconciled=True,
                     session=db,
@@ -4730,6 +4747,14 @@ def _expire_task_deadline(task: dict) -> bool:
                 task_id=task_id,
                 released=len(held),
             )
+            released = True
+        # Outside the lock block and required: _locked_session only flushes a
+        # supplied session, deliberately, so the caller can compose an atomic
+        # transaction. Without this the settlement is discarded on close and
+        # every tick re-posts the card for a slot that was never released.
+        db.commit()
+    if not released:
+        return False
     if isinstance(repo, str) and isinstance(number, int):
         _notify_escalation(task_id, repo, number, question)
     return True

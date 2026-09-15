@@ -309,13 +309,14 @@ def _absence_harness(
     return settled, audits, settlements
 
 
+def _stamp(seconds_before):
+    return (ABSENT_AT - timedelta(seconds=seconds_before)).isoformat()
+
+
 def _absence_record(seconds_before, *, sha="sha-9"):
     return (
         "stop_absence",
-        {
-            "identity_sha256": sha,
-            "recorded_at": (ABSENT_AT - timedelta(seconds=seconds_before)).isoformat(),
-        },
+        {"identity_sha256": sha, "recorded_at": _stamp(seconds_before)},
     )
 
 
@@ -339,12 +340,27 @@ def test_a_single_absence_records_an_observation_and_settles_nothing(monkeypatch
     ]
 
 
+def test_absence_is_sampled_on_an_interval_not_on_every_tick(monkeypatch):
+    """A fresh observation is only written once the interval has elapsed.
+
+    Recording every tick would take the whole count in one burst and then
+    settle on a span it never actually watched.
+    """
+    assert supervisor.ABSENCE_OBSERVATION_INTERVAL_SECONDS == 300
+    settled, audits, settlements = _absence_harness(
+        monkeypatch, records=[_absence_record(299)]
+    )
+
+    assert settled is False
+    assert settlements == []
+    assert audits == []
+
+
 def test_absence_below_the_observation_floor_does_not_settle(monkeypatch):
-    """Two prior observations still leave the count short of the floor."""
     assert supervisor.MIN_ABSENCE_OBSERVATIONS == 3
     settled, audits, settlements = _absence_harness(
         monkeypatch,
-        records=[_absence_record(3600), _absence_record(1800)],
+        records=[_absence_record(600), _absence_record(300)],
     )
 
     assert settled is False
@@ -353,31 +369,29 @@ def test_absence_below_the_observation_floor_does_not_settle(monkeypatch):
 
 
 def test_enough_observations_that_have_not_held_long_enough_do_not_settle(monkeypatch):
-    """The count is met but the span is not, so the reservation stays held."""
+    """The count is met but the watched span is not, so the slot stays held."""
     assert supervisor.ABSENCE_CONFIRM_SECONDS == 900
     settled, audits, settlements = _absence_harness(
         monkeypatch,
         records=[
-            _absence_record(899),
-            _absence_record(600),
+            _absence_record(500),
             _absence_record(300),
+            _absence_record(100),
         ],
     )
 
     assert settled is False
     assert settlements == []
-    # Nothing further is written once the floor is reached: the audit stream
-    # stays bounded however long the control plane keeps answering 404.
-    assert audits == []
 
 
 def test_sustained_absence_settles_the_attempt_failed(monkeypatch):
     settled, audits, settlements = _absence_harness(
         monkeypatch,
         records=[
-            _absence_record(1800),
-            _absence_record(1200),
-            _absence_record(600),
+            _absence_record(910),
+            _absence_record(610),
+            _absence_record(310),
+            _absence_record(10),
         ],
     )
 
@@ -385,12 +399,64 @@ def test_sustained_absence_settles_the_attempt_failed(monkeypatch):
     assert len(settlements) == 1
     assert settlements[0]["evidence_key"] == "absence"
     assert settlements[0]["reason"].startswith("guest_absent_confirmed:")
-    assert settlements[0]["evidence"]["observations"] == 3
-    assert settlements[0]["evidence"]["held_seconds"] == 1800
+    assert settlements[0]["evidence"]["observations"] == 4
+    assert settlements[0]["evidence"]["held_seconds"] == 900
     assert settlements[0]["evidence"]["guest_id"] == "guest-9"
     assert audits[-1][0] == "stop_settled"
     assert audits[-1][1]["cessation_confirmed"] is True
-    assert audits[-1][1]["intervention_required"] is False
+
+
+def test_an_intermittent_404_cannot_add_up_to_a_release(monkeypatch):
+    """The live defect this proof has to survive.
+
+    A guest that is alive, and a control plane that 404s it briefly during two
+    separate rollouts hours apart. Counting every absence ever recorded would
+    see three readings spanning three hours and release a running guest onto a
+    second writer. Only an unbroken run counts, so the old reading is dropped
+    and the evidence starts again.
+    """
+    assert supervisor.ABSENCE_MAX_GAP_SECONDS == 600
+    settled, audits, settlements = _absence_harness(
+        monkeypatch,
+        records=[
+            _absence_record(10800),
+            _absence_record(310),
+            _absence_record(10),
+        ],
+    )
+
+    assert settled is False
+    assert settlements == []
+
+
+def test_a_live_observation_between_absences_breaks_the_run(monkeypatch):
+    """Any non-absence stop record means a later tick saw something else."""
+    settled, _audits, settlements = _absence_harness(
+        monkeypatch,
+        records=[
+            _absence_record(1500),
+            _absence_record(1200),
+            ("stop_observation", {"recorded_at": _stamp(900), "reason": "x"}),
+            _absence_record(610),
+            _absence_record(310),
+        ],
+    )
+
+    assert settled is False
+    assert settlements == []
+
+
+def test_the_absence_audit_trail_is_capped(monkeypatch):
+    """A settlement that keeps being refused must not write a row per tick."""
+    assert supervisor.MAX_ABSENCE_OBSERVATIONS == 8
+    settled, audits, settlements = _absence_harness(
+        monkeypatch,
+        records=[_absence_record(3000 - 300 * n) for n in range(8)],
+    )
+
+    assert settled is True
+    assert len(settlements) == 1
+    assert not [entry for entry in audits if entry[0] == "stop_absence"]
 
 
 def test_absence_observations_from_another_attempt_do_not_count(monkeypatch):
@@ -398,9 +464,9 @@ def test_absence_observations_from_another_attempt_do_not_count(monkeypatch):
     settled, audits, settlements = _absence_harness(
         monkeypatch,
         records=[
-            _absence_record(1800, sha="sha-other"),
-            _absence_record(1200, sha="sha-other"),
-            _absence_record(600, sha="sha-other"),
+            _absence_record(910, sha="sha-other"),
+            _absence_record(610, sha="sha-other"),
+            _absence_record(310, sha="sha-other"),
         ],
     )
 
@@ -626,12 +692,17 @@ def _backstop_harness(monkeypatch, *, starts, task=None, enabled=True, finish_ok
     def locked(*_args, **_kwargs):
         yield ("db", "control")
 
+    commits = []
+
     class _Db:
         def __enter__(self):
             return self
 
         def __exit__(self, *_a):
             return False
+
+        def commit(self):
+            commits.append(True)
 
     monkeypatch.setenv(
         "FACTORY_DEADLINE_BACKSTOP_ENABLED", "true" if enabled else "false"
@@ -667,26 +738,31 @@ def _backstop_harness(monkeypatch, *, starts, task=None, enabled=True, finish_ok
         "factory.orchestration.factory_landing.github_write", lambda *a, **kw: {}
     )
     released = conductor._expire_task_deadline(task or _task())
-    return released, finishes, outcomes, escalations, notifies
+    return released, finishes, outcomes, escalations, notifies, commits
 
 
 def test_the_backstop_releases_a_stranded_start_and_escalates(monkeypatch):
-    released, finishes, outcomes, escalations, notifies = _backstop_harness(
+    released, finishes, outcomes, escalations, notifies, commits = _backstop_harness(
         monkeypatch, starts=[_Start("uncertain"), _Start("failed", start_key="s-0")]
     )
 
     assert released is True
-    assert [kw["cost_usd"] for kw in outcomes] == [0.0]
     assert outcomes[0]["reconciled"] is True
     assert finishes[0][0] == "escalated"
     assert finishes[0][1]["evidence"]["state"] == "deadline_backstop_expired"
-    assert escalations[0]["options"][0]["effect"] == "agent-ready"
+    # Hold is offered and recommended first: the backstop releases without
+    # cessation proof, so re-admitting could put a second writer on the branch.
+    assert escalations[0]["options"][0]["effect"] == "hold"
+    assert escalations[0]["recommendation"] == "hold"
+    assert [kw["cost_usd"] for kw in outcomes] == [None]
     assert len(notifies) == 1
+    # The settlement is only real if it committed.
+    assert commits == [True]
 
 
 def test_the_backstop_never_interrupts_a_reserved_start(monkeypatch):
     """A reserved start is live work. The backstop only collects the dead."""
-    released, finishes, outcomes, escalations, _n = _backstop_harness(
+    released, finishes, outcomes, escalations, _n, commits = _backstop_harness(
         monkeypatch, starts=[_Start("reserved"), _Start("uncertain")]
     )
 
@@ -697,7 +773,7 @@ def test_the_backstop_never_interrupts_a_reserved_start(monkeypatch):
 
 
 def test_the_backstop_does_nothing_with_no_uncertain_start(monkeypatch):
-    released, finishes, outcomes, _e, _n = _backstop_harness(
+    released, finishes, outcomes, _e, _n, commits = _backstop_harness(
         monkeypatch, starts=[_Start("succeeded"), _Start("failed")]
     )
 
@@ -711,7 +787,7 @@ def test_the_backstop_waits_out_the_grace_after_the_deadline(monkeypatch):
     from factory.orchestration import factory_conductor as conductor
 
     monkeypatch.setattr(conductor, "_deadline_backstop_due", lambda task: False)
-    released, finishes, outcomes, _e, _n = _backstop_harness(
+    released, finishes, outcomes, _e, _n, commits = _backstop_harness(
         monkeypatch, starts=[_Start("uncertain")]
     )
 
@@ -721,7 +797,7 @@ def test_the_backstop_waits_out_the_grace_after_the_deadline(monkeypatch):
 
 
 def test_the_backstop_is_off_by_default(monkeypatch):
-    released, finishes, outcomes, _e, _n = _backstop_harness(
+    released, finishes, outcomes, _e, _n, commits = _backstop_harness(
         monkeypatch, starts=[_Start("uncertain")], enabled=False
     )
 
@@ -731,13 +807,15 @@ def test_the_backstop_is_off_by_default(monkeypatch):
 
 
 def test_a_refused_finish_leaves_the_task_for_the_next_tick(monkeypatch):
-    released, finishes, _o, _e, notifies = _backstop_harness(
+    released, finishes, _o, _e, notifies, commits = _backstop_harness(
         monkeypatch, starts=[_Start("uncertain")], finish_ok=False
     )
 
     assert released is False
     assert finishes[0][0] == "escalated"
     assert notifies == []
+    # A refused finish must discard the settlement rather than commit it.
+    assert commits == []
 
 
 @pytest.mark.parametrize(

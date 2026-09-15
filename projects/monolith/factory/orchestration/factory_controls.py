@@ -1230,6 +1230,10 @@ def _snapshot(db: Session, row: FactoryReceipt, *, body: bool = False) -> dict:
                         "stop_request",
                         "stop_accepted",
                         "stop_observation",
+                        # Absence observations are the evidence behind a held
+                        # slot that is on its way to releasing, so the board
+                        # shows "absent, 2 of 3" rather than nothing at all.
+                        "stop_absence",
                         "stop_settled",
                         "attempt_stop_requested",
                         "attempt_stop_cancel",
