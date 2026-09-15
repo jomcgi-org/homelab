@@ -240,6 +240,8 @@ spec:
               value: {{ .Values.swarm.factoryLostBeforeGuestSettlementEnabled | default false | quote }}
             - name: FACTORY_ESCALATION_REVALIDATION_ENABLED
               value: {{ .Values.swarm.factoryEscalationRevalidationEnabled | default false | quote }}
+            - name: FACTORY_DEADLINE_BACKSTOP_ENABLED
+              value: {{ .Values.swarm.factoryDeadlineBackstopEnabled | default false | quote }}
             - name: FACTORY_MAX_CONCURRENT_TASKS
               value: {{ .Values.swarm.factoryMaxConcurrentTasks | default 1 | quote }}
             - name: FACTORY_BACKGROUND_RESERVE
