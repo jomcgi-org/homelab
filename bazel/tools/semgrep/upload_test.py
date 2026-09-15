@@ -1,419 +1,192 @@
-"""Tests for the semgrep results upload script.
-
-Covers _git, _detect_repo, _detect_commit, _detect_branch,
-_detect_semgrep_version, and main() — including the 3-step HTTP flow.
-
-All subprocess and HTTP calls are mocked; no real network or git
-invocations occur during tests.
-"""
+"""Hermetic tests for the best-effort Semgrep App lifecycle."""
 
 from __future__ import annotations
 
 import json
-import logging
-import os
-import subprocess
-import sys
-import tempfile
-from unittest.mock import MagicMock, call, patch
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from bazel.tools.semgrep.upload import (
-    _detect_branch,
-    _detect_commit,
-    _detect_repo,
-    _detect_semgrep_version,
-    _git,
-    main,
+from bazel.tools.semgrep.upload import TIMEOUT, upload
+
+
+def _response(*, scan_id="scan-42", error=None):
+    response = MagicMock()
+    response.json.return_value = {"info": {"id": scan_id}}
+    if error is not None:
+        response.raise_for_status.side_effect = error
+    return response
+
+
+def _client(stage_failure=None):
+    client = MagicMock()
+    client.__enter__.return_value = client
+    client.__exit__.return_value = False
+    responses = {
+        "registration": _response(),
+        "findings upload": _response(),
+        "completion": _response(),
+    }
+    if stage_failure:
+        responses[stage_failure] = _response(error=RuntimeError(stage_failure))
+    client.post.side_effect = list(responses.values())
+    return client
+
+
+@pytest.fixture
+def configured(monkeypatch):
+    monkeypatch.setenv("SEMGREP_APP_TOKEN", "test-token")
+    monkeypatch.setenv("SEMGREP_URL", "https://semgrep.example")
+    monkeypatch.setenv("SEMGREP_REPO", "org/repo")
+    monkeypatch.setenv("GITHUB_SHA", "a" * 40)
+    monkeypatch.setenv("GITHUB_REF_NAME", "feature/scan")
+    monkeypatch.setenv("SEMGREP_ENGINE_VERSION", "1.168.0")
+
+
+@pytest.mark.parametrize(
+    ("results", "scan_exit"),
+    [
+        ({"results": [], "errors": []}, 0),
+        ({"results": [{"check_id": "fixture.finding"}], "errors": []}, 1),
+    ],
+    ids=["clean", "findings"],
 )
+def test_successful_lifecycle_request_sequence_and_payloads(
+    tmp_path, configured, results, scan_exit, capsys
+):
+    path = tmp_path / "results.json"
+    path.write_text(json.dumps(results))
+    client = _client()
+
+    with patch(
+        "bazel.tools.semgrep.upload.httpx.Client", return_value=client
+    ) as factory:
+        upload(path, scan_exit)
+
+    factory.assert_called_once_with(timeout=TIMEOUT)
+    assert [request.args[0] for request in client.post.call_args_list] == [
+        "https://semgrep.example/api/cli/scans",
+        "https://semgrep.example/api/agent/scans/scan-42/results",
+        "https://semgrep.example/api/agent/scans/scan-42/complete",
+    ]
+    register = client.post.call_args_list[0].kwargs
+    assert register["headers"]["Authorization"] == "Bearer test-token"
+    assert register["json"]["scan_metadata"] | {"unique_id": "ignored"} == {
+        "cli_version": "1.168.0",
+        "unique_id": "ignored",
+        "requested_products": ["sast"],
+        "dry_run": False,
+    }
+    assert register["json"]["project_metadata"] == {
+        "semgrep_version": "1.168.0",
+        "repository": "org/repo",
+        "repo_url": "https://github.com/org/repo",
+        "branch": "feature/scan",
+        "commit": "a" * 40,
+        "is_full_scan": True,
+    }
+    assert client.post.call_args_list[1].kwargs["json"] == results
+    assert client.post.call_args_list[2].kwargs["json"] == {"exit_code": scan_exit}
+    assert "completed Semgrep App scan scan-42" in capsys.readouterr().err
 
 
-# ---------------------------------------------------------------------------
-# _git
-# ---------------------------------------------------------------------------
-
-
-class TestGit:
-    def test_success_returns_stripped_stdout(self):
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(stdout="abc123\n")
-            assert _git("rev-parse HEAD") == "abc123"
-
-    def test_exception_returns_empty_string(self):
-        with patch("subprocess.run", side_effect=Exception("git not found")):
-            assert _git("rev-parse HEAD") == ""
-
-    def test_timeout_returns_empty_string(self):
-        with patch(
-            "subprocess.run",
-            side_effect=subprocess.TimeoutExpired("git", 5),
-        ):
-            assert _git("rev-parse HEAD") == ""
-
-    def test_empty_stdout_returns_empty(self):
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(stdout="")
-            assert _git("rev-parse HEAD") == ""
-
-    def test_strips_trailing_whitespace(self):
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(stdout="  main  \n")
-            assert _git("rev-parse --abbrev-ref HEAD") == "main"
-
-    def test_command_split_correctly(self):
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(stdout="")
-            _git("remote get-url origin")
-            args = mock_run.call_args[0][0]
-            assert args[0] == "git"
-            assert "remote" in args
-            assert "get-url" in args
-            assert "origin" in args
-
-
-# ---------------------------------------------------------------------------
-# _detect_repo
-# ---------------------------------------------------------------------------
-
-
-class TestDetectRepo:
-    def test_env_var_takes_precedence(self, monkeypatch):
-        monkeypatch.setenv("SEMGREP_REPO", "myorg/myrepo")
-        assert _detect_repo() == "myorg/myrepo"
-
-    def test_ssh_remote_parsed(self, monkeypatch):
-        monkeypatch.delenv("SEMGREP_REPO", raising=False)
-        with patch("bazel.tools.semgrep.upload._git") as mock_git:
-            mock_git.return_value = "git@github.com:org/repo.git"
-            assert _detect_repo() == "org/repo"
-
-    def test_https_remote_parsed(self, monkeypatch):
-        monkeypatch.delenv("SEMGREP_REPO", raising=False)
-        with patch("bazel.tools.semgrep.upload._git") as mock_git:
-            mock_git.return_value = "https://github.com/org/repo.git"
-            assert _detect_repo() == "org/repo"
-
-    def test_no_remote_returns_unknown(self, monkeypatch):
-        monkeypatch.delenv("SEMGREP_REPO", raising=False)
-        with patch("bazel.tools.semgrep.upload._git") as mock_git:
-            mock_git.return_value = ""
-            assert _detect_repo() == "unknown/unknown"
-
-    def test_ssh_git_suffix_stripped(self, monkeypatch):
-        monkeypatch.delenv("SEMGREP_REPO", raising=False)
-        with patch("bazel.tools.semgrep.upload._git") as mock_git:
-            mock_git.return_value = "git@github.com:org/myrepo.git"
-            result = _detect_repo()
-        assert result == "org/myrepo"
-
-    def test_https_git_suffix_stripped(self, monkeypatch):
-        monkeypatch.delenv("SEMGREP_REPO", raising=False)
-        with patch("bazel.tools.semgrep.upload._git") as mock_git:
-            mock_git.return_value = "https://github.com/org/myrepo.git"
-            result = _detect_repo()
-        assert result == "org/myrepo"
-
-
-# ---------------------------------------------------------------------------
-# _detect_commit
-# ---------------------------------------------------------------------------
-
-
-class TestDetectCommit:
-    def test_github_sha_takes_precedence(self, monkeypatch):
-        monkeypatch.setenv("GITHUB_SHA", "sha-abc123")
-        monkeypatch.delenv("GIT_COMMIT", raising=False)
-        assert _detect_commit() == "sha-abc123"
-
-    def test_git_commit_fallback(self, monkeypatch):
-        monkeypatch.delenv("GITHUB_SHA", raising=False)
-        monkeypatch.setenv("GIT_COMMIT", "commit-def456")
-        assert _detect_commit() == "commit-def456"
-
-    def test_git_command_fallback(self, monkeypatch):
-        monkeypatch.delenv("GITHUB_SHA", raising=False)
-        monkeypatch.delenv("GIT_COMMIT", raising=False)
-        with patch("bazel.tools.semgrep.upload._git") as mock_git:
-            mock_git.return_value = "ghi789"
-            assert _detect_commit() == "ghi789"
-
-    def test_unknown_when_nothing_available(self, monkeypatch):
-        monkeypatch.delenv("GITHUB_SHA", raising=False)
-        monkeypatch.delenv("GIT_COMMIT", raising=False)
-        with patch("bazel.tools.semgrep.upload._git") as mock_git:
-            mock_git.return_value = ""
-            assert _detect_commit() == "unknown"
-
-
-# ---------------------------------------------------------------------------
-# _detect_branch
-# ---------------------------------------------------------------------------
-
-
-class TestDetectBranch:
-    def test_github_ref_name_takes_precedence(self, monkeypatch):
-        monkeypatch.setenv("GITHUB_REF_NAME", "main")
-        monkeypatch.delenv("GIT_BRANCH", raising=False)
-        assert _detect_branch() == "main"
-
-    def test_git_branch_fallback(self, monkeypatch):
-        monkeypatch.delenv("GITHUB_REF_NAME", raising=False)
-        monkeypatch.setenv("GIT_BRANCH", "feature/test")
-        assert _detect_branch() == "feature/test"
-
-    def test_git_command_fallback(self, monkeypatch):
-        monkeypatch.delenv("GITHUB_REF_NAME", raising=False)
-        monkeypatch.delenv("GIT_BRANCH", raising=False)
-        with patch("bazel.tools.semgrep.upload._git") as mock_git:
-            mock_git.return_value = "feat/my-feature"
-            assert _detect_branch() == "feat/my-feature"
-
-    def test_unknown_when_nothing_available(self, monkeypatch):
-        monkeypatch.delenv("GITHUB_REF_NAME", raising=False)
-        monkeypatch.delenv("GIT_BRANCH", raising=False)
-        with patch("bazel.tools.semgrep.upload._git") as mock_git:
-            mock_git.return_value = ""
-            assert _detect_branch() == "unknown"
-
-
-# ---------------------------------------------------------------------------
-# _detect_semgrep_version
-# ---------------------------------------------------------------------------
-
-
-class TestDetectSemgrepVersion:
-    def test_env_var_used(self, monkeypatch):
-        monkeypatch.setenv("SEMGREP_ENGINE_VERSION", "2.0.0")
-        assert _detect_semgrep_version() == "2.0.0"
-
-    def test_default_fallback(self, monkeypatch):
-        monkeypatch.delenv("SEMGREP_ENGINE_VERSION", raising=False)
-        # Default must be a non-empty version string
-        result = _detect_semgrep_version()
-        assert result
-        assert "." in result  # Looks like a semver string
-
-
-# ---------------------------------------------------------------------------
-# main — happy path and error paths
-# ---------------------------------------------------------------------------
-
-
-def _make_mock_http_client(scan_id: str = "scan-42"):
-    """Return a mock httpx.Client context manager with canned responses."""
-    mock_response = MagicMock()
-    mock_response.json.return_value = {"info": {"id": scan_id}}
-    mock_response.raise_for_status = MagicMock()
-
-    mock_client = MagicMock()
-    mock_client.__enter__ = MagicMock(return_value=mock_client)
-    mock_client.__exit__ = MagicMock(return_value=False)
-    mock_client.post = MagicMock(return_value=mock_response)
-    return mock_client
-
-
-class TestMain:
-    def test_no_token_returns_silently(self, monkeypatch):
+@pytest.mark.parametrize("token", [None, "", "   "])
+def test_missing_or_empty_token_never_starts_remote_lifecycle(
+    tmp_path, monkeypatch, token, capsys
+):
+    if token is None:
         monkeypatch.delenv("SEMGREP_APP_TOKEN", raising=False)
-        # Should return without error or output
-        main()
+    else:
+        monkeypatch.setenv("SEMGREP_APP_TOKEN", token)
+    path = tmp_path / "results.json"
+    path.write_text('{"results": [], "errors": []}')
 
-    def test_too_few_args_prints_error(self, monkeypatch, capsys):
-        monkeypatch.setenv("SEMGREP_APP_TOKEN", "tok")
-        with patch.object(sys, "argv", ["upload.py"]):
-            main()
-        assert "expected" in capsys.readouterr().err
+    with patch("bazel.tools.semgrep.upload.httpx.Client") as factory:
+        upload(path, 0)
 
-    def test_missing_results_file_prints_error(self, monkeypatch, capsys):
-        monkeypatch.setenv("SEMGREP_APP_TOKEN", "tok")
-        monkeypatch.setenv("SEMGREP_REPO", "org/repo")
-        with patch.object(sys, "argv", ["upload.py", "/nonexistent/file.json", "0"]):
-            main()
-        assert "failed to read" in capsys.readouterr().err
-
-    def test_invalid_json_prints_error(self, monkeypatch, capsys):
-        monkeypatch.setenv("SEMGREP_APP_TOKEN", "tok")
-        monkeypatch.setenv("SEMGREP_REPO", "org/repo")
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            f.write("not valid json {{")
-            path = f.name
-        try:
-            with patch.object(sys, "argv", ["upload.py", path, "0"]):
-                main()
-            assert "failed to read" in capsys.readouterr().err
-        finally:
-            os.unlink(path)
-
-    def test_successful_upload_three_http_calls(self, monkeypatch, capsys):
-        monkeypatch.setenv("SEMGREP_APP_TOKEN", "mytoken")
-        monkeypatch.setenv("SEMGREP_APP_URL", "https://semgrep.example.com")
-        monkeypatch.setenv("SEMGREP_REPO", "org/repo")
-        monkeypatch.setenv("GITHUB_SHA", "abc123")
-        monkeypatch.setenv("GITHUB_REF_NAME", "main")
-        monkeypatch.setenv("SEMGREP_ENGINE_VERSION", "1.0.0")
-
-        results = {"results": [], "errors": []}
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump(results, f)
-            path = f.name
-
-        try:
-            mock_client = _make_mock_http_client("scan-42")
-            with patch.object(sys, "argv", ["upload.py", path, "0"]):
-                with patch(
-                    "bazel.tools.semgrep.upload.httpx.Client", return_value=mock_client
-                ):
-                    main()
-
-            err = capsys.readouterr().err
-            assert "scan-42" in err
-            assert "https://semgrep.example.com" in err
-            # Exactly 3 HTTP POST calls: register → findings → complete
-            assert mock_client.post.call_count == 3
-        finally:
-            os.unlink(path)
-
-    def test_successful_upload_posts_to_correct_endpoints(self, monkeypatch):
-        monkeypatch.setenv("SEMGREP_APP_TOKEN", "tok")
-        monkeypatch.setenv("SEMGREP_APP_URL", "https://semgrep.example.com")
-        monkeypatch.setenv("SEMGREP_REPO", "org/repo")
-        monkeypatch.setenv("GITHUB_SHA", "abc")
-        monkeypatch.setenv("GITHUB_REF_NAME", "main")
-        monkeypatch.setenv("SEMGREP_ENGINE_VERSION", "1.0.0")
-
-        results = {"results": [], "errors": []}
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump(results, f)
-            path = f.name
-
-        try:
-            mock_client = _make_mock_http_client("s99")
-            with patch.object(sys, "argv", ["upload.py", path, "0"]):
-                with patch(
-                    "bazel.tools.semgrep.upload.httpx.Client", return_value=mock_client
-                ):
-                    main()
-
-            urls = [c.args[0] for c in mock_client.post.call_args_list]
-            assert any("/api/cli/scans" in u for u in urls)
-            assert any("/api/agent/scans/s99/results" in u for u in urls)
-            assert any("/api/agent/scans/s99/complete" in u for u in urls)
-        finally:
-            os.unlink(path)
-
-    def test_complete_call_sends_exit_code(self, monkeypatch):
-        monkeypatch.setenv("SEMGREP_APP_TOKEN", "tok")
-        monkeypatch.setenv("SEMGREP_REPO", "org/repo")
-        monkeypatch.setenv("GITHUB_SHA", "abc")
-        monkeypatch.setenv("GITHUB_REF_NAME", "main")
-        monkeypatch.setenv("SEMGREP_ENGINE_VERSION", "1.0.0")
-
-        results = {"results": [], "errors": []}
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump(results, f)
-            path = f.name
-
-        try:
-            mock_client = _make_mock_http_client("scanX")
-            with patch.object(sys, "argv", ["upload.py", path, "2"]):
-                with patch(
-                    "bazel.tools.semgrep.upload.httpx.Client", return_value=mock_client
-                ):
-                    main()
-
-            # Third call is the "complete" request
-            complete_call = mock_client.post.call_args_list[2]
-            assert complete_call.kwargs["json"]["exit_code"] == 2
-        finally:
-            os.unlink(path)
-
-    def test_http_failure_is_nonfatal(self, monkeypatch, capsys):
-        """Upload failures must never raise — always exits cleanly."""
-        monkeypatch.setenv("SEMGREP_APP_TOKEN", "tok")
-        monkeypatch.setenv("SEMGREP_REPO", "org/repo")
-        monkeypatch.setenv("GITHUB_SHA", "abc")
-        monkeypatch.setenv("GITHUB_REF_NAME", "main")
-
-        results = {"results": [], "errors": []}
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump(results, f)
-            path = f.name
-
-        try:
-            with patch.object(sys, "argv", ["upload.py", path, "1"]):
-                with patch(
-                    "bazel.tools.semgrep.upload.httpx.Client",
-                    side_effect=Exception("connection refused"),
-                ):
-                    main()  # Must not raise
-
-            assert "non-fatal" in capsys.readouterr().err
-        finally:
-            os.unlink(path)
-
-    def test_register_scan_includes_repo_metadata(self, monkeypatch):
-        monkeypatch.setenv("SEMGREP_APP_TOKEN", "tok")
-        monkeypatch.setenv("SEMGREP_REPO", "myorg/myrepo")
-        monkeypatch.setenv("GITHUB_SHA", "deadbeef")
-        monkeypatch.setenv("GITHUB_REF_NAME", "feat/branch")
-        monkeypatch.setenv("SEMGREP_ENGINE_VERSION", "1.0.0")
-
-        results = {"results": [], "errors": []}
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump(results, f)
-            path = f.name
-
-        try:
-            mock_client = _make_mock_http_client("s1")
-            with patch.object(sys, "argv", ["upload.py", path, "0"]):
-                with patch(
-                    "bazel.tools.semgrep.upload.httpx.Client", return_value=mock_client
-                ):
-                    main()
-
-            # First call is the register-scan POST
-            register_call = mock_client.post.call_args_list[0]
-            body = register_call.kwargs["json"]
-            assert body["project_metadata"]["repository"] == "myorg/myrepo"
-            assert body["project_metadata"]["commit"] == "deadbeef"
-            assert body["project_metadata"]["branch"] == "feat/branch"
-        finally:
-            os.unlink(path)
+    factory.assert_not_called()
+    assert "SEMGREP_APP_TOKEN is empty" in capsys.readouterr().err
 
 
-class TestMainLoggingWarning:
-    """Verify logging.warning is called in the two error paths of main()."""
+@pytest.mark.parametrize(
+    ("stage", "expected_requests"),
+    [("registration", 1), ("findings upload", 3), ("completion", 3)],
+)
+def test_each_remote_stage_failure_is_nonfatal_and_preserves_sequence(
+    tmp_path, configured, stage, expected_requests, capsys
+):
+    path = tmp_path / "results.json"
+    path.write_text('{"results": [{"check_id": "fixture.finding"}], "errors": []}')
+    client = _client(stage)
 
-    def test_warning_logged_when_results_file_unreadable(self, monkeypatch, caplog):
-        """logging.warning must be called when the results file cannot be opened."""
-        monkeypatch.setenv("SEMGREP_APP_TOKEN", "tok")
-        monkeypatch.setenv("SEMGREP_REPO", "org/repo")
-        with patch.object(sys, "argv", ["upload.py", "/nonexistent/file.json", "0"]):
-            with caplog.at_level(logging.WARNING):
-                main()
-        assert any("failed to read results" in r.message for r in caplog.records)
+    with patch("bazel.tools.semgrep.upload.httpx.Client", return_value=client):
+        upload(path, 1)
 
-    def test_warning_logged_when_upload_fails(self, monkeypatch, caplog):
-        """logging.warning must be called when the HTTP upload raises an exception."""
-        monkeypatch.setenv("SEMGREP_APP_TOKEN", "tok")
-        monkeypatch.setenv("SEMGREP_REPO", "org/repo")
-        monkeypatch.setenv("GITHUB_SHA", "abc")
-        monkeypatch.setenv("GITHUB_REF_NAME", "main")
+    assert client.post.call_count == expected_requests
+    diagnostic = capsys.readouterr().err
+    assert f"{stage} failed (non-fatal)" in diagnostic
+    if stage == "findings upload":
+        assert client.post.call_args_list[-1].args[0].endswith("/complete")
+        assert client.post.call_args_list[-1].kwargs["json"] == {"exit_code": 1}
 
-        results = {"results": [], "errors": []}
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump(results, f)
-            path = f.name
 
-        try:
-            with patch.object(sys, "argv", ["upload.py", path, "1"]):
-                with patch(
-                    "bazel.tools.semgrep.upload.httpx.Client",
-                    side_effect=Exception("connection refused"),
-                ):
-                    with caplog.at_level(logging.WARNING):
-                        main()
-            assert any("upload failed" in r.message for r in caplog.records)
-        finally:
-            os.unlink(path)
+def test_client_setup_failure_is_nonfatal(tmp_path, configured, capsys):
+    path = tmp_path / "results.json"
+    path.write_text('{"results": [], "errors": []}')
+
+    with patch(
+        "bazel.tools.semgrep.upload.httpx.Client",
+        side_effect=RuntimeError("offline"),
+    ):
+        upload(path, 0)
+
+    assert "client setup failed (non-fatal)" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("contents", ["not json", "[]"])
+def test_unreadable_result_never_starts_remote_lifecycle(
+    tmp_path, configured, contents, capsys
+):
+    path = tmp_path / "results.json"
+    path.write_text(contents)
+
+    with patch("bazel.tools.semgrep.upload.httpx.Client") as factory:
+        upload(path, 0)
+
+    if contents == "not json":
+        factory.assert_not_called()
+        assert "reading results failed (non-fatal)" in capsys.readouterr().err
+    else:
+        # Shape validation belongs to the scan wrapper. The upload helper sends
+        # an already-validated JSON document without silently rewriting it.
+        factory.assert_called_once()
+
+
+def test_metadata_fallback_uses_environment_only(tmp_path, monkeypatch):
+    monkeypatch.setenv("SEMGREP_APP_TOKEN", "token")
+    monkeypatch.delenv("SEMGREP_REPO", raising=False)
+    monkeypatch.setenv("GITHUB_REPOSITORY", "fallback/repo")
+    path = tmp_path / "results.json"
+    path.write_text('{"results": [], "errors": []}')
+    client = _client()
+
+    with patch("bazel.tools.semgrep.upload.httpx.Client", return_value=client):
+        upload(Path(path), 0)
+
+    metadata = client.post.call_args_list[0].kwargs["json"]["project_metadata"]
+    assert metadata["repository"] == "fallback/repo"
+
+
+def test_remote_errors_cannot_leak_the_app_token(tmp_path, configured, capsys):
+    path = tmp_path / "results.json"
+    path.write_text('{"results": [], "errors": []}')
+    client = _client()
+    client.post.side_effect = RuntimeError("request rejected test-token")
+
+    with patch("bazel.tools.semgrep.upload.httpx.Client", return_value=client):
+        upload(path, 0)
+
+    diagnostic = capsys.readouterr().err
+    assert "test-token" not in diagnostic
+    assert "[REDACTED]" in diagnostic

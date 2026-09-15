@@ -27,6 +27,8 @@ def _semgrep_target_test_impl(ctx):
         env_lines.append("export SEMGREP_EXCLUDE_RULES=\"{}\"".format(
             ",".join(ctx.attr.exclude_rules),
         ))
+    upload = ctx.attr._upload[DefaultInfo].files_to_run.executable
+    env_lines.append("export UPLOAD_SCRIPT=\"{}\"".format(upload.short_path))
 
     # Build args: <rule-files> <sca-rule-files> -- <source-files> [-- <lockfile-files>]
     test_runner = ctx.file._test_runner
@@ -65,6 +67,7 @@ def _semgrep_target_test_impl(ctx):
     runfiles = ctx.runfiles(files = all_files)
 
     runfiles = runfiles.merge(ctx.attr._engine[DefaultInfo].default_runfiles)
+    runfiles = runfiles.merge(ctx.attr._upload[DefaultInfo].default_runfiles)
     if ctx.attr.pro_engine:
         runfiles = runfiles.merge(ctx.attr.pro_engine[DefaultInfo].default_runfiles)
 
@@ -103,6 +106,7 @@ _semgrep_target_test = rule(
             allow_single_file = True,
         ),
         "_engine": attr.label(default = "//bazel/semgrep/third_party/semgrep:engine"),
+        "_upload": attr.label(default = "//bazel/tools/semgrep:upload"),
     },
 )
 

@@ -164,6 +164,14 @@ All directives inherit from parent directories.
 
 The Pro engine (`semgrep-core-proprietary`) enables cross-file taint analysis via `-pro_inter_file`. Both `GHCR_TOKEN` and `SEMGREP_APP_TOKEN` are required — missing credentials are build/test errors, not silent skips.
 
+The CI test configuration forwards `SEMGREP_APP_TOKEN`. An unset, empty, or
+whitespace-only value fails before engine discovery. Configured scans use
+`SEMGREP_URL`, which defaults to `https://semgrep.dev`; there is no offline
+placeholder token or dead-socket URL. After a valid local scan, registration,
+findings upload, and completion are attempted with bounded timeouts. Those
+remote operations are best-effort and never change the local clean or findings
+exit status.
+
 ```mermaid
 graph LR
     TOKEN{"GHCR_TOKEN set?"}
