@@ -5123,33 +5123,45 @@ def _expire_task_deadline(task: dict) -> bool:
                     # finishes the task.
                     savepoint = db.begin_nested()
                     try:
-                        held_permit = db.exec(
+                        # Every live reservation, not the first one found. The
+                        # unique constraint is on (session_id, pending_seq), so
+                        # one session may hold several unsettled permits, and
+                        # the ambiguity guard that keeps supervision to exactly
+                        # one does not run on this path. Releasing an arbitrary
+                        # single row would leave the rest counted and leak the
+                        # capacity this exists to reclaim. Ordered so the work
+                        # is deterministic rather than whatever the scan hands
+                        # back.
+                        held_permits = db.exec(
                             select(AgentCapacityReservation)
                             .where(
                                 AgentCapacityReservation.session_id == row.session_id,
                                 AgentCapacityReservation.state != "settled",
                             )
+                            .order_by(AgentCapacityReservation.pending_seq)
                             .with_for_update()
-                        ).first()
-                        if held_permit is None:
+                        ).all()
+                        if not held_permits:
                             savepoint.rollback()
                         else:
-                            admission.settle(
-                                db,
-                                _locked_agent_session(db, row.session_id),
-                                # Never assume seq 1: a second reservation on
-                                # one session is ordinary, and 175 rows in
-                                # production carry seq 2.
-                                held_permit.pending_seq,
-                                # Not guest_cessation_confirmed. The backstop
-                                # releases on a deadline without ever proving
-                                # the guest stopped, and this card says so.
-                                # Recording the cessation outcome would put a
-                                # claim in the audit trail that nothing here
-                                # established.
-                                outcome="deadline_backstop_released",
-                                cessation_confirmed=True,
-                            )
+                            agent = _locked_agent_session(db, row.session_id)
+                            for held_permit in held_permits:
+                                admission.settle(
+                                    db,
+                                    agent,
+                                    # Never assume seq 1: a second reservation
+                                    # on one session is ordinary, and 175 rows
+                                    # in production carry seq 2.
+                                    held_permit.pending_seq,
+                                    # Not guest_cessation_confirmed. The
+                                    # backstop releases on a deadline without
+                                    # ever proving the guest stopped, and this
+                                    # card says so. Recording the cessation
+                                    # outcome would put a claim in the audit
+                                    # trail that nothing here established.
+                                    outcome="deadline_backstop_released",
+                                    cessation_confirmed=True,
+                                )
                             savepoint.commit()
                     except SQLAlchemyError:
                         savepoint.rollback()
