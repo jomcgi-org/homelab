@@ -66,6 +66,7 @@ _ACTIONS = (
     "stop_accepted",
     "stop_observation",
     "stop_absence",
+    "stop_presence",
     "stop_settled",
 )
 _PRECONDITION_KEYS = frozenset(
@@ -692,6 +693,41 @@ def _absence_run(records, identity):
     return run
 
 
+def _record_presence(pin, identity):
+    """Break the absence run when the control plane answers for this guest.
+
+    Without this the run has nothing to break on. Every other record the
+    guest-visible path writes is deduplicated: _remember_observation writes
+    stop_intent and stop_accepted once each, stop_request is capped at
+    MAX_STOP_REQUESTS, and _note writes one row per reason code. So after the
+    first few ticks a successful 200 read leaves no trace, and a control plane
+    that 404s intermittently but at least once inside every gap window would
+    look exactly like one that had torn the guest down. This writes the trace,
+    so a single observed guest resets the evidence.
+
+    Written only while an absence run is actually open, and capped, so a
+    healthy attempt never accumulates rows.
+    """
+    with controls._locked_session() as (db, _control):
+        records = _records(db, pin)
+        if not records or records[-1][0] != "stop_absence":
+            return
+        if (
+            sum(action == "stop_presence" for action, _ in records)
+            >= MAX_ABSENCE_OBSERVATIONS
+        ):
+            return
+        _audit(
+            db,
+            pin,
+            "stop_presence",
+            identity_sha256=identity["identity_sha256"],
+            guest_id=identity["guest_id"],
+            cessation_confirmed=False,
+            intervention_required=False,
+        )
+
+
 def _absence_settled(pin, session_id, identity, original_result):
     """Record one authoritative absence, and settle once absence has held.
 
@@ -742,6 +778,14 @@ def _absence_settled(pin, session_id, identity, original_result):
         # Past the cap the run stops growing, but a span that is already long
         # enough still settles rather than stalling on a full audit trail.
         if len(seen) < MIN_ABSENCE_OBSERVATIONS:
+            return False
+        # Below the cap this is implied, because settlement can only be reached
+        # on a tick where no observation was due. At the cap the write is
+        # skipped, so without this a run whose last reading is hours old would
+        # settle on evidence that stopped being refreshed: the guest could have
+        # been answering for all of it. The freshest reading has to be as
+        # recent as the run's own gap rule demands.
+        if (now - seen[-1]).total_seconds() > ABSENCE_MAX_GAP_SECONDS:
             return False
         first = seen[0]
         # Measured between observations, never up to now: the span has to be
@@ -855,6 +899,9 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
     try:
         if not isinstance(view, dict) or view.get("session_id") != identity["guest_id"]:
             raise ValueError("wrong_stop_observation")
+        # The control plane answered for this exact guest, so any absence run
+        # in progress is over. Recorded before anything else acts on the view.
+        _record_presence(pin, identity)
         if _destroy_guest_on_departed_node(pin, identity, view):
             return False
         cessation = None
