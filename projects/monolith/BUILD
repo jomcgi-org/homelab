@@ -4570,27 +4570,26 @@ py_test(
     ],
 )
 
+# Renamed from e2e_playwright_test with issue #4219. The browser half of that
+# suite was deleted, not fixed: see e2e/e2e_http_test.py's docstring. What is
+# left drives the live FastAPI server over HTTP, so it needs neither
+# frontend_dist nor a browser, and it drops `manual` to actually run in CI.
 py_test(
-    name = "e2e_playwright_test",
+    name = "e2e_http_test",
     size = "large",
     timeout = "long",
     srcs = [
         "e2e/__init__.py",
         "e2e/conftest.py",
-        "e2e/e2e_playwright_test.py",
+        "e2e/e2e_http_test.py",
     ],
     data = [
-        ":frontend_dist",
         "//projects/monolith/chart:migrations",
         "@postgres_test//:postgres",
     ],
     env = {"PYTEST_ADDOPTS": "-p shared.testing.plugin"},
     imports = ["."],
-    tags = [
-        "e2e",
-        "manual",
-        "playwright",
-    ],
+    tags = ["e2e"],
     deps = [
         ":pkg_knowledge",
         ":shared_testing",
@@ -4598,7 +4597,6 @@ py_test(
         "@pip//httpx",
         "@pip//psycopg",
         "@pip//pytest",
-        # TODO: add @pip//pytest_playwright once requirements lock is regenerated
         "@pip//sqlmodel",
         "@pip//tzdata",
         "@pip//uvicorn",
@@ -7972,17 +7970,6 @@ bdd_test(
 )
 
 bdd_test(
-    name = "home_bdd_playwright_test",
-    timeout = "long",
-    srcs = [
-        "home/tests/__init__.py",
-        "home/tests/bdd_playwright_test.py",
-        "home/tests/conftest.py",
-    ],
-    playwright = True,
-)
-
-bdd_test(
     name = "home_bdd_public_test",
     srcs = [
         "home/tests/__init__.py",
@@ -8011,17 +7998,6 @@ bdd_test(
         "knowledge/tests/bdd_reports_test.py",
         "knowledge/tests/conftest.py",
     ],
-)
-
-bdd_test(
-    name = "knowledge_bdd_playwright_test",
-    timeout = "long",
-    srcs = [
-        "knowledge/tests/__init__.py",
-        "knowledge/tests/bdd_playwright_test.py",
-        "knowledge/tests/conftest.py",
-    ],
-    playwright = True,
 )
 
 bdd_test(
