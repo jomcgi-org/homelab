@@ -1,8 +1,64 @@
 argo-cd:
+  global:
+    # The hub shares one core node with every platform workload. Keep the
+    # GitOps control plane off the eviction path when memory pressure hits
+    # (the Sep 13-14 stall windows evicted ArgoCD pods together with
+    # authentik and cloudflared).
+    priorityClassName: system-cluster-critical
   server:
-    replicas: 1
+    replicas: 2
+    resources:
+      requests:
+        cpu: 25m
+        memory: 64Mi
+      limits:
+        cpu: 125m
+        memory: 256Mi
+    topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/component: server
   repoServer:
-    replicas: 1
+    replicas: 2
+    # Manifest generation is CPU-bound and its memory peaks during render
+    # storms; without bounds the repo-server competes with every other pod
+    # on the shared node and its 1s/3 liveness probe kill-cycles during
+    # contention (liveness kills at 01:00Z Sep 16, restarts on Sep 13-14).
+    resources:
+      requests:
+        cpu: 25m
+        memory: 128Mi
+      limits:
+        cpu: 10000m
+        memory: 1Gi
+    livenessProbe:
+      timeoutSeconds: 5
+      failureThreshold: 5
+    topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/component: repo-server
+  controller:
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        memory: 2Gi
+  redis:
+    resources:
+      requests:
+        cpu: 15m
+        memory: 32Mi
+      limits:
+        cpu: 100m
+        memory: 128Mi
   configs:
     params:
       reposerver.repo.cache.expiration: "10m"

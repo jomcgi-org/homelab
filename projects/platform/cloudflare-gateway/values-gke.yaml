@@ -1,3 +1,10 @@
+# Two data-plane replicas so a single proxy crash (SIGSEGV exit 139 on
+# 2026-09-13) or node kill cannot take every jomcgi.dev hostname down at once.
+# The EnvoyProxy template renders envoyDeployment.replicas from here.
+gateway:
+  envoyProxy:
+    replicas: 2
+
 gateway-helm:
   # The chart owns ALL Gateway API CRDs on the hub, exactly like home. The GKE
   # Gateway API addon is disabled on the cluster (2026-08-30): its

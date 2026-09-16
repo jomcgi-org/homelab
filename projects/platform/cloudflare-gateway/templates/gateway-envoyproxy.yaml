@@ -12,6 +12,7 @@ spec:
       envoyService:
         type: ClusterIP
       envoyDeployment:
+        replicas: {{ .Values.gateway.envoyProxy.replicas | default 1 }}
         container:
           resources: {{- toYaml .Values.gateway.envoyProxy.resources | nindent 12 }}
           securityContext:
