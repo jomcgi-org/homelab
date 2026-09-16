@@ -149,6 +149,8 @@ func TestTaskAndInvariantScenariosAgainstFakeControlPlane(t *testing.T) {
 	}
 	var elixirTaskRequests atomic.Int32
 	var nodeRequests atomic.Int32
+	cloneRequests := make(chan struct{})
+	var cloneRequestCount atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer test-token" {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -160,8 +162,30 @@ func TestTaskAndInvariantScenariosAgainstFakeControlPlane(t *testing.T) {
 				http.Error(w, "bad request", http.StatusBadRequest)
 				return
 			}
+			var request struct {
+				Code string `json:"code"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if cloneRequestCount.Add(1) == 2 {
+				close(cloneRequests)
+			}
+			select {
+			case <-cloneRequests:
+			case <-time.After(time.Second):
+				http.Error(w, "clone requests did not overlap", http.StatusGatewayTimeout)
+				return
+			case <-r.Context().Done():
+				return
+			}
+			token := "clone-a-1000000000"
+			if strings.Contains(request.Code, "clone-b-1000000000") {
+				token = "clone-b-1000000000"
+			}
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"exit_code":0,"stdout":"conformance ok\n"}`))
+			_ = json.NewEncoder(w).Encode(map[string]any{"exit_code": 0, "stdout": "host-to-guest:" + token + "\nguest-to-host:" + token + "\n"})
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/workloads/sandbox-elixir/tasks":
 			elixirTaskRequests.Add(1)
 			if r.URL.Query().Get("wait") != "true" || !strings.HasPrefix(r.Header.Get("Idempotency-Key"), "1.2.3-elixir-unicode-") {
@@ -199,8 +223,17 @@ func TestTaskAndInvariantScenariosAgainstFakeControlPlane(t *testing.T) {
 
 	cfg := config{baseURL: server.URL, tokenFile: tokenFile, chartVersion: "1.2.3", taskWorkload: "sandbox-python", elixirWorkload: "sandbox-elixir", minPassingInvariants: 4}
 	client := &controlPlaneClient{baseURL: server.URL, tokenFile: tokenFile, http: server.Client()}
-	if got := runS1(context.Background(), cfg, client, time.Unix(1, 0)); got.Verdict != verdictPass {
-		t.Fatalf("S1 = %#v", got)
+	s1 := runS1(context.Background(), cfg, client, time.Unix(1, 0))
+	if s1.Verdict != verdictPass {
+		t.Fatalf("S1 = %#v", s1)
+	}
+	for _, marker := range []string{"clone-a-1000000000", "clone-b-1000000000", "no cross-route"} {
+		if !strings.Contains(s1.Detail, marker) {
+			t.Fatalf("S1 detail = %q, want marker %q", s1.Detail, marker)
+		}
+	}
+	if got := cloneRequestCount.Load(); got != 2 {
+		t.Fatalf("S1 task requests = %d, want 2", got)
 	}
 	if got := runS4(context.Background(), cfg, client, time.Unix(1, 0)); got.Verdict != verdictPass {
 		t.Fatalf("S4 = %#v", got)
@@ -285,6 +318,51 @@ func TestRunS5RejectsInvalidElixirResultsThroughTaskAPI(t *testing.T) {
 				t.Fatalf("S5 = %#v, want failure containing %q", got, test.wantDetail)
 			}
 		})
+	}
+}
+
+func TestS1OverlapBudgetRequiresConcurrentGuestHolds(t *testing.T) {
+	if cloneHold != 5*time.Second {
+		t.Fatalf("clone hold = %s, want 5s", cloneHold)
+	}
+	if cloneOverlapBudget != 8*time.Second {
+		t.Fatalf("clone overlap budget = %s, want 8s", cloneOverlapBudget)
+	}
+	if cloneOverlapBudget <= cloneHold || cloneOverlapBudget >= 2*cloneHold {
+		t.Fatalf("overlap budget %s must allow one %s hold but reject two serialized holds", cloneOverlapBudget, cloneHold)
+	}
+}
+
+func TestRunS1RejectsCrossRoutedCloneResponse(t *testing.T) {
+	tokenFile := t.TempDir() + "/token"
+	if err := os.WriteFile(tokenFile, []byte("test-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/workloads/sandbox-python/tasks" {
+			http.NotFound(w, r)
+			return
+		}
+		var request struct {
+			Code string `json:"code"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		peer := "clone-b-1000000000"
+		if strings.Contains(request.Code, "clone-b-1000000000") {
+			peer = "clone-a-1000000000"
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"exit_code": 0, "stdout": "host-to-guest:" + peer + "\nguest-to-host:" + peer + "\n"})
+	}))
+	defer server.Close()
+
+	cfg := config{baseURL: server.URL, tokenFile: tokenFile, chartVersion: "1.2.3", taskWorkload: "sandbox-python"}
+	client := &controlPlaneClient{baseURL: server.URL, tokenFile: tokenFile, http: server.Client()}
+	got := runS1(context.Background(), cfg, client, time.Unix(1, 0))
+	if got.Verdict != verdictFail || !strings.Contains(got.Detail, "cross-route detected") {
+		t.Fatalf("S1 = %#v, want cross-route failure", got)
 	}
 }
 
