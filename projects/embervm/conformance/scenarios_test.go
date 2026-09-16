@@ -221,7 +221,7 @@ func TestTaskAndInvariantScenariosAgainstFakeControlPlane(t *testing.T) {
 	}))
 	defer server.Close()
 
-	cfg := config{baseURL: server.URL, tokenFile: tokenFile, chartVersion: "1.2.3", taskWorkload: "sandbox-python", elixirWorkload: "sandbox-elixir", minPassingInvariants: 4, cloneHold: defaultCloneHold, cloneOverlapBudget: defaultCloneOverlapBudget}
+	cfg := config{baseURL: server.URL, tokenFile: tokenFile, chartVersion: "1.2.3", taskWorkload: "sandbox-python", elixirWorkload: "sandbox-elixir", minPassingInvariants: 4, cloneHold: defaultCloneHold, cloneStartupHeadroom: defaultCloneStartupHeadroom}
 	client := &controlPlaneClient{baseURL: server.URL, tokenFile: tokenFile, http: server.Client()}
 	s1 := runS1(context.Background(), cfg, client, time.Unix(1, 0))
 	if s1.Verdict != verdictPass {
@@ -321,9 +321,10 @@ func TestRunS5RejectsInvalidElixirResultsThroughTaskAPI(t *testing.T) {
 	}
 }
 
-func TestS1OverlapBudgetRequiresConcurrentGuestHolds(t *testing.T) {
-	if defaultCloneOverlapBudget <= defaultCloneHold || defaultCloneOverlapBudget >= 2*defaultCloneHold {
-		t.Fatalf("overlap budget %s must allow one %s hold but reject two serialized holds", defaultCloneOverlapBudget, defaultCloneHold)
+func TestS1OverlapBudgetProvidesStartupHeadroomAndRejectsSerialHolds(t *testing.T) {
+	overlapBudget := defaultCloneHold + defaultCloneStartupHeadroom
+	if defaultCloneStartupHeadroom <= 0 || overlapBudget >= 2*defaultCloneHold {
+		t.Fatalf("overlap budget %s must include positive startup headroom and reject two serialized %s holds", overlapBudget, defaultCloneHold)
 	}
 }
 
@@ -339,7 +340,7 @@ func TestRunS1ReportsHTTPFailureBeforeOverlapBudget(t *testing.T) {
 
 	cfg := config{
 		baseURL: server.URL, tokenFile: tokenFile, chartVersion: "1.2.3",
-		taskWorkload: "sandbox-python", cloneOverlapBudget: time.Nanosecond,
+		taskWorkload: "sandbox-python", cloneStartupHeadroom: time.Nanosecond,
 	}
 	client := &controlPlaneClient{baseURL: server.URL, tokenFile: tokenFile, http: server.Client()}
 	got := runS1(context.Background(), cfg, client, time.Unix(1, 0))
@@ -373,7 +374,7 @@ func TestRunS1RejectsCrossRoutedCloneResponse(t *testing.T) {
 	}))
 	defer server.Close()
 
-	cfg := config{baseURL: server.URL, tokenFile: tokenFile, chartVersion: "1.2.3", taskWorkload: "sandbox-python", cloneHold: defaultCloneHold, cloneOverlapBudget: defaultCloneOverlapBudget}
+	cfg := config{baseURL: server.URL, tokenFile: tokenFile, chartVersion: "1.2.3", taskWorkload: "sandbox-python", cloneHold: defaultCloneHold, cloneStartupHeadroom: defaultCloneStartupHeadroom}
 	client := &controlPlaneClient{baseURL: server.URL, tokenFile: tokenFile, http: server.Client()}
 	got := runS1(context.Background(), cfg, client, time.Unix(1, 0))
 	if got.Verdict != verdictFail || !strings.Contains(got.Detail, "cross-route detected") {
