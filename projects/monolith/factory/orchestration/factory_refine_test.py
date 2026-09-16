@@ -1452,6 +1452,19 @@ def test_the_prompt_offers_closing_only_when_it_is_available():
     assert "### Supersedes" not in shut
 
 
+@pytest.mark.parametrize("closing", [True, False])
+def test_the_prompt_rescopes_retired_adr_deliverables(closing):
+    task = {"id": "t-1", "repo": "owner/repo"}
+    receipt = {"issue_number": 7, "url": "u", "title": "t", "body": "b"}
+    text = refine.refine_prompt(task, receipt, closing=closing)
+
+    assert refine.ADR_RETIREMENT_RULE in text
+    assert "`docs/decisions/` was deleted on 2026-09-06 (#4667)" in text
+    assert "that deliverable alone is not a reason for `needs-human` or `stale`" in text
+    assert "Default to rescoping it to the equivalent ARCHITECTURE.md note" in text
+    assert "A missing ADR file alone is not a dead premise" in text
+
+
 def test_needs_human_stores_the_options_on_the_receipt(db, monkeypatch):
     task, policy = make_task()
     add_refine_node(task, policy)
