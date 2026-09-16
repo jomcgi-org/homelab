@@ -403,7 +403,7 @@ const guestCID = 3
 // deterministic from the bundle dir, so the reconcile loop can reach a live
 // microVM's control channel without the driver handing back extra state.
 func (d *Driver) VsockUDSPath(threadID string) string {
-	return filepath.Join(d.threadDir(threadID), "vsock.sock")
+	return filepath.Join(d.threadDir(threadID), vsockproto.HostUDSName)
 }
 
 // StatefulAPISocketPath returns the live Firecracker API socket for h. An empty
@@ -421,7 +421,7 @@ func (d *Driver) StatefulAPISocketPath(h substrate.Handle) string {
 // (re)launch. Firecracker binds this path on PUT /vsock for a cold boot and when
 // applying the snapshot-load override for a restore. bind() fails with
 // EADDRINUSE when the path already exists. A thread's bundle dir lives on the
-// persistent snapshot disk, so a vsock.sock from a previous incarnation
+// persistent snapshot disk, so a v.sock from a previous incarnation
 // survives a daemon/pod restart and makes orphan recovery loop on a 400 until it
 // exhausts retries and marks the thread FAILED. The launcher already clears the
 // API socket; the vsock UDS and its per-port children (<uds>_<port>, created once
@@ -992,9 +992,11 @@ func (d *Driver) loadPatchAndResumeWithDiff(ctx context.Context, workload, threa
 	}
 	resumeVM := !patchVolume
 	snapshotCtx, cancelSnapshot := context.WithTimeout(ctx, snapshotOperationTimeout(memMib))
-	vsockPath := d.VsockUDSPath(threadID)
+	hostVsockPath := d.VsockUDSPath(threadID)
+	vsockPath := d.vsockDevicePath(proc, threadID)
 	d.logger.Info("driver: loading snapshot with per-VM vsock override",
-		"vm", vmID, "thread", threadID, "vsock_uds_path", vsockPath)
+		"vm", vmID, "thread", threadID, "vsock_uds_path", vsockPath,
+		"vsock_host_path", hostVsockPath)
 	err = client.LoadSnapshot(snapshotCtx, fcclient.SnapshotLoad{
 		SnapshotPath:        snapPath,
 		MemBackend:          &fcclient.MemBackend{BackendType: "File", BackendPath: memPath},
@@ -1278,7 +1280,7 @@ func (d *Driver) coldBoot(ctx context.Context, threadID string, cb coldBootSpec)
 		// file (self-contained + portable). See noded/server buildBaseZip.
 		// The vsock device is the guest's only channel to the controller (task
 		// delivery, idle signal, egress proxy). It must be configured before Start.
-		if err := client.PutVsock(ctx, fcclient.Vsock{GuestCID: guestCID, UDSPath: d.VsockUDSPath(threadID)}); err != nil {
+		if err := client.PutVsock(ctx, fcclient.Vsock{GuestCID: guestCID, UDSPath: d.vsockDevicePath(proc, threadID)}); err != nil {
 			return err
 		}
 		// Per-VM serial sink (issue #4404): redirect the guest's UART output into
@@ -2890,10 +2892,17 @@ func (d *Driver) bindJailedVsock(proc Process, threadID string) error {
 	}
 	jail := provider.Jail()
 	vsockPath := d.VsockUDSPath(threadID)
-	if err := jail.aliasSocket(vsockPath, vsockPath); err != nil {
+	if err := jail.aliasSocket(vsockPath, jail.VsockPath()); err != nil {
 		return err
 	}
-	return jail.aliasSocketPort(vsockPath, vsockPath, vsockproto.EgressPort)
+	return jail.aliasSocketPort(vsockPath, jail.VsockPath(), vsockproto.EgressPort)
+}
+
+func (d *Driver) vsockDevicePath(proc Process, threadID string) string {
+	if provider, ok := proc.(jailProvider); ok && provider.Jail() != nil {
+		return provider.Jail().VsockPath()
+	}
+	return d.VsockUDSPath(threadID)
 }
 
 func snapshotMemMib(memPath string, fallback int) int {

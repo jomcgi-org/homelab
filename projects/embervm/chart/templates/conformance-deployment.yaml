@@ -49,6 +49,8 @@ spec:
             - { name: LISTEN_ADDR, value: ":8080" }
             - { name: RUN_INTERVAL, value: {{ .Values.conformance.runInterval | quote }} }
             - { name: READY_WAIT, value: {{ .Values.conformance.readyWait | quote }} }
+            - { name: S1_CLONE_HOLD, value: {{ .Values.conformance.cloneHold | quote }} }
+            - { name: S1_CLONE_OVERLAP_BUDGET, value: {{ .Values.conformance.cloneOverlapBudget | quote }} }
             - { name: TASK_WORKLOAD, value: {{ .Values.conformance.taskWorkload | quote }} }
             - { name: SESSION_WORKLOAD, value: {{ .Values.conformance.sessionWorkload | quote }} }
             - { name: IDLE_BANK_SECONDS, value: {{ .Values.conformance.idleBankSeconds | quote }} }

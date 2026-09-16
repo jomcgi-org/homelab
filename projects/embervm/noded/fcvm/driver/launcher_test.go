@@ -152,7 +152,7 @@ func TestBindJailedVsockStagesOverrideAndGuestEgressTargets(t *testing.T) {
 		if err != nil {
 			t.Fatalf("vsock alias %q: %v", hostTarget, err)
 		}
-		want, err := jail.hostPath(vsockPath + suffix)
+		want, err := jail.hostPath(jail.VsockPath() + suffix)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -168,7 +168,7 @@ func TestBindJailedVsockStagesOverrideAndGuestEgressTargets(t *testing.T) {
 	}
 }
 
-func TestJailedSnapshotLoadKeepsAccessibleVsockOverride(t *testing.T) {
+func TestJailedSnapshotLoadUsesShortAccessibleVsockOverride(t *testing.T) {
 	root := t.TempDir()
 	d := New(Config{SnapshotRoot: root}, &fakeLauncher{}, nil)
 	threadID := "restore-thread"
@@ -193,7 +193,8 @@ func TestJailedSnapshotLoadKeepsAccessibleVsockOverride(t *testing.T) {
 	}
 	recorder := &snapshotLoadRecordingAPI{}
 	client := &jailedClient{fcAPI: recorder, jail: jail}
-	vsockPath := d.VsockUDSPath(threadID)
+	hostVsockPath := d.VsockUDSPath(threadID)
+	vsockPath := d.vsockDevicePath(&fakeProcess{jail: jail}, threadID)
 	if err := client.LoadSnapshot(context.Background(), fcclient.SnapshotLoad{
 		SnapshotPath:  snap,
 		MemBackend:    &fcclient.MemBackend{BackendType: "File", BackendPath: mem},
@@ -201,14 +202,14 @@ func TestJailedSnapshotLoadKeepsAccessibleVsockOverride(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("LoadSnapshot: %v", err)
 	}
-	if recorder.load.VsockOverride == nil || recorder.load.VsockOverride.UDSPath != vsockPath {
-		t.Fatalf("jailed vsock override = %#v, want %q", recorder.load.VsockOverride, vsockPath)
+	if recorder.load.VsockOverride == nil || recorder.load.VsockOverride.UDSPath != jail.VsockPath() {
+		t.Fatalf("jailed vsock override = %#v, want %q", recorder.load.VsockOverride, jail.VsockPath())
 	}
-	jailedPath, err := jail.hostPath(vsockPath)
+	jailedPath, err := jail.hostPath(jail.VsockPath())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if target, err := os.Readlink(vsockPath); err != nil || target != jailedPath {
+	if target, err := os.Readlink(hostVsockPath); err != nil || target != jailedPath {
 		t.Fatalf("host vsock alias = %q, %v, want %q", target, err, jailedPath)
 	}
 }

@@ -521,11 +521,11 @@ func TestDriverClaimedMibProjectsLiveMap(t *testing.T) {
 
 // TestDriverClaimClearsStaleVsockUDS reproduces the orphan-recovery failure
 // after a pod roll: a thread's bundle dir persists on the snapshot disk, so a
-// vsock.sock left by the dead incarnation makes Firecracker's PUT /vsock bind
+// v.sock left by the dead incarnation makes Firecracker's PUT /vsock bind
 // fail with EADDRINUSE, looping the reconcile claim until it marks the thread
 // FAILED. Claim must unlink the stale UDS (and its per-port children) first. The
 // fake launcher does not bind the vsock UDS, so we assert the unlink directly:
-// without it, Claim never touches vsock.sock and the seeded file survives.
+// without it, Claim never touches v.sock and the seeded file survives.
 func TestDriverClaimClearsStaleVsockUDS(t *testing.T) {
 	d := testDriver(t)
 	dir := d.threadDir("t-orphan")
@@ -544,10 +544,10 @@ func TestDriverClaimClearsStaleVsockUDS(t *testing.T) {
 		t.Fatalf("Claim over a stale vsock UDS: %v", err)
 	}
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {
-		t.Fatalf("stale vsock.sock should have been removed before bind, stat err=%v", err)
+		t.Fatalf("stale v.sock should have been removed before bind, stat err=%v", err)
 	}
 	if _, err := os.Stat(staleChild); !os.IsNotExist(err) {
-		t.Fatalf("stale vsock.sock_1024 should have been removed, stat err=%v", err)
+		t.Fatalf("stale v.sock_1024 should have been removed, stat err=%v", err)
 	}
 }
 

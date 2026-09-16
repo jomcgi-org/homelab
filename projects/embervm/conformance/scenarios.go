@@ -16,10 +16,8 @@ import (
 )
 
 const (
-	maxErrorBody       = 200
-	pollInterval       = time.Second
-	cloneHold          = 5 * time.Second
-	cloneOverlapBudget = 8 * time.Second
+	maxErrorBody = 200
+	pollInterval = time.Second
 )
 
 // These are the runnable and banked states in
@@ -37,6 +35,8 @@ type config struct {
 	listenAddr           string
 	runInterval          time.Duration
 	readyWait            time.Duration
+	cloneHold            time.Duration
+	cloneOverlapBudget   time.Duration
 	taskWorkload         string
 	sessionWorkload      string
 	idleBankSeconds      int
@@ -258,7 +258,7 @@ func runS1(ctx context.Context, cfg config, client *controlPlaneClient, suiteSta
 			code := fmt.Sprintf(
 				"import time\nprint(%q, flush=True)\ntime.sleep(%g)\nprint(%q, flush=True)\n",
 				"host-to-guest:"+token,
-				cloneHold.Seconds(),
+				cfg.cloneHold.Seconds(),
 				"guest-to-host:"+token,
 			)
 			body, err := json.Marshal(map[string]string{"code": code})
@@ -281,10 +281,6 @@ func runS1(ctx context.Context, cfg config, client *controlPlaneClient, suiteSta
 		invocations[result.label] = result
 	}
 	elapsed := time.Since(started)
-	if elapsed > cloneOverlapBudget {
-		return scenarioVerdict{Verdict: verdictFail, Detail: fmt.Sprintf("two clone invocations took %s, exceeding the %s overlap budget for two %s guest holds", elapsed.Round(time.Millisecond), cloneOverlapBudget, cloneHold)}
-	}
-
 	for _, label := range labels {
 		result := invocations[label]
 		if result.err != nil {
@@ -293,6 +289,13 @@ func runS1(ctx context.Context, cfg config, client *controlPlaneClient, suiteSta
 		if result.response.status < 200 || result.response.status >= 300 {
 			return scenarioVerdict{Verdict: verdictFail, Detail: fmt.Sprintf("%s: %s", label, httpErrorDetail(http.MethodPost, path, result.response))}
 		}
+	}
+	if elapsed > cfg.cloneOverlapBudget {
+		return scenarioVerdict{Verdict: verdictFail, Detail: fmt.Sprintf("two clone invocations took %s, exceeding the %s overlap budget for two %s guest holds", elapsed.Round(time.Millisecond), cfg.cloneOverlapBudget, cfg.cloneHold)}
+	}
+
+	for _, label := range labels {
+		result := invocations[label]
 		var guest struct {
 			ExitCode int    `json:"exit_code"`
 			Stdout   string `json:"stdout"`

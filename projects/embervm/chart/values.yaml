@@ -433,6 +433,8 @@ conformance:
     pullPolicy: IfNotPresent
   runInterval: 30m
   readyWait: 15m
+  cloneHold: 5s
+  cloneOverlapBudget: 8s
   taskWorkload: sandbox-python
   sessionWorkload: pi-runtime
   idleBankSeconds: 20
