@@ -579,6 +579,18 @@ func (s *Server) ResolveStateful(ctx context.Context, req *nodev1.ResolveStatefu
 	}
 	vmID := req.GetVmId()
 	token := req.GetCheckpointToken()
+	if req.GetMode() == nodev1.ResolveMode_RESOLVE_MODE_ABORT {
+		checkpointGeneration, ok := s.statefulVMs.resolveGeneration(vmID, token)
+		if !ok {
+			return nil, status.Errorf(codes.FailedPrecondition, "noded: no in-flight checkpoint for vm %q with the given token (unknown or already resolved)", vmID)
+		}
+		if req.GetBlessedGeneration() == 0 {
+			return nil, status.Errorf(codes.FailedPrecondition, "noded: checkpoint abort for vm %q requires a control-plane-issued blessed_generation", vmID)
+		}
+		if req.GetBlessedGeneration() <= checkpointGeneration {
+			return nil, status.Errorf(codes.FailedPrecondition, "noded: checkpoint abort for vm %q requires blessed_generation greater than current generation %d", vmID, checkpointGeneration)
+		}
+	}
 	e, ok := s.statefulVMs.claimResolve(vmID, token)
 	if !ok {
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: no in-flight checkpoint for vm %q with the given token (unknown or already resolved)", vmID)
