@@ -1524,7 +1524,7 @@ def test_default_startup_controls_remain_enabled():
     assert env["CD_PROBE_ENABLED"]["value"] == "true"
     assert env["HOME_OBSERVABILITY_PRIME_ENABLED"]["value"] == "true"
     assert env["MONOLITH_LEADER_SINGLETONS"]["value"] == "true"
-    assert env["POD_RESTART_WATCH_ENABLED"]["value"] == "false"
+    assert env["POD_RESTART_WATCH_ENABLED"]["value"] == "true"
     assert env["POD_RESTART_WATCH_INTERVAL_S"]["value"] == "300"
     assert env["POD_RESTART_WATCH_NAMESPACES"]["value"] == "monolith-public"
 

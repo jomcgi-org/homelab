@@ -1295,10 +1295,13 @@ cdHealth:
   # public reader treats a row older than 2.5x this as a dead writer.
   probeIntervalSeconds: 300
 
-# Private-tier pod restart watcher. Keep this dark until the loop and Discord
-# delivery have been verified live; enabling it is a deliberate follow-up.
+# Private-tier pod restart watcher. Armed 2026-09-16 after chart 0.505.0 rolled
+# out with the loop dark and the backend came up clean: leader election active,
+# no import or startup error from the cluster module. The first armed cycle is
+# expected to report monolith-public-web-5877458788-xgdct once, which carries a
+# real unreported OOMKilled restart from 2026-09-15.
 podRestartWatch:
-  enabled: false
+  enabled: true
   intervalSeconds: 300
   namespaces:
     - monolith-public
