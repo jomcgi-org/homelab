@@ -254,6 +254,18 @@ def receipt_of(db, task_id=None, receipt_id=None):
         ).one()
 
 
+def set_escalation_surface(db, receipt_id, branch, pr_number=21):
+    with Session(db) as session:
+        row = session.get(FactoryReceipt, receipt_id)
+        document = json.loads(row.escalation_json)
+        document["branch"] = branch
+        document["pr_number"] = pr_number
+        document["pr_url"] = f"https://github.com/{REPO}/pull/{pr_number}"
+        row.escalation_json = json.dumps(document)
+        session.add(row)
+        session.commit()
+
+
 def audits(db, action):
     with Session(db) as session:
         return [
@@ -733,6 +745,72 @@ def test_a_decision_re_admits_the_work_with_the_operator_direction(db, github, n
     assert context["operator_direction"]["answering"] == "Which surface is in scope?"
     assert "operator_direction, when it is present" in node["prompt"]
     assert audits(db, "operator_direction_read")[0]["previous_task_id"] == task_id
+
+
+def test_task_delivery_surface_defaults_to_its_own_branch(db, github, notices):
+    task_id, _policy = admitted(ISSUE)
+
+    task = task_of(task_id)
+    assert task["delivery_branch"] == f"factory/{task_id}"
+    assert task["delivery_pr_number"] is None
+
+
+def test_readmission_grants_the_operator_decisions_existing_pr_surface(
+    db, github, notices
+):
+    task_id, _policy = escalate(db, github, notices)
+    receipt_id = receipt_of(db, task_id).id
+    set_escalation_surface(db, receipt_id, f"factory/{task_id}")
+
+    result = decisions.apply_decision(
+        receipt_id, "continue-narrowed", "joe@example.test"
+    )
+    assert result["resolution"]["effects"]["readmitted"] is True
+    direction = json.loads(receipt_of(db, receipt_id=receipt_id).direction_json)
+    assert direction["delivery_branch"] == f"factory/{task_id}"
+    assert direction["delivery_pr_number"] == 21
+    second = admit_next("test")["task_id"]
+    task = task_of(second)
+    assert task["delivery_branch"] == f"factory/{task_id}"
+    assert task["delivery_pr_number"] == 21
+
+
+@pytest.mark.parametrize(
+    ("branch", "reason"),
+    [
+        ("feature/not-factory", "factory/ namespace"),
+        ("main", "main is forbidden"),
+    ],
+)
+def test_readmission_rejects_an_unauthorized_delivery_branch(
+    db, github, notices, branch, reason
+):
+    task_id, _policy = escalate(db, github, notices)
+    receipt_id = receipt_of(db, task_id).id
+    set_escalation_surface(db, receipt_id, branch)
+
+    result = decisions.apply_decision(
+        receipt_id, "continue-narrowed", "joe@example.test"
+    )
+    effects = result["resolution"]["effects"]
+    assert effects["readmitted"] is False
+    assert reason in effects["blocked_by"]
+
+
+def test_readmission_rejects_a_branch_owned_by_a_running_task(db, github, notices):
+    task_id, _policy = escalate(db, github, notices, issues=(ISSUE, SECOND_ISSUE))
+    receipt_id = receipt_of(db, task_id).id
+    running = admit_next("test")["task_id"]
+    set_escalation_surface(db, receipt_id, f"factory/{running}")
+
+    result = decisions.apply_decision(
+        receipt_id, "continue-narrowed", "joe@example.test"
+    )
+    effects = result["resolution"]["effects"]
+    assert effects["readmitted"] is False
+    assert effects["blocked_by"] == (
+        f"delivery branch factory/{running} is owned by running task {running}"
+    )
 
 
 def test_the_direction_is_carried_on_the_first_round_only(db, github, notices):
