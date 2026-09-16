@@ -444,6 +444,14 @@ spec:
               value: {{ .Values.cdHealth.probeIntervalSeconds | quote }}
             - name: CD_PROBE_ENABLED
               value: {{ .Values.cdHealth.probeEnabled | quote }}
+            # Last-seen restart counts for live pods. This loop is dark by
+            # default and must be enabled separately after live verification.
+            - name: POD_RESTART_WATCH_ENABLED
+              value: {{ .Values.podRestartWatch.enabled | quote }}
+            - name: POD_RESTART_WATCH_INTERVAL_S
+              value: {{ .Values.podRestartWatch.intervalSeconds | quote }}
+            - name: POD_RESTART_WATCH_NAMESPACES
+              value: {{ join "," .Values.podRestartWatch.namespaces | quote }}
             {{- if .Values.whatsapp.enabled }}
             # WhatsApp inbound bearer token (ADR 039 spec section 2). The monolith
             # validates the gateway's forwarded requests against it; the same

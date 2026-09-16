@@ -1489,6 +1489,9 @@ def _startup_control_env(rendered):
         "CD_PROBE_ENABLED",
         "HOME_OBSERVABILITY_PRIME_ENABLED",
         "MONOLITH_LEADER_SINGLETONS",
+        "POD_RESTART_WATCH_ENABLED",
+        "POD_RESTART_WATCH_INTERVAL_S",
+        "POD_RESTART_WATCH_NAMESPACES",
     ):
         assert sum(item["name"] == name for item in entries) == 1
     return _env_by_name(entries)
@@ -1521,6 +1524,33 @@ def test_default_startup_controls_remain_enabled():
     assert env["CD_PROBE_ENABLED"]["value"] == "true"
     assert env["HOME_OBSERVABILITY_PRIME_ENABLED"]["value"] == "true"
     assert env["MONOLITH_LEADER_SINGLETONS"]["value"] == "true"
+    assert env["POD_RESTART_WATCH_ENABLED"]["value"] == "false"
+    assert env["POD_RESTART_WATCH_INTERVAL_S"]["value"] == "300"
+    assert env["POD_RESTART_WATCH_NAMESPACES"]["value"] == "monolith-public"
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_pod_restart_watch_values_render_into_backend_env(tmp_path, enabled):
+    override = _write_values(
+        tmp_path,
+        "pod-restart-watch.yaml",
+        {
+            "podRestartWatch": {
+                "enabled": enabled,
+                "intervalSeconds": 45,
+                "namespaces": ["monolith-public", "second-namespace"],
+            }
+        },
+    )
+
+    env = _startup_control_env(_render("pod-restart-watch", [override]))
+
+    assert env["POD_RESTART_WATCH_ENABLED"]["value"] == str(enabled).lower()
+    assert env["POD_RESTART_WATCH_INTERVAL_S"]["value"] == "45"
+    assert (
+        env["POD_RESTART_WATCH_NAMESPACES"]["value"]
+        == "monolith-public,second-namespace"
+    )
 
 
 @pytest.mark.parametrize("tier", ["prod", "gke"])

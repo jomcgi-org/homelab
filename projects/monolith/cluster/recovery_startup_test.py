@@ -90,6 +90,36 @@ async def test_hook_reads_configuration_on_each_invocation(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("value", [None, "", "false", "0", "no", "unexpected"])
+async def test_pod_restart_watch_defaults_disabled(monkeypatch, value):
+    monkeypatch.setenv("CD_PROBE_ENABLED", "false")
+    if value is None:
+        monkeypatch.delenv("POD_RESTART_WATCH_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("POD_RESTART_WATCH_ENABLED", value)
+    monkeypatch.setitem(sys.modules, "cluster.pod_restart_leader", None)
+
+    assert await cluster_module.MODULE.leader_start(SimpleNamespace()) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", ["true", "1", "yes", " TRUE ", " Yes "])
+async def test_pod_restart_watch_requires_explicit_truthy_value(monkeypatch, value):
+    monkeypatch.setenv("CD_PROBE_ENABLED", "false")
+    monkeypatch.setenv("POD_RESTART_WATCH_ENABLED", value)
+    callback = AsyncMock(return_value=[object()])
+    fake = ModuleType("cluster.pod_restart_leader")
+    fake.leader_start = callback
+    monkeypatch.setitem(sys.modules, "cluster.pod_restart_leader", fake)
+    app = SimpleNamespace()
+
+    result = await cluster_module.MODULE.leader_start(app)
+
+    assert len(result) == 1
+    callback.assert_awaited_once_with(app)
+
+
+@pytest.mark.asyncio
 async def test_disabled_cd_preserves_other_leader_start_and_stop(monkeypatch):
     monkeypatch.setenv("CD_PROBE_ENABLED", "false")
     monkeypatch.setitem(sys.modules, "cluster.cd_leader", None)

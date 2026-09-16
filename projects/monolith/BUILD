@@ -385,6 +385,22 @@ py_library(
 )
 
 py_library(
+    name = "chat_outbox_producer",
+    srcs = [
+        "chat/models.py",
+        "chat/outbox.py",
+    ],
+    imports = ["."],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "@pip//pgvector",
+        "@pip//pydantic",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_library(
     name = "pkg_shared",
     srcs = glob(
         [
@@ -400,6 +416,7 @@ py_library(
     imports = ["."],
     visibility = ["//:__subpackages__"],
     deps = [
+        ":chat_outbox_producer",
         "@pip//certifi",
         "@pip//fastapi",
         "@pip//genai_prices",
@@ -551,6 +568,7 @@ py_library(
     deps = [
         ":pkg_core",
         ":pkg_framework",
+        ":pkg_shared",
         "@pip//certifi",
         "@pip//fastapi",
         "@pip//httpx",
@@ -1255,6 +1273,8 @@ py_library(
             "**/*_test.py",
             "**/test_*.py",
             "*/tests/**/*.py",
+            "chat/models.py",
+            "chat/outbox.py",
         ],
     ),
     imports = ["."],
@@ -7840,6 +7860,18 @@ py_test(
         ":pkg_cluster",
         "@pip//pytest",
         "@pip//pytest_asyncio",
+    ],
+)
+
+py_test(
+    name = "cluster_pod_restart_leader_test",
+    srcs = ["cluster/pod_restart_leader_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_cluster",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+        "@pip//sqlmodel",
     ],
 )
 
