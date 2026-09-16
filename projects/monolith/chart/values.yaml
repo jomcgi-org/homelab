@@ -1295,6 +1295,14 @@ cdHealth:
   # public reader treats a row older than 2.5x this as a dead writer.
   probeIntervalSeconds: 300
 
+# Private-tier pod restart watcher. Keep this dark until the loop and Discord
+# delivery have been verified live; enabling it is a deliberate follow-up.
+podRestartWatch:
+  enabled: false
+  intervalSeconds: 300
+  namespaces:
+    - monolith-public
+
 # ember-durability health component (#4338, ADR embervm/031): a FATAL-tier
 # /api/health component reading the EmberVM control plane's durability surface
 # (GET /v1/health/durability): tier 1 sustained artifact-export failure
