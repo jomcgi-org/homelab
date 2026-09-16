@@ -1441,16 +1441,22 @@ class TransientTurnError(RuntimeError):
     """
 
 
-# Provider-side transport failures: the CLI reached for its provider and the leg
-# died underneath it. These clear on their own, usually within seconds, so they
-# are worth the caller's roughly two-minute ladder.
+# An ESTABLISHED leg died, or the provider named a momentary condition. Only
+# these are worth the caller's roughly two-minute ladder.
+#
+# Deliberately NOT here: "error sending request", "transport error" and
+# "connection refused". Those are reqwest generics that a PERMANENT egress
+# fault emits on every attempt (a host missing from egressTo, a crashlooping
+# sidecar, a broker grant failing closed), so matching them would retry a
+# condition that cannot clear. The muse model-catalog failure is the worked
+# example: it reads like a transport blip and is structurally permanent,
+# because muse asks for https://api.meta.ai/muse-code/models while MUSE_BASE_URL
+# is plaintext (muse trusts neither the interception CA nor the system store),
+# and deploy/values.yaml denies api.meta.ai outright when the catalog entry is
+# dead. All 17 muse deliveries in the 2026-09-07 window failed; none recovered.
 _TRANSIENT_TURN_MARKERS = (
     "stream disconnected",
-    "error sending request",
     "connection reset",
-    "connection refused",
-    "transport error",
-    "failed to fetch model catalog",
     "at capacity",
 )
 
@@ -3220,6 +3226,11 @@ url = %s
                 # than failing every turn the way the hub did for 16 turns over
                 # two weeks. _spawn resets _server_threads, so the retry
                 # resumes the thread rather than skipping the bind.
+                #
+                # This covers a BIND-time -32600, which is the observed shape
+                # ("every first codex turn on the GKE hub"). An already-bound
+                # server that only fails at turn/start is not caught here and
+                # still surfaces as a bare 422; it has not been seen in prod.
                 sys.stderr.write(
                     "ember-claude-shim: codex config error, respawning: %s\n" % error
                 )
@@ -4998,6 +5009,16 @@ class PiProcess:
                                     "terminal event carried no text: %s"
                                     % (json.dumps(event)[:1500])
                                 )
+                            # Classify on the provider detail ALONE, before the
+                            # ring is appended. Unlike muse, which spawns per
+                            # turn, pi's process outlives many turns and
+                            # stderr_lines is reset only in _spawn, so a
+                            # "connection reset" it printed and recovered from
+                            # twenty turns ago would otherwise still be in the
+                            # ring and mark this failure retryable. The mirror
+                            # case matters too: a stale "usage limit" line would
+                            # suppress a genuine transient classification.
+                            transient = _is_transient_turn_failure(error_detail)
                             stderr = _truncate_ring_for_error(self.stderr_lines)
                             if stderr:
                                 error_detail += "\nCLI stderr:\n%s" % stderr
@@ -5010,8 +5031,9 @@ class PiProcess:
                             # The session is already poisoned and cleared above,
                             # so a retry starts a fresh pi session rather than
                             # resurrecting this one (see the poisoned-session
-                            # branch in turn()). That makes the retry safe.
-                            if _is_transient_turn_failure(error_detail):
+                            # branch in turn()). The retry is therefore a cold
+                            # re-ask on a new session, not a continuation.
+                            if transient:
                                 raise TransientTurnError(
                                     "pi turn produced no output: %s" % error_detail
                                 )

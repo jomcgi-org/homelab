@@ -336,12 +336,17 @@ assert sys.argv[1] == "app-server"
 rpc_path = os.environ.get("FAKE_CODEX_RPC")
 scenario = os.environ.get("FAKE_CODEX_SCENARIO", "")
 config_fail_path = os.environ.get("FAKE_CODEX_CONFIG_FAIL_ONCE")
+config_fail_always = os.environ.get("FAKE_CODEX_CONFIG_FAIL_ALWAYS")
 turn_failure = os.environ.get("FAKE_CODEX_TURN_FAILURE", "")
 
 def config_error_now():
     # Cross-process latch: the FIRST app-server to bind a thread fails with the
     # real -32600, every later one succeeds. A respawn is a new process with
     # the same env, so the latch has to live on disk rather than in memory.
+    # FAIL_ALWAYS instead keeps every bind failing, to pin that the retry does
+    # not loop and the second failure propagates.
+    if config_fail_always:
+        return True
     if not config_fail_path:
         return False
     if os.path.exists(config_fail_path):
@@ -2166,7 +2171,9 @@ def test_codex_resume_failure_raises_with_error(tmp_path, monkeypatch):
 # spans for the 14 days to 2026-09-16 (40 events). Their distribution is the
 # reason the classifier is an allowlist rather than "4xx means try again": 16
 # were a missing config file, 8 a missing binary, 11 an unreachable model
-# catalog, and exactly one was the stream disconnect a retry clears.
+# catalog, and exactly one was the stream disconnect a retry clears. The
+# allowlist therefore matches an ESTABLISHED leg dying, never a bare transport
+# generic, because a permanent egress fault emits those on every attempt.
 @pytest.mark.parametrize(
     "message, transient",
     [
@@ -2180,11 +2187,22 @@ def test_codex_resume_failure_raises_with_error(tmp_path, monkeypatch):
             "Please try a different model.",
             True,
         ),
+        ("muse run failed: connection reset by peer", True),
+        # Structurally permanent, and the reason the reqwest generics are NOT
+        # markers: muse asks for an https catalog URL it cannot trust, and a
+        # dead catalog entry denies api.meta.ai outright. All 17 muse
+        # deliveries in the 2026-09-07 window failed, so a ladder only spends
+        # eight attempts to reach the same place. This string matches BOTH
+        # "transport error" and "error sending request", which is why dropping
+        # the catalog phrase alone would not have been enough.
         (
             "failed to fetch model catalog: transport error: error sending "
             "request for url (https://api.meta.ai/muse-code/models)",
-            True,
+            False,
         ),
+        ("error sending request for url (https://api.meta.ai/v1)", False),
+        ("transport error", False),
+        ("connection refused", False),
         # Deterministic: the next attempt reproduces these exactly.
         (
             "-32600: failed to load configuration: No such file or directory "
@@ -2276,6 +2294,53 @@ def test_codex_config_error_respawns_and_completes_the_turn(tmp_path, monkeypatc
     manager._close_process()
 
 
+def test_codex_config_error_on_resume_respawns_and_rebinds(tmp_path, monkeypatch):
+    latch = tmp_path / "codex-config-failed"
+    monkeypatch.setenv("FAKE_CODEX_CONFIG_FAIL_ONCE", str(latch))
+    # Primed, so the FIRST bind succeeds and the failure lands on the resume.
+    latch.write_text("primed")
+    manager = _codex_manager(tmp_path, monkeypatch)
+    manager.turn("first", model="luna")
+    first_process = manager.process
+    session_id = manager.session_id
+
+    # Force the resume arm, then re-arm the latch so that resume fails once.
+    manager.session_id = None
+    latch.unlink()
+    manager.turn("second", session_id=session_id, model="luna")
+
+    assert manager.session_id == session_id
+    assert manager.process is not first_process
+    methods = [
+        json.loads(line)["method"]
+        for line in (tmp_path / "codex-rpc.jsonl").read_text().splitlines()
+    ]
+    # Two resumes: the first died on stale config, the second bound against the
+    # fresh server. This is the arm where reassigning requested_session in the
+    # except branch is load-bearing, and _spawn's _server_threads reset is what
+    # makes the retry rebind instead of skipping the bind entirely.
+    assert methods.count("thread/resume") == 2
+    assert methods.count("initialize") == 2
+    manager._close_process()
+
+
+def test_codex_config_error_on_both_binds_propagates(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_CODEX_CONFIG_FAIL_ALWAYS", "1")
+    manager = _codex_manager(tmp_path, monkeypatch)
+    with pytest.raises(RuntimeError, match="failed to load configuration"):
+        manager.turn("first", model="luna")
+
+    methods = [
+        json.loads(line)["method"]
+        for line in (tmp_path / "codex-rpc.jsonl").read_text().splitlines()
+    ]
+    # Exactly two binds: only the first call is wrapped, so a repeating config
+    # error propagates instead of looping. It is not transient either, so it
+    # reaches the caller as a bare 422.
+    assert methods.count("thread/start") == 2
+    manager._close_process()
+
+
 def test_codex_replaced_workspace_respawns_before_binding(tmp_path, monkeypatch):
     manager = _codex_manager(tmp_path, monkeypatch)
     manager.turn("first", model="luna")
@@ -2306,16 +2371,67 @@ def test_codex_unchanged_workspace_does_not_respawn(tmp_path, monkeypatch):
     manager._close_process()
 
 
-def test_muse_catalog_failure_is_transient(tmp_path, monkeypatch):
+def test_pi_stale_stderr_ring_does_not_mark_a_failure_retryable(tmp_path, monkeypatch):
+    """pi's process outlives many turns, so its stderr ring goes stale.
+
+    Classification must read the provider detail alone. While the ring was
+    concatenated onto error_detail first, a transport line pi printed and
+    recovered from many turns earlier would mark an unrelated deterministic
+    failure retryable, and the caller would burn its whole ladder on it.
+    """
+    monkeypatch.setenv("FAKE_PI_MODE", "interruptible")
+    manager = _pi_manager(tmp_path, monkeypatch)
+    exception = [None]
+
+    def run_turn():
+        try:
+            manager.turn("block", model="spark")
+        except Exception as exc:
+            exception[0] = exc
+
+    thread = threading.Thread(target=run_turn)
+    thread.start()
+    time.sleep(0.2)
+    # A line from earlier in this long-lived process's life, not from the
+    # failure being classified.
+    manager.stderr_lines.append("pi: connection reset by peer")
+    manager.interrupt()
+    thread.join(timeout=2)
+
+    assert "pi turn produced no output" in str(exception[0])
+    # The stale line is still reported to a human reading the error...
+    assert "connection reset" in str(exception[0])
+    # ...but it must not have driven the classification.
+    assert not isinstance(exception[0], shim.TransientTurnError)
+    manager._close_process()
+
+
+def test_muse_dropped_connection_is_transient(tmp_path, monkeypatch):
     manager = _muse_manager(tmp_path, monkeypatch)
     manager._stderr_thread = None
     # muse exits non-zero with the cause on stderr and nothing on stdout, so
-    # stderr is the only evidence _empty_stream_error has to classify on.
+    # stderr is the only evidence _empty_stream_error has. Classifying on the
+    # ring is safe HERE only because MuseProcess spawns per turn and _spawn
+    # rebuilds stderr_lines, so the ring can only hold this turn's lines.
     manager.stderr_lines = collections.deque(
-        ["failed to fetch model catalog: transport error: error sending request"],
-        maxlen=5,
+        ["muse run failed: connection reset by peer"], maxlen=5
     )
     assert isinstance(manager._empty_stream_error(None), shim.TransientTurnError)
+
+
+def test_muse_catalog_failure_is_not_transient(tmp_path, monkeypatch):
+    manager = _muse_manager(tmp_path, monkeypatch)
+    manager._stderr_thread = None
+    manager.stderr_lines = collections.deque(
+        [
+            "failed to fetch model catalog: transport error: error sending "
+            "request for url (https://api.meta.ai/muse-code/models)"
+        ],
+        maxlen=5,
+    )
+    error = manager._empty_stream_error(None)
+    assert isinstance(error, RuntimeError)
+    assert not isinstance(error, shim.TransientTurnError)
 
 
 def test_muse_failure_without_a_known_cause_is_not_transient(tmp_path, monkeypatch):
