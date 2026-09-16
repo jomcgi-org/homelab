@@ -21,6 +21,23 @@ swarm:
   # Settle attempts lost between "invoke sent" and "guest bound" (#6025):
   # the template landed one PR earlier; this is the behaviour flip.
   factoryLostBeforeGuestSettlementEnabled: true
+  # Release a lane slot held past its deadline by a start no cessation proof
+  # can settle (#6025): the template landed in #6156, this is the behaviour
+  # flip. Measured, not assumed. On 2026-09-14 four delivery slots were held
+  # for thirty hours in this exact shape and only a manual release at 19:03
+  # on 09-15 cleared them. The absence proof that shipped in the same PR does
+  # not cover it: a torn-down guest answers 200 "destroyed" until op-log
+  # compaction seven days later, so the 404 that proof keys on is nearly
+  # unreachable inside the backstop window, and both incidents instead failed
+  # observation with a transport error, which it deliberately excludes.
+  # Confirmed again after #6156 rolled out at 02:47 on 09-16: receipts 424,
+  # 429 and 430 sat uncertain with nothing running and the proof did not
+  # release any of them in the following forty minutes.
+  #
+  # This is the only path that frees such a slot. It settles the stranded
+  # starts and their capacity permits and escalates the task, never
+  # interrupting a start that is still reserved.
+  factoryDeadlineBackstopEnabled: true
   # Retire escalation cards their own issue has already answered (#6164): the
   # template landed one PR earlier, this is the behaviour flip. A sweep on
   # 2026-09-15 found 47 of 103 open cards stale, most of them because a card
