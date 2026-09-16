@@ -8,12 +8,14 @@ package egress
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/jomcgi/homelab/projects/embervm/noded/vsockproto"
 )
@@ -76,9 +78,30 @@ func listenUnix(path string) (net.Listener, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer dir.Close()
 	shortPath := fmt.Sprintf("/proc/self/fd/%d/%s", dir.Fd(), filepath.Base(path))
-	return net.Listen("unix", shortPath)
+	ln, err := net.Listen("unix", shortPath)
+	if err != nil {
+		return nil, errors.Join(err, dir.Close())
+	}
+	return &directoryListener{Listener: ln, dir: dir}, nil
+}
+
+// directoryListener keeps the directory descriptor in a /proc/self/fd bind
+// path valid until the Unix listener has unlinked that path during Close. This
+// prevents a recycled descriptor from making one listener unlink another
+// guest's socket.
+type directoryListener struct {
+	net.Listener
+	dir       *os.File
+	closeOnce sync.Once
+	closeErr  error
+}
+
+func (l *directoryListener) Close() error {
+	l.closeOnce.Do(func() {
+		l.closeErr = errors.Join(l.Listener.Close(), l.dir.Close())
+	})
+	return l.closeErr
 }
 
 // tunnelToSidecar dials the sidecar and copies bytes both ways until either side

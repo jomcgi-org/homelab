@@ -2,6 +2,7 @@ package egress
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -143,6 +144,41 @@ func TestServeEgressAcceptsGuestConnectionAtJailedTarget(t *testing.T) {
 	cancel()
 	if err := <-serveErr; err != nil {
 		t.Fatalf("ServeEgress: %v", err)
+	}
+}
+
+func TestListenUnixHoldsDirectoryFDThroughListenerClose(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("long unix socket path uses Linux /proc/self/fd")
+	}
+	dirPath := filepath.Join(t.TempDir(), strings.Repeat("j", 100))
+	if err := os.MkdirAll(dirPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dirPath, "v.sock_"+itoa(int(vsockproto.EgressPort)))
+	if len(path) < 108 {
+		t.Fatalf("test socket path is only %d bytes: %q", len(path), path)
+	}
+
+	ln, err := listenUnix(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	held, ok := ln.(*directoryListener)
+	if !ok {
+		t.Fatalf("listenUnix returned %T, want *directoryListener", ln)
+	}
+	if _, err := held.dir.Stat(); err != nil {
+		t.Fatalf("directory fd closed while listener is live: %v", err)
+	}
+	if err := ln.Close(); err != nil {
+		t.Fatalf("close listener: %v", err)
+	}
+	if _, err := held.dir.Stat(); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("directory fd after listener close: %v, want os.ErrClosed", err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("socket after listener close: %v, want os.ErrNotExist", err)
 	}
 }
 
