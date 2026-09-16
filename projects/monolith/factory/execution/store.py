@@ -489,6 +489,8 @@ def mark_turn_response_lost_sync(
     preemption path already uses, so every existing reader that skips an
     in-progress attempt keeps skipping this one. Only a committed result
     receipt for this exact dispatch can finish it, and only inside the bound.
+    A control-plane outage may leave generation and invoke_started_at unstamped;
+    the recovering owner then checks the guest once the control plane returns.
 
     Returns False and writes nothing whenever the exact dispatch identity, its
     permit, or the turn history has moved, which leaves the caller on its

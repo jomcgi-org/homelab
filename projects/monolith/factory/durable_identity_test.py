@@ -68,7 +68,11 @@ def test_package_move_preserves_the_deployed_node_workflow_version():
         (
             "agent_sessions.transport",
             "factory.execution.transport",
-            ("EmberTurnNotInvoked", "EmberSessionGone"),
+            (
+                "EmberTurnNotInvoked",
+                "EmberControlPlaneUnavailable",
+                "EmberSessionGone",
+            ),
         ),
         (
             "swarm.store",
