@@ -9,8 +9,9 @@ The in-cluster conformance runner's S1 scenario is the executable data-path
 assertion. It submits two sandbox tasks concurrently from one ready base. Each
 request carries a different token from host to guest, each guest returns its own
 token to the host, and either response containing the peer token is a failure.
-Both guests hold for five seconds and both requests must finish within eight
-seconds, so a serialized restore does not pass as concurrent execution.
+The hold and overlap budget come from the chart's `cloneHold` and
+`cloneOverlapBudget` values. The overlap budget must allow one hold but reject
+two serialized holds.
 
 ## Evidence contract
 
@@ -23,8 +24,9 @@ include:
 - whether the start was cold boot, clean-base restore, or crash relaunch;
 - the S1 `/verdict` JSON, including both clone markers, overlap duration, and
   final VM reap;
-- the noded log lines for both VM IDs and their distinct `vsock.sock` paths;
-- for crash relaunch, `ls -l` output showing the leftover `vsock.sock` and at
+- the noded log lines for both VM IDs, their distinct host `v.sock` paths, and
+  the applied device paths (the jailer path is `/vsock.sock`);
+- for crash relaunch, `ls -l` output showing the leftover `v.sock` and at
   least one `<uds>_<port>` child before the relaunch, followed by the successful
   relaunch and cleanup result.
 

@@ -12,4 +12,5 @@ go_test(
     name = "config_test",
     srcs = ["config_test.go"],
     embed = [":config"],
+    deps = ["//projects/embervm/noded/vsockproto"],
 )

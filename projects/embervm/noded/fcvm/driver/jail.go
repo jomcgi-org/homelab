@@ -72,6 +72,11 @@ func prepareJail(bundleDir, execFile, vmID string, uid, gid int, hostSocket stri
 // APISocketPath is the path Firecracker receives inside the chroot.
 func (j *Jail) APISocketPath() string { return "/api.sock" }
 
+// VsockPath is the short path Firecracker receives inside the chroot. Keeping
+// the device path independent of the host bundle prevents the jail root and
+// thread directory from being repeated in sockaddr_un paths.
+func (j *Jail) VsockPath() string { return "/vsock.sock" }
+
 func (j *Jail) hostPath(jailPath string) (string, error) {
 	clean := filepath.Clean("/" + jailPath)
 	if clean == "/" {
