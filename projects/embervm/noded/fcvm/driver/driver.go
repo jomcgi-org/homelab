@@ -78,13 +78,6 @@ type Config struct {
 	// shared read-only rootfs file can back every microVM restored from a single
 	// warm base without per-thread provisioning or corruption.
 	RootfsReadOnly bool
-	// CanonicalVsockDir, when set, is the fixed directory whose vsock.sock the base
-	// snapshot embeds. Cold boot binds the guest's vsock there (so the snapshot
-	// captures that path), and the launcher bind-mounts each VM's bundle dir over it
-	// per instance, so concurrent restores from one base each get their own
-	// host-reachable vsock socket. Pairs with ExecLauncher.VsockBindTarget. Empty
-	// keeps the per-thread vsock path (the legacy per-thread, no-warm-base behaviour).
-	CanonicalVsockDir string
 	// Provisioner selects the per-thread rootfs strategy (ADR 026): "copy" (the
 	// default CopyProvisioner full file copy) or "devmapper" (DevmapperProvisioner
 	// copy-on-write thin-snapshot). An empty value means "copy".
@@ -404,25 +397,13 @@ func (d *Driver) memfilePath(threadID string) string {
 // by listening on the per-thread UDS, not by CID, so a fixed value is fine.
 const guestCID = 3
 
-// bootVsockPath is the vsock UDS path firecracker binds at cold boot. With a
-// CanonicalVsockDir it is that fixed dir's vsock.sock (so the base snapshot embeds
-// a stable path the launcher can bind-mount per instance); otherwise it is the
-// per-thread host path. The launcher's per-instance bind-mount makes the canonical
-// path resolve to VsockUDSPath(threadID) on the host either way.
-func (d *Driver) bootVsockPath(threadID string) string {
-	if d.cfg.CanonicalVsockDir != "" {
-		return filepath.Join(d.cfg.CanonicalVsockDir, "vsock.sock")
-	}
-	return d.VsockUDSPath(threadID)
-}
-
 // VsockUDSPath is the host unix-domain socket backing a thread's vsock device.
 // Firecracker multiplexes guest connections onto "<uds>_<port>", so the control
 // server listens on VsockUDSPath(threadID)+"_"+ControlPort. The path is
 // deterministic from the bundle dir, so the reconcile loop can reach a live
 // microVM's control channel without the driver handing back extra state.
 func (d *Driver) VsockUDSPath(threadID string) string {
-	return filepath.Join(d.threadDir(threadID), "vsock.sock")
+	return filepath.Join(d.threadDir(threadID), vsockproto.HostUDSName)
 }
 
 // StatefulAPISocketPath returns the live Firecracker API socket for h. An empty
@@ -437,9 +418,10 @@ func (d *Driver) StatefulAPISocketPath(h substrate.Handle) string {
 }
 
 // removeStaleVsockUDS unlinks any leftover vsock unix-domain socket before a
-// (re)launch. Firecracker *binds* the vsock UDS on PUT /vsock, and bind() fails
-// with EADDRINUSE when the path already exists. A thread's bundle dir lives on
-// the persistent snapshot disk, so a vsock.sock from a previous incarnation
+// (re)launch. Firecracker binds this path on PUT /vsock for a cold boot and when
+// applying the snapshot-load override for a restore. bind() fails with
+// EADDRINUSE when the path already exists. A thread's bundle dir lives on the
+// persistent snapshot disk, so a v.sock from a previous incarnation
 // survives a daemon/pod restart and makes orphan recovery loop on a 400 until it
 // exhausts retries and marks the thread FAILED. The launcher already clears the
 // API socket; the vsock UDS and its per-port children (<uds>_<port>, created once
@@ -948,8 +930,8 @@ func (d *Driver) loadPatchAndResumeWithDiff(ctx context.Context, workload, threa
 	}
 	sock := filepath.Join(dir, sockName)
 	_ = os.Remove(sock)
-	// A restored snapshot re-binds the vsock UDS from its embedded config; clear
-	// any stale socket first so the resume does not fail on EADDRINUSE.
+	// Snapshot load overrides the embedded vsock path with this thread's UDS;
+	// clear any stale socket first so the restore does not fail on EADDRINUSE.
 	d.removeStaleVsockUDS(threadID)
 	vmID := newID("vm")
 	memMib := snapshotMemMib(memPath, d.cfg.MemMib)
@@ -1010,12 +992,18 @@ func (d *Driver) loadPatchAndResumeWithDiff(ctx context.Context, workload, threa
 	}
 	resumeVM := !patchVolume
 	snapshotCtx, cancelSnapshot := context.WithTimeout(ctx, snapshotOperationTimeout(memMib))
+	hostVsockPath := d.VsockUDSPath(threadID)
+	vsockPath := d.vsockDevicePath(proc, threadID)
+	d.logger.Info("driver: loading snapshot with per-VM vsock override",
+		"vm", vmID, "thread", threadID, "vsock_uds_path", vsockPath,
+		"vsock_host_path", hostVsockPath)
 	err = client.LoadSnapshot(snapshotCtx, fcclient.SnapshotLoad{
 		SnapshotPath:        snapPath,
 		MemBackend:          &fcclient.MemBackend{BackendType: "File", BackendPath: memPath},
 		EnableDiffSnapshots: enableDiffSnapshots,
 		TrackDirtyPages:     enableDiffSnapshots,
 		ResumeVM:            resumeVM,
+		VsockOverride:       &fcclient.VsockOverride{UDSPath: vsockPath},
 	})
 	cancelSnapshot()
 	if err != nil {
@@ -1292,7 +1280,7 @@ func (d *Driver) coldBoot(ctx context.Context, threadID string, cb coldBootSpec)
 		// file (self-contained + portable). See noded/server buildBaseZip.
 		// The vsock device is the guest's only channel to the controller (task
 		// delivery, idle signal, egress proxy). It must be configured before Start.
-		if err := client.PutVsock(ctx, fcclient.Vsock{GuestCID: guestCID, UDSPath: d.bootVsockPath(threadID)}); err != nil {
+		if err := client.PutVsock(ctx, fcclient.Vsock{GuestCID: guestCID, UDSPath: d.vsockDevicePath(proc, threadID)}); err != nil {
 			return err
 		}
 		// Per-VM serial sink (issue #4404): redirect the guest's UART output into
@@ -2903,10 +2891,18 @@ func (d *Driver) bindJailedVsock(proc Process, threadID string) error {
 		return nil
 	}
 	jail := provider.Jail()
-	if err := jail.aliasSocket(d.VsockUDSPath(threadID), d.bootVsockPath(threadID)); err != nil {
+	vsockPath := d.VsockUDSPath(threadID)
+	if err := jail.aliasSocket(vsockPath, jail.VsockPath()); err != nil {
 		return err
 	}
-	return jail.aliasSocketPort(d.VsockUDSPath(threadID), d.bootVsockPath(threadID), vsockproto.EgressPort)
+	return jail.aliasSocketPort(vsockPath, jail.VsockPath(), vsockproto.EgressPort)
+}
+
+func (d *Driver) vsockDevicePath(proc Process, threadID string) string {
+	if provider, ok := proc.(jailProvider); ok && provider.Jail() != nil {
+		return provider.Jail().VsockPath()
+	}
+	return d.VsockUDSPath(threadID)
 }
 
 func snapshotMemMib(memPath string, fallback int) int {

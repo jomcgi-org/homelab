@@ -23,6 +23,16 @@ func (a *driveRecordingAPI) PutDrive(_ context.Context, drive fcclient.Drive) er
 	return nil
 }
 
+type snapshotLoadRecordingAPI struct {
+	fcAPI
+	load fcclient.SnapshotLoad
+}
+
+func (a *snapshotLoadRecordingAPI) LoadSnapshot(_ context.Context, load fcclient.SnapshotLoad) error {
+	a.load = load
+	return nil
+}
+
 func TestPrepareJailStagesOnlyVMResources(t *testing.T) {
 	bundle := t.TempDir()
 	socket := filepath.Join(bundle, "api.sock")
@@ -120,7 +130,7 @@ func TestClientForJailedProcessStagesDrive(t *testing.T) {
 	}
 }
 
-func TestBindJailedVsockStagesGuestEgressTarget(t *testing.T) {
+func TestBindJailedVsockStagesOverrideAndGuestEgressTargets(t *testing.T) {
 	root := t.TempDir()
 	d := New(Config{SnapshotRoot: root}, &fakeLauncher{}, nil)
 	threadID := "egress-thread"
@@ -135,17 +145,72 @@ func TestBindJailedVsockStagesGuestEgressTarget(t *testing.T) {
 	if err := d.bindJailedVsock(&fakeProcess{jail: jail}, threadID); err != nil {
 		t.Fatalf("bindJailedVsock: %v", err)
 	}
-	hostTarget := d.VsockUDSPath(threadID) + "_" + fmt.Sprint(vsockproto.EgressPort)
-	got, err := os.Readlink(hostTarget)
-	if err != nil {
-		t.Fatalf("guest egress alias: %v", err)
+	vsockPath := d.VsockUDSPath(threadID)
+	for _, suffix := range []string{"", "_" + fmt.Sprint(vsockproto.EgressPort)} {
+		hostTarget := vsockPath + suffix
+		got, err := os.Readlink(hostTarget)
+		if err != nil {
+			t.Fatalf("vsock alias %q: %v", hostTarget, err)
+		}
+		want, err := jail.hostPath(jail.VsockPath() + suffix)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("vsock alias target = %q, want %q", got, want)
+		}
+		if rel, err := filepath.Rel(jail.RootDir, got); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			t.Fatalf("vsock alias target %q is outside jail root %q", got, jail.RootDir)
+		}
+		if _, err := os.Stat(filepath.Dir(got)); err != nil {
+			t.Fatalf("jailed vsock parent is inaccessible: %v", err)
+		}
 	}
-	want, err := jail.hostPath(d.bootVsockPath(threadID) + "_" + fmt.Sprint(vsockproto.EgressPort))
+}
+
+func TestJailedSnapshotLoadUsesShortAccessibleVsockOverride(t *testing.T) {
+	root := t.TempDir()
+	d := New(Config{SnapshotRoot: root}, &fakeLauncher{}, nil)
+	threadID := "restore-thread"
+	bundle := d.threadDir(threadID)
+	if err := os.MkdirAll(bundle, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	jail, err := prepareJail(bundle, "/opt/fc/firecracker", "vm-restore", os.Getuid(), os.Getgid(), filepath.Join(bundle, "api.sock"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != want {
-		t.Fatalf("guest egress alias target = %q, want %q", got, want)
+	t.Cleanup(func() { _ = jail.Cleanup() })
+	if err := d.bindJailedVsock(&fakeProcess{jail: jail}, threadID); err != nil {
+		t.Fatalf("bindJailedVsock: %v", err)
+	}
+	snap := filepath.Join(bundle, "snapfile")
+	mem := filepath.Join(bundle, "memfile")
+	for _, path := range []string{snap, mem} {
+		if err := os.WriteFile(path, []byte("snapshot"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	recorder := &snapshotLoadRecordingAPI{}
+	client := &jailedClient{fcAPI: recorder, jail: jail}
+	hostVsockPath := d.VsockUDSPath(threadID)
+	vsockPath := d.vsockDevicePath(&fakeProcess{jail: jail}, threadID)
+	if err := client.LoadSnapshot(context.Background(), fcclient.SnapshotLoad{
+		SnapshotPath:  snap,
+		MemBackend:    &fcclient.MemBackend{BackendType: "File", BackendPath: mem},
+		VsockOverride: &fcclient.VsockOverride{UDSPath: vsockPath},
+	}); err != nil {
+		t.Fatalf("LoadSnapshot: %v", err)
+	}
+	if recorder.load.VsockOverride == nil || recorder.load.VsockOverride.UDSPath != jail.VsockPath() {
+		t.Fatalf("jailed vsock override = %#v, want %q", recorder.load.VsockOverride, jail.VsockPath())
+	}
+	jailedPath, err := jail.hostPath(jail.VsockPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target, err := os.Readlink(hostVsockPath); err != nil || target != jailedPath {
+		t.Fatalf("host vsock alias = %q, %v, want %q", target, err, jailedPath)
 	}
 }
 

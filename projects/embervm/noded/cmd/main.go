@@ -34,12 +34,6 @@ import (
 )
 
 func main() {
-	// Handle the "__fcmount" re-exec FIRST: launching a microVM with per-instance
-	// vsock isolation re-execs this binary in a fresh mount namespace, bind-mounts
-	// the bundle dir, then execs firecracker (never returning). It is a no-op for a
-	// normal daemon start, so it must run before any other startup work.
-	driver.ExecMountTrampoline()
-
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 
@@ -105,11 +99,6 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
-	self, err := os.Executable()
-	if err != nil {
-		return err
-	}
-
 	// One transport shared across every VM: stateless, a fresh vsock connection
 	// per RoundTrip (keep-alives disabled), so no two microVMs share a connection.
 	transport := vsockhttp.NewTransport()
@@ -117,12 +106,12 @@ func run(logger *slog.Logger) error {
 	// The shared restore driver serves Prime/Assign/Destroy: it only ever restores
 	// from a base snapshot, so its rootfs/sizing are irrelevant (the snapshot has
 	// them baked). Its in-memory live map is the authority for LiveCount.
-	restoreDriver := newDriver(cfg, self, logger, driverExtras{})
+	restoreDriver := newDriver(cfg, logger, driverExtras{})
 
 	// Per-build drivers cold-boot one image's rootfs at its sizing, then snapshot;
 	// they are discarded after the base is written (the base lives on disk).
 	newBuild := func(spec server.BuildDriverSpec) server.BuildDriver {
-		return newDriver(cfg, self, logger, driverExtras{
+		return newDriver(cfg, logger, driverExtras{
 			rootfsPath:  spec.RootfsPath,
 			harnessInit: spec.HarnessInit,
 			vcpus:       spec.VCPUs,
@@ -458,13 +447,12 @@ type driverExtras struct {
 // newDriver builds an fcvm driver bound to the node's substrate paths. Cold-boot
 // fields (rootfs, sizing, harness init) are set only for build drivers; the
 // restore driver leaves them zero because restore ignores them.
-func newDriver(cfg config.Config, self string, logger *slog.Logger, x driverExtras) *driver.Driver {
+func newDriver(cfg config.Config, logger *slog.Logger, x driverExtras) *driver.Driver {
 	return driver.New(driver.Config{
 		KernelImagePath:       cfg.KernelImagePath,
 		KernelBootArgs:        cfg.KernelBootArgs,
 		RootfsPath:            x.rootfsPath,
 		RootfsReadOnly:        true,
-		CanonicalVsockDir:     cfg.CanonicalVsockDir,
 		HarnessInit:           x.harnessInit,
 		VCPUs:                 x.vcpus,
 		MemMib:                x.memMib,
@@ -477,13 +465,12 @@ func newDriver(cfg config.Config, self string, logger *slog.Logger, x driverExtr
 		WarmRestoreWithVolume: cfg.WarmRestoreWithVolume,
 		DiffBanking:           cfg.DiffBanking,
 	}, &driver.ExecLauncher{
-		Logger:          logger,
-		Bin:             cfg.BinPath,
-		JailerBin:       cfg.JailerBinPath,
-		JailerEnabled:   cfg.JailerEnabled,
-		OOMScoreAdj:     cfg.GuestOomScoreAdj,
-		VsockBindTarget: cfg.CanonicalVsockDir,
-		Self:            self,
+		Logger:         logger,
+		Bin:            cfg.BinPath,
+		JailerBin:      cfg.JailerBinPath,
+		JailerEnabled:  cfg.JailerEnabled,
+		OOMScoreAdj:    cfg.GuestOomScoreAdj,
+		MountNamespace: true,
 	}, nil)
 }
 

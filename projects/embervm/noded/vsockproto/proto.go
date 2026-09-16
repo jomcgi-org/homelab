@@ -17,6 +17,9 @@ package vsockproto
 // fixed id (the daemon reaches a guest by its per-thread host UDS, not by CID).
 // The guest dials these ports on the host.
 const (
+	// HostUDSName keeps the host socket and its port-suffixed children within
+	// Linux sockaddr_un when nested below the longest production warmth root.
+	HostUDSName = "v.sock"
 	// HostCID is the Firecracker-reserved host context id.
 	HostCID uint32 = 2
 	// GuestCID is the fixed guest context id every microVM is assigned.

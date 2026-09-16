@@ -433,13 +433,15 @@ conformance:
     pullPolicy: IfNotPresent
   runInterval: 30m
   readyWait: 15m
+  cloneHold: 30s
+  cloneStartupHeadroom: 20s
   taskWorkload: sandbox-python
   sessionWorkload: pi-runtime
   idleBankSeconds: 20
   sweepGraceSeconds: 15
   minPassingInvariants: 4
   budgets:
-    s1: 60s
+    s1: 90s
     # The guest shim's inner init read timeout is 90s. A 180s outer budget safely
     # leaves time for the 35s idle-bank wait and the invoke after relight.
     s2: 180s

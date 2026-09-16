@@ -193,9 +193,10 @@ func TestClientLoadSnapshotResume(t *testing.T) {
 	fake, sock := startFakeFC(t)
 	c := New(sock)
 	if err := c.LoadSnapshot(context.Background(), SnapshotLoad{
-		SnapshotPath: "/snap/snapfile",
-		MemBackend:   &MemBackend{BackendType: "File", BackendPath: "/snap/memfile"},
-		ResumeVM:     true,
+		SnapshotPath:  "/snap/snapfile",
+		MemBackend:    &MemBackend{BackendType: "File", BackendPath: "/snap/memfile"},
+		ResumeVM:      true,
+		VsockOverride: &VsockOverride{UDSPath: "/instances/thread-2/vsock.sock"},
 	}); err != nil {
 		t.Fatalf("LoadSnapshot: %v", err)
 	}
@@ -208,6 +209,10 @@ func TestClientLoadSnapshotResume(t *testing.T) {
 	mb, ok := r.Body["mem_backend"].(map[string]any)
 	if !ok || mb["backend_type"] != "File" {
 		t.Fatalf("mem_backend = %v", r.Body["mem_backend"])
+	}
+	vsock, ok := r.Body["vsock_override"].(map[string]any)
+	if !ok || vsock["uds_path"] != "/instances/thread-2/vsock.sock" {
+		t.Fatalf("vsock_override = %v", r.Body["vsock_override"])
 	}
 }
 

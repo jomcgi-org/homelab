@@ -2,11 +2,14 @@ package egress
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -93,12 +96,18 @@ func TestServeEgressTunnelsBidirectionally(t *testing.T) {
 // direction that differs under jailer. The host-facing suffixed path is a
 // symlink, while Firecracker connects to its target inside the chroot.
 func TestServeEgressAcceptsGuestConnectionAtJailedTarget(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("long jailed unix socket path uses Linux /proc/self/fd")
+	}
 	sidecarAddr, stopSidecar := startEchoSidecar(t)
 	defer stopSidecar()
 
 	tmp := t.TempDir()
 	udsPath := filepath.Join(tmp, "host", "vsock.sock")
-	jailedPath := filepath.Join(tmp, "jail", "vsock.sock_"+itoa(int(vsockproto.EgressPort)))
+	jailedPath := filepath.Join(tmp, strings.Repeat("j", 100), "vsock.sock_"+itoa(int(vsockproto.EgressPort)))
+	if len(jailedPath) < 108 {
+		t.Fatalf("test jail target is only %d bytes: %q", len(jailedPath), jailedPath)
+	}
 	if err := os.MkdirAll(filepath.Dir(udsPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +125,9 @@ func TestServeEgressAcceptsGuestConnectionAtJailedTarget(t *testing.T) {
 		serveErr <- ServeEgress(ctx, slog.Default(), udsPath, sidecarAddr)
 	}()
 
-	guest := dialWithRetry(t, jailedPath)
+	// The host alias is short enough for connect(2), and resolves to the socket
+	// ServeEgress created at the otherwise unbindable jail target.
+	guest := dialWithRetry(t, egressListenPath(udsPath))
 	defer guest.Close()
 	want := []byte("guest to host")
 	if _, err := guest.Write(want); err != nil {
@@ -133,6 +144,41 @@ func TestServeEgressAcceptsGuestConnectionAtJailedTarget(t *testing.T) {
 	cancel()
 	if err := <-serveErr; err != nil {
 		t.Fatalf("ServeEgress: %v", err)
+	}
+}
+
+func TestListenUnixHoldsDirectoryFDThroughListenerClose(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("long unix socket path uses Linux /proc/self/fd")
+	}
+	dirPath := filepath.Join(t.TempDir(), strings.Repeat("j", 100))
+	if err := os.MkdirAll(dirPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dirPath, "v.sock_"+itoa(int(vsockproto.EgressPort)))
+	if len(path) < 108 {
+		t.Fatalf("test socket path is only %d bytes: %q", len(path), path)
+	}
+
+	ln, err := listenUnix(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	held, ok := ln.(*directoryListener)
+	if !ok {
+		t.Fatalf("listenUnix returned %T, want *directoryListener", ln)
+	}
+	if _, err := held.dir.Stat(); err != nil {
+		t.Fatalf("directory fd closed while listener is live: %v", err)
+	}
+	if err := ln.Close(); err != nil {
+		t.Fatalf("close listener: %v", err)
+	}
+	if _, err := held.dir.Stat(); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("directory fd after listener close: %v, want os.ErrClosed", err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("socket after listener close: %v, want os.ErrNotExist", err)
 	}
 }
 

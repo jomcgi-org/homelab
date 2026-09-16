@@ -117,6 +117,13 @@ type MemBackend struct {
 	BackendPath string `json:"backend_path"`
 }
 
+// VsockOverride changes the host UDS path restored for the snapshot's vsock
+// device. Firecracker v1.16 and later apply it before rebuilding the device,
+// so each clone can use its own host socket without changing the guest CID.
+type VsockOverride struct {
+	UDSPath string `json:"uds_path"`
+}
+
 // SnapshotCreate is the body of PUT /snapshot/create.
 type SnapshotCreate struct {
 	SnapshotType string `json:"snapshot_type,omitempty"` // "Full" (default) or "Diff"
@@ -124,13 +131,16 @@ type SnapshotCreate struct {
 	MemFilePath  string `json:"mem_file_path"`
 }
 
-// SnapshotLoad is the body of PUT /snapshot/load.
+// SnapshotLoad is the body of PUT /snapshot/load. VsockOverride is set for
+// every EmberVM restore so concurrent clones never reuse the path embedded in
+// their common base snapshot.
 type SnapshotLoad struct {
-	SnapshotPath        string      `json:"snapshot_path"`
-	MemBackend          *MemBackend `json:"mem_backend,omitempty"`
-	EnableDiffSnapshots bool        `json:"enable_diff_snapshots,omitempty"`
-	TrackDirtyPages     bool        `json:"track_dirty_pages,omitempty"`
-	ResumeVM            bool        `json:"resume_vm"`
+	SnapshotPath        string         `json:"snapshot_path"`
+	MemBackend          *MemBackend    `json:"mem_backend,omitempty"`
+	EnableDiffSnapshots bool           `json:"enable_diff_snapshots,omitempty"`
+	TrackDirtyPages     bool           `json:"track_dirty_pages,omitempty"`
+	ResumeVM            bool           `json:"resume_vm"`
+	VsockOverride       *VsockOverride `json:"vsock_override,omitempty"`
 }
 
 // TokenBucket is one half of a Firecracker RateLimiter: `size` tokens are

@@ -57,7 +57,7 @@ func TestColdAndRestoredSerialOutputRouting(t *testing.T) {
 		t.Fatalf("Release restored: %v", err)
 	}
 
-	records := decodeLogRecords(t, output.Bytes())
+	records := guestLogRecords(decodeLogRecords(t, output.Bytes()))
 	want := []struct {
 		message  string
 		workload string
@@ -116,11 +116,21 @@ func TestRestoredSerialFailureFlushesUnterminatedOutput(t *testing.T) {
 	if err == nil {
 		t.Fatal("loadInto should fail")
 	}
-	records := decodeLogRecords(t, output.Bytes())
+	records := guestLogRecords(decodeLogRecords(t, output.Bytes()))
 	if len(records) != 1 {
 		t.Fatalf("records = %d, want 1: %s", len(records), output.Bytes())
 	}
 	assertGuestRecord(t, records[0], "restore final", "restore-failure-workload", "vm")
+}
+
+func guestLogRecords(records []map[string]any) []map[string]any {
+	guestRecords := make([]map[string]any, 0, len(records))
+	for _, record := range records {
+		if record["source"] == "guest" {
+			guestRecords = append(guestRecords, record)
+		}
+	}
+	return guestRecords
 }
 
 func TestSerialDrainStopsAtCapturedEndWhileLoggingAppends(t *testing.T) {

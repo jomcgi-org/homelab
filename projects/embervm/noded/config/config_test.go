@@ -1,11 +1,14 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jomcgi/homelab/projects/embervm/noded/vsockproto"
 )
 
 func TestDetectCPUVendorFromFixture(t *testing.T) {
@@ -674,9 +677,9 @@ func TestInstanceSegmentDeterministicAndDistinct(t *testing.T) {
 }
 
 // TestWorstCaseSocketPathUnderSunLen is the regression guard for the bug this PR
-// fixes: on a brick, the LONGEST firecracker unix socket path (a per-op
-// thread-<16hex> bundle dir under the per-instance warmth root, holding
-// restore.sock) MUST stay under the 108-byte sockaddr_un SUN_LEN limit, or every
+// fixes: on a brick, every firecracker unix socket path (a per-op
+// thread-<16hex> bundle dir under the per-instance warmth root) MUST stay under
+// the 108-byte sockaddr_un SUN_LEN limit, or every
 // VM operation fails with "path must be shorter than SUN_LEN". We reconstruct the
 // exact worst-case path the driver builds and assert it is comfortably under the
 // limit.
@@ -687,7 +690,6 @@ func TestWorstCaseSocketPathUnderSunLen(t *testing.T) {
 	const snapshotRoot = "/var/lib/embervm/scratch/embervm-noded/snapshots"
 	const podUID = "a1b2c3d4-e5f6-4788-9abc-def012345678"
 	const threadDir = "thread-0123456789abcdef" // driver: "thread-" + 16 hex
-	const longestSock = "restore.sock"          // > api.sock, vsock.sock
 
 	t.Setenv("EMBERVM_NODED_SNAPSHOT_ROOT", snapshotRoot)
 	t.Setenv("EMBERVM_NODED_SIZE_CLASS", "16gi")
@@ -697,17 +699,22 @@ func TestWorstCaseSocketPathUnderSunLen(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 
-	worst := filepath.Join(c.WarmthRoot, threadDir, longestSock)
 	// SUN_LEN is 108 on Linux; a NUL terminator eats one byte, so the usable path
 	// is <= 107. We assert a hard margin (< 100) so a future root/threadid tweak
 	// cannot silently creep back over the cliff.
-	if len(worst) >= 108 {
-		t.Fatalf("worst-case socket path OVERFLOWS SUN_LEN: %d bytes: %q", len(worst), worst)
+	paths := map[string]string{
+		"restore API":  filepath.Join(c.WarmthRoot, threadDir, "restore.sock"),
+		"vsock egress": fmt.Sprintf("%s_%d", filepath.Join(c.WarmthRoot, threadDir, vsockproto.HostUDSName), vsockproto.EgressPort),
 	}
-	if len(worst) >= 100 {
-		t.Errorf("worst-case socket path %d bytes (want < 100 for margin): %q", len(worst), worst)
+	for name, path := range paths {
+		if len(path) >= 108 {
+			t.Fatalf("%s socket path OVERFLOWS SUN_LEN: %d bytes: %q", name, len(path), path)
+		}
+		if len(path) >= 100 {
+			t.Errorf("%s socket path %d bytes (want < 100 for margin): %q", name, len(path), path)
+		}
+		t.Logf("worst-case brick %s socket path is %d bytes: %q", name, len(path), path)
 	}
-	t.Logf("worst-case brick socket path is %d bytes: %q", len(worst), worst)
 }
 
 // TestPruneStaleInstanceWarmth proves startup GC uses checked liveness claims,
