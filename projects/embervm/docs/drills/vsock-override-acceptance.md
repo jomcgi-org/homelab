@@ -9,9 +9,10 @@ The in-cluster conformance runner's S1 scenario is the executable data-path
 assertion. It submits two sandbox tasks concurrently from one ready base. Each
 request carries a different token from host to guest, each guest returns its own
 token to the host, and either response containing the peer token is a failure.
-The hold and overlap budget come from the chart's `cloneHold` and
-`cloneOverlapBudget` values. The overlap budget must allow one hold but reject
-two serialized holds.
+The hold and startup headroom come from the chart's `cloneHold` and
+`cloneStartupHeadroom` values. The overlap budget is their sum. The headroom
+must be shorter than the hold so the budget allows restore, admission, and HTTP
+latency while still rejecting two serialized holds.
 
 ## Evidence contract
 

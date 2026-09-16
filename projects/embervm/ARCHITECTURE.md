@@ -1233,7 +1233,9 @@ session sleep and relight, second-session restart latency, control-plane
 invariants) must all pass at `/verdict`, stamped with the chart version so an
 older deployment's evidence is refused. S1 sends a distinct marker into each
 clone, requires the same marker back, rejects the peer marker, and requires two
-five-second guest holds to complete inside an eight-second overlap budget. A
+30-second guest holds to complete inside a 50-second overlap budget. The budget
+includes 20 seconds of explicit restore, admission, and HTTP headroom while
+remaining shorter than two serialized holds. A
 failed or all-vacuous run blocks promotion; Freight approval is the explicit
 operator override. Phase 1 is tracked in #5224. The launch-mode, crash-relaunch,
 and architecture acceptance matrix for restore-time vsock overrides is a

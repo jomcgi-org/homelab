@@ -13,8 +13,8 @@ import (
 )
 
 const (
-	defaultCloneHold          = 5 * time.Second
-	defaultCloneOverlapBudget = 8 * time.Second
+	defaultCloneHold            = 30 * time.Second
+	defaultCloneStartupHeadroom = 20 * time.Second
 )
 
 func main() {
@@ -102,13 +102,13 @@ func loadConfig() (config, error) {
 	if cfg.cloneHold, err = durationEnv("S1_CLONE_HOLD", defaultCloneHold); err != nil {
 		return config{}, err
 	}
-	if cfg.cloneOverlapBudget, err = durationEnv("S1_CLONE_OVERLAP_BUDGET", defaultCloneOverlapBudget); err != nil {
+	if cfg.cloneStartupHeadroom, err = durationEnv("S1_CLONE_STARTUP_HEADROOM", defaultCloneStartupHeadroom); err != nil {
 		return config{}, err
 	}
-	if cfg.cloneOverlapBudget <= cfg.cloneHold || cfg.cloneOverlapBudget >= 2*cfg.cloneHold {
-		return config{}, fmt.Errorf("S1_CLONE_OVERLAP_BUDGET must allow one S1_CLONE_HOLD but reject two serialized holds")
+	if cfg.cloneStartupHeadroom >= cfg.cloneHold {
+		return config{}, fmt.Errorf("S1_CLONE_STARTUP_HEADROOM must be shorter than S1_CLONE_HOLD to reject two serialized holds")
 	}
-	for key, fallback := range map[string]time.Duration{"S1": time.Minute, "S2": 2 * time.Minute, "S3": time.Minute, "S4": 10 * time.Second} {
+	for key, fallback := range map[string]time.Duration{"S1": 90 * time.Second, "S2": 2 * time.Minute, "S3": time.Minute, "S4": 10 * time.Second} {
 		cfg.budgets[key], err = durationEnv(key+"_BUDGET", fallback)
 		if err != nil {
 			return config{}, err

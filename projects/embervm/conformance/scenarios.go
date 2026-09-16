@@ -36,7 +36,7 @@ type config struct {
 	runInterval          time.Duration
 	readyWait            time.Duration
 	cloneHold            time.Duration
-	cloneOverlapBudget   time.Duration
+	cloneStartupHeadroom time.Duration
 	taskWorkload         string
 	sessionWorkload      string
 	idleBankSeconds      int
@@ -290,8 +290,9 @@ func runS1(ctx context.Context, cfg config, client *controlPlaneClient, suiteSta
 			return scenarioVerdict{Verdict: verdictFail, Detail: fmt.Sprintf("%s: %s", label, httpErrorDetail(http.MethodPost, path, result.response))}
 		}
 	}
-	if elapsed > cfg.cloneOverlapBudget {
-		return scenarioVerdict{Verdict: verdictFail, Detail: fmt.Sprintf("two clone invocations took %s, exceeding the %s overlap budget for two %s guest holds", elapsed.Round(time.Millisecond), cfg.cloneOverlapBudget, cfg.cloneHold)}
+	overlapBudget := cfg.cloneHold + cfg.cloneStartupHeadroom
+	if elapsed > overlapBudget {
+		return scenarioVerdict{Verdict: verdictFail, Detail: fmt.Sprintf("two clone invocations took %s, exceeding the %s overlap budget (%s guest hold plus %s startup headroom)", elapsed.Round(time.Millisecond), overlapBudget, cfg.cloneHold, cfg.cloneStartupHeadroom)}
 	}
 
 	for _, label := range labels {
