@@ -456,6 +456,33 @@ wake-rate limit protect the receiving node.
 The S3 artifact GC uses an 8-hour TTL for stateful warmth and 7-day TTLs for
 session memory, serving snapshots, session workspaces, and group sets.
 
+**The control plane does not retry a session invoke, and the guest classifies
+its own failures.** Unlike a task, a session invoke's guest error is the
+guest's answer, not a VM failure: `run_invoke` issues one Assign and returns
+whatever the guest said, and the router proxies that status and body verbatim.
+`Embervm.Retry` and a workload's `invocation.retry` are task-lane only, so
+nothing in EmberVM retries a session turn. That leaves the guest 422 body as
+the only place a transient cause can be declared, and the shim is the only
+layer that can tell one from a permanent one: it raises `TransientTurnError`
+for provider-transport failures and adds `retryable: true` to the body, and the
+caller owns the backoff.
+
+**Why.** A guest 422 is a catch-all: the shim's `except Exception` maps a
+provider stream disconnect, a missing config file, a missing binary, and an
+exhausted usage limit to one status with one body shape. Over the 14 days to
+2026-09-16 that was 40 turns, of which 16 were a codex config load failing, 8 a
+missing muse binary, 11 an unreachable model catalog, and exactly one the
+stream disconnect a retry clears, so a blanket retry would have doubled the
+loud failures rather than fixed them. Classifying in the control plane was
+rejected because it would have to parse guest payloads to do it and still could
+not distinguish these causes; retrying in the control plane was rejected
+because the shim has to classify first either way. The cost of NOT retrying is
+not one wasted boot: a 422 marks the factory attempt `uncertain`, and with
+`factoryStopSupervisionEnabled` false that parks the run holding a parallel
+slot and its cost reservation, so the cheap same-session retry replaces an
+expensive fresh-VM node attempt. A header-based control-plane retry remains
+open (see Direction) for callers that do not go through the monolith transport.
+
 **Why.** A control-plane restart during an interruptible bank could leave a
 benign generation advance indistinguishable from an unauthorized one, forcing
 quarantine (ADR embervm/017). A live-volume timer snapshot was rejected because
@@ -1272,6 +1299,7 @@ this table when the work ships or the issue closes without it.
 | SPIFFE-issued identity moves beyond issuance: mTLS on the CP-to-noded hop, per-principal guest JWT-SVIDs, and GCP federation | section 9 | #5706 | not started |
 | A session workspace gets a size budget instead of unbounded growth | Decision history (embervm/027) | #5074 | not started |
 | A second Codex account joins the chatgpt.com grant pool once logged in, and quota floors per class and role protect planning capacity | section 9 | #5974 | grant pool built, pool not yet activated |
+| A guest-declared transient failure is retried inside EmberVM on a bounded session-invoke loop, so callers outside the monolith transport get it too | section 4 | #6185 | not started |
 
 ---
 

@@ -1422,6 +1422,69 @@ class SessionConflictError(StartupError):
     pass
 
 
+class TransientTurnError(RuntimeError):
+    """A turn that failed underneath the CLI, and that a retry could clear.
+
+    do_POST maps every unclassified turn failure to a bare 422, and the control
+    plane proxies a guest response verbatim (Embervm.Router.send_guest_result/4,
+    and session.ex: "a session invoke's guest error is the guest's answer, not a
+    VM failure"). There is no retry anywhere on the session lane inside EmberVM,
+    so this body is the ONLY place a transient cause can be declared: callers
+    key their backoff off `retryable` in it (see _retryable_from_response in
+    monolith factory/execution/transport.py).
+
+    Deliberately narrow. A cause that reproduces on the next attempt (a missing
+    config file, a missing binary, a usage limit that names its own reset hours
+    away) is NOT transient, and flagging one burns the caller's whole ladder
+    before failing anyway. RuntimeError is the base so the existing handlers
+    that catch RuntimeError keep catching these unchanged.
+    """
+
+
+# Provider-side transport failures: the CLI reached for its provider and the leg
+# died underneath it. These clear on their own, usually within seconds, so they
+# are worth the caller's roughly two-minute ladder.
+_TRANSIENT_TURN_MARKERS = (
+    "stream disconnected",
+    "error sending request",
+    "connection reset",
+    "connection refused",
+    "transport error",
+    "failed to fetch model catalog",
+    "at capacity",
+)
+
+# Checked FIRST, and a match here wins over any marker above. These read like a
+# transport failure but stay pinned open for hours, so no bounded ladder
+# outlasts them: a codex usage limit states its own reset time ("try again at
+# Sep 15th, 2026 1:25 AM"). Retrying one only spends attempts to fail anyway.
+_PERSISTENT_TURN_MARKERS = (
+    "usage limit",
+    "purchase more credits",
+    "quota exceeded",
+)
+
+
+def _is_transient_turn_failure(text):
+    """Whether a CLI failure message names a cause a retry could plausibly clear."""
+    if not text:
+        return False
+    lowered = str(text).lower()
+    if any(marker in lowered for marker in _PERSISTENT_TURN_MARKERS):
+        return False
+    return any(marker in lowered for marker in _TRANSIENT_TURN_MARKERS)
+
+
+def _is_codex_config_error(text):
+    """Whether a codex RPC error is the app-server failing to load its config.
+
+    The app-server reports this as JSON-RPC -32600 and stays wedged on it for
+    every later turn, so it is the signal to respawn rather than to retry.
+    """
+    lowered = str(text or "").lower()
+    return "-32600" in lowered and "failed to load configuration" in lowered
+
+
 _managed_child_pids = set()
 
 
@@ -3073,19 +3136,35 @@ url = %s
                 process = self.process
             cli_ready_path = None
             process_was_unbound = not self.session_id
+            # A relit VM can mount a workspace volume that ALREADY carries a
+            # .codex directory, which satisfies the isdir test below while the
+            # live app-server still points at the pre-mount inode. Compare the
+            # workspace identity the way ClaudeProcess.turn does (cwd_changed)
+            # so a REPLACED workspace respawns as well as a vanished one;
+            # _spawn records the identity but nothing here used to read it.
+            workspace_identity = _workspace_identity(self.workspace)
+            workspace_replaced = (
+                self._process_workspace_identity is not None
+                and workspace_identity is not None
+                and workspace_identity != self._process_workspace_identity
+            )
             if (
                 process is not None
                 and process.poll() is None
-                and not os.path.isdir(os.path.join(self.workspace, ".codex"))
+                and (
+                    not os.path.isdir(os.path.join(self.workspace, ".codex"))
+                    or workspace_replaced
+                )
             ):
-                # The live app-server's CODEX_HOME is gone: this VM was relit
-                # with a fresh workspace volume mounted under the same path, so
-                # the parked (usually prewarmed) server's spawn-time state
-                # predates the mount. Its next thread/start or resume fails
-                # "-32600: failed to load configuration" (every first codex
-                # turn on the GKE hub, 2026-09-01). Respawn against the current
-                # workspace instead; a cold spawn is ~250ms against the 1-5s
-                # API leg, and _spawn rewrites auth.json and config.toml.
+                # The live app-server's CODEX_HOME is gone or has been swapped
+                # under it: this VM was relit with a fresh workspace volume
+                # mounted under the same path, so the parked (usually
+                # prewarmed) server's spawn-time state predates the mount. Its
+                # next thread/start or resume fails "-32600: failed to load
+                # configuration" (every first codex turn on the GKE hub,
+                # 2026-09-01). Respawn against the current workspace instead; a
+                # cold spawn is ~250ms against the 1-5s API leg, and _spawn
+                # rewrites auth.json and config.toml.
                 self._close_process(kill=False)
                 process = None
             if process is None or process.poll() is not None:
@@ -3093,33 +3172,62 @@ url = %s
                 process = self._spawn()
                 requested_session = session_id or self.session_id
                 cli_ready_path = "lazy_spawn"
-            if requested_session and (
-                requested_session not in self._server_threads
-                or requested_session != self.session_id
-            ):
-                # Resume repeats the developer instructions so a restarted
-                # app-server thread receives the same prompt without duplication.
-                self._resume(requested_session, system_prompt=system_prompt)
-                if cli_ready_path is None and process_was_unbound:
-                    cli_ready_path = "adopt"
-            elif not requested_session:
-                result = self._request(
-                    "thread/start",
-                    {
-                        "cwd": self.workspace,
-                        "approvalPolicy": "never",
-                        "sandbox": "danger-full-access",
-                        "developerInstructions": compose_system_prompt(
-                            system_prompt,
-                            agent_mcp_configured=self._agent_mcp_configured,
-                        ),
-                    },
+
+            def _bind_thread(path):
+                """Resume or start the app-server thread; returns cli_ready_path."""
+                if requested_session and (
+                    requested_session not in self._server_threads
+                    or requested_session != self.session_id
+                ):
+                    # Resume repeats the developer instructions so a restarted
+                    # app-server thread receives the same prompt without duplication.
+                    self._resume(requested_session, system_prompt=system_prompt)
+                    if path is None and process_was_unbound:
+                        return "adopt"
+                elif not requested_session:
+                    result = self._request(
+                        "thread/start",
+                        {
+                            "cwd": self.workspace,
+                            "approvalPolicy": "never",
+                            "sandbox": "danger-full-access",
+                            "developerInstructions": compose_system_prompt(
+                                system_prompt,
+                                agent_mcp_configured=self._agent_mcp_configured,
+                            ),
+                        },
+                    )
+                    thread = (
+                        result.get("thread", {}) if isinstance(result, dict) else {}
+                    )
+                    self.session_id = (
+                        thread.get("id") if isinstance(thread, dict) else None
+                    )
+                    self._server_threads.add(self.session_id)
+                    if path is None and process_was_unbound:
+                        return "adopt"
+                return path
+
+            try:
+                cli_ready_path = _bind_thread(cli_ready_path)
+            except RuntimeError as error:
+                if not _is_codex_config_error(error):
+                    raise
+                # The guards above did not catch this swap: an identity that
+                # did not move, or a .codex that exists but is not the one this
+                # server loaded. The app-server stays wedged on stale config
+                # for every later turn, so bind once against a fresh one rather
+                # than failing every turn the way the hub did for 16 turns over
+                # two weeks. _spawn resets _server_threads, so the retry
+                # resumes the thread rather than skipping the bind.
+                sys.stderr.write(
+                    "ember-claude-shim: codex config error, respawning: %s\n" % error
                 )
-                thread = result.get("thread", {}) if isinstance(result, dict) else {}
-                self.session_id = thread.get("id") if isinstance(thread, dict) else None
-                self._server_threads.add(self.session_id)
-                if cli_ready_path is None and process_was_unbound:
-                    cli_ready_path = "adopt"
+                sys.stderr.flush()
+                self._close_process(kill=False)
+                process = self._spawn()
+                requested_session = session_id or self.session_id
+                cli_ready_path = _bind_thread("lazy_spawn")
             if cli_ready_path is None:
                 cli_ready_path = "reuse"
             with self._write_lock:
@@ -3235,10 +3343,18 @@ url = %s
                             error = turn.get("error", "Codex turn failed")
                             if isinstance(error, dict):
                                 error = error.get("message", error)
-                            raise RuntimeError(
-                                "Codex turn failed: %s\n%s"
-                                % (error, _truncate_ring_for_error(self.stderr_lines))
+                            detail = "Codex turn failed: %s\n%s" % (
+                                error,
+                                _truncate_ring_for_error(self.stderr_lines),
                             )
+                            # Classify on the provider's own message, never on
+                            # the stderr ring: the ring carries up to five
+                            # lines from earlier in the process's life, and a
+                            # stale "connection reset" in it would mark a
+                            # deterministic failure retryable.
+                            if _is_transient_turn_failure(error):
+                                raise TransientTurnError(detail)
+                            raise RuntimeError(detail)
                         terminal_reason = (
                             "user_interrupt" if status == "interrupted" else "completed"
                         )
@@ -3870,6 +3986,11 @@ class MuseProcess:
         stderr = _truncate_ring_for_error(self.stderr_lines)
         if stderr:
             error_msg += "\nCLI stderr:\n%s" % stderr
+        # Here stderr IS the only evidence of the cause: muse exits non-zero
+        # with the reason on stderr and nothing on stdout, which is how
+        # "failed to fetch model catalog" reached callers as a bare 422.
+        if _is_transient_turn_failure(stderr):
+            return TransientTurnError(error_msg)
         return RuntimeError(error_msg)
 
     def _collect_usage(self, command_id, expected_completions):
@@ -4886,6 +5007,14 @@ class PiProcess:
                                 self._poisoned_sessions.add(self.session_id)
                             self._close_process(kill=True)
                             self.session_id = None
+                            # The session is already poisoned and cleared above,
+                            # so a retry starts a fresh pi session rather than
+                            # resurrecting this one (see the poisoned-session
+                            # branch in turn()). That makes the retry safe.
+                            if _is_transient_turn_failure(error_detail):
+                                raise TransientTurnError(
+                                    "pi turn produced no output: %s" % error_detail
+                                )
                             raise RuntimeError(
                                 "pi turn produced no output: %s" % error_detail
                             )
@@ -5699,6 +5828,11 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             sys.stderr.write(str(exc) + "\n")
             sys.stderr.flush()
             self._send(503, {"error": str(exc)})
+        except TransientTurnError as exc:
+            # Same 422 as the catch-all below, plus the one bit the caller
+            # cannot derive for itself. Status stays 422 so nothing that keys
+            # off the code changes; only the body grows a field.
+            self._send(422, {"error": str(exc), "retryable": True})
         except Exception as exc:
             self._send(422, {"error": str(exc)})
         else:

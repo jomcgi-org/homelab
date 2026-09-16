@@ -1638,6 +1638,75 @@ def test_deliver_does_not_retry_reused_session_on_422(monkeypatch):
     assert create_calls == 0
 
 
+def test_deliver_retries_reused_session_on_retryable_422(monkeypatch):
+    """A shim-classified transient 422 is retried on the SAME warm session.
+
+    The shim is the only layer that can tell a provider blip from a missing
+    config file: EmberVM proxies a guest response verbatim and runs no retry of
+    its own on the session lane, so the flag in the body is the whole contract.
+    Retrying here costs one more turn against a live session. Letting it
+    through costs the factory an entire node attempt on a fresh VM, and leaves
+    the run parked `uncertain` while stop-supervision is off.
+    """
+    requests = []
+    create_calls = 0
+    sleeps = []
+
+    async def handler(request):
+        requests.append(request)
+        if len(requests) == 1:
+            return _error_response(request, 422, True)
+        return _turn_response(request)
+
+    async def create_session(model=None):
+        nonlocal create_calls
+        create_calls += 1
+        return transport.EmberSession("s2", "t2", None)
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    _client(monkeypatch, handler)
+    monkeypatch.setattr(transport.asyncio, "sleep", fake_sleep)
+    client = transport.EmberVmShimTransport()
+    monkeypatch.setattr(client, "create_session", create_session)
+    turn, _ = asyncio.run(
+        client.deliver(transport.EmberSession("s1", "t1", None), "cli-1", "hello")
+    )
+
+    assert turn.result == "ok"
+    assert len(requests) == 2
+    # Same session throughout: a transient 422 is not a dead binding, so it
+    # must not fall into the 403/410 recreate path.
+    assert create_calls == 0
+    assert sleeps == [2]
+
+
+def test_deliver_gives_up_after_the_retryable_422_ladder_is_exhausted(monkeypatch):
+    requests = []
+    sleeps = []
+
+    async def handler(request):
+        requests.append(request)
+        return _error_response(request, 422, True)
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    _client(monkeypatch, handler)
+    monkeypatch.setattr(transport.asyncio, "sleep", fake_sleep)
+    client = transport.EmberVmShimTransport()
+    with pytest.raises(EmberVMTransportError):
+        asyncio.run(
+            client.deliver(transport.EmberSession("s1", "t1", None), "cli-1", "hello")
+        )
+
+    # Bounded at eight attempts and seven sleeps. An outage that outlasts about
+    # two minutes fails the turn rather than holding the caller indefinitely.
+    assert len(requests) == 8
+    assert sleeps == [2, 5, 10, 20, 30, 30, 30]
+
+
 def test_deliver_does_not_retry_reused_session_on_404(monkeypatch):
     requests = []
     create_calls = 0
