@@ -95,9 +95,9 @@ defmodule Embervm.StatefulSweeperTest do
 
   # An Embervm.OpLog backend that delegates every callback to the real SQLite
   # backend EXCEPT append/2 for a :generation_blessed op, which it fails
-  # unconditionally. Used to exercise plan_resolve_blessing/3's
+  # unconditionally. Used to exercise plan_resolve_blessing/4's
   # bless_generation-fails-so-force-COMMIT branch (StatefulSweeper.ex's
-  # `defp plan_resolve_blessing(state, workload, :abort)`): the sweeper's own
+  # `defp plan_resolve_blessing(state, workload, :abort, checkpoint_generation)`): the sweeper's own
   # StatefulStore is a real GenServer whose op_log_mod is dispatched per-call
   # (see StatefulStore's moduledoc), so swapping ONLY this module in for the
   # workload's StatefulStore reproduces a genuine op-log append failure exactly
@@ -174,7 +174,7 @@ defmodule Embervm.StatefulSweeperTest do
     # bless_generation append failure (rather than the idempotent
     # at-or-below-watermark no-op, which is NOT an error) injects
     # FailingBlessOpLog here, exercising StatefulSweeper's
-    # plan_resolve_blessing/3 force-commit branch through the real call path.
+    # plan_resolve_blessing/4 force-commit branch through the real call path.
     store_op_log_mod = Keyword.get(opts, :store_op_log_mod, SQLite)
 
     {:ok, store} =
@@ -232,7 +232,7 @@ defmodule Embervm.StatefulSweeperTest do
             {:ok, %ResolveStatefulResponse{snapshot_ref: "snap-#{req.vm_id}", generation: 2, size_bytes: 8_192}}
 
           :RESOLVE_MODE_ABORT ->
-            {:ok, %ResolveStatefulResponse{}}
+            {:ok, %ResolveStatefulResponse{generation: req.blessed_generation}}
         end
       end
     end
@@ -1222,14 +1222,14 @@ defmodule Embervm.StatefulSweeperTest do
 
     wait_until(ctx, fn -> match?({:ok, %{state: :serving}}, StatefulStore.get(ctx.store, "sf-1")) end)
 
-    # The captured ResolveStateful request carries the blessed generation (1, the
-    # first blessing for a never-blessed workload), not 0.
-    assert [%{mode: :RESOLVE_MODE_ABORT, vm_id: "vm-1", blessed_generation: 1}] = resolve_calls(ctx)
+    # The checkpoint was taken at generation 1, so the captured request carries
+    # generation 2 even though the blessing watermark was previously absent.
+    assert [%{mode: :RESOLVE_MODE_ABORT, vm_id: "vm-1", blessed_generation: 2}] = resolve_calls(ctx)
 
     # The store's blessing watermark advanced to what was dispatched, and a
-    # SECOND abort cycle blesses the NEXT generation past it (2), proving the
+    # SECOND abort cycle blesses the NEXT generation past it (3), proving the
     # watermark is durable across cycles, not just threaded once.
-    assert StatefulStore.next_blessed_generation(ctx.store, "wl-i") == 2
+    assert StatefulStore.next_blessed_generation(ctx.store, "wl-i") == 3
 
     advance(ctx.clock_agent, 5_000)
     set_scrape(ctx, reading(prefix, 0, 3))
@@ -1240,8 +1240,8 @@ defmodule Embervm.StatefulSweeperTest do
 
     wait_until(ctx, fn -> length(resolve_calls(ctx)) >= 2 end)
 
-    assert [_first, %{mode: :RESOLVE_MODE_ABORT, blessed_generation: 2}] = resolve_calls(ctx)
-    assert StatefulStore.next_blessed_generation(ctx.store, "wl-i") == 3
+    assert [_first, %{mode: :RESOLVE_MODE_ABORT, blessed_generation: 3}] = resolve_calls(ctx)
+    assert StatefulStore.next_blessed_generation(ctx.store, "wl-i") == 4
   end
 
   test "a COMMIT resolve does NOT bless: the watermark is unchanged and the request carries blessed_generation 0" do
@@ -1305,13 +1305,13 @@ defmodule Embervm.StatefulSweeperTest do
     # A stale/lower-generation collision against StatefulStore.bless_generation/3
     # is NOT an error (the store's monotonicity guard treats it as an idempotent
     # no-op returning {:ok, fact}; see StatefulStore's handle_call({:bless_generation,
-    # ...}) clause), so it cannot be used to trigger plan_resolve_blessing/3's
+    # ...}) clause), so it cannot be used to trigger plan_resolve_blessing/4's
     # {:error, reason} branch. The only way bless_generation/3 genuinely returns
     # {:error, _} is an op-log append failure. FailingBlessOpLog fails exactly
     # (only) the :generation_blessed append, through the real StatefulStore call
     # path (state.store here is a real StatefulStore GenServer, just backed by a
     # failing op-log for this one op kind), so this reproduces the real failure
-    # StatefulSweeper.plan_resolve_blessing/3 must recover from, not an artificial
+    # StatefulSweeper.plan_resolve_blessing/4 must recover from, not an artificial
     # short-circuit.
     ctx = start_stack(store_op_log_mod: FailingBlessOpLog)
     prefix = prime_idle_interruptible(ctx, "wl-i", 5400, "sf-1", "vm-1")
@@ -1327,7 +1327,7 @@ defmodule Embervm.StatefulSweeperTest do
     wait_until(ctx, fn -> match?({:ok, %{state: :banked}}, StatefulStore.get(ctx.store, "sf-1")) end)
 
     # Forced COMMIT despite parked==true: no generation was blessed to abort with,
-    # so plan_resolve_blessing/3 refuses to dispatch an unblessed abort and falls
+    # so plan_resolve_blessing/4 refuses to dispatch an unblessed abort and falls
     # back to the always-ledger-safe COMMIT.
     assert [%{mode: :RESOLVE_MODE_COMMIT, blessed_generation: 0}] = resolve_calls(ctx)
 
@@ -1337,6 +1337,34 @@ defmodule Embervm.StatefulSweeperTest do
     # The watermark never advanced (the append failed): still 1 for the very
     # first bless attempt of this never-blessed workload.
     assert StatefulStore.next_blessed_generation(ctx.store, "wl-i") == 1
+  end
+
+  test "an ABORT response at the wrong generation is not confirmed as success" do
+    ctx = start_stack()
+    prefix = prime_idle_interruptible(ctx, "wl-i", 5400, "sf-1", "vm-1")
+
+    set_parked(ctx, true)
+
+    :sys.replace_state(ctx.sweeper, fn state ->
+      %{
+        state
+        | resolve_stateful_fun: fn _channel, _request ->
+            {:ok, %ResolveStatefulResponse{generation: 999}}
+          end
+      }
+    end)
+
+    advance(ctx.clock_agent, 65_000)
+    set_scrape(ctx, reading(prefix, 0, 3))
+    StatefulSweeper.sweep(ctx.sweeper)
+
+    wait_until(ctx, fn -> match?({:ok, %{state: :failed}}, StatefulStore.get(ctx.store, "sf-1")) end)
+
+    assert length(load_ops(ctx, "checkpoint_dispatched")) == 1
+    assert load_ops(ctx, "checkpoint_resolved") == []
+    assert load_ops(ctx, "stateful_failed") != []
+    _ = :sys.get_state(ctx.fake_mgr)
+    assert resolved_notes(ctx) == []
   end
 
   test "flap guard: at the abort threshold the next cycle FORCES COMMIT even though parked, and resets the counter" do
@@ -1377,6 +1405,9 @@ defmodule Embervm.StatefulSweeperTest do
     {:ok, failed} = StatefulStore.get(ctx.store, "sf-1")
     assert failed.state == :failed
     assert load_ops(ctx, "stateful_failed") != []
+    assert load_ops(ctx, "checkpoint_resolved") == []
+    _ = :sys.get_state(ctx.fake_mgr)
+    assert resolved_notes(ctx) == []
   end
 
   test "a resolve rejected FAILED_PRECONDITION (noded auto-aborted first) reconciles to serving, not failed (ADR 008)" do

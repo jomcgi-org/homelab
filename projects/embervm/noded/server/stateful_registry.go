@@ -233,6 +233,20 @@ func (r *statefulRegistry) claimResolve(id, token string) (*statefulEntry, bool)
 	return e, true
 }
 
+// resolveGeneration returns the generation of the checkpoint identified by the
+// exact vm_id and token without consuming its single-resolve ownership. The RPC
+// handler uses it to reject an absent, unblessed, or stale ABORT authorization
+// before claimResolve stops the recovery timer and clears the token.
+func (r *statefulRegistry) resolveGeneration(id, token string) (uint64, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e := r.vms[id]
+	if e == nil || e.checkpointToken == "" || e.checkpointToken != token {
+		return 0, false
+	}
+	return e.generation, true
+}
+
 // resumeFromCheckpoint returns a checkpoint-aborted VM to serving: it updates the
 // generation to the post-abort bump and clears the stop-in-flight guard (the
 // token was already cleared by claimResolve). The probe kept running across the

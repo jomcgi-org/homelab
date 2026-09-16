@@ -1729,7 +1729,7 @@ defmodule Embervm.StatefulSweeper do
         _ = StatefulStore.record_checkpoint_dispatch(state.store, workload, vm_id, generation)
 
         {mode, state} = decide_resolve(state, workload)
-        {mode, blessed_generation, state} = plan_resolve_blessing(state, workload, mode)
+        {mode, blessed_generation, state} = plan_resolve_blessing(state, workload, mode, generation)
         spawn_resolve_worker(state, instance_id, node_id, vm_id, ip, port, workload, token, mode, blessed_generation)
         state
 
@@ -1831,8 +1831,8 @@ defmodule Embervm.StatefulSweeper do
   # commit invents no generation and is always ledger-safe (the parked caller
   # relights, slightly colder, off the fresh bundle). COMMIT needs no blessing (it
   # publishes the already-blessed boot generation).
-  defp plan_resolve_blessing(state, workload, :abort) do
-    next = StatefulStore.next_blessed_generation(state.store, workload)
+  defp plan_resolve_blessing(state, workload, :abort, checkpoint_generation) do
+    next = max(StatefulStore.next_blessed_generation(state.store, workload), checkpoint_generation + 1)
 
     case StatefulStore.bless_generation(state.store, workload, next) do
       {:ok, _fact} ->
@@ -1848,7 +1848,7 @@ defmodule Embervm.StatefulSweeper do
     end
   end
 
-  defp plan_resolve_blessing(state, _workload, :commit), do: {:commit, 0, state}
+  defp plan_resolve_blessing(state, _workload, :commit, _checkpoint_generation), do: {:commit, 0, state}
 
   # The resolve worker: ResolveStateful(vm_id, token, mode) off the GenServer (it
   # can take seconds: a commit publishes the bundle, an abort resumes the VM).
@@ -1875,7 +1875,7 @@ defmodule Embervm.StatefulSweeper do
           try do
             case over_channel(channel_fun, invalidate_fun, dial_key, &resolve_fun.(&1, resolve_request(vm_id, token, mode, blessed_generation))) do
               {:ok, %ResolveStatefulResponse{} = resp} ->
-                {:ok, resp}
+                validate_resolve_response(mode, blessed_generation, resp)
 
               other ->
                 {:error, other}
@@ -1890,6 +1890,18 @@ defmodule Embervm.StatefulSweeper do
       send(owner, {:resolve_done, instance_id, node_id, vm_id, ip, port, workload, mode, outcome})
     end)
   end
+
+  defp validate_resolve_response(:abort, expected_generation, %ResolveStatefulResponse{generation: actual_generation} = resp) do
+    if expected_generation > 0 and actual_generation == expected_generation do
+      {:ok, resp}
+    else
+      {:error,
+       {:abort_generation_mismatch,
+        %{expected_generation: expected_generation, actual_generation: actual_generation}}}
+    end
+  end
+
+  defp validate_resolve_response(:commit, _expected_generation, %ResolveStatefulResponse{} = resp), do: {:ok, resp}
 
   defp resolve_request(vm_id, token, mode, blessed_generation) do
     %ResolveStatefulRequest{

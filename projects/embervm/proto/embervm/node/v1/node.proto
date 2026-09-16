@@ -1013,8 +1013,9 @@ message ResolveStatefulRequest {
   // must advance; recording the CP-blessed value (RecordBlessed) instead of a
   // legacy self-bump keeps genFile == blessedFile so the node reports
   // generation_blessed:true and the volume is never falsely quarantined. Zero
-  // means the legacy self-bump lane (only the node's own resolve-timeout
-  // auto-abort, where no control plane is reachable to issue a generation).
+  // is rejected on this RPC. The node's own resolve-timeout auto-abort is the
+  // only legacy self-bump lane and invokes the internal abort path directly when
+  // no control plane is reachable to issue a generation.
   // COMMIT ignores this field (it publishes the already-blessed boot generation).
   uint64 blessed_generation = 5;
 }
