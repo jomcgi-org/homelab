@@ -6122,7 +6122,9 @@ def test_egress_forwarder_reaps_completed_lingering_git_tunnel_before_second(
         second_client.sendall(b"CONNECT example.com:443 HTTP/1.1\r\n\r\n")
         second_peer, second_closed = wait_for_pair(1)
         closed_within_bound = first_closed.wait(1)
-        assert closed_within_bound, "completed tunnel A remained open past cleanup bound"
+        assert closed_within_bound, (
+            "completed tunnel A remained open past cleanup bound"
+        )
 
         preamble = b"example.com:443\n"
         assert second_peer.recv(len(preamble)) == preamble
@@ -6130,9 +6132,7 @@ def test_egress_forwarder_reaps_completed_lingering_git_tunnel_before_second(
         assert second_client.recv(len(established)) == established
         second_client.sendall(b"request-b")
         assert second_peer.recv(len(b"request-b")) == b"request-b"
-        _finish_proxy_tunnel(
-            second_client, second_peer, second_closed, b"response-b"
-        )
+        _finish_proxy_tunnel(second_client, second_peer, second_closed, b"response-b")
         second_client = second_peer = None
     finally:
         if first_client is not None:
