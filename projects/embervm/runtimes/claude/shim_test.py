@@ -2,6 +2,7 @@
 
 import ast
 import base64
+import collections
 import copy
 import datetime
 import hashlib
@@ -334,6 +335,25 @@ assert sys.argv[1] == "app-server"
 
 rpc_path = os.environ.get("FAKE_CODEX_RPC")
 scenario = os.environ.get("FAKE_CODEX_SCENARIO", "")
+config_fail_path = os.environ.get("FAKE_CODEX_CONFIG_FAIL_ONCE")
+turn_failure = os.environ.get("FAKE_CODEX_TURN_FAILURE", "")
+
+def config_error_now():
+    # Cross-process latch: the FIRST app-server to bind a thread fails with the
+    # real -32600, every later one succeeds. A respawn is a new process with
+    # the same env, so the latch has to live on disk rather than in memory.
+    if not config_fail_path:
+        return False
+    if os.path.exists(config_fail_path):
+        return False
+    with open(config_fail_path, "w") as stream:
+        stream.write("failed")
+    return True
+
+CONFIG_ERROR = {
+    "code": -32600,
+    "message": "failed to load configuration: No such file or directory (os error 2)",
+}
 
 def record(value):
     if rpc_path:
@@ -368,11 +388,17 @@ for line in sys.stdin:
         response({"id": None}, error={"code": -32000, "message": "server request denied"})
         continue
     if method == "thread/start":
+        if config_error_now():
+            response(request, error=CONFIG_ERROR)
+            continue
         response(request, {"thread": {"id": "codex-thread"}, "model": "gpt-5.6-luna", "cwd": "/workspace"})
         emit({"jsonrpc": "2.0", "method": "thread/started", "params": {"thread": {"id": "codex-thread"}}})
     elif method == "thread/resume":
         params = request.get("params", {})
         thread_id = params.get("threadId")
+        if config_error_now():
+            response(request, error=CONFIG_ERROR)
+            continue
         if scenario == "resume-not-found-no-path":
             response(request, error={"code": -32004, "message": "thread not found"})
         else:
@@ -381,6 +407,9 @@ for line in sys.stdin:
     elif method == "turn/start":
         params = request.get("params", {})
         emit({"jsonrpc": "2.0", "method": "turn/started", "params": {"turn": {"id": "turn-1"}}})
+        if turn_failure:
+            emit({"jsonrpc": "2.0", "method": "turn/completed", "params": {"turn": {"id": "turn-1", "status": "failed", "error": {"message": turn_failure}}}})
+            continue
         if scenario == "death-mid-turn":
             print("fake codex died mid-turn", file=sys.stderr, flush=True)
             sys.exit(17)
@@ -2131,6 +2160,171 @@ def test_codex_resume_failure_raises_with_error(tmp_path, monkeypatch):
     assert session_id in error
     assert "thread not found" in error
     manager._close_process()
+
+
+# The strings are real response bodies, taken from the monolith's exception
+# spans for the 14 days to 2026-09-16 (40 events). Their distribution is the
+# reason the classifier is an allowlist rather than "4xx means try again": 16
+# were a missing config file, 8 a missing binary, 11 an unreachable model
+# catalog, and exactly one was the stream disconnect a retry clears.
+@pytest.mark.parametrize(
+    "message, transient",
+    [
+        (
+            "Codex turn failed: stream disconnected before completion: error "
+            "sending request for url (http://chatgpt.com/backend-api/codex/responses)",
+            True,
+        ),
+        (
+            "Codex turn failed: Selected model is at capacity. "
+            "Please try a different model.",
+            True,
+        ),
+        (
+            "failed to fetch model catalog: transport error: error sending "
+            "request for url (https://api.meta.ai/muse-code/models)",
+            True,
+        ),
+        # Deterministic: the next attempt reproduces these exactly.
+        (
+            "-32600: failed to load configuration: No such file or directory "
+            "(os error 2)",
+            False,
+        ),
+        ("[Errno 2] No such file or directory: 'muse'", False),
+        (
+            "muse: cron store backend error: local timezone could not be determined",
+            False,
+        ),
+        # Pinned open for hours, so no bounded ladder outlasts it.
+        (
+            "Codex turn failed: You've hit your usage limit. Visit "
+            "https://chatgpt.com/codex/settings/usage to purchase more credits "
+            "or try again at Sep 15th, 2026 1:25 AM.",
+            False,
+        ),
+        # A persistent marker WINS over a transport marker in the same message,
+        # which is the whole reason the persistent list is checked first.
+        ("usage limit reached: error sending request for url (...)", False),
+        ("", False),
+        (None, False),
+    ],
+)
+def test_transient_turn_failure_classification(message, transient):
+    assert shim._is_transient_turn_failure(message) is transient
+
+
+def test_codex_config_error_detection():
+    # _resume wraps the RPC error in its own message, so the test has to match
+    # the wrapped shape and not just a bare code.
+    assert shim._is_codex_config_error(
+        "unable to resume session codex-thread: -32600: failed to load "
+        "configuration: No such file or directory (os error 2)"
+    )
+    assert not shim._is_codex_config_error("-32004: thread not found")
+    # Both halves are required: a config phrase without the code is some other
+    # failure, and -32600 alone is a generic invalid request.
+    assert not shim._is_codex_config_error("failed to load configuration")
+    assert not shim._is_codex_config_error("-32600: invalid request")
+    assert not shim._is_codex_config_error(None)
+
+
+def test_codex_transient_turn_failure_raises_transient_error(tmp_path, monkeypatch):
+    monkeypatch.setenv(
+        "FAKE_CODEX_TURN_FAILURE",
+        "stream disconnected before completion: error sending request for url "
+        "(http://chatgpt.com/backend-api/codex/responses)",
+    )
+    manager = _codex_manager(tmp_path, monkeypatch)
+    with pytest.raises(shim.TransientTurnError) as exc_info:
+        manager.turn("first", model="luna")
+    assert "stream disconnected" in str(exc_info.value)
+    manager._close_process()
+
+
+def test_codex_usage_limit_turn_failure_is_not_transient(tmp_path, monkeypatch):
+    monkeypatch.setenv(
+        "FAKE_CODEX_TURN_FAILURE",
+        "You've hit your usage limit. Visit "
+        "https://chatgpt.com/codex/settings/usage to purchase more credits or "
+        "try again at Sep 15th, 2026 1:25 AM.",
+    )
+    manager = _codex_manager(tmp_path, monkeypatch)
+    with pytest.raises(RuntimeError) as exc_info:
+        manager.turn("first", model="luna")
+    assert not isinstance(exc_info.value, shim.TransientTurnError)
+    manager._close_process()
+
+
+def test_codex_config_error_respawns_and_completes_the_turn(tmp_path, monkeypatch):
+    monkeypatch.setenv(
+        "FAKE_CODEX_CONFIG_FAIL_ONCE", str(tmp_path / "codex-config-failed")
+    )
+    manager = _codex_manager(tmp_path, monkeypatch)
+    record = manager.turn("first", model="luna")
+
+    assert record["terminal_reason"] == "completed"
+    assert manager.session_id == "codex-thread"
+    methods = [
+        json.loads(line)["method"]
+        for line in (tmp_path / "codex-rpc.jsonl").read_text().splitlines()
+    ]
+    # Two app-servers: the first failed thread/start on stale config, the second
+    # bound cleanly. Before this the turn died as a bare 422, 16 times in 14 days.
+    assert methods.count("initialize") == 2
+    assert methods.count("thread/start") == 2
+    manager._close_process()
+
+
+def test_codex_replaced_workspace_respawns_before_binding(tmp_path, monkeypatch):
+    manager = _codex_manager(tmp_path, monkeypatch)
+    manager.turn("first", model="luna")
+    first_process = manager.process
+    identity = manager._process_workspace_identity
+    assert identity is not None
+
+    # A relit VM mounts a NEW volume at the same path that already carries a
+    # .codex, so the isdir guard is satisfied while the live server still holds
+    # the pre-mount inode. Only the identity compare catches that.
+    assert os.path.isdir(os.path.join(manager.workspace, ".codex"))
+    manager._process_workspace_identity = (identity[0], identity[1] + 1)
+
+    manager.turn("second", model="luna")
+    assert manager.process is not first_process
+    assert manager.process.poll() is None
+    manager._close_process()
+
+
+def test_codex_unchanged_workspace_does_not_respawn(tmp_path, monkeypatch):
+    # The guard above must not fire on the ordinary second turn: a respawn per
+    # turn would throw away the app-server's warm thread every time.
+    manager = _codex_manager(tmp_path, monkeypatch)
+    manager.turn("first", model="luna")
+    first_process = manager.process
+    manager.turn("second", model="luna")
+    assert manager.process is first_process
+    manager._close_process()
+
+
+def test_muse_catalog_failure_is_transient(tmp_path, monkeypatch):
+    manager = _muse_manager(tmp_path, monkeypatch)
+    manager._stderr_thread = None
+    # muse exits non-zero with the cause on stderr and nothing on stdout, so
+    # stderr is the only evidence _empty_stream_error has to classify on.
+    manager.stderr_lines = collections.deque(
+        ["failed to fetch model catalog: transport error: error sending request"],
+        maxlen=5,
+    )
+    assert isinstance(manager._empty_stream_error(None), shim.TransientTurnError)
+
+
+def test_muse_failure_without_a_known_cause_is_not_transient(tmp_path, monkeypatch):
+    manager = _muse_manager(tmp_path, monkeypatch)
+    manager._stderr_thread = None
+    manager.stderr_lines = collections.deque(["run ended with Failed"], maxlen=5)
+    error = manager._empty_stream_error(None)
+    assert isinstance(error, RuntimeError)
+    assert not isinstance(error, shim.TransientTurnError)
 
 
 def test_codex_turn_parameters_per_model(tmp_path, monkeypatch):
@@ -7220,6 +7414,37 @@ def test_cli_crash_is_422(tmp_path, monkeypatch):
             server, "POST", shim.TURN_PATH, json.dumps({"message": "hi"}).encode()
         )
         assert status == 422 and "crashed" in body["error"]
+        # The default is unchanged and stays unchanged: a cause the shim did
+        # not positively classify must not invite a retry, because the caller
+        # reads the absence of this key as "do not retry".
+        assert "retryable" not in body
+    finally:
+        manager._spawn = original
+        server.shutdown()
+        server.server_close()
+
+
+def test_transient_turn_error_is_422_with_retryable_flag(tmp_path, monkeypatch):
+    manager = _manager(tmp_path, monkeypatch)
+    original = manager._spawn
+
+    def transient_spawn(session_id=None, first_message=None, model=None, **_kwargs):
+        raise shim.TransientTurnError(
+            "Codex turn failed: stream disconnected before completion"
+        )
+
+    manager._spawn = transient_spawn
+    server = _run_server(manager)
+    try:
+        status, body = _request(
+            server, "POST", shim.TURN_PATH, json.dumps({"message": "hi"}).encode()
+        )
+        # Status stays 422 so nothing keyed off the code moves; the body grows
+        # the one bit the caller cannot derive for itself. EmberVM proxies a
+        # guest response verbatim, so this body is the only place to say it.
+        assert status == 422
+        assert body["retryable"] is True
+        assert "stream disconnected" in body["error"]
     finally:
         manager._spawn = original
         server.shutdown()
