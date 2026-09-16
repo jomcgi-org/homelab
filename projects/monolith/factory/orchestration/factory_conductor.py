@@ -1792,8 +1792,20 @@ def _post_decision_card(repo: str, number: int, marker: str, body: str) -> str |
     return created.get("html_url") if isinstance(created, dict) else None
 
 
-def _record_escalation(task_id: str, document: dict, issue_body: object) -> None:
+_RECEIPT_BODY = object()
+
+
+def _record_escalation(
+    task_id: str, document: dict, issue_body: object = _RECEIPT_BODY
+) -> None:
     """Write the escalation document onto the receipt, superseding the last.
+
+    ``issue_body`` defaults to the receipt's own stored text, for callers that
+    must not read GitHub on their path. It is the same text revalidation falls
+    back to when a card carries no hash, so the recorded hash still matches
+    what the checker computes. Passing None instead would hash the empty
+    string, which is a real value that defeats that fallback and retires the
+    escalation on the next revalidation pass.
 
     A document an operator already resolved is not discarded: it moves to
     ``history`` and the new one takes its place. A receipt is re-admitted
@@ -1812,6 +1824,8 @@ def _record_escalation(task_id: str, document: dict, issue_body: object) -> None
         ).first()
         if row is None:
             return
+        if issue_body is _RECEIPT_BODY:
+            issue_body = row.body
         document["issue_body_sha256"] = issue_body_hash(issue_body)
         stored = json.loads(row.escalation_json) if row.escalation_json else None
         if stored is not None:
@@ -5081,6 +5095,8 @@ def _expire_task_deadline(task: dict) -> bool:
             logger.exception(
                 "factory deadline backstop card failed for task %s", task_id
             )
+    # No issue_body: the release must not wait on GitHub, so the receipt's own
+    # stored text is what the hash is taken over. See _record_escalation.
     _record_escalation(task_id, document)
 
     # Every refusal below returns from inside the block, so a partly applied
