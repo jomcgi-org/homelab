@@ -41,6 +41,13 @@ GIT_DAEMON_PORT = "9418"
 EGRESS_VSOCK_CONNECT_TIMEOUT_SECONDS = 5.0
 EGRESS_VSOCK_CONNECT_ATTEMPTS = 3
 EGRESS_VSOCK_CONNECT_BACKOFF_SECONDS = 0.2
+# Port 9418 cannot propagate a client half-close onto Firecracker's hybrid
+# vsock stream, so completion is the first response-idle window after the
+# client upload ends. This matches the git helper's existing 2 second response
+# completion window with one second of scheduling margin. Closing the full
+# stream at this bound releases the muxer before another lane connection starts.
+EGRESS_GIT_TUNNEL_IDLE_CLOSE_SECONDS = 3.0
+EGRESS_TUNNEL_JOIN_POLL_SECONDS = 0.1
 VSOCK_ADDRESS_FAMILY = getattr(socket, "AF_VSOCK", -1)
 HEALTHZ_PATH = "/shim/healthz"
 READY_PATH = "/shim/ready"
@@ -1604,7 +1611,14 @@ class VsockEgressForwarder:
             threading.Thread(target=self._forward, args=(client,), daemon=True).start()
 
     @staticmethod
-    def _copy(source, destination, direction=None, *, propagate_half_close=True):
+    def _copy(
+        source,
+        destination,
+        direction=None,
+        *,
+        propagate_half_close=True,
+        last_activity=None,
+    ):
         total_bytes = 0
         next_boundary = 1024 * 1024
         error = None
@@ -1628,6 +1642,8 @@ class VsockEgressForwarder:
                 if not data:
                     return
                 destination.sendall(data)
+                if last_activity is not None:
+                    last_activity[0] = time.monotonic()
                 total_bytes += len(data)
                 while direction is not None and total_bytes >= next_boundary:
                     write_progress(str(next_boundary))
@@ -1748,23 +1764,57 @@ class VsockEgressForwarder:
             # Suppression is scoped to the git daemon port because git:// is
             # the one protocol here that half-closes mid-exchange and then
             # expects a large response; its server never needs the EOF (the
-            # response ends via flush-pkt) and the leaked tunnel is bounded by
-            # the VM's lifetime. Everything else (HTTPS CONNECT) only closes
-            # when the exchange is over, and keeping the propagation there is
-            # what tears those tunnels down promptly.
+            # response ends via flush-pkt). The response-idle cleanup below
+            # closes the full stream after completion. Everything else (HTTPS
+            # CONNECT) only closes when the exchange is over, and keeping the
+            # propagation there is what tears those tunnels down promptly.
             half_close_upstream = not host_port.endswith(":" + GIT_DAEMON_PORT)
+            last_down_activity = [time.monotonic()]
             copies = [
                 threading.Thread(
                     target=self._copy,
                     args=(client, upstream, "up"),
                     kwargs={"propagate_half_close": half_close_upstream},
+                    daemon=True,
                 ),
-                threading.Thread(target=self._copy, args=(upstream, client, "down")),
+                threading.Thread(
+                    target=self._copy,
+                    args=(upstream, client, "down"),
+                    kwargs={"last_activity": last_down_activity},
+                    daemon=True,
+                ),
             ]
             for copy_thread in copies:
                 copy_thread.start()
-            for copy_thread in copies:
-                copy_thread.join()
+            if half_close_upstream:
+                for copy_thread in copies:
+                    copy_thread.join()
+            else:
+                # The git upload pump ends as soon as git half-closes its small
+                # request. Keep the response pump alive while bytes arrive, then
+                # close the whole vsock stream after the documented idle bound.
+                # Previously this joined the response pump forever because the
+                # suppressed half-close also suppresses server EOF. That left A
+                # owning the hybrid-vsock muxer until VM death and connection B
+                # connected without ever delivering its first host-side bytes.
+                copies[0].join()
+                last_down_activity[0] = time.monotonic()
+                while copies[1].is_alive():
+                    copies[1].join(timeout=EGRESS_TUNNEL_JOIN_POLL_SECONDS)
+                    if (
+                        time.monotonic() - last_down_activity[0]
+                        < EGRESS_GIT_TUNNEL_IDLE_CLOSE_SECONDS
+                    ):
+                        continue
+                    try:
+                        upstream.shutdown(socket.SHUT_RDWR)
+                    except OSError:
+                        pass
+                    # A real socket wakes immediately on SHUT_RDWR. Keep this
+                    # join bounded too so a broken socket implementation cannot
+                    # recreate the lifetime leak in the lifecycle owner.
+                    copies[1].join(timeout=EGRESS_TUNNEL_JOIN_POLL_SECONDS)
+                    break
         except OSError as exc:
             sys.stderr.write(
                 "ember-claude-shim: egress vsock connect failed: %s\n" % exc

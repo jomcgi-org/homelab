@@ -5999,9 +5999,191 @@ def test_egress_forwarder_opens_one_vsock_connection_per_accept(monkeypatch):
         forwarder.close()
 
 
+def _install_vsock_pair_factory(monkeypatch):
+    """Replace AF_VSOCK sockets with observable, independent socket pairs."""
+    original_socket = socket.socket
+    socketpair = socket.socketpair
+    created = []
+    created_condition = threading.Condition()
+
+    class FakeVsock:
+        def __init__(self):
+            self.forwarder_socket, peer = socketpair()
+            self.closed = threading.Event()
+            with created_condition:
+                created.append((peer, self.closed))
+                created_condition.notify_all()
+
+        def settimeout(self, timeout):
+            self.forwarder_socket.settimeout(timeout)
+
+        def connect(self, _address):
+            pass
+
+        def recv(self, size):
+            return self.forwarder_socket.recv(size)
+
+        def sendall(self, data):
+            return self.forwarder_socket.sendall(data)
+
+        def shutdown(self, how):
+            return self.forwarder_socket.shutdown(how)
+
+        def close(self):
+            try:
+                self.forwarder_socket.close()
+            finally:
+                self.closed.set()
+
+    def socket_factory(family, *args, **kwargs):
+        if family == shim.VSOCK_ADDRESS_FAMILY:
+            return FakeVsock()
+        return original_socket(family, *args, **kwargs)
+
+    def wait_for_pair(index, timeout=2):
+        deadline = time.monotonic() + timeout
+        with created_condition:
+            while len(created) <= index:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise AssertionError(
+                        "forwarder did not open vsock connection %s" % index
+                    )
+                created_condition.wait(remaining)
+            return created[index]
+
+    monkeypatch.setattr(shim.socket, "socket", socket_factory)
+    return wait_for_pair
+
+
+def _open_proxy_tunnel(forwarder, wait_for_pair, index, port, request):
+    client = socket.create_connection((shim.EGRESS_LOCALHOST, forwarder.port))
+    client.settimeout(2)
+    client.sendall(("CONNECT example.com:%s HTTP/1.1\r\n\r\n" % port).encode())
+    peer, closed = wait_for_pair(index)
+    preamble = ("example.com:%s\n" % port).encode()
+    assert peer.recv(len(preamble)) == preamble
+    established = b"HTTP/1.1 200 Connection Established\r\n\r\n"
+    assert client.recv(len(established)) == established
+    client.sendall(request)
+    assert peer.recv(len(request)) == request
+    return client, peer, closed
+
+
+def _finish_proxy_tunnel(client, peer, closed, payload):
+    peer.sendall(payload)
+    assert client.recv(len(payload)) == payload
+    peer.shutdown(socket.SHUT_WR)
+    assert client.recv(1) == b""
+    client.close()
+    assert closed.wait(2), "completed tunnel was not cleaned up within 2 seconds"
+    peer.close()
+
+
+def test_egress_forwarder_delivers_two_sequential_fully_closed_connections(
+    monkeypatch,
+):
+    wait_for_pair = _install_vsock_pair_factory(monkeypatch)
+    forwarder = shim.VsockEgressForwarder(port=0)
+    forwarder.listen()
+    try:
+        first = _open_proxy_tunnel(forwarder, wait_for_pair, 0, "443", b"request-a")
+        _finish_proxy_tunnel(*first, b"response-a")
+        second = _open_proxy_tunnel(forwarder, wait_for_pair, 1, "443", b"request-b")
+        _finish_proxy_tunnel(*second, b"response-b")
+    finally:
+        forwarder.close()
+
+
+def test_egress_forwarder_reaps_completed_lingering_git_tunnel_before_second(
+    monkeypatch,
+):
+    monkeypatch.setattr(shim, "EGRESS_GIT_TUNNEL_IDLE_CLOSE_SECONDS", 0.1)
+    wait_for_pair = _install_vsock_pair_factory(monkeypatch)
+    forwarder = shim.VsockEgressForwarder(port=0)
+    forwarder.listen()
+    first_client = first_peer = second_client = second_peer = None
+    try:
+        first_client, first_peer, first_closed = _open_proxy_tunnel(
+            forwarder, wait_for_pair, 0, shim.GIT_DAEMON_PORT, b"request-a"
+        )
+        first_client.shutdown(socket.SHUT_WR)
+        first_peer.sendall(b"response-a")
+        assert first_client.recv(len(b"response-a")) == b"response-a"
+
+        # Reproduce the observed Firecracker muxer constraint: B connects, but
+        # its first bytes cannot be serviced while completed A still owns the
+        # lingering vsock tunnel. The lifecycle owner must reap A within its
+        # documented idle bound before B can deliver a payload.
+        second_client = socket.create_connection(
+            (shim.EGRESS_LOCALHOST, forwarder.port)
+        )
+        second_client.settimeout(2)
+        second_client.sendall(b"CONNECT example.com:443 HTTP/1.1\r\n\r\n")
+        second_peer, second_closed = wait_for_pair(1)
+        closed_within_bound = first_closed.wait(1)
+        assert closed_within_bound, "completed tunnel A remained open past cleanup bound"
+
+        preamble = b"example.com:443\n"
+        assert second_peer.recv(len(preamble)) == preamble
+        established = b"HTTP/1.1 200 Connection Established\r\n\r\n"
+        assert second_client.recv(len(established)) == established
+        second_client.sendall(b"request-b")
+        assert second_peer.recv(len(b"request-b")) == b"request-b"
+        _finish_proxy_tunnel(
+            second_client, second_peer, second_closed, b"response-b"
+        )
+        second_client = second_peer = None
+    finally:
+        if first_client is not None:
+            first_client.close()
+        if first_peer is not None:
+            first_peer.close()
+        if second_client is not None:
+            second_client.close()
+        if second_peer is not None:
+            second_peer.close()
+        forwarder.close()
+
+
+def test_egress_forwarder_delivers_two_concurrent_active_connections(monkeypatch):
+    wait_for_pair = _install_vsock_pair_factory(monkeypatch)
+    forwarder = shim.VsockEgressForwarder(port=0)
+    forwarder.listen()
+    first_client = first_peer = second_client = second_peer = None
+    try:
+        first_client, first_peer, first_closed = _open_proxy_tunnel(
+            forwarder, wait_for_pair, 0, "443", b"request-a"
+        )
+        second_client, second_peer, second_closed = _open_proxy_tunnel(
+            forwarder, wait_for_pair, 1, "443", b"request-b"
+        )
+
+        second_peer.sendall(b"response-b")
+        first_peer.sendall(b"response-a")
+        assert second_client.recv(len(b"response-b")) == b"response-b"
+        assert first_client.recv(len(b"response-a")) == b"response-a"
+
+        first_peer.shutdown(socket.SHUT_WR)
+        second_peer.shutdown(socket.SHUT_WR)
+        assert first_client.recv(1) == b""
+        assert second_client.recv(1) == b""
+        first_client.close()
+        second_client.close()
+        first_client = second_client = None
+        assert first_closed.wait(2), "concurrent tunnel A cleanup exceeded 2 seconds"
+        assert second_closed.wait(2), "concurrent tunnel B cleanup exceeded 2 seconds"
+    finally:
+        for endpoint in (first_client, first_peer, second_client, second_peer):
+            if endpoint is not None:
+                endpoint.close()
+        forwarder.close()
+
+
 def test_egress_vsock_connect_constants_pinned():
     assert shim.EGRESS_VSOCK_CONNECT_TIMEOUT_SECONDS == 5.0
     assert shim.EGRESS_VSOCK_CONNECT_ATTEMPTS == 3
+    assert shim.EGRESS_GIT_TUNNEL_IDLE_CLOSE_SECONDS == 3.0
 
 
 def test_egress_forwarder_retries_vsock_connect(monkeypatch):
