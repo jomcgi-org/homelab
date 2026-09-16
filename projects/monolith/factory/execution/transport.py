@@ -87,6 +87,16 @@ class EmberTurnNotInvoked(EmberVMTransportError):
     """
 
 
+class EmberControlPlaneUnavailable(EmberVMTransportError):
+    """The invoke connection to the EmberVM control plane was lost.
+
+    This is deliberately narrower than ``EmberVMTransportError``. An HTTP
+    response from the control plane, including one reporting a guest failure,
+    is not control-plane unavailability. Timeouts are also excluded because a
+    long-running guest can legitimately reach the invoke deadline.
+    """
+
+
 async def _check_delivery_admission() -> None:
     check = _delivery_admission_check.get()
     if check is not None:
@@ -1368,6 +1378,18 @@ class EmberVmShimTransport:
                     _status_error_detail(exc),
                 )
                 raise
+            except (
+                httpx.ConnectError,
+                httpx.ReadError,
+                httpx.WriteError,
+                httpx.RemoteProtocolError,
+            ) as exc:
+                logger.warning(
+                    "embervm invoke transport error for session %s: %s",
+                    current.session_id,
+                    exc,
+                )
+                raise EmberControlPlaneUnavailable(str(exc)) from exc
             except httpx.TransportError as exc:
                 logger.warning(
                     "embervm invoke transport error for session %s: %s",
@@ -1498,6 +1520,8 @@ class EmberVmShimTransport:
                     lambda: invoke(new_ember, cli)
                 )
                 return turn._replace(workspace_recovery=workspace_recovery), new_ember
+            except EmberControlPlaneUnavailable:
+                raise
             except (httpx.HTTPStatusError, EmberVMTransportError) as retry_exc:
                 if isinstance(retry_exc, httpx.HTTPStatusError):
                     raise EmberSessionGone(
@@ -1508,5 +1532,6 @@ class EmberVmShimTransport:
 
 # Keep stored exceptions readable by replicas on either side of a deploy.
 EmberTurnNotInvoked.__module__ = "agent_sessions.transport"
+EmberControlPlaneUnavailable.__module__ = "agent_sessions.transport"
 EmberSessionGone.__module__ = "agent_sessions.transport"
 EmberBrickGone.__module__ = "agent_sessions.transport"
