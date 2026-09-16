@@ -164,6 +164,34 @@ def observe_response(receipt, **changes):
     )
 
 
+def release_response_observer(receipt, **changes):
+    return receipts.mark_response_observer_released(
+        **(
+            dict(
+                receipt_id=receipt["id"],
+                session_id=1,
+                claim_owner="executor-one",
+                dispatch_count=1,
+                guest_id="guest-one",
+            )
+            | changes
+        )
+    )
+
+
+def make_ownerless_discord_session(engine):
+    with Session(engine) as db, db.begin():
+        agent = db.get(AgentSession, 1)
+        agent.local_session_id = "discord-thread-session"
+        agent.discord_thread = "discord-thread-6055"
+        agent.admission_tier = "interactive"
+        db.add(agent)
+        permit = db.exec(select(AgentCapacityReservation)).one()
+        permit.local_session_id = agent.local_session_id
+        permit.tier = "interactive"
+        db.add(permit)
+
+
 def execution_state(engine):
     with Session(engine) as db:
         return {
@@ -1068,6 +1096,95 @@ def test_old_observer_never_clears_a_different_or_newer_execution(database, chan
         )
 
 
+@pytest.mark.parametrize("release_first", [False, True])
+def test_ownerless_fence_releases_when_its_exact_observer_is_gone(
+    database, release_first
+):
+    make_ownerless_discord_session(database)
+    receipt = prepare()
+    capture(receipt)
+    if release_first:
+        assert release_response_observer(receipt)
+    with Session(database) as db, db.begin():
+        validate_active(db, receipt)
+    if not release_first:
+        with Session(database) as db:
+            assert db.get(AgentSession, 1).result_receipt_fence_id == receipt["id"]
+        assert release_response_observer(receipt)
+    with Session(database) as db:
+        agent = db.get(AgentSession, 1)
+        stored = db.get(AgentResultReceipt, receipt["id"])
+        assert agent.result_receipt_fence_id is None
+        assert stored.response_observer_released_at is not None
+        assert stored.response_observed_at is None
+
+
+def test_observer_release_preserves_factory_and_drainer_cleanup_ownership(database):
+    receipt = prepare()
+    capture(receipt)
+    with Session(database) as db, db.begin():
+        validate_active(db, receipt)
+    assert release_response_observer(receipt)
+    with Session(database) as db:
+        assert db.get(AgentSession, 1).result_receipt_fence_id == receipt["id"]
+        assert (
+            db.get(AgentResultReceipt, receipt["id"]).response_observer_released_at
+            is not None
+        )
+
+
+def test_binding_cleanup_waits_for_the_live_exact_observer(database):
+    make_ownerless_discord_session(database)
+    receipt = prepare()
+    capture(receipt)
+    with Session(database) as db, db.begin():
+        validate_active(db, receipt)
+    with Session(database) as db:
+        assert store.clear_ember_bindings_by_ember_id(db, "guest-one") == []
+        held = db.get(AgentSession, 1)
+        assert held.result_receipt_fence_id == receipt["id"]
+        assert held.ember_session_id == "guest-one"
+
+    assert release_response_observer(receipt)
+    with Session(database) as db:
+        assert store.clear_ember_bindings_by_ember_id(db, "guest-one") == [1]
+        cleared = db.get(AgentSession, 1)
+        assert cleared.result_receipt_fence_id is None
+        assert cleared.ember_session_id is None
+
+
+@pytest.mark.parametrize("changed", ["fence", "binding", "newer_turn"])
+def test_released_old_observer_never_clears_newer_identity(database, changed):
+    make_ownerless_discord_session(database)
+    receipt = prepare()
+    capture(receipt)
+    with Session(database) as db, db.begin():
+        validate_active(db, receipt)
+        agent = db.get(AgentSession, 1)
+        if changed == "fence":
+            agent.result_receipt_fence_id = "newer-receipt"
+        elif changed == "binding":
+            agent.ember_session_id = "newer-guest"
+        else:
+            db.add(
+                AgentTurn(
+                    session_id=1,
+                    seq=2,
+                    prompt="newer",
+                    result_text="newer",
+                )
+            )
+        expected_fence = agent.result_receipt_fence_id
+        db.add(agent)
+    assert release_response_observer(receipt)
+    with Session(database) as db:
+        assert db.get(AgentSession, 1).result_receipt_fence_id == expected_fence
+        assert (
+            db.get(AgentResultReceipt, receipt["id"]).response_observer_released_at
+            is not None
+        )
+
+
 @pytest.mark.parametrize("change", ["seq", "digest", "corrupt_body", "other_fence"])
 def test_locked_validation_rejects_wrong_result_without_mutation(database, change):
     receipt = prepare()
@@ -1227,6 +1344,96 @@ def test_unreceived_receipt_keeps_its_guest_while_the_post_may_still_land(databa
     assert release_unobserved(receipt) is False
     assert receipts.release_abandoned_fence(1, receipt["id"]) is False
     assert execution_state(database) == before
+
+
+def test_discord_session_claims_followup_after_receipt_accept_window(
+    database, monkeypatch
+):
+    make_ownerless_discord_session(database)
+    receipt = prepare()
+    capture(receipt)
+    with Session(database) as db, db.begin():
+        validate_active(db, receipt)
+        pending = db.exec(select(PendingMessage)).one()
+        db.delete(pending)
+        db.add(
+            AgentTurn(
+                session_id=1,
+                seq=1,
+                prompt="first Discord message",
+                result_text="done",
+                terminal_reason="completed",
+                stop_reason="end_turn",
+            )
+        )
+        permit = db.exec(select(AgentCapacityReservation)).one()
+        permit.state = "settled"
+        db.add(permit)
+        accept_until = receipts._aware(
+            db.get(AgentResultReceipt, receipt["id"]).accept_until
+        )
+    with Session(database) as db:
+        followup = store.create_pending_message(db, 1, "next Discord message")
+        assert followup.seq == 2
+
+    # A live original POST retains the exact fence inside its acceptance bound.
+    assert store.claim_pending_message_for_session_sync(1, "discord-followup") is None
+    with Session(database) as db:
+        assert db.get(AgentSession, 1).result_receipt_fence_id == receipt["id"]
+
+    monkeypatch.setattr(receipts, "_now", lambda: accept_until)
+    assert store.claim_pending_message_for_session_sync(1, "discord-followup") == 2
+    with Session(database) as db:
+        agent = db.get(AgentSession, 1)
+        assert agent.discord_thread == "discord-thread-6055"
+        assert agent.result_receipt_fence_id is None
+        assert agent.ember_session_id == "guest-one"
+
+
+@pytest.mark.parametrize("release_path", ["followup", "destroy"])
+def test_ownerless_session_releases_fence_after_receipt_is_pruned(
+    database, release_path
+):
+    make_ownerless_discord_session(database)
+    receipt = prepare()
+    capture(receipt)
+    with Session(database) as db, db.begin():
+        validate_active(db, receipt)
+        pending = db.exec(select(PendingMessage)).one()
+        db.delete(pending)
+        db.add(
+            AgentTurn(
+                session_id=1,
+                seq=1,
+                prompt="first Discord message",
+                result_text="done",
+                terminal_reason="completed",
+                stop_reason="end_turn",
+            )
+        )
+        permit = db.exec(select(AgentCapacityReservation)).one()
+        permit.state = "settled"
+        db.add(permit)
+        receipt_row = db.get(AgentResultReceipt, receipt["id"])
+        assert receipt_row is not None
+        db.delete(receipt_row)
+    with Session(database) as db:
+        assert db.get(AgentResultReceipt, receipt["id"]) is None
+        followup = store.create_pending_message(db, 1, "next Discord message")
+        assert followup.seq == 2
+
+    if release_path == "followup":
+        assert store.claim_pending_message_for_session_sync(1, "discord-followup") == 2
+    else:
+        with Session(database) as db:
+            assert store.clear_ember_bindings_by_ember_id(db, "guest-one") == [1]
+
+    with Session(database) as db:
+        agent = db.get(AgentSession, 1)
+        assert agent.result_receipt_fence_id is None
+        assert agent.ember_session_id == (
+            "guest-one" if release_path == "followup" else None
+        )
 
 
 @pytest.mark.parametrize(
