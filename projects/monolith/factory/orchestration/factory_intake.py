@@ -17,7 +17,9 @@ from factory.orchestration.factory_controls import (
     _snapshot,
     _text,
     DEFAULT_TASK_CLASS,
+    delivery_branch_owner,
     factory_max_concurrent_tasks,
+    granted_delivery_surface,
     INTAKE_ACTOR,
     LANES,
     intake_policy,
@@ -296,6 +298,29 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
         ).first()
         if row is None:
             return {"ok": False, "reason": "no_eligible_issue"}
+        direction = json.loads(row.direction_json) if row.direction_json else None
+        try:
+            granted_branch, _granted_pr = granted_delivery_surface(direction)
+        except ValueError as exc:
+            return {
+                "ok": False,
+                "reason": "delivery_surface_invalid",
+                "detail": str(exc),
+            }
+        if granted_branch is not None:
+            owner = delivery_branch_owner(
+                db,
+                row.repo,
+                granted_branch,
+                exclude_receipt_id=row.id,
+            )
+            if owner is not None:
+                return {
+                    "ok": False,
+                    "reason": "delivery_branch_owned",
+                    "task_id": owner,
+                    "branch": granted_branch,
+                }
         task_id = mint_task_id()
         task = SwarmTask(
             id=task_id,

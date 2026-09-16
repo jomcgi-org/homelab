@@ -105,6 +105,7 @@ def test_refine_schema_and_boundary_are_separate_from_delivery():
     assert "do not open a pull request" in boundary
     delivery = conductor._boundary(task)
     assert "dedicated branch factory/t-1" in delivery
+    assert conductor.delivery_branch(task) == "factory/t-1"
     assert "Factory refine task" not in delivery
     # An explicit raise, not an assert: a python -O run strips asserts and
     # would hand a reviewer node the refine boundary instead of refusing.
@@ -5797,8 +5798,37 @@ def conflicting_pull(task, *, head=HEAD_ONE):
         "draft": False,
         "mergeable": False,
         "mergeable_state": "dirty",
-        "head": {"ref": f"factory/{task['id']}", "sha": head},
+        "head": {"ref": conductor.delivery_branch(task), "sha": head},
     }
+
+
+def test_granted_delivery_branch_is_used_for_envelope_conflict_and_dispatch(
+    feedback_db, monkeypatch
+):
+    task, _policy = reviewed_task(verdict="approve")
+    task["delivery_branch"] = "factory/original-task"
+    task["delivery_pr_number"] = 21
+    monkeypatch.setattr(conductor, "github_get", lambda *_args: conflicting_pull(task))
+
+    assert "dedicated branch factory/original-task" in conductor._boundary(task)
+    assert (
+        conductor._dispatch_branch(
+            task["id"],
+            "implement_serial",
+            conductor.graph.load_graph(task["id"]),
+            conductor.graph.node_runs(task["id"]),
+            1,
+            target_branch=conductor.delivery_branch(task),
+        )
+        == "factory/original-task"
+    )
+    recovery = conductor._pending_landing_recovery(
+        task,
+        conductor.graph.load_graph(task["id"]),
+        conductor.graph.node_runs(task["id"]),
+    )
+    assert recovery is not None
+    assert recovery[1]["pr_number"] == 21
 
 
 def test_an_approved_conflicting_delivery_opens_a_rebase_and_re_review_round(
@@ -8641,7 +8671,7 @@ def recovery_github(monkeypatch, task, *, state="success", context="success"):
         "draft": True,
         "head": {
             "sha": HEAD_TWO,
-            "ref": conductor.task_branch(task["id"]),
+            "ref": conductor.delivery_branch(task),
             "repo": {"full_name": task["repo"]},
         },
         "base": {"ref": task["base_branch"]},
@@ -8669,6 +8699,28 @@ def recovery_task(**overrides):
     conductor.reconcile_task(task["id"], policy, object())
     run_correction_round(task, policy, 1, verdict="changes_requested", head=HEAD_TWO)
     return task, policy
+
+
+def test_review_recovery_matches_the_granted_delivery_surface(feedback_db, monkeypatch):
+    task, _policy = recovery_task()
+    task["delivery_branch"] = "factory/original-task"
+    task["delivery_pr_number"] = 21
+    recovery_github(monkeypatch, task)
+    review = max(
+        (
+            run
+            for run in conductor.graph.node_runs(task["id"])
+            if run["node_key"].startswith("review_")
+        ),
+        key=lambda run: run["id"],
+    )
+
+    assert conductor._review_recovery_evidence(task, review) == {
+        "head_sha": HEAD_TWO,
+        "pr_number": 21,
+        "state": "ready",
+        "reason": "reviewed_head_ci_passed",
+    }
 
 
 def test_review_recovery_keeps_task_accounting_and_stops_at_its_durable_cap(
