@@ -87,6 +87,33 @@ RECOMMENDED_EFFECT = {
 # security finding is a judgment call that belongs to a person.
 PROTECTED_LABELS = ("critical", "security-finding")
 
+# This is issue admission policy, not a delivery instruction. Keep it on the
+# common refine path so both closing modes interpret deleted ADR references alike.
+ADR_RETIREMENT_RULE = (
+    "ADR authoring is retired. `docs/decisions/` was deleted on 2026-09-06 "
+    "(#4667). An ADR file referenced by an issue does not exist and will not "
+    "be recreated. Its historical text is recoverable with `git log -- "
+    "docs/decisions/`. Decisions are now recorded in the relevant domain's "
+    "`projects/<domain>/ARCHITECTURE.md`, as a `**Why.**` paragraph under the "
+    "section the decision changes, plus a Direction row carrying its tracking "
+    "issue. When an issue requests writing an ADR, updating an ADR, or "
+    "recording a decision in an ADR, that deliverable alone is not a reason "
+    "for `needs-human` or `stale`. Default to rescoping it to the equivalent "
+    "ARCHITECTURE.md note in the owning domain and reach `agent-ready`, while "
+    "keeping the issue's substantive acceptance criteria intact. Escalate to "
+    "`needs-human` only when something else genuinely needs a person, such as "
+    "a real scope or authorization question, a technical prerequisite that is "
+    "not ready, or a decision between two substantive designs. State that "
+    "other reason explicitly in `### Decision needed`. `stale` still applies "
+    "when the issue's underlying premise is dead on its own merits, for "
+    "example when the service, file, or flag it concerns is gone, or the "
+    "symptom no longer reproduces. A missing ADR file alone is not a dead "
+    "premise. An issue body citing `ADR <domain>/<nnn>` is a pointer to a "
+    "deleted file. Do not treat `I cannot find this ADR` as evidence of "
+    "anything. Read the owning domain's ARCHITECTURE.md instead, and use `git "
+    "log -- docs/decisions/` only when the historical text matters.\n\n"
+)
+
 REFINE_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -161,6 +188,7 @@ def refine_prompt(task: dict, receipt: dict, *, closing: bool) -> str:
         f"{receipt['url']}.\n\n"
         f"Title: {receipt['title']}\n\nIssue body:\n{body}\n\n"
         + _chat_prompt(receipt)
+        + ADR_RETIREMENT_RULE
         + "Research before reading toward a verdict, and cite what you find "
         "under `### Evidence`, in this order. First, call `search_knowledge` "
         "on the `agents` MCP server with the issue title, then once for every "
