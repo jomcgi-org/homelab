@@ -1,12 +1,6 @@
 argo-cd:
-  global:
-    # The hub shares one core node with every platform workload. Keep the
-    # GitOps control plane off the eviction path when memory pressure hits
-    # (the Sep 13-14 stall windows evicted ArgoCD pods together with
-    # authentik and cloudflared).
-    priorityClassName: system-cluster-critical
   server:
-    replicas: 2
+    replicas: 1
     resources:
       requests:
         cpu: 25m
@@ -14,19 +8,22 @@ argo-cd:
       limits:
         cpu: 125m
         memory: 256Mi
-    topologySpreadConstraints:
-      - maxSkew: 1
-        topologyKey: kubernetes.io/hostname
-        whenUnsatisfiable: ScheduleAnyway
-        labelSelector:
-          matchLabels:
-            app.kubernetes.io/component: server
+    # Same 1s/3 -> 5s/5 relaxation as repo-server below: argocd-server was one
+    # of the four pods that tripped Unhealthy in the 01:00:26-32Z Sep 16 window.
+    livenessProbe:
+      timeoutSeconds: 5
+      failureThreshold: 5
   repoServer:
-    replicas: 2
+    replicas: 1
     # Manifest generation is CPU-bound and its memory peaks during render
     # storms; without bounds the repo-server competes with every other pod
     # on the shared node and its 1s/3 liveness probe kill-cycles during
     # contention (liveness kills at 01:00Z Sep 16, restarts on Sep 13-14).
+    #
+    # The 10000m CPU limit is burst headroom, not expected consumption: CPU is
+    # compressible, the request stays 25m, and the 10m cache expiration below
+    # makes every app re-render on that period. See values-cluster.yaml for the
+    # measurements behind these numbers.
     resources:
       requests:
         cpu: 25m
@@ -34,17 +31,14 @@ argo-cd:
       limits:
         cpu: 10000m
         memory: 1Gi
+    # 1s/3 kill-cycles the pod whenever the shared core node stalls for a few
+    # seconds. 5s/5 still kills a genuinely dead pod inside the same 30s window.
     livenessProbe:
       timeoutSeconds: 5
       failureThreshold: 5
-    topologySpreadConstraints:
-      - maxSkew: 1
-        topologyKey: kubernetes.io/hostname
-        whenUnsatisfiable: ScheduleAnyway
-        labelSelector:
-          matchLabels:
-            app.kubernetes.io/component: repo-server
   controller:
+    # Memory limit 2Gi against a 1Gi request: sync storms spike well above the
+    # request and the controller has an OOMKilled history on the home cluster.
     resources:
       requests:
         cpu: 500m
