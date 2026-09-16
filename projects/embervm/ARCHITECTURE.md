@@ -1228,11 +1228,17 @@ shared Postgres) is in [deploy/README.md](deploy/README.md).
 EmberVM promotes the dev chart to production through Kargo: `argocd-wait`
 proves the Application Synced and Healthy, a soak interval catches failures
 that appear after reconciliation settles, and the in-cluster conformance
-runner's S1 to S4 scenarios (task execution, session sleep and relight,
-second-session restart latency, control-plane invariants) must all pass at
-`/verdict`, stamped with the chart version so an older deployment's evidence
-is refused. A failed or all-vacuous run blocks promotion; Freight approval is
-the explicit operator override. Phase 1 is tracked in #5224.
+runner's S1 to S4 scenarios (two concurrent restored-clone vsock exchanges,
+session sleep and relight, second-session restart latency, control-plane
+invariants) must all pass at `/verdict`, stamped with the chart version so an
+older deployment's evidence is refused. S1 sends a distinct marker into each
+clone, requires the same marker back, rejects the peer marker, and requires two
+five-second guest holds to complete inside an eight-second overlap budget. A
+failed or all-vacuous run blocks promotion; Freight approval is the explicit
+operator override. Phase 1 is tracked in #5224. The launch-mode, crash-relaunch,
+and architecture acceptance matrix for restore-time vsock overrides is a
+separate manual readiness gate in
+[`docs/drills/vsock-override-acceptance.md`](docs/drills/vsock-override-acceptance.md).
 
 **Known walls and provisional numbers** (each states what would move it):
 

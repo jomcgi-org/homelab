@@ -992,13 +992,16 @@ func (d *Driver) loadPatchAndResumeWithDiff(ctx context.Context, workload, threa
 	}
 	resumeVM := !patchVolume
 	snapshotCtx, cancelSnapshot := context.WithTimeout(ctx, snapshotOperationTimeout(memMib))
+	vsockPath := d.VsockUDSPath(threadID)
+	d.logger.Info("driver: loading snapshot with per-VM vsock override",
+		"vm", vmID, "thread", threadID, "vsock_uds_path", vsockPath)
 	err = client.LoadSnapshot(snapshotCtx, fcclient.SnapshotLoad{
 		SnapshotPath:        snapPath,
 		MemBackend:          &fcclient.MemBackend{BackendType: "File", BackendPath: memPath},
 		EnableDiffSnapshots: enableDiffSnapshots,
 		TrackDirtyPages:     enableDiffSnapshots,
 		ResumeVM:            resumeVM,
-		VsockOverride:       &fcclient.VsockOverride{UDSPath: d.VsockUDSPath(threadID)},
+		VsockOverride:       &fcclient.VsockOverride{UDSPath: vsockPath},
 	})
 	cancelSnapshot()
 	if err != nil {

@@ -16,8 +16,10 @@ import (
 )
 
 const (
-	maxErrorBody = 200
-	pollInterval = time.Second
+	maxErrorBody       = 200
+	pollInterval       = time.Second
+	cloneHold          = 5 * time.Second
+	cloneOverlapBudget = 8 * time.Second
 )
 
 // These are the runnable and banked states in
@@ -236,33 +238,91 @@ func logScenario(result scenarioVerdict) {
 	slog.Info("conformance scenario completed", "id", result.ID, "verdict", result.Verdict, "detail", result.Detail, "ms", result.MS)
 }
 
+type cloneInvocation struct {
+	label    string
+	token    string
+	response apiResponse
+	err      error
+}
+
 func runS1(ctx context.Context, cfg config, client *controlPlaneClient, suiteStarted time.Time) scenarioVerdict {
 	path := "/v1/workloads/" + url.PathEscape(cfg.taskWorkload) + "/tasks?wait=true"
-	body := []byte("{\"code\":\"print(\\\"conformance ok\\\")\"}")
-	response, err := client.request(ctx, http.MethodPost, path, body, "", map[string]string{
-		"Idempotency-Key": cfg.chartVersion + "-" + suiteStarted.UTC().Format(time.RFC3339),
-	})
-	if err != nil {
-		return scenarioVerdict{Verdict: verdictFail, Detail: fmt.Sprintf("POST %s: %v", path, err)}
+	labels := []string{"clone-a", "clone-b"}
+	results := make(chan cloneInvocation, len(labels))
+	start := make(chan struct{})
+	for _, label := range labels {
+		label := label
+		token := fmt.Sprintf("%s-%d", label, suiteStarted.UnixNano())
+		go func() {
+			<-start
+			code := fmt.Sprintf(
+				"import time\nprint(%q, flush=True)\ntime.sleep(%g)\nprint(%q, flush=True)\n",
+				"host-to-guest:"+token,
+				cloneHold.Seconds(),
+				"guest-to-host:"+token,
+			)
+			body, err := json.Marshal(map[string]string{"code": code})
+			if err != nil {
+				results <- cloneInvocation{label: label, token: token, err: err}
+				return
+			}
+			response, err := client.request(ctx, http.MethodPost, path, body, "", map[string]string{
+				"Idempotency-Key": cfg.chartVersion + "-" + suiteStarted.UTC().Format(time.RFC3339Nano) + "-" + label,
+			})
+			results <- cloneInvocation{label: label, token: token, response: response, err: err}
+		}()
 	}
-	if response.status < 200 || response.status >= 300 {
-		return scenarioVerdict{Verdict: verdictFail, Detail: httpErrorDetail(http.MethodPost, path, response)}
+	started := time.Now()
+	close(start)
+
+	invocations := make(map[string]cloneInvocation, len(labels))
+	for range labels {
+		result := <-results
+		invocations[result.label] = result
 	}
-	var guest struct {
-		ExitCode int    `json:"exit_code"`
-		Stdout   string `json:"stdout"`
+	elapsed := time.Since(started)
+	if elapsed > cloneOverlapBudget {
+		return scenarioVerdict{Verdict: verdictFail, Detail: fmt.Sprintf("two clone invocations took %s, exceeding the %s overlap budget for two %s guest holds", elapsed.Round(time.Millisecond), cloneOverlapBudget, cloneHold)}
 	}
-	if err := json.Unmarshal(response.body, &guest); err != nil {
-		return scenarioVerdict{Verdict: verdictFail, Detail: fmt.Sprintf("POST %s invalid guest response: %v", path, err)}
-	}
-	if guest.ExitCode != 0 || !strings.Contains(guest.Stdout, "conformance ok") {
-		return scenarioVerdict{Verdict: verdictFail, Detail: fmt.Sprintf("guest exit_code=%d stdout=%q", guest.ExitCode, truncate(guest.Stdout, maxErrorBody))}
+
+	for _, label := range labels {
+		result := invocations[label]
+		if result.err != nil {
+			return scenarioVerdict{Verdict: verdictFail, Detail: fmt.Sprintf("POST %s for %s: %v", path, label, result.err)}
+		}
+		if result.response.status < 200 || result.response.status >= 300 {
+			return scenarioVerdict{Verdict: verdictFail, Detail: fmt.Sprintf("%s: %s", label, httpErrorDetail(http.MethodPost, path, result.response))}
+		}
+		var guest struct {
+			ExitCode int    `json:"exit_code"`
+			Stdout   string `json:"stdout"`
+		}
+		if err := json.Unmarshal(result.response.body, &guest); err != nil {
+			return scenarioVerdict{Verdict: verdictFail, Detail: fmt.Sprintf("POST %s for %s returned invalid guest response: %v", path, label, err)}
+		}
+		peerLabel := labels[0]
+		if peerLabel == label {
+			peerLabel = labels[1]
+		}
+		peerToken := invocations[peerLabel].token
+		if strings.Contains(guest.Stdout, peerToken) {
+			return scenarioVerdict{Verdict: verdictFail, Detail: fmt.Sprintf("cross-route detected: %s returned peer token %q in stdout=%q", label, peerToken, truncate(guest.Stdout, maxErrorBody))}
+		}
+		if guest.ExitCode != 0 || !strings.Contains(guest.Stdout, "host-to-guest:"+result.token) || !strings.Contains(guest.Stdout, "guest-to-host:"+result.token) {
+			return scenarioVerdict{Verdict: verdictFail, Detail: fmt.Sprintf("%s did not return its bidirectional marker: exit_code=%d stdout=%q", label, guest.ExitCode, truncate(guest.Stdout, maxErrorBody))}
+		}
 	}
 	reapDelay, finalLiveVMs, err := waitForWorkloadVMsZero(ctx, client, cfg.taskWorkload)
 	if err != nil {
 		return scenarioVerdict{Verdict: verdictFail, Detail: fmt.Sprintf("task guest was not reaped; final live VM count=%d: %v", finalLiveVMs, err)}
 	}
-	return scenarioVerdict{Verdict: verdictPass, Detail: fmt.Sprintf("guest exited 0 and printed conformance ok; VM reap observed in %s", reapDelay.Round(time.Millisecond))}
+	return scenarioVerdict{Verdict: verdictPass, Detail: fmt.Sprintf(
+		"two restored clones exchanged distinct bidirectional markers with no cross-route in %s; tokens=%q,%q; VM reap observed in %s",
+		elapsed.Round(time.Millisecond),
+		invocations[labels[0]].token,
+		invocations[labels[1]].token,
+		reapDelay.Round(time.Millisecond),
+	)}
 }
 
 func createSession(ctx context.Context, cfg config, client *controlPlaneClient) (sessionIdentity, string, error) {
