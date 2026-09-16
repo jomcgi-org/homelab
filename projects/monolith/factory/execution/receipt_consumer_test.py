@@ -643,6 +643,47 @@ def test_receipt_completes_once_and_fences_only_its_guest_until_response(
     asyncio.run(asyncio.wait_for(run(), 12))
 
 
+def test_discord_receipt_winner_releases_when_original_post_is_gone(
+    database, monkeypatch
+):
+    sid = queue(database, "discord-receipt", tier="interactive")
+    with Session(database) as db, db.begin():
+        row = db.get(AgentSession, sid)
+        row.discord_thread = "discord-thread-6055"
+        db.add(row)
+    record = native_record()
+    captured = {}
+
+    async def handler(request):
+        receipt, _body = await publish(request, record)
+        captured.update(receipt)
+        raise httpx.ReadError("original response lost", request=request)
+
+    requests = fake_http(monkeypatch, handler)
+
+    async def run():
+        await asyncio.wait_for(mcp._execute_pending_message(sid), 5)
+        await asyncio.wait_for(drain_observers(), 3)
+        state = snapshot(database, sid)
+        assert state["pending"] == []
+        assert len(state["turns"]) == 1
+        assert state["session"]["discord_thread"] == "discord-thread-6055"
+        assert state["session"]["result_receipt_fence_id"] is None
+        with Session(database) as db:
+            receipt = db.get(AgentResultReceipt, captured["id"])
+            assert receipt.received_at is not None
+            assert receipt.response_observer_released_at is not None
+            assert receipt.response_observed_at is None
+
+        assert execution_api.send_to_swarm_session(sid, "next Discord message") == 2
+        assert (
+            store.claim_pending_message_for_session_sync(sid, "discord-followup") == 2
+        )
+        assert len(requests) == 1
+
+    asyncio.run(asyncio.wait_for(run(), 10))
+
+
 @pytest.mark.parametrize("response", ["disconnect", "cancelled_observer"])
 def test_kg_cleanup_frees_a_receipt_won_guest_after_a_lost_response(
     database, monkeypatch, response
