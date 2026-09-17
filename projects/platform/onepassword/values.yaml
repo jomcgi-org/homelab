@@ -1,0 +1,76 @@
+# Wrapper values for the upstream 1Password `connect` chart, vendored as the
+# subchart `connect`. The upstream chart's own values are nested (`connect:` and
+# `operator:` at its top level), so they are nested once more here under the
+# subchart key: values under `connect.connect` reach `.Values.connect`, and
+# values under `connect.operator` reach `.Values.operator`.
+#
+# The Connect API pod is the single hub every OnePasswordItem in the cluster is
+# reconciled through, so a single replica made it a cluster-wide secret-delivery
+# single point of failure: evicted or drained, and no new pod that consumes a
+# OnePasswordItem could start. Two replicas plus a PodDisruptionBudget keep one
+# API server available through a node drain or memory-pressure eviction, and a
+# memory request stops the pod sitting in the first eviction class.
+#
+# The bootstrap secrets (connect.connect.credentialsName and
+# connect.operator.token.name) are created out of band and are deliberately NOT
+# set here: the chart renders those Secrets only when their values are supplied,
+# so nothing in Git can overwrite the live op-credentials or onepassword-token
+# Secrets.
+#
+# Memory request equals limit in every block, per the cluster convention: a
+# request below the limit lets the kernel overcommit and OOM-kill the pod under
+# node pressure, below its own ceiling. Observe working sets run about 33Mi
+# (connect-api), 16Mi (connect-sync), and 27Mi (operator), so these ceilings
+# carry generous headroom. Neither block sets a CPU limit: throttling the secret
+# broker is worse than letting it burst.
+connect:
+  connect:
+    create: true
+    # Two API replicas so a single node loss does not stop secret delivery.
+    replicas: 2
+    api:
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          memory: 256Mi
+    sync:
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          memory: 128Mi
+    # Guarantee at least one API server stays up through a node drain. The repo
+    # convention (and the pdb-minAvailable-blocks-eviction rule) prefers
+    # maxUnavailable over minAvailable: with two replicas one may go at a time.
+    pdb:
+      enabled: true
+      maxUnavailable: 1
+    # Spread the two replicas across nodes without risking a Pending second pod.
+    affinity:
+      podAntiAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/component: connect
+  operator:
+    create: true
+    # One reconciler: the chart does not enable leader election, so a second
+    # replica would reconcile the same items concurrently.
+    replicas: 1
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        memory: 128Mi
+  # The acceptance-test Pod is a Helm test hook; it is disabled so ArgoCD has no
+  # stray Pod to reconcile.
+  acceptanceTests:
+    healthCheck:
+      enabled: false
