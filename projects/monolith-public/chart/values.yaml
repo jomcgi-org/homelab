@@ -713,22 +713,15 @@ cfIngress:
     gateway:
       name: cloudflare-ingress
       namespace: envoy-gateway-system
-    rateLimit:
-      requests: 100
-      unit: Minute
-    # Rate limit for the public FaaS invocation route (/functions/*, Task 13).
-    # Envoy Local coarse burst cap, keyed independently by the client address
-    # Cloudflare writes into CF-Connecting-IP. The gateway chart enforces the
-    # cloudflared-to-listener hop with a NetworkPolicy. Worker subrequests are
-    # rejected because same-zone Workers can influence this header and cross-zone
-    # Workers do not carry the visitor address. Missing or malformed identities
-    # use a separate fail-safe bucket and never consume a valid client's budget.
-    # This remains layered on top of the EmberVM per-principal daily quota.
-    # og-image is low-volume (one fetch per social share), so 120/min is
-    # generous; lower it if abuse appears.
-    functionsRateLimit:
-      requests: 120
-      unit: Minute
+    # Identity keying for the public per-client rate limits (the apex page route
+    # and /functions). Envoy Local coarse burst cap, keyed independently by the
+    # client address Cloudflare writes into CF-Connecting-IP. The gateway chart
+    # enforces the cloudflared-to-listener hop with a NetworkPolicy. Worker
+    # subrequests are rejected because same-zone Workers can influence this header
+    # and cross-zone Workers do not carry the visitor address. Missing or
+    # malformed identities use a separate fail-safe bucket and never consume a
+    # valid client's budget.
+    clientIdentity:
       cloudflareZone: jomcgi.dev
       # Cloudflare's documented address for cross-zone Worker subrequests.
       crossZoneWorkerAddress: 2a06:98c0:3600::103
@@ -738,13 +731,32 @@ cfIngress:
         # from Distinct makes arbitrary malformed values hit the fallback
         # rather than manufacture unlimited fresh descriptor buckets.
         valuePattern: '^(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(?:\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3}|(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}|(?:[0-9A-Fa-f]{1,4}:){1,7}:|(?:[0-9A-Fa-f]{1,4}:){1,6}:[0-9A-Fa-f]{1,4}|(?:[0-9A-Fa-f]{1,4}:){1,5}(?::[0-9A-Fa-f]{1,4}){1,2}|(?:[0-9A-Fa-f]{1,4}:){1,4}(?::[0-9A-Fa-f]{1,4}){1,3}|(?:[0-9A-Fa-f]{1,4}:){1,3}(?::[0-9A-Fa-f]{1,4}){1,4}|(?:[0-9A-Fa-f]{1,4}:){1,2}(?::[0-9A-Fa-f]{1,4}){1,5}|[0-9A-Fa-f]{1,4}:(?:(?::[0-9A-Fa-f]{1,4}){1,6})|:(?:(?::[0-9A-Fa-f]{1,4}){1,7}|:))$'
+    # Rate limit for the apex page route (the catch-all "/" and /_app/ rules).
+    # Also keyed per client (see clientIdentity), not the gateway-wide bucket the
+    # shared cf-ingress.rate-limit helper renders. That shared bucket let one
+    # scanner sweep (the Laravel and Ignition probes such as /js/.env that fall
+    # to this catch-all) or one lingering client drain the budget and 429
+    # local_rate_limited every other visitor, the residue the ember-reads
+    # carve-out below only worked around.
+    rateLimit:
+      requests: 100
+      unit: Minute
+    # Rate limit for the public FaaS invocation route (/functions/*, Task 13).
+    # Keyed per client like the page route above, with its own budget. This
+    # remains layered on top of the EmberVM per-principal daily quota. og-image
+    # is low-volume (one fetch per social share), so 120/min is generous; lower
+    # it if abuse appears.
+    functionsRateLimit:
+      requests: 120
+      unit: Minute
     # Dedicated budget for the ember demo's cheap, wake-safe, server-cached
     # lifecycle reads (/ember/postgres/api/status + /savings), carved onto their
-    # own HTTPRoute so their sub-second polling never shares (and exhausts) the
-    # page's 100/min gateway-wide bucket. status is 500ms single-flight cached
-    # and savings 30s cached, so a high poll rate is nearly free upstream; 600/min
-    # gives comfortable headroom for concurrent viewers. Writes (/query, /session)
-    # stay on the page limit above, backstopped by the backend gates + Turnstile.
+    # own HTTPRoute so their sub-second polling never sits inside the same
+    # per-client page budget as the page's own page loads and trips it. status is
+    # 500ms single-flight cached and savings 30s cached, so a high poll rate is
+    # nearly free upstream; 600/min gives comfortable headroom for concurrent
+    # viewers. Writes (/query, /session) stay on the page limit above,
+    # backstopped by the backend gates + Turnstile.
     emberReadsRateLimit:
       requests: 600
       unit: Minute

@@ -118,15 +118,14 @@ spec:
 ---
 # /ember/postgres/api/status + /savings -> the frontend, on their OWN HTTPRoute
 # so the demo's sub-second lifecycle polling does NOT share the page's coarse
-# rate-limit budget. That page limit is a single gateway-wide bucket shared
-# across ALL clients (Local rate limit, no clientSelectors), and the status poll
-# alone runs ~85 req/min per viewer, so one lingering visitor could starve the
-# whole apex site (429 local_rate_limited for everyone). Both endpoints are
-# cheap, wake-safe control-plane reads served from a short server-side cache
-# (status 500ms single-flight, savings 30s), so a high poll rate costs the
-# backend almost nothing and a generous dedicated limit is safe. The write paths
-# (/query, /session) deliberately stay on the page budget, backstopped by the
-# backend's per-session insert bucket, the query semaphore, and Turnstile.
+# rate-limit budget. The status poll alone runs ~85 req/min per viewer, which
+# would otherwise sit inside the same per-client page budget as the page's own
+# page loads and trip it. Both endpoints are cheap, wake-safe control-plane
+# reads served from a short server-side cache (status 500ms single-flight,
+# savings 30s), so a high poll rate costs the backend almost nothing and a
+# generous dedicated limit is safe. The write paths (/query, /session)
+# deliberately stay on the page budget, backstopped by the backend's
+# per-session insert bucket, the query semaphore, and Turnstile.
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -156,30 +155,95 @@ spec:
       timeouts:
         request: 60s
 ---
-{{- $rlParams := dict
-  "name" (printf "%s-public" (include "monolith-public.fullname" .))
-  "rateLimit" .Values.cfIngress.public.rateLimit
-}}
-{{- include "cf-ingress.rate-limit" $rlParams }}
----
-# The public function route is intentionally different from the shared
-# cf-ingress.rate-limit helper above and below. The gateway chart's NetworkPolicy
-# admits the listener only from its cloudflared pods, and Cloudflare overwrites
-# CF-Connecting-IP on non-Worker edge requests. The SecurityPolicy below rejects
-# same-zone Worker subrequests (where a Worker can influence CF-Connecting-IP)
-# and Cloudflare's fixed cross-zone Worker address. The first rate-limit rule is
-# a fail-safe bucket for a missing or malformed header. A valid address
-# matches the Distinct descriptor in the second rule instead, and Envoy Gateway
-# 1.8.3 sets always_consume_default_token_bucket=false for descriptor rules, so
-# valid clients neither consume nor inherit that shared fallback budget.
-# The gateway chart also patches this route-specific LocalRateLimit to retain
-# up to 10,000 dynamic descriptors. Without that route-level capacity, Envoy's
-# default of 20 would let ordinary client cardinality evict exhausted buckets.
+# Per-client rate limits for the two public routes whose traffic is keyed on the
+# client address. Neither uses the shared cf-ingress.rate-limit helper below,
+# whose Local bucket is gateway-wide and shared across every client. The gateway
+# chart's NetworkPolicy admits the listener only from its cloudflared pods, and
+# Cloudflare overwrites CF-Connecting-IP on non-Worker edge requests. The
+# SecurityPolicy rejects same-zone Worker subrequests (where a Worker can
+# influence CF-Connecting-IP) and Cloudflare's fixed cross-zone Worker address.
+# Each policy's first rate-limit rule is a fail-safe bucket for a missing or
+# malformed header; a valid address matches the Distinct descriptor in the
+# second rule instead, and Envoy Gateway 1.8.3 sets
+# always_consume_default_token_bucket=false for descriptor rules, so valid
+# clients neither consume nor inherit that shared fallback budget. The gateway
+# chart also patches each route-specific LocalRateLimit to retain up to 10,000
+# dynamic descriptors; without that route-level capacity Envoy's default of 20
+# would let ordinary client cardinality evict exhausted buckets.
 #
 # Keep the regular-expression matcher alongside Distinct. Distinct alone would
 # give every arbitrary malformed value a fresh bucket if the tunnel contract
 # ever regressed. The expression accepts canonical IPv4 and IPv6 addresses; a
 # non-canonical value safely falls back to the first rule.
+#
+# The apex page route (the catch-all "/" and /_app/ rules) is keyed per client
+# too. It used to share one gateway-wide bucket, so a single scanner sweep (the
+# Laravel and Ignition probes such as /js/.env that fall to this catch-all) or
+# one lingering client could drain the budget and 429 local_rate_limited every
+# other visitor. That is the residue the ember-reads carve-out only worked
+# around; keying on the client address removes it.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: {{ include "monolith-public.fullname" . }}-public-rate-limit
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: {{ include "monolith-public.fullname" . }}-public
+  rateLimit:
+    type: Local
+    local:
+      rules:
+        # Requests without a valid Cloudflare identity land only in this
+        # fail-safe bucket. Descriptor matches do not consume it.
+        - limit:
+            requests: {{ .Values.cfIngress.public.rateLimit.requests }}
+            unit: {{ .Values.cfIngress.public.rateLimit.unit }}
+        - clientSelectors:
+            - headers:
+                - name: {{ .Values.cfIngress.public.clientIdentity.clientHeader.name | quote }}
+                  type: Distinct
+                - name: {{ .Values.cfIngress.public.clientIdentity.clientHeader.name | quote }}
+                  type: RegularExpression
+                  value: {{ .Values.cfIngress.public.clientIdentity.clientHeader.valuePattern | quote }}
+          limit:
+            requests: {{ .Values.cfIngress.public.rateLimit.requests }}
+            unit: {{ .Values.cfIngress.public.rateLimit.unit }}
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: {{ include "monolith-public.fullname" . }}-public-origin
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: {{ include "monolith-public.fullname" . }}-public
+  authorization:
+    defaultAction: Allow
+    rules:
+      # Cloudflare documents that same-zone Workers can alter x-real-ip, which
+      # becomes CF-Connecting-IP. CF-Worker is added to every fetch subrequest.
+      - name: deny-same-zone-workers
+        action: Deny
+        principal:
+          headers:
+            - name: CF-Worker
+              values:
+                - {{ .Values.cfIngress.public.clientIdentity.cloudflareZone | quote }}
+      # Cross-zone Worker traffic receives this fixed address rather than the
+      # visitor address. Reject it instead of treating all Workers as one client.
+      - name: deny-cross-zone-workers
+        action: Deny
+        principal:
+          headers:
+            - name: {{ .Values.cfIngress.public.clientIdentity.clientHeader.name | quote }}
+              values:
+                - {{ .Values.cfIngress.public.clientIdentity.crossZoneWorkerAddress | quote }}
+---
+# /functions/ carries the same per-client shape described above, with its own
+# budget.
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: BackendTrafficPolicy
 metadata:
@@ -200,11 +264,11 @@ spec:
             unit: {{ .Values.cfIngress.public.functionsRateLimit.unit }}
         - clientSelectors:
             - headers:
-                - name: {{ .Values.cfIngress.public.functionsRateLimit.clientHeader.name | quote }}
+                - name: {{ .Values.cfIngress.public.clientIdentity.clientHeader.name | quote }}
                   type: Distinct
-                - name: {{ .Values.cfIngress.public.functionsRateLimit.clientHeader.name | quote }}
+                - name: {{ .Values.cfIngress.public.clientIdentity.clientHeader.name | quote }}
                   type: RegularExpression
-                  value: {{ .Values.cfIngress.public.functionsRateLimit.clientHeader.valuePattern | quote }}
+                  value: {{ .Values.cfIngress.public.clientIdentity.clientHeader.valuePattern | quote }}
           limit:
             requests: {{ .Values.cfIngress.public.functionsRateLimit.requests }}
             unit: {{ .Values.cfIngress.public.functionsRateLimit.unit }}
@@ -229,16 +293,16 @@ spec:
           headers:
             - name: CF-Worker
               values:
-                - {{ .Values.cfIngress.public.functionsRateLimit.cloudflareZone | quote }}
+                - {{ .Values.cfIngress.public.clientIdentity.cloudflareZone | quote }}
       # Cross-zone Worker traffic receives this fixed address rather than the
       # visitor address. Reject it instead of treating all Workers as one client.
       - name: deny-cross-zone-workers
         action: Deny
         principal:
           headers:
-            - name: {{ .Values.cfIngress.public.functionsRateLimit.clientHeader.name | quote }}
+            - name: {{ .Values.cfIngress.public.clientIdentity.clientHeader.name | quote }}
               values:
-                - {{ .Values.cfIngress.public.functionsRateLimit.crossZoneWorkerAddress | quote }}
+                - {{ .Values.cfIngress.public.clientIdentity.crossZoneWorkerAddress | quote }}
 ---
 {{- $emberRlParams := dict
   "name" (printf "%s-ember-reads" (include "monolith-public.fullname" .))

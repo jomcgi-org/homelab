@@ -39,12 +39,20 @@ gateway:
   service:
     name: cloudflare-ingress
     port: 80
-  publicFunctionsRateLimit:
-    routeNamespace: monolith-public
-    routeName: monolith-public-functions
-    # Match Envoy Gateway's listener-level descriptor capacity at route scope.
-    # Route-specific LocalRateLimit configuration replaces the listener config.
-    maxDynamicDescriptors: 10000
+  # Route-scoped descriptor capacity for every public route whose LocalRateLimit
+  # keys clients with clientSelectors. Envoy Gateway emits a route-specific
+  # LocalRateLimit for each (replacing the listener-level filter config), so its
+  # omitted max_dynamic_descriptors would default to 20 and evict exhausted
+  # buckets under ordinary client cardinality. Match the listener-level capacity.
+  publicRateLimitRoutes:
+    - suffix: page
+      routeNamespace: monolith-public
+      routeName: monolith-public-public
+      maxDynamicDescriptors: 10000
+    - suffix: functions
+      routeNamespace: monolith-public
+      routeName: monolith-public-functions
+      maxDynamicDescriptors: 10000
 
 # --- Cloudflare Tunnel ---
 tunnel:
