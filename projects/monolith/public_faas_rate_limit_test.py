@@ -153,6 +153,10 @@ def _translation_resources(public_docs: list[dict]) -> list[dict]:
         ("HTTPRoute", "monolith-public-functions"),
         ("SecurityPolicy", "monolith-public-functions-origin"),
         ("Service", "monolith-public-web"),
+        ("BackendTrafficPolicy", "monolith-public-public-rate-limit"),
+        ("HTTPRoute", "monolith-public-public"),
+        ("SecurityPolicy", "monolith-public-public-origin"),
+        ("Service", "monolith-public-frontend"),
     }
     for document in public_docs:
         identity = (document.get("kind"), document.get("metadata", {}).get("name"))
@@ -317,11 +321,12 @@ def _request(
     port: int,
     identity: str | None = None,
     *,
+    path: str = _FUNCTION_PATH,
     worker: str | None = None,
     duplicate_identity: str | None = None,
 ) -> int:
     connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-    connection.putrequest("GET", _FUNCTION_PATH, skip_host=True)
+    connection.putrequest("GET", path, skip_host=True)
     connection.putheader("Host", _HOST)
     if identity is not None:
         connection.putheader("CF-Connecting-IP", identity)
@@ -397,9 +402,19 @@ def test_active_gke_render_scopes_identity_and_preserves_other_budgets():
         "monolith-public-functions",
         "monolith-public-ember-reads",
     }
-    assert policies["monolith-public-public"]["spec"]["rateLimit"]["local"][
+    page_rules = policies["monolith-public-public"]["spec"]["rateLimit"]["local"][
         "rules"
-    ] == [{"limit": {"requests": 100, "unit": "Minute"}}]
+    ]
+    assert len(page_rules) == 2
+    page_fallback, page_per_client = page_rules
+    assert "clientSelectors" not in page_fallback
+    assert page_fallback["limit"] == {"requests": 100, "unit": "Minute"}
+    assert page_per_client["limit"] == page_fallback["limit"]
+    page_headers = page_per_client["clientSelectors"][0]["headers"]
+    assert page_headers[0] == {"name": "CF-Connecting-IP", "type": "Distinct"}
+    assert page_headers[1]["name"] == "CF-Connecting-IP"
+    assert page_headers[1]["type"] == "RegularExpression"
+
     assert policies["monolith-public-ember-reads"]["spec"]["rateLimit"]["local"][
         "rules"
     ] == [{"limit": {"requests": 600, "unit": "Minute"}}]
@@ -440,6 +455,11 @@ def test_active_gke_render_scopes_identity_and_preserves_other_budgets():
             },
         ],
     }
+
+    page_security = _named(
+        documents, "SecurityPolicy", "monolith-public-public-origin"
+    )["spec"]["authorization"]
+    assert page_security == security
 
 
 def test_gateway_render_enforces_the_cloudflared_origin_boundary():
@@ -485,6 +505,18 @@ def test_gateway_render_enforces_the_cloudflared_origin_boundary():
                 }
             ],
         }
+
+        page_patch = _named(
+            documents,
+            "EnvoyPatchPolicy",
+            "cloudflare-ingress-page-rate-limit-capacity",
+        )
+        assert page_patch["metadata"]["namespace"] == "envoy-gateway-system"
+        assert page_patch["spec"]["targetRef"] == descriptor_patch["spec"]["targetRef"]
+        assert page_patch["spec"]["jsonPatches"][0]["operation"]["jsonPath"] == (
+            '..routes[?(@.name=~"^httproute/monolith-public/monolith-public-public/")]'
+        )
+        assert page_patch["spec"]["jsonPatches"][0]["operation"]["value"] == 10000
 
         service = _named(documents, "Service", "cloudflare-ingress")
         assert service["spec"]["type"] == "ClusterIP"
@@ -562,3 +594,26 @@ def test_envoy_refills_the_translated_descriptor_bucket():
         assert _request(port, identity) == 429
         time.sleep(1.1)
         assert _request(port, identity) == 200
+
+
+def test_envoy_isolates_the_apex_page_budget_per_client():
+    with _running_envoy(_render_public()) as port:
+        # A scanner sweep on the catch-all page route (Laravel/Ignition probes
+        # such as /js/.env fall here) must no longer drain one gateway-wide
+        # bucket. Each client owns its own 100/min budget instead.
+        scanner = "203.0.113.70"
+        assert [
+            _request(port, scanner, path="/js/.env") for _ in range(100)
+        ] == [200] * 100
+        assert _request(port, scanner, path="/js/.env") == 429
+        assert _request(port, scanner, path="/") == 429
+
+        # A different client on the same page route is unaffected by the sweep.
+        for address in range(1, 11):
+            assert _request(port, f"198.51.100.{address}", path="/") == 200
+
+        # A missing identity still has its own fail-safe bucket, separate from
+        # any valid client, and the worker-rejection policy covers the route.
+        assert _request(port, path="/") == 200
+        assert _request(port, "192.0.2.70", worker="jomcgi.dev", path="/") == 403
+        assert _request(port, _CROSS_ZONE_WORKER_IP, worker="other.example", path="/") == 403
