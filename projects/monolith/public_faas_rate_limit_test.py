@@ -602,9 +602,9 @@ def test_envoy_isolates_the_apex_page_budget_per_client():
         # such as /js/.env fall here) must no longer drain one gateway-wide
         # bucket. Each client owns its own 100/min budget instead.
         scanner = "203.0.113.70"
-        assert [
-            _request(port, scanner, path="/js/.env") for _ in range(100)
-        ] == [200] * 100
+        assert [_request(port, scanner, path="/js/.env") for _ in range(100)] == [
+            200
+        ] * 100
         assert _request(port, scanner, path="/js/.env") == 429
         assert _request(port, scanner, path="/") == 429
 
@@ -616,4 +616,7 @@ def test_envoy_isolates_the_apex_page_budget_per_client():
         # any valid client, and the worker-rejection policy covers the route.
         assert _request(port, path="/") == 200
         assert _request(port, "192.0.2.70", worker="jomcgi.dev", path="/") == 403
-        assert _request(port, _CROSS_ZONE_WORKER_IP, worker="other.example", path="/") == 403
+        assert (
+            _request(port, _CROSS_ZONE_WORKER_IP, worker="other.example", path="/")
+            == 403
+        )
