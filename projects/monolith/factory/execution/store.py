@@ -1360,6 +1360,12 @@ def clear_ember_bindings_by_ember_id(session: Session, ember_id: str) -> list[in
     ).all()
     ids: list[int] = []
     for row in rows:
+        # These owners need the fence and binding as evidence. Check them before
+        # release_ownerless_fence_locked, which mutates a releasable fence.
+        if admission.cleanup_pending(session, row) or has_unknown_outcome(
+            session, row.id
+        ):
+            continue
         if row.result_receipt_fence_id is not None:
             from factory.execution import result_receipts
 
@@ -1367,12 +1373,6 @@ def clear_ember_bindings_by_ember_id(session: Session, ember_id: str) -> list[in
                 session, row, row.result_receipt_fence_id
             ):
                 continue
-        # A stale cleanup observation must not erase the identity needed by
-        # the original POST to clear its committed receipt fence.
-        if admission.cleanup_pending(session, row) or has_unknown_outcome(
-            session, row.id
-        ):
-            continue
         if row.ember_lineage_id:
             row.prior_ember_lineage_id = row.ember_lineage_id
         if row.cli_session_id:
