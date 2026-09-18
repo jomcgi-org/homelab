@@ -63,6 +63,6 @@ pydantic-settings>=2.14.2
 pytest>=9.0.3
 pytest-asyncio>=1.4,<2
 python-multipart>=0.0.31
-soupsieve>=2.8.4
+soupsieve>=2.9
 urllib3>=2.7.0
 zeroconf>=0.149.16
