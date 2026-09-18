@@ -70,6 +70,10 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.jobs.dbSecretName }}
                   key: {{ .Values.jobs.dbSecretKey }}
+            {{- if .Values.backend.otelEndpoint }}
+            - name: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+              value: {{ .Values.backend.otelEndpoint | quote }}
+            {{- end }}
             - name: STARS_GRID_SOURCE_S3_ENDPOINT
               value: {{ $job.source.endpoint | quote }}
             - name: STARS_GRID_SOURCE_S3_REGION
