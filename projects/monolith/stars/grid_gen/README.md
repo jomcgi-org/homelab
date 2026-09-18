@@ -9,7 +9,8 @@ Each run downloads four operator-selected objects from one S3-compatible store:
 
 - a Natural Earth admin-1 GeoJSON containing Scotland boundaries
 - a Scotland roads GeoJSON
-- a georeferenced RGB light-pollution raster
+- a georeferenced RGB light-pollution raster with a declared nodata value and
+  every uncovered background pixel encoded as nodata
 - a georeferenced DEM raster with valid elevation coverage at every retained
   point
 
@@ -23,10 +24,14 @@ already-managed Secret when the selected store differs. No credentials belong
 in values.
 
 The job creates a unique directory under the `emptyDir` mounted at `/work`,
-downloads each object there, and deletes the directory after the run. Configure
+downloads each object there, and deletes the directory after the run. A second
+`emptyDir` at `/tmp` provides writable temporary and HOME storage while the
+container root filesystem remains read-only. Configure
 `temporaryStorage.sizeLimit` and the ephemeral-storage requests and limits for
 the selected dataset sizes. `spacingKm` controls mesh density and
-`maxRoadDistanceM` controls road accessibility.
+`maxRoadDistanceM` controls road accessibility. The light-pollution stage fails
+closed when the raster does not declare nodata, preventing an uncovered black
+background pixel from being classified as a pristine site.
 
 The production CronWorkflow is intentionally suspended. After setting and
 reviewing all input values, submit a one-off Workflow from the template:
