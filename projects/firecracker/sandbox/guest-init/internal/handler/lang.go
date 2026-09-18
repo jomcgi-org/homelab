@@ -156,13 +156,11 @@ var languageSpecs = map[string]Spec{
 		Run:        []string{"elixir", "main.exs"},
 		Env: []string{
 			"ERL_CRASH_DUMP=/dev/null",
-			// +fnu sets the VM's native name encoding to utf8. Without it every
-			// run prints "the VM is running with native name encoding of latin1
-			// which may cause Elixir to malfunction as it expects utf8" to
-			// stderr, and any snippet touching a non-ASCII filename misbehaves.
-			// The usual alternative, a UTF-8 locale, is not available: the guest
-			// image ships no locale data.
-			"ELIXIR_ERL_OPTIONS=-noinput +fnu",
+			// +fnu sets the VM's native filename encoding to utf8. The standard_io
+			// device is separate and otherwise starts in latin1, corrupting UTF-8
+			// before the handler can capture it. Set that device directly because
+			// the guest image has no locale data from which to derive unicode.
+			"ELIXIR_ERL_OPTIONS=-noinput +fnu -kernel standard_io_encoding unicode",
 		},
 		Warm:           []string{"elixir", "-e", ":ok"},
 		ExcludeOutputs: []string{"main.exs"},

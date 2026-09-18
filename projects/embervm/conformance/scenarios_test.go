@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -155,8 +156,22 @@ func TestTaskAndInvariantScenariosAgainstFakeControlPlane(t *testing.T) {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"exit_code":0,"stdout":"conformance ok\n"}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/workloads/sandbox-elixir/tasks":
+			if r.URL.Query().Get("wait") != "true" || !strings.HasPrefix(r.Header.Get("Idempotency-Key"), "1.2.3-elixir-unicode-") {
+				http.Error(w, "bad request", http.StatusBadRequest)
+				return
+			}
+			var request struct {
+				Code string `json:"code"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.Code != elixirUnicodeSource {
+				http.Error(w, "wrong Elixir source", http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"exit_code":0,"stdout":"non-ascii round trip: CAFÉ ΑΒΓ\n","stderr":""}`))
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/nodes":
-			_, _ = w.Write([]byte(`{"nodes":[{"facts":{"live_vms":0,"workloads":{"sandbox-python":{}}}}]}`))
+			_, _ = w.Write([]byte(`{"nodes":[{"facts":{"live_vms":0,"workloads":{"sandbox-python":{},"sandbox-elixir":{}}}}]}`))
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/conformance":
 			if r.URL.Query().Get("since_ts_ms") != "1000" {
 				http.Error(w, "missing suite start", http.StatusBadRequest)
@@ -169,13 +184,34 @@ func TestTaskAndInvariantScenariosAgainstFakeControlPlane(t *testing.T) {
 	}))
 	defer server.Close()
 
-	cfg := config{baseURL: server.URL, tokenFile: tokenFile, chartVersion: "1.2.3", taskWorkload: "sandbox-python", minPassingInvariants: 4}
+	cfg := config{baseURL: server.URL, tokenFile: tokenFile, chartVersion: "1.2.3", taskWorkload: "sandbox-python", elixirWorkload: "sandbox-elixir", minPassingInvariants: 4}
 	client := &controlPlaneClient{baseURL: server.URL, tokenFile: tokenFile, http: server.Client()}
 	if got := runS1(context.Background(), cfg, client, time.Unix(1, 0)); got.Verdict != verdictPass {
 		t.Fatalf("S1 = %#v", got)
 	}
 	if got := runS4(context.Background(), cfg, client, time.Unix(1, 0)); got.Verdict != verdictPass {
 		t.Fatalf("S4 = %#v", got)
+	}
+	if got := runS5(context.Background(), cfg, client, time.Unix(1, 0)); got.Verdict != verdictPass {
+		t.Fatalf("S5 = %#v", got)
+	}
+}
+
+func TestRunS5RejectsMangledElixirStdout(t *testing.T) {
+	tokenFile := t.TempDir() + "/token"
+	if err := os.WriteFile(tokenFile, []byte("test-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"exit_code":0,"stdout":"non-ascii round trip: CAF� \\x{391}\\x{392}\\x{393}\n","stderr":""}`))
+	}))
+	defer server.Close()
+
+	cfg := config{baseURL: server.URL, tokenFile: tokenFile, chartVersion: "test", elixirWorkload: "sandbox-elixir"}
+	client := &controlPlaneClient{baseURL: server.URL, tokenFile: tokenFile, http: server.Client()}
+	got := runS5(context.Background(), cfg, client, time.Unix(1, 0))
+	if got.Verdict != verdictFail || !strings.Contains(got.Detail, `\\x{391}`) {
+		t.Fatalf("S5 = %#v, want failure containing original escaped output", got)
 	}
 }
 

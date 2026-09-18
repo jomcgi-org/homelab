@@ -435,6 +435,7 @@ conformance:
   readyWait: 15m
   taskWorkload: sandbox-python
   sessionWorkload: pi-runtime
+  elixirWorkload: sandbox-elixir
   idleBankSeconds: 20
   sweepGraceSeconds: 15
   minPassingInvariants: 4
@@ -445,6 +446,7 @@ conformance:
     s2: 180s
     s3: 60s
     s4: 10s
+    s5: 60s
   resources:
     requests:
       cpu: 50m
