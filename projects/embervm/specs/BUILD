@@ -384,7 +384,7 @@ genrule(
           "\"$(location %s)\" " % _JAR +
           "\"$(location lineage_handoff.tla)\" " +
           "\"$(location lineage_handoff_delete_early.cfg)\" " +
-          "\"$@\" fail",
+          "\"$@\" fail WorkspaceAvailable",
     tags = ["verification"],
     tools = ["//bazel/tla:tlc.sh"],
 )
@@ -401,7 +401,7 @@ genrule(
           "\"$(location %s)\" " % _JAR +
           "\"$(location lineage_handoff.tla)\" " +
           "\"$(location lineage_handoff_volatile_claim.cfg)\" " +
-          "\"$@\" fail",
+          "\"$@\" fail NeverTwoLiveHeirs",
     tags = ["verification"],
     tools = ["//bazel/tla:tlc.sh"],
 )
@@ -418,7 +418,7 @@ genrule(
           "\"$(location %s)\" " % _JAR +
           "\"$(location lineage_handoff.tla)\" " +
           "\"$(location lineage_handoff_destroying_eligible.cfg)\" " +
-          "\"$@\" fail",
+          "\"$@\" fail TerminalPredecessorOnly",
     tags = ["verification"],
     tools = ["//bazel/tla:tlc.sh"],
 )
@@ -435,7 +435,7 @@ genrule(
           "\"$(location %s)\" " % _JAR +
           "\"$(location lineage_handoff.tla)\" " +
           "\"$(location lineage_handoff_no_generation.cfg)\" " +
-          "\"$@\" fail",
+          "\"$@\" fail CommonAncestorDivergenceDetected",
     tags = ["verification"],
     tools = ["//bazel/tla:tlc.sh"],
 )
@@ -452,7 +452,7 @@ genrule(
           "\"$(location %s)\" " % _JAR +
           "\"$(location lineage_handoff.tla)\" " +
           "\"$(location lineage_handoff_relinquish_order.cfg)\" " +
-          "\"$@\" fail",
+          "\"$@\" fail DurableRelinquishBeforeHandoff",
     tags = ["verification"],
     tools = ["//bazel/tla:tlc.sh"],
 )

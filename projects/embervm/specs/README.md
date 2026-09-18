@@ -481,7 +481,7 @@ simultaneous loss of local storage and S3, or network partitions that violate
 the RPC outcome abstraction. The scheduler is adversarial and has no fairness
 assumption. None of the desired invariants is an environment assumption.
 
-| cfg | switches changed from positive | checks | expectation | bounded result |
+| cfg | switches changed from positive | checks | expectation | historical local observation |
 | --- | --- | --- | --- | --- |
 | `lineage_handoff.cfg` | none | `TypeOK`, all four requested invariants, and durable relinquish ordering | pass | exhaustive: 5,323 generated, 2,094 distinct, depth 22, 0 queued |
 | `lineage_handoff_delete_early.cfg` | export initiation permits deletion | `WorkspaceAvailable` only | fail | intended `WorkspaceAvailable` counterexample, depth 6 |
@@ -491,10 +491,17 @@ assumption. None of the desired invariants is an environment assumption.
 | `lineage_handoff_relinquish_order.cfg` | heir can start before durable marker | `DurableRelinquishBeforeHandoff` only | fail | intended `DurableRelinquishBeforeHandoff` counterexample, depth 5 |
 
 Each negative configuration declares only its intended invariant. The shared
-driver additionally requires TLC to report an actual invariant violation. A
+driver additionally requires TLC to name that exact invariant as violated. A
 parse error, deadlock, Java failure, timeout, empty negative search, or unrelated
 invariant cannot satisfy the target. Positive completion additionally requires
 TLC's `0 states left on queue` line, so a `stopAfter` truncation is not a pass.
+
+The counts and depths in the table are preserved historical local observations,
+not registered-CI acceptance evidence. The pull request records the final-head
+Linux invocation separately. Its positive target must pass the completion and
+empty-queue assertion above, and each negative target must terminate on its
+named counterexample; a green umbrella check without those selected targets is
+not sufficient.
 
 The four requested invariants are:
 
