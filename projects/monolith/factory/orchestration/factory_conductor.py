@@ -2396,7 +2396,7 @@ def _prepare_add(task: dict, policy: dict, source: dict) -> dict:
     review_cost = _review_reservation_usd(task, policy, model) if review else None
     bounds = _policy_bounds(policy, source, review_cost=review_cost)
     if review_cost is not None:
-        bounds["max_cost_usd"] = max(bounds["max_cost_usd"], review_cost)
+        bounds["max_cost_usd"] = review_cost
     return {
         "op": "add_node",
         "role": role,
@@ -4820,10 +4820,15 @@ def _escalate_dispatch_refusal(
     task: dict, node_key: str, key: str, refusal: ReservationResult, runs: list[dict]
 ) -> None:
     target = refusal.used + refusal.requested
+    # Funding-disabled path only: with factoryConductorFundingEnabled the
+    # refusal goes to factory_funding.request above and this card never posts.
+    # raise_envelope re-queues the same receipt without moving the envelope
+    # (the #6134 overlay is not wired here yet), so the label says the raise is
+    # by hand; wait is a terminal defer that cancels the task.
     if target > refusal.allowed:
-        label = f"Raise {refusal.limit} by {target - refusal.allowed:g} to {target:g}"
+        label = f"Continue once {refusal.limit} is raised by hand to {target:g}"
     else:
-        label = f"Raise {refusal.limit} allowance by {max(0, target - refusal.allowance):g} to {target:g}"
+        label = f"Continue once the {refusal.limit} allowance is raised by hand to {target:g}"
     reason = (
         f"Dispatch of {node_key} refused by {refusal.limit}: used {refusal.used}, "
         f"requested {refusal.requested}, ceiling {refusal.allowed}, allowance {refusal.allowance}."
@@ -4851,7 +4856,7 @@ def _escalate_dispatch_refusal(
                 },
                 {
                     "key": "wait",
-                    "label": "Wait for the limit to change",
+                    "label": "Defer this delivery (cancels the task; relabel the issue to restart)",
                     "effect": "defer",
                     "detail": {"comment": reason},
                 },
