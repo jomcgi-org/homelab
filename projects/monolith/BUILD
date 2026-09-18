@@ -291,16 +291,8 @@ py_library(
 
 py_venv_binary(
     name = "stars_grid_job",
-    srcs = ["stars/grid_gen/job.py"],
-    imports = ["."],
     main = "stars/grid_gen/job.py",
     visibility = ["//:__subpackages__"],
-    deps = [
-        ":stars_grid_generator",
-        ":stars_grid_ingest",
-        "@pip//boto3",
-        "@pip//botocore",
-    ],
 )
 
 # Progress-ingest entrypoint (ADR agents/051): same source closure as :main,
