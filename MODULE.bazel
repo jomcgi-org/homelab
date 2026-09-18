@@ -61,14 +61,15 @@ bazel_dep(name = "platforms", version = "1.0.0")
 bazel_dep(name = "rules_cc", version = "0.2.17")
 bazel_dep(name = "toolchains_buildbuddy", version = "0.0.4")
 
-# Kubernetes 1.35.8 strict schemas for //bazel/helm:chart_admissibility_test.
+# Kubernetes 1.36.3 strict schemas for //bazel/helm:chart_admissibility_test.
 # strip_prefix exposes only the hub version instead of every historical schema
 # directory in the upstream archive.
 http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 http_file = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_file")
+multiarch_http_file = use_repo_rule("//bazel/tools/http:multiarch_http_file.bzl", "multiarch_http_file")
 
 http_archive(
-    name = "kubernetes_json_schema_1_35_8",
+    name = "kubernetes_json_schema_1_36_3",
     build_file_content = """
 exports_files(glob(["*.json"]), visibility = ["//visibility:public"])
 
@@ -79,20 +80,18 @@ filegroup(
 )
 """,
     sha256 = "586a17a884fba2229149fdc394c94b3a38a39c90921386b130c40f4f1f4857be",
-    strip_prefix = "kubernetes-json-schema-5a69f8365c9d3ed7de997f5365e22481cf775fa2/v1.35.8-standalone-strict",
+    strip_prefix = "kubernetes-json-schema-5a69f8365c9d3ed7de997f5365e22481cf775fa2/v1.36.3-standalone-strict",
     urls = ["https://github.com/yannh/kubernetes-json-schema/archive/5a69f8365c9d3ed7de997f5365e22481cf775fa2.tar.gz"],
 )
 
 # kubeconform is a test-only Linux tool. CI and the BuildBuddy executors are
-# amd64 Linux, so fetching it directly avoids hand-editing the multitool lock,
-# whose companion updater can update existing entries but cannot add one.
-http_archive(
+# amd64 Linux, so only that platform is pinned here.
+multiarch_http_file(
     name = "kubeconform_0_8_0_linux_amd64",
-    build_file_content = """
-exports_files(["kubeconform"], visibility = ["//visibility:public"])
-""",
-    sha256 = "9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883",
-    urls = ["https://github.com/yannh/kubeconform/releases/download/v0.8.0/kubeconform-linux-amd64.tar.gz"],
+    amd64_sha256 = "9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883",
+    amd64_url = "https://github.com/yannh/kubeconform/releases/download/v0.8.0/kubeconform-linux-amd64.tar.gz",
+    binary_name = "kubeconform",
+    extract_path = "kubeconform",
 )
 
 # Atlas, Cilium, and CloudNativePG do not ship their CRDs in the local wrapper
@@ -786,9 +785,6 @@ bazel_demo_workspace(
         "https://github.com/bazelbuild/rules_python/releases/download/0.24.0/rules_python-0.24.0.tar.gz",
     ],
 )
-
-# Download multiarch binaries (raw binary files)
-multiarch_http_file = use_repo_rule("//bazel/tools/http:multiarch_http_file.bzl", "multiarch_http_file")
 
 # Linux-only acceptance tools for the public Envoy Gateway policy guard. egctl
 # is pinned to the installed gateway chart and Envoy matches that release's

@@ -27,6 +27,7 @@ MANIFEST_SETS = [
     "//projects/inference/deploy:manifests/all.yaml",
     "//projects/inference/deploy:manifests_gke/all.yaml",
     "//projects/mcp/context-forge-gateway/deploy:manifests/all.yaml",
+    "//projects/mcp/context-forge-gateway/deploy:manifests_gke/all.yaml",
     "//projects/monolith-agents/deploy:manifests/all.yaml",
     "//projects/monolith-agents/deploy:manifests_gke/all.yaml",
     "//projects/monolith-public/deploy:manifests/all.yaml",
@@ -65,11 +66,17 @@ MANIFEST_SETS = [
     "//projects/platform/spire:manifests_gke/all.yaml",
 ]
 
-# Explicit render skips. Entries stay out of MANIFEST_SETS only for the stated
-# reason, so a chart cannot disappear from the gate without leaving reviewable
-# evidence here.
+# Documentation-only record of explicit render skips. Entries stay out of
+# MANIFEST_SETS only for the stated reason, so a chart cannot disappear from
+# the gate without leaving reviewable evidence here. The completeness test
+# below enforces the record against the source tree.
 SKIPPED_MANIFEST_SETS = {
-    "projects/mcp/context-forge-gateway/deploy/values-gke.yaml": "The dormant overlay intentionally sets replicaCount to 0, but the upstream mcp-stack values schema requires at least 1. Argo CD carries skipSchemaValidation for this overlay.",
+    "projects/embervm/dev/deploy/values-recovery-gke.yaml": "Recovery overlay, not rendered by CI.",
+    "projects/monolith/dev/deploy/values-recovery-gke.yaml": "Recovery overlay, not rendered by CI.",
+    "projects/platform/atlas-operator/deploy/values.yaml": "Remote chart with no local Chart.yaml or render target.",
+    "projects/platform/cf-ingress-library": "Library chart, which renders nothing.",
+    "projects/platform/cloudnative-pg/deploy/values.yaml": "Remote chart with no local Chart.yaml or render target.",
+    "projects/shared/helm/homelab-library": "Library chart, which renders nothing.",
 }
 
 # Most CRD definitions are present in the rendered charts and are converted at
@@ -97,23 +104,30 @@ sh_test(
     srcs = ["chart-admissibility-test.sh"],
     args = [
         "$(rootpath @multitool//tools/helm)",
-        "$(rootpath @kubeconform_0_8_0_linux_amd64//:kubeconform)",
+        "$(rootpath @kubeconform_0_8_0_linux_amd64//:binary)",
         "$(rootpath :crd_schemas)",
         "$(rootpath //bazel/helm:testdata/bad-secretkeyref/Chart.yaml)",
-        "$(rootpath @kubernetes_json_schema_1_35_8//:secret-v1.json)",
+        "$(rootpath @kubernetes_json_schema_1_36_3//:secret-v1.json)",
     ] + ["$(rootpath {})".format(source) for source in EXTERNAL_CRD_SOURCES] + ["--"] + [
         "$(rootpath {})".format(manifest)
         for manifest in MANIFEST_SETS
     ],
     data = [
         ":crd_schemas",
-        "@kubernetes_json_schema_1_35_8//:schemas",
-        "@kubernetes_json_schema_1_35_8//:secret-v1.json",
-        "@kubeconform_0_8_0_linux_amd64//:kubeconform",
+        "@kubernetes_json_schema_1_36_3//:schemas",
+        "@kubernetes_json_schema_1_36_3//:secret-v1.json",
+        "@kubeconform_0_8_0_linux_amd64//:binary",
         "@multitool//tools/helm",
         "//bazel/helm:testdata/bad-secretkeyref/Chart.yaml",
     ] + glob(["testdata/bad-secretkeyref/templates/**"]) + EXTERNAL_CRD_SOURCES + MANIFEST_SETS,
     timeout = "long",
+)
+
+sh_test(
+    name = "chart_admissibility_completeness_test",
+    srcs = ["chart-admissibility-completeness-test.sh"],
+    args = ["$(rootpath chart-admissibility-completeness-test.sh)"],
+    tags = ["local"],
 )
 
 sh_test(

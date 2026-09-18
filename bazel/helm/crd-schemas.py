@@ -23,6 +23,8 @@ def _close_objects(value, *, root=False):
             result[key] = [_close_objects(branch, root=True) for branch in item]
         else:
             result[key] = _close_objects(item)
+    # Keep objects closed even beside x-kubernetes-preserve-unknown-fields:
+    # this is stricter than the API server and matches openapi2jsonschema.
     if not root and "properties" in result and "additionalProperties" not in result:
         result["additionalProperties"] = False
     return result

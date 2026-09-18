@@ -25,7 +25,7 @@ fi
 shift
 MANIFESTS=("$@")
 
-KUBERNETES_VERSION="1.35.8"
+KUBERNETES_VERSION="1.36.3"
 BUILTIN_SCHEMA_LOCATION="$(dirname "$SCHEMA_ANCHOR")/{{ .ResourceKind }}{{ .KindSuffix }}.json"
 CRD_SCHEMA_ROOT="${TEST_TMPDIR:-$PWD}/crd-schemas"
 CRD_SCHEMA_LOCATION="${CRD_SCHEMA_ROOT}/{{ .Group }}/{{ .ResourceKind }}_{{ .ResourceAPIVersion }}.json"

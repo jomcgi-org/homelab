@@ -14,16 +14,12 @@ helm_chart(
     lint = False,
     visibility = [
         "//overlays:__subpackages__",
-        "//projects/mcp/context-forge-gateway:__subpackages__",
+        "//projects/mcp/context-forge-gateway:__subpackages__",  # keep
     ],
 )
 
-# No _gke render target on purpose: the GKE overlay sets replicaCount: 0
-# for the dormant deployment, which the upstream mcp-stack schema rejects
-# (>= 1). The live Application carries skipSchemaValidation for exactly
-# this reason, but helm_template_test has no schema-skip flag, so a CI
-# render of that composition can never pass. The home render target above
-# still proves the chart; the GKE overlay is validated by ArgoCD at sync.
+# The deploy package renders both the home and GKE compositions. The GKE
+# overlay keeps replicaCount at the upstream mcp-stack minimum of 1.
 
 # The team-mapping reconciler is shipped inside the chart (files/) and mounted
 # from a ConfigMap, so it is not a Python package gazelle can see. Declare the
