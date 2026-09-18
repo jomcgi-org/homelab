@@ -35,6 +35,7 @@ class _Session:
         repo_diff=None,
         quality=None,
         burst=None,
+        agent_reports=None,
     ):
         self.results = iter(
             [
@@ -51,6 +52,13 @@ class _Session:
                 ),
                 _Result(repo_diff or SimpleNamespace(last_sha=None, last_run_at=None)),
                 _Result(burst),
+                _Result(
+                    agent_reports
+                    or SimpleNamespace(
+                        written_by_reporter_kind={},
+                        failed_writes_24h=0,
+                    )
+                ),
             ]
         )
         self.calls = []
@@ -140,6 +148,28 @@ def test_kg_health_reports_rejected_and_corrected_counts():
     assert "extraction_rejected" in quality_sql
     assert "extraction_passes" in quality_sql
     assert quality_params == {"version": EXTRACTION_VERSION}
+
+
+def test_kg_health_reports_agent_report_writes_and_failures():
+    session = _Session(
+        SimpleNamespace(queued=0, held=0, oldest_seconds=None),
+        SimpleNamespace(failed_24h=0, atoms_24h=0, last_success_at=None),
+        agent_reports=SimpleNamespace(
+            written_by_reporter_kind={"workload": 7, "human": 2},
+            failed_writes_24h=3,
+        ),
+    )
+
+    result = _kg_health_core(session, 40)
+
+    assert result["agent_reports"] == {
+        "written_24h_by_reporter_kind": {"workload": 7, "human": 2},
+        "failed_writes_24h": 3,
+    }
+    report_sql, report_params = session.calls[7]
+    assert "source = 'agent-report'" in report_sql
+    assert "knowledge.agent_report_write_failures" in report_sql
+    assert report_params == {}
 
 
 def test_kg_health_reports_stale_open_disputes_and_last_sweep():

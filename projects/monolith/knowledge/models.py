@@ -283,6 +283,18 @@ class RawInput(SQLModel, table=True):
     extra: dict[str, Any] = Field(default_factory=dict, sa_column=Column(_JSONB))
 
 
+class AgentReportWriteFailure(SQLModel, table=True):
+    """Durable, secret-free record of an agent report persistence failure."""
+
+    __tablename__ = "agent_report_write_failures"
+    __table_args__ = {"schema": "knowledge", "extend_existing": True}
+
+    id: int | None = Field(default=None, primary_key=True)
+    reporter_kind: str = Field(sa_column=Column(String, nullable=False))
+    error_type: str = Field(sa_column=Column(String, nullable=False))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 class AtomRawProvenance(SQLModel, table=True):
     __tablename__ = "atom_raw_provenance"
     __table_args__ = {"schema": "knowledge", "extend_existing": True}

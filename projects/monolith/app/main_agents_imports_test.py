@@ -25,14 +25,14 @@ import os
 import subprocess
 import sys
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest  # noqa: F401  (keeps the gazelle pytest dep; see module docstring)
 from sqlalchemy import text
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from auth.principal import Authority, Principal, PrincipalKind
-from knowledge.models import RawInput
+from knowledge.models import AgentReportWriteFailure, Note, RawInput
 from knowledge.raw_write import write_raw
 
 # Private surface that must never land in the agents import closure. Each entry
@@ -247,7 +247,7 @@ def agents_db_fixture(tmp_path, monkeypatch):
             )
             session.commit()
         monkeypatch.setattr(
-            "knowledge.mcp.upload_raw",
+            "knowledge.raw_write.upload_raw",
             lambda raw_id, content: uploads.__setitem__(raw_id, content),
         )
         yield SimpleNamespace(engine=engine, uploads=uploads)
@@ -269,8 +269,8 @@ def _agents_principal() -> Principal:
     )
 
 
-def test_report_knowledge_runs_from_agents_import_closure(agents_db) -> None:
-    """The pruned agents catalogue can persist and queue a knowledge report."""
+def test_reporting_tools_run_from_agents_import_closure(agents_db) -> None:
+    """All reporting tools run without reaching the private ingest module."""
     import app.agents_main as agents_main
 
     loaded = _loaded_modules()
@@ -278,27 +278,55 @@ def test_report_knowledge_runs_from_agents_import_closure(agents_db) -> None:
     assert "knowledge.ingest_queue" not in loaded
     agents_main.build_agent_mcp_app(resolver=object())
 
+    with Session(agents_db.engine) as session:
+        session.add(
+            Note(
+                note_id="agents-closure-fact",
+                path="agents-closure-fact.md",
+                title="Agents closure fact",
+                content_hash="agents-closure-fact-hash",
+                content="Current body",
+                type="fact",
+            )
+        )
+        session.commit()
+
     with (
         patch("knowledge.mcp.get_engine", return_value=agents_db.engine),
         patch("knowledge.mcp.current_principal", return_value=_agents_principal()),
+        patch("knowledge.mcp._notify", AsyncMock(return_value={"ok": True})),
     ):
-        result = asyncio.run(
+        report_result = asyncio.run(
             agents_main.report_knowledge(
                 "Agents can persist reports",
                 evidence=["projects/monolith/app/agents_main.py"],
             )
         )
+        dispute_result = asyncio.run(
+            agents_main.dispute_fact(
+                "agents-closure-fact",
+                "The checked-out source contradicts this",
+            )
+        )
+        distress_result = asyncio.run(
+            agents_main.report_distress("Agent is blocked", "blocked")
+        )
 
-    assert result["status"] == "queued"
+    assert report_result["status"] == "queued"
+    assert dispute_result["status"] == "disputed"
+    assert distress_result["status"] == "notified"
+    assert "knowledge.ingest_queue" not in sys.modules
     with Session(agents_db.engine) as session:
         raw = session.exec(
-            select(RawInput).where(RawInput.raw_id == result["raw_id"])
+            select(RawInput).where(RawInput.raw_id == report_result["raw_id"])
         ).one()
         jobs = session.execute(text("SELECT * FROM routine_jobs")).all()
         assert raw.extra["evidence"] == ["projects/monolith/app/agents_main.py"]
         assert raw.extra["status"] == "queued"
-        assert len(jobs) == 1
+        assert len(jobs) == 2
         assert raw.raw_id in agents_db.uploads
+        assert dispute_result["raw_id"] in agents_db.uploads
+        assert distress_result["intervention_id"] in agents_db.uploads
 
 
 def test_raw_write_coerces_evidence_to_json_lists(agents_db) -> None:
@@ -310,6 +338,7 @@ def test_raw_write_coerces_evidence_to_json_lists(agents_db) -> None:
             source="agent-report",
             scope="repo:jomcgi-org/homelab",
             evidence=["one", "two"],
+            status="queued",
         )
         without_evidence, _ = write_raw(
             session,
@@ -317,6 +346,7 @@ def test_raw_write_coerces_evidence_to_json_lists(agents_db) -> None:
             source="agent-report",
             scope="repo:jomcgi-org/homelab",
             evidence=None,
+            status="queued",
         )
         string_evidence, _ = write_raw(
             session,
@@ -324,6 +354,7 @@ def test_raw_write_coerces_evidence_to_json_lists(agents_db) -> None:
             source="agent-report",
             scope="repo:jomcgi-org/homelab",
             evidence="one",
+            status="queued",
         )
         raw_ids = (
             with_evidence.raw_id,
@@ -342,16 +373,21 @@ def test_raw_write_coerces_evidence_to_json_lists(agents_db) -> None:
 
 
 def test_report_knowledge_returns_structured_write_error(agents_db) -> None:
-    """A database failure is visible to the guest and increments the counter."""
+    """A write failure has a safe response and a durable health record."""
     import knowledge.mcp as knowledge_mcp
 
-    before = knowledge_mcp.REPORT_KNOWLEDGE_METRICS["write_errors"]
     with (
         patch("knowledge.mcp.get_engine", return_value=agents_db.engine),
         patch("knowledge.mcp.current_principal", return_value=_agents_principal()),
-        patch("knowledge.mcp.write_raw", side_effect=RuntimeError("write failed")),
+        patch(
+            "knowledge.mcp.persist_raw_with_status",
+            side_effect=RuntimeError("postgresql://secret@db/write failed"),
+        ),
     ):
         result = asyncio.run(knowledge_mcp.report_knowledge("A report"))
 
-    assert result == {"ok": False, "reason": "write failed"}
-    assert knowledge_mcp.REPORT_KNOWLEDGE_METRICS["write_errors"] == before + 1
+    assert result == {"error": "report could not be persisted: RuntimeError"}
+    with Session(agents_db.engine) as session:
+        failure = session.exec(select(AgentReportWriteFailure)).one()
+        assert failure.reporter_kind == "workload"
+        assert failure.error_type == "RuntimeError"

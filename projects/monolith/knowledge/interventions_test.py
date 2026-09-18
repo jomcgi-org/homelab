@@ -50,7 +50,7 @@ def db_fixture(tmp_path, monkeypatch):
             table.schema = None
     uploads: dict[str, str] = {}
     monkeypatch.setattr(
-        "knowledge.ingest_queue.upload_raw",
+        "knowledge.raw_write.upload_raw",
         lambda raw_id, content: uploads.__setitem__(raw_id, content),
     )
     try:

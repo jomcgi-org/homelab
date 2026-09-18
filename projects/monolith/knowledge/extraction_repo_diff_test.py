@@ -122,7 +122,7 @@ def test_apply_change_writes_raw_queues_extraction_and_advances_cursor(
     _scout_job(session)
     uploaded = {}
     monkeypatch.setattr(
-        "knowledge.ingest_queue.upload_raw",
+        "knowledge.raw_write.upload_raw",
         lambda raw_id, content: uploaded.update(raw_id=raw_id, content=content),
     )
 
@@ -153,7 +153,7 @@ def test_apply_change_writes_raw_queues_extraction_and_advances_cursor(
 
 def test_duplicate_content_still_advances_cursor(session, monkeypatch):
     _scout_job(session)
-    monkeypatch.setattr("knowledge.ingest_queue.upload_raw", lambda *_args: None)
+    monkeypatch.setattr("knowledge.raw_write.upload_raw", lambda *_args: None)
     result = _output(
         base_sha="a" * 40,
         diff_stat=" file.py | 1 +",

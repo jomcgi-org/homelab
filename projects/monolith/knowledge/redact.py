@@ -85,6 +85,23 @@ def redact_text_counts(text: str) -> tuple[str, dict[str, int]]:
     return redacted, counts
 
 
+def _redact_extra_strings(value: object, counts: Counter[str]) -> object:
+    """Copy a structured value while redacting all nested string values."""
+    if isinstance(value, str):
+        redacted, value_counts = redact_text_counts(value)
+        counts.update(value_counts)
+        return redacted
+    if isinstance(value, dict):
+        return {
+            key: _redact_extra_strings(nested, counts) for key, nested in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_extra_strings(nested, counts) for nested in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_extra_strings(nested, counts) for nested in value)
+    return value
+
+
 def redact_text(text: str) -> tuple[str, int]:
     """Replace credentials and return the total replacement count."""
     redacted, counts = redact_text_counts(text)

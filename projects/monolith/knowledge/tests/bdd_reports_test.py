@@ -19,7 +19,7 @@ async def test_report_knowledge_queues_unverified_evidence(
 
     uploads = {}
     with patch(
-        "knowledge.mcp.upload_raw",
+        "knowledge.raw_write.upload_raw",
         side_effect=lambda raw_id, content: uploads.setdefault(raw_id, content),
     ):
         result = await report_knowledge("A repo claim", evidence=["a source"])
@@ -65,7 +65,7 @@ async def test_dispute_fact_records_open_dispute(session, knowledge_mcp_engine):
 
     uploads = {}
     with patch(
-        "knowledge.ingest_queue.upload_raw",
+        "knowledge.raw_write.upload_raw",
         side_effect=lambda raw_id, content: uploads.setdefault(raw_id, content),
     ):
         result = await dispute_fact(
@@ -99,7 +99,7 @@ async def test_report_distress_records_then_notifies(session, knowledge_mcp_engi
     uploads = {}
     with (
         patch(
-            "knowledge.ingest_queue.upload_raw",
+            "knowledge.raw_write.upload_raw",
             side_effect=lambda raw_id, content: uploads.setdefault(raw_id, content),
         ),
         patch("knowledge.mcp._notify", notify),
