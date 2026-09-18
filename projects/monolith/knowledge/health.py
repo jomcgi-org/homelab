@@ -151,6 +151,35 @@ def _kg_health_core(session: Session, cap: int) -> dict:
         {},
     ).one()
     burst = kg_burst_state(session)
+    agent_reports = session.execute(
+        text(
+            """
+            SELECT COALESCE(
+                       (
+                           SELECT jsonb_object_agg(reporter_kind, report_count)
+                             FROM (
+                                 SELECT COALESCE(
+                                            extra ->> 'reporter_kind',
+                                            'unknown'
+                                        ) AS reporter_kind,
+                                        count(*) AS report_count
+                                   FROM knowledge.raw_inputs
+                                  WHERE source = 'agent-report'
+                                    AND created_at >= now() - interval '24 hours'
+                                  GROUP BY 1
+                             ) AS counts
+                       ),
+                       '{}'::jsonb
+                   ) AS written_by_reporter_kind,
+                   (
+                       SELECT count(*)
+                         FROM knowledge.agent_report_write_failures
+                        WHERE created_at >= now() - interval '24 hours'
+                   ) AS failed_writes_24h
+            """
+        ),
+        {},
+    ).one()
     oldest = max(0.0, float(queue.oldest_seconds or 0.0))
     oldest_dispute = max(0.0, float(disputes.oldest_open_dispute_seconds or 0.0))
     failed_24h = int(provenance.failed_24h)
@@ -188,6 +217,13 @@ def _kg_health_core(session: Session, cap: int) -> dict:
         "oldest_open_dispute_seconds": oldest_dispute,
         "repo_diff_last_sha": repo_diff.last_sha,
         "repo_diff_last_run_at": _iso(repo_diff.last_run_at),
+        "agent_reports": {
+            "written_24h_by_reporter_kind": {
+                str(kind): int(count)
+                for kind, count in agent_reports.written_by_reporter_kind.items()
+            },
+            "failed_writes_24h": int(agent_reports.failed_writes_24h),
+        },
     }
 
 

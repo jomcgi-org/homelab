@@ -39,7 +39,7 @@ def client_fixture(session):
         (knowledge.module.MODULE,),
     )
     app.dependency_overrides[get_session] = lambda: session
-    with patch("knowledge.ingest_queue.upload_raw"):
+    with patch("knowledge.raw_write.upload_raw"):
         yield TestClient(app, raise_server_exceptions=False)
     app.dependency_overrides.clear()
 
@@ -286,7 +286,7 @@ def test_backfill_raw_usage_never_fails_on_pricing_error(client, session):
 
 def test_create_extractable_raw_redacts_before_storage(client, session):
     token = "ghp_abcdefghijklmnopqrstuvwxyz123456"
-    with patch("knowledge.ingest_queue.upload_raw") as upload:
+    with patch("knowledge.raw_write.upload_raw") as upload:
         response = client.post(
             "/api/knowledge/raws",
             json={"content": f"reported token {token}", "source": "agent-report"},
@@ -304,7 +304,7 @@ def test_create_extractable_raw_redacts_before_storage(client, session):
 
 def test_create_capture_raw_does_not_redact(client, session):
     token = "ghp_abcdefghijklmnopqrstuvwxyz123456"
-    with patch("knowledge.ingest_queue.upload_raw") as upload:
+    with patch("knowledge.raw_write.upload_raw") as upload:
         response = client.post(
             "/api/knowledge/raws",
             json={"content": f"captured token {token}", "source": "capture"},

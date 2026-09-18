@@ -1266,7 +1266,7 @@ def test_repo_scout_and_actual_derived_raw_get_bounded_validated_service(
         SQLModel.metadata.create_all(engine)
         monkeypatch.setattr("core.db.get_engine", lambda: engine)
         monkeypatch.setattr(routine_jobs, "get_engine", lambda: engine)
-        monkeypatch.setattr("knowledge.ingest_queue.upload_raw", lambda *_args: None)
+        monkeypatch.setattr("knowledge.raw_write.upload_raw", lambda *_args: None)
         with Session(engine) as session:
             session.execute(
                 text("""

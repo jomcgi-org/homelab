@@ -46,11 +46,7 @@ def db_fixture(tmp_path, monkeypatch):
             )
             session.commit()
         monkeypatch.setattr(
-            "knowledge.ingest_queue.upload_raw",
-            lambda raw_id, content: uploads.__setitem__(raw_id, content),
-        )
-        monkeypatch.setattr(
-            "knowledge.mcp.upload_raw",
+            "knowledge.raw_write.upload_raw",
             lambda raw_id, content: uploads.__setitem__(raw_id, content),
         )
         yield SimpleNamespace(engine=engine, uploads=uploads)
@@ -149,6 +145,24 @@ async def test_report_knowledge_marks_existing_raw_duplicate(db, principal):
     assert second["status"] == "duplicate"
     assert second["created"] is False
     assert second["raw_id"] == first["raw_id"]
+
+
+@pytest.mark.asyncio
+async def test_report_knowledge_redacts_secret_from_body_and_extra(db, principal):
+    secret = "ghp_abcdefghijklmnopqrstuvwxyz123456"
+    with (
+        patch("knowledge.mcp.get_engine", return_value=db.engine),
+        patch("knowledge.mcp.current_principal", return_value=principal),
+    ):
+        result = await report_knowledge(f"The report contains {secret}")
+
+    with Session(db.engine) as session:
+        raw = session.exec(
+            select(RawInput).where(RawInput.raw_id == result["raw_id"])
+        ).one()
+        assert secret not in db.uploads[raw.raw_id]
+        assert secret not in str(raw.extra)
+        assert raw.extra["server_redactions"] == {"github_token": 2}
 
 
 @pytest.mark.asyncio
@@ -383,7 +397,7 @@ async def test_dispute_fact_ingest_failure_writes_no_dispute(db, principal):
         patch("knowledge.mcp.get_engine", return_value=db.engine),
         patch("knowledge.mcp.current_principal", return_value=principal),
         patch(
-            "knowledge.mcp.ingest_raw_with_status",
+            "knowledge.mcp.persist_raw_with_status",
             side_effect=RuntimeError("upload failed"),
         ),
         pytest.raises(RuntimeError, match="upload failed"),

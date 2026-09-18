@@ -1,13 +1,24 @@
-"""Minimal database writer for knowledge raw inputs."""
+"""Agents-safe persistence helpers for knowledge raw inputs."""
 
 from __future__ import annotations
 
+from collections import Counter
 import hashlib
+import logging
 
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
+from knowledge.extraction import (
+    EXTRACTABLE_SOURCES,
+    LANE_OWNED_SOURCES,
+    enqueue_extraction,
+)
 from knowledge.models import RawInput
+from knowledge.raw_store import upload_raw
+from knowledge.redact import _redact_extra_strings, redact_text_counts
+
+logger = logging.getLogger("monolith.knowledge.raw_write")
 
 
 def _coerce_evidence(evidence: list[str] | str | None) -> list[str] | None:
@@ -27,7 +38,7 @@ def write_raw(
     scope: str | None = None,
     evidence: list[str] | str | None = None,
     validity_hint: str | None = None,
-    status: str | None = "queued",
+    status: str | None = None,
     original_url: str | None = None,
     extra: dict | None = None,
     commit: bool = True,
@@ -77,4 +88,60 @@ def write_raw(
         savepoint.commit()
     if commit:
         session.commit()
+    return raw, True
+
+
+def persist_raw_with_status(
+    session: Session,
+    *,
+    content: str,
+    source: str,
+    scope: str | None = None,
+    evidence: list[str] | str | None = None,
+    validity_hint: str | None = None,
+    status: str | None = None,
+    original_url: str | None = None,
+    extra: dict | None = None,
+    commit: bool = True,
+    row_writer=write_raw,
+) -> tuple[RawInput, bool]:
+    """Redact and persist one raw, upload its body, and queue extraction."""
+    stored_extra = dict(extra or {})
+    if source in LANE_OWNED_SOURCES:
+        content, content_redactions = redact_text_counts(content)
+        server_redactions: Counter[str] = Counter(content_redactions)
+        stored_extra = _redact_extra_strings(stored_extra, server_redactions)
+        scope = _redact_extra_strings(scope, server_redactions)
+        evidence = _redact_extra_strings(evidence, server_redactions)
+        validity_hint = _redact_extra_strings(validity_hint, server_redactions)
+        stored_extra["server_redactions"] = dict(server_redactions)
+
+    raw, created = row_writer(
+        session,
+        content=content,
+        source=source,
+        scope=scope,
+        evidence=evidence,
+        validity_hint=validity_hint,
+        status=status,
+        original_url=original_url,
+        extra=stored_extra,
+        commit=False,
+    )
+    if not created:
+        return raw, False
+
+    upload_raw(raw.content_hash, content)
+    if source in EXTRACTABLE_SOURCES:
+        enqueue_savepoint = session.begin_nested()
+        try:
+            enqueue_extraction(session, raw.raw_id, commit=False)
+        except Exception:  # noqa: BLE001 - sweep_unqueued_raws repairs missed jobs
+            enqueue_savepoint.rollback()
+            logger.exception("raw_write: failed to enqueue raw %s", raw.raw_id)
+        else:
+            enqueue_savepoint.commit()
+    if commit:
+        session.commit()
+    logger.info("raw_write: persisted raw %s (source=%s)", raw.raw_id, source)
     return raw, True

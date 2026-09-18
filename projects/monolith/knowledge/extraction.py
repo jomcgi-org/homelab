@@ -727,9 +727,9 @@ def apply_repo_diff(session: Session, job_name: str, result_text: str) -> dict:
 
         changed_files = _changed_files(parsed.diff_stat, parsed.diff)
         markdown = _repo_diff_markdown(parsed, changed_files)
-        from knowledge.ingest_queue import ingest_raw_with_status
+        from knowledge.raw_write import persist_raw_with_status
 
-        raw, created = ingest_raw_with_status(
+        raw, created = persist_raw_with_status(
             session,
             content=markdown,
             source="repo-diff",
