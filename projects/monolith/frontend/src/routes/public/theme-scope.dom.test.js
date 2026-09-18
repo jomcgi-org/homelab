@@ -59,30 +59,27 @@ afterEach(async () => {
 });
 
 describe("rendered theme scopes", () => {
-  it(
-    "applies the public palette while its layout is mounted and drops it on navigation away",
-    async () => {
-      const target = mountInBody(PublicLayout, {
-        data: { maintenanceBanner: null },
-        children,
-      });
-      await tick();
+  it("applies the public palette while its layout is mounted and drops it on navigation away", async () => {
+    const target = mountInBody(PublicLayout, {
+      data: { maintenanceBanner: null },
+      children,
+    });
+    await tick();
 
-      expect(target.querySelector(".public-theme")).not.toBeNull();
-      expect(document.body.matches(":has(.public-theme)")).toBe(true);
-      expect(token(document.body, "--accent")).toBe("#ffde01");
-      expect(token(document.body, "--cream")).toBe("#f3ede1");
+    expect(target.querySelector(".public-theme")).not.toBeNull();
+    expect(document.body.matches(":has(.public-theme)")).toBe(true);
+    expect(token(document.body, "--accent")).toBe("#ffde01");
+    expect(token(document.body, "--cream")).toBe("#f3ede1");
 
-      const [{ instance }] = mounted.splice(0);
-      await unmount(instance);
-      target.remove();
-      await tick();
+    const [{ instance }] = mounted.splice(0);
+    await unmount(instance);
+    target.remove();
+    await tick();
 
-      expect(document.body.matches(":has(.public-theme)")).toBe(false);
-      expect(token(document.documentElement, "--accent")).toBe("#0066ff");
-      expect(token(document.documentElement, "--cream")).toBe("#f1ebdc");
-    },
-  );
+    expect(document.body.matches(":has(.public-theme)")).toBe(false);
+    expect(token(document.documentElement, "--accent")).toBe("#0066ff");
+    expect(token(document.documentElement, "--cream")).toBe("#f1ebdc");
+  });
 
   it("renders the root error boundary with the brutalist palette", async () => {
     const target = mountInBody(ErrorBoundary);
@@ -94,29 +91,26 @@ describe("rendered theme scopes", () => {
     expect(token(document.body, "--coral")).toBe("#ff7169");
   });
 
-  it(
-    "keeps rendered Grimoire and Ember surfaces distinct inside the public scope",
-    async () => {
-      mountInBody(PublicLayout, {
-        data: { maintenanceBanner: null },
-        children,
-      });
-      const grimoireTarget = mountInBody(GrimoireShare, {
-        data: { messages: [], turnstileSiteKey: "" },
-      });
-      const emberTarget = mountInBody(EmberPage, {
-        data: { status: null, savings: null },
-      });
-      await tick();
+  it("keeps rendered Grimoire and Ember surfaces distinct inside the public scope", async () => {
+    mountInBody(PublicLayout, {
+      data: { maintenanceBanner: null },
+      children,
+    });
+    const grimoireTarget = mountInBody(GrimoireShare, {
+      data: { messages: [], turnstileSiteKey: "" },
+    });
+    const emberTarget = mountInBody(EmberPage, {
+      data: { status: null, savings: null },
+    });
+    await tick();
 
-      const grimoire = grimoireTarget.querySelector(".grimoire");
-      const ember = emberTarget.querySelector(".ember-site");
-      expect(grimoire).not.toBeNull();
-      expect(ember).not.toBeNull();
-      expect(token(grimoire, "--grim-accent")).toBe("#33507a");
-      expect(token(grimoire, "--accent")).toBe("#33507a");
-      expect(token(ember, "--em-ember")).toBe("#e0421a");
-      expect(token(document.body, "--accent")).toBe("#ffde01");
-    },
-  );
+    const grimoire = grimoireTarget.querySelector(".grimoire");
+    const ember = emberTarget.querySelector(".ember-site");
+    expect(grimoire).not.toBeNull();
+    expect(ember).not.toBeNull();
+    expect(token(grimoire, "--grim-accent")).toBe("#33507a");
+    expect(token(grimoire, "--accent")).toBe("#33507a");
+    expect(token(ember, "--em-ember")).toBe("#e0421a");
+    expect(token(document.body, "--accent")).toBe("#ffde01");
+  });
 });
