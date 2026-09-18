@@ -238,10 +238,7 @@ py_test(
         "PROD_VALUES": "$(rootpath //projects/embervm/deploy:deploy_values)",
         "ROUTER_SOURCE": "$(rootpath //projects/embervm/control:lib/embervm/router.ex)",
     },
-    deps = [
-        "@pip//pytest",
-        "@pip//pyyaml",
-    ],
+    deps = ["@pip//pyyaml"],
 )
 
 py_test(
