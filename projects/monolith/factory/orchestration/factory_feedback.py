@@ -159,12 +159,18 @@ def _verdict_dict(row: FactoryReviewVerdict) -> dict:
     }
 
 
-def record_first_pass(task_id: str, runs: list[dict]) -> dict | None:
+def record_first_pass(
+    task_id: str,
+    runs: list[dict],
+    *,
+    advisory_verified: bool | None = None,
+) -> dict | None:
     """Persist one first-pass sample for a delivery or recovery task.
 
     Review retries cannot replace the earliest completed invocation. A failed
     invocation is blocked and a malformed successful artifact is unparseable,
     so neither can disappear from the rejection denominator or become approval.
+    Advisory approvals require the caller to verify the reviewed comment first.
     """
     if not any(
         str(run.get("node_key") or "").startswith("review_")
@@ -189,11 +195,20 @@ def record_first_pass(task_id: str, runs: list[dict]) -> dict | None:
         if task_class in ADVISORY_CLASSES:
             return None
         sample_kind = _sample_kind(receipt)
+        if sample_kind == ADVISORY_TIER and advisory_verified is None:
+            return None
         review = _first_review(runs, sample_kind)
         if review is None:
             return None
         recipe = _recipe_run(runs, review, sample_kind)
         verdict, summary, head_sha = _classified_verdict(review)
+        if (
+            sample_kind == ADVISORY_TIER
+            and advisory_verified is False
+            and verdict == "approve"
+        ):
+            verdict = "unparseable"
+            summary = "The approved advisory comment could not be verified."
         if (
             sample_kind == ADVISORY_TIER
             and recipe is not None
@@ -548,11 +563,11 @@ def reconcile(
             if producer_run is not None
             else None
         )
-        sample = record_first_pass(task["id"], runs)
         independent = producer_run is not None and producer_run.get(
             "session_id"
         ) != review_run.get("session_id")
         if not independent:
+            record_first_pass(task["id"], runs, advisory_verified=False)
             _finish_failed(task["id"], "the advisory review was not independent")
             return
         if (
@@ -561,8 +576,10 @@ def reconcile(
             or url != producer_url
             or _comment(task, url) is None
         ):
+            record_first_pass(task["id"], runs, advisory_verified=False)
             _finish_failed(task["id"], "the reviewed advisory comment is absent")
             return
+        sample = record_first_pass(task["id"], runs, advisory_verified=True)
         if sample is None or sample["verdict"] != "approve":
             _finish_failed(task["id"], "the first-pass advisory review did not approve")
             return

@@ -6030,6 +6030,18 @@ def test_plan_preserves_the_reserved_conductor_and_engine_round_prefixes(feedbac
     assert audits[0]["refusal_code"] == "engine_loop_key_reserved"
 
 
+def test_plan_preserves_the_reserved_feedback_review_namespace(feedback_db):
+    task, _policy = planned_task(
+        feedback_task(),
+        [plan_edit("feedback_1", "review")],
+    )
+    assert [n["node_key"] for n in conductor.graph.load_graph(task["id"])] == [
+        "conductor_1"
+    ]
+    audits = feedback_audits(feedback_db, task["id"])
+    assert audits[0]["refusal_code"] == "feedback_review_key_reserved"
+
+
 def test_plan_refuses_a_stale_expected_version_whole(feedback_db):
     task, policy = feedback_task()
     run = complete_feedback_node(

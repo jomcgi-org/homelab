@@ -597,3 +597,53 @@ def test_demoted_task_runs_comment_and_independent_review_end_to_end(db, monkeyp
         assert sample.verdict == "approve"
         assert sample.recipe_run_id is not None
         assert sample.review_run_id != sample.recipe_run_id
+
+
+def test_unverified_advisory_comment_cannot_approve_recovery(db, monkeypatch):
+    from factory.orchestration import factory_conductor as conductor
+
+    for number in range(1, 21):
+        _sample(db, number, "approve" if number <= 11 else "changes_requested")
+    policy = _policy(999)
+    _configure(policy)
+    receive_issue(
+        "owner/repo",
+        999,
+        "new bug",
+        "body",
+        "https://github.com/owner/repo/issues/999",
+        "operator",
+    )
+    admitted = admit_next("scheduler")
+    task = conductor._task(admitted["task_id"])
+
+    conductor.reconcile_task(task["id"], policy, object())
+    url = "https://github.com/owner/repo/issues/999#issuecomment-1"
+    _run_node(
+        task,
+        feedback.ADVISORY_NODE_KEY,
+        {"status": "complete", "summary": "Safer recipe", "comment_url": url},
+        100,
+    )
+    conductor.reconcile_task(task["id"], policy, object())
+    _run_node(
+        task,
+        feedback.REVIEW_NODE_KEY,
+        {"verdict": "approve", "summary": "Recipe is usable", "comment_url": url},
+        101,
+    )
+    monkeypatch.setattr(conductor, "github_list", lambda *_args: [])
+    conductor.reconcile_task(task["id"], policy, object())
+
+    assert controls.task_snapshot(task["id"])["state"] == "failed"
+    recovery = feedback.feedback_for_class("bug-fix")["recovery_window"]
+    assert recovery["sample_count"] == 1
+    assert recovery["approval_count"] == 0
+    assert recovery["rejection_count"] == 1
+    with Session(db) as session:
+        sample = session.exec(
+            select(FactoryReviewVerdict).where(
+                FactoryReviewVerdict.task_id == task["id"]
+            )
+        ).one()
+        assert sample.verdict == "unparseable"
