@@ -6002,6 +6002,23 @@ py_test(
     ],
 )
 
+# Hand-registered because grimoire is gazelle-excluded: the bounded v1 sheet
+# contract, version history, workflow transitions, and campaign/role ACLs.
+py_test(
+    name = "grimoire_sheets_test",
+    srcs = ["grimoire/sheets_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_auth",
+        ":pkg_core",
+        ":pkg_grimoire",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
 py_test(
     name = "grimoire_entities_test",
     srcs = ["grimoire/entities_test.py"],

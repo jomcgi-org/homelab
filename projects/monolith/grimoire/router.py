@@ -23,7 +23,7 @@ from core.db import get_session
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from knowledge.api import get_embedding_client
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from shared.embedding import EmbeddingClient
 from sqlalchemy import func
 from sqlmodel import Session, or_, select
@@ -35,6 +35,8 @@ from grimoire.models import (
     AppUser,
     Campaign,
     CampaignMember,
+    CharacterSheetStatus,
+    CharacterSheetVersion,
     Entity,
     EntityType,
     GameSession,
@@ -46,6 +48,7 @@ from grimoire.models import (
     Relationship,
     SessionStatus,
 )
+from grimoire.sheets import CharacterSheetV1, SheetValidationError, derive_sheet
 from grimoire.search import search_campaign
 from grimoire.visibility import (
     Viewer,
@@ -357,6 +360,329 @@ def list_characters(
             return []
         query = query.where(PlayerCharacter.id == member.player_character_id)
     return session.exec(query.order_by(PlayerCharacter.character_name)).all()
+
+
+# --- Versioned character sheets ----------------------------------------
+
+
+class CharacterSheetView(BaseModel):
+    id: str
+    campaign_id: str
+    player_character_id: str
+    version: int
+    contract_version: int
+    status: CharacterSheetStatus
+    sheet: dict
+    derived: dict
+    created_by_email: str
+    submitted_at: datetime | None
+    decided_at: datetime | None
+    decision_comment: str | None
+    decided_by_email: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class CharacterSheetHistoryView(BaseModel):
+    character: CharacterView
+    viewer_role: MemberRole
+    versions: list[CharacterSheetView]
+
+
+class SheetDecisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    comment: str | None = Field(default=None, max_length=1000)
+
+    @field_validator("comment")
+    @classmethod
+    def normalize_comment(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = " ".join(value.split())
+        return normalized or None
+
+
+def _require_character_reader(
+    session: Session,
+    campaign_id: str,
+    player_character_id: str,
+    email: str,
+) -> tuple[CampaignMember, PlayerCharacter]:
+    member = _get_member_or_404(session, campaign_id, email)
+    character = _get_character_in_campaign_or_404(
+        session, campaign_id, player_character_id
+    )
+    if member.role == "player" and member.player_character_id != character.id:
+        raise HTTPException(status_code=404, detail="player character not found")
+    return member, character
+
+
+def _require_character_owner(
+    session: Session,
+    campaign_id: str,
+    player_character_id: str,
+    email: str,
+) -> tuple[CampaignMember, PlayerCharacter]:
+    member, character = _require_character_reader(
+        session, campaign_id, player_character_id, email
+    )
+    if member.role != "player":
+        raise HTTPException(status_code=403, detail="player role required")
+    if member.player_character_id != character.id:
+        raise HTTPException(status_code=404, detail="player character not found")
+    return member, character
+
+
+def _get_sheet_version_or_404(
+    session: Session,
+    campaign_id: str,
+    player_character_id: str,
+    sheet_version_id: str,
+) -> CharacterSheetVersion:
+    version = session.get(CharacterSheetVersion, sheet_version_id)
+    if (
+        version is None
+        or version.campaign_id != campaign_id
+        or version.player_character_id != player_character_id
+    ):
+        raise HTTPException(status_code=404, detail="character sheet version not found")
+    return version
+
+
+def _derive_sheet_or_422(
+    session: Session,
+    campaign_id: str,
+    player_character_id: str,
+    sheet: CharacterSheetV1,
+) -> dict:
+    try:
+        return derive_sheet(session, campaign_id, player_character_id, sheet)
+    except SheetValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get(
+    "/campaigns/{campaign_id}/characters/{player_character_id}/sheets",
+    response_model=CharacterSheetHistoryView,
+)
+def list_character_sheet_versions(
+    campaign_id: str,
+    player_character_id: str,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> CharacterSheetHistoryView:
+    member, character = _require_character_reader(
+        session, campaign_id, player_character_id, email
+    )
+    versions = session.exec(
+        select(CharacterSheetVersion)
+        .where(
+            CharacterSheetVersion.campaign_id == campaign_id,
+            CharacterSheetVersion.player_character_id == player_character_id,
+        )
+        .order_by(CharacterSheetVersion.version.desc())
+    ).all()
+    return CharacterSheetHistoryView(
+        character=CharacterView.model_validate(character, from_attributes=True),
+        viewer_role=member.role,
+        versions=[
+            CharacterSheetView.model_validate(version, from_attributes=True)
+            for version in versions
+        ],
+    )
+
+
+@router.post(
+    "/campaigns/{campaign_id}/characters/{player_character_id}/sheets/drafts",
+    response_model=CharacterSheetView,
+)
+def create_character_sheet_draft(
+    campaign_id: str,
+    player_character_id: str,
+    body: CharacterSheetV1,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> CharacterSheetVersion:
+    _require_character_owner(session, campaign_id, player_character_id, email)
+    session.exec(
+        select(PlayerCharacter)
+        .where(PlayerCharacter.id == player_character_id)
+        .with_for_update()
+    ).first()
+    latest = session.exec(
+        select(CharacterSheetVersion)
+        .where(CharacterSheetVersion.player_character_id == player_character_id)
+        .order_by(CharacterSheetVersion.version.desc())
+    ).first()
+    if latest is not None and latest.status in ("draft", "submitted"):
+        raise HTTPException(
+            status_code=409, detail="character already has an open draft"
+        )
+
+    version_number = 1 if latest is None else latest.version + 1
+    derived = _derive_sheet_or_422(
+        session, campaign_id, player_character_id, body
+    )
+    version = CharacterSheetVersion(
+        campaign_id=campaign_id,
+        player_character_id=player_character_id,
+        version=version_number,
+        sheet=body.model_dump(),
+        derived=derived,
+        created_by_email=email,
+    )
+    session.add(version)
+    session.commit()
+    session.refresh(version)
+    return version
+
+
+@router.patch(
+    "/campaigns/{campaign_id}/characters/{player_character_id}/sheets/"
+    "{sheet_version_id}",
+    response_model=CharacterSheetView,
+)
+def update_character_sheet_draft(
+    campaign_id: str,
+    player_character_id: str,
+    sheet_version_id: str,
+    body: CharacterSheetV1,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> CharacterSheetVersion:
+    _require_character_owner(session, campaign_id, player_character_id, email)
+    version = _get_sheet_version_or_404(
+        session, campaign_id, player_character_id, sheet_version_id
+    )
+    if version.status != "draft":
+        raise HTTPException(status_code=409, detail="only a draft can be edited")
+    version.sheet = body.model_dump()
+    version.derived = _derive_sheet_or_422(
+        session, campaign_id, player_character_id, body
+    )
+    version.updated_at = datetime.now(timezone.utc)
+    session.add(version)
+    session.commit()
+    session.refresh(version)
+    return version
+
+
+@router.post(
+    "/campaigns/{campaign_id}/characters/{player_character_id}/sheets/"
+    "{sheet_version_id}/submit",
+    response_model=CharacterSheetView,
+)
+def submit_character_sheet_draft(
+    campaign_id: str,
+    player_character_id: str,
+    sheet_version_id: str,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> CharacterSheetVersion:
+    _require_character_owner(session, campaign_id, player_character_id, email)
+    version = _get_sheet_version_or_404(
+        session, campaign_id, player_character_id, sheet_version_id
+    )
+    if version.status != "draft":
+        raise HTTPException(status_code=409, detail="only a draft can be submitted")
+    now = datetime.now(timezone.utc)
+    version.status = "submitted"
+    version.submitted_at = now
+    version.updated_at = now
+    session.add(version)
+    session.commit()
+    session.refresh(version)
+    return version
+
+
+def _decide_character_sheet(
+    *,
+    session: Session,
+    campaign_id: str,
+    player_character_id: str,
+    sheet_version_id: str,
+    email: str,
+    status: Literal["approved", "returned"],
+    comment: str | None,
+) -> CharacterSheetVersion:
+    _require_dm(session, campaign_id, email)
+    character = _get_character_in_campaign_or_404(
+        session, campaign_id, player_character_id
+    )
+    version = _get_sheet_version_or_404(
+        session, campaign_id, player_character_id, sheet_version_id
+    )
+    if version.status != "submitted":
+        raise HTTPException(
+            status_code=409, detail="only a submitted sheet can be decided"
+        )
+    if status == "returned" and comment is None:
+        raise HTTPException(status_code=422, detail="a return comment is required")
+
+    now = datetime.now(timezone.utc)
+    version.status = status
+    version.decision_comment = comment
+    version.decided_by_email = email
+    version.decided_at = now
+    version.updated_at = now
+    if status == "approved":
+        character.class_name = version.sheet["class_name"]
+        character.level = version.sheet["level"]
+        character.sheet = version.sheet
+        session.add(character)
+    session.add(version)
+    session.commit()
+    session.refresh(version)
+    return version
+
+
+@router.post(
+    "/campaigns/{campaign_id}/characters/{player_character_id}/sheets/"
+    "{sheet_version_id}/approve",
+    response_model=CharacterSheetView,
+)
+def approve_character_sheet(
+    campaign_id: str,
+    player_character_id: str,
+    sheet_version_id: str,
+    body: SheetDecisionRequest,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> CharacterSheetVersion:
+    return _decide_character_sheet(
+        session=session,
+        campaign_id=campaign_id,
+        player_character_id=player_character_id,
+        sheet_version_id=sheet_version_id,
+        email=email,
+        status="approved",
+        comment=body.comment,
+    )
+
+
+@router.post(
+    "/campaigns/{campaign_id}/characters/{player_character_id}/sheets/"
+    "{sheet_version_id}/return",
+    response_model=CharacterSheetView,
+)
+def return_character_sheet(
+    campaign_id: str,
+    player_character_id: str,
+    sheet_version_id: str,
+    body: SheetDecisionRequest,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> CharacterSheetVersion:
+    return _decide_character_sheet(
+        session=session,
+        campaign_id=campaign_id,
+        player_character_id=player_character_id,
+        sheet_version_id=sheet_version_id,
+        email=email,
+        status="returned",
+        comment=body.comment,
+    )
 
 
 # --- Campaign membership -----------------------------------------------
