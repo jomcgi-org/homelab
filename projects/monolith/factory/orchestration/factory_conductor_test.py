@@ -10822,14 +10822,21 @@ def test_fan_in_reinsertion_prices_a_legacy_review(feedback_db):
 @pytest.mark.parametrize(
     "limit, used, requested, allowed, allowance, label",
     [
-        ("task_budget", 35, 8, 36, 20, "Raise task_budget by 7 to 43"),
+        (
+            "task_budget",
+            35,
+            8,
+            36,
+            20,
+            "Continue once task_budget is raised by hand to 43",
+        ),
         (
             "max_task_turns_hard",
             5,
             1,
             18,
             5,
-            "Raise max_task_turns_hard allowance by 1 to 6",
+            "Continue once the max_task_turns_hard allowance is raised by hand to 6",
         ),
     ],
 )
