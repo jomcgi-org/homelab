@@ -6,19 +6,14 @@
 
 :root {
   /* ── Palette ─────────────────────────────── */
-  --cream: #f3ede1;
   --paper: #ffffff;
   --ink: #1a1a1a;
   --ink-2: #2a2824;
   --ink-3: #6b6658;
   --rule: #ddd5c3;
   --rule-2: #bcb39e;
-  --accent: #ffde01;
   --blue: #6fc2ff;
-  --coral: #ff7169;
   --teal: #29a187;
-  --green: #4ade80;
-  --bg: var(--cream);
   --bg-elev: #ebe4d4;
   /* Single calm tint for "external / third-party" diagram nodes. A cool
      blue-grey reads as "outside the cluster" against the warm cream stack
@@ -39,6 +34,17 @@
   --shadow-hard-sm: 2px 2px 0 var(--ink);
   --shadow-hard: 4px 4px 0 var(--ink);
   --shadow-hard-lg: 6px 6px 0 var(--ink);
+}
+
+/* These names also exist in the shared private-tier tokens loaded by
+ * global.css. Keep the public values on the public route scope so their
+ * winner is determined by theme ancestry, never stylesheet import order. */
+body:has(.public-theme) {
+  --cream: #f3ede1;
+  --accent: #ffde01;
+  --coral: #ff7169;
+  --green: #4ade80;
+  --bg: var(--cream);
 }
 
 /* ── Reset ──────────────────────────────── */

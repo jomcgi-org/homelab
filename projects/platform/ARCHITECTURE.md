@@ -331,7 +331,7 @@ Rationale only; these records describe decisions, not current state. This docume
 | Memory oversubscription via Burstable QoS and PriorityClass | platform/010 | Accepted, shipped; a third class added 2026-09-01 | deleted |
 | Idempotent chart publish with missed-bump detection | platform/011 | Accepted, shipped | deleted |
 | Cilium replaces Linkerd | platform/012 | Shipped at home; the hub runs GKE's managed Cilium instead | deleted |
-| Design system contract with distinct themes | platform/013 | Accepted, shipped in part; contract tokens exist, primitives and `/design` open at #4449; `.impeccable.md` is canonical for themes; deletion tracked by #5170 | deleted |
+| Design system contract with distinct themes | platform/013 | Superseded by #4449: only confirmed token collisions are scoped; the contract migration, primitives, and `/design` programme were dropped; distinct themes remain | deleted |
 | Stateless merge-queue reconciler | platform/014 | Accepted, never built; native GitHub queue instead, #4915 closed | deleted |
 | Remove SigNoz, opt-in OTel collector to Honeycomb | platform/015 | Accepted, shipped on both clusters | deleted |
 | GKE hub runs two node pools | platform/016 | Accepted, shipped; live pools match | deleted |
