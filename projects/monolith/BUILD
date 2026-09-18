@@ -7245,12 +7245,15 @@ py_test(
 py_test(
     name = "stars_grid_job_test",
     srcs = [
-        "stars/grid_gen/generate_grid_v2.py",
         "stars/grid_gen/job.py",
         "stars/grid_gen/job_test.py",
     ],
-    imports = ["stars/grid_gen"],
-    deps = ["@pip//pytest"],
+    imports = ["."],
+    deps = [
+        ":stars_grid_generator",
+        ":stars_grid_ingest",
+        "@pip//pytest",
+    ],
 )
 
 py_test(

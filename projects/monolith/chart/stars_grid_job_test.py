@@ -16,9 +16,6 @@ def test_stars_grid_job_is_isolated_suspended_and_configurable(tmp_path):
         "stars:\n"
         "  gridGenerator:\n"
         "    enabled: true\n"
-        "    image:\n"
-        "      repository: registry.invalid/stars-grid\n"
-        "      digest: sha256:test\n"
         "    source:\n"
         "      endpoint: https://objects.invalid\n"
         "      region: test-region\n"
@@ -59,7 +56,11 @@ def test_stars_grid_job_is_isolated_suspended_and_configurable(tmp_path):
     assert spec["securityContext"]["runAsUser"] == 65532
     template = spec["templates"][0]
     container = template["container"]
-    assert container["image"] == "registry.invalid/stars-grid@sha256:test"
+    assert container["image"] == (
+        "ghcr.io/jomcgi/homelab/projects/monolith/stars-grid@"
+        "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    )
+    assert container["imagePullPolicy"] == "IfNotPresent"
     assert "args" not in container
     assert container["securityContext"]["readOnlyRootFilesystem"] is True
     env = {entry["name"]: entry for entry in container["env"]}
@@ -68,7 +69,11 @@ def test_stars_grid_job_is_isolated_suspended_and_configurable(tmp_path):
     assert env["STARS_GRID_ROADS_KEY"]["value"] == "roads.geojson"
     assert env["STARS_GRID_DEM_KEY"]["value"] == "dem.tif"
     assert env["DATABASE_URL"]["valueFrom"]["secretKeyRef"]["name"]
-    assert spec["volumes"][0]["emptyDir"]["sizeLimit"] == "5Gi"
+    volumes = {volume["name"]: volume for volume in spec["volumes"]}
+    assert volumes["work"]["emptyDir"]["sizeLimit"] == "5Gi"
+    assert volumes["tmp"]["emptyDir"] == {}
+    mounts = {mount["name"]: mount["mountPath"] for mount in container["volumeMounts"]}
+    assert mounts == {"work": "/work", "tmp": "/tmp"}
 
 
 def test_production_keeps_grid_job_suspended_and_dev_omits_it():

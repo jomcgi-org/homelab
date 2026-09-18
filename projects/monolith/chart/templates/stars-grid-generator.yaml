@@ -5,7 +5,7 @@ image. The operator configures source objects, submits a one-off run, verifies
 the resulting Workflow, and leaves the schedule suspended between refreshes.
 */ -}}
 {{- $job := .Values.stars.gridGenerator -}}
-{{- if and $job.enabled $job.image }}
+{{- if $job.enabled }}
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: CronWorkflow
@@ -52,10 +52,13 @@ spec:
       - name: work
         emptyDir:
           sizeLimit: {{ $job.temporaryStorage.sizeLimit }}
+      - name: tmp
+        emptyDir: {}
     templates:
       - name: compute-and-ingest
         container:
           image: "{{ $job.image.repository }}@{{ $job.image.digest }}"
+          imagePullPolicy: {{ $job.image.pullPolicy }}
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -102,6 +105,8 @@ spec:
           volumeMounts:
             - name: work
               mountPath: {{ $job.workDir }}
+            - name: tmp
+              mountPath: /tmp
           resources:
             {{- toYaml $job.resources | nindent 12 }}
 {{- end }}

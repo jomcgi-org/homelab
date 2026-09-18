@@ -41,18 +41,7 @@ def _site_rows(grid: list[dict]) -> tuple[list[Site], int]:
     return rows, skipped
 
 
-def replace_grid(grid: list[dict], *, engine=None, reject_invalid: bool = False) -> int:
-    """Replace ``stars.sites`` atomically from a grid-compatible site list.
-
-    The scheduled object loader retains its historical behavior of skipping
-    malformed entries. Dedicated producers set ``reject_invalid`` so output
-    incompatibility fails before the database transaction starts.
-    """
-    rows, skipped = _site_rows(grid)
-    if skipped and reject_invalid:
-        raise ValueError(f"grid contains {skipped} malformed site rows")
-    if skipped:
-        logger.warning("stars.load_grid: skipped %d malformed grid points", skipped)
+def _replace_rows(rows: list[Site], *, engine=None) -> int:
     if not rows:
         logger.warning("stars.load_grid: no valid grid points, leaving table intact")
         return 0
@@ -77,6 +66,21 @@ def replace_grid(grid: list[dict], *, engine=None, reject_invalid: bool = False)
     return len(rows)
 
 
+def replace_grid(grid: list[dict], *, engine=None, reject_invalid: bool = False) -> int:
+    """Replace ``stars.sites`` atomically from a grid-compatible site list.
+
+    The scheduled object loader retains its historical behavior of skipping
+    malformed entries. Dedicated producers set ``reject_invalid`` so output
+    incompatibility fails before the database transaction starts.
+    """
+    rows, skipped = _site_rows(grid)
+    if skipped and reject_invalid:
+        raise ValueError(f"grid contains {skipped} malformed site rows")
+    if skipped:
+        logger.warning("stars.load_grid: skipped %d malformed grid points", skipped)
+    return _replace_rows(rows, engine=engine)
+
+
 def replace_computed_grid(grid: list[dict], *, engine=None) -> int:
     """Strict ingest contract for freshly computed grid output."""
     rows, skipped = _site_rows(grid)
@@ -85,4 +89,4 @@ def replace_computed_grid(grid: list[dict], *, engine=None) -> int:
     site_ids = [row.id for row in rows]
     if len(site_ids) != len(set(site_ids)):
         raise ValueError("grid contains duplicate site ids")
-    return replace_grid(grid, engine=engine, reject_invalid=True)
+    return _replace_rows(rows, engine=engine)

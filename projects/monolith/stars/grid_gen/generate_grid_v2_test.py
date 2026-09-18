@@ -68,6 +68,28 @@ class TestClassifyZone:
         assert classify_zone((120, 120, 120)) in names
 
 
+def test_classify_points_requires_declared_nodata(monkeypatch):
+    class Raster:
+        crs = "EPSG:27700"
+        nodata = None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    class Rasterio:
+        @staticmethod
+        def open(_path):
+            return Raster()
+
+    monkeypatch.setitem(__import__("sys").modules, "rasterio", Rasterio)
+
+    with pytest.raises(ValueError, match="must declare a nodata value"):
+        generate_grid_v2.classify_points([(-4.0, 56.0)], "light.tif")
+
+
 # ---------------------------------------------------------------------------
 # is_dark_zone (the keep set)
 # ---------------------------------------------------------------------------

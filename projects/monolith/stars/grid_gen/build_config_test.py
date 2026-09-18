@@ -1,6 +1,7 @@
 """Static checks for the grid image's dependency and runtime isolation."""
 
 import json
+import re
 from pathlib import Path
 
 
@@ -8,20 +9,42 @@ HERE = Path(__file__).resolve().parent
 MONOLITH = HERE.parents[1]
 
 
-def _between(text: str, start: str, end: str) -> str:
-    return text.split(start, 1)[1].split(end, 1)[0]
+def _named_target(text: str, name: str) -> str:
+    """Return a top-level BUILD call identified by its exact target name."""
+    for match in re.finditer(
+        r"(?ms)^[a-z_][a-z0-9_]*\(\n.*?^\)\n",
+        text,
+    ):
+        target = match.group(0)
+        if re.search(rf'^    name = "{re.escape(name)}",$', target, re.MULTILINE):
+            return target
+    raise AssertionError(f"BUILD target {name!r} not found")
+
+
+def _assignment_call(text: str, name: str) -> str:
+    match = re.search(
+        rf"(?ms)^{re.escape(name)} = [a-z_][a-z0-9_]*\(\n.*?^\)\n",
+        text,
+    )
+    assert match is not None, f"BUILD assignment {name!r} not found"
+    return match.group(0)
+
+
+def _list_attr(target: str, name: str) -> set[str]:
+    match = re.search(
+        rf"(?ms)^    {re.escape(name)} = \[\n(?P<body>.*?)^    \],(?:  # keep)?$",
+        target,
+    )
+    assert match is not None, f"list attribute {name!r} not found"
+    return set(re.findall(r'^        "([^"]+)",$', match.group("body"), re.MULTILINE))
 
 
 def test_geospatial_dependencies_are_only_on_dedicated_binary():
     build = (MONOLITH / "BUILD").read_text()
-    backend_sources = _between(build, "_BACKEND_SRCS = glob(", "py_venv_binary(")
-    stars_package = _between(build, 'name = "pkg_stars"', 'name = "pkg_chat_public"')
-    monolith_backend = _between(build, 'name = "monolith_backend"', 'name = "image"')
-    generator = _between(
-        build,
-        'name = "stars_grid_generator"',
-        'name = "stars_grid_ingest"',
-    )
+    backend_sources = _assignment_call(build, "_BACKEND_SRCS")
+    stars_package = _named_target(build, "pkg_stars")
+    monolith_backend = _named_target(build, "monolith_backend")
+    generator = _named_target(build, "stars_grid_generator")
 
     assert '"stars/grid_gen/**"' in backend_sources
     assert '"stars/grid_gen/**"' in stars_package
@@ -33,18 +56,16 @@ def test_geospatial_dependencies_are_only_on_dedicated_binary():
 
 def test_grid_job_has_an_explicit_minimal_runfiles_closure():
     build = (MONOLITH / "BUILD").read_text()
-    job = _between(build, 'name = "stars_grid_job"', "# Progress-ingest entrypoint")
+    job = _named_target(build, "stars_grid_job")
 
     assert 'srcs = ["stars/grid_gen/job.py"],  # keep' in job
     assert 'imports = ["."],  # keep' in job
-    for dependency in (
+    assert _list_attr(job, "deps") == {
         ":stars_grid_generator",
         ":stars_grid_ingest",
         "@pip//boto3",
         "@pip//botocore",
-    ):
-        assert f'"{dependency}"' in job
-    assert "],  # keep" in job
+    }
     assert ":pkg_stars" not in job
 
 
@@ -56,13 +77,9 @@ def test_grid_runtime_is_dual_arch_and_non_root():
     assert "run-as: 65532" in config
 
     build = (MONOLITH / "BUILD").read_text()
-    image = _between(
-        build,
-        'name = "stars_grid_apko_base"',
-        'name = "stars_grid_image"',
-    )
+    image = _named_target(build, "stars_grid_apko_base")
     assert "arm64 = True" in image
-    final_image = build.split('name = "stars_grid_image"', 1)[1]
+    final_image = _named_target(build, "stars_grid_image")
     assert "multi_platform = True" in final_image
 
 
