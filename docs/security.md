@@ -237,6 +237,28 @@ content leaves the cluster on this path. Its `NetworkPolicy` is on and is
 ingress-only by upstream's own rule: egress is `- {}`, which is what the tunnel
 and the kube API need.
 
+**The guest MCP tier has a separate repository-scoped observation role.** The
+`monolith-agents` chart defines its own Roles for core workload status, events,
+bounded logs, workload controllers, and pod metrics in an enumerated namespace
+list. Argo CD Application reads are a Role in `argocd`; Kargo Freight reads are
+Roles in `kargo-monolith` and `kargo-embervm`. One independent ClusterRole has
+only nodes, namespaces, and node metrics. All rules are get/list except the
+get-only `pods/log`; there is no watch, mutation, Secret, exec, attach,
+port-forward, proxy, wildcard group, wildcard resource, or reuse of the private
+monolith ClusterRole.
+
+The pruned `agent_kubernetes` package is the matching application boundary. It
+constructs requests only from the same resource and namespace table, bounds
+pages, log time and size, and API timeouts, and returns explicit freshness and
+coverage. Every call requires the standing, undelegated `kg-agent-sa` workload
+principal in `kg-agents`, even though the tier's four knowledge tools retain
+their existing non-anonymous gate. The package cannot import `cluster`, and the
+private import guard continues to enforce that exclusion.
+
+This is source and rendered-manifest state, not deployment evidence. The hub
+uses a separately published and pinned chart. No permission is live merely
+because this repository contains it, and this change makes no rollout claim.
+
 **Host-level exceptions, all named** (`kubectl get pods -A -o json`,
 filtered for `privileged`, `hostNetwork`, `hostPID`, and uid 0):
 
@@ -481,9 +503,10 @@ column above says nothing will do it for you:
 - Ingress as an `HTTPRoute` on the shared Gateway with an `ingress-tier`
   label and a `SecurityPolicy` for anything not public; never a
   `LoadBalancer` or an `Ingress`.
-- A monolith endpoint that reads cluster resources needs matching
-  `ClusterRole` verbs (`projects/monolith/chart/templates/rbac.yaml`); a
-  missing verb fails in prod as a generic 5xx.
+- A private monolith endpoint that reads cluster resources needs matching
+  permissions in `projects/monolith/chart/templates/rbac.yaml`. An agents-tier
+  observation instead belongs in its independent namespaced Roles and narrow
+  cluster exception, never the private ClusterRole.
 - Anything served on the public apex: the public-tier checklist.
 - A new guest egress destination: an entry in `egress.internal.allowlist`,
   which is global to every egress-enabled workload.

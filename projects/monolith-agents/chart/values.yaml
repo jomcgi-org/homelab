@@ -1,8 +1,8 @@
 # Authenticated agents service. Isolation is enforced by
 # templates/cilium-policy.yaml under ADR platform/012.
 #
-# Identity-only token for authentication; the SA has no K8s RBAC. The token is
-# mounted so the workload can prove its service identity, not call the K8s API.
+# The service account token authenticates the explicit read-only Kubernetes
+# observations below. No private-monolith role is reused.
 
 nameOverride: ""
 fullnameOverride: ""
@@ -31,10 +31,33 @@ securityContext:
 
 serviceAccount:
   create: true
-  # Identity-only token for authentication; the SA has no K8s RBAC.
+  # Used only by agent_kubernetes's fixed get/list and pods/log surface.
   automount: true
   annotations: {}
   name: ""
+
+kubernetesRead:
+  enabled: true
+  # Workload status, event, and bounded log observations. Each entry renders a
+  # Role and RoleBinding in that namespace, never a cluster-wide namespaced
+  # resource grant. These are concrete namespaces present in the repository's
+  # hub applications and agents-tier dependency paths.
+  observationNamespaces:
+    - argocd
+    - authentik
+    - embervm
+    - inference
+    - kargo
+    - kargo-embervm
+    - kargo-monolith
+    - mcp
+    - monolith
+    - monolith-agents
+    - otel-collector
+  argocdNamespace: argocd
+  kargoNamespaces:
+    - kargo-embervm
+    - kargo-monolith
 
 nodeSelector: {}
 tolerations: []

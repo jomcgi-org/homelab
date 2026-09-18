@@ -97,18 +97,166 @@ def _deployment(documents: list[dict]) -> dict:
     return next(doc for doc in documents if doc.get("kind") == "Deployment")
 
 
-def test_agents_tier_has_zero_cluster_rbac(documents: list[dict]) -> None:
-    # Security property: agent tier must have zero cluster RBAC.
+OBSERVATION_NAMESPACES = {
+    "argocd",
+    "authentik",
+    "embervm",
+    "inference",
+    "kargo",
+    "kargo-embervm",
+    "kargo-monolith",
+    "mcp",
+    "monolith",
+    "monolith-agents",
+    "otel-collector",
+}
+GENERAL_RULES = [
+    {
+        "apiGroups": [""],
+        "resources": ["pods", "services", "configmaps", "events"],
+        "verbs": ["get", "list"],
+    },
+    {"apiGroups": [""], "resources": ["pods/log"], "verbs": ["get"]},
+    {
+        "apiGroups": ["apps"],
+        "resources": [
+            "deployments",
+            "statefulsets",
+            "daemonsets",
+            "replicasets",
+        ],
+        "verbs": ["get", "list"],
+    },
+    {
+        "apiGroups": ["metrics.k8s.io"],
+        "resources": ["pods"],
+        "verbs": ["get", "list"],
+    },
+]
+
+
+def test_agents_tier_has_exact_restricted_read_rbac(documents: list[dict]) -> None:
     roles = [doc for doc in documents if doc.get("kind") == "Role"]
     rolebindings = [doc for doc in documents if doc.get("kind") == "RoleBinding"]
     clusterroles = [doc for doc in documents if doc.get("kind") == "ClusterRole"]
     clusterrolebindings = [
         doc for doc in documents if doc.get("kind") == "ClusterRoleBinding"
     ]
-    assert len(roles) == 0
-    assert len(rolebindings) == 0
-    assert len(clusterroles) == 0
-    assert len(clusterrolebindings) == 0
+
+    general_roles = [
+        role for role in roles if role["metadata"]["name"].endswith("-observer")
+    ]
+    assert {role["metadata"]["namespace"] for role in general_roles} == (
+        OBSERVATION_NAMESPACES
+    )
+    assert all(role["rules"] == GENERAL_RULES for role in general_roles)
+
+    argocd = next(
+        role for role in roles if role["metadata"]["name"].endswith("-argocd-reader")
+    )
+    assert argocd["metadata"]["namespace"] == "argocd"
+    assert argocd["rules"] == [
+        {
+            "apiGroups": ["argoproj.io"],
+            "resources": ["applications"],
+            "verbs": ["get", "list"],
+        }
+    ]
+
+    kargo = [
+        role for role in roles if role["metadata"]["name"].endswith("-kargo-reader")
+    ]
+    assert {role["metadata"]["namespace"] for role in kargo} == {
+        "kargo-embervm",
+        "kargo-monolith",
+    }
+    assert all(
+        role["rules"]
+        == [
+            {
+                "apiGroups": ["kargo.akuity.io"],
+                "resources": ["freights"],
+                "verbs": ["get", "list"],
+            }
+        ]
+        for role in kargo
+    )
+
+    assert len(roles) == len(OBSERVATION_NAMESPACES) + 3
+    assert len(rolebindings) == len(roles)
+    assert len(clusterroles) == 1
+    assert clusterroles[0]["rules"] == [
+        {
+            "apiGroups": [""],
+            "resources": ["nodes", "namespaces"],
+            "verbs": ["get", "list"],
+        },
+        {
+            "apiGroups": ["metrics.k8s.io"],
+            "resources": ["nodes"],
+            "verbs": ["get", "list"],
+        },
+    ]
+    assert len(clusterrolebindings) == 1
+
+    all_rules = [rule for role in [*roles, *clusterroles] for rule in role["rules"]]
+    assert not any("*" in rule["apiGroups"] for rule in all_rules)
+    assert not any("*" in rule["resources"] for rule in all_rules)
+    assert not any(
+        verb not in {"get", "list"} for rule in all_rules for verb in rule["verbs"]
+    )
+    assert not any(
+        resource in {"secrets", "pods/exec", "pods/attach", "pods/portforward"}
+        or resource.endswith("/proxy")
+        for rule in all_rules
+        for resource in rule["resources"]
+    )
+
+    bindings = [*rolebindings, *clusterrolebindings]
+    assert all(
+        binding["subjects"]
+        == [
+            {
+                "kind": "ServiceAccount",
+                "name": "monolith-agents",
+                "namespace": "monolith-agents",
+            }
+        ]
+        for binding in bindings
+    )
+    assert all(
+        binding["roleRef"]
+        == {
+            "apiGroup": "rbac.authorization.k8s.io",
+            "kind": "Role",
+            "name": binding["metadata"]["name"],
+        }
+        for binding in rolebindings
+    )
+    assert clusterrolebindings[0]["roleRef"] == {
+        "apiGroup": "rbac.authorization.k8s.io",
+        "kind": "ClusterRole",
+        "name": clusterroles[0]["metadata"]["name"],
+    }
+    assert clusterroles[0]["metadata"]["name"].startswith("monolith-agents-")
+
+
+def test_cilium_egress_admits_only_the_api_server_for_kubernetes(
+    documents: list[dict],
+) -> None:
+    egress = next(
+        doc
+        for doc in documents
+        if doc.get("kind") == "CiliumNetworkPolicy"
+        and doc["metadata"]["name"].endswith("-egress")
+    )
+    api_rules = [rule for rule in egress["spec"]["egress"] if "toEntities" in rule]
+    assert api_rules == [
+        {
+            "toEntities": ["kube-apiserver"],
+            "toPorts": [{"ports": [{"port": "443", "protocol": "TCP"}]}],
+        }
+    ]
 
 
 def test_agents_container_exposes_port_8092(documents: list[dict]) -> None:

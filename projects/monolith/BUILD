@@ -1,5 +1,6 @@
 # gazelle:exclude agent
 # gazelle:exclude agent_sessions
+# gazelle:exclude agent_kubernetes
 # gazelle:exclude auth
 # gazelle:exclude artifact
 # gazelle:exclude chat
@@ -106,6 +107,7 @@ _BACKEND_SRCS = glob(
     [
         "agent/**/*.py",
         "agent_sessions/**/*.py",
+        "agent_kubernetes/**/*.py",
         "app/**/*.py",
         "auth/**/*.py",
         "core/**/*.py",
@@ -345,6 +347,20 @@ py_library(
         # PyJWT is currently locked transitively through mcp and semgrep.
         "@pip//pyjwt",
         "@pip//starlette",
+    ],
+)
+
+py_library(
+    name = "pkg_agent_kubernetes",
+    srcs = glob(
+        ["agent_kubernetes/**/*.py"],
+        exclude = ["**/*_test.py"],
+    ),
+    imports = ["."],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        ":pkg_auth",
+        "@pip//kubernetes_asyncio",
     ],
 )
 
@@ -1988,6 +2004,7 @@ py_library(
     name = "monolith_agents_backend",
     srcs = glob(
         [
+            "agent_kubernetes/**/*.py",
             "app/**/*.py",
             "auth/**/*.py",
             "core/**/*.py",
@@ -2047,6 +2064,7 @@ py_venv_binary(
     name = "main_agents",
     srcs = glob(
         [
+            "agent_kubernetes/**/*.py",
             "app/**/*.py",
             "auth/**/*.py",
             "core/**/*.py",
@@ -2662,6 +2680,30 @@ py_test(
     deps = [
         ":monolith_agents_backend",
         "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "agent_kubernetes_client_test",
+    srcs = ["agent_kubernetes/client_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_agent_kubernetes",
+        "@pip//kubernetes_asyncio",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+    ],
+)
+
+py_test(
+    name = "agent_kubernetes_mcp_test",
+    srcs = ["agent_kubernetes/mcp_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_agent_kubernetes",
+        ":pkg_auth",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
     ],
 )
 
