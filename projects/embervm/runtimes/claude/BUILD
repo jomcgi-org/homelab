@@ -191,7 +191,7 @@ py_test(
 py_test(
     name = "pi_context_window_sync_test",
     srcs = ["pi_context_window_sync_test.py"],
-    data = ["//projects/inference/deploy:values_yaml"],
+    data = ["//projects/inference/chart:values_yaml"],
     imports = ["."],
     deps = [
         ":shim_lib",

@@ -32,7 +32,7 @@ This document provides an overview of all services running in the cluster.
 | **Monolith**           | Primary application backend and frontend    | [projects/monolith](../../projects/monolith/)                                       |
 | **Monolith Public**    | Read-only public tier serving jomcgi.dev    | [projects/monolith-public](../../projects/monolith-public/)                         |
 | **EmberVM**            | Firecracker microVM orchestration for agent sandboxes | [projects/embervm](../../projects/embervm/)                               |
-| **Inference**          | Self-hosted LLM inference (vLLM)            | [projects/inference](../../projects/inference/)                                     |
+| **Inference**          | NInfer generation and llama.cpp embeddings  | [projects/inference](../../projects/inference/)                                     |
 | **Context Forge Gateway** | MCP gateway in front of the monolith tool surface for Claude.ai and Claude Code | [projects/mcp/context-forge-gateway](../../projects/mcp/context-forge-gateway/) |
 
 ## Development Services (dev)

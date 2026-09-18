@@ -7,7 +7,7 @@ spec:
   project: default
   source:
     repoURL: https://github.com/jomcgi-org/homelab.git
-    path: projects/inference/deploy
+    path: projects/inference/chart
     targetRevision: HEAD
     helm:
       releaseName: inference

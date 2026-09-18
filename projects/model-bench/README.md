@@ -62,11 +62,11 @@ Each model in `models.yaml` has a `provider`:
 
 An anchors-only run (`--model claude`) needs no `OPENROUTER_API_KEY` at all.
 
-### In-cluster llama.cpp (self-hosted qwen)
+### In-cluster NInfer (self-hosted qwen)
 
 `bench run --base-url <url>/v1` points the OpenRouter client at any OpenAI-compatible
 endpoint instead, skipping the API key and OpenRouter pricing (cost records as 0). Two
-routes reach the in-cluster llama.cpp:
+routes reach the in-cluster NInfer service:
 
 - on-cluster: `kubectl -n inference port-forward svc/inference 18080:8080` and
   `--base-url http://127.0.0.1:18080/v1`;
@@ -76,7 +76,7 @@ routes reach the in-cluster llama.cpp:
 
 The `qwen/qwen3.8-27b` entry in `models.yaml` is the self-hosted row: it is
 `status: experimental` so a bare `bench run` never sends that slug to OpenRouter, and its
-`api_model` is the alias llama.cpp actually serves. The comments on that entry are
+`api_model` is the alias NInfer serves. The comments on that entry are
 canonical for how it is reached.
 
 ## Result cells (billed output — kept out of the worktree)

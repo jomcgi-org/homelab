@@ -35,7 +35,7 @@ def test_pi_context_window_stays_under_inference_config():
     """
     import yaml
 
-    values_path = _repo_path("projects", "inference", "deploy", "values.yaml")
+    values_path = _repo_path("projects", "inference", "chart", "values.yaml")
 
     with open(values_path) as stream:
         config = yaml.safe_load(stream)
@@ -52,7 +52,7 @@ def test_pi_context_window_stays_under_inference_config():
     assert shim.PI_CONTEXT_WINDOW <= max_context, (
         "PI_CONTEXT_WINDOW (%s) exceeds ninfer.maxContext (%s). "
         "Lower PI_CONTEXT_WINDOW in projects/embervm/runtimes/claude/shim.py or "
-        "raise ninfer.maxContext in projects/inference/deploy/values.yaml."
+        "raise ninfer.maxContext in projects/inference/chart/values.yaml."
         % (shim.PI_CONTEXT_WINDOW, max_context)
     )
 

@@ -44,7 +44,7 @@ See [docs/security.md](docs/security.md) for the defense-in-depth model, [projec
 | Secrets        | 1Password Operator, OnePasswordItem CRDs, nothing in Git                                   |
 | Storage        | Longhorn for persistent volumes, SeaweedFS for S3-compatible object storage                |
 | Messaging      | NATS JetStream: pub/sub backbone for AIS data, trip points, agent jobs                     |
-| GPU            | NVIDIA GPU Operator: Qwen3.8-27B via llama.cpp; voyage-4-nano embeddings via llama.cpp     |
+| GPU            | NVIDIA GPU Operator: Qwen3.8-27B via NInfer; voyage-4-nano embeddings via llama.cpp        |
 | Images         | apko + rules_apko: no Dockerfiles, dual-arch (x86_64 + aarch64), non-root                  |
 | CI             | BuildBuddy Workflows: remote build execution, `bazel test //...`, image push               |
 | GitOps         | ArgoCD with colocated `deploy/` dirs; `kubectl` is read-only                               |
@@ -58,7 +58,7 @@ projects/             # All services, operators, websites, colocated with deploy
 ├── monolith-public/  #   Read-only public replica of the monolith
 ├── monolith-agents/  #   Agent-facing MCP tier, pruned and with no cluster RBAC
 ├── mcp/              #   Context Forge gateway + MCP servers
-├── inference/        #   On-cluster llama.cpp (Qwen3.8-27B) + llama.cpp embeddings
+├── inference/        #   NInfer generation (Qwen3.8-27B) + llama.cpp embeddings
 ├── operators/        #   Custom Kubernetes operators
 ├── sextant/          #   State-machine code generator for operators
 ├── embervm/          #   Firecracker orchestrator, guest images, and shared host/guest utilities
