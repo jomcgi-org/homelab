@@ -382,3 +382,9 @@ semgrep_test(
     srcs = ["chart_github_broker_test.py"],
     rules = ["//bazel/semgrep/rules:python_rules"],
 )
+
+semgrep_test(
+    name = "image_repository_correspondence_test_semgrep_test",
+    srcs = ["image_repository_correspondence_test.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)

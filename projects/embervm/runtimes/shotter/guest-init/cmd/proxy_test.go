@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jomcgi/homelab/projects/embervm/runtimes/shotter"
 	"github.com/jomcgi/homelab/projects/embervm/firecracker/substrate/vsockproto"
+	"github.com/jomcgi/homelab/projects/embervm/runtimes/shotter"
 )
 
 const (

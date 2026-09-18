@@ -47,7 +47,7 @@ go_test(
     ],
     embed = [":cmd_lib"],
     deps = [
-        "//projects/embervm/runtimes/shotter:egress_config",
         "//projects/embervm/firecracker/substrate/vsockproto",
+        "//projects/embervm/runtimes/shotter:egress_config",
     ],
 )

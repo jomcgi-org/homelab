@@ -46,9 +46,7 @@ def _provider_repository(package: str) -> str:
     test_srcdir = os.environ.get("TEST_SRCDIR")
     if not test_srcdir:
         return _source_repository(package)
-    repository_file = (
-        Path(test_srcdir) / "_main" / package / "image.info.repository"
-    )
+    repository_file = Path(test_srcdir) / "_main" / package / "image.info.repository"
     assert repository_file.is_file(), f"missing image metadata: {repository_file}"
     return repository_file.read_text().strip()
 

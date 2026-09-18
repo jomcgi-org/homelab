@@ -29,15 +29,15 @@ go_library(
     visibility = ["//visibility:private"],
     deps = select({
         "@rules_go//go/platform:android": [
-            "//projects/embervm/noded/guestagent",
             "//projects/embervm/firecracker/substrate/shim",
             "//projects/embervm/firecracker/substrate/vsockproto",
+            "//projects/embervm/noded/guestagent",
             "@org_golang_x_sys//unix",
         ],
         "@rules_go//go/platform:linux": [
-            "//projects/embervm/noded/guestagent",
             "//projects/embervm/firecracker/substrate/shim",
             "//projects/embervm/firecracker/substrate/vsockproto",
+            "//projects/embervm/noded/guestagent",
             "@org_golang_x_sys//unix",
         ],
         "//conditions:default": [],
