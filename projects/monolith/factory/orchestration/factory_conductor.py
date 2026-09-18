@@ -4441,12 +4441,11 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
     # Capture delivery reviews before retries or correction rounds add later
     # verdicts. Advisory reviews wait for the verified-comment gate below.
     from factory.orchestration.factory_feedback import (
-        ADVISORY_TIER,
-        pinned_route,
+        REVIEW_NODE_KEY,
         record_first_pass,
     )
 
-    if pinned_route(task_id) != ADVISORY_TIER:
+    if not any(run.get("node_key") == REVIEW_NODE_KEY for run in runs):
         record_first_pass(task_id, runs)
     # A crash may fall between graph settlement and the factory reservation
     # settlement. Reconcile terminal facts before attempting any further work.
