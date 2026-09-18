@@ -104,6 +104,17 @@ async def test_cron_digest_tool_validates_and_persists(engine):
             },
             _deps(),
         )
+        invalid_timezone = await _run_tool(
+            agent,
+            "schedule_task",
+            {
+                "task_kind": "reminder",
+                "schedule_kind": "one_shot",
+                "due_at_iso": "2026-09-20T09:00:00 Mars/Olympus",
+                "text": "check oven",
+            },
+            _deps(),
+        )
         valid = await _run_tool(
             agent,
             "schedule_task",
@@ -116,6 +127,7 @@ async def test_cron_digest_tool_validates_and_persists(engine):
             _deps(),
         )
     assert "between 0 and 59" in invalid
+    assert "couldn't understand that time" in invalid_timezone
     assert valid.startswith("Scheduled task #")
     with Session(engine) as session:
         row = session.query(ScheduledTask).one()
