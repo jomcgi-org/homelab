@@ -707,9 +707,7 @@ class CharacterSheetVersion(SQLModel, table=True):
         sa_column=_uuid_column(nullable=False, fk="grimoire.player_character.id"),
     )
     version: int = Field(sa_column=Column(Integer, nullable=False))
-    contract_version: int = Field(
-        default=1, sa_column=Column(Integer, nullable=False)
-    )
+    contract_version: int = Field(default=1, sa_column=Column(Integer, nullable=False))
     status: CharacterSheetStatus = Field(
         default="draft", sa_column=Column(String, nullable=False)
     )
