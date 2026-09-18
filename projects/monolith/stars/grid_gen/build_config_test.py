@@ -35,8 +35,8 @@ def test_grid_job_has_an_explicit_minimal_runfiles_closure():
     build = (MONOLITH / "BUILD").read_text()
     job = _between(build, 'name = "stars_grid_job"', "# Progress-ingest entrypoint")
 
-    assert 'srcs = ["stars/grid_gen/job.py"]' in job
-    assert 'imports = ["."]' in job
+    assert 'srcs = ["stars/grid_gen/job.py"],  # keep' in job
+    assert 'imports = ["."],  # keep' in job
     for dependency in (
         ":stars_grid_generator",
         ":stars_grid_ingest",
@@ -44,6 +44,7 @@ def test_grid_job_has_an_explicit_minimal_runfiles_closure():
         "@pip//botocore",
     ):
         assert f'"{dependency}"' in job
+    assert "],  # keep" in job
     assert ":pkg_stars" not in job
 
 
