@@ -12,9 +12,20 @@ helm_chart(
     visibility = ["//overlays:__subpackages__"],
 )
 
-# The generated deploy/BUILD target covers the home composition. Keep the GKE
-# render here, where a same-package chart reference cannot lose visibility when
-# the Helm Gazelle extension refreshes the deploy package.
+# Render the same chart and values hierarchy declared by the home Application.
+argocd_app(
+    name = "inference",
+    chart = "projects/inference/chart",
+    chart_files = ":chart",
+    generate_manifests = False,
+    generate_semgrep = False,
+    namespace = "inference",
+    release_name = "inference",
+    values_files = ["values.yaml"],
+)
+
+# Render the GKE composition too. The overlay disables the NInfer workload and
+# keeps the embeddings workload, so both deployment shapes stay covered.
 argocd_app(
     name = "inference-gke",
     chart = "projects/inference/chart",

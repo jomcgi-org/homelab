@@ -1,20 +1,11 @@
-load("//bazel/helm:defs.bzl", "argocd_app")
+# gazelle:argocd disabled
+# The ArgoCD Gazelle extension would generate render targets here that depend
+# on the sibling chart target. The Helm extension resets that target's
+# visibility on each format pass, so those generated targets cannot analyze.
+# Hand-written home and GKE render targets live in ../chart/BUILD instead.
 
 filegroup(
     name = "gke_values",
     srcs = ["values-gke.yaml"],
     visibility = ["//projects/inference/chart:__pkg__"],
-)
-
-argocd_app(
-    name = "inference",
-    chart = "projects/inference/chart",
-    chart_files = "//projects/inference/chart:chart",
-    namespace = "inference",
-    release_name = "inference",
-    tags = [
-        "helm",
-        "template",
-    ],
-    values_files = ["//projects/inference/chart:values.yaml"],
 )
