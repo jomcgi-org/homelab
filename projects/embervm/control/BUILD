@@ -16,7 +16,10 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 
-exports_files(["mix.exs"])
+exports_files([
+    "lib/embervm/router.ex",
+    "mix.exs",
+])
 
 # The control-plane OTP release, built by the prebuilt OTP + Elixir toolchain and
 # emitted as one deterministic tar rooted at opt/embervm/ (arch-independent .beam;

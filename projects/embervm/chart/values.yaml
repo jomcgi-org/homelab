@@ -98,6 +98,20 @@ resources:
 controlPlane:
   # Maximum concurrent session create workers. 0 disables the cap.
   createConcurrency: 16
+  # Cilium-only protection and Hubble signals for the pod-visible listener.
+  # Both stay off by default because the GKE hub has neither the Cilium policy
+  # CRD nor Hubble. Cilium environments opt in from their deployment values.
+  networkPolicy:
+    enabled: false
+    # Additional API caller selectors outside the EmberVM release namespace.
+    # Every selector must include k8s:io.kubernetes.pod.namespace.
+    externalClientPodSelectors: []
+  hubbleAlerts:
+    # Renders the repository's SigNoz alert ConfigMap contract. The declarations
+    # are source-only while the alert synchronizer remains decommissioned.
+    enabled: false
+    errorRateThreshold: 0.05
+    p99LatencySeconds: 5
 
 controlPlaneLivenessProbe:
   # Issue #5235: at the 10-second period, allow up to 60 seconds for an internal

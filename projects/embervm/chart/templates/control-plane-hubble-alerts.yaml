@@ -1,0 +1,188 @@
+{{- if .Values.controlPlane.hubbleAlerts.enabled }}
+{{- $destination := printf "%s/%s" .Release.Namespace (include "embervm.fullname" .) -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "embervm.fullname" . }}-http-error-rate-alert
+  labels:
+    signoz.io/alert: "true"
+  annotations:
+    signoz.io/alert-name: "EmberVM control-plane HTTP error rate"
+    signoz.io/severity: "warning"
+    signoz.io/notification-channels: "incidentio"
+# Hubble's httpV2 plugin emits hubble_http_requests_total only for traffic sent
+# through a Cilium L7 redirect. destination is the workload context requested in
+# projects/platform/cilium/values.yaml, while destination_namespace, status, and
+# reporter are explicit or built-in labels in Cilium 1.20.0.
+data:
+  alert.json: |
+    {
+      "alert": "EmberVM control-plane HTTP error rate",
+      "alertType": "METRIC_BASED_ALERT",
+      "ruleType": "threshold_rule",
+      "version": "v5",
+      "broadcastToAll": false,
+      "disabled": false,
+      "evalWindow": "10m0s",
+      "frequency": "1m0s",
+      "severity": "warning",
+      "labels": {
+        "category": "network",
+        "environment": "production",
+        "service": "embervm-control"
+      },
+      "annotations": {
+        "summary": "EmberVM control-plane HTTP 5xx ratio is elevated",
+        "description": "The service-scoped Hubble HTTP 5xx ratio exceeded the configured threshold for the EmberVM control-plane workload. Inspect the control-plane logs and Hubble L7 flows."
+      },
+      "condition": {
+        "compositeQuery": {
+          "queries": [
+            {
+              "type": "builder_query",
+              "spec": {
+                "name": "A",
+                "signal": "metrics",
+                "stepInterval": 60,
+                "aggregations": [{
+                  "timeAggregation": "increase",
+                  "spaceAggregation": "sum",
+                  "metricName": "hubble_http_requests_total"
+                }],
+                "filter": {
+                  "expression": {{ printf "destination_namespace = '%s' AND destination = '%s' AND reporter = 'server'" .Release.Namespace $destination | quote }}
+                },
+                "groupBy": [],
+                "order": [],
+                "disabled": false
+              }
+            },
+            {
+              "type": "builder_query",
+              "spec": {
+                "name": "B",
+                "signal": "metrics",
+                "stepInterval": 60,
+                "aggregations": [{
+                  "timeAggregation": "increase",
+                  "spaceAggregation": "sum",
+                  "metricName": "hubble_http_requests_total"
+                }],
+                "filter": {
+                  "expression": {{ printf "destination_namespace = '%s' AND destination = '%s' AND reporter = 'server' AND status >= '500' AND status < '600'" .Release.Namespace $destination | quote }}
+                },
+                "groupBy": [],
+                "order": [],
+                "disabled": false
+              }
+            },
+            {
+              "type": "builder_formula",
+              "spec": {
+                "name": "C",
+                "expression": "B / A",
+                "functions": []
+              }
+            }
+          ],
+          "panelType": "graph",
+          "queryType": "builder"
+        },
+        "selectedQueryName": "C",
+        "op": "1",
+        "target": {{ .Values.controlPlane.hubbleAlerts.errorRateThreshold }},
+        "matchType": "3",
+        "targetUnit": "",
+        "thresholds": {
+          "kind": "basic",
+          "spec": [{
+            "name": "warning",
+            "target": {{ .Values.controlPlane.hubbleAlerts.errorRateThreshold }},
+            "targetUnit": "",
+            "matchType": "3",
+            "op": "1",
+            "channels": ["incidentio"]
+          }]
+        }
+      },
+      "preferredChannels": ["incidentio"]
+    }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "embervm.fullname" . }}-http-p99-latency-alert
+  labels:
+    signoz.io/alert: "true"
+  annotations:
+    signoz.io/alert-name: "EmberVM control-plane HTTP p99 latency"
+    signoz.io/severity: "warning"
+    signoz.io/notification-channels: "incidentio"
+# The httpV2 duration histogram is emitted as
+# hubble_http_request_duration_seconds. SigNoz applies the p99 space aggregation
+# to that histogram after filtering to this release's destination workload.
+data:
+  alert.json: |
+    {
+      "alert": "EmberVM control-plane HTTP p99 latency",
+      "alertType": "METRIC_BASED_ALERT",
+      "ruleType": "threshold_rule",
+      "version": "v5",
+      "broadcastToAll": false,
+      "disabled": false,
+      "evalWindow": "10m0s",
+      "frequency": "1m0s",
+      "severity": "warning",
+      "labels": {
+        "category": "network",
+        "environment": "production",
+        "service": "embervm-control"
+      },
+      "annotations": {
+        "summary": "EmberVM control-plane HTTP p99 latency is elevated",
+        "description": "The service-scoped Hubble HTTP duration histogram exceeded the configured p99 threshold for the EmberVM control-plane workload."
+      },
+      "condition": {
+        "compositeQuery": {
+          "queries": [{
+            "type": "builder_query",
+            "spec": {
+              "name": "A",
+              "signal": "metrics",
+              "stepInterval": 60,
+              "aggregations": [{
+                "timeAggregation": "avg",
+                "spaceAggregation": "p99",
+                "metricName": "hubble_http_request_duration_seconds"
+              }],
+              "filter": {
+                "expression": {{ printf "destination_namespace = '%s' AND destination = '%s' AND reporter = 'server'" .Release.Namespace $destination | quote }}
+              },
+              "groupBy": [],
+              "order": [],
+              "disabled": false
+            }
+          }],
+          "panelType": "graph",
+          "queryType": "builder"
+        },
+        "selectedQueryName": "A",
+        "op": "1",
+        "target": {{ .Values.controlPlane.hubbleAlerts.p99LatencySeconds }},
+        "matchType": "3",
+        "targetUnit": "s",
+        "thresholds": {
+          "kind": "basic",
+          "spec": [{
+            "name": "warning",
+            "target": {{ .Values.controlPlane.hubbleAlerts.p99LatencySeconds }},
+            "targetUnit": "s",
+            "matchType": "3",
+            "op": "1",
+            "channels": ["incidentio"]
+          }]
+        }
+      },
+      "preferredChannels": ["incidentio"]
+    }
+{{- end }}

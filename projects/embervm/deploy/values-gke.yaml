@@ -61,6 +61,15 @@ noded:
   # projects/platform/priority-classes.
   priorityClassName: homelab-preemptible
 
+# The active hub uses GKE Dataplane V2. It has neither the CiliumNetworkPolicy
+# CRD nor Hubble, so the Cilium-only control-plane policy and its paired Hubble
+# alert declarations must not render here.
+controlPlane:
+  networkPolicy:
+    enabled: false
+  hubbleAlerts:
+    enabled: false
+
 # Broker on, its CiliumNetworkPolicy off (no Cilium CRDs on the hub; same
 # trade as noded.networkPolicy above). Without the broker the codex-cluster
 # grant never populates and every codex-lane session turn fails with

@@ -211,6 +211,39 @@ py_test(
     deps = ["@pip//pytest"],
 )
 
+# Pins the control-plane Cilium L7 allow-list to the actual Plug.Router routes,
+# checks that no L4 rule shadows port 8080, and validates the paired Hubble
+# alert series, labels, formula, and p99 aggregation (#3824 Part A).
+py_test(
+    name = "control_plane_networkpolicy_test",
+    srcs = ["control_plane_networkpolicy_test.py"],
+    data = [
+        "Chart.yaml",
+        "values.yaml",
+        "//projects/embervm/control:lib/embervm/router.ex",
+        "//projects/embervm/deploy:deploy_values",
+        "//projects/embervm/deploy:gke_values",
+        "//projects/platform/cilium:bootstrap/cilium-helmchart.yaml",
+        "//projects/platform/cilium:values.yaml",
+        "@multitool//tools/helm",
+    ] + glob([
+        "templates/**/*",
+        "crds/**/*",
+    ]),
+    env = {
+        "CILIUM_BOOTSTRAP": "$(rootpath //projects/platform/cilium:bootstrap/cilium-helmchart.yaml)",
+        "CILIUM_VALUES": "$(rootpath //projects/platform/cilium:values.yaml)",
+        "GKE_VALUES": "$(rootpath //projects/embervm/deploy:gke_values)",
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+        "PROD_VALUES": "$(rootpath //projects/embervm/deploy:deploy_values)",
+        "ROUTER_SOURCE": "$(rootpath //projects/embervm/control:lib/embervm/router.ex)",
+    },
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)
+
 py_test(
     name = "chart_hypervisor_epoch_test",
     srcs = ["chart_hypervisor_epoch_test.py"],
@@ -273,6 +306,12 @@ semgrep_test(
 semgrep_test(
     name = "noded_networkpolicy_test_semgrep_test",
     srcs = ["noded_networkpolicy_test.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+semgrep_test(
+    name = "control_plane_networkpolicy_test_semgrep_test",
+    srcs = ["control_plane_networkpolicy_test.py"],
     rules = ["//bazel/semgrep/rules:python_rules"],
 )
 

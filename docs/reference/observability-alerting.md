@@ -28,9 +28,26 @@ public frontend.
 
 ## Alerting gap
 
-This repo configures no in-cluster alert rules or notification channel for the
-probe metrics. It also configures no alert rules for Kubernetes health, ArgoCD
-state, EmberVM safety properties, or Hubble network-policy denials.
+This repo configures no active in-cluster alert rules or notification channel
+for the probe metrics. It also configures no active alert rules for Kubernetes
+health, ArgoCD state, EmberVM safety properties, or Hubble network-policy
+denials.
+
+The EmberVM chart carries two Cilium-only source declarations for the
+control-plane HTTP surface: a 5xx ratio alert over
+`hubble_http_requests_total` and a p99 latency alert over
+`hubble_http_request_duration_seconds`. They filter on the Hubble
+`destination_namespace`, workload-context `destination`, and `reporter` labels
+configured by `projects/platform/cilium/values.yaml`. The chart renders them in
+the former SigNoz alert ConfigMap format only when
+`controlPlane.hubbleAlerts.enabled` is true.
+
+Those ConfigMaps are not active alerts today. The SigNoz alert synchronizer and
+notification channel were removed, the current GKE hub has no Hubble, and the
+OpenTelemetry Collector metrics pipeline accepts only its `http_check` receiver.
+Do not treat a rendered ConfigMap as evidence that either alert is evaluating.
+Activating these queries requires a separately authorized alert consumer and
+notification recipient; this chart does not add an observability backend.
 
 The collector and probe configuration is documented in
 [`docs/observability.md`](../observability.md).

@@ -100,6 +100,23 @@ auth:
     # below caps the entire public surface as the in-repo backpressure backstop.
     - system:serviceaccount:monolith-public:monolith-public
 
+# Part A of #3824 for Cilium environments. The GKE overlay turns both switches
+# back off because Dataplane V2 exposes no CiliumNetworkPolicy CRD or Hubble.
+controlPlane:
+  networkPolicy:
+    enabled: true
+    externalClientPodSelectors:
+      - matchLabels:
+          k8s:io.kubernetes.pod.namespace: monolith
+          app.kubernetes.io/name: monolith
+          app.kubernetes.io/component: app
+      - matchLabels:
+          k8s:io.kubernetes.pod.namespace: monolith-public
+          app.kubernetes.io/name: monolith-public
+          app.kubernetes.io/component: web
+  hubbleAlerts:
+    enabled: true
+
 # Metering, audit, and quotas (Task 12). Quota is left OFF in R0 (opt-in, empty =
 # no enforcement): per-principal daily vCPU-second budgets are set alongside the
 # real consumer SAs at the Task 14/15 cutover, once real tasks actually run (no

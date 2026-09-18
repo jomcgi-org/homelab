@@ -1,0 +1,112 @@
+{{- define "embervm.controlPlane.httpRules" -}}
+http:
+  # Health probes share the HTTP listener with the authenticated API.
+  - { method: "GET", path: "^/healthz$" }
+  - { method: "GET", path: "^/livez$" }
+  # Task API.
+  - { method: "POST", path: "^/v1/workloads/[^/?]+/tasks([?].*)?$" }
+  - { method: "GET", path: "^/v1/tasks/[^/?]+([?].*)?$" }
+  - { method: "GET", path: "^/v1/tasks/[^/?]+/result([?].*)?$" }
+  - { method: "GET", path: "^/v1/workloads/[^/?]+/dead-letters([?].*)?$" }
+  - { method: "POST", path: "^/v1/tasks/[^/?]+/redrive([?].*)?$" }
+  # Operational and node APIs.
+  - { method: "GET", path: "^/v1/usage([?].*)?$" }
+  - { method: "GET", path: "^/v1/nodes([?].*)?$" }
+  - { method: "GET", path: "^/v1/conformance([?].*)?$" }
+  - { method: "GET", path: "^/v1/health/durability([?].*)?$" }
+  - { method: "POST", path: "^/v1/nodes/register([?].*)?$" }
+  - { method: "POST", path: "^/v1/artifacts/wrap([?].*)?$" }
+  - { method: "POST", path: "^/v1/artifacts/rewrap([?].*)?$" }
+  # Session API. These are the sensitive routes this policy primarily narrows.
+  - { method: "POST", path: "^/v1/workloads/[^/?]+/sessions([?].*)?$" }
+  - { method: "GET", path: "^/v1/workloads/[^/?]+/sessions([?].*)?$" }
+  - { method: "POST", path: "^/v1/sessions/[^/?]+/invoke([?].*)?$" }
+  - { method: "GET", path: "^/v1/sessions/[^/?]+([?].*)?$" }
+  - { method: "DELETE", path: "^/v1/sessions/[^/?]+([?].*)?$" }
+  # Serving, stateful, and composite management APIs.
+  - { method: "GET", path: "^/v1/serving/[^/?]+([?].*)?$" }
+  - { method: "DELETE", path: "^/v1/serving/[^/?]+/instances([?].*)?$" }
+  - { method: "GET", path: "^/v1/stateful/[^/?]+([?].*)?$" }
+  - { method: "DELETE", path: "^/v1/stateful/[^/?]+/instance([?].*)?$" }
+  - { method: "DELETE", path: "^/v1/stateful/[^/?]+/volume([?].*)?$" }
+  - { method: "POST", path: "^/v1/stateful/[^/?]+/handover/[^/?]+([?].*)?$" }
+  - { method: "GET", path: "^/v1/groups/[^/?]+([?].*)?$" }
+  - { method: "DELETE", path: "^/v1/groups/[^/?]+/instance([?].*)?$" }
+{{- end }}
+
+{{- if .Values.controlPlane.networkPolicy.enabled }}
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ include "embervm.fullname" . }}-control-plane
+  namespace: {{ .Release.Namespace }}
+spec:
+  endpointSelector:
+    matchLabels:
+      {{- include "embervm.selectorLabels" . | nindent 6 }}
+  ingress:
+    # The control plane, noded, and the dev conformance runner are the in-release
+    # API clients. Production's cross-namespace callers are declared explicitly
+    # in controlPlane.networkPolicy.externalClientPodSelectors.
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Release.Namespace | quote }}
+            {{- include "embervm.selectorLabels" . | nindent 12 }}
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Release.Namespace | quote }}
+            app.kubernetes.io/name: {{ include "embervm.noded.name" . }}
+            app.kubernetes.io/instance: {{ .Release.Name }}
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Release.Namespace | quote }}
+            {{- include "embervm.conformance.selectorLabels" . | nindent 12 }}
+        {{- with .Values.controlPlane.networkPolicy.externalClientPodSelectors }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      toPorts:
+        - ports:
+            - { port: {{ .Values.service.port | quote }}, protocol: TCP }
+          # Every allow on the API port carries the same L7 allow-list. There is
+          # no overlapping L4-only rule for these identities.
+          rules:
+            {{- include "embervm.controlPlane.httpRules" . | nindent 12 }}
+    # Kubelet probes originate from host/health. kube-apiserver is included so
+    # kubectl port-forward remains a usable authenticated operator path. These
+    # identities receive the same method/path restrictions as pod API clients.
+    - fromEntities:
+        - host
+        - health
+        - kube-apiserver
+      toPorts:
+        - ports:
+            - { port: {{ .Values.service.port | quote }}, protocol: TCP }
+          rules:
+            {{- include "embervm.controlPlane.httpRules" . | nindent 12 }}
+    # The node Envoy sends arbitrary application methods and paths to the final
+    # Router catch-all when a scaled-to-zero serving workload misses. Its exact
+    # pod selector keeps that ancillary surface from becoming a general API-port
+    # bypass for other callers. This remains an L7 rule, not a shadowing L4 allow.
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Release.Namespace | quote }}
+            {{- include "embervm.servingEnvoy.selectorLabels" . | nindent 12 }}
+      toPorts:
+        - ports:
+            - { port: {{ .Values.service.port | quote }}, protocol: TCP }
+          rules:
+            http:
+              - path: "^/.*$"
+                headerMatches:
+                  # Presence is enough: the Router validates the non-empty value.
+                  - name: x-ember-workload
+    {{- if .Values.xds.enabled }}
+    # ADS is gRPC on a separate Service port. It is not HTTP policy traffic and
+    # is allowed only from the serving Envoy pods that consume it.
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Release.Namespace | quote }}
+            {{- include "embervm.servingEnvoy.selectorLabels" . | nindent 12 }}
+      toPorts:
+        - ports:
+            - { port: {{ .Values.xds.grpcPort | quote }}, protocol: TCP }
+    {{- end }}
+{{- end }}
