@@ -901,11 +901,23 @@ visibility flip for verified/unverified agent facts).
 (see: /projects/monolith/chart/migrations/20260903000000_knowledge_scoped_assertions.sql)
 (see: /projects/monolith/deploy/values.yaml)
 
+**Why.** Knowledge stays in Postgres beside the evidence lanes rather than moving
+to a Loom deployment (#5991, closed 2026-09-14). Loom was removed from the
+cluster in 81c58b2ae, the entity spine (`knowledge/entities.yaml`, b3b2ea20b)
+and the recall floor (#5828) already anchor facts to projects and services in the
+same database the factory reads, and a second store would split provenance and
+scope enforcement (#5573) across two systems before either had a measured
+retrieval baseline. Expansion is gated on that baseline: #6128 measures a
+labelled set of real agent queries with expected evidence, including abstention
+cases, and each later slice (entity-aware drain, work-item linkage, runtime
+revalidation, component overviews) lands as its own issue only after the
+baseline names the failure it fixes.
+
 Facts are anchored to entities seeded from a committed manifest
-(`projects/monolith/entities.yaml`); `note_entities` edges link facts to subjects
-(projects, orgs, environments) with role constraints, and extraction uses the
-closed subject vocabulary and scope grammar to derive facts about the repository
-rather than hallucinations.
+(`projects/monolith/knowledge/entities.yaml`); `note_entities` edges link facts
+to subjects (projects, orgs, environments) with role constraints, and extraction
+uses the closed subject vocabulary and scope grammar to derive facts about the
+repository rather than hallucinations.
 
 **Why.** Facts needed a subject so the public record and the extraction lens
 could speak about tangible entities (projects, organizations) rather than
@@ -952,6 +964,21 @@ and projection then applies full, partial, or recognition-only scope.
 (see: /projects/monolith/grimoire/models.py)
 (see: /projects/monolith/chart/migrations/20260703070000_grimoire_schema.sql)
 (see: /projects/monolith/grimoire/visibility.py)
+
+**Why.** Grimoire stays a corpus browser with a thin play layer rather than a
+live-play platform, and grows one table-driven slice at a time. A real table
+will use it (decided 2026-09-13, #3942), which is why authenticated campaign
+membership and private ACLs (#3959) were approved first: every later feature
+reads or writes campaign-private data, and the `?as=` viewpoint override on the
+private routes had to become a real membership check before any of it. Character
+sheets as the mechanical source of truth (#3960) and a session transcript
+pipeline (#3961) remain proposals, each gated on membership landing and on Joe
+naming the concrete table workflow it serves with a bounded first deliverable;
+finishing membership does not authorise sheets, transcription, auto-reveals,
+combat automation or public replays. Voice capture with in-cluster transcription
+is deliberately last because the hub has no GPU pool for an ASR service (#5461),
+and derived character-knowledge automation (#3910) was dropped in favour of
+explicit DM grants until manual assignment is shown to be a burden.
 
 The Grimoire ingest path converts extracted documents into ordered text and
 image-derived chunks, records section hierarchy and image references, embeds
@@ -1164,15 +1191,21 @@ this table when the work ships or the issue closes without it.
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
 | The orchestration-level graph becomes a mutable DAG dispatched per node, replacing the workflow's Python control flow | section 4 | #5419 | in progress: the factory lane plans its DAG at plan time and runs engine-owned review rounds; legacy swarm runs are still `implement_then_review` |
-| One factory conductor above every per-run conductor selects and coordinates work under a versioned charter, acting on Joe's behalf | The factory conductor | #5784 | not started |
+| One factory conductor above every per-run conductor selects and coordinates work under a versioned charter, acting on Joe's behalf | The factory conductor | #5784 (children #5785, #5787, #5788, #5789, #5804; #5786 closed 2026-09-14) | not started |
 | The charter document and its loader govern what the conductor may read, coordinate, or act on | The factory conductor | #5785 | not started |
 | Product-goal records, the factory index, and acceptance evidence drive work selection | The factory conductor | #5786 | not started |
 | Conductor journal, memory assembly, and session lifecycle persist across restarts | The factory conductor | #5787 | not started |
 | One factory conversation spans web, Discord, and voice for the same conductor | The factory conductor | #5788 | not started |
 | Conductor mutations are server-gated by tier, ledgered, and stoppable, with health gates before autonomous action | The factory conductor | #5789 | not started |
-| Shared admission and reservations schedule product-goal work across lanes with downstream backpressure | The factory conductor | #5804 | not started |
+| Shared admission and reservations schedule product-goal work across lanes with downstream backpressure | The factory conductor | #5804 | gated: no oversubscription observed as of 2026-09-18; the lane starvation seen twice (2026-09-13, 2026-09-16) was uncertain-attempt settlement, owned by #6091 and 49b617ef9, not admission. Opens when #5851's baseline or an incident shows concurrent lanes oversubscribing capacity |
+| Execution profiles (implement, investigate, debug, research) become policy dimensions beside difficulty and risk | The factory conductor | #5784 | not started; conductor and planner on Astra since generation 11 |
 | Autonomous intake selects bounded issue work and refines or escalates issues that are not delivery-ready | section 4 | #6002 | in progress: policy, intake selection, and the refine path are implemented behind disabled defaults |
 | Per-caller result scoping restricts what each MCP caller's tool calls can return | section 7 | #4569 | not started |
+| The knowledge graph gains project context, runtime evidence and known-work linkage in bounded slices behind a measured retrieval baseline | section 6 | #5829 (children #6128, #5849, #5571, #5573, #5913, #5926) | not started: baseline #6128 first |
+| Evidence-lane follow-ons: deployment observations (#5571), default retrieval scopes with personal opt-in (#5573), distress inbox (#5574), #5569, #5587 | section 6 (agents/063) | #5527 | in progress: slice live 2026-09-03, children open |
+| Grimoire private routes enforce campaign membership instead of the `?as=` override | section 6 | #3959 | in progress (PR #6125) |
+| Approved character sheets with DM approval become Grimoire's mechanical source of truth | section 6 | #3960 | proposal, gated on #3959 and a selected table workflow |
+| A Discord-backed session transcript pipeline with ACL-filtered surfacing and reviewed replays | section 6 | #3961 | proposal, gated on #3959, a selected table workflow and ASR capacity (#5461) |
 | Discord chat automation gets persisted scheduled tasks, configurable message triggers, and per-channel memory notes | Decision history (services/002) | #3901 | in progress: configurable message triggers are implemented; persisted scheduled tasks and per-channel memory notes remain |
 | Grimoire post-extraction quality passes (evidence-grounded stat verification, review-approved alias merges) ship | Decision history (services/014) | #3912 | not started |
 | Public chat retention and takedown purge tooling ships | Decision history (security/005) | #3899 | not started |
@@ -1181,8 +1214,9 @@ this table when the work ships or the issue closes without it.
 ### The factory conductor
 
 One logical conductor per operator sits above every per-run conductor and drain
-lane. It runs in a replaceable fenced EmberVM session, starting on Opus, and
-selects and coordinates work on Joe's behalf under a versioned charter. An
+lane. It runs in a replaceable fenced EmberVM session, on Astra since policy
+generation 11, and selects and coordinates work on Joe's behalf under a
+versioned charter. An
 escalation means Joe is needed. Its default view answers what advanced, what is
 running, what needs Joe, and why capacity is idle. Its objective is to keep all
 safely available subscription quota doing useful work toward agreed product
@@ -1214,7 +1248,7 @@ probe intervals, health thresholds, work-in-progress limits, and receipt and
 control latency targets are chosen and validated by the implementing issues
 before the matching autonomous control is enabled. Fable is evaluated against
 recorded coordination correctness, unnecessary escalations, latency, and cost
-before any switch from Opus.
+as an escalation model, not a lane.
 
 **Why.** A per-run conductor owns one DAG and cannot pick priorities or
 reconcile overlap across local and cloud Claude sessions, Codex workers,
@@ -1231,7 +1265,18 @@ Destroying the conductor session as the stop was rejected because it leaves
 delegated work and uncertain side effects unaccounted for. The design amends
 ADR agents/062 by adding coordination above individual runs and ADR agents/060
 by resolving delegated decisions inside the charter before anything reaches
-Joe.
+Joe. Shared reservations were deferred because the only capacity failures
+recorded so far were permits held by attempts whose guest had died, which a
+reservation ledger would have held just as long; settling uncertain outcomes
+quickly buys more throughput than scheduling policy until an oversubscription is
+actually observed. The conductor and per-task planner run on Astra since policy
+generation 11 (2026-09-13), replacing the Opus default: Astra plans DAGs with
+fewer correction rounds at lower cost per turn, and the Opus weekly window is
+reserved for independent review, which is the scarce input. Fable stays an
+escalation model, not a lane. Implementer and reviewer pairs follow the
+difficulty profile on #5784 (hard engineering Astra/Fable, medium Sol/Opus,
+easy Luna/Terra) as trial configuration, judged on correction rounds and cost
+per merged PR.
 
 ---
 

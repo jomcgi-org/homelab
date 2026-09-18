@@ -289,6 +289,21 @@ embervm/038, `noded/server/activator.go`).
   become independent Workloads wired by bindings rather than composite
   groups.
 
+**Why.** Per-request tenant isolation (one fresh VM per request, destroyed after
+the response, re-primed locally with no control-plane hop) is the fast execution
+path the session and task classes do not offer, and it is retained, not dropped.
+It is not built as a second stack: the Semgrep scan pod (#6132) is extracting
+the task substrate (prime, assign, destroy, registry, budget, jailer) into a
+native library with a local pool loop, and the lane is that library behind an
+Ember-facing request entry. Fresh execution state per request is the invariant;
+restoring many guests from one clean base satisfies it, reusing a prior tenant's
+mutated state never does. Routing reuses Kubernetes Service plus pod readiness
+first; LEAST_REQUEST, retry-on-503 and outlier ejection are added only for a
+demonstrated gap, and a retry never replays tenant work after an uncertain
+result. The per-brick fail-closed quota lease was withdrawn by ADR 020 and stays
+withdrawn. The lane becomes agent-ready when the library exists and a workload
+needs it (#3864).
+
 **Why.** Classes originally bundled persistence policy, leaving no class for a
 filesystem-backed workload without a memory snapshot (ADR embervm/027). A new
 class for each persistence shape was rejected because persistence is orthogonal
@@ -406,6 +421,19 @@ the entry, it withdraws and tears down that endpoint before following the
 ordinary bounded wake path (#5818). A bank-owned or actively spliced entry is
 left for its operation, and the witnessed-connect withdrawal above remains
 stateful-only.
+
+**Why Fork B stays unbuilt.** ADR embervm/018 split brick-owned lifecycle into
+Fork A (node-local wake, shipped) and Fork B (brick-authoritative idle banking,
+generation advancement under a wake grant, checkpoint COMMIT on the node). Fork
+A answers the availability question that motivated the split: a request during
+a control-plane gap reaches a ready VM. Fork B would move generation authority
+off the control plane, the seam ADR embervm/011 made single-writer on purpose,
+and no workload has yet needed idle bank or relight through a sustained
+control-plane gap, nor has control-plane sweep load been measured as a problem.
+Fork B therefore waits for one of those two facts and starts with one bounded
+transition (ownership, authority, persistence, recovery stated), not the
+seven-phase plan in the ADR history. Wake-path retirement (#4013) is gated
+separately on the #4702 model and runtime evidence and does not imply Fork B.
 
 ### Sessions: the durability ladder
 
@@ -726,6 +754,20 @@ a brick's size is fixed for its lifetime.
 | Brick pod to node | kube-scheduler | pod shape only |
 | Node provisioning | Karpenter or equivalent (cloud) / none (fixed fleet) | brick count vector from the single-writer controller; a Pending brick is the signal |
 
+**Why.** The reserve constants are provisional and measured only once:
+`daemonReserveMib` (256 in the chart, 512 in the binary default when the chart
+does not inject it), `vmOverheadMib` (0 until a brick is switched to `reserved`),
+and the roughly 3 MiB per guest the overhead script reported on the first hub
+samples. `Stats()` is read once at release, so there is no recurring per-VM RSS
+series and no separation of daemon working set from guest RSS from shared page
+cache. That is deliberate: a sampler is cheap to write and expensive to keep
+honest (page-cache first-toucher misattribution, cgroup v2 no-internal-process
+rules, cardinality), and no sizing or incident decision has yet needed a number
+the existing facilities cannot supply. Recurring per-VM telemetry (#4773) is
+added when a named decision needs it, scoped to that decision, and never changes
+the reserve, admission or banking policy in the same change. The B5 shadow
+ledger (#6056) is the next measurement that exists by design.
+
 On a fixed fleet a Pending brick **is** the fleet-full signal: the
 controller flags `:fleet_full`, the dispatcher refuses placement (503), and
 a human is paged, rather than overcommitting.
@@ -763,6 +805,22 @@ drains). The Firecracker jailer that backs the guest rung of the ladder is
 **Shipped-but-suspended** (#5520; section 10 has the containment detail). It
 lands dark pending live verification on one brick, after which a values-only
 change can arm it.
+
+**Why.** Host memory usage cannot say whether a guest is reclaiming hard or has
+already killed its application: a guest OOM leaves the Firecracker process
+alive, a host cgroup OOM kills the VMM. Today noded classifies only the second
+(`cgroup.OOMKilled()` at process cleanup); everything else is an unclassified
+VMM exit and a guest application death is invisible until the workload's own
+health signal notices. Host-observed capacity stays authoritative: a guest
+report can never raise capacity, bypass a quota, or relax idle-only banking, and
+a missing or stale report is neither healthy nor proof of OOM. A guest feedback
+channel (available memory, PSI where the kernel has it, OOM evidence, freshness
+tied to the current VM activation rather than a snapshot-cloned flag) is
+**Planned** (#5805) behind a named diagnostic gap, because it means a new
+command on the frozen guest-agent contract and a rootfs rebake for every
+runtime. The first slice when the gate fires is exit classification alone (host
+cgroup OOM, guest kernel panic from the serial marker, unclassified) surfaced as
+a structured lifecycle event, which needs no guest change.
 
 **Decided direction**: PriorityClass ranking of brick
 pools by lane with sacrificial balloon bricks for burst headroom, and
@@ -811,6 +869,20 @@ the 110 second figure when a preemption arrives. State durability within the sta
 the guarantee, connection continuity is not. Artifact retention TTLs and the
 GC sweep behaviour are in [deploy/README.md](deploy/README.md).
 
+**Why drains bank in place rather than hand over.** A drain edge is one signal
+(`drain_deadline_unix_ms`, SIGTERM or the Spot preemption notice, whichever is
+earlier) and the coordinator answers it one way: force-bank every class in
+durability order inside the deadline. A pod-surge roll keeps the node's disk, so
+the replacement daemon relights locally and no bytes leave the brick. A Spot
+preemption gives about 20 seconds, enough to bank and export but not to export,
+restore onto a peer, re-anchor, and evict, so pre-drain redistribution would
+race the deadline for no availability gain; when the node is gone, anchor-loss
+recovery (ADR embervm/040) restores the banked volume onto a peer from the store.
+The manual handover verb (`POST /v1/stateful/:name/handover/:target`) exists for
+the planned case: a node leaving the fleet on an operator's schedule. Automatic
+handover at the drain edge would need a drain cause the daemon does not publish
+and a workload whose downtime budget banking cannot meet; neither exists.
+
 **Why.** Per-invocation pods and Kubernetes objects made pod churn and etcd the
 ceiling for short work, yet bypassing Kubernetes meant its autoscaler could no
 longer observe Firecracker demand (ADR embervm/001, ADR embervm/005). A pod per
@@ -847,7 +919,12 @@ flattened EROFS manifests and immutable chunks. Private chunks deduplicate under
 `rootfs/platform/...`. A brick fully hydrates and verifies every chunk of an
 active manifest before reporting the rootfs READY, then presents a local-only
 read-only ublk device. The object store is a preparation dependency, never a
-live guest block-read dependency.
+live guest block-read dependency. Phase 0 (`rootfs/PHASE0-RESULTS.md`) measured a
+16.8 percent Account-scope saving with Gear CDC at 64 KiB / 256 KiB / 1 MiB and
+showed `-Enoinline_data` is required for rebuild stability; the build waits for
+EKS because converter placement and Account key custody are its prerequisites,
+and the two larger wins it uncovered (superseded-rootfs reclaim, dropping unused
+baked images) need no chunk store.
 
 | Failure | task | session | serving | stateful |
 | ------- | ---- | ------- | ------- | -------- |
@@ -1235,6 +1312,21 @@ S3-compatible object store.
   replacement: every guest rootfs rebakes in the brick init containers and
   the control plane re-drives the dropped bases without a restart, about ten
   minutes end to end.
+
+  **Why.** Scratch is deliberately ephemeral. A per-node persistent disk would
+  have to be named, attached and fenced across Spot replacement in an
+  autoscaling pool, would carry the ext4 loop file's generation marker past the
+  node that wrote it, and would cost more than the Spot saving it protects on a
+  three-node pool. Preserving the filesystem also proves nothing about a
+  database's recovery point: demo-postgres durability rests on its export path,
+  not on scratch surviving. The reference design therefore pays for replacement
+  with reconstruction: the rootfs cache (#5772) shortens the rebake and the
+  control plane re-drives bases without a restart. Persistent scratch is
+  reconsidered (#5773) only against a measured post-cache replacement that a
+  named workload cannot tolerate, or a workload that declares local data must
+  survive with a stated RPO and RTO, and even then reconstruction or export
+  recovery is compared first. The filesystem choice for any such disk follows
+  #5699.
 - **Warmth never crosses a CPU vendor** (until CPU templates land):
   artifacts are keyed per vendor, the gate fails closed at the daemon, and
   each vendor pool holds its own warmth.
@@ -1245,8 +1337,27 @@ S3-compatible object store.
   reference deployment configures its op-log as a Postgres database (a shared
   cluster is acceptable: a CP
   outage is a designed-for state, and CP rolls are the availability events
-  the node-local activator exists to survive). Multi-replica needs the
-  single-writer-per-cell appender.
+  the node-local activator exists to survive).
+
+  **Why.** One replica is a choice, not a limitation of the op-log: the Postgres
+  tier is live and the CP's state is a reconciled cache of what bricks report,
+  so a second replica could rebuild the same hot set by observing. What is not
+  safe is the action side. `claimForAssign` already fences duplicate assignment
+  at the node, but `Destroy`, `Bank`, `StopStateful` and `Relight` carry no
+  ownership epoch on the noded RPC surface, and `EndpointPublisher` versions are
+  boot-epoch prefixed so an older-booted writer is locked out permanently. A CP
+  outage is a designed-for state (pod reschedule plus op-log projection load
+  plus the node-local activator covers admitted work), and no workload or factory
+  operation has yet named an availability or recovery bound that this fails.
+  When one does (#3862), the sequence is fixed: first the fence (a per-brick
+  ownership epoch mirroring `wake_grant`, and a multi-writer-safe publisher
+  version), then the smallest topology that meets the requirement, which is a
+  leader-elected actor tier on a Postgres advisory lock with observers on every
+  replica. Brick-sharded ownership over libcluster and Horde is a fan-in scaling
+  tool for a fleet of thousands of bricks, not an availability tool, and cells
+  (#3855) were withdrawn. The ADR 007 loop walls (global prime budget, O(V^2)
+  adoption sweep, timer reconciles) each buy more than replicas and are fixed
+  first.
 - **Small fleets may co-locate guests with control-plane nodes** as an
   eyes-open risk acceptance, provided the cluster is GitOps-reconstructible
   and durable state lives in S3: quorum loss is bounded downtime, not data
@@ -1302,12 +1413,17 @@ this table when the work ships or the issue closes without it.
 | --- | --- | --- | --- |
 | The Firecracker jailer arms on every brick, closing the direct-root-exec gap between co-resident guests | section 10 | #5255 | not started |
 | EmberVM ships a standalone quickstart and packaging boundary independent of the homelab's deployment configuration | Decision history (embervm/009) | #3858 | not started |
-| OCI images convert to deterministic EROFS manifests and immutable content-addressed chunks, hydrated through a local-only read-only ublk device | section 8 | #4182 | not started |
+| OCI images convert to deterministic EROFS manifests and immutable content-addressed chunks, hydrated through a local-only read-only ublk device | section 8 | #4182 | deferred until EKS metal and per-Account KMS (2026-09-12) |
 | The brick `maxReplicas` ceiling itself moves on sustained denial pressure, not only the replica count clamped inside it | section 7 | #5505 | not started |
 | SPIFFE-issued identity moves beyond issuance: mTLS on the CP-to-noded hop, per-principal guest JWT-SVIDs, and GCP federation | section 9 | #5706 | not started |
 | A session workspace gets a size budget instead of unbounded growth | Decision history (embervm/027) | #5074 | not started |
 | A second Codex account joins the chatgpt.com grant pool once logged in, and quota floors per class and role protect planning capacity | section 9 | #5974 | grant pool built, pool not yet activated |
 | A guest-declared transient failure is retried inside EmberVM on a bounded session-invoke loop, so callers outside the monolith transport get it too | section 4 | #6185 | not started |
+| A guest reports memory pressure and OOM evidence, and VMM exits are classified | section 7 | #5805 | gated on a diagnostic gap |
+| Brick scratch survives Spot replacement | section 11 | #5773 | gated on a measured recovery gap |
+| Per-VM host resource gauges on an interval | section 7 | #4773 | gated on a named sizing decision |
+| Isolated per-request lane on the shared task library | section 3 | #3864 | gated on #6132 library plus a named workload |
+| Control-plane replica loss without a single-active gap | section 11 | #3862 | gated on a named availability requirement; fence first |
 
 ---
 
@@ -1332,10 +1448,10 @@ has the full text.
 | embervm/012 | Co-located fleet, etcd blast radius accepted, grandfather rule, registry survives restart | Accepted; dynamic sizing retired by 013; HA open (#3862) | deleted |
 | embervm/013 | Classes are reuse semantics, substrates are lanes; brick sizing; bricks everywhere | Accepted, Built | deleted |
 | embervm/014 | Worker-authoritative state, async writes, node-confirmed destruction | Draft, Built (`adoption.tla`); metering clause amended by 020 | deleted |
-| embervm/015 | Isolated high-throughput lane with data-plane placement | Draft, not built (#3864, #3865, #3866); fail-closed lease withdrawn by 020 | deleted |
+| embervm/015 | Isolated high-throughput lane with data-plane placement | Draft, not built (#3864); fail-closed lease withdrawn by 020 | deleted |
 | embervm/016 | Kubernetes scheduling contract: the pod is the ABI, priority projection, session ladder | Accepted; kwok drills never built; placement loop superseded by 020, ladder amended by 025, 027, 029 | deleted |
 | embervm/017 | Bounded auto-heal of the checkpoint-abort quarantine | Accepted, Built (`generation_issuance.tla`) | deleted |
-| embervm/018 | Node-local activator (Fork A), brick-authoritative lifecycle (Fork B) | Accepted; Fork A partly landed, Fork B lease Built (#3993, #4013) | deleted |
+| embervm/018 | Node-local activator (Fork A), brick-authoritative lifecycle (Fork B) | Accepted; Fork A shipped, Fork B not started (gated, see section 4) | deleted |
 | embervm/019 | Op-log payload separation, time partitioning, principal-scoped erasure | Draft, Decided direction | deleted |
 | embervm/020 | Admission-only control plane, token routing, peer redistribution, fail-open metering | Draft, Decided direction; decision 3 withdrawn to 023 | deleted |
 | embervm/021 | `memMib` as the only dial, derived CPU, GB-seconds | Draft, Decided direction | deleted |
