@@ -31,8 +31,8 @@ def drainer_queue():
     return get_queues()[2]
 
 
-# The merge queue is declared but not used yet: ADR 027's merge gate does not
-# exist in code, so this example stops at review.
+# The merge queue remains unused. See FACTORY.md, "Review publisher", for the
+# disabled publisher and the external safeguards required before activation.
 
 
 def _prepare_drainer_workers_once(
