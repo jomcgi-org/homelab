@@ -35,6 +35,8 @@ function token(element, name) {
 }
 
 beforeEach(() => {
+  window.happyDOM.settings.disableCSSFileLoading = true;
+  window.happyDOM.settings.handleDisabledFileLoadingAsSuccess = true;
   const style = document.createElement("style");
   style.textContent = styles;
   document.head.append(style);
