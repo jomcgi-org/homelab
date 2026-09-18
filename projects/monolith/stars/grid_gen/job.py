@@ -13,9 +13,9 @@ import json
 import logging
 import os
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
 logger = logging.getLogger("monolith.stars.grid_gen")
 
@@ -48,7 +48,7 @@ class GridJobConfig:
     max_road_distance_m: float
 
     @classmethod
-    def from_env(cls) -> "GridJobConfig":
+    def from_env(cls) -> GridJobConfig:
         endpoint = os.environ.get("STARS_GRID_SOURCE_S3_ENDPOINT", "").strip()
         if endpoint and not endpoint.startswith(("http://", "https://")):
             raise ValueError(
@@ -110,7 +110,7 @@ def run(
     if build_grid is None:
         from stars.grid_gen.generate_grid_v2 import build as build_grid
     if ingest_grid is None:
-        from stars.grid import replace_grid as ingest_grid
+        from stars.grid_ingest import replace_computed_grid as ingest_grid
     if boundary_parser is None:
         from stars.grid_gen.generate_grid_v2 import (
             _scotland_polygons as boundary_parser,

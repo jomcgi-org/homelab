@@ -128,6 +128,20 @@ def test_run_rejects_empty_computation_without_ingesting(config):
     assert ingested == []
 
 
+def test_run_rejects_duplicate_ids_without_ingesting(config):
+    ingested = []
+    duplicate = {"id": "same", "lat": 56.5, "lon": -4.5}
+    with pytest.raises(RuntimeError, match="duplicate site ids"):
+        run(
+            config,
+            s3=FakeS3(),
+            build_grid=lambda *args, **kwargs: [duplicate, dict(duplicate)],
+            ingest_grid=lambda rows: ingested.append(rows),
+            boundary_parser=lambda admin1: ["scotland"],
+        )
+    assert ingested == []
+
+
 def test_run_propagates_ingest_failure(config):
     def fail_ingest(rows):
         raise RuntimeError("database unavailable")
