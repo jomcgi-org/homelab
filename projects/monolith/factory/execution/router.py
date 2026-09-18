@@ -873,11 +873,12 @@ def _persist_task_session_start(
     from sqlalchemy.exc import IntegrityError
 
     local_session_id = f"swarm-task:{task_id}"
-    # Computed before the session opens: recall blocks on an embedding call,
-    # and holding a pooled connection through it starves other handlers.
+    from factory.orchestration.models import recall_task_text
+
+    # Recall reads cached vectors only, before opening the write transaction.
     system_prompt = attach_recall(
         _append_rationale_trailer(None, start_request.repo),
-        start_request.prompt,
+        recall_task_text(task_id),
         node_key=None,
     )
     with Session(get_engine()) as db_session:

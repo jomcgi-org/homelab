@@ -1158,6 +1158,7 @@ def create_session(
     node_attempt: int | None = None,
     admission_tier: str = "interactive",
     commit: bool = True,
+    recall_pending: bool = False,
 ) -> AgentSession:
     if admission_tier not in admission.TIERS:
         raise ValueError("Invalid server admission tier")
@@ -1172,6 +1173,7 @@ def create_session(
         admission_tier=admission_tier,
         progress_token=secrets.token_urlsafe(32),
         system_prompt=system_prompt,
+        recall_pending=recall_pending,
         reasoning=reasoning,
         workflow_id=workflow_id,
         node_key=node_key,
@@ -1853,13 +1855,25 @@ def create_pending_message(
     scratch, and retry (up to 5 attempts). After all attempts are exhausted,
     raise RuntimeError.
     """
-    if _lock_session(session, session_id) is None:
+    session_row = _lock_session(session, session_id)
+    if session_row is None:
         raise ValueError(f"Unknown agent session {session_id}")
     _assert_sendable(session, session_id)
-
     max_attempts = 5
     for attempt in range(max_attempts):
         try:
+            if session_row.recall_pending:
+                from knowledge.api import attach_recall, recall_prompt_ready
+
+                if recall_prompt_ready(message_text):
+                    session_row.system_prompt = attach_recall(
+                        session_row.system_prompt,
+                        message_text,
+                        node_key=session_row.node_key,
+                    )
+                    # A cache miss is still the one recall attempt for this session.
+                    session_row.recall_pending = False
+                    session.add(session_row)
             last_turn = session.exec(
                 select(func.max(AgentTurn.seq)).where(
                     AgentTurn.session_id == session_id
@@ -1887,7 +1901,7 @@ def create_pending_message(
                 raise RuntimeError(
                     f"Failed to allocate seq for session {session_id} after {max_attempts} attempts"
                 )
-            _lock_session(session, session_id)
+            session_row = _lock_session(session, session_id)
             _assert_sendable(session, session_id)
 
 

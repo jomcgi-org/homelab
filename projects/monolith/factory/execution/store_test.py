@@ -1355,3 +1355,37 @@ def test_late_progress_after_completion_does_not_hold_untouched_successor(
     with Session(engine) as session:
         assert store.get_turn(session, session_id, 2) is None
         assert store.get_pending_message(session, session_id, 2).dispatch_count == 1
+
+
+def test_deferred_recall_uses_first_non_boilerplate_prompt_once(monkeypatch, tmp_path):
+    import knowledge.api as knowledge
+
+    engine, schemas = _database(monkeypatch, tmp_path)
+    seen = []
+
+    def attach(system, prompt, **_kwargs):
+        seen.append(prompt)
+        return system  # A cache miss must still consume the one attempt.
+
+    monkeypatch.setattr(knowledge, "attach_recall", attach)
+    try:
+        with Session(engine) as session:
+            agent = store.create_session(
+                session, "deferred-recall", "guest", "main", recall_pending=True
+            )
+            store.create_pending_message(
+                session,
+                agent.id,
+                "<environment_context>shim boilerplate</environment_context>",
+            )
+            assert agent.recall_pending is True
+            store.create_pending_message(
+                session, agent.id, "Investigate the guest memory restore bug"
+            )
+            assert agent.recall_pending is False
+            store.create_pending_message(
+                session, agent.id, "Now work on a completely different problem"
+            )
+            assert seen == ["Investigate the guest memory restore bug"]
+    finally:
+        _restore_schemas(schemas)

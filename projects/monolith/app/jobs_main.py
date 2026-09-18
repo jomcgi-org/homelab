@@ -380,6 +380,23 @@ def publish_facts(
             logger.info("(dry-run, no changes made)")
 
 
+@app.command("knowledge-merge-clones")
+def knowledge_merge_clones(
+    apply: bool = typer.Option(
+        False, "--apply", help="Persist merges; default is dry-run."
+    ),
+    scope: str | None = typer.Option(None, help="Limit to one exact knowledge scope."),
+) -> None:
+    """Merge semantic fact clones, preserving provenance and invalidated rows."""
+    from core.db import get_engine
+    from knowledge.gardener import merge_clones
+    from sqlmodel import Session
+
+    with Session(get_engine()) as session:
+        plans = merge_clones(session, apply=apply, scope=scope)
+    typer.echo(json.dumps({"dry_run": not apply, "merges": plans}))
+
+
 # Entity spine rollout is manual after deployment. The supported path is the
 # suspended seed-entities CronWorkflow, followed by backfill-entities. Submit
 # each with `argo submit --from cronworkflow/<name> -n monolith-workflows`.

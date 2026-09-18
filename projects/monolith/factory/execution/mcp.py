@@ -42,7 +42,7 @@ from core.mcp_app import mcp
 from faas.embervm_client import EmberVMTransportError
 from framework import log_task_exception
 from goosecracker.api import REPO_CATALOG
-from knowledge.api import attach_recall
+from knowledge.api import attach_recall, defer_recall
 from factory.execution.rationale import parse_rationale
 from auth.api import Authority, current_principal
 
@@ -386,8 +386,14 @@ def _persist_session(
     node_key: str | None = None,
     node_attempt: int | None = None,
     admission_tier: str = "interactive",
+    task_id: str | None = None,
 ) -> AgentSession:
-    system_prompt = attach_recall(system_prompt, prompt, node_key=node_key)
+    recall_text = prompt
+    if task_id is not None:
+        from factory.orchestration.models import recall_task_text
+
+        recall_text = recall_task_text(task_id)
+    system_prompt = attach_recall(system_prompt, recall_text, node_key=node_key)
     with Session(get_engine()) as db_session:
         return store.create_session(
             db_session,
@@ -404,6 +410,7 @@ def _persist_session(
             node_key=node_key,
             node_attempt=node_attempt,
             admission_tier=admission_tier,
+            recall_pending=task_id is None and defer_recall(prompt, node_key=node_key),
         )
 
 

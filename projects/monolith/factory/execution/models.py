@@ -84,6 +84,8 @@ class AgentSession(SQLModel, table=True):
     # a Discord thread posts the turn result verbatim, so voice markup there is
     # noise rather than signal.
     system_prompt: str | None = Field(default=None)
+    # Only sessions opened before a meaningful user prompt defer recall.
+    recall_pending: bool = Field(default=False)
     # BigInteger, not the default Integer: this is epoch MILLISECONDS from the
     # control plane, which overflows int4. The migration already declares BIGINT,
     # but SQLModel maps a plain int to sqlalchemy Integer and emits an explicit

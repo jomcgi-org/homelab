@@ -10,6 +10,7 @@ from sqlalchemy import text
 from sqlmodel import Session
 
 from knowledge.burst import kg_burst_state
+from knowledge.recall_metrics import snapshot as recall_metrics
 from knowledge.extraction import EXTRACTION_VERSION, KG_JOB_KIND, KG_NODE_KEY
 from shared.invocation_outcomes import UNKNOWN_INVOCATION
 
@@ -190,6 +191,7 @@ def _kg_health_core(session: Session, cap: int) -> dict:
             and oldest_dispute <= _DISPUTE_STALE_SECONDS
             and not (failed_24h > 0 and atoms_24h == 0)
         ),
+        "recall": recall_metrics(),
         "queued": int(queue.queued),
         "held": int(queue.held),
         "oldest_queued_seconds": oldest,

@@ -40,7 +40,9 @@ def test_mint_task_id_is_prefixed_uuid():
     UUID(task_id.removeprefix("t-"))
 
 
-def test_create_task_writes_row(db):
+def test_create_task_writes_row(db, monkeypatch):
+    prepared = []
+    monkeypatch.setattr("knowledge.api.prepare_recall", prepared.append)
     task_id = mint_task_id()
     with Session(db) as session:
         row = create_task(
@@ -62,6 +64,7 @@ def test_create_task_writes_row(db):
         assert stored.workflow_id == "wf-1"
         assert stored.session_id == 7
         assert isinstance(stored.created_at, datetime)
+    assert prepared == ["build the thing"]
 
 
 def test_append_plan_version_rejects_duplicate_version(db):

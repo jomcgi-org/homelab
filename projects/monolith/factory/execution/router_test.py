@@ -1994,6 +1994,12 @@ def test_start_session_marks_message_ui_originated(client, session, monkeypatch)
 
 def test_task_session_start_is_idempotent_and_ui_originated(session, monkeypatch):
     """A recovered classifier task reuses its session and Discord marker."""
+    monkeypatch.setattr(
+        "factory.orchestration.models.recall_task_text",
+        lambda task_id: (
+            "GitHub issue https://github.com/acme/repo/issues/1\n\nIssue title\n\nTask objective"
+        ),
+    )
 
     async def no_login(_model):
         return None

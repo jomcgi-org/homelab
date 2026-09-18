@@ -437,6 +437,7 @@ def _start_node_session(pin: dict, key: str, prompt: str, deadline: str) -> dict
             pin["repo"],
             pin.get("hydration_branch", pin["branch"]),
             workflow_id=pin["workflow_id"],
+            task_id=pin["task_id"],
             node_key=pin["node_key"],
             node_attempt=pin["attempt"],
         )

@@ -526,6 +526,7 @@ class KnowledgeStore:
         type_filter: str | None = None,
         scope_filter: str | None = None,
         exclude_invalidated: bool = False,
+        include_embeddings: bool = False,
     ) -> list[dict]:
         """Semantic search returning type, tags, best chunk section + snippet.
 
@@ -665,6 +666,10 @@ class KnowledgeStore:
                     "entities": entities_by_note.get(row.note_id, []),
                 }
             )
+            if include_embeddings:
+                results[-1]["embedding"] = (
+                    list(chunk.embedding) if chunk is not None else None
+                )
         return results
 
     def get_note_by_id(self, note_id: str) -> dict | None:

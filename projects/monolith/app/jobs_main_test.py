@@ -551,3 +551,21 @@ def test_post_internal_does_not_retry_400(monkeypatch):
             jobs_main._post_internal("/internal/agent/drain", "agent-drain-trigger")
 
     assert calls == 1
+
+
+def test_knowledge_clone_job_defaults_to_dry_run():
+    with (
+        mock.patch("core.db.get_engine", return_value=object()),
+        mock.patch("sqlmodel.Session"),
+        mock.patch("knowledge.gardener.merge_clones", return_value=[]) as merge,
+    ):
+        result = runner.invoke(jobs_main.app, ["knowledge-merge-clones"])
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output)["dry_run"] is True
+        assert merge.call_args.kwargs == {"apply": False, "scope": None}
+        result = runner.invoke(
+            jobs_main.app,
+            ["knowledge-merge-clones", "--apply", "--scope", "repo:acme/repo"],
+        )
+        assert result.exit_code == 0, result.output
+        assert merge.call_args.kwargs == {"apply": True, "scope": "repo:acme/repo"}
