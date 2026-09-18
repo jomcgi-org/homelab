@@ -5,9 +5,10 @@
 #   "$WORKDIR"/bazel/tools/codex/dispatch.sh <tier> "$WORKDIR" "<task spec>"
 #   echo "<task spec>" | "$WORKDIR"/bazel/tools/codex/dispatch.sh <tier> "$WORKDIR" -
 #
-#   tier:    luna | terra | frontier
+#   tier:    luna | terra | frontier | astra
 #            frontier/Sol = default (trial, review 2026-08-28); luna =
-#            mechanical bulk; terra = middle rung
+#            mechanical bulk; terra = middle rung; astra = the factory
+#            conductor model (gpt-6-astra), for specs Sol has failed twice
 #   workdir: directory the worker may write to (a /tmp/claude-worktrees/* worktree)
 #   spec:    full task spec as one argument, or "-" to read from stdin
 #
@@ -48,7 +49,7 @@ QUOTA_EXIT=42
 BUSY_EXIT=65
 
 usage() {
-	echo "usage: $0 <luna|terra|frontier> <workdir> <spec|-> " >&2
+	echo "usage: $0 <luna|terra|frontier|astra> <workdir> <spec|-> " >&2
 	exit 64
 }
 
@@ -58,6 +59,7 @@ case "$1" in
 luna) MODEL="gpt-5.6-luna" EFFORT="medium" ;;
 terra) MODEL="gpt-5.6-terra" EFFORT="high" ;;
 frontier) MODEL="gpt-5.6-sol" EFFORT="high" ;;
+astra) MODEL="gpt-6-astra" EFFORT="high" ;;
 *) usage ;;
 esac
 
