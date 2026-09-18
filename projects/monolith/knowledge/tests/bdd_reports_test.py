@@ -19,7 +19,7 @@ async def test_report_knowledge_queues_unverified_evidence(
 
     uploads = {}
     with patch(
-        "knowledge.ingest_queue.upload_raw",
+        "knowledge.mcp.upload_raw",
         side_effect=lambda raw_id, content: uploads.setdefault(raw_id, content),
     ):
         result = await report_knowledge("A repo claim", evidence=["a source"])

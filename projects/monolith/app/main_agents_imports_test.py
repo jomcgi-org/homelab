@@ -19,12 +19,21 @@ gazelle's dependency inference attaching ``@pip//pytest`` to this target.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import subprocess
 import sys
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest  # noqa: F401  (keeps the gazelle pytest dep; see module docstring)
+from sqlalchemy import text
+from sqlmodel import Session, SQLModel, create_engine, select
+
+from auth.principal import Authority, Principal, PrincipalKind
+from knowledge.models import RawInput
+from knowledge.raw_write import write_raw
 
 # Private surface that must never land in the agents import closure. Each entry
 # is matched as a module name OR a dotted prefix. Cluster stays intentionally
@@ -101,6 +110,7 @@ FORBIDDEN_MODULES = [
     # Private knowledge routers, maintenance code, and write-path internals.
     "knowledge.gaps",
     "knowledge.ingest_queue",
+    # knowledge.raw_write is allowed: it only inserts raw metadata via SQLModel.
     "knowledge.layout",
     "knowledge.publish",
     "knowledge.router",
@@ -206,3 +216,142 @@ def test_only_narrow_kubernetes_tools_join_the_agent_catalogue():
     assert not any(
         module == "cluster" or module.startswith("cluster.") for module in loaded
     )
+
+
+@pytest.fixture(name="agents_db")
+def agents_db_fixture(tmp_path, monkeypatch):
+    """Provide the agents catalogue with a file-backed raw-input database."""
+    engine = create_engine(f"sqlite:///{tmp_path / 'agents-report.db'}")
+    original_schemas = {}
+    for table in SQLModel.metadata.tables.values():
+        if table.schema is not None:
+            original_schemas[table.name] = table.schema
+            table.schema = None
+    uploads: dict[str, str] = {}
+    try:
+        SQLModel.metadata.create_all(engine)
+        with Session(engine) as session:
+            session.execute(
+                text(
+                    """
+                    CREATE TABLE routine_jobs (
+                        name TEXT PRIMARY KEY,
+                        routine_kind TEXT NOT NULL,
+                        interval_secs INTEGER,
+                        next_run_at TIMESTAMP,
+                        payload TEXT,
+                        created_by TEXT
+                    )
+                    """
+                )
+            )
+            session.commit()
+        monkeypatch.setattr(
+            "knowledge.mcp.upload_raw",
+            lambda raw_id, content: uploads.__setitem__(raw_id, content),
+        )
+        yield SimpleNamespace(engine=engine, uploads=uploads)
+    finally:
+        for table in SQLModel.metadata.tables.values():
+            if table.name in original_schemas:
+                table.schema = original_schemas[table.name]
+
+
+def _agents_principal() -> Principal:
+    return Principal(
+        subject="agent:ember-guest",
+        actor=(),
+        scope=(),
+        groups=(),
+        email=None,
+        kind=PrincipalKind.WORKLOAD,
+        authority=Authority.DELEGATED,
+    )
+
+
+def test_report_knowledge_runs_from_agents_import_closure(agents_db) -> None:
+    """The pruned agents catalogue can persist and queue a knowledge report."""
+    import app.agents_main as agents_main
+
+    loaded = _loaded_modules()
+    assert "knowledge.raw_write" in loaded
+    assert "knowledge.ingest_queue" not in loaded
+    agents_main.build_agent_mcp_app(resolver=object())
+
+    with (
+        patch("knowledge.mcp.get_engine", return_value=agents_db.engine),
+        patch("knowledge.mcp.current_principal", return_value=_agents_principal()),
+    ):
+        result = asyncio.run(
+            agents_main.report_knowledge(
+                "Agents can persist reports",
+                evidence=["projects/monolith/app/agents_main.py"],
+            )
+        )
+
+    assert result["status"] == "queued"
+    with Session(agents_db.engine) as session:
+        raw = session.exec(
+            select(RawInput).where(RawInput.raw_id == result["raw_id"])
+        ).one()
+        jobs = session.execute(text("SELECT * FROM routine_jobs")).all()
+        assert raw.extra["evidence"] == ["projects/monolith/app/agents_main.py"]
+        assert raw.extra["status"] == "queued"
+        assert len(jobs) == 1
+        assert raw.raw_id in agents_db.uploads
+
+
+def test_raw_write_coerces_evidence_to_json_lists(agents_db) -> None:
+    """Evidence is always a JSON list or null, including string input."""
+    with Session(agents_db.engine) as session:
+        with_evidence, _ = write_raw(
+            session,
+            content="report with evidence",
+            source="agent-report",
+            scope="repo:jomcgi-org/homelab",
+            evidence=["one", "two"],
+        )
+        without_evidence, _ = write_raw(
+            session,
+            content="report without evidence",
+            source="agent-report",
+            scope="repo:jomcgi-org/homelab",
+            evidence=None,
+        )
+        string_evidence, _ = write_raw(
+            session,
+            content="report with string evidence",
+            source="agent-report",
+            scope="repo:jomcgi-org/homelab",
+            evidence="one",
+        )
+        raw_ids = (
+            with_evidence.raw_id,
+            without_evidence.raw_id,
+            string_evidence.raw_id,
+        )
+
+    with Session(agents_db.engine) as session:
+        stored = [
+            session.exec(select(RawInput).where(RawInput.raw_id == raw_id)).one()
+            for raw_id in raw_ids
+        ]
+        assert stored[0].extra["evidence"] == ["one", "two"]
+        assert stored[1].extra["evidence"] is None
+        assert stored[2].extra["evidence"] == ["one"]
+
+
+def test_report_knowledge_returns_structured_write_error(agents_db) -> None:
+    """A database failure is visible to the guest and increments the counter."""
+    import knowledge.mcp as knowledge_mcp
+
+    before = knowledge_mcp.REPORT_KNOWLEDGE_METRICS["write_errors"]
+    with (
+        patch("knowledge.mcp.get_engine", return_value=agents_db.engine),
+        patch("knowledge.mcp.current_principal", return_value=_agents_principal()),
+        patch("knowledge.mcp.write_raw", side_effect=RuntimeError("write failed")),
+    ):
+        result = asyncio.run(knowledge_mcp.report_knowledge("A report"))
+
+    assert result == {"ok": False, "reason": "write failed"}
+    assert knowledge_mcp.REPORT_KNOWLEDGE_METRICS["write_errors"] == before + 1
