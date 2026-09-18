@@ -4423,6 +4423,120 @@ def test_evicted_guest_settles_factory_without_committed_stop_intent(
         )
 
 
+def test_brick_restart_loss_settles_exact_attempt_and_admits_bounded_retry(
+    uncertain_factory, monkeypatch
+):
+    """A durable brick_gone transition releases only the failed graph attempt."""
+    from datetime import timedelta
+    from sqlmodel import Session, select
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import factory_supervision as supervisor
+    from factory.orchestration.factory_models import FactoryAudit
+
+    s = uncertain_factory
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    s.cp.update(
+        state="failed",
+        terminal_reason="brick_gone",
+        last_invoke_at=None,
+        updated_at=int(
+            (s.failed_turn_at - timedelta(milliseconds=1)).timestamp() * 1000
+        ),
+        node={"node_id": "node-1", "health": "down", "draining": True},
+        stop_precondition=None,
+    )
+
+    assert supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    settled = _uncertain_snapshot(s)
+    assert settled["permits"][0]["state"] == "settled"
+    assert settled["runs"][0]["status"] == "failed"
+    assert settled["factory"]["starts"][0]["status"] == "failed"
+    proof = settled["factory"]["stop_events"][0]["completion"]
+    assert proof["cessation_evidence"] == "brick_restart"
+    assert proof["session_id"] == "s-exact-factory"
+    assert proof["node_id"] == "node-1"
+
+    # Re-observing the old workflow is idempotent, including after the ordinary
+    # conductor admits the one remaining graph attempt.
+    assert supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    monkeypatch.setattr(
+        conductor, "github_get", lambda *_args: {"object": {"sha": "c" * 40}}
+    )
+    conductor.reconcile_task(s.task["id"], s.policy, s.dbos)
+    assert [
+        (run["attempt"], run["status"])
+        for run in conductor.graph.node_runs(s.task["id"])
+    ] == [(1, "failed"), (2, "admitted")]
+    with Session(s.engine) as db:
+        assert (
+            len(
+                db.exec(
+                    select(FactoryAudit).where(
+                        FactoryAudit.action == "stop_settled"
+                    )
+                ).all()
+            )
+            == 1
+        )
+        starts = controls.task_snapshot(s.task["id"], session=db)["starts"]
+        assert [start["status"] for start in starts] == ["failed", "reserved"]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "temporary_state",
+        "foreign_guest",
+        "stale_invoke",
+        "completed_invoke",
+        "malformed_update",
+    ],
+)
+def test_ambiguous_brick_restart_evidence_does_not_permit_retry(
+    uncertain_factory, monkeypatch, change
+):
+    from datetime import timedelta
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = uncertain_factory
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    s.cp.update(
+        state="failed",
+        terminal_reason="brick_gone",
+        last_invoke_at=None,
+        updated_at=int(
+            (s.failed_turn_at - timedelta(milliseconds=1)).timestamp() * 1000
+        ),
+        node={"node_id": "node-1", "health": "down", "draining": True},
+        stop_precondition=None,
+    )
+    if change == "temporary_state":
+        s.cp.update(state="running", terminal_reason=None)
+    elif change == "foreign_guest":
+        s.cp["session_id"] = "s-foreign"
+    elif change == "stale_invoke":
+        s.cp["invoke_started_at"] = int(
+            (s.dispatched_at - timedelta(seconds=1)).timestamp() * 1000
+        )
+    elif change == "completed_invoke":
+        s.cp["last_invoke_at"] = s.cp["invoke_started_at"]
+    else:
+        s.cp["updated_at"] = "unknown"
+
+    assert not supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    snapshot = _uncertain_snapshot(s)
+    assert snapshot["permits"][0]["state"] == "uncertain"
+    assert [(run["attempt"], run["status"]) for run in snapshot["runs"]] == [
+        (1, "uncertain")
+    ]
+
+
 def test_evicted_guest_settles_factory_from_the_committed_stop_intent(
     uncertain_factory, monkeypatch
 ):

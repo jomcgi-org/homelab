@@ -80,8 +80,15 @@ defmodule Embervm.Session do
   later invoke will arrive. The workload's idle-bank disable applies to pressure
   too.
 
-  All timers use `Process.send_after` with an injectable `idle_bank_ms`, and tests
-  drive `:maybe_bank` directly for determinism.
+  `drain/1` is the stronger brick-roll fence. It rejects queued and new invokes
+  retryably, lets the one already-running invoke finish, and then asks to bank.
+  Bank admission refusals leave the fence latched and retry until admission or
+  until Kubernetes ends the old pod at its external drain deadline. A bank RPC
+  failure is recovered by the manager, which restarts the process with the same
+  drain latch instead of reopening invoke admission.
+
+  Timers use `Process.send_after`; idle banking and drain retry cadences are
+  injectable, and tests drive `:maybe_bank` directly for determinism.
   """
 
   use GenServer, restart: :transient
@@ -102,6 +109,7 @@ defmodule Embervm.Session do
   # the dispatcher's @assign_watchdog_margin_ms; overridable per deploy through
   # EMBERVM_SESSION_INVOKE_WATCHDOG_MARGIN_MS.
   @invoke_watchdog_margin_ms 15_000
+  @drain_bank_retry_ms 1_000
 
   # -- Client API ------------------------------------------------------------
 
@@ -139,6 +147,10 @@ defmodule Embervm.Session do
   @doc "Fail every current caller retryably because the session's brick is gone."
   @spec brick_gone(GenServer.server(), map()) :: :ok
   def brick_gone(server, metadata \\ %{}), do: GenServer.cast(server, {:brick_gone, metadata})
+
+  @doc "Close invoke admission and bank after the current invoke finishes."
+  @spec drain(GenServer.server()) :: :ok
+  def drain(server), do: GenServer.cast(server, :drain)
 
   @doc "Classify an invoke error using the bound node's current registry state."
   @spec classify_invoke_error(term(), map()) :: %{reason: term(), invalidate_channel: boolean()}
@@ -219,11 +231,25 @@ defmodule Embervm.Session do
       queue: :queue.new(),
       worker: nil,
       # The armed idle-bank timer ref (nil when disarmed).
-      idle_timer: nil
+      idle_timer: nil,
+      # A brick rollout closes admission before waiting for the one running
+      # invoke. The latch survives admission refusals and is restored by the
+      # manager when a failed bank attempt restarts this process.
+      draining: Keyword.get(opts, :draining, false),
+      drain_bank_retry_ms:
+        Keyword.get(opts, :drain_bank_retry_ms, @drain_bank_retry_ms),
+      drain_timer: nil
     }
 
-    {:ok, arm_idle_timer(state)}
+    if state.draining do
+      {:ok, state, {:continue, :drain}}
+    else
+      {:ok, arm_idle_timer(state)}
+    end
   end
+
+  @impl true
+  def handle_continue(:drain, state), do: {:noreply, maybe_drain_bank(state)}
 
   @impl true
   def handle_call(:session_id, _from, state), do: {:reply, state.session_id, state}
@@ -243,6 +269,10 @@ defmodule Embervm.Session do
           {:error, _reason} = error -> {:reply, error, state}
         end
     end
+  end
+
+  def handle_call({:invoke, _req}, _from, %{draining: true} = state) do
+    {:reply, {:error, :brick_draining}, state}
   end
 
   def handle_call({:invoke, req}, from, state) do
@@ -267,6 +297,17 @@ defmodule Embervm.Session do
   end
 
   @impl true
+  def handle_cast(:drain, state) do
+    state =
+      state
+      |> disarm_idle_timer()
+      |> disarm_drain_timer()
+      |> Map.put(:draining, true)
+
+    drain_queue(state, :brick_draining)
+    {:noreply, maybe_drain_bank(%{state | queue: :queue.new()})}
+  end
+
   def handle_cast({:brick_gone, _metadata}, state) do
     state = stop_invoke_worker(state)
     reply_current_as_brick_gone(state)
@@ -290,7 +331,13 @@ defmodule Embervm.Session do
         # it is logged and the response still goes back.
         _ = record_invoke(state, usage)
         GenServer.reply(from, {:ok, result})
-        {:noreply, maybe_start_next(disarm_rejoin_failure(state))}
+        state = disarm_rejoin_failure(state)
+        state =
+          if state.draining,
+            do: maybe_drain_bank(state),
+            else: maybe_start_next(state)
+
+        {:noreply, state}
 
       {:error, reason, status} ->
         # A daemon transport/timeout/suspect failure: the session is failed and its
@@ -354,7 +401,13 @@ defmodule Embervm.Session do
       :brick_gone -> handle_invoke_error(state, :brick_gone, status, from)
       :invoke_timeout ->
         GenServer.reply(from, {:error, :invoke_timeout})
-        {:noreply, maybe_start_next(disarm_rejoin_failure(state))}
+        state = disarm_rejoin_failure(state)
+        state =
+          if state.draining,
+            do: maybe_drain_bank(state),
+            else: maybe_start_next(state)
+
+        {:noreply, state}
     end
   end
 
@@ -387,6 +440,13 @@ defmodule Embervm.Session do
     end
   end
 
+  def handle_info(:drain_bank, state) do
+    state = %{state | drain_timer: nil}
+    {:noreply, maybe_drain_bank(state)}
+  end
+
+  def handle_info(:drain_admitted, state), do: {:stop, :normal, state}
+
   def handle_info(_msg, state), do: {:noreply, state}
 
   # -- idle-bank -------------------------------------------------------------
@@ -404,6 +464,42 @@ defmodule Embervm.Session do
     _ -> {:error, :bank_call_raised}
   catch
     _, _ -> {:error, :bank_call_raised}
+  end
+
+  # A drain never interrupts the current guest turn. Once it is the only work
+  # left, keep asking the manager for bank admission until accepted. Refusals
+  # such as the per-node bank cap or temporarily unknown disk facts are not
+  # cessation evidence and must neither fail the guest nor reopen admission.
+  # Kubernetes owns the outer bound through terminationGracePeriodSeconds.
+  defp maybe_drain_bank(%{draining: true} = state) do
+    if quiescent_state?(state) do
+      case ask_bank(state) do
+        :ok ->
+          send(self(), :drain_admitted)
+          state
+
+        {:error, _reason} ->
+          arm_drain_timer(state)
+      end
+    else
+      state
+    end
+  end
+
+  defp maybe_drain_bank(state), do: state
+
+  defp arm_drain_timer(%{drain_timer: nil, drain_bank_retry_ms: ms} = state)
+       when is_integer(ms) and ms > 0 do
+    %{state | drain_timer: Process.send_after(self(), :drain_bank, ms)}
+  end
+
+  defp arm_drain_timer(state), do: state
+
+  defp disarm_drain_timer(%{drain_timer: nil} = state), do: state
+
+  defp disarm_drain_timer(%{drain_timer: ref} = state) do
+    _ = Process.cancel_timer(ref)
+    %{state | drain_timer: nil}
   end
 
   # Arm the idle-bank timer if banking is enabled and it is not already armed. A nil

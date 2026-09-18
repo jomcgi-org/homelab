@@ -17,11 +17,18 @@ noded:
     # has to land before the flag can go back on. Tracked on #5255.
     enabled: false
   drain:
+    # A factory turn can run for 12 hours. Ordinary brick publication must keep
+    # the old pod alive long enough for that already-running guest to finish and
+    # bank; closing admission alone would not drain it. This is above the
+    # 43,200s guest invoke bound and the 43,500s caller read bound. Kubernetes
+    # adds the chart's 30s shutdown margin. A long turn can therefore delay its
+    # brick replacement for this full period.
+    timeoutSeconds: 43800
     # GCE preemption notice watcher (ADR embervm/040 decision 5). Armed on the
     # hub only: the watcher hangs GETs on the instance/preempted metadata value,
     # which exists nowhere but GCE. Until it is armed every Spot preemption
-    # force-banks against the 110s rollout budget, about four times what GCE
-    # actually gives, so noded keeps working past the point the VM is gone.
+    # force-banks against the ordinary rollout budget, far past what GCE
+    # actually gives, so the separate short budget remains load-bearing.
     # preemptionTimeoutSeconds stays at the chart default (20s).
     preemptionNoticeEnabled: true
   firecracker:
@@ -118,6 +125,10 @@ bazelQueryWorkload:
 # not fit the current node adds one. 8gi/16gi stay off; explicit zeros
 # prevent deep-merge leakage. #5459 tracks the fuller session-class design.
 bricks:
+  # Must exceed the 43,830s pod termination grace plus a cold brick's rootfs
+  # build. Otherwise Kubernetes reports ProgressDeadlineExceeded while a valid
+  # long factory turn is still draining.
+  progressDeadlineSeconds: 46800
   desiredReplicas:
     2gi: 1
     4gi: 1

@@ -523,6 +523,10 @@ defmodule Embervm.SessionManager do
       # cleared on a successful bank or a successful invoke-driven relight.
       bank_failures: %{},
       bank_dial_misses: %{},
+      # Sessions fenced from new invokes by a brick drain. This manager-side
+      # mirror keeps the fence closed while a bank RPC owns the row and restores
+      # it if a failed bank restarts the per-session process.
+      draining_sessions: MapSet.new(),
       # session_id -> placed instance dial. The capacity table is eventually
       # consistent, so keep the dial that actually created or restarted the VM for
       # bank and destroy when its live-vm fact is temporarily absent.
@@ -836,29 +840,10 @@ defmodule Embervm.SessionManager do
     # the session process's own FIFO parks the caller. So we reply the pid to the
     # caller path via a spawned forwarder, keeping the manager responsive. Simpler:
     # forward synchronously from a short task so the manager is not the bottleneck.
-    {route, state} = resolve_route(state, session_id)
-
-    case route do
-      {:live, pid} ->
-        # Forward off the manager so a long guest round-trip does not serialize other
-        # sessions' routing through this one GenServer.
-        _ = spawn_forward(pid, req, from)
-        {:noreply, state}
-
-      # A banked session: this invoke is a lifecycle MISS. Park the caller and (if it
-      # is the first for this session) trigger a relight, subject to the per-principal
-      # wake-rate limit. Concurrent invokes to the same banked session share the one
-      # relight (they all park under relighting[session_id]).
-      {:relight, session} ->
-        {:noreply, park_and_relight(state, session, from, req)}
-
-      # A relight is already in flight for this session (started by an earlier
-      # invoke): just park behind it. Drained when the relight completes.
-      {:relighting, _session} ->
-        {:noreply, park_relighting(state, session_id, from, req)}
-
-      {:error, _reason} = error ->
-        {:reply, error, state}
+    if MapSet.member?(state.draining_sessions, session_id) do
+      {:reply, {:error, :brick_draining}, state}
+    else
+      route_invoke(state, session_id, req, from)
     end
   end
 
@@ -1837,6 +1822,13 @@ defmodule Embervm.SessionManager do
   defp start_session_from_row(state, session, node_id, vm_id, dial_id, extra_opts \\ []) do
     state = remember_session_dial(state, session.session_id, node_id, dial_id)
 
+    extra_opts =
+      if MapSet.member?(state.draining_sessions, session.session_id) do
+        Keyword.put(extra_opts, :draining, true)
+      else
+        extra_opts
+      end
+
     case fetch_session_workload(state, session.workload) do
       {:ok, entry} ->
         result =
@@ -1959,6 +1951,33 @@ defmodule Embervm.SessionManager do
   # Forward an invoke to the session process off the manager, replying to the
   # original caller. A crash forwarding (process died mid-route) becomes an error
   # reply rather than a hung caller.
+  defp route_invoke(state, session_id, req, from) do
+    {route, state} = resolve_route(state, session_id)
+
+    case route do
+      {:live, pid} ->
+        # Forward off the manager so a long guest round-trip does not serialize other
+        # sessions' routing through this one GenServer.
+        _ = spawn_forward(pid, req, from)
+        {:noreply, state}
+
+      # A banked session: this invoke is a lifecycle MISS. Park the caller and (if it
+      # is the first for this session) trigger a relight, subject to the per-principal
+      # wake-rate limit. Concurrent invokes to the same banked session share the one
+      # relight (they all park under relighting[session_id]).
+      {:relight, session} ->
+        {:noreply, park_and_relight(state, session, from, req)}
+
+      # A relight is already in flight for this session (started by an earlier
+      # invoke): just park behind it. Drained when the relight completes.
+      {:relighting, _session} ->
+        {:noreply, park_relighting(state, session_id, from, req)}
+
+      {:error, _reason} = error ->
+        {:reply, error, state}
+    end
+  end
+
   defp spawn_forward(pid, req, from) do
     spawn(fn ->
       reply =
@@ -1982,19 +2001,15 @@ defmodule Embervm.SessionManager do
   # Replies `:ok` (admitted; the caller session process stops) or a refusal (the
   # caller re-arms its timer and stays live).
   @doc """
-  Force-bank every quiescent live session on a draining node (R6, ADR embervm/009).
+  Drain every live session on a draining node (R6, ADR embervm/009).
 
-  Called by the DrainCoordinator on the drain edge. Banks each `:running` session
-  on the node via the existing bank path, so its state survives the roll and relights
-  on the next invoke. A session with an invoke in flight is never terminated at this
-  edge. Its transport settles at the drain deadline as `brick_gone`. Sessions already
-  banking are skipped. Sessions refused at the per-node bank cap or with unknown disk
-  facts are left for the normal sweep. Returns the count whose bank was admitted.
-
-  The default 15,000 ms NodeRegistry `down_after_ms` sweep is the backstop for
-  sessions this edge cannot bank within the approximately 30,000 ms Spot drain
-  budget. That ordering is coincidental, so keep the two constants explicitly
-  ordered if either default changes.
+  Called by the DrainCoordinator on the drain edge. Each live process closes
+  invoke admission, rejects queued turns retryably, lets its current turn finish,
+  and then banks through the existing path. A running row whose process is missing
+  banks directly. Bank admission refusals retain the drain fence and retry while
+  the pod remains alive. A bank RPC failure that restarts a process restores the
+  same fence. Sessions already banking are marked so that recovery also resumes
+  draining. Returns the number of running sessions signalled or directly admitted.
   """
   @spec drain_node(GenServer.server(), String.t()) :: non_neg_integer()
   def drain_node(server \\ __MODULE__, node_id) do
@@ -2002,24 +2017,37 @@ defmodule Embervm.SessionManager do
   end
 
   defp drain_bank_node(state, node_id) do
-    sessions =
+    node_sessions =
       SessionStore.all(state.session_store)
-      |> Enum.filter(&(&1.state == :running and &1.node_id == node_id))
-      |> Enum.reject(&Map.has_key?(state.banking, &1.session_id))
-      |> Enum.filter(&quiescent_session?(state, &1.session_id))
+      |> Enum.filter(&(&1.state in [:running, :banking] and &1.node_id == node_id))
 
-    {count, state} = Enum.reduce(sessions, {0, state}, fn session, {n, acc} ->
-      case do_bank(acc, session.session_id) do
-        {:ok, acc} -> {n + 1, acc}
-        {{:error, _reason}, acc} -> {n, acc}
-      end
-    end)
+    state =
+      Enum.reduce(node_sessions, state, fn session, acc ->
+        %{acc | draining_sessions: MapSet.put(acc.draining_sessions, session.session_id)}
+      end)
 
-    # Snapshot after parking completes so sessions that were running when the
-    # drain began are included alongside already-parked lineages. Archive OFF
-    # the manager: the RPC is a fast enqueue-ACK on a healthy node, but an
-    # unresponsive brick would otherwise stall invoke routing for its 10s
-    # deadline once per lineage, serialized on this process.
+    running = Enum.filter(node_sessions, &(&1.state == :running))
+
+    {count, state} =
+      Enum.reduce(running, {0, state}, fn session, {n, acc} ->
+        case Registry.lookup(acc.registry, session.session_id) do
+          [{pid, _}] ->
+            Embervm.Session.drain(pid)
+            {n + 1, acc}
+
+          [] ->
+            case do_bank(acc, session.session_id) do
+              {:ok, acc} -> {n + 1, acc}
+              {{:error, _reason}, acc} -> {n, acc}
+            end
+        end
+      end)
+
+    # Archive lineages that were already parked at the drain edge. A live
+    # persistence session parks after its current invoke and archives from the
+    # park path. Archive OFF the manager: the RPC is a fast enqueue-ACK on a
+    # healthy node, but an unresponsive brick would otherwise stall invoke
+    # routing for its 10s deadline once per lineage, serialized on this process.
     parked =
       SessionStore.all(state.session_store)
       |> Enum.filter(&(&1.state == :parked and &1.volume_node_id == node_id))
@@ -2028,17 +2056,6 @@ defmodule Embervm.SessionManager do
     spawn(fn -> Enum.each(parked, fn session -> _ = archive_session_volume(state, session) end) end)
 
     {count, state}
-  end
-
-  defp quiescent_session?(state, session_id) do
-    case Registry.lookup(state.registry, session_id) do
-      [{pid, _}] -> Embervm.Session.quiescent?(pid, 100)
-      [] -> true
-    end
-  rescue
-    _ -> false
-  catch
-    _, _ -> false
   end
 
   defp sweep_brick_gone_node(state, node_id, supplied_metadata) do
@@ -2454,7 +2471,13 @@ defmodule Embervm.SessionManager do
         if persistence_enabled_workload?(session_workload_entry(state, session.workload)) do
           {reply, state} = park_session(state, session_id)
           case reply do
-            {:ok, _} -> {:ok, state}
+            {:ok, parked} ->
+              if MapSet.member?(state.draining_sessions, session_id) do
+                spawn(fn -> _ = archive_session_volume(state, parked) end)
+              end
+
+              {:ok, clear_draining_session(state, session_id)}
+
             other -> {other, state}
           end
         else
@@ -2480,7 +2503,7 @@ defmodule Embervm.SessionManager do
                   {:ok, updated_session} ->
                     {destroy_reply, state} = destroy_live_legacy(state, updated_session)
                     case destroy_reply do
-                      {:ok, _} -> {:ok, state}
+                      {:ok, _} -> {:ok, clear_draining_session(state, session_id)}
                       other -> {other, state}
                     end
 
@@ -2693,7 +2716,11 @@ defmodule Embervm.SessionManager do
           principal: principal_of(state, session_id),
           snapshot_bytes: size
         )
-        state = clear_bank_failures(state, session_id)
+        state =
+          state
+          |> clear_bank_failures(session_id)
+          |> clear_draining_session(session_id)
+
         relight_parked_after_bank(state, session_id)
 
       {:error, reason} ->
@@ -2817,12 +2844,17 @@ defmodule Embervm.SessionManager do
     }
   end
 
+  defp clear_draining_session(state, session_id) do
+    %{state | draining_sessions: MapSet.delete(state.draining_sessions, session_id)}
+  end
+
   defp clear_session_tracking(state, session_id) do
     %{
       state
       | bank_failures: Map.delete(state.bank_failures, session_id),
         bank_dial_misses: Map.delete(state.bank_dial_misses, session_id),
-        session_dials: Map.delete(state.session_dials, session_id)
+        session_dials: Map.delete(state.session_dials, session_id),
+        draining_sessions: MapSet.delete(state.draining_sessions, session_id)
     }
   end
 

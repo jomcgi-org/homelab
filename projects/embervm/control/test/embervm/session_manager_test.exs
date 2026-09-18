@@ -214,7 +214,8 @@ defmodule Embervm.SessionManagerTest do
           %{health: :healthy, draining: false, registered: true, tombstoned: false, pod_uid: "pod-node-4"}
         end),
       # Test-only watchdog budget (#4434); nil keeps the production formula.
-      invoke_watchdog_ms: Keyword.get(opts, :invoke_watchdog_ms)
+      invoke_watchdog_ms: Keyword.get(opts, :invoke_watchdog_ms),
+      drain_bank_retry_ms: Keyword.get(opts, :drain_bank_retry_ms, 10)
     ]
 
     mgr_opts =
@@ -2882,38 +2883,119 @@ defmodule Embervm.SessionManagerTest do
     assert failed.terminal_reason == "brick_gone"
   end
 
-  test "drain skips an in-flight invoke and its transport loss returns brick_gone" do
+  test "drain waits for an in-flight invoke, closes admission, and banks afterward" do
     parent = self()
 
     assign_fun = fn _channel, _req ->
       send(parent, {:brick_invoke_started, self()})
 
       receive do
-        :brick_preempted -> {:error, %GRPC.RPCError{status: 14, message: "unavailable"}}
+        :finish_invoke ->
+          {:ok,
+           %SessionAssignResponse{
+             response: %GuestResponse{status_code: 200, headers: %{}, body: "finished"},
+             usage: %UsageStats{cpu_ms: 1, peak_rss_mib: 1, wall_ms: 1}
+           }}
       end
     end
 
-    ctx =
-      start_stack(
-        assign_fun: assign_fun,
-        brick_status_fun: fn _node ->
-          %{health: :healthy, draining: true, tombstoned: false, pod_uid: "pod-draining"}
-        end
-      )
+    ctx = start_stack(assign_fun: assign_fun)
 
     put_session_workload(ctx, "wl-drain-busy")
     {:ok, created} = SessionManager.create(ctx.mgr, "wl-drain-busy", "p1")
     invoke = Task.async(fn -> SessionManager.invoke(ctx.mgr, created.session_id, %{body: "turn"}) end)
     assert_receive {:brick_invoke_started, worker}, 1_000
+    assert [{pid, _}] = Registry.lookup(ctx.registry, created.session_id)
 
-    assert SessionManager.drain_node(ctx.mgr, "node-4") == 0
+    queued =
+      Task.async(fn ->
+        SessionManager.invoke(ctx.mgr, created.session_id, %{body: "queued turn"})
+      end)
+
+    assert eventually(fn -> :queue.len(:sys.get_state(pid).queue) == 1 end)
+
+    assert SessionManager.drain_node(ctx.mgr, "node-4") == 1
+    assert Process.alive?(pid)
+    assert {:error, :brick_draining} = Task.await(queued, 2_000)
+    assert {:error, :brick_draining} =
+             SessionManager.invoke(ctx.mgr, created.session_id, %{body: "later turn"})
+
+    send(worker, :finish_invoke)
+    assert {:ok, %{body: "finished"}} = Task.await(invoke, 2_000)
+    assert eventually(fn -> Registry.lookup(ctx.registry, created.session_id) == [] end)
+    assert wait_for_state(ctx, created.session_id, :banked).state == :banked
+    refute MapSet.member?(:sys.get_state(ctx.mgr).draining_sessions, created.session_id)
+  end
+
+  test "drain retries a transient bank refusal without reopening admission" do
+    ctx = start_stack(drain_bank_retry_ms: 10)
+    put_session_workload(ctx, "wl-drain-retry")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-drain-retry", "p1")
+
+    :sys.replace_state(ctx.mgr, &%{&1 | bank_concurrency: 0})
+    assert SessionManager.drain_node(ctx.mgr, "node-4") == 1
+
+    assert eventually(fn ->
+             case Registry.lookup(ctx.registry, created.session_id) do
+               [{pid, _}] -> :sys.get_state(pid).draining
+               [] -> false
+             end
+           end)
+
+    Process.sleep(30)
+    assert {:ok, %{state: :running}} = SessionStore.get(ctx.store, created.session_id)
+    assert {:error, :brick_draining} =
+             SessionManager.invoke(ctx.mgr, created.session_id, %{body: "blocked"})
+
+    :sys.replace_state(ctx.mgr, &%{&1 | bank_concurrency: 1})
+    assert wait_for_state(ctx, created.session_id, :banked).state == :banked
+    refute MapSet.member?(:sys.get_state(ctx.mgr).draining_sessions, created.session_id)
+  end
+
+  test "a failed drain bank resumes with its admission fence intact" do
+    {:ok, attempts} = Agent.start_link(fn -> 0 end)
+
+    bank_fun = fn _channel, req ->
+      attempt = Agent.get_and_update(attempts, &{&1 + 1, &1 + 1})
+
+      if attempt == 1 do
+        {:error, :temporarily_unavailable}
+      else
+        {:ok,
+         %BankResponse{
+           snapshot_ref: "snap-#{req.session_id}",
+           size_bytes: 1_000
+         }}
+      end
+    end
+
+    ctx = start_stack(bank_fun: bank_fun, drain_bank_retry_ms: 10)
+    put_session_workload(ctx, "wl-drain-bank-retry")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-drain-bank-retry", "p1")
+
+    assert SessionManager.drain_node(ctx.mgr, "node-4") == 1
+    assert wait_for_state(ctx, created.session_id, :banked).state == :banked
+    assert Agent.get(attempts, & &1) == 2
+    refute MapSet.member?(:sys.get_state(ctx.mgr).draining_sessions, created.session_id)
+  end
+
+  test "a persistent drain refusal stays fenced until the external deadline" do
+    ctx = start_stack(drain_bank_retry_ms: 10)
+    put_session_workload(ctx, "wl-drain-refused")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-drain-refused", "p1")
+
+    :sys.replace_state(ctx.mgr, &%{&1 | bank_concurrency: 0})
+    assert SessionManager.drain_node(ctx.mgr, "node-4") == 1
+    Process.sleep(30)
+
     assert [{pid, _}] = Registry.lookup(ctx.registry, created.session_id)
     assert Process.alive?(pid)
-
-    send(worker, :brick_preempted)
-    assert {:error, :brick_gone} = Task.await(invoke, 2_000)
-    assert {:ok, %{state: :failed, terminal_reason: "brick_gone"}} =
+    assert :sys.get_state(pid).draining
+    assert {:ok, %{state: :running, terminal_reason: nil}} =
              SessionStore.get(ctx.store, created.session_id)
+    assert MapSet.member?(:sys.get_state(ctx.mgr).draining_sessions, created.session_id)
+    assert {:error, :brick_draining} =
+             SessionManager.invoke(ctx.mgr, created.session_id, %{body: "blocked"})
   end
 
   test "drain banks a running row whose session process is missing" do

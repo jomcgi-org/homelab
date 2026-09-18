@@ -1502,6 +1502,13 @@ defmodule Embervm.Router do
               retryable: true
             })
 
+          {:error, :brick_draining} ->
+            send_json(conn, 503, %{
+              error: "session brick is draining",
+              session_id: session_id,
+              retryable: true
+            })
+
           {:error, :wake_rate_limited} ->
             # The per-principal wake-rate limit (relight-triggering invokes) tripped:
             # 429 WITHOUT having touched the node (the asymmetric-cost relight was
