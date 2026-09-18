@@ -52,7 +52,7 @@ helm_chart(
     publish = True,
     visibility = [
         "//overlays:__subpackages__",
-        "//projects/monolith:__subpackages__",
+        "//projects/monolith:__subpackages__",  # keep
     ],
 )
 

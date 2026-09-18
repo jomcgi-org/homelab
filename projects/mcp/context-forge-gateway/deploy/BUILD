@@ -23,6 +23,20 @@ helm_admissibility_render(
     values_files = [":deploy_values"],
 )
 
+helm_admissibility_render(
+    name = "render_manifests_gke",
+    chart = "projects/mcp/context-forge-gateway/chart",
+    chart_files = "//projects/mcp/context-forge-gateway/chart:chart",
+    namespace = "mcp",
+    release_name = "context-forge-gateway",
+    target_suffix = "_gke",
+    values_files = [
+        "//projects/mcp/context-forge-gateway/chart:values.yaml",
+        ":deploy_values",
+        ":gke_values",
+    ],
+)
+
 filegroup(
     name = "gke_values",
     srcs = ["values-gke.yaml"],
