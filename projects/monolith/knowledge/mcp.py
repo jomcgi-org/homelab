@@ -288,8 +288,6 @@ def _report_knowledge_sync(
     extra = {
         **reporter,
         "proposed_scope": proposed_scope,
-        "scope": scope,
-        "validity_hint": validity_hint,
     }
 
     try:
