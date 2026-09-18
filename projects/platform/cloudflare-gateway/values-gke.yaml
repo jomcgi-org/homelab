@@ -43,3 +43,29 @@ tunnel:
   ingress:
     catchAll:
       service: http://cloudflare-ingress.envoy-gateway-system.svc.cluster.local:80
+
+  # The hub is now the only ingress path for every jomcgi.dev hostname and both
+  # connectors land on the one schedulable node (core-e2), so a node
+  # memory-pressure eviction takes the whole zone down with them (cloudflared
+  # has been evicted alongside other platform pods in a single such event).
+  # These carry the values-prod.yaml tunnel settings into the hub overlay, which
+  # previously dropped them: with no priority class and no resource requests the
+  # connector runs BestEffort at default priority and is among the first pods
+  # the kubelet evicts. system-cluster-critical plus a request ranks it last.
+  # The spread rule is best effort; it cannot separate the replicas while only
+  # one node is schedulable, but it will once a second on-demand node exists.
+  priorityClassName: system-cluster-critical
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      cpu: 1000m
+      memory: 256Mi
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/name: cloudflare-tunnel
