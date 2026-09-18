@@ -1,6 +1,6 @@
 # EmberVM protocol TLA+ specs, checked by TLC in CI (ADR embervm/006).
 #
-# Six specs, twenty-two genrules run the //bazel/tla:tlc.sh driver:
+# Seven specs, twenty-seven genrules run the //bazel/tla:tlc.sh driver:
 #   adoption.tla (protocol 1: VM lifecycle + adoption) with four cfgs: rich
 #     safety, positive liveness, and two NEGATIVE modes (expectation "fail") that
 #     prove the model still reproduces a historical bug.
@@ -24,6 +24,8 @@
 #   stateful.tla (stateful lifecycle, checkpoint recovery, destroy redrive, and
 #     writable attach singleton) with safety and liveness configs, two NEGATIVE
 #     incident wedges, and one NEGATIVE destroy-escape design comparison.
+#   session_lineage.tla (issue #4701: session lineage handoff) with one rich
+#     safety config and four NEGATIVE modes, one for each retained invariant.
 # The driver fails the build if a "fail" mode finds NO violation (the model went
 # blind). Safety and liveness are split across cfgs because exhaustive liveness over
 # the rich safety graph is too slow for CI; see README.md for the cfg matrix.
@@ -431,6 +433,94 @@ genrule(
           "\"$(location %s)\" " % _JAR +
           "\"$(location stateful.tla)\" " +
           "\"$(location stateful_destroy_escape_unsafe.cfg)\" " +
+          "\"$@\" fail",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+# Issue #4701: one exhaustive positive safety check and one focused NEGATIVE
+# mutation per invariant. Each negative cfg lists only TypeOK and its intended
+# invariant so an unrelated earlier violation cannot satisfy expectation fail.
+genrule(
+    name = "tlc_session_lineage",
+    srcs = _JRE_SRCS + [
+        "session_lineage.tla",
+        "session_lineage.cfg",
+    ],
+    outs = ["session_lineage.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location session_lineage.tla)\" " +
+          "\"$(location session_lineage.cfg)\" " +
+          "\"$@\" pass",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_session_lineage_loss",
+    srcs = _JRE_SRCS + [
+        "session_lineage.tla",
+        "session_lineage_loss.cfg",
+    ],
+    outs = ["session_lineage_loss.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location session_lineage.tla)\" " +
+          "\"$(location session_lineage_loss.cfg)\" " +
+          "\"$@\" fail",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_session_lineage_double_heir",
+    srcs = _JRE_SRCS + [
+        "session_lineage.tla",
+        "session_lineage_double_heir.cfg",
+    ],
+    outs = ["session_lineage_double_heir.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location session_lineage.tla)\" " +
+          "\"$(location session_lineage_double_heir.cfg)\" " +
+          "\"$@\" fail",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_session_lineage_nonterminal",
+    srcs = _JRE_SRCS + [
+        "session_lineage.tla",
+        "session_lineage_nonterminal.cfg",
+    ],
+    outs = ["session_lineage_nonterminal.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location session_lineage.tla)\" " +
+          "\"$(location session_lineage_nonterminal.cfg)\" " +
+          "\"$@\" fail",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_session_lineage_silent_merge",
+    srcs = _JRE_SRCS + [
+        "session_lineage.tla",
+        "session_lineage_silent_merge.cfg",
+    ],
+    outs = ["session_lineage_silent_merge.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location session_lineage.tla)\" " +
+          "\"$(location session_lineage_silent_merge.cfg)\" " +
           "\"$@\" fail",
     tags = ["verification"],
     tools = ["//bazel/tla:tlc.sh"],
