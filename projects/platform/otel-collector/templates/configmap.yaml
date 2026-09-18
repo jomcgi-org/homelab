@@ -150,8 +150,10 @@ data:
       {{- end }}
 
     {{- $hcExporter := "otlp/honeycomb" }}
+    {{- $hcMetricsExporter := "otlp/honeycomb-metrics" }}
     {{- if eq (.Values.honeycomb.protocol | default "grpc") "http" }}
     {{- $hcExporter = "otlphttp/honeycomb" }}
+    {{- $hcMetricsExporter = "otlphttp/honeycomb-metrics" }}
     {{- end }}
     exporters:
       # The otlp exporter requires a bare host:port endpoint. A URL scheme
@@ -167,11 +169,21 @@ data:
         endpoint: {{ .Values.honeycomb.httpEndpoint | default "https://api.honeycomb.io" | quote }}
         headers:
           x-honeycomb-team: ${env:HONEYCOMB_API_KEY}
+      otlphttp/honeycomb-metrics:
+        endpoint: {{ .Values.honeycomb.httpEndpoint | default "https://api.honeycomb.io" | quote }}
+        headers:
+          x-honeycomb-team: ${env:HONEYCOMB_API_KEY}
+          x-honeycomb-dataset: {{ .Values.honeycomb.metricsDataset | quote }}
       {{- else }}
       otlp/honeycomb:
         endpoint: {{ .Values.honeycomb.endpoint | quote }}
         headers:
           x-honeycomb-team: ${env:HONEYCOMB_API_KEY}
+      otlp/honeycomb-metrics:
+        endpoint: {{ .Values.honeycomb.endpoint | quote }}
+        headers:
+          x-honeycomb-team: ${env:HONEYCOMB_API_KEY}
+          x-honeycomb-dataset: {{ .Values.honeycomb.metricsDataset | quote }}
       {{- end }}
 
     service:
@@ -183,12 +195,11 @@ data:
           processors: [memory_limiter, filter/allowlist{{ if .Values.environment }}, resource/environment{{ end }}, tail_sampling, batch]
           exporters: [{{ $hcExporter }}]
         {{- end }}
-        {{- if .Values.httpcheck.enabled }}
-        # http_check only. The otlp receiver is deliberately absent here: an
-        # opted-in service sends traces, not arbitrary metrics, and unbounded
-        # metric events are the easiest way to burn the quota by accident.
+        {{- if or .Values.httpcheck.enabled .Values.allowedServices }}
+        # Allow OTLP metrics only when at least one service is already opted in
+        # to the shared receiver. Probe-only renders remain closed to OTLP.
         metrics:
-          receivers: [http_check]
+          receivers: [{{ if .Values.httpcheck.enabled }}http_check{{ if .Values.allowedServices }}, {{ end }}{{ end }}{{ if .Values.allowedServices }}otlp{{ end }}]
           processors: [memory_limiter{{ if .Values.environment }}, resource/environment{{ end }}, batch]
-          exporters: [{{ $hcExporter }}]
+          exporters: [{{ $hcMetricsExporter }}]
         {{- end }}

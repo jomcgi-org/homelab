@@ -15,9 +15,8 @@ moving the metrics pipeline onto the otlp receiver while debugging. Either diff
 reads as harmless and silently re-opens an unmetered path to a paid backend.
 
 The second invariant is narrower and just as load-bearing: the metrics pipeline
-takes http_check ONLY. Arbitrary OTLP metrics are the easiest way to burn the
-quota by accident, so no service may push them even once it is allowed to send
-traces.
+accepts OTLP only when the shared receiver is enabled by a non-empty service
+allowlist. Probe-only renders must remain closed to arbitrary OTLP metrics.
 
 These renders need helm: HELM_BIN comes from the BUILD target under Bazel and
 falls back to `helm` on PATH locally. The values files are found beside
@@ -138,14 +137,14 @@ def test_empty_allowlist_exposes_no_otlp_ports():
 def test_empty_allowlist_still_ships_probe_metrics():
     """Deny-by-default must not mean deny-everything: the probes are the whole
     day-one signal, and they are what replaced the SigNoz synthetic monitors."""
-    config = _collector_config(_render())
+    config = _collector_config(_render_empty_allowlist())
     metrics = config["service"]["pipelines"]["metrics"]
     assert metrics["receivers"] == ["http_check"]
-    assert metrics["exporters"] == ["otlp/honeycomb"]
+    assert metrics["exporters"] == ["otlp/honeycomb-metrics"]
 
 
 # ---------------------------------------------------------------------------
-# Populated allowlist: only listed services, and still no arbitrary metrics.
+# Populated allowlist: only listed services can reach the shared receiver.
 # ---------------------------------------------------------------------------
 
 
@@ -187,12 +186,22 @@ def test_allowlist_drops_services_not_named():
     assert 'resource.attributes["service.name"] == nil' in joined
 
 
-def test_metrics_pipeline_never_accepts_otlp_even_when_traces_are_on():
+def test_metrics_pipeline_accepts_otlp_when_traces_are_on():
     config = _collector_config(_render(["--set", "allowedServices[0]=monolith"]))
-    assert config["service"]["pipelines"]["metrics"]["receivers"] == ["http_check"], (
-        "the metrics pipeline accepts otlp: an opted-in service could push "
-        "unbounded metric events, which is the easiest way to burn quota"
-    )
+    assert config["service"]["pipelines"]["metrics"]["receivers"] == [
+        "http_check",
+        "otlp",
+    ]
+
+
+def test_metrics_pipeline_uses_otlp_http_exporter_with_dataset_header():
+    config = _collector_config(_render(["--set", "honeycomb.protocol=http"]))
+    metrics = config["service"]["pipelines"]["metrics"]
+
+    assert metrics["exporters"] == ["otlphttp/honeycomb-metrics"]
+    headers = config["exporters"]["otlphttp/honeycomb-metrics"]["headers"]
+    assert headers["x-honeycomb-team"] == "${env:HONEYCOMB_API_KEY}"
+    assert headers["x-honeycomb-dataset"] == "metrics"
 
 
 # ---------------------------------------------------------------------------
