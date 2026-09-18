@@ -15,10 +15,12 @@ and invokes this engine against operator-configured inputs. Pipeline:
   3. DARK filter: sample the local 3-band RGB LP render at each kept point and
      classify the pixel by NEAREST match to the authoritative 8-stop legend
      (classify_zone). Keep only the darkest zones (pristine/excellent/rural =
-     black/gray/blue). Validated: every Scottish Dark Sky Park reads
-     black/gray/blue, every city reads orange/pink/white. The color_palette.json
-     on the PVC is a MISMATCHED legend, ignore it; the swatches below are
-     authoritative.
+     black/gray/blue). The raster must declare a nodata value and encode all
+     uncovered background pixels as nodata; otherwise the run fails closed so
+     an uncovered black pixel cannot become a false pristine site. Validated:
+     every Scottish Dark Sky Park reads black/gray/blue, every city reads
+     orange/pink/white. The color_palette.json on the PVC is a MISMATCHED
+     legend, ignore it; the swatches below are authoritative.
   4. DEM enrichment: transform each retained WGS84 point into the DEM CRS,
      sample band 1, and fail the run if any retained point lacks valid elevation.
 
@@ -223,12 +225,15 @@ def classify_points(
     WGS84 into the raster CRS before sampling.
     """
     import rasterio
-    from rasterio.warp import transform
 
     results: list[tuple[tuple[float, float], str]] = []
     with rasterio.open(raster_path) as src:
         if src.crs is None:
             raise ValueError("light-pollution raster has no CRS")
+        if src.nodata is None:
+            raise ValueError("light-pollution raster must declare a nodata value")
+        from rasterio.warp import transform
+
         xs, ys = transform(
             "EPSG:4326",
             src.crs,

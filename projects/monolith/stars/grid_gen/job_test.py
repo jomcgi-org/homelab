@@ -7,7 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from job import GridJobConfig, run
+from stars import grid_ingest
+from stars.grid_gen import generate_grid_v2
+from stars.grid_gen.job import GridJobConfig, run
 
 
 _ADMIN1 = {
@@ -99,6 +101,15 @@ def test_run_downloads_computes_and_ingests(config):
     }
     assert observed["ingested"] == sites
     assert list(config.work_dir.iterdir()) == []
+
+
+def test_run_resolves_default_module_imports(config, monkeypatch):
+    sites = [{"id": "scotland-0000", "lat": 56.5, "lon": -4.5}]
+    monkeypatch.setattr(generate_grid_v2, "_scotland_polygons", lambda _data: ["land"])
+    monkeypatch.setattr(generate_grid_v2, "build", lambda *_args, **_kwargs: sites)
+    monkeypatch.setattr(grid_ingest, "replace_computed_grid", lambda rows: len(rows))
+
+    assert run(config, s3=FakeS3()) == 1
 
 
 def test_run_propagates_source_failure_without_ingesting(config):
