@@ -1,0 +1,136 @@
+{{- if not (kindIs "bool" .Values.kubernetesRead.enabled) }}
+{{- fail "kubernetesRead.enabled must be a boolean" }}
+{{- end }}
+{{- if .Values.kubernetesRead.enabled }}
+{{- $root := . }}
+{{- $name := include "monolith-agents.fullname" . }}
+{{- $serviceAccount := include "monolith-agents.serviceAccountName" . }}
+{{- range $namespace := .Values.kubernetesRead.observationNamespaces }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}-observer
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "monolith-agents.labels" $root | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services", "configmaps", "events"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+    verbs: ["get", "list"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}-observer
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "monolith-agents.labels" $root | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}-observer
+subjects:
+  - kind: ServiceAccount
+    name: {{ $serviceAccount }}
+    namespace: {{ $root.Release.Namespace }}
+{{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}-argocd-reader
+  namespace: {{ .Values.kubernetesRead.argocdNamespace }}
+  labels:
+    {{- include "monolith-agents.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["argoproj.io"]
+    resources: ["applications"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}-argocd-reader
+  namespace: {{ .Values.kubernetesRead.argocdNamespace }}
+  labels:
+    {{- include "monolith-agents.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}-argocd-reader
+subjects:
+  - kind: ServiceAccount
+    name: {{ $serviceAccount }}
+    namespace: {{ .Release.Namespace }}
+{{- range $namespace := .Values.kubernetesRead.kargoNamespaces }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}-kargo-reader
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "monolith-agents.labels" $root | nindent 4 }}
+rules:
+  - apiGroups: ["kargo.akuity.io"]
+    resources: ["freights"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}-kargo-reader
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "monolith-agents.labels" $root | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}-kargo-reader
+subjects:
+  - kind: ServiceAccount
+    name: {{ $serviceAccount }}
+    namespace: {{ $root.Release.Namespace }}
+{{- end }}
+---
+# Cluster scope is limited to inventory and node utilization. Namespaced
+# resources never appear here.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $name }}-cluster-observer
+  labels:
+    {{- include "monolith-agents.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "namespaces"]
+    verbs: ["get", "list"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $name }}-cluster-observer
+  labels:
+    {{- include "monolith-agents.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $name }}-cluster-observer
+subjects:
+  - kind: ServiceAccount
+    name: {{ $serviceAccount }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

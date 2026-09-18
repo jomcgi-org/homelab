@@ -36,6 +36,14 @@ spec:
       {{- include "monolith-agents.selectorLabels" . | nindent 6 }}
       app.kubernetes.io/component: agents
   egress:
+    # The narrow read client authenticates to the Kubernetes API with this
+    # pod's service account. RBAC remains the authorization boundary.
+    - toEntities:
+        - kube-apiserver
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
     - toEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: kube-system

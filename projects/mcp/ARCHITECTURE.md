@@ -53,8 +53,9 @@ listed in `projects/monolith/ARCHITECTURE.md`.
 **The monolith-agents tier is the second entry point, intended for Ember guests.**
 It is a pruned monolith binary (`projects/monolith/app/agents_main.py`)
 serving four knowledge tools (`search_knowledge`, `report_knowledge`,
-`dispute_fact`, `report_distress`) on its own Service and port, with no
-cluster RBAC and a database role scoped to the knowledge tables. It is
+`dispute_fact`, `report_distress`) and two bounded Kubernetes observation
+tools (`kubernetes_read`, `kubernetes_pod_logs`) on its own Service and port,
+with a database role scoped to the knowledge tables. It is
 fail-closed: an anonymous principal is answered 401 before the MCP app runs.
 Identity comes from the authentik `mcp-agents` provider by
 `client_credentials`. The EmberVM token broker mints the bearer (grant
@@ -63,10 +64,21 @@ the guest never holds the token and cannot reach the tier except through the
 sidecar. The guest-side half (the egress allowlist entry, `plaintextUpstream`,
 `injectAlwaysPaths`, the shim-written MCP client config and the boot argument
 that carries the URL) is EmberVM's and is documented there.
-The application also configures the human `mcp-friends` verifier and accepts
-any non-anonymous principal without a `kg-agents` group check. That broader
-source boundary is unresolved; the guest-only topology does not narrow it at
-the resource server.
+The application also configures the human `mcp-friends` verifier. Any
+non-anonymous principal may use the existing knowledge catalogue, while every
+Kubernetes tool invocation separately requires the standing, undelegated
+`kg-agent-sa` workload identity and its `kg-agents` group. The Kubernetes
+client accepts only fixed get/list resources and a separately bounded
+`pods/log` get. Its namespaced reads are matched by Roles in a concrete
+namespace list, with Argo CD limited to `argocd`, Kargo limited to
+`kargo-monolith` and `kargo-embervm`, and cluster scope limited to nodes,
+namespaces, and node metrics. It has no mutation, watch, Secret, exec, attach,
+port-forward, proxy, or wildcard route and does not import the private
+monolith cluster client.
+
+This describes repository source only. The hub Application uses a published
+chart pin advanced separately, so merging these files does not prove the RBAC
+is deployed or that a live observation succeeds.
 (see: `projects/monolith-agents/chart/values.yaml`,
 `projects/monolith/app/agents_main.py`, `projects/embervm/deploy/values.yaml`
 under `egress.secrets`, `projects/embervm/deploy/values-gke.yaml` under

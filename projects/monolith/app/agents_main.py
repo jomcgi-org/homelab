@@ -10,6 +10,7 @@ from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 
+from agent_kubernetes import kubernetes_pod_logs, kubernetes_read
 from auth.api import (
     Authority,
     PrincipalMiddleware,
@@ -25,12 +26,19 @@ from knowledge.mcp import (
 
 agent_mcp = FastMCP("Agent Catalogue")
 # The catalogue is listed explicitly rather than taken from a module registry.
-# This tier's whole surface is four tools and no HTTP routes, so a registry
+# This tier's whole surface is explicit and has no HTTP routes, so a registry
 # would be indirection with nothing to hold, and knowledge.module registers on
 # the SHARED core.mcp_app instance, which this binary prunes.
 # report_distress is included; its notification path is shared.notify, so the
 # tier does not reach agent/**.
-AGENT_TOOLS = (search_knowledge, report_knowledge, dispute_fact, report_distress)
+AGENT_TOOLS = (
+    search_knowledge,
+    report_knowledge,
+    dispute_fact,
+    report_distress,
+    kubernetes_read,
+    kubernetes_pod_logs,
+)
 AGENT_TOOL_NAMES = tuple(tool.__name__ for tool in AGENT_TOOLS)
 
 for _tool in AGENT_TOOLS:

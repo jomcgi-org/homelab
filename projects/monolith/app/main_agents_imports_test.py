@@ -1,7 +1,9 @@
 """Import-closure guard for the agents app (ADR 004 Layer 1+4).
 
 The agents service must ship a pruned image that does NOT contain the private
-domain modules or their credentials. This test imports ``app.agents_main`` in a
+domain modules or their credentials. The sole Kubernetes exception is the
+standalone ``agent_kubernetes`` package, which has no mutation methods and does
+not import the private ``cluster`` domain. This test imports ``app.agents_main`` in a
 FRESH subprocess (so module state leaked into ``sys.modules`` by other tests in
 the same process cannot mask a regression) and asserts that none of the
 forbidden private modules ended up in the child's ``sys.modules``.
@@ -25,9 +27,9 @@ import sys
 import pytest  # noqa: F401  (keeps the gazelle pytest dep; see module docstring)
 
 # Private surface that must never land in the agents import closure. Each entry
-# is matched as a module name OR a dotted prefix. Cluster is intentionally
-# broad: the agent tier must have no path to Kubernetes credentials or cluster
-# RBAC.
+# is matched as a module name OR a dotted prefix. Cluster stays intentionally
+# broad: the agent tier may import only agent_kubernetes, never the private
+# client's mutation helpers or broader credential paths.
 FORBIDDEN_MODULES = [
     # Private domains.
     "agent",
@@ -186,3 +188,21 @@ def test_report_distress_is_in_the_agent_catalogue():
     import app.agents_main as agents_main
 
     assert "report_distress" in agents_main.AGENT_TOOL_NAMES
+
+
+def test_only_narrow_kubernetes_tools_join_the_agent_catalogue():
+    import app.agents_main as agents_main
+
+    assert agents_main.AGENT_TOOL_NAMES == (
+        "search_knowledge",
+        "report_knowledge",
+        "dispute_fact",
+        "report_distress",
+        "kubernetes_read",
+        "kubernetes_pod_logs",
+    )
+    loaded = _loaded_modules()
+    assert "agent_kubernetes.client" in loaded
+    assert not any(
+        module == "cluster" or module.startswith("cluster.") for module in loaded
+    )
