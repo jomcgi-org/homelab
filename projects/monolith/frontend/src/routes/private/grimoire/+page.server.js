@@ -1,7 +1,8 @@
 import { fail } from "@sveltejs/kit";
 
 const API_BASE = process.env.API_BASE;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function authenticatedHeaders(request, supplied) {
   const headers = new Headers(supplied);
@@ -32,7 +33,10 @@ async function readError(response) {
     const body = JSON.parse(text);
     if (typeof body?.detail === "string") return body.detail;
     if (Array.isArray(body?.detail)) {
-      return body.detail.map((item) => item.msg).filter(Boolean).join("; ");
+      return body.detail
+        .map((item) => item.msg)
+        .filter(Boolean)
+        .join("; ");
     }
   } catch {
     // Preserve the upstream text when it is not a FastAPI JSON error.
@@ -58,11 +62,7 @@ export async function load({ fetch, request }) {
         );
         const workspaces = await Promise.all(
           characters.map((character) =>
-            apiJson(
-              fetch,
-              request,
-              sheetsPath(campaign.id, character.id),
-            ),
+            apiJson(fetch, request, sheetsPath(campaign.id, character.id)),
           ),
         );
         return { campaign, workspaces };
@@ -70,7 +70,11 @@ export async function load({ fetch, request }) {
     );
     return { groups, unavailable: false };
   } catch (error) {
-    return { groups: [], unavailable: true, message: error?.message ?? "unavailable" };
+    return {
+      groups: [],
+      unavailable: true,
+      message: error?.message ?? "unavailable",
+    };
   }
 }
 
@@ -108,7 +112,9 @@ export const actions = {
     if (!parsed) return fail(400, { error: "invalid character" });
     const base = sheetsPath(parsed.campaignId, parsed.characterId);
     const versionId = data.get("version_id");
-    const path = UUID.test(versionId) ? `${base}/${versionId}` : `${base}/drafts`;
+    const path = UUID.test(versionId)
+      ? `${base}/${versionId}`
+      : `${base}/drafts`;
     try {
       await apiJson(fetch, request, path, {
         method: UUID.test(versionId) ? "PATCH" : "POST",
@@ -153,7 +159,9 @@ export const actions = {
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ comment: String(data.get("comment") ?? "") || null }),
+          body: JSON.stringify({
+            comment: String(data.get("comment") ?? "") || null,
+          }),
         },
       );
       return { ok: true };

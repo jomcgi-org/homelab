@@ -31,8 +31,8 @@
       <p class="eyebrow">Grimoire · private table</p>
       <h1>Character sheets</h1>
       <p class="lede">
-        Players author base facts. Grimoire calculates the mechanics and keeps every
-        submitted decision as history.
+        Players author base facts. Grimoire calculates the mechanics and keeps
+        every submitted decision as history.
       </p>
     </div>
     <span class="contract">contract v1</span>
@@ -52,7 +52,9 @@
   {:else if data.groups.length === 0}
     <section class="empty">
       <h2>No campaigns yet</h2>
-      <p>A campaign DM must add your verified account before sheets appear here.</p>
+      <p>
+        A campaign DM must add your verified account before sheets appear here.
+      </p>
     </section>
   {:else}
     {#each data.groups as group}
@@ -78,18 +80,31 @@
                   <h3>{workspace.character.character_name}</h3>
                   <p class="summary">
                     {workspace.character.class_name ?? "Unapproved class"}
-                    {workspace.character.level ? ` · level ${workspace.character.level}` : ""}
+                    {workspace.character.level
+                      ? ` · level ${workspace.character.level}`
+                      : ""}
                   </p>
                 </div>
-                <span class:approved={latest?.status === "approved"} class="status">
+                <span
+                  class:approved={latest?.status === "approved"}
+                  class="status"
+                >
                   {latest?.status ?? "no sheet"}
                 </span>
               </header>
 
               {#if workspace.viewer_role === "player" && latest?.status !== "submitted"}
                 <form method="POST" action="?/save" class="builder">
-                  <input type="hidden" name="campaign_id" value={group.campaign.id} />
-                  <input type="hidden" name="character_id" value={workspace.character.id} />
+                  <input
+                    type="hidden"
+                    name="campaign_id"
+                    value={group.campaign.id}
+                  />
+                  <input
+                    type="hidden"
+                    name="character_id"
+                    value={workspace.character.id}
+                  />
                   {#if draft}
                     <input type="hidden" name="version_id" value={draft.id} />
                   {/if}
@@ -131,7 +146,7 @@
                         <label>
                           <span>{label}</span>
                           <input
-                            name={name}
+                            {name}
                             type="number"
                             min="3"
                             max="20"
@@ -142,20 +157,34 @@
                       {/each}
                     </div>
                   </fieldset>
-                  <button type="submit">{draft ? "Save draft" : "Start new draft"}</button>
+                  <button type="submit"
+                    >{draft ? "Save draft" : "Start new draft"}</button
+                  >
                 </form>
 
                 {#if draft}
                   <form method="POST" action="?/submit" class="submit-row">
-                    <input type="hidden" name="campaign_id" value={group.campaign.id} />
-                    <input type="hidden" name="character_id" value={workspace.character.id} />
+                    <input
+                      type="hidden"
+                      name="campaign_id"
+                      value={group.campaign.id}
+                    />
+                    <input
+                      type="hidden"
+                      name="character_id"
+                      value={workspace.character.id}
+                    />
                     <input type="hidden" name="version_id" value={draft.id} />
-                    <p>Submitting locks version {draft.version} for DM review.</p>
+                    <p>
+                      Submitting locks version {draft.version} for DM review.
+                    </p>
                     <button type="submit" class="primary">Submit to DM</button>
                   </form>
                 {/if}
               {:else if latest?.status === "submitted"}
-                <p class="notice">Version {latest.version} is waiting for the DM.</p>
+                <p class="notice">
+                  Version {latest.version} is waiting for the DM.
+                </p>
               {/if}
 
               {#if latest?.derived}
@@ -168,8 +197,15 @@
                     <span>Unarmored AC</span>
                     <strong>{latest.derived.unarmored_armor_class}</strong>
                   </div>
-                  <div><span>Max HP</span><strong>{latest.derived.max_hit_points}</strong></div>
-                  <div><span>Hit die</span><strong>{latest.derived.hit_die}</strong></div>
+                  <div>
+                    <span>Max HP</span><strong
+                      >{latest.derived.max_hit_points}</strong
+                    >
+                  </div>
+                  <div>
+                    <span>Hit die</span><strong>{latest.derived.hit_die}</strong
+                    >
+                  </div>
                   {#each abilities as [name, label]}
                     <div>
                       <span>{label} mod / save</span>
@@ -184,8 +220,16 @@
 
               {#if workspace.viewer_role === "dm" && latest?.status === "submitted"}
                 <form method="POST" action="?/decide" class="decision">
-                  <input type="hidden" name="campaign_id" value={group.campaign.id} />
-                  <input type="hidden" name="character_id" value={workspace.character.id} />
+                  <input
+                    type="hidden"
+                    name="campaign_id"
+                    value={group.campaign.id}
+                  />
+                  <input
+                    type="hidden"
+                    name="character_id"
+                    value={workspace.character.id}
+                  />
                   <input type="hidden" name="version_id" value={latest.id} />
                   <label>
                     <span>Decision comment</span>
@@ -193,11 +237,12 @@
                       name="comment"
                       maxlength="1000"
                       rows="3"
-                      placeholder="Required when returning"
-                    ></textarea>
+                      placeholder="Required when returning"></textarea>
                   </label>
                   <div class="decision-actions">
-                    <button type="submit" name="decision" value="return">Return to player</button>
+                    <button type="submit" name="decision" value="return"
+                      >Return to player</button
+                    >
                     <button
                       type="submit"
                       name="decision"
@@ -211,7 +256,9 @@
               {#if latest?.decision_comment}
                 <blockquote>
                   <p>{latest.decision_comment}</p>
-                  <footer>{latest.decided_by_email} · {date(latest.decided_at)}</footer>
+                  <footer>
+                    {latest.decided_by_email} · {date(latest.decided_at)}
+                  </footer>
                 </blockquote>
               {/if}
 
@@ -224,7 +271,9 @@
                     {#each workspace.versions as version}
                       <li>
                         <span>v{version.version} · {version.status}</span>
-                        <time datetime={version.created_at}>{date(version.created_at)}</time>
+                        <time datetime={version.created_at}
+                          >{date(version.created_at)}</time
+                        >
                       </li>
                     {/each}
                   </ol>
@@ -321,11 +370,7 @@
   .sheet-card,
   .empty {
     border: 1px solid #bdb6a5;
-    background: color-mix(
-      in srgb,
-      var(--grim-bg, #f7f3e8) 88%,
-      white
-    );
+    background: color-mix(in srgb, var(--grim-bg, #f7f3e8) 88%, white);
     padding: clamp(1rem, 3vw, 1.75rem);
     box-shadow: 4px 4px 0 #d7cfbd;
   }
@@ -454,10 +499,23 @@
     margin: 3rem auto;
   }
   @media (max-width: 640px) {
-    .page-head, .character-head, .submit-row { align-items: flex-start; flex-direction: column; }
-    .identity-fields { grid-template-columns: 1fr 1fr; }
-    .level-field { grid-column: span 2; }
-    .abilities { grid-template-columns: repeat(3, 1fr); }
-    .derived { grid-template-columns: 1fr; }
+    .page-head,
+    .character-head,
+    .submit-row {
+      align-items: flex-start;
+      flex-direction: column;
+    }
+    .identity-fields {
+      grid-template-columns: 1fr 1fr;
+    }
+    .level-field {
+      grid-column: span 2;
+    }
+    .abilities {
+      grid-template-columns: repeat(3, 1fr);
+    }
+    .derived {
+      grid-template-columns: 1fr;
+    }
   }
 </style>
