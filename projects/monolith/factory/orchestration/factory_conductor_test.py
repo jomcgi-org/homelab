@@ -465,8 +465,10 @@ def feedback_db(tmp_path, monkeypatch):
     from factory.orchestration import factory_controls as controls
     from factory.orchestration.factory_models import (
         FactoryAudit,
+        FactoryClassTier,
         FactoryControl,
         FactoryReceipt,
+        FactoryReviewVerdict,
         FactoryStart,
     )
     from factory.orchestration.models import (
@@ -492,8 +494,10 @@ def feedback_db(tmp_path, monkeypatch):
         SwarmPlanNode,
         SwarmNodeRun,
         SwarmConductorCall,
+        FactoryClassTier,
         FactoryControl,
         FactoryReceipt,
+        FactoryReviewVerdict,
         FactoryStart,
         FactoryAudit,
     )
@@ -1390,8 +1394,9 @@ def test_planner_keeps_completed_review_after_recursive_historical_prompts(monke
     # planner round a refused pause costs. Move it again only for a rule the
     # planner cannot follow without being told, and say which rule.
     # Funding reassessment adds a typed action and separates internal limits
-    # from human authority; keep that instruction within 200 extra characters.
-    assert len(prompt) < 17_200
+    # from human authority. Class feedback adds one bounded quality snapshot
+    # plus the instruction that turns attributed rejections into recipe input.
+    assert len(prompt) < 17_800
     assert (task, nodes, runs) == before
 
 

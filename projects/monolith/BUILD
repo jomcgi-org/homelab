@@ -4788,6 +4788,23 @@ py_test(
 )
 
 py_test(
+    name = "swarm_factory_feedback_test",
+    srcs = ["factory/orchestration/factory_feedback_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_agent_sessions",
+        ":pkg_auth",
+        ":pkg_factory",
+        ":pkg_swarm",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "swarm_mcp_test",
     srcs = ["factory/orchestration/mcp_test.py"],
     imports = ["."],

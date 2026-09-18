@@ -847,6 +847,8 @@ def _requeue(row: FactoryReceipt) -> None:
     row.task_id = None
     row.policy_json = None
     row.allowance_json = None
+    # A fresh admission must read the then-current class quality window.
+    row.routing_tier = None
     row.task_paused = False
     row.cancellation_requested = False
 

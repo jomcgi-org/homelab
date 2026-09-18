@@ -12,8 +12,10 @@ import factory.orchestration.factory_controls as controls
 from factory.orchestration.factory_intake import admit_next, receive_issue
 from factory.orchestration.factory_models import (
     FactoryAudit,
+    FactoryClassTier,
     FactoryControl,
     FactoryReceipt,
+    FactoryReviewVerdict,
     FactoryStart,
 )
 from factory.orchestration.models import SwarmTask
@@ -37,8 +39,10 @@ def db(tmp_path, monkeypatch):
             m.__table__
             for m in (
                 SwarmTask,
+                FactoryClassTier,
                 FactoryControl,
                 FactoryReceipt,
+                FactoryReviewVerdict,
                 FactoryStart,
                 FactoryAudit,
             )
