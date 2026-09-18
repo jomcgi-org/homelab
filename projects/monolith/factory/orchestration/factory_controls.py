@@ -765,7 +765,9 @@ def lane_usage(policy: dict, receipts: list[dict]) -> dict:
     generation = policy.get("generation", 0)
     usage = {lane: {"limit": limits[lane], "active": 0, "queued": 0} for lane in LANES}
     for receipt in receipts:
-        lane = lane_for(receipt.get("task_class") or DEFAULT_TASK_CLASS)
+        lane = receipt.get("routing_tier") or lane_for(
+            receipt.get("task_class") or DEFAULT_TASK_CLASS
+        )
         if receipt.get("state") in _ACTIVE:
             usage[lane]["active"] += 1
         elif (
@@ -1275,6 +1277,7 @@ def _snapshot(db: Session, row: FactoryReceipt, *, body: bool = False) -> dict:
         )
     }
     result["task_class"] = receipt_task_class(row)
+    result["routing_tier"] = row.routing_tier or lane_for(result["task_class"])
     # The escalation document, when this receipt raised one. It is read by the
     # board, by the decision endpoint, and by the next refine prompt when the
     # operator asked for more, so it belongs on the one snapshot they share.
@@ -1439,8 +1442,12 @@ def delivery_admissions(db, since: datetime) -> int:
                 # A receipt written before classes existed reads as the
                 # default, which is delivery, so an untyped row still counts.
                 or_(
-                    FactoryReceipt.task_class.is_(None),
-                    FactoryReceipt.task_class.notin_(ADVISORY_CLASSES),
+                    FactoryReceipt.routing_tier == "delivery",
+                    FactoryReceipt.routing_tier.is_(None)
+                    & or_(
+                        FactoryReceipt.task_class.is_(None),
+                        FactoryReceipt.task_class.notin_(ADVISORY_CLASSES),
+                    ),
                 ),
             )
         ).all()
@@ -1545,7 +1552,8 @@ def escalation_view(receipt: dict) -> dict | None:
         # the work should be; a delivery escalation is a planner mid-task
         # asking a question it cannot answer, and it names a branch and
         # usually a pull request the next attempt can carry on from.
-        "kind": lane_for(receipt.get("task_class") or DEFAULT_TASK_CLASS),
+        "kind": receipt.get("routing_tier")
+        or lane_for(receipt.get("task_class") or DEFAULT_TASK_CLASS),
         "recommendation": escalation.get("recommendation"),
         "question": escalation.get("question"),
         "summary": escalation.get("summary"),
@@ -2548,7 +2556,10 @@ def request_landing_recovery(
             ):
                 return {"ok": False, "reason": "issue_already_active"}
             if (
-                sum(lane_for(receipt_task_class(r)) == "delivery" for r in active)
+                sum(
+                    (r.routing_tier or lane_for(receipt_task_class(r))) == "delivery"
+                    for r in active
+                )
                 >= lane_limits(live_policy)["delivery"]
             ):
                 return {"ok": False, "reason": "delivery_capacity"}

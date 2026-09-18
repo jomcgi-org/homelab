@@ -134,8 +134,8 @@ def concurrency_limit(policy: dict) -> int:
 
 
 def lane_of(row) -> str:
-    """The lane a receipt belongs to, reading a pre-class receipt as delivery."""
-    return lane_for(receipt_task_class(row))
+    """The pinned route, or the class lane for a pre-feedback receipt."""
+    return getattr(row, "routing_tier", None) or lane_for(receipt_task_class(row))
 
 
 def ceiling_below_lanes(policy: dict) -> dict | None:
@@ -268,12 +268,20 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
                     for lane in LANES
                 },
             }
-        # A receipt written before classes existed has a NULL column and reads
-        # as the default class, which is delivery. Matching it by class alone
-        # would leave those receipts unadmittable.
-        classes = [name for name in TASK_CLASSES if lane_for(name) in available]
+        # Evaluate quality at the admission boundary, then use the resulting
+        # class map in the ordered receipt query. This keeps the query bounded
+        # by the fixed class set and avoids loading the whole intake queue.
+        from factory.orchestration.factory_feedback import (
+            route_for_class,
+            store_class_route,
+        )
+
+        routes = {name: route_for_class(name, session=db) for name in TASK_CLASSES}
+        classes = [
+            name for name, feedback in routes.items() if feedback["tier"] in available
+        ]
         in_lane = FactoryReceipt.task_class.in_(classes)
-        if "delivery" in available:
+        if routes[DEFAULT_TASK_CLASS]["tier"] in available:
             in_lane = or_(in_lane, FactoryReceipt.task_class.is_(None))
         eligible = FactoryReceipt.issue_number.in_(policy["issue_numbers"])
         if intake_policy(policy)["enabled"]:
@@ -298,6 +306,7 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
         ).first()
         if row is None:
             return {"ok": False, "reason": "no_eligible_issue"}
+        route = routes[receipt_task_class(row)]
         direction = json.loads(row.direction_json) if row.direction_json else None
         try:
             granted_branch, _granted_pr = granted_delivery_surface(direction)
@@ -336,6 +345,8 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
         db.add(task)
         db.flush()
         row.task_id, row.state, row.policy_json = task_id, "admitted", _json(policy)
+        row.routing_tier = route["tier"]
+        store_class_route(receipt_task_class(row), route, session=db)
         row.updated_at = _now()
         control.admitted_count += 1
         control.updated_at = _now()
@@ -348,8 +359,30 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
             task_id=task_id,
             receipt_id=row.id,
             lane=lane_of(row),
+            task_class=receipt_task_class(row),
+            feedback_decision=route["decision"],
+            feedback_samples=route["sample_count"],
+            first_pass_approval_rate=route["approval_rate"],
             policy_version=control.version,
         )
+        if route["tier"] != route["previous_tier"]:
+            _audit(
+                db,
+                "factory:feedback",
+                (
+                    "class_tier_demoted"
+                    if route["tier"] == "advisory"
+                    else "class_tier_restored"
+                ),
+                task_id=task_id,
+                task_class=receipt_task_class(row),
+                previous_tier=route["previous_tier"],
+                routing_tier=route["tier"],
+                sample_kind=route["sample_kind"],
+                sample_count=route["sample_count"],
+                approval_rate=route["approval_rate"],
+                approval_floor=route["approval_floor"],
+            )
         return {
             "ok": True,
             "task_id": task_id,

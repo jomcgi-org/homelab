@@ -85,6 +85,10 @@ class FactoryReceipt(SQLModel, table=True):
             "'failed', 'cancelled')",
             name="factory_receipt_state_check",
         ),
+        CheckConstraint(
+            "routing_tier IS NULL OR routing_tier IN ('delivery', 'advisory')",
+            name="factory_receipt_routing_tier_check",
+        ),
         Index("factory_receipt_state_created_at_idx", "state", "created_at"),
         {"schema": "swarm", "extend_existing": True},
     )
@@ -100,6 +104,9 @@ class FactoryReceipt(SQLModel, table=True):
     url: str
     actor: str
     task_class: str = Field(default=DEFAULT_TASK_CLASS)
+    # Admission pins the quality route separately from the original class.
+    # A null value identifies receipts admitted before feedback routing.
+    routing_tier: str | None = Field(default=None)
     state: str = Field(default="queued")
     task_id: str | None = Field(default=None, foreign_key="swarm.swarm_task.id")
     policy_json: str | None = Field(default=None)
@@ -182,3 +189,66 @@ class FactoryAudit(SQLModel, table=True):
     task_id: str | None = Field(default=None, foreign_key="swarm.swarm_task.id")
     detail_json: str = Field(default="{}")
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class FactoryClassTier(SQLModel, table=True):
+    """Durable routing state and the start of its current evaluation epoch."""
+
+    __tablename__ = "factory_class_tier"
+    __table_args__ = (
+        CheckConstraint(
+            "routing_tier IN ('delivery', 'advisory')",
+            name="factory_class_tier_value_check",
+        ),
+        {"schema": "swarm", "extend_existing": True},
+    )
+
+    task_class: str = Field(primary_key=True)
+    routing_tier: str = Field(default="delivery")
+    transitioned_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class FactoryReviewVerdict(SQLModel, table=True):
+    """One immutable first-pass quality sample per factory task."""
+
+    __tablename__ = "factory_review_verdict"
+    __table_args__ = (
+        UniqueConstraint("task_id", name="factory_review_verdict_task_id_key"),
+        UniqueConstraint(
+            "review_run_id", name="factory_review_verdict_review_run_id_key"
+        ),
+        CheckConstraint(
+            "sample_kind IN ('delivery', 'advisory')",
+            name="factory_review_verdict_kind_check",
+        ),
+        CheckConstraint(
+            "verdict IN ('approve', 'changes_requested', 'blocked', 'unparseable')",
+            name="factory_review_verdict_value_check",
+        ),
+        Index(
+            "factory_review_verdict_class_kind_reviewed_idx",
+            "task_class",
+            "sample_kind",
+            "reviewed_at",
+            "id",
+        ),
+        {"schema": "swarm", "extend_existing": True},
+    )
+
+    id: int | None = Field(
+        default=None, primary_key=True, sa_type=_BIGINT, nullable=False
+    )
+    task_id: str = Field(foreign_key="swarm.swarm_task.id")
+    review_run_id: int = Field(foreign_key="swarm.swarm_node_run.id")
+    recipe_run_id: int | None = Field(
+        default=None, foreign_key="swarm.swarm_node_run.id"
+    )
+    task_class: str
+    sample_kind: str
+    verdict: str
+    summary: str = Field(default="")
+    head_sha: str | None = Field(default=None)
+    reviewed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
