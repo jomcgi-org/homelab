@@ -49,6 +49,10 @@ def db_fixture(tmp_path, monkeypatch):
             "knowledge.ingest_queue.upload_raw",
             lambda raw_id, content: uploads.__setitem__(raw_id, content),
         )
+        monkeypatch.setattr(
+            "knowledge.mcp.upload_raw",
+            lambda raw_id, content: uploads.__setitem__(raw_id, content),
+        )
         yield SimpleNamespace(engine=engine, uploads=uploads)
     finally:
         for table in SQLModel.metadata.tables.values():
@@ -122,6 +126,9 @@ async def test_report_knowledge_writes_raw_and_enqueues_once(db, principal):
         assert raw.extra["reporter_subject"] == "agent:reviewer"
         assert raw.extra["reporter_authority"] == "delegated"
         assert raw.extra["reporter_kind"] == "workload"
+        assert raw.extra["evidence"] == ["projects/monolith/knowledge/mcp.py"]
+        assert raw.extra["validity_hint"] == "while this branch is checked out"
+        assert raw.extra["status"] == "queued"
         assert len(jobs) == 1
         assert jobs[0].name == f"kg:{raw.raw_id}"
         assert json.loads(jobs[0].payload) == {"raw_id": raw.raw_id}

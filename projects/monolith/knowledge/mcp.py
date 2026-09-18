@@ -12,6 +12,7 @@ KnowledgeStore directly (no HTTP round-trip).
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 import logging
 import os
 import re
@@ -27,15 +28,19 @@ from core.db import get_engine
 from knowledge.api import ingest_raw_with_status
 from knowledge.atoms import index_atom
 from knowledge.burst import create_kg_burst_grant, validate_kg_burst_grant
+from knowledge.extraction import enqueue_extraction
 from knowledge.indexing import index_note_from_raw
 from knowledge.interventions import create_intervention
 from knowledge.models import Dispute, SCOPE_PATTERN
 from knowledge.notes import resolve_note_body
 from knowledge.redact import redact_text
+from knowledge.raw_store import upload_raw
+from knowledge.raw_write import write_raw
 from knowledge.store import KnowledgeStore
 from shared.embedding import EmbeddingClient
 
 logger = logging.getLogger(__name__)
+REPORT_KNOWLEDGE_METRICS: Counter[str] = Counter()
 
 
 async def _index_atom(session: Session, **kwargs) -> str:
@@ -292,20 +297,39 @@ def _report_knowledge_sync(
         "validity_hint": validity_hint,
     }
 
-    with Session(get_engine()) as session:
-        raw, created = ingest_raw_with_status(
-            session,
-            content=content,
-            source="agent-report",
-            original_url=None,
-            extra=extra,
+    try:
+        with Session(get_engine()) as session:
+            raw, created = write_raw(
+                session,
+                content=content,
+                source="agent-report",
+                scope=scope,
+                evidence=evidence,
+                validity_hint=validity_hint,
+                original_url=None,
+                extra=extra,
+                commit=False,
+            )
+            if created:
+                upload_raw(raw.content_hash, content)
+                enqueue_extraction(session, raw.raw_id, commit=False)
+            session.commit()
+            return {
+                "raw_id": raw.raw_id,
+                "created": created,
+                "status": "queued" if created else "duplicate",
+                "scope": scope,
+            }
+    except Exception as exc:  # noqa: BLE001 - tool failures are returned in-band
+        REPORT_KNOWLEDGE_METRICS["write_errors"] += 1
+        logger.exception(
+            "report_knowledge raw write failed",
+            extra={
+                "metric": "report_knowledge_write_errors_total",
+                "increment": 1,
+            },
         )
-        return {
-            "raw_id": raw.raw_id,
-            "created": created,
-            "status": "queued" if created else "duplicate",
-            "scope": scope,
-        }
+        return {"ok": False, "reason": str(exc)}
 
 
 @_knowledge_tool

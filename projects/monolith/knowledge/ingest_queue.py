@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections import Counter
 import logging
 import re
@@ -12,13 +11,12 @@ from urllib.parse import parse_qs, urlparse
 import trafilatura
 from sqlalchemy import Column, String, text
 from sqlalchemy.engine import Engine
-from sqlalchemy.exc import IntegrityError
-from sqlmodel import Field, Session, SQLModel, select
+from sqlmodel import Field, Session, SQLModel
 from youtube_transcript_api import YouTubeTranscriptApi
 
 from knowledge.models import RawInput
-from knowledge.raw_paths import compute_raw_id
 from knowledge.raw_store import upload_raw
+from knowledge.raw_write import write_raw
 from knowledge.redact import redact_text_counts
 
 logger = logging.getLogger("monolith.knowledge.ingest_queue")
@@ -190,6 +188,7 @@ def ingest_raw_with_status(
     original_url: str | None = None,
     extra: dict | None = None,
     commit: bool = True,
+    row_writer=write_raw,
 ) -> tuple[RawInput, bool]:
     """Persist raw content and report whether a new row was created."""
     from knowledge.extraction import (
@@ -204,34 +203,20 @@ def ingest_raw_with_status(
         server_redactions: Counter[str] = Counter(content_redactions)
         stored_extra = _redact_extra_strings(stored_extra, server_redactions)
         stored_extra["server_redactions"] = dict(server_redactions)
-    raw_id = compute_raw_id(content)
-    existing = session.exec(select(RawInput).where(RawInput.raw_id == raw_id)).first()
-    if existing is not None:
-        return existing, False
-
-    upload_raw(raw_id, content)
-    raw = RawInput(
-        raw_id=raw_id,
-        path=f"raws/{raw_id}.md",
+    raw, created = row_writer(
+        session,
+        content=content,
         source=source,
-        content_hash=raw_id,
-        original_path=original_url,
+        status=None,
+        original_url=original_url,
         extra=stored_extra,
+        commit=False,
     )
-    savepoint = session.begin_nested()
-    try:
-        session.add(raw)
-        session.flush()
-    except IntegrityError:
-        savepoint.rollback()
-        existing = session.exec(
-            select(RawInput).where(RawInput.raw_id == raw_id)
-        ).first()
-        if existing is None:
-            raise
-        return existing, False
-    else:
-        savepoint.commit()
+    if not created:
+        return raw, False
+
+    raw_id = raw.raw_id
+    upload_raw(raw_id, content)
     if source in EXTRACTABLE_SOURCES:
         enqueue_savepoint = session.begin_nested()
         try:

@@ -92,8 +92,13 @@ def ingest_raw_with_status(
     extra: dict | None = None,
     commit: bool = True,
 ):
-    """Persist raw content and return its row plus a created flag."""
+    """Persist raw content and return its row plus a created flag.
+
+    The ingest pipeline retains private-tier storage and queueing while the
+    database insert stays in the agents-safe ``knowledge.raw_write`` module.
+    """
     from knowledge.ingest_queue import ingest_raw_with_status as _ingest_with_status
+    from knowledge.raw_write import write_raw
 
     return _ingest_with_status(
         session,
@@ -102,6 +107,7 @@ def ingest_raw_with_status(
         original_url=original_url,
         extra=extra,
         commit=commit,
+        row_writer=write_raw,
     )
 
 
