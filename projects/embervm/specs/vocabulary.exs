@@ -23,10 +23,13 @@
   # that drives the health machine and adoption reconcile. bank_relight.tla (ADR 006
   # protocol 2) models the Bank and Relight generation-pairing verbs. stateful.tla
   # models the R4 StartStateful, StopStateful, and ResolveStateful lifecycle.
+  # session_lineage.tla models RetireVolume's durable relinquish record and the
+  # RestoreArtifact side of a cross-brick lineage handoff.
   proto_rpcs: %{
     modeled:
       ~w(Prime Assign Destroy WatchNode GetNodeStatus Bank Relight
-         StartStateful StopStateful ResolveStateful)a,
+         StartStateful StopStateful ResolveStateful RetireVolume
+         RestoreArtifact)a,
     excluded:
       ~w(
         BuildBase
@@ -46,7 +49,7 @@
         # is the remote (store) inventory read that remote base retention computes
         # its keep-set from; like its siblings it is durability plumbing, not VM
         # lifecycle or adoption.
-        ~w(ExportArtifact RestoreArtifact EvictArtifact ListArtifacts ArchiveVolume RetireVolume)a ++
+        ~w(ExportArtifact EvictArtifact ListArtifacts ArchiveVolume)a ++
         # Artifact-decoupling Phase 2: control-plane -> daemon workload-registry
         # push verbs (SyncRegistry converges the pushed set; Register/Deregister
         # are the incremental forms). They deliver node-side image identity, not
@@ -90,8 +93,9 @@
         # (filesystem restore) rather than a relight (memory snapshot restore). This
         # payload-based discriminator is self-describing and correct forever,
         # unlike a time-based watermark that would break on restore.
-        ~w(session_banked session_relit session_evicted session_destroying
-           session_destroyed)a ++
+        ~w(session_created session_banked session_relit session_evicted
+           session_destroying session_destroyed session_rejoined
+           session_expired session_failed)a ++
         # R4 stateful.tla: lifecycle completions, node-confirmed destroy intent,
         # conservative failed escape, and interruptible checkpoint dispatch/resolve.
         ~w(stateful_started stateful_published stateful_banked stateful_relit
@@ -117,20 +121,18 @@
       # outside the adoption pilot and outside bank_relight.tla's bank/relight
       # generation pairing (a parked session holds a filesystem lineage volume,
       # not a memory snapshot, so it pairs with no generation).
-      # session_rejoined is not modeled by bank_relight.tla (filesystem lineage,
-      # no generation pairing).
+      # session_lineage.tla models the filesystem lineage create/rejoin and the
+      # expired/failed terminal-predecessor cases.
       # session_brick_gone is an audit-only node-loss outcome. The modeled
       # session transitions already cover the resulting banked or failed state.
-      ~w(session_parking session_parked session_rejoined session_brick_gone)a ++
+      ~w(session_parking session_parked session_brick_gone)a ++
         ~w(started vm_destroyed base_built denied drain retried
            redrive dead_lettered failed)a ++
         # Remaining R2 session lifecycle kinds still out of scope. The bank/relight,
         # evict, and node-confirmed-destroy kinds moved to `modeled` above (bank_relight.tla,
-        # ADR 006 protocol 2). session_created / session_invoked / session_expired /
-        # session_failed are the create/invoke/expire/fail lifecycle edges bank_relight
-        # does not model (it starts from a running instance and models only the
-        # bank/relight/evict/destroy generation-pairing subset).
-        ~w(session_created session_invoke_started session_invoked session_expired session_failed)a ++
+        # ADR 006 protocol 2). Invoke lifecycle edges remain outside the focused
+        # bank/relight and lineage-handoff protocols.
+        ~w(session_invoke_started session_invoked)a ++
         # R3 serving lifecycle kinds, out of scope. serving_destroying is the
         # ADR embervm/014 destroy-intent kind (see session_destroying).
         ~w(serving_started serving_published serving_unpublished serving_banked
@@ -195,11 +197,15 @@
     # is the checker's assertion (zero :primed alongside :assigned is vacuous, not passing).
     primed: "primed_op.ex",
     quota_enforced: "metering.ex",
+    session_created: "session_store.ex",
     session_banked: "session_manager.ex",
     session_relit: "session_manager.ex",
     session_evicted: "session_manager.ex",
     session_destroying: "session_manager.ex",
     session_destroyed: "session_manager.ex",
+    session_rejoined: "session_manager.ex",
+    session_expired: "session_manager.ex",
+    session_failed: "session_manager.ex",
     stateful_started: "stateful_store.ex",
     stateful_published: "stateful_store.ex",
     stateful_banked: "stateful_sweeper.ex",

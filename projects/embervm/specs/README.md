@@ -2,7 +2,7 @@
 
 Formal specifications of EmberVM's concurrency-critical protocols, checked by
 TLC in CI. This directory is the pilot of ADR embervm/006 ([ARCHITECTURE.md, section 6](../ARCHITECTURE.md#6-control-plane-internals)):
-six specs now, checked exhaustively over small bounds, plus the layer-1
+seven specs now, checked exhaustively over small bounds, plus the layer-1
 vocabulary sync guard that keeps them honest against the code. Protocol 1 (VM
 lifecycle + adoption) is `adoption.tla`; protocol 2 (session bank/relight
 generation pairing) is `bank_relight.tla`, added by the ADR embervm/014 PR 5
@@ -52,7 +52,14 @@ checkpoint-abort auto-heal) is `generation_issuance.tla`, added for issue
 - `stateful.cfg`, `stateful_liveness.cfg`, `stateful_destroying_wedge.cfg`,
   `stateful_attach_wedge.cfg`, `stateful_destroy_escape_unsafe.cfg` : the five
   stateful lifecycle TLC run configurations (below).
-- `BUILD` : twenty-two genrules run TLC over the six specs, one per cfg, via the
+- `session_lineage.tla` : the pure TLA+ model of session workspace lineage
+  inheritance, durable relinquish and export ordering, exclusive heir claims,
+  process crashes, and common-ancestor divergence detection on reconnect.
+- `session_lineage.cfg`, `session_lineage_loss.cfg`,
+  `session_lineage_double_heir.cfg`, `session_lineage_nonterminal.cfg`,
+  `session_lineage_silent_merge.cfg` : the positive model and four focused
+  negative mutations for issue #4701 (below).
+- `BUILD` : twenty-seven genrules run TLC over the seven specs, one per cfg, via the
   `//bazel/tla` prebuilt toolchain (tla2tools.jar + a pinned Temurin JRE).
 - `vocabulary.exs` : the layer-1 manifest declaring, per implementation surface
   (proto RPC verbs, health states, op-log kinds), what the specs model vs
@@ -452,9 +459,102 @@ socket validation, attach release, and wake actions. Crash and report-loss
 actions remain unfair adversarial faults. The spec is pure TLA+, so it has no
 PlusCal translation region to regenerate.
 
+## Session lineage handoff (`session_lineage.tla`)
+
+Issue #4701 models one durable workspace lineage across a terminal predecessor,
+two candidate heirs, two bricks, and crashes at the boundaries between
+relinquish, export, claim, restore, and reconnect. The protocol shape is:
+
+```
+live predecessor
+      |
+      v
+terminal -> durable relinquish -> S3 export complete -> install one heir
+                 |                       |                       |
+                 +---- crash/restart ----+---- crash/restart ----+
+                                                                 |
+disconnected predecessor copy <--- common ancestor ---> heir copy
+                 \_________ reconnect compares both heads ______/
+                                      |
+                              detect, never merge
+```
+
+The action map in the TLA+ header points to the concrete sites. In summary,
+`validate_restore_lineage/4` and `check_restore_not_inflight/2` in
+`session_manager.ex` admit an heir; `RetireVolume` writes
+`.retirement-intent` before enqueueing export; `Store.Export` publishes
+`meta.json` last; `completeRetirement` deletes local bytes only after export
+success; `RestoreArtifact` and `Prime` hydrate and attach the heir. Terminal
+states are the durable `session_expired`, `session_evicted`,
+`session_destroyed`, and `session_failed` transitions.
+
+### Bounds, assumptions, and results
+
+The positive cfg declares one lineage, one predecessor, two candidate heirs,
+two bricks, generations 0 through 2, at most one control-plane crash, and at
+most one noded process crash. Process crashes preserve local NVMe. Physical
+media loss before any S3 export is outside `NoWorkspaceLoss`; no protocol can
+preserve bytes after the only copy is destroyed. A completed export means the
+S3 completeness marker is durable. The positive abstract model also assumes a
+durable heir claim and a reconnect comparison against the recorded common
+ancestor. Those two assumptions are requirements, not implementation
+conformance claims.
+
+All results below were produced on Linux by the repository's pinned TLC 1.7.4
+and `//bazel/tla:tlc.sh` driver. The positive queue drained fully. Negative
+runs are expected counterexamples, so TLC stops at the named violation and
+they are not reported as exhaustive passes.
+
+| cfg | changed guard | checked result | generated / distinct / queue | depth |
+| --- | --- | --- | --- | --- |
+| `session_lineage.cfg` | none | all four invariants pass exhaustively | 2,113 / 810 / 0 | 15 |
+| `session_lineage_loss.cfg` | `SafeRelease = FALSE` | `NoWorkspaceLoss` violated | 20 / 18 / 8 | 5 |
+| `session_lineage_double_heir.cfg` | `ExclusiveHeirGuard = FALSE` | `NeverTwoLiveHeirs` violated | 278 / 160 / 24 | 12 |
+| `session_lineage_nonterminal.cfg` | `TerminalPredecessorGuard = FALSE` | `InheritanceOnlyFromTerminal` violated | 15 / 12 / 4 | 4 |
+| `session_lineage_silent_merge.cfg` | `ReconnectComparison = FALSE` | `ReconnectDetectsDivergence` violated | 327 / 149 / 5 | 11 |
+
+Each negative cfg lists only `TypeOK` and its intended invariant. Therefore a
+different safety failure cannot satisfy the driver's expected-failure mode.
+The four counterexamples are, respectively: source release before either a
+local or exported copy exists; two restore workers separated by a CP crash;
+claiming from a live predecessor; and equal-depth writes on both sides of a
+common ancestor followed by reconnect without comparison.
+
+### Implementation conformance gaps found by the mapping
+
+A clean abstract model is not proof that the code conforms. Mapping the actions
+to the current source found three bounded gaps. This PR intentionally changes no
+runtime code.
+
+- Terminal predecessor: `validate_restore_lineage/4` accepts `:destroying`, but
+  `SessionState.terminal_states/0` contains only `:expired`, `:evicted`,
+  `:destroyed`, and `:failed`. The bounded fix is to gate with
+  `SessionState.terminal?/1`, so a destroy intent cannot be inherited before
+  node-confirmed completion.
+- Exclusive heir across a CP crash: `inflight_restore_lineages` is a volatile
+  `MapSet`, while the restore effect runs in an unlinked `spawn_monitor` worker.
+  A CP restart can forget the claim before the first worker's node effects are
+  reconciled. The bounded fix is a durable per-lineage claim, transactionally
+  unique while non-terminal, written before the worker and resolved or redriven
+  after restart.
+- Reconnect divergence: session workspaces have no generation ledger.
+  `artifactGeneration` returns `0` for this artifact kind, and
+  `restore_session_workspace` requests generation `0`; no session reconnect
+  path compares both heads with a recorded common ancestor. The bounded fix is
+  a per-lineage generation and common-ancestor stamp on local and S3 workspace
+  metadata, followed by reconnect refusal or quarantine when both branches
+  advanced. Silent merge must never be a recovery path.
+
+The last two gaps are why `ExclusiveHeirGuard` and `ReconnectComparison` are
+declared assumptions in the positive cfg. The negative cfgs demonstrate the
+counterexamples those missing mechanisms must prevent. Runtime fixes and a
+conformance harness remain separate decisions; this model does not require
+#4761.
+
 ## Running TLC
 
-CI runs all twenty-two genrules via `bazel test //projects/embervm/specs/...`. There is
+CI runs all twenty-seven genrules through the repository's affected-target
+Linux path. There is
 no local Bazel test loop in this repo. To iterate on a spec locally you need a JRE
 (>= 11) and `tla2tools.jar` (v1.7.4, the version `//bazel/tla` pins); then, from a
 copy of this directory (swap `adoption` for `bank_relight` for protocol 2):
@@ -472,7 +572,7 @@ Never hand-edit the translation region.
 
 ## Scope
 
-The pilot now models six protocols: protocol 1 (VM lifecycle + adoption,
+The pilot now models seven protocols: protocol 1 (VM lifecycle + adoption,
 `adoption.tla`), protocol 2 (session bank/relight generation pairing,
 `bank_relight.tla`, added by the ADR embervm/014 PR 5 follow-through since the
 pilot earned its keep), protocol 3 (the fail-closed quota gate, `quota.tla`),
@@ -480,6 +580,7 @@ and protocol 4 (generation issuance authority: blessing, wake grants,
 quarantine, checkpoint-abort auto-heal, `generation_issuance.tla`, added for
 issue #4700). The SessionManager create-starvation model `session_create.tla`
 covers issue #5051 alongside them. The stateful lifecycle model `stateful.tla`
-covers the bounded destroy and writable-attach escapes. Layer-2 trace validation
+covers the bounded destroy and writable-attach escapes. The session lineage
+model covers issue #4701's handoff and no-loss invariants. Layer-2 trace validation
 (op-log events mapped to TLA+ actions and checked against a drill trace) is a
 separate follow-up and is deliberately not built here.
