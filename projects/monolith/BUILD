@@ -4812,7 +4812,7 @@ py_test(
     srcs = ["factory/review_publisher_test.py"],
     imports = ["."],
     deps = [
-        ":pkg_auth",
+        ":pkg_factory",
         ":pkg_swarm",
         "@pip//httpx",
         "@pip//pytest",
@@ -8876,9 +8876,11 @@ py_library(
     deps = [
         ":factory_access",
         ":pkg_agent_sessions",
+        ":pkg_core",
         ":pkg_framework",
         ":pkg_knowledge",
         ":pkg_swarm",
+        "@pip//httpx",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
     ],
