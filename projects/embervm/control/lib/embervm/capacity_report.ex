@@ -20,6 +20,7 @@ defmodule Embervm.CapacityReport do
   surge can have two instances with the same `node_id`, so grouping by node id
   would erase real capacity. Aggregate headroom and free-slot counts are
   descriptive only: they are never a placement guarantee or a scaling target.
+  The observable gauges land in Honeycomb through the collector metrics pipeline.
   """
 
   alias Embervm.{Cron, Dispatcher, NodeCapacity, WorkloadCatalog}

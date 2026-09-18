@@ -21,6 +21,9 @@ onepassword:
 
 honeycomb:
   endpoint: "api.honeycomb.io:443"
+  # Metrics require an explicit Honeycomb dataset even when traces route by
+  # service.name through the same API key.
+  metricsDataset: "metrics"
 
 # Stamped onto every span and metric as the deployment.environment resource
 # attribute. Set per environment so prod and dev stay separable in Honeycomb
