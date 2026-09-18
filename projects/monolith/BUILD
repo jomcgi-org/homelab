@@ -5897,6 +5897,7 @@ py_test(
     deps = [
         ":pkg_knowledge",
         "@pip//pytest",
+        "@pip//sqlmodel",
     ],
 )
 

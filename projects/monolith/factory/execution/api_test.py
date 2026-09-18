@@ -963,3 +963,32 @@ for name in (
         timeout=30,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_factory_recall_uses_task_text_instead_of_shim_prompt(monkeypatch, tmp_path):
+    import factory.orchestration.models as tasks
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'factory_recall.db'}")
+    captured = []
+    objective = "GitHub issue https://github.com/acme/repo/issues/7\n\nFix cloning\n\nRestore memory safely."
+    monkeypatch.setattr(
+        tasks,
+        "recall_task_text",
+        lambda task_id: objective if task_id == "t-7" else None,
+    )
+    monkeypatch.setattr(mcp, "get_engine", lambda: engine)
+    monkeypatch.setattr(
+        mcp,
+        "attach_recall",
+        lambda system, prompt, **kwargs: captured.append(prompt) or system,
+    )
+    monkeypatch.setattr(mcp.store, "create_session", lambda *_args, **_kwargs: None)
+    mcp._persist_session(
+        "local",
+        "guest",
+        "main",
+        "luna",
+        prompt="Factory task t-7, obey the launch instructions.",
+        task_id="t-7",
+    )
+    assert captured == [objective]

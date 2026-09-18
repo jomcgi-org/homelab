@@ -344,6 +344,9 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
         )
         db.add(task)
         db.flush()
+        from knowledge.api import prepare_recall
+
+        prepare_recall(task.task_text)
         row.task_id, row.state, row.policy_json = task_id, "admitted", _json(policy)
         row.routing_tier = route["tier"]
         store_class_route(receipt_task_class(row), route, session=db)

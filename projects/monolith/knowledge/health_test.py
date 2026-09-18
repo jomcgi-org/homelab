@@ -259,3 +259,21 @@ def test_kg_health_reports_base_cap_for_expired_burst():
     assert result["effective_cap"] == 325
     assert result["burst"]["active"] is False
     assert result["burst"]["remaining_jobs"] == 0
+
+
+def test_kg_health_exposes_recall_counters():
+    from knowledge.recall_metrics import increment, snapshot
+
+    increment("attempts")
+    session = _Session(
+        SimpleNamespace(queued=0, held=0, oldest_seconds=0),
+        SimpleNamespace(failed_24h=0, atoms_24h=0, last_success_at=None),
+    )
+    assert _kg_health_core(session, 40)["recall"] == snapshot()
+    assert set(snapshot()) == {
+        "attempts",
+        "cache_hits",
+        "skips",
+        "timeouts",
+        "distinct_facts_served",
+    }

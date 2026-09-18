@@ -69,6 +69,15 @@ _STRING_ARRAY = PG_ARRAY(String).with_variant(JSON(), "sqlite")
 _JSONB = JSONB().with_variant(JSON(), "sqlite")
 
 
+class RecallEmbedding(SQLModel, table=True):
+    __tablename__ = "recall_embeddings"
+    __table_args__ = {"schema": "knowledge", "extend_existing": True}
+
+    key: str = Field(primary_key=True)
+    embedding: list[float] = Field(sa_column=Column(Vector(1024), nullable=False))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 class Note(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory
     __tablename__ = "notes"
     __table_args__ = (

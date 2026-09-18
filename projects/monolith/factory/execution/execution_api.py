@@ -473,6 +473,7 @@ def start_session_for_swarm(
     node_attempt: int | None = None,
     reasoning: bool = False,
     admission_tier: str = "project",
+    task_id: str | None = None,
 ) -> int:
     """Create and schedule a swarm-owned session through the normal session path.
 
@@ -507,6 +508,7 @@ def start_session_for_swarm(
         node_key=node_key,
         node_attempt=node_attempt,
         admission_tier=admission_tier,
+        task_id=task_id,
     )
     assert row.id is not None
     _persist_pending_message(row.id, prompt, model)

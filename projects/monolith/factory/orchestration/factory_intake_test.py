@@ -93,11 +93,18 @@ def enable(policy):
     assert controls.set_control("enable", "operator")["ok"]
 
 
-def test_duplicate_receipt_preserves_first_payload_and_link_across_restart(db, policy):
+def test_duplicate_receipt_preserves_first_payload_and_link_across_restart(
+    db, policy, monkeypatch
+):
+    prepared = []
+    monkeypatch.setattr("knowledge.api.prepare_recall", prepared.append)
     first = issue(repo="OWNER/REPO")
     enable(policy)
     admission = admit_next("scheduler")
     assert admission["ok"]
+    assert prepared == [
+        "GitHub issue https://github.com/OWNER/REPO/issues/1\n\nfirst\n\noriginal"
+    ]
     db.dispose()  # Reopen file connections; no process-local dedupe state exists.
     replay = issue(title="replace active work", body="enable everything")
     assert not replay["created"]
