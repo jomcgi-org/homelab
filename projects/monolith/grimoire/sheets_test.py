@@ -235,10 +235,7 @@ def test_player_cannot_take_dm_decisions_or_write_another_character(
     assert _post(client, f"{base}/submit", PLAYER).status_code == 200
 
     assert _post(client, f"{base}/approve", PLAYER, {}).status_code == 403
-    assert (
-        _post(client, f"{base}/return", PLAYER, {"comment": "No"}).status_code
-        == 403
-    )
+    assert _post(client, f"{base}/return", PLAYER, {"comment": "No"}).status_code == 403
     dm_draft = _post(client, _draft_path(campaign, character), DM, _sheet())
     assert dm_draft.status_code == 403
 
@@ -319,9 +316,7 @@ def test_sheet_selections_must_exist_in_visible_campaign_corpus(
 ):
     campaign, character = table
     missing_race = {**_sheet(), "ancestry": "Astral Elf"}
-    response = _post(
-        client, _draft_path(campaign, character), PLAYER, missing_race
-    )
+    response = _post(client, _draft_path(campaign, character), PLAYER, missing_race)
     assert response.status_code == 422
     assert response.json()["detail"] == (
         "ancestry is not available in this campaign corpus"

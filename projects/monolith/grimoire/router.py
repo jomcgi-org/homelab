@@ -521,9 +521,7 @@ def create_character_sheet_draft(
         )
 
     version_number = 1 if latest is None else latest.version + 1
-    derived = _derive_sheet_or_422(
-        session, campaign_id, player_character_id, body
-    )
+    derived = _derive_sheet_or_422(session, campaign_id, player_character_id, body)
     version = CharacterSheetVersion(
         campaign_id=campaign_id,
         player_character_id=player_character_id,
