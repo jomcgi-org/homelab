@@ -184,11 +184,32 @@ else
 	fail "buildbuddy_main_publish_branch" "main-only branch must publish changed images and write chart versions back"
 fi
 
-if grep -Fq 'GIT_COMMIT_MESSAGE="${GIT_COMMIT_MESSAGE:-$(git log -1 --format=%B)}"' <<<"$pr_checks_shape" &&
-	grep -Fq '"style: auto-format"*|"chore(charts): publish"*' <<<"$pr_checks_shape"; then
+if grep -Fq 'git log -1 --format=%s' <<<"$pr_checks_shape" &&
+	grep -Fq '"chore(charts): publish"*)' <<<"$pr_checks_shape" &&
+	! grep -Fq '"style: auto-format"*' <<<"$pr_checks_shape"; then
 	pass "buildbuddy_generated_commit_skip"
 else
-	fail "buildbuddy_generated_commit_skip" "generated main commits must skip publish and format work"
+	fail "buildbuddy_generated_commit_skip" "only chart-version write-back heads may skip publish and format work"
+fi
+
+full_test_ln=$(grep -nF 'bazel test //... --config=ci' <<<"$pr_checks_shape" | head -1 | cut -d: -f1 || true)
+publish_ln=$(grep -nF './bazel/images/push/push-changed.sh' <<<"$pr_checks_shape" | head -1 | cut -d: -f1 || true)
+if [[ -n "$full_test_ln" && -n "$publish_ln" && "$full_test_ln" -lt "$publish_ln" ]]; then
+	pass "buildbuddy_tests_before_publish"
+else
+	fail "buildbuddy_tests_before_publish" "full test gate (line $full_test_ln) must precede publish (line $publish_ln)"
+fi
+
+main_drift_branch="$(awk '
+	$0 == "              elif [ \"$ON_MAIN\" = true ]; then" { in_branch = 1 }
+	in_branch && $0 == "              else" { exit }
+	in_branch { print }
+' <<<"$pr_checks_shape")"
+if grep -Fq 'exit 1' <<<"$main_drift_branch" &&
+	! grep -Fq 'git push' <<<"$main_drift_branch"; then
+	pass "buildbuddy_main_drift_fails_read_only"
+else
+	fail "buildbuddy_main_drift_fails_read_only" "main drift path must exit 1 without pushing"
 fi
 
 if grep -q 'local affected-target feedback' "$CI" &&

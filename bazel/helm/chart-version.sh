@@ -42,12 +42,12 @@ fi
 # depth, so two publishes of the same commit on differently-deepened runners
 # disagree, and the shallower one computes the lower version.
 #
-# This is not hypothetical: it is what took main's deploy down on 2026-08-10.
+# This is not hypothetical: it is what took main's publish down on 2026-08-10.
 # BuildBuddy clones shallow, every chart reported "no bump needed", and the
 # publish either skipped silently or died in push.sh.tpl's escalation. The
-# deploy action now deepens the clone before publishing (buildbuddy.yaml); this
-# is the backstop for any caller that does not, and it fails loudly because a
-# wrong version is far more expensive than a red build: it wedges ArgoCD.
+# pr-checks main run now deepens the clone before publishing (buildbuddy.yaml);
+# this is the backstop for any caller that does not, and it fails loudly because
+# a wrong version is far more expensive than a red build: it wedges ArgoCD.
 if [[ "$(git rev-parse --is-shallow-repository 2>/dev/null || echo false)" == "true" ]]; then
 	echo >&2 "ERROR: refusing to compute a chart version in a shallow repository."
 	echo >&2 "The commit walk would be truncated, making the version a function of the fetch depth rather than of the commit."
