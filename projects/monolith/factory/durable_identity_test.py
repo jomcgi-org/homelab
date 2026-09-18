@@ -49,10 +49,11 @@ def test_package_move_preserves_the_deployed_node_workflow_version():
     sources = sorted(
         durable_source(inspect.getsource(f)) for f in _node_workflow_members()
     )
-    # Captured from the 12 durable members at f635906e, before the package move.
+    # Captured from the 12 durable members at f635906e, before the package move,
+    # and moved for #6052 (over-ceiling settlement lives in a durable member).
     # An intentional checkpoint/body change must update this deployment baseline.
     source_hash = hashlib.md5("".join(sources).encode())
-    assert source_hash.hexdigest() == "33891819c41b8a41725d7869a5059ed7"
+    assert source_hash.hexdigest() == "61147958e64d81cfd02fb5ca17841212"
     source_hash.update(GlobalParams.dbos_version.encode())
     assert node_workflow_version() == source_hash.hexdigest()
 

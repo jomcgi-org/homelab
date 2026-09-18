@@ -10786,7 +10786,7 @@ def test_dispatch_refusal_audit(
         assert (
             conductor.verify_option_list(decision["options"], subject="pause") is None
         )
-        assert "by 1" in decision["options"][0]["label"]
+        assert "raised by hand to" in decision["options"][0]["label"]
         snapshot = controls.task_snapshot(task["id"])
         assert snapshot["state"] == "escalated"
         assert snapshot["evidence"]["reason"]
