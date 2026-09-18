@@ -47,14 +47,14 @@ func runLoop(ctx context.Context, cfg config, client *controlPlaneClient, store 
 		started := time.Now().UTC()
 		store.start(started)
 		readyCtx, cancelReady := context.WithTimeout(ctx, cfg.readyWait)
-		err := waitForReady(readyCtx, client, cfg.taskWorkload, cfg.sessionWorkload)
+		err := waitForReady(readyCtx, client, cfg.taskWorkload, cfg.sessionWorkload, cfg.elixirWorkload)
 		cancelReady()
 		if err != nil {
 			result := scenarioVerdict{ID: "S0", Verdict: verdictFail, Detail: fmt.Sprintf("workload readiness failed within READY_WAIT: %v", err), MS: time.Since(started).Milliseconds()}
 			logScenario(result)
 			store.finish(started, []scenarioVerdict{result})
 		} else {
-			totalBudget := cfg.budgets["S1"] + cfg.budgets["S2"] + cfg.budgets["S3"] + cfg.budgets["S4"]
+			totalBudget := cfg.budgets["S1"] + cfg.budgets["S2"] + cfg.budgets["S3"] + cfg.budgets["S4"] + cfg.budgets["S5"]
 			suiteCtx, cancelSuite := context.WithTimeout(ctx, totalBudget)
 			scenarios := runScenarios(suiteCtx, cfg, client, started)
 			cancelSuite()
@@ -75,6 +75,7 @@ func loadConfig() (config, error) {
 		listenAddr:           envOr("LISTEN_ADDR", ":8080"),
 		taskWorkload:         envOr("TASK_WORKLOAD", "sandbox-python"),
 		sessionWorkload:      envOr("SESSION_WORKLOAD", "pi-runtime"),
+		elixirWorkload:       envOr("ELIXIR_WORKLOAD", "sandbox-elixir"),
 		idleBankSeconds:      20,
 		sweepGraceSeconds:    15,
 		minPassingInvariants: 4,
@@ -94,7 +95,7 @@ func loadConfig() (config, error) {
 	if cfg.readyWait, err = durationEnv("READY_WAIT", 15*time.Minute); err != nil {
 		return config{}, err
 	}
-	for key, fallback := range map[string]time.Duration{"S1": time.Minute, "S2": 2 * time.Minute, "S3": time.Minute, "S4": 10 * time.Second} {
+	for key, fallback := range map[string]time.Duration{"S1": time.Minute, "S2": 2 * time.Minute, "S3": time.Minute, "S4": 10 * time.Second, "S5": time.Minute} {
 		cfg.budgets[key], err = durationEnv(key+"_BUDGET", fallback)
 		if err != nil {
 			return config{}, err

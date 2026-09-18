@@ -37,6 +37,7 @@ type config struct {
 	readyWait            time.Duration
 	taskWorkload         string
 	sessionWorkload      string
+	elixirWorkload       string
 	idleBankSeconds      int
 	sweepGraceSeconds    int
 	minPassingInvariants int
@@ -212,7 +213,12 @@ func runScenarios(ctx context.Context, cfg config, client *controlPlaneClient, s
 		return runS4(scenarioCtx, cfg, client, started)
 	})
 	logScenario(s4)
-	return []scenarioVerdict{s1, s2, s3, s4}
+
+	s5 := runBudgeted(ctx, "S5", cfg.budgets["S5"], func(scenarioCtx context.Context) scenarioVerdict {
+		return runS5(scenarioCtx, cfg, client, started)
+	})
+	logScenario(s5)
+	return []scenarioVerdict{s1, s2, s3, s4, s5}
 }
 
 func runBudgeted(parent context.Context, id string, budget time.Duration, run func(context.Context) scenarioVerdict) scenarioVerdict {
@@ -263,6 +269,55 @@ func runS1(ctx context.Context, cfg config, client *controlPlaneClient, suiteSta
 		return scenarioVerdict{Verdict: verdictFail, Detail: fmt.Sprintf("task guest was not reaped; final live VM count=%d: %v", finalLiveVMs, err)}
 	}
 	return scenarioVerdict{Verdict: verdictPass, Detail: fmt.Sprintf("guest exited 0 and printed conformance ok; VM reap observed in %s", reapDelay.Round(time.Millisecond))}
+}
+
+const (
+	elixirUnicodeSource = `IO.puts("non-ascii round trip: #{String.upcase("café αβγ")}")`
+	elixirUnicodeStdout = "non-ascii round trip: CAFÉ ΑΒΓ\n"
+)
+
+func runS5(ctx context.Context, cfg config, client *controlPlaneClient, suiteStarted time.Time) scenarioVerdict {
+	path := "/v1/workloads/" + url.PathEscape(cfg.elixirWorkload) + "/tasks?wait=true"
+	body, err := json.Marshal(struct {
+		Code string `json:"code"`
+	}{Code: elixirUnicodeSource})
+	if err != nil {
+		return scenarioVerdict{Verdict: verdictFail, Detail: "encode Elixir probe: " + err.Error()}
+	}
+	response, err := client.request(ctx, http.MethodPost, path, body, "", map[string]string{
+		"Idempotency-Key": cfg.chartVersion + "-elixir-unicode-" + suiteStarted.UTC().Format(time.RFC3339Nano),
+	})
+	if err != nil {
+		return scenarioVerdict{Verdict: verdictFail, Detail: fmt.Sprintf("POST %s: %v", path, err)}
+	}
+	if response.status < 200 || response.status >= 300 {
+		return scenarioVerdict{Verdict: verdictFail, Detail: httpErrorDetail(http.MethodPost, path, response)}
+	}
+	var guest struct {
+		ExitCode  int    `json:"exit_code"`
+		Stdout    string `json:"stdout"`
+		Stderr    string `json:"stderr"`
+		Truncated bool   `json:"truncated"`
+		Error     string `json:"error"`
+	}
+	if err := json.Unmarshal(response.body, &guest); err != nil {
+		return scenarioVerdict{Verdict: verdictFail, Detail: fmt.Sprintf("POST %s invalid guest response: %v", path, err)}
+	}
+	if guest.ExitCode != 0 || guest.Stdout != elixirUnicodeStdout || guest.Stderr != "" || guest.Truncated || guest.Error != "" {
+		return scenarioVerdict{Verdict: verdictFail, Detail: fmt.Sprintf(
+			"guest exit_code=%d stdout=%q stderr=%q truncated=%t error=%q",
+			guest.ExitCode,
+			truncate(guest.Stdout, maxErrorBody),
+			truncate(guest.Stderr, maxErrorBody),
+			guest.Truncated,
+			truncate(guest.Error, maxErrorBody),
+		)}
+	}
+	reapDelay, finalLiveVMs, err := waitForWorkloadVMsZero(ctx, client, cfg.elixirWorkload)
+	if err != nil {
+		return scenarioVerdict{Verdict: verdictFail, Detail: fmt.Sprintf("Elixir task guest was not reaped; final live VM count=%d: %v", finalLiveVMs, err)}
+	}
+	return scenarioVerdict{Verdict: verdictPass, Detail: fmt.Sprintf("guest exited 0 with exact untruncated stdout %q and empty stderr and guest error; VM reap observed in %s", elixirUnicodeStdout, reapDelay.Round(time.Millisecond))}
 }
 
 func createSession(ctx context.Context, cfg config, client *controlPlaneClient) (sessionIdentity, string, error) {

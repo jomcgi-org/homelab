@@ -119,7 +119,7 @@ func TestLanguageSpecs(t *testing.T) {
 		{name: "python", sourceFile: "main.py", run: []string{"python3", "main.py"}, extraEnv: []string{"PYTHONUNBUFFERED=1", "MPLBACKEND=Agg", "MPLCONFIGDIR=/tmp/mplconfig", "PYTHONPATH=/opt/sandbox"}, warm: []string{"python3", "-c"}, excluded: []string{"main.py"}},
 		{name: "go", sourceFile: "main.go", run: []string{"go", "run", "."}, extraEnv: []string{"GOROOT=/usr/lib/go", "GOCACHE=/tmp/gocache", "GOPATH=/tmp/gopath", "GOMODCACHE=/tmp/gopath/pkg/mod", "GOTOOLCHAIN=local", "GOPROXY=off", "GOFLAGS=-mod=mod", "CGO_ENABLED=0", "GOMAXPROCS=1", "TMPDIR=/tmp"}, warm: []string{"/bin/sh", "-c"}, excluded: []string{"main.go", "go.mod", "go.sum"}},
 		{name: "rust", sourceFile: "main.rs", compile: []string{"rustc", "-O", "main.rs", "-o", "main"}, run: []string{"./main"}, warm: []string{"/bin/sh", "-c"}, excluded: []string{"main.rs", "main"}},
-		{name: "elixir", sourceFile: "main.exs", run: []string{"elixir", "main.exs"}, extraEnv: []string{"ERL_CRASH_DUMP=/dev/null", "ELIXIR_ERL_OPTIONS=-noinput +fnu"}, warm: []string{"elixir", "-e", ":ok"}, excluded: []string{"main.exs"}},
+		{name: "elixir", sourceFile: "main.exs", run: []string{"elixir", "main.exs"}, extraEnv: []string{"ERL_CRASH_DUMP=/dev/null", "ELIXIR_ERL_OPTIONS=-noinput +fnu -kernel standard_io_encoding unicode"}, warm: []string{"elixir", "-e", ":ok"}, excluded: []string{"main.exs"}},
 		{name: "ocaml", sourceFile: "main.ml", run: []string{"ocaml", "main.ml"}, warm: []string{"/bin/sh", "-c"}, excluded: []string{"main.ml", "main.cmi", "main.cmo"}},
 		{name: "javascript", sourceFile: "main.js", run: []string{"node", "main.js"}, warm: []string{"node", "-e", "0"}, excluded: []string{"main.js"}},
 	}
@@ -213,12 +213,13 @@ func TestGoTmpdirOverridesTheWorkdir(t *testing.T) {
 	}
 }
 
-// TestElixirRunsWithUtf8NameEncoding pins +fnu. The image ships no locale data,
-// so without it the BEAM starts in latin1 and warns on every run.
-func TestElixirRunsWithUtf8NameEncoding(t *testing.T) {
+// TestElixirRunsWithUnicodeIOAndUtf8NameEncoding pins both independent BEAM
+// encodings. The image has no locale data, so each must be set explicitly.
+func TestElixirRunsWithUnicodeIOAndUtf8NameEncoding(t *testing.T) {
 	env := languageSpecs["elixir"].Environment("/tmp/workdir")
-	if !contains(env, "ELIXIR_ERL_OPTIONS=-noinput +fnu") {
-		t.Errorf("Elixir environment %#v does not request utf8 name encoding", env)
+	const want = "ELIXIR_ERL_OPTIONS=-noinput +fnu -kernel standard_io_encoding unicode"
+	if !contains(env, want) {
+		t.Errorf("Elixir environment %#v does not request unicode standard_io and utf8 filename encoding", env)
 	}
 }
 

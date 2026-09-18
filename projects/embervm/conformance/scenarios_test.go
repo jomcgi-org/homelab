@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -121,6 +122,7 @@ func TestRunLoopFailsS0WhenOnlyTaskWorkloadIsReady(t *testing.T) {
 		runInterval:     time.Hour,
 		taskWorkload:    "sandbox-python",
 		sessionWorkload: "pi-runtime",
+		elixirWorkload:  "sandbox-elixir",
 	}
 	client := &controlPlaneClient{baseURL: server.URL, tokenFile: tokenFile, http: server.Client()}
 	store := newVerdictStore(cfg.chartVersion)
@@ -135,6 +137,9 @@ func TestRunLoopFailsS0WhenOnlyTaskWorkloadIsReady(t *testing.T) {
 	if !strings.Contains(got.Scenarios[0].Detail, cfg.sessionWorkload) {
 		t.Fatalf("S0 detail = %q, want unready workload %q", got.Scenarios[0].Detail, cfg.sessionWorkload)
 	}
+	if !strings.Contains(got.Scenarios[0].Detail, cfg.elixirWorkload) {
+		t.Fatalf("S0 detail = %q, want unready workload %q", got.Scenarios[0].Detail, cfg.elixirWorkload)
+	}
 }
 
 func TestTaskAndInvariantScenariosAgainstFakeControlPlane(t *testing.T) {
@@ -142,6 +147,8 @@ func TestTaskAndInvariantScenariosAgainstFakeControlPlane(t *testing.T) {
 	if err := os.WriteFile(tokenFile, []byte("test-token\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	var elixirTaskRequests atomic.Int32
+	var nodeRequests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer test-token" {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -155,8 +162,29 @@ func TestTaskAndInvariantScenariosAgainstFakeControlPlane(t *testing.T) {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"exit_code":0,"stdout":"conformance ok\n"}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/workloads/sandbox-elixir/tasks":
+			elixirTaskRequests.Add(1)
+			if r.URL.Query().Get("wait") != "true" || !strings.HasPrefix(r.Header.Get("Idempotency-Key"), "1.2.3-elixir-unicode-") {
+				http.Error(w, "bad request", http.StatusBadRequest)
+				return
+			}
+			var request struct {
+				Code string `json:"code"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.Code != elixirUnicodeSource {
+				http.Error(w, "wrong Elixir source", http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"exit_code": 0,
+				"stdout":    elixirUnicodeStdout,
+				"stderr":    "",
+				"error":     "",
+			})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/nodes":
-			_, _ = w.Write([]byte(`{"nodes":[{"facts":{"live_vms":0,"workloads":{"sandbox-python":{}}}}]}`))
+			nodeRequests.Add(1)
+			_, _ = w.Write([]byte(`{"nodes":[{"facts":{"live_vms":0,"workloads":{"sandbox-python":{},"sandbox-elixir":{}}}}]}`))
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/conformance":
 			if r.URL.Query().Get("since_ts_ms") != "1000" {
 				http.Error(w, "missing suite start", http.StatusBadRequest)
@@ -169,13 +197,94 @@ func TestTaskAndInvariantScenariosAgainstFakeControlPlane(t *testing.T) {
 	}))
 	defer server.Close()
 
-	cfg := config{baseURL: server.URL, tokenFile: tokenFile, chartVersion: "1.2.3", taskWorkload: "sandbox-python", minPassingInvariants: 4}
+	cfg := config{baseURL: server.URL, tokenFile: tokenFile, chartVersion: "1.2.3", taskWorkload: "sandbox-python", elixirWorkload: "sandbox-elixir", minPassingInvariants: 4}
 	client := &controlPlaneClient{baseURL: server.URL, tokenFile: tokenFile, http: server.Client()}
 	if got := runS1(context.Background(), cfg, client, time.Unix(1, 0)); got.Verdict != verdictPass {
 		t.Fatalf("S1 = %#v", got)
 	}
 	if got := runS4(context.Background(), cfg, client, time.Unix(1, 0)); got.Verdict != verdictPass {
 		t.Fatalf("S4 = %#v", got)
+	}
+	nodesBeforeS5 := nodeRequests.Load()
+	if got := runS5(context.Background(), cfg, client, time.Unix(1, 0)); got.Verdict != verdictPass {
+		t.Fatalf("S5 = %#v", got)
+	}
+	if got := elixirTaskRequests.Load(); got != 1 {
+		t.Fatalf("Elixir task requests = %d, want 1", got)
+	}
+	if got := nodeRequests.Load(); got <= nodesBeforeS5 {
+		t.Fatalf("node requests after S5 = %d, want more than %d to prove reap validation", got, nodesBeforeS5)
+	}
+}
+
+func TestRunS5RejectsInvalidElixirResultsThroughTaskAPI(t *testing.T) {
+	tests := []struct {
+		name       string
+		exitCode   int
+		stdout     string
+		stderr     string
+		truncated  bool
+		guestError string
+		wantDetail string
+	}{
+		{name: "replacement character", stdout: "non-ascii round trip: CAF� ΑΒΓ\n", wantDetail: "CAF�"},
+		{name: "escaped Greek", stdout: `non-ascii round trip: CAFÉ \x{391}\x{392}\x{393}` + "\n", wantDetail: `\\x{391}`},
+		{name: "truncated text", stdout: "non-ascii round trip: CAFÉ ΑΒ\n", wantDetail: `ΑΒ\n`},
+		{name: "truncated response", stdout: elixirUnicodeStdout, truncated: true, wantDetail: "truncated=true"},
+		{name: "missing newline", stdout: "non-ascii round trip: CAFÉ ΑΒΓ", wantDetail: `ΑΒΓ`},
+		{name: "extra newline", stdout: elixirUnicodeStdout + "\n", wantDetail: `ΑΒΓ\n\n`},
+		{name: "trailing bytes", stdout: elixirUnicodeStdout + "unexpected", wantDetail: `unexpected`},
+		{name: "stderr", stdout: elixirUnicodeStdout, stderr: "warning", wantDetail: `stderr="warning"`},
+		{name: "guest error", stdout: elixirUnicodeStdout, guestError: "guest failed", wantDetail: `error="guest failed"`},
+		{name: "nonzero exit", exitCode: 1, stdout: elixirUnicodeStdout, wantDetail: "exit_code=1"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			tokenFile := t.TempDir() + "/token"
+			if err := os.WriteFile(tokenFile, []byte("test-token\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var requestSeen atomic.Bool
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requestSeen.Store(true)
+				if r.Method != http.MethodPost || r.URL.Path != "/v1/workloads/sandbox-elixir/tasks" || r.URL.Query().Get("wait") != "true" {
+					t.Errorf("request = %s %s, want sandbox-elixir task with wait=true", r.Method, r.URL.String())
+				}
+				if r.Header.Get("Authorization") != "Bearer test-token" {
+					t.Errorf("Authorization = %q, want bearer token", r.Header.Get("Authorization"))
+				}
+				if !strings.HasPrefix(r.Header.Get("Idempotency-Key"), "test-elixir-unicode-") {
+					t.Errorf("Idempotency-Key = %q, want Elixir probe prefix", r.Header.Get("Idempotency-Key"))
+				}
+				var request struct {
+					Code string `json:"code"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Errorf("decode request: %v", err)
+				} else if request.Code != elixirUnicodeSource {
+					t.Errorf("code = %q, want issue #5015 probe", request.Code)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"exit_code": test.exitCode,
+					"stdout":    test.stdout,
+					"stderr":    test.stderr,
+					"truncated": test.truncated,
+					"error":     test.guestError,
+				})
+			}))
+			defer server.Close()
+
+			cfg := config{baseURL: server.URL, tokenFile: tokenFile, chartVersion: "test", elixirWorkload: "sandbox-elixir"}
+			client := &controlPlaneClient{baseURL: server.URL, tokenFile: tokenFile, http: server.Client()}
+			got := runS5(context.Background(), cfg, client, time.Unix(1, 0))
+			if !requestSeen.Load() {
+				t.Fatal("S5 did not call the sandbox task API")
+			}
+			if got.Verdict != verdictFail || !strings.Contains(got.Detail, test.wantDetail) {
+				t.Fatalf("S5 = %#v, want failure containing %q", got, test.wantDetail)
+			}
+		})
 	}
 }
 
