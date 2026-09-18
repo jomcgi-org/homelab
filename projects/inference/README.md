@@ -54,8 +54,8 @@ it.
 - Keep the context-window guard in
   [`../embervm/runtimes/claude/pi_context_window_sync_test.py`](../embervm/runtimes/claude/pi_context_window_sync_test.py)
   pointed at the chart defaults.
-- Render both the home and GKE compositions through the targets registered in
-  [`chart/BUILD`](chart/BUILD).
+- Render the home composition through [`deploy/BUILD`](deploy/BUILD) and the
+  GKE composition through [`chart/BUILD`](chart/BUILD).
 
 Open engine work is tracked in
 [#5471](https://github.com/jomcgi-org/homelab/issues/5471), which proposes a
