@@ -29,6 +29,10 @@
   />
 </svelte:head>
 
+<!-- A non-rendered route marker lets design-system.css scope the public palette
+     onto body for the root layout's sibling Nav as well as this layout tree. -->
+<div class="public-theme" hidden></div>
+
 {#if showBanner}
   <div class="maintenance-banner" role="status">
     {data.maintenanceBanner}
