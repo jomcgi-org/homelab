@@ -222,7 +222,14 @@ def github(monkeypatch, *, pulls=None, issues=None, refuse=None):
 
 
 def test_landing_is_inert_without_the_flag(db, monkeypatch):
+    from factory import review_publisher
+
     delivered(db, "t-1", 11, 3)
+    monkeypatch.setattr(
+        review_publisher,
+        "collect",
+        lambda *_args: pytest.fail("disabled landing collected review evidence"),
+    )
     monkeypatch.setattr(
         landing,
         "github_get",
@@ -230,6 +237,92 @@ def test_landing_is_inert_without_the_flag(db, monkeypatch):
     )
     landing.landing_tick({"repo": "owner/repo"})
     landing.landing_tick({"repo": "owner/repo", "auto_merge": False})
+    assert audits(db, "merge_armed") == []
+
+
+def test_missing_publisher_token_refuses_to_arm_when_enabled(db, monkeypatch):
+    from factory import review_publisher
+
+    delivered(db, "t-1", 11, 3)
+    calls = github(monkeypatch, pulls={3: pull(3)})
+    monkeypatch.setenv(review_publisher.PUBLISH_ENABLED_ENV, "true")
+    monkeypatch.delenv(review_publisher.PUBLISHER_TOKEN_ENV, raising=False)
+    monkeypatch.setattr(
+        review_publisher,
+        "collect",
+        lambda _task_id: review_publisher.ReviewEvidence(
+            task_id="t-1",
+            repo="owner/repo",
+            pr_number=3,
+            branch="factory/t-1",
+            head_sha=HEAD,
+            review_run_id=17,
+            review_session_id=11,
+            policy_version=1,
+            details_url="https://private.jomcgi.dev/agents/session/11",
+        ),
+    )
+
+    landing.landing_tick(POLICY)
+
+    assert calls["graphql"] == []
+    assert audits(db, "review_publish_skipped", "t-1") == [
+        {"reason": "publisher_token_missing"}
+    ]
+    assert audits(db, "merge_arm_refused", "t-1") == [
+        {
+            "pr_number": 3,
+            "reason": "review_not_published",
+            "review_reason": "publisher_token_missing",
+        }
+    ]
+
+
+def test_review_canary_publishes_while_merge_remains_disabled(db, monkeypatch):
+    from factory import review_publisher
+
+    delivered(db, "t-1", 11, 3)
+    monkeypatch.setattr(review_publisher, "enabled", lambda: True)
+    evidence = review_publisher.ReviewEvidence(
+        task_id="t-1",
+        repo="owner/repo",
+        pr_number=3,
+        branch="factory/t-1",
+        head_sha=HEAD,
+        review_run_id=17,
+        review_session_id=11,
+        policy_version=1,
+        details_url="https://private.jomcgi.dev/agents/session/11",
+    )
+    monkeypatch.setattr(review_publisher, "collect", lambda _task_id: evidence)
+    monkeypatch.setattr(
+        review_publisher,
+        "publish",
+        lambda _evidence: {
+            "action": "published",
+            "conclusion": "success",
+            "check_id": 91,
+            "head_sha": HEAD,
+            "review_run_id": 17,
+        },
+    )
+    monkeypatch.setattr(
+        landing,
+        "github_get",
+        lambda *_args: pytest.fail("merge-disabled canary reached arming"),
+    )
+
+    landing.landing_tick({"repo": "owner/repo", "auto_merge": False})
+
+    assert audits(db, "review_published", "t-1") == [
+        {
+            "pr_number": 3,
+            "head_sha": HEAD,
+            "review_run_id": 17,
+            "check_id": 91,
+            "conclusion": "success",
+        }
+    ]
     assert audits(db, "merge_armed") == []
 
 

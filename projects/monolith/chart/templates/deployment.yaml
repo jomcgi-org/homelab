@@ -246,6 +246,10 @@ spec:
               value: {{ .Values.swarm.factoryMaxConcurrentTasks | default 1 | quote }}
             - name: FACTORY_BACKGROUND_RESERVE
               value: {{ .Values.swarm.factoryBackgroundReserve | default 2 | quote }}
+            {{- if .Values.factory.reviewPublish.enabled }}
+            - name: FACTORY_REVIEW_PUBLISH_ENABLED
+              value: "true"
+            {{- end }}
             {{- if .Values.chat.enabled }}
             # Who may answer a factory escalation from the private agents page,
             # matched against the X-Auth-Email claim Envoy projected from the

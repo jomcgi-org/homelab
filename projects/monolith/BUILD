@@ -4823,6 +4823,20 @@ py_test(
 )
 
 py_test(
+    name = "factory_review_publisher_test",
+    srcs = ["factory/review_publisher_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_auth",
+        ":pkg_swarm",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "swarm_factory_quota_guard_test",
     srcs = ["factory/orchestration/factory_quota_guard_test.py"],
     imports = ["."],

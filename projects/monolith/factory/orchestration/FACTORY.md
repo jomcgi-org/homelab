@@ -994,11 +994,47 @@ issue in this task's own repository counts.
 
 ### Landing
 
-Landing is off unless the policy sets `auto_merge` to `true`, and only the
-value `true` counts: a policy written before the flag existed, or one carrying
-anything else, lands nothing. It is the first factory step that writes to the
-repository rather than reading it, so the process needs a GitHub token with
-write access to pull requests and issues before the flag is worth turning on.
+#### Review publisher
+
+The landing path contains a trusted `factory/review` check publisher. It is off
+by default (`factory.reviewPublish.enabled: false`) and changes no behavior
+while off. When enabled, it loads the task's durable receipt, admission policy
+version, settlement PR and approved head, and latest assigned `review_*` run.
+It accepts only a successfully validated approval from a session distinct from
+every implementation, integration and correction session. A fresh GitHub read
+must show the open, non-draft PR in the policy repository, on the exact
+operator-authorized task branch and base branch, at that approved head. Missing,
+failed, invalid, stale, self-authored, moved or superseded evidence fails closed.
+A later valid `changes_requested` review of the same SHA publishes a failing
+check to invalidate an earlier success.
+
+The publisher uses only `FACTORY_REVIEW_PUBLISHER_TOKEN`, supplied through an
+injected provider. It never falls back to `GITHUB_API_TOKEN`. A missing token
+publishes nothing, audits `review_publish_skipped`, and prevents landing from
+arming that pull request. The chart intentionally wires no Secret in this
+change.
+
+Activation still requires operator work outside this repository-only slice:
+
+1. Deliver a broker-minted `review-publisher` token to the trusted monolith
+   caller through the `bosun-review-publisher` SPIFFE grant described in
+   `projects/embervm/tokenbroker/README.md`. Do not expose that grant to guests,
+   implementers or the shared noded identity.
+2. Canary a real check, then require `factory/review` on `main`, pinned to the
+   Bosun numeric App ID alongside existing Linux CI. Do not use an any-App
+   source or add an agent to a bypass list.
+3. Verify an unreviewed or moved head cannot merge and a later rejecting review
+   invalidates the same-SHA success before enabling merge behavior.
+4. Activate merging separately. This change does not provision credentials,
+   alter branch protection, enable the publisher in a deployment, or enable a
+   merge queue.
+
+Merge landing is off unless the policy sets `auto_merge` to `true`, and only
+the value `true` counts: a policy written before the flag existed, or one
+carrying anything else, lands nothing. Review publication may be canaried with
+merge landing still off. Merge landing is the first factory step that writes
+pull request and issue state, so the process needs a GitHub token with those
+permissions before the merge flag is worth turning on.
 
 With the flag on, a task that settled `succeeded` with pull request evidence
 has its merge armed through the GitHub auto-merge mutation with the rebase

@@ -286,10 +286,9 @@ metaSpark:
 # sessions). Enabled here because the chart default is false and a chart default
 # never arms anything in prod.
 #
-# Deliberately stops short of merging. ADR 027's implementer/reviewer gate is
-# still Draft and `agent-review/gate` does not exist in code, so nothing
-# autonomous may land on main yet; the merge queue is declared at concurrency 1
-# and left unused until it does.
+# Deliberately stops short of merging. The disabled-by-default `factory/review`
+# publisher and the operator prerequisites that remain before rollout are
+# documented in factory/orchestration/FACTORY.md under "Review publisher".
 swarm:
   enabled: true
 

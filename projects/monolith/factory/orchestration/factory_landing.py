@@ -1,9 +1,10 @@
 """Land an approved factory delivery: arm its merge, then close its issue.
 
 Phase 4 of #6002, and the first factory step that writes to the repository
-rather than reading it. Every write here is behind the policy ``auto_merge``
-flag, which defaults off, so a lane that has not opted in behaves exactly as
-it did before: it verifies the delivery, settles the task, and stops.
+rather than reading it. Merge mutations are behind the policy ``auto_merge``
+flag, while review check publication has its own environment gate. Both default
+off, so a lane that has not opted in behaves exactly as it did before: it
+verifies the delivery, settles the task, and stops.
 
 Landing is deliberately serial. This repository merges through the GitHub
 merge queue, and a queue ejection cascades across every candidate behind the
@@ -44,6 +45,7 @@ ACTOR = "factory:landing"
 # backlog; ordering is oldest first, because arming is serial and the delivery
 # that has waited longest takes the free slot.
 LANDING_BATCH = 200
+REVIEW_PUBLISH_BATCH = 5
 # Only for a delivery landing has never touched. Turning the flag on for the
 # first time must not stampede over every delivery in the lane's history, but
 # anything the lane has already armed is followed to a terminal state whatever
@@ -784,6 +786,40 @@ def _defer(item: dict, holder: dict) -> None:
         )
 
 
+def _publish_review_gate(item: dict) -> bool:
+    """Publish the exact-head review check before giving this PR to merge."""
+    from factory import review_publisher
+
+    evidence = review_publisher.collect(item["task_id"])
+    result = review_publisher.publish(evidence)
+    if result["action"] in ("published", "already_published"):
+        if result["action"] == "published":
+            _append(
+                item["task_id"],
+                "review_published",
+                pr_number=item["pr_number"],
+                head_sha=result["head_sha"],
+                review_run_id=result["review_run_id"],
+                check_id=result["check_id"],
+                conclusion=result["conclusion"],
+            )
+        if isinstance(evidence, review_publisher.ReviewEvidence):
+            return result["conclusion"] == "success"
+    reason = (
+        evidence.reason
+        if isinstance(evidence, review_publisher.Refusal)
+        else result.get("reason", "review_publish_failed")
+    )
+    _append(
+        item["task_id"],
+        "review_publish_refused",
+        pr_number=item["pr_number"],
+        reason=reason,
+    )
+    _refuse(item, "review_not_published", review_reason=reason)
+    return False
+
+
 def landing_tick(policy: dict) -> None:
     """Advance every settled delivery one landing step, arming at most one.
 
@@ -793,20 +829,38 @@ def landing_tick(policy: dict) -> None:
     fifteen seconds.
     """
     try:
-        if not auto_merge_enabled(policy):
+        from factory import review_publisher
+
+        merge_enabled = auto_merge_enabled(policy)
+        publish_enabled = review_publisher.enabled()
+        if not merge_enabled and not publish_enabled:
             return
         repo = policy["repo"]
-        _recover_refused(policy)
+        if merge_enabled:
+            _recover_refused(policy)
         deliveries = _deliveries(policy)
         for item in deliveries:
             item["refused"] = False
+        if publish_enabled:
+            candidates = [item for item in deliveries if arm_eligible(item)]
+            for item in candidates[:REVIEW_PUBLISH_BATCH]:
+                _publish_review_gate(item)
+            for item in candidates[REVIEW_PUBLISH_BATCH:]:
+                item["review_publish_pending"] = True
+        if not merge_enabled:
+            return
+        for item in deliveries:
             if holding(item):
                 _observe(repo, item)
             if item["merged"] and not item["closed"]:
                 _close_issue(repo, item)
         live = [item for item in deliveries if not item["refused"]]
         holder = next((item for item in live if holding(item)), None)
-        waiting = [item for item in live if arm_eligible(item)]
+        waiting = [
+            item
+            for item in live
+            if arm_eligible(item) and not item.get("review_publish_pending")
+        ]
         if not waiting:
             return
         if holder is None:

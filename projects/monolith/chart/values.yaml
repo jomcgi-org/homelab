@@ -52,6 +52,13 @@ backend:
     enabled: true
     maxUnavailable: 1
 
+# Trusted publication of the factory's durable independent-review evidence.
+# This only emits the factory/review check. Token delivery, branch protection,
+# and merge activation are separate operator-controlled rollout steps.
+factory:
+  reviewPublish:
+    enabled: false
+
 # Authentik derives the OIDC issuer from the APPLICATION SLUG, so these values
 # track the mcp-friends slug in projects/platform/authentik/blueprints/mcp-auth.yaml.
 # Renaming the application silently breaks verification. The issuer's trailing
