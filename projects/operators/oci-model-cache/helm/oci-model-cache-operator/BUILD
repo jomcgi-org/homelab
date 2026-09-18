@@ -6,5 +6,8 @@ helm_chart(
         "controllerManager.image": "//projects/operators/oci-model-cache:image.info",
     },
     publish = True,
-    visibility = ["//overlays:__subpackages__"],
+    visibility = [
+        "//overlays:__subpackages__",
+        "//projects/operators/oci-model-cache:__subpackages__",
+    ],
 )

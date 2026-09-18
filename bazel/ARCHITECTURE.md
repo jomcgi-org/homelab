@@ -58,6 +58,8 @@ Tests run before the main-only publish, so a failing suite cannot ship images or
 
 The format stage runs `bazel run //bazel/tools/format:format` plus the format-stage guards in section 6, then `git diff --exit-code`. Drift on a PR branch is committed and pushed as `ci-format-bot`, and the run that pushed it exits red so a green status on the superseded head cannot enqueue a merge without the fix (#5089). Drift on a queue candidate fails the run, which ejects the PR.
 
+**Why.** Helm proves that templates render, but it does not enforce the API server's required fields or reject unknown fields. `//bazel/helm:chart_admissibility_test` validates every first-party and platform chart render, including admissible GKE value overlays, with kubeconform strict mode against the hub's pinned Kubernetes 1.35.8 schemas and CRD schemas derived from pinned charts. The offline schemas and an invalid `secretKeyRef` negative control keep the result reproducible and fail closed without giving CI cluster credentials.
+
 Runner cost is dominated by cold snapshot restores, so the action keeps one shared workspace, removes Bazel's sandbox stash before the runner snapshots the VM, and disables the stash under `--config=ci`. `resource_requests` are part of the snapshot key, so changing them invalidates every snapshot and they change rarely. Two further actions (BDD future features, Buck2 rules) have been commented out since 2026-08-09 to cut runner spin-ups; nothing required depends on them. `gh run` sees none of this: PR and queue checks live on BuildBuddy, and a red one is re-triggered from there.
 
 The repository remains rebase-only, the merge queue remains the authoritative pre-merge gate, and a PR is never rebased by hand merely for BEHIND. The details are in the `pr-workflow` skill.
@@ -159,6 +161,7 @@ this table when the work ships or the issue closes without it.
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
+| Gate every CI chart render on offline strict Kubernetes and CRD schema validation | section 4 | #4831 | implemented |
 | Semgrep tests fail closed instead of skip-passing when the engine or Pro image can't run | section 8 | #4777 | in progress (#5838) |
 | A Copier template scaffolds new services instead of copying `projects/monolith/deploy/` by hand | Decision history (tooling/002) | #3918 | not started |
 

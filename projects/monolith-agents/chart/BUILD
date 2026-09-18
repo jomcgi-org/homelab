@@ -9,7 +9,10 @@ helm_chart(
     },
     lint = False,
     publish = True,
-    visibility = ["//overlays:__subpackages__"],
+    visibility = [
+        "//overlays:__subpackages__",
+        "//projects/monolith-agents:__subpackages__",
+    ],
 )
 
 helm_template_test(

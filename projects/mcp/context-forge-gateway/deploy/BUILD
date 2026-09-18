@@ -6,10 +6,21 @@
 # targets can never analyse. The chart renders are covered by the
 # hand-written targets in ../chart/BUILD instead.
 
+load("//bazel/helm:defs.bzl", "helm_admissibility_render")
+
 filegroup(
     name = "deploy_values",
     srcs = ["values.yaml"],
     visibility = ["//projects/mcp/context-forge-gateway/chart:__pkg__"],
+)
+
+helm_admissibility_render(
+    name = "render_manifests",
+    chart = "projects/mcp/context-forge-gateway/chart",
+    chart_files = "//projects/mcp/context-forge-gateway/chart:chart",
+    namespace = "mcp",
+    release_name = "context-forge-gateway",
+    values_files = [":deploy_values"],
 )
 
 filegroup(

@@ -11,10 +11,6 @@ argocd_app(
     name = "onepassword",
     chart = "projects/platform/onepassword",
     chart_files = ":chart",
-    # The Application lives in projects/platform-gke/onepassword, so the render
-    # genrule has nothing here to render; the semgrep scan reads the chart, not
-    # the Application.
-    generate_manifests = False,
     namespace = "default",
     release_name = "connect",
     tags = [

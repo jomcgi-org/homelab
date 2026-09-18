@@ -25,7 +25,6 @@ argocd_app(
     name = "spire-gke",
     chart = "projects/platform/spire",
     chart_files = ":chart",
-    generate_manifests = False,
     generate_semgrep = False,
     namespace = "spire",
     release_name = "spire",

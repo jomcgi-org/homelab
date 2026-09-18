@@ -82,7 +82,10 @@ helm_chart(
         "conformance.image": "//projects/embervm/conformance:image.info",
     },
     publish = True,
-    visibility = ["//overlays:__subpackages__"],
+    visibility = [
+        "//overlays:__subpackages__",
+        "//projects/embervm:__subpackages__",
+    ],
 )
 
 # Exposed so the ENOSPC-reclaim guard in the claude runtime package can read the

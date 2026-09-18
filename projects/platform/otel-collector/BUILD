@@ -39,7 +39,6 @@ argocd_app(
     name = "otel-collector-gke",
     chart = "projects/platform/otel-collector",
     chart_files = ":chart",
-    generate_manifests = False,
     generate_semgrep = False,
     namespace = "otel-collector",
     release_name = "otel-collector",
