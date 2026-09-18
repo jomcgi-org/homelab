@@ -11,6 +11,8 @@ contents:
     - bash
     - busybox
     - ca-certificates-bundle
+    # Shapely's bundled GEOS links libstdc++.so.6 dynamically.
+    - libstdc++
 
 archs:
   - x86_64

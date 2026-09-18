@@ -13,6 +13,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from datetime import datetime, timezone
 
 import stars.grid as grid
+from stars.grid_ingest import replace_computed_grid
 from stars.models import Site, SiteHour
 
 
@@ -168,6 +169,39 @@ def test_replace_grid_is_repeatable(engine):
         rows = session.exec(select(Site)).all()
         assert len(rows) == 2
         assert next(row for row in rows if row.id == "grid-0001").altitude_m == 444
+
+
+def test_computed_grid_contract_rejects_partial_replacement(engine):
+    with Session(engine) as session:
+        session.add(Site(id="prior", lat=57.0, lon=-4.0, source="grid"))
+        session.commit()
+
+    incompatible = [dict(_GRID[0]), {"id": "missing-coordinates"}]
+    with pytest.raises(ValueError, match="malformed site rows"):
+        replace_computed_grid(incompatible, engine=engine)
+
+    with Session(engine) as session:
+        rows = session.exec(select(Site)).all()
+        assert [(row.id, row.lat, row.lon) for row in rows] == [("prior", 57.0, -4.0)]
+
+
+def test_computed_grid_contract_accepts_generator_output(engine):
+    generated = [
+        {
+            "id": "scotland-0000",
+            "name": None,
+            "lat": 56.1234,
+            "lon": -4.5678,
+            "altitude_m": 321,
+            "lp_zone": "excellent",
+        }
+    ]
+
+    assert replace_computed_grid(generated, engine=engine) == 1
+    with Session(engine) as session:
+        row = session.get(Site, "scotland-0000")
+        assert row is not None
+        assert (row.altitude_m, row.lp_zone, row.source) == (321, "excellent", "grid")
 
 
 def test_load_grid_sync_empty_grid_is_noop(engine, monkeypatch):
