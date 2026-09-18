@@ -4,7 +4,7 @@ The experimental engine is an osemgrep-pro build that runs a warm stdio
 "scan-server" (osemgrep-pro mcp --experimental --pro) fully offline: it warms
 per-language parsers, prints one {"ready":true} line, then answers
 newline-delimited JSON scanFiles requests. It is what the Firecracker semgrep
-guest (projects/firecracker/semgrep) runs in place of the old resident
+guest (projects/embervm/firecracker/semgrep) runs in place of the old resident
 `semgrep lsp`, which could only ever run OSS analysis.
 
 amd64 only: there is no arm64 engine build and no arm64 Firecracker nodes.

@@ -18,15 +18,15 @@ go_library(
     visibility = ["//visibility:private"],
     deps = select({
         "@rules_go//go/platform:android": [
-            "//projects/firecracker/substrate/vsockproto",
+            "//projects/embervm/firecracker/substrate/vsockproto",
             "@org_golang_x_sys//unix",
         ],
         "@rules_go//go/platform:linux": [
-            "//projects/firecracker/substrate/vsockproto",
+            "//projects/embervm/firecracker/substrate/vsockproto",
             "@org_golang_x_sys//unix",
         ],
         "//conditions:default": [
-            "//projects/firecracker/substrate/vsockproto",
+            "//projects/embervm/firecracker/substrate/vsockproto",
         ],
     }),
 )

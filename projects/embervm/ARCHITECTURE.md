@@ -1070,7 +1070,7 @@ egress reads the plaintext request, sets the configured header to the real
 value (mounted only in the sidecar), and originates a fresh verified TLS
 connection onward. Injection fires only when the destination is in that
 secret's `egressTo`, so the credential is unreachable at every other host
-(`projects/firecracker/substrate/egress-proxy/cmd/swap.go`). Header
+(`projects/embervm/firecracker/substrate/egress-proxy/cmd/swap.go`). Header
 injection is used rather than placeholder substitution because a
 guest-controlled placeholder can be spliced into a URL and reflect the
 credential into a request line. RAM scrubbing before snapshot is rejected

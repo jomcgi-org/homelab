@@ -24,8 +24,8 @@ go_library(
     importpath = "github.com/jomcgi/homelab/projects/embervm/runtimes/postgres/guest-init/cmd",
     visibility = ["//visibility:private"],
     deps = [
-        "//projects/firecracker/substrate/shim",
-        "//projects/firecracker/substrate/vsockproto",
+        "//projects/embervm/firecracker/substrate/shim",
+        "//projects/embervm/firecracker/substrate/vsockproto",
     ] + select({
         "@rules_go//go/platform:android": [
             "@org_golang_x_sys//unix",

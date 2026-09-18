@@ -24,21 +24,21 @@ helm_chart(
         # keys sharing a top-level prefix (e.g. noded.image + noded.sandbox.*)
         # collapse to the last on parse (duplicate-key), dropping the others. Flat
         # top-level keys mirror fc-invoke's proven layout.
-        "sandboxPython.guestImage": "//projects/firecracker/sandbox/python:image.info",
-        "sandboxGo.guestImage": "//projects/firecracker/sandbox/go:image.info",
-        "sandboxRust.guestImage": "//projects/firecracker/sandbox/rust:image.info",
-        "sandboxElixir.guestImage": "//projects/firecracker/sandbox/elixir:image.info",
-        "sandboxOcaml.guestImage": "//projects/firecracker/sandbox/ocaml:image.info",
-        "sandboxJavascript.guestImage": "//projects/firecracker/sandbox/javascript:image.info",
-        "rootfsBuilder.image": "//projects/firecracker/substrate/rootfs-builder:image.info",
+        "sandboxPython.guestImage": "//projects/embervm/firecracker/sandbox/python:image.info",
+        "sandboxGo.guestImage": "//projects/embervm/firecracker/sandbox/go:image.info",
+        "sandboxRust.guestImage": "//projects/embervm/firecracker/sandbox/rust:image.info",
+        "sandboxElixir.guestImage": "//projects/embervm/firecracker/sandbox/elixir:image.info",
+        "sandboxOcaml.guestImage": "//projects/embervm/firecracker/sandbox/ocaml:image.info",
+        "sandboxJavascript.guestImage": "//projects/embervm/firecracker/sandbox/javascript:image.info",
+        "rootfsBuilder.image": "//projects/embervm/firecracker/substrate/rootfs-builder:image.info",
         # Semgrep guest image. Distinct top-level key.
-        "semgrep.guestImage": "//projects/firecracker/semgrep/guest:image.info",
+        "semgrep.guestImage": "//projects/embervm/firecracker/semgrep/guest:image.info",
         # R1 zip lane (ADR embervm/002): the runtime-python base image the zip
         # lane layers an adopter's archive onto. Distinct top-level key (D14a.6).
         "runtimePython.guestImage": "//projects/embervm/runtimes/python:image.info",
         # The egress-proxy sidecar (ADR 023). Pinned from its
         # .info so the sidecar the daemon tunnels to is the digest CI built.
-        "egress.image": "//projects/firecracker/substrate/egress-proxy:image.info",
+        "egress.image": "//projects/embervm/firecracker/substrate/egress-proxy:image.info",
         # Issue #4055: the runtime-claude base image, a session-class guest that
         # runs the Claude Code CLI headlessly under a vsock shim so monolith can
         # expose agent sessions as MCP tools. Distinct FLAT top-level key (D14a.6),
@@ -155,6 +155,26 @@ py_test(
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
     },
     deps = ["@pip//pyyaml"],
+)
+
+# The relocated Firecracker image producers and the chart defaults must name
+# the same GHCR repositories. The image.info data reads the repository metadata
+# emitted by each actual image rule, including egress-proxy's derived default.
+py_test(
+    name = "image_repository_correspondence_test",
+    srcs = ["image_repository_correspondence_test.py"],
+    data = [
+        "values.yaml",
+        "//projects/embervm/firecracker/sandbox/elixir:image.info",
+        "//projects/embervm/firecracker/sandbox/go:image.info",
+        "//projects/embervm/firecracker/sandbox/javascript:image.info",
+        "//projects/embervm/firecracker/sandbox/ocaml:image.info",
+        "//projects/embervm/firecracker/sandbox/python:image.info",
+        "//projects/embervm/firecracker/sandbox/rust:image.info",
+        "//projects/embervm/firecracker/semgrep/guest:image.info",
+        "//projects/embervm/firecracker/substrate/egress-proxy:image.info",
+        "//projects/embervm/firecracker/substrate/rootfs-builder:image.info",
+    ],
 )
 
 semgrep_test(

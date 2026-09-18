@@ -5,7 +5,7 @@ Personal monorepo. Dev tooling and deployment for my projects.
 ## Systems
 
 - [**EmberVM**](projects/embervm/): Firecracker microVM orchestrator. An Elixir control plane and a Go node daemon run task, session, serving, stateful, and composite workloads. See its [current architecture](projects/embervm/ARCHITECTURE.md).
-- [**Firecracker components**](projects/firecracker/): guest images and shared host/guest utilities retained by EmberVM after the original fc-invoke daemon was retired.
+- [**Firecracker components**](projects/embervm/firecracker/): guest images and shared host/guest utilities retained by EmberVM after the original fc-invoke daemon was retired.
 - [**Knowledge pipeline**](projects/monolith/knowledge/): an on-cluster LLM decomposes markdown into structured facts, embeds them, and stores them in pgvector. Searchable via MCP tools and a SvelteKit frontend.
 - [**Agent platform**](projects/embervm/ARCHITECTURE.md): AI agents in sandboxed microVM sessions, with the monolith providing the user-facing control plane.
 - [**Discord bot**](projects/monolith/chat/): LLM-powered chat with vision, web search, knowledge graph context, and a per-user trust ledger ([monolith architecture, section 5](projects/monolith/ARCHITECTURE.md)).
@@ -61,8 +61,7 @@ projects/             # All services, operators, websites, colocated with deploy
 ├── inference/        #   On-cluster llama.cpp (Qwen3.8-27B) + llama.cpp embeddings
 ├── operators/        #   Custom Kubernetes operators
 ├── sextant/          #   State-machine code generator for operators
-├── embervm/          #   Firecracker microVM orchestrator (Elixir control plane + Go node daemon)
-├── firecracker/      #   fc-invoke microVM substrate (frozen; embervm forked its node daemon from it)
+├── embervm/          #   Firecracker orchestrator, guest images, and shared host/guest utilities
 ├── gke-apps/         #   GKE destinations for the app workloads (dormant until cutover)
 ├── gke-cluster/      #   Auto-generated ArgoCD root kustomization for GKE hub
 ├── home-cluster/     #   Auto-generated ArgoCD root kustomization

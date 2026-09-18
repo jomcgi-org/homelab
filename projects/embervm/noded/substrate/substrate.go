@@ -1,7 +1,7 @@
 // Package substrate is embervm-noded's forked, trimmed copy of the FC executor
 // seam types the driver depends on. It is a DELIBERATE FORK of the fc-invoke
 // substrate seam (ADR embervm/001 mandates fork-not-extend: embervm-noded shares
-// no Go packages with projects/firecracker), reduced to only the types the forked
+// no Go packages with projects/embervm/firecracker), reduced to only the types the forked
 // fcvm driver and its gueststats use.
 //
 // Dropped on the fork relative to fc-invoke's seam: the HTTP-shaped NodeExecutor

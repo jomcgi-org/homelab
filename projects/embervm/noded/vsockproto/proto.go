@@ -1,7 +1,7 @@
 // Package vsockproto is embervm-noded's forked copy of the Firecracker vsock
 // addressing constants the host-side transport and egress forwarder need. It is
-// a DELIBERATE, minimal FORK of projects/firecracker/substrate/vsockproto (ADR
-// embervm/001: embervm-noded shares no Go packages with projects/firecracker).
+// a DELIBERATE, minimal FORK of projects/embervm/firecracker/substrate/vsockproto (ADR
+// embervm/001: embervm-noded shares no Go packages with projects/embervm/firecracker).
 //
 // These port numbers ARE the frozen guest contract: the guest images embervm
 // runs listen on GuestHTTPPort for inbound task delivery and dial EgressPort for

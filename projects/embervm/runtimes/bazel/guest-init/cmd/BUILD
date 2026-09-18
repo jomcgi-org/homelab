@@ -21,7 +21,7 @@ go_library(
     importpath = "github.com/jomcgi/homelab/projects/embervm/runtimes/bazel/guest-init/cmd",
     visibility = ["//visibility:private"],
     deps = [
-        "//projects/firecracker/substrate/vsockproto",
+        "//projects/embervm/firecracker/substrate/vsockproto",
         "@org_golang_x_sys//unix",
     ],
 )

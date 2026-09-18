@@ -881,37 +881,37 @@ workloads:
 
 sandboxPython:
   guestImage:
-    repository: ghcr.io/jomcgi/homelab/projects/firecracker/sandbox/python
+    repository: ghcr.io/jomcgi/homelab/projects/embervm/firecracker/sandbox/python
     tag: latest
     digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
 
 sandboxGo:
   guestImage:
-    repository: ghcr.io/jomcgi/homelab/projects/firecracker/sandbox/go
+    repository: ghcr.io/jomcgi/homelab/projects/embervm/firecracker/sandbox/go
     tag: latest
     digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
 
 sandboxRust:
   guestImage:
-    repository: ghcr.io/jomcgi/homelab/projects/firecracker/sandbox/rust
+    repository: ghcr.io/jomcgi/homelab/projects/embervm/firecracker/sandbox/rust
     tag: latest
     digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
 
 sandboxElixir:
   guestImage:
-    repository: ghcr.io/jomcgi/homelab/projects/firecracker/sandbox/elixir
+    repository: ghcr.io/jomcgi/homelab/projects/embervm/firecracker/sandbox/elixir
     tag: latest
     digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
 
 sandboxOcaml:
   guestImage:
-    repository: ghcr.io/jomcgi/homelab/projects/firecracker/sandbox/ocaml
+    repository: ghcr.io/jomcgi/homelab/projects/embervm/firecracker/sandbox/ocaml
     tag: latest
     digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
 
 sandboxJavascript:
   guestImage:
-    repository: ghcr.io/jomcgi/homelab/projects/firecracker/sandbox/javascript
+    repository: ghcr.io/jomcgi/homelab/projects/embervm/firecracker/sandbox/javascript
     tag: latest
     digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
 
@@ -920,7 +920,7 @@ sandboxJavascript:
 # (never noded.*) so the image pin does not collide, per D14a.6.
 semgrep:
   guestImage:
-    repository: ghcr.io/jomcgi/homelab/projects/firecracker/semgrep/guest
+    repository: ghcr.io/jomcgi/homelab/projects/embervm/firecracker/semgrep/guest
     tag: latest
     digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
 
@@ -1221,7 +1221,7 @@ durabilityHealth:
 # fc-invoke rootfs-builder image; Bazel pins repository:tag from its .info.
 rootfsBuilder:
   image:
-    repository: ghcr.io/jomcgi/homelab/projects/firecracker/substrate/rootfs-builder
+    repository: ghcr.io/jomcgi/homelab/projects/embervm/firecracker/substrate/rootfs-builder
     tag: latest
     digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
   # 4G covers the largest guest (semgrep: engine + rules + python); the sandbox

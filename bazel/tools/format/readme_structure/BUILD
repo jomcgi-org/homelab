@@ -1,4 +1,4 @@
-# Hand-managed targets (same convention as projects/firecracker/tools/env_readme):
+# Hand-managed targets (same convention as projects/embervm/firecracker/tools/env_readme):
 # the checker is invoked as plain python3 from the CI "Format check" step against
 # the full working tree (a sandboxed bazel test cannot list projects/* on RBE),
 # so only the pure-logic contract is pinned by a bazel test here.

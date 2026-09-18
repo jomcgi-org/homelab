@@ -20,7 +20,7 @@ go_library(
     importpath = "github.com/jomcgi/homelab/projects/embervm/runtimes/shotter/guest-init/cmd",
     visibility = ["//visibility:private"],
     deps = [
-        "//projects/firecracker/substrate/vsockproto",
+        "//projects/embervm/firecracker/substrate/vsockproto",
         "@io_nhooyr_websocket//:websocket",
     ] + select({
         "@rules_go//go/platform:android": [
@@ -48,6 +48,6 @@ go_test(
     embed = [":cmd_lib"],
     deps = [
         "//projects/embervm/runtimes/shotter:egress_config",
-        "//projects/firecracker/substrate/vsockproto",
+        "//projects/embervm/firecracker/substrate/vsockproto",
     ],
 )

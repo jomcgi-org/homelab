@@ -109,7 +109,6 @@ slower and less grounded, so fill every required field.
 Top-level projects/ directories:
 - design-system
 - embervm
-- firecracker
 - gke-apps
 - gke-cluster
 - home-cluster

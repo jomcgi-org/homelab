@@ -233,7 +233,7 @@ the app's privileges.
 
 **Guest egress is brokered.** Task and session guests have no NIC. The only
 way out is the vsock egress port, which noded forwards unparsed to the
-`egress-proxy` sidecar (`projects/firecracker/substrate/egress-proxy/`). The
+`egress-proxy` sidecar (`projects/embervm/firecracker/substrate/egress-proxy/`). The
 sidecar allowlists internal destinations by both name and resolved address
 (`classify.go`), so a guest cannot reach the monolith API by any spelling,
 and injects real credentials only for hosts in a secret's `egressTo`
@@ -296,7 +296,7 @@ The egress sidecar in every brick pod is the model the rest should follow:
 uid 65532, `readOnlyRootFilesystem`, all capabilities dropped, holding the
 credentials noded never sees.
 
-(see: `projects/platform/cloudflare-gateway/`, `projects/platform-gke/tailscale/`, `projects/firecracker/substrate/egress-proxy/`, `projects/platform/polylane/values.yaml`, `projects/*/deploy/values-gke.yaml`)
+(see: `projects/platform/cloudflare-gateway/`, `projects/platform-gke/tailscale/`, `projects/embervm/firecracker/substrate/egress-proxy/`, `projects/platform/polylane/values.yaml`, `projects/*/deploy/values-gke.yaml`)
 
 **Why.** The former tunnel operator reimplemented routing while production
 ran a static tunnel configuration, so Envoy Gateway took over in-cluster
@@ -557,7 +557,7 @@ red, which is why the list above states enforcement rather than intent.
 | Workload identity issuance | `projects/platform/spire/values.yaml` (`clusterSPIFFEIDs`) |
 | Tailnet access | `projects/platform-gke/tailscale/values.yaml` (`apiServerProxyAdmins`, `egressServices`), `projects/monolith/chart/templates/service-tailnet.yaml` |
 | Pod network policy | none on the hub beyond the Context Forge redis rule; templates in `projects/{monolith,monolith-public,embervm,monolith-agents}/chart/templates/*policy*.yaml` are gated off in `values-gke.yaml` |
-| Guest egress allowlist and credential swap | `projects/firecracker/substrate/egress-proxy/cmd/`, catalog in `projects/embervm/deploy/values-gke.yaml` |
+| Guest egress allowlist and credential swap | `projects/embervm/firecracker/substrate/egress-proxy/cmd/`, catalog in `projects/embervm/deploy/values-gke.yaml` |
 | Secrets | `OnePasswordItem` CRs per chart; operator is the `connect` Helm release outside git |
 | Sandbox | `projects/embervm/` (Firecracker), entry `projects/monolith/sandbox/client.py`; jailer gated on `noded.jailer.enabled` |
 | Public data isolation | `public_reader` and `public_writer` grants, `main_public_imports_test`, `public_httproute_chat_guard_test`, `chat_public_grants_test`, `check-public-reader-grant.sh` |

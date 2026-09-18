@@ -3,7 +3,7 @@
 # with any hand-written binary of the same name, and gazelle cannot resolve the
 # sibling `import measure_chunks` from the test to a target it did not create.
 # Both sources are excluded and the targets are written by hand, the same
-# convention as //projects/firecracker/tools/env_readme. The harness itself is
+# convention as //projects/embervm/firecracker/tools/env_readme. The harness itself is
 # invoked as plain python3 against real images on a brick, not through bazel.
 # gazelle:exclude measure_chunks.py
 # gazelle:exclude measure_chunks_test.py

@@ -30,14 +30,14 @@ go_library(
     deps = select({
         "@rules_go//go/platform:android": [
             "//projects/embervm/noded/guestagent",
-            "//projects/firecracker/substrate/shim",
-            "//projects/firecracker/substrate/vsockproto",
+            "//projects/embervm/firecracker/substrate/shim",
+            "//projects/embervm/firecracker/substrate/vsockproto",
             "@org_golang_x_sys//unix",
         ],
         "@rules_go//go/platform:linux": [
             "//projects/embervm/noded/guestagent",
-            "//projects/firecracker/substrate/shim",
-            "//projects/firecracker/substrate/vsockproto",
+            "//projects/embervm/firecracker/substrate/shim",
+            "//projects/embervm/firecracker/substrate/vsockproto",
             "@org_golang_x_sys//unix",
         ],
         "//conditions:default": [],

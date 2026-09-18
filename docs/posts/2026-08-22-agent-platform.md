@@ -21,6 +21,6 @@ The first version ran unattended Claude agents in sandboxed Kubernetes pods. Whe
 
 ## Source
 
-- [projects/firecracker](https://github.com/jomcgi/homelab/tree/main/projects/firecracker)
+- [projects/embervm/firecracker](https://github.com/jomcgi/homelab/tree/main/projects/embervm/firecracker)
 
 <!-- Numbers above were current on 2026-08-22 when this was transcribed from the engineering page. This is a point-in-time post; do not update it, write a new one. -->

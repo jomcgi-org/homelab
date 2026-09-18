@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jomcgi/homelab/projects/firecracker/substrate/vsockproto"
+	"github.com/jomcgi/homelab/projects/embervm/firecracker/substrate/vsockproto"
 )
 
 const (

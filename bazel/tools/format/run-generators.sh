@@ -40,11 +40,11 @@ run() {
 # generators below index repo markdown (including environment.md), so
 # writing it concurrently would make the manifests flip-flop across runs.
 for sandbox_lang in python go rust elixir ocaml javascript; do
-	python3 ./projects/firecracker/tools/env_readme/gen_env_readme.py \
-		--lock "projects/firecracker/sandbox/${sandbox_lang}/apko.lock.json" \
+	python3 ./projects/embervm/firecracker/tools/env_readme/gen_env_readme.py \
+		--lock "projects/embervm/firecracker/sandbox/${sandbox_lang}/apko.lock.json" \
 		--title "${sandbox_lang} sandbox guest environment" \
-		--notes "projects/firecracker/sandbox/${sandbox_lang}/env-notes.md" \
-		--out "projects/firecracker/sandbox/${sandbox_lang}/environment.md" || exit 1
+		--notes "projects/embervm/firecracker/sandbox/${sandbox_lang}/env-notes.md" \
+		--out "projects/embervm/firecracker/sandbox/${sandbox_lang}/environment.md" || exit 1
 done
 
 run ./bazel/images/generate-home-cluster.sh

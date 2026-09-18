@@ -163,8 +163,8 @@ need_generators() {
 		projects/monolith/generate-routes.sh | projects/monolith/*/router.py | \
 			projects/monolith/*/module.py | projects/monolith/knowledge/tools/* | \
 			projects/monolith/chat/* | \
-			projects/firecracker/*/*/apko.lock.json | \
-			projects/firecracker/*/*/env-notes.md)
+			projects/embervm/firecracker/*/*/apko.lock.json | \
+			projects/embervm/firecracker/*/*/env-notes.md)
 			return 0
 			;;
 		*.md | */*.md) return 0 ;;

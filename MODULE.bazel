@@ -522,11 +522,11 @@ apko.translate_lock(
 )
 apko.translate_lock(
     name = "rootfs_builder_lock",
-    lock = "//projects/firecracker/substrate/rootfs-builder:apko.lock.json",
+    lock = "//projects/embervm/firecracker/substrate/rootfs-builder:apko.lock.json",
 )
 apko.translate_lock(
     name = "semgrep_guest_lock",
-    lock = "//projects/firecracker/semgrep/guest:apko.lock.json",
+    lock = "//projects/embervm/firecracker/semgrep/guest:apko.lock.json",
 )
 
 # The six per-language code-executor guests (ADR agents/057). One lock each:
@@ -534,27 +534,27 @@ apko.translate_lock(
 # one language re-bakes only that language's rootfs.
 apko.translate_lock(
     name = "sandbox_python_lock",
-    lock = "//projects/firecracker/sandbox/python:apko.lock.json",
+    lock = "//projects/embervm/firecracker/sandbox/python:apko.lock.json",
 )
 apko.translate_lock(
     name = "sandbox_go_lock",
-    lock = "//projects/firecracker/sandbox/go:apko.lock.json",
+    lock = "//projects/embervm/firecracker/sandbox/go:apko.lock.json",
 )
 apko.translate_lock(
     name = "sandbox_rust_lock",
-    lock = "//projects/firecracker/sandbox/rust:apko.lock.json",
+    lock = "//projects/embervm/firecracker/sandbox/rust:apko.lock.json",
 )
 apko.translate_lock(
     name = "sandbox_elixir_lock",
-    lock = "//projects/firecracker/sandbox/elixir:apko.lock.json",
+    lock = "//projects/embervm/firecracker/sandbox/elixir:apko.lock.json",
 )
 apko.translate_lock(
     name = "sandbox_ocaml_lock",
-    lock = "//projects/firecracker/sandbox/ocaml:apko.lock.json",
+    lock = "//projects/embervm/firecracker/sandbox/ocaml:apko.lock.json",
 )
 apko.translate_lock(
     name = "sandbox_javascript_lock",
-    lock = "//projects/firecracker/sandbox/javascript:apko.lock.json",
+    lock = "//projects/embervm/firecracker/sandbox/javascript:apko.lock.json",
 )
 apko.translate_lock(
     name = "whatsapp_lock",

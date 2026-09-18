@@ -18,7 +18,7 @@ go_library(
 go_binary(
     name = "rootfs-store",
     embed = [":rootfs-store_lib"],
-    visibility = ["//projects/firecracker/substrate/rootfs-builder:__pkg__"],
+    visibility = ["//projects/embervm/firecracker/substrate/rootfs-builder:__pkg__"],
 )
 
 go_test(

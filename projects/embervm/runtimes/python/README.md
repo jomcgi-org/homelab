@@ -180,7 +180,7 @@ A raw Firecracker boot ignores OCI image config entirely and boots
 `entrypoint` that runs the shim is never honoured on a Firecracker boot. This
 image therefore ships a real PID 1: `ember-runtime-guest-init`
 (`guest-init/cmd/`, a small Go binary mirroring
-`projects/firecracker/sandbox/guest-init/`), layered at
+`projects/embervm/firecracker/sandbox/guest-init/`), layered at
 `/usr/local/bin/ember-runtime-guest-init` by `../BUILD`.
 
 On boot it:

@@ -34,7 +34,7 @@ Keep existing `secretRef` entries working identically.
 Add chart-side validation: fail (with a clear error) if both `brokerGrant` and `secretRef` are set, OR if neither is set.
 
 ### 2. SIDECAR: Fetch and cache broker tokens
-**File**: projects/firecracker/substrate/egress-proxy/cmd/swap.go (new file)
+**File**: projects/embervm/firecracker/substrate/egress-proxy/cmd/swap.go (new file)
 
 The sidecar needs to resolve header values for `brokerGrant` entries by calling the broker.
 
@@ -55,7 +55,7 @@ Create swap.go with:
   - Set valuePrefix + real value
 
 ### 3. MAIN: Load broker URL and wire it
-**File**: projects/firecracker/substrate/egress-proxy/cmd/main.go
+**File**: projects/embervm/firecracker/substrate/egress-proxy/cmd/main.go
 
 - Read `EGRESS_TOKEN_BROKER_URL` from env
 - Pass it to the proxy struct
@@ -99,7 +99,7 @@ Add a comment explaining that the subscription grant now supplies it and an abse
 Leave the Anthropic entry unchanged (still using `secretRef`).
 
 ### 6. TESTS: Egress-proxy behavior
-**File**: projects/firecracker/substrate/egress-proxy/cmd/swap_test.go (new file)
+**File**: projects/embervm/firecracker/substrate/egress-proxy/cmd/swap_test.go (new file)
 
 Go tests using httptest to fake the broker and proxy. Follow the existing idiom in the package (main_test.go). Each test:
 
@@ -119,7 +119,7 @@ Go tests using httptest to fake the broker and proxy. Follow the existing idiom 
 
 ### Egress-proxy tests
 ```bash
-bb remote --os=linux --arch=amd64 test //projects/firecracker/substrate/egress-proxy/... --config=ci
+bb remote --os=linux --arch=amd64 test //projects/embervm/firecracker/substrate/egress-proxy/... --config=ci
 ```
 
 All tests must pass.

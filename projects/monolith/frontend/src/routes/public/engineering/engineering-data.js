@@ -81,8 +81,8 @@ export const projects = [
     ],
     links: [
       {
-        label: "projects/firecracker",
-        href: "https://github.com/jomcgi/homelab/tree/main/projects/firecracker",
+        label: "projects/embervm/firecracker",
+        href: "https://github.com/jomcgi/homelab/tree/main/projects/embervm/firecracker",
       },
     ],
   },

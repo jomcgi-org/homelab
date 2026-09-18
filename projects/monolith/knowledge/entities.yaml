@@ -17,7 +17,7 @@ entities:
     title: Firecracker
     aliases:
       - {name: firecracker, title: true}
-    path: projects/firecracker
+    path: projects/embervm/firecracker
   - kind: project
     slug: design-system
     title: Design System

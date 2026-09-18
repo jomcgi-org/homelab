@@ -6,8 +6,8 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/jomcgi/homelab/projects/firecracker/substrate/shim"
-	"github.com/jomcgi/homelab/projects/firecracker/substrate/vsockproto"
+	"github.com/jomcgi/homelab/projects/embervm/firecracker/substrate/shim"
+	"github.com/jomcgi/homelab/projects/embervm/firecracker/substrate/vsockproto"
 )
 
 // startVsockReadyServer binds the frozen guest-contract readiness listener on

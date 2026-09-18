@@ -36,8 +36,8 @@ import (
 	"sync/atomic"
 	"syscall"
 
-	"github.com/jomcgi/homelab/projects/firecracker/substrate/shim"
-	"github.com/jomcgi/homelab/projects/firecracker/substrate/vsockproto"
+	"github.com/jomcgi/homelab/projects/embervm/firecracker/substrate/shim"
+	"github.com/jomcgi/homelab/projects/embervm/firecracker/substrate/vsockproto"
 )
 
 func main() {

@@ -11,7 +11,7 @@ Both are mechanically decidable, so they are enforced here rather than left to
 a human noticing. Prose staleness (a wrong model name, an out-of-date count)
 needs judgment and is handled out of band by the weekly refresh routine.
 
-Invoked two ways, mirroring `projects/firecracker/tools/env_readme/`:
+Invoked two ways, mirroring `projects/embervm/firecracker/tools/env_readme/`:
 
   * As a CLI from the CI "Format check" step (`check()` against the real
     checkout, `exit 1` on any violation). That step runs on the full working
