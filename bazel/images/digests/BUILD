@@ -44,6 +44,8 @@ oci_digest_manifest(
         "//projects/monolith:jobs_image.info": "//projects/monolith:jobs_image.push",
         "//projects/monolith:main_agents_image.info": "//projects/monolith:main_agents_image.push",
         "//projects/monolith:progress_image.info": "//projects/monolith:progress_image.push",
+        "//projects/monolith:stars_grid_apko_base.info": "//projects/monolith:stars_grid_apko_base.push",
+        "//projects/monolith:stars_grid_image.info": "//projects/monolith:stars_grid_image.push",
         "//projects/operators/oci-model-cache:image.info": "//projects/operators/oci-model-cache:image.push",
     },
     visibility = ["//visibility:public"],

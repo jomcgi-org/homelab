@@ -19,11 +19,12 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime
 
-from sqlmodel import Session, delete, select
+from sqlmodel import Session, delete
 
-from stars.models import Site, SiteHour, SiteMonthClimatology
+from stars.grid_ingest import replace_grid
+from stars.models import SiteMonthClimatology
 
 logger = logging.getLogger("monolith.stars.grid")
 
@@ -87,66 +88,11 @@ def _fetch_grid() -> list[dict] | None:
 
 
 def _load_grid_sync() -> int:
-    """Wholesale-replace stars.sites from the grid. Returns rows written.
-
-    Malformed points (missing id/lat/lon) are skipped with a logged count. The
-    delete + add_all run in one transaction so a failure leaves the prior table
-    intact rather than truncating it.
-    """
-    from core.db import get_engine
-
+    """Fetch the configured S3 grid and replace ``stars.sites`` with it."""
     grid = _fetch_grid()
     if not grid:
         return 0
-
-    now = datetime.now(timezone.utc)
-    rows: list[Site] = []
-    skipped = 0
-    for point in grid:
-        if not isinstance(point, dict):
-            skipped += 1
-            continue
-        site_id = point.get("id")
-        lat = point.get("lat")
-        lon = point.get("lon")
-        if site_id is None or lat is None or lon is None:
-            skipped += 1
-            continue
-        rows.append(
-            Site(
-                id=str(site_id),
-                name=point.get("name"),
-                lat=float(lat),
-                lon=float(lon),
-                altitude_m=int(point.get("altitude_m") or 0),
-                lp_zone=str(point.get("lp_zone") or "unknown"),
-                source="grid",
-                updated_at=now,
-            )
-        )
-    if skipped:
-        logger.warning("stars.load_grid: skipped %d malformed grid points", skipped)
-    if not rows:
-        logger.warning("stars.load_grid: no valid grid points, leaving table intact")
-        return 0
-
-    with Session(get_engine()) as session:
-        session.execute(delete(Site))
-        session.add_all(rows)
-        # Clean orphaned forecast hours for sites no longer in the grid: the
-        # add_all above autoflushes before the subquery runs, so this sees the
-        # new grid. site_month_climatology orphans are intentionally left: the
-        # seasonal history is worth keeping even if a grid point is dropped, and
-        # the table is bounded at 12 rows per site.
-        # synchronize_session=False: the ORM evaluator cannot evaluate a notin_
-        # subquery in Python, so issue the DELETE as SQL.
-        session.execute(
-            delete(SiteHour)
-            .where(SiteHour.site_id.notin_(select(Site.id)))
-            .execution_options(synchronize_session=False)
-        )
-        session.commit()
-    return len(rows)
+    return replace_grid(grid)
 
 
 async def load_grid_handler(session: Session) -> datetime | None:

@@ -2,27 +2,24 @@
 
 Uses SQLModel.metadata.create_all on SQLite (no migrations), mirroring
 stars/models_test. _fetch_grid is monkeypatched so the S3 layer is never
-exercised; _load_grid_sync's get_engine is pointed at the in-memory engine so
-the upsert is asserted against a real session.
+exercised; _load_grid_sync's get_engine is pointed at a file-backed engine so
+the replacement is asserted against a real session and transaction.
 """
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, SQLModel, create_engine, select
-from sqlmodel.pool import StaticPool
 
 from datetime import datetime, timezone
 
 import stars.grid as grid
+from stars.grid_ingest import replace_computed_grid
 from stars.models import Site, SiteHour
 
 
 @pytest.fixture(name="engine")
-def engine_fixture(monkeypatch):
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
+def engine_fixture(monkeypatch, tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'stars-grid.sqlite'}")
     original_schemas = {}
     for table in SQLModel.metadata.tables.values():
         if table.schema is not None:
@@ -70,13 +67,13 @@ def test_load_grid_sync_upserts_rows(engine, monkeypatch):
     with Session(engine) as session:
         rows = session.exec(select(Site)).all()
         by_id = {r.id: r for r in rows}
-    assert set(by_id) == {"grid-0001", "grid-0002"}
-    assert by_id["grid-0001"].name is None
-    assert by_id["grid-0001"].lat == 57.12
-    assert by_id["grid-0001"].altitude_m == 312
-    assert by_id["grid-0001"].lp_zone == "1a"
-    assert by_id["grid-0001"].source == "grid"
-    assert by_id["grid-0002"].name == "Named"
+        assert set(by_id) == {"grid-0001", "grid-0002"}
+        assert by_id["grid-0001"].name is None
+        assert by_id["grid-0001"].lat == 57.12
+        assert by_id["grid-0001"].altitude_m == 312
+        assert by_id["grid-0001"].lp_zone == "1a"
+        assert by_id["grid-0001"].source == "grid"
+        assert by_id["grid-0002"].name == "Named"
 
 
 def test_load_grid_sync_replaces_existing_rows(engine, monkeypatch):
@@ -91,7 +88,7 @@ def test_load_grid_sync_replaces_existing_rows(engine, monkeypatch):
 
     with Session(engine) as session:
         ids = {r.id for r in session.exec(select(Site)).all()}
-    assert ids == {"grid-0001"}
+        assert ids == {"grid-0001"}
 
 
 def test_load_grid_sync_skips_malformed_points(engine, monkeypatch):
@@ -107,7 +104,7 @@ def test_load_grid_sync_skips_malformed_points(engine, monkeypatch):
     assert written == 1
     with Session(engine) as session:
         ids = {r.id for r in session.exec(select(Site)).all()}
-    assert ids == {"good"}
+        assert ids == {"good"}
 
 
 def test_load_grid_sync_removes_orphaned_site_hours(engine, monkeypatch):
@@ -144,8 +141,67 @@ def test_load_grid_sync_removes_orphaned_site_hours(engine, monkeypatch):
 
     with Session(engine) as session:
         hour_site_ids = {r.site_id for r in session.exec(select(SiteHour)).all()}
-    # The orphaned site's hour is gone; the surviving grid site's hour remains.
-    assert hour_site_ids == {"grid-0001"}
+        # The orphaned site's hour is gone; the surviving grid site's hour remains.
+        assert hour_site_ids == {"grid-0001"}
+
+
+def test_replace_grid_rolls_back_failed_repeat(engine):
+    with Session(engine) as session:
+        session.add(Site(id="prior", lat=57.0, lon=-4.0, source="grid"))
+        session.commit()
+
+    duplicate_ids = [dict(_GRID[0]), dict(_GRID[0])]
+    with pytest.raises(IntegrityError):
+        grid.replace_grid(duplicate_ids, engine=engine)
+
+    with Session(engine) as session:
+        rows = session.exec(select(Site)).all()
+        assert [(row.id, row.lat, row.lon) for row in rows] == [("prior", 57.0, -4.0)]
+
+
+def test_replace_grid_is_repeatable(engine):
+    assert grid.replace_grid(list(_GRID), engine=engine) == 2
+    updated = [dict(point) for point in _GRID]
+    updated[0]["altitude_m"] = 444
+    assert grid.replace_grid(updated, engine=engine) == 2
+
+    with Session(engine) as session:
+        rows = session.exec(select(Site)).all()
+        assert len(rows) == 2
+        assert next(row for row in rows if row.id == "grid-0001").altitude_m == 444
+
+
+def test_computed_grid_contract_rejects_partial_replacement(engine):
+    with Session(engine) as session:
+        session.add(Site(id="prior", lat=57.0, lon=-4.0, source="grid"))
+        session.commit()
+
+    incompatible = [dict(_GRID[0]), {"id": "missing-coordinates"}]
+    with pytest.raises(ValueError, match="malformed site rows"):
+        replace_computed_grid(incompatible, engine=engine)
+
+    with Session(engine) as session:
+        rows = session.exec(select(Site)).all()
+        assert [(row.id, row.lat, row.lon) for row in rows] == [("prior", 57.0, -4.0)]
+
+
+def test_computed_grid_contract_accepts_generator_output(engine):
+    generated = [
+        {
+            "id": "scotland-0000",
+            "name": None,
+            "lat": 56.1234,
+            "lon": -4.5678,
+            "altitude_m": 321,
+            "lp_zone": "excellent",
+        }
+    ]
+
+    assert replace_computed_grid(generated, engine=engine) == 1
+    with Session(engine) as session:
+        row = session.get(Site, "scotland-0000")
+        assert row is not None
+        assert (row.altitude_m, row.lp_zone, row.source) == (321, "excellent", "grid")
 
 
 def test_load_grid_sync_empty_grid_is_noop(engine, monkeypatch):
