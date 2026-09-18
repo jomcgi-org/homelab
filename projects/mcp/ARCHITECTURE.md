@@ -50,7 +50,7 @@ any profile declaring `mcp_enabled`, as stateless streamable HTTP behind
 is a visible symptom rather than a missing route. Which domains register is
 listed in `projects/monolith/ARCHITECTURE.md`.
 
-**The monolith-agents tier is the second entry point, for Ember guests only.**
+**The monolith-agents tier is the second entry point, intended for Ember guests.**
 It is a pruned monolith binary (`projects/monolith/app/agents_main.py`)
 serving four knowledge tools (`search_knowledge`, `report_knowledge`,
 `dispute_fact`, `report_distress`) on its own Service and port, with no
@@ -63,6 +63,10 @@ the guest never holds the token and cannot reach the tier except through the
 sidecar. The guest-side half (the egress allowlist entry, `plaintextUpstream`,
 `injectAlwaysPaths`, the shim-written MCP client config and the boot argument
 that carries the URL) is EmberVM's and is documented there.
+The application also configures the human `mcp-friends` verifier and accepts
+any non-anonymous principal without a `kg-agents` group check. That broader
+source boundary is unresolved; the guest-only topology does not narrow it at
+the resource server.
 (see: `projects/monolith-agents/chart/values.yaml`,
 `projects/monolith/app/agents_main.py`, `projects/embervm/deploy/values.yaml`
 under `egress.secrets`, `projects/embervm/deploy/values-gke.yaml` under
@@ -268,8 +272,10 @@ wins and is renamed to `Authorization` (#5002).
 verifies RS256 against authentik's JWKS on the `/mcp` mount and hands handlers a
 `Principal`. Absent bearer material yields an anonymous least-privilege
 principal rather than a 401, because Context Forge's health-check refresh and
-gateway federation call with no user context; material that is present and
-invalid always raises.
+gateway federation call with no user context. A malformed, invalid, or
+unrecognized Bearer raises. The anonymous identity permits catalogue refresh only:
+`core/mcp_policy.py` denies its tool calls. Non-Bearer authorization is treated
+like absence; an empty Bearer or invalid Bearer is rejected.
 
 The token names the monolith as a **second audience**, so what arrives is
 validated rather than believed. `blueprints/mcp-auth.yaml` binds a scope mapping
@@ -296,20 +302,26 @@ the session opener and every later message runs in its context, so a stateful
 mount would pin `current_principal()` to the opener again (#4569 records the
 mechanism).
 
-**Per-caller result scoping is still not built** (#4569). `search_knowledge`
-returns the same rows to an admin and to an anonymous caller. The one monolith
-tool that reads the principal for authorization, `grant_kg_burst`, gates on
-group membership rather than scoping results, and it is not reachable through
-Context Forge today (see Identity). What stands in the way is now only the
-scoping code itself.
+**Per-caller result scoping is still not built** (#4569). The shared monolith
+surface now requires `operators` for every current tool call, so an anonymous
+caller cannot call `search_knowledge` at all. Among callers admitted to a tool,
+the tool still returns the same rows or object regardless of subject: for
+example, `search_knowledge` does not filter notes and
+`monolith_agent_detail` returns a requested turn's verbatim result without a
+per-session ownership check. Domain checks can narrow the surface gate:
+factory orchestration requires a standing human operator, `grant_kg_burst`
+checks the operator group, and `submit_product_update` checks
+`updates:submit`. Identity and attribution therefore do not themselves grant
+resource access. The authoritative surface table and future gates are in
+`projects/monolith/ARCHITECTURE.md` section 7.
 
 **Why.** Tool-level gateway ACLs cannot decide whether a returned task, session,
 or repository object belongs to the caller, so identity must reach the domain
 that owns that object (ADR agents/055, ADR agents/059). Trusted identity headers
 were rejected because an in-cluster caller could forge them; a verifiable bearer
 keeps the resource server responsible for validation. ADR agents/059 superseded
-055 for GitHub mediation by moving the broker into the monolith, while 055's
-reasoning for tool mediation and bounded credentials still holds.
+055's proposed placement. Any future GitHub mediation remains gated by #4940,
+#4944, and #4946; no broker or delegated grant enforcement is shipped.
 
 ## Deployment
 
@@ -471,5 +483,5 @@ Rationale only. None of these describes current state.
 | `agents/020` | Deprecate Context Forge, serve MCP from the monolith | Superseded by 059; its execution issues #3832 and #3833 stay open, #3831 closed 2026-09-05 | deleted |
 | `agents/034` | Per-tier guest MCP ACL at `/private/mcp/{tier}/` | Draft; #3838 open. The agents tier (#5656) is the shape that shipped instead | deleted |
 | `agents/042` | Agent MCP v1 follow-ons | Accepted, partially shipped; #3844 | deleted |
-| `agents/055` | Tool-mediated GitHub access on Context Forge | Superseded by 059; mediation moves to the monolith's broker (#4946). The GitHub registration here is disabled with no tools | deleted |
+| `agents/055` | Tool-mediated GitHub access on Context Forge | Superseded by 059. The GitHub registration here is disabled with no tools; #4940 retains the gated direction, and no monolith broker is selected or shipped | deleted |
 | `agents/059` | Authentik federates identity, the monolith serves MCP directly | Draft, not executed: Context Forge is still the front door, `mcp-friends` still advertises no DCR endpoint (2026-09-05), the monolith serves no RFC 9728 document. #3832, #3833 | deleted |

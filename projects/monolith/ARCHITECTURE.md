@@ -41,7 +41,7 @@ cluster deployment is dormant.
 (see: /projects/monolith/app/agents_main.py)
 (see: /projects/gke-apps/monolith/application.yaml)
 
-Current as of a93980260 (2026-09-05)
+Current as of 7b90da040 (2026-09-18)
 
 ## 1. What it is and request paths
 
@@ -1019,8 +1019,8 @@ instead, so its BDD specs can attach the tools deterministically.
 (see: /projects/monolith/core/mcp_app.py)
 (see: /projects/monolith/shotter/module.py)
 
-The agents tier is the second surface, for guests. `monolith-agents` runs in
-its own namespace and serves four knowledge tools (`search_knowledge`,
+The agents tier is the second surface, intended for guests.
+`monolith-agents` runs in its own namespace and serves four knowledge tools (`search_knowledge`,
 `report_knowledge`, `dispute_fact`, `report_distress`) over stateless MCP.
 Identity middleware rejects anonymous callers, the tokens are minted by
 authentik's agent provider, and an Ember guest reaches the tier only through
@@ -1042,6 +1042,81 @@ limitations, and catalogue refresh behavior are documented in
 [MCP architecture](../mcp/ARCHITECTURE.md).
 (see: /projects/monolith/auth/middleware.py)
 (see: /projects/mcp/ARCHITECTURE.md)
+
+### Current authentication trust boundary
+
+**Status: Accepted for the current source boundary.** This record describes
+mechanisms present at the current task head. The future delegation design in
+#4940 remains gated. The deployment values declare both standing issuers and
+the EmberVM token broker grant. Source and manifests establish code and
+configuration presence only. The dated runtime observation in
+`projects/mcp/ARCHITECTURE.md` remains deployment evidence from 2026-09-05;
+this source-only reconciliation adds no newer production observation.
+
+Supported human callers authenticate to Context Forge with an authentik
+`mcp-friends` token. Context Forge forwards that bearer to the shared monolith
+`/mcp` mount, where `PrincipalMiddleware` calls
+`TokenResolver.resolve`. Supported EmberVM guests do not hold the authentik
+client secret: the token broker uses the `mcp-agents` client and the
+`kg-agent-sa` service account, then the egress sidecar presents the resulting
+bearer to `monolith-agents`. Both resolve as standing identities. Delegation is
+absent.
+The relevant declarations are `mcp-auth.yaml` (`mcp-friends`, `mcp-agents`,
+and `kg-agent-sa`), `projects/embervm/deploy/values-gke.yaml`
+(`tokenBroker.authentik`), and the two monolith deployment value files.
+
+`AuthentikStandingVerifier.verify` first uses the unverified `iss` only to
+choose an owning verifier. For a token it owns, it requires an RS256 header and
+non-empty `kid`, finds that key in the configured JWKS, verifies the signature,
+strict issuer and configured audience, and requires `exp`, `iss`, `aud`, and
+`sub`. PyJWT also rejects expired and not-yet-valid tokens. The verifier then
+requires `sub` to be a non-empty string, `groups` to be a list of strings, and
+`scope` to be a string; a non-empty string `email` is retained. It does not
+check `azp`, infer a resource permission, or validate a dedicated human versus
+workload claim. `Principal.kind` currently infers human from email presence.
+That classification grants nothing.
+(see: /projects/monolith/auth/verifier.py)
+(see: /projects/monolith/auth/principal.py)
+
+The request outcomes differ by surface:
+
+| Surface | Missing or unusable authorization | Valid standing token | Resource and result authorization |
+| --- | --- | --- | --- |
+| Shared private `/mcp` | No header, a blank header, or a non-Bearer scheme becomes the anonymous principal. Anonymous `tools/list` returns the catalogue for Context Forge refresh, but `GroupPolicyMiddleware.on_call_tool` denies every non-public tool. No current tool carries `mcp:public`. `Bearer` without a credential and any invalid or unrecognized bearer return 401; verifier or JWKS configuration faults return 503. | The verified claims become a standing `Principal`. Listing is filtered and calls require the literal `operators` group unless a tool is explicitly tagged public. | `GroupPolicyMiddleware` owns the coarse call gate. Domain checks can narrow it further. Factory orchestration uses `factory.access.is_operator`, knowledge and Grimoire HTTP mutations require a standing human operator, and `submit_product_update` requires `updates:submit`. Tool visibility, a populated `Principal`, and network reachability do not grant permission. |
+| Agent `/mcp` | `/healthz` is open. The MCP gate turns the anonymous principal into 401, while an invalid bearer is rejected by `PrincipalMiddleware` with 401 and an infrastructure fault with 503. | The resolver is configured for both `mcp-friends` and `mcp-agents`; `_AuthenticatedPrincipalGate` accepts any non-anonymous principal. It does not require `kg-agents`, a scope, or a workload kind before exposing its four knowledge tools. | `search_knowledge` does not filter rows by principal. The three reporting tools record the resolved subject and authority for attribution. The recorded facts grant no permission. The lack of a service-account group gate is an unresolved difference between the guest-only intent and enforcement in source. |
+| Private HTTP API | Only routes that opt into `get_principal` parse a bearer. On those routes, absence becomes anonymous and invalid bearer material returns 401 or 503; their owner may then return 403. Most private routes do not opt in and ignore bearer identity. | Knowledge intervention and Grimoire alias owners require a standing human in `operators`. Browser factory decisions instead use the single `X-Auth-Email` claim projected from a verified Cloudflare Access JWT and optionally narrow it with `FACTORY_OPERATOR_EMAILS`. | Cloudflare Access owns the external ingress gate. The application defines no blanket anonymous-principal policy. For example, `GET /api/agents/sessions/{session_id}` returns prompts and verbatim turn results without an application-level principal or per-session ownership check. Direct network reachability supplies no permission. The missing object-level result check remains unresolved and does not redefine the edge policy. |
+| Result receipt callback `/ingest/results/{receipt_id}` | Missing, malformed, unknown, or mismatched receipt bearer material returns 401. An expired acceptance window returns 410 and a different body for an already captured receipt returns 409. It never falls back to an anonymous principal. | `result_receipts.authenticate_receipt` compares the presented capability hash before reading the body; `capture_result` rechecks it, the expiry, and exact-byte idempotency. | This is a write-only callback for one receipt minted by `prepare_receipt` while the session, turn, dispatch owner, and guest are active. Capturing is evidence only; later consumption revalidates current executor ownership. The callback exposes no result-reading operation and does not use the authentik `Principal`. |
+
+Identity and attribution stay separate from permission to act. Middleware logs
+the resolved subject, kind, authority, and groups; report and decision records
+may persist subject and authority. Those facts explain who was observed. The
+surface or resource owner still has to check groups, scopes, an edge-verified
+claim, a receipt capability, target ownership, and state preconditions as
+appropriate. There is no central policy engine that turns every representable
+`Principal` field into authority.
+
+Historical #4942 explains the origin of the auth package, but history is not
+deployment evidence. `Authority.DELEGATED`, `Principal.actor`, and
+`Principal.scope` can represent future authority; the default resolver
+constructs only `Authority.STANDING`, with an empty actor chain, or the local
+anonymous principal. No code here mints a delegation, verifies a
+monolith-issued delegation, brokers GitHub mutations, or performs a
+session-token swap.
+
+Those proposals remain gated. #4943 requires a named caller whose existing
+authentication is inadequate. #4944 and #4946 require a concrete agent
+operation, exact issue and verb set, and demonstrated permission gap before
+delegation or a broker is selected. #4945 proceeds only if that selected design
+needs a new credential-delivery path. These closed gates may be reopened with
+their evidence; they are not accepted future architecture. The independent
+result-scoping work in #4569 and existing factory-control enforcement in #5789
+do not wait for this record or for delegation.
+(see: /projects/monolith/core/mcp_policy.py)
+(see: /projects/monolith/app/agents_main.py)
+(see: /projects/monolith/factory/access.py)
+(see: /projects/monolith/factory/execution/result_receipts_router.py)
+(see: /projects/monolith/factory/execution/result_receipts.py)
+(tracks: #4940, #4941, #4943, #4944, #4945, #4946)
 
 **Why.** A federating gateway originally replaced one authentication workaround
 and local proxy per backend, giving remote agents one catalogue and one place for

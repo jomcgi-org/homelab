@@ -84,14 +84,14 @@ name. authentik runs on the hub with its own CNPG cluster and publishes
 flows share one API prefix and cannot be gated by path.
 
 **The monolith verifies, it does not issue.** `projects/monolith/auth/`
-validates RS256 bearer tokens against the authentik JWKS, requires `exp`,
-`iss`, `aud` and `sub`, and hands handlers a `Principal`. A missing token
-resolves to an anonymous least-privilege principal; a present but invalid
-token always raises. The middleware is mounted only on `/mcp`
-(`stateless_http=True`, so the principal is per request rather than pinned
-to the session opener). Nothing in the monolith attenuates or delegates:
-`Authority.DELEGATED` is declared in `auth/principal.py` and never
-constructed (#4940, #4943, #4944).
+validates configured authentik standing issuers and hands opted-in handlers a
+`Principal`. The complete current decision, exact claim checks, surface-specific
+missing and invalid token behavior, owner authorization, and result-access gaps
+are recorded in `projects/monolith/ARCHITECTURE.md` section 7 (#4940, #4941).
+In particular, anonymous catalogue discovery on the shared MCP mount does not
+authorize an anonymous tool call, and the agent MCP mount rejects anonymous
+requests. `Authority.DELEGATED` and actor/scope fields are representable but no
+delegation is minted or verified.
 
 **Cloudflare Access guards the private tier.** The Access application and
 its wildcard policy on `private.jomcgi.dev/*` live in the Cloudflare
@@ -136,7 +136,11 @@ an authentik token for one shared service account (provider `mcp-agents`,
 `tokenBroker.grants` in `projects/embervm/deploy/values-gke.yaml`), which
 `monolith-agents` validates alongside the human `mcp-friends` issuer
 (`projects/monolith-agents/deploy/values.yaml`, `auth:`). Every guest is
-therefore the same principal at that service until SPIFFE phase 4.
+therefore the same principal at that service until SPIFFE phase 4. The agent
+application checks only that a principal is non-anonymous, not that it belongs
+to `kg-agents`, so accepting the human issuer is a broader source boundary than
+the guest-only topology implies. Network reachability supplies no application
+authorization.
 
 **SPIFFE identity exists and nothing presents it yet.** SPIRE runs on the
 hub (`projects/platform/spire`, Application `projects/platform-gke/spire`):
@@ -528,7 +532,7 @@ this table when the work ships or the issue closes without it.
 | --- | --- | --- | --- |
 | Public-tier egress scopes to its four documented destinations, enforced on the hub | Network | #5276 | not started |
 | Per-workload EmberVM egress allowlists replace the single allowlist shared across every workload | Network | #5320 | not started |
-| The monolith constructs delegated, attenuation-only authority instead of relying only on standing tokens | Identity | #4940, #4943, #4944 | not started |
+| Optional delegated authority, a GitHub broker, or session delivery is selected only after its caller and permission or delivery gate fires | Identity | #4940, #4943, #4944, #4945, #4946 | gated; no proposal selected or shipped |
 | Semgrep findings reach the hosted App under required credentials, replacing the offline placeholder token | Static checks and review gates | #3893 | not started |
 
 ## Decision history
