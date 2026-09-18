@@ -1,6 +1,6 @@
 # EmberVM protocol TLA+ specs, checked by TLC in CI (ADR embervm/006).
 #
-# Six specs, twenty-two genrules run the //bazel/tla:tlc.sh driver:
+# Seven specs, twenty-eight genrules run the //bazel/tla:tlc.sh driver:
 #   adoption.tla (protocol 1: VM lifecycle + adoption) with four cfgs: rich
 #     safety, positive liveness, and two NEGATIVE modes (expectation "fail") that
 #     prove the model still reproduces a historical bug.
@@ -24,6 +24,9 @@
 #   stateful.tla (stateful lifecycle, checkpoint recovery, destroy redrive, and
 #     writable attach singleton) with safety and liveness configs, two NEGATIVE
 #     incident wedges, and one NEGATIVE destroy-escape design comparison.
+#   lineage_handoff.tla (session workspace succession, issue #4701) with one
+#     positive bounded protocol config and five isolated NEGATIVE configs: one
+#     deletion mutation plus four source-conformance gaps.
 # The driver fails the build if a "fail" mode finds NO violation (the model went
 # blind). Safety and liveness are split across cfgs because exhaustive liveness over
 # the rich safety graph is too slow for CI; see README.md for the cfg matrix.
@@ -343,6 +346,112 @@ genrule(
           "\"$(location %s)\" " % _JAR +
           "\"$(location generation_issuance.tla)\" " +
           "\"$(location generation_issuance_lag_wedge.cfg)\" " +
+          "\"$@\" fail",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+# Session lineage handoff, issue #4701. The positive target checks the required
+# protocol. Each negative target configures exactly one intended invariant, so
+# a parse failure, timeout, deadlock, or different invariant cannot count as a
+# successful counterexample.
+genrule(
+    name = "tlc_lineage_handoff",
+    srcs = _JRE_SRCS + [
+        "lineage_handoff.tla",
+        "lineage_handoff.cfg",
+    ],
+    outs = ["lineage_handoff.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location lineage_handoff.tla)\" " +
+          "\"$(location lineage_handoff.cfg)\" " +
+          "\"$@\" pass",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_lineage_handoff_delete_early",
+    srcs = _JRE_SRCS + [
+        "lineage_handoff.tla",
+        "lineage_handoff_delete_early.cfg",
+    ],
+    outs = ["lineage_handoff_delete_early.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location lineage_handoff.tla)\" " +
+          "\"$(location lineage_handoff_delete_early.cfg)\" " +
+          "\"$@\" fail",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_lineage_handoff_volatile_claim",
+    srcs = _JRE_SRCS + [
+        "lineage_handoff.tla",
+        "lineage_handoff_volatile_claim.cfg",
+    ],
+    outs = ["lineage_handoff_volatile_claim.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location lineage_handoff.tla)\" " +
+          "\"$(location lineage_handoff_volatile_claim.cfg)\" " +
+          "\"$@\" fail",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_lineage_handoff_destroying_eligible",
+    srcs = _JRE_SRCS + [
+        "lineage_handoff.tla",
+        "lineage_handoff_destroying_eligible.cfg",
+    ],
+    outs = ["lineage_handoff_destroying_eligible.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location lineage_handoff.tla)\" " +
+          "\"$(location lineage_handoff_destroying_eligible.cfg)\" " +
+          "\"$@\" fail",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_lineage_handoff_no_generation",
+    srcs = _JRE_SRCS + [
+        "lineage_handoff.tla",
+        "lineage_handoff_no_generation.cfg",
+    ],
+    outs = ["lineage_handoff_no_generation.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location lineage_handoff.tla)\" " +
+          "\"$(location lineage_handoff_no_generation.cfg)\" " +
+          "\"$@\" fail",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_lineage_handoff_relinquish_order",
+    srcs = _JRE_SRCS + [
+        "lineage_handoff.tla",
+        "lineage_handoff_relinquish_order.cfg",
+    ],
+    outs = ["lineage_handoff_relinquish_order.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location lineage_handoff.tla)\" " +
+          "\"$(location lineage_handoff_relinquish_order.cfg)\" " +
           "\"$@\" fail",
     tags = ["verification"],
     tools = ["//bazel/tla:tlc.sh"],

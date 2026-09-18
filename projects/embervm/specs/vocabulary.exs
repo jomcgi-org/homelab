@@ -23,10 +23,13 @@
   # that drives the health machine and adoption reconcile. bank_relight.tla (ADR 006
   # protocol 2) models the Bank and Relight generation-pairing verbs. stateful.tla
   # models the R4 StartStateful, StopStateful, and ResolveStateful lifecycle.
+  # lineage_handoff.tla models RetireVolume's durable relinquish and
+  # RestoreArtifact's workspace recovery boundary.
   proto_rpcs: %{
     modeled:
       ~w(Prime Assign Destroy WatchNode GetNodeStatus Bank Relight
-         StartStateful StopStateful ResolveStateful)a,
+         StartStateful StopStateful ResolveStateful RetireVolume
+         RestoreArtifact)a,
     excluded:
       ~w(
         BuildBase
@@ -46,7 +49,10 @@
         # is the remote (store) inventory read that remote base retention computes
         # its keep-set from; like its siblings it is durability plumbing, not VM
         # lifecycle or adoption.
-        ~w(ExportArtifact RestoreArtifact EvictArtifact ListArtifacts ArchiveVolume RetireVolume)a ++
+        # lineage_handoff.tla moves RestoreArtifact and RetireVolume to modeled;
+        # ExportArtifact remains excluded because retirement uses the internal
+        # asynchronous worker rather than that control-plane RPC.
+        ~w(ExportArtifact EvictArtifact ListArtifacts ArchiveVolume)a ++
         # Artifact-decoupling Phase 2: control-plane -> daemon workload-registry
         # push verbs (SyncRegistry converges the pushed set; Register/Deregister
         # are the incremental forms). They deliver node-side image identity, not

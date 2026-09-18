@@ -2,7 +2,7 @@
 
 Formal specifications of EmberVM's concurrency-critical protocols, checked by
 TLC in CI. This directory is the pilot of ADR embervm/006 ([ARCHITECTURE.md, section 6](../ARCHITECTURE.md#6-control-plane-internals)):
-six specs now, checked exhaustively over small bounds, plus the layer-1
+seven specs now, checked exhaustively over small bounds, plus the layer-1
 vocabulary sync guard that keeps them honest against the code. Protocol 1 (VM
 lifecycle + adoption) is `adoption.tla`; protocol 2 (session bank/relight
 generation pairing) is `bank_relight.tla`, added by the ADR embervm/014 PR 5
@@ -12,7 +12,8 @@ Protocol 3 (the fail-closed per-principal daily quota gate) is `quota.tla`.
 The SessionManager create-starvation model is `session_create.tla`. Protocol 4
 (generation issuance authority: blessing, wake grants, quarantine,
 checkpoint-abort auto-heal) is `generation_issuance.tla`, added for issue
-#4700.
+#4700. The bounded session workspace succession model is
+`lineage_handoff.tla`, added for issue #4701.
 
 ## What is here
 
@@ -46,13 +47,19 @@ checkpoint-abort auto-heal) is `generation_issuance.tla`, added for issue
 - `generation_issuance.cfg`, `generation_issuance_liveness.cfg`,
   `generation_issuance_heal_wedge.cfg`, `generation_issuance_lag_wedge.cfg` :
   the four generation issuance TLC run configurations (below).
+- `lineage_handoff.tla` : the pure TLA+ model of session workspace succession,
+  durable relinquish, asynchronous export, crash recovery, exclusive heirs,
+  terminal predecessor eligibility, and reconnect divergence detection.
+- `lineage_handoff*.cfg` : one positive handoff protocol configuration, one
+  no-loss deletion mutation, and four source-conformance negative
+  configurations (below).
 - `stateful.tla` : the pure TLA+ model of the full stateful FSM, interruptible
   checkpoint recovery, node-confirmed destroy redrive, and noded writable-attach
   singleton under VM, brick, and owner-report faults.
 - `stateful.cfg`, `stateful_liveness.cfg`, `stateful_destroying_wedge.cfg`,
   `stateful_attach_wedge.cfg`, `stateful_destroy_escape_unsafe.cfg` : the five
   stateful lifecycle TLC run configurations (below).
-- `BUILD` : twenty-two genrules run TLC over the six specs, one per cfg, via the
+- `BUILD` : twenty-eight genrules run TLC over the seven specs, one per cfg, via the
   `//bazel/tla` prebuilt toolchain (tla2tools.jar + a pinned Temurin JRE).
 - `vocabulary.exs` : the layer-1 manifest declaring, per implementation surface
   (proto RPC verbs, health states, op-log kinds), what the specs model vs
@@ -427,6 +434,119 @@ one fix and asserts TLC still reproduces the outage that motivated it:
   wake, so it can never re-bless to catch the watermark up: the recurring
   demo-postgres quarantine after a CP roll.
 
+## Session lineage handoff (`lineage_handoff.tla`)
+
+Issue #4701 asks whether a durable workspace can move from one terminal session
+generation to exactly one successor without losing its last copy or silently
+joining a stale branch. This pure TLA+ model makes the ordering boundaries
+explicit. The positive configuration is the required protocol, not a claim
+that every guard is implemented today.
+
+```mermaid
+flowchart LR
+    A[predecessor live] --> B[destroying]
+    B --> C[durable relinquish marker]
+    C --> D[terminal predecessor]
+    D --> E[durable exclusive heir claim]
+    E --> F[restore or attach workspace]
+    F --> G[heir live at generation N+1]
+    C --> H[export initiated]
+    H --> I[S3 export completed]
+    I --> J[remove local workspace]
+    H -. daemon crash .-> K[recover from marker]
+    K --> H
+    G -. old branch reconnects .-> L{compare generation}
+    L -->|mismatch| M[detect divergence]
+    L -->|match| N[continue]
+```
+
+### Bounds, assumptions, and results
+
+Every configuration has one lineage, three finite heir identities (`h0`, `h1`,
+`h2`), generations `0..3`, at most one control-plane crash, and at most one
+noded process crash. Three heirs are the minimum that can express one
+predecessor plus two concurrent successor attempts. Generation 3 permits two
+successions without an unbounded counter. The crashes may occur between any
+enabled actions. `CrashCP` clears process-local claims but not durable rows or a
+durable claim; `CrashNode` interrupts an initiated export but preserves local
+disk and the retirement marker. `RecoverNode` can therefore re-enqueue the
+export from that marker.
+
+The durability assumptions are intentionally narrower than physical storage
+durability. Local volume contents, durable database rows, the retirement marker,
+and completed S3 objects survive process crashes. S3 publication becomes
+complete atomically when the metadata-last export finishes. The model does not
+cover corrupt media, Byzantine object storage, arbitrary local disk loss,
+simultaneous loss of local storage and S3, or network partitions that violate
+the RPC outcome abstraction. The scheduler is adversarial and has no fairness
+assumption. None of the desired invariants is an environment assumption.
+
+| cfg | switches changed from positive | checks | expectation | bounded result |
+| --- | --- | --- | --- | --- |
+| `lineage_handoff.cfg` | none | `TypeOK`, all four requested invariants, and durable relinquish ordering | pass | pending registered Linux CI |
+| `lineage_handoff_delete_early.cfg` | export initiation permits deletion | `WorkspaceAvailable` only | fail | pending, must name `WorkspaceAvailable` |
+| `lineage_handoff_volatile_claim.cfg` | durable claim replaced by process-local claim | `NeverTwoLiveHeirs` only | fail | pending, must name `NeverTwoLiveHeirs` |
+| `lineage_handoff_destroying_eligible.cfg` | `destroying` predecessor may be inherited | `TerminalPredecessorOnly` only | fail | pending, must name `TerminalPredecessorOnly` |
+| `lineage_handoff_no_generation.cfg` | reconnect generation comparison removed | `CommonAncestorDivergenceDetected` only | fail | pending, must name `CommonAncestorDivergenceDetected` |
+| `lineage_handoff_relinquish_order.cfg` | heir can start before durable marker | `DurableRelinquishBeforeHandoff` only | fail | pending, must name `DurableRelinquishBeforeHandoff` |
+
+Each negative configuration declares only its intended invariant. The shared
+driver additionally requires TLC to report an actual invariant violation. A
+parse error, deadlock, Java failure, timeout, empty negative search, or unrelated
+invariant cannot satisfy the target. Positive completion additionally requires
+TLC's `0 states left on queue` line, so a `stopAfter` truncation is not a pass.
+
+The four requested invariants are:
+
+- `WorkspaceAvailable`: at every modeled instant, the local workspace exists or
+  an S3 export has completed. `RemoveLocal` requires completion and matching
+  generation in the positive mode. The negative mutation weakens that guard to
+  export initiation.
+- `NeverTwoLiveHeirs`: at most one heir is live or destroying. The negative
+  mode crashes the control plane after one process-local reservation and admits
+  another contender after recovery while the first worker can still finish.
+- `TerminalPredecessorOnly`: no admitted successor observed a predecessor state
+  other than terminal. The negative mode admits from `destroying`.
+- `CommonAncestorDivergenceDetected`: a reconnecting older generation is never
+  silently merged. The positive mode records the mismatch as detected; the
+  negative mode records a silent merge.
+
+`DurableRelinquishBeforeHandoff` is an additional ordering invariant because the
+issue makes the marker a protocol precondition even though it is not one of the
+four named outcomes.
+
+### Source-site map and conformance finding
+
+| model action | current source site | abstraction and conformance limit |
+| --- | --- | --- |
+| `BeginDestroy`, `Terminalize` | `control/lib/embervm/session_manager.ex` terminal paths; `session_store.ex` exact destroy and transition calls | Multiple terminal reasons collapse to `terminal`. The model keeps `destroying` distinct because the store classifies it as live. |
+| `RecordRelinquish` | `noded/server/store.go`, `RetireVolume`; `noded/volume/volume.go`, `WriteRetirementIntent` | The marker write is durable on the node. The current control-plane caller spawns this RPC and does not await its acknowledgement before terminal transition, represented by `RequireDurableRelinquish = FALSE` in the ordering negative. |
+| `StartExport`, `CompleteExport` | `noded/server/store.go`, `enqueueExport`, `runExport`, and `exportWithKeys` | Queue admission is initiation, not completion. The model publishes S3 only on successful export completion. |
+| `RemoveLocal` | `noded/server/store.go`, `completeRetirement`; `noded/volume/volume.go`, `DeleteSession` | Current code deletes only after export success, which conforms to the positive no-loss guard under the stated storage assumptions. |
+| `CrashNode`, `RecoverNode` | `StartStoreLoops` and `enqueueRetirementSweep` in `noded/server/store.go` | Models daemon restart with disk retained. It does not claim coverage of physical disk loss. |
+| `BeginHeir` | `validate_restore_lineage` and `check_restore_not_inflight` in `control/lib/embervm/session_manager.ex` | The current claim is a `MapSet` in SessionManager memory. It is not a durable CAS or unique lineage reservation. The validator also accepts `:destroying`, although `SessionStore` includes it in live states. |
+| `FinishHeir` | `restore_then_prime`, `restore_session_workspace`, `prime`, and `register_and_start` in `session_manager.ex`; `RestoreArtifact` in `noded/server/store.go` | The model collapses RPC internals to an heir completion. Current restore waits for an existing retirement marker, but it cannot wait for a marker whose asynchronous RPC has not yet landed. |
+| `CrashCP`, `RecoverCP` | SessionManager restart and SessionStore rebuild | Durable session rows rebuild, but in-flight lineage claims do not. The model conservatively permits an already admitted external worker to finish after manager loss. |
+| `ReconnectOld` | required reconnect comparison, with the current restore capability assembled in `restore_session_workspace` | Session workspace restore currently passes generation `0`; noded documents that workspaces have no generation ledger. No current source site performs the modeled comparison. |
+
+The source audit therefore found three requested-invariant conformance defects
+and one required-ordering defect, all kept as model results rather than runtime
+changes in this task:
+
+1. The exclusive-heir reservation is volatile across a control-plane restart.
+2. `:destroying` is inheritance-eligible while still classified as live.
+3. There is no session-workspace generation comparison on reconnect.
+4. The durable retirement acknowledgement is not ordered before terminal
+   eligibility and successor admission.
+
+A bounded runtime proposal is to add one durable per-lineage row containing a
+monotonic generation, relinquished generation, and nullable heir reservation;
+commit relinquish before terminal eligibility; claim the next generation with a
+database compare-and-swap; include that generation in the workspace marker and
+S3 metadata; and reject or quarantine reconnects whose generation differs.
+That is a proposal only. This change intentionally does not modify runtime
+behavior and does not depend on #4761.
+
 ## Stateful lifecycle and bounded escapes (`stateful.tla`)
 
 The stateful model names all 11 implementation states and all 37 legal FSM
@@ -454,7 +574,7 @@ PlusCal translation region to regenerate.
 
 ## Running TLC
 
-CI runs all twenty-two genrules via `bazel test //projects/embervm/specs/...`. There is
+CI runs all twenty-eight genrules via `bazel test //projects/embervm/specs/...`. There is
 no local Bazel test loop in this repo. To iterate on a spec locally you need a JRE
 (>= 11) and `tla2tools.jar` (v1.7.4, the version `//bazel/tla` pins); then, from a
 copy of this directory (swap `adoption` for `bank_relight` for protocol 2):
@@ -472,7 +592,7 @@ Never hand-edit the translation region.
 
 ## Scope
 
-The pilot now models six protocols: protocol 1 (VM lifecycle + adoption,
+The pilot now models seven protocols: protocol 1 (VM lifecycle + adoption,
 `adoption.tla`), protocol 2 (session bank/relight generation pairing,
 `bank_relight.tla`, added by the ADR embervm/014 PR 5 follow-through since the
 pilot earned its keep), protocol 3 (the fail-closed quota gate, `quota.tla`),
@@ -480,6 +600,8 @@ and protocol 4 (generation issuance authority: blessing, wake grants,
 quarantine, checkpoint-abort auto-heal, `generation_issuance.tla`, added for
 issue #4700). The SessionManager create-starvation model `session_create.tla`
 covers issue #5051 alongside them. The stateful lifecycle model `stateful.tla`
-covers the bounded destroy and writable-attach escapes. Layer-2 trace validation
+covers the bounded destroy and writable-attach escapes. The session lineage
+handoff model `lineage_handoff.tla` covers issue #4701 and explicitly separates
+the required protocol from current source conformance. Layer-2 trace validation
 (op-log events mapped to TLA+ actions and checked against a drill trace) is a
 separate follow-up and is deliberately not built here.
