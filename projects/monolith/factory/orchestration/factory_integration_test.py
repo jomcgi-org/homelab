@@ -86,6 +86,8 @@ def db(tmp_path, monkeypatch):
         monkeypatch.setattr(module, "get_engine", lambda: engine)
 
     def github_branch(repo, suffix):
+        if suffix == "pulls/21":
+            return {"additions": 100, "deletions": 20}
         with Session(engine) as session:
             expected = {
                 (task.repo, f"git/ref/heads/{quote('factory/' + task.id, safe='')}")

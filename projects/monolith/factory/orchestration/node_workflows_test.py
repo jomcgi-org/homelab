@@ -283,12 +283,13 @@ def test_invalid_list_price_still_consumes_the_reservation(harness):
     assert "full admission reservation" in result["reason"]
 
 
-def test_reported_cost_overrun_keeps_actual_spend_and_fails(harness):
+def test_reported_cost_overrun_keeps_actual_spend_and_artifact(harness):
     harness.turn["cost_usd"] = 3
     result = nodes.execute_node.__wrapped__(pin())
-    assert result["status"] == "failed"
+    assert result["status"] == "succeeded"
     assert result["cost_usd"] == 3
-    assert "cost_exceeded" in result["reason"]
+    assert result["value"] == {"ok": True}
+    assert "cost_over_reservation" in result["reason"]
 
 
 @pytest.mark.parametrize(
@@ -930,7 +931,7 @@ def test_reconcile_retains_hold_when_session_has_more_work(reconciliation_db, pe
     "fields,status,cost",
     [
         ({"cost_usd": None}, "succeeded", None),
-        ({"cost_usd": 3.0}, "failed", 3.0),
+        ({"cost_usd": 3.0}, "succeeded", 3.0),
         ({"artifact_blob": b'{"ok":"bad"}'}, "failed", 0.5),
         (
             {
@@ -1390,3 +1391,50 @@ def test_start_guard_passes_exact_workflow_identity(monkeypatch):
     )
     nodes._start_guard("task")
     assert observed == [("task", {"start_key": None})]
+
+
+@pytest.mark.parametrize("cost", [1.0, 7.02])
+def test_review_verdict_survives_provider_spend(harness, cost):
+    from factory.orchestration.factory_conductor import REVIEW_SCHEMA
+
+    verdict = {
+        "verdict": "approve",
+        "summary": "Ready",
+        "pr_number": 21,
+        "head_sha": "a" * 40,
+    }
+    harness.turn["cost_usd"] = cost
+    harness.stored.update(
+        artifact_blob=json.dumps(verdict).encode(), schema=REVIEW_SCHEMA
+    )
+    result = nodes.execute_node.__wrapped__(
+        pin(
+            node_key="review_delivery",
+            model="opus",
+            max_cost_usd=4.0,
+            artifact_schema=REVIEW_SCHEMA,
+        )
+    )
+    assert result["status"] == "succeeded"
+    assert result["value"] == verdict
+    assert result["cost_usd"] == cost
+    assert ("cost_over_reservation" in (result["reason"] or "")) == (cost > 4.0)
+
+
+def test_reconciled_review_verdict_survives_provider_spend(reconciliation_db):
+    from factory.orchestration.factory_conductor import REVIEW_SCHEMA
+
+    state = reconciliation_db
+    verdict = {
+        "verdict": "approve",
+        "summary": "Ready",
+        "pr_number": 21,
+        "head_sha": "a" * 40,
+    }
+    state.pin["artifact_schema"] = REVIEW_SCHEMA
+    state.complete(cost_usd=7.02, artifact_blob=json.dumps(verdict).encode())
+    result = nodes.reconcile_completed_node(state.pin, 7)
+    assert result["status"] == "succeeded"
+    assert result["value"] == verdict
+    assert result["cost_usd"] == 7.02
+    assert "cost_over_reservation" in result["reason"]

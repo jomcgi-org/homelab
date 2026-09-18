@@ -863,12 +863,11 @@ def execute_node(pin: dict) -> dict:
             "list_priced_cost: the provider reported no spend, so this attempt "
             f"settles at the list price of its token usage{ceiling}"
         )
-    # Only measured provider spend fails a delivery. A list price is an estimate,
-    # so it settles the ledger without discarding completed work.
-    overrun = basis == "provider" and cost > pin["max_cost_usd"]
+    # Completed artifacts survive an overrun; actual spend constrains later starts.
+    overrun = cost is not None and cost > pin["max_cost_usd"]
     if overrun:
         reasons.append(
-            "cost_exceeded: reported spend exceeds reservation; provider cutoff is not enforced"
+            "cost_over_reservation: completed spend exceeds its admission reservation"
         )
     if artifact["status"] != "ok":
         reasons.append(
@@ -888,7 +887,7 @@ def execute_node(pin: dict) -> dict:
         "escalated"
         if escalated
         else "failed"
-        if overrun or artifact["status"] != "ok"
+        if artifact["status"] != "ok"
         else "succeeded"
     )
     result = _result(
@@ -1089,12 +1088,11 @@ def reconcile_completed_node(pin: dict, session_id: int | None) -> dict | None:
             "list_priced_cost: the provider reported no spend, so this attempt "
             f"settles at the list price of its token usage{ceiling}"
         )
-    # Only measured provider spend fails a delivery. A list price is an estimate,
-    # so it settles the ledger without discarding completed work.
-    overrun = basis == "provider" and cost > pin["max_cost_usd"]
+    # Completed artifacts survive an overrun; actual spend constrains later starts.
+    overrun = cost is not None and cost > pin["max_cost_usd"]
     if overrun:
         reasons.append(
-            "cost_exceeded: reported spend exceeds reservation; provider cutoff is not enforced"
+            "cost_over_reservation: completed spend exceeds its admission reservation"
         )
     if artifact["status"] != "ok":
         reasons.append(
@@ -1114,7 +1112,7 @@ def reconcile_completed_node(pin: dict, session_id: int | None) -> dict | None:
         "escalated"
         if escalated
         else "failed"
-        if overrun or artifact["status"] != "ok"
+        if artifact["status"] != "ok"
         else "succeeded",
         session_id,
         pin["attempt"],

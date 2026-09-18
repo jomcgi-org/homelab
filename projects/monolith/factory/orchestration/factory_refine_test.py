@@ -67,7 +67,7 @@ def db(tmp_path, monkeypatch):
     engine.dispose()
 
 
-def make_task(task_class="refine"):
+def make_task(task_class="refine", **overrides):
     policy = {
         "repo": "owner/repo",
         "issue_numbers": [7],
@@ -84,6 +84,7 @@ def make_task(task_class="refine"):
         "task_timeout_seconds": 3600,
         "max_attempts": 4,
     }
+    policy.update(overrides)
     assert controls.set_control("configure", "operator", policy=policy)["ok"]
     assert controls.set_control("enable", "operator")["ok"]
     receive_issue(
@@ -1731,3 +1732,15 @@ def test_a_resolved_escalation_is_never_overwritten(db, monkeypatch):
         "option_key": "hold",
         "actor": "joe",
     }
+
+
+@pytest.mark.parametrize("model", ["astra", "spark"])
+def test_refine_node_pricing(db, monkeypatch, model):
+    monkeypatch.setattr(
+        refine, "select_model", lambda *_: {"model": model, "skipped": []}
+    )
+    task, policy = make_task(allowed_models=["opus", "luna", "astra", "spark"])
+    node = add_refine_node(task, policy)
+    assert node["model"] == model
+    assert node["max_cost_usd"] == 0.5
+    assert graph.admit_dispatch(task["id"], node["node_key"]).pin["max_cost_usd"] == 0.5
