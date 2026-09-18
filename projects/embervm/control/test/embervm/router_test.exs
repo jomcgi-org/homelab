@@ -157,6 +157,12 @@ defmodule Embervm.RouterTest do
     def invoke(_srv, "s-brick-gone", _req), do: {:error, :brick_gone}
     def invoke(_srv, _id, _req), do: {:error, :not_found}
 
+    def interrupt(_srv, "s-live", "dispatch-live"),
+      do: {:ok, %{terminal_reason: "user_interrupt", killed: false, timeout: false}}
+
+    def interrupt(_srv, "s-live", _dispatch), do: {:error, :stale_dispatch}
+    def interrupt(_srv, _id, _dispatch), do: {:error, :not_found}
+
     def stop_identity(_srv, _id), do: nil
     def destroy(_srv, "s-live", %{"session_id" => "s-live", "invoke_started_at" => nil}), do: {:ok, :destroying}
     def destroy(_srv, _id, _expected), do: {:error, :stop_precondition_failed}
@@ -1547,6 +1553,35 @@ defmodule Embervm.RouterTest do
     resp = req(:post, "/v1/sessions/s-term/invoke", auth("sess-token-term"), "x")
     assert resp.status == 410
     assert json(resp.body)["reason"] == "destroyed"
+  end
+
+  test "interrupt requires the exact session token and active dispatch" do
+    with_session_fakes()
+    body = ~s({"dispatch_id":"dispatch-live"})
+
+    assert req(:post, "/v1/sessions/s-live/interrupt", [], body).status == 401
+    assert req(:post, "/v1/sessions/s-live/interrupt", auth("good"), body).status == 403
+
+    cross = req(:post, "/v1/sessions/s-live/interrupt", auth("sess-token-queue"), body)
+    assert cross.status == 403
+
+    stale =
+      req(
+        :post,
+        "/v1/sessions/s-live/interrupt",
+        auth("sess-token-live"),
+        ~s({"dispatch_id":"dispatch-old"})
+      )
+
+    assert stale.status == 409
+    ok = req(:post, "/v1/sessions/s-live/interrupt", auth("sess-token-live"), body)
+    assert ok.status == 200
+    assert json(ok.body) == %{
+             "status" => "requested",
+             "terminal_reason" => "user_interrupt",
+             "killed" => false,
+             "timeout" => false
+           }
   end
 
   test "invoke queue-full maps to 429" do

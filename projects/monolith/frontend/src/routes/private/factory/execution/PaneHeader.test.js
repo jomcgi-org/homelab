@@ -128,6 +128,25 @@ describe("run header menu", () => {
 });
 
 describe("session header menu", () => {
+  test("gates and confirms exact-turn stop", async () => {
+    const disabled = await render();
+    await click(menuButton(disabled));
+    expect(disabled.querySelector('[data-menu-item="stop"]').disabled).toBe(
+      true,
+    );
+
+    const onStop = vi.fn();
+    const target = await render({ canStop: true, onStop });
+    await click(menuButton(target));
+    const stop = target.querySelector('[data-menu-item="stop"]');
+    expect(stop.disabled).toBe(false);
+    await click(stop);
+    expect(onStop).not.toHaveBeenCalled();
+    expect(stop.textContent).toBe(P.labels.stopTurnConfirmMenu);
+    await click(stop);
+    expect(onStop).toHaveBeenCalledTimes(1);
+  });
+
   test("opens voice companion from session and run menus", async () => {
     const sessionVoice = vi.fn();
     const sessionTarget = await render({ onVoice: sessionVoice });

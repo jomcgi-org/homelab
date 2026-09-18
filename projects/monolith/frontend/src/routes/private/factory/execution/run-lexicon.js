@@ -123,6 +123,9 @@ export const RUN_LEXICON = {
     sessionMenu: "Session actions",
     headerBackToRun: "Back to run",
     headerCopyId: "Copy id",
+    stopTurnMenu: "Stop active turn",
+    stopTurnConfirmMenu: "Stop turn? Confirm",
+    stoppingTurnMenu: "Stop requested…",
     headerDestroySession: "Destroy session",
     destroyConfirmMenu: "Destroy? Confirm",
     // staleShowing trails off into an age ("unreachable, showing"), so it

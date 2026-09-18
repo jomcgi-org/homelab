@@ -17,7 +17,7 @@ defmodule Embervm.SessionManagerTest do
   alias Embervm.{Dispatcher, NodeCapacity, SessionManager, SessionStore, TaskStore, WorkloadCatalog}
   alias Embervm.KeyService.Envelope
   alias Embervm.OpLog.SQLite
-  alias Embervm.Node.V1.{BankResponse, GuestResponse, PrimeResponse, RelightResponse, SessionAssignResponse, UsageStats}
+  alias Embervm.Node.V1.{BankResponse, GuestResponse, PrimeResponse, RelightResponse, SessionAssignResponse, SessionInterruptResponse, UsageStats}
 
   @bank_dial_miss_limit 30
 
@@ -202,6 +202,15 @@ defmodule Embervm.SessionManagerTest do
     session_opts = [
       channel_fun: Keyword.get(opts, :session_channel_fun, fn _node -> {:ok, :ch} end),
       assign_fun: assign_fun,
+      interrupt_fun:
+        Keyword.get(opts, :interrupt_fun, fn _ch, _req ->
+          {:ok,
+           %SessionInterruptResponse{
+             terminal_reason: "user_interrupt",
+             killed: false,
+             timeout: false
+           }}
+        end),
       destroy_fun: Keyword.get(opts, :destroy_fun, fn _ch, _vm -> {:ok, %{teardown_confirmed: true}} end),
       destroy_exact_fun: Keyword.get(opts, :destroy_exact_fun, fn _ch, _req -> {:error, :unsupported} end),
       invalidate_fun: fn _node, _ch -> :ok end,
@@ -3673,6 +3682,150 @@ defmodule Embervm.SessionManagerTest do
     assert {:ok, %{state: :running}} = SessionStore.get(ctx.store, created.session_id)
     assert [{pid, _}] = Registry.lookup(ctx.registry, created.session_id)
     assert Process.alive?(pid)
+  end
+
+  test "interrupt is exact, duplicate-safe, and leaves the session reusable" do
+    parent = self()
+
+    assign_fun = fn _channel, req ->
+      send(parent, {:interrupt_assign_started, self(), req.dispatch_id})
+
+      receive do
+        {:finish, body} ->
+          {:ok,
+           %SessionAssignResponse{
+             response: %GuestResponse{status_code: 200, headers: %{}, body: body},
+             usage: %UsageStats{cpu_ms: 1, peak_rss_mib: 1, wall_ms: 1},
+             suspect: false
+           }}
+      end
+    end
+
+    interrupt_fun = fn _channel, req ->
+      send(parent, {:interrupt_relayed, req.dispatch_id})
+
+      {:ok,
+       %SessionInterruptResponse{
+         terminal_reason: "user_interrupt",
+         killed: false,
+         timeout: false
+       }}
+    end
+
+    ctx = start_stack(assign_fun: assign_fun, interrupt_fun: interrupt_fun)
+    put_session_workload(ctx, "wl-interrupt")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-interrupt", "p1")
+
+    first =
+      Task.async(fn ->
+        SessionManager.invoke(ctx.mgr, created.session_id, %{body: "first", dispatch_id: "dispatch-1"})
+      end)
+
+    assert_receive {:interrupt_assign_started, worker, "dispatch-1"}, 1_000
+    assert {:error, :stale_dispatch} =
+             SessionManager.interrupt(ctx.mgr, created.session_id, "dispatch-old")
+
+    stops =
+      for _ <- 1..2 do
+        Task.async(fn -> SessionManager.interrupt(ctx.mgr, created.session_id, "dispatch-1") end)
+      end
+
+    assert_receive {:interrupt_relayed, "dispatch-1"}, 1_000
+    assert Enum.map(stops, &Task.await(&1, 1_000)) == [
+             {:ok, %{terminal_reason: "user_interrupt", killed: false, timeout: false}},
+             {:ok, %{terminal_reason: "user_interrupt", killed: false, timeout: false}}
+           ]
+    refute_receive {:interrupt_relayed, "dispatch-1"}, 50
+    send(worker, {:finish, "interrupted"})
+    assert {:ok, %{body: "interrupted"}} = Task.await(first, 1_000)
+
+    second =
+      Task.async(fn ->
+        SessionManager.invoke(ctx.mgr, created.session_id, %{body: "second", dispatch_id: "dispatch-2"})
+      end)
+
+    assert_receive {:interrupt_assign_started, successor, "dispatch-2"}, 1_000
+    assert {:error, :stale_dispatch} =
+             SessionManager.interrupt(ctx.mgr, created.session_id, "dispatch-1")
+    send(successor, {:finish, "completed"})
+    assert {:ok, %{body: "completed"}} = Task.await(second, 1_000)
+    assert {:ok, %{state: :running}} = SessionStore.get(ctx.store, created.session_id)
+  end
+
+  test "interrupt timeout does not settle or destroy the active invoke" do
+    parent = self()
+
+    assign_fun = fn _channel, req ->
+      send(parent, {:timeout_assign_started, self(), req.dispatch_id})
+
+      receive do
+        :finish ->
+          {:ok,
+           %SessionAssignResponse{
+             response: %GuestResponse{status_code: 200, headers: %{}, body: "completed"},
+             usage: %UsageStats{cpu_ms: 1, peak_rss_mib: 1, wall_ms: 1},
+             suspect: false
+           }}
+      end
+    end
+
+    interrupt_fun = fn _channel, _req ->
+      {:error, %GRPC.RPCError{status: 4, message: "deadline exceeded"}}
+    end
+
+    ctx = start_stack(assign_fun: assign_fun, interrupt_fun: interrupt_fun)
+    put_session_workload(ctx, "wl-interrupt-timeout")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-interrupt-timeout", "p1")
+    invoke =
+      Task.async(fn ->
+        SessionManager.invoke(ctx.mgr, created.session_id, %{body: "slow", dispatch_id: "dispatch-timeout"})
+      end)
+    assert_receive {:timeout_assign_started, worker, "dispatch-timeout"}, 1_000
+    assert {:error, :deadline_exceeded} =
+             SessionManager.interrupt(ctx.mgr, created.session_id, "dispatch-timeout")
+    assert {:ok, %{state: :running}} = SessionStore.get(ctx.store, created.session_id)
+    send(worker, :finish)
+    assert {:ok, %{body: "completed"}} = Task.await(invoke, 1_000)
+  end
+
+  test "interrupt maps a downstream dispatch recheck to stale" do
+    parent = self()
+
+    assign_fun = fn _channel, req ->
+      send(parent, {:stale_assign_started, self(), req.dispatch_id})
+
+      receive do
+        :finish ->
+          {:ok,
+           %SessionAssignResponse{
+             response: %GuestResponse{status_code: 200, headers: %{}, body: "completed"},
+             usage: %UsageStats{cpu_ms: 1, peak_rss_mib: 1, wall_ms: 1},
+             suspect: false
+           }}
+      end
+    end
+
+    interrupt_fun = fn _channel, _req ->
+      {:error, %GRPC.RPCError{status: 9, message: "failed precondition"}}
+    end
+
+    ctx = start_stack(assign_fun: assign_fun, interrupt_fun: interrupt_fun)
+    put_session_workload(ctx, "wl-interrupt-stale")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-interrupt-stale", "p1")
+
+    invoke =
+      Task.async(fn ->
+        SessionManager.invoke(ctx.mgr, created.session_id, %{
+          body: "slow",
+          dispatch_id: "dispatch-stale"
+        })
+      end)
+
+    assert_receive {:stale_assign_started, worker, "dispatch-stale"}, 1_000
+    assert {:error, :stale_dispatch} =
+             SessionManager.interrupt(ctx.mgr, created.session_id, "dispatch-stale")
+    send(worker, :finish)
+    assert {:ok, %{body: "completed"}} = Task.await(invoke, 1_000)
   end
 
   test "the queue cap rejects pile-ups past invokeQueueCap with :queue_full" do

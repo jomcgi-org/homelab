@@ -5196,6 +5196,16 @@ class ProcessManager:
         self._remediation_lock = threading.Lock()
         self._remediation_attempts = 0
         self._remediation_thread = None
+        # Exact dispatch identity for turn-level interrupt. This lock is held
+        # through the adapter signal itself, so a completed turn cannot clear
+        # its identity and let a successor start in the validation-to-signal
+        # window. Adapter interrupt waits on adapter-owned completion events and
+        # never needs this lock.
+        self._dispatch_lock = threading.Lock()
+        self._active_dispatch_id = None
+        self._active_dispatch_adapter = None
+        self._last_interrupt_id = None
+        self._last_interrupt_result = None
         _write_git_proxy_helper()
         _create_claude_mcp_config_dir()
         cli_workspace = os.path.join(self.workspace, "src")
@@ -5591,6 +5601,7 @@ class ProcessManager:
         system_prompt=None,
         thinking=None,
         artifact_path=None,
+        dispatch_id=None,
     ):
         total_start = _turn_timing_now()
         with self._mount_lock:
@@ -5633,6 +5644,14 @@ class ProcessManager:
             getattr(self, "workspace", DEFAULT_WORKSPACE), "src"
         )
         turn_base = _capture_turn_base(checkout_dir)
+        dispatch_bound = False
+        if dispatch_id is not None:
+            with self._dispatch_lock:
+                if self._active_dispatch_id is not None:
+                    raise SessionConflictError("another dispatch is already active")
+                self._active_dispatch_id = dispatch_id
+                self._active_dispatch_adapter = adapter
+                dispatch_bound = True
         try:
             extra = {"progress_token": progress_token} if progress_token else {}
             prompt = {"system_prompt": system_prompt} if system_prompt else {}
@@ -5678,6 +5697,11 @@ class ProcessManager:
                     record["artifact"] = artifact
             return record
         finally:
+            if dispatch_bound:
+                with self._dispatch_lock:
+                    if self._active_dispatch_id == dispatch_id:
+                        self._active_dispatch_id = None
+                        self._active_dispatch_adapter = None
             # End-of-turn quiescence point: park only happens after a completed
             # turn plus idle, so flushing here guarantees the device has the
             # full session file well before any later park SIGKILLs the VM
@@ -5689,19 +5713,25 @@ class ProcessManager:
             _sync_session_volume()
             _emit_elapsed("total", total_start)
 
-    def interrupt(self):
-        # An interrupt has no model in its request, so interrupt every adapter.
-        pi_result = self.pi.interrupt()
-        muse_result = self.muse.interrupt()
-        codex_result = self.codex.interrupt()
-        claude_result = self.claude.interrupt()
-        if claude_result.get("killed"):
-            return claude_result
-        if codex_result.get("killed"):
-            return codex_result
-        if muse_result.get("killed"):
-            return muse_result
-        return pi_result
+    def interrupt(self, dispatch_id):
+        with self._dispatch_lock:
+            if (
+                self._last_interrupt_id == dispatch_id
+                and self._last_interrupt_result is not None
+            ):
+                return dict(self._last_interrupt_result)
+            if (
+                not dispatch_id
+                or self._active_dispatch_id != dispatch_id
+                or self._active_dispatch_adapter is None
+            ):
+                raise SessionConflictError("dispatch is no longer active")
+            # Keep the identity lock until the signal is sent and the adapter's
+            # bounded wait returns. A successor cannot bind during this window.
+            result = self._active_dispatch_adapter.interrupt()
+            self._last_interrupt_id = dispatch_id
+            self._last_interrupt_result = dict(result)
+            return result
 
     def _close_process(self, kill=False):
         self.claude._close_process(kill=kill)
@@ -5737,10 +5767,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             self._send(404, {"error": "not found"})
 
     def do_POST(self):
-        if self.path == INTERRUPT_PATH:
-            self._send(200, self.manager.interrupt())
-            return
-        if self.path not in (TURN_PATH, CLOCK_PATH):
+        if self.path not in (TURN_PATH, CLOCK_PATH, INTERRUPT_PATH):
             self._send(404, {"error": "not found"})
             return
         try:
@@ -5761,6 +5788,26 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             payload = json.loads(raw)
         except (UnicodeDecodeError, json.JSONDecodeError, TypeError):
             self._send(400, {"error": "invalid JSON body"})
+            return
+        if self.path == INTERRUPT_PATH:
+            dispatch_id = (
+                payload.get("dispatch_id") if isinstance(payload, dict) else None
+            )
+            if (
+                not isinstance(dispatch_id, str)
+                or not dispatch_id.strip()
+                or set(payload) != {"dispatch_id"}
+            ):
+                self._send(400, {"error": "dispatch_id must be a non-empty string"})
+                return
+            try:
+                outcome = self.manager.interrupt(dispatch_id.strip())
+            except SessionConflictError as exc:
+                self._send(409, {"error": str(exc)})
+            except Exception as exc:
+                self._send(503, {"error": str(exc)})
+            else:
+                self._send(200, outcome)
             return
         message = payload.get("message") if isinstance(payload, dict) else None
         if not isinstance(message, str) or not message.strip():
@@ -5815,6 +5862,12 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                 },
             )
             return
+        dispatch_id = payload.get("dispatch_id")
+        if dispatch_id is not None and (
+            not isinstance(dispatch_id, str) or not dispatch_id.strip()
+        ):
+            self._send(400, {"error": "dispatch_id must be a non-empty string"})
+            return
         if "session_id" in payload:
             sid = payload.get("session_id")
             if sid is not None and (not isinstance(sid, str) or not sid.strip()):
@@ -5831,11 +5884,19 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             prompt = {"system_prompt": system_prompt.strip()} if system_prompt else {}
             artifact = {"artifact_path": artifact_path.strip()} if artifact_path else {}
             thinking_override = {"thinking": thinking} if thinking is not None else {}
+            dispatch = {"dispatch_id": dispatch_id.strip()} if dispatch_id else {}
             record = self.manager.turn(
                 message,
                 session_id,
                 payload.get("model"),
-                **(hydration | progress | prompt | artifact | thinking_override),
+                **(
+                    hydration
+                    | progress
+                    | prompt
+                    | artifact
+                    | thinking_override
+                    | dispatch
+                ),
             )
             if repo is not None and isinstance(record, dict):
                 if getattr(self.manager, "_hydration_error", None):

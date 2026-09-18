@@ -450,6 +450,91 @@ def test_prewarm_uses_session_invoke_health_probe_with_short_timeout(monkeypatch
     assert transport.PREWARM_SESSION_TIMEOUT == 2.0
 
 
+def test_deliver_and_interrupt_share_exact_dispatch_identity(monkeypatch):
+    requests = []
+
+    async def handler(request):
+        requests.append(request)
+        if request.url.path.endswith("/invoke"):
+            return httpx.Response(
+                200,
+                json={"result": "done", "terminal_reason": "completed"},
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            json={
+                "status": "requested",
+                "terminal_reason": "user_interrupt",
+                "killed": False,
+                "timeout": False,
+            },
+            request=request,
+        )
+
+    _client(monkeypatch, handler)
+    client = transport.EmberVmShimTransport()
+    guest = transport.EmberSession("s1", "t1", None)
+    dispatch_id = transport.exact_dispatch_id(7, "s1", 3, "replica:claim", 2)
+
+    asyncio.run(
+        client.deliver(
+            guest,
+            None,
+            "work",
+            agent_session_id=7,
+            turn_seq=3,
+            claim_owner="replica:claim",
+            dispatch_count=2,
+        )
+    )
+    result = asyncio.run(client.interrupt_session("s1", "t1", dispatch_id))
+
+    invoke = requests[0]
+    assert invoke.headers["X-Ember-Dispatch-Id"] == dispatch_id
+    assert json.loads(invoke.content)["dispatch_id"] == dispatch_id
+    interrupt = requests[1]
+    assert interrupt.url.path == "/v1/sessions/s1/interrupt"
+    assert interrupt.headers["Authorization"] == "Bearer t1"
+    assert json.loads(interrupt.content) == {"dispatch_id": dispatch_id}
+    assert result["status"] == "requested"
+
+
+def test_interrupt_is_bounded_and_maps_stale_without_destroy(monkeypatch):
+    timeout_values = []
+    real_timeout = httpx.Timeout
+
+    async def handler(request):
+        return httpx.Response(
+            409, json={"error": "session dispatch is no longer active"}, request=request
+        )
+
+    def capture_timeout(value, **kwargs):
+        timeout_values.append(real_timeout(value, **kwargs))
+        return timeout_values[-1]
+
+    _client(monkeypatch, handler)
+    monkeypatch.setattr(transport.httpx, "Timeout", capture_timeout)
+    with pytest.raises(transport.EmberDispatchStale):
+        asyncio.run(
+            transport.EmberVmShimTransport().interrupt_session("s1", "t1", "a" * 64)
+        )
+    assert [value.read for value in timeout_values] == [30.0]
+    assert transport.DESTROY_SESSION_READ_TIMEOUT == 30.0
+
+
+def test_interrupt_endpoint_absence_is_unconfirmed_not_stale(monkeypatch):
+    async def handler(request):
+        return httpx.Response(404, json={"error": "not found"}, request=request)
+
+    _client(monkeypatch, handler)
+    with pytest.raises(transport.EmberVMTransportError) as error:
+        asyncio.run(
+            transport.EmberVmShimTransport().interrupt_session("s1", "t1", "a" * 64)
+        )
+    assert not isinstance(error.value, transport.EmberDispatchStale)
+
+
 def test_create_session_retryable_backoff_and_restore_payload(monkeypatch):
     attempts = []
     sleeps = []
