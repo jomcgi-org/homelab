@@ -503,9 +503,13 @@ def feedback_db(tmp_path, monkeypatch):
         db.commit()
     for module in (conductor, conductor.graph, controls):
         monkeypatch.setattr(module, "get_engine", lambda: engine)
-    monkeypatch.setattr(
-        conductor, "github_get", lambda *_args: pytest.fail("unexpected GitHub read")
-    )
+
+    def github_read(_repo, path):
+        if path.startswith("pulls/"):
+            return {}
+        pytest.fail(f"unexpected GitHub read: {path}")
+
+    monkeypatch.setattr(conductor, "github_get", github_read)
     # Dispatch reads the shared background pool now, the serial lane included,
     # and this fixture holds no admission tables. A test that cares about the
     # pool sets its own count afterwards, which wins over this one.
@@ -5682,6 +5686,7 @@ def test_first_planner_node_follows_conductor_pool_and_quota(
     task, policy = pooled_task(monkeypatch, quota)
     conductor.reconcile_task(task["id"], policy, object())
     assert _node(task["id"], "conductor_1")["model"] == expected
+    assert _node(task["id"], "conductor_1")["max_cost_usd"] == 0.5
 
 
 def test_planner_add_node_without_model_uses_worker_pool_when_codex_walled(
@@ -6124,6 +6129,7 @@ def test_changes_requested_opens_an_engine_owned_correction_round(feedback_db):
     assert correct["prompt"].startswith(conductor._boundary(task))
     review = nodes["review_1"]
     assert review["max_attempts"] == 1
+    assert review["max_cost_usd"] == 8.0
     assert review["deps"] == ["correct_1"] and review["model"] == "opus"
     assert review["kind"] == "gate" and not review["side_effects"]
     assert review["prompt"].startswith(conductor._boundary(task, review=True))
@@ -6325,7 +6331,11 @@ def test_a_settled_queue_conflict_is_reopened_and_consumed_once(
     monkeypatch.setattr(
         conductor,
         "github_get",
-        lambda *_args: pytest.fail("the durable queue marker supplies the conflict"),
+        lambda _repo, path: (
+            {}
+            if path == "pulls/21"
+            else pytest.fail("the durable queue marker supplies the conflict")
+        ),
     )
 
     conductor.reconcile_task(task["id"], policy, object())
@@ -7375,6 +7385,8 @@ def task_ref(task_id, head=HEAD_ONE, *, existing=("task",)):
     import httpx
 
     def get(_repo, suffix):
+        if suffix.startswith("pulls/"):
+            return {}
         assert suffix.startswith("git/ref/heads/")
         branch = suffix.removeprefix("git/ref/heads/").replace("%2F", "/")
         known = {"task": f"factory/{task_id}"}
@@ -8040,7 +8052,7 @@ def test_an_over_envelope_plan_is_refused_whole_with_its_excess(feedback_db):
     # spare figure read off a graph with no review node would send the planner
     # back with a six-turn plan that derives eight and is refused again.
     assert detail["spare_turns"] == 4
-    assert detail["spare_usd"] == round(policy["task_budget_usd"] - 4.25, 6)
+    assert detail["spare_usd"] == round(policy["task_budget_usd"] - 10.25, 6)
     # Nothing was derived, so admission still reads the envelope.
     assert controls.task_snapshot(task["id"])["allowance"]["derived"] is False
     # The next planner is told exactly what to shrink.
@@ -9158,7 +9170,7 @@ def test_review_recovery_keeps_task_accounting_and_stops_at_its_durable_cap(
     nodes = {n["node_key"]: n for n in conductor.graph.load_graph(task["id"])}
     assert "conductor_1" in nodes and "correct_4" not in nodes
     assert conductor._review_rounds_used(task["id"]) == 3
-    assert len(reads) == 6
+    assert len(reads) == 8
 
 
 def test_review_recovery_waits_for_ci_without_spending_a_planner_turn(
@@ -9260,7 +9272,7 @@ def test_review_recovery_transient_read_waits_and_retries(feedback_db, monkeypat
     assert conductor._review_rounds_used(task["id"]) == 2
 
 
-@pytest.mark.parametrize("envelope", [{"max_turns": 5}, {"task_budget_usd": 4.5}])
+@pytest.mark.parametrize("envelope", [{"max_turns": 5}, {"task_budget_usd": 10.5}])
 def test_review_recovery_never_exceeds_the_task_envelope(
     feedback_db, monkeypatch, envelope
 ):
@@ -10298,7 +10310,11 @@ def test_queue_ejection_opens_evidence_assessment_and_independent_review(
     )
     assert result["ok"]
     monkeypatch.setattr(
-        conductor, "github_get", lambda *_: pytest.fail("durable request is sufficient")
+        conductor,
+        "github_get",
+        lambda _repo, path: (
+            {} if path == "pulls/21" else pytest.fail("durable request is sufficient")
+        ),
     )
     conductor.reconcile_task(task["id"], policy, object())
     nodes = {node["node_key"]: node for node in conductor.graph.load_graph(task["id"])}
@@ -10548,3 +10564,286 @@ def test_the_deadline_backstop_leaves_a_reserved_start_alone(
             select(FactoryReceipt).where(FactoryReceipt.task_id == s.task["id"])
         ).one()
         assert receipt.state != "escalated"
+
+
+@pytest.mark.parametrize(
+    "model, expected", [("astra", 0.5), ("spark", 0.5), ("opus", 4.0)]
+)
+@pytest.mark.parametrize("refine", [False, True])
+def test_planner_node_pricing(feedback_db, model, expected, refine):
+    task, policy = feedback_task(
+        turn_budget_usd=4.0, allowed_models=["astra", "spark", "opus", "luna"]
+    )
+    key = "refine_brief" if refine else "conductor_1"
+    assert conductor._add(
+        task, policy, key, "decision", [], model, "pricing", "pricing", refine=refine
+    ).ok
+    node = _node(task["id"], key)
+    assert node["max_cost_usd"] == expected
+    assert conductor.graph.budget_snapshot(task["id"])["planned_cost_usd"] == expected
+    assert (
+        conductor.graph.admit_dispatch(task["id"], key).pin["max_cost_usd"] == expected
+    )
+
+
+@pytest.mark.parametrize("lines, expected", [(0, 8.0), (100_000, 9.04)])
+def test_review_node_pricing(feedback_db, monkeypatch, lines, expected):
+    from shared import pricing
+
+    task, policy = feedback_task()
+    complete_feedback_node(task, policy, "implement_fix", {"pr_number": 21})
+    calls = []
+    monkeypatch.setattr(
+        conductor,
+        "github_get",
+        lambda repo, path: calls.append(path) or {"additions": lines, "deletions": 0},
+    )
+    monkeypatch.setattr(
+        pricing,
+        "price_usage",
+        lambda model, usage: SimpleNamespace(
+            cost_usd=(usage["input_tokens"] + usage["output_tokens"]) / 1_000_000
+        ),
+    )
+    edit = conductor._prepare_add(task, policy, plan_edit("delivery", "review"))
+    assert edit["model"] == "opus"
+    assert edit["max_cost_usd"] == expected
+    assert calls == ["pulls/21"]
+    assert conductor._add(
+        task,
+        policy,
+        "review_delivery",
+        "review",
+        [],
+        "opus",
+        "pricing",
+        "pricing",
+        review=True,
+    ).ok
+    assert _node(task["id"], "review_delivery")["max_cost_usd"] == expected
+
+
+@pytest.mark.parametrize("cost", [1.0, 7.02])
+def test_over_ceiling_review_settled_succeeded(feedback_db, cost):
+    from sqlmodel import Session, select
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryAudit
+
+    task, policy = feedback_task()
+    # A legacy reservation can be smaller than today's review floor.
+    assert conductor._add(
+        task,
+        policy,
+        "review_delivery",
+        "review",
+        [],
+        "opus",
+        "review",
+        "review",
+        review=True,
+        max_cost_usd=4.0,
+    ).ok
+    workflow = f"factory-node:{task['id']}:review_delivery:1"
+    context = {
+        "repo": task["repo"],
+        "branch": f"factory/{task['id']}",
+        "workflow_id": workflow,
+        "artifact_path": ".factory/review.json",
+        "artifact_schema": conductor.REVIEW_SCHEMA,
+    }
+    assert conductor.reserve_node(task["id"], "review_delivery", workflow, context)
+    run = conductor.graph.node_runs(task["id"])[0]
+    verdict = {
+        "verdict": "approve",
+        "summary": "Ready",
+        "pr_number": 21,
+        "head_sha": HEAD_ONE,
+    }
+    result = {
+        "status": "succeeded",
+        "session_id": 101,
+        "cost_usd": cost,
+        "head_sha": HEAD_ONE,
+        "artifact": {"status": "ok", "value": verdict},
+        "value": verdict,
+    }
+    dbos = SimpleNamespace(
+        get_workflow_status=lambda _: SimpleNamespace(status="SUCCESS"),
+        retrieve_workflow=lambda _: SimpleNamespace(get_result=lambda: result),
+    )
+    conductor._submit_or_reconcile(task, run, dbos)
+    conductor._submit_or_reconcile(task, run, dbos)
+    settled = conductor.graph.node_runs(task["id"])[0]
+    assert settled["status"] == "succeeded"
+    assert conductor._artifact(settled) == verdict
+    assert settled["accounted_cost_usd"] == cost
+    assert controls.task_snapshot(task["id"])["committed_cost_usd"] == cost
+    with Session(feedback_db) as db:
+        rows = db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == "cost_over_reservation")
+        ).all()
+        assert len(rows) == (1 if cost > 4 else 0)
+        if rows:
+            detail = json.loads(rows[0].detail_json)
+            assert detail["cost_usd"] == cost
+            assert detail["reserved_cost_usd"] == 4.0
+
+
+@pytest.mark.parametrize(
+    "limit, ledger",
+    [
+        ("task_budget", "graph"),
+        ("task_budget", "starts"),
+        ("max_task_turns_hard", "starts"),
+        ("max_planner_turns", "starts"),
+    ],
+)
+@pytest.mark.parametrize("funding_enabled", [False, True])
+def test_dispatch_refusal_audit(
+    feedback_db, monkeypatch, limit, ledger, funding_enabled
+):
+    from sqlmodel import Session, select
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_funding as funding,
+    )
+    from factory.orchestration.factory_models import FactoryAudit
+
+    monkeypatch.setenv(
+        "FACTORY_CONDUCTOR_FUNDING_ENABLED", str(funding_enabled).lower()
+    )
+    task, policy = feedback_task(
+        max_turns=5 if limit == "task_budget" else 1,
+        max_planner_turns=1,
+        task_budget_usd=8.0,
+    )
+    planner = limit == "max_planner_turns"
+    first = "conductor_1" if planner else "implement_first"
+    complete_feedback_node(task, policy, first, {})
+    key = "conductor_2" if planner else "implement_next"
+    assert conductor._add(task, policy, key, "next", [], "opus", "next", "next").ok
+    if limit == "task_budget":
+        # Late measured spend consumes headroom after this node was planned.
+        from factory.orchestration.models import SwarmNodeRun
+        from factory.orchestration.factory_models import FactoryStart
+
+        with Session(feedback_db) as db:
+            for cls in (
+                (SwarmNodeRun, FactoryStart) if ledger == "graph" else (FactoryStart,)
+            ):
+                row = db.exec(select(cls).where(cls.task_id == task["id"])).one()
+                row.cost_usd = 7.0
+                db.add(row)
+            db.commit()
+    from factory.orchestration import factory_landing
+
+    escalations, requests = [], []
+    escalate = conductor._escalate_task
+
+    def record_escalation(*args):
+        escalations.append(args)
+        return escalate(*args)
+
+    monkeypatch.setattr(conductor, "_escalate_task", record_escalation)
+    monkeypatch.setattr(conductor, "github_get", lambda *_: {"body": "Issue scope"})
+    monkeypatch.setattr(factory_landing, "github_write", lambda *_: {})
+    monkeypatch.setattr(
+        conductor, "_post_decision_card", lambda *_: "https://example.test/card"
+    )
+    monkeypatch.setattr(conductor, "_notify_escalation", lambda *_: None)
+    monkeypatch.setattr(
+        funding, "request", lambda *args, **kwargs: requests.append(args) or True
+    )
+    monkeypatch.setattr(conductor, "hydration_branch", lambda _: "main")
+    monkeypatch.setattr(conductor, "branch_hydration", lambda *_: "main")
+    nodes, runs = graph_state(task["id"])
+    assert not conductor._dispatch_ready(
+        task, nodes, runs, 1, fan_out=False, parallel=1, policy=policy
+    )
+    assert len(conductor.graph.node_runs(task["id"])) == 1
+    assert len(controls.task_snapshot(task["id"])["starts"]) == 1
+    with Session(feedback_db) as db:
+        audit = db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == "dispatch_refused")
+        ).one()
+        detail = json.loads(audit.detail_json)
+        assert detail["limit"] == limit
+        assert detail["used"] == (7 if limit == "task_budget" else 1)
+        assert detail["requested"] == (2 if limit == "task_budget" else 1)
+        assert detail["allowed"] == (8 if limit == "task_budget" else 1)
+        assert detail["allowance"] is not None
+    if funding_enabled:
+        assert requests and not escalations
+        assert not controls.task_snapshot(task["id"])["task_paused"]
+    else:
+        decision = escalations[0][1]
+        assert decision["reason"]
+        assert [option["key"] for option in decision["options"]] == [
+            "raise_envelope",
+            "cancel",
+            "wait",
+        ]
+        assert (
+            conductor.verify_option_list(decision["options"], subject="pause") is None
+        )
+        assert "by 1" in decision["options"][0]["label"]
+        snapshot = controls.task_snapshot(task["id"])
+        assert snapshot["state"] == "escalated"
+        assert snapshot["evidence"]["reason"]
+        from factory.orchestration.factory_models import FactoryReceipt
+
+        with Session(feedback_db) as db:
+            receipt = db.exec(
+                select(FactoryReceipt).where(FactoryReceipt.task_id == task["id"])
+            ).one()
+            card = json.loads(receipt.escalation_json)
+            assert card["options"] == decision["options"]
+            assert card["comment_url"] == "https://example.test/card"
+
+
+def test_fan_in_reinsertion_prices_a_legacy_review(feedback_db):
+    task, policy = parallel_plan()
+    nodes, runs = graph_state(task["id"])
+    for node in nodes:
+        if node["node_key"] == "review_check":
+            node["max_cost_usd"] = 2.0
+    edits = conductor._integration_edits(
+        task, policy, nodes, ["implement_alpha", "implement_beta"], "integrate_1"
+    )
+    review = next(
+        edit
+        for edit in edits
+        if edit["op"] == "add_node" and edit["node_key"] == "review_check"
+    )
+    assert review["max_cost_usd"] == 8.0
+    assert review["deps"] == ["integrate_1"]
+
+
+@pytest.mark.parametrize(
+    "limit, used, requested, allowed, allowance, label",
+    [
+        ("task_budget", 35, 8, 36, 20, "Raise task_budget by 7 to 43"),
+        (
+            "max_task_turns_hard",
+            5,
+            1,
+            18,
+            5,
+            "Raise max_task_turns_hard allowance by 1 to 6",
+        ),
+    ],
+)
+def test_dispatch_refusal_card_distinguishes_envelope_and_allowance(
+    monkeypatch, limit, used, requested, allowed, allowance, label
+):
+    cards = []
+    monkeypatch.setattr(
+        conductor, "_escalate_task", lambda *args: cards.append(args[1])
+    )
+    refusal = conductor.ReservationResult(
+        False, "refused", limit, used, requested, allowed, allowance
+    )
+    conductor._escalate_dispatch_refusal(
+        {"id": "task"}, "review_delivery", "workflow", refusal, []
+    )
+    assert cards[0]["options"][0]["label"] == label

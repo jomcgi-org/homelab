@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import nullcontext
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import json
 import logging
@@ -38,6 +39,8 @@ from factory.orchestration.factory_controls import (
     issue_body_hash,
     is_advisory,
     verify_option_list,
+    turn_reservation_usd,
+    review_reservation_usd,
 )
 from factory.orchestration.model_pool import (
     JUDGMENT_MODELS,
@@ -722,7 +725,11 @@ def _budget_evidence(task_id: str) -> dict:
             "deadline_at": receipt["deadline_at"],
             "new_node_max_cost_usd": policy["turn_budget_usd"],
             "max_attempts": policy["max_attempts"],
-            "pending_planner_max_cost_usd": policy["turn_budget_usd"],
+            "pending_planner_max_cost_usd": turn_reservation_usd(
+                select_model("conductor", policy)["model"],
+                "planner",
+                policy["turn_budget_usd"],
+            ),
             "snapshot_phase": "before_this_planner_node_is_added_or_admitted",
         }
 
@@ -1026,6 +1033,20 @@ def _add(
     expected_version: int | None = None,
 ) -> graph.GraphOp:
     boundary = _boundary(task, review=review, refine=refine)
+    if max_cost_usd is None:
+        max_cost_usd = (
+            _review_reservation_usd(task, policy, model)
+            if review
+            else turn_reservation_usd(
+                model,
+                "refine"
+                if refine
+                else "planner"
+                if key.startswith("conductor_")
+                else "work",
+                policy["turn_budget_usd"],
+            )
+        )
     return graph.add_node(
         task["id"],
         author_kind="conductor",
@@ -1043,9 +1064,7 @@ def _add(
         prompt=boundary + prompt,
         model=model,
         deps=deps,
-        max_cost_usd=policy["turn_budget_usd"]
-        if max_cost_usd is None
-        else max_cost_usd,
+        max_cost_usd=max_cost_usd,
         side_effects=not review,
         max_attempts=policy["max_attempts"] if max_attempts is None else max_attempts,
         turn_timeout_seconds=(
@@ -1054,6 +1073,26 @@ def _add(
             else turn_timeout_seconds
         ),
     )
+
+
+def _review_reservation_usd(
+    task: dict, policy: dict, model: str, *, pr_number: int | None = None
+) -> float:
+    """Use the latest delivered PR size when insertion has that evidence."""
+    number = pr_number or _latest_pr(graph.node_runs(task["id"]))
+    lines = 0
+    if number is not None:
+        try:
+            pull = github_get(task["repo"], f"pulls/{number}")
+        except (httpx.HTTPError, ValueError):
+            logger.info("Review sizing unavailable for PR %s", number)
+        else:
+            additions, deletions = pull.get("additions"), pull.get("deletions")
+            if all(
+                type(value) is int and value >= 0 for value in (additions, deletions)
+            ):
+                lines = additions + deletions
+    return review_reservation_usd(model, lines, policy["turn_budget_usd"])
 
 
 def _bounded_planner_text(value: str, limit: int, marker: str = "") -> str:
@@ -2257,11 +2296,15 @@ class _EditRefused(ValueError):
         self.reason = reason
 
 
-def _policy_bounds(policy: dict, source: dict) -> dict:
+def _policy_bounds(
+    policy: dict, source: dict, *, review_cost: float | None = None
+) -> dict:
     """Per-node bounds, refusing anything a decision cannot widen."""
     limits = {
         "max_attempts": policy["max_attempts"],
-        "max_cost_usd": policy["turn_budget_usd"],
+        "max_cost_usd": policy["turn_budget_usd"]
+        if review_cost is None
+        else review_cost,
         "turn_timeout_seconds": policy["turn_timeout_seconds"],
     }
     bounds = {name: source.get(name, limit) for name, limit in limits.items()}
@@ -2349,8 +2392,11 @@ def _prepare_add(task: dict, policy: dict, source: dict) -> dict:
         )
     if model not in policy["allowed_models"]:
         raise _EditRefused("model_not_allowed", "model is not allowed")
-    bounds = _policy_bounds(policy, source)
     review = role == "review"
+    review_cost = _review_reservation_usd(task, policy, model) if review else None
+    bounds = _policy_bounds(policy, source, review_cost=review_cost)
+    if review_cost is not None:
+        bounds["max_cost_usd"] = max(bounds["max_cost_usd"], review_cost)
     return {
         "op": "add_node",
         "role": role,
@@ -3372,6 +3418,9 @@ def _insert_review_round(
             "stated_reason": f"Engine-owned re-review for round {ordinal}",
             "turn_timeout_seconds": _sized(review_node),
             **bounds,
+            "max_cost_usd": _review_reservation_usd(
+                task, policy, reviewer, pr_number=number
+            ),
         },
     ]
     # An engine insertion is checked on the nodes it really adds and on nothing
@@ -3521,7 +3570,14 @@ def _integration_edits(
                 "deps": deps,
                 "side_effects": by_key[node["node_key"]]["side_effects"],
                 "stated_reason": f"Repointed {node['node_key']} at {key}",
-                "max_cost_usd": by_key[node["node_key"]]["max_cost_usd"],
+                "max_cost_usd": (
+                    max(
+                        node["max_cost_usd"],
+                        _review_reservation_usd(task, policy, node["model"]),
+                    )
+                    if node["node_key"].startswith("review_")
+                    else node["max_cost_usd"]
+                ),
                 "max_attempts": by_key[node["node_key"]]["max_attempts"],
                 "turn_timeout_seconds": by_key[node["node_key"]][
                     "turn_timeout_seconds"
@@ -4689,6 +4745,123 @@ def _reviewer_override(
     return True, None if model == node.get("model") else model
 
 
+@dataclass(frozen=True)
+class ReservationResult:
+    ok: bool
+    refusal_code: str | None = None
+    limit: str | None = None
+    used: float | int | None = None
+    requested: float | int | None = None
+    allowed: float | int | None = None
+    allowance: float | int | None = None
+
+    def __bool__(self) -> bool:
+        return self.ok
+
+
+def _reservation_refusal(
+    db: Session, task_id: str, code: str, cost: float
+) -> ReservationResult:
+    """Capture the refusing ledger's numbers before its transaction rolls back."""
+    from factory.orchestration.factory_controls import (
+        task_snapshot,
+        task_turn_ceiling,
+        planner_turn_cap,
+    )
+
+    snapshot = task_snapshot(task_id, session=db)
+    policy = snapshot["policy"]
+    if code == "task_budget_exhausted":
+        budget = graph.budget_snapshot(task_id, session=db)
+        return ReservationResult(
+            False,
+            code,
+            "task_budget",
+            budget["accounted_cost_usd"],
+            cost,
+            budget["task_budget_usd"],
+            snapshot["allowance"]["usd"],
+        )
+    if code == "budget_limit":
+        return ReservationResult(
+            False,
+            code,
+            "task_budget",
+            snapshot["committed_cost_usd"],
+            cost,
+            policy["task_budget_usd"],
+            snapshot["allowance"]["usd"],
+        )
+    if code == "turn_limit":
+        return ReservationResult(
+            False,
+            code,
+            "max_task_turns_hard",
+            snapshot["turns_used"],
+            1,
+            task_turn_ceiling(policy),
+            snapshot["allowance"]["turns"],
+        )
+    if code == "planner_turn_limit":
+        cap = planner_turn_cap(policy)
+        return ReservationResult(
+            False,
+            code,
+            "max_planner_turns",
+            snapshot["planner_turns_used"],
+            1,
+            cap,
+            cap,
+        )
+    return ReservationResult(False, code)
+
+
+def _escalate_dispatch_refusal(
+    task: dict, node_key: str, key: str, refusal: ReservationResult, runs: list[dict]
+) -> None:
+    target = refusal.used + refusal.requested
+    if target > refusal.allowed:
+        label = f"Raise {refusal.limit} by {target - refusal.allowed:g} to {target:g}"
+    else:
+        label = f"Raise {refusal.limit} allowance by {max(0, target - refusal.allowance):g} to {target:g}"
+    reason = (
+        f"Dispatch of {node_key} refused by {refusal.limit}: used {refusal.used}, "
+        f"requested {refusal.requested}, ceiling {refusal.allowed}, allowance {refusal.allowance}."
+    )
+    _escalate_task(
+        task,
+        {
+            "action": "pause",
+            "reason": reason,
+            "question": reason + " Raise the envelope, cancel, or wait?",
+            "options": [
+                {
+                    "key": "raise_envelope",
+                    "label": label,
+                    "effect": CONTINUE_EFFECT,
+                    "detail": {
+                        "scope": f"Raise {refusal.limit} and its allowance to at least {target:g} before continuing this delivery on its existing branch."
+                    },
+                },
+                {
+                    "key": "cancel",
+                    "label": "Cancel this delivery",
+                    "effect": "close",
+                    "detail": {"reason": "not_planned", "comment": reason},
+                },
+                {
+                    "key": "wait",
+                    "label": "Wait for the limit to change",
+                    "effect": "defer",
+                    "detail": {"comment": reason},
+                },
+            ],
+        },
+        f"dispatch-refused:{key}:{refusal.limit}",
+        runs,
+    )
+
+
 def _dispatch_ready(
     task: dict,
     nodes: list[dict],
@@ -4776,9 +4949,26 @@ def _dispatch_ready(
             )[-16000:],
         }
 
-        if reserve_node(task_id, node_key, key, context, model=reviewer):
+        reservation = reserve_node(task_id, node_key, key, context, model=reviewer)
+        if reservation:
             dispatched += 1
             continue
+        if isinstance(reservation, ReservationResult):
+            _audit_once(
+                task_id,
+                key,
+                "dispatch_refused",
+                {
+                    "node_key": node_key,
+                    "attempt": attempt,
+                    "refusal_code": reservation.refusal_code,
+                    "limit": reservation.limit or reservation.refusal_code,
+                    "used": reservation.used,
+                    "requested": reservation.requested,
+                    "allowed": reservation.allowed,
+                    "allowance": reservation.allowance,
+                },
+            )
         if dispatched == 0:
             from factory.orchestration import factory_funding
 
@@ -4790,6 +4980,11 @@ def _dispatch_ready(
                     task,
                     "Ready dispatch was refused; reassess current allocation and graph evidence",
                 )
+            elif (
+                isinstance(reservation, ReservationResult)
+                and reservation.limit is not None
+            ):
+                _escalate_dispatch_refusal(task, node_key, key, reservation, runs)
             elif not fan_out:
                 set_control("pause_task", ACTOR, task_id=task_id)
         break
@@ -4798,7 +4993,7 @@ def _dispatch_ready(
 
 def reserve_node(
     task_id: str, node_key: str, key: str, context: dict, *, model: str | None = None
-) -> bool:
+) -> ReservationResult:
     """Atomically reserve graph attempt and factory turn under the control lock.
 
     ``model`` substitutes the model for this attempt, which is how a review
@@ -4842,8 +5037,26 @@ def reserve_node(
                 session=db,
             )
             if not admitted.ok:
+                node = next(
+                    (
+                        n
+                        for n in graph.load_graph(task_id, session=db)
+                        if n["node_key"] == node_key
+                    ),
+                    None,
+                )
+                spent = sum(
+                    r["accounted_cost_usd"]
+                    for r in graph.node_runs(task_id, node_key, session=db)
+                )
+                refusal = _reservation_refusal(
+                    db,
+                    task_id,
+                    admitted.refusal_code,
+                    max(0, node["max_cost_usd"] - spent) if node else 0,
+                )
                 db.rollback()
-                return False
+                return refusal
             pin = admitted.pin
             grant = authorize_start(
                 task_id,
@@ -4854,10 +5067,13 @@ def reserve_node(
                 session=db,
             )
             if not grant["ok"]:
+                refusal = _reservation_refusal(
+                    db, task_id, grant["reason"], pin["max_cost_usd"]
+                )
                 db.rollback()
-                return False
+                return refusal
         db.commit()
-    return True
+    return ReservationResult(True)
 
 
 def observe_reviewer_routing(policy: dict) -> None:

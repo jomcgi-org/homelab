@@ -142,7 +142,12 @@ def try_grant(
         cost = sum(e["max_cost_usd"] for e in edits)
         if any(
             e["model"] not in policy["allowed_models"]
-            or e["max_cost_usd"] > policy["turn_budget_usd"]
+            # Reviews are sized by the engine from model and diff evidence.
+            # They share the task envelope but may exceed the worker ceiling.
+            or (
+                not e["node_key"].startswith("review_")
+                and e["max_cost_usd"] > policy["turn_budget_usd"]
+            )
             for e in edits
         ) or budget["committed_cost_usd"] + cost > min(
             policy["task_budget_usd"], stored_task.budget_usd

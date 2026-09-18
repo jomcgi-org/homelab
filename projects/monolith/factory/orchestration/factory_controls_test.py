@@ -794,7 +794,7 @@ def test_a_three_node_plan_sizes_its_own_task(policy):
     # spent. The planner node costs money but never a work turn.
     assert allowance["turns"] == 3 * 2 + 2
     assert allowance["review_rounds_reserved"] == 1
-    assert allowance["usd"] == 4 * 2.0 + 2 * policy["turn_budget_usd"]
+    assert allowance["usd"] == 4 * 2.0 + policy["turn_budget_usd"] + 8.0
     assert allowance["graph_revision"] == 4 and allowance["derived"] is True
 
 

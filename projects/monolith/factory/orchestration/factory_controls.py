@@ -225,6 +225,41 @@ DEFAULT_MAX_PARALLEL_NODES = 1
 # that fails is a deviation the planner must answer, not a turn to spend again,
 # so a round costs exactly two turns and the reserve can say so honestly.
 REVIEW_ROUND_ATTEMPTS = 1
+
+
+def turn_reservation_usd(model: str, turn_class: str, fallback: float) -> float:
+    """Reserve short decisions at the model's conservative turn-class price."""
+    if turn_class in {"planner", "refine"} and model in {
+        "astra",
+        "spark",
+        "pi-spark",
+        "qwen",
+        "gpt-6-astra",
+        "muse-spark-1.3-contributor",
+    }:
+        return 0.50
+    return float(fallback)
+
+
+def review_reservation_usd(model: str, changed_lines: int, fallback: float) -> float:
+    """Price review context and output, retaining the observed Opus floor."""
+    from shared.pricing import price_usage
+
+    lines = min(max(changed_lines, 0), 1_000_000) if type(changed_lines) is int else 0
+    # Allow context exploration and reasoning beyond the patch itself.
+    priced = price_usage(
+        model,
+        {"input_tokens": 50_000 + 20 * lines, "output_tokens": 10_000 + 2 * lines},
+    )
+    estimate = (
+        float(fallback)
+        if priced is None
+        else math.ceil(priced.cost_usd * 4 * 100) / 100
+    )
+    floor = 8.0 if model == "opus" or model.startswith("claude-opus-") else 0.0
+    return max(floor, estimate)
+
+
 # Pools whose head must be the role's own configured model, so the policy's
 # stated preference is always what a pool is ranked from.
 _POOL_ROLES = {"conductor": "conductor_model", "worker": "worker_model"}
@@ -275,7 +310,7 @@ MIN_OPTIONS = 2
 MAX_OPTIONS = 4
 MAX_SPLIT_CHILDREN = 5
 CLOSE_REASONS = ("not_planned", "completed")
-OPTION_KEY = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
+OPTION_KEY = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 
 OPTION_SCHEMA = {
     "type": "object",
@@ -961,14 +996,22 @@ def allowance_from_graph(
         reviewable = any(node["node_key"].startswith("review_") for node in nodes)
     rounds = min(1, max(0, review_rounds_remaining)) if reviewable else 0
     fan_ins = max(0, fan_ins_remaining)
-    reserved_nodes = 2 * rounds + fan_ins
+    from factory.orchestration.model_pool import pool_for
+
+    review_cost = review_reservation_usd(
+        pool_for("reviewer", policy)[0], 0, policy["turn_budget_usd"]
+    )
+    reserved_usd = (
+        rounds * (policy["turn_budget_usd"] + review_cost)
+        + fan_ins * policy["turn_budget_usd"]
+    )
     reserved_turns = (
         2 * rounds * REVIEW_ROUND_ATTEMPTS + fan_ins * policy["max_attempts"]
     )
     return {
         "turns": work_turns_used + remaining_turns + reserved_turns,
         "usd": round(
-            charged_total + remaining_usd + reserved_nodes * policy["turn_budget_usd"],
+            charged_total + remaining_usd + reserved_usd,
             6,
         ),
         "graph_revision": graph_revision,
@@ -2155,8 +2198,19 @@ def authorize_start(
             reason = "turn_limit"
         # Both kinds of start still answer to the one task budget.
         elif not oversight and (
-            cost > policy["turn_budget_usd"]
-            or budget["committed_cost_usd"] + cost > policy["task_budget_usd"]
+            budget["committed_cost_usd"] + cost > policy["task_budget_usd"]
+            or (
+                cost > policy["turn_budget_usd"]
+                and not any(
+                    run.dispatch_key == start_key
+                    and run.status == "admitted"
+                    and run.reserved_cost_usd == cost
+                    and json.loads(run.pin_json or "{}").get("model") == model
+                    for run in db.exec(
+                        select(SwarmNodeRun).where(SwarmNodeRun.task_id == task_id)
+                    ).all()
+                )
+            )
         ):
             reason = "budget_limit"
         if reason:
@@ -2261,6 +2315,19 @@ def record_start_outcome(
             status=effective,
             reconciled=reconciled,
         )
+        if effective in _TERMINAL and cost is not None and cost > start.max_cost_usd:
+            _audit(
+                db,
+                actor,
+                "cost_over_reservation",
+                task_id=task_id,
+                start_key=start_key,
+                workflow_id=start_key,
+                status=status,
+                cost_usd=cost,
+                reserved_cost_usd=start.max_cost_usd,
+                overage_usd=cost - start.max_cost_usd,
+            )
         return {"ok": True, "replayed": False, "start": _start_dict(start)}
 
 
