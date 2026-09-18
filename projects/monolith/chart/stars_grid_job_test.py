@@ -13,6 +13,8 @@ def test_stars_grid_job_is_isolated_suspended_and_configurable(tmp_path):
     chart = Path(__file__).resolve().parent
     override = tmp_path / "grid-values.yaml"
     override.write_text(
+        "backend:\n"
+        "  otelEndpoint: http://otel.invalid:4318/v1/traces\n"
         "stars:\n"
         "  gridGenerator:\n"
         "    enabled: true\n"
@@ -69,6 +71,9 @@ def test_stars_grid_job_is_isolated_suspended_and_configurable(tmp_path):
     assert env["STARS_GRID_ROADS_KEY"]["value"] == "roads.geojson"
     assert env["STARS_GRID_DEM_KEY"]["value"] == "dem.tif"
     assert env["DATABASE_URL"]["valueFrom"]["secretKeyRef"]["name"]
+    assert env["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"]["value"] == (
+        "http://otel.invalid:4318/v1/traces"
+    )
     volumes = {volume["name"]: volume for volume in spec["volumes"]}
     assert volumes["work"]["emptyDir"]["sizeLimit"] == "5Gi"
     assert volumes["tmp"]["emptyDir"] == {}
