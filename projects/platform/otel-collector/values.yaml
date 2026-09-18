@@ -136,18 +136,22 @@ sampling:
   # latency threshold to catch pathological outliers makes this worse, because
   # deep traces are exactly what a small slice cannot hold.
   #
-  # So every slice has to exceed a typical trace, not just the errors slice.
-  # embervm-control has ~107 span callsites and its traces are deep, so at 400
-  # the slices are 200/100/100 spans/sec and all three can admit a deep trace.
-  # The 27-hour exhaustion figure at 200 was better on paper and bought with
-  # silent drops.
+  # So every general trace slice has to meet a typical trace, while the two
+  # session slices only have to hold deliberately isolated one-span traces.
+  # embervm-control has ~107 span callsites and its traces are deep. The errors
+  # slice remains at 100 spans/sec. The request slice gets 100 spans/sec against
+  # an application-enforced maximum of 88 across both pods possible during a
+  # rolling update. The marker slice gets 24 spans/sec against a maximum of 22.
   #
   # Recheck against measured span-per-trace depth once real data lands. If
   # traces run deeper than 100 spans, raise this rather than rebalancing:
   # shrinking any slice to feed another just moves the silent drop.
   maxTotalSpansPerSecond: 400
-  # Budget split. Errors keep the largest slice, but every slice is sized to
-  # hold a whole trace, per the per-trace rule above.
+  # Budget split. Session API request observations and saturation markers are
+  # separate one-span root traces. Below the application envelope the request
+  # stream is complete. Above it, the independently budgeted marker tells every
+  # alert formula to suppress the affected evaluation window. The errors slice
+  # stays at 100 spans/sec so other services do not lose error visibility.
   #
   # These do NOT have to sum to 100 and nothing validates them, so a sum over
   # 100 quietly raises the real ceiling above maxTotalSpansPerSecond. A
@@ -155,9 +159,11 @@ sampling:
   # rather than erroring or getting nothing, so keep the names in step with the
   # composite_sub_policy entries in the ConfigMap template.
   rateAllocation:
-    errorsPercent: 50
-    slowPercent: 25
-    baselinePercent: 25
+    sessionApiSaturationPercent: 6
+    sessionApiPercent: 25
+    errorsPercent: 25
+    slowPercent: 24
+    baselinePercent: 20
 
 # URLs the http_check receiver probes. Empty by default.
 #

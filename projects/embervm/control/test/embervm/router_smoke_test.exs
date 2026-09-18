@@ -35,4 +35,33 @@ defmodule Embervm.RouterSmokeTest do
 
     assert resp.status == 404
   end
+
+  test "session allow-list is enforced on the direct Bandit listener" do
+    # The activator header used to turn an otherwise-unmatched session path into
+    # a serving miss. Drive Bandit over loopback to prove no Service or ingress
+    # layer is required for the denial.
+    headers = [{"x-ember-workload", "ping"}]
+
+    for {method, path} <- [
+          {:put, "/v1/sessions/s-1/invoke"},
+          {:post, "/v1/sessions/s-1/invoke/"},
+          {:post, "/v1%2Fsessions/s-1/invoke"},
+          {:post, "/v1/%73essions/s-1/invoke"},
+          {:post, "/v1//sessions/s-1/invoke"}
+        ] do
+      {:ok, resp} =
+        Finch.build(method, "http://127.0.0.1:#{@port}#{path}", headers)
+        |> Finch.request(Embervm.Finch)
+
+      assert resp.status == 403, "expected #{method} #{path} to be denied"
+    end
+  end
+
+  test "canonical session paths pass the policy and reach authentication" do
+    {:ok, resp} =
+      Finch.build(:post, "http://127.0.0.1:#{@port}/v1/sessions/s-1/invoke")
+      |> Finch.request(Embervm.Finch)
+
+    assert resp.status == 401
+  end
 end
