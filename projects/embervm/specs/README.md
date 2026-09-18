@@ -483,12 +483,12 @@ assumption. None of the desired invariants is an environment assumption.
 
 | cfg | switches changed from positive | checks | expectation | bounded result |
 | --- | --- | --- | --- | --- |
-| `lineage_handoff.cfg` | none | `TypeOK`, all four requested invariants, and durable relinquish ordering | pass | pending registered Linux CI |
-| `lineage_handoff_delete_early.cfg` | export initiation permits deletion | `WorkspaceAvailable` only | fail | pending, must name `WorkspaceAvailable` |
-| `lineage_handoff_volatile_claim.cfg` | durable claim replaced by process-local claim | `NeverTwoLiveHeirs` only | fail | pending, must name `NeverTwoLiveHeirs` |
-| `lineage_handoff_destroying_eligible.cfg` | `destroying` predecessor may be inherited | `TerminalPredecessorOnly` only | fail | pending, must name `TerminalPredecessorOnly` |
-| `lineage_handoff_no_generation.cfg` | reconnect generation comparison removed | `CommonAncestorDivergenceDetected` only | fail | pending, must name `CommonAncestorDivergenceDetected` |
-| `lineage_handoff_relinquish_order.cfg` | heir can start before durable marker | `DurableRelinquishBeforeHandoff` only | fail | pending, must name `DurableRelinquishBeforeHandoff` |
+| `lineage_handoff.cfg` | none | `TypeOK`, all four requested invariants, and durable relinquish ordering | pass | exhaustive: 5,323 generated, 2,094 distinct, depth 22, 0 queued |
+| `lineage_handoff_delete_early.cfg` | export initiation permits deletion | `WorkspaceAvailable` only | fail | intended `WorkspaceAvailable` counterexample, depth 6 |
+| `lineage_handoff_volatile_claim.cfg` | durable claim replaced by process-local claim | `NeverTwoLiveHeirs` only | fail | intended `NeverTwoLiveHeirs` counterexample, depth 10 |
+| `lineage_handoff_destroying_eligible.cfg` | `destroying` predecessor may be inherited | `TerminalPredecessorOnly` only | fail | intended `TerminalPredecessorOnly` counterexample, depth 5 |
+| `lineage_handoff_no_generation.cfg` | reconnect generation comparison removed | `CommonAncestorDivergenceDetected` only | fail | intended `CommonAncestorDivergenceDetected` counterexample, depth 7 |
+| `lineage_handoff_relinquish_order.cfg` | heir can start before durable marker | `DurableRelinquishBeforeHandoff` only | fail | intended `DurableRelinquishBeforeHandoff` counterexample, depth 5 |
 
 Each negative configuration declares only its intended invariant. The shared
 driver additionally requires TLC to report an actual invariant violation. A

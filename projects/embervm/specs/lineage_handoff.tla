@@ -124,7 +124,7 @@ BeginDestroy(h) ==
         cpAlive, nodeAlive, cpCrashes, nodeCrashes,
         inheritedFromNonterminal, handoffWithoutRelinquish,
         divergenceDetected, silentMerge
-    >>
+        >>
 
 RecordRelinquish(h) ==
     /\ nodeAlive
@@ -138,7 +138,7 @@ RecordRelinquish(h) ==
         cpAlive, nodeAlive, cpCrashes, nodeCrashes,
         inheritedFromNonterminal, handoffWithoutRelinquish,
         divergenceDetected, silentMerge
-    >>
+        >>
 
 Terminalize(h) ==
     /\ cpAlive
@@ -152,7 +152,7 @@ Terminalize(h) ==
         cpAlive, nodeAlive, cpCrashes, nodeCrashes,
         inheritedFromNonterminal, handoffWithoutRelinquish,
         divergenceDetected, silentMerge
-    >>
+        >>
 
 StartExport ==
     /\ nodeAlive
@@ -168,7 +168,7 @@ StartExport ==
         cpAlive, nodeAlive, cpCrashes, nodeCrashes,
         inheritedFromNonterminal, handoffWithoutRelinquish,
         divergenceDetected, silentMerge
-    >>
+        >>
 
 CompleteExport ==
     /\ nodeAlive
@@ -182,7 +182,7 @@ CompleteExport ==
         localExists, localGeneration, cpAlive, nodeAlive, cpCrashes,
         nodeCrashes, inheritedFromNonterminal, handoffWithoutRelinquish,
         divergenceDetected, silentMerge
-    >>
+        >>
 
 RemoveLocal ==
     /\ nodeAlive
@@ -199,7 +199,7 @@ RemoveLocal ==
         cpAlive, nodeAlive, cpCrashes, nodeCrashes,
         inheritedFromNonterminal, handoffWithoutRelinquish,
         divergenceDetected, silentMerge
-    >>
+        >>
 
 BeginHeir(h) ==
     /\ h \in OtherHeirs
@@ -217,14 +217,14 @@ BeginHeir(h) ==
     /\ durableClaim' = IF DurableHeirClaim THEN h ELSE NULL
     /\ volatileClaims' = IF DurableHeirClaim THEN {} ELSE {h}
     /\ inheritedFromNonterminal' =
-        inheritedFromNonterminal \/ holderState[latestHolder] # "terminal"
-    /\ handoffWithoutRelinquish' = handoffWithoutRelinquish \/ ~relinquished
+        (inheritedFromNonterminal \/ (holderState[latestHolder] # "terminal"))
+    /\ handoffWithoutRelinquish' = (handoffWithoutRelinquish \/ ~relinquished)
     /\ UNCHANGED <<
         holderState, holderGeneration, latestHolder, lineageGeneration,
         localExists, localGeneration, exportPhase, exportGeneration,
         relinquished, cpAlive, nodeAlive, cpCrashes, nodeCrashes,
         divergenceDetected, silentMerge
-    >>
+        >>
 
 FinishHeir(h) ==
     /\ h \in attempts
@@ -246,7 +246,7 @@ FinishHeir(h) ==
         attemptBase, exportPhase, exportGeneration, cpAlive, nodeAlive,
         cpCrashes, nodeCrashes, inheritedFromNonterminal,
         handoffWithoutRelinquish, divergenceDetected, silentMerge
-    >>
+        >>
 
 CrashCP ==
     /\ cpAlive
@@ -260,7 +260,7 @@ CrashCP ==
         localExists, localGeneration, exportPhase, exportGeneration,
         nodeAlive, nodeCrashes, inheritedFromNonterminal,
         handoffWithoutRelinquish, divergenceDetected, silentMerge
-    >>
+        >>
 
 RecoverCP ==
     /\ ~cpAlive
@@ -271,7 +271,7 @@ RecoverCP ==
         localExists, localGeneration, exportPhase, exportGeneration,
         nodeAlive, cpCrashes, nodeCrashes, inheritedFromNonterminal,
         handoffWithoutRelinquish, divergenceDetected, silentMerge
-    >>
+        >>
 
 CrashNode ==
     /\ nodeAlive
@@ -285,7 +285,7 @@ CrashNode ==
         localExists, localGeneration, exportGeneration,
         cpAlive, cpCrashes, inheritedFromNonterminal,
         handoffWithoutRelinquish, divergenceDetected, silentMerge
-    >>
+        >>
 
 RecoverNode ==
     /\ ~nodeAlive
@@ -296,7 +296,7 @@ RecoverNode ==
         localExists, localGeneration, exportPhase, exportGeneration,
         cpAlive, cpCrashes, nodeCrashes, inheritedFromNonterminal,
         handoffWithoutRelinquish, divergenceDetected, silentMerge
-    >>
+        >>
 
 ReconnectOld(h) ==
     /\ cpAlive
@@ -313,7 +313,7 @@ ReconnectOld(h) ==
         localExists, localGeneration, exportPhase, exportGeneration,
         cpAlive, nodeAlive, cpCrashes, nodeCrashes,
         inheritedFromNonterminal, handoffWithoutRelinquish
-    >>
+        >>
 
 Next ==
     \/ \E h \in Heirs : BeginDestroy(h)
