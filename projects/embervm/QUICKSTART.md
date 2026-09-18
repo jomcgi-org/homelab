@@ -24,6 +24,7 @@ under `/var/lib/embervm/scratch`.
   creates one sparse 4 GiB base rootfs plus snapshots on scratch.
 - `curl`, `git`, `jq`, Helm 3.8 or newer, and a checkout of this repository at
   the revision containing this guide. Run the commands from the checkout root.
+  The k3s installer in step 2 supplies the `kubectl` command used afterward.
 - Outbound HTTPS access to the k3s installer and `ghcr.io`.
 - A GitHub account authorized to pull this repository's private container
   packages, plus a classic personal access token with `read:packages`. The Helm
@@ -58,6 +59,7 @@ which the task/session walkthrough does not use.
 ```bash
 export INSTALL_K3S_VERSION=v1.36.4+k3s1
 curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable traefik" sh -
+command -v kubectl
 
 sudo install -o "$(id -u)" -g "$(id -g)" -m 0600 \
   /etc/rancher/k3s/k3s.yaml "$PWD/embervm-kubeconfig"
@@ -86,6 +88,18 @@ export GHCR_TOKEN=your-read-packages-token
 export EMBER_CHART_VERSION="$(awk '$1 == "version:" {print $2; exit}' \
   projects/embervm/chart/Chart.yaml)"
 test -n "$EMBER_CHART_VERSION"
+
+# Render the published chart before changing the cluster. This proves that the
+# checkout's standalone overlay still matches the chart version it names and
+# that the published package contains real image digests.
+helm template embervm \
+  oci://ghcr.io/jomcgi/homelab/charts/embervm \
+  --version "$EMBER_CHART_VERSION" \
+  --namespace embervm \
+  --values projects/embervm/chart/standalone-values.yaml \
+  >"$PWD/embervm-rendered.yaml"
+! grep -q 'sha256:0000000000000000000000000000000000000000000000000000000000000000' \
+  "$PWD/embervm-rendered.yaml"
 
 kubectl create namespace embervm
 kubectl -n embervm create secret docker-registry embervm-quickstart-registry \
@@ -181,8 +195,12 @@ separate base because class and lifecycle settings participate in its signature.
 ```bash
 export EMBER_SANDBOX_IMAGE="$(kubectl -n embervm get workload sandbox-python \
   -o jsonpath='{.spec.source.image.ref}')"
+export EMBER_HYPERVISOR_EPOCH="$(kubectl -n embervm get workload sandbox-python \
+  -o jsonpath='{.spec.source.image.initEnv.EMBER_HYPERVISOR_EPOCH}')"
+test -n "$EMBER_SANDBOX_IMAGE"
+test -n "$EMBER_HYPERVISOR_EPOCH"
 
-envsubst <<EOF | kubectl apply -f -
+kubectl apply -f - <<EOF
 apiVersion: embervm.dev/v1alpha1
 kind: Workload
 metadata:
@@ -196,6 +214,8 @@ spec:
       port: 1027
       readyPath: /shim/ready
       invokePath: /invoke
+      initEnv:
+        EMBER_HYPERVISOR_EPOCH: ${EMBER_HYPERVISOR_EPOCH}
   resources:
     vcpus: 1
     memMib: 512
@@ -218,9 +238,10 @@ kubectl -n embervm wait workload/quickstart-session \
 kubectl -n embervm get workload quickstart-session -o yaml
 ```
 
-`envsubst` is supplied by the `gettext` package on common distributions. If it
-is unavailable, replace `${EMBER_SANDBOX_IMAGE}` manually with the exact output
-of the preceding `kubectl get` command.
+The new definition copies both the immutable image reference and the
+Firecracker compatibility epoch from the chart-registered Workload. The epoch
+forces a new base after a hypervisor upgrade instead of trying to restore a
+snapshot written by an incompatible Firecracker version.
 
 ## 7. Create, execute, suspend, and resume
 
@@ -399,40 +420,50 @@ helm uninstall embervm --namespace embervm
 kubectl delete namespace embervm --wait=true
 kubectl delete priorityclass embervm-quickstart
 kubectl delete crd workloads.embervm.dev
-sudo rm -rf /var/lib/embervm/scratch/embervm-noded
+sudo rm -rf /var/lib/embervm/scratch/embervm-noded \
+  /var/lib/embervm/scratch/embervm-noded-vsock
 sudo /usr/local/bin/k3s-uninstall.sh
 rm -f "$PWD/embervm-kubeconfig" \
+  "$PWD/embervm-rendered.yaml" \
   "$PWD/embervm-port-forward.log" \
   "$PWD/embervm-hello.json" \
   "$PWD/embervm-session-create.json" \
   "$PWD/embervm-session-write.json" \
   "$PWD/embervm-session-resume.json" \
   "$PWD/embervm-unsupported.json"
-unset GHCR_TOKEN EMBER_TOKEN EMBER_SESSION_TOKEN
+unset GHCR_USERNAME GHCR_TOKEN EMBER_CHART_VERSION EMBER_NODE \
+  EMBER_TOKEN EMBER_URL EMBER_PORT_FORWARD_PID EMBER_SANDBOX_IMAGE \
+  EMBER_HYPERVISOR_EPOCH EMBER_SESSION_ID EMBER_SESSION_TOKEN \
+  EMBER_STORE_ENDPOINT KUBECONFIG INSTALL_K3S_VERSION
 ```
 
-The scratch cleanup is intentionally limited to EmberVM's own
-`/var/lib/embervm/scratch/embervm-noded` subtree. It does not remove the scratch
-mount or unrelated host data.
+The scratch cleanup is intentionally limited to EmberVM's own data subtree and
+canonical vsock directory. It does not remove the scratch mount or unrelated
+host data.
 
 ## Compatibility and validation status
 
 This is the native EmberVM API, not the Kubernetes Agent Sandbox API. EmberVM
 does not currently ship an Agent Sandbox adapter, and no adapter is required by
-this quickstart. The compatibility gate and its still-open review are tracked in
-[#5806](https://github.com/jomcgi-org/homelab/issues/5806).
+this quickstart. The ADR 004 compatibility gate review in
+[#5806](https://github.com/jomcgi-org/homelab/issues/5806) closed the external
+adapter program as not planned. External clients use the native EmberVM
+interface unless a future, independently justified compatibility review changes
+that decision.
 
 The chart/overlay combination is regression-tested by rendering the real Helm
 templates and asserting that it contains one control plane, one noded, one
 Python Workload, local-path storage, no fc-agentd, and none of the homelab-only
-services. The published `0.78.2` chart was also confirmed anonymously readable
-from GHCR while this guide was written; its images returned authorization
-failures without package credentials, which is why registry access is an
-explicit prerequisite above.
+services. Step 3 renders the matching published chart and rejects build-time
+placeholder digests before installation. The chart package is anonymously
+readable from GHCR; its private component and guest images require the package
+credentials called out above.
 
 The complete KVM lifecycle was not executed in the environment that authored
 this guide because it exposes no `/dev/kvm`, `kubectl`, or pre-existing Linux
 cluster, and this task does not authorize deploying to another environment.
 Run every assertion above on a clean disposable Linux host before treating the
 quickstart as operationally validated. The repository's required Linux CI is a
-static and build gate, not evidence of a production cutover or a KVM drill.
+static and build gate, not evidence of a production cutover or a KVM drill. That
+clean-host acceptance remains tracked by open
+[#3858](https://github.com/jomcgi-org/homelab/issues/3858).

@@ -1301,7 +1301,7 @@ this table when the work ships or the issue closes without it.
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
 | The Firecracker jailer arms on every brick, closing the direct-root-exec gap between co-resident guests | section 10 | #5255 | not started |
-| EmberVM ships a standalone quickstart and packaging boundary independent of the homelab's deployment configuration | Decision history (embervm/009) | #3858 | not started |
+| EmberVM ships a standalone quickstart and packaging boundary independent of the homelab's deployment configuration | Decision history (embervm/009) | #3858 | repository packaging and guide shipped; clean-host KVM validation outstanding |
 | OCI images convert to deterministic EROFS manifests and immutable content-addressed chunks, hydrated through a local-only read-only ublk device | section 8 | #4182 | not started |
 | The brick `maxReplicas` ceiling itself moves on sustained denial pressure, not only the replica count clamped inside it | section 7 | #5505 | not started |
 | SPIFFE-issued identity moves beyond issuance: mTLS on the CP-to-noded hop, per-principal guest JWT-SVIDs, and GCP federation | section 9 | #5706 | not started |
@@ -1326,7 +1326,7 @@ has the full text.
 | embervm/006 | TLA+ pilot with three conformance layers | Accepted; six specs run under TLC in the build, trace validation deferred to 034 | deleted |
 | embervm/007 | Batched Postgres op-log tier, cells, hot-loop corrections | Accepted; Postgres Built, no cell seams exist (#4753, #3853, #3855) | deleted |
 | embervm/008 | Opt-in two-phase interruptible bank | Accepted, Built | deleted |
-| embervm/009 | Continuity before tenancy: R6 to R9, spot availability contract, S3 seam | Accepted; quickstart open (#3856, #3858) | deleted |
+| embervm/009 | Continuity before tenancy: R6 to R9, spot availability contract, S3 seam | Accepted; repository quickstart shipped, clean-host KVM validation open (#3858) | deleted |
 | embervm/010 | Bazel warm-Skyframe public demo as a stateless query consumer | Accepted, Built | deleted |
 | embervm/011 | Vendor-bound warmth, single-writer fencing, CP-sequenced rollouts | Accepted; stateful Longhorn withdrawn by 025; sole-issuer rule amended by 017, 018, 040 | deleted |
 | embervm/012 | Co-located fleet, etcd blast radius accepted, grandfather rule, registry survives restart | Accepted; dynamic sizing retired by 013; HA open (#3862) | deleted |

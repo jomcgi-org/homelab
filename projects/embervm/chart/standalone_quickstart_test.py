@@ -7,6 +7,7 @@ import yaml
 
 CHART_DIR = Path(__file__).parent
 VALUES = CHART_DIR / "standalone-values.yaml"
+DEFAULT_VALUES = CHART_DIR / "values.yaml"
 
 
 def _render() -> str:
@@ -50,9 +51,12 @@ def test_standalone_profile_renders_only_the_minimum_execution_lane():
         "embervm-embervm-noded",
         "embervm-embervm",
     ]
-    assert [item["metadata"]["name"] for item in _kind(objects, "Workload")] == [
-        "sandbox-python"
-    ]
+    workloads = _kind(objects, "Workload")
+    assert [item["metadata"]["name"] for item in workloads] == ["sandbox-python"]
+    defaults = yaml.safe_load(DEFAULT_VALUES.read_text())
+    assert workloads[0]["spec"]["source"]["image"]["initEnv"] == {
+        "EMBER_HYPERVISOR_EPOCH": defaults["hypervisorEpoch"]
+    }
     assert not _kind(objects, "OnePasswordItem")
     assert not _kind(objects, "HTTPRoute")
 
