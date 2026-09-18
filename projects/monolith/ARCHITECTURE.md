@@ -775,6 +775,19 @@ manual submission.
 (see: /projects/monolith/chart/templates/cronworkflows.yaml)
 (see: /projects/monolith/app/jobs_main.py)
 
+### Stars grid image architecture exception
+
+The stars grid computation uses a dedicated image so its GIS wheels do not
+enter the API or general jobs images. That image remains a dual-architecture
+OCI index even though there is no current arm64 workload consumer or node
+selector. This intentionally differs from the OCI macro guidance for the
+current amd64-only cluster. The repository-wide container rule requires
+dual-architecture images, so the additional arm64 build cost is accepted for
+this workload unless that rule changes. Both the apko base and Python layer are
+built for x86_64 and aarch64 so either manifest has a complete native runtime.
+(see: /projects/monolith/stars/grid_gen/apko.yaml)
+(see: /projects/monolith/BUILD)
+
 Leader election scopes side-effecting singleton hooks to one API replica: the
 Discord bot, outbox drain and message-lock sweep, AIS ingest, the agent-session
 loops (pending-message sweep, title refresh, Ember-session export into the

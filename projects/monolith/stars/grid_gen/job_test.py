@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
 from stars import grid_ingest
-from stars.grid_gen import generate_grid_v2
+from stars.grid_gen import generate_grid_v2, job
 from stars.grid_gen.job import GridJobConfig, run
 
 
@@ -43,6 +44,31 @@ class FakeS3:
         self.downloads.append((bucket, key, path))
 
 
+class FakeSpan:
+    def __init__(self, name: str):
+        self.name = name
+        self.attributes = {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        return False
+
+    def set_attribute(self, name: str, value: object) -> None:
+        self.attributes[name] = value
+
+
+class FakeTracer:
+    def __init__(self):
+        self.spans: list[FakeSpan] = []
+
+    def start_as_current_span(self, name: str) -> FakeSpan:
+        span = FakeSpan(name)
+        self.spans.append(span)
+        return span
+
+
 @pytest.fixture(name="config")
 def config_fixture(tmp_path):
     return GridJobConfig(
@@ -61,6 +87,7 @@ def config_fixture(tmp_path):
 
 def test_run_downloads_computes_and_ingests(config):
     s3 = FakeS3()
+    tracer = FakeTracer()
     observed = {}
     sites = [
         {
@@ -90,6 +117,7 @@ def test_run_downloads_computes_and_ingests(config):
             build_grid=build_grid,
             ingest_grid=ingest_grid,
             boundary_parser=lambda admin1: ["scotland"],
+            tracer=tracer,
         )
         == 1
     )
@@ -101,6 +129,13 @@ def test_run_downloads_computes_and_ingests(config):
     }
     assert observed["ingested"] == sites
     assert list(config.work_dir.iterdir()) == []
+    assert [span.name for span in tracer.spans] == [
+        "stars.grid.download",
+        "stars.grid.compute",
+        "stars.grid.ingest",
+    ]
+    assert tracer.spans[1].attributes == {"stars.grid.site_count": 1}
+    assert tracer.spans[2].attributes == {"stars.grid.site_count": 1}
 
 
 def test_run_resolves_default_module_imports(config, monkeypatch):
@@ -182,3 +217,79 @@ def test_config_requires_every_input_key(monkeypatch, tmp_path):
 
     with pytest.raises(ValueError, match="STARS_GRID_DEM_KEY must be configured"):
         GridJobConfig.from_env()
+
+
+def test_setup_otel_installs_exporter_and_grid_tracer(monkeypatch):
+    endpoint = "http://collector.example:4318/v1/traces"
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", endpoint)
+    provider = mock.Mock()
+    processor = mock.Mock()
+
+    with (
+        mock.patch(
+            "opentelemetry.sdk.trace.TracerProvider", return_value=provider
+        ) as provider_class,
+        mock.patch(
+            "opentelemetry.sdk.trace.export.BatchSpanProcessor",
+            return_value=processor,
+        ) as processor_class,
+        mock.patch(
+            "opentelemetry.exporter.otlp.proto.http.trace_exporter.OTLPSpanExporter"
+        ) as exporter_class,
+        mock.patch("opentelemetry.trace.set_tracer_provider") as set_provider,
+        mock.patch("opentelemetry.trace.get_tracer") as get_tracer,
+    ):
+        result = job._setup_otel()
+
+    assert result == (provider, get_tracer.return_value)
+    exporter_class.assert_called_once_with(endpoint=endpoint)
+    processor_class.assert_called_once_with(exporter_class.return_value)
+    provider.add_span_processor.assert_called_once_with(processor)
+    set_provider.assert_called_once_with(provider)
+    get_tracer.assert_called_once_with("monolith.stars.grid_gen")
+    resource = provider_class.call_args.kwargs["resource"]
+    assert resource.attributes["service.name"] == "monolith-stars-grid"
+
+
+def test_shutdown_otel_flushes_and_shuts_down():
+    provider = mock.Mock()
+    provider.force_flush.return_value = True
+
+    job._shutdown_otel(provider)
+
+    provider.force_flush.assert_called_once_with()
+    provider.shutdown.assert_called_once_with()
+
+
+def test_main_records_job_span_and_flushes(monkeypatch, config):
+    provider = mock.Mock()
+    provider.force_flush.return_value = True
+    tracer = FakeTracer()
+    monkeypatch.setattr(job, "_setup_otel", lambda: (provider, tracer))
+    monkeypatch.setattr(GridJobConfig, "from_env", lambda: config)
+    monkeypatch.setattr(job, "run", lambda _config, *, tracer: 7)
+
+    job.main()
+
+    assert [span.name for span in tracer.spans] == ["stars.grid.job"]
+    assert tracer.spans[0].attributes == {"stars.grid.site_count": 7}
+    provider.force_flush.assert_called_once_with()
+    provider.shutdown.assert_called_once_with()
+
+
+def test_main_flushes_after_job_failure(monkeypatch, config):
+    provider = mock.Mock()
+    provider.force_flush.return_value = True
+    monkeypatch.setattr(job, "_setup_otel", lambda: (provider, None))
+    monkeypatch.setattr(GridJobConfig, "from_env", lambda: config)
+
+    def fail_run(_config, *, tracer):
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(job, "run", fail_run)
+
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        job.main()
+
+    provider.force_flush.assert_called_once_with()
+    provider.shutdown.assert_called_once_with()
