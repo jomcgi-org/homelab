@@ -377,6 +377,82 @@ def _control_plane_cessation(view, identity, saved=None):
     }
 
 
+def _brick_restart_cessation(view, identity, saved=None):
+    """Prove that this attempt's guest vanished with its exact brick.
+
+    EmberVM writes ``failed`` plus terminal reason ``brick_gone`` only after its
+    node registry has aged out or unregistered the owning brick instance. That
+    durable transition is stronger than an absent session read: it names a
+    guest that existed, an invocation that started for this dispatch, and the
+    physical node whose departed instance owned it.
+
+    The brick transition can precede the monolith's transport failure stamp, so
+    unlike an ordinary later eviction it need not have ``updated_at`` after
+    ``failed_turn_at``. The invoke itself still has to start after dispatch and
+    no later than the recorded failure. A saved exact stop identity, when one
+    exists, must also match generation, invoke stamp, and node. Missing,
+    malformed, stale, or foreign evidence proves nothing.
+    """
+    if (
+        view.get("state") != "failed"
+        or view.get("terminal_reason") != "brick_gone"
+        or view.get("session_id") != identity["guest_id"]
+    ):
+        return None
+    generation = view.get("generation")
+    started = view.get("invoke_started_at")
+    last_invoke = view.get("last_invoke_at")
+    updated_at = view.get("updated_at")
+    node = view.get("node")
+    node_id = node.get("node_id") if isinstance(node, dict) else None
+    if (
+        type(generation) is not int
+        or generation < 0
+        or type(started) is not int
+        or started < 1
+        or type(updated_at) is not int
+        or updated_at < started
+        or not isinstance(node_id, str)
+        or not node_id
+        or (
+            last_invoke is not None
+            and (type(last_invoke) is not int or last_invoke < 1)
+        )
+        or (type(last_invoke) is int and last_invoke >= started)
+    ):
+        return None
+    dispatched_at = int(_timestamp(identity["dispatched_at"]).timestamp() * 1000)
+    failed_turn_at = int(_timestamp(identity["failed_turn_at"]).timestamp() * 1000)
+    if (
+        started <= dispatched_at
+        or started > failed_turn_at
+        or updated_at <= dispatched_at
+    ):
+        return None
+    if saved is not None:
+        try:
+            expected = _precondition(saved.get("precondition"), identity["guest_id"])
+        except ValueError:
+            return None
+        if (
+            generation != expected["generation"]
+            or started != expected["invoke_started_at"]
+            or node_id != expected["node_id"]
+        ):
+            return None
+    return {
+        "session_id": identity["guest_id"],
+        "state": "failed",
+        "terminal_reason": "brick_gone",
+        "generation": generation,
+        "invoke_started_at": started,
+        "last_invoke_at": last_invoke,
+        "updated_at": updated_at,
+        "node_id": node_id,
+        "cessation_evidence": "brick_restart",
+    }
+
+
 def _replacement_invocation_cessation(view, identity, saved):
     """Prove that a same-guest control-plane record replaced the old invoke.
 
@@ -986,6 +1062,8 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
         cessation = None
         if cessation_enabled:
             cessation = _control_plane_cessation(view, identity, saved)
+            if cessation is None:
+                cessation = _brick_restart_cessation(view, identity, saved)
             if cessation is None:
                 cessation = _replacement_invocation_cessation(view, identity, saved)
         if cessation is not None:

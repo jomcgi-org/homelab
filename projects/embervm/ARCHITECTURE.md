@@ -859,15 +859,43 @@ second alerting path. This does not reopen in-place pod resize, which ADR
 embervm/013 section 7 and ADR embervm/039's own alternatives already declined
 to reopen. Implementation is tracked on #5505.
 
-The availability contract is spot semantics with two budgets: a routine
-roll, upgrade, or scale-down gives a workload up to 110 seconds of drain
-notice, and a GCE Spot preemption about 30 seconds (ADR 040). noded's GCE
+The availability contract is spot semantics with two budgets. The chart
+default gives a routine roll, upgrade, or scale-down 110 seconds of drain
+notice. The GKE hub overrides that ordinary budget to 43,800 seconds because
+factory invokes can run for 12 hours. A GCE Spot preemption still provides
+about 30 seconds (ADR 040). noded's GCE
 preemption-notice watcher (`drain.preemptionNoticeEnabled`, a 20 second
 preemption budget) is armed on the hub since 2026-09-06 (#5819) and off in
 the chart default, so a deployment without the hub overlay is still told
 the 110 second figure when a preemption arrives. State durability within the stated archive interval is
 the guarantee, connection continuity is not. Artifact retention TTLs and the
 GC sweep behaviour are in [deploy/README.md](deploy/README.md).
+
+An ordinary brick rollout closes placement at the node drain edge and closes
+session invoke admission before evacuation. Closing new admission is not a
+drain by itself: guests that were already running remain on the old brick. A
+session therefore rejects queued and later invokes retryably, lets its one
+current invoke finish, and asks to bank immediately afterward. Temporary bank
+admission failures keep the fence closed and retry; a failed bank RPC restores
+the fence when the session process resumes. The old pod remains terminating
+until its guests leave the live registry or the externally configured deadline
+expires. This means one long factory turn can delay its GKE brick replacement
+for up to the configured 43,800 second bound. Sequential sync waves can compound
+that delay across a full fleet rollout. The Deployment progress deadline is
+longer than one termination grace plus a cold rootfs build. Promotion tooling
+with a shorter wait budget can still report a timeout while Kubernetes is
+gracefully terminating the old brick; recovery must resume observation and
+must not force-delete that pod.
+
+That protection is intentionally limited. Spot preemption, force deletion,
+node loss, and expiration of the drain deadline can still destroy a running
+guest. Temporary control-plane or bank unavailability is not evidence that a
+guest stopped, so it never authorizes a replacement attempt. When EmberVM has
+durably recorded `failed` with terminal reason `brick_gone`, factory
+supervision may settle only the exact matching guest invocation and use only
+the graph attempt's remaining bounded retry. Guest, generation, invoke stamp,
+or node mismatches remain uncertain, as do outcomes with ambiguous external
+effects. No retry is admitted from absence or temporary unavailability alone.
 
 **Why drains bank in place rather than hand over.** A drain edge is one signal
 (`drain_deadline_unix_ms`, SIGTERM or the Spot preemption notice, whichever is

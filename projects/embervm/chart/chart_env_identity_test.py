@@ -743,6 +743,41 @@ def test_production_brick_caps_and_resources_survive_values_overlays(
     assert wildcard == [], "production must keep the wildcard noded DaemonSet disabled"
 
 
+def test_gke_brick_rollout_budget_outlasts_factory_invokes() -> None:
+    rendered = _render(
+        "embervm",
+        [
+            _chart_dir() / "values.yaml",
+            Path(os.environ["PROD_VALUES"]),
+            Path(os.environ["GKE_VALUES"]),
+        ],
+    )
+    deployments = [
+        document
+        for document in yaml.safe_load_all(rendered)
+        if isinstance(document, dict)
+        and document.get("kind") == "Deployment"
+        and document.get("metadata", {})
+        .get("labels", {})
+        .get("app.kubernetes.io/component")
+        == "noded-brick"
+    ]
+    assert deployments
+
+    for deployment in deployments:
+        spec = deployment["spec"]
+        pod_spec = spec["template"]["spec"]
+        noded = next(
+            container
+            for container in pod_spec["containers"]
+            if container["name"] == "noded"
+        )
+        env = {entry["name"]: entry["value"] for entry in noded["env"]}
+        assert env["EMBERVM_NODED_DRAIN_TIMEOUT"] == "43800s"
+        assert pod_spec["terminationGracePeriodSeconds"] == 43830
+        assert spec["progressDeadlineSeconds"] == 46800
+
+
 def test_noded_onepassword_item_uses_default_shared_secret_name():
     chart = _chart_dir()
     rendered = _render(
