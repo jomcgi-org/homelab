@@ -833,14 +833,19 @@ def create_agent(
 
         if action == "read":
             return channel_memory.format_memory(
-                channel_memory.get_memory(ctx.deps.store.session, ctx.deps.channel_id)
+                await asyncio.to_thread(
+                    channel_memory.get_memory,
+                    ctx.deps.store.session,
+                    ctx.deps.channel_id,
+                )
             )
         if action != "update":
             return 'action must be "read" or "update".'
         if not acl.is_owner(ctx.deps.author_id):
             return "Only the configured owner can update channel memory."
         try:
-            memory = channel_memory.update_memory(
+            memory = await asyncio.to_thread(
+                channel_memory.update_memory,
                 ctx.deps.store.session,
                 ctx.deps.channel_id,
                 field,
