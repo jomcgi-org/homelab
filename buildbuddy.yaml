@@ -201,22 +201,22 @@ actions:
           # workflow service; comparing them keeps this correct if the default
           # branch is renamed.
           #
-          # GIT_PR_NUMBER closes an authorization hole, not just a routing one.
-          # On a pull_request event GIT_BRANCH is the PR's HEAD branch, so a PR
-          # opened from a fork's own `main` would match a branch-name-only test
-          # and gain publishing authority. The workflow service formats that
-          # variable with %d, so a push is exactly "0" and any PR is non-zero.
+          # GIT_PR_NUMBER closes a routing ambiguity. On a pull_request event
+          # GIT_BRANCH is the PR's HEAD branch, so a PR opened from a fork's own
+          # `main` would match a branch-name-only test. The workflow service
+          # formats that variable with %d, so a push is exactly "0" and any PR
+          # is non-zero. A fork's push fires the fork's webhooks, not this one.
           ON_MAIN=false
           SKIP_MAIN_PUBLISH=false
           if [ -n "${GIT_BRANCH:-}" ] &&
              [ "${GIT_BRANCH:-}" = "${GIT_REPO_DEFAULT_BRANCH:-}" ] &&
              [ "${GIT_PR_NUMBER:-0}" = "0" ]; then
             ON_MAIN=true
-            GIT_COMMIT_MESSAGE="${GIT_COMMIT_MESSAGE:-$(git log -1 --format=%B)}"
-            case "$GIT_COMMIT_MESSAGE" in
-              "style: auto-format"*|"chore(charts): publish"*)
+            COMMIT_SUBJECT="$(git log -1 --format=%s)"
+            case "$COMMIT_SUBJECT" in
+              "chore(charts): publish"*)
                 SKIP_MAIN_PUBLISH=true
-                echo "On ${GIT_BRANCH}: tests will refresh the snapshot; publish and format are already complete."
+                echo "On ${GIT_BRANCH}: tests will refresh the snapshot; the chart-version write-back is already complete."
                 ;;
               *)
                 echo "On ${GIT_BRANCH}: full gate plus publish."
@@ -310,9 +310,12 @@ actions:
           # not stop a good build from shipping. The format result remains fatal
           # after publish, which still exposes drift on main.
           #
-          # This branch is also the publishing-authority boundary. PR and
-          # merge-queue runs never reach push-changed.sh or the privileged
-          # version write-back, even if a fork names its head branch `main`.
+          # Credential isolation is unchanged by this routing gate: BuildBuddy
+          # injects secrets for every trusted event, including same-repo events
+          # and collaborator fork PRs, and executes the YAML from the pushed
+          # branch. pr-checks already received GHCR_TOKEN. ON_MAIN only routes
+          # this PR-controlled script: PR events set GIT_BRANCH to the head ref
+          # and GIT_PR_NUMBER non-zero, while push events never set a PR number.
           if [ "$ON_MAIN" = true ] && [ "$SKIP_MAIN_PUBLISH" = false ]; then
             # push.sh.tpl decides per chart whether to publish and skips a
             # version already present in the registry, so retries are
@@ -343,17 +346,16 @@ actions:
             # otherwise leaves ArgoCD in a permanent phantom-OutOfSync state.
             ./bazel/helm/ci-diff-manifests.sh
           else
-            echo "Skipping publish for generated main commit: ${GIT_COMMIT_MESSAGE%%$'\n'*}"
+            echo "Skipping publish for the chart-version write-back: $COMMIT_SUBJECT"
           fi
 
           # After whichever image stage ran, normally the fattest point.
           echo "DISK pr-checks after images:"; df -h /
 
           # ---- 4. format, generators, drift -------------------------------
-          # Generated auto-format and chart-version commits already ran their
-          # respective mutating stage. Tests above still run to keep the main
-          # snapshot fresh, but another format or publish would only create a
-          # loop or repeat expensive work.
+          # The chart-version write-back already ran its mutating stage. Tests
+          # above still run to keep the main snapshot fresh, but another format
+          # or publish would only create a loop or repeat expensive work.
           if [ "$ON_MAIN" = true ] && [ "$SKIP_MAIN_PUBLISH" = true ]; then
             echo "Skipping format for generated main commit."
           else
