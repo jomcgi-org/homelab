@@ -3955,6 +3955,22 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
         }
     elif workflow_status == "SUCCESS":
         result = dbos.retrieve_workflow(key).get_result()
+        # A completed artifact over its reservation is booked, never
+        # failed. The rule lives here rather than in execute_node so the
+        # pinned node workflow version holds across this deploy
+        # (durable_identity_test); fold it into the member at its next
+        # real checkpoint change.
+        if (
+            result.get("status") == "failed"
+            and (result.get("artifact") or {}).get("status") == "ok"
+            and result.get("cost_usd") is not None
+            and result["cost_usd"] > pin["max_cost_usd"]
+        ):
+            result = {
+                **result,
+                "status": "succeeded",
+                "reason": "cost_over_reservation: completed spend exceeds its admission reservation",
+            }
     else:
         result = {
             "status": "uncertain",

@@ -10660,7 +10660,12 @@ def test_over_ceiling_review_settled_succeeded(feedback_db, cost):
         "head_sha": HEAD_ONE,
     }
     result = {
-        "status": "succeeded",
+        "status": "failed" if cost > 4.0 else "succeeded",
+        "reason": (
+            "cost_exceeded: reported spend exceeds reservation; provider cutoff is not enforced"
+            if cost > 4.0
+            else None
+        ),
         "session_id": 101,
         "cost_usd": cost,
         "head_sha": HEAD_ONE,

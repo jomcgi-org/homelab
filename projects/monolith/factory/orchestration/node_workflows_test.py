@@ -283,13 +283,12 @@ def test_invalid_list_price_still_consumes_the_reservation(harness):
     assert "full admission reservation" in result["reason"]
 
 
-def test_reported_cost_overrun_keeps_actual_spend_and_artifact(harness):
+def test_reported_cost_overrun_keeps_actual_spend_and_fails(harness):
     harness.turn["cost_usd"] = 3
     result = nodes.execute_node.__wrapped__(pin())
-    assert result["status"] == "succeeded"
+    assert result["status"] == "failed"
     assert result["cost_usd"] == 3
-    assert result["value"] == {"ok": True}
-    assert "cost_over_reservation" in result["reason"]
+    assert "cost_exceeded" in result["reason"]
 
 
 @pytest.mark.parametrize(
@@ -1415,10 +1414,10 @@ def test_review_verdict_survives_provider_spend(harness, cost):
             artifact_schema=REVIEW_SCHEMA,
         )
     )
-    assert result["status"] == "succeeded"
+    assert result["status"] == ("failed" if cost > 4.0 else "succeeded")
     assert result["value"] == verdict
     assert result["cost_usd"] == cost
-    assert ("cost_over_reservation" in (result["reason"] or "")) == (cost > 4.0)
+    assert ("cost_exceeded" in (result["reason"] or "")) == (cost > 4.0)
 
 
 def test_reconciled_review_verdict_survives_provider_spend(reconciliation_db):
