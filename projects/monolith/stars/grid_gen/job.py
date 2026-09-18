@@ -14,6 +14,7 @@ import logging
 import os
 import tempfile
 from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -98,6 +99,56 @@ def _download(s3, bucket: str, key: str, destination: Path) -> None:
         raise RuntimeError(f"downloaded input is empty: s3://{bucket}/{key}")
 
 
+def _setup_otel() -> tuple[object | None, object | None]:
+    """Install tracing when an OTLP endpoint is configured."""
+    endpoint = os.environ.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "").strip()
+    if not endpoint:
+        return None, None
+
+    try:
+        from opentelemetry import trace
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+            OTLPSpanExporter,
+        )
+        from opentelemetry.sdk.resources import Resource
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+        provider = TracerProvider(
+            resource=Resource.create({"service.name": "monolith-stars-grid"})
+        )
+        provider.add_span_processor(
+            BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint))
+        )
+        trace.set_tracer_provider(provider)
+        logger.info("OpenTelemetry instrumentation enabled")
+        return provider, trace.get_tracer("monolith.stars.grid_gen")
+    except Exception:
+        logger.warning("Failed to initialize OpenTelemetry", exc_info=True)
+        return None, None
+
+
+def _shutdown_otel(provider: object | None) -> None:
+    """Flush job spans without allowing telemetry to change the exit status."""
+    if provider is None:
+        return
+    try:
+        if not provider.force_flush():
+            logger.warning("OpenTelemetry force_flush timed out")
+    except Exception:
+        logger.warning("Failed to flush OpenTelemetry", exc_info=True)
+    try:
+        provider.shutdown()
+    except Exception:
+        logger.warning("Failed to shut down OpenTelemetry", exc_info=True)
+
+
+def _span(tracer: object | None, name: str):
+    if tracer is None:
+        return nullcontext()
+    return tracer.start_as_current_span(name)
+
+
 def run(
     config: GridJobConfig,
     *,
@@ -105,6 +156,7 @@ def run(
     build_grid: Callable[..., list[dict]] | None = None,
     ingest_grid: Callable[[list[dict]], int] | None = None,
     boundary_parser: Callable[[dict], list] | None = None,
+    tracer: object | None = None,
 ) -> int:
     """Run all stages once and return the number of ingested sites."""
     if build_grid is None:
@@ -130,33 +182,42 @@ def run(
             ),
             "dem": (config.dem_key, work / "dem.tif"),
         }
-        for key, destination in inputs.values():
-            _download(s3, config.source_bucket, key, destination)
+        with _span(tracer, "stars.grid.download"):
+            for key, destination in inputs.values():
+                _download(s3, config.source_bucket, key, destination)
 
-        with inputs["admin1"][1].open(encoding="utf-8") as handle:
-            admin1 = json.load(handle)
-        scotland = boundary_parser(admin1)
-        if not scotland:
-            raise ValueError("admin-1 input contains no feature with geonunit Scotland")
+            with inputs["admin1"][1].open(encoding="utf-8") as handle:
+                admin1 = json.load(handle)
+            scotland = boundary_parser(admin1)
+            if not scotland:
+                raise ValueError(
+                    "admin-1 input contains no feature with geonunit Scotland"
+                )
 
-        sites = build_grid(
-            scotland,
-            str(inputs["roads"][1]),
-            str(inputs["light_pollution"][1]),
-            str(inputs["dem"][1]),
-            spacing_km=config.spacing_km,
-            max_road_distance_m=config.max_road_distance_m,
-        )
-        if not sites:
-            raise RuntimeError("geospatial computation produced no sites")
-        if len({site.get("id") for site in sites}) != len(sites):
-            raise RuntimeError("geospatial computation produced duplicate site ids")
-
-        written = ingest_grid(sites)
-        if written != len(sites):
-            raise RuntimeError(
-                f"ingest wrote {written} sites but computation produced {len(sites)}"
+        with _span(tracer, "stars.grid.compute") as compute_span:
+            sites = build_grid(
+                scotland,
+                str(inputs["roads"][1]),
+                str(inputs["light_pollution"][1]),
+                str(inputs["dem"][1]),
+                spacing_km=config.spacing_km,
+                max_road_distance_m=config.max_road_distance_m,
             )
+            if not sites:
+                raise RuntimeError("geospatial computation produced no sites")
+            if len({site.get("id") for site in sites}) != len(sites):
+                raise RuntimeError("geospatial computation produced duplicate site ids")
+            if compute_span is not None:
+                compute_span.set_attribute("stars.grid.site_count", len(sites))
+
+        with _span(tracer, "stars.grid.ingest") as ingest_span:
+            written = ingest_grid(sites)
+            if written != len(sites):
+                raise RuntimeError(
+                    f"ingest wrote {written} sites but computation produced {len(sites)}"
+                )
+            if ingest_span is not None:
+                ingest_span.set_attribute("stars.grid.site_count", written)
         logger.info("computed and ingested %d stars sites", written)
         return written
 
@@ -166,7 +227,14 @@ def main() -> None:
         level=os.environ.get("LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    run(GridJobConfig.from_env())
+    provider, tracer = _setup_otel()
+    try:
+        with _span(tracer, "stars.grid.job") as job_span:
+            written = run(GridJobConfig.from_env(), tracer=tracer)
+            if job_span is not None:
+                job_span.set_attribute("stars.grid.site_count", written)
+    finally:
+        _shutdown_otel(provider)
 
 
 if __name__ == "__main__":

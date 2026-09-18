@@ -65,6 +65,9 @@ def test_grid_job_has_an_explicit_minimal_runfiles_closure():
         ":stars_grid_ingest",
         "@pip//boto3",
         "@pip//botocore",
+        "@pip//opentelemetry_api",
+        "@pip//opentelemetry_exporter_otlp_proto_http",
+        "@pip//opentelemetry_sdk",
     }
     assert ":pkg_stars" not in job
 
@@ -81,6 +84,10 @@ def test_grid_runtime_is_dual_arch_and_non_root():
     assert "arm64 = True" in image
     final_image = _named_target(build, "stars_grid_image")
     assert "multi_platform = True" in final_image
+
+    architecture = (MONOLITH / "ARCHITECTURE.md").read_text()
+    assert "Stars grid image architecture exception" in architecture
+    assert "no current arm64 workload consumer" in architecture
 
 
 def test_grid_runtime_contains_native_cpp_library_on_both_architectures():

@@ -300,6 +300,9 @@ py_venv_binary(
         ":stars_grid_ingest",
         "@pip//boto3",
         "@pip//botocore",
+        "@pip//opentelemetry_api",
+        "@pip//opentelemetry_exporter_otlp_proto_http",
+        "@pip//opentelemetry_sdk",
     ],  # keep
 )
 
@@ -7252,6 +7255,9 @@ py_test(
     deps = [
         ":stars_grid_generator",
         ":stars_grid_ingest",
+        "@pip//opentelemetry_api",
+        "@pip//opentelemetry_exporter_otlp_proto_http",
+        "@pip//opentelemetry_sdk",
         "@pip//pytest",
     ],
 )
@@ -7260,6 +7266,7 @@ py_test(
     name = "stars_grid_build_config_test",
     srcs = ["stars/grid_gen/build_config_test.py"],
     data = [
+        "ARCHITECTURE.md",
         "BUILD",
         "stars/grid_gen/apko.lock.json",
         "stars/grid_gen/apko.yaml",
