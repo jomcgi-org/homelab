@@ -50,7 +50,10 @@ helm_chart(
     },
     lint = False,
     publish = True,
-    visibility = ["//overlays:__subpackages__"],
+    visibility = [
+        "//overlays:__subpackages__",
+        "//projects/monolith:__subpackages__",
+    ],
 )
 
 argocd_app(

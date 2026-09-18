@@ -61,6 +61,78 @@ bazel_dep(name = "platforms", version = "1.0.0")
 bazel_dep(name = "rules_cc", version = "0.2.17")
 bazel_dep(name = "toolchains_buildbuddy", version = "0.0.4")
 
+# Kubernetes 1.35.8 strict schemas for //bazel/helm:chart_admissibility_test.
+# strip_prefix exposes only the hub version instead of every historical schema
+# directory in the upstream archive.
+http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+http_file = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_file")
+
+http_archive(
+    name = "kubernetes_json_schema_1_35_8",
+    build_file_content = """
+exports_files(glob(["*.json"]), visibility = ["//visibility:public"])
+
+filegroup(
+    name = "schemas",
+    srcs = glob(["*.json"]),
+    visibility = ["//visibility:public"],
+)
+""",
+    sha256 = "586a17a884fba2229149fdc394c94b3a38a39c90921386b130c40f4f1f4857be",
+    strip_prefix = "kubernetes-json-schema-5a69f8365c9d3ed7de997f5365e22481cf775fa2/v1.35.8-standalone-strict",
+    urls = ["https://github.com/yannh/kubernetes-json-schema/archive/5a69f8365c9d3ed7de997f5365e22481cf775fa2.tar.gz"],
+)
+
+# kubeconform is a test-only Linux tool. CI and the BuildBuddy executors are
+# amd64 Linux, so fetching it directly avoids hand-editing the multitool lock,
+# whose companion updater can update existing entries but cannot add one.
+http_archive(
+    name = "kubeconform_0_8_0_linux_amd64",
+    build_file_content = """
+exports_files(["kubeconform"], visibility = ["//visibility:public"])
+""",
+    sha256 = "9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883",
+    urls = ["https://github.com/yannh/kubeconform/releases/download/v0.8.0/kubeconform-linux-amd64.tar.gz"],
+)
+
+# Atlas, Cilium, and CloudNativePG do not ship their CRDs in the local wrapper
+# chart renders. Pin the exact operator-version CRDs as inputs, then convert
+# them to the same offline kubeconform schema layout inside the test.
+http_file(
+    name = "atlasmigration_crd_0_7_28",
+    downloaded_file_path = "atlasmigration.yaml",
+    sha256 = "c8cc6727acbabe224073d9d4b8b2e4f4d9c9cb67bae069d3b9122b7184e61b92",
+    urls = ["https://raw.githubusercontent.com/ariga/atlas-operator/v0.7.28/config/crd/bases/db.atlasgo.io_atlasmigrations.yaml"],
+)
+
+http_file(
+    name = "cilium_network_policy_crd_1_20_0",
+    downloaded_file_path = "ciliumnetworkpolicy.yaml",
+    sha256 = "62c6de8f358da125b94468d39187edb1cea157d79503fdc50ccec8a6aaa79a76",
+    urls = ["https://raw.githubusercontent.com/cilium/cilium/v1.20.0/pkg/k8s/apis/cilium.io/client/crds/v2/ciliumnetworkpolicies.yaml"],
+)
+
+http_file(
+    name = "cloudnative_pg_cluster_crd_1_30_0",
+    downloaded_file_path = "cluster.yaml",
+    sha256 = "ae47f4a00f6e998faef57e480f9a3960cd48ea16a79270861fc7442601507472",
+    urls = ["https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/v1.30.0/config/crd/bases/postgresql.cnpg.io_clusters.yaml"],
+)
+
+http_file(
+    name = "cloudnative_pg_database_crd_1_30_0",
+    downloaded_file_path = "database.yaml",
+    sha256 = "53f7dfca6d23eb70246f41f1e7db596f8782341cd4fffb6ad990107cc8a588e7",
+    urls = ["https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/v1.30.0/config/crd/bases/postgresql.cnpg.io_databases.yaml"],
+)
+
+http_file(
+    name = "cloudnative_pg_scheduled_backup_crd_1_30_0",
+    downloaded_file_path = "scheduledbackup.yaml",
+    sha256 = "1dffb969a92ed6b09abe59d9c848ff97c6646c7824e75f8e0b8379df8473a145",
+    urls = ["https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/v1.30.0/config/crd/bases/postgresql.cnpg.io_scheduledbackups.yaml"],
+)
+
 # BuildBuddy RBE toolchain for remote build execution (80 cores on free tier)
 buildbuddy = use_extension("@toolchains_buildbuddy//:extensions.bzl", "buildbuddy")
 use_repo(buildbuddy, "buildbuddy_toolchain")

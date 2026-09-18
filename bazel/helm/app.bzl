@@ -46,8 +46,8 @@ def argocd_app(
 
     # Always create a template test. target_suffix keeps a second overlay in
     # the same package (e.g. a values-gke.yaml variant) from colliding with
-    # the default target names; such variants must also disable manifests and
-    # semgrep, whose target and output names stay fixed.
+    # the default target names. Semgrep still has a fixed target name, so a
+    # second overlay must disable only that output.
     helm_template_test(
         name = "template_test" + target_suffix,
         chart = chart,
@@ -67,6 +67,7 @@ def argocd_app(
             chart,
             "--namespace",
             namespace,
+            "--include-crds",
         ]
 
         # Add values files as --values flags using workspace-relative paths
@@ -88,9 +89,10 @@ def argocd_app(
 
         cmd_parts.extend([">", "$@"])
 
-        # Collect srcs: application.yaml + chart files + values files
+        # Collect the chart and values inputs. application.yaml is not used by
+        # helm template and may live in a different package for GKE overlays.
         chart_label = "//" + chart
-        srcs_list = ["application.yaml", chart_files, chart_label + ":Chart.yaml", chart_label + ":values.yaml"] + values_files
+        srcs_list = [chart_files, chart_label + ":Chart.yaml", chart_label + ":values.yaml"] + values_files
 
         # Deduplicate while preserving order, normalizing labels to absolute
         # form so that "values.yaml" and "//pkg:values.yaml" are recognized as
@@ -109,9 +111,9 @@ def argocd_app(
                 srcs.append(s)
 
         native.genrule(
-            name = "render_manifests",
+            name = "render_manifests" + target_suffix,
             srcs = srcs,
-            outs = ["manifests/all.yaml"],
+            outs = ["manifests" + target_suffix + "/all.yaml"],
             cmd = " ".join(cmd_parts),
             tools = [
                 "//bazel/helm:render-manifests.sh",

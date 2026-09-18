@@ -1,11 +1,13 @@
 # gazelle:exclude **/*.bzl
 load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
 load("@multitool//:tools.bzl", MULTITOOL_TOOLS = "TOOLS")
+load("@aspect_rules_py//py:defs.bzl", "py_binary")
 load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
 exports_files([
     "argocd-live-diff.sh",
+    "chart-admissibility-test.sh",
     "chart-version.sh",
     "check-missed-bump.sh",
     "helm-assert-annotations.sh",
@@ -16,6 +18,103 @@ exports_files([
     "render-manifests.sh",
     "write-back-versions.sh",
 ])
+
+MANIFEST_SETS = [
+    # First-party applications rendered with their deploy values.
+    "//projects/embervm/deploy:manifests/all.yaml",
+    "//projects/embervm/deploy:manifests_gke/all.yaml",
+    "//projects/embervm/dev/deploy:manifests/all.yaml",
+    "//projects/inference/deploy:manifests/all.yaml",
+    "//projects/inference/deploy:manifests_gke/all.yaml",
+    "//projects/mcp/context-forge-gateway/deploy:manifests/all.yaml",
+    "//projects/monolith-agents/deploy:manifests/all.yaml",
+    "//projects/monolith-agents/deploy:manifests_gke/all.yaml",
+    "//projects/monolith-public/deploy:manifests/all.yaml",
+    "//projects/monolith-public/deploy:manifests_gke/all.yaml",
+    "//projects/monolith/deploy:manifests/all.yaml",
+    "//projects/monolith/deploy:manifests_gke/all.yaml",
+    "//projects/monolith/dev/deploy:manifests/all.yaml",
+    "//projects/operators/oci-model-cache/deploy:manifests/all.yaml",
+    # Platform applications rendered by argocd_app.
+    "//projects/platform-gke/tailscale:manifests/all.yaml",
+    "//projects/platform/argo-workflows:manifests/all.yaml",
+    "//projects/platform/argo-workflows:manifests_gke/all.yaml",
+    "//projects/platform/argocd:manifests/all.yaml",
+    "//projects/platform/argocd:manifests_gke/all.yaml",
+    "//projects/platform/authentik:manifests/all.yaml",
+    "//projects/platform/authentik:manifests_gke/all.yaml",
+    "//projects/platform/cert-manager:manifests/all.yaml",
+    "//projects/platform/cert-manager:manifests_gke/all.yaml",
+    "//projects/platform/cilium:manifests/all.yaml",
+    "//projects/platform/cloudflare-gateway:manifests/all.yaml",
+    "//projects/platform/cloudflare-gateway:manifests_gke/all.yaml",
+    "//projects/platform/coredns:manifests/all.yaml",
+    "//projects/platform/kargo:manifests/all.yaml",
+    "//projects/platform/keda:manifests/all.yaml",
+    "//projects/platform/kyverno:manifests/all.yaml",
+    "//projects/platform/longhorn:manifests/all.yaml",
+    "//projects/platform/nvidia-gpu-operator:manifests/all.yaml",
+    "//projects/platform/onepassword:manifests/all.yaml",
+    "//projects/platform/opentelemetry-operator:manifests/all.yaml",
+    "//projects/platform/otel-collector:manifests/all.yaml",
+    "//projects/platform/otel-collector:manifests_gke/all.yaml",
+    "//projects/platform/polylane:manifests/all.yaml",
+    "//projects/platform/priority-classes:manifests/all.yaml",
+    "//projects/platform/renovate:manifests/all.yaml",
+    "//projects/platform/spire:manifests/all.yaml",
+    "//projects/platform/spire:manifests_gke/all.yaml",
+]
+
+# Explicit render skips. Entries stay out of MANIFEST_SETS only for the stated
+# reason, so a chart cannot disappear from the gate without leaving reviewable
+# evidence here.
+SKIPPED_MANIFEST_SETS = {
+    "projects/mcp/context-forge-gateway/deploy/values-gke.yaml": "The dormant overlay intentionally sets replicaCount to 0, but the upstream mcp-stack values schema requires at least 1. Argo CD carries skipSchemaValidation for this overlay.",
+}
+
+# Most CRD definitions are present in the rendered charts and are converted at
+# test time. These operators are installed from remote charts, or omit CRDs
+# from their wrapper chart, so their version-pinned definitions are additional
+# hermetic inputs.
+EXTERNAL_CRD_SOURCES = [
+    "@atlasmigration_crd_0_7_28//file",
+    "@cilium_network_policy_crd_1_20_0//file",
+    "@cloudnative_pg_cluster_crd_1_30_0//file",
+    "@cloudnative_pg_database_crd_1_30_0//file",
+    "@cloudnative_pg_scheduled_backup_crd_1_30_0//file",
+]
+
+py_binary(
+    name = "crd_schemas",
+    srcs = ["crd-schemas.py"],
+    main = "crd-schemas.py",
+    deps = ["@pip//pyyaml"],
+)
+
+sh_test(
+    name = "chart_admissibility_test",
+    size = "large",
+    srcs = ["chart-admissibility-test.sh"],
+    args = [
+        "$(rootpath @multitool//tools/helm)",
+        "$(rootpath @kubeconform_0_8_0_linux_amd64//:kubeconform)",
+        "$(rootpath :crd_schemas)",
+        "$(rootpath //bazel/helm:testdata/bad-secretkeyref/Chart.yaml)",
+        "$(rootpath @kubernetes_json_schema_1_35_8//:secret-v1.json)",
+    ] + ["$(rootpath {})".format(source) for source in EXTERNAL_CRD_SOURCES] + ["--"] + [
+        "$(rootpath {})".format(manifest)
+        for manifest in MANIFEST_SETS
+    ],
+    data = [
+        ":crd_schemas",
+        "@kubernetes_json_schema_1_35_8//:schemas",
+        "@kubernetes_json_schema_1_35_8//:secret-v1.json",
+        "@kubeconform_0_8_0_linux_amd64//:kubeconform",
+        "@multitool//tools/helm",
+        "//bazel/helm:testdata/bad-secretkeyref/Chart.yaml",
+    ] + glob(["testdata/bad-secretkeyref/templates/**"]) + EXTERNAL_CRD_SOURCES + MANIFEST_SETS,
+    timeout = "long",
+)
 
 sh_test(
     name = "argocd_live_diff_test",
@@ -82,6 +181,7 @@ sh_binary(
 bzl_library(
     name = "defs",
     srcs = [
+        "admissibility.bzl",  # keep
         "app.bzl",  # keep
         "chart.bzl",  # keep
         "defs.bzl",  # keep

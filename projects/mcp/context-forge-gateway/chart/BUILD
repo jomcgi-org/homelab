@@ -12,7 +12,10 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 helm_chart(
     name = "chart",
     lint = False,
-    visibility = ["//overlays:__subpackages__"],
+    visibility = [
+        "//overlays:__subpackages__",
+        "//projects/mcp/context-forge-gateway:__subpackages__",
+    ],
 )
 
 # No _gke render target on purpose: the GKE overlay sets replicaCount: 0
