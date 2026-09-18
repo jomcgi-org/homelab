@@ -135,6 +135,62 @@ else
 	fail "buildbuddy_resource_parity" "$(printf '%s | ' "${drift[@]}")"
 fi
 
+# Keep deployment folded into the required check. Action names are part of
+# BuildBuddy's snapshot key, so accidentally restoring a separate deploy action
+# would also restore duplicate main tests and disjoint snapshot state.
+action_names="$(awk '
+	$0 ~ /^  - name: / {
+		name = $0
+		sub(/^  - name: "/, "", name)
+		sub(/"$/, "", name)
+		print name
+	}
+' "$BUILD_BUDDY")"
+if [[ "$action_names" == "pr-checks" ]]; then
+	pass "buildbuddy_single_action"
+else
+	fail "buildbuddy_single_action" "expected only pr-checks, found: ${action_names//$'\n'/, }"
+fi
+
+pr_checks_shape="$(awk '
+	$0 == "  - name: \"pr-checks\"" { in_action = 1 }
+	in_action && $0 ~ /^  - name: / && $0 != "  - name: \"pr-checks\"" { exit }
+	in_action { print }
+' "$BUILD_BUDDY")"
+if grep -q '^    timeout: "2h"$' <<<"$pr_checks_shape" &&
+	grep -q '^    git_fetch_depth: 0$' <<<"$pr_checks_shape"; then
+	pass "buildbuddy_pr_checks_runner_shape"
+else
+	fail "buildbuddy_pr_checks_runner_shape" "pr-checks must declare timeout 2h and git_fetch_depth 0"
+fi
+
+if grep -Fq '[ -n "${GIT_BRANCH:-}" ]' <<<"$pr_checks_shape" &&
+	grep -Fq '[ "${GIT_BRANCH:-}" = "${GIT_REPO_DEFAULT_BRANCH:-}" ]' <<<"$pr_checks_shape" &&
+	grep -Fq '[ "${GIT_PR_NUMBER:-0}" = "0" ]' <<<"$pr_checks_shape"; then
+	pass "buildbuddy_main_gate"
+else
+	fail "buildbuddy_main_gate" "main gate must require default-branch identity and a zero PR number"
+fi
+
+main_publish_branch="$(awk '
+	$0 == "          if [ \"$ON_MAIN\" = true ] && [ \"$SKIP_MAIN_PUBLISH\" = false ]; then" { in_branch = 1 }
+	in_branch { print }
+	in_branch && $0 == "          fi" { exit }
+' "$BUILD_BUDDY")"
+if grep -Fq './bazel/images/push/push-changed.sh' <<<"$main_publish_branch" &&
+	grep -Fq './bazel/helm/write-back-versions.sh .chart-version-records' <<<"$main_publish_branch"; then
+	pass "buildbuddy_main_publish_branch"
+else
+	fail "buildbuddy_main_publish_branch" "main-only branch must publish changed images and write chart versions back"
+fi
+
+if grep -Fq 'GIT_COMMIT_MESSAGE="${GIT_COMMIT_MESSAGE:-$(git log -1 --format=%B)}"' <<<"$pr_checks_shape" &&
+	grep -Fq '"style: auto-format"*|"chore(charts): publish"*' <<<"$pr_checks_shape"; then
+	pass "buildbuddy_generated_commit_skip"
+else
+	fail "buildbuddy_generated_commit_skip" "generated main commits must skip publish and format work"
+fi
+
 if grep -q 'local affected-target feedback' "$CI" &&
 	grep -q 'SKIP_REMOTE=1' "$CI" &&
 	grep -q 'include-secrets=true' "$CI" &&
