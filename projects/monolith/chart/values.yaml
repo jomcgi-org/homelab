@@ -1393,7 +1393,7 @@ agentSessions:
   admission:
     total: 16
     background: 12
-    kg: 2
+    kg: 3
 
 # EmberVM R4 scratch-postgres consumer (ADR embervm/001, D-R4.PR-11.1). When
 # enabled the monolith exposes SCRATCH_POSTGRES_DSN so agent run_code python runs
