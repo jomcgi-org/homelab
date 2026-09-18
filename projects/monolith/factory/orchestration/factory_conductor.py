@@ -96,6 +96,7 @@ _KEY = r"^[a-z][a-z0-9_]{0,63}$"
 # rounds. A planner that could mint one could replenish a server-owned bound,
 # or claim a fan-in key, by renaming a node.
 _ROUND_KEY = re.compile(r"^(?:correct|review|integrate)_[0-9]+$")
+_FEEDBACK_REVIEW_KEY = re.compile(r"^review_feedback(?:_|$)")
 _CORRECT_KEY = re.compile(r"^correct_[0-9]+$")
 # The pair one engine review round owns, with the round number.
 _ENGINE_ROUND_KEY = re.compile(r"^(?:correct|review)_([0-9]+)$")
@@ -2406,6 +2407,11 @@ def _prepare_add(task: dict, policy: dict, source: dict) -> dict:
     key = key if key.startswith(f"{role}_") else f"{role}_{key}"
     if len(key) > 64:
         raise ValueError("node key exceeds role prefix limit")
+    if _FEEDBACK_REVIEW_KEY.match(key):
+        raise _EditRefused(
+            "feedback_review_key_reserved",
+            "review_feedback keys name the engine-owned advisory review",
+        )
     if _ROUND_KEY.fullmatch(key):
         raise _EditRefused(
             "engine_loop_key_reserved",
@@ -4432,11 +4438,16 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
     _consume_intervention_notifications(task_id)
     task = _task(task_id)
     runs = graph.node_runs(task_id)
-    # Capture the earliest completed review before retries or correction rounds
-    # can add later verdicts. Reconciliation replay is idempotent by task id.
-    from factory.orchestration.factory_feedback import record_first_pass
+    # Capture delivery reviews before retries or correction rounds add later
+    # verdicts. Advisory reviews wait for the verified-comment gate below.
+    from factory.orchestration.factory_feedback import (
+        ADVISORY_TIER,
+        pinned_route,
+        record_first_pass,
+    )
 
-    record_first_pass(task_id, runs)
+    if pinned_route(task_id) != ADVISORY_TIER:
+        record_first_pass(task_id, runs)
     # A crash may fall between graph settlement and the factory reservation
     # settlement. Reconcile terminal facts before attempting any further work.
     for run in runs:
