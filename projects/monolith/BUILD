@@ -4739,7 +4739,6 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_auth",
-        ":pkg_factory",
         ":pkg_swarm",
         "@pip//fastapi",
         "@pip//httpx",
@@ -4799,6 +4798,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_auth",
+        ":pkg_factory",
         ":pkg_swarm",
         "@pip//fastapi",
         "@pip//httpx",
