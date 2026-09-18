@@ -41,8 +41,9 @@ The contract is **wired but not consumed**. As of this README:
   the three themes overrides a `--ds-*` token inside its scope class.
 - The five conflicting public tokens are scoped to
   `body:has(.public-theme)`, while the shared defaults remain at `:root`.
-  Public palette selection therefore follows route ancestry rather than
-  stylesheet import order.
+  The public layout and root error boundary mount that marker, so the
+  brutalist palette follows the rendered surface rather than stylesheet
+  import order.
 - There is no primitive layer, no `jomcgi.dev/design` gallery, and no
   Storybook, and #4449 does not require any of them.
 
@@ -54,9 +55,9 @@ an adoption requirement.
 
 ## Rules that already hold
 
-- Themes scope conflicting values to their route or component root
-  (`.public-theme`, `.ember-site`, `.grimoire`). Do not add another
-  unscoped writer for those names.
+- Themes scope conflicting values to a surface marker or component root
+  (`.public-theme` from the public layout and error boundary, `.ember-site`,
+  `.grimoire`). Do not add another unscoped writer for those names.
 - A token change here ships in the shared monolith frontend image, so it
   bumps both `monolith` and `monolith-public` together. Ownership moved here;
   release trains did not.

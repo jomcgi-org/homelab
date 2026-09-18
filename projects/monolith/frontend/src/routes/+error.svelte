@@ -48,6 +48,8 @@
   />
 </svelte:head>
 
+<div class="public-theme" hidden></div>
+
 <main class="nf">
   <!-- decorative brutalist shapes, same flat-ink language as the homepage hero -->
   <svg

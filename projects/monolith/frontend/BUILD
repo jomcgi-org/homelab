@@ -210,6 +210,7 @@ js_library(
         # Client-only page components imported by SSR shell tests reference
         # these SvelteKit virtual modules even though they never mount.
         "test/app-navigation-stub.js",
+        "test/app-state-stub.js",
         "test/app-stores-stub.js",
         # Resolved by the $env/dynamic/private alias in vitest.config.js; same
         # rationale: lives outside src/ so it never reaches the app bundle.

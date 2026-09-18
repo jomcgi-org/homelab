@@ -26,6 +26,9 @@ export default defineConfig({
       "$app/stores": fileURLToPath(
         new URL("./test/app-stores-stub.js", import.meta.url),
       ),
+      "$app/state": fileURLToPath(
+        new URL("./test/app-state-stub.js", import.meta.url),
+      ),
       // Same reason for `$env/dynamic/private` (used by lib/server/trips-img.js
       // and, transitively, the trips server loads). The real module is injected
       // by SvelteKit at build time; the stub exposes process.env so tests can

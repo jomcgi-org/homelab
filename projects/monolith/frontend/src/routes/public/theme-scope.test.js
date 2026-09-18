@@ -1,8 +1,9 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 const routeDir = fileURLToPath(new URL(".", import.meta.url));
+const sourceDir = fileURLToPath(new URL("../../", import.meta.url));
 const layout = readFileSync(new URL("+layout.svelte", import.meta.url), "utf8");
 const publicTokens = readFileSync(
   new URL("../../lib/public/styles/design-system.css", import.meta.url),
@@ -20,6 +21,14 @@ function declarationsFor(css, selector) {
   return new Set(
     [...match[1].matchAll(/(--[a-z0-9-]+)\s*:/g)].map((entry) => entry[1]),
   );
+}
+
+function svelteFilesUnder(dir) {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const path = `${dir}/${entry.name}`;
+    if (entry.isDirectory()) return svelteFilesUnder(path);
+    return entry.name.endsWith(".svelte") ? [path] : [];
+  });
 }
 
 describe("public theme token scope", () => {
@@ -45,7 +54,20 @@ describe("public theme token scope", () => {
     expect(collisions.every((token) => !publicRoot.has(token))).toBe(true);
   });
 
-  it("activates the scope only while the public layout is mounted", () => {
+  it("marks every surface that imports the brutalist design system", () => {
     expect(layout).toContain('<div class="public-theme" hidden></div>');
+
+    const importers = svelteFilesUnder(sourceDir).filter((path) =>
+      /^\s*import\s+["'][^"']*design-system\.css["'];/m.test(
+        readFileSync(path, "utf8"),
+      ),
+    );
+
+    expect(importers).toHaveLength(2);
+    for (const path of importers) {
+      expect(readFileSync(path, "utf8"), path).toContain(
+        '<div class="public-theme" hidden></div>',
+      );
+    }
   });
 });
