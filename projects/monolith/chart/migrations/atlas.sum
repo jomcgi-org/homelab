@@ -1,4 +1,4 @@
-h1:hhsOma7r/JT/4CVcAurVTR1T3Do5F4P5ehrDYPolX6Q=
+h1:wTiDZhdA/TvVtMTiN6cXGkqrEsW2Ejw55i8T46ckU08=
 20260330000000_initial_schema.sql h1:J2futpSW0nJAIRR7nR7ssT7LwXIYrvRI+PkHb5Y4tLI=
 20260403000000_chat_schema.sql h1:pERUFC0vzM95etRuzp43XzkCV7lBCzrrtY5Mk7aF3CA=
 20260404000000_chat_attachments.sql h1:tv+Fdbr1rQC5nzUxfaBC0O6fu2OMGgLWf+YNg1WQXi4=
@@ -213,6 +213,6 @@ h1:hhsOma7r/JT/4CVcAurVTR1T3Do5F4P5ehrDYPolX6Q=
 20260915123918_agent_activity_daily_nul_safe.sql h1:U+stWCtyxoDCWtsFP+5TNv9mijb8+YWKaRoFVS+Kn/M=
 20260916015512_pod_restart_watch.sql h1:KqP17SYd8a0qWDCu2I4y2v7li1MpevhYKHqAoglpLwQ=
 20260916020000_result_receipt_observer_release.sql h1:0ZmBCXxXaSC/8Wy9QrplKcyKPXCKLrWit8ZU3vgrDG4=
-20260918010000_grimoire_campaign_acl.sql h1:KbveL1k9HFuJwkD/JQ2XQ8MZT80my0KrgaiZx3YrAvg=
-20260918020000_channel_memory.sql h1:3cMsXWIrhxxAdPCDeahmG2woMeIeCFAG1DxsBVMa4Is=
-20260918030000_grimoire_entity_verification.sql h1:AFa5vhhj2J7jMnr779vG6c/GN+fpkDasDJmcMZ1dUdE=
+20260918020000_channel_memory.sql h1:zkC0ftF7uaMJbjm+nHujWWm24V5r8PY7Ej1NuT0liCA=
+20260918030000_grimoire_entity_verification.sql h1:Bz9CXi6/TSnsul4A+agbE8IpOPi6zFMg4PuLWwSjupU=
+20260918040000_grimoire_campaign_acl.sql h1:2terZ397WmvvR2tpKzdRLfeYt8hsspUEXhXCcv/4Ci4=
