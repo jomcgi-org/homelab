@@ -52,7 +52,6 @@ spec:
           imagePullPolicy: {{ .Values.tokenBroker.image.pullPolicy }}
           ports:
             - { name: http, containerPort: 8080 }
-            - { name: metrics, containerPort: 9090 }
             {{- if .Values.tokenBroker.spiffe.enabled }}
             - { name: https, containerPort: {{ .Values.tokenBroker.spiffe.tlsPort }} }
             {{- end }}
