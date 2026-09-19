@@ -2156,6 +2156,12 @@ func (s *Server) SyncRegistry(_ context.Context, req *nodev1.SyncRegistryRequest
 		}
 	}
 	n := s.registry.syncFromControlPlane(entries, req.GetControlPlaneActivatorIp())
+	// The live replay is the first authoritative evidence of workload class and
+	// current image identity. Reconcile handler-less image-lane inventory now that
+	// those facts can be joined to the validated base inventory on disk. This is
+	// idempotent, so reconnect replays also retract entries whose class or image
+	// changed while the daemon was disconnected.
+	s.reconcileServingImagesFromDisk()
 	s.logger.Info("workload registry synced", "entries", n)
 	// A sync can flip the daemon ready; wake any WatchNode observers so the
 	// control plane sees the new registry-derived facts promptly.
@@ -2172,6 +2178,7 @@ func (s *Server) RegisterWorkload(_ context.Context, req *nodev1.RegisterWorkloa
 		return nil, status.Error(codes.InvalidArgument, "noded: entry.workload required")
 	}
 	n := s.registry.register(entryFromProto(entry))
+	s.reconcileServingImagesFromDisk()
 	s.signalChange()
 	return &nodev1.RegisterWorkloadResponse{EntryCount: uint32(n)}, nil
 }
@@ -2180,6 +2187,7 @@ func (s *Server) RegisterWorkload(_ context.Context, req *nodev1.RegisterWorkloa
 // an absent workload.
 func (s *Server) DeregisterWorkload(_ context.Context, req *nodev1.DeregisterWorkloadRequest) (*nodev1.DeregisterWorkloadResponse, error) {
 	n := s.registry.deregister(req.GetWorkload())
+	s.reconcileServingImagesFromDisk()
 	s.signalChange()
 	return &nodev1.DeregisterWorkloadResponse{EntryCount: uint32(n)}, nil
 }
@@ -3621,6 +3629,11 @@ func (s *Server) ReconcileBasesFromDisk() error {
 		for _, entry := range adopted {
 			s.bases.register(entry)
 		}
+		// A repeated reconcile can invalidate a previously READY base or discover a
+		// newly published one. Keep replay-derived image-lane inventory converged to
+		// that validated disk truth. Before the first live SyncRegistry this only
+		// performs the existing zip-artifact rescan.
+		s.reconcileServingImagesFromDisk()
 	}
 	n := len(adopted)
 	if generationChanged || n > 0 || gc > 0 {
@@ -3665,7 +3678,16 @@ func (s *Server) reconcileServingImagesFromDisk() {
 	if s.servingDriver == nil {
 		return
 	}
-	for _, a := range s.servingDriver.ScanServingHandlerArtifacts() {
+	artifacts := s.servingDriver.ScanServingHandlerArtifacts()
+	zipBases := make(map[string]bool, len(artifacts))
+	for _, a := range artifacts {
+		// Preserve the zip lane's boot-time behavior. Its handler artifact is
+		// positive serving evidence and remains independently recoverable before
+		// the workload registry replay arrives.
+		if a.Path == "" {
+			continue
+		}
+		zipBases[a.BaseKey] = true
 		s.servingImage.add(servingImageEntry{
 			baseKey: a.BaseKey,
 			// The disk rescan has no control-plane binding, so recover the workload
@@ -3676,6 +3698,53 @@ func (s *Server) reconcileServingImagesFromDisk() {
 			runtimeImageRef: a.RuntimeImageRef,
 			sizeBytes:       a.SizeBytes,
 		})
+	}
+
+	// A handler-less runtime.ref marker is not sufficient evidence by itself. It
+	// can outlive a superseded or non-serving workload, and New runs before base
+	// validation and before the control plane's authoritative registry replay.
+	// Wait for that live replay, then derive image-lane inventory from the join of:
+	// a validated READY base, a serving-class workload, the workload's current
+	// image ref, and the same provisioned rootfs the base was built against. This
+	// also recovers older valid bases that have no runtime.ref marker, without
+	// forcing a rebuild or re-key.
+	if !s.registry.isSynced() {
+		return
+	}
+
+	desired := make(map[string]servingImageEntry)
+	for _, base := range s.bases.snapshot() {
+		if base.state != nodev1.BaseBuildState_BASE_BUILD_STATE_READY || zipBases[base.snapshotRef] {
+			continue
+		}
+		workload, ok := s.registry.get(base.workload)
+		if !ok || workload.ServingPort == 0 || workload.ImageRef == "" || workload.ImageRef != base.imageDigest {
+			continue
+		}
+		image, provisioned := s.resolveImageByRef(base.imageDigest)
+		if !provisioned || image.RootfsPath == "" || image.RootfsPath != base.rootfsPath {
+			continue
+		}
+		desired[base.snapshotRef] = servingImageEntry{
+			baseKey:         base.snapshotRef,
+			workload:        base.workload,
+			runtimeImageRef: base.imageDigest,
+		}
+	}
+
+	// Replays and disk reconciles are level-triggered. Retract only handler-less
+	// entries that no longer satisfy the authoritative join; zip-lane entries keep
+	// their existing artifact-owned lifecycle.
+	for _, current := range s.servingImage.snapshot() {
+		if current.handlerPath != "" {
+			continue
+		}
+		if _, ok := desired[current.baseKey]; !ok {
+			s.servingImage.remove(current.baseKey)
+		}
+	}
+	for _, entry := range desired {
+		s.servingImage.add(entry)
 	}
 }
 

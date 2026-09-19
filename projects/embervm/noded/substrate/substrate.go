@@ -177,7 +177,7 @@ type SnapshotRef struct {
 // may import the other. Two shapes: a ZIP-lane handler artifact (handler.zip plus
 // its runtime-ref sidecar; Path set, SizeBytes exact) and an IMAGE-lane marker
 // (runtime.ref alone per ADR embervm/038; Path "" and SizeBytes 0, a HANDLER-LESS
-// entry whose fresh boot runs the image entrypoint with no artifact drive).
+// candidate whose fresh boot runs the image entrypoint with no artifact drive).
 type ServingHandlerArtifact struct {
 	// BaseKey is the serving base key (== the serving image ref the control plane
 	// places on), recovered from the bundle dir name.
