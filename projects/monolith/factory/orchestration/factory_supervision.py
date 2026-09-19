@@ -343,9 +343,9 @@ def _control_plane_cessation(view, identity, saved=None):
             or started != expected["invoke_started_at"]
         ):
             return None
-    if last_invoke is None:
+    if last_invoke is None or (type(last_invoke) is int and 0 < last_invoke < started):
         # Eviction can cause the failed turn itself, before the client records
-        # its error. A missing completion stamp is expected when that response
+        # its error. A missing or older completion stamp is expected when the response
         # was lost; match the exact durable dispatch instead of requiring it.
         from shared.invocation_outcomes import terminal_dispatch_cessation
 
@@ -367,7 +367,7 @@ def _control_plane_cessation(view, identity, saved=None):
             "state": view["state"],
             "generation": generation,
             "invoke_started_at": started,
-            "last_invoke_at": None,
+            "last_invoke_at": last_invoke,
             "updated_at": updated_at,
             "cessation_evidence": "terminal_dispatch",
         }
