@@ -1,7 +1,7 @@
 # gazelle:exclude **/*.bzl
 load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
 load("@multitool//:tools.bzl", MULTITOOL_TOOLS = "TOOLS")
-load("@aspect_rules_py//py:defs.bzl", "py_binary")
+load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
 load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
@@ -91,7 +91,7 @@ EXTERNAL_CRD_SOURCES = [
     "@cloudnative_pg_scheduled_backup_crd_1_30_0//file",
 ]
 
-py_binary(
+py_venv_binary(
     name = "crd_schemas",
     srcs = ["crd-schemas.py"],
     main = "crd-schemas.py",

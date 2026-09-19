@@ -1,10 +1,9 @@
 # gazelle:argocd disabled
 # The argocd gazelle extension would generate an argocd_app here (this is
 # the one git-chart single-source app) whose template and semgrep tests
-# depend on the chart target, visible only to //overlays; the extension
-# also resets that visibility on every format pass, so the generated
-# targets can never analyse. The chart renders are covered by the
-# hand-written targets in ../chart/BUILD instead.
+# depend on the chart target. The chart's visibility to this package is
+# held by a gazelle keep marker in ../chart/BUILD, and the renders the
+# admissibility gate consumes are the hand-written targets below.
 
 load("//bazel/helm:defs.bzl", "helm_admissibility_render")
 
