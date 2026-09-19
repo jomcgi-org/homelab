@@ -1287,6 +1287,11 @@ noded:
   # gRPC port the control plane dials; health port for kubelet probes.
   grpcPort: 9090
   healthPort: 8080
+  # OpenTelemetry OTLP/gRPC tracing for the node daemon. An empty endpoint
+  # leaves the SDK disabled and renders no OTEL environment variables.
+  tracing:
+    endpoint: ""
+    serviceName: embervm-noded
   # Node-local activator HTTP listener (ADR embervm/018 Fork A): a node Envoy
   # routes a scaled-to-zero serving workload's first request here, so the cold
   # boot happens on the brick and survives a control-plane Recreate. Advertised as

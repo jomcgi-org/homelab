@@ -345,6 +345,36 @@ py_test(
     deps = ["@pip//pyyaml"],
 )
 
+py_test(
+    name = "chart_noded_tracing_test",
+    srcs = ["chart_noded_tracing_test.py"],
+    data = [
+        "Chart.yaml",
+        "values.yaml",
+        "//projects/embervm/deploy:deploy_values",
+        "//projects/platform/otel-collector:prod_values",
+        "@multitool//tools/helm",
+    ] + glob([
+        "templates/**/*",
+        "crds/**/*",
+    ]),
+    env = {
+        "COLLECTOR_PROD_VALUES": "$(rootpath //projects/platform/otel-collector:prod_values)",
+        "DEPLOY_VALUES": "$(rootpath //projects/embervm/deploy:deploy_values)",
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+    },
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)
+
+semgrep_test(
+    name = "chart_noded_tracing_test_semgrep_test",
+    srcs = ["chart_noded_tracing_test.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
 semgrep_test(
     name = "chart_control_plane_probe_test_semgrep_test",
     srcs = ["chart_control_plane_probe_test.py"],

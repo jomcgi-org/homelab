@@ -30,6 +30,7 @@ import (
 	"github.com/jomcgi/homelab/projects/embervm/noded/server"
 	"github.com/jomcgi/homelab/projects/embervm/noded/serving"
 	"github.com/jomcgi/homelab/projects/embervm/noded/store"
+	"github.com/jomcgi/homelab/projects/embervm/noded/telemetry"
 	"github.com/jomcgi/homelab/projects/embervm/noded/vsockhttp"
 )
 
@@ -54,6 +55,15 @@ func run(logger *slog.Logger) error {
 	defer stopSignals()
 	ctx, cancelRun := context.WithCancel(signalCtx)
 	defer cancelRun()
+	tp, err := telemetry.InitializeTracing(ctx)
+	if err != nil {
+		return fmt.Errorf("initialize tracing: %w", err)
+	}
+	defer func() {
+		if err := telemetry.Shutdown(context.Background(), tp); err != nil {
+			logger.Error("could not shut down tracer provider", "err", err)
+		}
+	}()
 
 	cfg, err := config.Load()
 	if err != nil {

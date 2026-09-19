@@ -187,6 +187,14 @@ containers:
         value: ":{{ $ctx.Values.noded.grpcPort }}"
       - name: EMBERVM_NODED_HEALTH_ADDR
         value: ":{{ $ctx.Values.noded.healthPort }}"
+      {{- if $ctx.Values.noded.tracing.endpoint }}
+      # OpenTelemetry OTLP/gRPC tracing. The Go SDK uses the same endpoint and
+      # resource identity for every consumer of this shared noded pod template.
+      - name: OTEL_EXPORTER_OTLP_ENDPOINT
+        value: {{ $ctx.Values.noded.tracing.endpoint | quote }}
+      - name: OTEL_SERVICE_NAME
+        value: {{ $ctx.Values.noded.tracing.serviceName | default "embervm-noded" | quote }}
+      {{- end }}
       # The daemon self-identifies from the Downward API so snapshot node-
       # pinning is correct wherever it lands.
       - name: EMBERVM_NODED_NODE

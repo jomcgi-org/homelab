@@ -16,7 +16,10 @@ helm_chart(
 filegroup(
     name = "prod_values",
     srcs = ["values-prod.yaml"],
-    visibility = ["//projects/monolith/chart:__pkg__"],
+    visibility = [
+        "//projects/embervm/chart:__pkg__",
+        "//projects/monolith/chart:__pkg__",
+    ],
 )
 
 argocd_app(
