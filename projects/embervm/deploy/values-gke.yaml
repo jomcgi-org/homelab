@@ -17,13 +17,15 @@ noded:
     # has to land before the flag can go back on. Tracked on #5255.
     enabled: false
   drain:
-    # A factory turn can run for 12 hours. Ordinary brick publication must keep
-    # the old pod alive long enough for that already-running guest to finish and
-    # bank; closing admission alone would not drain it. This is above the
-    # 43,200s guest invoke bound and the 43,500s caller read bound. Kubernetes
-    # adds the chart's 30s shutdown margin. A long turn can therefore delay its
-    # brick replacement for this full period.
-    timeoutSeconds: 43800
+    # A brick publication keeps the old pod alive so an already-running guest
+    # can finish its current invoke and bank; closing admission alone would
+    # not drain it. Capped at two hours (Joe, 2026-09-19): a factory turn can
+    # legally run for 12 hours, but most end within 40 minutes, and a publish
+    # must not hang a brick wave all day. A turn still running at the cap is
+    # killed and retried under max_attempts. The real fix is #6256 (snapshot
+    # mid-invoke and replay), after which this drops back to the ordinary
+    # rollout budget. Kubernetes adds the chart's 30s shutdown margin.
+    timeoutSeconds: 7200
     # GCE preemption notice watcher (ADR embervm/040 decision 5). Armed on the
     # hub only: the watcher hangs GETs on the instance/preempted metadata value,
     # which exists nowhere but GCE. Until it is armed every Spot preemption
@@ -128,7 +130,7 @@ bricks:
   # Must exceed the 43,830s pod termination grace plus a cold brick's rootfs
   # build. Otherwise Kubernetes reports ProgressDeadlineExceeded while a valid
   # long factory turn is still draining.
-  progressDeadlineSeconds: 46800
+  progressDeadlineSeconds: 10800
   desiredReplicas:
     2gi: 1
     4gi: 1
