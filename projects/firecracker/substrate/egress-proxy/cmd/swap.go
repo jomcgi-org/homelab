@@ -184,12 +184,22 @@ const grantDeadCooldown = 60 * time.Second
 // otherwise latch a grant out of the pool forever.
 const grantExhaustionStaleAfter = 15 * time.Minute
 
+// grantPerishableWindow is the horizon where preserving quota outweighs
+// connection stickiness. It has to be long enough to actually drain the
+// remainder: a grant holding a fifth of a weekly window needs the better part
+// of a day at the rates these pools see, so a two-hour horizon would strand
+// most of what it exists to rescue. Twelve hours is still only the last seven
+// percent of a weekly window, so ordinary future resets never move traffic.
+const grantPerishableWindow = 12 * time.Hour
+
 // grantBand is the ranking key for one grant: remaining quota in 25% bands
 // (4 = untouched or unobserved, 0 = under a quarter left, -1 = exhausted)
-// and the reset time of the window that set the band, for tie-breaking.
+// and the reset time of the window that set the band, for tie-breaking. A
+// healthy grant is perishable when any future reset is imminent.
 type grantBand struct {
-	band     int
-	resetsAt time.Time
+	band       int
+	resetsAt   time.Time
+	perishable bool
 }
 
 // bandFor scores one grant from the broker's view of it.
@@ -248,7 +258,8 @@ func bandFor(view grantQuotaView, ok bool, now time.Time) grantBand {
 	if band > 4 {
 		band = 4
 	}
-	return grantBand{band: band, resetsAt: resetsAt}
+	perishable := !soonestFuture.IsZero() && !soonestFuture.After(now.Add(grantPerishableWindow))
+	return grantBand{band: band, resetsAt: resetsAt, perishable: perishable}
 }
 
 // rankGrants orders a pool by preference: the grant to try first, then the
@@ -256,12 +267,15 @@ func bandFor(view grantQuotaView, ok bool, now time.Time) grantBand {
 // (isDead) moved to the end so a healthy account is always tried before a
 // dead one.
 //
-// The best grant is the one with the most remaining quota by band; within a
-// band the sooner reset wins, because that quota is the quota that would
-// otherwise go unused; within that, pool order wins. The current grant is
-// kept unless the best is a full band ahead of it, so a brick stays on one
-// account through small differences and each account burns down in
-// quarter steps rather than the pool ping-ponging on every reading.
+// The best grant first has quota with a reset inside the perishable window,
+// then the most remaining quota by band; within a band the sooner reset wins,
+// and within that pool order wins. An imminent grant with only hours left
+// therefore beats a higher-band grant whose quota will remain available.
+//
+// The current grant is normally kept unless the best is a full band ahead,
+// so small differences within the same perishability category do not cause
+// ping-pong. A perishable best grant can also displace a durable current grant
+// because quota lost at reset cannot be recovered.
 func rankGrants(pool []string, views map[string]grantQuotaView, current string, now time.Time, isDead func(string, time.Time) bool) []string {
 	if len(pool) == 0 {
 		if current == "" {
@@ -295,7 +309,8 @@ func rankGrants(pool []string, views map[string]grantQuotaView, current string, 
 	if !inPool || (isDead != nil && isDead(current, now)) {
 		return ordered
 	}
-	if bands[ordered[0]].band > currentBand.band {
+	bestBand := bands[ordered[0]]
+	if (bestBand.perishable && !currentBand.perishable) || bestBand.band > currentBand.band {
 		return ordered
 	}
 	// Keep the current grant in front; the rest keep their rank order.
@@ -309,9 +324,13 @@ func rankGrants(pool []string, views map[string]grantQuotaView, current string, 
 }
 
 // better is a strict total order so the stable sort keeps pool order among
-// true ties: higher band first, then a known reset before an unknown one,
-// then the sooner reset.
+// true ties: perishable quota first, then higher band, then a known reset
+// before an unknown one, then the sooner reset. Exhausted grants are never
+// perishable, so an imminent reset cannot promote them.
 func better(candidate, incumbent grantBand) bool {
+	if candidate.perishable != incumbent.perishable {
+		return candidate.perishable
+	}
 	if candidate.band != incumbent.band {
 		return candidate.band > incumbent.band
 	}
