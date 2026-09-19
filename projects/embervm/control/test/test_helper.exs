@@ -61,6 +61,7 @@ defmodule Embervm.TestSpanExporter do
   @parent_span_id_index 4
   @trace_id_index 1
   @span_id_index 2
+  @start_time_index 8
   @end_time_index 9
   @attributes_index 10
   @status_index 13
@@ -85,6 +86,7 @@ defmodule Embervm.TestSpanExporter do
   def trace_id(span), do: elem(span, @trace_id_index)
   def span_id(span), do: elem(span, @span_id_index)
   def parent_span_id(span), do: elem(span, @parent_span_id_index)
+  def start_time(span), do: elem(span, @start_time_index)
   def end_time(span), do: elem(span, @end_time_index)
   def attributes(span), do: span |> elem(@attributes_index) |> :otel_attributes.map()
   def status_code(span) do

@@ -924,17 +924,11 @@ claudeRuntimeWorkload:
 # The pi-runtime workload: the small session lane (256 MiB), carrying only the
 # pi CLI. Sizing and the "why 256 holds" arithmetic are in chart/values.yaml.
 #
-# ON, but NOTHING ROUTES TO IT YET. The monolith still sends every model family,
-# qwen included, to claude-runtime (agent_sessions/transport.py defaults its
-# workload to "claude-runtime"), so enabling this here builds the base and
-# stands the CR up without changing a single live turn. That ordering is
-# deliberate: embervm and monolith are separate ArgoCD apps with independent
-# rollouts, so shipping the routing flip in the same change would mean whichever
-# app synced first decided whether qwen sessions 404 on an unknown workload for
-# a few minutes. It also means the 256 MiB sizing is proven by a real session
-# create here BEFORE the */5 synthetic probe depends on it.
-#
-# The follow-up that routes model=qwen here is a monolith-side change.
+# ON because the monolith's pi-family default is pi-runtime
+# (factory/execution/__init__.py). EmberVM and monolith are separate ArgoCD apps,
+# so this shared production overlay must keep the Workload CR rendered anywhere
+# that routing default is active. The chart render test covers both home and GKE
+# overlays to prevent a configuration-only 404.
 piRuntimeWorkload:
   enabled: true
   # Keep the shared shim's base on the same verified callback configuration.

@@ -5300,7 +5300,8 @@ class ProcessManager:
         """Keep one bounded phase measurement for the current HTTP response."""
         try:
             finished = _turn_timing_now()
-            if started is None or finished is None:
+            turn_started = getattr(self, "_turn_started_at", None)
+            if started is None or finished is None or turn_started is None:
                 return
             if phase not in ("hydration", "repo-clone"):
                 return
@@ -5314,6 +5315,7 @@ class ProcessManager:
                 return
             self._turn_phase_telemetry[phase] = {
                 "ms": max(0, int((finished - started) * 1000)),
+                "start_offset_ms": max(0, int((started - turn_started) * 1000)),
                 "status": status,
             }
         except Exception:
@@ -5629,6 +5631,7 @@ class ProcessManager:
         artifact_path=None,
     ):
         total_start = _turn_timing_now()
+        self._turn_started_at = total_start
         self._turn_phase_telemetry = {}
         with self._mount_lock:
             ensure_workspace_volume()
@@ -5776,8 +5779,11 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             if not isinstance(measurement, dict):
                 continue
             duration_ms = measurement.get("ms")
+            start_offset_ms = measurement.get("start_offset_ms")
             status = measurement.get("status")
             if type(duration_ms) is not int or duration_ms < 0:
+                continue
+            if type(start_offset_ms) is not int or start_offset_ms < 0:
                 continue
             if status not in (
                 "cloned",
@@ -5789,6 +5795,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                 continue
             prefix = "X-Ember-Phase-%s" % phase.title()
             self._phase_headers[prefix + "-Ms"] = str(duration_ms)
+            self._phase_headers[prefix + "-Start-Offset-Ms"] = str(start_offset_ms)
             self._phase_headers[prefix + "-Status"] = status
 
     def do_GET(self):

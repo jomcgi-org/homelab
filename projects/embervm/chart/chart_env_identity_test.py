@@ -964,6 +964,29 @@ def test_dev_does_not_render_production_only_workloads(renders):
     )
 
 
+@pytest.mark.parametrize(
+    "values_names", [["PROD_VALUES"], ["PROD_VALUES", "GKE_VALUES"]]
+)
+def test_production_renders_the_pi_runtime_target(values_names):
+    rendered = _render(
+        "embervm", [Path(os.environ[name]) for name in values_names]
+    )
+    matches = [
+        doc
+        for kind, name, doc in _docs(rendered)
+        if kind == "Workload" and name == "pi-runtime"
+    ]
+
+    assert len(matches) == 1
+    assert matches[0]["spec"]["invocation"]["timeoutSeconds"] == 43_200
+    invocation_timeouts = [
+        doc["spec"]["invocation"]["timeoutSeconds"]
+        for kind, _name, doc in _docs(rendered)
+        if kind == "Workload" and "invocation" in doc["spec"]
+    ]
+    assert max(invocation_timeouts) == 43_200
+
+
 def test_noded_bucket_path_configuration(renders):
     """Dev's noded bucket path must be isolated from production.
 

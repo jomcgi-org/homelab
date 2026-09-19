@@ -40,6 +40,9 @@ defmodule Embervm.SessionTelemetryTest do
 
   test "marking is inert without an exporter and returns the selected reason" do
     assert SessionTelemetry.mark_error(:invoke_timeout) == "invoke_timeout"
+    assert SessionTelemetry.mark_expected(:queue_full) == "queue_full"
+    assert SessionTelemetry.mark_result(:queue_full) == "queue_full"
+    assert SessionTelemetry.mark_result(:invoke_timeout) == "invoke_timeout"
     assert SessionTelemetry.mark_guest_response(200, "ok") == nil
     assert SessionTelemetry.mark_guest_response(503, "workspace does not exist: /secret") ==
              "workspace_missing"

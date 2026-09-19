@@ -737,7 +737,7 @@ defmodule Embervm.SessionManager do
                              "ember.create.denied" => "create_saturated"
                            }
                          } do
-          SessionTelemetry.mark_error(:create_saturated)
+          SessionTelemetry.mark_expected(:create_saturated)
           error_result = {:error, {:denied, :create_saturated}}
           state = %{state | create_saturated_denials: state.create_saturated_denials + 1}
           state = log_saturated_denial(state, workload, principal, inflight)
@@ -1173,7 +1173,7 @@ defmodule Embervm.SessionManager do
          }}
       else
         {:error, reason} ->
-          SessionTelemetry.mark_error(reason)
+          SessionTelemetry.mark_result(reason)
           {:error, {:denied, reason}}
       end
     end

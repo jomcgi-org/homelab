@@ -104,14 +104,28 @@ data:
         tail_storage: pebble_tail_storage
         {{- end }}
         policies:
-          # These two policies are deliberate uncapped exemptions. The issue
-          # being diagnosed is the loss of error and low-volume pi-runtime
-          # traces, so either class must survive even when the baseline budget
-          # is full. Peer tail-sampling policies are ORed.
+          # These two policies are deliberate uncapped exemptions. Explicitly
+          # expected outcomes are excluded, so routine 4xx and backpressure
+          # cannot bypass the composite ceiling even if an instrumentation
+          # regression marks one ERROR. Ordinary OTel 5xx errors from services
+          # that do not add EmberVM's classification remain eligible.
           - name: keep-errors
-            type: status_code
-            status_code:
-              status_codes: [ERROR]
+            type: and
+            and:
+              and_sub_policy:
+                - name: error-status
+                  type: status_code
+                  status_code:
+                    status_codes: [ERROR]
+                - name: exclude-expected-class
+                  type: not
+                  not:
+                    not_sub_policy:
+                      name: expected-class
+                      type: string_attribute
+                      string_attribute:
+                        key: ember.failure.class
+                        values: [expected]
           - name: keep-pi-runtime
             type: string_attribute
             string_attribute:

@@ -61,16 +61,16 @@ allowedServices: []
 
 # Tail sampling. Only rendered when allowedServices is non-empty.
 sampling:
-  # The control-plane invoke watchdog can reply after about 920 seconds. The
-  # root span carries ERROR only when that reply arrives, so a 10-second tail
-  # decision permanently classified the trace before its failure was visible.
-  # Keep the trace pending past the watchdog without changing the invoke budget.
-  decisionWaitSeconds: 960
+  # Long-running session failures emit a dedicated ERROR root when detected,
+  # so this window does not have to outwait the twelve-hour invoke watchdog.
+  # Keeping the normal 10-second decision budget avoids delaying every service
+  # and preserves 50,000 / 10 = 5,000 pending traces/second before eviction.
+  decisionWaitSeconds: 10
   # Traces held pending a sampling decision. In-flight volume is roughly
   # trace_rate x decisionWaitSeconds, but the buffer has to absorb bursts well
   # above the average or the sampler starts deciding on evicted, incomplete
-  # traces, which is the failure tail sampling exists to avoid: an error
-  # arriving in a late span is missed because the trace was already judged.
+  # traces. Errors detected after an original trace's decision are represented
+  # by their own short failure trace instead of extending this pending window.
   #
   # At ~1KB per span this does not fit in the container's memory limit, which
   # is why tailStorage below moves it to disk.
@@ -102,7 +102,9 @@ sampling:
     sizeLimit: 2Gi
     # Pebble's own cap, deliberately under sizeLimit. It defaults to unlimited,
     # so without this the buffer can grow past the volume and trigger that
-    # eviction, which is a worse failure than the OOM disk backing avoids.
+    # eviction, which is a worse failure than the OOM disk backing avoids. At
+    # the 50,000-trace ceiling and about 1 KiB/span, 1536 MiB holds roughly 31
+    # spans per pending trace while preserving 512 MiB of volume headroom.
     maxStorageSizeMib: 1536
   # 10s, not 2s. At a 2s threshold a latency incident makes EVERY trace
   # qualify, which is a worse volume risk than an error storm because latency

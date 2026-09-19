@@ -1253,7 +1253,7 @@ defmodule Embervm.Router do
       # session is gone, so this is not retryable against THIS key; callers
       # mint a new key to create again.
       {:error, {:conflict, reason}} ->
-        SessionTelemetry.mark_error({:conflict, reason})
+        SessionTelemetry.mark_expected({:conflict, reason})
 
         send_json(conn, 409, %{
           error: "session idempotency key already bound to a terminal session",
@@ -1263,7 +1263,7 @@ defmodule Embervm.Router do
         })
 
       {:error, {:denied, reason}} ->
-        SessionTelemetry.mark_error(reason)
+        SessionTelemetry.mark_result(reason)
         create_denial(conn, workload, reason)
 
       {:error, reason} ->
@@ -1501,16 +1501,16 @@ defmodule Embervm.Router do
       proxy_invoke(conn, session_id, session)
     else
       {:error, :no_token} ->
-        SessionTelemetry.mark_error(:missing_session_token)
+        SessionTelemetry.mark_expected(:missing_session_token)
         halt_json(conn, 401, %{error: "missing session token", retryable: false})
 
       {:error, :terminal} ->
         # A valid token on a terminal session: 410 with the recorded reason.
-        SessionTelemetry.mark_error(:session_gone)
+        SessionTelemetry.mark_expected(:session_gone)
         session_gone(conn, session_id)
 
       {:error, _} ->
-        SessionTelemetry.mark_error(:invalid_session_token)
+        SessionTelemetry.mark_expected(:invalid_session_token)
         halt_json(conn, 403, %{error: "invalid session token", session_id: session_id, retryable: false})
     end
   end
@@ -1538,11 +1538,11 @@ defmodule Embervm.Router do
             send_guest_result(conn, code, resp_body, headers)
 
           {:error, {:gone, reason}} ->
-            SessionTelemetry.mark_error({:gone, reason})
+            SessionTelemetry.mark_expected({:gone, reason})
             send_json(conn, 410, %{error: "session gone", reason: to_string(reason), session_id: session_id, retryable: false})
 
           {:error, {:not_ready, state}} ->
-            SessionTelemetry.mark_error({:not_ready, state})
+            SessionTelemetry.mark_expected({:not_ready, state})
 
             send_json(conn, 409, %{
               error: "session not ready",
@@ -1552,7 +1552,7 @@ defmodule Embervm.Router do
             })
 
           {:error, :queue_full} ->
-            SessionTelemetry.mark_error(:queue_full)
+            SessionTelemetry.mark_expected(:queue_full)
 
             send_json(conn, 429, %{
               error: "session invoke queue is full",
@@ -1571,7 +1571,7 @@ defmodule Embervm.Router do
             # The per-principal wake-rate limit (relight-triggering invokes) tripped:
             # 429 WITHOUT having touched the node (the asymmetric-cost relight was
             # never issued). Retryable once the window drains.
-            SessionTelemetry.mark_error(:wake_rate_limited)
+            SessionTelemetry.mark_expected(:wake_rate_limited)
 
             send_json(conn, 429, %{
               error: "session wake-rate limit exceeded",
@@ -1581,7 +1581,7 @@ defmodule Embervm.Router do
             })
 
           {:error, :not_found} ->
-            SessionTelemetry.mark_error(:session_not_found)
+            SessionTelemetry.mark_expected(:session_not_found)
             send_json(conn, 404, %{error: "session not found", session_id: session_id, retryable: false})
 
           {:error, :brick_gone} ->
@@ -1605,7 +1605,7 @@ defmodule Embervm.Router do
         end
 
       {:error, :too_large} ->
-        SessionTelemetry.mark_error(:request_too_large)
+        SessionTelemetry.mark_expected(:request_too_large)
         send_json(conn, 413, %{error: "request body exceeds 8 MiB", retryable: false})
     end
   end
@@ -2546,8 +2546,10 @@ defmodule Embervm.Router do
                           "proxy-authenticate",
                           "x-ember-truncated",
                           "x-ember-phase-hydration-ms",
+                          "x-ember-phase-hydration-start-offset-ms",
                           "x-ember-phase-hydration-status",
                           "x-ember-phase-repo-clone-ms",
+                          "x-ember-phase-repo-clone-start-offset-ms",
                           "x-ember-phase-repo-clone-status"
                         ])
 
