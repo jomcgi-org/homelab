@@ -2,17 +2,13 @@
 
 Formal specifications of EmberVM's concurrency-critical protocols, checked by
 TLC in CI. This directory is the pilot of ADR embervm/006 ([ARCHITECTURE.md, section 6](../ARCHITECTURE.md#6-control-plane-internals)):
-seven specs now, checked exhaustively over small bounds, plus the layer-1
-vocabulary sync guard that keeps them honest against the code. Protocol 1 (VM
-lifecycle + adoption) is `adoption.tla`; protocol 2 (session bank/relight
-generation pairing) is `bank_relight.tla`, added by the ADR embervm/014 PR 5
-follow-through. Both are modeled under the ADR embervm/014 worker-authoritative
-consistency rules (node state is the source of truth, node-confirmed destruction).
-Protocol 3 (the fail-closed per-principal daily quota gate) is `quota.tla`.
-The SessionManager create-starvation model is `session_create.tla`. Protocol 4
-(generation issuance authority: blessing, wake grants, quarantine,
-checkpoint-abort auto-heal) is `generation_issuance.tla`, added for issue
-#4700.
+the seven tracked specs are `adoption.tla`, `bank_relight.tla`, `quota.tla`,
+`session_create.tla`, `generation_issuance.tla`, `stateful.tla`, and
+`session_lineage.tla`. The directory also contains their registered
+configurations and the layer-1 vocabulary sync guard. This inventory records
+what exists, not proof that a model corresponds to the current implementation or
+that an issue's closure establishes its evidence. Bounds and completed results
+are documented with the individual specs below.
 
 ## What is here
 
@@ -66,6 +62,42 @@ checkpoint-abort auto-heal) is `generation_issuance.tla`, added for issue
   deliberately exclude. The ExUnit test in `control/test/embervm/` asserts every
   live enum member is classified and every modeled op-kind name appears verbatim
   in some spec `.tla`.
+
+## Conventions for a new spec
+
+Every new spec must include evidence that a reviewer can check independently:
+
+- Identify the implementation revision modeled and map actions, predicates, and
+  state to current implementation sites. State assumptions, supported paths, and
+  exclusions explicitly.
+- Name every configuration and its finite bounds, and report completed results
+  from the registered Linux check. Call a run exhaustive only when the configured
+  state space completed. An early-stopped or truncated run is never an exhaustive
+  pass.
+- Include focused negative configurations or mutations that demonstrate each
+  selected check detects its intended violation.
+- Keep model results, implementation correspondence, and runtime evidence
+  separate. A successful bounded model establishes only its stated model result;
+  the mapping supports a correspondence argument, and runtime behavior requires
+  its own evidence.
+
+Preserve useful existing material and checks when extending a model. EmberCore
+extraction, diagrams or vocabulary machinery, badges, speculative modeling, and
+new harness work are not mandatory deliverables or prerequisites.
+
+## Approved follow-up index
+
+The approved partial order has two branches after #4701:
+
+- #4701 precedes #4702. #4702 precedes and informs the separately gated #4013
+  wake-path retirement decision; it does not authorize that retirement.
+- Independently from #4702, #4701 precedes #4705, which precedes #4703, which
+  precedes #4704.
+- #4482 remains independent and must not wait for either branch.
+
+Each child issue remains the authority for its scope and evidence gate. This
+index changes neither, and neither file existence nor issue closure alone proves
+that a gate's required evidence exists.
 
 ## The model, in one paragraph
 
