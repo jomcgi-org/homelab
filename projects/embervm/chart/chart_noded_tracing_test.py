@@ -33,6 +33,13 @@ def _collector_prod_values() -> Path:
     )
 
 
+def _collector_gke_values() -> Path:
+    return _external_values(
+        "COLLECTOR_GKE_VALUES",
+        CHART_DIR.parents[1] / "platform" / "otel-collector" / "values-gke.yaml",
+    )
+
+
 def _render(values: list[Path], sets: list[str] | None = None) -> list[dict]:
     argv = [
         os.environ.get("HELM_BIN", "helm"),
@@ -133,9 +140,10 @@ def test_production_tracing_reaches_every_shared_template_consumer() -> None:
 
 def test_production_service_name_is_collector_allowlisted() -> None:
     deploy_values = yaml.safe_load(_prod_values().read_text())
-    collector_values = yaml.safe_load(_collector_prod_values().read_text())
     tracing = deploy_values["noded"]["tracing"]
 
     assert tracing["endpoint"]
     assert tracing["endpoint"] == deploy_values["tracing"]["endpoint"]
-    assert tracing["serviceName"] in collector_values["allowedServices"]
+    for collector_values_path in (_collector_prod_values(), _collector_gke_values()):
+        collector_values = yaml.safe_load(collector_values_path.read_text())
+        assert tracing["serviceName"] in collector_values["allowedServices"]
