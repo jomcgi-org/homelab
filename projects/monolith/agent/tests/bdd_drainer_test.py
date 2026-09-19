@@ -233,6 +233,84 @@ def test_drainer_health_reports_recent_unlocked_job_as_ok(agent_db: Session):
     assert claimed["name"] == "recent-unlocked"
 
 
+def test_daily_cap_no_holder_path_defers_atomically_and_remains_schedulable(
+    monkeypatch, agent_db: Session
+):
+    name = "kg:cap-no-holder"
+    assert routine_jobs.register_job(
+        name=name,
+        kind="kg-drain",
+        payload={"raw_id": "cap-no-holder"},
+        next_run_at=datetime.now(timezone.utc),
+    )
+    job = next(row for row in routine_jobs.list_jobs() if row["name"] == name)
+    assert job["locked_by"] is None
+
+    monkeypatch.setattr(FakeDBOS, "workflow_id", "cap-no-holder-workflow")
+    monkeypatch.setattr(drainer, "DBOS", FakeDBOS)
+    monkeypatch.setattr(
+        drainer,
+        "pin_drainer_settings",
+        lambda: asdict(
+            _drainer_settings(max_jobs_per_cycle=1, job_kinds=("kg-drain",))
+        ),
+    )
+    monkeypatch.setattr(drainer, "IDLE_POLL_LIMIT", 0)
+    monkeypatch.setattr(drainer, "drainer_wait_enabled", lambda: True)
+    monkeypatch.setattr(drainer, "claim_drainer_job", lambda *_args: job)
+    monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 40)
+    monkeypatch.setattr(drainer, "kg_effective_cap", lambda value: value)
+    monkeypatch.setattr(drainer, "sweep_kg_raws", lambda: 0)
+    monkeypatch.setattr(
+        drainer,
+        "retry_stranded_drainer_cleanups",
+        lambda: {"stranded": 0, "retired": 0},
+    )
+    monkeypatch.setattr(drainer, "cancel_drainer_reservation", lambda *_args: True)
+    monkeypatch.setattr(
+        drainer, "finish_drainer_job", drainer.finish_drainer_job.__wrapped__
+    )
+
+    def reject_second_session(*_args, **_kwargs):
+        raise AssertionError("cap deferral must finish in one routine_jobs mutation")
+
+    monkeypatch.setattr(drainer, "defer_drainer_job", reject_second_session)
+
+    before = datetime.now(timezone.utc)
+    assert drainer.drain_cycle.__wrapped__() == {
+        "status": "complete",
+        "processed": 0,
+    }
+
+    row = agent_db.execute(
+        text(
+            "SELECT last_status, last_summary, next_run_at, locked_by, locked_at "
+            "FROM claude_agent.routine_jobs WHERE name = :name"
+        ),
+        {"name": name},
+    ).one()
+    assert row.last_status == "deferred"
+    assert row.last_summary == "kg daily cap reached"
+    assert row.next_run_at >= before + timedelta(minutes=59)
+    assert row.locked_by is None
+    assert row.locked_at is None
+    assert not any(
+        item["name"] == name for item in routine_jobs.list_jobs(due_only=True)
+    )
+
+    agent_db.execute(
+        text(
+            "UPDATE claude_agent.routine_jobs "
+            "SET next_run_at = now() - interval '1 second' WHERE name = :name"
+        ),
+        {"name": name},
+    )
+    agent_db.commit()
+    claimed = routine_jobs.claim_job("next-cap-cycle", 60, name=name)
+    assert claimed is not None
+    assert claimed["name"] == name
+
+
 def test_destroy_drainer_session_with_no_row(agent_db: Session):
     assert (
         drainer.destroy_drainer_session.__wrapped__(None, "missing-drainer-session")

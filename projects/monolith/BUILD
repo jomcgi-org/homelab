@@ -8626,6 +8626,11 @@ py_test(
     ],
 )
 
+bdd_test(
+    name = "agent_sessions_kg_feed_postgres_test",
+    srcs = ["factory/execution/kg_feed_postgres_test.py"],
+)
+
 py_test(
     name = "agent_sessions_mcp_test",
     srcs = ["factory/execution/mcp_test.py"],

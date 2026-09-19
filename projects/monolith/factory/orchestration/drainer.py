@@ -581,7 +581,12 @@ def finish_drainer_job(
             if not completed:
                 raise RuntimeError("routine job claim ownership changed")
         else:
-            completed = complete_job(name, status=status, summary=summary)
+            completed = complete_job(
+                name,
+                status=status,
+                summary=summary,
+                defer_seconds=defer_seconds,
+            )
         if deregister and completed and expected_holder is None:
             # Keep the completed freshness row's cooldown through one-shot
             # cleanup, including final failure before extraction provenance.
@@ -1113,17 +1118,13 @@ def drain_cycle() -> dict:
                     cancel_drainer_reservation(
                         _session_key(workflow_id, name, KG_NODE_KEY)
                     )
-                    if ownership:
-                        finish_drainer_job(
-                            name,
-                            "deferred",
-                            "kg daily cap reached",
-                            defer_seconds=3600,
-                            **ownership,
-                        )
-                    else:
-                        finish_drainer_job(name, "deferred", "kg daily cap reached")
-                        defer_drainer_job(name, 3600)
+                    finish_drainer_job(
+                        name,
+                        "deferred",
+                        "kg daily cap reached",
+                        defer_seconds=3600,
+                        **ownership,
+                    )
                     claim_kinds = [kind for kind in claim_kinds if kind != KG_JOB_KIND]
                     continue
 

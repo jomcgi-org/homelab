@@ -49,9 +49,15 @@
   const visibleJobs = $derived(filterJobs(data?.jobs, filter));
   const filterStates = $derived.by(() => {
     const counts = data?.queue || {};
-    return ["running", "due", "scheduled", "error", "ok", "parked"].filter(
-      (state) => (counts[state] || 0) > 0,
-    );
+    return [
+      "running",
+      "due",
+      "scheduled",
+      "deferred",
+      "error",
+      "ok",
+      "parked",
+    ].filter((state) => (counts[state] || 0) > 0);
   });
   const cancellable = $derived(
     Boolean(cycle) && ["PENDING", "ENQUEUED"].includes(cycle?.status),
@@ -377,6 +383,8 @@
                 <span class="job-sub">
                   {#if job.state === "error" && job.summary_head}
                     <span class="err-text">{job.summary_head}</span>
+                  {:else if job.state === "deferred" && job.summary_head}
+                    {job.summary_head}
                   {:else if job.state === "ok" && job.outcome === "pr" && job.pr}
                     <a
                       class="pr-ref mono"
@@ -451,7 +459,7 @@
                       </span>
                     {/if}
                     <span class="grow" aria-hidden="true"></span>
-                    {#if ["error", "parked", "ok"].includes(detail.job.state)}
+                    {#if ["deferred", "error", "parked", "ok"].includes(detail.job.state)}
                       <button
                         class="ghost mono"
                         type="button"

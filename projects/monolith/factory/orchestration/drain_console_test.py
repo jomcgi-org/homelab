@@ -48,8 +48,20 @@ class TestJobState:
     def test_completed_one_shot_states(self):
         ok = _job(last_run_at=NOW - timedelta(minutes=5), last_status="ok")
         err = _job(last_run_at=NOW - timedelta(minutes=5), last_status="error")
+        deferred = _job(last_run_at=NOW - timedelta(minutes=5), last_status="deferred")
         assert drain_console.job_state(ok, NOW) == "ok"
         assert drain_console.job_state(err, NOW) == "error"
+        assert drain_console.job_state(deferred, NOW) == "deferred"
+
+    def test_deferred_backoff_is_distinct_until_it_becomes_due(self):
+        waiting = _job(
+            last_run_at=NOW - timedelta(minutes=5),
+            last_status="deferred",
+            next_run_at=NOW + timedelta(minutes=10),
+        )
+        due = {**waiting, "next_run_at": NOW - timedelta(seconds=1)}
+        assert drain_console.job_state(waiting, NOW) == "deferred"
+        assert drain_console.job_state(due, NOW) == "due"
 
     def test_never_run_never_armed_is_parked(self):
         assert drain_console.job_state(_job(), NOW) == "parked"
@@ -213,11 +225,13 @@ class TestComposeJobs:
         jobs = [
             _job(name="a", next_run_at=NOW - timedelta(minutes=1)),
             _job(name="b", last_run_at=NOW, last_status="error"),
+            _job(name="c", last_run_at=NOW, last_status="deferred"),
         ]
         entries = drain_console.compose_jobs(jobs, [], {}, {}, NOW)
         counts = drain_console.queue_counts(entries)
         assert counts["due"] == 1
         assert counts["error"] == 1
+        assert counts["deferred"] == 1
         assert counts["running"] == 0
 
 

@@ -85,6 +85,7 @@ export const DRAIN_LEXICON = {
     running: "running",
     due: "queued",
     scheduled: "scheduled",
+    deferred: "deferred",
     ok: "ok",
     error: "failed",
     parked: "parked",

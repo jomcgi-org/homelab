@@ -27,6 +27,7 @@ describe("lane and job classes", () => {
   test("failed jobs are errors, queued jobs ask for attention", () => {
     expect(jobClass("error")).toBe("err");
     expect(jobClass("due")).toBe("attn");
+    expect(jobClass("deferred")).toBe("attn");
     expect(jobClass("ok")).toBe("idle");
   });
 });
