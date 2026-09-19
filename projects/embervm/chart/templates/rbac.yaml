@@ -49,6 +49,11 @@ metadata:
   labels:
     {{- include "embervm.labels" . | nindent 4 }}
 rules:
+  # A complete node inventory lets session reconciliation recover a departure
+  # missed during a control-plane restart. No node mutations are permitted.
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["list"]
 {{- if eq $scope "cluster" }}
   - apiGroups:
       - embervm.dev

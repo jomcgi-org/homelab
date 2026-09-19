@@ -22,6 +22,25 @@ defmodule Embervm.K8sTest do
            }
   end
 
+  test "node absence requires a complete and well-formed Kubernetes inventory" do
+    encode = fn value -> :json.encode(value) |> IO.iodata_to_binary() end
+    empty = %{"kind" => "NodeList", "metadata" => %{}, "items" => []}
+    assert {:ok, names} = K8s.parse_node_names(encode.(empty))
+    assert MapSet.size(names) == 0
+    complete = %{empty | "items" => [%{"metadata" => %{"name" => "node-4"}}]}
+    assert {:ok, names} = K8s.parse_node_names(encode.(complete))
+    assert MapSet.member?(names, "node-4")
+    for invalid <- [
+      %{empty | "metadata" => %{"continue" => "next-page"}},
+      %{empty | "items" => [%{}]},
+      %{empty | "metadata" => nil},
+      %{"kind" => "Status", "reason" => "Forbidden"}
+    ] do
+      assert {:error, _} = K8s.parse_node_names(encode.(invalid))
+    end
+    assert {:error, _} = K8s.parse_node_names("not json")
+  end
+
   describe "parse_review/2" do
     test "returns the complete bound pod identity" do
       body =
