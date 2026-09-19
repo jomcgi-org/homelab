@@ -2307,8 +2307,7 @@
             <Turns
               {detail}
               {selectedSession}
-              attemptN={crumbLineage?.attemptN ??
-                selectedSession.node_attempt}
+              attemptN={crumbLineage?.attemptN ?? selectedSession.node_attempt}
               attemptCount={crumbLineage?.attemptCount ??
                 selectedSession.node_attempt}
               {renderedPending}

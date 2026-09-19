@@ -185,9 +185,7 @@ def _head(value: Any) -> Any:
     return value
 
 
-def _attempt_cause(
-    index: int, node_key: str, observations: list[Any]
-) -> str:
+def _attempt_cause(index: int, node_key: str, observations: list[Any]) -> str:
     """Why this attempt started, based only on evidence before it."""
     if index == 0:
         return "initial"
@@ -246,9 +244,7 @@ def _attempts(
         pair_complete = i * 2 + 1 < len(observations)
         prior = _head(observations[i * 2]) if i * 2 < len(observations) else None
         observed = (
-            _head(observations[i * 2 + 1])
-            if i * 2 + 1 < len(observations)
-            else None
+            _head(observations[i * 2 + 1]) if i * 2 + 1 < len(observations) else None
         )
         state = _value(row, "status", "running")
         attempt_state = "failed" if state == "warn" else state
@@ -263,9 +259,7 @@ def _attempts(
                 "local_session_id": _value(row, "local_session_id"),
                 "model": _value(row, "model"),
                 "state": "gated"
-                if state == "completed"
-                and observed == prior
-                and pair_complete
+                if state == "completed" and observed == prior and pair_complete
                 else attempt_state,
                 "started_at": _iso(_value(row, "created_at")),
                 "ended_at": _iso(_value(row, "last_turn_at"))
