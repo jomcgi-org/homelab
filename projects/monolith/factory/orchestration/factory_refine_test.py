@@ -1829,6 +1829,29 @@ def test_refine_rejects_irreversible_gate_claimed_ready(db, monkeypatch):
     assert controls.task_snapshot(task["id"])["state"] == "failed"
 
 
+def test_refine_backstop_rejects_spend_shaped_reversible_gate(db, monkeypatch):
+    """#6208: a model label of reversible on a spend-shaped value still needs a human."""
+    task, policy = make_task()
+    add_refine_node(task, policy)
+    comment = verified_github(monkeypatch, task)
+    run = settle_attempt(
+        task,
+        "succeeded",
+        {
+            "outcome": "agent-ready",
+            "comment_url": comment["html_url"],
+            "gate": {
+                "kind": "parameter",
+                "classification": "reversible",
+                "value": "budget alert $50/month",
+                "reason": "A threshold the operator can change later",
+            },
+        },
+    )
+    refine.reconcile(task, policy, graph.load_graph(task["id"]), [run], 1)
+    assert controls.task_snapshot(task["id"])["state"] == "failed"
+
+
 def test_reversible_refine_retries_after_label_write_and_deferred_settlement(
     db, monkeypatch
 ):

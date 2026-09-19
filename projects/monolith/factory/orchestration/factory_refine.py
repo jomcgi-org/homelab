@@ -888,7 +888,11 @@ def _settle(task: dict, run: dict, policy: dict) -> None:
         except ValueError as exc:
             _mismatch(task["id"], number, str(exc), False)
             return
-        if gate["classification"] != "reversible" and outcome != HUMAN_LABEL:
+        restricted = gate["classification"] != "reversible" or any(
+            factory_gates.HUMAN_GATE_BACKSTOP.search(gate.get(field, ""))
+            for field in ("value", "reason")
+        )
+        if restricted and outcome != HUMAN_LABEL:
             _mismatch(
                 task["id"], number, "irreversible gate requires needs-human", False
             )
