@@ -439,6 +439,13 @@ def test_hydration_timing_reports_clone_and_existing_status(
     assert manager._turn_phase_telemetry["repo-clone"]["status"] == "cloned"
     assert type(manager._turn_phase_telemetry["hydration"]["ms"]) is int
     assert type(manager._turn_phase_telemetry["repo-clone"]["ms"]) is int
+    assert (
+        type(manager._turn_phase_telemetry["hydration"]["start_offset_ms"]) is int
+    )
+    assert (
+        manager._turn_phase_telemetry["hydration"]["start_offset_ms"]
+        <= manager._turn_phase_telemetry["repo-clone"]["start_offset_ms"]
+    )
     first_lines = capsys.readouterr().err.splitlines()
     assert any(
         line.startswith(
@@ -501,6 +508,8 @@ def test_turn_response_carries_only_bounded_phase_headers(manager, monkeypatch):
     assert headers["X-Ember-Phase-Repo-Clone-Status"] == "cloned"
     assert headers["X-Ember-Phase-Hydration-Ms"].isdigit()
     assert headers["X-Ember-Phase-Repo-Clone-Ms"].isdigit()
+    assert headers["X-Ember-Phase-Hydration-Start-Offset-Ms"].isdigit()
+    assert headers["X-Ember-Phase-Repo-Clone-Start-Offset-Ms"].isdigit()
     assert "owner/repo" not in repr(headers)
 
 

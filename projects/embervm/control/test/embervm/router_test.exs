@@ -156,20 +156,24 @@ defmodule Embervm.RouterTest do
     def invoke(_srv, "s-snapshot", _req), do: {:error, {:relight_failed, {:prime_failed, %GRPC.RPCError{status: 9, message: "snapshot lost"}}}}
     def invoke(_srv, "s-brick-gone", _req), do: {:error, :brick_gone}
 
-    def invoke(_srv, "s-pi-timeout", _req),
-      do:
-        {:ok,
-         %{
-           status_code: 422,
-           headers: %{
-             "content-type" => "application/json",
-             "x-ember-phase-hydration-ms" => "125",
-             "x-ember-phase-hydration-status" => "cloned",
-             "x-ember-phase-repo-clone-ms" => "100",
-             "x-ember-phase-repo-clone-status" => "cloned"
-           },
-           body: ~s({"error":"timed out waiting for Pi output after 600 seconds"})
-         }}
+    def invoke(_srv, "s-pi-timeout", _req) do
+      Process.sleep(50)
+
+      {:ok,
+       %{
+         status_code: 422,
+         headers: %{
+           "content-type" => "application/json",
+           "x-ember-phase-hydration-ms" => "15",
+           "x-ember-phase-hydration-start-offset-ms" => "0",
+           "x-ember-phase-hydration-status" => "cloned",
+           "x-ember-phase-repo-clone-ms" => "10",
+           "x-ember-phase-repo-clone-start-offset-ms" => "20",
+           "x-ember-phase-repo-clone-status" => "cloned"
+         },
+         body: ~s({"error":"timed out waiting for Pi output after 600 seconds"})
+       }}
+    end
 
     def invoke(_srv, "s-workspace-missing", _req),
       do:
@@ -178,9 +182,11 @@ defmodule Embervm.RouterTest do
            status_code: 503,
            headers: %{
              "content-type" => "application/json",
-             "x-ember-phase-hydration-ms" => "250",
+             "x-ember-phase-hydration-ms" => "0",
+             "x-ember-phase-hydration-start-offset-ms" => "0",
              "x-ember-phase-hydration-status" => "failed",
-             "x-ember-phase-repo-clone-ms" => "200",
+             "x-ember-phase-repo-clone-ms" => "0",
+             "x-ember-phase-repo-clone-start-offset-ms" => "0",
              "x-ember-phase-repo-clone-status" => "failed"
            },
            body: ~s({"error":"workspace does not exist: /workspace/src"})
@@ -1650,9 +1656,23 @@ defmodule Embervm.RouterTest do
   test "invoke queue-full maps to 429" do
     with_session_fakes()
 
-    # s-queue authorizes with its own token and the manager fake returns :queue_full.
-    resp = req(:post, "/v1/sessions/s-queue/invoke", auth("sess-token-queue"), "x")
+    {resp, spans} =
+      TestSpanExporter.capture(
+        fn -> req(:post, "/v1/sessions/s-queue/invoke", auth("sess-token-queue"), "x") end,
+        ["embervm.session.invoke", "embervm.session.output_wait"]
+      )
+
     assert resp.status == 429
+
+    queue_invoke = find_span(spans, "embervm.session.invoke", "queue_full")
+    queue_wait = find_span(spans, "embervm.session.output_wait", "queue_full")
+
+    for span <- [queue_invoke, queue_wait] do
+      assert TestSpanExporter.status_code(span) == :unset
+      assert TestSpanExporter.attributes(span)["ember.failure.class"] == "expected"
+    end
+
+    assert TestSpanExporter.named(spans, "embervm.session.failure") == []
   end
 
   test "known guest failures keep their response contract while telemetry classifies them" do
@@ -1690,6 +1710,7 @@ defmodule Embervm.RouterTest do
         [
           "embervm.session.invoke",
           "embervm.session.output_wait",
+          "embervm.session.failure",
           "embervm.session.hydration",
           "embervm.session.repo_clone"
         ]
@@ -1702,7 +1723,9 @@ defmodule Embervm.RouterTest do
              "error" => "timed out waiting for Pi output after 600 seconds"
            }
     refute has_resp_header?(pi_timeout, "x-ember-phase-hydration-ms")
+    refute has_resp_header?(pi_timeout, "x-ember-phase-hydration-start-offset-ms")
     refute has_resp_header?(pi_timeout, "x-ember-phase-repo-clone-ms")
+    refute has_resp_header?(pi_timeout, "x-ember-phase-repo-clone-start-offset-ms")
 
     assert workspace_missing.status == 503
     assert json(workspace_missing.body) == %{
@@ -1717,9 +1740,24 @@ defmodule Embervm.RouterTest do
     missing_invoke = find_span(spans, "embervm.session.invoke", "workspace_missing")
     missing_wait = find_span(spans, "embervm.session.output_wait", "workspace_missing")
 
-    for span <- [pi_invoke, pi_wait, missing_invoke, missing_wait] do
+    for span <- [missing_invoke, missing_wait] do
       assert TestSpanExporter.status_code(span) == :error
       assert TestSpanExporter.end_time(span) != :undefined
+    end
+
+    for span <- [pi_invoke, pi_wait] do
+      assert TestSpanExporter.status_code(span) == :unset
+      assert TestSpanExporter.attributes(span)["ember.failure.class"] == "expected"
+    end
+
+    pi_failure = find_span(spans, "embervm.session.failure", "pi_output_timeout")
+    missing_failure = find_span(spans, "embervm.session.failure", "workspace_missing")
+
+    for {failure, original} <- [{pi_failure, pi_wait}, {missing_failure, missing_wait}] do
+      assert TestSpanExporter.status_code(failure) == :error
+      assert TestSpanExporter.attributes(failure)["ember.failure.class"] == "infrastructure"
+      assert TestSpanExporter.trace_id(failure) != TestSpanExporter.trace_id(original)
+      assert TestSpanExporter.end_time(failure) != :undefined
     end
 
     assert TestSpanExporter.parent_span_id(pi_wait) == TestSpanExporter.span_id(pi_invoke)
@@ -1734,7 +1772,17 @@ defmodule Embervm.RouterTest do
       assert TestSpanExporter.status_code(phase) == :unset
       assert TestSpanExporter.attributes(phase)["ember.workload"] == "pi-runtime"
       assert TestSpanExporter.attributes(phase)["ember.phase.status"] == "cloned"
+      assert TestSpanExporter.end_time(phase) < TestSpanExporter.end_time(pi_wait)
     end
+
+    assert TestSpanExporter.start_time(hydration) == TestSpanExporter.start_time(pi_wait)
+    assert TestSpanExporter.start_time(repo_clone) > TestSpanExporter.start_time(hydration)
+
+    assert TestSpanExporter.end_time(hydration) - TestSpanExporter.start_time(hydration) ==
+             System.convert_time_unit(15, :millisecond, :native)
+
+    assert TestSpanExporter.end_time(repo_clone) - TestSpanExporter.start_time(repo_clone) ==
+             System.convert_time_unit(10, :millisecond, :native)
 
     failed_hydration =
       find_phase_span(spans, "embervm.session.hydration", "s-workspace-missing")

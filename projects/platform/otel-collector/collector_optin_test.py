@@ -78,7 +78,7 @@ def _render_overlay(values_name: str, extra: list[str] | None = None) -> list[di
 
 
 def _matches_policy(policy: dict, spans: list[dict]) -> bool:
-    """Evaluate the two exact-match collector policy types used by this chart."""
+    """Evaluate the focused exact-match collector policy types used here."""
     if policy["type"] == "status_code":
         accepted = set(policy["status_code"]["status_codes"])
         return any(span.get("status_code") in accepted for span in spans)
@@ -88,6 +88,13 @@ def _matches_policy(policy: dict, spans: list[dict]) -> bool:
         return any(
             span.get("attributes", {}).get(matcher["key"]) in accepted for span in spans
         )
+    if policy["type"] == "and":
+        return all(
+            _matches_policy(sub_policy, spans)
+            for sub_policy in policy["and"]["and_sub_policy"]
+        )
+    if policy["type"] == "not":
+        return not _matches_policy(policy["not"]["not_sub_policy"], spans)
     raise AssertionError(f"unsupported policy type in focused test: {policy['type']}")
 
 
@@ -202,12 +209,37 @@ def test_tail_sampling_keeps_errors_and_pi_runtime_invokes(values_name):
     config = _collector_config(_render_overlay(values_name))
     sampling = config["processors"]["tail_sampling"]
 
-    assert sampling["decision_wait"] == "960s"
+    assert sampling["decision_wait"] == "10s"
+    assert sampling["num_traces"] // 10 >= 5_000
+    values = yaml.safe_load(_values("values").read_text())
+    assert values["sampling"]["tailStorage"]["maxStorageSizeMib"] == 1_536
     policies = {policy["name"]: policy for policy in sampling["policies"]}
     assert policies["keep-errors"] == {
         "name": "keep-errors",
-        "type": "status_code",
-        "status_code": {"status_codes": ["ERROR"]},
+        "type": "and",
+        "and": {
+            "and_sub_policy": [
+                {
+                    "name": "error-status",
+                    "type": "status_code",
+                    "status_code": {"status_codes": ["ERROR"]},
+                },
+                {
+                    "name": "exclude-expected-class",
+                    "type": "not",
+                    "not": {
+                        "not_sub_policy": {
+                            "name": "expected-class",
+                            "type": "string_attribute",
+                            "string_attribute": {
+                                "key": "ember.failure.class",
+                                "values": ["expected"],
+                            },
+                        }
+                    },
+                },
+            ]
+        },
     }
     assert policies["keep-pi-runtime"] == {
         "name": "keep-pi-runtime",
@@ -217,7 +249,19 @@ def test_tail_sampling_keeps_errors_and_pi_runtime_invokes(values_name):
 
     error_trace = [
         {"status_code": "UNSET", "attributes": {"ember.workload": "other"}},
-        {"status_code": "ERROR", "attributes": {}},
+        {
+            "status_code": "ERROR",
+            "attributes": {"ember.failure.class": "infrastructure"},
+        },
+    ]
+    routine_backpressure_trace = [
+        {
+            "status_code": "ERROR",
+            "attributes": {
+                "ember.failure.class": "expected",
+                "ember.reason": "queue_full",
+            },
+        }
     ]
     pi_trace = [
         {"status_code": "UNSET", "attributes": {"ember.workload": "pi-runtime"}}
@@ -227,6 +271,12 @@ def test_tail_sampling_keeps_errors_and_pi_runtime_invokes(values_name):
     ]
 
     assert _matches_policy(policies["keep-errors"], error_trace)
+    assert _matches_policy(
+        policies["keep-errors"], [{"status_code": "ERROR", "attributes": {}}]
+    )
+    assert not _matches_policy(
+        policies["keep-errors"], routine_backpressure_trace
+    )
     assert not _matches_policy(policies["keep-pi-runtime"], error_trace)
     assert _matches_policy(policies["keep-pi-runtime"], pi_trace)
     assert not _matches_policy(policies["keep-errors"], pi_trace)

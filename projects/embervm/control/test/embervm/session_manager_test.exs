@@ -3829,7 +3829,12 @@ defmodule Embervm.SessionManagerTest do
             )
           end
         end,
-        ["test.session.invoke", "embervm.session.output_wait", "embervm.session.queue_wait"]
+        [
+          "test.session.invoke",
+          "embervm.session.output_wait",
+          "embervm.session.failure",
+          "embervm.session.queue_wait"
+        ]
       )
 
     assert result == {:error, :invoke_timeout}
@@ -3848,6 +3853,11 @@ defmodule Embervm.SessionManagerTest do
       |> TestSpanExporter.named("embervm.session.queue_wait")
       |> Enum.find(&(TestSpanExporter.attributes(&1)["ember.session_id"] == created.session_id))
 
+    failure =
+      spans
+      |> TestSpanExporter.named("embervm.session.failure")
+      |> Enum.find(&(TestSpanExporter.attributes(&1)["ember.session_id"] == created.session_id))
+
     assert TestSpanExporter.end_time(root) != :undefined
     assert TestSpanExporter.end_time(output_wait) != :undefined
     assert TestSpanExporter.status_code(output_wait) == :error
@@ -3855,6 +3865,10 @@ defmodule Embervm.SessionManagerTest do
     assert TestSpanExporter.parent_span_id(output_wait) == TestSpanExporter.span_id(root)
     assert TestSpanExporter.parent_span_id(queue_wait) == TestSpanExporter.span_id(output_wait)
     assert TestSpanExporter.trace_id(queue_wait) == TestSpanExporter.trace_id(output_wait)
+    assert TestSpanExporter.status_code(failure) == :error
+    assert TestSpanExporter.attributes(failure)["ember.reason"] == "invoke_timeout"
+    assert TestSpanExporter.attributes(failure)["ember.failure.class"] == "infrastructure"
+    assert TestSpanExporter.trace_id(failure) != TestSpanExporter.trace_id(output_wait)
 
     # The watchdog uses an untrappable :kill, so the worker-owned guest_exec
     # cannot end. The caller-owned output_wait above is the exported failure seam.
