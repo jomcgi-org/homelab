@@ -224,9 +224,7 @@
             <div class="state">
               <strong>No updates were published in this month.</strong>
               <span>
-                <a
-                  class="clear"
-                  href={monthHref(data.months[0].month, "", "")}
+                <a class="clear" href={monthHref(data.months[0].month, "", "")}
                   >Open the newest available month.</a
                 >
               </span>
