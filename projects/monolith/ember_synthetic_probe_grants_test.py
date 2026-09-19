@@ -29,7 +29,10 @@ def test_public_reader_can_select_ember_synthetic_probe(pg):
 
             # SELECT is granted: must not raise.
             session.execute(
-                text("SELECT count(*) FROM ember_synthetic_probe")
+                text(
+                    "SELECT count(trace_id) + count(ember_session_id) "
+                    "FROM ember_synthetic_probe"
+                )
             ).scalar_one()
 
             # Never commit: the test session is rolled back so other tests stay clean.

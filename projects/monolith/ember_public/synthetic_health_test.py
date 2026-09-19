@@ -30,13 +30,14 @@ async def test_missing_probe_is_fail_open(monkeypatch):
     )() == {
         "ok": True,
         "detail": "no probe recorded yet",
+        "trace_id": None,
     }
 
 
 @pytest.mark.asyncio
 async def test_failed_probe_stays_down(monkeypatch):
     async def read(_):
-        return _row(ok=False, detail="connection refused")
+        return _row(ok=False, detail="connection refused", trace_id="a" * 32)
 
     monkeypatch.setattr(health, "read_probe", read)
     result = await health.synthetic_probe_health(
@@ -44,6 +45,21 @@ async def test_failed_probe_stays_down(monkeypatch):
     )()
     assert result["ok"] is False
     assert "connection refused" in result["detail"]
+    assert result["trace_id"] == "a" * 32
+
+
+@pytest.mark.asyncio
+async def test_success_with_legacy_null_trace_serializes_null(monkeypatch):
+    async def read(_):
+        return _row(trace_id=None)
+
+    monkeypatch.setattr(health, "read_probe", read)
+    result = await health.synthetic_probe_health(
+        "bazel", health.EMBER_SYNTHETIC_STALENESS_S
+    )()
+
+    assert result["ok"] is True
+    assert result["trace_id"] is None
 
 
 @pytest.mark.asyncio
