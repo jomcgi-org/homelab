@@ -242,6 +242,7 @@ defmodule Embervm.SessionManagerTest do
       [
         name: nil,
         session_store: store,
+        node_inventory_fun: Keyword.get(opts, :node_inventory_fun, fn -> {:error, :not_configured} end),
         dispatcher: Keyword.get(opts, :dispatcher, Embervm.Dispatcher),
         supervisor: sup,
         registry: registry,
@@ -3144,6 +3145,95 @@ defmodule Embervm.SessionManagerTest do
              SessionStore.all(ctx.store),
              &(&1.node_id == "node-4" and &1.state in [:running, :relighting, :creating])
            )
+  end
+
+  test "reconcile recovers missed node departure without an in-memory tombstone" do
+    ctx = start_stack(
+      node_inventory_fun: fn -> {:ok, MapSet.new(["replacement-node"])} end,
+      brick_status_fun: fn _ ->
+        %{health: :unknown, registered: false, tombstoned: false}
+      end
+    )
+    put_session_workload(ctx, "wl-missed-departure")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-missed-departure", "p1")
+    persisted = create_persistence_session(ctx, workload: "wl-missed-persistence")
+    :ets.delete_all_objects(ctx.cap_table)
+    # Model the lost per-process placement cache and callback after restart.
+    :sys.replace_state(ctx.mgr, &%{&1 | session_dials: %{}})
+
+    assert :ok = SessionManager.reconcile(ctx.mgr)
+    wait_for_state(ctx, created.session_id, :failed)
+    wait_for_state(ctx, persisted.session_id, :evicted)
+    rebuilt = start_supervised!({SessionStore, name: nil, op_log: ctx.op_log, op_log_mod: SQLite})
+    assert {:ok, %{state: :failed, terminal_reason: "brick_gone"}} =
+      SessionStore.get(rebuilt, created.session_id)
+    assert {:ok, %{state: :evicted, terminal_reason: "node_gone"}} =
+      SessionStore.get(rebuilt, persisted.session_id)
+  end
+
+  test "reconcile retains sessions when Kubernetes still has the node or inventory fails" do
+    parent = self()
+    for result <- [{:ok, MapSet.new(["node-4"])}, {:error, :forbidden}, {:error, :timeout}] do
+      ctx = start_stack(
+        node_inventory_fun: fn -> send(parent, :inventory_read); result end,
+        brick_status_fun: fn _ -> %{health: :unknown, registered: false, tombstoned: false} end
+      )
+      put_session_workload(ctx, "wl-retained")
+      {:ok, created} = SessionManager.create(ctx.mgr, "wl-retained", "p1")
+      :ets.delete_all_objects(ctx.cap_table)
+      assert :ok = SessionManager.reconcile(ctx.mgr)
+      assert_receive :inventory_read
+      assert eventually(fn -> :sys.get_state(ctx.mgr).node_inventory_worker == nil end)
+      assert {:ok, %{state: :running}} = SessionStore.get(ctx.store, created.session_id)
+    end
+  end
+
+  test "a blocked inventory does not block the manager and re-registration fences its result" do
+    parent = self()
+    {:ok, registered} = Agent.start_link(fn -> false end)
+    ctx = start_stack(
+      node_inventory_fun: fn ->
+        send(parent, {:inventory_worker, self()})
+        receive do :release -> {:ok, MapSet.new()} end
+      end,
+      brick_status_fun: fn _ ->
+        %{health: :unknown, registered: Agent.get(registered, & &1), tombstoned: false}
+      end
+    )
+    put_session_workload(ctx, "wl-reregister")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-reregister", "p1")
+    :ets.delete_all_objects(ctx.cap_table)
+    assert :ok = SessionManager.reconcile(ctx.mgr)
+    assert_receive {:inventory_worker, worker}
+    assert :ok = SessionManager.reconcile(ctx.mgr)
+    refute_receive {:inventory_worker, _}, 20
+    Agent.update(registered, fn _ -> true end)
+    send(worker, :release)
+    assert eventually(fn -> :sys.get_state(ctx.mgr).node_inventory_worker == nil end)
+    assert {:ok, %{state: :running}} = SessionStore.get(ctx.store, created.session_id)
+  end
+
+  test "inventory worker death is retryable and cannot strand reconciliation" do
+    parent = self()
+    ctx = start_stack(
+      node_inventory_fun: fn ->
+        send(parent, {:inventory_worker, self()})
+        receive do :release -> {:ok, MapSet.new()} end
+      end,
+      brick_status_fun: fn _ -> %{health: :unknown, registered: false, tombstoned: false} end
+    )
+    put_session_workload(ctx, "wl-worker-retry")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-worker-retry", "p1")
+    :ets.delete_all_objects(ctx.cap_table)
+    assert :ok = SessionManager.reconcile(ctx.mgr)
+    assert_receive {:inventory_worker, worker}
+    Process.exit(worker, :kill)
+    assert eventually(fn -> :sys.get_state(ctx.mgr).node_inventory_worker == nil end)
+    assert {:ok, %{state: :running}} = SessionStore.get(ctx.store, created.session_id)
+    assert :ok = SessionManager.reconcile(ctx.mgr)
+    assert_receive {:inventory_worker, retry}
+    send(retry, :release)
+    wait_for_state(ctx, created.session_id, :failed)
   end
 
   test "node departure evicts parked and banked sessions with durable terminal evidence" do

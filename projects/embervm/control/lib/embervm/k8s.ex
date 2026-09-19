@@ -409,6 +409,36 @@ defmodule Embervm.K8s do
     end
   end
 
+  @doc "Complete node inventory used to recover departures missed across a CP restart."
+  def list_node_names do
+    case do_request(:get, "/api/v1/nodes", nil, nil) do
+      {:ok, 200, body} -> parse_node_names(body)
+      {:ok, status, _body} -> {:error, {:apiserver_status, status}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc false
+  def parse_node_names(body) do
+    # A partial, malformed, or failed list is never evidence of node absence.
+    case :json.decode(body) do
+      %{"kind" => "NodeList", "items" => items, "metadata" => metadata} when is_list(items) ->
+        names = Enum.map(items, fn
+          %{"metadata" => %{"name" => name}} when is_binary(name) and name != "" -> name
+          _ -> nil
+        end)
+        if is_map(metadata) and Map.get(metadata, "continue", "") == "" and
+             Enum.all?(names, &is_binary/1) do
+          {:ok, MapSet.new(names)}
+        else
+          {:error, :incomplete_node_inventory}
+        end
+      _ -> {:error, :invalid_node_inventory}
+    end
+  rescue
+    _ -> {:error, :invalid_node_inventory}
+  end
+
   @doc """
   Patches one `Workload`'s `/status` subresource with `status_map` (a
   binary-keyed map the caller already built). Uses a JSON merge patch

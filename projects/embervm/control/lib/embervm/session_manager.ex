@@ -561,6 +561,10 @@ defmodule Embervm.SessionManager do
       # may already be gone, so the manager owns a bounded-cadence re-drive until
       # the row terminalizes or fresh node evidence makes departure inapplicable.
       departure_retries: %{},
+      # Rebuild missed departure evidence after a CP restart. The inventory read
+      # runs outside this server, with one bounded worker for the whole fleet.
+      node_inventory_fun: Keyword.get(opts, :node_inventory_fun, &Embervm.K8s.list_node_names/0),
+      node_inventory_worker: nil,
       departure_retry_interval_ms:
         Keyword.get(opts, :departure_retry_interval_ms, @default_departure_retry_interval_ms),
       # Snapshot-disk low watermark (bytes): when a node's snapshot_disk_free_bytes
@@ -1053,6 +1057,42 @@ defmodule Embervm.SessionManager do
     {:noreply, resume_pressure_wait(state, session_id)}
   end
 
+  def handle_info({:node_inventory_result, ref, result}, state) do
+    case state.node_inventory_worker do
+      {_pid, _monitor, _timer, ^ref, candidates} ->
+        state = clear_node_inventory_worker(state)
+        case result do
+          {:ok, %MapSet{} = present} ->
+            # Re-read registry/capacity after the HTTP request: a re-register or
+            # new live fact while the worker ran invalidates its departure check.
+            statuses = safe_brick_statuses(state, candidates)
+            state = Enum.reduce(candidates, state, fn node, acc ->
+              if not MapSet.member?(present, node) and absent_from_registry?(acc, node, statuses) do
+                {_count, acc} = sweep_brick_gone_node(acc, node, %{registered: false})
+                acc
+              else
+                acc
+              end
+            end)
+            {:noreply, state}
+
+          _ ->
+            {:noreply, state}
+        end
+
+      _ -> {:noreply, state}
+    end
+  end
+
+  def handle_info({:node_inventory_timeout, ref}, state) do
+    case state.node_inventory_worker do
+      {pid, _monitor, _timer, ^ref, _candidates} ->
+        Process.exit(pid, :kill)
+        {:noreply, clear_node_inventory_worker(state)}
+      _ -> {:noreply, state}
+    end
+  end
+
   def handle_info({:departure_terminalize_retry, session_id}, state) do
     case Map.pop(state.departure_retries, session_id) do
       {nil, _pending} ->
@@ -1130,6 +1170,11 @@ defmodule Embervm.SessionManager do
       nil ->
         {:noreply, state}
     end
+  end
+
+  def handle_info({:DOWN, monitor, :process, _pid, _reason},
+        %{node_inventory_worker: {_worker, monitor, _timer, _ref, _nodes}} = state) do
+    {:noreply, clear_node_inventory_worker(state)}
   end
 
   def handle_info({:DOWN, monitor_ref, :process, _pid, reason}, state) do
@@ -3914,6 +3959,49 @@ defmodule Embervm.SessionManager do
   # NEVER reap when a node's facts are simply missing (a disconnect): a session on a
   # node not currently in the capacity table is left untouched, exactly the pool's
   # additive-only rule.
+  defp clear_node_inventory_worker(state) do
+    {_pid, monitor, timer, _ref, _nodes} = state.node_inventory_worker
+    Process.demonitor(monitor, [:flush])
+    Process.cancel_timer(timer)
+    %{state | node_inventory_worker: nil}
+  end
+
+  defp absent_from_registry?(state, node, statuses) do
+    not node_reporting?(state, node) and
+      Map.get(Map.get(statuses, node, %{}), :registered) == false
+  end
+
+  defp reconcile_deleted_nodes(%{node_inventory_worker: worker} = state) when not is_nil(worker),
+    do: state
+
+  defp reconcile_deleted_nodes(state) do
+    nodes = SessionStore.all(state.session_store)
+      |> Enum.flat_map(fn session ->
+        case session.state do
+          status when status in [:running, :banking, :relighting, :creating] -> [session.node_id]
+          status when status in [:parked, :banked] -> [dormant_session_owner_node(session)]
+          _ -> []
+        end
+      end)
+      |> Enum.filter(&(is_binary(&1) and &1 != ""))
+      |> Enum.uniq()
+    statuses = safe_brick_statuses(state, nodes)
+    candidates = Enum.filter(nodes, &absent_from_registry?(state, &1, statuses))
+
+    if candidates == [] do
+      state
+    else
+      parent = self()
+      ref = make_ref()
+      inventory = state.node_inventory_fun
+      {pid, monitor} = spawn_monitor(fn ->
+        send(parent, {:node_inventory_result, ref, inventory.()})
+      end)
+      timer = Process.send_after(self(), {:node_inventory_timeout, ref}, 15_000)
+      %{state | node_inventory_worker: {pid, monitor, timer, ref, candidates}}
+    end
+  end
+
   defp do_reconcile(state) do
     facts = NodeCapacity.all(state.capacity_table)
     live_vms = index_session_vms(facts)
@@ -3921,7 +4009,7 @@ defmodule Embervm.SessionManager do
     inventory_observed_at = complete_inventory_observed_at(state, facts)
     nodes_facts = index_node_facts(facts)
 
-    state = clear_changed_unapplicable(state)
+    state = state |> clear_changed_unapplicable() |> reconcile_deleted_nodes()
 
     state =
       SessionStore.all(state.session_store)
