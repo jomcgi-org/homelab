@@ -55,6 +55,10 @@ def _render_empty_allowlist() -> list[dict]:
 
 
 def _render(extra: list[str] | None = None) -> list[dict]:
+    return _render_overlay("values-prod", extra)
+
+
+def _render_overlay(values_name: str, extra: list[str] | None = None) -> list[dict]:
     argv = [
         os.environ.get("HELM_BIN", "helm"),
         "template",
@@ -65,12 +69,33 @@ def _render(extra: list[str] | None = None) -> list[dict]:
         "--values",
         str(_values("values")),
         "--values",
-        str(_values("values-prod")),
+        str(_values(values_name)),
         *(extra or []),
     ]
     result = subprocess.run(argv, capture_output=True, text=True, timeout=120)
     assert result.returncode == 0, f"helm template failed:\n{result.stderr}"
     return [d for d in yaml.safe_load_all(result.stdout) if d]
+
+
+def _matches_policy(policy: dict, spans: list[dict]) -> bool:
+    """Evaluate the focused exact-match collector policy types used here."""
+    if policy["type"] == "status_code":
+        accepted = set(policy["status_code"]["status_codes"])
+        return any(span.get("status_code") in accepted for span in spans)
+    if policy["type"] == "string_attribute":
+        matcher = policy["string_attribute"]
+        accepted = set(matcher["values"])
+        return any(
+            span.get("attributes", {}).get(matcher["key"]) in accepted for span in spans
+        )
+    if policy["type"] == "and":
+        return all(
+            _matches_policy(sub_policy, spans)
+            for sub_policy in policy["and"]["and_sub_policy"]
+        )
+    if policy["type"] == "not":
+        return not _matches_policy(policy["not"]["not_sub_policy"], spans)
+    raise AssertionError(f"unsupported policy type in focused test: {policy['type']}")
 
 
 def _render_default() -> list[dict]:
@@ -171,9 +196,90 @@ def test_allowlisted_service_gets_a_filtered_traces_pipeline():
 def test_prod_allowlist_includes_monolith_emitters():
     values = yaml.safe_load(_values("values-prod").read_text())
 
-    assert {"monolith-backend", "monolith-jobs", "monolith-public"} <= set(
-        values["allowedServices"]
+    assert {
+        "embervm-control",
+        "monolith-backend",
+        "monolith-jobs",
+        "monolith-public",
+    } <= set(values["allowedServices"])
+
+
+@pytest.mark.parametrize("values_name", ["values-prod", "values-gke"])
+def test_tail_sampling_keeps_errors_and_pi_runtime_invokes(values_name):
+    config = _collector_config(_render_overlay(values_name))
+    sampling = config["processors"]["tail_sampling"]
+
+    assert sampling["decision_wait"] == "10s"
+    assert sampling["num_traces"] // 10 >= 5_000
+    values = yaml.safe_load(_values("values").read_text())
+    assert values["sampling"]["tailStorage"]["maxStorageSizeMib"] == 1_536
+    policies = {policy["name"]: policy for policy in sampling["policies"]}
+    assert policies["keep-errors"] == {
+        "name": "keep-errors",
+        "type": "and",
+        "and": {
+            "and_sub_policy": [
+                {
+                    "name": "error-status",
+                    "type": "status_code",
+                    "status_code": {"status_codes": ["ERROR"]},
+                },
+                {
+                    "name": "exclude-expected-class",
+                    "type": "not",
+                    "not": {
+                        "not_sub_policy": {
+                            "name": "expected-class",
+                            "type": "string_attribute",
+                            "string_attribute": {
+                                "key": "ember.failure.class",
+                                "values": ["expected"],
+                            },
+                        }
+                    },
+                },
+            ]
+        },
+    }
+    assert policies["keep-pi-runtime"] == {
+        "name": "keep-pi-runtime",
+        "type": "string_attribute",
+        "string_attribute": {"key": "ember.workload", "values": ["pi-runtime"]},
+    }
+
+    error_trace = [
+        {"status_code": "UNSET", "attributes": {"ember.workload": "other"}},
+        {
+            "status_code": "ERROR",
+            "attributes": {"ember.failure.class": "infrastructure"},
+        },
+    ]
+    routine_backpressure_trace = [
+        {
+            "status_code": "ERROR",
+            "attributes": {
+                "ember.failure.class": "expected",
+                "ember.reason": "queue_full",
+            },
+        }
+    ]
+    pi_trace = [
+        {"status_code": "UNSET", "attributes": {"ember.workload": "pi-runtime"}}
+    ]
+    ordinary_trace = [
+        {"status_code": "UNSET", "attributes": {"ember.workload": "other"}}
+    ]
+
+    assert _matches_policy(policies["keep-errors"], error_trace)
+    assert _matches_policy(
+        policies["keep-errors"], [{"status_code": "ERROR", "attributes": {}}]
     )
+    assert not _matches_policy(policies["keep-errors"], routine_backpressure_trace)
+    assert not _matches_policy(policies["keep-pi-runtime"], error_trace)
+    assert _matches_policy(policies["keep-pi-runtime"], pi_trace)
+    assert not _matches_policy(policies["keep-errors"], pi_trace)
+    assert not _matches_policy(policies["keep-errors"], ordinary_trace)
+    assert not _matches_policy(policies["keep-pi-runtime"], ordinary_trace)
 
 
 def test_allowlist_drops_services_not_named():

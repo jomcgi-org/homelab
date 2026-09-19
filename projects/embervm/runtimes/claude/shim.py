@@ -5181,6 +5181,7 @@ class ProcessManager:
         self._hydration_error = None
         self._checkout_dir = None
         self._hydration_status = None
+        self._turn_phase_telemetry = {}
         self.fatal_error = None
         try:
             self._prewarm_clis = self._read_prewarm_clis()
@@ -5295,13 +5296,46 @@ class ProcessManager:
         finally:
             self._prewarm_complete = True
 
+    def _record_turn_phase(self, phase, started, status):
+        """Keep one bounded phase measurement for the current HTTP response."""
+        try:
+            finished = _turn_timing_now()
+            turn_started = getattr(self, "_turn_started_at", None)
+            if started is None or finished is None or turn_started is None:
+                return
+            if phase not in ("hydration", "repo-clone"):
+                return
+            if status not in (
+                "cloned",
+                "skipped_existing",
+                "failed",
+                "lost",
+                "attempt_cap",
+            ):
+                return
+            self._turn_phase_telemetry[phase] = {
+                "ms": max(0, int((finished - started) * 1000)),
+                "start_offset_ms": max(0, int((started - turn_started) * 1000)),
+                "status": status,
+            }
+        except Exception:
+            pass
+
     def _hydrate_workspace(self, repo, branch):
         hydration_start = _turn_timing_now()
+        status = "failed"
+        try:
+            status = self._hydrate_workspace_inner(repo, branch, hydration_start)
+            return status
+        finally:
+            self._record_turn_phase("hydration", hydration_start, status)
+
+    def _hydrate_workspace_inner(self, repo, branch, hydration_start):
         if self._hydration_status in ("ok", "skipped_existing"):
             if _checkout_is_usable(self._checkout_dir):
                 self._hydration_status = "skipped_existing"
                 _emit_elapsed("hydration", hydration_start, status="skipped_existing")
-                return
+                return "skipped_existing"
             # The checkout this session already hydrated is gone, or is a stub.
             # The skip used to return unconditionally, so hydration never ran
             # again once it had succeeded even though the source it had cloned
@@ -5319,7 +5353,7 @@ class ProcessManager:
             self._hydration_status = None
             self._checkout_dir = None
         if self._hydration_attempts >= HYDRATION_ATTEMPT_CAP:
-            return
+            return "attempt_cap"
         if self._hydration_attempts:
             sys.stderr.write(
                 "ember-claude-shim: retrying workspace hydration for %s@%s "
@@ -5347,7 +5381,7 @@ class ProcessManager:
                 self.pi.workspace = checkout_dir
                 self.muse.workspace = checkout_dir
                 _emit_elapsed("hydration", hydration_start, status="skipped_existing")
-                return
+                return "skipped_existing"
             # A durable volume can contain a partial clone from a prior failure,
             # and the turn path recreates this directory empty on every turn.
             shutil.rmtree(checkout_dir, ignore_errors=True)
@@ -5419,6 +5453,9 @@ class ProcessManager:
             # A partial clone from a failed attempt must not survive. A retry
             # on a later turn starts clean.
             shutil.rmtree(checkout_dir, ignore_errors=True)
+        self._record_turn_phase(
+            "repo-clone", clone_start, "failed" if failure is not None else "cloned"
+        )
         if failure is not None:
             if isinstance(failure, subprocess.TimeoutExpired):
                 _write_hydration_diagnostics(failure, checkout_dir)
@@ -5428,7 +5465,7 @@ class ProcessManager:
                 % (repo, branch, failure)
             )
             sys.stderr.flush()
-            return
+            return "failed"
         self._hydration_error = None
         if not _checkout_is_usable(checkout_dir):
             # The clone validated moments ago, so the checkout went away under
@@ -5449,7 +5486,7 @@ class ProcessManager:
             )
             sys.stderr.flush()
             _emit_elapsed("hydration", hydration_start, status="lost")
-            return
+            return "lost"
         exclude_file = os.path.join(checkout_dir, ".git/info/exclude")
         _ensure_cli_dir(os.path.dirname(exclude_file))
         with open(exclude_file, "a") as stream:
@@ -5461,6 +5498,7 @@ class ProcessManager:
         self.pi.workspace = checkout_dir
         self.muse.workspace = checkout_dir
         _emit_elapsed("hydration", hydration_start, status="cloned")
+        return "cloned"
 
     def _adapter(self, model):
         if model in ("spark", "qwen"):
@@ -5593,6 +5631,8 @@ class ProcessManager:
         artifact_path=None,
     ):
         total_start = _turn_timing_now()
+        self._turn_started_at = total_start
+        self._turn_phase_telemetry = {}
         with self._mount_lock:
             ensure_workspace_volume()
         # Re-apply per turn so a restored guest picks up CA rotation without a
@@ -5724,8 +5764,39 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        for name, header_value in getattr(self, "_phase_headers", {}).items():
+            self.send_header(name, header_value)
         self.end_headers()
         self.wfile.write(body)
+
+    def _load_phase_headers(self):
+        self._phase_headers = {}
+        phases = getattr(self.manager, "_turn_phase_telemetry", {})
+        if not isinstance(phases, dict):
+            return
+        for phase in ("hydration", "repo-clone"):
+            measurement = phases.get(phase)
+            if not isinstance(measurement, dict):
+                continue
+            duration_ms = measurement.get("ms")
+            start_offset_ms = measurement.get("start_offset_ms")
+            status = measurement.get("status")
+            if type(duration_ms) is not int or duration_ms < 0:
+                continue
+            if type(start_offset_ms) is not int or start_offset_ms < 0:
+                continue
+            if status not in (
+                "cloned",
+                "skipped_existing",
+                "failed",
+                "lost",
+                "attempt_cap",
+            ):
+                continue
+            prefix = "X-Ember-Phase-%s" % phase.title()
+            self._phase_headers[prefix + "-Ms"] = str(duration_ms)
+            self._phase_headers[prefix + "-Start-Offset-Ms"] = str(start_offset_ms)
+            self._phase_headers[prefix + "-Status"] = status
 
     def do_GET(self):
         if self.path == HEALTHZ_PATH:
@@ -5737,6 +5808,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             self._send(404, {"error": "not found"})
 
     def do_POST(self):
+        self._phase_headers = {}
         if self.path == INTERRUPT_PATH:
             self._send(200, self.manager.interrupt())
             return
@@ -5845,17 +5917,21 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                 elif getattr(self.manager, "_hydration_status", None):
                     record["workspace_hydration"] = self.manager._hydration_status
         except SessionConflictError as exc:
+            self._load_phase_headers()
             self._send(409, {"error": str(exc)})
         except StartupError as exc:
             sys.stderr.write(str(exc) + "\n")
             sys.stderr.flush()
+            self._load_phase_headers()
             self._send(503, {"error": str(exc)})
         except TransientTurnError as exc:
             # Same 422 as the catch-all below, plus the one bit the caller
             # cannot derive for itself. Status stays 422 so nothing that keys
             # off the code changes; only the body grows a field.
+            self._load_phase_headers()
             self._send(422, {"error": str(exc), "retryable": True})
         except Exception as exc:
+            self._load_phase_headers()
             self._send(422, {"error": str(exc)})
         else:
             if result_receipt is not None:
@@ -5863,6 +5939,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                     _publish_result_receipt(result_receipt, record)
                 except Exception:  # noqa: BLE001 - preserve the native response.
                     _emit_result_receipt_failure("unexpected_callback_failure")
+            self._load_phase_headers()
             self._send(200, record)
 
     def _set_clock(self, raw):

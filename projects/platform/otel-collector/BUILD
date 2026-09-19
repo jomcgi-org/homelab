@@ -67,6 +67,7 @@ py_test(
         "Chart.lock",
         "Chart.yaml",
         "values.yaml",
+        "values-gke.yaml",
         "values-prod.yaml",
         "@multitool//tools/helm",
         # Chart.lock plus the vendored charts/ tree are load-bearing for

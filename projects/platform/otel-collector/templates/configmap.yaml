@@ -104,10 +104,37 @@ data:
         tail_storage: pebble_tail_storage
         {{- end }}
         policies:
+          # These two policies are deliberate uncapped exemptions. Explicitly
+          # expected outcomes are excluded, so routine 4xx and backpressure
+          # cannot bypass the composite ceiling even if an instrumentation
+          # regression marks one ERROR. Ordinary OTel 5xx errors from services
+          # that do not add EmberVM's classification remain eligible.
+          - name: keep-errors
+            type: and
+            and:
+              and_sub_policy:
+                - name: error-status
+                  type: status_code
+                  status_code:
+                    status_codes: [ERROR]
+                - name: exclude-expected-class
+                  type: not
+                  not:
+                    not_sub_policy:
+                      name: expected-class
+                      type: string_attribute
+                      string_attribute:
+                        key: ember.failure.class
+                        values: [expected]
+          - name: keep-pi-runtime
+            type: string_attribute
+            string_attribute:
+              key: ember.workload
+              values: [pi-runtime]
           # One composite policy, not three peer policies. tail_sampling ORs
-          # its policies, so peers can only ever admit more traces; composite
-          # is what imposes a ceiling, by giving each sub-policy a slice of a
-          # spans-per-second budget and dropping what does not fit.
+          # its policies, so peers can only ever admit more traces. The
+          # composite policy imposes the ceiling on ordinary traffic, while the
+          # explicit keep policies above are allowed to exceed it.
           #
           # Priority comes from the ORDER OF composite_sub_policy below, not
           # from policy_order. policy_order parses and is then ignored by the
