@@ -85,6 +85,9 @@ class AgentSession(SQLModel, table=True):
     # noise rather than signal.
     system_prompt: str | None = Field(default=None)
     # Only sessions opened before a meaningful user prompt defer recall.
+    # Interactive sessions get recall only when a cached vector exists. A retry
+    # keyed on the first ready message is the follow-up; a cache miss currently
+    # consumes the session's one recall attempt.
     recall_pending: bool = Field(default=False)
     # BigInteger, not the default Integer: this is epoch MILLISECONDS from the
     # control plane, which overflows int4. The migration already declares BIGINT,

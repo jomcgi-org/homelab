@@ -89,6 +89,13 @@ def merge_clones(
         if not apply:
             continue
         merged = list((survivor.extra or {}).get("merged_note_ids", []))
+        raw_fks = set(
+            session.exec(
+                select(AtomRawProvenance.raw_fk).where(
+                    AtomRawProvenance.atom_fk == survivor.id
+                )
+            ).all()
+        )
         for loser in losers:
             # Copy provenance to the survivor without destroying the original
             # extraction record, timestamps, errors, or gardener version.
@@ -101,6 +108,8 @@ def merge_clones(
                 )
             ).all()
             for source in sources:
+                if source.raw_fk is None or source.raw_fk in raw_fks:
+                    continue
                 session.add(
                     AtomRawProvenance(
                         atom_fk=survivor.id,
@@ -112,6 +121,7 @@ def merge_clones(
                         retry_count=source.retry_count,
                     )
                 )
+                raw_fks.add(source.raw_fk)
             loser.verification_state = "invalidated"
             loser.valid_until = datetime.now(timezone.utc)
             loser.extra = {**(loser.extra or {}), "merged_into": survivor.note_id}

@@ -337,6 +337,18 @@ jobs:
     #   argo submit --from cronworkflow/backfill-entities -n monolith-workflows
     # Both jobs receive DATABASE_URL from jobs.dbSecretName in the shared
     # CronWorkflow template. Run seed first so backfill resolves the manifest.
+    - name: knowledge-merge-clones
+      args: ["knowledge-merge-clones", "--apply"]
+      schedule: "0 0 1 1 *" # inert; suspended, manual-only
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 600
+      suspend: true
+      resources:
+        requests:
+          cpu: 250m
+          memory: 512Mi
+        limits:
+          memory: 512Mi
     - name: seed-entities
       args: ["seed-entities"]
       schedule: "0 0 1 1 *" # inert; suspended, manual-only

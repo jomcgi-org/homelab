@@ -42,7 +42,7 @@ from core.mcp_app import mcp
 from faas.embervm_client import EmberVMTransportError
 from framework import log_task_exception
 from goosecracker.api import REPO_CATALOG
-from knowledge.api import attach_recall, defer_recall
+from knowledge.api import attach_recall, defer_recall, recall_prompt_ready
 from factory.execution.rationale import parse_rationale
 from auth.api import Authority, current_principal
 
@@ -352,8 +352,21 @@ async def _release_receipt_fence(native_receipt: dict) -> bool:
 def _persist_pending_message(
     session_id: int, message_text: str, model: str | None
 ) -> int:
+    recall_update = {}
     with Session(get_engine()) as db_session:
-        row = store.create_pending_message(db_session, session_id, message_text, model)
+        agent = db_session.get(AgentSession, session_id)
+        pending = agent is not None and agent.recall_pending
+        system_prompt = agent.system_prompt if agent is not None else None
+        node_key = agent.node_key if agent is not None else None
+    # Vector search must finish before taking the cluster-wide admission lock.
+    if pending and recall_prompt_ready(message_text):
+        recall_update["system_prompt"] = attach_recall(
+            system_prompt, message_text, node_key=node_key
+        )
+    with Session(get_engine()) as db_session:
+        row = store.create_pending_message(
+            db_session, session_id, message_text, model, **recall_update
+        )
         assert row.seq is not None
         return row.seq
 

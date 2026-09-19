@@ -435,8 +435,18 @@ def test_persist_session_attaches_recall_to_system_prompt(monkeypatch, tmp_path)
     assert captured["kwargs"]["node_key"] == "implement"
 
 
+@pytest.mark.parametrize(
+    "session_key,explicit_task,expected_task",
+    [
+        ("swarm-recall", None, None),
+        ("factory:t-7:implement:1", None, "t-7"),
+        ("factory:t-7:review:2", None, "t-7"),
+        ("factory:t-7:implement:1", "explicit", "explicit"),
+        ("swarm-task:router", "router", "router"),
+    ],
+)
 def test_start_session_for_swarm_passes_first_prompt_to_persistence(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, session_key, explicit_task, expected_task
 ):
     engine = create_engine(
         f"sqlite:///{tmp_path / 'swarm_recall_test.db'}",
@@ -461,14 +471,16 @@ def test_start_session_for_swarm_passes_first_prompt_to_persistence(
     monkeypatch.setattr(api.store, "get_session_by_local_id", lambda *_args: None)
 
     session_id = api.start_session_for_swarm(
-        "swarm-recall",
+        session_key,
         "the first swarm task prompt",
         "luna",
         "jomcgi-org/homelab",
         "main",
+        task_id=explicit_task,
     )
 
     assert session_id == 52
+    assert captured["kwargs"]["task_id"] == expected_task
     assert captured["kwargs"]["prompt"] == "the first swarm task prompt"
 
 

@@ -875,7 +875,8 @@ def _persist_task_session_start(
     local_session_id = f"swarm-task:{task_id}"
     from factory.orchestration.models import recall_task_text
 
-    # Recall reads cached vectors only, before opening the write transaction.
+    # Computed before the session opens: recall can block on vector search,
+    # and holding a pooled connection through it starves other handlers.
     system_prompt = attach_recall(
         _append_rationale_trailer(None, start_request.repo),
         recall_task_text(task_id),

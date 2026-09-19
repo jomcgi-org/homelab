@@ -318,6 +318,7 @@ def list_tasks_weekly(session: "Session") -> list[dict]:
 _FACTORY_EXPORTS = {
     "find_reviewable_docfix_prs": "knowledge.docfix",
     "prune_completed_docfix_reviews": "knowledge.docfix",
+    "prune_recall_embeddings": "knowledge.recall_cache",
     "schedule_docfix_review": "knowledge.docfix",
     "kg_burst_state": "knowledge.burst",
     "kg_effective_cap": "knowledge.burst",

@@ -2713,3 +2713,79 @@ def test_replanned_routine_receives_supervisor_guidance(monkeypatch):
         monkeypatch, [{"name": "job-1", "payload": {"prompt": "do work"}}]
     )
     assert starts[0][1] == "do work\nUse the corrected schema"
+
+
+def test_recall_cache_maintenance_retains_live_receipts_and_bounds_deletion(
+    monkeypatch, tmp_path
+):
+    from datetime import datetime, timedelta, timezone
+    from sqlmodel import SQLModel, select
+    from knowledge import recall_cache
+    from knowledge.models import RecallEmbedding
+    from factory.orchestration.factory_models import FactoryReceipt
+    from factory.orchestration.models import SwarmTask
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'recall_retention.db'}"
+    ).execution_options(schema_translate_map={"knowledge": None, "swarm": None})
+    SQLModel.metadata.create_all(
+        engine,
+        tables=[
+            RecallEmbedding.__table__,
+            FactoryReceipt.__table__,
+            SwarmTask.__table__,
+        ],
+    )
+    monkeypatch.setattr(recall_cache, "RECALL_CLEANUP_LIMIT", 2)
+    now = datetime.now(timezone.utc)
+    old = now - timedelta(days=31)
+    with Session(engine) as session:
+        task_text = "GitHub issue https://github.com/acme/repo/issues/1\n\nOriginal task\n\nTask body"
+        session.add(SwarmTask(id="task", task_text=task_text, conductor_model="luna"))
+        session.flush()
+        for number, state in enumerate(["admitted", "queued", "succeeded"], 1):
+            title, body = f"Receipt {number}", "Receipt body"
+            session.add(
+                FactoryReceipt(
+                    repo="acme/repo",
+                    issue_number=number,
+                    title=title,
+                    body=body,
+                    url=f"https://github.com/acme/repo/issues/{number}",
+                    actor="test",
+                    state=state,
+                    task_id="task" if state == "admitted" else None,
+                )
+            )
+            session.add(
+                RecallEmbedding(
+                    key=recall_cache.cache_key(
+                        recall_cache.query_text(f"{title}\n\n{body}")
+                    ),
+                    embedding=[0.1] * 1024,
+                    created_at=old,
+                )
+            )
+        task_key = recall_cache.cache_key(recall_cache.query_text(task_text))
+        session.add(
+            RecallEmbedding(key=task_key, embedding=[0.1] * 1024, created_at=old)
+        )
+        for key, created_at in [
+            ("recent", now - timedelta(days=29)),
+            ("orphan1", old),
+            ("orphan2", old),
+        ]:
+            session.add(
+                RecallEmbedding(key=key, embedding=[0.1] * 1024, created_at=created_at)
+            )
+        session.commit()
+        assert drainer._prune_recall_cache(session) == 2
+        assert drainer._prune_recall_cache(session) == 1
+        assert drainer._prune_recall_cache(session) == 0
+        remaining = set(session.exec(select(RecallEmbedding.key)).all())
+        assert remaining == {
+            "recent",
+            task_key,
+            recall_cache.cache_key("Receipt 1\n\nReceipt body"),
+            recall_cache.cache_key("Receipt 2\n\nReceipt body"),
+        }
