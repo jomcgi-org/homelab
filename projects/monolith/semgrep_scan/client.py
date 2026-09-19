@@ -2,8 +2,8 @@
 
 The plain-function half of the semgrep scan path, mirroring
 ``sandbox/client.py``. It POSTs file contents to EmberVM and returns structured
-findings. The MCP tool (``semgrep_scan/mcp.py``) and the demos router
-(``demos/firecracker_api.py``) call ``scan_files``.
+findings. The MCP tool (``semgrep_scan/mcp.py``), the GitHub webhook, and the
+public EmberVM Semgrep experience call ``scan_files``.
 """
 
 from __future__ import annotations

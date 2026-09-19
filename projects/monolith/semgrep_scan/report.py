@@ -90,7 +90,7 @@ import logging
 import os
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from typing import Any
 from typing import Optional
 
@@ -98,8 +98,7 @@ import httpx
 
 logger = logging.getLogger("monolith.semgrep.report")
 
-# The scan_environment string the App tags our scans with. Distinguishes Route B
-# (self-hosted) scans from Semgrep Managed Scans in the dashboard.
+# The scan_environment string the App tags our self-hosted scans with.
 SCAN_ENVIRONMENT = "homelab-fc-invoke"
 
 # Semgrep App base URL. semgrep.dev is the SaaS default; overridable via env for a
@@ -401,8 +400,8 @@ def _reported_repository(repo: str) -> str:
     When ``SEMGREP_SHADOW_PROJECT`` is set and non-empty we report under that
     SHADOW project name (e.g. ``jomcgi/homelab-selfhosted``) instead of the real
     ``repo``, so Route B (self-hosted) scans land in a SEPARATE Semgrep project
-    from SMS's ``jomcgi/homelab`` project and the two can be compared side by
-    side. Unset (the cutover state) falls back to the real ``repo`` so Route B
+    from SMS's ``jomcgi/homelab`` project. Unset (the cutover state) falls back
+    to the real ``repo`` so Route B
     reports to the real project with no code change.
     """
     shadow = os.environ.get("SEMGREP_SHADOW_PROJECT")
@@ -430,7 +429,7 @@ def _build_project_metadata(
 
     The ``repository`` value comes from ``_reported_repository(repo)``: with
     ``SEMGREP_SHADOW_PROJECT`` set it is the shadow project name, not the real
-    ``repo``, so these scans land in a separate Semgrep project for comparison.
+    ``repo``, so these scans land in a separate Semgrep project.
 
     ``is_full_scan=False`` (the default) is byte-identical to the original PR
     diff scan behavior: ``"on": "pull_request"`` and ``pull_request_id`` set to
@@ -561,7 +560,6 @@ async def report_pr_scan(
     project_id: Optional[str] = None,
     repo_url: Optional[str] = None,
     scan_execution_duration: Optional[float] = None,
-    cohort: Optional[dict] = None,
     dry_run: bool = False,
     is_full_scan: bool = False,
 ) -> dict[str, Any]:
@@ -586,7 +584,6 @@ async def report_pr_scan(
         project_id=project_id,
         repo_url=repo_url,
         scan_execution_duration=scan_execution_duration,
-        cohort=cohort,
         dry_run=dry_run,
         is_full_scan=is_full_scan,
     )
@@ -603,7 +600,6 @@ def _report_pr_scan_blocking(
     project_id: Optional[str] = None,
     repo_url: Optional[str] = None,
     scan_execution_duration: Optional[float] = None,
-    cohort: Optional[dict] = None,
     dry_run: bool = False,
     is_full_scan: bool = False,
 ) -> dict[str, Any]:
@@ -712,47 +708,6 @@ def _report_pr_scan_blocking(
         result["app_blocking_match_based_ids"] = [
             mid.value for mid in complete_response.app_blocking_match_based_ids
         ]
-
-        # Persist a Route B perf row (authoritative runtime = scan_execution_duration)
-        # for the private scan-perf comparison page. Best-effort: a perf-store
-        # failure must never fail an already-reported scan.
-        try:
-            from semgrep import __VERSION__ as _sg_cli_version
-            from sqlmodel import Session
-            from core.db import get_engine
-            from semgrep_scan.perf_store import ScanPerf, upsert_scan_perf
-
-            # Stamp the completion time at persist (this runs right after the
-            # scan reported complete). scan_completed_at must be set: the perf
-            # read query orders by it, and route-b rows without it sort NULLS
-            # FIRST in Postgres and starve dated SMS rows past the LIMIT.
-            _perf_now = datetime.now(timezone.utc)
-            _perf_dur = float(scan_execution_duration or 0.0)
-            with Session(get_engine()) as _perf_session:
-                upsert_scan_perf(
-                    _perf_session,
-                    ScanPerf(
-                        scan_id=scan_id,
-                        environment="route-b",
-                        raw_environment=SCAN_ENVIRONMENT,
-                        is_full_scan=is_full_scan,
-                        branch=branch,
-                        scan_ref=(f"refs/pull/{pr_id}/merge" if pr_id else branch),
-                        commit_sha=commit,
-                        total_time=_perf_dur,
-                        findings_total=int(findings_count),
-                        cli_version=_sg_cli_version,
-                        scan_started_at=_perf_now - timedelta(seconds=_perf_dur),
-                        scan_completed_at=_perf_now,
-                        # Diff cohort (route-b only; a matched pair inherits it by
-                        # commit_sha). None for full scans / when unavailable.
-                        file_count=(cohort or {}).get("file_count"),
-                        changed_lines=(cohort or {}).get("changed_lines"),
-                        languages=(cohort or {}).get("languages"),
-                    ),
-                )
-        except Exception:
-            logger.exception("semgrep perf: failed to persist route-b scan_perf row")
 
         return result
     except Exception as exc:  # noqa: BLE001 - structured error, never kill the process

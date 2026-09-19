@@ -25,8 +25,6 @@
   // - the dashboard root itself ("/"): it IS the nav
   // - /app/*: gateway-routed full-screen apps (ArgoCD, Longhorn) with their
   //   own chrome
-  // - /demos/*: renders its own Grimoire-style topbar (wordmark + tabs) that
-  //   the link would collide with
   // - /review: renders its own top bar (tabs + mode toggle) flush with the
   //   top-left, where the link would sit on top of the tabs
   // - /chat and /notes: both render their own top-left chrome (the explorer
@@ -38,7 +36,7 @@
   let showBack = $derived.by(() => {
     const path = $page.url.pathname.replace(/^\/private(?=\/|$)/, "") || "/";
     if (path === "/") return false;
-    if (/^\/(app|demos|review|chat|notes)(\/|$)/.test(path)) return false;
+    if (/^\/(app|review|chat|notes)(\/|$)/.test(path)) return false;
     return true;
   });
 </script>

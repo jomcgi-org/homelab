@@ -83,17 +83,17 @@ flowchart LR
     Sidecar --> AgentsApi[monolith-agents /mcp]
     Internal[Internal agents] --> ClusterIP[Kubernetes ClusterIP]
     ClusterIP --> PrivateApi
-    Webhooks[GitHub / Semgrep webhooks] --> PrivateIngress
+    Webhooks[GitHub Semgrep webhook] --> PrivateIngress
     PrivateIngress --> WebhookRoute[HMAC-verified webhook route]
     WebhookRoute --> PrivateApi
 ```
 
 The public and private ingress split, the friends policy, and the internal
-service ports are rendered by the Helm chart. Two routes on the private
-hostname carry no `SecurityPolicy` on purpose: the GitHub and Semgrep webhook
-paths reach the backend through a Cloudflare Access IP bypass and are
-authenticated by the handler's HMAC verification alone, which is why they live
-on their own HTTPRoute rather than as rules on the private one.
+service ports are rendered by the Helm chart. The GitHub Semgrep webhook route
+on the private hostname carries no `SecurityPolicy` on purpose: it reaches the
+backend through a Cloudflare Access IP bypass and is authenticated by the
+handler's HMAC verification alone, which is why it lives on its own HTTPRoute
+rather than as a rule on the private one.
 (see: /projects/monolith/chart/templates/httproute-private.yaml)
 (see: /projects/monolith/chart/templates/service.yaml)
 (see: /projects/mcp/ARCHITECTURE.md)
@@ -222,6 +222,12 @@ database is divided into domain schemas including `knowledge`, `chat`,
 `campsites`, and `swarm`. The migration bundle is rendered into a ConfigMap for
 Atlas, and bulk seed data is kept out of it because client-side apply records
 the manifest in an annotation with a 256 KiB ceiling.
+
+Historical migrations still define the retired private demo load tables and
+Semgrep scan-performance table. Their application writers and readers are gone,
+but the tables remain because removing them would delete production schema and
+data. Any later cleanup requires a separately authorized migration and retention
+decision.
 (see: /projects/monolith/chart/templates/atlas-migration.yaml)
 (see: /projects/monolith/chart/templates/migrations-configmap.yaml)
 (see: /bazel/tools/hooks/check-large-migration-sql.sh)
@@ -814,8 +820,8 @@ namespace, whose controller owns cadence, concurrency, deadlines, and history.
 Each entry runs the digest-pinned jobs image with one `jobs_main.py`
 subcommand. A job pod gets `DATABASE_URL` from a Kyverno-cloned Secret plus
 whatever the entry declares, never the deployment's environment. Entries marked
-`internalApi` only POST a private endpoint on the leader (the drain tick, the
-synthetic probes, the Semgrep harvest), so that work runs inside the API pod
+`internalApi` only POST a private endpoint on the leader (the drain tick and
+the synthetic probes), so that work runs inside the API pod
 where the credentials already live. Suspended entries remain available for
 manual submission.
 (see: /projects/monolith/chart/templates/cronworkflows.yaml)
@@ -1254,12 +1260,14 @@ spans over HTTP/protobuf to the platform's OpenTelemetry collector, which
 forwards to Honeycomb. The endpoint value must spell out the collector's HTTP
 port and the full traces path, because the exporter posts to it verbatim, and
 the service name must stay on the collector's allow list or the spans are
-dropped after they arrive. The frontend exports nothing, and the demo trace
-waterfall returns no spans until a span store is connected (#5363). The public
-stats ticker scrapes the DCGM exporter directly for GPU utilization and frame
-buffer usage.
+dropped after they arrive. The frontend exports nothing and there is no trace
+query API. The public Firecracker story still serves its committed measurements,
+but its former bake workflow depended on the retired private demos API and the
+removed SigNoz ClickHouse store, so it cannot regenerate those measurements.
+The public stats ticker scrapes the DCGM exporter directly for GPU utilization
+and frame buffer usage.
 (see: /projects/monolith/deploy/values.yaml)
-(see: /projects/monolith/home/observability/traces.py)
+(see: /projects/monolith/frontend/src/lib/public/fcstory/bake-fc-story.sh)
 (see: /projects/monolith/home/observability/stats.py)
 (see: /projects/platform/ARCHITECTURE.md)
 

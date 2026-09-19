@@ -1,9 +1,6 @@
-const EMPTY_PEAKS = Object.freeze({ decodeTps: 0, ttftMs: null });
-const EMPTY_TOTALS = Object.freeze({ turns: 0, tokens: 0, generationMs: 0 });
-
-function hasText(value) {
-  return typeof value === "string" && value.length > 0;
-}
+// Capture-only metrics used to regenerate the baked public Qwen replay.
+// They live beside the capture script so the public recording no longer
+// depends on the retired private Qwen demo route.
 
 function nonNegativeInteger(value) {
   return Number.isInteger(value) && value >= 0 ? value : null;
@@ -11,11 +8,6 @@ function nonNegativeInteger(value) {
 
 function positiveInteger(value) {
   return Number.isInteger(value) && value > 0 ? value : null;
-}
-
-function finiteNonNegative(value) {
-  const number = Number(value);
-  return Number.isFinite(number) && number >= 0 ? number : 0;
 }
 
 function indexedValues(value) {
@@ -52,114 +44,7 @@ function inferredExpertCount(profile) {
   return widths[0];
 }
 
-const MIN_RATE_MS = 250;
-
-export function trackSessionPeaks(peaks = EMPTY_PEAKS, turnMetrics) {
-  const decodeTps = finiteNonNegative(turnMetrics?.tokensPerSecond);
-  const ttft = finiteNonNegative(turnMetrics?.ttftMs);
-  const nextTtft =
-    turnMetrics?.ttftMs === null || turnMetrics?.ttftMs === undefined
-      ? peaks.ttftMs
-      : peaks.ttftMs === null
-        ? ttft
-        : Math.min(peaks.ttftMs, ttft);
-
-  return {
-    decodeTps: Math.max(finiteNonNegative(peaks.decodeTps), decodeTps),
-    ttftMs: nextTtft,
-  };
-}
-
-export function addSessionTurn(
-  totals = EMPTY_TOTALS,
-  turnMetrics,
-  generationMs,
-) {
-  return {
-    turns: nonNegativeInteger(totals.turns) === null ? 1 : totals.turns + 1,
-    tokens:
-      finiteNonNegative(totals.tokens) +
-      finiteNonNegative(turnMetrics?.reasoningTokens) +
-      finiteNonNegative(turnMetrics?.answerTokens),
-    generationMs:
-      finiteNonNegative(totals.generationMs) + finiteNonNegative(generationMs),
-  };
-}
-
-export function deriveModelState(inFlight, firstTokenSeen) {
-  if (!inFlight) return "idle";
-  return firstTokenSeen ? "generating" : "prefilling";
-}
-
-export function countTurnTokens(chunks) {
-  return chunks.reduce(
-    (counts, chunk) => ({
-      reasoningTokens:
-        counts.reasoningTokens + (hasText(chunk.reasoning_content) ? 1 : 0),
-      answerTokens: counts.answerTokens + (hasText(chunk.content) ? 1 : 0),
-    }),
-    { reasoningTokens: 0, answerTokens: 0 },
-  );
-}
-
-export function calculateTurnMetrics(startedAt, chunks) {
-  const outputChunks = chunks.filter(
-    (chunk) => hasText(chunk.reasoning_content) || hasText(chunk.content),
-  );
-  const { reasoningTokens, answerTokens } = countTurnTokens(chunks);
-  const firstReasoning = chunks.find((chunk) =>
-    hasText(chunk.reasoning_content),
-  );
-  const firstAnswer = chunks.find((chunk) => hasText(chunk.content));
-
-  if (!outputChunks.length) {
-    return {
-      ttftMs: null,
-      tokensPerSecond: 0,
-      timeToFirstReasoningMs: null,
-      timeToFirstAnswerMs: null,
-      reasoningTokens,
-      answerTokens,
-    };
-  }
-
-  const first = outputChunks[0];
-  const last = outputChunks[outputChunks.length - 1];
-  const tokenCount = reasoningTokens + answerTokens;
-  const generationMs = last.at - first.at;
-
-  return {
-    ttftMs: Math.max(0, first.at - startedAt),
-    // Require a real time window before quoting a rate. Two chunks a fraction
-    // of a millisecond apart yield thousands of tokens per second, which then
-    // sticks as the session peak and is plainly wrong on screen.
-    tokensPerSecond:
-      tokenCount > 1 && generationMs >= MIN_RATE_MS
-        ? ((tokenCount - 1) * 1000) / generationMs
-        : 0,
-    timeToFirstReasoningMs: firstReasoning
-      ? Math.max(0, firstReasoning.at - startedAt)
-      : null,
-    timeToFirstAnswerMs: firstAnswer
-      ? Math.max(0, firstAnswer.at - startedAt)
-      : null,
-    reasoningTokens,
-    answerTokens,
-  };
-}
-
-export function formatBytes(bytes) {
-  const value = Number(bytes);
-  if (!Number.isFinite(value) || value < 0) return "0.0 GB";
-  return `${(value / 1_000_000_000).toFixed(1)} GB`;
-}
-
-export function formatRate(rate) {
-  const value = Number(rate);
-  return `${(Number.isFinite(value) ? value : 0).toFixed(1)}`;
-}
-
-export function classifyLayerTier(layers, layerIndex) {
+function classifyLayerTier(layers, layerIndex) {
   const values = indexedValues(layers);
   const value = values?.[layerIndex];
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
@@ -168,7 +53,7 @@ export function classifyLayerTier(layers, layerIndex) {
   return value > 0 ? "disk" : "resident";
 }
 
-export function diffExpertHits(previous, current) {
+function diffExpertHits(previous, current) {
   const previousRows = profileHits(previous);
   const currentRows = profileHits(current);
   if (!previousRows || !currentRows) return [];
@@ -177,7 +62,6 @@ export function diffExpertHits(previous, current) {
   currentRows.forEach((currentHits, layer) => {
     const previousHits = previousRows[layer];
     if (!Array.isArray(currentHits) || !Array.isArray(previousHits)) return;
-
     currentHits.forEach((value, expert) => {
       const before = previousHits[expert];
       if (

@@ -107,9 +107,9 @@ push webhook route below is exposed here.
 
 Documented holes in that gate, each deliberate:
 
-- `/webhooks/github/semgrep` and `/webhooks/semgrep` are a separate route
-  with no `SecurityPolicy`, reachable through an IP-allowlist bypass in the
-  Access policy and authenticated by HMAC in the handler
+- `/webhooks/github/semgrep` is a separate route with no `SecurityPolicy`,
+  reachable through an IP-allowlist bypass in the Access policy and
+  authenticated by HMAC in the handler
   (`projects/monolith/chart/templates/httproute-private.yaml`).
 - `/webhooks/github/argocd` is the ArgoCD push-sync webhook route, enabled on
   the hub by `cfIngress.githubWebhook.enabled: true` in

@@ -534,7 +534,7 @@ _DEFAULT_CLUSTER_RULES = [
     },
     {
         "apiGroups": ["metrics.k8s.io"],
-        "resources": ["nodes", "pods"],
+        "resources": ["nodes"],
         "verbs": ["get", "list"],
     },
 ]

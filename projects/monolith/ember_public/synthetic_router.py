@@ -1,9 +1,7 @@
 """Private-tier internal endpoint that runs the ember synthetic probes.
 
-The cron job only TRIGGERS this; the probing happens in the API pod, mirroring
-semgrep_scan.router's /internal/semgrep/harvest-scans ("the harvest runs in the
-API pod, not this ephemeral job pod, so the job needs no tokens or DB access,
-just HTTP").
+The cron job only TRIGGERS this; the probing happens in the API pod so the job
+needs no EmberVM credentials or database access, only HTTP.
 
 That split is not stylistic here, it is the fix for the #4065 rollout. Probing
 from the job pod failed on three counts, none of which CI could catch:

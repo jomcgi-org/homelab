@@ -197,7 +197,7 @@ Trace admission is deny-by-default by construction. With an empty `allowedServic
 
 The metrics pipeline accepts the `http_check` receiver only: home probes `https://jomcgi.dev/health` and `https://jomcgi.dev/`, the hub probes ArgoCD's health endpoint (which reads 0, #5460). Arbitrary OTLP metrics are never accepted.
 
-UptimeRobot checks `https://jomcgi.dev/health/otel-collector`, a direct public `HTTPRoute` into the hub collector's `health_check` extension that does not proxy through the frontend. Kyverno's cluster-wide OTel environment-variable injection is disabled. The OpenTelemetry Operator is installed at home only and renders no `Instrumentation` resources. There is no trace query surface: the demos trace waterfall is inoperative until #5363 lands.
+UptimeRobot checks `https://jomcgi.dev/health/otel-collector`, a direct public `HTTPRoute` into the hub collector's `health_check` extension that does not proxy through the frontend. Kyverno's cluster-wide OTel environment-variable injection is disabled. The OpenTelemetry Operator is installed at home only and renders no `Instrumentation` resources. There is no in-repository trace query surface; the retired private waterfall is not being restored.
 
 **Internal observability guidance** lives in `docs/observability.md` (not published externally).
 
@@ -274,7 +274,7 @@ and an agent on every brick node (ADR embervm/041).
 
 ## 9. Maintenance automation
 
-**Argo Workflows** runs in `monolith-workflows` on both clusters as the CronWorkflow executor. On the hub it runs the monolith's job schedule (33 CronWorkflows); at home it runs Renovate and apko lock maintenance.
+**Argo Workflows** runs in `monolith-workflows` on both clusters as the CronWorkflow executor. On the hub it runs the monolith's job schedule (32 CronWorkflows); at home it runs Renovate and apko lock maintenance.
 
 **Renovate** (home only) runs daily at 04:00 as an Argo `CronWorkflow` (`projects/platform/renovate/values.yaml` l.7). Its enabled managers cover Bazel modules, Go, pep621, npm/pnpm, Helm, Kubernetes manifests and ArgoCD `application.yaml` files. `renovate.json` holds ordinary PR creation to a Monday window, so the daily run exists to absorb a transient failure rather than to open PRs seven days a week. Credentials come from 1Password. **apko lock maintenance** is a second CronWorkflow, weekly on Monday at 01:00, regenerating every committed `apko.lock.json` through the pinned `rules_apko` toolchain into one `renovate/apko-lock-maintenance` PR under rebase auto-merge (l.31, `README.md`). The last such PR opened on 2026-08-24, before the cutover; whether either CronWorkflow still fires on the residual home cluster is unverified.
 
@@ -307,7 +307,6 @@ this table when the work ships or the issue closes without it.
 | The hub gets a GPU pool for model serving | section 6 | #5461 | not started |
 | Kargo promotion on the hub gains a functional verification gate, not just stage ordering | section 4 | #4745 | not started |
 | Per-PR preview environments exist for the monolith, with copy-on-write CNPG clones | section 4 | #3882 | not started |
-| A trace query surface (the demos waterfall) is restored on the Honeycomb-backed span store | section 7 | #5363 | not started |
 | Values-only PRs flip on mTLS for SPIFFE-issued workloads and retire the static bearer token | section 8 | #5759 | not started |
 
 ## Decision history

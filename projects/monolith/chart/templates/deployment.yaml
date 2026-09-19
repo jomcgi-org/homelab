@@ -330,10 +330,10 @@ spec:
               value: "postgresql://postgres:$(SCRATCH_PG_PASSWORD)@{{ .Values.scratchPostgres.servingService }}.{{ .Values.scratchPostgres.embervmNamespace }}.svc:{{ .Values.scratchPostgres.listenPort }}/scratch"
             {{- end }}
             {{- if .Values.scratchPostgres.demoListenPort }}
-            # Demo-postgres DSN (the demos page's sleep/wake exhibit): the SAME
+            # Demo-postgres DSN (the public Ember Postgres exhibit): the SAME
             # serving Service and password (the demo workload reuses the scratch-
             # postgres Secret on the embervm side), a different stateful listen
-            # port. The demos API connects here so a page visit wakes the demo
+            # port. The public API connects here so a page visit wakes the demo
             # VM, never the real scratch-postgres tenant.
             - name: DEMO_POSTGRES_DSN
               value: "postgresql://postgres:$(SCRATCH_PG_PASSWORD)@{{ .Values.scratchPostgres.servingService }}.{{ .Values.scratchPostgres.embervmNamespace }}.svc:{{ .Values.scratchPostgres.demoListenPort }}/scratch"
@@ -342,7 +342,7 @@ spec:
             {{- if .Values.semgrep.shadowProject }}
             # Route B shadow project: the relay reports App scans under this name
             # instead of the real repo, keeping self-hosted scans in a separate
-            # Semgrep project from SMS for comparison. Unset at cutover.
+            # Semgrep project from SMS. Unset at cutover.
             - name: SEMGREP_SHADOW_PROJECT
               value: {{ .Values.semgrep.shadowProject | quote }}
             {{- end }}
@@ -409,20 +409,6 @@ spec:
                 secretKeyRef:
                   name: {{ include "monolith.fullname" . }}-semgrep-app
                   key: GITHUB_SEMGREP_WEBHOOK_SECRET
-                  optional: true
-            # HMAC secret for the Semgrep AppSec Platform scan webhook
-            # (semgrep_scan/perf_webhook.py). Semgrep signs the body with it
-            # (X-Semgrep-Signature-256) so we capture every managed scan's
-            # runtime findings-independently. Same semgrep vault item, field
-            # SEMGREP_WEBHOOK_SECRET; Joe sets the identical value in the Semgrep
-            # webhook config. Optional so an older vault item without the field
-            # does not block the pod (the webhook then 401s, the fail-closed
-            # default).
-            - name: SEMGREP_WEBHOOK_SECRET
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "monolith.fullname" . }}-semgrep-app
-                  key: SEMGREP_WEBHOOK_SECRET
                   optional: true
             {{- end }}
             {{- if .Values.chat.onepassword.itemPath }}
@@ -804,8 +790,6 @@ spec:
           env:
             - name: API_BASE
               value: "http://localhost:8000"
-            - name: QWEN_FLASH_API_BASE
-              value: {{ required "frontend.qwenFlashApiBase is required" .Values.frontend.qwenFlashApiBase | quote }}
             {{- if .Values.frontend.otelCollectorUrl }}
             - name: OTEL_COLLECTOR_HTTP_URL
               value: {{ .Values.frontend.otelCollectorUrl | quote }}

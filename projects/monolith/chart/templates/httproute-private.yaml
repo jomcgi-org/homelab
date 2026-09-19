@@ -31,17 +31,6 @@ spec:
       backendRefs:
         - name: {{ include "monolith.fullname" . }}
           port: {{ .Values.service.apiPort | int }}
-    # Demos API: pass through to backend without rewriting
-    - matches:
-        - path:
-            type: PathPrefix
-            value: /api/demos
-      timeouts:
-        request: 600s
-        backendRequest: 600s
-      backendRefs:
-        - name: {{ include "monolith.fullname" . }}
-          port: {{ .Values.service.apiPort | int }}
     # Scheduler API — pass through to backend without rewriting
     - matches:
         - path:
@@ -284,13 +273,6 @@ spec:
         - path:
             type: PathPrefix
             value: /webhooks/github/factory
-        # Semgrep AppSec Platform scan webhook (semgrep_scan/perf_webhook.py).
-        # Same no-SecurityPolicy treatment: Semgrep sends no Access JWT, so it
-        # reaches this route via a Cloudflare Access IP-Bypass for Semgrep's
-        # egress IPs and is gated only by the handler's HMAC verification.
-        - path:
-            type: PathPrefix
-            value: /webhooks/semgrep
       backendRefs:
         - name: {{ include "monolith.fullname" . }}
           port: {{ .Values.service.apiPort | int }}

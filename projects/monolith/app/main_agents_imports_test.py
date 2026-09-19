@@ -45,7 +45,6 @@ FORBIDDEN_MODULES = [
     "agent_sessions",
     "factory",
     "cluster",
-    "demos",
     "goosecracker",
     "moving",
     "sandbox",
@@ -122,7 +121,6 @@ FORBIDDEN_MODULES = [
     "home.observability.slo",
     "home.observability.rollup",
     "home.observability.stats",
-    "home.observability.traces",
     # Other domains outside the agents tier allowlist.
     "artifact",
     "campsites",

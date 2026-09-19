@@ -2,16 +2,11 @@
 
 A dedicated stateful Postgres workload (NOT the scratch-postgres real tenants
 use) tuned to bank ~a sweeper tick after its last connection closes. The
-demo's three verbs map straight onto the embervm surfaces:
+demo's two verbs map straight onto the embervm surfaces:
   status -> GET  {EMBERVM_URL}/v1/stateful/demo-postgres (management introspection;
             an HTTP read of the control plane, so POLLING NEVER WAKES THE VM)
   query  -> a short-lived psycopg connect to DEMO_POSTGRES_DSN; the TCP
             activator wakes the VM on a miss, so connect wall time IS the wake
-  reset  -> DELETE {EMBERVM_URL}/v1/stateful/demo-postgres/instance (destroys
-            the live VM AND evicts the banked bundle; the volume survives, so
-            the next connect cold-boots against retained data). Reset itself
-            stays private-only (see demos/firecracker_api.py); this module
-            only owns the destroy call it wraps.
 
 This module must stay importable in the public closure (see
 ember_public/__init__.py's docstring): EMBERVM_URL is read directly from the
@@ -636,20 +631,3 @@ def demo_pg_orders_roundtrip(dsn: str, mode: str, session_tag: str | None) -> di
         "total_revenue": float(total_revenue),
         "postmaster_start": postmaster_start.isoformat(),
     }
-
-
-async def destroy_demo_pg_instance() -> dict:
-    """DELETE .../instance: destroys the live VM AND evicts the banked bundle.
-
-    The volume is untouched, so the next connect cold-boots Postgres against
-    the retained data. Wrapped here so the private-only reset endpoint
-    (demos/firecracker_api.py) does not duplicate the EMBERVM_URL call shape;
-    the endpoint itself (auth posture, 503-if-unconfigured) stays private.
-    """
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.delete(
-            f"{EMBERVM_URL}/v1/stateful/{_DEMO_PG_WORKLOAD}/instance",
-            headers=auth_headers(),
-        )
-        resp.raise_for_status()
-        return resp.json()

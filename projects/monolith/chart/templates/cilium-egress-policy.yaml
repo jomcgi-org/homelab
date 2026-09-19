@@ -87,7 +87,7 @@ spec:
         - ports:
             - port: "5432"
               protocol: TCP
-    {{- range $target := list $targets.inference $targets.embeddings $targets.authentik $targets.otelCollector $targets.embervm $targets.tokenBroker $targets.embervmServing $targets.dcgmExporter $targets.inferenceBridge }}
+    {{- range $target := list $targets.inference $targets.embeddings $targets.authentik $targets.otelCollector $targets.embervm $targets.tokenBroker $targets.embervmServing $targets.dcgmExporter }}
     - toEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: {{ $target.namespace }}
