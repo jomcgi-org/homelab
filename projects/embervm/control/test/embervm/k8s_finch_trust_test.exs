@@ -8,7 +8,7 @@ defmodule Embervm.K8sFinchTrustTest do
 
   @system_ca_file "/etc/ssl/certs/ca-certificates.crt"
   @tls_fixture_dir Path.expand("../fixtures", __DIR__)
-  # Long-lived localhost-only fixture from Bandit's own TLS test support.
+  # Long-lived localhost-only fixture generated for this test.
   @server_ca Path.join(@tls_fixture_dir, "store_tls_ca.pem")
   @server_cert Path.join(@tls_fixture_dir, "store_tls_server.pem")
   @server_key Path.join(@tls_fixture_dir, "store_tls_server_key.pem")

@@ -715,6 +715,7 @@ defmodule Embervm.Router do
   defp store_health_line do
     case store_probe_status() do
       %{state: :degraded, reason: reason} -> "store: degraded " <> single_line(reason)
+      %{state: :unknown} -> "store: unknown"
       %{state: state} when state in [:ok, :disabled] -> "store: " <> Atom.to_string(state)
     end
   end

@@ -82,6 +82,9 @@ defmodule Embervm.ApplicationTest do
 
     System.put_env("EMBERVM_STORE_PROBE_INTERVAL_SECONDS", "0")
     assert App.store_probe_interval_ms() == 1_000
+
+    System.put_env("EMBERVM_STORE_PROBE_INTERVAL_SECONDS", "not-a-number")
+    assert App.store_probe_interval_ms() == 300_000
   end
 
   # op_log_mod/0 selection (PR-4, #18/#27): EMBERVM_OPLOG_DSN unset or empty
