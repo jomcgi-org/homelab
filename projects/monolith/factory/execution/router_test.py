@@ -1996,7 +1996,7 @@ def test_task_session_start_is_idempotent_and_ui_originated(session, monkeypatch
     """A recovered classifier task reuses its session and Discord marker."""
     monkeypatch.setattr(
         "factory.orchestration.models.recall_task_text",
-        lambda task_id: (
+        lambda task_id, *, session: (
             "GitHub issue https://github.com/acme/repo/issues/1\n\nIssue title\n\nTask objective"
         ),
     )

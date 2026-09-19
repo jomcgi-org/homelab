@@ -297,7 +297,12 @@ def test_missing_cache_skips_without_embedding_and_backfills(
     enabled_recall, monkeypatch
 ):
     scheduled = []
-    monkeypatch.setattr(recall, "prepare_recall", scheduled.append)
+
+    def prepare(session, text):
+        assert session.get_bind() is enabled_recall
+        scheduled.append(text)
+
+    monkeypatch.setattr(recall, "prepare_recall", prepare)
     embedded = []
 
     async def embed(*args):
@@ -352,6 +357,80 @@ def test_backfill_is_durable_and_reuses_cached_embedding(enabled_recall, monkeyp
     assert calls == [text]
 
 
+def test_prepare_recall_reads_callers_uncommitted_cache(enabled_recall, monkeypatch):
+    monkeypatch.setattr(enabled_recall.dialect, "name", "postgresql")
+
+    def unexpected(*_args):
+        raise AssertionError("cached recall must not create an engine or submit work")
+
+    monkeypatch.setattr("core.db.get_engine", unexpected)
+    monkeypatch.setattr(recall_cache._executor, "submit", unexpected)
+    text = "An uncommitted cached vector in the caller's transaction"
+    with Session(enabled_recall) as session:
+        session.add(
+            RecallEmbedding(key=recall_cache.cache_key(text), embedding=[0.4] * 1024)
+        )
+        session.flush()
+        recall_cache.prepare_recall(session, text)
+        assert recall_cache.cached_vector(session, text) == pytest.approx([0.4] * 1024)
+
+
+def test_prepare_recall_submits_single_flight_for_postgres(enabled_recall, monkeypatch):
+    monkeypatch.setattr(enabled_recall.dialect, "name", "postgresql")
+    submissions = []
+    monkeypatch.setattr(
+        recall_cache._executor, "submit", lambda *args: submissions.append(args)
+    )
+    text = "A new task submitted once for a production database"
+    key = recall_cache.cache_key(text)
+    try:
+        with Session(enabled_recall) as session:
+            recall_cache.prepare_recall(session, text)
+            recall_cache.prepare_recall(session, text)
+        assert submissions == [(recall_cache._backfill, text)]
+    finally:
+        with recall_cache._lock:
+            recall_cache._pending.discard(key)
+
+
+@pytest.mark.parametrize("failure_call", [1, 2])
+def test_backfill_connection_errors_are_advisory(
+    enabled_recall, monkeypatch, caplog, failure_call
+):
+    from sqlalchemy.exc import OperationalError
+    from knowledge.recall_metrics import snapshot
+
+    calls = 0
+
+    def get_engine():
+        nonlocal calls
+        calls += 1
+        if calls == failure_call:
+            raise OperationalError("connect", {}, ConnectionError("unavailable"))
+        return enabled_recall
+
+    async def embed(_self, _text):
+        return [0.2] * 1024
+
+    monkeypatch.setattr("core.db.get_engine", get_engine)
+    monkeypatch.setattr(recall_cache.EmbeddingClient, "embed", embed)
+    text = "A task whose background database connection fails"
+    key = recall_cache.cache_key(text)
+    with recall_cache._lock:
+        recall_cache._pending.add(key)
+    before = snapshot()["backfill_errors"]
+    with caplog.at_level("WARNING", logger="knowledge.recall_cache"):
+        recall_cache._backfill(text)
+    assert snapshot()["backfill_errors"] == before + 1
+    assert calls == failure_call
+    assert key not in recall_cache._pending
+    assert any(
+        record.levelname == "WARNING"
+        and record.message == "knowledge recall backfill failed: OperationalError"
+        for record in caplog.records
+    )
+
+
 def test_background_embedding_timeout_is_separate(enabled_recall, monkeypatch):
     from knowledge.recall_metrics import snapshot
 
@@ -388,6 +467,8 @@ def test_metrics_count_unique_served_facts(enabled_recall, monkeypatch):
 def test_slow_embedding_never_holds_session_creation(enabled_recall, monkeypatch):
     from threading import Event
 
+    # Exercise production submission while keeping all database access hermetic.
+    monkeypatch.setattr(enabled_recall.dialect, "name", "postgresql")
     started, release, finished = Event(), Event(), Event()
     futures = []
     submit = recall_cache._executor.submit

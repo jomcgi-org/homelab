@@ -115,7 +115,7 @@ def _search_with_session(text: str, limit: int) -> list[dict]:
     with Session(get_engine()) as session:
         vector = cached_vector(session, text)
         if vector is None:
-            prepare_recall(text)
+            prepare_recall(session, text)
             return []
         increment("cache_hits")
         return search_related(session, vector, limit=limit)

@@ -97,7 +97,12 @@ def test_duplicate_receipt_preserves_first_payload_and_link_across_restart(
     db, policy, monkeypatch
 ):
     prepared = []
-    monkeypatch.setattr("knowledge.api.prepare_recall", prepared.append)
+
+    def prepare(session, text):
+        assert session.get_bind() is db
+        prepared.append(text)
+
+    monkeypatch.setattr("knowledge.api.prepare_recall", prepare)
     first = issue(repo="OWNER/REPO")
     enable(policy)
     admission = admit_next("scheduler")
@@ -117,6 +122,42 @@ def test_duplicate_receipt_preserves_first_payload_and_link_across_restart(
         assert len(tasks) == 1 and "original" in tasks[0].task_text
         assert tasks[0].start_state == "factory"
         assert tasks[0].workflow_id == f"factory:{admission['task_id']}"
+
+
+def test_admission_recall_reuses_sqlite_session(db, policy, monkeypatch, caplog):
+    from knowledge import recall_cache
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("KNOWLEDGE_RECALL_ENABLED", "true")
+    engine_calls = []
+    submissions = []
+
+    def unexpected_engine():
+        engine_calls.append(True)
+        raise AssertionError("admission must reuse its existing session")
+
+    def unexpected_backfill(*args):
+        submissions.append(args)
+        raise AssertionError("SQLite admission must not submit a backfill")
+
+    monkeypatch.setattr("core.db.get_engine", unexpected_engine)
+    monkeypatch.setattr(recall_cache._executor, "submit", unexpected_backfill)
+    issue(body="Fix the recall cache engine leak during factory admission")
+    enable(policy)
+    with caplog.at_level("DEBUG", logger="knowledge.recall_cache"):
+        admission = admit_next("scheduler")
+
+    assert admission["ok"]
+    assert engine_calls == []
+    assert submissions == []
+    assert "backfill skipped for SQLite or test engine" in caplog.text
+    with Session(db) as session:
+        task = session.get(SwarmTask, admission["task_id"])
+        assert task is not None
+        assert task.start_state == "factory"
+        receipt = session.get(FactoryReceipt, admission["receipt_id"])
+        assert receipt.state == "admitted"
+        assert receipt.task_id == task.id
 
 
 def test_issue_body_cannot_enable_or_expand_operator_allowlist(db, policy):

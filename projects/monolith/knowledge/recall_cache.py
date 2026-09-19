@@ -76,20 +76,28 @@ def _backfill(text: str) -> None:
                 session.rollback()
     except TimeoutError:
         increment("timeouts")
+        increment("backfill_errors")
         logger.warning("knowledge recall embedding backfill timed out")
     except Exception as exc:  # noqa: BLE001 - advisory background work
+        increment("backfill_errors")
         logger.warning("knowledge recall backfill failed: %s", type(exc).__name__)
     finally:
         with _lock:
             _pending.discard(cache_key(text))
 
 
-def prepare_recall(text: str | None) -> None:
+def prepare_recall(session: Session, text: str | None) -> None:
     """Schedule bounded, single-flight backfill, never wait for an embedding."""
     from knowledge.recall import RECALL_MIN_PROMPT_CHARS, recall_enabled
 
     text = query_text(text)
     if not recall_enabled() or len(text) < RECALL_MIN_PROMPT_CHARS:
+        return
+    # Follow the KG jobs' dialect check without creating a global engine.
+    if session.get_bind().dialect.name != "postgresql":
+        logger.debug("knowledge recall backfill skipped for SQLite or test engine")
+        return
+    if cached_vector(session, text) is not None:
         return
     key = cache_key(text)
     with _lock:

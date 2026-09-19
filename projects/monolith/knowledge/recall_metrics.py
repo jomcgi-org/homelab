@@ -5,7 +5,12 @@ from threading import Lock
 
 _lock = Lock()
 _counts = Counter(
-    attempts=0, cache_hits=0, skips=0, timeouts=0, distinct_facts_served=0
+    attempts=0,
+    cache_hits=0,
+    skips=0,
+    timeouts=0,
+    backfill_errors=0,
+    distinct_facts_served=0,
 )
 _served: set[str] = set()
 

@@ -980,14 +980,24 @@ for name in (
 def test_factory_recall_uses_task_text_instead_of_shim_prompt(monkeypatch, tmp_path):
     import factory.orchestration.models as tasks
 
-    engine = create_engine(f"sqlite:///{tmp_path / 'factory_recall.db'}")
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'factory_recall.db'}",
+        execution_options={"schema_translate_map": {"swarm": None}},
+    )
+    SQLModel.metadata.create_all(engine, tables=[tasks.SwarmTask.__table__])
     captured = []
     objective = "GitHub issue https://github.com/acme/repo/issues/7\n\nFix cloning\n\nRestore memory safely."
-    monkeypatch.setattr(
-        tasks,
-        "recall_task_text",
-        lambda task_id: objective if task_id == "t-7" else None,
-    )
+    with Session(engine) as session:
+        session.add(
+            tasks.SwarmTask(id="t-7", task_text=objective, conductor_model="luna")
+        )
+        session.commit()
+
+    def unexpected_engine():
+        raise AssertionError("task recall must use the session startup engine")
+
+    monkeypatch.setattr(tasks, "get_engine", unexpected_engine)
+    monkeypatch.setattr("core.db.get_engine", unexpected_engine)
     monkeypatch.setattr(mcp, "get_engine", lambda: engine)
     monkeypatch.setattr(
         mcp,
