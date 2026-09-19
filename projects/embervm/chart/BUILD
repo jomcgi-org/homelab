@@ -363,10 +363,7 @@ py_test(
         "DEPLOY_VALUES": "$(rootpath //projects/embervm/deploy:deploy_values)",
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
     },
-    deps = [
-        "@pip//pytest",
-        "@pip//pyyaml",
-    ],
+    deps = ["@pip//pyyaml"],
 )
 
 semgrep_test(
