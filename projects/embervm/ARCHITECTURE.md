@@ -1385,7 +1385,7 @@ the explicit operator override. Phase 1 is tracked in #5224.
 | Item | Value | Status | Confidence |
 | ---- | ----- | ------ | ---------- |
 | `statefulTcpPortRange` | 10 ports (5400-5409), CRD-validated | **Built** | asserted; hard cap, remedy constrained to name-based L4 (SNI/PROXY protocol) |
-| CPU pivot | 1,024 MiB per vCPU | **Built** | provisional; replace from measured utilization |
+| CPU pivot | 1,024 MiB per vCPU | **Decided direction** (#5231) | not implemented: `vcpus` is an explicit CRD input; derive from `memMib` when the resource-model direction in section 6 lands |
 | Active brick utilization target | >90% | **Built** | asserted; too high if shed events become common |
 | Stateful continuity floor | 8h (also the S3 stateful warmth TTL) | **Built** | asserted; validate against rotation cadence |
 | Session lifetime cap | `maxLifetimeSeconds` (agent lanes 21600s by values, CRD default 86400s) | **Built** | asserted; version-convergence bound, not a durability claim; no platform-wide clamp |
