@@ -182,9 +182,7 @@ def archive(
         selected = filtered
     else:
         selected_month = month or (_month_key(filtered[0]) if filtered else None)
-        selected = [
-            row for row in filtered if _month_key(row) == selected_month
-        ]
+        selected = [row for row in filtered if _month_key(row) == selected_month]
     return ProductUpdateArchive(
         updates=[_view(row) for row in selected],
         months=_month_summaries(filtered),

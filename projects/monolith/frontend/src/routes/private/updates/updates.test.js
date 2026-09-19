@@ -42,13 +42,7 @@ describe("updates archive helpers", () => {
       "/updates?project=monolith&technology=security&month=2026-08",
     );
     expect(
-      facetHref(
-        "technology",
-        "security",
-        "monolith",
-        "security",
-        "2026-08",
-      ),
+      facetHref("technology", "security", "monolith", "security", "2026-08"),
     ).toBe("/updates?project=monolith&month=2026-08");
     expect(facetHref("project", "monolith", "monolith", "")).toBe("/updates");
   });
@@ -57,13 +51,15 @@ describe("updates archive helpers", () => {
     expect(monthHref("2025-12", "monolith", "frontend")).toBe(
       "/updates?month=2025-12&project=monolith&technology=frontend",
     );
-    expect(
-      monthHref("2026-01", "monolith", "", "2026-01-02"),
-    ).toBe("/updates?month=2026-01&project=monolith#update-2026-01-02");
+    expect(monthHref("2026-01", "monolith", "", "2026-01-02")).toBe(
+      "/updates?month=2026-01&project=monolith#update-2026-01-02",
+    );
   });
 
   it("renders distinct empty, filtered-month, and API error states", async () => {
-    expect(await renderPage()).toContain("Waiting for the first daily edition.");
+    expect(await renderPage()).toContain(
+      "Waiting for the first daily edition.",
+    );
     expect(
       await renderPage({
         months: [
