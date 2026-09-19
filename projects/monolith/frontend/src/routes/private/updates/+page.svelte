@@ -2,8 +2,9 @@
   import {
     facetHref,
     formatDate,
-    groupUpdatesByMonth,
     label,
+    monthHref,
+    monthLabel,
   } from "./updates.js";
 
   let { data } = $props();
@@ -19,8 +20,7 @@
     return () => scheme.removeEventListener("change", apply);
   });
   let activeDate = $state("");
-  let activeMonth = $derived(activeDate.slice(0, 7));
-  let monthGroups = $derived(groupUpdatesByMonth(data.updates));
+  let activeMonth = $derived(activeDate.slice(0, 7) || data.selectedMonth);
   let filtering = $derived(
     Boolean(data.selectedProject || data.selectedTechnology),
   );
@@ -82,6 +82,7 @@
                       facet.value,
                       data.selectedProject,
                       data.selectedTechnology,
+                      data.selectedMonth,
                     )}
                   >
                     <span class="name">{label(facet.value)}</span>
@@ -116,6 +117,7 @@
                       facet.value,
                       data.selectedProject,
                       data.selectedTechnology,
+                      data.selectedMonth,
                     )}
                   >
                     <span class="name">{label(facet.value)}</span>
@@ -141,25 +143,51 @@
                   )}{/if}{#if data.selectedTechnology}
                   · {label(data.selectedTechnology)}{/if}
               </span>
-              <a class="clear" href="/updates">Clear</a>
+              <a
+                class="clear"
+                href={data.selectedMonth
+                  ? monthHref(data.selectedMonth, "", "")
+                  : "/updates"}>Clear</a
+              >
             </p>
           {/if}
         </nav>
 
-        {#if data.updates.length}
+        {#if data.months.length}
           <nav class="date-rail" aria-label="Updates by date">
             <p class="sec-label">/ Index</p>
-            {#each monthGroups as group}
-              <details class="rail-month" open={group.key === activeMonth}>
+            {#each data.months as group}
+              <details class="rail-month" open={group.month === activeMonth}>
                 <summary>
-                  <span class="month-name">{group.label}</span>
-                  <span class="group-count">{group.updates.length}</span>
+                  {#if group.month === data.selectedMonth}
+                    <span class="month-link" aria-current="page">
+                      <span class="month-name">{monthLabel(group.month)}</span>
+                      <span class="group-count">{group.count}</span>
+                    </span>
+                  {:else}
+                    <a
+                      class="month-link"
+                      href={monthHref(
+                        group.month,
+                        data.selectedProject,
+                        data.selectedTechnology,
+                      )}
+                    >
+                      <span class="month-name">{monthLabel(group.month)}</span>
+                      <span class="group-count">{group.count}</span>
+                    </a>
+                  {/if}
                 </summary>
                 <div class="rail-days">
-                  {#each group.updates as update}
+                  {#each group.editions as update}
                     <a
                       class:active={activeDate === update.published_on}
-                      href={`#update-${update.published_on}`}
+                      href={monthHref(
+                        group.month,
+                        data.selectedProject,
+                        data.selectedTechnology,
+                        update.published_on,
+                      )}
                       aria-current={activeDate === update.published_on
                         ? "location"
                         : undefined}
@@ -184,8 +212,24 @@
         {:else if !data.updates.length}
           {#if filtering}
             <div class="state">
-              <strong>No updates match these filters.</strong>
-              <span>Clear a filter to see the complete journal.</span>
+              {#if data.months.length}
+                <strong>No updates match these filters in this month.</strong>
+                <span>Choose another month or clear a filter.</span>
+              {:else}
+                <strong>No updates match these filters.</strong>
+                <span>Clear a filter to see the complete journal.</span>
+              {/if}
+            </div>
+          {:else if data.months.length}
+            <div class="state">
+              <strong>No updates were published in this month.</strong>
+              <span>
+                <a
+                  class="clear"
+                  href={monthHref(data.months[0].month, "", "")}
+                  >Open the newest available month.</a
+                >
+              </span>
             </div>
           {:else}
             <section class="empty-entry">
@@ -250,6 +294,7 @@
                             project,
                             data.selectedProject,
                             data.selectedTechnology,
+                            data.selectedMonth,
                           )}>{label(project)}</a
                         >
                       {/each}
@@ -260,6 +305,7 @@
                             technology,
                             data.selectedProject,
                             data.selectedTechnology,
+                            data.selectedMonth,
                           )}>{label(technology)}</a
                         >
                       {/each}
@@ -538,11 +584,7 @@
   }
 
   .rail-month summary {
-    display: flex;
-    gap: 0.6em;
-    align-items: baseline;
-    justify-content: space-between;
-    padding: 0.5em 0;
+    padding: 0;
     border-bottom: 1px solid var(--line);
     cursor: pointer;
     list-style: none;
@@ -550,6 +592,16 @@
 
   .rail-month summary::-webkit-details-marker {
     display: none;
+  }
+
+  .rail-month .month-link {
+    display: flex;
+    gap: 0.6em;
+    align-items: baseline;
+    justify-content: space-between;
+    padding: 0.5em 0;
+    color: inherit;
+    text-decoration: none;
   }
 
   .month-name {
@@ -570,7 +622,7 @@
     border-bottom: 1px solid var(--line);
   }
 
-  .rail-month a {
+  .rail-days a {
     display: grid;
     grid-template-columns: 2em minmax(0, 1fr);
     gap: 0.65em;
@@ -582,7 +634,7 @@
     transition: color 120ms ease;
   }
 
-  .rail-month a > span {
+  .rail-days a > span {
     font-family: var(--font-code);
     font-size: 0.75em;
   }
@@ -596,16 +648,16 @@
     -webkit-line-clamp: 2;
   }
 
-  .rail-month a:hover,
-  .rail-month a.active {
+  .rail-days a:hover,
+  .rail-days a.active {
     color: var(--accent-ink);
   }
 
-  .rail-month a.active {
+  .rail-days a.active {
     border-left-color: var(--accent-ink);
   }
 
-  .rail-month a.active > span {
+  .rail-days a.active > span {
     font-weight: 700;
   }
 
@@ -952,8 +1004,11 @@
 
     .rail-month summary {
       min-width: max-content;
-      padding: 0.65em 0;
       border-bottom: 2px solid transparent;
+    }
+
+    .rail-month .month-link {
+      padding: 0.65em 0;
     }
 
     .rail-days {
@@ -964,7 +1019,7 @@
       border-bottom: 0;
     }
 
-    .rail-month a {
+    .rail-days a {
       display: block;
       min-width: 2.2em;
       padding: 0.65em 0.4em;
@@ -975,7 +1030,7 @@
       border-bottom: 2px solid transparent;
     }
 
-    .rail-month a.active {
+    .rail-days a.active {
       border-bottom-color: var(--accent-ink);
     }
 

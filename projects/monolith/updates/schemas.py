@@ -120,7 +120,24 @@ class FacetCount(BaseModel):
     count: int
 
 
+class ProductUpdateSummary(BaseModel):
+    """Lightweight index entry for an edition body loaded separately."""
+
+    published_on: date
+    headline: str
+
+
+class MonthSummary(BaseModel):
+    """One archive month and the edition links shown in the spine."""
+
+    month: str = Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")
+    count: int
+    editions: list[ProductUpdateSummary]
+
+
 class ProductUpdateArchive(BaseModel):
     updates: list[ProductUpdateView]
+    months: list[MonthSummary]
     projects: list[FacetCount]
     technologies: list[FacetCount]
+    selected_month: str | None

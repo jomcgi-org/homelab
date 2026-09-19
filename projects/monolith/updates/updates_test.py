@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -78,6 +78,29 @@ def submission(**overrides) -> ProductUpdateSubmission:
     }
     values.update(overrides)
     return ProductUpdateSubmission(**values)
+
+
+def stored_update(
+    published_on: date,
+    headline: str,
+    projects: list[Project],
+    technologies: list[Technology],
+    base: str,
+    head: str,
+) -> ProductUpdate:
+    update = submission(
+        published_on=published_on,
+        headline=headline,
+        projects=projects,
+        technologies=technologies,
+        source_base_sha=base * 40,
+        source_head_sha=head * 40,
+    )
+    return ProductUpdate(
+        **update.model_dump(mode="python"),
+        submitted_by="workload:daily-updates",
+        submitted_authority="standing",
+    )
 
 
 def run_as(identity: Principal, awaitable):
@@ -189,6 +212,144 @@ def test_archive_filters_entries_and_keeps_unfiltered_facet_counts(engine):
     }
 
 
+def test_archive_month_boundaries_filters_and_summary_integrity(engine):
+    rows = [
+        stored_update(
+            date(2026, 1, 2),
+            "January frontend",
+            [Project.MONOLITH],
+            [Technology.FRONTEND],
+            "1",
+            "2",
+        ),
+        stored_update(
+            date(2025, 12, 31),
+            "December storage",
+            [Project.HOME_CLUSTER],
+            [Technology.STORAGE],
+            "3",
+            "4",
+        ),
+        stored_update(
+            date(2025, 12, 5),
+            "December agents",
+            [Project.MONOLITH],
+            [Technology.AGENTS],
+            "5",
+            "6",
+        ),
+        stored_update(
+            date(2025, 10, 1),
+            "Sparse October",
+            [Project.MONOLITH],
+            [Technology.FRONTEND],
+            "a",
+            "b",
+        ),
+    ]
+    with Session(engine) as session:
+        session.add_all(rows)
+        session.commit()
+
+        newest = store.archive(project=Project.MONOLITH, session=session)
+        december_agents = store.archive(
+            project=Project.MONOLITH,
+            technology=Technology.AGENTS,
+            month="2025-12",
+            session=session,
+        )
+        filtered_empty_month = store.archive(
+            project=Project.MONOLITH,
+            technology=Technology.AGENTS,
+            month="2026-01",
+            session=session,
+        )
+
+    assert newest.selected_month == "2026-01"
+    assert [update.headline for update in newest.updates] == ["January frontend"]
+    assert [summary.month for summary in newest.months] == [
+        "2026-01",
+        "2025-12",
+        "2025-10",
+    ]
+    assert [summary.count for summary in newest.months] == [1, 1, 1]
+    assert newest.months[1].editions[0].model_dump(mode="json") == {
+        "published_on": "2025-12-05",
+        "headline": "December agents",
+    }
+    assert {facet.value: facet.count for facet in newest.projects} == {
+        "home-cluster": 1,
+        "monolith": 3,
+    }
+
+    assert december_agents.selected_month == "2025-12"
+    assert [update.headline for update in december_agents.updates] == [
+        "December agents"
+    ]
+    assert [summary.month for summary in december_agents.months] == ["2025-12"]
+
+    assert filtered_empty_month.selected_month == "2026-01"
+    assert filtered_empty_month.updates == []
+    assert [summary.month for summary in filtered_empty_month.months] == ["2025-12"]
+
+
+def test_empty_archive_has_no_selected_month_or_summaries(engine):
+    with Session(engine) as session:
+        result = store.archive(session=session)
+
+    assert result.updates == []
+    assert result.months == []
+    assert result.projects == []
+    assert result.technologies == []
+    assert result.selected_month is None
+
+
+def test_full_archive_mode_keeps_compatibility_for_filtered_results(engine):
+    with Session(engine) as session:
+        session.add_all(
+            [
+                stored_update(
+                    date(2026, 1, 2),
+                    "January frontend",
+                    [Project.MONOLITH],
+                    [Technology.FRONTEND],
+                    "1",
+                    "2",
+                ),
+                stored_update(
+                    date(2025, 12, 31),
+                    "December frontend",
+                    [Project.MONOLITH],
+                    [Technology.FRONTEND],
+                    "3",
+                    "4",
+                ),
+                stored_update(
+                    date(2025, 10, 1),
+                    "October storage",
+                    [Project.HOME_CLUSTER],
+                    [Technology.STORAGE],
+                    "5",
+                    "6",
+                ),
+            ]
+        )
+        session.commit()
+
+        result = store.archive(
+            project=Project.MONOLITH,
+            full_archive=True,
+            session=session,
+        )
+
+    assert result.selected_month is None
+    assert [update.headline for update in result.updates] == [
+        "January frontend",
+        "December frontend",
+    ]
+    assert [summary.month for summary in result.months] == ["2026-01", "2025-12"]
+
+
 def test_private_archive_route_uses_validated_facets(engine):
     app = FastAPI()
     app.include_router(router.router)
@@ -204,10 +365,17 @@ def test_private_archive_route_uses_validated_facets(engine):
     with TestClient(app) as client:
         response = client.get("/api/updates?project=monolith")
         invalid = client.get("/api/updates?technology=made-up")
+        invalid_month = client.get("/api/updates?month=2026-13")
+        full_archive = client.get("/api/updates?all=true")
+        conflicting_scope = client.get("/api/updates?month=2026-01&all=true")
 
     assert response.status_code == 200
     assert response.json()["updates"][0]["headline"] == "Private product updates"
     assert invalid.status_code == 422
+    assert invalid_month.status_code == 422
+    assert full_archive.status_code == 200
+    assert full_archive.json()["selected_month"] is None
+    assert conflicting_scope.status_code == 422
 
 
 def test_submission_tool_requires_the_workload_scope():
