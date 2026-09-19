@@ -263,7 +263,25 @@ data:
     esac
     short="${digest:0:12}"
     cache="$base_dir/rootfs-$short.ext4"
+    # Co-located replacements share scratch. Only one builder should download
+    # or bake this cache entry; siblings recheck it after acquiring the lock.
+    # Keep the lock inode: unlinking it would allow two independent holders.
+    # flock is supplied by busybox. The kernel releases it on process exit;
+    # the bounded wait also retries a wedged holder through init backoff.
+    exec 9>"$cache.lock"
+    if ! flock -x -w 900 9; then
+      echo "rootfs cache lock timed out: $cache" >&2
+      exit 1
+    fi
+    link_cached_rootfs() {
+      # Materialize under the same lock: siblings can share this link path too.
+      # Both names refer to the immutable cache inode used by banked snapshots.
+      ln -f "$cache" "$BASE_ROOTFS_PATH"
+      echo "linked $BASE_ROOTFS_PATH -> $cache"
+    }
     if [ -f "$cache" ]; then
+      link_cached_rootfs
+      flock -u 9
       echo "rootfs cache hit $short for $GUEST_IMAGE"
     else
       cache_tmp="$(mktemp "$cache.tmp.XXXXXX")"
@@ -382,6 +400,10 @@ data:
           exit 1
         fi
       fi
+      link_cached_rootfs
+      # Publication is complete. Do not hold up local waiters while uploading
+      # a freshly baked artifact to the remote store.
+      flock -u 9
       if [ "$baked" -eq 1 ]; then
         if [ "$store_fallback" -eq 1 ]; then
           echo "rootfs store $store_fallback_reason and baked digest=sha256:$digest path=$cache"
@@ -405,11 +427,6 @@ data:
         fi
       fi
     fi
-    # Materialize the template-time path noded attaches as a hardlink to the cache
-    # file: instant, no data copy, and both names are immutable inodes, so a
-    # snapshot that embedded either path restores against byte-identical content.
-    ln -f "$cache" "$BASE_ROOTFS_PATH"
-    echo "linked $BASE_ROOTFS_PATH -> $cache"
     # Read s_uuid directly from the primary ext4 superblock. The optional
     # e2fsprogs-extra listing utility is deliberately absent from the image.
     # The pipeline and its output validation are guarded because identity
