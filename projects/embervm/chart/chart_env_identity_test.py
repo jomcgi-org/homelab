@@ -1627,7 +1627,11 @@ def test_namespace_rbac_omits_scale_rule_when_no_class_deployments(
     objects = _rbac_objects(documents)
     grants = _effective_grants(objects, "recovery-lane", "recovery")
     assert grants == sorted(
-        [(None, _TOKEN_REVIEW_RULE), *[("recovery", rule) for rule in _WORKLOAD_RULES]],
+        [
+            (None, _NODE_INVENTORY_RULE),
+            (None, _TOKEN_REVIEW_RULE),
+            *[("recovery", rule) for rule in _WORKLOAD_RULES],
+        ],
         key=repr,
     )
     assert not any(
@@ -1780,7 +1784,8 @@ def test_recovery_namespace_rbac_matches_contract(recovery_render) -> None:
     )
     assert objects == expected
     assert _effective_grants(objects, _RECOVERY_CP, _RECOVERY_NS) == sorted(
-        [(None, _TOKEN_REVIEW_RULE)] + [(_RECOVERY_NS, rule) for rule in runtime_rules],
+        [(None, _NODE_INVENTORY_RULE), (None, _TOKEN_REVIEW_RULE)]
+        + [(_RECOVERY_NS, rule) for rule in runtime_rules],
         key=repr,
     )
     service_accounts = {
