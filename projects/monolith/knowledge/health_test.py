@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from knowledge.extraction import EXTRACTION_VERSION
-from knowledge.health import _kg_health_core, set_swept_last_cycle
+from knowledge.health import _kg_health_core
 from shared.invocation_outcomes import UNKNOWN_INVOCATION
 
 
@@ -172,8 +172,7 @@ def test_kg_health_reports_agent_report_writes_and_failures():
     assert report_params == {}
 
 
-def test_kg_health_reports_stale_open_disputes_and_last_sweep():
-    set_swept_last_cycle(7)
+def test_kg_health_reports_stale_open_disputes():
     session = _Session(
         SimpleNamespace(queued=0, held=0, oldest_seconds=None),
         SimpleNamespace(failed_24h=0, atoms_24h=0, last_success_at=None),
@@ -192,7 +191,7 @@ def test_kg_health_reports_stale_open_disputes_and_last_sweep():
     assert result["ok"] is False
     assert result["open_disputes"] == 2
     assert result["oldest_open_dispute_seconds"] == 48 * 60 * 60 + 1
-    assert result["swept_last_cycle"] == 7
+    assert "swept_last_cycle" not in result
     assert result["repo_diff_last_sha"] == "a" * 40
     assert result["repo_diff_last_run_at"] == "2026-09-03T13:00:00+00:00"
 

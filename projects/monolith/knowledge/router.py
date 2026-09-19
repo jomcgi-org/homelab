@@ -525,6 +525,7 @@ class IngestRequest(BaseModel):
 _RAW_SOURCE_RE = re.compile(r"^[a-z][a-z0-9-]{1,40}$")
 _MAX_RAW_BYTES = 2 * 1024 * 1024
 _MAX_RAW_EXTRA_BYTES = 64 * 1024
+_MCP_OWNED_RAW_SOURCES = frozenset({"agent-report", "dispute", "distress"})
 
 
 class CreateRawRequest(BaseModel):
@@ -594,6 +595,11 @@ def create_raw(
     data: CreateRawRequest,
     session: Session = Depends(get_session),
 ) -> JSONResponse:
+    if data.source in _MCP_OWNED_RAW_SOURCES:
+        raise HTTPException(
+            status_code=403,
+            detail=f"source {data.source!r} is reserved for authenticated MCP tools",
+        )
     content_bytes = len(data.content.encode("utf-8"))
     if content_bytes > _MAX_RAW_BYTES:
         raise HTTPException(

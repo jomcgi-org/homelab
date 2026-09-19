@@ -343,6 +343,12 @@ class Dispute(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-fac
             "'invalidated', 'rejected')",
             name="disputes_state_chk",
         ),
+        CheckConstraint(
+            "previous_verification_state IS NULL OR "
+            "previous_verification_state IN "
+            "('legacy', 'unverified', 'verified', 'disputed', 'invalidated')",
+            name="disputes_previous_verification_state_chk",
+        ),
         {"schema": "knowledge", "extend_existing": True},
     )
 
@@ -356,6 +362,9 @@ class Dispute(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-fac
     reporter_subject: str | None = None
     reporter_authority: str | None = None
     reporter_session: str | None = None
+    previous_verification_state: str | None = Field(
+        default=None, sa_column=Column(String, nullable=True)
+    )
     state: str = Field(
         default="open", sa_column=Column(String, nullable=False, server_default="open")
     )

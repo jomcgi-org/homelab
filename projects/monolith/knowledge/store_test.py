@@ -492,6 +492,70 @@ class TestSearchNotesWithContext:
         assert ones_text in row["snippet"]
         assert zeros_text not in row["snippet"]
 
+    def test_hydration_queries_project_only_response_columns(self):
+        self.store.upsert_note(
+            note_id="projected",
+            path="projected.md",
+            content_hash="projected-hash",
+            title="Projected",
+            metadata=_meta(title="Projected", type="fact", tags=["query"]),
+            chunks=[
+                {
+                    "index": 0,
+                    "section_header": "## Projection",
+                    "text": "project only the columns used by the response",
+                }
+            ],
+            vectors=[[0.0] * 1024],
+            links=[],
+            content="full note content must not be hydrated",
+        )
+        statements = []
+
+        def capture_sql(_conn, _cursor, statement, _params, _context, _many):
+            statements.append(statement)
+
+        bind = self.session.get_bind()
+        event.listen(bind, "before_cursor_execute", capture_sql)
+        try:
+            without_embeddings = self.store.search_notes_with_context(
+                query_embedding=[0.0] * 1024
+            )
+            first_call_statements = list(statements)
+            statements.clear()
+            with_embeddings = self.store.search_notes_with_context(
+                query_embedding=[0.0] * 1024,
+                include_embeddings=True,
+            )
+            second_call_statements = list(statements)
+        finally:
+            event.remove(bind, "before_cursor_execute", capture_sql)
+
+        def hydration_sql(captured, table, required_column):
+            return next(
+                statement
+                for statement in captured
+                if f"FROM knowledge.{table}" in statement
+                and required_column in statement
+                and f"knowledge.{table}.id IN" in statement
+            )
+
+        note_sql = hydration_sql(first_call_statements, "notes", "notes.title")
+        chunk_sql = hydration_sql(
+            first_call_statements, "chunks", "chunks.section_header"
+        )
+        chunk_sql_with_embedding = hydration_sql(
+            second_call_statements, "chunks", "chunks.section_header"
+        )
+        assert "notes.content" not in note_sql
+        assert "notes.content_hash" not in note_sql
+        assert "notes.extra" not in note_sql
+        assert "chunks.embedding" not in chunk_sql
+        assert "chunks.embedding" in chunk_sql_with_embedding
+        assert without_embeddings[0]["snippet"].startswith("project only")
+        assert "embedding" not in without_embeddings[0]
+        assert with_embeddings[0]["embedding"] == [0.0] * 1024
+
     def test_filters_by_type(self):
         _upsert(
             self.store,

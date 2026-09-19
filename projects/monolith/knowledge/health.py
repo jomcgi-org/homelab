@@ -16,12 +16,6 @@ from shared.invocation_outcomes import UNKNOWN_INVOCATION
 
 _STALE_SECONDS = 6 * 60 * 60
 _DISPUTE_STALE_SECONDS = 48 * 60 * 60
-_swept_last_cycle = 0
-
-
-def set_swept_last_cycle(count: int) -> None:
-    global _swept_last_cycle
-    _swept_last_cycle = count
 
 
 def _iso(value) -> str | None:
@@ -214,7 +208,6 @@ def _kg_health_core(session: Session, cap: int) -> dict:
             "expires_at": _iso(burst.expires_at),
             "created_by": burst.created_by,
         },
-        "swept_last_cycle": _swept_last_cycle,
         "open_disputes": int(disputes.open_disputes),
         "oldest_open_dispute_seconds": oldest_dispute,
         "repo_diff_last_sha": repo_diff.last_sha,
