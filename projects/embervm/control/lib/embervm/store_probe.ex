@@ -18,10 +18,11 @@ defmodule Embervm.StoreProbe do
   require Logger
 
   @default_interval_ms 300_000
+  @status_timeout_ms 250
   @probe_key "probe/.keep"
 
   @type status :: %{
-          state: :ok | :degraded | :disabled,
+          state: :unknown | :ok | :degraded | :disabled,
           reason: String.t() | nil,
           last_ok_at: String.t() | nil,
           last_checked_at: String.t() | nil
@@ -34,7 +35,7 @@ defmodule Embervm.StoreProbe do
 
   @doc "Returns the latest completed store trust observation."
   @spec status(GenServer.server()) :: status()
-  def status(server \\ __MODULE__), do: GenServer.call(server, :status)
+  def status(server \\ __MODULE__), do: GenServer.call(server, :status, @status_timeout_ms)
 
   @impl true
   def init(opts) do
@@ -46,6 +47,7 @@ defmodule Embervm.StoreProbe do
       endpoint: endpoint,
       interval_ms: Keyword.get(opts, :interval_ms, @default_interval_ms),
       s3_client: Keyword.get(opts, :s3_client, Embervm.S3Client),
+      task: nil,
       status: initial_status(client, endpoint)
     }
 
@@ -57,22 +59,30 @@ defmodule Embervm.StoreProbe do
   def handle_call(:status, _from, state), do: {:reply, state.status, state}
 
   @impl true
-  def handle_info(:probe, state) do
+  def handle_info(:probe, %{task: nil} = state) do
     checked_at = timestamp()
-    result = safe_get(state.s3_client, state.client)
+    task = Task.async(fn -> {checked_at, safe_get(state.s3_client, state.client)} end)
+
+    {:noreply, %{state | task: task}}
+  end
+
+  def handle_info(:probe, state), do: {:noreply, state}
+
+  def handle_info({ref, {checked_at, result}}, %{task: %Task{ref: ref}} = state) do
+    Process.demonitor(ref, [:flush])
     status = classify(result, checked_at, state.status.last_ok_at)
 
     emit_transition(state.status, status, state.endpoint)
     Process.send_after(self(), :probe, state.interval_ms)
 
-    {:noreply, %{state | status: status}}
+    {:noreply, %{state | task: nil, status: status}}
   end
 
   defp initial_status(nil, _endpoint), do: disabled_status()
   defp initial_status(_client, "http://" <> _rest), do: disabled_status()
 
   defp initial_status(_client, _endpoint) do
-    %{state: :degraded, reason: "not checked", last_ok_at: nil, last_checked_at: nil}
+    %{state: :unknown, reason: "not checked", last_ok_at: nil, last_checked_at: nil}
   end
 
   defp disabled_status do
@@ -120,7 +130,7 @@ defmodule Embervm.StoreProbe do
     Logger.warning("embervm store probe: store fetch failed", reason: reason, endpoint: endpoint)
   end
 
-  defp emit_transition(%{state: :degraded, reason: "not checked"}, %{state: :ok}, _endpoint), do: :ok
+  defp emit_transition(%{state: :unknown}, %{state: :ok}, _endpoint), do: :ok
 
   defp emit_transition(%{state: :degraded}, %{state: :ok}, endpoint) do
     Logger.info("embervm store probe: store fetch recovered", endpoint: endpoint)

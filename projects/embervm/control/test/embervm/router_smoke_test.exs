@@ -25,7 +25,7 @@ defmodule Embervm.RouterSmokeTest do
       |> Finch.request(Embervm.Finch)
 
     assert resp.status == 200
-    assert resp.body =~ ~r/^ok\nstore: (ok|disabled)$/
+    assert resp.body =~ ~r/^ok\nstore: (ok|disabled|unknown)$/
   end
 
   test "unknown path returns 404 through the same Bandit/Finch path" do
