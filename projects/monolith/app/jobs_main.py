@@ -273,14 +273,24 @@ def ember_synthetic_trigger() -> None:
     probes run in the API pod, not this ephemeral job pod, so the job needs
     only HTTP access, not tokens or DB.
     """
-    _post_internal("/internal/ember/synthetic-probe", "ember-synthetic-trigger")
+    # The four demo probes carry a 90s internal retry budget, so a 240s total
+    # client budget keeps every attempt inside the 300s step deadline.
+    _post_internal(
+        "/internal/ember/synthetic-probe",
+        "ember-synthetic-trigger",
+        max_elapsed_s=240,
+    )
 
 
 @app.command("ember-codex-synthetic-trigger")
 def ember_codex_synthetic_trigger() -> None:
     """Trigger the Codex session synthetic in the monolith API pod."""
+    # A read timeout means the probe is still running in the API pod, so a
+    # retry only re-runs it. 240s gives up first, inside the 300s deadline.
     _post_internal(
-        "/internal/ember/codex-session-probe", "ember-codex-synthetic-trigger"
+        "/internal/ember/codex-session-probe",
+        "ember-codex-synthetic-trigger",
+        max_elapsed_s=240,
     )
 
 
@@ -290,10 +300,14 @@ def ember_spark_synthetic_trigger() -> None:
     # The probe runs a whole Spark session turn synchronously, and the interim
     # Meta Spark contributor tier answers at ~14s per completion, so a cold
     # probe legitimately takes several minutes. 180s read-timed-out every run.
+    # The 420s read timeout needs 450s total budget so a retry can still fit;
+    # with neither a read-timeout retry nor a deadline kill, the job fails on
+    # the real error about 30s before the 480s step deadline.
     _post_internal(
         "/internal/ember/spark-session-probe",
         "ember-spark-synthetic-trigger",
         timeout=420,
+        max_elapsed_s=450,
     )
 
 
@@ -433,7 +447,12 @@ _INTERNAL_POST_RETRY_DELAYS_S = (2.0, 5.0, 10.0, 20.0, 30.0)
 _INTERNAL_POST_RETRY_STATUS_CODES = frozenset({502, 503, 504})
 
 
-def _post_internal(path: str, name: str, timeout: int = 180) -> None:
+def _post_internal(
+    path: str,
+    name: str,
+    timeout: int = 180,
+    max_elapsed_s: float | None = None,
+) -> None:
     """POST an idempotent internal trigger, retrying rollout failures.
 
     Retrying POST is safe here because every caller targets an idempotent
@@ -443,6 +462,14 @@ def _post_internal(path: str, name: str, timeout: int = 180) -> None:
     URL is the plain Service, so a follower replica answers 503 for the
     leader-only endpoints (#5590) and a rollout drops the connection
     mid-request (#5715); both are covered by the same ladder.
+
+    ``max_elapsed_s`` bounds the whole call, retry ladder included, so the
+    caller's Argo ``activeDeadlineSeconds`` stays the outer backstop and
+    never becomes the thing that ends the job. Before sleeping for a retry
+    the helper checks that another attempt (its ``timeout``) still fits in
+    the budget; if not it re-raises now, so a read timeout on a probe that
+    is merely still running fails the job with a clear error well before
+    the step deadline. Callers leave it unset to keep the unbounded ladder.
     """
     import httpx
 
@@ -452,6 +479,7 @@ def _post_internal(path: str, name: str, timeout: int = 180) -> None:
         raise RuntimeError("MONOLITH_INTERNAL_URL is not set")
     logger.info("%s: POST %s%s", name, url, path)
     request_url = f"{url}{path}"
+    started = time.monotonic()
     attempts = len(_INTERNAL_POST_RETRY_DELAYS_S) + 1
     for attempt in range(1, attempts + 1):
         retry_error: httpx.HTTPError | None = None
@@ -476,6 +504,25 @@ def _post_internal(path: str, name: str, timeout: int = 180) -> None:
                 raise retry_error
 
             delay = _INTERNAL_POST_RETRY_DELAYS_S[attempt - 1]
+            if (
+                max_elapsed_s is not None
+                and time.monotonic() - started + delay + timeout > max_elapsed_s
+            ):
+                # Another attempt could not finish inside the budget, and the
+                # step deadline must never be what ends the job: stop here
+                # with the real error instead of being SIGTERM'd at the
+                # deadline (exit 143, which hides the cause).
+                logger.warning(
+                    "%s: %s on attempt %d/%d, no room for a retry in the "
+                    "%.0fs budget, giving up POST %s",
+                    name,
+                    type(retry_error).__name__,
+                    attempt,
+                    attempts,
+                    max_elapsed_s,
+                    request_url,
+                )
+                raise retry_error
             logger.warning(
                 "%s: retryable %s on attempt %d/%d, retrying POST %s in %.0fs",
                 name,

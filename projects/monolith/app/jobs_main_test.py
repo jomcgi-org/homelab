@@ -544,3 +544,74 @@ def test_post_internal_does_not_retry_400(monkeypatch):
             jobs_main._post_internal("/internal/agent/drain", "agent-drain-trigger")
 
     assert calls == 1
+
+
+def test_post_internal_gives_up_when_budget_leaves_no_room_to_retry(monkeypatch):
+    monkeypatch.setenv("MONOLITH_INTERNAL_URL", "http://monolith")
+    monkeypatch.setattr(jobs_main, "configure_logging", lambda: None)
+    monkeypatch.setattr(jobs_main.time, "sleep", lambda _delay: None)
+    ticks = iter([0.0, 460.0])
+    monkeypatch.setattr(jobs_main.time, "monotonic", lambda: next(ticks))
+    calls = 0
+
+    def handler(request):
+        nonlocal calls
+        calls += 1
+        raise httpx.ReadTimeout("probe still running", request=request)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        monkeypatch.setattr(httpx, "post", client.post)
+        with pytest.raises(httpx.ReadTimeout):
+            jobs_main._post_internal(
+                "/internal/ember/spark-session-probe",
+                "ember-spark-synthetic-trigger",
+                timeout=420,
+                max_elapsed_s=450,
+            )
+
+    assert calls == 1
+
+
+def test_post_internal_still_retries_while_budget_allows(monkeypatch):
+    monkeypatch.setenv("MONOLITH_INTERNAL_URL", "http://monolith")
+    monkeypatch.setattr(jobs_main, "configure_logging", lambda: None)
+    monkeypatch.setattr(jobs_main.time, "sleep", lambda _delay: None)
+    monkeypatch.setattr(jobs_main.time, "monotonic", lambda: 0.0)
+    calls = 0
+
+    def handler(request):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise httpx.RemoteProtocolError("rollout disconnect", request=request)
+        return httpx.Response(200, json={"ok": True})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        monkeypatch.setattr(httpx, "post", client.post)
+        jobs_main._post_internal(
+            "/internal/ember/codex-session-probe",
+            "ember-codex-synthetic-trigger",
+            max_elapsed_s=240,
+        )
+
+    assert calls == 2
+
+
+def test_ember_triggers_budget_inside_step_deadline(monkeypatch):
+    seen: dict[str, tuple[int, float | None]] = {}
+
+    def fake_post(path, name, timeout=180, max_elapsed_s=None):
+        seen[name] = (timeout, max_elapsed_s)
+
+    monkeypatch.setattr(jobs_main, "_post_internal", fake_post)
+    for command in (
+        "ember-synthetic-trigger",
+        "ember-codex-synthetic-trigger",
+        "ember-spark-synthetic-trigger",
+    ):
+        result = runner.invoke(jobs_main.app, [command])
+        assert result.exit_code == 0, result.output
+
+    assert seen["ember-synthetic-trigger"] == (180, 240)
+    assert seen["ember-codex-synthetic-trigger"] == (180, 240)
+    assert seen["ember-spark-synthetic-trigger"] == (420, 450)
