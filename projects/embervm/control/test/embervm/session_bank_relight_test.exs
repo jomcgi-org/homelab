@@ -113,7 +113,9 @@ defmodule Embervm.SessionBankRelightTest do
           :bank_concurrency,
           :status_writer,
           :restore_artifact_fun,
-          :evict_artifact_fun
+          :evict_artifact_fun,
+          :expected_instances_fun,
+          :monotonic_clock
         ])
 
     {:ok, mgr} = SessionManager.start_link(mgr_opts)
@@ -544,8 +546,9 @@ defmodule Embervm.SessionBankRelightTest do
     assert Registry.lookup(ctx.registry, created.session_id) == []
   end
 
-  test "adoption fails a session whose VM AND snapshot both vanished (node reporting)" do
-    ctx = start_stack()
+  test "adoption evicts a session whose VM AND snapshot both vanished (node reporting)" do
+    ctx = start_stack(monotonic_clock: fn -> -800_000 end,
+      expected_instances_fun: fn -> %{"node-4" => %{configured_id: "node-4"}} end)
     put_workload(ctx, "wl")
     {:ok, created} = SessionManager.create(ctx.mgr, "wl", "p1")
 
@@ -554,14 +557,15 @@ defmodule Embervm.SessionBankRelightTest do
     Process.sleep(10)
 
     # The node is up but reports NO vm and NO snapshot for this session: authoritative
-    # vanish -> failed.
-    NodeCapacity.put(ctx.cap_table, "node-4", node_fact("wl", session_vms: [], session_snapshots: []))
+    # vanish -> evicted, so downstream owners can establish cessation.
+    fact = node_fact("wl", session_vms: [], session_snapshots: [], updated_at: -850_000)
+    NodeCapacity.put(ctx.cap_table, "node-4", Map.put(fact, :observed_at_unix_ms, 2_000_000))
 
     :ok = SessionManager.reconcile(ctx.mgr)
 
     {:ok, session} = SessionStore.get(ctx.store, created.session_id)
-    assert session.state == :failed
-    assert session.terminal_reason == "failed"
+    assert session.state == :evicted
+    assert session.terminal_reason == "vm_and_snapshot_vanished"
   end
 
   test "adoption NEVER reaps on a transient disconnect (node absent from the facts)" do
