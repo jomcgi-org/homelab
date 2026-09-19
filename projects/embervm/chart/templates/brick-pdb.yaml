@@ -1,0 +1,25 @@
+{{- if and .Values.bricks.enabled .Values.bricks.disruptionBudget.enabled }}
+{{- $ctx := . }}
+{{- range $class := .Values.bricks.classes }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "embervm.noded.fullname" $ctx }}-brick-{{ $class.name }}
+  annotations:
+    # Protect ready capacity before the brick Deployment sync waves begin.
+    argocd.argoproj.io/sync-wave: "0"
+  labels:
+    {{- include "embervm.brick.labels" (dict "ctx" $ctx "class" $class.name) | nindent 4 }}
+spec:
+  # Count ready capacity across both elastic and floor Deployments in this
+  # class. A smaller brick cannot replace the last guest-capable larger brick.
+  minAvailable: 1
+  # Unready bricks must not prevent draining a broken node. Replacement init
+  # containers can take minutes, but do not count as usable guest capacity.
+  unhealthyPodEvictionPolicy: AlwaysAllow
+  selector:
+    matchLabels:
+      {{- include "embervm.brick.selectorLabels" (dict "ctx" $ctx "class" $class.name) | nindent 6 }}
+{{- end }}
+{{- end }}
