@@ -1,10 +1,11 @@
 # Monolith
 
-The monolith is a single FastAPI + SvelteKit service that hosts most of this
-homelab's applications behind one deployment. It combines a personal knowledge
-graph, a Discord chat agent, and a handful of small public apps (hikes, trips,
-stars, ships, world cup odds, campsites) with a shared database, scheduler, and
-public-facing website served at [jomcgi.dev](https://jomcgi.dev).
+The monolith is the FastAPI + SvelteKit application suite behind most of this
+homelab. It combines a personal knowledge graph, a Discord chat agent, the
+EmberVM-backed software factory, and small public apps (including Grimoire,
+hikes, trips, stars, and ships) over a shared Postgres data plane. Separate
+private, public, and agent compositions ship only the routes and code each
+audience needs; [jomcgi.dev](https://jomcgi.dev) is the public surface.
 
 ## Architecture
 
@@ -20,34 +21,42 @@ website and the private app surfaces. Public routes proxy to the backend's
 public API through `+page.server.js` loaders so pages render server-side and
 stay cacheable at the edge; private routes talk to the authenticated API.
 
-Two tiers run side by side in the same process:
+The deployed application has distinct audience surfaces:
 
 - **Public tier**: read-only, unauthenticated routes served at jomcgi.dev
-  (health check, hikes, trips, stars, ships, world cup, campsites, docs, the
-  knowledge graph's public views). These use a restricted `public_reader`
-  database role and are the only traffic that reaches the public internet
-  (via Cloudflare).
-- **Private tier**: authenticated apps and APIs (knowledge graph editing,
-  chat/Discord agent, goosecracker agent orchestration, task management)
-  reachable only from inside the cluster's ingress.
+  (health, public apps, docs, and published factory and knowledge views). It is
+  a pruned binary on the restricted `public_reader` role, with narrowly scoped
+  writers for the two public chat domains.
+- **Private tier**: authenticated apps, APIs, Discord integration, knowledge
+  editing, and factory controls behind the private ingress.
+- **Agent tier**: a separate pruned MCP server for EmberVM guests. It exposes
+  the bounded knowledge and Kubernetes observation tools described in
+  [ARCHITECTURE.md](ARCHITECTURE.md#7-mcp-surface), not the private catalogue.
+- **Friends surface**: only the moving planner and its browser API, protected by
+  its own authentik policy.
 
-The tier boundary is enforced at three layers (a separate binary artifact
-with no private code, the restricted `public_reader` database role, and a
-read replica); see
-[ARCHITECTURE.md](ARCHITECTURE.md) sections 1 to 3.
+The tier boundaries are enforced through separate compositions, database
+roles, and ingress policy; see [ARCHITECTURE.md](ARCHITECTURE.md) sections 1 to
+3.
 The hazard model for this boundary is [STPA.md](STPA.md).
+
+The shipped **Factory** selects bounded issue work, asks a per-task **Planner**
+to build a DAG, and has an **Executor** run its role-specific nodes. Legacy
+`factory_conductor` names refer to that task planner, not to the proposed
+operator-facing Conductor. The top-level Conductor specification and expanded
+MCP review and steering interface remain follow-up work in
+[#5785](https://github.com/jomcgi-org/homelab/issues/5785) and
+[#5788](https://github.com/jomcgi-org/homelab/issues/5788); this README does not
+present them as shipped.
 
 ## Trust and safety
 
-Discord engagement runs behind a per-(guild, user) trust ledger. Three
-detection lanes of increasing cost feed one score: regex heuristics on every
-message (jailbreak and exfiltration patterns, mention bursts, resource
-exhaustion), an LLM intent classifier on bot-addressed or flagged messages,
-and a shadow random forest that retrains out of band. Scores start at 100;
-below 40 the user is soft-locked (no replies, no agent runs, no message
-storage) and recovers at 20 points per day. A pardon resets the score and
-flips the user's recent labels, so a wrong lockout becomes corrective
-training data. Current state: [ARCHITECTURE.md](ARCHITECTURE.md) section 5.
+Discord engagement runs behind a per-server, per-user trust ledger. Narrow
+regex heuristics, an asynchronous LLM intent classifier, and a shadow-first
+random forest feed one score. The thresholds are environment-overridable; a
+pardon restores the score and relabels recent events, so a wrong lockout
+becomes corrective training data. Current state:
+[ARCHITECTURE.md](ARCHITECTURE.md#5-chat).
 
 ## Key subdirectories
 
@@ -57,24 +66,25 @@ training data. Current state: [ARCHITECTURE.md](ARCHITECTURE.md) section 5.
 | `frontend/`                                                                                | SvelteKit app: public website, private app UIs                    |
 | `chart/`                                                                                   | Helm chart for the service (templates, migrations, dashboards)                             |
 | `deploy/`                                                                                  | ArgoCD Application, Helm values, and GitOps wiring for this cluster                        |
-| `knowledge/`                                                                               | The knowledge graph: notes, raw capture ingest, chunking, gap tracking, gardener           |
-| `chat/`                                                                                    | Discord bot integration, chat history store, summarizer, goosecracker orchestration client |
-| `goosecracker/`                                                                            | Orchestration layer that dispatches agent tasks to the Firecracker-hosted goose agent      |
-| `agent/`                                                                                   | MCP tool surface and routine job registry for Claude-driven automation                     |
+| `knowledge/`                                                                               | Evidence ingestion, extraction, retrieval, public views, and knowledge interventions       |
+| `chat/`                                                                                    | Discord bot, trust and safety, triggers, reminders, summaries, and session adapter          |
+| `factory/`                                                                                 | Factory execution, task planning, DAG orchestration, operator controls, and public snapshots |
 | `scheduler/`                                                                               | Postgres-backed job scheduler shared by all domains                                        |
 | `shared/`                                                                                  | Cross-domain database session/engine setup and test helpers                                |
-| `hikes/`, `ships/`, `stars/`, `trips/`, `worldcup/`, `campsites/`, `dr_jobs/`, `grimoire/` | Individual small apps, each with their own routes and models                               |
+| `grimoire/`, `hikes/`, `ships/`, `stars/`, `trips/`, `worldcup/`, `campsites/`, `dr_jobs/` | Individual public data products, each with its own routes and models                       |
 | `e2e/`                                                                                     | End-to-end tests spanning the frontend and backend together                                |
 
 ## Deployment
 
 The monolith is packaged as a Helm chart (`chart/`) and published as an OCI
-artifact. Images are built dual-arch (x86_64 and aarch64) with apko in CI, and
-the chart version is bumped alongside the image tag. ArgoCD (`deploy/`) tracks
-a pinned chart version by OCI reference and syncs it into the cluster; there
-is no image-updater in the loop. A push to the repository triggers BuildBuddy
-CI to run tests, build and push images, and (on `main`) cut the new chart
-version that ArgoCD then rolls out.
+artifact. Images are built amd64-only with apko in CI. A
+merge to `main` publishes the chart and writes its new version back to the
+repository. Production runs on the GKE hub, where Kargo promotes new chart
+versions to the `monolith` and `monolith-public` ArgoCD Applications. The home
+deployment is dormant, and its pinned revision remains a revert record rather
+than the production source of truth. See
+[Platform architecture: GitOps and delivery](../platform/ARCHITECTURE.md#4-gitops-and-delivery)
+for the current pipeline.
 
 Database schema changes go through Atlas migrations checked in under
 `chart/migrations/`, applied by an in-cluster Atlas operator rather than at
