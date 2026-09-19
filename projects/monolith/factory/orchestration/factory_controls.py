@@ -199,6 +199,8 @@ DEFAULT_AUTO_MERGE = False
 DEFAULT_QUOTA_GUARD = {
     "claude_7d_pause_percent": 85,
     "claude_7d_resume_percent": 75,
+    # Quota about to be replaced is not quota worth preserving.
+    "claude_7d_imminent_reset_minutes": 120,
 }
 # An observation older than this says nothing about now, and an unknown
 # reading never starts a fallback: downgrading every review because a broker
@@ -668,7 +670,12 @@ def _validate_quota_guard(value: object) -> dict:
     if not isinstance(value, dict) or not set(value) <= set(DEFAULT_QUOTA_GUARD):
         raise ValueError("invalid quota_guard")
     result = {
-        key: _integer(value.get(key, DEFAULT_QUOTA_GUARD[key]), key, 1, 100)
+        key: _integer(
+            value.get(key, DEFAULT_QUOTA_GUARD[key]),
+            key,
+            0 if key == "claude_7d_imminent_reset_minutes" else 1,
+            10080 if key == "claude_7d_imminent_reset_minutes" else 100,
+        )
         for key in DEFAULT_QUOTA_GUARD
     }
     # Equal thresholds are a flap, not a guard: the lane would pause and resume

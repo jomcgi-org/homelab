@@ -24,7 +24,7 @@ mid-task, and so the board can render it without a broker call.
 
 from __future__ import annotations
 
-from datetime import timedelta, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import logging
 import time
@@ -101,6 +101,10 @@ def _window(fetched: object) -> dict | None:
                 else None
             ),
             "resets_at": window.get("resets_at"),
+            "exhausted": claude.get("exhausted", False) is True,
+            "status": (
+                claude.get("status") if isinstance(claude.get("status"), str) else None
+            ),
         }
     return None
 
@@ -174,6 +178,7 @@ def observe(policy: dict, *, session: Session | None = None) -> dict:
         previous = latest_verdict(db)
         state = window_high(session=db)
         used = None
+        imminent_reset = False
         if observed is None:
             _audit_unknown(db, "unobserved", {})
         else:
@@ -190,6 +195,28 @@ def observe(policy: dict, *, session: Session | None = None) -> dict:
                     state = used >= block["claude_7d_resume_percent"]
                 else:
                     state = used >= block["claude_7d_pause_percent"]
+                horizon = block["claude_7d_imminent_reset_minutes"]
+                if (
+                    horizon > 0
+                    and not observed.get("exhausted", False)
+                    and observed.get("status") != "rejected"
+                ):
+                    try:
+                        resets_at = observed.get("resets_at")
+                        if isinstance(resets_at, str):
+                            reset = datetime.fromisoformat(
+                                resets_at.replace("Z", "+00:00")
+                            )
+                            if reset.tzinfo is None:
+                                reset = reset.replace(tzinfo=timezone.utc)
+                            remaining = reset - _now()
+                            imminent_reset = (
+                                timedelta(0) <= remaining <= timedelta(minutes=horizon)
+                            )
+                    except ValueError:
+                        imminent_reset = False
+                if imminent_reset:
+                    state = False
         choice = select_reviewer(policy, window_high=state, quota=quota)
         action = _verdict_action(choice)
         detail = {
@@ -205,6 +232,7 @@ def observe(policy: dict, *, session: Session | None = None) -> dict:
                 if state and previous is not None
                 else None
             ),
+            "imminent_reset": imminent_reset,
             "model": choice["model"],
             "pause_percent": block["claude_7d_pause_percent"],
             "resume_percent": block["claude_7d_resume_percent"],
@@ -230,6 +258,7 @@ def observe(policy: dict, *, session: Session | None = None) -> dict:
                 (last_unknown is None or last_unknown.id < previous.id)
                 and previous_detail.get("used_percent") == used
                 and previous_detail.get("resets_at") == detail["resets_at"]
+                and bool(previous_detail.get("imminent_reset", False)) == imminent_reset
                 and (_now() - created).total_seconds() < OBSERVATION_AUDIT_SECONDS
             )
         # A first tick on a quiet window has restored nothing: the ledger stays
