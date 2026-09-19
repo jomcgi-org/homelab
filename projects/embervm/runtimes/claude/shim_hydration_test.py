@@ -58,6 +58,23 @@ def _post_payload(payload, manager):
     return responses
 
 
+def _post_payload_with_headers(payload, manager):
+    handler = object.__new__(shim.RequestHandler)
+    raw = json.dumps(payload).encode("utf-8")
+    handler.path = shim.TURN_PATH
+    handler.headers = _Headers(len(raw))
+    handler.rfile = io.BytesIO(raw)
+    responses = []
+
+    def capture(status, value):
+        responses.append((status, value, dict(handler._phase_headers)))
+
+    handler._send = capture
+    handler.manager = manager
+    shim.RequestHandler.do_POST(handler)
+    return responses
+
+
 def test_parse_repo_branch_from_payload(monkeypatch):
     class Manager:
         def __init__(self):
@@ -377,6 +394,8 @@ def test_hydration_git_failure_128(manager, monkeypatch, capsys):
             "failed": "git command failed with exit code 128: fatal: repository not found"
         },
     }
+    assert manager._turn_phase_telemetry["hydration"]["status"] == "failed"
+    assert manager._turn_phase_telemetry["repo-clone"]["status"] == "failed"
     error = capsys.readouterr().err
     assert "fatal: repository not found" in error
     assert "workspace hydration failed for owner/repo@nonexistent" in error
@@ -416,6 +435,10 @@ def test_hydration_timing_reports_clone_and_existing_status(
 
     monkeypatch.setattr(shim.subprocess, "run", fake_run)
     manager.turn("first", repo="owner/repo", branch="main")
+    assert manager._turn_phase_telemetry["hydration"]["status"] == "cloned"
+    assert manager._turn_phase_telemetry["repo-clone"]["status"] == "cloned"
+    assert type(manager._turn_phase_telemetry["hydration"]["ms"]) is int
+    assert type(manager._turn_phase_telemetry["repo-clone"]["ms"]) is int
     first_lines = capsys.readouterr().err.splitlines()
     assert any(
         line.startswith(
@@ -436,6 +459,8 @@ def test_hydration_timing_reports_clone_and_existing_status(
     )
 
     manager.turn("second", repo="owner/repo", branch="main")
+    assert manager._turn_phase_telemetry["hydration"]["status"] == "skipped_existing"
+    assert "repo-clone" not in manager._turn_phase_telemetry
     second_lines = capsys.readouterr().err.splitlines()
     skipped = [
         line
@@ -454,6 +479,29 @@ def test_hydration_timing_reports_clone_and_existing_status(
         )
         == 1
     )
+
+
+def test_turn_response_carries_only_bounded_phase_headers(manager, monkeypatch):
+    checkout_dir = os.path.join(manager.workspace, "src")
+
+    def fake_run(command, **_kwargs):
+        if command[1] == "clone":
+            _materialize_checkout(checkout_dir)
+        return _GitProcess()
+
+    monkeypatch.setattr(shim.subprocess, "run", fake_run)
+
+    [(status, value, headers)] = _post_payload_with_headers(
+        {"message": "hello", "repo": "owner/repo", "branch": "main"}, manager
+    )
+
+    assert status == 200
+    assert value["workspace_hydration"] == "ok"
+    assert headers["X-Ember-Phase-Hydration-Status"] == "cloned"
+    assert headers["X-Ember-Phase-Repo-Clone-Status"] == "cloned"
+    assert headers["X-Ember-Phase-Hydration-Ms"].isdigit()
+    assert headers["X-Ember-Phase-Repo-Clone-Ms"].isdigit()
+    assert "owner/repo" not in repr(headers)
 
 
 def test_failed_clone_leaves_no_directory(manager, monkeypatch):

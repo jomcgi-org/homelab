@@ -10,7 +10,7 @@ defmodule Embervm.RouterTest do
   use ExUnit.Case, async: false
   import ExUnit.CaptureLog
 
-  alias Embervm.{KeyService, NodeRegistry, TaskStore}
+  alias Embervm.{KeyService, NodeRegistry, TaskStore, TestSpanExporter}
   alias Embervm.KeyService.Envelope
 
   @allowed "system:serviceaccount:embervm:embervm"
@@ -161,7 +161,13 @@ defmodule Embervm.RouterTest do
         {:ok,
          %{
            status_code: 422,
-           headers: %{"content-type" => "application/json"},
+           headers: %{
+             "content-type" => "application/json",
+             "x-ember-phase-hydration-ms" => "125",
+             "x-ember-phase-hydration-status" => "cloned",
+             "x-ember-phase-repo-clone-ms" => "100",
+             "x-ember-phase-repo-clone-status" => "cloned"
+           },
            body: ~s({"error":"timed out waiting for Pi output after 600 seconds"})
          }}
 
@@ -170,7 +176,13 @@ defmodule Embervm.RouterTest do
         {:ok,
          %{
            status_code: 503,
-           headers: %{"content-type" => "application/json"},
+           headers: %{
+             "content-type" => "application/json",
+             "x-ember-phase-hydration-ms" => "250",
+             "x-ember-phase-hydration-status" => "failed",
+             "x-ember-phase-repo-clone-ms" => "200",
+             "x-ember-phase-repo-clone-status" => "failed"
+           },
            body: ~s({"error":"workspace does not exist: /workspace/src"})
          }}
 
@@ -574,6 +586,22 @@ defmodule Embervm.RouterTest do
   defp json(body) do
     {decoded, :ok, <<>>} = :json.decode(body, :ok, %{null: nil})
     decoded
+  end
+
+  defp has_resp_header?(response, name) do
+    Enum.any?(response.headers, fn {key, _value} -> String.downcase(key) == name end)
+  end
+
+  defp find_span(spans, name, reason) do
+    spans
+    |> TestSpanExporter.named(name)
+    |> Enum.find(&(TestSpanExporter.attributes(&1)["ember.reason"] == reason))
+  end
+
+  defp find_phase_span(spans, name, session_id) do
+    spans
+    |> TestSpanExporter.named(name)
+    |> Enum.find(&(TestSpanExporter.attributes(&1)["ember.session_id"] == session_id))
   end
 
   defp key_service(root, opts \\ []) do
@@ -1369,6 +1397,37 @@ defmodule Embervm.RouterTest do
     assert body["state"] == "running"
   end
 
+  test "session create exports bounded failure telemetry and leaves success unset" do
+    with_session_fakes()
+
+    {{failed, succeeded}, spans} =
+      TestSpanExporter.capture(
+        fn ->
+          {
+            req(:post, "/v1/workloads/wl-cap/sessions", auth("good")),
+            req(:post, "/v1/workloads/wl-ok/sessions", auth("good"))
+          }
+        end,
+        ["embervm.session.create.request"]
+      )
+
+    assert failed.status == 429
+    assert succeeded.status == 201
+
+    failed_span =
+      find_span(spans, "embervm.session.create.request", "session_cap")
+
+    successful_span =
+      spans
+      |> TestSpanExporter.named("embervm.session.create.request")
+      |> Enum.find(&(TestSpanExporter.attributes(&1)["ember.workload"] == "wl-ok"))
+
+    assert TestSpanExporter.status_code(failed_span) == :error
+    assert TestSpanExporter.end_time(failed_span) != :undefined
+    assert TestSpanExporter.status_code(successful_span) == :unset
+    refute Map.has_key?(TestSpanExporter.attributes(successful_span), "ember.reason")
+  end
+
   test "POST .../sessions returns retryable 503 when the SessionManager call times out" do
     manager = start_supervised!(NeverReplySessionManager)
     Application.put_env(:embervm, :session_manager, TimeoutSessionManager)
@@ -1599,31 +1658,111 @@ defmodule Embervm.RouterTest do
   test "known guest failures keep their response contract while telemetry classifies them" do
     with_session_fakes()
 
-    pi_timeout =
-      req(
-        :post,
-        "/v1/sessions/s-pi-timeout/invoke",
-        auth("sess-token-pi-timeout"),
-        "x"
+    {responses, spans} =
+      TestSpanExporter.capture(
+        fn ->
+          pi_timeout =
+            req(
+              :post,
+              "/v1/sessions/s-pi-timeout/invoke",
+              auth("sess-token-pi-timeout"),
+              "x"
+            )
+
+          workspace_missing =
+            req(
+              :post,
+              "/v1/sessions/s-workspace-missing/invoke",
+              auth("sess-token-workspace-missing"),
+              "x"
+            )
+
+          success =
+            req(
+              :post,
+              "/v1/sessions/s-live/invoke",
+              auth("sess-token-live"),
+              "x"
+            )
+
+          {pi_timeout, workspace_missing, success}
+        end,
+        [
+          "embervm.session.invoke",
+          "embervm.session.output_wait",
+          "embervm.session.hydration",
+          "embervm.session.repo_clone"
+        ]
       )
+
+    {pi_timeout, workspace_missing, success} = responses
 
     assert pi_timeout.status == 422
     assert json(pi_timeout.body) == %{
              "error" => "timed out waiting for Pi output after 600 seconds"
            }
-
-    workspace_missing =
-      req(
-        :post,
-        "/v1/sessions/s-workspace-missing/invoke",
-        auth("sess-token-workspace-missing"),
-        "x"
-      )
+    refute has_resp_header?(pi_timeout, "x-ember-phase-hydration-ms")
+    refute has_resp_header?(pi_timeout, "x-ember-phase-repo-clone-ms")
 
     assert workspace_missing.status == 503
     assert json(workspace_missing.body) == %{
              "error" => "workspace does not exist: /workspace/src"
            }
+
+    assert success.status == 200
+    assert success.body == "echoed"
+
+    pi_invoke = find_span(spans, "embervm.session.invoke", "pi_output_timeout")
+    pi_wait = find_span(spans, "embervm.session.output_wait", "pi_output_timeout")
+    missing_invoke = find_span(spans, "embervm.session.invoke", "workspace_missing")
+    missing_wait = find_span(spans, "embervm.session.output_wait", "workspace_missing")
+
+    for span <- [pi_invoke, pi_wait, missing_invoke, missing_wait] do
+      assert TestSpanExporter.status_code(span) == :error
+      assert TestSpanExporter.end_time(span) != :undefined
+    end
+
+    assert TestSpanExporter.parent_span_id(pi_wait) == TestSpanExporter.span_id(pi_invoke)
+    assert TestSpanExporter.trace_id(pi_wait) == TestSpanExporter.trace_id(pi_invoke)
+
+    hydration = find_phase_span(spans, "embervm.session.hydration", "s-pi-timeout")
+    repo_clone = find_phase_span(spans, "embervm.session.repo_clone", "s-pi-timeout")
+
+    for phase <- [hydration, repo_clone] do
+      assert TestSpanExporter.parent_span_id(phase) == TestSpanExporter.span_id(pi_wait)
+      assert TestSpanExporter.trace_id(phase) == TestSpanExporter.trace_id(pi_wait)
+      assert TestSpanExporter.status_code(phase) == :unset
+      assert TestSpanExporter.attributes(phase)["ember.workload"] == "pi-runtime"
+      assert TestSpanExporter.attributes(phase)["ember.phase.status"] == "cloned"
+    end
+
+    failed_hydration =
+      find_phase_span(spans, "embervm.session.hydration", "s-workspace-missing")
+
+    failed_clone =
+      find_phase_span(spans, "embervm.session.repo_clone", "s-workspace-missing")
+
+    assert TestSpanExporter.status_code(failed_hydration) == :error
+    assert TestSpanExporter.attributes(failed_hydration)["ember.reason"] ==
+             "workspace_hydration_failed"
+
+    assert TestSpanExporter.status_code(failed_clone) == :error
+    assert TestSpanExporter.attributes(failed_clone)["ember.reason"] == "repo_clone_failed"
+
+    successful_invoke =
+      spans
+      |> TestSpanExporter.named("embervm.session.invoke")
+      |> Enum.find(&(TestSpanExporter.attributes(&1)["ember.session_id"] == "s-live"))
+
+    successful_wait =
+      spans
+      |> TestSpanExporter.named("embervm.session.output_wait")
+      |> Enum.find(&(TestSpanExporter.attributes(&1)["ember.session_id"] == "s-live"))
+
+    assert TestSpanExporter.status_code(successful_invoke) == :unset
+    assert TestSpanExporter.status_code(successful_wait) == :unset
+    refute Map.has_key?(TestSpanExporter.attributes(successful_invoke), "ember.reason")
+    refute Map.has_key?(TestSpanExporter.attributes(successful_wait), "ember.reason")
   end
 
   test "invoke-start op-log unavailability maps to a retryable 503" do
