@@ -19,6 +19,7 @@ from sqlalchemy import (
     Computed,
     DateTime,
     ForeignKey,
+    Integer,
     String,
     UniqueConstraint,
     text,
@@ -66,6 +67,7 @@ Category = Literal["lore", "gameplay", "mechanics"]
 Temporality = Literal["historical", "present", "future"]
 SourceType = Literal["extracted", "homebrew"]
 MemberRole = Literal["dm", "player"]
+CharacterSheetStatus = Literal["draft", "submitted", "approved", "returned"]
 EmbeddableKind = Literal["entity", "chunk", "transcript"]
 AliasCandidateStatus = Literal["pending", "approved", "rejected", "stale", "merged"]
 SessionStatus = Literal["active", "paused", "ended"]
@@ -654,6 +656,82 @@ class PlayerCharacter(SQLModel, table=True):
     class_name: str | None = None
     level: int | None = None
     sheet: dict = Field(default_factory=dict, sa_column=Column(_JSONB))
+
+
+class CharacterSheetVersion(SQLModel, table=True):
+    """One immutable-after-submission snapshot of a player's sheet."""
+
+    __tablename__ = "character_sheet_version"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('draft', 'submitted', 'approved', 'returned')",
+            name="character_sheet_version_status_chk",
+        ),
+        CheckConstraint(
+            "version > 0",
+            name="character_sheet_version_version_chk",
+        ),
+        CheckConstraint(
+            "contract_version = 1",
+            name="character_sheet_version_contract_version_chk",
+        ),
+        CheckConstraint(
+            "(status = 'draft' AND submitted_at IS NULL AND decided_at IS NULL "
+            "AND decided_by_email IS NULL AND decision_comment IS NULL) OR "
+            "(status = 'submitted' AND submitted_at IS NOT NULL "
+            "AND decided_at IS NULL AND decided_by_email IS NULL "
+            "AND decision_comment IS NULL) OR "
+            "(status = 'approved' AND submitted_at IS NOT NULL "
+            "AND decided_at IS NOT NULL AND decided_by_email IS NOT NULL) OR "
+            "(status = 'returned' AND submitted_at IS NOT NULL "
+            "AND decided_at IS NOT NULL AND decided_by_email IS NOT NULL "
+            "AND trim(decision_comment) <> '')",
+            name="character_sheet_version_state_chk",
+        ),
+        UniqueConstraint(
+            "player_character_id",
+            "version",
+            name="character_sheet_version_character_version_key",
+        ),
+        {"schema": "grimoire", "extend_existing": True},
+    )
+
+    id: str | None = Field(
+        default_factory=lambda: str(uuid.uuid4()),
+        sa_column=_uuid_column(primary_key=True),
+    )
+    campaign_id: str = Field(
+        sa_column=_uuid_column(nullable=False, fk="grimoire.campaign.id"),
+    )
+    player_character_id: str = Field(
+        sa_column=_uuid_column(nullable=False, fk="grimoire.player_character.id"),
+    )
+    version: int = Field(sa_column=Column(Integer, nullable=False))
+    contract_version: int = Field(default=1, sa_column=Column(Integer, nullable=False))
+    status: CharacterSheetStatus = Field(
+        default="draft", sa_column=Column(String, nullable=False)
+    )
+    sheet: dict = Field(default_factory=dict, sa_column=Column(_JSONB, nullable=False))
+    derived: dict = Field(
+        default_factory=dict, sa_column=Column(_JSONB, nullable=False)
+    )
+    created_by_email: str = Field(sa_column=Column(String, nullable=False))
+    submitted_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True))
+    )
+    decided_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True))
+    )
+    decision_comment: str | None = None
+    decided_by_email: str | None = None
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True)),
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True)),
+    )
 
 
 # nosemgrep: sqlmodel-datetime-without-factory (ended_at is intentionally NULL until the session ends)
