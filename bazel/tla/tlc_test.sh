@@ -39,6 +39,11 @@ for a in "$@"; do
 			echo "1234 states generated, 567 distinct states found, 89 states left on queue."
 			exit 12
 			;;
+		wrong_violation)
+			echo "Error: Invariant DifferentInvariant is violated."
+			echo "1234 states generated, 567 distinct states found, 89 states left on queue."
+			exit 12
+			;;
 		esac
 		;;
 	esac
@@ -52,10 +57,10 @@ chmod +x "$fake_java"
 echo "---- MODULE fake ----" >"$work/fake.tla"
 echo "INIT Init" >"$work/fake.cfg"
 
-run() { # $1 case, $2 expectation; prints driver rc, captures stderr in $work/err
+run() { # $1 case, $2 expectation, $3 optional invariant; captures stderr
 	local rc=0
 	TLC_CASE="$1" "$driver" "$fake_java" "$work/tla2tools.jar" "$work/fake.tla" \
-		"$work/fake.cfg" "$work/out" "$2" >"$work/err" 2>&1 || rc=$?
+		"$work/fake.cfg" "$work/out" "$2" "${3:-}" >"$work/err" 2>&1 || rc=$?
 	echo "$rc"
 }
 
@@ -83,5 +88,11 @@ grep -q "TLC PASS" "$work/err" && fail "truncated run must not be reported as PA
 [ "$(run violation fail)" -eq 0 ] || fail "violation should satisfy fail mode"
 [ "$(run exhaustive fail)" -ne 0 ] || fail "clean run must not satisfy fail mode"
 grep -q "NEGATIVE MODE REGRESSED" "$work/err" || fail "clean fail-mode run should report regression"
+
+# When a negative target supplies an invariant name, only that exact violation
+# can satisfy the expectation.
+[ "$(run violation fail NoDoubleDispatch)" -eq 0 ] || fail "named invariant should satisfy exact fail mode"
+[ "$(run wrong_violation fail NoDoubleDispatch)" -ne 0 ] || fail "different invariant must not satisfy exact fail mode"
+grep -q "found the wrong violation" "$work/err" || fail "wrong invariant should be reported explicitly"
 
 echo "tlc_test: all cases OK"

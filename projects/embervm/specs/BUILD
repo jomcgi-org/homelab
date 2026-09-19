@@ -470,7 +470,7 @@ genrule(
           "\"$(location %s)\" " % _JAR +
           "\"$(location session_lineage.tla)\" " +
           "\"$(location session_lineage_loss.cfg)\" " +
-          "\"$@\" fail",
+          "\"$@\" fail NoWorkspaceLoss",
     tags = ["verification"],
     tools = ["//bazel/tla:tlc.sh"],
 )
@@ -487,7 +487,7 @@ genrule(
           "\"$(location %s)\" " % _JAR +
           "\"$(location session_lineage.tla)\" " +
           "\"$(location session_lineage_double_heir.cfg)\" " +
-          "\"$@\" fail",
+          "\"$@\" fail NeverTwoLiveHeirs",
     tags = ["verification"],
     tools = ["//bazel/tla:tlc.sh"],
 )
@@ -504,7 +504,7 @@ genrule(
           "\"$(location %s)\" " % _JAR +
           "\"$(location session_lineage.tla)\" " +
           "\"$(location session_lineage_nonterminal.cfg)\" " +
-          "\"$@\" fail",
+          "\"$@\" fail InheritanceOnlyFromTerminal",
     tags = ["verification"],
     tools = ["//bazel/tla:tlc.sh"],
 )
@@ -521,7 +521,7 @@ genrule(
           "\"$(location %s)\" " % _JAR +
           "\"$(location session_lineage.tla)\" " +
           "\"$(location session_lineage_silent_merge.cfg)\" " +
-          "\"$@\" fail",
+          "\"$@\" fail ReconnectDetectsDivergence",
     tags = ["verification"],
     tools = ["//bazel/tla:tlc.sh"],
 )

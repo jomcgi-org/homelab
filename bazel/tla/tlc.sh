@@ -20,6 +20,8 @@
 #   $5 output marker (TLC output is captured here; also the genrule's out)
 #   $6 expectation: "pass" (TLC must find no error) or "fail" (a negative mode
 #      that must still reproduce a known violation)
+#   $7 expected invariant name (optional, fail mode only). When present, the
+#      negative run must name this exact invariant as violated.
 set -euo pipefail
 
 java_anchor="$1"
@@ -28,6 +30,7 @@ spec="$3"
 cfg="$4"
 out="$5"
 expect="$6"
+expected_invariant="${7:-}"
 
 # Absolutize every input before we cd into the workdir (Bazel passes them
 # execroot-relative).
@@ -131,6 +134,14 @@ elif [ "$expect" = "fail" ]; then
 		echo "NEGATIVE MODE did not reproduce a violation for $spec_name: TLC exited" >&2
 		echo "nonzero but its output names no invariant or temporal-property" >&2
 		echo "violation (likely a crash, not a detection). Output:" >&2
+		cat "$out" >&2
+		exit 1
+	fi
+	if [ -n "$expected_invariant" ] &&
+		! grep -qF "Invariant $expected_invariant is violated" "$out"; then
+		echo "NEGATIVE MODE found the wrong violation for $spec_name: expected" >&2
+		echo "Invariant $expected_invariant, but TLC did not name it as violated." >&2
+		echo "Output:" >&2
 		cat "$out" >&2
 		exit 1
 	fi
