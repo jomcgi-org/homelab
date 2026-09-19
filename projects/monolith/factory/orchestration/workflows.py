@@ -604,9 +604,10 @@ def implement_then_review(
                 total_cost,
                 budget_decision,
             )
-        # Every reviewer gets a FRESH session (ADR 038 decision 3), and each
-        # review node starts at node_attempt 1. The implementer's workspace is
-        # never handed to the reviewer.
+        # Every reviewer gets a FRESH session (ADR 038 decision 3). Review
+        # attempts count review cycles, independently of the implementer's
+        # global attempt number. The implementer's workspace is never handed
+        # to the reviewer.
         reviewer_intent, reviewer_protocol = reviewer_prompt_parts(
             task, branch_name, commit_sha
         )
@@ -618,7 +619,7 @@ def implement_then_review(
             branch,
             workflow_id,
             node_key="review",
-            node_attempt=1,
+            node_attempt=review_cycles + 1,
         )
         reviewer_turn = _await_turn(
             reviewer_session_id, 0, plan["turn_timeout_seconds"]

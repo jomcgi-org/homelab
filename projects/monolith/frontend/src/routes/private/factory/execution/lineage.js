@@ -16,6 +16,7 @@ export function sessionLineage(run, sessionId) {
           nodeKey: node.key,
           nodeLabel: node.label,
           attemptN: attempt.n,
+          attemptCount: node.attempts?.length ?? 0,
         };
       }
     }
@@ -28,6 +29,7 @@ export function crumbTrail({
   runTitle,
   nodeLabel,
   attemptN,
+  attemptCount,
   sessionTitle,
 }) {
   runTitle = String(runTitle ?? "").trim();
@@ -43,10 +45,12 @@ export function crumbTrail({
   }
   if (kind !== "session" || !runTitle) return [];
 
+  const hasMultipleAttempts =
+    attemptCount != null ? attemptCount > 1 : attemptN != null && attemptN > 1;
   const leaf =
     joinMeta(
       nodeLabel,
-      attemptN != null && attemptN > 1
+      attemptN != null && hasMultipleAttempts
         ? `${RUN_LEXICON.labels.attempt} ${attemptN}`
         : null,
     ) || sessionTitle;

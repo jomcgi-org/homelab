@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import pytest
 
 from factory.orchestration.view import (
+    _attempts,
     _disposition,
     _structured_verdict,
     compose_master,
@@ -808,6 +809,72 @@ def test_review_does_not_inherit_the_implement_lane_head_reads():
     review_attempt = review["attempts"][0]
     assert review_attempt["finding"] is None
     assert review_attempt["prior_head"] is None
+    assert review_attempt["cause"] == "initial"
+
+
+def test_review_attempts_use_chronological_local_ordinals():
+    later = {
+        **session(22, status="completed", node="review", attempt=1),
+        "id": 22,
+        "created_at": datetime(2026, 8, 10, 4, 8, tzinfo=timezone.utc),
+    }
+    earlier = {
+        **session(11, status="completed", node="review", attempt=1),
+        "id": 11,
+        "created_at": datetime(2026, 8, 10, 4, 7, tzinfo=timezone.utc),
+    }
+
+    attempts = _attempts([later, earlier], [], "review")
+
+    assert [attempt["session_id"] for attempt in attempts] == [11, 22]
+    assert [attempt["n"] for attempt in attempts] == [1, 2]
+    assert [attempt["cause"] for attempt in attempts] == ["initial", "send_back"]
+
+
+def test_implement_causes_follow_previous_head_pair_and_keep_global_ordinals():
+    rows = [
+        {**session(4, node="implement", attempt=7), "id": 4},
+        {**session(1, node="implement", attempt=1), "id": 1},
+        {**session(3, node="implement", attempt=5), "id": 3},
+        {**session(2, node="implement", attempt=3), "id": 2},
+    ]
+
+    attempts = _attempts(
+        rows,
+        [
+            None,
+            None,
+            {"head": "a" * 40},
+            {"sha": "b" * 40},
+            "b" * 40,
+            "b" * 40,
+            "b" * 40,
+            "c" * 40,
+        ],
+        "implement",
+    )
+
+    assert [attempt["n"] for attempt in attempts] == [1, 3, 5, 7]
+    assert [attempt["cause"] for attempt in attempts] == [
+        "initial",
+        "delivery_retry",
+        "send_back",
+        "delivery_retry",
+    ]
+
+
+def test_missing_previous_head_pair_does_not_invent_send_back_cause():
+    rows = [
+        {**session(1, node="implement", attempt=1), "id": 1},
+        {**session(2, node="implement", attempt=2), "id": 2},
+    ]
+
+    attempts = _attempts(rows, ["a" * 40], "implement")
+
+    assert [attempt["cause"] for attempt in attempts] == [
+        "initial",
+        "delivery_retry",
+    ]
 
 
 def test_unserializable_timestamp_is_absent_not_passed_through():

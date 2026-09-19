@@ -179,6 +179,33 @@ def _branch_head_observations(steps: list[Any]) -> list[Any]:
     return observations
 
 
+def _head(value: Any) -> Any:
+    if isinstance(value, dict):
+        return value.get("head", value.get("sha"))
+    return value
+
+
+def _attempt_cause(
+    index: int, node_key: str, observations: list[Any]
+) -> str:
+    """Why this attempt started, based only on evidence before it."""
+    if index == 0:
+        return "initial"
+    if node_key == "review":
+        # A later review cycle exists only after the preceding review sent the
+        # work back and the implementer delivered another branch head.
+        return "send_back"
+    previous_pair = (index - 1) * 2
+    if previous_pair + 1 >= len(observations):
+        # Old or incomplete workflow histories may not contain both reads.
+        # Only positive movement evidence can support send_back, so missing
+        # evidence conservatively remains a delivery retry.
+        return "delivery_retry"
+    prior = _head(observations[previous_pair])
+    observed = _head(observations[previous_pair + 1])
+    return "delivery_retry" if prior == observed else "send_back"
+
+
 def _attempts(
     session_rows: list[Any], observations: list[Any], node_key: str
 ) -> list[dict]:
@@ -192,37 +219,64 @@ def _attempts(
     to the wrong node is the exact confusion that decision exists to prevent.
     A caller that has no observations for a node passes none.
     """
-    rows = sorted(
-        [r for r in session_rows if _value(r, "node_key") == node_key],
-        key=lambda r: _value(r, "node_attempt", 0) or 0,
-    )
+    node_rows = [r for r in session_rows if _value(r, "node_key") == node_key]
+    if node_key == "review":
+        # Historical review sessions all carried node_attempt=1. Their
+        # creation time and database id are the durable chronological order.
+        rows = sorted(
+            node_rows,
+            key=lambda r: (
+                _iso(_value(r, "created_at")) or "",
+                _value(r, "id", 0) or 0,
+            ),
+        )
+    else:
+        # Implement attempts are global workflow ordinals. Preserve that
+        # meaning and use chronology only as a deterministic tie breaker.
+        rows = sorted(
+            node_rows,
+            key=lambda r: (
+                _value(r, "node_attempt", 0) or 0,
+                _iso(_value(r, "created_at")) or "",
+                _value(r, "id", 0) or 0,
+            ),
+        )
     result = []
     for i, row in enumerate(rows):
-        prior = observations[i * 2] if i * 2 < len(observations) else None
-        observed = observations[i * 2 + 1] if i * 2 + 1 < len(observations) else None
-        if isinstance(prior, dict):
-            prior = prior.get("head", prior.get("sha"))
-        if isinstance(observed, dict):
-            observed = observed.get("head", observed.get("sha"))
+        pair_complete = i * 2 + 1 < len(observations)
+        prior = _head(observations[i * 2]) if i * 2 < len(observations) else None
+        observed = (
+            _head(observations[i * 2 + 1])
+            if i * 2 + 1 < len(observations)
+            else None
+        )
         state = _value(row, "status", "running")
         attempt_state = "failed" if state == "warn" else state
         result.append(
             {
-                "n": _value(row, "node_attempt"),
+                # Review ordinals are local cycle positions, including for
+                # historical rows stamped 1. Implement keeps the engine's
+                # global node_attempt unchanged.
+                "n": i + 1 if node_key == "review" else _value(row, "node_attempt"),
+                "cause": _attempt_cause(i, node_key, observations),
                 "session_id": _value(row, "id"),
                 "local_session_id": _value(row, "local_session_id"),
                 "model": _value(row, "model"),
                 "state": "gated"
                 if state == "completed"
                 and observed == prior
-                and (prior is not None or observed is not None)
+                and pair_complete
                 else attempt_state,
                 "started_at": _iso(_value(row, "created_at")),
                 "ended_at": _iso(_value(row, "last_turn_at"))
                 if state != "running"
                 else None,
                 "cost_usd": _value(row, "total_cost_usd", _value(row, "cost_usd")),
-                "finding": _finding(None, observed, prior),
+                "finding": _finding(
+                    "branch_missing" if pair_complete and observed is None else None,
+                    observed,
+                    prior,
+                ),
                 "rationale": parse_rationale(_value(row, "final_result_text")),
                 "prior_head": _short_sha(prior),
                 "live": None

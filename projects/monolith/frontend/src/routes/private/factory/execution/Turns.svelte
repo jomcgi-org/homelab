@@ -9,6 +9,8 @@
   let {
     detail = null,
     selectedSession = null,
+    attemptN = null,
+    attemptCount = null,
     renderedPending = {},
     vms = {},
     element = $bindable(null),
@@ -186,6 +188,8 @@
             <SessionWalkthrough
               sessionId={selectedSession.id}
               turnSeq={turn.seq}
+              {attemptN}
+              {attemptCount}
               model={turn.model ||
                 selectedSession.model ||
                 P.labels.defaultModel}

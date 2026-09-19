@@ -1009,7 +1009,7 @@ def test_request_changes_triggers_new_implement_attempt(monkeypatch):
         ("implement", 1),
         ("review", 1),
         ("implement", 2),
-        ("review", 1),
+        ("review", 2),
     ]
     assert calls[1][0] == workflows.session_key("review-1")
     assert calls[3][0] == workflows.session_key("review-2")

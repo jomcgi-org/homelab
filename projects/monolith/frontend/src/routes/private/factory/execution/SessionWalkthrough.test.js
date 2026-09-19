@@ -58,6 +58,12 @@ function explainedFixture() {
   );
 }
 
+function fixtureWithAttempt(attempt) {
+  const fixture = explainedFixture();
+  fixture.payload.steps[0].testimony.attempt = attempt;
+  return fixture;
+}
+
 async function render(Component, props = {}) {
   const target = document.createElement("div");
   document.body.append(target);
@@ -100,6 +106,31 @@ describe("conversation disclosure", () => {
     details.dispatchEvent(new Event("toggle"));
     await tick();
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  test("hides singleton attempt attribution and keeps repeated ordinals", async () => {
+    const singleton = await render(SessionWalkthrough, {
+      model: "luna",
+      attemptN: 1,
+      attemptCount: 1,
+      fixture: fixtureWithAttempt(1),
+    });
+    const repeatedFirst = await render(SessionWalkthrough, {
+      model: "luna",
+      attemptN: 1,
+      attemptCount: 2,
+      fixture: fixtureWithAttempt(1),
+    });
+    const repeatedSecond = await render(SessionWalkthrough, {
+      model: "luna",
+      attemptN: 2,
+      attemptCount: 2,
+      fixture: fixtureWithAttempt(2),
+    });
+
+    expect(singleton.textContent).not.toContain("attempt 1");
+    expect(repeatedFirst.textContent).toContain("attempt 1");
+    expect(repeatedSecond.textContent).toContain("attempt 2");
   });
 });
 

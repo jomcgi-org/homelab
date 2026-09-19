@@ -129,9 +129,8 @@ function attemptAt(n, state = "done") {
 }
 
 describe("attempt ordinals", () => {
-  // An attempt increments ONLY when the branch head did not move, so a single
-  // attempt is the healthy path for every node. Printing "1 attempt" there
-  // reads as an iteration budget the engine does not have.
+  // A single attempt is the healthy path for every node. Printing "1 attempt"
+  // there reads as an iteration budget the engine does not have.
   test("a single attempt reports state and duration, never an ordinal", async () => {
     const target = await render({ run: workRun([attemptAt(1)]) });
     expect(target.textContent).not.toContain("1 attempt");
@@ -144,6 +143,20 @@ describe("attempt ordinals", () => {
     });
     expect(target.textContent).toContain("2 attempts");
     expect(target.textContent).toContain("attempt 2");
+  });
+
+  test("summarizes send-backs separately from delivery retries", async () => {
+    const target = await render({
+      run: workRun([
+        { ...attemptAt(1), cause: "initial" },
+        { ...attemptAt(2), cause: "send_back" },
+        { ...attemptAt(3), cause: "delivery_retry" },
+      ]),
+    });
+
+    expect(target.textContent).toContain("3 attempts");
+    expect(target.textContent).toContain("sent back once");
+    expect(target.textContent).toContain("delivery retried once");
   });
 
   // max_review_cycles is a plan constant, not run state: it said the same

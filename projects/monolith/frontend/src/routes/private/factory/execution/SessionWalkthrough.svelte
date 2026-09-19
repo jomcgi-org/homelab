@@ -17,6 +17,8 @@
   let {
     sessionId = null,
     turnSeq = null,
+    attemptN = null,
+    attemptCount = null,
     model = "",
     // Fixture preview (?fixture=walk-*): payload/patches supplied inline,
     // so the preview never fetches.
@@ -85,14 +87,19 @@
   }
 
   function attributionLine(index, item) {
+    const attributionAttempt = attemptN ?? item.attribution?.attempt;
+    const hasMultipleAttempts =
+      attemptCount != null
+        ? attemptCount > 1
+        : attributionAttempt != null && attributionAttempt > 1;
     return joinMeta(
       `${P.labels.walkPointWord} ${index + 1}`,
       P.labels.walkAccountLabel,
       item.attribution?.turn != null
         ? `${P.labels.turn} ${item.attribution.turn}`
         : "",
-      item.attribution?.attempt != null
-        ? `${P.labels.attempt} ${item.attribution.attempt}`
+      attributionAttempt != null && hasMultipleAttempts
+        ? `${P.labels.attempt} ${attributionAttempt}`
         : "",
       model,
     );

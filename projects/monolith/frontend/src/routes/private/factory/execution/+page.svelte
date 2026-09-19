@@ -332,6 +332,7 @@
       runTitle: crumbRunTitle,
       nodeLabel: crumbLineage?.nodeLabel,
       attemptN: crumbLineage?.attemptN,
+      attemptCount: crumbLineage?.attemptCount,
       sessionTitle: headerTitle,
     }),
   );
@@ -2306,6 +2307,10 @@
             <Turns
               {detail}
               {selectedSession}
+              attemptN={crumbLineage?.attemptN ??
+                selectedSession.node_attempt}
+              attemptCount={crumbLineage?.attemptCount ??
+                selectedSession.node_attempt}
               {renderedPending}
               {vms}
               bind:element={turnsEl}
