@@ -131,7 +131,7 @@
               </div>
             </details>
           {/if}
-          {#if filtering && !data.error}
+          {#if filtering && !data.error && !data.invalidMonth}
             <p class="filter-results">
               <span>
                 {data.updates.length}
@@ -157,54 +157,67 @@
           <nav class="date-rail" aria-label="Updates by date">
             <p class="sec-label">/ Index</p>
             {#each data.months as group}
-              <details class="rail-month" open={group.month === activeMonth}>
-                <summary>
-                  {#if group.month === data.selectedMonth}
-                    <span class="month-link" aria-current="page">
+              <div class="rail-month">
+                <details open={group.month === activeMonth}>
+                  <summary>
+                    <span
+                      class="month-link"
+                      aria-current={group.month === data.selectedMonth
+                        ? "page"
+                        : undefined}
+                    >
                       <span class="month-name">{monthLabel(group.month)}</span>
                       <span class="group-count">{group.count}</span>
                     </span>
-                  {:else}
-                    <a
-                      class="month-link"
-                      href={monthHref(
-                        group.month,
-                        data.selectedProject,
-                        data.selectedTechnology,
-                      )}
-                    >
-                      <span class="month-name">{monthLabel(group.month)}</span>
-                      <span class="group-count">{group.count}</span>
-                    </a>
-                  {/if}
-                </summary>
-                <div class="rail-days">
-                  {#each group.editions as update}
-                    <a
-                      class:active={activeDate === update.published_on}
-                      href={monthHref(
-                        group.month,
-                        data.selectedProject,
-                        data.selectedTechnology,
-                        update.published_on,
-                      )}
-                      aria-current={activeDate === update.published_on
-                        ? "location"
-                        : undefined}
-                    >
-                      <span>{update.published_on.slice(8)}</span>
-                      <small>{update.headline}</small>
-                    </a>
-                  {/each}
-                </div>
-              </details>
+                  </summary>
+                  <div class="rail-days">
+                    {#each group.editions as update}
+                      <a
+                        class:active={activeDate === update.published_on}
+                        href={monthHref(
+                          group.month,
+                          data.selectedProject,
+                          data.selectedTechnology,
+                          update.published_on,
+                        )}
+                        aria-current={activeDate === update.published_on
+                          ? "location"
+                          : undefined}
+                      >
+                        <span>{update.published_on.slice(8)}</span>
+                        <small>{update.headline}</small>
+                      </a>
+                    {/each}
+                  </div>
+                </details>
+                {#if group.month !== data.selectedMonth}
+                  <a
+                    class="month-navigation"
+                    aria-label={`Open ${monthLabel(group.month)}`}
+                    href={monthHref(
+                      group.month,
+                      data.selectedProject,
+                      data.selectedTechnology,
+                    )}>Open</a
+                  >
+                {/if}
+              </div>
             {/each}
           </nav>
         {/if}
       </aside>
 
       <div class="content">
-        {#if data.error}
+        {#if data.invalidMonth}
+          <div class="state" role="alert">
+            <strong>That journal month is not valid.</strong>
+            <span>
+              <a class="clear" href="/updates"
+                >Open the newest available month.</a
+              >
+            </span>
+          </div>
+        {:else if data.error}
           <div class="state" role="alert">
             <strong>The journal is unavailable.</strong>
             <span>The archive service did not respond. Try again shortly.</span>
@@ -508,7 +521,7 @@
   }
 
   .spine-group[open] .group-count::after,
-  .rail-month[open] .group-count::after {
+  .rail-month > details[open] .group-count::after {
     content: "\2212";
   }
 
@@ -582,7 +595,7 @@
   }
 
   .rail-month summary {
-    padding: 0;
+    padding: 0 3.2rem 0 0;
     border-bottom: 1px solid var(--line);
     cursor: pointer;
     list-style: none;
@@ -600,6 +613,26 @@
     padding: 0.5em 0;
     color: inherit;
     text-decoration: none;
+  }
+
+  .rail-month {
+    position: relative;
+  }
+
+  .month-navigation {
+    position: absolute;
+    top: 0;
+    right: 0;
+    padding: 0.58em 0;
+    color: var(--ink-2);
+    font-family: var(--font-code);
+    font-size: 0.62em;
+    text-decoration: none;
+    text-transform: uppercase;
+  }
+
+  .month-navigation:hover {
+    color: var(--accent-ink);
   }
 
   .month-name {
@@ -994,9 +1027,6 @@
     }
 
     .rail-month {
-      display: flex;
-      gap: 0.65em;
-      align-items: center;
       margin: 0;
     }
 
