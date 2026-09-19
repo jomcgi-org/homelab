@@ -205,11 +205,11 @@ ciliumPolicy:
 # dev's chart version pins.
 #
 # Blanking jobs.image rather than emptying jobs.cronWorkflows, deliberately.
-# The list also drives ARGO_JOBS on the backend, which is what makes the app
-# SKIP registering these jobs in-process ("so they never run in both places").
-# Emptying the list would render no CronWorkflows and simultaneously re-enable
-# the in-process copies. Blanking the image disables the CronWorkflows at their
-# own gate while leaving ARGO_JOBS populated, so dev runs them nowhere.
+# The list also drives ARGO_JOBS on the backend, which suppresses the legacy
+# registry metadata for every replacing entry. Emptying the list would render no
+# CronWorkflows and repopulate that metadata, but would not restore a dispatcher.
+# Blanking the image disables the CronWorkflows at their own gate while leaving
+# ARGO_JOBS populated, so dev runs them nowhere.
 jobs:
   image: ""
 

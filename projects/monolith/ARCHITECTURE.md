@@ -1217,6 +1217,9 @@ private leader and read by both tiers. The combined demo probes run one hourly
 CronWorkflow and the Codex lane probe runs its own hourly CronWorkflow, each
 with a 2.5x staleness allowance. Codex is the one automatically scheduled
 agent probe; the Spark session probe is manual-only with no health component.
+The CD latch writer defaults to a 300-second interval, while its public reader
+uses an independent 750-second constant. That is currently the same 2.5x
+allowance, and changes to either value must keep the pair consistent.
 (see: /projects/monolith/ember_public/health.py)
 (see: /projects/monolith/core/platform_probe.py)
 (see: /projects/monolith/factory/orchestration/health.py)

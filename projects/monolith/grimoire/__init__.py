@@ -29,10 +29,10 @@ def on_startup_jobs(session: Session) -> None:
     """Register grimoire ingest jobs (spec #4.2): a daily chunk loader and a
     daily heavy entity-extraction pass.
 
-    Both are idempotent batch jobs; ``register_job`` skips any that an Argo
-    CronWorkflow owns. Extraction is flagged ``heavy`` (LLM calls, long-running)
-    so the dispatcher never co-schedules it with another memory-heavy job, and
-    gets a generous 25m deadline; the loader gets 10m.
+    Both are idempotent batch jobs; ``register_job`` omits metadata for names a
+    replacing Argo CronWorkflow owns. ``heavy`` is legacy registry metadata and
+    does not serialize execution. Argo carries the actual concurrency, resource,
+    and deadline controls.
     """
     from scheduler.api import register_job
 
