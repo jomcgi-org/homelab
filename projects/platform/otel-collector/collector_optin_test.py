@@ -58,9 +58,7 @@ def _render(extra: list[str] | None = None) -> list[dict]:
     return _render_overlay("values-prod", extra)
 
 
-def _render_overlay(
-    values_name: str, extra: list[str] | None = None
-) -> list[dict]:
+def _render_overlay(values_name: str, extra: list[str] | None = None) -> list[dict]:
     argv = [
         os.environ.get("HELM_BIN", "helm"),
         "template",
@@ -88,8 +86,7 @@ def _matches_policy(policy: dict, spans: list[dict]) -> bool:
         matcher = policy["string_attribute"]
         accepted = set(matcher["values"])
         return any(
-            span.get("attributes", {}).get(matcher["key"]) in accepted
-            for span in spans
+            span.get("attributes", {}).get(matcher["key"]) in accepted for span in spans
         )
     raise AssertionError(f"unsupported policy type in focused test: {policy['type']}")
 
