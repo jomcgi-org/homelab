@@ -184,7 +184,7 @@ agents:
 # runtime - ArgoCD syncs the CRs like any other manifest.
 #
 # Cutover is per-job via `replaces`: naming the old scheduler job adds it to the
-# deployment's ARGO_JOBS env, so on_startup_jobs skips in-process registration.
+# deployment's ARGO_JOBS env, so on_startup_jobs omits legacy registry metadata.
 # `suspend` controls only the recurring Argo schedule. A replacing, suspended
 # CronWorkflow remains available for manual one-off submission through run-now.
 #
@@ -1317,7 +1317,8 @@ cdHealth:
   # kargo chart means adding it here (or in the deploy values) too.
   apps: []
   # How often the private tier recomputes cd health and writes the latch. The
-  # public reader treats a row older than 2.5x this as a dead writer.
+  # public reader uses an independent 750s constant, currently 2.5x this value.
+  # Keep the two consistent when changing either one.
   probeIntervalSeconds: 300
 
 # Private-tier pod restart watcher. Armed 2026-09-16 after chart 0.505.0 rolled
@@ -1689,15 +1690,10 @@ orchestrator:
 # chart BUILD images map); never hand-set a digest here.
 whatsapp:
   enabled: false
-  # Heavy-agent path (goose household dispatch for charts/artifacts/full tasks).
-  # Off by default: a heavy request replies "not wired up yet" instead of
-  # dispatching. Set true in deploy values to wire it on.
-  agentEnabled: false
   # Pinned OpenRouter model for household CONTENT generation in the monolith: the
-  # concierge agent-result reply and the WhatsApp chat agent both author on this
-  # (strong but cheap). The goose GUEST model is set separately in
-  # goosecracker.tiers.household. Kept as a value (never :auto) so replies stay
-  # attributable; the monolith reaches openrouter.ai directly with OPENROUTER_API_KEY.
+  # surviving WhatsApp chat agent authors on this (strong but cheap). Kept as a
+  # value (never :auto) so replies stay attributable; the monolith reaches
+  # openrouter.ai directly with OPENROUTER_API_KEY.
   model: "deepseek/deepseek-v4-flash"
   image:
     repository: ""
@@ -2049,7 +2045,8 @@ ciliumPolicy:
     # regression test. The list covers the private request paths and enabled
     # leader integrations visible in current code and deploy values. A
     # systematic register_job minus jobs.cronWorkflows[].replaces audit leaves
-    # only grimoire.load_chunks and grimoire.extract_entities in the app pod.
+    # only grimoire.load_chunks and grimoire.extract_entities as app-pod registry
+    # metadata. There is no in-process dispatcher.
     # The loader uses the internal S3 and embedding targets above. Extraction
     # uses grimoire.extractBaseUrl, whose production host is included below.
     # The R2 hostname is deliberately exact rather than a Cloudflare-wide CIDR

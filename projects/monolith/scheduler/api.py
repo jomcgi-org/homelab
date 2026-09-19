@@ -1,8 +1,8 @@
-"""Scheduler domain API: job registry + ScheduledJob rows (views + agent checks).
+"""Scheduler domain API: registry metadata, rows, and Argo run-now submission.
 
-The in-process dispatch loop that used to claim and run these jobs was deleted
-when the jobs moved to Argo CronWorkflows (see app/jobs_main.py); what remains
-is the registry that feeds the scheduler views and the agent orphan-job check.
+The in-process dispatch loop was deleted when scheduled execution moved to Argo
+CronWorkflows (see app/jobs_main.py). Startup registration now feeds only the
+scheduler views and agent orphan-job check. It never executes a handler.
 """
 
 import logging
@@ -21,12 +21,12 @@ logger = logging.getLogger("monolith.scheduler")
 
 
 def argo_handled(job_name: str) -> bool:
-    """True if an active Argo CronWorkflow owns this job (set via ARGO_JOBS env).
+    """True if a replacing Argo CronWorkflow owns this job's execution path.
 
-    on_startup_jobs callers skip register_job for these so the job does not run
-    both in-process and as a CronWorkflow. ARGO_JOBS is a comma-separated list of
-    in-process job names, derived by the chart from cronWorkflows entries with
-    ``replaces`` set (see chart/templates/deployment.yaml).
+    ``ARGO_JOBS`` is derived from every chart CronWorkflow with ``replaces`` set,
+    including suspended manual-only entries. Startup callers skip registry and
+    row metadata for those names. ``suspend`` controls recurring Argo execution,
+    not membership here, and there is no in-process dispatch loop.
     """
     handled = {
         n.strip() for n in os.environ.get("ARGO_JOBS", "").split(",") if n.strip()
@@ -54,14 +54,11 @@ class ScheduledJob(SQLModel, table=True):
 # site (e.g. ``handler=lambda _: my_handler()``).
 Handler = Callable[[Session], Awaitable[datetime | None]]
 
-# In-memory handler registry (populated at startup)
+# In-memory handler registry, populated at startup for views and orphan checks.
 _registry: dict[str, Handler] = {}
 
-# Names of jobs flagged memory-heavy at registration. The dispatcher runs at most
-# ``max_heavy`` of these at once (default 1) so two big jobs (e.g. the FA2 graph
-# layout) never pile up and OOMKill the shared pod. Light jobs stay fully
-# parallel. Bounding concurrency by COUNT alone (the old semaphore) does not stop
-# this: several heavy jobs can be admitted in one tick before any has spiked.
+# Legacy registration metadata. No current dispatcher consumes this set; Argo
+# Workflow resources and concurrency policies govern actual batch execution.
 _heavy: set[str] = set()
 
 
@@ -71,7 +68,7 @@ def is_registered(name: str) -> bool:
 
 
 def is_heavy(name: str) -> bool:
-    """True if the job is flagged memory-heavy (serialized against other heavies)."""
+    """True if legacy registration metadata flags the job as memory-heavy."""
     return name in _heavy
 
 
@@ -102,16 +99,15 @@ def register_job(
     ttl_secs: int = 1200,
     heavy: bool = False,
 ) -> None:
-    """Register a job handler and upsert its row in the database.
+    """Record handler metadata and upsert its legacy scheduler row.
 
-    Set ``heavy=True`` for memory-intensive jobs (e.g. the graph layout pass) so
-    the dispatcher never co-schedules two of them.
+    This function does not schedule or execute the handler. ``heavy`` is retained
+    as legacy metadata only; Argo owns execution controls for migrated jobs.
 
-    Jobs an active Argo CronWorkflow owns (listed in ARGO_JOBS) are skipped here
-    so they never run both in-process and as a CronWorkflow. This is centralized
-    so every module's on_startup_jobs gets the skip for free - callers do not
-    each need to gate on argo_handled. A previously-registered row is left for
-    purge_unregistered_jobs to drop on the next sweep.
+    Jobs with a replacing Argo CronWorkflow (listed in ``ARGO_JOBS`` regardless
+    of ``suspend``) are skipped. This is centralized so every module's
+    ``on_startup_jobs`` gets the metadata suppression for free. A previous row
+    remains until the orphan cleanup removes it.
     """
     if argo_handled(name):
         logger.info(

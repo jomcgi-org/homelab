@@ -121,7 +121,6 @@ chat:
     itemPath: ""
 whatsapp:
   enabled: false
-  agentEnabled: false
 marine:
   enabled: false
   onepassword:

@@ -51,8 +51,8 @@ spec:
                 secretKeyRef:
                   name: {{ include "monolith.fullname" . }}-pg-app
                   key: uri
-            # Jobs an Argo CronWorkflow now owns; on_startup_jobs skips
-            # registering these in-process so they never run in both places.
+            # Jobs an Argo CronWorkflow now owns; on_startup_jobs omits their
+            # legacy registry metadata. There is no in-process dispatch loop.
             # Membership is driven by `replaces` alone, NOT suspend: `replaces`
             # means "Argo owns this job", while `suspend` only controls whether
             # the CronWorkflow auto-runs on its schedule. That lets an entry be
@@ -349,9 +349,6 @@ spec:
                   name: {{ .Values.metaSpark.secretName }}
                   key: META_SPARK_API_KEY
             {{- end }}
-            # Pinned OpenRouter model for household content generation.
-            - name: HOUSEHOLD_LLM_MODEL
-              value: {{ .Values.whatsapp.model | quote }}
             - name: CHAT_REASONING_EFFORT
               value: {{ .Values.chat.reasoningEffort | quote }}
             - name: CHAT_MAX_TOKENS
@@ -362,11 +359,6 @@ spec:
               value: {{ .Values.chat.baseUrl | quote }}
             - name: CHAT_PROVIDER
               value: {{ .Values.chat.provider | quote }}
-            # Gate the WhatsApp heavy-agent path (goose household dispatch for
-            # charts/artifacts/full tasks). Off -> a heavy request gets the "not
-            # wired up yet" reply; on -> it dispatches the household goose agent.
-            - name: WHATSAPP_AGENT_ENABLED
-              value: {{ .Values.whatsapp.agentEnabled | quote }}
             - name: EMBEDDING_URL
               value: {{ .Values.chat.embeddingUrl | quote }}
             - name: SEARXNG_URL
@@ -418,23 +410,23 @@ spec:
                   name: {{ include "monolith.fullname" . }}-semgrep-app
                   key: SEMGREP_WEBHOOK_SECRET
                   optional: true
-            {{- if .Values.chat.enabled }}
-            # Real GitHub API token for GitHub-backed changed-file fetches,
-            # including the session compare proxy. The
-            # monolith's own GITHUB_TOKEN env is a kloak: placeholder (guest
-            # egress swap), useless for a direct API call, so we wire the REAL
-            # token (monolith-chat-secrets key GITHUB_TOKEN, the same one
-            # git-mirror uses) under a distinct env name the API reads.
+            {{- end }}
+            {{- if .Values.chat.onepassword.itemPath }}
+            # Real GitHub API token for every direct API consumer, including
+            # factory, CD health, knowledge docfix, and Semgrep changed-file
+            # fetches. The monolith's GITHUB_TOKEN env is a kloak: placeholder
+            # for guest egress swap, so direct callers use this distinct name.
+            # Availability follows the existing chat secret's item path, not an
+            # unrelated chat or Semgrep feature switch.
             - name: GITHUB_API_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: {{ include "monolith.fullname" . }}-chat-secrets
                   key: {{ .Values.chat.githubApiTokenSecretKey }}
             {{- end }}
-            {{- end }}
-            # cd health component thresholds (issue #4597). Values, not code
-            # constants, so retuning the signal does not need a rebuild. The
-            # component is advisory: it reports on a 200 and pages nobody.
+            # cd health fault thresholds (issue #4597). The separate writer
+            # interval below has an independent 750s reader-staleness constant in
+            # home/module.py. The component reports on a 200 and pages nobody.
             - name: CD_HEALTH_CHART_LAG_S
               value: {{ .Values.cdHealth.chartLagSeconds | quote }}
             - name: CD_HEALTH_CI_RED_WINDOW_S
@@ -459,6 +451,10 @@ spec:
             - name: POD_RESTART_WATCH_NAMESPACES
               value: {{ join "," .Values.podRestartWatch.namespaces | quote }}
             {{- if .Values.whatsapp.enabled }}
+            # Pinned OpenRouter model for the surviving in-monolith WhatsApp
+            # household reply path. Heavy Goose agent dispatch was retired.
+            - name: HOUSEHOLD_LLM_MODEL
+              value: {{ .Values.whatsapp.model | quote }}
             # WhatsApp inbound bearer token (ADR 039 spec section 2). The monolith
             # validates the gateway's forwarded requests against it; the same
             # 1Password-managed Secret injects it into the gateway (the caller).

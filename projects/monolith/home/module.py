@@ -13,9 +13,10 @@ from core.platform_probe import probe_health
 
 from framework import Module as _Module
 
-# 2.5x the writer's default 300s cadence, so one slow or missed cycle never
-# flaps the endpoint but a dead writer still surfaces. Same reasoning as the
-# ember synthetic components.
+# Fixed reader threshold. It currently equals 2.5x the writer's default 300s
+# cadence, so one slow or missed cycle does not flap the endpoint. This constant
+# is independent of cdHealth.probeIntervalSeconds; keep both consistent if the
+# writer cadence changes.
 _CD_STALENESS_S = 750.0
 
 
