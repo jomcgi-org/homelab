@@ -23,8 +23,9 @@
 //   WatchNode   server-streamed capacity heartbeat; the daemon is the health
 //               authority and this is the control plane's only source of node
 //               truth.
-//   GetNodeStatus  unary snapshot of the same facts, for polling fallback and
-//               startup reconciliation.
+//   GetNodeStatus  unary snapshot of the same facts. The daemon implements it,
+//               but it is reserved for future control-plane polling or
+//               reconciliation; the current control plane uses WatchNode.
 //
 // Concurrency is owned by the control plane, NOT the daemon: the per-workload
 // semaphore of fc-invoke is deliberately dropped on the fork. The daemon
@@ -87,19 +88,21 @@ service NodeService {
   // subscribe, then on every material change and at a liveness interval.
   rpc WatchNode(WatchNodeRequest) returns (stream NodeStatus);
 
-  // GetNodeStatus is a unary snapshot of the same facts WatchNode streams, for
-  // polling fallback (if streaming over the mesh proves flaky) and for control-
-  // plane startup reconciliation (existing base snapshots + parked VMs are
-  // reported so the control plane reconciles rather than rebuilding).
+  // GetNodeStatus is a unary snapshot of the same facts WatchNode streams. The
+  // daemon implements this RPC, but the current control plane has no caller for
+  // it and uses WatchNode for node status. It is reserved for a future polling
+  // fallback or reconciliation path.
   rpc GetNodeStatus(GetNodeStatusRequest) returns (NodeStatus);
 
   // -- Workload registry verbs (artifact-decoupling Phase 2, ADDITIVE) -------
   //
-  // The daemon holds NO workload table of its own (config.go carries only node
-  // substrate paths now, never an image identity table). The control plane
-  // PUSHES the workload registry over these three verbs, so a daemon boots with
-  // an EMPTY registry and does not admit work until the control plane has
-  // replayed the authoritative set on (re)connect. This retires the
+  // The daemon holds NO configured workload table of its own (config.go carries
+  // only node substrate paths now, never an image identity table). The current
+  // control plane PUSHES the full workload registry with SyncRegistry, so a
+  // daemon boots with an EMPTY registry and does not admit work until the
+  // control plane has replayed the authoritative set on (re)connect. The daemon
+  // also implements RegisterWorkload and DeregisterWorkload, but those RPCs are
+  // reserved for future incremental control-plane updates. This retires the
   // EMBERVM_NODED_IMAGES env table: image identity (rootfs ref, harness init,
   // sizing) now arrives over the wire, keyed by workload, from the control
   // plane's op-log-backed workload view. The verbs are additive: a daemon that
@@ -109,23 +112,24 @@ service NodeService {
   // SyncRegistry pushes the AUTHORITATIVE full workload set. The daemon converges
   // its in-memory registry to EXACTLY the pushed entries: an entry present locally
   // but absent from the push is DROPPED, an entry present in the push is
-  // added-or-updated. This is the reconcile primitive the control plane calls once
-  // per daemon (re)connect after the adoption handshake, so a daemon that missed
-  // an incremental Register/Deregister while disconnected re-converges to truth.
-  // Idempotent under replay: applying the same set twice is a no-op. The response
-  // echoes the resulting entry count for the control plane's own correlation.
+  // added-or-updated. The current control plane calls this before starting
+  // WatchNode on every daemon (re)connect and periodically re-pushes it to
+  // connected daemons. Idempotent under replay: applying the same set twice is a
+  // no-op. The response echoes the resulting entry count for the control plane's
+  // own correlation.
   rpc SyncRegistry(SyncRegistryRequest) returns (SyncRegistryResponse);
 
-  // RegisterWorkload adds-or-updates ONE registry entry, an incremental
-  // optimization over a full SyncRegistry when a single workload is provisioned.
-  // Idempotent: re-registering the same entry overwrites in place. The control
-  // plane still owns convergence via SyncRegistry; this only shortens the common
-  // single-workload path.
+  // RegisterWorkload adds-or-updates ONE registry entry. The daemon implements
+  // this idempotent operation, but the current control plane has no caller for
+  // it; it is reserved for a future incremental optimization. Re-registering the
+  // same entry overwrites in place. SyncRegistry remains the current control-
+  // plane convergence path.
   rpc RegisterWorkload(RegisterWorkloadRequest) returns (RegisterWorkloadResponse);
 
-  // DeregisterWorkload removes ONE registry entry by workload name, the
-  // incremental counterpart of RegisterWorkload. Idempotent: deregistering an
-  // absent workload is a no-op (the desired end-state already holds).
+  // DeregisterWorkload removes ONE registry entry by workload name. The daemon
+  // implements this idempotent operation, but the current control plane has no
+  // caller for it; it is reserved for the future incremental counterpart of
+  // RegisterWorkload. Deregistering an absent workload is a no-op.
   rpc DeregisterWorkload(DeregisterWorkloadRequest) returns (DeregisterWorkloadResponse);
 
   // -- Session verbs (R2) ----------------------------------------------------
@@ -1275,8 +1279,9 @@ message GroupMemberPlanEntry {
 }
 
 // RegistryEntry is the node-side identity of ONE workload the daemon can build a
-// base for and prime/serve, pushed by the control plane over SyncRegistry /
-// RegisterWorkload. It carries exactly what the retired EMBERVM_NODED_IMAGES env
+// base for and prime/serve. The current control plane pushes entries with
+// SyncRegistry; RegisterWorkload is a reserved future incremental path. An entry
+// carries exactly what the retired EMBERVM_NODED_IMAGES env
 // table carried per image (rootfs path, harness init) plus the resolved image
 // digest and the base VM sizing, keyed by workload rather than by image ref. The
 // daemon interprets these node-side facts (a rootfs path is on-disk, an
