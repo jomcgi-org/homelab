@@ -11,6 +11,7 @@ from factory.execution.reconciliation import (
     read_factory_dispatch as read_factory_dispatch,
     cancel_queued_factory_attempt as cancel_queued_factory_attempt,
     confirm_reconciled_guest_cessation as confirm_reconciled_guest_cessation,
+    confirm_reconciled_unbound_attempt as confirm_reconciled_unbound_attempt,
     inspect_lost_before_guest_factory_attempt as inspect_lost_before_guest_factory_attempt,
     lock_cessation_session as lock_cessation_session,
     read_lost_before_guest_factory_attempt as read_lost_before_guest_factory_attempt,

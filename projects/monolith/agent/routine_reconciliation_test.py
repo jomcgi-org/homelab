@@ -1434,3 +1434,212 @@ def test_terminal_dispatch_reconciliation_rejects_unmatched_evidence(database, c
             == original
         )
         assert db.exec(select(RoutineReconciliation)).first() is None
+
+
+def unbound_held(database, monkeypatch, *, applied=False, outcome="lease_expired"):
+    from factory.execution import permit_supervision as supervision
+    from factory.execution.models import ProbeObservation
+    from factory.execution.review_leases import ReservationReview
+    from factory.orchestration.factory_models import FactoryStart
+    from factory.orchestration.models import SwarmTask, SwarmNodeRun
+
+    request, _ = held(database, delivery_error=True, applied=applied)
+    engine = database.execution_options(
+        schema_translate_map={
+            "agent_sessions": None,
+            "claude_agent": None,
+            "swarm": None,
+        }
+    )
+    SQLModel.metadata.create_all(
+        engine,
+        tables=[
+            m.__table__
+            for m in (
+                ProbeObservation,
+                ReservationReview,
+                FactoryStart,
+                SwarmTask,
+                SwarmNodeRun,
+            )
+        ],
+    )
+    monkeypatch.setenv("FACTORY_RESERVATION_REVIEW_ENABLED", "true")
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    monkeypatch.setattr(supervision, "get_engine", lambda: engine)
+    with Session(engine) as db, db.begin():
+        agent = db.get(AgentSession, request["session_id"])
+        agent.status = "failed"
+        for field in (
+            "ember_session_id",
+            "ember_lineage_id",
+            "ember_session_token",
+            "cli_session_id",
+        ):
+            setattr(agent, field, None)
+        permit = db.exec(select(AgentCapacityReservation)).one()
+        permit.outcome = outcome
+        permit.owner = "worker"
+        turn = db.exec(select(AgentTurn)).one()
+        turn.stop_reason = UNKNOWN_INVOCATION
+        turn.result_text = ""
+        turn.usage_json = json.dumps(
+            {
+                "recovery": {
+                    "cause": outcome,
+                    "claim_owner": "worker",
+                    "dispatch_count": 1,
+                    "last_dispatch_at": (
+                        datetime.now(timezone.utc) - timedelta(minutes=2)
+                    ).isoformat(),
+                }
+            }
+        )
+        db.add(agent)
+        db.add(permit)
+        db.add(turn)
+        pid = permit.id
+    return engine, request, pid
+
+
+@pytest.mark.parametrize("applied", [False, True])
+@pytest.mark.parametrize(
+    "outcome", ["lease_expired", "delivery_error", "executor_cancelled"]
+)
+def test_supervision_recovers_unbound_job_atomically(
+    database, monkeypatch, applied, outcome
+):
+    import asyncio
+    from factory.execution import permit_supervision as supervision
+
+    engine, request, pid = unbound_held(
+        database, monkeypatch, applied=applied, outcome=outcome
+    )
+    with Session(engine) as db:
+        before = reconciliation.read_reconciliation_state(
+            db, request["job_name"], request["session_id"]
+        )
+
+    class NoTransport:
+        def __getattr__(self, name):
+            raise AssertionError(
+                f"Unbound recovery must not contact guest transport: {name}"
+            )
+
+    asyncio.run(supervision.sweep_once(NoTransport()))
+    asyncio.run(supervision.sweep_once(NoTransport()))
+    with Session(engine) as db:
+        after = reconciliation.read_reconciliation_state(
+            db, request["job_name"], request["session_id"]
+        )
+        assert (after["next_run_at"] is None) == applied
+        assert after["turns_sha256"] == before["turns_sha256"]
+        assert after["payload_sha256"] == before["payload_sha256"]
+        assert db.get(AgentCapacityReservation, pid).outcome == "no_guest_bound"
+        assert db.get(AgentCapacityReservation, pid).state == "settled"
+        audit = db.exec(select(RoutineReconciliation)).one()
+        result = json.loads(audit.result_json)
+        assert result["no_guest_bound"] is True
+        assert result["guest_cessation_confirmed"] is False
+        assert db.exec(select(AgentTurn)).one().cost_usd is None
+        with pytest.raises(store.SessionOutcomeUnknown):
+            store.set_ember_session(
+                db, request["session_id"], "late-guest", "token", None
+            )
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "owner",
+        "binding",
+        "partial",
+        "legacy",
+        "identity",
+        "workflow",
+        "pending",
+        "competing_permit",
+    ],
+)
+def test_unbound_recovery_refuses_changed_or_incomplete_proof(
+    database, monkeypatch, change
+):
+    from factory.execution import permit_supervision as supervision
+
+    engine, request, pid = unbound_held(database, monkeypatch)
+    candidate = supervision._prepare(pid)
+    assert candidate is not None
+    with Session(engine) as db, db.begin():
+        agent = db.get(AgentSession, request["session_id"])
+        permit = db.get(AgentCapacityReservation, pid)
+        turn = db.exec(select(AgentTurn)).one()
+        if change == "owner":
+            permit.owner = "other-worker"
+        elif change == "binding":
+            agent.prior_ember_lineage_id = "old-binding"
+        elif change == "partial":
+            usage = json.loads(turn.usage_json)
+            usage["recovery"]["partial_text"] = "possible delivery"
+            turn.usage_json = json.dumps(usage)
+        elif change == "legacy":
+            turn.stop_reason = None
+            agent.status = "warn"
+            permit.outcome = "delivery_error"
+        elif change == "identity":
+            turn.prompt = "changed prompt"
+        elif change == "pending":
+            db.add(
+                PendingMessage(session_id=agent.id, seq=2, message_text="late retry")
+            )
+        elif change == "competing_permit":
+            db.add(
+                AgentCapacityReservation(
+                    local_session_id="other-attempt",
+                    session_id=agent.id,
+                    pending_seq=2,
+                    tier="kg",
+                    routine_job_name=request["job_name"],
+                    state="reserved",
+                )
+            )
+        else:
+            db.execute(text("UPDATE workflow_status SET status='PENDING'"))
+        db.add(agent)
+        db.add(permit)
+        db.add(turn)
+    supervision._record_no_guest(candidate)
+    with Session(engine) as db:
+        assert db.get(AgentCapacityReservation, pid).state == "uncertain"
+        assert db.exec(select(RoutineReconciliation)).first() is None
+        assert (
+            reconciliation.read_reconciliation_state(
+                db, request["job_name"], request["session_id"]
+            )["next_run_at"]
+            is None
+        )
+
+
+def test_unbound_recovery_rolls_back_when_audit_fails(database, monkeypatch):
+    from factory.execution import permit_supervision as supervision
+
+    engine, request, pid = unbound_held(database, monkeypatch)
+    candidate = supervision._prepare(pid)
+    add = Session.add
+
+    def fail_audit(self, instance, *args, **kwargs):
+        if isinstance(instance, RoutineReconciliation):
+            raise RuntimeError("audit unavailable")
+        return add(self, instance, *args, **kwargs)
+
+    monkeypatch.setattr(Session, "add", fail_audit)
+    with pytest.raises(RuntimeError, match="audit unavailable"):
+        supervision._record_no_guest(candidate)
+    with Session(engine) as db:
+        assert db.get(AgentCapacityReservation, pid).state == "uncertain"
+        assert db.exec(select(RoutineReconciliation)).first() is None
+        assert (
+            reconciliation.read_reconciliation_state(
+                db, request["job_name"], request["session_id"]
+            )["next_run_at"]
+            is None
+        )
