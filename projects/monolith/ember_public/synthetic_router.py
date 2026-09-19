@@ -44,11 +44,25 @@ _codex_probe_in_flight = False
 # The Spark lane probe has an independent cadence and guard.
 _spark_probe_in_flight = False
 
+_SIGNOZ_TRACE_URL = "https://private.jomcgi.dev/app/signoz/trace"
+
 
 async def _notify(message: str, level: str) -> None:
     from agent.api import notify
 
     await notify(message, level=level)
+
+
+def _failure_detail_with_trace(result: dict) -> str:
+    trace_id = result.get("trace_id")
+    if (
+        isinstance(trace_id, str)
+        and len(trace_id) == 32
+        and all(character in "0123456789abcdef" for character in trace_id)
+        and trace_id != "0" * 32
+    ):
+        return f"{result['detail']} ({_SIGNOZ_TRACE_URL}/{trace_id})"
+    return result["detail"]
 
 
 @internal_router.post("/synthetic-probe")
@@ -77,7 +91,11 @@ async def synthetic_probe_endpoint() -> dict:
 
         for demo, result in results.items():
             if not result["ok"]:
-                logger.warning("ember synthetic %s failed: %s", demo, result["detail"])
+                logger.warning(
+                    "ember synthetic %s failed: %s",
+                    demo,
+                    _failure_detail_with_trace(result),
+                )
 
         # Recording IS allowed to raise: a failed write means the detector is
         # blind, which the triggering job should surface as a job failure.
@@ -104,7 +122,10 @@ async def codex_session_probe_endpoint() -> dict:
 
         result = await synthetic_probe.probe_codex()
         if not result["ok"]:
-            logger.warning("ember synthetic codex failed: %s", result["detail"])
+            logger.warning(
+                "ember synthetic codex failed: %s",
+                _failure_detail_with_trace(result),
+            )
             await _notify(result["detail"], level="warn")
         await synthetic_probe.record("codex", result)
         return {"codex": result}
@@ -127,7 +148,10 @@ async def spark_session_probe_endpoint() -> dict:
 
         result = await synthetic_probe.probe_spark()
         if not result["ok"]:
-            logger.warning("ember synthetic spark failed: %s", result["detail"])
+            logger.warning(
+                "ember synthetic spark failed: %s",
+                _failure_detail_with_trace(result),
+            )
             await _notify(result["detail"], level="warn")
         await synthetic_probe.record("spark", result)
         return {"spark": result}

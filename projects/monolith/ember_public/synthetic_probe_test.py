@@ -1,3 +1,4 @@
+import builtins
 from datetime import datetime, timezone
 
 import pytest
@@ -42,9 +43,15 @@ async def test_retry_returns_last_failure_detail(monkeypatch):
     monkeypatch.setattr(probe.asyncio, "sleep", lambda *_: _done())
     monkeypatch.setattr(probe, "perf_counter", _clock([0.0, 0.0, 15.0]))
 
-    result = await probe._retry_probe(lambda: _next_result(results))
+    result = await probe._retry_probe("bazel", lambda: _next_result(results))
 
-    assert result == {"ok": False, "detail": "last failure", "latency_ms": None}
+    assert result == {
+        "ok": False,
+        "detail": "last failure",
+        "latency_ms": None,
+        "trace_id": None,
+        "ember_session_id": None,
+    }
 
 
 @pytest.mark.asyncio
@@ -63,7 +70,7 @@ async def test_retry_does_not_exceed_budget(monkeypatch):
     )
     monkeypatch.setattr(probe, "perf_counter", _clock([0.0, 0.0, 15.0, 30.0]))
 
-    result = await probe._retry_probe(always_fails)
+    result = await probe._retry_probe("bazel", always_fails)
 
     assert result["detail"] == "failure 2"
     assert calls == 2
@@ -75,7 +82,7 @@ async def test_retry_immediate_success_has_no_retry_note(monkeypatch):
     async def succeeds():
         return {"ok": True, "detail": "warm, 501ms", "latency_ms": 501}
 
-    result = await probe._retry_probe(succeeds)
+    result = await probe._retry_probe("bazel", succeeds)
 
     assert result["detail"] == "warm, 501ms"
 
@@ -91,6 +98,83 @@ def _clock(values):
 
 async def _sleep(sleeps, interval):
     sleeps.append(interval)
+
+
+class _TraceScope:
+    def __init__(self, tracer, name, context):
+        self.tracer = tracer
+        self.name = name
+        self.context = context
+
+    def __enter__(self):
+        self.tracer.current = next(self.tracer.trace_ids)
+        self.tracer.roots.append((self.name, self.context, self.tracer.current))
+
+    def __exit__(self, *_):
+        self.tracer.current = None
+
+
+class _FakeTracer:
+    def __init__(self, trace_ids):
+        self.trace_ids = iter(trace_ids)
+        self.roots = []
+        self.current = None
+
+    def start_as_current_span(self, name, context):
+        return _TraceScope(self, name, context)
+
+
+def test_current_trace_id_is_none_for_invalid_context(monkeypatch):
+    class SpanContext:
+        is_valid = False
+        trace_id = 0
+
+    class Span:
+        def get_span_context(self):
+            return SpanContext()
+
+    monkeypatch.setattr(probe.trace, "get_current_span", lambda: Span())
+
+    assert probe._current_trace_id() is None
+
+
+@pytest.mark.asyncio
+async def test_retry_runs_share_one_independent_root_per_logical_run(monkeypatch):
+    trace_ids = ["1" * 32, "2" * 32]
+    tracer = _FakeTracer(trace_ids)
+    attempts = []
+    results = iter(
+        [
+            {"ok": False, "detail": "retry", "latency_ms": None},
+            {"ok": True, "detail": "recovered", "latency_ms": 1},
+        ]
+    )
+
+    async def attempt():
+        attempts.append(tracer.current)
+        return next(results)
+
+    monkeypatch.setattr(probe, "_tracer", tracer)
+    monkeypatch.setattr(probe, "_current_trace_id", lambda: tracer.current)
+    monkeypatch.setattr(probe, "EMBER_SYNTHETIC_RETRY_BUDGET_S", 30.0)
+    monkeypatch.setattr(probe.asyncio, "sleep", lambda *_: _done())
+    monkeypatch.setattr(probe, "perf_counter", _clock([0.0, 0.0, 15.0, 30.0]))
+
+    first = await probe._retry_probe("bazel", attempt)
+    second = await probe._retry_probe(
+        "pages",
+        lambda: _next_result(iter([{"ok": True, "detail": "ok", "latency_ms": 1}])),
+        retry=False,
+    )
+
+    assert attempts == ["1" * 32, "1" * 32]
+    assert first["trace_id"] == "1" * 32
+    assert second["trace_id"] == "2" * 32
+    assert [name for name, _, _ in tracer.roots] == [
+        "ember.probe.bazel",
+        "ember.probe.pages",
+    ]
+    assert all(isinstance(context, probe.Context) for _, context, _ in tracer.roots)
 
 
 @pytest.mark.asyncio
@@ -164,17 +248,24 @@ async def test_probe_codex_success(monkeypatch):
         terminal_reason = "completed"
         result = " codex synthetic ok "
 
-    async def run_session(prompt, model):
+    async def run_session(prompt, model, on_ember_session_id):
         assert prompt == "Reply with exactly: codex synthetic ok"
         assert model == "luna"
+        on_ember_session_id("ember-codex")
         return Turn()
 
+    tracer = _FakeTracer(["3" * 32])
     monkeypatch.setattr("factory.execution.api.run_synthetic_session", run_session)
+    monkeypatch.setattr(probe, "_tracer", tracer)
+    monkeypatch.setattr(probe, "_current_trace_id", lambda: tracer.current)
 
     result = await probe.probe_codex()
 
     assert result["ok"] is True
     assert isinstance(result["latency_ms"], (int, float))
+    assert result["trace_id"] == "3" * 32
+    assert result["ember_session_id"] == "ember-codex"
+    assert [name for name, _, _ in tracer.roots] == ["ember.probe.codex"]
 
 
 @pytest.mark.asyncio
@@ -226,7 +317,8 @@ async def test_probe_codex_empty_result(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_probe_codex_exception(monkeypatch):
-    async def run_session(*_, **__):
+    async def run_session(*_, on_ember_session_id, **__):
+        on_ember_session_id("ember-failed")
         raise RuntimeError("Codex transport unavailable")
 
     monkeypatch.setattr("factory.execution.api.run_synthetic_session", run_session)
@@ -235,6 +327,34 @@ async def test_probe_codex_exception(monkeypatch):
 
     assert result["ok"] is False
     assert result["latency_ms"] is None
+    assert result["ember_session_id"] == "ember-failed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("session_probe", "blocked_module"),
+    [
+        (probe.probe_codex, "factory.execution.constants"),
+        (probe.probe_spark, "factory.execution.api"),
+    ],
+)
+async def test_probe_session_import_failure_is_reported(
+    monkeypatch, session_probe, blocked_module
+):
+    real_import = builtins.__import__
+
+    def fail_selected_import(name, *args, **kwargs):
+        if name == blocked_module:
+            raise ImportError(f"cannot import {blocked_module}")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fail_selected_import)
+
+    result = await session_probe()
+
+    assert result["ok"] is False
+    assert result["latency_ms"] is None
+    assert result["detail"] == f"cannot import {blocked_module}"
 
 
 @pytest.mark.asyncio
@@ -243,17 +363,24 @@ async def test_probe_spark_success(monkeypatch):
         terminal_reason = "completed"
         result = " spark synthetic ok "
 
-    async def run_session(prompt, model):
+    async def run_session(prompt, model, on_ember_session_id):
         assert prompt == "Reply with exactly: spark synthetic ok"
         assert model == "spark"
+        on_ember_session_id("ember-spark")
         return Turn()
 
+    tracer = _FakeTracer(["4" * 32])
     monkeypatch.setattr("factory.execution.api.run_synthetic_session", run_session)
+    monkeypatch.setattr(probe, "_tracer", tracer)
+    monkeypatch.setattr(probe, "_current_trace_id", lambda: tracer.current)
 
     result = await probe.probe_spark()
 
     assert result["ok"] is True
     assert isinstance(result["latency_ms"], (int, float))
+    assert result["trace_id"] == "4" * 32
+    assert result["ember_session_id"] == "ember-spark"
+    assert [name for name, _, _ in tracer.roots] == ["ember.probe.spark"]
 
 
 @pytest.mark.asyncio
@@ -343,6 +470,8 @@ async def test_record_preserves_last_ok_at_on_failure(monkeypatch):
             demo="bazel",
             ok=True,
             detail="old",
+            trace_id="a" * 32,
+            ember_session_id="ember-old",
             checked_at=datetime.now(timezone.utc),
             last_ok_at=datetime(2026, 7, 27, tzinfo=timezone.utc),
         )
@@ -365,3 +494,5 @@ async def test_record_preserves_last_ok_at_on_failure(monkeypatch):
     await probe.record("bazel", {"ok": False, "detail": "failed", "latency_ms": None})
     assert session.row.ok is False
     assert session.row.last_ok_at == old
+    assert session.row.trace_id is None
+    assert session.row.ember_session_id is None

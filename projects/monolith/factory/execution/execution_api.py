@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import secrets
+from collections.abc import Callable
 from uuid import uuid4
+
 from sqlalchemy import func
 
 from core.db import get_engine
@@ -141,6 +143,7 @@ async def run_synthetic_session(
     session_key: str | None = None,
     read_timeout: float | None = None,
     admission_tier: str = "probe",
+    on_ember_session_id: Callable[[str], None] | None = None,
 ):
     """Run and persist one short synthetic session through the normal path.
 
@@ -148,7 +151,9 @@ async def run_synthetic_session(
     probes. It still uses the shared transport and turn persistence, but gives
     the caller the completed turn instead of requiring a background task and a
     database poll. Completed probes are destroyed; unknown outcomes retain
-    their guest for operator reconciliation.
+    their guest for operator reconciliation. ``on_ember_session_id`` observes
+    the exact guest only after its binding has been persisted, without changing
+    the established return value or cancellation and exception behavior.
     """
     from factory.execution.mcp import _turn_status
 
@@ -273,6 +278,14 @@ async def run_synthetic_session(
                 created_ember,
             )
             binding_persisted = True
+            if on_ember_session_id is not None:
+                try:
+                    on_ember_session_id(created_ember.session_id)
+                except Exception:  # noqa: BLE001 - observer must not fail delivery
+                    logger.exception(
+                        "Synthetic session ID observer failed for session %s",
+                        row.id,
+                    )
         except (store.PendingClaimLost, store.SessionOutcomeUnknown):
             claim_stolen = True
             raise

@@ -17,6 +17,8 @@ from datetime import datetime, timezone
 from time import perf_counter
 
 import httpx
+from opentelemetry import trace
+from opentelemetry.context import Context
 from sqlmodel import Session
 
 from core.db import get_engine
@@ -24,6 +26,8 @@ from ember_public import bazel_core, core, semgrep_core
 from ember_public.synthetic_models import EmberSyntheticProbe
 
 logger = logging.getLogger(__name__)
+
+_tracer = trace.get_tracer("ember.synthetic_probe")
 
 # These sentinels are deliberately <title> strings, which stay stable across
 # site rewording. They remain a real signal because SvelteKit SSR failure
@@ -49,25 +53,60 @@ EMBER_SYNTHETIC_RETRY_BUDGET_S = float(
 EMBER_SYNTHETIC_RETRY_INTERVAL_S = 15.0
 
 
-def _failure(exc: Exception) -> dict:
-    return {"ok": False, "detail": str(exc), "latency_ms": None}
+def _failure(
+    exc: Exception,
+    *,
+    trace_id: str | None = None,
+    ember_session_id: str | None = None,
+) -> dict:
+    return {
+        "ok": False,
+        "detail": str(exc),
+        "latency_ms": None,
+        "trace_id": trace_id,
+        "ember_session_id": ember_session_id,
+    }
 
 
-async def _retry_probe(probe) -> dict:
-    started = perf_counter()
-    retries = 0
-    result = await probe()
-    while not result["ok"]:
-        elapsed = perf_counter() - started
-        if elapsed + EMBER_SYNTHETIC_RETRY_INTERVAL_S >= EMBER_SYNTHETIC_RETRY_BUDGET_S:
-            break
-        await asyncio.sleep(EMBER_SYNTHETIC_RETRY_INTERVAL_S)
+def _current_trace_id() -> str | None:
+    """Return the active valid W3C trace ID, or None without tracing."""
+    span_context = trace.get_current_span().get_span_context()
+    if not span_context.is_valid:
+        return None
+    return format(span_context.trace_id, "032x")
+
+
+def _correlate(
+    result: dict,
+    trace_id: str | None,
+    ember_session_id: str | None = None,
+) -> dict:
+    correlated = dict(result)
+    correlated["trace_id"] = trace_id
+    correlated["ember_session_id"] = ember_session_id
+    return correlated
+
+
+async def _retry_probe(demo: str, probe, *, retry: bool = True) -> dict:
+    with _tracer.start_as_current_span(f"ember.probe.{demo}", context=Context()):
+        trace_id = _current_trace_id()
+        started = perf_counter()
+        retries = 0
         result = await probe()
-        retries += 1
-    if result["ok"] and retries:
-        result = dict(result)
-        result["detail"] += f" (recovered after {retries} retries)"
-    return result
+        while retry and not result["ok"]:
+            elapsed = perf_counter() - started
+            if (
+                elapsed + EMBER_SYNTHETIC_RETRY_INTERVAL_S
+                >= EMBER_SYNTHETIC_RETRY_BUDGET_S
+            ):
+                break
+            await asyncio.sleep(EMBER_SYNTHETIC_RETRY_INTERVAL_S)
+            result = await probe()
+            retries += 1
+        if result["ok"] and retries:
+            result = dict(result)
+            result["detail"] += f" (recovered after {retries} retries)"
+        return _correlate(result, trace_id)
 
 
 async def _probe_bazel_once() -> dict:
@@ -103,7 +142,7 @@ async def _probe_bazel_once() -> dict:
 
 
 async def probe_bazel() -> dict:
-    return await _retry_probe(_probe_bazel_once)
+    return await _retry_probe("bazel", _probe_bazel_once)
 
 
 async def _probe_semgrep_once() -> dict:
@@ -161,10 +200,10 @@ def run():
 
 
 async def probe_semgrep() -> dict:
-    return await _retry_probe(_probe_semgrep_once)
+    return await _retry_probe("semgrep", _probe_semgrep_once)
 
 
-async def probe_pages() -> dict:
+async def _probe_pages_once() -> dict:
     base = os.environ.get("EMBER_SYNTHETIC_BASE_URL", "").rstrip("/")
     if not base:
         return {"ok": True, "detail": "not configured", "latency_ms": None}
@@ -220,6 +259,10 @@ async def probe_pages() -> dict:
         return _failure(exc)
 
 
+async def probe_pages() -> dict:
+    return await _retry_probe("pages", _probe_pages_once, retry=False)
+
+
 async def _probe_postgres_once() -> dict:
     """Probe via a direct core call, not HTTP.
 
@@ -271,88 +314,98 @@ async def _probe_postgres_once() -> dict:
 
 
 async def probe_postgres() -> dict:
-    return await _retry_probe(_probe_postgres_once)
+    return await _retry_probe("postgres", _probe_postgres_once)
 
 
 async def probe_codex() -> dict:
     """Exercise a real Codex lane session through the Luna model."""
-    started = perf_counter()
-    try:
-        from factory.execution.api import run_synthetic_session
-        from factory.execution.constants import CODEX_SYNTHETIC_PROMPT
-
-        turn = await run_synthetic_session(
-            CODEX_SYNTHETIC_PROMPT,
-            model="luna",
-        )
-        if turn is None:
-            # Another replica claimed this run's pending message and is
-            # delivering it. Nothing was proven, but nothing is known broken
-            # either, so report ok rather than paging: a red here would say
-            # "the lane is down" when the lane is merely busy elsewhere. The
-            # claim loss is logged in run_synthetic_session.
-            return {
-                "ok": True,
-                "detail": "another replica delivered this run",
-                "latency_ms": (perf_counter() - started) * 1000,
-            }
-        if turn.terminal_reason not in {"completed", "stop"}:
-            return {
-                "ok": False,
-                "detail": f"turn reason {turn.terminal_reason!r}",
-                "latency_ms": (perf_counter() - started) * 1000,
-            }
-        if not turn.result.strip():
-            return {
-                "ok": False,
-                "detail": "completed turn had an empty result",
-                "latency_ms": (perf_counter() - started) * 1000,
-            }
-        return {
-            "ok": True,
-            "detail": f"completed, destroyed, {(perf_counter() - started) * 1000:.0f}ms",
-            "latency_ms": (perf_counter() - started) * 1000,
-        }
-    except Exception as exc:  # noqa: BLE001 - probes report failures in-band
-        return _failure(exc)
+    return await _probe_session("codex", "luna")
 
 
 async def probe_spark() -> dict:
     """Exercise a real Muse-family session on claude-runtime."""
-    started = perf_counter()
-    try:
-        from factory.execution.api import run_synthetic_session
-        from factory.execution.constants import SPARK_SYNTHETIC_PROMPT
+    return await _probe_session("spark", "spark")
 
-        turn = await run_synthetic_session(
-            SPARK_SYNTHETIC_PROMPT,
-            model="spark",
-        )
-        if turn is None:
-            return {
-                "ok": True,
-                "detail": "another replica delivered this run",
-                "latency_ms": (perf_counter() - started) * 1000,
-            }
-        if turn.terminal_reason not in {"completed", "stop"}:
-            return {
-                "ok": False,
-                "detail": f"turn reason {turn.terminal_reason!r}",
-                "latency_ms": (perf_counter() - started) * 1000,
-            }
-        if not turn.result.strip():
-            return {
-                "ok": False,
-                "detail": "completed turn had an empty result",
-                "latency_ms": (perf_counter() - started) * 1000,
-            }
-        return {
-            "ok": True,
-            "detail": f"completed, destroyed, {(perf_counter() - started) * 1000:.0f}ms",
-            "latency_ms": (perf_counter() - started) * 1000,
-        }
-    except Exception as exc:  # noqa: BLE001 - probes report failures in-band
-        return _failure(exc)
+
+async def _probe_session(demo: str, model: str) -> dict:
+    """Run one session synthetic under an independent trace root."""
+    started = perf_counter()
+    ember_session_id = None
+
+    def capture_ember_session_id(session_id: str) -> None:
+        nonlocal ember_session_id
+        ember_session_id = session_id
+
+    with _tracer.start_as_current_span(f"ember.probe.{demo}", context=Context()):
+        trace_id = _current_trace_id()
+        try:
+            from factory.execution.api import run_synthetic_session
+
+            if demo == "codex":
+                from factory.execution.constants import CODEX_SYNTHETIC_PROMPT
+
+                prompt = CODEX_SYNTHETIC_PROMPT
+            elif demo == "spark":
+                from factory.execution.constants import SPARK_SYNTHETIC_PROMPT
+
+                prompt = SPARK_SYNTHETIC_PROMPT
+            else:
+                raise ValueError(f"unknown session probe {demo!r}")
+
+            turn = await run_synthetic_session(
+                prompt,
+                model=model,
+                on_ember_session_id=capture_ember_session_id,
+            )
+            if turn is None:
+                # Another replica claimed this run's pending message and is
+                # delivering it. Nothing was proven, but nothing is known broken
+                # either, so report ok rather than paging.
+                return _correlate(
+                    {
+                        "ok": True,
+                        "detail": "another replica delivered this run",
+                        "latency_ms": (perf_counter() - started) * 1000,
+                    },
+                    trace_id,
+                    ember_session_id,
+                )
+            if turn.terminal_reason not in {"completed", "stop"}:
+                return _correlate(
+                    {
+                        "ok": False,
+                        "detail": f"turn reason {turn.terminal_reason!r}",
+                        "latency_ms": (perf_counter() - started) * 1000,
+                    },
+                    trace_id,
+                    ember_session_id,
+                )
+            if not turn.result.strip():
+                return _correlate(
+                    {
+                        "ok": False,
+                        "detail": "completed turn had an empty result",
+                        "latency_ms": (perf_counter() - started) * 1000,
+                    },
+                    trace_id,
+                    ember_session_id,
+                )
+            elapsed_ms = (perf_counter() - started) * 1000
+            return _correlate(
+                {
+                    "ok": True,
+                    "detail": f"completed, destroyed, {elapsed_ms:.0f}ms",
+                    "latency_ms": elapsed_ms,
+                },
+                trace_id,
+                ember_session_id,
+            )
+        except Exception as exc:  # noqa: BLE001 - probes report failures in-band
+            return _failure(
+                exc,
+                trace_id=trace_id,
+                ember_session_id=ember_session_id,
+            )
 
 
 def _record_sync(demo: str, result: dict) -> None:
@@ -365,6 +418,8 @@ def _record_sync(demo: str, result: dict) -> None:
                 ok=result["ok"],
                 detail=result["detail"],
                 latency_ms=result.get("latency_ms"),
+                trace_id=result.get("trace_id"),
+                ember_session_id=result.get("ember_session_id"),
                 checked_at=now,
                 last_ok_at=now if result["ok"] else None,
             )
@@ -373,6 +428,8 @@ def _record_sync(demo: str, result: dict) -> None:
             row.ok = result["ok"]
             row.detail = result["detail"]
             row.latency_ms = result.get("latency_ms")
+            row.trace_id = result.get("trace_id")
+            row.ember_session_id = result.get("ember_session_id")
             row.checked_at = now
             if result["ok"]:
                 row.last_ok_at = now

@@ -35,7 +35,11 @@ def synthetic_probe_health(demo: str, staleness_s: float):
         # Fail open on bootstrap: monolith-public rolls out before the migration
         # creates the table, and a missing row means the prober has not run yet.
         if row is None:
-            return {"ok": True, "detail": "no probe recorded yet"}
+            return {
+                "ok": True,
+                "detail": "no probe recorded yet",
+                "trace_id": None,
+            }
         if not row.ok:
             detail = row.detail
             preempted = None
@@ -69,6 +73,7 @@ def synthetic_probe_health(demo: str, staleness_s: float):
                     "ok": False,
                     "detail": f"{prefix}: {detail}",
                     "cause": "preemption",
+                    "trace_id": row.trace_id,
                 }
             if row.last_ok_at is not None:
                 now = datetime.now(timezone.utc)
@@ -79,7 +84,7 @@ def synthetic_probe_health(demo: str, staleness_s: float):
                 )
                 downtime_s = max(0.0, (now - last_ok_at).total_seconds())
                 detail = f"{detail}, down for {downtime_s / 60:.1f}m"
-            return {"ok": False, "detail": detail}
+            return {"ok": False, "detail": detail, "trace_id": row.trace_id}
         checked_at = (
             row.checked_at.replace(tzinfo=timezone.utc)
             if row.checked_at.tzinfo is None
@@ -90,12 +95,13 @@ def synthetic_probe_health(demo: str, staleness_s: float):
             return {
                 "ok": False,
                 "detail": f"last probe was {age_s / 60:.0f}m ago, prober may be dead",
+                "trace_id": row.trace_id,
             }
         detail = (
             f"probe ok, {row.latency_ms:.0f}ms"
             if row.latency_ms is not None
             else "probe ok"
         )
-        return {"ok": True, "detail": detail}
+        return {"ok": True, "detail": detail, "trace_id": row.trace_id}
 
     return check
