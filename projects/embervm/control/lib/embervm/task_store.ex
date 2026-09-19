@@ -338,7 +338,7 @@ defmodule Embervm.TaskStore do
   # snapshot, because the op-log projection already IS the authoritative
   # current state.
   defp rebuild(%{op_log: op_log, op_log_mod: op_log_mod, tasks: tasks, idem: idem}) do
-    case op_log_mod.load_tasks(op_log) do
+    case call_op_log(fn -> op_log_mod.load_tasks(op_log) end) do
       {:ok, rows} ->
         Enum.each(rows, fn row ->
           task = row_to_task(row)
@@ -439,7 +439,7 @@ defmodule Embervm.TaskStore do
   # ETS entries, then submit fresh under the same key. The old task's immutable ops
   # stay in the journal until horizon compaction; only the projection is pruned early.
   defp fresh_resubmit(attrs, workload, idempotency_key, old_task_id, state) do
-    case state.op_log_mod.evict_task(state.op_log, old_task_id) do
+    case call_op_log(fn -> state.op_log_mod.evict_task(state.op_log, old_task_id) end) do
       :ok ->
         :ets.delete(state.tasks, old_task_id)
         :ets.delete(state.idem, {workload, idempotency_key})
@@ -523,7 +523,7 @@ defmodule Embervm.TaskStore do
         payload: %{}
       }
 
-      case state.op_log_mod.append(state.op_log, op) do
+      case call_op_log(fn -> state.op_log_mod.append(state.op_log, op) end) do
         {:ok, _seq} ->
           updated = %{task | state: next, attempt: task.attempt + 1, updated_at: ts}
           :ets.insert(state.tasks, {task_id, updated})
@@ -550,11 +550,11 @@ defmodule Embervm.TaskStore do
   end
 
   def handle_call({:get_request, task_id}, _from, state) do
-    {:reply, state.op_log_mod.load_request(state.op_log, task_id), state}
+    {:reply, call_op_log(fn -> state.op_log_mod.load_request(state.op_log, task_id) end), state}
   end
 
   def handle_call({:list_usage, opts}, _from, state) do
-    {:reply, state.op_log_mod.list_usage(state.op_log, opts), state}
+    {:reply, call_op_log(fn -> state.op_log_mod.list_usage(state.op_log, opts) end), state}
   end
 
   def handle_call(:list_backlog, _from, state) do
@@ -619,7 +619,7 @@ defmodule Embervm.TaskStore do
         payload: %{}
       }
 
-      case state.op_log_mod.append(state.op_log, op) do
+      case call_op_log(fn -> state.op_log_mod.append(state.op_log, op) end) do
         {:ok, _seq} ->
           updated = %{task | state: next, attempt: 1, updated_at: ts}
           :ets.insert(state.tasks, {task_id, updated})
@@ -681,7 +681,7 @@ defmodule Embervm.TaskStore do
       }
     }
 
-    case state.op_log_mod.append(state.op_log, op) do
+    case call_op_log(fn -> state.op_log_mod.append(state.op_log, op) end) do
       {:ok, _seq} ->
         task = %{
           task_id: task_id,
@@ -824,7 +824,7 @@ defmodule Embervm.TaskStore do
       payload: payload
     }
 
-    case state.op_log_mod.append(state.op_log, op) do
+    case call_op_log(fn -> state.op_log_mod.append(state.op_log, op) end) do
       {:ok, _seq} ->
         updated = %{task | state: next_state, updated_at: ts}
         :ets.insert(state.tasks, {task.task_id, updated})
@@ -956,7 +956,7 @@ defmodule Embervm.TaskStore do
   # The clock lives here in the store, so the filter stays here rather than in the
   # op-log's load_result (whose behaviour signature is unchanged).
   defp live_result(state, task_id) do
-    case state.op_log_mod.load_result(state.op_log, task_id) do
+    case call_op_log(fn -> state.op_log_mod.load_result(state.op_log, task_id) end) do
       {:ok, %{expires_at: expires_at} = result} when is_integer(expires_at) ->
         if expires_at < state.clock.(), do: {:ok, nil}, else: {:ok, result}
 
@@ -971,6 +971,31 @@ defmodule Embervm.TaskStore do
       [] -> {:error, {:not_found, task_id}}
     end
   end
+
+  # The Postgres adapter normally converts its own call timeout to
+  # {:error, :unavailable}. Keep the store alive during the smaller restart
+  # window where the op-log process is absent or shuts down between dispatch
+  # and GenServer.call. Only genuine GenServer.call availability exits are
+  # normalized here. Arbitrary exits and exceptions still fail loudly.
+  defp call_op_log(fun) do
+    fun.()
+  catch
+    :exit, reason ->
+      if unavailable_call_exit?(reason), do: {:error, :unavailable}, else: exit(reason)
+  end
+
+  defp unavailable_call_exit?({reason, {GenServer, :call, _args}}),
+    do: unavailable_call_reason?(reason)
+
+  defp unavailable_call_exit?(_reason), do: false
+
+  defp unavailable_call_reason?(reason)
+       when reason in [:timeout, :noproc, :normal, :shutdown, :noconnection],
+       do: true
+
+  defp unavailable_call_reason?({:shutdown, _reason}), do: true
+  defp unavailable_call_reason?({:nodedown, _node}), do: true
+  defp unavailable_call_reason?(_reason), do: false
 
   # Reads the per-workload retry config from Embervm.WorkloadCatalog (kept up
   # to date by Embervm.WorkloadWatcher's reconcile loop, Task 5).
