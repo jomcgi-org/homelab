@@ -18,6 +18,7 @@ defmodule Embervm.LogFormatter do
   # its keys here or they are silently dropped.
   @meta_keys [
     :task_id,
+    :session_id,
     :workload,
     :principal,
     :ref,

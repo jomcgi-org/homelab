@@ -104,10 +104,23 @@ data:
         tail_storage: pebble_tail_storage
         {{- end }}
         policies:
+          # These two policies are deliberate uncapped exemptions. The issue
+          # being diagnosed is the loss of error and low-volume pi-runtime
+          # traces, so either class must survive even when the baseline budget
+          # is full. Peer tail-sampling policies are ORed.
+          - name: keep-errors
+            type: status_code
+            status_code:
+              status_codes: [ERROR]
+          - name: keep-pi-runtime
+            type: string_attribute
+            string_attribute:
+              key: ember.workload
+              values: [pi-runtime]
           # One composite policy, not three peer policies. tail_sampling ORs
-          # its policies, so peers can only ever admit more traces; composite
-          # is what imposes a ceiling, by giving each sub-policy a slice of a
-          # spans-per-second budget and dropping what does not fit.
+          # its policies, so peers can only ever admit more traces. The
+          # composite policy imposes the ceiling on ordinary traffic, while the
+          # explicit keep policies above are allowed to exceed it.
           #
           # Priority comes from the ORDER OF composite_sub_policy below, not
           # from policy_order. policy_order parses and is then ignored by the

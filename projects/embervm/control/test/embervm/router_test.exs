@@ -155,6 +155,25 @@ defmodule Embervm.RouterTest do
     def invoke(_srv, "s-pressure", _req), do: {:error, {:relight_failed, {:prime_failed, %GRPC.RPCError{status: 8, message: "pressure:mem"}}}}
     def invoke(_srv, "s-snapshot", _req), do: {:error, {:relight_failed, {:prime_failed, %GRPC.RPCError{status: 9, message: "snapshot lost"}}}}
     def invoke(_srv, "s-brick-gone", _req), do: {:error, :brick_gone}
+
+    def invoke(_srv, "s-pi-timeout", _req),
+      do:
+        {:ok,
+         %{
+           status_code: 422,
+           headers: %{"content-type" => "application/json"},
+           body: ~s({"error":"timed out waiting for Pi output after 600 seconds"})
+         }}
+
+    def invoke(_srv, "s-workspace-missing", _req),
+      do:
+        {:ok,
+         %{
+           status_code: 503,
+           headers: %{"content-type" => "application/json"},
+           body: ~s({"error":"workspace does not exist: /workspace/src"})
+         }}
+
     def invoke(_srv, _id, _req), do: {:error, :not_found}
 
     def stop_identity(_srv, _id), do: nil
@@ -204,6 +223,13 @@ defmodule Embervm.RouterTest do
     def verify_token(_srv, "s-snapshot", "sess-token-snapshot"), do: {:ok, %{session_id: "s-snapshot"}}
     def verify_token(_srv, "s-brick-gone", "sess-token-brick"),
       do: {:ok, %{session_id: "s-brick-gone", lineage_id: "lineage-brick", node_id: "node-4", state: :running}}
+
+    def verify_token(_srv, "s-pi-timeout", "sess-token-pi-timeout"),
+      do: {:ok, %{session_id: "s-pi-timeout", workload: "pi-runtime", principal: "p", state: :running}}
+
+    def verify_token(_srv, "s-workspace-missing", "sess-token-workspace-missing"),
+      do: {:ok, %{session_id: "s-workspace-missing", workload: "pi-runtime", principal: "p", state: :running}}
+
     def verify_token(_srv, "s-term", "sess-token-term"), do: {:error, :terminal}
     def verify_token(_srv, "s-brick-failed", "sess-token-brick-failed"), do: {:error, :terminal}
     def verify_token(_srv, _id, _token), do: {:error, :not_found}
@@ -1568,6 +1594,36 @@ defmodule Embervm.RouterTest do
     # s-queue authorizes with its own token and the manager fake returns :queue_full.
     resp = req(:post, "/v1/sessions/s-queue/invoke", auth("sess-token-queue"), "x")
     assert resp.status == 429
+  end
+
+  test "known guest failures keep their response contract while telemetry classifies them" do
+    with_session_fakes()
+
+    pi_timeout =
+      req(
+        :post,
+        "/v1/sessions/s-pi-timeout/invoke",
+        auth("sess-token-pi-timeout"),
+        "x"
+      )
+
+    assert pi_timeout.status == 422
+    assert json(pi_timeout.body) == %{
+             "error" => "timed out waiting for Pi output after 600 seconds"
+           }
+
+    workspace_missing =
+      req(
+        :post,
+        "/v1/sessions/s-workspace-missing/invoke",
+        auth("sess-token-workspace-missing"),
+        "x"
+      )
+
+    assert workspace_missing.status == 503
+    assert json(workspace_missing.body) == %{
+             "error" => "workspace does not exist: /workspace/src"
+           }
   end
 
   test "invoke-start op-log unavailability maps to a retryable 503" do

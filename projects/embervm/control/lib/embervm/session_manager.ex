@@ -59,7 +59,16 @@ defmodule Embervm.SessionManager do
   require Logger
   require OpenTelemetry.Tracer, as: Tracer
 
-  alias Embervm.{Brick, NodeCapacity, SessionState, SessionStore, SessionTrace, WakeInstance, WorkloadCatalog}
+  alias Embervm.{
+    Brick,
+    NodeCapacity,
+    SessionState,
+    SessionStore,
+    SessionTelemetry,
+    SessionTrace,
+    WakeInstance,
+    WorkloadCatalog
+  }
   alias Embervm.Scheduler.Request
   alias Embervm.Scheduler
   alias Embervm.PrimedOp
@@ -721,7 +730,7 @@ defmodule Embervm.SessionManager do
                              "ember.create.denied" => "create_saturated"
                            }
                          } do
-          Tracer.set_status(:error, "create_saturated")
+          SessionTelemetry.mark_error(:create_saturated)
           error_result = {:error, {:denied, :create_saturated}}
           state = %{state | create_saturated_denials: state.create_saturated_denials + 1}
           state = log_saturated_denial(state, workload, principal, inflight)
@@ -1163,7 +1172,9 @@ defmodule Embervm.SessionManager do
                if(persistence_enabled_workload?(entry), do: mint_lineage_id(state), else: nil)
          }}
       else
-        {:error, reason} -> {:error, {:denied, reason}}
+        {:error, reason} ->
+          SessionTelemetry.mark_error(reason)
+          {:error, {:denied, reason}}
       end
     end
   end

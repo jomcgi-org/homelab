@@ -171,9 +171,30 @@ def test_allowlisted_service_gets_a_filtered_traces_pipeline():
 def test_prod_allowlist_includes_monolith_emitters():
     values = yaml.safe_load(_values("values-prod").read_text())
 
-    assert {"monolith-backend", "monolith-jobs", "monolith-public"} <= set(
-        values["allowedServices"]
-    )
+    assert {
+        "embervm-control",
+        "monolith-backend",
+        "monolith-jobs",
+        "monolith-public",
+    } <= set(values["allowedServices"])
+
+
+def test_tail_sampling_keeps_errors_and_pi_runtime_invokes():
+    config = _collector_config(_render())
+    sampling = config["processors"]["tail_sampling"]
+
+    assert sampling["decision_wait"] == "960s"
+    policies = {policy["name"]: policy for policy in sampling["policies"]}
+    assert policies["keep-errors"] == {
+        "name": "keep-errors",
+        "type": "status_code",
+        "status_code": {"status_codes": ["ERROR"]},
+    }
+    assert policies["keep-pi-runtime"] == {
+        "name": "keep-pi-runtime",
+        "type": "string_attribute",
+        "string_attribute": {"key": "ember.workload", "values": ["pi-runtime"]},
+    }
 
 
 def test_allowlist_drops_services_not_named():

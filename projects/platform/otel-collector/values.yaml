@@ -61,7 +61,11 @@ allowedServices: []
 
 # Tail sampling. Only rendered when allowedServices is non-empty.
 sampling:
-  decisionWaitSeconds: 10
+  # The control-plane invoke watchdog can reply after about 920 seconds. The
+  # root span carries ERROR only when that reply arrives, so a 10-second tail
+  # decision permanently classified the trace before its failure was visible.
+  # Keep the trace pending past the watchdog without changing the invoke budget.
+  decisionWaitSeconds: 960
   # Traces held pending a sampling decision. In-flight volume is roughly
   # trace_rate x decisionWaitSeconds, but the buffer has to absorb bursts well
   # above the average or the sampler starts deciding on evicted, incomplete

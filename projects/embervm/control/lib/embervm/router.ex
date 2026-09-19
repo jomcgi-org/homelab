@@ -47,7 +47,14 @@ defmodule Embervm.Router do
   require Logger
   require OpenTelemetry.Tracer, as: Tracer
 
-  alias Embervm.{CapacityReport, SessionTrace, SyncWait, TaskState, TaskStore}
+  alias Embervm.{
+    CapacityReport,
+    SessionTelemetry,
+    SessionTrace,
+    SyncWait,
+    TaskState,
+    TaskStore
+  }
 
   # Single tenant in v1 (the `homelab` tenant); the column is still carried on
   # every record so multi-tenant is a data change, not a schema change.
@@ -1167,6 +1174,27 @@ defmodule Embervm.Router do
   # workload, or lineage mismatch, 500 for an internal failure.
   defp handle_create_session(conn, workload) do
     principal = conn.assigns.principal
+
+    SessionTrace.restore_parent(header_value(conn, "traceparent"))
+
+    Tracer.with_span "embervm.session.create.request", %{
+      attributes: %{"ember.workload" => workload, "ember.principal" => principal}
+    } do
+      try do
+        do_handle_create_session(conn, workload, principal)
+      rescue
+        error ->
+          SessionTelemetry.mark_error(:create_exception)
+          reraise error, __STACKTRACE__
+      catch
+        kind, reason ->
+          SessionTelemetry.mark_error(:create_exception)
+          :erlang.raise(kind, reason, __STACKTRACE__)
+      end
+    end
+  end
+
+  defp do_handle_create_session(conn, workload, principal) do
     {restore_lineage, conn} = optional_restore_lineage(conn)
     idempotency_key = header_value(conn, "idempotency-key")
 
@@ -1183,6 +1211,7 @@ defmodule Embervm.Router do
 
     case result do
       :control_plane_busy ->
+        SessionTelemetry.mark_error(:control_plane_busy)
         send_json(conn, 503, %{error: "control plane busy", retryable: true})
 
       # A keyed retry resolved to an EXISTING live session: 200 with its current
@@ -1219,6 +1248,8 @@ defmodule Embervm.Router do
       # session is gone, so this is not retryable against THIS key; callers
       # mint a new key to create again.
       {:error, {:conflict, reason}} ->
+        SessionTelemetry.mark_error({:conflict, reason})
+
         send_json(conn, 409, %{
           error: "session idempotency key already bound to a terminal session",
           reason: to_string(reason),
@@ -1227,9 +1258,11 @@ defmodule Embervm.Router do
         })
 
       {:error, {:denied, reason}} ->
+        SessionTelemetry.mark_error(reason)
         create_denial(conn, workload, reason)
 
       {:error, reason} ->
+        SessionTelemetry.mark_error(reason)
         Logger.error("embervm create session failed: #{inspect(reason)}")
         send_json(conn, 500, %{error: "create session failed", workload: workload, retryable: true})
     end
@@ -1448,13 +1481,16 @@ defmodule Embervm.Router do
         proxy_invoke(conn, session_id, session)
       else
         {:error, :no_token} ->
+          SessionTelemetry.mark_error(:missing_session_token)
           halt_json(conn, 401, %{error: "missing session token", retryable: false})
 
         {:error, :terminal} ->
           # A valid token on a terminal session: 410 with the recorded reason.
+          SessionTelemetry.mark_error(:session_gone)
           session_gone(conn, session_id)
 
         {:error, _} ->
+          SessionTelemetry.mark_error(:invalid_session_token)
           halt_json(conn, 403, %{error: "invalid session token", session_id: session_id, retryable: false})
       end
     end
@@ -1475,14 +1511,20 @@ defmodule Embervm.Router do
           traceparent: SessionTrace.current_traceparent()
         }
 
-        case session_manager().invoke(session_manager_server(), session_id, req) do
+        result = invoke_with_output_wait(session_id, authorized_session, req)
+
+        case result do
           {:ok, %{status_code: code, headers: headers, body: resp_body}} ->
+            SessionTelemetry.mark_guest_response(code, resp_body)
             send_guest_result(conn, code, resp_body, headers)
 
           {:error, {:gone, reason}} ->
+            SessionTelemetry.mark_error({:gone, reason})
             send_json(conn, 410, %{error: "session gone", reason: to_string(reason), session_id: session_id, retryable: false})
 
           {:error, {:not_ready, state}} ->
+            SessionTelemetry.mark_error({:not_ready, state})
+
             send_json(conn, 409, %{
               error: "session not ready",
               state: to_string(state),
@@ -1491,6 +1533,8 @@ defmodule Embervm.Router do
             })
 
           {:error, :queue_full} ->
+            SessionTelemetry.mark_error(:queue_full)
+
             send_json(conn, 429, %{
               error: "session invoke queue is full",
               session_id: session_id,
@@ -1501,6 +1545,8 @@ defmodule Embervm.Router do
             # The per-principal wake-rate limit (relight-triggering invokes) tripped:
             # 429 WITHOUT having touched the node (the asymmetric-cost relight was
             # never issued). Retryable once the window drains.
+            SessionTelemetry.mark_error(:wake_rate_limited)
+
             send_json(conn, 429, %{
               error: "session wake-rate limit exceeded",
               reason: "wake_rate",
@@ -1509,9 +1555,11 @@ defmodule Embervm.Router do
             })
 
           {:error, :not_found} ->
+            SessionTelemetry.mark_error(:session_not_found)
             send_json(conn, 404, %{error: "session not found", session_id: session_id, retryable: false})
 
           {:error, :brick_gone} ->
+            SessionTelemetry.mark_error(:brick_gone)
             send_brick_gone(conn, session_id, authorized_session)
 
           {:error, reason} ->
@@ -1520,6 +1568,7 @@ defmodule Embervm.Router do
             # is retryable and maps to 503; other failures retain the at-most-once
             # 502 response.
             status = if unavailable_error?(reason), do: 503, else: 502
+            SessionTelemetry.mark_error(reason)
 
             send_json(conn, status, %{
               error: "session invoke failed",
@@ -1530,9 +1579,44 @@ defmodule Embervm.Router do
         end
 
       {:error, :too_large} ->
+        SessionTelemetry.mark_error(:request_too_large)
         send_json(conn, 413, %{error: "request body exceeds 8 MiB", retryable: false})
     end
   end
+
+  # This span is owned by the router process, not the invoke worker. It therefore
+  # finishes and exports even when the watchdog kills the worker that owns the
+  # lower-level guest_exec span. The span covers the caller-visible wait for guest
+  # output; it does not attach the response body.
+  defp invoke_with_output_wait(session_id, session, req) do
+    Tracer.with_span "embervm.session.output_wait", %{
+      attributes: %{
+        "ember.session_id" => session_id,
+        "ember.workload" => Map.get(session, :workload),
+        "ember.principal" => Map.get(session, :principal)
+      }
+    } do
+      try do
+        result = session_manager().invoke(session_manager_server(), session_id, req)
+        mark_invoke_result(result)
+        result
+      rescue
+        error ->
+          SessionTelemetry.mark_error(:invoke_exception)
+          reraise error, __STACKTRACE__
+      catch
+        kind, reason ->
+          SessionTelemetry.mark_error(:invoke_exception)
+          :erlang.raise(kind, reason, __STACKTRACE__)
+      end
+    end
+  end
+
+  defp mark_invoke_result({:ok, %{status_code: code, body: body}}),
+    do: SessionTelemetry.mark_guest_response(code, body)
+
+  defp mark_invoke_result({:error, reason}), do: SessionTelemetry.mark_error(reason)
+  defp mark_invoke_result(_result), do: :ok
 
   # Memory pressure is inherent to the claude fleet (4096 MiB VMs, single 16gi brick host); idle sessions park/evict on TTL, so RESOURCE_EXHAUSTED is transient and retryable.
   # A placement denial (:no_bricks, :capacity) is the same class; the session manager parks the wake behind it and the expiry reason wraps the atom, so callers may back off and retry.

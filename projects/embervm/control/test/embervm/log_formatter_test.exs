@@ -3,6 +3,25 @@ defmodule Embervm.LogFormatterTest do
 
   alias Embervm.CapacityObserver
 
+  test "preserves session identity on invoke watchdog logs" do
+    line =
+      Embervm.LogFormatter.format(
+        %{
+          level: :warning,
+          msg: {:string, "session invoke worker watchdog fired"},
+          meta: %{session_id: "session-123", workload: "pi-runtime", node_id: "node-4"}
+        },
+        %{}
+      )
+      |> IO.iodata_to_binary()
+
+    decoded = :json.decode(line)
+
+    assert decoded["session_id"] == "session-123"
+    assert decoded["workload"] == "pi-runtime"
+    assert decoded["node_id"] == "node-4"
+  end
+
   test "preserves every CapacityObserver record field in structured JSON" do
     reservation_table =
       String.to_atom("log_formatter_reservation_#{System.unique_integer([:positive])}")
