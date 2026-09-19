@@ -62,7 +62,7 @@ def test_runs_every_probe_and_records_each(app, recorded):
     assert rows["bazel"]["detail"] == "test:bazel"
 
 
-def test_probe_failure_still_returns_200_and_records(app, recorded):
+def test_probe_failure_still_returns_200_and_records(app, recorded, caplog):
     """A failing probe is not an endpoint error: the latch row carries it.
 
     The triggering job must exit 0 so Argo retries and failed-job alerts stay
@@ -75,6 +75,33 @@ def test_probe_failure_still_returns_200_and_records(app, recorded):
     assert resp.status_code == 200
     assert resp.json()["bazel"]["ok"] is False
     assert rows["bazel"]["ok"] is False
+    assert "/app/signoz/trace/" not in caplog.text
+
+
+def test_probe_failure_log_includes_valid_trace_link(
+    app, recorded, monkeypatch, caplog
+):
+    rows = recorded(ok=False, detail="boom")
+    trace_id = "a" * 32
+
+    async def probe_bazel():
+        return {
+            "ok": False,
+            "detail": "boom:bazel",
+            "latency_ms": None,
+            "trace_id": trace_id,
+        }
+
+    monkeypatch.setattr("ember_public.synthetic_probe.probe_bazel", probe_bazel)
+
+    response = TestClient(app).post("/internal/ember/synthetic-probe")
+
+    assert response.status_code == 200
+    assert rows["bazel"]["trace_id"] == trace_id
+    assert (
+        f"ember synthetic bazel failed: boom:bazel "
+        f"(https://private.jomcgi.dev/app/signoz/trace/{trace_id})"
+    ) in caplog.text
 
 
 def test_probe_failure_warning_carries_the_recording_span(recorded, monkeypatch):
