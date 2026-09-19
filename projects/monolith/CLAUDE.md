@@ -3,16 +3,19 @@
 Scoped guidance for `projects/monolith`. The repo-root `CLAUDE.md` still applies.
 See `README.md` in this directory for the domain map and public/private tier boundary.
 
-## Scheduled job handlers must not block the event loop
+## Scheduled job registrations are metadata only
 
 Handlers registered with `scheduler.api.register_job` have the signature
-`async def handler(session: Session) -> datetime | None` and are **awaited on the
-scheduler's event loop**. The monolith uses synchronous SQLModel sessions, so
-calling a sync Session method (`session.add` / `exec` / `execute` / `commit` /
-`get`) directly inside an `async def` blocks every coroutine on the loop,
-including `/healthz`, for the duration of the query. Semgrep
-`no-sync-session-in-async-def` fails CI on this; the rule is enforcing a real
-production concern, not a style nit.
+`async def handler(session: Session) -> datetime | None`, but the in-process
+dispatcher was deleted. Registration now populates only legacy scheduler rows
+and handler metadata for views and orphan checks. Scheduled execution comes from
+Argo CronWorkflows invoking `app/jobs_main.py`; `replaces` adds a name to
+`ARGO_JOBS` and suppresses that metadata even when the CronWorkflow is suspended.
+
+Async batch handlers must still keep synchronous SQLModel work off their event
+loop. Semgrep `no-sync-session-in-async-def` fails CI on direct Session methods
+inside `async def`, and `no-session-in-to-thread` rejects moving an existing
+Session across threads.
 
 The established pattern (see `hikes/jobs.py`, `ships/retention.py`):
 
@@ -27,7 +30,7 @@ The established pattern (see `hikes/jobs.py`, `ships/retention.py`):
            ...  # sync DB work
            session.commit()
    ```
-   Pass plain data into `to_thread`, **never** the scheduler's `session` argument
+   Pass plain data into `to_thread`, **never** the handler's `session` argument
    (semgrep `no-session-in-to-thread` blocks that, and a session is not safe to
    use across threads).
 4. Keep the DB logic in a sync core that takes an explicit `session` parameter
@@ -36,9 +39,9 @@ The established pattern (see `hikes/jobs.py`, `ships/retention.py`):
 5. Do not `session.add` in a loop (semgrep `session-add-in-loop`): build the
    rows and `session.add_all(...)` once, or mutate `session.get`-tracked rows
    and let them flush on `commit`.
-6. Pass `heavy=True` to `register_job` for memory-intensive jobs (e.g. graph
-   layout). The dispatcher serializes heavy jobs so two of them never co-run
-   and OOMKill the shared pod; light jobs stay fully parallel.
+6. Put memory requests, limits, deadlines, and concurrency policy on the Argo
+   CronWorkflow. `register_job(..., heavy=True)` is legacy metadata and does not
+   serialize execution.
 
 ## Test fixtures use SQLite; datetimes come back naive
 

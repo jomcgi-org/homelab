@@ -368,13 +368,8 @@ orchestrator:
 whatsapp:
   # WINDOW: session singleton parked; re-enable on GKE only after home is off.
   enabled: false
-  # Heavy-agent path ON: charts/artifacts/full tasks dispatch the household goose
-  # agent (recipe=agent, tier=household, DeepSeek). Charts come back as an artifact
-  # URL (deliverable as text), sidestepping the text-only outbox media limit.
-  agentEnabled: true
-  # Household content model (in-monolith concierge reply + WhatsApp chat agent).
-  # DeepSeek V4 Flash on OpenRouter; the goose guest model is in
-  # goosecracker.tiers.household.
+  # Household content model for the surviving in-monolith WhatsApp chat agent.
+  # DeepSeek V4 Flash on OpenRouter.
   model: "deepseek/deepseek-v4-flash"
   onepassword:
     itemPath: "vaults/k8s-homelab/items/whatsapp"

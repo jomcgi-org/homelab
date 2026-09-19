@@ -569,8 +569,8 @@
       "reason": "Not a hazard but the enforced control: DB permission denies the read; asserted by projects/monolith/public_reader_grants_test.py:44"
     },
     {
-      "item": "scheduler.trigger marks a job that never dispatches",
-      "reason": "Inert, not unsafe for currently Argo-owned jobs: ARGO_JOBS prevents duplicate in-process registration and active CronWorkflows own execution (projects/monolith/scheduler/api.py:23)"
+      "item": "scheduler.trigger submits the wrong execution path",
+      "reason": "Bounded by run-now looking up the CronWorkflow whose `replaces` annotation names the requested job and creating a one-off Workflow from its `workflowSpec`; `ARGO_JOBS` only suppresses legacy registry metadata, including for suspended entries (projects/monolith/scheduler/service.py:53)"
     },
     {
       "item": "shotter.capture exceeding its render budget",
