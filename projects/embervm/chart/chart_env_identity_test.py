@@ -933,9 +933,7 @@ def test_dev_does_not_render_production_only_workloads(renders):
     "values_names", [["PROD_VALUES"], ["PROD_VALUES", "GKE_VALUES"]]
 )
 def test_production_renders_the_pi_runtime_target(values_names):
-    rendered = _render(
-        "embervm", [Path(os.environ[name]) for name in values_names]
-    )
+    rendered = _render("embervm", [Path(os.environ[name]) for name in values_names])
     matches = [
         doc
         for doc in yaml.safe_load_all(rendered)

@@ -274,9 +274,7 @@ def test_tail_sampling_keeps_errors_and_pi_runtime_invokes(values_name):
     assert _matches_policy(
         policies["keep-errors"], [{"status_code": "ERROR", "attributes": {}}]
     )
-    assert not _matches_policy(
-        policies["keep-errors"], routine_backpressure_trace
-    )
+    assert not _matches_policy(policies["keep-errors"], routine_backpressure_trace)
     assert not _matches_policy(policies["keep-pi-runtime"], error_trace)
     assert _matches_policy(policies["keep-pi-runtime"], pi_trace)
     assert not _matches_policy(policies["keep-errors"], pi_trace)

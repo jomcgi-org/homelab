@@ -439,9 +439,7 @@ def test_hydration_timing_reports_clone_and_existing_status(
     assert manager._turn_phase_telemetry["repo-clone"]["status"] == "cloned"
     assert type(manager._turn_phase_telemetry["hydration"]["ms"]) is int
     assert type(manager._turn_phase_telemetry["repo-clone"]["ms"]) is int
-    assert (
-        type(manager._turn_phase_telemetry["hydration"]["start_offset_ms"]) is int
-    )
+    assert type(manager._turn_phase_telemetry["hydration"]["start_offset_ms"]) is int
     assert (
         manager._turn_phase_telemetry["hydration"]["start_offset_ms"]
         <= manager._turn_phase_telemetry["repo-clone"]["start_offset_ms"]
