@@ -44,6 +44,8 @@ _codex_probe_in_flight = False
 # The Spark lane probe has an independent cadence and guard.
 _spark_probe_in_flight = False
 
+_SIGNOZ_TRACE_URL = "https://private.jomcgi.dev/app/signoz/trace"
+
 
 async def _notify(message: str, level: str) -> None:
     from agent.api import notify
@@ -59,9 +61,7 @@ def _failure_detail_with_trace(result: dict) -> str:
         and all(character in "0123456789abcdef" for character in trace_id)
         and trace_id != "0" * 32
     ):
-        # The trace lives in Honeycomb; there is no stable deep-link builder in
-        # the repo, so surface the id for a Honeycomb trace search.
-        return f"{result['detail']} (trace_id {trace_id})"
+        return f"{result['detail']} ({_SIGNOZ_TRACE_URL}/{trace_id})"
     return result["detail"]
 
 

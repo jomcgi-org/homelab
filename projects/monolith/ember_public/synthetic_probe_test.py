@@ -1,3 +1,4 @@
+import builtins
 from datetime import datetime, timezone
 
 import pytest
@@ -327,6 +328,33 @@ async def test_probe_codex_exception(monkeypatch):
     assert result["ok"] is False
     assert result["latency_ms"] is None
     assert result["ember_session_id"] == "ember-failed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("session_probe", "blocked_module"),
+    [
+        (probe.probe_codex, "factory.execution.constants"),
+        (probe.probe_spark, "factory.execution.api"),
+    ],
+)
+async def test_probe_session_import_failure_is_reported(
+    monkeypatch, session_probe, blocked_module
+):
+    real_import = builtins.__import__
+
+    def fail_selected_import(name, *args, **kwargs):
+        if name == blocked_module:
+            raise ImportError(f"cannot import {blocked_module}")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fail_selected_import)
+
+    result = await session_probe()
+
+    assert result["ok"] is False
+    assert result["latency_ms"] is None
+    assert result["detail"] == f"cannot import {blocked_module}"
 
 
 @pytest.mark.asyncio
