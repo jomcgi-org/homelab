@@ -27,6 +27,7 @@ defmodule Embervm.LogFormatter do
     :restore_target,
     :exported_generation,
     :reason,
+    :endpoint,
     :attempt,
     :kind,
     :mfa,

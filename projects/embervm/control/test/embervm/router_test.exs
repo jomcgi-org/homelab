@@ -59,6 +59,26 @@ defmodule Embervm.RouterTest do
     def submit(_server, _attrs), do: {:error, :unavailable}
   end
 
+  defmodule StoreProbeOk do
+    def status,
+      do: %{state: :ok, reason: nil, last_ok_at: "2026-09-19T01:02:03Z", last_checked_at: "2026-09-19T01:02:03Z"}
+  end
+
+  defmodule StoreProbeDegraded do
+    def status,
+      do: %{
+        state: :degraded,
+        reason: "{:tls_alert, {:unknown_ca, :certificate_unknown}}",
+        last_ok_at: nil,
+        last_checked_at: "2026-09-19T01:02:03Z"
+      }
+  end
+
+  defmodule StoreProbeDisabled do
+    def status,
+      do: %{state: :disabled, reason: nil, last_ok_at: nil, last_checked_at: "2026-09-19T01:02:03Z"}
+  end
+
   # Fakes for the R2 session routes: the router resolves the session manager/store
   # from app-env (the :session_manager / :session_store_mod keys), so a request test
   # can drive the HTTP surface, and especially the SESSION-TOKEN auth boundary,
@@ -500,6 +520,7 @@ defmodule Embervm.RouterTest do
       Application.delete_env(:embervm, :artifact_key_service)
       Application.delete_env(:embervm, :artifact_principal)
       Application.delete_env(:embervm, :task_store_mod)
+      Application.delete_env(:embervm, :store_probe)
     end)
 
     :ok
@@ -942,7 +963,38 @@ defmodule Embervm.RouterTest do
     Application.put_env(:embervm, :session_manager_server, self())
     resp = req(:get, "/healthz")
     assert resp.status == 200
-    assert resp.body == "ok"
+    assert resp.body =~ ~r/^ok\nstore: (ok|disabled)$/
+  end
+
+  test "/healthz reports each store state without changing readiness" do
+    Application.put_env(:embervm, :session_manager, RaisingPingSessionManager)
+    Application.put_env(:embervm, :session_manager_server, self())
+
+    for {probe, line} <- [
+          {StoreProbeOk, "store: ok"},
+          {StoreProbeDegraded, "store: degraded {:tls_alert, {:unknown_ca, :certificate_unknown}}"},
+          {StoreProbeDisabled, "store: disabled"}
+        ] do
+      Application.put_env(:embervm, :store_probe, probe)
+      resp = req(:get, "/healthz")
+      assert resp.status == 200
+      assert resp.body == "ok\n" <> line
+    end
+  end
+
+  test "/v1/health/store is authenticated and returns the current observation" do
+    Application.put_env(:embervm, :store_probe, StoreProbeDegraded)
+    assert req(:get, "/v1/health/store").status == 401
+
+    resp = req(:get, "/v1/health/store", auth("good"))
+    assert resp.status == 200
+
+    assert json(resp.body) == %{
+             "state" => "degraded",
+             "reason" => "{:tls_alert, {:unknown_ca, :certificate_unknown}}",
+             "last_ok_at" => nil,
+             "last_checked_at" => "2026-09-19T01:02:03Z"
+           }
   end
 
   test "/livez needs no auth and reports an unresponsive session manager" do
@@ -978,7 +1030,7 @@ defmodule Embervm.RouterTest do
 
     resp = req(:get, "/healthz")
     assert resp.status == 503
-    assert resp.body == "session manager down"
+    assert resp.body =~ ~r/^session manager down\nstore: (ok|disabled)$/
   end
 
   test "/livez reports a missing session manager" do
