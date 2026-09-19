@@ -44,6 +44,35 @@ func TestInitializeTracingWithoutEndpointStaysDisabled(t *testing.T) {
 	}
 }
 
+func TestInitializeTracingRejectsInvalidSamplerBeforeCreatingExporter(t *testing.T) {
+	cfg := testConfig()
+	cfg.samplerArg = "not-a-rate"
+	factoryCalled := false
+	installCalled := false
+
+	tp, err := initializeTracing(
+		context.Background(),
+		cfg,
+		func(context.Context, string) (sdktrace.SpanExporter, error) {
+			factoryCalled = true
+			return nil, errors.New("unexpected exporter construction")
+		},
+		func(trace.TracerProvider) { installCalled = true },
+	)
+	if err == nil {
+		t.Fatal("invalid sampler argument returned no error")
+	}
+	if tp != nil {
+		t.Fatal("invalid sampler argument returned a provider")
+	}
+	if factoryCalled {
+		t.Fatal("invalid sampler argument constructed an exporter")
+	}
+	if installCalled {
+		t.Fatal("invalid sampler argument installed a provider")
+	}
+}
+
 func TestInitializeTracingInstallsProviderExportsAndSetsResourceIdentity(t *testing.T) {
 	cfg := testConfig()
 	exporter := &recordingExporter{}
