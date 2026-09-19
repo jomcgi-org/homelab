@@ -645,7 +645,7 @@ def test_review_escalation_retry_runs_implementer_before_reviewer(monkeypatch):
         ("review", 1),
         ("implement", 2),
         ("implement", 3),
-        ("review", 1),
+        ("review", 2),
     ]
     assert decision_calls[0][1:4] == (
         "review",
