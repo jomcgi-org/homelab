@@ -4865,7 +4865,15 @@ defmodule Embervm.SessionManager do
       reason: reason
     )
 
-    state = if match?({:ok, _}, reply), do: clear_session_tracking(state, session.session_id), else: state
+    state =
+      if match?({:ok, _}, reply) do
+        # Banking can leave a dormant session process registered. Once the
+        # durable eviction commits, its timers and registry entry must stop.
+        terminate_session_process(state, session.session_id)
+        clear_session_tracking(state, session.session_id)
+      else
+        state
+      end
     {reply, state}
   end
 
