@@ -325,10 +325,7 @@ def _control_plane_cessation(view, identity, saved=None):
     # Some legacy destroyed views have no terminal timestamp. They cannot prove
     # ordering, but may still carry the existing exact stop-completion proof.
     if (
-        any(
-            type(value) is not int or value < 1
-            for value in (started, last_invoke, updated_at)
-        )
+        any(type(value) is not int or value < 1 for value in (started, updated_at))
         or type(generation) is not int
         or generation < 0
     ):
@@ -346,7 +343,35 @@ def _control_plane_cessation(view, identity, saved=None):
             or started != expected["invoke_started_at"]
         ):
             return None
-    if not started <= last_invoke <= updated_at:
+    if last_invoke is None:
+        # Eviction can cause the failed turn itself, before the client records
+        # its error. A missing completion stamp is expected when that response
+        # was lost; match the exact durable dispatch instead of requiring it.
+        from shared.invocation_outcomes import terminal_dispatch_cessation
+
+        if view.get("session_id") != identity[
+            "guest_id"
+        ] or not terminal_dispatch_cessation(
+            view,
+            {
+                "claim_owner": identity.get("claim_owner"),
+                "dispatch_count": identity.get("dispatch_count"),
+                "last_dispatch_at": identity["dispatched_at"],
+            },
+            identity.get("claim_owner"),
+            _timestamp(identity["failed_turn_at"]),
+        ):
+            return None
+        return {
+            "session_id": identity["guest_id"],
+            "state": view["state"],
+            "generation": generation,
+            "invoke_started_at": started,
+            "last_invoke_at": None,
+            "updated_at": updated_at,
+            "cessation_evidence": "terminal_dispatch",
+        }
+    if type(last_invoke) is not int or not started <= last_invoke <= updated_at:
         return None
     # The control plane stamps these in its own milliseconds and they are
     # ordered here against monolith-side timestamps. The gaps asserted are the

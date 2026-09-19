@@ -4425,6 +4425,86 @@ def test_evicted_guest_settles_factory_without_committed_stop_intent(
         )
 
 
+@pytest.mark.parametrize("terminal_state", ["evicted", "destroyed"])
+@pytest.mark.parametrize("terminal_offset_ms", [-1, 1])
+def test_terminal_factory_guest_without_completion_settles_exact_dispatch(
+    uncertain_factory, monkeypatch, terminal_state, terminal_offset_ms
+):
+    from datetime import timedelta
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = uncertain_factory
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    s.cp.update(
+        state=terminal_state,
+        last_invoke_at=None,
+        stop_precondition=None,
+        updated_at=int(
+            (s.failed_turn_at + timedelta(milliseconds=terminal_offset_ms)).timestamp()
+            * 1000
+        ),
+    )
+    before = _uncertain_snapshot(s)
+    assert supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    after = _uncertain_snapshot(s)
+    assert after["permits"][0]["state"] == "settled"
+    assert after["runs"][0]["status"] == "failed"
+    assert after["runs"][0]["accounted_cost_usd"] == s.run["pin"]["max_cost_usd"]
+    assert after["factory"]["starts"][0]["status"] == "failed"
+    assert all(precondition is None for _guest, precondition in s.calls)
+    assert supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    assert before["permits"][0]["state"] == "uncertain"
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "foreign_guest",
+        "old_invoke",
+        "new_invoke",
+        "bad_generation",
+        "reordered",
+        "foreign_stop",
+    ],
+)
+def test_incomplete_terminal_factory_proof_rejects_ambiguous_identity(
+    uncertain_factory, monkeypatch, mutation
+):
+    from datetime import timedelta
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = uncertain_factory
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    s.cp.update(
+        state="evicted",
+        last_invoke_at=None,
+        stop_precondition=None,
+        updated_at=int((s.failed_turn_at + timedelta(seconds=1)).timestamp() * 1000),
+    )
+    if mutation == "foreign_guest":
+        s.cp["session_id"] = "s-someone-else"
+    elif mutation == "old_invoke":
+        s.cp["invoke_started_at"] = int(s.dispatched_at.timestamp() * 1000)
+    elif mutation == "new_invoke":
+        s.cp["invoke_started_at"] = int(
+            (s.failed_turn_at + timedelta(milliseconds=1)).timestamp() * 1000
+        )
+    elif mutation == "bad_generation":
+        s.cp["generation"] = True
+    elif mutation == "reordered":
+        s.cp["updated_at"] = s.cp["invoke_started_at"] - 1
+    else:
+        s.cp["stop_precondition"] = {**s.precondition, "generation": 7}
+    assert not supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    assert _uncertain_snapshot(s)["permits"][0]["state"] == "uncertain"
+
+
 @pytest.mark.parametrize("cost_usd", [None, 0.25])
 def test_brick_restart_loss_settles_exact_attempt_and_honors_retry_budget(
     uncertain_factory, monkeypatch, cost_usd
