@@ -235,9 +235,9 @@ def create_task(
         db.add(row)
         db.commit()
         db.refresh(row)
-    from knowledge.api import prepare_recall
+        from knowledge.api import prepare_recall
 
-    prepare_recall(task_text)
+        prepare_recall(db, task_text)
     return row
 
 
@@ -350,8 +350,7 @@ def record_conductor_call(
     return row
 
 
-def recall_task_text(task_id: str) -> str | None:
+def recall_task_text(task_id: str, *, session: Session) -> str | None:
     """Read the task objective without substituting a launch envelope."""
-    with Session(get_engine()) as session:
-        task = session.get(SwarmTask, task_id)
-        return task.task_text if task is not None else None
+    task = session.get(SwarmTask, task_id)
+    return task.task_text if task is not None else None

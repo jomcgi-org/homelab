@@ -275,5 +275,6 @@ def test_kg_health_exposes_recall_counters():
         "cache_hits",
         "skips",
         "timeouts",
+        "backfill_errors",
         "distinct_facts_served",
     }

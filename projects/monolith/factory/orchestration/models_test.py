@@ -42,7 +42,12 @@ def test_mint_task_id_is_prefixed_uuid():
 
 def test_create_task_writes_row(db, monkeypatch):
     prepared = []
-    monkeypatch.setattr("knowledge.api.prepare_recall", prepared.append)
+
+    def prepare(session, text):
+        assert session.get_bind() is db
+        prepared.append(text)
+
+    monkeypatch.setattr("knowledge.api.prepare_recall", prepare)
     task_id = mint_task_id()
     with Session(db) as session:
         row = create_task(

@@ -405,7 +405,8 @@ def _persist_session(
     if task_id is not None:
         from factory.orchestration.models import recall_task_text
 
-        recall_text = recall_task_text(task_id)
+        with Session(get_engine()) as db_session:
+            recall_text = recall_task_text(task_id, session=db_session)
     system_prompt = attach_recall(system_prompt, recall_text, node_key=node_key)
     with Session(get_engine()) as db_session:
         return store.create_session(
