@@ -1475,48 +1475,62 @@ defmodule Embervm.Router do
     Tracer.with_span "embervm.session.invoke", %{
       attributes: %{"ember.session_id" => session_id}
     } do
-      with {:ok, token} <- bearer_token(conn),
-           {:ok, session} <- verify_session_token_span(session_id, token) do
-        Tracer.set_attributes(%{
-          "ember.workload" => Map.get(session, :workload),
-          "ember.principal" => Map.get(session, :principal),
-          "ember.session_state" => to_string(Map.get(session, :state))
-        })
-
-        proxy_invoke(conn, session_id, session)
-      else
-        {:error, :no_token} ->
-          SessionTelemetry.mark_error(:missing_session_token)
-          halt_json(conn, 401, %{error: "missing session token", retryable: false})
-
-        {:error, :terminal} ->
-          # A valid token on a terminal session: 410 with the recorded reason.
-          SessionTelemetry.mark_error(:session_gone)
-          session_gone(conn, session_id)
-
-        {:error, _} ->
-          SessionTelemetry.mark_error(:invalid_session_token)
-          halt_json(conn, 403, %{error: "invalid session token", session_id: session_id, retryable: false})
+      try do
+        do_handle_session_invoke(conn, session_id)
+      rescue
+        error ->
+          SessionTelemetry.mark_error(:invoke_exception)
+          reraise error, __STACKTRACE__
+      catch
+        kind, reason ->
+          SessionTelemetry.mark_error(:invoke_exception)
+          :erlang.raise(kind, reason, __STACKTRACE__)
       end
+    end
+  end
+
+  defp do_handle_session_invoke(conn, session_id) do
+    with {:ok, token} <- bearer_token(conn),
+         {:ok, session} <- verify_session_token_span(session_id, token) do
+      Tracer.set_attributes(%{
+        "ember.workload" => Map.get(session, :workload),
+        "ember.principal" => Map.get(session, :principal),
+        "ember.session_state" => to_string(Map.get(session, :state))
+      })
+
+      proxy_invoke(conn, session_id, session)
+    else
+      {:error, :no_token} ->
+        SessionTelemetry.mark_error(:missing_session_token)
+        halt_json(conn, 401, %{error: "missing session token", retryable: false})
+
+      {:error, :terminal} ->
+        # A valid token on a terminal session: 410 with the recorded reason.
+        SessionTelemetry.mark_error(:session_gone)
+        session_gone(conn, session_id)
+
+      {:error, _} ->
+        SessionTelemetry.mark_error(:invalid_session_token)
+        halt_json(conn, 403, %{error: "invalid session token", session_id: session_id, retryable: false})
     end
   end
 
   defp proxy_invoke(conn, session_id, authorized_session) do
     case read_capped_body(conn) do
       {:ok, body, conn} ->
+        # The caller-owned output-wait span adds its traceparent immediately
+        # before dispatch, after that span is active. See SessionTelemetry.
         req = %{
           method: "POST",
           path: guest_path(conn),
           headers: guest_headers(conn),
-          body: body,
-          # Serialize the invoke ROOT span so the downstream queue_wait/relight/
-          # guest_exec spans (which run in other processes across GenServer.call and
-          # spawn boundaries, where the OTel process context does not follow) nest
-          # under it. nil when tracing is off (CI). See Embervm.SessionTrace.
-          traceparent: SessionTrace.current_traceparent()
+          body: body
         }
 
-        result = invoke_with_output_wait(session_id, authorized_session, req)
+        result =
+          SessionTelemetry.with_output_wait(session_id, authorized_session, req, fn traced_req ->
+            session_manager().invoke(session_manager_server(), session_id, traced_req)
+          end)
 
         case result do
           {:ok, %{status_code: code, headers: headers, body: resp_body}} ->
@@ -1595,40 +1609,6 @@ defmodule Embervm.Router do
         send_json(conn, 413, %{error: "request body exceeds 8 MiB", retryable: false})
     end
   end
-
-  # This span is owned by the router process, not the invoke worker. It therefore
-  # finishes and exports even when the watchdog kills the worker that owns the
-  # lower-level guest_exec span. The span covers the caller-visible wait for guest
-  # output; it does not attach the response body.
-  defp invoke_with_output_wait(session_id, session, req) do
-    Tracer.with_span "embervm.session.output_wait", %{
-      attributes: %{
-        "ember.session_id" => session_id,
-        "ember.workload" => Map.get(session, :workload),
-        "ember.principal" => Map.get(session, :principal)
-      }
-    } do
-      try do
-        result = session_manager().invoke(session_manager_server(), session_id, req)
-        mark_invoke_result(result)
-        result
-      rescue
-        error ->
-          SessionTelemetry.mark_error(:invoke_exception)
-          reraise error, __STACKTRACE__
-      catch
-        kind, reason ->
-          SessionTelemetry.mark_error(:invoke_exception)
-          :erlang.raise(kind, reason, __STACKTRACE__)
-      end
-    end
-  end
-
-  defp mark_invoke_result({:ok, %{status_code: code, body: body}}),
-    do: SessionTelemetry.mark_guest_response(code, body)
-
-  defp mark_invoke_result({:error, reason}), do: SessionTelemetry.mark_error(reason)
-  defp mark_invoke_result(_result), do: :ok
 
   # Memory pressure is inherent to the claude fleet (4096 MiB VMs, single 16gi brick host); idle sessions park/evict on TTL, so RESOURCE_EXHAUSTED is transient and retryable.
   # A placement denial (:no_bricks, :capacity) is the same class; the session manager parks the wake behind it and the expiry reason wraps the atom, so callers may back off and retry.
@@ -2564,7 +2544,11 @@ defmodule Embervm.Router do
                           "trailer",
                           "proxy-authorization",
                           "proxy-authenticate",
-                          "x-ember-truncated"
+                          "x-ember-truncated",
+                          "x-ember-phase-hydration-ms",
+                          "x-ember-phase-hydration-status",
+                          "x-ember-phase-repo-clone-ms",
+                          "x-ember-phase-repo-clone-status"
                         ])
 
   # Replays the guest's response headers onto the caller's connection under a

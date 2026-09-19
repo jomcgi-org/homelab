@@ -13,8 +13,18 @@ defmodule Embervm.SessionManagerTest do
   """
   use ExUnit.Case, async: false
   import ExUnit.CaptureLog
+  require OpenTelemetry.Tracer, as: Tracer
 
-  alias Embervm.{Dispatcher, NodeCapacity, SessionManager, SessionStore, TaskStore, WorkloadCatalog}
+  alias Embervm.{
+    Dispatcher,
+    NodeCapacity,
+    SessionManager,
+    SessionStore,
+    SessionTelemetry,
+    TaskStore,
+    TestSpanExporter,
+    WorkloadCatalog
+  }
   alias Embervm.KeyService.Envelope
   alias Embervm.OpLog.SQLite
   alias Embervm.Node.V1.{BankResponse, GuestResponse, PrimeResponse, RelightResponse, SessionAssignResponse, UsageStats}
@@ -3896,6 +3906,50 @@ defmodule Embervm.SessionManagerTest do
     # its invoke completes on the healthy assign path.
     assert {:ok, fresh} = SessionManager.create(ctx.mgr, "wl-wedge", "p1")
     assert {:ok, %{status_code: 200, body: "z"}} = SessionManager.invoke(ctx.mgr, fresh.session_id, %{body: "z"})
+  end
+
+  test "the caller-owned output wait exports after the watchdog kills its worker" do
+    ctx =
+      start_stack(
+        assign_fun: fn _channel, _req -> :timer.sleep(:infinity) end,
+        invoke_watchdog_ms: 150
+      )
+
+    put_session_workload(ctx, "wl-watchdog-trace")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-watchdog-trace", "p1")
+
+    {result, spans} =
+      TestSpanExporter.capture(
+        fn ->
+          Tracer.with_span "test.session.invoke" do
+            SessionTelemetry.with_output_wait(
+              created.session_id,
+              %{workload: "wl-watchdog-trace", principal: "p1"},
+              %{body: "turn"},
+              &SessionManager.invoke(ctx.mgr, created.session_id, &1)
+            )
+          end
+        end,
+        ["test.session.invoke", "embervm.session.output_wait", "embervm.session.queue_wait"]
+      )
+
+    assert result == {:error, :invoke_timeout}
+
+    root = hd(TestSpanExporter.named(spans, "test.session.invoke"))
+    output_wait = hd(TestSpanExporter.named(spans, "embervm.session.output_wait"))
+    queue_wait = hd(TestSpanExporter.named(spans, "embervm.session.queue_wait"))
+
+    assert TestSpanExporter.end_time(root) != :undefined
+    assert TestSpanExporter.end_time(output_wait) != :undefined
+    assert TestSpanExporter.status_code(output_wait) == :error
+    assert TestSpanExporter.attributes(output_wait)["ember.reason"] == "invoke_timeout"
+    assert TestSpanExporter.parent_span_id(output_wait) == TestSpanExporter.span_id(root)
+    assert TestSpanExporter.parent_span_id(queue_wait) == TestSpanExporter.span_id(output_wait)
+    assert TestSpanExporter.trace_id(queue_wait) == TestSpanExporter.trace_id(output_wait)
+
+    # The watchdog uses an untrappable :kill, so the worker-owned guest_exec
+    # cannot end. The caller-owned output_wait above is the exported failure seam.
+    assert TestSpanExporter.named(spans, "embervm.session.guest_exec") == []
   end
 
   test "the invoke watchdog reports brick_gone when registry health shows preemption" do

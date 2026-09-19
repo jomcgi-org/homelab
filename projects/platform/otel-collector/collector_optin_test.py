@@ -55,6 +55,12 @@ def _render_empty_allowlist() -> list[dict]:
 
 
 def _render(extra: list[str] | None = None) -> list[dict]:
+    return _render_overlay("values-prod", extra)
+
+
+def _render_overlay(
+    values_name: str, extra: list[str] | None = None
+) -> list[dict]:
     argv = [
         os.environ.get("HELM_BIN", "helm"),
         "template",
@@ -65,12 +71,27 @@ def _render(extra: list[str] | None = None) -> list[dict]:
         "--values",
         str(_values("values")),
         "--values",
-        str(_values("values-prod")),
+        str(_values(values_name)),
         *(extra or []),
     ]
     result = subprocess.run(argv, capture_output=True, text=True, timeout=120)
     assert result.returncode == 0, f"helm template failed:\n{result.stderr}"
     return [d for d in yaml.safe_load_all(result.stdout) if d]
+
+
+def _matches_policy(policy: dict, spans: list[dict]) -> bool:
+    """Evaluate the two exact-match collector policy types used by this chart."""
+    if policy["type"] == "status_code":
+        accepted = set(policy["status_code"]["status_codes"])
+        return any(span.get("status_code") in accepted for span in spans)
+    if policy["type"] == "string_attribute":
+        matcher = policy["string_attribute"]
+        accepted = set(matcher["values"])
+        return any(
+            span.get("attributes", {}).get(matcher["key"]) in accepted
+            for span in spans
+        )
+    raise AssertionError(f"unsupported policy type in focused test: {policy['type']}")
 
 
 def _render_default() -> list[dict]:
@@ -179,8 +200,9 @@ def test_prod_allowlist_includes_monolith_emitters():
     } <= set(values["allowedServices"])
 
 
-def test_tail_sampling_keeps_errors_and_pi_runtime_invokes():
-    config = _collector_config(_render())
+@pytest.mark.parametrize("values_name", ["values-prod", "values-gke"])
+def test_tail_sampling_keeps_errors_and_pi_runtime_invokes(values_name):
+    config = _collector_config(_render_overlay(values_name))
     sampling = config["processors"]["tail_sampling"]
 
     assert sampling["decision_wait"] == "960s"
@@ -195,6 +217,24 @@ def test_tail_sampling_keeps_errors_and_pi_runtime_invokes():
         "type": "string_attribute",
         "string_attribute": {"key": "ember.workload", "values": ["pi-runtime"]},
     }
+
+    error_trace = [
+        {"status_code": "UNSET", "attributes": {"ember.workload": "other"}},
+        {"status_code": "ERROR", "attributes": {}},
+    ]
+    pi_trace = [
+        {"status_code": "UNSET", "attributes": {"ember.workload": "pi-runtime"}}
+    ]
+    ordinary_trace = [
+        {"status_code": "UNSET", "attributes": {"ember.workload": "other"}}
+    ]
+
+    assert _matches_policy(policies["keep-errors"], error_trace)
+    assert not _matches_policy(policies["keep-pi-runtime"], error_trace)
+    assert _matches_policy(policies["keep-pi-runtime"], pi_trace)
+    assert not _matches_policy(policies["keep-errors"], pi_trace)
+    assert not _matches_policy(policies["keep-errors"], ordinary_trace)
+    assert not _matches_policy(policies["keep-pi-runtime"], ordinary_trace)
 
 
 def test_allowlist_drops_services_not_named():
