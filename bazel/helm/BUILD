@@ -106,7 +106,7 @@ sh_test(
         "$(rootpath @multitool//tools/helm)",
         "$(rootpath @kubeconform_0_8_0_linux_amd64//:binary)",
         "$(rootpath :crd_schemas)",
-        "$(rootpath //bazel/helm:testdata/bad-secretkeyref/Chart.yaml)",
+        "$(rootpath //bazel/helm/testdata/bad-secretkeyref:Chart.yaml)",
         "$(rootpath @kubernetes_json_schema_1_36_3//:secret-v1.json)",
     ] + ["$(rootpath {})".format(source) for source in EXTERNAL_CRD_SOURCES] + ["--"] + [
         "$(rootpath {})".format(manifest)
@@ -118,8 +118,8 @@ sh_test(
         "@kubernetes_json_schema_1_36_3//:secret-v1.json",
         "@kubeconform_0_8_0_linux_amd64//:binary",
         "@multitool//tools/helm",
-        "//bazel/helm:testdata/bad-secretkeyref/Chart.yaml",
-        "//bazel/helm:testdata/bad-secretkeyref/templates/deployment.yaml",
+        "//bazel/helm/testdata/bad-secretkeyref:Chart.yaml",
+        "//bazel/helm/testdata/bad-secretkeyref:templates/deployment.yaml",
     ] + EXTERNAL_CRD_SOURCES + MANIFEST_SETS,
     timeout = "long",
 )
