@@ -165,7 +165,7 @@ def _latest(db, action: str) -> FactoryAudit | None:
     ).first()
 
 
-def _throttled(action: str, detail: dict) -> None:
+def _throttled(action: str, detail: dict, *, session=None) -> None:
     """Write one audit of this action per hour, and drop the rest.
 
     A quiet lane reaches the same conclusion every fifteen seconds. Recording
@@ -173,7 +173,7 @@ def _throttled(action: str, detail: dict) -> None:
     already said.
     """
     cutoff = _now() - timedelta(seconds=IDLE_AUDIT_SECONDS)
-    with _locked_session() as (db, _control):
+    with _locked_session(session) as (db, _control):
         last = _latest(db, action)
         if last is not None and _aware(last.created_at) >= cutoff:
             return
@@ -301,11 +301,45 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
             return []
         try:
             from factory.orchestration.work_items import sync_github_work_items
+            from factory.orchestration.work_item_links import reconcile_body_edges
 
             work_item_counts = sync_github_work_items(
                 repo, issues, truncated=issues_cut, actor=ACTOR
             )
             logger.info("work_item_sync", extra=work_item_counts)
+
+            # Reconcile body edges in a new transaction
+            with _locked_session() as (db, _control):
+                synced_items = db.exec(
+                    select(WorkItem).where(
+                        WorkItem.github_repo == repo,
+                        WorkItem.authority == "github",
+                    )
+                ).all()
+                # Build list of (item, body) tuples from the GitHub issues
+                items_with_bodies = []
+                issue_by_number = {
+                    issue.get("number"): issue
+                    for issue in issues
+                    if isinstance(issue, dict)
+                }
+                for item in synced_items:
+                    if item.github_issue_number is not None:
+                        issue = issue_by_number.get(item.github_issue_number)
+                        if issue is not None:
+                            body = issue.get("body") or ""
+                            items_with_bodies.append((item, body))
+
+                if items_with_bodies:
+                    edge_counts = reconcile_body_edges(
+                        db,
+                        repo,
+                        items_with_bodies,
+                        actor=ACTOR,
+                        truncated=issues_cut,
+                    )
+                    logger.info("work_item_edge_reconcile", extra=edge_counts)
+                db.commit()
         except Exception as exc:  # noqa: BLE001 - intake must survive sync failure
             logger.exception("work_item_sync_error")
             _throttled(

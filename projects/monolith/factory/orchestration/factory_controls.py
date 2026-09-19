@@ -1291,6 +1291,7 @@ def _snapshot(db: Session, row: FactoryReceipt, *, body: bool = False) -> dict:
             "id",
             "repo",
             "issue_number",
+            "work_item_id",
             "generation",
             "title",
             "url",
@@ -1633,6 +1634,7 @@ def escalation_view(receipt: dict) -> dict | None:
         # A brief running on this issue is a decision the server will refuse,
         # so the page reads this rather than offering buttons that 409.
         "briefing": receipt.get("state") in _ACTIVE,
+        "work_item_id": receipt.get("work_item_id"),
     }
 
 

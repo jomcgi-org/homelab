@@ -310,6 +310,14 @@
         <article class="panel" class:here={index === cursor}>
           <header class="panel-head">
             <span class="issue code">#{item.issue_number}</span>
+            {#if item.work_item_id}
+              <a
+                href="/factory/work-items/{item.work_item_id}"
+                class="work-item code"
+              >
+                work item {item.work_item_id}
+              </a>
+            {/if}
             <span class="title">{item.title}</span>
             <span class="badge">{item.task_class}</span>
             <span class="badge">recommend {item.recommendation}</span>
@@ -634,6 +642,15 @@
   .issue {
     color: var(--ink-2);
     font-size: 0.78rem;
+  }
+  .work-item {
+    color: var(--ink-2);
+    font-size: 0.78rem;
+    text-decoration: none;
+  }
+  .work-item:hover {
+    color: var(--accent);
+    text-decoration: underline;
   }
   .title {
     flex: 1 1 14em;

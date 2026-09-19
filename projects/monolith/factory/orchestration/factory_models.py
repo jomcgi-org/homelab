@@ -347,6 +347,10 @@ class WorkItemEdge(SQLModel, table=True):
             "kind IN ('blocks','parent','supersedes')",
             name="work_item_edge_kind_check",
         ),
+        CheckConstraint(
+            "source IN ('manual','github_body','decision')",
+            name="work_item_edge_source_check",
+        ),
         CheckConstraint("from_id <> to_id", name="work_item_edge_self_check"),
         UniqueConstraint("from_id", "to_id", "kind", name="work_item_edge_unique"),
         Index("work_item_edge_to_id_idx", "to_id"),
@@ -359,6 +363,7 @@ class WorkItemEdge(SQLModel, table=True):
     from_id: int = Field(foreign_key="swarm.work_item.id")
     to_id: int = Field(foreign_key="swarm.work_item.id")
     kind: str
+    source: str = Field(default="manual", nullable=False)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 

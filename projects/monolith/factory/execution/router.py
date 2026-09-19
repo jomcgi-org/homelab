@@ -337,6 +337,149 @@ def factory_work_item(item_id: int, session: Session = Depends(get_session)) -> 
     return document
 
 
+class WorkItemEdgeBody(BaseModel):
+    kind: str
+    direction: str
+    other: int | str
+    stated_reason: str | None = None
+
+
+@router.post("/factory/work-items/{item_id}/edges")
+def factory_work_item_add_edge(
+    item_id: int,
+    body: WorkItemEdgeBody,
+    request: Request,
+    session: Session = Depends(get_session),
+) -> dict:
+    """Add an edge to a work item from the private agents page."""
+    from factory.orchestration.work_items import (
+        work_item_document,
+        add_edge,
+        WorkItemError,
+    )
+
+    actor = factory_decider(request)
+
+    # Validate kind and direction
+    if body.kind not in ("blocks", "parent", "supersedes"):
+        raise HTTPException(
+            status_code=422, detail="kind must be blocks, parent, or supersedes"
+        )
+    if body.direction not in ("out", "in"):
+        raise HTTPException(status_code=422, detail="direction must be out or in")
+
+    # Resolve the other item ID
+    other_id = None
+    if isinstance(body.other, int):
+        other_id = body.other
+    elif isinstance(body.other, str) and body.other.startswith("#"):
+        # Resolve #N to work item for the same repo
+        from factory.orchestration.factory_models import WorkItem
+
+        try:
+            issue_number = int(body.other[1:])
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422, detail="other must be an integer or #N format"
+            ) from exc
+        current_item = session.exec(
+            select(WorkItem).where(WorkItem.id == item_id)
+        ).one_or_none()
+        if current_item is None or current_item.github_repo is None:
+            raise HTTPException(status_code=404, detail="work item not found")
+        other_item = session.exec(
+            select(WorkItem).where(
+                WorkItem.github_repo == current_item.github_repo,
+                WorkItem.github_issue_number == issue_number,
+            )
+        ).one_or_none()
+        if other_item is None or other_item.id is None:
+            raise HTTPException(
+                status_code=404, detail=f"issue #{issue_number} not found in this repo"
+            )
+        other_id = other_item.id
+    else:
+        raise HTTPException(
+            status_code=422, detail="other must be an integer or #N format"
+        )
+
+    if other_id is None:
+        raise HTTPException(status_code=422, detail="could not resolve other work item")
+
+    try:
+        # Determine from_id and to_id based on direction
+        if body.direction == "out":
+            from_id, to_id = item_id, other_id
+        else:
+            from_id, to_id = other_id, item_id
+
+        add_edge(
+            session,
+            from_id,
+            to_id,
+            body.kind,
+            actor=actor,
+            author_kind="operator",
+            cause_kind="operator",
+            source="manual",
+            stated_reason=body.stated_reason,
+        )
+        session.commit()
+        document = work_item_document(session, item_id)
+        if document is None:
+            raise HTTPException(status_code=404, detail="work item not found")
+        return document
+    except WorkItemError as exc:
+        session.rollback()
+        if "cycle" in str(exc).lower():
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.delete("/factory/work-items/{item_id}/edges/{edge_id}")
+def factory_work_item_delete_edge(
+    item_id: int,
+    edge_id: int,
+    request: Request,
+    session: Session = Depends(get_session),
+) -> dict:
+    """Delete an edge from a work item from the private agents page."""
+    from factory.orchestration.work_items import (
+        work_item_document,
+        remove_edge,
+        WorkItemError,
+    )
+    from factory.orchestration.factory_models import WorkItemEdge
+
+    actor = factory_decider(request)
+
+    # Verify the edge exists and touches this item
+    edge = session.exec(
+        select(WorkItemEdge).where(WorkItemEdge.id == edge_id)
+    ).one_or_none()
+    if edge is None or (edge.from_id != item_id and edge.to_id != item_id):
+        raise HTTPException(status_code=404, detail="edge not found")
+
+    try:
+        remove_edge(
+            session,
+            edge.from_id,
+            edge.to_id,
+            edge.kind,
+            actor=actor,
+            author_kind="operator",
+            cause_kind="operator",
+        )
+        session.commit()
+        document = work_item_document(session, item_id)
+        if document is None:
+            raise HTTPException(status_code=404, detail="work item not found")
+        return document
+    except WorkItemError as exc:
+        session.rollback()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @router.get("/factory/escalations/{receipt_id}/context")
 def factory_escalation_context(
     receipt_id: int, session: Session = Depends(get_session)

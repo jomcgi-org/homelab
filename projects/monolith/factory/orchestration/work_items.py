@@ -14,6 +14,7 @@ from core.db import get_engine  # noqa: F401 - for test monkeypatching
 from factory.orchestration.factory_controls import (
     normalize_repo,
     _locked_session,
+    receipt_task_class,
 )
 from factory.orchestration.factory_intake_loop import derive_task_class
 from factory.orchestration.factory_models import (
@@ -403,6 +404,7 @@ def add_edge(
     cause_kind: str,
     cause_ref: str | None = None,
     stated_reason: str | None = None,
+    source: str = "manual",
 ) -> None:
     """Add one relationship, idempotently, after checking relevant cycles."""
     if kind not in _EDGE_KINDS:
@@ -421,7 +423,7 @@ def add_edge(
         return
     if kind != "supersedes" and _would_cycle(db, from_id, to_id, kind):
         raise WorkItemError(f"would create {kind} cycle")
-    db.add(WorkItemEdge(from_id=from_id, to_id=to_id, kind=kind))
+    db.add(WorkItemEdge(from_id=from_id, to_id=to_id, kind=kind, source=source))
     _event(
         db,
         items[from_id],
@@ -547,6 +549,11 @@ def _work_item_document(db: Session, item: WorkItem) -> dict:
         .order_by(WorkItemEvent.created_at.desc(), WorkItemEvent.id.desc())
         .limit(20)
     ).all()
+    receipts = db.exec(
+        select(FactoryReceipt)
+        .where(FactoryReceipt.work_item_id == item.id)
+        .order_by(FactoryReceipt.created_at.desc(), FactoryReceipt.id.desc())
+    ).all()
     return {
         "item": item.model_dump(),
         "edges_out": [
@@ -554,6 +561,7 @@ def _work_item_document(db: Session, item: WorkItem) -> dict:
                 "id": edge.id,
                 "to_id": edge.to_id,
                 "kind": edge.kind,
+                "source": edge.source,
                 "created_at": edge.created_at.isoformat(),
             }
             for edge in edges_out
@@ -563,6 +571,7 @@ def _work_item_document(db: Session, item: WorkItem) -> dict:
                 "id": edge.id,
                 "from_id": edge.from_id,
                 "kind": edge.kind,
+                "source": edge.source,
                 "created_at": edge.created_at.isoformat(),
             }
             for edge in edges_in
@@ -581,6 +590,17 @@ def _work_item_document(db: Session, item: WorkItem) -> dict:
                 "created_at": event.created_at.isoformat(),
             }
             for event in events
+        ],
+        "receipts": [
+            {
+                "id": receipt.id,
+                "generation": receipt.generation,
+                "task_class": receipt_task_class(receipt),
+                "state": receipt.state,
+                "created_at": receipt.created_at.isoformat(),
+                "task_id": receipt.task_id,
+            }
+            for receipt in receipts
         ],
     }
 
