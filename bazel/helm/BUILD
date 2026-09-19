@@ -119,7 +119,8 @@ sh_test(
         "@kubeconform_0_8_0_linux_amd64//:binary",
         "@multitool//tools/helm",
         "//bazel/helm:testdata/bad-secretkeyref/Chart.yaml",
-    ] + glob(["testdata/bad-secretkeyref/templates/**"]) + EXTERNAL_CRD_SOURCES + MANIFEST_SETS,
+        "//bazel/helm:testdata/bad-secretkeyref/templates/deployment.yaml",
+    ] + EXTERNAL_CRD_SOURCES + MANIFEST_SETS,
     timeout = "long",
 )
 
