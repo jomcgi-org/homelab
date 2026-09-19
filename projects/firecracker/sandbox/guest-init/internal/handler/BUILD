@@ -1,3 +1,4 @@
+# gazelle:exclude elixir_runtime_test.go
 load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
@@ -20,6 +21,21 @@ go_test(
         "lang_test.go",
     ],
     embed = [":handler"],
+    deps = [
+        "//projects/firecracker/substrate/shim",
+    ],
+)
+
+# keep: this Linux-only test runs against the lock-pinned sandbox APK payload.
+go_test(
+    name = "elixir_runtime_test",
+    srcs = ["elixir_runtime_test.go"],
+    data = ["@sandbox_elixir_lock//:contents"],
+    embed = [":handler"],
+    target_compatible_with = [
+        "@platforms//cpu:x86_64",
+        "@platforms//os:linux",
+    ],
     deps = [
         "//projects/firecracker/substrate/shim",
     ],
