@@ -319,22 +319,16 @@ async def probe_postgres() -> dict:
 
 async def probe_codex() -> dict:
     """Exercise a real Codex lane session through the Luna model."""
-    from factory.execution.constants import CODEX_SYNTHETIC_PROMPT
-
-    return await _probe_session("codex", CODEX_SYNTHETIC_PROMPT, "luna")
+    return await _probe_session("codex", "luna")
 
 
 async def probe_spark() -> dict:
     """Exercise a real Muse-family session on claude-runtime."""
-    from factory.execution.constants import SPARK_SYNTHETIC_PROMPT
-
-    return await _probe_session("spark", SPARK_SYNTHETIC_PROMPT, "spark")
+    return await _probe_session("spark", "spark")
 
 
-async def _probe_session(demo: str, prompt: str, model: str) -> dict:
+async def _probe_session(demo: str, model: str) -> dict:
     """Run one session synthetic under an independent trace root."""
-    from factory.execution.api import run_synthetic_session
-
     started = perf_counter()
     ember_session_id = None
 
@@ -345,6 +339,19 @@ async def _probe_session(demo: str, prompt: str, model: str) -> dict:
     with _tracer.start_as_current_span(f"ember.probe.{demo}", context=Context()):
         trace_id = _current_trace_id()
         try:
+            from factory.execution.api import run_synthetic_session
+
+            if demo == "codex":
+                from factory.execution.constants import CODEX_SYNTHETIC_PROMPT
+
+                prompt = CODEX_SYNTHETIC_PROMPT
+            elif demo == "spark":
+                from factory.execution.constants import SPARK_SYNTHETIC_PROMPT
+
+                prompt = SPARK_SYNTHETIC_PROMPT
+            else:
+                raise ValueError(f"unknown session probe {demo!r}")
+
             turn = await run_synthetic_session(
                 prompt,
                 model=model,
