@@ -1066,6 +1066,29 @@ defmodule Embervm.SessionManagerTest do
     assert payload == %{lane: :session, workload: "wl-session-prime", vm_id: "vm-session-prime", node_id: "node-4"}
   end
 
+  test "carries the create caller trace context through the manager and prime worker" do
+    parent = self()
+    traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+
+    ctx =
+      start_stack(
+        claim_fun: fn _dispatcher, _node, _workload -> :miss end,
+        prime_fun: fn _channel, _request ->
+          send(parent, {:prime_traceparent, Embervm.SessionTrace.current_traceparent()})
+          {:ok, %PrimeResponse{vm_id: "vm-traced-prime"}}
+        end
+      )
+
+    put_session_workload(ctx, "wl-traced-prime")
+    Embervm.SessionTrace.restore_parent(traceparent)
+
+    assert {:ok, _created} = SessionManager.create(ctx.mgr, "wl-traced-prime", "p1")
+    assert_receive {:prime_traceparent, worker_traceparent}
+    assert {trace_id, span_id, 1} = Embervm.SessionTrace.parse_traceparent(worker_traceparent)
+    assert trace_id == 0x4BF92F3577B34DA6A3CE929D0E0E4736
+    assert span_id != 0
+  end
+
   test "create denies unknown workload (404-shaped reason)" do
     ctx = start_stack()
     assert {:error, {:denied, :unknown_workload}} = SessionManager.create(ctx.mgr, "nope", "p1")

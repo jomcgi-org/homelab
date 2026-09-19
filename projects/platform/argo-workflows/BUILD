@@ -39,7 +39,6 @@ argocd_app(
     name = "argo-workflows-gke",
     chart = "projects/platform/argo-workflows",
     chart_files = ":chart",
-    generate_manifests = False,
     generate_semgrep = False,
     namespace = "monolith-workflows",
     release_name = "argo-workflows",

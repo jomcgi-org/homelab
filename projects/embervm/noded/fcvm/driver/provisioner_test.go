@@ -9,6 +9,10 @@ import (
 	"testing"
 
 	"github.com/jomcgi/homelab/projects/embervm/noded/substrate"
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func TestCopyProvisionerCopiesBase(t *testing.T) {
@@ -82,6 +86,56 @@ func TestDriverClaimProvisionsPerThreadRootfs(t *testing.T) {
 	}
 	if h.ThreadID != "t-prov" {
 		t.Fatalf("handle thread = %q", h.ThreadID)
+	}
+}
+
+func TestColdBootSpansContinueRemoteRPCParent(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	previousProvider := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		_ = provider.Shutdown(context.Background())
+		otel.SetTracerProvider(previousProvider)
+	})
+
+	traceID, err := trace.TraceIDFromHex("4bf92f3577b34da6a3ce929d0e0e4736")
+	if err != nil {
+		t.Fatalf("parse trace ID: %v", err)
+	}
+	parentSpanID, err := trace.SpanIDFromHex("00f067aa0ba902b7")
+	if err != nil {
+		t.Fatalf("parse span ID: %v", err)
+	}
+	parent := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    traceID,
+		SpanID:     parentSpanID,
+		TraceFlags: trace.FlagsSampled,
+		Remote:     true,
+	})
+	ctx := trace.ContextWithRemoteSpanContext(context.Background(), parent)
+
+	d := testDriver(t)
+	d.SetProvisioner(&fakeProvisioner{})
+	if _, err := d.Claim(ctx, substrate.ClaimSpec{ThreadID: "t-traced"}); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+
+	spansByName := make(map[string]tracetest.SpanStub)
+	for _, span := range exporter.GetSpans() {
+		spansByName[span.Name] = span
+	}
+	for _, name := range []string{"provision_rootfs", "firecracker_boot"} {
+		span, ok := spansByName[name]
+		if !ok {
+			t.Fatalf("missing %q span; got %v", name, exporter.GetSpans())
+		}
+		if span.SpanContext.TraceID() != traceID {
+			t.Errorf("%s trace ID = %s, want %s", name, span.SpanContext.TraceID(), traceID)
+		}
+		if span.Parent.SpanID() != parentSpanID || !span.Parent.IsRemote() {
+			t.Errorf("%s parent = %v, want remote span %s", name, span.Parent, parentSpanID)
+		}
 	}
 }
 

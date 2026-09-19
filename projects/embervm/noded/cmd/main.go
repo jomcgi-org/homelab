@@ -30,6 +30,7 @@ import (
 	"github.com/jomcgi/homelab/projects/embervm/noded/server"
 	"github.com/jomcgi/homelab/projects/embervm/noded/serving"
 	"github.com/jomcgi/homelab/projects/embervm/noded/store"
+	"github.com/jomcgi/homelab/projects/embervm/noded/telemetry"
 	"github.com/jomcgi/homelab/projects/embervm/noded/vsockhttp"
 )
 
@@ -54,6 +55,8 @@ func run(logger *slog.Logger) error {
 	defer stopSignals()
 	ctx, cancelRun := context.WithCancel(signalCtx)
 	defer cancelRun()
+	shutdownTracing := setupTracing(ctx, logger)
+	defer shutdownTracing()
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -314,12 +317,8 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("group network setup: %w", err)
 	}
 
-	var serverOpts []grpc.ServerOption
+	serverOpts := grpcServerOptions(cfg.BearerToken)
 	if cfg.BearerToken != "" {
-		serverOpts = append(serverOpts,
-			grpc.UnaryInterceptor(unaryAuthInterceptor(cfg.BearerToken)),
-			grpc.StreamInterceptor(streamAuthInterceptor(cfg.BearerToken)),
-		)
 		logger.Info("bearer-token auth enabled")
 	} else {
 		logger.Warn("bearer-token auth DISABLED: EMBERVM_NODED_BEARER_TOKEN is unset, so the gRPC surface is open to any in-cluster client (rely on Cilium/Linkerd policy)")
@@ -443,6 +442,22 @@ func run(logger *slog.Logger) error {
 			gs.Stop()
 		}
 		return nil
+	}
+}
+
+// setupTracing is deliberately fail-open. Telemetry configuration must not
+// prevent the node daemon or any brick from serving workloads.
+func setupTracing(ctx context.Context, logger *slog.Logger) func() {
+	tp, err := telemetry.InitializeTracing(ctx)
+	if err != nil {
+		logger.Error("could not initialize tracing; continuing with tracing disabled", "err", err)
+		return func() {}
+	}
+
+	return func() {
+		if err := telemetry.Shutdown(context.Background(), tp); err != nil {
+			logger.Error("could not shut down tracer provider", "err", err)
+		}
 	}
 }
 

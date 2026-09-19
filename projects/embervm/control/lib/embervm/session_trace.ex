@@ -19,34 +19,18 @@ defmodule Embervm.SessionTrace do
   helper is shared here rather than duplicated.
   """
 
-  # current_span_ctx/0 and set_current_span/1 are OpenTelemetry.Tracer MACROS, so
-  # the module must be required even though it is called fully-qualified.
-  require OpenTelemetry.Tracer
-
   @traceparent_key "traceparent"
 
   @doc """
   The W3C `traceparent` for the CURRENTLY active span, or `nil` when no span is
-  recording (tracing off, e.g. CI with no exporter). Sampled flag is forced to
-  `01`: we only ever serialize a span we just opened and are recording under, so a
-  downstream worker restoring it should sample the same trace.
+  active (tracing off, e.g. CI with no exporter).
+
+  Serialization is delegated to OpenTelemetry's W3C TraceContext propagator so
+  the current sampling flag and validation rules stay consistent with the SDK.
   """
   @spec current_traceparent() :: String.t() | nil
   def current_traceparent do
-    case OpenTelemetry.Tracer.current_span_ctx() do
-      :undefined ->
-        nil
-
-      span_ctx ->
-        trace_hex = OpenTelemetry.Span.hex_trace_id(span_ctx)
-        span_hex = OpenTelemetry.Span.hex_span_id(span_ctx)
-
-        if all_zero?(trace_hex) or all_zero?(span_hex) do
-          nil
-        else
-          "00-#{trace_hex}-#{span_hex}-01"
-        end
-    end
+    outbound_metadata()[@traceparent_key]
   rescue
     # A trace hiccup must never break the invoke path: no traceparent just means
     # the downstream span is a root instead of a child.
@@ -56,27 +40,76 @@ defmodule Embervm.SessionTrace do
   end
 
   @doc """
+  Inject the current W3C TraceContext into outbound gRPC metadata.
+
+  Existing metadata is retained, including authorization or application keys.
+  With no valid active span the map is returned unchanged.
+  """
+  @spec outbound_metadata(map()) :: map()
+  def outbound_metadata(metadata \\ %{}) when is_map(metadata) do
+    :otel_propagator_text_map.inject(
+      :otel_propagator_trace_context,
+      metadata,
+      fn key, value, carrier -> Map.put(carrier, key, value) end
+    )
+  rescue
+    _ -> metadata
+  catch
+    _, _ -> metadata
+  end
+
+  @doc "Add current W3C TraceContext metadata to a gRPC call's options."
+  @spec rpc_options(keyword()) :: keyword()
+  def rpc_options(options \\ []) when is_list(options) do
+    existing = Keyword.get(options, :metadata, %{})
+    injected = outbound_metadata(existing)
+
+    cond do
+      injected == existing -> options
+      Keyword.has_key?(options, :metadata) or map_size(injected) > 0 ->
+        Keyword.put(options, :metadata, injected)
+      true ->
+        options
+    end
+  rescue
+    _ -> options
+  catch
+    _, _ -> options
+  end
+
+  @doc """
   Restore `traceparent` (a W3C string, or nil) as the current process's remote
   parent span so a subsequently-opened span nests under it. A nil/malformed
   traceparent is a no-op (the next span becomes a root). Guarded: a trace hiccup
   never crashes the caller (mirrors `Dispatcher.restore_trace_ctx/2`).
   """
   @spec restore_parent(String.t() | nil) :: :ok
-  def restore_parent(traceparent) do
-    case parse_traceparent(traceparent) do
-      {trace_id, span_id, flags} ->
-        try do
-          remote = :otel_tracer.from_remote_span(trace_id, span_id, flags)
-          OpenTelemetry.Tracer.set_current_span(remote)
-          :ok
-        rescue
-          _ -> :ok
-        catch
-          _, _ -> :ok
-        end
+  def restore_parent(traceparent) when is_binary(traceparent) do
+    _token =
+      :otel_propagator_text_map.extract(
+        :otel_propagator_trace_context,
+        [{@traceparent_key, traceparent}]
+      )
 
-      :error ->
-        :ok
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
+  def restore_parent(_), do: :ok
+
+  @doc "Run a function with only the supplied remote parent active in this process."
+  @spec with_parent(String.t() | nil, (-> result)) :: result when result: var
+  def with_parent(traceparent, fun) when is_function(fun, 0) do
+    token = OpenTelemetry.Ctx.attach(OpenTelemetry.Ctx.new())
+
+    try do
+      restore_parent(traceparent)
+      fun.()
+    after
+      OpenTelemetry.Ctx.detach(token)
     end
   end
 
@@ -107,6 +140,4 @@ defmodule Embervm.SessionTrace do
   end
 
   def parse_traceparent(_), do: :error
-
-  defp all_zero?(hex), do: String.trim(hex, "0") == ""
 end

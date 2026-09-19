@@ -11,11 +11,6 @@ argocd_app(
     name = "polylane",
     chart = "projects/platform/polylane",
     chart_files = ":chart",
-    # The render genrule hard-codes application.yaml into its srcs, and this
-    # Application lives in projects/platform-gke/polylane, so there is nothing
-    # here for it to render. The semgrep scan reads the chart, not the
-    # Application, so it stays on.
-    generate_manifests = False,
     namespace = "polylane",
     release_name = "polylane-k8s",
     # cloudflared runs runAsNonRoot with a read-only root filesystem and

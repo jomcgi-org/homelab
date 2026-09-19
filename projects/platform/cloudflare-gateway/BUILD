@@ -43,7 +43,6 @@ argocd_app(
     name = "cloudflare-gateway-gke",
     chart = "projects/platform/cloudflare-gateway",
     chart_files = ":chart",
-    generate_manifests = False,
     generate_semgrep = False,
     namespace = "envoy-gateway-system",
     release_name = "cloudflare-gateway",

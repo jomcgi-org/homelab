@@ -15,6 +15,8 @@ environment: production
 # embervm-control must match OTEL_SERVICE_NAME in
 # projects/embervm/deploy/values.yaml (tracing.serviceName). If the two drift
 # apart the filter drops every span and nothing says so.
+# embervm-noded follows the same contract through noded.tracing.serviceName in
+# that values file.
 #
 # monolith-backend must match PRIVATE_PROFILE.service_name in
 # projects/monolith/framework/core.py, which is what _setup_otel puts in the
@@ -24,6 +26,7 @@ environment: production
 # service names are set by PUBLIC_PROFILE and app/jobs_main.py respectively.
 allowedServices:
   - embervm-control
+  - embervm-noded
   - monolith-backend
   - monolith-jobs
   - monolith-public
