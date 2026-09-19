@@ -778,7 +778,8 @@ defmodule Embervm.Session do
   # -- defaults --------------------------------------------------------------
 
   defp default_session_assign(channel, %SessionAssignRequest{timeout_ms: timeout_ms} = req) do
-    Embervm.Node.V1.NodeService.Stub.session_assign(channel, req, timeout: transport_timeout(timeout_ms))
+    opts = SessionTrace.rpc_options(timeout: transport_timeout(timeout_ms))
+    Embervm.Node.V1.NodeService.Stub.session_assign(channel, req, opts)
   end
 
   defp default_destroy(channel, vm_id) do

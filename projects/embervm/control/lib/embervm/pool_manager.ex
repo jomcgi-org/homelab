@@ -614,7 +614,7 @@ defmodule Embervm.PoolManager do
   defp default_mono, do: System.monotonic_time(:millisecond)
 
   defp default_prime(channel, %PrimeRequest{} = req) do
-    Embervm.Node.V1.NodeService.Stub.prime(channel, req)
+    Embervm.Node.V1.NodeService.Stub.prime(channel, req, Embervm.SessionTrace.rpc_options())
   end
 
   # Tear the shared channel down when a Prime failed because the channel's transport
