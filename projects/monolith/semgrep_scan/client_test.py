@@ -11,8 +11,10 @@ from semgrep_scan import client
 
 
 class _Resp:
-    def __init__(self, data):
+    def __init__(self, data, status_code=200, headers=None):
         self._data = data
+        self.status_code = status_code
+        self.headers = headers or {}
 
     def raise_for_status(self):
         return None
@@ -35,7 +37,7 @@ class _FakeClient:
 
     async def post(self, url, json=None, headers=None):
         self.posts.append({"url": url, "json": json, "headers": headers or {}})
-        return _Resp({"findings": [], "errors": []})
+        return _Resp({"findings": [], "errors": [], "raw_cli_output": {"results": []}})
 
 
 @pytest.fixture(autouse=True)
@@ -106,3 +108,96 @@ async def test_overlapping_scans_keep_distinct_correlation_ids():
         "overlap-one",
         "overlap-two",
     }
+
+
+@pytest.mark.asyncio
+async def test_pending_scan_polls_same_task_through_retry_until_result(monkeypatch):
+    gets = []
+    replies = iter(
+        [
+            {"state": "running"},
+            {"state": "failed_retryable"},
+            {"state": "queued"},
+            {"state": "succeeded"},
+            {"findings": [], "raw_cli_output": {"results": []}},
+        ]
+    )
+
+    class PendingClient(_FakeClient):
+        async def post(self, url, json=None, headers=None):
+            await super().post(url, json=json, headers=headers)
+            return _Resp({"task_id": "scan-1", "state": "queued"}, 202)
+
+        async def get(self, url, headers=None):
+            gets.append(url)
+            return _Resp(next(replies))
+
+    monkeypatch.setattr(client.httpx, "AsyncClient", PendingClient)
+    monkeypatch.setattr(client, "SEMGREP_POLL_INTERVAL", 0)
+    result = await client.scan_files([{"path": "a.py", "content": "pass"}])
+    assert result["raw_cli_output"] == {"results": []}
+    assert len(_FakeClient.posts) == 1
+    assert gets == ["http://ev/v1/tasks/scan-1"] * 4 + [
+        "http://ev/v1/tasks/scan-1/result"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_observation_timeout_retains_task_without_resubmitting(monkeypatch):
+    class PendingClient(_FakeClient):
+        async def post(self, url, json=None, headers=None):
+            await super().post(url, json=json, headers=headers)
+            return _Resp({"task_id": "scan-1"}, 202)
+
+        async def get(self, url, headers=None):
+            await asyncio.sleep(1)
+
+    monkeypatch.setattr(client.httpx, "AsyncClient", PendingClient)
+    monkeypatch.setattr(client, "SEMGREP_COMPLETION_TIMEOUT", 0.01)
+    result = await client.scan_files([{"path": "a.py", "content": "pass"}])
+    assert result == {
+        "error": "timed out waiting for scan completion",
+        "task_id": "scan-1",
+    }
+    assert len(_FakeClient.posts) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["failed_permanent", "dead_lettered"])
+async def test_terminal_scan_failure_never_fetches_or_reports_results(
+    monkeypatch, state
+):
+    gets = []
+
+    class FailedClient(_FakeClient):
+        async def post(self, url, json=None, headers=None):
+            return _Resp({"task_id": "scan-1"}, 202)
+
+        async def get(self, url, headers=None):
+            gets.append(url)
+            return _Resp({"state": state})
+
+    monkeypatch.setattr(client.httpx, "AsyncClient", FailedClient)
+    result = await client.scan_files([{"path": "a.py", "content": "pass"}])
+    assert result["error"] == f"embervm scan ended in state {state}"
+    assert gets == ["http://ev/v1/tasks/scan-1"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "data,headers",
+    [
+        ({"findings": [], "errors": ["EOF"]}, {}),
+        ({"raw_cli_output": {"results": []}}, {"x-ember-truncated": "true"}),
+    ],
+)
+async def test_incomplete_scan_is_not_a_reportable_success(monkeypatch, data, headers):
+    class IncompleteClient(_FakeClient):
+        async def post(self, url, json=None, headers=None):
+            return _Resp(data, headers=response_headers)
+
+    response_headers = headers
+    monkeypatch.setattr(client.httpx, "AsyncClient", IncompleteClient)
+    result = await client.scan_files([{"path": "a.py", "content": "pass"}])
+    assert "error" in result
+    assert "raw_cli_output" not in result

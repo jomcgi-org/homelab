@@ -8,10 +8,12 @@ findings. The MCP tool (``semgrep_scan/mcp.py``) and the demos router
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import os
 import re
+from urllib.parse import quote
 
 import httpx
 
@@ -25,7 +27,9 @@ EMBERVM_URL = os.environ.get("EMBERVM_URL", "")
 # while a generous read budget (a bit over the daemon ScanTimeout) lets a large
 # multi-file scan finish.
 SEMGREP_CONNECT_TIMEOUT = 5.0
-SEMGREP_READ_TIMEOUT = 90.0
+SEMGREP_READ_TIMEOUT = 95.0
+SEMGREP_COMPLETION_TIMEOUT = 180.0
+SEMGREP_POLL_INTERVAL = 1.0
 MAX_CORRELATION_ID_LENGTH = 128
 _CORRELATION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]*$")
 
@@ -37,9 +41,8 @@ async def _post_embervm(
     correlation_id: str | None = None,
 ) -> dict:
     """POST a diff scan to EmberVM's ``semgrep`` Workload; the EmberVM counterpart
-    Submits synchronously (``?wait=true``) so the guest's
-    ScanResult comes back inline (EmberVM forwards the guest response verbatim, so
-    the shape is stable), with an Idempotency-Key from the content hash so
+    Submits synchronously (``?wait=true``) and follows the same task if the
+    synchronous wait expires. The guest ScanResult is forwarded verbatim, with an Idempotency-Key from the content hash so
     a webhook redelivery dedupes to the same task, unless ``dedupe`` is False (the
     demo single-scan path), in which case the header is omitted so a fresh scan
     always runs. Same error shape as ``_post_invoke`` (a dict with a single
@@ -62,15 +65,60 @@ async def _post_embervm(
     if dedupe:
         headers["Idempotency-Key"] = _content_key(files, correlation_id)
 
+    task_id = None
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(
-                f"{EMBERVM_URL}/v1/workloads/semgrep/tasks?wait=true",
-                json=payload,
-                headers=headers,
-            )
-            resp.raise_for_status()
-            return resp.json()
+        async with asyncio.timeout(SEMGREP_COMPLETION_TIMEOUT):
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                resp = await client.post(
+                    f"{EMBERVM_URL}/v1/workloads/semgrep/tasks?wait=true",
+                    json=payload,
+                    headers=headers,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                if resp.status_code == 202:
+                    task_id = data.get("task_id") if isinstance(data, dict) else None
+                    if not isinstance(task_id, str) or not task_id:
+                        return {"error": "embervm accepted scan without a task ID"}
+                    task_url = f"{EMBERVM_URL}/v1/tasks/{quote(task_id, safe='')}"
+                    while True:
+                        status = await client.get(task_url, headers=auth_headers())
+                        status.raise_for_status()
+                        state = status.json().get("state")
+                        if state == "succeeded":
+                            resp = await client.get(
+                                f"{task_url}/result", headers=auth_headers()
+                            )
+                            resp.raise_for_status()
+                            data = resp.json()
+                            break
+                        if state not in {
+                            "queued",
+                            "assigned",
+                            "running",
+                            "failed_retryable",
+                        }:
+                            return {
+                                "error": f"embervm scan ended in state {state}",
+                                "task_id": task_id,
+                            }
+                        await asyncio.sleep(SEMGREP_POLL_INTERVAL)
+                if resp.headers.get("x-ember-truncated") == "true":
+                    return {
+                        "error": "embervm scan result was truncated",
+                        "task_id": task_id,
+                    }
+                # Old guests can return HTTP 200 with only errors (for example
+                # EOF from a crashed engine). Never report that as a clean scan.
+                if not isinstance(data, dict) or not data.get("raw_cli_output"):
+                    return {
+                        "error": "scanner returned no raw CLI output",
+                        "task_id": task_id,
+                    }
+                return data
+    except TimeoutError:
+        # A bounded observer timeout does not cancel or resubmit the task.
+        return {"error": "timed out waiting for scan completion", "task_id": task_id}
     except httpx.ConnectError as exc:
         logger.exception("embervm connection failed")
         return {"error": f"could not reach embervm: {exc}"}
@@ -82,7 +130,7 @@ async def _post_embervm(
                 f"{exc.response.text[:500]}"
             )
         }
-    except Exception as exc:  # noqa: BLE001: surface any failure as structured error
+    except Exception as exc:  # noqa: BLE001 - surface any failure as structured error
         logger.exception("embervm semgrep scan failed")
         return {"error": f"embervm semgrep scan failed: {exc}"}
 

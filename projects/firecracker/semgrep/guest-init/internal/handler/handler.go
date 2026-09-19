@@ -48,9 +48,9 @@ func validateCorrelationID(id string) error {
 
 // newHandler decodes a vsockproto.ScanRequest from the HTTP request body, runs
 // it through scan, and writes a vsockproto.ScanResult as the response body
-// (HTTP 200). Scan errors go into ScanResult.Errors rather than propagating as
-// HTTP errors, preserving the partial-results semantics of the legacy scan-port
-// RPC: a scan that ran but errored returns 200 with errors populated. An
+// (HTTP 200 for completed scans). Errors with usable CLI output preserve partial
+// results. An engine failure without output returns 503 so EmberVM retries the
+// task within its existing attempt budget instead of recording false success. An
 // undecodable body or invalid correlation ID returns a non-nil error, which the
 // shim maps to 502 before the scanner runs.
 func newHandler(scan ScanFunc, logger *slog.Logger) shim.Handler {
@@ -84,7 +84,11 @@ func newHandler(scan ScanFunc, logger *slog.Logger) shim.Handler {
 		if err != nil {
 			return nil, fmt.Errorf("handler: marshal result: %w", err)
 		}
-		return &shim.Response{Status: 200, Body: body}, nil
+		status := 200
+		if scanErr != nil && len(result.RawCliOutput) == 0 {
+			status = 503
+		}
+		return &shim.Response{Status: status, Body: body}, nil
 	}
 }
 
