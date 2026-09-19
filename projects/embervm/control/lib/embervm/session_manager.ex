@@ -3956,9 +3956,9 @@ defmodule Embervm.SessionManager do
   #
   # Then evict snapshots the node reports whose session row is terminal or absent.
   #
-  # NEVER reap when a node's facts are simply missing (a disconnect): a session on a
-  # node not currently in the capacity table is left untouched, exactly the pool's
-  # additive-only rule.
+  # Missing capacity facts alone never justify reaping. If the registry also
+  # lacks the node, a separate complete Kubernetes inventory can prove that the
+  # owner was deleted while this control plane was offline.
   defp clear_node_inventory_worker(state) do
     {_pid, monitor, timer, _ref, _nodes} = state.node_inventory_worker
     Process.demonitor(monitor, [:flush])
