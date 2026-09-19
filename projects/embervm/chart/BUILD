@@ -352,6 +352,7 @@ py_test(
         "Chart.yaml",
         "values.yaml",
         "//projects/embervm/deploy:deploy_values",
+        "//projects/platform/otel-collector:gke_values",
         "//projects/platform/otel-collector:prod_values",
         "@multitool//tools/helm",
     ] + glob([
@@ -359,6 +360,7 @@ py_test(
         "crds/**/*",
     ]),
     env = {
+        "COLLECTOR_GKE_VALUES": "$(rootpath //projects/platform/otel-collector:gke_values)",
         "COLLECTOR_PROD_VALUES": "$(rootpath //projects/platform/otel-collector:prod_values)",
         "DEPLOY_VALUES": "$(rootpath //projects/embervm/deploy:deploy_values)",
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",

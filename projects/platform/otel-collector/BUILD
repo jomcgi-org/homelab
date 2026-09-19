@@ -22,6 +22,12 @@ filegroup(
     ],
 )
 
+filegroup(
+    name = "gke_values",
+    srcs = ["values-gke.yaml"],
+    visibility = ["//projects/embervm/chart:__pkg__"],
+)
+
 argocd_app(
     name = "otel-collector",
     chart = "projects/platform/otel-collector",
