@@ -177,7 +177,7 @@ def test_mint_from_github_and_backfill_receipt(db):
         assert item.body == "body"
         assert item.state == "ready"
         assert item.task_class == "docs"
-        assert json.loads(item.labels) == ["agent-ready", "documentation"]
+        assert item.labels == ["agent-ready", "documentation"]
         assert item.source_kind == "github"
         assert item.authority == "github"
         assert item.trust == "trusted"

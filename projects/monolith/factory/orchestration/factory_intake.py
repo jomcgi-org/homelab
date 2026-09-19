@@ -98,28 +98,10 @@ def receive_issue(
         ).first()
         if existing is not None:
             return {"ok": True, "created": False, "receipt": _snapshot(db, existing)}
-        # Look up existing work item and set work_item_id if found
-        work_item = db.exec(
-            select(WorkItem).where(
-                WorkItem.github_repo == repo,
-                WorkItem.github_issue_number == issue_number,
-            )
-        ).one_or_none()
-        # Look up existing work item and set work_item_id if found
-        work_item = db.exec(
-            select(WorkItem).where(
-                WorkItem.github_repo == repo,
-                WorkItem.github_issue_number == issue_number,
-            )
-        ).one_or_none()
-        # Look up existing work item and set work_item_id if found
-        work_item = db.exec(
-            select(WorkItem).where(
-                WorkItem.github_repo == repo,
-                WorkItem.github_issue_number == issue_number,
-            )
-        ).one_or_none()
-        # Look up existing work item and set work_item_id if found
+        # The sweep mints the work item before admission runs on the same
+        # tick, so a receipt links to it at creation; an operator-posted
+        # receipt for an issue the sweep has not seen yet links on the next
+        # mint through the backfill in work_items.
         work_item = db.exec(
             select(WorkItem).where(
                 WorkItem.github_repo == repo,

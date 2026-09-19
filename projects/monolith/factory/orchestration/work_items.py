@@ -127,7 +127,7 @@ def _github_values(repo: str, issue: dict) -> dict[str, Any]:
         "body": body,
         "state": state_from_github_labels(labels),
         "task_class": task_class,
-        "labels": json.dumps(sorted(labels), sort_keys=True, separators=(",", ":")),
+        "labels": sorted(labels),
         "source_ref": source_ref,
         "trust": trust_for_github_author(issue.get("user") or issue.get("author")),
         "github_created_at": _github_created_at(issue),
@@ -533,15 +533,9 @@ def close_missing_from_github(
     db: Session, repo: str, open_numbers: set[int], *, actor: str
 ) -> int:
     """Close GitHub-authority items absent from a complete open-issue listing."""
-    # Skip closing if the listing was empty
-    if not open_numbers:
-        return 0
-
-    # Skip closing if the listing was empty
-    if not open_numbers:
-        return 0
-
-    # Skip closing if the listing was empty
+    # An empty listing is never trusted as "everything closed": a repository
+    # with no open issues would close every row, and there is no floor under
+    # that. Callers see it as close_skipped=empty_listing.
     if not open_numbers:
         return 0
 
