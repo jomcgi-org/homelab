@@ -6,13 +6,14 @@ import logging
 from collections.abc import Iterable
 from datetime import date, datetime, timedelta, timezone
 
-from sqlalchemy import func, not_, or_
+from sqlalchemy import false, func, not_, or_
 from sqlalchemy.orm.attributes import flag_modified
 from sqlmodel import Session, delete, select
 
-from knowledge.frontmatter import ParsedFrontmatter
-from knowledge.extraction import LANE_OWNED_SOURCES
+from knowledge.chunker import Chunk as ChunkPayload
 from knowledge.entities import Entity, NoteEntity
+from knowledge.extraction import LANE_OWNED_SOURCES
+from knowledge.frontmatter import ParsedFrontmatter
 from knowledge.gardener import GARDENER_VERSION, MAX_GARDENER_RETRIES, _slugify
 from knowledge.links import Link
 from knowledge.models import (
@@ -24,7 +25,6 @@ from knowledge.models import (
     NoteLink,
     RawInput,
 )
-from knowledge.chunker import Chunk as ChunkPayload
 
 logger = logging.getLogger(__name__)
 
@@ -51,16 +51,36 @@ _DONE_STATUSES = frozenset({"done", "cancelled"})
 GRAPH_NOTE_TYPES = frozenset({"atom", "fact", "raw", "gap", "active", "paper"})
 
 
-def _resolve_edge_targets(session: Session, rows: list) -> set[str]:
-    """Return the set of target_id values (for kind='edge' rows) that exist as notes."""
+def _scope_predicate(scope_filters: tuple[str, ...] | None, *, include_unscoped: bool):
+    """Build the note-scope allow-list predicate, including legacy NULL on opt-in."""
+    if scope_filters is None and not include_unscoped:
+        return None
+    conditions = []
+    if scope_filters:
+        conditions.append(Note.scope.in_(scope_filters))
+    if include_unscoped:
+        conditions.append(Note.scope.is_(None))
+    return or_(*conditions) if conditions else false()
+
+
+def _resolve_edge_targets(
+    session: Session,
+    rows: list,
+    *,
+    scope_filters: tuple[str, ...] | None = None,
+    include_unscoped: bool = False,
+) -> set[str]:
+    """Return edge targets that exist inside the retrieval allow-list."""
     edge_ids = {r.target_id for r in rows if r.kind == "edge"}
     if not edge_ids:
         return set()
-    return set(
-        session.execute(select(Note.note_id).where(Note.note_id.in_(edge_ids)))
-        .scalars()
-        .all()
+    stmt = select(Note.note_id).where(
+        Note.note_id.in_(edge_ids), Note.deleted_at.is_(None)
     )
+    scope_predicate = _scope_predicate(scope_filters, include_unscoped=include_unscoped)
+    if scope_predicate is not None:
+        stmt = stmt.where(scope_predicate)
+    return set(session.execute(stmt).scalars().all())
 
 
 def open_dispute_note_ids(session: Session, note_ids: Iterable[str]) -> set[str]:
@@ -170,7 +190,8 @@ def _rank_search_chunks(
     query_embedding: list[float],
     limit: int,
     type_filter: str | None,
-    scope_filter: str | None = None,
+    scope_filters: tuple[str, ...] | None = None,
+    include_unscoped: bool = False,
     exclude_invalidated: bool = False,
 ) -> list[tuple[int, int, float]]:
     """Return ranked ``(note_fk, chunk_fk, score)`` tuples using pgvector."""
@@ -189,12 +210,12 @@ def _rank_search_chunks(
         .group_by(Note.id)
         .having(func.max(adjusted) >= MIN_SEARCH_SCORE)
         .order_by(best_score.desc())
-        .limit(limit)
     )
     if type_filter is not None:
         notes_stmt = notes_stmt.where(Note.type == type_filter)
-    if scope_filter is not None:
-        notes_stmt = notes_stmt.where(Note.scope == scope_filter)
+    scope_predicate = _scope_predicate(scope_filters, include_unscoped=include_unscoped)
+    if scope_predicate is not None:
+        notes_stmt = notes_stmt.where(scope_predicate)
     if exclude_invalidated:
         notes_stmt = notes_stmt.where(
             Note.valid_until.is_(None),
@@ -203,6 +224,9 @@ def _rank_search_chunks(
                 Note.verification_state != "invalidated",
             ),
         )
+    # Authorization belongs in this query, before top-N is selected. Filtering
+    # ranked results in Python would let unauthorized rows consume the limit.
+    notes_stmt = notes_stmt.limit(limit)
 
     note_rows = session.execute(notes_stmt).all()
     if not note_rows:
@@ -525,6 +549,8 @@ class KnowledgeStore:
         limit: int = 20,
         type_filter: str | None = None,
         scope_filter: str | None = None,
+        scope_filters: tuple[str, ...] | None = None,
+        include_unscoped: bool = False,
         exclude_invalidated: bool = False,
         include_embeddings: bool = False,
     ) -> list[dict]:
@@ -541,40 +567,20 @@ class KnowledgeStore:
         Results are stitched in Python into dicts with keys:
         ``note_id, title, path, type, tags, score, section, snippet, entities``.
         """
-        if scope_filter is None:
-            if exclude_invalidated:
-                ranked = _rank_search_chunks(
-                    self.session,
-                    query_embedding,
-                    limit,
-                    type_filter,
-                    exclude_invalidated=True,
-                )
-            else:
-                ranked = _rank_search_chunks(
-                    self.session,
-                    query_embedding,
-                    limit,
-                    type_filter,
-                )
-        else:
-            if exclude_invalidated:
-                ranked = _rank_search_chunks(
-                    self.session,
-                    query_embedding,
-                    limit,
-                    type_filter,
-                    scope_filter,
-                    True,
-                )
-            else:
-                ranked = _rank_search_chunks(
-                    self.session,
-                    query_embedding,
-                    limit,
-                    type_filter,
-                    scope_filter,
-                )
+        if scope_filter is not None and scope_filters is not None:
+            raise ValueError("scope_filter and scope_filters are mutually exclusive")
+        effective_scope_filters = (
+            (scope_filter,) if scope_filter is not None else scope_filters
+        )
+        ranked = _rank_search_chunks(
+            self.session,
+            query_embedding,
+            limit,
+            type_filter,
+            scope_filters=effective_scope_filters,
+            include_unscoped=include_unscoped,
+            exclude_invalidated=exclude_invalidated,
+        )
         if not ranked:
             return []
 
@@ -616,7 +622,12 @@ class KnowledgeStore:
 
         # Resolve typed edges: check which target note_ids exist so
         # consumers know which edges are navigable.
-        resolved = _resolve_edge_targets(self.session, edge_rows)
+        resolved = _resolve_edge_targets(
+            self.session,
+            edge_rows,
+            scope_filters=effective_scope_filters,
+            include_unscoped=include_unscoped,
+        )
 
         edges_by_note: dict[int, list[dict]] = {}
         for edge_row in edge_rows:

@@ -304,6 +304,42 @@ class AgentReportWriteFailure(SQLModel, table=True):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class PersonalRetrievalAudit(SQLModel, table=True):
+    """Attribution-only audit row for an explicit personal-scope search."""
+
+    __tablename__ = "personal_retrieval_audit"
+    __table_args__ = (
+        CheckConstraint(
+            "length(principal_subject) BETWEEN 1 AND 512",
+            name="personal_retrieval_audit_subject_length_chk",
+        ),
+        CheckConstraint(
+            "length(principal_actor) <= 4096",
+            name="personal_retrieval_audit_actor_length_chk",
+        ),
+        CheckConstraint(
+            "length(personal_scope) BETWEEN 1 AND 1024",
+            name="personal_retrieval_audit_scope_length_chk",
+        ),
+        CheckConstraint(
+            "entrypoint IN ('mcp', 'http')",
+            name="personal_retrieval_audit_entrypoint_chk",
+        ),
+        {"schema": "knowledge", "extend_existing": True},
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    principal_subject: str = Field(sa_column=Column(String, nullable=False))
+    principal_actor: str = Field(sa_column=Column(String, nullable=False))
+    principal_authority: str = Field(sa_column=Column(String, nullable=False))
+    personal_scope: str = Field(sa_column=Column(String, nullable=False))
+    entrypoint: str = Field(sa_column=Column(String, nullable=False))
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+
+
 class AtomRawProvenance(SQLModel, table=True):
     __tablename__ = "atom_raw_provenance"
     __table_args__ = {"schema": "knowledge", "extend_existing": True}

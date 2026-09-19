@@ -1,16 +1,29 @@
 """Tests for scoped assertions, disputes, and provenance in the store."""
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from auth.api import Authority, Principal, PrincipalKind
+from sqlalchemy.dialects import postgresql
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from knowledge.frontmatter import ParsedFrontmatter
 from knowledge.indexing import index_note_from_raw
-from knowledge.models import AtomRawProvenance, Chunk, Dispute, Note, RawInput
+from knowledge.models import (
+    AtomRawProvenance,
+    Chunk,
+    Dispute,
+    Note,
+    PersonalRetrievalAudit,
+    RawInput,
+)
+from knowledge.retrieval_policy import audit_personal_retrieval, authorize_retrieval
 from knowledge.store import (
     KnowledgeStore,
+    _rank_search_chunks,
+    _resolve_edge_targets,
     open_dispute_note_ids,
     provenance_for_notes,
 )
@@ -221,7 +234,15 @@ def test_search_and_get_note_project_scoped_fields_with_real_session(session):
     ) as rank:
         results = KnowledgeStore(session).search_notes_with_context(embedding)
 
-    rank.assert_called_once_with(session, embedding, 20, None)
+    rank.assert_called_once_with(
+        session,
+        embedding,
+        20,
+        None,
+        scope_filters=None,
+        include_unscoped=False,
+        exclude_invalidated=False,
+    )
     detail = KnowledgeStore(session).get_note_by_id("scoped")
     assert detail is not None
     for result in (results[0], detail):
@@ -231,3 +252,116 @@ def test_search_and_get_note_project_scoped_fields_with_real_session(session):
         assert result["provenance"] == [
             {"raw_id": "raw-1", "source": "collector", "gardener_version": "v1"}
         ]
+
+
+def test_search_scope_allow_list_is_applied_before_ranking():
+    session = MagicMock()
+    session.execute.return_value.all.return_value = []
+
+    _rank_search_chunks(
+        session,
+        [0.0] * 1024,
+        2,
+        None,
+        scope_filters=("repo:owner/repo", "org:owner"),
+        include_unscoped=True,
+    )
+
+    statement = session.execute.call_args.args[0]
+    compiled = statement.compile(dialect=postgresql.dialect())
+    sql = str(compiled)
+    assert "knowledge.notes.scope IN" in sql
+    assert "knowledge.notes.scope IS NULL" in sql
+    assert sql.index("WHERE") < sql.index("LIMIT")
+    scope_params = [
+        value for value in compiled.params.values() if isinstance(value, (list, tuple))
+    ]
+    assert any(set(value) == {"repo:owner/repo", "org:owner"} for value in scope_params)
+
+
+def test_empty_scope_allow_list_does_not_fall_back_to_unrestricted_search():
+    session = MagicMock()
+    session.execute.return_value.all.return_value = []
+
+    _rank_search_chunks(
+        session,
+        [0.0] * 1024,
+        2,
+        None,
+        scope_filters=(),
+    )
+
+    sql = str(session.execute.call_args.args[0].compile(dialect=postgresql.dialect()))
+    assert "false" in sql
+
+
+def test_edge_resolution_uses_search_allow_list(session):
+    allowed = Note(
+        note_id="allowed-target",
+        path="allowed.md",
+        title="Allowed",
+        content_hash="allowed",
+        scope="repo:owner/repo",
+    )
+    other_repo = Note(
+        note_id="other-target",
+        path="other.md",
+        title="Other",
+        content_hash="other",
+        scope="repo:other/repo",
+    )
+    personal = Note(
+        note_id="personal-target",
+        path="personal.md",
+        title="Personal",
+        content_hash="personal",
+        scope="personal:alice",
+    )
+    legacy = Note(
+        note_id="legacy-target",
+        path="legacy.md",
+        title="Legacy",
+        content_hash="legacy",
+        scope=None,
+    )
+    session.add_all([allowed, other_repo, personal, legacy])
+    session.commit()
+    rows = [
+        SimpleNamespace(kind="edge", target_id=note.note_id)
+        for note in (allowed, other_repo, personal, legacy)
+    ]
+
+    defaults = _resolve_edge_targets(session, rows, scope_filters=("repo:owner/repo",))
+    opted_in = _resolve_edge_targets(
+        session,
+        rows,
+        scope_filters=("repo:owner/repo", "personal:alice"),
+        include_unscoped=True,
+    )
+
+    assert defaults == {"allowed-target"}
+    assert opted_in == {"allowed-target", "personal-target", "legacy-target"}
+
+
+def test_personal_opt_in_persists_one_bounded_attribution_row(session):
+    principal = Principal(
+        subject="alice",
+        actor=("operator",),
+        scope=("repo:owner/repo", "personal:alice"),
+        groups=(),
+        email="alice@example.com",
+        kind=PrincipalKind.HUMAN,
+        authority=Authority.STANDING,
+    )
+    authorization = authorize_retrieval(principal, include_personal=True)
+
+    audit_personal_retrieval(session, principal, authorization, entrypoint="mcp")
+
+    rows = session.exec(select(PersonalRetrievalAudit)).all()
+    assert len(rows) == 1
+    assert rows[0].principal_subject == "alice"
+    assert rows[0].principal_actor == '["operator"]'
+    assert rows[0].personal_scope == "personal:alice"
+    assert rows[0].entrypoint == "mcp"
+    assert not hasattr(rows[0], "query")
+    assert not hasattr(rows[0], "results")

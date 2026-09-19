@@ -21,13 +21,15 @@ from email.utils import format_datetime
 from typing import Annotated, Any, Literal
 
 import yaml
+from auth.api import Authority, Principal, PrincipalKind, get_principal
+from core.db import get_session
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from shared.embedding import EmbeddingClient
+from shared.pricing import price_usage
 from sqlmodel import Session, select
 
-from auth.api import Authority, Principal, PrincipalKind, get_principal
-from core.db import get_session
 from knowledge.api import enqueue_extraction, ingest_raw_with_status
 from knowledge.extraction import EXTRACTABLE_SOURCES
 from knowledge.gaps import (
@@ -42,7 +44,7 @@ from knowledge.gaps import (
     verify_gap,
 )
 from knowledge.gardener import MAX_GARDENER_RETRIES
-from knowledge.http_cache import _as_utc, _graph_etag, _GRAPH_CACHE_CONTROL
+from knowledge.http_cache import _GRAPH_CACHE_CONTROL, _as_utc, _graph_etag
 from knowledge.indexing import reindex_note_with_edits
 from knowledge.ingest_queue import IngestQueueItem, ingest_raw
 from knowledge.interventions import decision_reference, lock_intervention
@@ -57,11 +59,15 @@ from knowledge.notes import (
     undelete_note,
     verify_note_visibility,
 )
-from knowledge.redact import redact_text
 from knowledge.raw_paths import compute_raw_id
+from knowledge.redact import redact_text
+from knowledge.retrieval_policy import (
+    RetrievalAuditError,
+    RetrievalAuthorizationError,
+    audit_personal_retrieval,
+    authorize_retrieval,
+)
 from knowledge.store import KnowledgeStore
-from shared.embedding import EmbeddingClient
-from shared.pricing import price_usage
 
 logger = logging.getLogger(__name__)
 
@@ -354,9 +360,34 @@ async def search_knowledge(
     q: str = "",
     type: str | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=100),
+    include_personal: bool = Query(default=False),
+    principal: Principal = Depends(get_principal),
     session: Session = Depends(get_session),
     embed_client: EmbeddingClient = Depends(get_embedding_client),
 ) -> dict:
+    try:
+        authorization = authorize_retrieval(
+            principal, include_personal=include_personal
+        )
+    except RetrievalAuthorizationError as exc:
+        status_code = 401 if exc.reason == "anonymous" else 403
+        raise HTTPException(
+            status_code=status_code,
+            detail={"message": str(exc), "reason": exc.reason},
+        ) from exc
+
+    try:
+        audit_personal_retrieval(session, principal, authorization, entrypoint="http")
+    except RetrievalAuditError as exc:
+        logger.exception("knowledge.search: personal retrieval audit failed")
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "message": "personal retrieval audit unavailable",
+                "reason": "audit_unavailable",
+            },
+        ) from exc
+
     # Mirror the frontend's 2-char debounce threshold: skip the embed call
     # entirely for empty / single-char queries so we never hit the embed
     # service for no reason.
@@ -373,6 +404,8 @@ async def search_knowledge(
         query_embedding=vector,
         limit=limit,
         type_filter=type,
+        scope_filters=authorization.scopes,
+        include_unscoped=authorization.include_unscoped,
     )
     return {"results": results}
 
