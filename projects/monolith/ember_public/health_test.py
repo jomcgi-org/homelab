@@ -41,6 +41,8 @@ async def test_probe_postgres_unconfigured_is_not_ok(monkeypatch):
         "ok": False,
         "detail": "DEMO_POSTGRES_DSN not configured",
         "latency_ms": None,
+        "trace_id": None,
+        "ember_session_id": None,
     }
 
 
