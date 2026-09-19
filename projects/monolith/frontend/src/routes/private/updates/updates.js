@@ -26,25 +26,30 @@ export function label(value) {
     .join(" ");
 }
 
-export function groupUpdatesByMonth(updates) {
-  const groups = [];
-  for (const update of updates) {
-    const key = update.published_on.slice(0, 7);
-    let group = groups.at(-1);
-    if (!group || group.key !== key) {
-      group = {
-        key,
-        label: MONTH_FORMAT.format(asDate(`${key}-01`)),
-        updates: [],
-      };
-      groups.push(group);
-    }
-    group.updates.push(update);
-  }
-  return groups;
+export function monthLabel(value) {
+  return MONTH_FORMAT.format(asDate(`${value}-01`));
 }
 
-export function facetHref(kind, value, selectedProject, selectedTechnology) {
+export function monthHref(
+  month,
+  selectedProject,
+  selectedTechnology,
+  date = "",
+) {
+  const params = new URLSearchParams({ month });
+  if (selectedProject) params.set("project", selectedProject);
+  if (selectedTechnology) params.set("technology", selectedTechnology);
+  const fragment = date ? `#update-${date}` : "";
+  return `/updates?${params.toString()}${fragment}`;
+}
+
+export function facetHref(
+  kind,
+  value,
+  selectedProject,
+  selectedTechnology,
+  selectedMonth = "",
+) {
   const params = new URLSearchParams();
   const nextProject =
     kind === "project"
@@ -60,6 +65,7 @@ export function facetHref(kind, value, selectedProject, selectedTechnology) {
       : selectedTechnology;
   if (nextProject) params.set("project", nextProject);
   if (nextTechnology) params.set("technology", nextTechnology);
+  if (selectedMonth) params.set("month", selectedMonth);
   const query = params.toString();
   return query ? `/updates?${query}` : "/updates";
 }

@@ -16,8 +16,10 @@ from core.db import get_engine
 from updates.models import ProductUpdate
 from updates.schemas import (
     FacetCount,
+    MonthSummary,
     ProductUpdateArchive,
     ProductUpdateSubmission,
+    ProductUpdateSummary,
     ProductUpdateView,
     Project,
     Technology,
@@ -129,13 +131,39 @@ def _facet_counts(rows: list[ProductUpdate], field: str) -> list[FacetCount]:
     ]
 
 
+def _month_key(row: ProductUpdate) -> str:
+    return row.published_on.strftime("%Y-%m")
+
+
+def _month_summaries(rows: list[ProductUpdate]) -> list[MonthSummary]:
+    grouped: dict[str, list[ProductUpdate]] = {}
+    for row in rows:
+        grouped.setdefault(_month_key(row), []).append(row)
+    return [
+        MonthSummary(
+            month=month,
+            count=len(editions),
+            editions=[
+                ProductUpdateSummary(
+                    published_on=edition.published_on,
+                    headline=edition.headline,
+                )
+                for edition in editions
+            ],
+        )
+        for month, editions in grouped.items()
+    ]
+
+
 def archive(
     *,
     project: Project | None = None,
     technology: Technology | None = None,
+    month: str | None = None,
+    full_archive: bool = False,
     session: Session | None = None,
 ) -> ProductUpdateArchive:
-    """Return the filtered journal plus unfiltered facet counts."""
+    """Return selected edition bodies plus archive index and facet summaries."""
     with _session(session) as db:
         rows = list(
             db.exec(
@@ -149,8 +177,18 @@ def archive(
         if (project is None or project.value in row.projects)
         and (technology is None or technology.value in row.technologies)
     ]
+    selected_month = None
+    if full_archive:
+        selected = filtered
+    else:
+        selected_month = month or (_month_key(filtered[0]) if filtered else None)
+        selected = [
+            row for row in filtered if _month_key(row) == selected_month
+        ]
     return ProductUpdateArchive(
-        updates=[_view(row) for row in filtered],
+        updates=[_view(row) for row in selected],
+        months=_month_summaries(filtered),
         projects=_facet_counts(rows, "projects"),
         technologies=_facet_counts(rows, "technologies"),
+        selected_month=selected_month,
     )
