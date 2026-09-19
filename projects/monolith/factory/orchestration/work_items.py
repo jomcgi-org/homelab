@@ -529,6 +529,89 @@ def is_admissible(db: Session, item_id: int) -> bool:
     return item.state == "ready" and not open_blockers(db, item_id)
 
 
+def _work_item_document(db: Session, item: WorkItem) -> dict:
+    """Shape one work item with its relationships and bounded event history."""
+    edges_out = db.exec(
+        select(WorkItemEdge)
+        .where(WorkItemEdge.from_id == item.id)
+        .order_by(WorkItemEdge.id)
+    ).all()
+    edges_in = db.exec(
+        select(WorkItemEdge)
+        .where(WorkItemEdge.to_id == item.id)
+        .order_by(WorkItemEdge.id)
+    ).all()
+    events = db.exec(
+        select(WorkItemEvent)
+        .where(WorkItemEvent.work_item_id == item.id)
+        .order_by(WorkItemEvent.created_at.desc(), WorkItemEvent.id.desc())
+        .limit(20)
+    ).all()
+    return {
+        "item": item.model_dump(),
+        "edges_out": [
+            {
+                "id": edge.id,
+                "to_id": edge.to_id,
+                "kind": edge.kind,
+                "created_at": edge.created_at.isoformat(),
+            }
+            for edge in edges_out
+        ],
+        "edges_in": [
+            {
+                "id": edge.id,
+                "from_id": edge.from_id,
+                "kind": edge.kind,
+                "created_at": edge.created_at.isoformat(),
+            }
+            for edge in edges_in
+        ],
+        "events": [
+            {
+                "id": event.id,
+                "version": event.version,
+                "op": event.op,
+                "author_kind": event.author_kind,
+                "author": event.author,
+                "change_json": event.change_json,
+                "cause_kind": event.cause_kind,
+                "cause_ref": event.cause_ref,
+                "stated_reason": event.stated_reason,
+                "created_at": event.created_at.isoformat(),
+            }
+            for event in events
+        ],
+    }
+
+
+def work_item_document(db: Session, item_id: int) -> dict | None:
+    """Return one work item read model, or None when the item is unknown."""
+    item = db.exec(select(WorkItem).where(WorkItem.id == item_id)).one_or_none()
+    return None if item is None else _work_item_document(db, item)
+
+
+def list_work_items(
+    db: Session,
+    *,
+    state: str | None,
+    authority: str | None,
+    limit: int,
+) -> list[dict]:
+    """Return bounded work item rows in newest-first order."""
+    query = select(WorkItem)
+    if state is not None:
+        query = query.where(WorkItem.state == state)
+    if authority is not None:
+        query = query.where(WorkItem.authority == authority)
+    rows = db.exec(
+        query.order_by(WorkItem.created_at.desc(), WorkItem.id.desc()).limit(
+            max(1, min(int(limit), 200))
+        )
+    ).all()
+    return [item.model_dump() for item in rows]
+
+
 def close_missing_from_github(
     db: Session, repo: str, open_numbers: set[int], *, actor: str
 ) -> int:

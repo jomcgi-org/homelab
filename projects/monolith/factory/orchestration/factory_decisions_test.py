@@ -104,8 +104,13 @@ class Github:
         state = self.state if number == ISSUE else self.issue_states.get(number, "open")
         issue = {
             "number": number,
+            "title": f"Issue {number}",
+            "body": "body",
+            "html_url": f"https://github.com/{REPO}/issues/{number}",
             "state": state,
             "labels": [{"name": name} for name in sorted(labels)],
+            "user": {"login": "jomcgi", "type": "User"},
+            "created_at": "2026-09-19T12:00:00Z",
         }
         if number in self.pull_requests:
             issue["pull_request"] = {"url": f"https://api.github.test/pulls/{number}"}
@@ -128,7 +133,16 @@ class Github:
             return {"id": len(self.comments)}
         if suffix == "issues":
             self.next_issue += 1
-            return {"number": self.next_issue}
+            return {
+                "number": self.next_issue,
+                "title": payload["title"],
+                "body": payload["body"],
+                "html_url": f"https://github.com/{repo}/issues/{self.next_issue}",
+                "state": "open",
+                "labels": [],
+                "user": {"login": "jomcgi", "type": "User"},
+                "created_at": "2026-09-19T12:00:00Z",
+            }
         if method == "POST" and suffix.endswith("/labels"):
             number = int(suffix.split("/")[1])
             if number == ISSUE:
@@ -527,6 +541,72 @@ def test_split_opens_the_children_then_closes_the_parent(db, github):
         },
     ) in github.writes
     assert audit_actions(db).count("decision_child_created") == 2
+    with Session(db) as session:
+        assert len(session.exec(select(WorkItem)).all()) == 2
+        assert session.exec(select(WorkItemEdge)).all() == []
+
+
+def test_split_creates_parent_edges_and_replay_does_not_duplicate_them(
+    db, github, monkeypatch
+):
+    receipt_id = escalate(db, "split")
+    with Session(db) as session:
+        parent = WorkItem(
+            title="parent",
+            state="open",
+            source_kind="github",
+            trust="trusted",
+            authority="github",
+            github_repo=REPO,
+            github_issue_number=ISSUE,
+        )
+        session.add(parent)
+        session.flush()
+        receipt = session.get(FactoryReceipt, receipt_id)
+        receipt.work_item_id = parent.id
+        session.add(receipt)
+        session.commit()
+        parent_id = parent.id
+
+    original_close = decisions._close
+    failed = False
+
+    def fail_once(repo, number, reason):
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise ValueError("close failed")
+        return original_close(repo, number, reason)
+
+    monkeypatch.setattr(decisions, "_close", fail_once)
+    with pytest.raises(decisions.DecisionError):
+        decisions.apply_decision(receipt_id, "split", "joe@example.test")
+    result = decisions.apply_decision(receipt_id, "split", "joe@example.test")
+    assert result["resolution"]["effects"]["children"] == [101, 102]
+    with Session(db) as session:
+        edges = session.exec(
+            select(WorkItemEdge).where(
+                WorkItemEdge.from_id == parent_id,
+                WorkItemEdge.kind == "parent",
+            )
+        ).all()
+        assert len(edges) == 2
+        assert len({edge.to_id for edge in edges}) == 2
+
+
+def test_split_mint_failure_is_audited_without_failing_decision(
+    db, github, monkeypatch
+):
+    receipt_id = escalate(db, "split")
+
+    def fail_mint(*_args, **_kwargs):
+        raise RuntimeError("database mint failed")
+
+    monkeypatch.setattr(decisions.work_items, "mint_or_sync_from_github", fail_mint)
+    result = decisions.apply_decision(receipt_id, "split", "joe@example.test")
+    assert result["applied"] is True
+    assert result["resolution"]["effects"]["children"] == [101, 102]
+    assert audit_actions(db).count("decision_child_link_error") == 2
 
 
 def test_defer_moves_it_to_needs_thought_with_the_wait_condition(db, github):

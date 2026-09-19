@@ -336,6 +336,12 @@ path. `close_enabled` allows a refine verdict to close an issue and
 default 3. All three feature flags default off or, for the cap, bound a
 capability that is itself off.
 
+An open `blocks` edge holds the blocked work item's receipt out of both the
+autonomous candidate sweep and final admission. The sweep counts the exclusion
+as `blocked`, and final admission records one `admission_blocked` audit for the
+first queued receipt when it is blocked. Closing the blocking work item
+releases the receipt on the next tick without operator action.
+
 Intake sweeps GitHub at most once an hour while it is finding nothing, again
 immediately after any receipt settles, and again on the tick after it admits
 anything. That last clause is what lets a lane fill: a sweep takes at most one
@@ -519,6 +525,15 @@ that would make the work worth doing. `hold` writes nothing and records that
 someone looked and chose to leave it. `supersede` closes one to ten named
 issues as `wontfix` in favour of one surviving issue. The receipt's own issue
 must be among the closes or be the survivor.
+
+Each child created by `split` carries a `parent` edge from the split issue's
+work item.
+
+The escalation context document presents five sections: the ask, what stopped,
+what happened, cost, and lineage. Each section's `line` is a claim, and the
+fields beneath it are the evidence for that claim. The private read endpoint is
+`GET /api/agents/factory/escalations/{receipt_id}/context`. It reads only the
+factory database and performs no GitHub reads.
 
 The first option is the recommendation, and its effect has to be the one the
 `recommend:` line names: deliver is `agent-ready`, close is `close` or

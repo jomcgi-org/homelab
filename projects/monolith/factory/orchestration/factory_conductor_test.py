@@ -506,6 +506,7 @@ def feedback_db(tmp_path, monkeypatch):
         FactoryReviewVerdict,
         FactoryStart,
         WorkItem,
+        WorkItemEdge,
         WorkItemEvent,
     )
     from factory.orchestration.models import (
@@ -535,6 +536,7 @@ def feedback_db(tmp_path, monkeypatch):
         FactoryControl,
         FactoryReceipt,
         WorkItem,
+        WorkItemEdge,
         WorkItemEvent,
         FactoryReviewVerdict,
         FactoryStart,

@@ -22,6 +22,7 @@ from factory.orchestration.factory_models import (
     FactoryControl,
     FactoryReceipt,
     WorkItem,
+    WorkItemEdge,
     WorkItemEvent,
     FactoryReviewVerdict,
     FactoryStart,
@@ -51,6 +52,7 @@ def db(tmp_path, monkeypatch):
                 FactoryControl,
                 FactoryReceipt,
                 WorkItem,
+                WorkItemEdge,
                 WorkItemEvent,
                 FactoryReviewVerdict,
                 FactoryStart,
@@ -355,6 +357,98 @@ def test_concurrent_admissions_cannot_both_claim_wip(db, policy):
     assert snapshot["admitted_count"] == 1 and len(snapshot["active_tasks"]) == 1
     with Session(db) as session:
         assert len(session.exec(select(SwarmTask)).all()) == 1
+
+
+def test_admission_skips_blocked_receipts_and_releases_after_close(db, policy):
+    policy["issue_numbers"] = [1, 2, 3]
+    enable(policy)
+    for number in (1, 2, 3):
+        issue(number)
+    with Session(db) as session:
+        blocker = WorkItem(
+            title="blocker",
+            state="open",
+            source_kind="factory",
+            trust="trusted",
+        )
+        targets = [
+            WorkItem(
+                title=f"target {number}",
+                state="open",
+                source_kind="factory",
+                trust="trusted",
+            )
+            for number in (1, 2, 3)
+        ]
+        session.add_all([blocker, *targets])
+        session.flush()
+        session.add_all(
+            [
+                WorkItemEdge(from_id=blocker.id, to_id=targets[0].id, kind="blocks"),
+                WorkItemEdge(from_id=blocker.id, to_id=targets[1].id, kind="blocks"),
+            ]
+        )
+        receipts = session.exec(
+            select(FactoryReceipt).order_by(FactoryReceipt.issue_number)
+        ).all()
+        for receipt, target in zip(receipts, targets, strict=True):
+            receipt.work_item_id = target.id
+            session.add(receipt)
+        session.commit()
+        blocker_id = blocker.id
+
+    admitted = admit_next("scheduler")
+    assert admitted["ok"] and admitted["receipt"]["issue_number"] == 3
+    with Session(db) as session:
+        blocked_audits = session.exec(
+            select(FactoryAudit).where(FactoryAudit.action == "admission_blocked")
+        ).all()
+        assert len(blocked_audits) == 1
+        assert json.loads(blocked_audits[0].detail_json)["blocked_by"] == [blocker_id]
+
+    controls.finish_task(admitted["task_id"], "failed", "scheduler")
+    with Session(db) as session:
+        blocker = session.get(WorkItem, blocker_id)
+        blocker.state = "closed"
+        blocker.close_reason = "completed"
+        blocker.closed_at = controls._now()
+        session.add(blocker)
+        session.commit()
+    released = admit_next("scheduler")
+    assert released["ok"] and released["receipt"]["issue_number"] == 1
+
+
+def test_admission_reports_blocked_and_leaves_null_work_item_eligible(db, policy):
+    enable(policy)
+    issue(1)
+    issue(2)
+    with Session(db) as session:
+        blocker = WorkItem(
+            title="blocker",
+            state="open",
+            source_kind="factory",
+            trust="trusted",
+        )
+        target = WorkItem(
+            title="target",
+            state="open",
+            source_kind="factory",
+            trust="trusted",
+        )
+        session.add_all([blocker, target])
+        session.flush()
+        session.add(WorkItemEdge(from_id=blocker.id, to_id=target.id, kind="blocks"))
+        second = session.exec(
+            select(FactoryReceipt).where(FactoryReceipt.issue_number == 2)
+        ).one()
+        second.work_item_id = target.id
+        session.add(second)
+        session.commit()
+
+    null_link = admit_next("scheduler")
+    assert null_link["ok"] and null_link["receipt"]["issue_number"] == 1
+    controls.finish_task(null_link["task_id"], "failed", "scheduler")
+    assert admit_next("scheduler") == {"ok": False, "reason": "blocked"}
 
 
 def test_max_tasks_bounds_tasks_in_flight_not_tasks_ever_admitted(db, policy):
@@ -852,3 +946,130 @@ def test_receive_issue_still_writes_the_receipt_when_minting_fails(db, monkeypat
         receipt = session.get(FactoryReceipt, result["receipt"]["id"])
         assert receipt is not None
         assert receipt.work_item_id is None
+
+
+def test_fifty_blocked_receipts_ahead_of_unblocked_admits_unblocked(db, policy):
+    """The blocker predicate in SQL prevents starvation of unblocked work."""
+    policy["issue_numbers"] = list(range(1, 53))  # 1-52
+    enable(policy)
+    for number in range(1, 51):
+        issue(number)
+
+    with Session(db) as session:
+        blocker = WorkItem(
+            title="blocker",
+            state="open",
+            source_kind="factory",
+            trust="trusted",
+        )
+        targets = [
+            WorkItem(
+                title=f"target {number}",
+                state="open",
+                source_kind="factory",
+                trust="trusted",
+            )
+            for number in range(1, 51)  # 50 blocked targets
+        ]
+        session.add_all([blocker, *targets])
+        session.flush()
+        session.add_all(
+            [
+                WorkItemEdge(from_id=blocker.id, to_id=target.id, kind="blocks")
+                for target in targets
+            ]
+        )
+        receipts = session.exec(
+            select(FactoryReceipt).order_by(FactoryReceipt.issue_number)
+        ).all()
+        # Link first 50 receipts to blocked targets
+        for receipt, target in zip(receipts[:50], targets, strict=True):
+            receipt.work_item_id = target.id
+            session.add(receipt)
+        # Issue 51 has no work item, so it's unblocked
+        # Issue 52 has a work item with no blockers, so it's unblocked
+        session.commit()
+
+    # Create issue 51 and 52
+    issue(51)
+    issue(52)
+
+    # The first call should admit issue 51 (first unblocked), not hang on the 50 blocked ones
+    admitted = admit_next("scheduler")
+    assert admitted["ok"]
+    assert admitted["receipt"]["issue_number"] == 51
+
+
+def test_admission_blocked_throttled_audit(db, policy):
+    """admission_blocked audits write only once per hour for the same receipt."""
+    # The whole queue must be blocked for admit_next to report blocked;
+    # an unblocked sibling would simply be admitted.
+    policy["issue_numbers"] = [1]
+    enable(policy)
+    issue(1)
+
+    with Session(db) as session:
+        blocker = WorkItem(
+            title="blocker",
+            state="open",
+            source_kind="factory",
+            trust="trusted",
+        )
+        target = WorkItem(
+            title="target",
+            state="open",
+            source_kind="factory",
+            trust="trusted",
+        )
+        session.add_all([blocker, target])
+        session.flush()
+        session.add(WorkItemEdge(from_id=blocker.id, to_id=target.id, kind="blocks"))
+        first = session.exec(
+            select(FactoryReceipt).where(FactoryReceipt.issue_number == 1)
+        ).one()
+        first.work_item_id = target.id
+        session.add(first)
+        session.commit()
+
+    # First call writes the audit
+    result1 = admit_next("scheduler")
+    assert result1["reason"] == "blocked"
+
+    with Session(db) as session:
+        audits1 = session.exec(
+            select(FactoryAudit).where(FactoryAudit.action == "admission_blocked")
+        ).all()
+        assert len(audits1) == 1
+
+    # Second call immediately after should not write another audit
+    result2 = admit_next("scheduler")
+    assert result2["reason"] == "blocked"
+
+    with Session(db) as session:
+        audits2 = session.exec(
+            select(FactoryAudit).where(FactoryAudit.action == "admission_blocked")
+        ).all()
+        assert len(audits2) == 1  # Still only one, throttled
+
+    # Age the audit past the throttle window and check it writes again
+    from factory.orchestration.factory_intake_loop import IDLE_AUDIT_SECONDS
+    from factory.orchestration.factory_controls import _now
+    from datetime import timedelta
+
+    with Session(db) as session:
+        audit = session.exec(
+            select(FactoryAudit).where(FactoryAudit.action == "admission_blocked")
+        ).one()
+        # Move its timestamp back
+        audit.created_at = _now() - timedelta(seconds=IDLE_AUDIT_SECONDS + 1)
+        session.add(audit)
+        session.commit()
+
+    result3 = admit_next("scheduler")
+    assert result3["reason"] == "blocked"
+
+    with Session(db) as session:
+        audits3 = session.exec(
+            select(FactoryAudit).where(FactoryAudit.action == "admission_blocked")
+        ).all()
+        assert len(audits3) == 2  # Now two after aging past throttle window

@@ -309,6 +309,47 @@ def factory_board(task: str | None = None) -> dict:
     return build_factory_view(task)
 
 
+@router.get("/factory/work-items")
+def factory_work_items(
+    state: str | None = None,
+    authority: str | None = None,
+    limit: int = 50,
+    session: Session = Depends(get_session),
+) -> dict:
+    """Read durable work items for the private agents page."""
+    from factory.orchestration.work_items import list_work_items
+
+    return {
+        "work_items": list_work_items(
+            session, state=state, authority=authority, limit=limit
+        )
+    }
+
+
+@router.get("/factory/work-items/{item_id}")
+def factory_work_item(item_id: int, session: Session = Depends(get_session)) -> dict:
+    """Read one durable work item with edges and recent events."""
+    from factory.orchestration.work_items import work_item_document
+
+    document = work_item_document(session, item_id)
+    if document is None:
+        raise HTTPException(status_code=404, detail="work item not found")
+    return document
+
+
+@router.get("/factory/escalations/{receipt_id}/context")
+def factory_escalation_context(
+    receipt_id: int, session: Session = Depends(get_session)
+) -> dict:
+    """Read the evidence document for one factory escalation."""
+    from factory.orchestration.escalation_context import escalation_context
+
+    document = escalation_context(session, receipt_id)
+    if document is None:
+        raise HTTPException(status_code=404, detail="factory receipt not found")
+    return document
+
+
 class FactoryDecisionBody(BaseModel):
     option_key: str | None = None
     action: str | None = None

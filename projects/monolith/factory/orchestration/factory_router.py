@@ -2,19 +2,14 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
-from sqlmodel import Session, select
+from sqlmodel import Session
 
 from auth.api import Principal
 from core.db import get_session
 from factory.access import operator
 from goosecracker.api import REPO_CATALOG
-
-if TYPE_CHECKING:
-    from factory.orchestration.factory_models import WorkItem
 
 router = APIRouter(prefix="/api/swarm/factory", tags=["factory"])
 
@@ -51,10 +46,6 @@ class DecisionRequest(BaseModel):
     note: str | None = Field(default=None, max_length=4000)
 
 
-def _work_item_dict(item: WorkItem) -> dict:
-    return item.model_dump()
-
-
 @router.get("")
 def factory_status(principal: Principal = Depends(operator)) -> dict:
     from factory.orchestration import graph
@@ -77,19 +68,13 @@ def factory_work_items(
     principal: Principal = Depends(operator),
 ) -> dict:
     """List durable work items for the private factory surface."""
-    from factory.orchestration.factory_models import WorkItem
+    from factory.orchestration.work_items import list_work_items
 
-    query = select(WorkItem)
-    if state is not None:
-        query = query.where(WorkItem.state == state)
-    if authority is not None:
-        query = query.where(WorkItem.authority == authority)
-    rows = session.exec(
-        query.order_by(WorkItem.created_at.desc(), WorkItem.id.desc()).limit(
-            max(1, min(limit, 200))
+    return {
+        "work_items": list_work_items(
+            session, state=state, authority=authority, limit=limit
         )
-    ).all()
-    return {"work_items": [_work_item_dict(item) for item in rows]}
+    }
 
 
 @router.get("/work-items/{item_id}")
@@ -99,71 +84,12 @@ def factory_work_item(
     principal: Principal = Depends(operator),
 ) -> dict:
     """Read one durable work item with edges and recent events."""
-    from factory.orchestration.factory_models import WorkItem
-    from factory.orchestration.work_items import WorkItemEdge, WorkItemEvent
+    from factory.orchestration.work_items import work_item_document
 
-    item = session.exec(select(WorkItem).where(WorkItem.id == item_id)).one_or_none()
-    if item is None:
+    document = work_item_document(session, item_id)
+    if document is None:
         raise HTTPException(404, "work item not found")
-
-    # Fetch outgoing edges
-    edges_out = session.exec(
-        select(WorkItemEdge)
-        .where(WorkItemEdge.from_id == item_id)
-        .order_by(WorkItemEdge.id)
-    ).all()
-
-    # Fetch incoming edges
-    edges_in = session.exec(
-        select(WorkItemEdge)
-        .where(WorkItemEdge.to_id == item_id)
-        .order_by(WorkItemEdge.id)
-    ).all()
-
-    # Fetch latest 20 events, newest first
-    events = session.exec(
-        select(WorkItemEvent)
-        .where(WorkItemEvent.work_item_id == item_id)
-        .order_by(WorkItemEvent.created_at.desc(), WorkItemEvent.id.desc())
-        .limit(20)
-    ).all()
-
-    return {
-        "item": _work_item_dict(item),
-        "edges_out": [
-            {
-                "id": e.id,
-                "to_id": e.to_id,
-                "kind": e.kind,
-                "created_at": e.created_at.isoformat(),
-            }
-            for e in edges_out
-        ],
-        "edges_in": [
-            {
-                "id": e.id,
-                "from_id": e.from_id,
-                "kind": e.kind,
-                "created_at": e.created_at.isoformat(),
-            }
-            for e in edges_in
-        ],
-        "events": [
-            {
-                "id": e.id,
-                "version": e.version,
-                "op": e.op,
-                "author_kind": e.author_kind,
-                "author": e.author,
-                "change_json": e.change_json,
-                "cause_kind": e.cause_kind,
-                "cause_ref": e.cause_ref,
-                "stated_reason": e.stated_reason,
-                "created_at": e.created_at.isoformat(),
-            }
-            for e in events
-        ],
-    }
+    return document
 
 
 @router.get("/attempt-stop")
