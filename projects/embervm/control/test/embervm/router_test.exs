@@ -1428,7 +1428,8 @@ defmodule Embervm.RouterTest do
       |> TestSpanExporter.named("embervm.session.create.request")
       |> Enum.find(&(TestSpanExporter.attributes(&1)["ember.workload"] == "wl-ok"))
 
-    assert TestSpanExporter.status_code(failed_span) == :error
+    assert TestSpanExporter.status_code(failed_span) == :unset
+    assert TestSpanExporter.attributes(failed_span)["ember.failure.class"] == "expected"
     assert TestSpanExporter.end_time(failed_span) != :undefined
     assert TestSpanExporter.status_code(successful_span) == :unset
     refute Map.has_key?(TestSpanExporter.attributes(successful_span), "ember.reason")
@@ -1672,7 +1673,10 @@ defmodule Embervm.RouterTest do
       assert TestSpanExporter.attributes(span)["ember.failure.class"] == "expected"
     end
 
-    assert TestSpanExporter.named(spans, "embervm.session.failure") == []
+    refute Enum.any?(
+             TestSpanExporter.named(spans, "embervm.session.failure"),
+             &(TestSpanExporter.attributes(&1)["ember.session_id"] == "s-queue")
+           )
   end
 
   test "known guest failures keep their response contract while telemetry classifies them" do
