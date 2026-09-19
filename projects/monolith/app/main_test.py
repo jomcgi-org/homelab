@@ -504,8 +504,8 @@ async def test_lifespan_creates_discord_and_service_tasks_when_token_set():
             ):
                 await _start_singletons(app)
 
-    # Bot, outbox, lock sweep, and seven service loops including quota refresh.
-    assert len(created_tasks) == 10
+    # Bot, outbox, scheduled tasks, lock sweep, and seven service loops.
+    assert len(created_tasks) == 11
 
 
 @pytest.mark.asyncio
