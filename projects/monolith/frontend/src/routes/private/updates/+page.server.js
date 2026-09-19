@@ -14,6 +14,19 @@ export async function load({ fetch, url }) {
     const response = await fetch(endpoint, {
       signal: AbortSignal.timeout(10000),
     });
+    if (response.status === 422 && requestedMonth) {
+      return {
+        updates: [],
+        months: [],
+        projects: [],
+        technologies: [],
+        selectedMonth: requestedMonth,
+        selectedProject,
+        selectedTechnology,
+        invalidMonth: true,
+        error: false,
+      };
+    }
     if (!response.ok)
       throw new Error(`updates API returned ${response.status}`);
     const archive = await response.json();
@@ -25,6 +38,7 @@ export async function load({ fetch, url }) {
       selectedMonth: archive.selected_month ?? requestedMonth,
       selectedProject,
       selectedTechnology,
+      invalidMonth: false,
       error: false,
     };
   } catch {
@@ -36,6 +50,7 @@ export async function load({ fetch, url }) {
       selectedMonth: requestedMonth,
       selectedProject,
       selectedTechnology,
+      invalidMonth: false,
       error: true,
     };
   }

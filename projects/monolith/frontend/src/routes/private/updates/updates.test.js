@@ -19,6 +19,7 @@ async function renderPage(overrides = {}) {
     selectedMonth: "",
     selectedProject: "",
     selectedTechnology: "",
+    invalidMonth: false,
     error: false,
     ...overrides,
   };
@@ -56,9 +57,29 @@ describe("updates archive helpers", () => {
     );
   });
 
-  it("renders distinct empty, filtered-month, and API error states", async () => {
+  it("renders distinct empty, selected-month, filtered, and error states", async () => {
     expect(await renderPage()).toContain(
       "Waiting for the first daily edition.",
+    );
+    const selectedMonthEmpty = await renderPage({
+      months: [
+        {
+          month: "2025-12",
+          count: 1,
+          editions: [
+            { published_on: "2025-12-05", headline: "December agents" },
+          ],
+        },
+      ],
+      selectedMonth: "2026-01",
+    });
+    expect(selectedMonthEmpty).toContain(
+      "No updates were published in this month.",
+    );
+    expect(selectedMonthEmpty).toContain('href="/updates?month=2025-12"');
+    expect(selectedMonthEmpty).toContain('aria-label="Open December 2025"');
+    expect(selectedMonthEmpty).not.toMatch(
+      /<summary\b[^>]*>(?:(?!<\/summary>)[\s\S])*<a\b/,
     );
     expect(
       await renderPage({
@@ -78,5 +99,12 @@ describe("updates archive helpers", () => {
     expect(await renderPage({ error: true })).toContain(
       "The journal is unavailable.",
     );
+    const invalidMonth = await renderPage({
+      selectedMonth: "2026-13",
+      invalidMonth: true,
+    });
+    expect(invalidMonth).toContain("That journal month is not valid.");
+    expect(invalidMonth).toContain('href="/updates"');
+    expect(invalidMonth).not.toContain("The journal is unavailable.");
   });
 });

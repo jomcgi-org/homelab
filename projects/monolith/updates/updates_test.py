@@ -264,6 +264,7 @@ def test_archive_month_boundaries_filters_and_summary_integrity(engine):
             month="2026-01",
             session=session,
         )
+        unfiltered_empty_month = store.archive(month="2025-11", session=session)
 
     assert newest.selected_month == "2026-01"
     assert [update.headline for update in newest.updates] == ["January frontend"]
@@ -291,6 +292,14 @@ def test_archive_month_boundaries_filters_and_summary_integrity(engine):
     assert filtered_empty_month.selected_month == "2026-01"
     assert filtered_empty_month.updates == []
     assert [summary.month for summary in filtered_empty_month.months] == ["2025-12"]
+
+    assert unfiltered_empty_month.selected_month == "2025-11"
+    assert unfiltered_empty_month.updates == []
+    assert [summary.month for summary in unfiltered_empty_month.months] == [
+        "2026-01",
+        "2025-12",
+        "2025-10",
+    ]
 
 
 def test_empty_archive_has_no_selected_month_or_summaries(engine):

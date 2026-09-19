@@ -6,8 +6,12 @@ vi.hoisted(() => {
 
 import { load } from "./+page.server.js";
 
-function response(body, ok = true) {
-  return { ok, status: ok ? 200 : 503, json: async () => body };
+function response(body, status = 200) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => body,
+  };
 }
 
 describe("private updates load", () => {
@@ -42,6 +46,7 @@ describe("private updates load", () => {
       selectedMonth: "2026-08",
       selectedProject: "",
       selectedTechnology: "",
+      invalidMonth: false,
       error: false,
     });
   });
@@ -94,11 +99,11 @@ describe("private updates load", () => {
     expect(result.months).toEqual([]);
   });
 
-  it("returns a renderable error state for an invalid direct month", async () => {
+  it("returns a distinct state for an invalid direct month", async () => {
     const result = await load({
-      fetch: vi.fn(async () => response({}, false)),
+      fetch: vi.fn(async () => response({}, 422)),
       url: new URL(
-        "https://private.jomcgi.dev/updates?project=monolith&month=invalid",
+        "https://private.jomcgi.dev/updates?project=monolith&month=2026-13",
       ),
     });
 
@@ -107,10 +112,21 @@ describe("private updates load", () => {
       months: [],
       projects: [],
       technologies: [],
-      selectedMonth: "invalid",
+      selectedMonth: "2026-13",
       selectedProject: "monolith",
       selectedTechnology: "",
-      error: true,
+      invalidMonth: true,
+      error: false,
     });
+  });
+
+  it("keeps upstream failures distinct from an invalid direct month", async () => {
+    const result = await load({
+      fetch: vi.fn(async () => response({}, 503)),
+      url: new URL("https://private.jomcgi.dev/updates?month=2026-01"),
+    });
+
+    expect(result.invalidMonth).toBe(false);
+    expect(result.error).toBe(true);
   });
 });
