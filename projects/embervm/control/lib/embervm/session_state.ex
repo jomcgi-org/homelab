@@ -81,6 +81,7 @@ defmodule Embervm.SessionState do
     :relight_abort,
     :expire,
     :evict,
+    :inventory_vanished,
     :begin_destroy,
     :destroy,
     :fail
@@ -130,6 +131,12 @@ defmodule Embervm.SessionState do
     # parked session past the same idle TTL (workspace volume).
     {:banked, :evict} => :evicted,
     {:parked, :evict} => :evicted,
+    # Complete, current fleet inventory proves both VM and snapshot are absent.
+    # Unlike generic failure, eviction communicates verified cessation downstream.
+    {:creating, :inventory_vanished} => :evicted,
+    {:running, :inventory_vanished} => :evicted,
+    {:banking, :inventory_vanished} => :evicted,
+    {:relighting, :inventory_vanished} => :evicted,
     # Destroy (DELETE). Two shapes, selected by the EMBERVM_NODE_CONFIRMED_DESTROY
     # gate in the manager:
     #   * gate off (today's behaviour): the direct `:destroy` edge records
@@ -186,6 +193,7 @@ defmodule Embervm.SessionState do
           | :relight_ready
           | :expire
           | :evict
+          | :inventory_vanished
           | :begin_destroy
           | :destroy
           | :fail

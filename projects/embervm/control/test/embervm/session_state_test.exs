@@ -39,6 +39,12 @@ defmodule Embervm.SessionStateTest do
     {:banked, :expire} => :expired,
     {:banked, :evict} => :evicted,
     {:parked, :evict} => :evicted,
+    # Complete, current fleet inventory proves both VM and snapshot are absent.
+    # Unlike generic failure, eviction communicates verified cessation downstream.
+    {:creating, :inventory_vanished} => :evicted,
+    {:running, :inventory_vanished} => :evicted,
+    {:banking, :inventory_vanished} => :evicted,
+    {:relighting, :inventory_vanished} => :evicted,
     {:creating, :destroy} => :destroyed,
     {:running, :destroy} => :destroyed,
     {:banking, :destroy} => :destroyed,
@@ -60,8 +66,8 @@ defmodule Embervm.SessionStateTest do
   }
 
   test "exhaustive transition table: every (state, event) pair matches the documented outcome" do
-    assert map_size(@legal) == 43
-    assert length(SessionState.events()) == 18
+    assert map_size(@legal) == 47
+    assert length(SessionState.events()) == 19
     assert length(SessionState.states()) == 12
 
     for state <- SessionState.states(), event <- SessionState.events() do

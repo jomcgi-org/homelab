@@ -3823,7 +3823,7 @@ defmodule Embervm.SessionManager do
   #     truth). No process.
   #   * neither a VM nor a snapshot reported for the session -> the VM and snapshot
   #     both vanished (node death after a live-only session, or an out-of-band wipe):
-  #     mark it failed. This is the ONLY reaping, and only when node truth confirms
+  #     evict it. This is the ONLY reaping, and only when node truth confirms
   #     the state is gone, never on a transient absence of the whole node's facts.
   #
   # Then evict snapshots the node reports whose session row is terminal or absent.
@@ -4302,7 +4302,7 @@ defmodule Embervm.SessionManager do
             evict_banked(state, session, :snapshot_vanished)
 
           session_state when session_state in [:running, :banking, :relighting, :creating] ->
-            fail_adopted_session(state, session)
+            evict_vanished_session(state, session)
 
           _ ->
             state
@@ -4329,23 +4329,24 @@ defmodule Embervm.SessionManager do
     end)
   end
 
-  defp fail_adopted_session(state, session) do
+  defp evict_vanished_session(state, session) do
     case SessionStore.transition(
            state.session_store,
            session.session_id,
-           :fail,
-           :session_failed,
-           %{reason: :failed, detail: "vm_and_snapshot_vanished"},
+           :inventory_vanished,
+           :session_evicted,
+           %{reason: :vm_and_snapshot_vanished},
            %{}
          ) do
       {:ok, _} ->
+        terminate_session_process(state, session.session_id)
         clear_session_tracking(state, session.session_id)
 
       {:error, err} ->
         if MapSet.member?(state.logged_unapplicable, session.session_id) do
           state
         else
-          Logger.warning("embervm session fail transition failed",
+          Logger.warning("embervm session vanished eviction failed",
             session_id: session.session_id,
             error: inspect(err)
           )

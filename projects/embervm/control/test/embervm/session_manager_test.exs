@@ -4766,8 +4766,8 @@ defmodule Embervm.SessionManagerTest do
     refute_received {:exact_stop_attempted, _}
   end
 
-  for {banked, terminal} <- [{false, :failed}, {true, :evicted}] do
-    test "vanished #{terminal} recovery compares Unix observations, not monotonic clocks" do
+  for {banked, terminal} <- [{false, :evicted}, {true, :evicted}] do
+    test "vanished recovery with banked=#{banked} compares Unix observations, not monotonic clocks" do
       ctx = start_stack(store_clock: fn -> 4_000_000 end)
       put_session_workload(ctx, "wl-vanished")
       {:ok, created} = SessionManager.create(ctx.mgr, "wl-vanished", "p1")
@@ -4786,6 +4786,9 @@ defmodule Embervm.SessionManagerTest do
       NodeCapacity.put(ctx.cap_table, "node-4", Map.put(fact, :observed_at_unix_ms, 5_000_000))
       assert :ok = SessionManager.reconcile(ctx.mgr)
       assert {:ok, %{state: unquote(terminal)}} = SessionStore.get(ctx.store, created.session_id)
+      assert :session_evicted in op_kinds_for(ctx, created.session_id)
+      refute :session_failed in op_kinds_for(ctx, created.session_id)
+      assert Registry.lookup(ctx.registry, created.session_id) == []
     end
   end
 
@@ -4814,7 +4817,7 @@ defmodule Embervm.SessionManagerTest do
 
     NodeCapacity.put(ctx.cap_table, {"node-4", "sibling"}, sibling)
     assert :ok = SessionManager.reconcile(ctx.mgr)
-    assert {:ok, %{state: :failed}} = SessionStore.get(ctx.store, created.session_id)
+    assert {:ok, %{state: :evicted, terminal_reason: "vm_and_snapshot_vanished"}} = SessionStore.get(ctx.store, created.session_id)
   end
 
   test "unreadable instance inventory never proves a guest vanished" do
