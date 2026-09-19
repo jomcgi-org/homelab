@@ -4425,8 +4425,9 @@ def test_evicted_guest_settles_factory_without_committed_stop_intent(
 
 @pytest.mark.parametrize("terminal_state", ["evicted", "destroyed"])
 @pytest.mark.parametrize("terminal_offset_ms", [-1, 1])
+@pytest.mark.parametrize("prior_completion", [False, True])
 def test_terminal_factory_guest_without_completion_settles_exact_dispatch(
-    uncertain_factory, monkeypatch, terminal_state, terminal_offset_ms
+    uncertain_factory, monkeypatch, terminal_state, terminal_offset_ms, prior_completion
 ):
     from datetime import timedelta
     from factory.orchestration import factory_supervision as supervisor
@@ -4435,7 +4436,7 @@ def test_terminal_factory_guest_without_completion_settles_exact_dispatch(
     monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     s.cp.update(
         state=terminal_state,
-        last_invoke_at=None,
+        last_invoke_at=s.cp["invoke_started_at"] - 1 if prior_completion else None,
         stop_precondition=None,
         updated_at=int(
             (s.failed_turn_at + timedelta(milliseconds=terminal_offset_ms)).timestamp()
