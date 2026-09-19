@@ -78,6 +78,22 @@ class RecallEmbedding(SQLModel, table=True):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class KnowledgeFeedState(SQLModel, table=True):
+    """Durable initialization state for database-backed knowledge feeds."""
+
+    __tablename__ = "feed_state"
+    __table_args__ = {"schema": "knowledge", "extend_existing": True}
+
+    feed_name: str = Field(primary_key=True)
+    first_enabled_at: datetime = Field(
+        sa_column=Column(
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=text("CURRENT_TIMESTAMP"),
+        )
+    )
+
+
 class Note(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory
     __tablename__ = "notes"
     __table_args__ = (

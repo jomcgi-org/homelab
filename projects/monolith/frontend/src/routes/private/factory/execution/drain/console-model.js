@@ -26,6 +26,7 @@ const JOB_CLASSES = {
   running: "ok",
   due: "attn",
   scheduled: "idle",
+  deferred: "attn",
   ok: "idle",
   error: "err",
   parked: "idle",

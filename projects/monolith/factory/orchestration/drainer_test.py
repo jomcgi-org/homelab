@@ -120,11 +120,15 @@ def _run(
         await_turn
         or (lambda *_: {"result_text": "finished", "terminal_reason": "stop"}),
     )
-    monkeypatch.setattr(
-        drainer,
-        "finish_drainer_job",
-        lambda *args: completions.append(args) or True,
-    )
+
+    def finish(*args, **kwargs):
+        recorded = args
+        if "defer_seconds" in kwargs:
+            recorded += (kwargs["defer_seconds"],)
+        completions.append(recorded)
+        return True
+
+    monkeypatch.setattr(drainer, "finish_drainer_job", finish)
     monkeypatch.setattr(
         drainer,
         "notify_drainer_failure",
@@ -523,12 +527,6 @@ def test_recurring_kg_job_is_not_deregistered_on_completion(monkeypatch):
 
 def test_kg_daily_cap_defers_without_processing_or_notification(monkeypatch):
     monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 40)
-    deferred = []
-    monkeypatch.setattr(
-        drainer,
-        "defer_drainer_job",
-        lambda name, seconds: deferred.append((name, seconds)) or True,
-    )
     job = {
         "name": "kg:raw-1",
         "routine_kind": "kg-drain",
@@ -538,8 +536,7 @@ def test_kg_daily_cap_defers_without_processing_or_notification(monkeypatch):
     result, _, starts, completions, notifications, destroys = _run(monkeypatch, [job])
 
     assert result == {"status": "complete", "processed": 0}
-    assert completions == [("kg:raw-1", "deferred", "kg daily cap reached")]
-    assert deferred == [("kg:raw-1", 3600)]
+    assert completions == [("kg:raw-1", "deferred", "kg daily cap reached", 3600)]
     assert starts == []
     assert notifications == []
     assert destroys == []
