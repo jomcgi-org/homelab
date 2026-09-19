@@ -18,6 +18,7 @@ defmodule Embervm.Router do
     * `GET  /v1/health/durability`     both ADR 031 durability tiers (#4338):
       tier 1 export-failure streaks + tier 2 gc-manifests stall. 200 ok /
       503 not-ok / 404 while dark.
+    * `GET  /v1/health/store`          latest artifact-store TLS probe result.
     * `GET  /healthz`                  unauthenticated readiness.
     * `GET  /livez`                    unauthenticated liveness.
 
@@ -127,6 +128,10 @@ defmodule Embervm.Router do
   # detector neither reads healthy nor pages anybody.
   get "/v1/health/durability" do
     handle_durability(conn)
+  end
+
+  get "/v1/health/store" do
+    handle_store_health(conn)
   end
 
   # POST /v1/nodes/register (NODE auth ONLY): the dial-home registration a noded
@@ -615,9 +620,9 @@ defmodule Embervm.Router do
 
   defp handle_healthz(conn) do
     if session_manager_alive?() do
-      text_response(conn, 200, "ok")
+      text_response(conn, 200, "ok\n" <> store_health_line())
     else
-      text_response(conn, 503, "session manager down")
+      text_response(conn, 503, "session manager down\n" <> store_health_line())
     end
   end
 
@@ -702,6 +707,38 @@ defmodule Embervm.Router do
   rescue
     e -> {:error, e}
   end
+
+  defp handle_store_health(conn) do
+    send_json(conn, 200, store_probe_status() |> Map.update!(:state, &Atom.to_string/1))
+  end
+
+  defp store_health_line do
+    case store_probe_status() do
+      %{state: :degraded, reason: reason} -> "store: degraded " <> single_line(reason)
+      %{state: state} when state in [:ok, :disabled] -> "store: " <> Atom.to_string(state)
+    end
+  end
+
+  defp store_probe_status do
+    probe = Application.get_env(:embervm, :store_probe, Embervm.StoreProbe)
+    probe.status()
+  rescue
+    error -> unavailable_store_status(error)
+  catch
+    kind, reason -> unavailable_store_status({kind, reason})
+  end
+
+  defp unavailable_store_status(reason) do
+    %{
+      state: :degraded,
+      reason: "probe unavailable: #{inspect(reason)}",
+      last_ok_at: nil,
+      last_checked_at: nil
+    }
+  end
+
+  defp single_line(nil), do: "unknown"
+  defp single_line(reason), do: String.replace(reason, ~r/[\r\n]/, " ")
 
   defp conformance_view(query_params) do
     if Embervm.SpecTrace.enabled_now?() do

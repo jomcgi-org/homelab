@@ -98,6 +98,10 @@ resources:
 controlPlane:
   # Maximum concurrent session create workers. 0 disables the cap.
   createConcurrency: 16
+  storeProbe:
+    # One real S3Client meta fetch at boot and after each completed interval.
+    # The result is observational only and never changes readiness.
+    intervalSeconds: 300
 
 controlPlaneLivenessProbe:
   # Issue #5235: at the 10-second period, allow up to 60 seconds for an internal
