@@ -17,15 +17,14 @@ noded:
     # has to land before the flag can go back on. Tracked on #5255.
     enabled: false
   drain:
-    # A brick publication keeps the old pod alive so an already-running guest
-    # can finish its current invoke and bank; closing admission alone would
-    # not drain it. Capped at two hours (Joe, 2026-09-19): a factory turn can
-    # legally run for 12 hours, but most end within 40 minutes, and a publish
-    # must not hang a brick wave all day. A turn still running at the cap is
-    # killed and retried under max_attempts. The real fix is #6256 (snapshot
-    # mid-invoke and replay), after which this drops back to the ordinary
-    # rollout budget. Kubernetes adds the chart's 30s shutdown margin.
-    timeoutSeconds: 7200
+    # Since #6256 (PR 6268) a brick publication interrupts the running guest
+    # turn, gives it a bounded flush window (EMBERVM_SESSION_DRAIN_FLUSH_MS,
+    # 60s), banks at the between-turns safe point, and the next brick relights
+    # the session as its next turn. So the drain only has to cover flush plus
+    # bank, not a whole factory turn: 150s here, and Kubernetes adds the
+    # chart's 30s shutdown margin for a 180s termination grace. The two hour
+    # interim from #6216 is gone with the image that carries the relay.
+    timeoutSeconds: 150
     # GCE preemption notice watcher (ADR embervm/040 decision 5). Armed on the
     # hub only: the watcher hangs GETs on the instance/preempted metadata value,
     # which exists nowhere but GCE. Until it is armed every Spot preemption
@@ -130,10 +129,8 @@ bazelQueryWorkload:
 # not fit the current node adds one. 8gi/16gi stay off; explicit zeros
 # prevent deep-merge leakage. #5459 tracks the fuller session-class design.
 bricks:
-  # Must exceed the 43,830s pod termination grace plus a cold brick's rootfs
-  # build. Otherwise Kubernetes reports ProgressDeadlineExceeded while a valid
-  # long factory turn is still draining.
-  progressDeadlineSeconds: 10800
+  # progressDeadlineSeconds is the chart default (3600s): a healthy cold brick
+  # rebuild still needs it, and the drain no longer waits on a factory turn.
   desiredReplicas:
     2gi: 1
     4gi: 1

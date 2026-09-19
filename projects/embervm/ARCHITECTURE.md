@@ -902,10 +902,10 @@ invokes receive retryable drain responses until bank completes. A failed bank
 retains the fence. Relight resumes as the next turn on the same factory
 attempt and reservation. The deadline still bounds evacuation: node loss, a
 failed flush, or an export that cannot finish before it can lose progress
-since the last durable archive. The GKE hub overlay still carries the
-interim 7,200 second drain budget from #6216 until the noded and shim image
-with the interrupt relay has rolled (an image lands one publish after its
-merge); the follow-up on #6256 drops it to the ordinary rollout budget. State
+since the last durable archive. The GKE hub overlay
+sets a 150 second drain (180 second termination grace) so the budget covers
+flush plus bank rather than a whole factory turn; the brick progress deadline
+stays the chart default because a cold rootfs rebuild still needs it. State
 durability within the stated archive interval is the guarantee, connection
 continuity is not. Artifact retention TTLs and the GC sweep behaviour are in
 [deploy/README.md](deploy/README.md).
