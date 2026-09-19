@@ -26,6 +26,13 @@ from knowledge.models import RawInput
 runner = CliRunner()
 
 
+def test_configure_logging_includes_trace_context():
+    with mock.patch.object(jobs_main, "_configure_shared_logging") as configure:
+        jobs_main.configure_logging()
+
+    configure.assert_called_once_with(include_trace_context=True)
+
+
 def test_agent_drain_trigger_posts_internal_endpoint(monkeypatch):
     response = mock.Mock()
     response.json.return_value = {"status": "started"}

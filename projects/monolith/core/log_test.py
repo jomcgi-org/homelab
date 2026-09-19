@@ -119,6 +119,21 @@ def _record(message: str = "probe failed") -> logging.LogRecord:
     )
 
 
+def _exception_record() -> logging.LogRecord:
+    try:
+        raise ValueError("boom")
+    except ValueError as error:
+        return logging.LogRecord(
+            name="trace-test",
+            level=logging.ERROR,
+            pathname=__file__,
+            lineno=1,
+            msg="embedding call failed",
+            args=(),
+            exc_info=(type(error), error, error.__traceback__),
+        )
+
+
 def _configured_line(include_trace_context: bool, emit) -> str:
     stream = io.StringIO()
     try:
@@ -164,6 +179,27 @@ class TestTraceContextFormatter:
             "WARNING trace-test: ember synthetic qwen failed: model unavailable"
             f" trace_id={context.trace_id:032x} span_id={context.span_id:016x}"
         )
+
+    def test_no_span_exception_keeps_plain_output_byte_identical(self):
+        record = _exception_record()
+
+        expected = logging.Formatter(_PLAIN_FORMAT).format(record)
+
+        assert self.formatter.format(record) == expected
+
+    def test_recording_span_ids_precede_unmodified_exception_text(self):
+        record = _exception_record()
+        plain_lines = logging.Formatter(_PLAIN_FORMAT).format(record).splitlines()
+
+        with self.tracer.start_as_current_span("failed-embedding") as span:
+            context = span.get_span_context()
+            traced_lines = self.formatter.format(record).splitlines()
+
+        assert traced_lines[0] == (
+            "ERROR trace-test: embedding call failed"
+            f" trace_id={context.trace_id:032x} span_id={context.span_id:016x}"
+        )
+        assert traced_lines[1:] == plain_lines[1:]
 
     def test_public_configuration_is_plain_even_during_recording_span(self):
         with self.tracer.start_as_current_span("public-request"):

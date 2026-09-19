@@ -30,7 +30,7 @@ from datetime import datetime, timedelta, timezone
 
 import typer
 
-from core.log import configure_logging
+from core.log import configure_logging as _configure_shared_logging
 
 logger = logging.getLogger("monolith.jobs")
 
@@ -39,6 +39,11 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
 )
+
+
+def configure_logging() -> None:
+    """Configure this private, span-producing runtime with trace correlation."""
+    _configure_shared_logging(include_trace_context=True)
 
 
 @dataclass(frozen=True)
