@@ -1517,3 +1517,70 @@ def test_malformed_recovery_is_held_before_the_grace(database, monkeypatch):
     assert before(database, pid)[0]["state"] == "uncertain"
     with Session(database) as db:
         assert db.get(ProbeObservation, pid).reason == "stale_unbound_grace"
+
+
+@pytest.mark.parametrize("guest_state", ["evicted", "destroyed"])
+@pytest.mark.parametrize(
+    "change",
+    [
+        None,
+        "old_invoke",
+        "wrong_owner",
+        "missing_dispatch",
+        "naive_dispatch",
+        "bad_count",
+        "bad_completion",
+        "nonterminal",
+        "disabled",
+    ],
+)
+def test_terminal_dispatch_can_precede_client_failure(
+    database, monkeypatch, guest_state, change
+):
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    now = datetime.now(timezone.utc)
+    recovery = {"last_dispatch_at": (now - timedelta(seconds=120)).isoformat()}
+    if change == "wrong_owner":
+        recovery["claim_owner"] = "different-worker"
+    elif change == "missing_dispatch":
+        recovery["last_dispatch_at"] = None
+    elif change == "naive_dispatch":
+        recovery["last_dispatch_at"] = (
+            (now - timedelta(seconds=120)).replace(tzinfo=None).isoformat()
+        )
+    elif change == "bad_count":
+        recovery["dispatch_count"] = True
+    pid = seed(database, tier="kg", routine_job_name=None, recovery_updates=recovery)
+    original = before(database, pid)
+    evidence = proof(
+        state=guest_state,
+        invoke_started_at=int((now - timedelta(seconds=100)).timestamp() * 1000),
+        last_invoke_at=None,
+        updated_at=int((now - timedelta(seconds=11)).timestamp() * 1000),
+    )
+    if change == "old_invoke":
+        evidence["invoke_started_at"] = int(
+            (now - timedelta(seconds=130)).timestamp() * 1000
+        )
+    elif change == "bad_completion":
+        evidence["last_invoke_at"] = True
+    elif change == "nonterminal":
+        evidence["state"] = "running"
+    elif change == "disabled":
+        monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "false")
+    sweep(evidence)
+    after = before(database, pid)
+    assert after[2] == original[2]
+    if change is not None:
+        assert after == original
+    else:
+        assert after[0]["state"] == "settled"
+        assert after[0]["outcome"] == "guest_cessation_confirmed"
+        with Session(database) as db:
+            audit = db.get(ProbeObservation, pid)
+            assert (
+                json.loads(audit.evidence_json)["cessation_evidence"]
+                == "terminal_dispatch"
+            )
+        sweep(evidence)
+        assert before(database, pid) == after
