@@ -158,9 +158,22 @@ decorators.
 (see: /projects/monolith/core/mcp_app.py)
 
 Cross-domain imports must enter another domain through its `api` module. The
-boundary test parses every non-test Python file and reports internal imports,
-with no standing exceptions.
+boundary test parses every non-test Python file in its explicit domain set and
+reports internal imports, with no standing exceptions. Its Bazel target carries
+the selected sources as runfiles and an independently generated manifest, then
+requires exact, nonempty coverage before checking imports. The set is explicit
+because not every top-level package is currently classified as an architecture
+domain; adding one is an architecture decision rather than a test-side guess.
+
+The retired `app/architecture_test.py` encoded two older conventions that are
+not current contracts. Domain composition now uses `Module` descriptors rather
+than requiring every package `__init__.py` to expose `register(app)`. Route
+ownership is expressed by each descriptor's registration hooks, and routes may
+intentionally use `/api`, `/internal`, or `/webhooks` namespaces, so there is no
+blanket `/api/{domain}` prefix rule. Router ownership and any narrower prefix
+rules remain separate, domain-specific review concerns.
 (see: /projects/monolith/import_boundaries_test.py)
+(see: /projects/monolith/BUILD)
 
 The public profile registers only `register_public` hooks and has no private
 lifespan, MCP mount, telemetry setup, or static frontend mount. The public

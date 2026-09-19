@@ -2313,40 +2313,63 @@ py_test(
     ],
 )
 
-# Reads every domain source file from disk (via rglob) to enforce that domains
-# only import each other through <domain>/api.py, so the scanned files must be
-# materialised as data (the same pattern as bdd_completeness_test).
+# This is the deliberately bounded domain set enforced by import_boundaries_test.
+# Keep it aligned with DOMAINS in that test. Other top-level packages are not
+# silently claimed as architecture domains by this check.
+_IMPORT_BOUNDARY_DOMAINS = [
+    "agent",
+    "auth",
+    "chat",
+    "chat_public",
+    "dr_jobs",
+    "factory",
+    "goosecracker",
+    "hikes",
+    "home",
+    "knowledge",
+    "moving",
+    "scheduler",
+    "ships",
+    "stars",
+    "trips",
+    "worldcup",
+]
+
+_IMPORT_BOUNDARY_SRCS = glob(
+    [domain + "/**/*.py" for domain in _IMPORT_BOUNDARY_DOMAINS],
+    exclude = [
+        "**/*_test.py",
+        "**/test_*.py",
+        "*/tests/**/*.py",
+    ],
+)
+
+# Capture Bazel's exact source selection independently of the test runfiles.
+# The test compares this manifest to what it can actually discover at runtime,
+# so an empty, missing, or partial runfiles tree fails instead of passing
+# vacuously. Paths are package-relative, matching the test's monolith root.
+genrule(
+    name = "import_boundary_sources_manifest",
+    srcs = _IMPORT_BOUNDARY_SRCS,
+    outs = ["import_boundary_sources_manifest.txt"],
+    cmd = """
+        for src in $(SRCS); do
+          case "$$src" in
+            projects/monolith/*) echo "$${src#projects/monolith/}" ;;
+            *) echo "unexpected boundary source path: $$src" >&2; exit 1 ;;
+          esac
+        done | LC_ALL=C sort > "$@"
+    """,
+)
+
+# Scans every non-test Python source under _IMPORT_BOUNDARY_DOMAINS and carries
+# those real files plus the independently generated expected-source manifest as
+# runfile data. This target is hand-written because projects/monolith is
+# gazelle-excluded.
 py_test(
     name = "import_boundaries_test",
     srcs = ["import_boundaries_test.py"],
-    data = glob(
-        include = [
-            "ships/**/*.py",
-            "stars/**/*.py",
-            "artifact/**/*.py",
-            "chat/**/*.py",
-            "chat_public/**/*.py",
-            "grimoire_chat/**/*.py",
-            "knowledge/**/*.py",
-            "hikes/**/*.py",
-            "moving/**/*.py",
-            "dr_jobs/**/*.py",
-            "trips/**/*.py",
-            "home/**/*.py",
-            "scheduler/**/*.py",
-            "agent/**/*.py",
-            "factory/**/*.py",
-            "auth/**/*.py",
-            "goosecracker/**/*.py",
-            "worldcup/**/*.py",
-            "campsites/**/*.py",
-        ],
-        exclude = [
-            "**/*_test.py",
-            "**/test_*.py",
-            "*/tests/**/*.py",
-        ],
-    ),
+    data = _IMPORT_BOUNDARY_SRCS + [":import_boundary_sources_manifest"],
     imports = ["."],
     deps = ["@pip//pytest"],
 )
