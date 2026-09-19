@@ -317,12 +317,8 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("group network setup: %w", err)
 	}
 
-	var serverOpts []grpc.ServerOption
+	serverOpts := grpcServerOptions(cfg.BearerToken)
 	if cfg.BearerToken != "" {
-		serverOpts = append(serverOpts,
-			grpc.UnaryInterceptor(unaryAuthInterceptor(cfg.BearerToken)),
-			grpc.StreamInterceptor(streamAuthInterceptor(cfg.BearerToken)),
-		)
 		logger.Info("bearer-token auth enabled")
 	} else {
 		logger.Warn("bearer-token auth DISABLED: EMBERVM_NODED_BEARER_TOKEN is unset, so the gRPC surface is open to any in-cluster client (rely on Cilium/Linkerd policy)")

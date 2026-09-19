@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "auth.go",
         "main.go",
+        "trace.go",
     ],
     importpath = "github.com/jomcgi/homelab/projects/embervm/noded/cmd",
     visibility = ["//visibility:private"],
@@ -17,6 +18,7 @@ go_library(
         "//projects/embervm/noded/telemetry",
         "//projects/embervm/noded/vsockhttp",
         "//projects/embervm/proto/embervm/node/v1:nodev1",
+        "@io_opentelemetry_go_otel//propagation",
         "@org_golang_google_grpc//:grpc",
         "@org_golang_google_grpc//codes",
         "@org_golang_google_grpc//metadata",
@@ -47,12 +49,16 @@ go_test(
     srcs = [
         "auth_test.go",
         "main_test.go",
+        "trace_test.go",
     ],
     embed = [":cmd_lib"],
     deps = [
         "//projects/embervm/noded/server",
+        "//projects/embervm/proto/embervm/node/v1:nodev1",
+        "@io_opentelemetry_go_otel_trace//:trace",
         "@org_golang_google_grpc//:grpc",
         "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//credentials/insecure",
         "@org_golang_google_grpc//metadata",
         "@org_golang_google_grpc//status",
     ],

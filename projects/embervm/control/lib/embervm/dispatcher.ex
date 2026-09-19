@@ -97,7 +97,7 @@ defmodule Embervm.Dispatcher do
   require Logger
   require OpenTelemetry.Tracer, as: Tracer
 
-  alias Embervm.{Brick, NodeCapacity, WorkloadCatalog}
+  alias Embervm.{Brick, NodeCapacity, SessionTrace, WorkloadCatalog}
   alias Embervm.PrimedOp
   alias Embervm.Scheduler
   alias Embervm.Scheduler.Request
@@ -1860,14 +1860,15 @@ defmodule Embervm.Dispatcher do
   defp default_wall, do: System.system_time(:millisecond)
 
   defp default_assign(channel, %AssignRequest{timeout_ms: timeout_ms} = req) do
-    Embervm.Node.V1.NodeService.Stub.assign(channel, req, timeout: transport_timeout(timeout_ms))
+    opts = SessionTrace.rpc_options(timeout: transport_timeout(timeout_ms))
+    Embervm.Node.V1.NodeService.Stub.assign(channel, req, opts)
   end
 
   # Prime is a fast VM allocation on a brick with guaranteed free slots;
   # deliberately keep the short elixir-grpc default (10s) since a Prime should
   # complete in <1s and this is not an application deadline like Assign/SessionAssign.
   defp default_prime(channel, %PrimeRequest{} = req) do
-    Embervm.Node.V1.NodeService.Stub.prime(channel, req)
+    Embervm.Node.V1.NodeService.Stub.prime(channel, req, SessionTrace.rpc_options())
   end
 
   # Transport timeout must exceed the application deadline (timeout_ms) the guest is

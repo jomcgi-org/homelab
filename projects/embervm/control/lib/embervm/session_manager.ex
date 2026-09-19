@@ -275,7 +275,8 @@ defmodule Embervm.SessionManager do
     GenServer.call(
       server,
       {:create, workload, principal, normalize_restore_lineage(restore_lineage),
-       normalize_idempotency_key(Keyword.get(opts, :idempotency_key))},
+       normalize_idempotency_key(Keyword.get(opts, :idempotency_key)),
+       SessionTrace.current_traceparent()},
       240_000
     )
   end
@@ -663,8 +664,9 @@ defmodule Embervm.SessionManager do
       state.create_saturated_denials}, state}
   end
 
-  def handle_call({:create, workload, principal, restore_lineage, idempotency_key}, from, state) do
-    cond do
+  def handle_call({:create, workload, principal, restore_lineage, idempotency_key, traceparent}, from, state) do
+    SessionTrace.with_parent(traceparent, fn ->
+      cond do
       # A present-but-malformed key is a client bug: deny before anything runs.
       idempotency_key != nil and not valid_idempotency_key?(idempotency_key) ->
         reason = :invalid_idempotency_key
@@ -688,7 +690,8 @@ defmodule Embervm.SessionManager do
 
       true ->
         create_unbound(state, from, workload, principal, restore_lineage, nil)
-    end
+      end
+    end)
   end
 
   # The tail of {:create, ...} for a key that is not yet bound (or was never
@@ -731,7 +734,14 @@ defmodule Embervm.SessionManager do
       true ->
         case do_create_inline(state, workload, principal, restore_lineage) do
           {:ok,
-           %{entry: entry, node_id: node_id, dial_id: dial_id, snapshot_ref: snapshot_ref, lineage_id: lineage_id}} ->
+           %{
+             entry: entry,
+             node_id: node_id,
+             dial_id: dial_id,
+             snapshot_ref: snapshot_ref,
+             lineage_id: lineage_id,
+             traceparent: traceparent
+           }} ->
             ref = state.create_next_ref
 
             state =
@@ -778,7 +788,8 @@ defmodule Embervm.SessionManager do
                 entry,
                 lineage_id,
                 restore_lineage,
-                principal
+                principal,
+                traceparent
               )
 
             {:noreply, put_in(state.create_workers[ref], worker)}
@@ -1160,7 +1171,11 @@ defmodule Embervm.SessionManager do
            # register_and_start). Non-restoring behavior is unchanged.
            lineage_id:
              restore_lineage ||
-               if(persistence_enabled_workload?(entry), do: mint_lineage_id(state), else: nil)
+               if(persistence_enabled_workload?(entry), do: mint_lineage_id(state), else: nil),
+           # The create RPC runs in this GenServer but a cold Prime runs in the
+           # worker below. Carry the active create span across that process
+           # boundary before with_span unwinds it.
+           traceparent: SessionTrace.current_traceparent()
          }}
       else
         {:error, reason} -> {:error, {:denied, reason}}
@@ -1262,12 +1277,15 @@ defmodule Embervm.SessionManager do
          entry,
          lineage_id,
          restore_lineage,
-         principal
+         principal,
+         traceparent
        ) do
     owner = self()
     timeout_ref = Process.send_after(owner, {:create_timeout, ref}, @create_worker_timeout_ms)
 
     {pid, monitor_ref} = spawn_monitor(fn ->
+      SessionTrace.restore_parent(traceparent)
+
       result =
         try do
           case restore_lineage do
@@ -5461,7 +5479,7 @@ defmodule Embervm.SessionManager do
 
   defp default_prime(channel, %PrimeRequest{} = req) do
     timeout = if req.lineage_id in [nil, ""], do: 30_000, else: @prime_cold_boot_timeout_ms
-    Embervm.Node.V1.NodeService.Stub.prime(channel, req, timeout: timeout)
+    Embervm.Node.V1.NodeService.Stub.prime(channel, req, SessionTrace.rpc_options(timeout: timeout))
   end
 
   defp default_bank(channel, %BankRequest{} = req) do

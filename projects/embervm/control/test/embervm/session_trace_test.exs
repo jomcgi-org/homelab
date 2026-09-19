@@ -34,6 +34,52 @@ defmodule Embervm.SessionTraceTest do
     test "is nil when no span is recording (the CI/no-exporter case)" do
       assert SessionTrace.current_traceparent() == nil
     end
+
+    test "serializes the active context with its W3C sampling flag" do
+      unsampled = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00"
+      assert SessionTrace.restore_parent(unsampled) == :ok
+      assert SessionTrace.current_traceparent() == unsampled
+    end
+  end
+
+  describe "rpc_options/1" do
+    test "injects the active traceparent and preserves unrelated metadata and options" do
+      traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+      assert SessionTrace.restore_parent(traceparent) == :ok
+
+      options =
+        SessionTrace.rpc_options(
+          timeout: 95_000,
+          metadata: %{"authorization" => "Bearer node-secret", "x-request-id" => "request-1"}
+        )
+
+      assert options[:timeout] == 95_000
+      assert options[:metadata]["traceparent"] == traceparent
+      assert options[:metadata]["authorization"] == "Bearer node-secret"
+      assert options[:metadata]["x-request-id"] == "request-1"
+    end
+
+    test "leaves options unchanged without an active context" do
+      options = [timeout: 10_000, metadata: %{"x-request-id" => "request-2"}]
+      assert SessionTrace.rpc_options(options) == options
+    end
+
+    test "does not leak trace context between request processes" do
+      caller = self()
+      traceparent = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01"
+
+      spawn(fn ->
+        SessionTrace.restore_parent(traceparent)
+        send(caller, {:traced, SessionTrace.rpc_options()})
+      end)
+
+      spawn(fn -> send(caller, {:untraced, SessionTrace.rpc_options()}) end)
+
+      assert_receive {:traced, traced}
+      assert traced[:metadata]["traceparent"] == traceparent
+      assert_receive {:untraced, untraced}
+      refute Keyword.has_key?(untraced, :metadata)
+    end
   end
 
   describe "restore_parent/1" do
@@ -45,6 +91,19 @@ defmodule Embervm.SessionTraceTest do
 
     test "accepts a well-formed traceparent without raising" do
       assert SessionTrace.restore_parent("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01") == :ok
+    end
+  end
+
+  describe "with_parent/2" do
+    test "scopes each request parent and restores the prior process context" do
+      outer = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01"
+      inner = "00-cccccccccccccccccccccccccccccccc-dddddddddddddddd-00"
+      SessionTrace.restore_parent(outer)
+
+      assert SessionTrace.with_parent(inner, fn -> SessionTrace.current_traceparent() end) == inner
+      assert SessionTrace.current_traceparent() == outer
+      assert SessionTrace.with_parent(nil, fn -> SessionTrace.current_traceparent() end) == nil
+      assert SessionTrace.current_traceparent() == outer
     end
   end
 
