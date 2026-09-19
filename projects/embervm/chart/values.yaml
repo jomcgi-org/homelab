@@ -1576,6 +1576,13 @@ noded:
 # netns), which the 16Gi class covers.
 bricks:
   enabled: false
+  # Preserve the last ready brick of each class during voluntary evictions
+  # (including cluster-autoscaler scale-down). Unready pods remain evictable.
+  # A singleton class requires another ready brick before its node can drain;
+  # provision replacement capacity first for planned maintenance. This does not
+  # constrain Deployment scale-down/rollouts or prevent involuntary node loss.
+  disruptionBudget:
+    enabled: true
   # First ArgoCD sync-wave handed out to a brick Deployment. Brick wave groups
   # advance in list order (classes first, then floors), so ArgoCD rolls one
   # bounded group at a time instead of applying the whole fleet at once. Before
