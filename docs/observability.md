@@ -34,9 +34,9 @@ the DCGM exporter directly. It does not use the collector or a telemetry store.
 ## Trace admission is deny-by-default
 
 `allowedServices` defaults to an empty list in
-`projects/platform/otel-collector/values.yaml`. Production currently admits
-`embervm-control`, `monolith-backend`, `monolith-jobs`, and `monolith-public`.
-Read `values-prod.yaml` as the source of truth for the current list.
+`projects/platform/otel-collector/values.yaml`. Read
+`values-prod.yaml` for the services actually admitted; this document does not
+list them, because that list changes and a copy here would go stale.
 
 While the list is empty the rendered collector has:
 
@@ -87,7 +87,7 @@ separate log-ingestion follow-up.
 ## Network visibility
 
 Cilium and Hubble still provide network flow visibility from the eBPF datapath.
-Their metrics are not part of the collector's `http_check`-only metrics pipeline.
+Their metrics are not part of the collector's probe and OTLP metrics pipeline.
 
 ## Configuration
 
