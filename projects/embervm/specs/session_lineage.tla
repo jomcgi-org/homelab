@@ -197,6 +197,7 @@ WriteRelinquish ==
 
 BeginExport ==
     /\ relinquished
+    /\ nodeUp[SourceNode]
     /\ exportState = "none"
     /\ localVolume[SourceNode]
     /\ exportState' = "pending"
@@ -208,6 +209,7 @@ BeginExport ==
 
 CompleteExport ==
     /\ exportState = "pending"
+    /\ nodeUp[SourceNode]
     /\ localVolume[SourceNode]
     /\ exportState' = "complete"
     /\ exportGeneration' = actorGeneration[Predecessor]
@@ -272,9 +274,10 @@ InstallReleasedHeir(h) ==
                                       ELSE actorGeneration[Predecessor]]
     /\ commonGeneration' = [commonGeneration EXCEPT ![h] = actorGeneration'[h]]
     /\ workers' = workers \ {h}
+    /\ durableClaims' = durableClaims \ {h}
     /\ volatileClaims' = volatileClaims \ {h}
     /\ UNCHANGED <<cpAlive, nodeUp, relinquished, exportState,
-                    exportGeneration, durableClaims, released,
+                    exportGeneration, released,
                     divergenceDetected, reconnectedDivergence, silentMerge,
                     inheritedNonTerminal, cpCrashes, nodeCrashes>>
 
@@ -289,9 +292,10 @@ InstallRemoteHeir(h) ==
     /\ actorGeneration' = [actorGeneration EXCEPT ![h] = exportGeneration]
     /\ commonGeneration' = [commonGeneration EXCEPT ![h] = exportGeneration]
     /\ workers' = workers \ {h}
+    /\ durableClaims' = durableClaims \ {h}
     /\ volatileClaims' = volatileClaims \ {h}
     /\ UNCHANGED <<cpAlive, nodeUp, relinquished, exportState,
-                    exportGeneration, durableClaims, released,
+                    exportGeneration, released,
                     divergenceDetected, reconnectedDivergence, silentMerge,
                     inheritedNonTerminal, cpCrashes, nodeCrashes>>
 
@@ -346,8 +350,12 @@ CrashNode(n) ==
     /\ nodeUp[n]
     /\ nodeCrashes < MaxNodeCrashes
     /\ nodeUp' = [nodeUp EXCEPT ![n] = FALSE]
+    /\ exportState' =
+          IF n = SourceNode /\ exportState = "pending"
+          THEN "none"
+          ELSE exportState
     /\ nodeCrashes' = nodeCrashes + 1
-    /\ UNCHANGED <<status, cpAlive, localVolume, relinquished, exportState,
+    /\ UNCHANGED <<status, cpAlive, localVolume, relinquished,
                     exportGeneration, workers, durableClaims, volatileClaims,
                     released, actorGeneration, commonGeneration,
                     divergenceDetected, reconnectedDivergence, silentMerge,

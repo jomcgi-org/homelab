@@ -507,11 +507,11 @@ they are not reported as exhaustive passes.
 
 | cfg | changed guard | checked result | generated / distinct / queue | depth |
 | --- | --- | --- | --- | --- |
-| `session_lineage.cfg` | none | all four invariants pass exhaustively | 2,113 / 810 / 0 | 15 |
-| `session_lineage_loss.cfg` | `SafeRelease = FALSE` | `NoWorkspaceLoss` violated | 20 / 18 / 8 | 5 |
-| `session_lineage_double_heir.cfg` | `ExclusiveHeirGuard = FALSE` | `NeverTwoLiveHeirs` violated | 278 / 160 / 24 | 12 |
-| `session_lineage_nonterminal.cfg` | `TerminalPredecessorGuard = FALSE` | `InheritanceOnlyFromTerminal` violated | 15 / 12 / 4 | 4 |
-| `session_lineage_silent_merge.cfg` | `ReconnectComparison = FALSE` | `ReconnectDetectsDivergence` violated | 327 / 149 / 5 | 11 |
+| `session_lineage.cfg` | none | all four invariants pass exhaustively | 2,002 / 783 / 0 | 15 |
+| `session_lineage_loss.cfg` | `SafeRelease = FALSE` | `NoWorkspaceLoss` violated | 44 / 34 / 5 | 6 |
+| `session_lineage_double_heir.cfg` | `ExclusiveHeirGuard = FALSE` | `NeverTwoLiveHeirs` violated | 350 / 192 / 0 | 14 |
+| `session_lineage_nonterminal.cfg` | `TerminalPredecessorGuard = FALSE` | `InheritanceOnlyFromTerminal` violated | 77 / 55 / 0 | 10 |
+| `session_lineage_silent_merge.cfg` | `ReconnectComparison = FALSE` | `ReconnectDetectsDivergence` violated | 306 / 144 / 0 | 11 |
 
 Each negative cfg lists only `TypeOK` and its intended invariant. Therefore a
 different safety failure cannot satisfy the driver's expected-failure mode.
@@ -523,7 +523,7 @@ common ancestor followed by reconnect without comparison.
 ### Implementation conformance gaps found by the mapping
 
 A clean abstract model is not proof that the code conforms. Mapping the actions
-to the current source found three bounded gaps. This PR intentionally changes no
+to the current source found four bounded gaps. This PR intentionally changes no
 runtime code.
 
 - Terminal predecessor: `validate_restore_lineage/4` accepts `:destroying`, but
@@ -544,12 +544,18 @@ runtime code.
   a per-lineage generation and common-ancestor stamp on local and S3 workspace
   metadata, followed by reconnect refusal or quarantine when both branches
   advanced. Silent merge must never be a recovery path.
+- Relinquish ordering: retire_session_volume (session_manager.ex around lines
+  5622 to 5657) spawns the RetireVolume RPC and advances the session lifecycle
+  immediately without waiting for durable relinquish marker or successful
+  export. A durable relinquish is not ordered before terminal eligibility or
+  heir admission. See issue #6250. The noded side does not yet conform (Export is ordered
+  correctly), but the CP side needs ordering enforcement.
 
-The last two gaps are why `ExclusiveHeirGuard` and `ReconnectComparison` are
-declared assumptions in the positive cfg. The negative cfgs demonstrate the
-counterexamples those missing mechanisms must prevent. Runtime fixes and a
-conformance harness remain separate decisions; this model does not require
-#4761.
+The last two gaps (exclusive heir and reconnect divergence) are why
+`ExclusiveHeirGuard` and `ReconnectComparison` are declared assumptions in the
+positive cfg. The negative cfgs demonstrate the counterexamples those missing
+mechanisms must prevent. Runtime fixes and a conformance harness remain separate
+decisions; this model does not require #4761.
 
 ## Running TLC
 
