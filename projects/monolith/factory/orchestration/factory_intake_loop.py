@@ -28,7 +28,7 @@ from factory.orchestration.factory_intake import (
     open_lanes,
     receive_issue,
 )
-from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt
+from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt, WorkItem
 
 logger = logging.getLogger(__name__)
 
@@ -355,25 +355,47 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
             for item, _labels in survivors
             if type(item.get("number")) is int and 1 <= item["number"] <= 2**31 - 1
         ]
+        work_item_map = {}
         if numbers:
             with _read_session() as db:
+                # Resolve the candidates' work items first, so a receipt that
+                # was linked to one of them under another issue number is in
+                # the set: fetching receipts by number alone can never see it.
+                work_items = db.exec(
+                    select(WorkItem).where(
+                        WorkItem.github_repo == repo,
+                        WorkItem.github_issue_number.in_(numbers),
+                    )
+                ).all()
+                work_item_map = {
+                    wi.id: wi.github_issue_number
+                    for wi in work_items
+                    if wi.github_issue_number is not None
+                }
+                by_number_or_item = FactoryReceipt.issue_number.in_(numbers)
+                if work_item_map:
+                    by_number_or_item = by_number_or_item | (
+                        FactoryReceipt.work_item_id.in_(list(work_item_map))
+                    )
                 receipt_rows = db.exec(
                     select(FactoryReceipt)
-                    .where(
-                        FactoryReceipt.repo == repo,
-                        FactoryReceipt.issue_number.in_(numbers),
-                    )
+                    .where(FactoryReceipt.repo == repo, by_number_or_item)
                     .order_by(FactoryReceipt.issue_number, FactoryReceipt.id.desc())
                 ).all()
-        by_number: dict[int, list[FactoryReceipt]] = {}
-        for row in receipt_rows:
-            by_number.setdefault(row.issue_number, []).append(row)
-
         candidates = []
         cooldown_cutoff = now - timedelta(hours=intake["cooldown_hours"])
         for item, labels in survivors:
             number = item.get("number")
-            rows = by_number.get(number, []) if type(number) is int else []
+            rows = []
+            if type(number) is int:
+                for row in receipt_rows:
+                    if row.issue_number == number:
+                        rows.append(row)
+                    elif (
+                        row.work_item_id is not None
+                        and work_item_map.get(row.work_item_id) == number
+                    ):
+                        rows.append(row)
             latest = rows[0] if rows else None
             # A delivered issue is done, whatever generation delivered it and
             # whatever the issue's own labels still say. The defect this
@@ -526,6 +548,7 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                 ACTOR,
                 generation=generation,
                 task_class=candidate["task_class"],
+                issue=issue,
             )
             if delivery:
                 admitted_today += 1

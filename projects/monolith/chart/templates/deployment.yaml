@@ -228,6 +228,10 @@ spec:
               value: {{ .Values.swarm.factoryEnabled | default false | quote }}
             - name: FACTORY_RESERVATION_REVIEW_ENABLED
               value: {{ .Values.swarm.factoryReservationReviewEnabled | default false | quote }}
+            - name: FACTORY_WORK_ITEM_POINTER_ENABLED
+              value: {{ .Values.swarm.factoryWorkItemPointerEnabled | default false | quote }}
+            - name: FACTORY_WORK_ITEM_BASE_URL
+              value: {{ .Values.swarm.factoryWorkItemBaseUrl | default "https://private.jomcgi.dev" | quote }}
             - name: FACTORY_CONDUCTOR_FUNDING_ENABLED
               value: {{ .Values.swarm.factoryConductorFundingEnabled | default false | quote }}
             - name: FACTORY_AUTONOMOUS_CONTINUATION_ENABLED

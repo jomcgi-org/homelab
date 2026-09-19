@@ -374,6 +374,7 @@ def ingest_eligible(policy: dict) -> None:
             ACTOR,
             generation=policy.get("generation", 0),
             task_class=task_class,
+            issue=issue,
         )
 
 
@@ -406,6 +407,7 @@ def _task(task_id: str) -> dict:
         return {
             **task.model_dump(),
             "issue_number": None if receipt is None else receipt.issue_number,
+            "work_item_id": None if receipt is None else receipt.work_item_id,
             "funding_enrolled": latest(db, task_id, "funding_review_requested")
             is not None,
             "delivery_branch": granted_branch or task_branch(task_id),
@@ -5818,6 +5820,12 @@ def tick() -> None:
     from factory.orchestration.factory_landing import landing_tick
 
     landing_tick(snapshot["policy"])
+    try:
+        from factory.orchestration.work_item_pointer import sync_pointers
+
+        sync_pointers(actor=ACTOR)
+    except Exception:  # noqa: BLE001 - pointer failure must not stall reconciliation
+        logger.exception("work item pointer sync failed")
     if snapshot["state"] != "enabled":
         return
     from factory.orchestration.factory_intake import concurrency_limit

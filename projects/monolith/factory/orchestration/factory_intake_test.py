@@ -9,13 +9,20 @@ from sqlalchemy import event
 from sqlmodel import Session, SQLModel, create_engine, select
 
 import factory.orchestration.factory_controls as controls
-from factory.orchestration.factory_intake import admit_next, receive_issue
+import factory.orchestration.work_items as work_items
+from factory.orchestration.factory_intake import (
+    admit_next,
+    receive_issue,
+    receipts_for_work,
+    same_work,
+)
 from factory.orchestration.factory_models import (
     FactoryAudit,
     FactoryClassTier,
     FactoryControl,
     FactoryReceipt,
     WorkItem,
+    WorkItemEvent,
     FactoryReviewVerdict,
     FactoryStart,
 )
@@ -44,6 +51,7 @@ def db(tmp_path, monkeypatch):
                 FactoryControl,
                 FactoryReceipt,
                 WorkItem,
+                WorkItemEvent,
                 FactoryReviewVerdict,
                 FactoryStart,
                 FactoryAudit,
@@ -54,6 +62,7 @@ def db(tmp_path, monkeypatch):
         session.add(FactoryControl(id="factory", actor="migration"))
         session.commit()
     monkeypatch.setattr(controls, "get_engine", lambda: engine)
+    monkeypatch.setattr(work_items, "get_engine", lambda: engine)
     yield engine
     engine.dispose()
 
@@ -88,6 +97,19 @@ def issue(number=1, *, repo="owner/repo", title="first", body="original", genera
         "github-poller",
         generation=generation,
     )
+
+
+def github_issue(number=1):
+    return {
+        "number": number,
+        "title": f"Issue {number}",
+        "body": "body",
+        "html_url": f"https://github.com/owner/repo/issues/{number}",
+        "state": "open",
+        "labels": [],
+        "user": {"login": "jomcgi", "type": "User"},
+        "created_at": "2026-09-19T12:00:00Z",
+    }
 
 
 def enable(policy):
@@ -182,6 +204,136 @@ def test_concurrent_duplicate_receipts_share_one_durable_identity(db):
         values = [f.result(timeout=5) for f in futures]
     assert sum(r["created"] for r in values) == 1
     assert len({r["receipt"]["id"] for r in values}) == 1
+
+
+def test_receive_issue_mints_work_item_once_and_links_receipt(db, monkeypatch):
+    calls = []
+    original = work_items.mint_or_sync_from_github
+
+    def mint(*args, **kwargs):
+        calls.append(True)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(work_items, "mint_or_sync_from_github", mint)
+    raw = github_issue()
+    first = receive_issue(
+        "owner/repo",
+        1,
+        raw["title"],
+        raw["body"],
+        raw["html_url"],
+        "poller",
+        issue=raw,
+    )
+    duplicate = receive_issue(
+        "owner/repo",
+        1,
+        raw["title"],
+        raw["body"],
+        raw["html_url"],
+        "poller",
+        issue=raw,
+    )
+    assert first["created"] is True
+    assert duplicate["created"] is False
+    assert len(calls) == 1
+    with Session(db) as session:
+        receipt = session.get(FactoryReceipt, first["receipt"]["id"])
+        assert receipt.work_item_id == session.exec(select(WorkItem.id)).one()
+
+
+def test_same_work_matches_work_item_before_issue_identity(db):
+    first = FactoryReceipt(
+        repo="owner/repo",
+        issue_number=1,
+        title="first",
+        body="",
+        url="https://github.com/owner/repo/issues/1",
+        actor="test",
+        work_item_id=100001,
+    )
+    moved = FactoryReceipt(
+        repo="owner/repo",
+        issue_number=2,
+        title="moved",
+        body="",
+        url="https://github.com/owner/repo/issues/2",
+        actor="test",
+        work_item_id=100001,
+    )
+    assert same_work(first, moved)
+    with Session(db) as session:
+        session.add(
+            WorkItem(
+                id=100001,
+                title="test item",
+                state="open",
+                source_kind="github",
+                trust="trusted",
+                github_repo="owner/repo",
+                github_issue_number=1,
+            )
+        )
+        session.commit()
+        session.add(first)
+        session.add(moved)
+        session.commit()
+
+        rows = receipts_for_work(session, "owner/repo", 1)
+        assert any(r.issue_number == 1 for r in rows)
+
+        rows = receipts_for_work(session, "owner/repo", 2)
+        assert any(r.issue_number == 2 for r in rows)
+
+
+def test_active_receipt_blocks_admission_of_shared_work_item(db):
+    with Session(db) as session:
+        work_item = WorkItem(
+            id=100001,
+            title="shared",
+            state="open",
+            source_kind="github",
+            trust="trusted",
+            github_repo="owner/repo",
+            github_issue_number=7,
+        )
+        session.add(work_item)
+        session.commit()
+        session.add(
+            FactoryReceipt(
+                repo="owner/repo",
+                issue_number=7,
+                title="first",
+                body="",
+                url="https://github.com/owner/repo/issues/7",
+                actor="test",
+                state="admitted",
+                work_item_id=100001,
+            )
+        )
+        session.add(
+            FactoryReceipt(
+                repo="owner/repo",
+                issue_number=9,
+                title="second",
+                body="",
+                url="https://github.com/owner/repo/issues/9",
+                actor="test",
+                state="queued",
+                work_item_id=100001,
+            )
+        )
+        session.commit()
+
+        rows = receipts_for_work(session, "owner/repo", 7)
+        assert any(r.state == "admitted" for r in rows)
+
+        rows = receipts_for_work(session, "owner/repo", 9)
+        assert any(r.state == "queued" for r in rows)
+
+        rows = receipts_for_work(session, "owner/repo", 9)
+        rows_with_work_item = [r for r in rows if r.work_item_id == 100001]
+        assert len(rows_with_work_item) == 1
 
 
 def test_concurrent_admissions_cannot_both_claim_wip(db, policy):
@@ -677,3 +829,26 @@ def test_receipt_lookup_preserves_identity_and_requires_exact_generation(db):
     assert get_issue_receipt("owner/repo", 1, 3) is None
     assert get_issue_receipt("other/repo", 1, 2) is None
     assert get_issue_receipt("owner/repo", 2, 2) is None
+
+
+def test_receive_issue_still_writes_the_receipt_when_minting_fails(db, monkeypatch):
+    from factory.orchestration import work_items
+
+    def explode(*_args, **_kwargs):
+        raise RuntimeError("mint exploded")
+
+    monkeypatch.setattr(work_items, "mint_or_sync_from_github", explode)
+    result = receive_issue(
+        "owner/repo",
+        41,
+        "Unlinked",
+        "body",
+        "https://github.com/owner/repo/issues/41",
+        "test",
+        issue={"number": 41, "title": "Unlinked", "body": "body"},
+    )
+    assert result["created"] is True
+    with Session(db) as session:
+        receipt = session.get(FactoryReceipt, result["receipt"]["id"])
+        assert receipt is not None
+        assert receipt.work_item_id is None

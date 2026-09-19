@@ -215,6 +215,9 @@ def test_ranking_prefers_delivery_label_rank_then_age(db, monkeypatch):
     )
     assert result[0]["receipt"]["issue_number"] == 3
     assert result[0]["receipt"]["task_class"] == "bug-fix"
+    with Session(db) as session:
+        receipt = session.get(FactoryReceipt, result[0]["receipt"]["id"])
+        assert receipt.work_item_id is not None
 
 
 def test_delivery_without_rank_beats_critical_refine(db, monkeypatch):

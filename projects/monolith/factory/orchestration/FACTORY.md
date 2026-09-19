@@ -1311,6 +1311,26 @@ atomically and prevents ordinary retry from rearming it. Steering and replanning
 carry guidance into the next routine attempt only after confirmed cessation.
 
 
+### Work item pointer comments
+
+`FACTORY_WORK_ITEM_POINTER_ENABLED` and `FACTORY_WORK_ITEM_BASE_URL` (default
+`https://private.jomcgi.dev`) enable GitHub comments that link each work item
+to its durable factory record. One comment per GitHub-sourced work item, created
+once and edited on mint, transition and authority changes, never read back. The
+comment includes a `<!-- work-item:ID -->` marker, the work item state, and a
+link to the work item detail page. Pointer comments exist only for display and
+reference; labels, changes and comments on the GitHub issue are not mirrored
+back.
+
+The sync runs at most 20 items per tick. A failed GitHub write triggers
+exponential backoff: wait 2^n minutes (capped at 1440 minutes / 24 hours) after
+the nth failure, then retry. A successful write clears the backoff counter. The
+sync excludes closed work items and skips work items lacking a GitHub issue
+number.
+
+The `/factory/work-items/{id}` page does not yet exist. Keep this flag disabled
+until task 3 ships that page.
+
 ### Autonomous correction continuation
 
 `FACTORY_AUTONOMOUS_CONTINUATION_ENABLED` allows the engine to grant one final

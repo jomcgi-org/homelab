@@ -328,6 +328,11 @@ class WorkItem(SQLModel, table=True):
     github_repo: str | None = Field(default=None)
     github_issue_number: int | None = Field(default=None)
     github_created_at: datetime | None = Field(default=None)
+    github_pointer_comment_id: int | None = Field(default=None, sa_type=_BIGINT)
+    pointer_synced_version: int = Field(default=0)
+    pointer_synced_at: datetime | None = Field(default=None)
+    pointer_failures: int = Field(default=0)
+    pointer_next_attempt_at: datetime | None = Field(default=None)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     closed_at: datetime | None = Field(default=None)
@@ -379,3 +384,29 @@ class WorkItemEvent(SQLModel, table=True):
     cause_ref: str | None = Field(default=None)
     stated_reason: str | None = Field(default=None)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+def same_work(row_or_key, other) -> bool:
+    """Return whether two receipts or issue keys identify the same work.
+
+    Lives here rather than in factory_intake because swarm_factory_controls
+    ships in the pruned session executor binary without the full swarm
+    package, and the re-admission guard in factory_controls needs it.
+    """
+
+    def identity(value):
+        if isinstance(value, tuple) and len(value) == 2:
+            return None, value[0], value[1]
+        return (
+            getattr(value, "work_item_id", None),
+            getattr(value, "repo", None),
+            getattr(value, "issue_number", None),
+        )
+
+    work_item_id, repo, issue_number = identity(row_or_key)
+    other_work_item_id, other_repo, other_issue_number = identity(other)
+    return (
+        work_item_id is not None
+        and other_work_item_id is not None
+        and work_item_id == other_work_item_id
+    ) or (repo == other_repo and issue_number == other_issue_number)

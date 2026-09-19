@@ -2,8 +2,10 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from sqlmodel import Session, select
 
 from factory.orchestration import factory_conductor as conductor
+from factory.orchestration.factory_models import FactoryReceipt, WorkItem
 from factory.orchestration.turn_artifact import schema_errors
 
 
@@ -388,6 +390,39 @@ def test_tick_at_the_limit_reconciles_without_ingesting_or_admitting(monkeypatch
     assert reconciled == ["t-1"]
 
 
+def test_tick_syncs_work_item_pointers_while_paused(monkeypatch):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_landing,
+        work_item_pointer,
+    )
+
+    policy = {"repo": "owner/repo"}
+    monkeypatch.setattr(
+        controls,
+        "status",
+        lambda: {"state": "paused", "policy": policy, "active_tasks": []},
+    )
+    monkeypatch.setattr(conductor.runtime, "is_launched", lambda: True)
+    monkeypatch.setattr(conductor.runtime, "init_dbos", lambda: object())
+    monkeypatch.setattr(conductor, "revalidate_escalations", lambda: None)
+    monkeypatch.setattr(conductor, "observe_reviewer_routing", lambda _policy: None)
+    calls = []
+    monkeypatch.setattr(
+        factory_landing, "landing_tick", lambda value: calls.append(("landing", value))
+    )
+    monkeypatch.setattr(
+        work_item_pointer,
+        "sync_pointers",
+        lambda **kwargs: calls.append(("pointer", kwargs)),
+    )
+    conductor.tick()
+    assert calls == [
+        ("landing", policy),
+        ("pointer", {"actor": conductor.ACTOR}),
+    ]
+
+
 def test_tick_isolates_a_failing_task_and_a_failing_ingest(monkeypatch):
     import factory.orchestration.factory_controls as controls
     import factory.orchestration.factory_intake as intake
@@ -471,6 +506,7 @@ def feedback_db(tmp_path, monkeypatch):
         FactoryReviewVerdict,
         FactoryStart,
         WorkItem,
+        WorkItemEvent,
     )
     from factory.orchestration.models import (
         SwarmConductorCall,
@@ -499,6 +535,7 @@ def feedback_db(tmp_path, monkeypatch):
         FactoryControl,
         FactoryReceipt,
         WorkItem,
+        WorkItemEvent,
         FactoryReviewVerdict,
         FactoryStart,
         FactoryAudit,
@@ -509,6 +546,9 @@ def feedback_db(tmp_path, monkeypatch):
         db.commit()
     for module in (conductor, conductor.graph, controls):
         monkeypatch.setattr(module, "get_engine", lambda: engine)
+    from factory.orchestration import work_items
+
+    monkeypatch.setattr(work_items, "get_engine", lambda: engine)
 
     def github_read(_repo, path):
         if path.startswith("pulls/"):
@@ -8534,6 +8574,70 @@ def test_ingest_eligible_classifies_the_operators_named_issues(monkeypatch):
         {"repo": "owner/repo", "issue_numbers": [4], "generation": 0}
     )
     assert received == ["judgment-analysis"]
+
+
+def test_ingest_eligible_links_receipt_to_work_item(feedback_db, monkeypatch):
+    monkeypatch.setattr(
+        conductor,
+        "github_get",
+        lambda _repo, _suffix: {
+            "number": 4,
+            "state": "open",
+            "assignees": [],
+            "title": "Work item",
+            "body": "body",
+            "html_url": "https://github.com/owner/repo/issues/4",
+            "labels": [{"name": "bug"}],
+            "user": {"login": "jomcgi", "type": "User"},
+            "created_at": "2026-09-19T12:00:00Z",
+        },
+    )
+    conductor.ingest_eligible(
+        {"repo": "owner/repo", "issue_numbers": [4], "generation": 0}
+    )
+    with Session(feedback_db) as db:
+        receipt = db.exec(
+            select(FactoryReceipt).where(FactoryReceipt.issue_number == 4)
+        ).one()
+        assert (
+            receipt.work_item_id
+            == db.exec(
+                select(WorkItem.id).where(WorkItem.github_issue_number == 4)
+            ).one()
+        )
+
+
+def test_task_dict_includes_receipt_work_item_id(feedback_db):
+    with Session(feedback_db) as db:
+        item = WorkItem(
+            title="item",
+            state="open",
+            source_kind="factory",
+            trust="trusted",
+        )
+        task = conductor.SwarmTask(
+            id="task-with-work-item",
+            task_text="work",
+            conductor_model="opus",
+            budget_usd=1,
+        )
+        db.add_all([item, task])
+        db.flush()
+        db.add(
+            FactoryReceipt(
+                repo="owner/repo",
+                issue_number=44,
+                title="work",
+                body="",
+                url="https://github.com/owner/repo/issues/44",
+                actor="test",
+                task_id=task.id,
+                work_item_id=item.id,
+            )
+        )
+        db.commit()
+        item_id = item.id
+    assert conductor._task("task-with-work-item")["work_item_id"] == item_id
 
 
 def test_a_correction_on_judgment_work_stays_at_the_floor():

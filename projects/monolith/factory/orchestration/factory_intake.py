@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import json
 
 from sqlalchemy import or_
@@ -32,8 +34,47 @@ from factory.orchestration.factory_controls import (
     validate_task_class,
     validate_policy,
 )
-from factory.orchestration.factory_models import FactoryReceipt, WorkItem
+from factory.orchestration.factory_models import (  # noqa: F401 - same_work re-exported
+    FactoryReceipt,
+    WorkItem,
+    same_work,
+)
 from factory.orchestration.models import SwarmTask, mint_task_id
+
+
+logger = logging.getLogger(__name__)
+
+
+def receipts_for_work(
+    db: Session, repo: str, issue_number: int, *, states: list[str] | None = None
+) -> list[FactoryReceipt]:
+    """Select receipts for a work item, matching by work item ID if present.
+
+    If a work item exists for (repo, issue_number), receipts are selected where
+    work_item_id matches that work item ID. Otherwise, receipts are selected by
+    (repo, issue_number). Results are optionally filtered by state.
+    """
+    work_item_id = None
+    work_item_row = db.exec(
+        select(WorkItem).where(
+            WorkItem.github_repo == repo,
+            WorkItem.github_issue_number == issue_number,
+        )
+    ).one_or_none()
+    if work_item_row is not None:
+        work_item_id = work_item_row.id
+
+    query = select(FactoryReceipt).where(
+        (FactoryReceipt.work_item_id == work_item_id)
+        if work_item_id is not None
+        else (
+            (FactoryReceipt.repo == repo)
+            & (FactoryReceipt.issue_number == issue_number)
+        )
+    )
+    if states is not None:
+        query = query.where(FactoryReceipt.state.in_(states))
+    return db.exec(query).all()
 
 
 def get_issue_receipt(repo: str, issue_number: int, generation: int) -> dict | None:
@@ -67,6 +108,7 @@ def receive_issue(
     *,
     generation: int = 0,
     task_class: str = DEFAULT_TASK_CLASS,
+    issue: dict | None = None,
     session: Session | None = None,
 ) -> dict:
     """Store one bounded issue snapshot. A duplicate can never replace its text.
@@ -108,6 +150,27 @@ def receive_issue(
                 WorkItem.github_issue_number == issue_number,
             )
         ).one_or_none()
+        if work_item is None and issue is not None:
+            from factory.orchestration import work_items
+
+            # Minting is a side effect of receiving, never a gate on it: a
+            # malformed issue or a missing table must not cost the receipt.
+            # The savepoint keeps a failed mint from poisoning the session
+            # the receipt is about to commit on; the next sweep's backfill
+            # links the receipt once the item exists.
+            try:
+                with db.begin_nested():
+                    work_item, _outcome = work_items.mint_or_sync_from_github(
+                        db, repo, issue, actor=actor
+                    )
+            except Exception:  # noqa: BLE001 - logged, receipt still written
+                logger.warning(
+                    "work item mint failed while receiving %s#%s",
+                    repo,
+                    issue_number,
+                    exc_info=True,
+                )
+                work_item = None
         row = FactoryReceipt(
             repo=repo,
             work_item_id=work_item.id if work_item else None,
@@ -302,18 +365,30 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
             eligible = or_(eligible, FactoryReceipt.actor == INTAKE_ACTOR)
         # A new generation may coexist with an older task. A direct receipt
         # cannot start a second task on that same issue, even in another lane.
-        busy_issues = [row.issue_number for row in active if row.repo == policy["repo"]]
-        row = db.exec(
-            select(FactoryReceipt)
-            .where(
-                FactoryReceipt.state == "queued",
-                FactoryReceipt.issue_number.not_in(busy_issues),
-                FactoryReceipt.repo == policy["repo"],
-                eligible,
-                in_lane,
-                FactoryReceipt.generation == policy["generation"],
+        busy_issues = [r.issue_number for r in active if r.repo == policy["repo"]]
+        busy_work_items = [
+            r.work_item_id
+            for r in active
+            if r.work_item_id is not None and r.repo == policy["repo"]
+        ]
+        base_query = select(FactoryReceipt).where(
+            FactoryReceipt.state == "queued",
+            FactoryReceipt.repo == policy["repo"],
+            eligible,
+            in_lane,
+            FactoryReceipt.generation == policy["generation"],
+        )
+        if busy_issues:
+            base_query = base_query.where(
+                FactoryReceipt.issue_number.not_in(busy_issues)
             )
-            .order_by(FactoryReceipt.created_at, FactoryReceipt.id)
+        if busy_work_items:
+            base_query = base_query.where(
+                (FactoryReceipt.work_item_id.is_(None))
+                | (FactoryReceipt.work_item_id.not_in(busy_work_items))
+            )
+        row = db.exec(
+            base_query.order_by(FactoryReceipt.created_at, FactoryReceipt.id)
         ).first()
         if row is None:
             return {"ok": False, "reason": "no_eligible_issue"}

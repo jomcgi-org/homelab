@@ -2722,7 +2722,12 @@ def test_recall_cache_maintenance_retains_live_receipts_and_bounds_deletion(
     from sqlmodel import SQLModel, select
     from knowledge import recall_cache
     from knowledge.models import RecallEmbedding
-    from factory.orchestration.factory_models import FactoryReceipt, WorkItem
+    from factory.orchestration.factory_models import (
+        FactoryReceipt,
+        WorkItem,
+        WorkItemEdge,
+        WorkItemEvent,
+    )
     from factory.orchestration.models import SwarmTask
 
     engine = create_engine(
@@ -2734,6 +2739,8 @@ def test_recall_cache_maintenance_retains_live_receipts_and_bounds_deletion(
             RecallEmbedding.__table__,
             FactoryReceipt.__table__,
             WorkItem.__table__,
+            WorkItemEdge.__table__,
+            WorkItemEvent.__table__,
             SwarmTask.__table__,
         ],
     )

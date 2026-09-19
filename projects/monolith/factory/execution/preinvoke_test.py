@@ -872,6 +872,8 @@ def test_cancelled_create_without_guest_blocks_next_hour_probe(database, monkeyp
         FactoryControl,
         FactoryReceipt,
         WorkItem,
+        WorkItemEdge,
+        WorkItemEvent,
     )
 
     # Add the factory ledger to the same file-backed execution database.

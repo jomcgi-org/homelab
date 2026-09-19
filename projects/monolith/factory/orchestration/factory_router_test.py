@@ -1,9 +1,55 @@
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import pytest
+from sqlalchemy import event
+from sqlmodel import Session, SQLModel, create_engine, select
 
 from auth.api import Authority, Principal, PrincipalKind, get_principal
+from factory.orchestration import factory_controls, factory_router, work_items
+from factory.orchestration.factory_models import (
+    FactoryAudit,
+    FactoryControl,
+    FactoryReceipt,
+    WorkItem,
+    WorkItemEvent,
+)
 from factory.orchestration.factory_router import router
+from factory.orchestration.models import SwarmTask
+
+
+@pytest.fixture
+def receipt_db(tmp_path, monkeypatch):
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'router-receipt.db'}",
+        connect_args={"check_same_thread": False, "timeout": 5},
+        execution_options={"schema_translate_map": {"swarm": None}},
+    )
+
+    @event.listens_for(engine, "connect")
+    def foreign_keys(connection, _record):
+        connection.execute("PRAGMA foreign_keys=ON")
+
+    SQLModel.metadata.create_all(
+        engine,
+        tables=[
+            model.__table__
+            for model in (
+                SwarmTask,
+                FactoryControl,
+                FactoryAudit,
+                WorkItem,
+                WorkItemEvent,
+                FactoryReceipt,
+            )
+        ],
+    )
+    with Session(engine) as session:
+        session.add(FactoryControl(id="factory", actor="test"))
+        session.commit()
+    monkeypatch.setattr(factory_controls, "get_engine", lambda: engine)
+    monkeypatch.setattr(work_items, "get_engine", lambda: engine)
+    yield engine
+    engine.dispose()
 
 
 @pytest.mark.parametrize(
@@ -109,6 +155,31 @@ def operator_client(subject="operator:test"):
         authority=Authority.STANDING,
     )
     return TestClient(app)
+
+
+def test_issue_endpoint_links_receipt_to_fetched_work_item(receipt_db, monkeypatch):
+    from factory.orchestration import factory_conductor
+
+    issue = {
+        "number": 12,
+        "title": "Issue 12",
+        "body": "body",
+        "html_url": "https://github.com/owner/repo/issues/12",
+        "state": "open",
+        "labels": [],
+        "user": {"login": "jomcgi", "type": "User"},
+        "created_at": "2026-09-19T12:00:00Z",
+    }
+    monkeypatch.setattr(factory_router, "REPO_CATALOG", {"owner/repo": {}})
+    monkeypatch.setattr(factory_conductor, "github_get", lambda *_args: issue)
+    response = operator_client().post(
+        "/api/swarm/factory/issues",
+        json={"repo": "owner/repo", "issue_number": 12},
+    )
+    assert response.status_code == 200
+    with Session(receipt_db) as session:
+        receipt = session.exec(select(FactoryReceipt)).one()
+        assert receipt.work_item_id == session.exec(select(WorkItem.id)).one()
 
 
 @pytest.mark.parametrize(

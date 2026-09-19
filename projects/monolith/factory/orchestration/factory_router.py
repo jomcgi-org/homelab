@@ -310,6 +310,7 @@ def factory_receipt(
             issue["html_url"],
             principal.subject,
             generation=body.generation,
+            issue=issue,
         )
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
