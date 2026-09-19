@@ -1082,6 +1082,10 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
         # The control plane answered for this exact guest, so any absence run
         # in progress is over. Recorded before anything else acts on the view.
         _record_presence(pin, identity)
+        if view.get("terminal_reason") == "interrupted_for_drain" and view.get(
+            "state"
+        ) in {"running", "banking", "banked", "parked", "relighting"}:
+            return False
         if _destroy_guest_on_departed_node(pin, identity, view):
             return False
         cessation = None

@@ -6173,6 +6173,104 @@ def test_interrupt_waits_for_clean_exit(tmp_path, monkeypatch):
     assert errors
 
 
+def test_process_manager_interrupt_is_exact_duplicate_safe_and_successor_fenced():
+    manager = object.__new__(shim.ProcessManager)
+    manager._dispatch_lock = threading.Lock()
+    manager._active_dispatch_id = "dispatch-1"
+    manager._last_interrupt_id = None
+    manager._last_interrupt_result = None
+    entered = threading.Event()
+    release = threading.Event()
+
+    class Adapter:
+        def __init__(self):
+            self.calls = 0
+
+        def interrupt(self):
+            self.calls += 1
+            entered.set()
+            assert release.wait(2)
+            return {
+                "terminal_reason": "user_interrupt",
+                "killed": False,
+                "timeout": False,
+            }
+
+    first_adapter = Adapter()
+    successor_adapter = Adapter()
+    manager._active_dispatch_adapter = first_adapter
+    outcomes = []
+    interrupt = threading.Thread(
+        target=lambda: outcomes.append(manager.interrupt("dispatch-1"))
+    )
+    interrupt.start()
+    assert entered.wait(1)
+
+    successor_bound = threading.Event()
+
+    def bind_successor():
+        with manager._dispatch_lock:
+            manager._active_dispatch_id = "dispatch-2"
+            manager._active_dispatch_adapter = successor_adapter
+            successor_bound.set()
+
+    successor = threading.Thread(target=bind_successor)
+    successor.start()
+    assert not successor_bound.wait(0.05)
+    release.set()
+    interrupt.join(1)
+    successor.join(1)
+    assert successor_bound.is_set()
+    assert first_adapter.calls == 1
+    assert outcomes[0]["terminal_reason"] == "user_interrupt"
+
+    # An exact duplicate replays the first acknowledgment and never reaches the
+    # successor adapter. Any different stale identity is rejected.
+    assert manager.interrupt("dispatch-1") == outcomes[0]
+    assert first_adapter.calls == 1
+    assert successor_adapter.calls == 0
+    with pytest.raises(shim.SessionConflictError, match="no longer active"):
+        manager.interrupt("dispatch-old")
+
+
+def test_interrupt_http_endpoint_requires_and_forwards_exact_dispatch():
+    class Manager:
+        def __init__(self):
+            self.calls = []
+
+        def interrupt(self, dispatch_id):
+            self.calls.append(dispatch_id)
+            if dispatch_id == "stale":
+                raise shim.SessionConflictError("dispatch is no longer active")
+            return {
+                "terminal_reason": "user_interrupt",
+                "killed": False,
+                "timeout": False,
+            }
+
+    def post(payload, manager):
+        handler = object.__new__(shim.RequestHandler)
+        raw = json.dumps(payload).encode()
+        handler.path = shim.INTERRUPT_PATH
+        handler.headers = {"Content-Length": str(len(raw))}
+        handler.rfile = io.BytesIO(raw)
+        responses = []
+        handler._send = lambda status, value: responses.append((status, value))
+        handler.manager = manager
+        handler.do_POST()
+        return responses
+
+    manager = Manager()
+    assert post({"dispatch_id": "  dispatch-1  "}, manager)[0][0] == 200
+    assert manager.calls == ["dispatch-1"]
+    assert post({"dispatch_id": "dispatch-1", "extra": True}, manager) == [
+        (400, {"error": "dispatch_id must be a non-empty string"})
+    ]
+    assert post({"dispatch_id": "stale"}, manager) == [
+        (409, {"error": "dispatch is no longer active"})
+    ]
+
+
 def test_resume_argument_is_used_on_new_process(tmp_path, monkeypatch):
     args_path = tmp_path / "args.json"
     monkeypatch.setenv("FAKE_ARGS", str(args_path))
@@ -8861,3 +8959,173 @@ def test_muse_usage_native_two_turn_capture_keeps_exact_exec_boundary(
     assert usage["output_tokens"] == output_tokens
     assert usage["total_tokens"] == input_tokens + output_tokens
     assert "total_cost_usd" not in usage
+
+
+@pytest.mark.parametrize("during_startup", [False, True])
+@pytest.mark.parametrize("reason", ["interrupted_for_drain", "user_interrupt"])
+def test_interrupt_flushes_partial_transcript_before_turn_safe_point(
+    tmp_path, monkeypatch, reason, during_startup
+):
+    manager = _new_process_manager()
+    manager.workspace = str(tmp_path)
+    manager._dispatch_lock = threading.Lock()
+    manager._active_dispatch_id = None
+    manager._active_dispatch_adapter = None
+    manager._last_interrupt_id = None
+    manager._last_interrupt_result = None
+    manager._interrupt_reason = None
+    started, stopped, flushed = threading.Event(), threading.Event(), threading.Event()
+    entered, start_provider = threading.Event(), threading.Event()
+    outcomes = []
+
+    class Adapter:
+        session_id = "cli-preserved"
+        workspace = str(tmp_path)
+
+        def turn(self, *args, **kwargs):
+            entered.set()
+            if during_startup:
+                assert start_provider.wait(2)
+            started.set()
+            assert stopped.wait(2)
+            self._partial_turn = {
+                "result": "partial output",
+                "session_id": self.session_id,
+                "events": [{"type": "assistant", "text": "partial output"}],
+            }
+            raise RuntimeError("provider stopped")
+
+        def interrupt(self, timeout):
+            assert 0 < timeout <= 4
+            if started.is_set():
+                stopped.set()
+            else:
+                start_provider.set()
+            return {"killed": False, "timeout": False}
+
+    manager.claude = Adapter()
+    manager.codex = manager.pi = manager.muse = object()
+    monkeypatch.setattr(shim, "ensure_workspace_volume", lambda: None)
+    monkeypatch.setattr(shim, "apply_egress_ca_trust", lambda: None)
+    monkeypatch.setattr(shim, "_ensure_cli_dir", lambda path: None)
+    monkeypatch.setattr(shim, "_capture_turn_base", lambda path: None)
+    monkeypatch.setattr(
+        shim,
+        "_capture_turn_diff",
+        lambda *args: pytest.fail("drain must not wait for git diff"),
+    )
+
+    def sync():
+        records = list((tmp_path / ".ember" / "interrupted-turns").glob("*.json"))
+        assert len(records) == 1
+        record = json.loads(records[0].read_text())
+        assert record["result"] == "partial output"
+        assert record["events"][0]["text"] == "partial output"
+        assert record["terminal_reason"] == reason
+        assert record["turn_seq"] == 7
+        flushed.set()
+
+    monkeypatch.setattr(shim, "_sync_session_volume", sync)
+    thread = threading.Thread(
+        target=lambda: outcomes.append(
+            manager.turn("work", dispatch_id="dispatch-7", turn_seq=7)
+        )
+    )
+    thread.start()
+    assert entered.wait(1)
+    manager.interrupt("dispatch-7", reason=reason, timeout_ms=5000)
+    thread.join(2)
+    assert not thread.is_alive()
+    assert flushed.is_set()
+    assert outcomes[0]["terminal_reason"] == reason
+    assert outcomes[0]["session_id"] == "cli-preserved"
+    assert manager._active_dispatch_id is None
+
+
+def test_drain_receipt_does_not_spend_flush_window_on_callback(
+    monkeypatch, result_receipt, progress_endpoint
+):
+    waits = []
+
+    class StalledCallback:
+        def __init__(self, **kwargs):
+            pass
+
+        def start(self):
+            pass
+
+        def join(self, timeout):
+            waits.append(timeout)
+
+        def is_alive(self):
+            return True
+
+    monkeypatch.setattr(shim.threading, "Thread", StalledCallback)
+    assert not shim._publish_result_receipt(
+        result_receipt, {"terminal_reason": "interrupted_for_drain"}
+    )
+    assert waits == [1.0]
+
+
+def test_interrupted_first_warm_turn_recovers_cli_identity_from_init_event():
+    adapter = type("Adapter", (), {"session_id": None})()
+    partial = shim._partial_turn(
+        adapter,
+        {
+            "events": [{"type": "system", "subtype": "init", "session_id": "new-cli"}],
+            "current_message_buffer": "unfinished answer",
+        },
+    )
+    assert partial["session_id"] == "new-cli"
+    assert partial["result"] == "unfinished answer"
+
+
+@pytest.mark.parametrize(
+    ("reason", "timeout_ms", "expected"),
+    [
+        ("interrupted_for_drain", 60000, 58.0),
+        ("interrupted_for_drain", 500, 1.0),
+        ("user_interrupt", 60000, 30.0),
+    ],
+)
+def test_interrupt_honors_window_and_resignals_only_once(
+    monkeypatch, reason, timeout_ms, expected
+):
+    manager = _new_process_manager()
+    manager._dispatch_lock = threading.Lock()
+    manager._last_interrupt_id = None
+    manager._last_interrupt_result = None
+    manager._active_dispatch_id = "drain-window"
+    now = [0.0]
+    waits = []
+    signals = []
+    killed = []
+    monkeypatch.setattr(shim.time, "monotonic", lambda: now[0])
+
+    class Done:
+        def wait(self, timeout):
+            waits.append(timeout)
+            now[0] += timeout
+            return False
+
+    class Adapter:
+        def interrupt(self, timeout):
+            signals.append(timeout)
+            return {"killed": False, "timeout": False}
+
+        def _close_process(self, kill=False):
+            killed.append(kill)
+
+    manager._active_dispatch_adapter = Adapter()
+    manager._active_provider_done = Done()
+    outcome = manager.interrupt("drain-window", reason=reason, timeout_ms=timeout_ms)
+    assert signals == pytest.approx([expected, expected - 0.25])
+    assert waits == pytest.approx([0.25, expected - 0.25])
+    assert now[0] == pytest.approx(expected)
+    assert killed == [True]
+    assert outcome["terminal_reason"] == reason
+    assert (
+        manager.interrupt("drain-window", reason=reason, timeout_ms=timeout_ms)
+        == outcome
+    )
+    assert len(signals) == 2

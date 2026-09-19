@@ -27,7 +27,7 @@ defmodule Embervm.SessionManagerTest do
   }
   alias Embervm.KeyService.Envelope
   alias Embervm.OpLog.SQLite
-  alias Embervm.Node.V1.{BankResponse, GuestResponse, PrimeResponse, RelightResponse, SessionAssignResponse, UsageStats}
+  alias Embervm.Node.V1.{BankResponse, GuestResponse, PrimeResponse, RelightResponse, SessionAssignResponse, SessionInterruptResponse, UsageStats}
 
   @bank_dial_miss_limit 30
 
@@ -212,6 +212,15 @@ defmodule Embervm.SessionManagerTest do
     session_opts = [
       channel_fun: Keyword.get(opts, :session_channel_fun, fn _node -> {:ok, :ch} end),
       assign_fun: assign_fun,
+      interrupt_fun:
+        Keyword.get(opts, :interrupt_fun, fn _ch, _req ->
+          {:ok,
+           %SessionInterruptResponse{
+             terminal_reason: "user_interrupt",
+             killed: false,
+             timeout: false
+           }}
+        end),
       destroy_fun: Keyword.get(opts, :destroy_fun, fn _ch, _vm -> {:ok, %{teardown_confirmed: true}} end),
       destroy_exact_fun: Keyword.get(opts, :destroy_exact_fun, fn _ch, _req -> {:error, :unsupported} end),
       invalidate_fun: fn _node, _ch -> :ok end,
@@ -225,7 +234,8 @@ defmodule Embervm.SessionManagerTest do
         end),
       # Test-only watchdog budget (#4434); nil keeps the production formula.
       invoke_watchdog_ms: Keyword.get(opts, :invoke_watchdog_ms),
-      drain_bank_retry_ms: Keyword.get(opts, :drain_bank_retry_ms, 10)
+      drain_bank_retry_ms: Keyword.get(opts, :drain_bank_retry_ms, 10),
+      clock: Keyword.get(opts, :clock, fn -> System.system_time(:millisecond) end)
     ]
 
     mgr_opts =
@@ -2939,6 +2949,78 @@ defmodule Embervm.SessionManagerTest do
     refute MapSet.member?(:sys.get_state(ctx.mgr).draining_sessions, created.session_id)
   end
 
+  test "20 second drain interrupts, flushes, banks, and resumes the next turn" do
+    parent = self()
+    {:ok, clock} = Agent.start_link(fn -> 1_000 end)
+    {:ok, active} = Agent.start_link(fn -> nil end)
+    now = fn -> Agent.get(clock, & &1) end
+    assign = fn _ch, req ->
+      payload = :json.decode(req.request.body)
+      if payload["turn_seq"] == 1 do
+        worker = self()
+        Agent.update(active, fn _ -> worker end)
+        send(parent, :provider_running)
+        receive do
+          :flush ->
+            Agent.update(clock, fn _ -> 3_000 end)
+            send(parent, :transcript_flushed)
+            body = :json.encode(%{terminal_reason: "interrupted_for_drain", session_id: "cli-1", dispatch_id: req.dispatch_id}) |> IO.iodata_to_binary()
+            {:ok, %SessionAssignResponse{response: %GuestResponse{status_code: 200, body: body}}}
+        end
+      else
+        send(parent, {:resumed, payload})
+        {:ok, %SessionAssignResponse{response: %GuestResponse{status_code: 200, body: ~s({"terminal_reason":"completed"})}}}
+      end
+    end
+    interrupt = fn _ch, req ->
+      assert req.reason == "interrupted_for_drain"
+      assert req.timeout_ms == 5_000
+      send(parent, {:interrupted, req.dispatch_id})
+      send(Agent.get(active, & &1), :flush)
+      {:ok, %SessionInterruptResponse{terminal_reason: req.reason}}
+    end
+    bank = fn _ch, req ->
+      assert now.() == 3_000
+      Agent.update(clock, fn _ -> 10_000 end)
+      send(parent, :banked)
+      {:ok, %BankResponse{snapshot_ref: "snap-#{req.session_id}", size_bytes: 1_000}}
+    end
+    ctx = start_stack(clock: now, assign_fun: assign, interrupt_fun: interrupt, bank_fun: bank)
+    put_session_workload(ctx, "wl-drain-short")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-drain-short", "p1")
+    invoke = Task.async(fn -> SessionManager.invoke(ctx.mgr, created.session_id, %{body: ~s({"message":"work"})}) end)
+    assert_receive :provider_running, 1_000
+    assert SessionManager.drain_node(ctx.mgr, "node-4", 21_000) == 1
+    assert_receive {:interrupted, _}, 1_000
+    assert_receive :transcript_flushed, 1_000
+    assert {:ok, result} = Task.await(invoke, 1_000)
+    assert :json.decode(result.body)["terminal_reason"] == "interrupted_for_drain"
+    assert_receive :banked, 1_000
+    banked = wait_for_state(ctx, created.session_id, :banked)
+    assert banked.terminal_reason == nil
+    assert banked.interrupted_turn["seq"] == 1
+    assert now.() < 21_000
+    {:ok, fact} = NodeCapacity.fetch(ctx.cap_table, "node-4")
+    NodeCapacity.put(ctx.cap_table, "node-4", Map.put(fact, :session_snapshots, [
+      %{session_id: created.session_id, snapshot_ref: banked.snapshot_ref, workload: "wl-drain-short"}
+    ]))
+    assert {:ok, _} = SessionManager.invoke(ctx.mgr, created.session_id, %{body: ~s({"message":"original prompt"})})
+    assert_receive {:resumed, message}, 1_000
+    assert message["turn_seq"] == 2
+    assert message["session_id"] == "cli-1"
+    assert message["message"] =~ "interrupted for a drain"
+    assert message["message"] =~ "transcript and workspace are intact"
+    assert String.ends_with?(message["message"], "\n\noriginal prompt")
+    {:ok, row} = SessionStore.get(ctx.store, created.session_id)
+    assert row.interrupted_turn == nil
+  end
+
+  test "flush window reserves bank time and never extends the drain deadline" do
+    assert Embervm.Session.flush_window(180_000, 0) == 60_000
+    assert Embervm.Session.flush_window(20_000, 0) == 5_000
+    assert Embervm.Session.flush_window(10_000, 0) == 0
+  end
+
   test "drain retries a transient bank refusal without reopening admission" do
     ctx = start_stack(drain_bank_retry_ms: 10)
     put_session_workload(ctx, "wl-drain-retry")
@@ -3790,6 +3872,150 @@ defmodule Embervm.SessionManagerTest do
     assert {:ok, %{state: :running}} = SessionStore.get(ctx.store, created.session_id)
     assert [{pid, _}] = Registry.lookup(ctx.registry, created.session_id)
     assert Process.alive?(pid)
+  end
+
+  test "interrupt is exact, duplicate-safe, and leaves the session reusable" do
+    parent = self()
+
+    assign_fun = fn _channel, req ->
+      send(parent, {:interrupt_assign_started, self(), req.dispatch_id})
+
+      receive do
+        {:finish, body} ->
+          {:ok,
+           %SessionAssignResponse{
+             response: %GuestResponse{status_code: 200, headers: %{}, body: body},
+             usage: %UsageStats{cpu_ms: 1, peak_rss_mib: 1, wall_ms: 1},
+             suspect: false
+           }}
+      end
+    end
+
+    interrupt_fun = fn _channel, req ->
+      send(parent, {:interrupt_relayed, req.dispatch_id})
+
+      {:ok,
+       %SessionInterruptResponse{
+         terminal_reason: "user_interrupt",
+         killed: false,
+         timeout: false
+       }}
+    end
+
+    ctx = start_stack(assign_fun: assign_fun, interrupt_fun: interrupt_fun)
+    put_session_workload(ctx, "wl-interrupt")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-interrupt", "p1")
+
+    first =
+      Task.async(fn ->
+        SessionManager.invoke(ctx.mgr, created.session_id, %{body: "first", dispatch_id: "dispatch-1"})
+      end)
+
+    assert_receive {:interrupt_assign_started, worker, "dispatch-1"}, 1_000
+    assert {:error, :stale_dispatch} =
+             SessionManager.interrupt(ctx.mgr, created.session_id, "dispatch-old")
+
+    stops =
+      for _ <- 1..2 do
+        Task.async(fn -> SessionManager.interrupt(ctx.mgr, created.session_id, "dispatch-1") end)
+      end
+
+    assert_receive {:interrupt_relayed, "dispatch-1"}, 1_000
+    assert Enum.map(stops, &Task.await(&1, 1_000)) == [
+             {:ok, %{terminal_reason: "user_interrupt", killed: false, timeout: false}},
+             {:ok, %{terminal_reason: "user_interrupt", killed: false, timeout: false}}
+           ]
+    refute_receive {:interrupt_relayed, "dispatch-1"}, 50
+    send(worker, {:finish, "interrupted"})
+    assert {:ok, %{body: "interrupted"}} = Task.await(first, 1_000)
+
+    second =
+      Task.async(fn ->
+        SessionManager.invoke(ctx.mgr, created.session_id, %{body: "second", dispatch_id: "dispatch-2"})
+      end)
+
+    assert_receive {:interrupt_assign_started, successor, "dispatch-2"}, 1_000
+    assert {:error, :stale_dispatch} =
+             SessionManager.interrupt(ctx.mgr, created.session_id, "dispatch-1")
+    send(successor, {:finish, "completed"})
+    assert {:ok, %{body: "completed"}} = Task.await(second, 1_000)
+    assert {:ok, %{state: :running}} = SessionStore.get(ctx.store, created.session_id)
+  end
+
+  test "interrupt timeout does not settle or destroy the active invoke" do
+    parent = self()
+
+    assign_fun = fn _channel, req ->
+      send(parent, {:timeout_assign_started, self(), req.dispatch_id})
+
+      receive do
+        :finish ->
+          {:ok,
+           %SessionAssignResponse{
+             response: %GuestResponse{status_code: 200, headers: %{}, body: "completed"},
+             usage: %UsageStats{cpu_ms: 1, peak_rss_mib: 1, wall_ms: 1},
+             suspect: false
+           }}
+      end
+    end
+
+    interrupt_fun = fn _channel, _req ->
+      {:error, %GRPC.RPCError{status: 4, message: "deadline exceeded"}}
+    end
+
+    ctx = start_stack(assign_fun: assign_fun, interrupt_fun: interrupt_fun)
+    put_session_workload(ctx, "wl-interrupt-timeout")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-interrupt-timeout", "p1")
+    invoke =
+      Task.async(fn ->
+        SessionManager.invoke(ctx.mgr, created.session_id, %{body: "slow", dispatch_id: "dispatch-timeout"})
+      end)
+    assert_receive {:timeout_assign_started, worker, "dispatch-timeout"}, 1_000
+    assert {:error, :deadline_exceeded} =
+             SessionManager.interrupt(ctx.mgr, created.session_id, "dispatch-timeout")
+    assert {:ok, %{state: :running}} = SessionStore.get(ctx.store, created.session_id)
+    send(worker, :finish)
+    assert {:ok, %{body: "completed"}} = Task.await(invoke, 1_000)
+  end
+
+  test "interrupt maps a downstream dispatch recheck to stale" do
+    parent = self()
+
+    assign_fun = fn _channel, req ->
+      send(parent, {:stale_assign_started, self(), req.dispatch_id})
+
+      receive do
+        :finish ->
+          {:ok,
+           %SessionAssignResponse{
+             response: %GuestResponse{status_code: 200, headers: %{}, body: "completed"},
+             usage: %UsageStats{cpu_ms: 1, peak_rss_mib: 1, wall_ms: 1},
+             suspect: false
+           }}
+      end
+    end
+
+    interrupt_fun = fn _channel, _req ->
+      {:error, %GRPC.RPCError{status: 9, message: "failed precondition"}}
+    end
+
+    ctx = start_stack(assign_fun: assign_fun, interrupt_fun: interrupt_fun)
+    put_session_workload(ctx, "wl-interrupt-stale")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-interrupt-stale", "p1")
+
+    invoke =
+      Task.async(fn ->
+        SessionManager.invoke(ctx.mgr, created.session_id, %{
+          body: "slow",
+          dispatch_id: "dispatch-stale"
+        })
+      end)
+
+    assert_receive {:stale_assign_started, worker, "dispatch-stale"}, 1_000
+    assert {:error, :stale_dispatch} =
+             SessionManager.interrupt(ctx.mgr, created.session_id, "dispatch-stale")
+    send(worker, :finish)
+    assert {:ok, %{body: "completed"}} = Task.await(invoke, 1_000)
   end
 
   test "the queue cap rejects pile-ups past invokeQueueCap with :queue_full" do
@@ -5544,4 +5770,91 @@ defmodule Embervm.SessionManagerTest do
       end
     end
   end
+  defmodule DrainRecordStore do
+    use GenServer
+    def init(opts), do: {:ok, opts}
+    def handle_call({:record_invoke_started, id}, _from, state) do
+      {:reply, {:ok, %{session_id: id, invoke_started_at: 1, turn_seq: 1, interrupted_turn: nil}}, state}
+    end
+    def handle_call({:record_invoke, _, _, _}, _from, state) do
+      send(state.parent, :record_attempted)
+      {:reply, state.result, state}
+    end
+  end
+
+  for error <- [:not_running, :invalid_payload, :unavailable] do
+    test "drain persistence #{error} releases the caller and banks" do
+      parent = self()
+      {:ok, clock} = Agent.start_link(fn -> 1_000 end)
+      {:ok, store} = GenServer.start_link(DrainRecordStore, %{parent: parent, result: {:error, unquote(error)}})
+      {:ok, session} = Embervm.Session.start_link(
+        session_id: "s-drain-record", workload: "sandbox", node_id: "node", vm_id: "vm",
+        queue_cap: 1, session_store: store, clock: fn -> Agent.get(clock, & &1) end,
+        channel_fun: fn _ -> {:ok, :channel} end,
+        assign_fun: fn _, _ ->
+          send(parent, {:active_drain_worker, self()})
+          receive do :finish -> :ok end
+          {:ok, %SessionAssignResponse{response: %GuestResponse{status_code: 200,
+            body: ~s({"terminal_reason":"interrupted_for_drain","session_id":"cli-1"})}}}
+        end,
+        interrupt_fun: fn _, _ -> {:ok, %SessionInterruptResponse{}} end,
+        bank_fun: fn _, _ -> send(parent, :bank_attempted); {:error, :busy} end
+      )
+      on_exit(fn -> if Process.alive?(session), do: GenServer.stop(session) end)
+      caller = Task.async(fn -> Embervm.Session.invoke(session, %{body: ~s({"message":"work"})}) end)
+      assert_receive {:active_drain_worker, worker}, 1_000
+      Embervm.Session.drain(session, 20_000)
+      assert :sys.get_state(session).draining
+      send(worker, :finish)
+      assert_receive :record_attempted, 1_000
+      if unquote(error) == :unavailable do
+        Agent.update(clock, fn _ -> 20_000 end)
+      end
+      assert {:ok, _} = Task.await(caller, 1_000)
+      assert_receive :bank_attempted, 1_000
+      state = :sys.get_state(session)
+      refute state.completion_pending
+      assert state.interrupted_turn["cli_session_id"] == "cli-1"
+      refute_receive :record_attempted, 100
+    end
+  end
+
+  test "expired drain window skips the interrupt relay and proceeds to bank" do
+    parent = self()
+    {:ok, store} = GenServer.start_link(DrainRecordStore, %{parent: parent, result: {:ok, %{}}})
+    {:ok, session} = Embervm.Session.start_link(
+      session_id: "s-expired", workload: "sandbox", node_id: "node", vm_id: "vm",
+      queue_cap: 1, session_store: store, clock: fn -> 1_000 end,
+      channel_fun: fn _ -> {:ok, :channel} end,
+      assign_fun: fn _, _ -> send(parent, :active_expired); receive do :never -> :ok end end,
+      interrupt_fun: fn _, _ -> send(parent, :unexpected_relay); {:ok, %SessionInterruptResponse{}} end,
+      bank_fun: fn _, _ -> send(parent, :expired_bank); :ok end
+    )
+    caller = Task.async(fn -> Embervm.Session.invoke(session, %{body: "{}"}) end)
+    assert_receive :active_expired, 1_000
+    Embervm.Session.drain(session, 10_000)
+    assert {:error, :brick_draining} = Task.await(caller, 1_000)
+    assert_receive :expired_bank, 1_000
+    refute_receive :unexpected_relay, 100
+  end
+
+  test "interrupt worker crash answers waiters and preserves duplicate-safe completion" do
+    parent = self()
+    assign = fn _, _ ->
+      send(parent, {:crash_test_worker, self()})
+      receive do :finish -> :ok end
+      {:ok, %SessionAssignResponse{response: %GuestResponse{status_code: 200, body: "{}"}}}
+    end
+    ctx = start_stack(assign_fun: assign, interrupt_fun: fn _, _ -> raise "interrupt crash" end)
+    put_session_workload(ctx, "wl-interrupt-crash")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-interrupt-crash", "p1")
+    invoke = Task.async(fn -> SessionManager.invoke(ctx.mgr, created.session_id, %{body: "{}", dispatch_id: "dispatch-crash"}) end)
+    assert_receive {:crash_test_worker, worker}, 1_000
+    interrupt = Task.async(fn -> SessionManager.interrupt(ctx.mgr, created.session_id, "dispatch-crash") end)
+    assert {:error, {:interrupt_crashed, _}} = outcome = Task.await(interrupt, 1_000)
+    assert SessionManager.interrupt(ctx.mgr, created.session_id, "dispatch-crash") == outcome
+    send(worker, :finish)
+    assert {:ok, _} = Task.await(invoke, 1_000)
+  end
+
 end

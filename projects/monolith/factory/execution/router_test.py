@@ -899,7 +899,12 @@ def test_vm_stream_heartbeats_when_idle(monkeypatch):
 
 
 def test_get_session_detail(client, session):
-    row = _session(session, "detail")
+    row = _session(
+        session,
+        "detail",
+        ember_session_id="guest-detail",
+        ember_session_token="token-detail",
+    )
     other_row = _session(session, "other")
     session.add_all(
         [
@@ -918,6 +923,8 @@ def test_get_session_detail(client, session):
                 message_text="next",
                 partial_text="in progress",
                 partial_activities='[{"type": "tool", "name": "shell"}]',
+                claimed_by_replica="replica:detail",
+                dispatch_count=1,
             ),
             AgentTurn(
                 session_id=other_row.id,
@@ -950,6 +957,8 @@ def test_get_session_detail(client, session):
     assert body["pending_queue"][0]["partial_activities"] == [
         {"type": "tool", "name": "shell"}
     ]
+    assert body["pending_queue"][0]["dispatch_count"] == 1
+    assert "dispatch_id" not in body["pending_queue"][0]
 
     newer = client.get(f"/api/agents/sessions/{row.id}?after_seq=1").json()
     assert [turn["seq"] for turn in newer["turns"]] == [2]

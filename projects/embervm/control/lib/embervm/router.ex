@@ -271,10 +271,11 @@ defmodule Embervm.Router do
   defp fetch_query(conn, _opts), do: fetch_query_params(conn)
 
   # Auth is scoped to /v1: /healthz and /livez stay open for kubelet probes. The
-  # session routes that take a SESSION token (invoke, and the session-token-or-management
-  # GET) authenticate in their handler, not here, because the bearer token they
-  # carry is a per-session capability, not a ServiceAccount token TokenReview would
-  # recognize. Running management auth on them would 401 every valid session token.
+  # session routes that take a SESSION token (invoke and the
+  # session-token-or-management GET) authenticate in their handler, not here,
+  # because the bearer token they carry is a per-session capability, not a
+  # ServiceAccount token TokenReview would recognize. Running management auth on
+  # them would 401 every valid session token.
   # So this plug runs management auth on every /v1 path EXCEPT those, which
   # `session_token_route?/1` names explicitly (a closed allow-list, not a prefix,
   # so a new management route is never accidentally opened).
@@ -297,9 +298,10 @@ defmodule Embervm.Router do
 
   # The routes whose bearer token is a SESSION token (verified in-handler against
   # Embervm.SessionStore), NOT a management ServiceAccount token: POST
-  # /v1/sessions/:id/invoke (session token ONLY) and GET /v1/sessions/:id
-  # (management OR session token). Matched structurally on path_info so a query
-  # string or trailing content cannot smuggle a management route past the gate.
+  # /v1/sessions/:id/invoke (session token ONLY), and GET
+  # /v1/sessions/:id (management OR session token). Matched structurally on
+  # path_info so a query string or trailing content cannot smuggle a management
+  # route past the gate.
   defp session_token_route?(%Plug.Conn{method: "POST", path_info: ["v1", "sessions", _id, "invoke"]}),
     do: true
 
@@ -1524,7 +1526,8 @@ defmodule Embervm.Router do
           method: "POST",
           path: guest_path(conn),
           headers: guest_headers(conn),
-          body: body
+          body: body,
+          dispatch_id: header_value(conn, "x-ember-dispatch-id")
         }
 
         result =
@@ -2370,6 +2373,8 @@ defmodule Embervm.Router do
       expires_at: session.expires_at,
       updated_at: session.updated_at,
       terminal_reason: session.terminal_reason,
+      turn_seq: Map.get(session, :turn_seq, 0),
+      interrupted_turn: Map.get(session, :interrupted_turn),
       stop_intent: Map.get(session, :stop_intent),
       stop_completion: Embervm.SessionStopProof.completion(session),
       node: session_node_view(session, node_statuses)

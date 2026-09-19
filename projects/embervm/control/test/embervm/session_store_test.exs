@@ -312,6 +312,36 @@ defmodule Embervm.SessionStoreTest do
     assert SessionStore.counts(store, "wl-t") == %{live: 0, banked: 0}
   end
 
+  test "drain turn identity and sequence survive a store restart", %{path: path} do
+    {op_log, store} = start_pair(path)
+    {:ok, created} = create(store)
+    {:ok, started} = SessionStore.record_invoke_started(store, created.session_id)
+    assert started.turn_seq == 1
+    {:ok, interrupted} = SessionStore.record_invoke(store, created.session_id, nil,
+      %{"terminal_reason" => "interrupted_for_drain", "session_id" => "cli-1", "dispatch_id" => "d-1"})
+    GenServer.stop(store)
+    {:ok, restored} = SessionStore.start_link(name: nil, op_log: op_log)
+    {:ok, row} = SessionStore.get(restored, created.session_id)
+    assert row.turn_seq == 1
+    assert row.terminal_reason == nil
+    assert row.interrupted_turn == interrupted.interrupted_turn
+    {:ok, next} = SessionStore.record_invoke_started(restored, created.session_id)
+    assert next.turn_seq == 2
+    assert next.interrupted_turn["seq"] == 1
+    {:ok, consumed} = SessionStore.get(restored, created.session_id)
+    assert consumed.interrupted_turn == nil
+    GenServer.stop(restored)
+    {:ok, restarted} = SessionStore.start_link(name: nil, op_log: op_log)
+    {:ok, consumed} = SessionStore.get(restarted, created.session_id)
+    assert consumed.interrupted_turn == nil
+    assert consumed.turn_seq == 2
+    # No completion was recorded for the resumed dispatch. An unrelated next
+    # turn still must not consume its resume hint again.
+    {:ok, unrelated} = SessionStore.record_invoke_started(restarted, created.session_id)
+    assert unrelated.turn_seq == 3
+    assert unrelated.interrupted_turn == nil
+  end
+
   test "record_invoke bumps last_invoke_at and usage without moving state", %{path: path} do
     {op_log, store} = start_pair(path)
 

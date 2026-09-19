@@ -195,6 +195,7 @@ defmodule Embervm.RouterTest do
 
     def invoke(_srv, _id, _req), do: {:error, :not_found}
 
+
     def stop_identity(_srv, _id), do: nil
     def destroy(_srv, "s-live", %{"session_id" => "s-live", "invoke_started_at" => nil}), do: {:ok, :destroying}
     def destroy(_srv, _id, _expected), do: {:error, :stop_precondition_failed}

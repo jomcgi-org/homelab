@@ -14,6 +14,8 @@ from factory.execution.models import AgentSession, AgentTurn
 import core.db
 import factory.orchestration.node_workflows as nodes
 
+_REAL_AWAIT_NODE_TURN = nodes._await_node_turn
+
 SCHEMA = {
     "type": "object",
     "properties": {"ok": {"type": "boolean"}},
@@ -1437,3 +1439,18 @@ def test_reconciled_review_verdict_survives_provider_spend(reconciliation_db):
     assert result["value"] == verdict
     assert result["cost_usd"] == 7.02
     assert "cost_over_reservation" in result["reason"]
+
+
+def test_drain_interruption_waits_on_same_factory_attempt(harness, monkeypatch):
+    turns = iter([{"terminal_reason": "interrupted_for_drain"}, harness.turn])
+    sleeps = []
+    monkeypatch.setattr(nodes, "poll_turn", lambda sid, seq: next(turns))
+    monkeypatch.setattr(nodes.DBOS, "sleep", sleeps.append)
+    monkeypatch.setattr(nodes, "_await_node_turn", _REAL_AWAIT_NODE_TURN)
+    result = nodes.execute_node.__wrapped__(pin())
+    assert result["status"] == "succeeded"
+    assert len(harness.starts) == 1
+    assert harness.starts[0][0]["attempt"] == 1
+    assert harness.starts[0][0]["max_cost_usd"] == 2.0
+    assert harness.cleanups == ["parent-run"]
+    assert sleeps == [5]

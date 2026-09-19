@@ -81,7 +81,8 @@ defmodule Embervm.Session do
   too.
 
   `drain/1` is the stronger brick-roll fence. It rejects queued and new invokes
-  retryably, lets the one already-running invoke finish, and then asks to bank.
+  retryably, optionally interrupts the running invoke if a deadline is approaching,
+  and banks after its completion or flushed response.
   Bank admission refusals leave the fence latched and retry until admission or
   until Kubernetes ends the old pod at its external drain deadline. A bank RPC
   failure is recovered by the manager, which restarts the process with the same
@@ -100,6 +101,8 @@ defmodule Embervm.Session do
     GuestResponse,
     SessionAssignRequest,
     SessionAssignResponse,
+    SessionInterruptRequest,
+    SessionInterruptResponse,
     Trace
   }
 
@@ -109,6 +112,7 @@ defmodule Embervm.Session do
   # the dispatcher's @assign_watchdog_margin_ms; overridable per deploy through
   # EMBERVM_SESSION_INVOKE_WATCHDOG_MARGIN_MS.
   @invoke_watchdog_margin_ms 15_000
+  @interrupt_timeout_ms 30_000
   @drain_bank_retry_ms 1_000
 
   # -- Client API ------------------------------------------------------------
@@ -136,6 +140,18 @@ defmodule Embervm.Session do
     GenServer.call(server, {:invoke, req}, :infinity)
   end
 
+  @doc """
+  Interrupt one exact active dispatch without ending the session.
+
+  Exact-dispatch primitive: duplicate-safe and stale-safe. Reached only through
+  `Embervm.SessionManager.interrupt/3`, which has no production caller yet
+  (#6256 follow-up); the drain path uses `interrupt_for_drain/1` directly.
+  """
+  @spec interrupt(GenServer.server(), String.t()) :: {:ok, map()} | {:error, term()}
+  def interrupt(server, dispatch_id) when is_binary(dispatch_id) do
+    GenServer.call(server, {:interrupt, dispatch_id}, @interrupt_timeout_ms + 5_000)
+  end
+
   @doc "The session id this process serves (for supervision/debug)."
   @spec session_id(GenServer.server()) :: String.t()
   def session_id(server), do: GenServer.call(server, :session_id)
@@ -148,10 +164,17 @@ defmodule Embervm.Session do
   @spec brick_gone(GenServer.server(), map()) :: :ok
   def brick_gone(server, metadata \\ %{}), do: GenServer.cast(server, {:brick_gone, metadata})
 
-  @doc "Close invoke admission and bank after the current invoke finishes."
+  @doc "Fence invokes, interrupt the active turn, and bank after its flushed response."
   @spec drain(GenServer.server()) :: :ok
-  def drain(server), do: GenServer.cast(server, :drain)
+  def drain(server), do: drain(server, System.system_time(:millisecond) + 180_000)
+  def drain(server, deadline), do: GenServer.cast(server, {:drain, deadline})
 
+  @doc "Reserve bank/export time within the external drain deadline."
+  def flush_window(deadline, now, cap \\ 60_000, bank_budget \\ 15_000) do
+    max(0, min(cap, deadline - now - bank_budget))
+  end
+
+  
   @doc "Classify an invoke error using the bound node's current registry state."
   @spec classify_invoke_error(term(), map()) :: %{reason: term(), invalidate_channel: boolean()}
   def classify_invoke_error(error, status) do
@@ -221,6 +244,7 @@ defmodule Embervm.Session do
       channel_fun: Keyword.get(opts, :channel_fun, &Embervm.NodeChannel.get/1),
       invalidate_fun: Keyword.get(opts, :invalidate_fun, &Embervm.NodeChannel.invalidate/2),
       assign_fun: Keyword.get(opts, :assign_fun, &default_session_assign/2),
+      interrupt_fun: Keyword.get(opts, :interrupt_fun, &default_session_interrupt/2),
       destroy_fun: Keyword.get(opts, :destroy_fun, &default_destroy/2),
       rejoin_failure_fun: Keyword.get(opts, :rejoin_failure_fun),
       brick_status_fun: Keyword.get(opts, :brick_status_fun, &default_brick_status/1),
@@ -230,6 +254,11 @@ defmodule Embervm.Session do
       # invoke, or nil.
       queue: :queue.new(),
       worker: nil,
+      dispatch_id: nil,
+      interrupt: nil,
+      interrupt_workers: %{},
+      interrupted_turn: nil,
+      turn_seq: 0,
       # The armed idle-bank timer ref (nil when disarmed).
       idle_timer: nil,
       # A brick rollout closes admission before waiting for the one running
@@ -238,7 +267,14 @@ defmodule Embervm.Session do
       draining: Keyword.get(opts, :draining, false),
       drain_bank_retry_ms:
         Keyword.get(opts, :drain_bank_retry_ms, @drain_bank_retry_ms),
-      drain_timer: nil
+      drain_timer: nil,
+      drain_deadline: Keyword.get(opts, :drain_deadline),
+      drain_flush_ms: Keyword.get(opts, :drain_flush_ms, 60_000),
+      drain_bank_budget_ms: Keyword.get(opts, :drain_bank_budget_ms, 15_000),
+      drain_flush_timer: nil,
+      drain_flush_deadline: nil,
+      completion_pending: false,
+      clock: Keyword.get(opts, :clock, fn -> System.system_time(:millisecond) end)
     }
 
     if state.draining do
@@ -289,6 +325,33 @@ defmodule Embervm.Session do
     end
   end
 
+  def handle_call({:interrupt, dispatch_id}, from, state) do
+    cond do
+      not is_binary(dispatch_id) or dispatch_id == "" ->
+        {:reply, {:error, :invalid_dispatch}, state}
+
+      state.dispatch_id != dispatch_id or is_nil(state.worker) ->
+        {:reply, {:error, :stale_dispatch}, state}
+
+      match?({^dispatch_id, {:done, _}}, state.interrupt) ->
+        # The relay already completed for this exact dispatch while the turn is
+        # still in flight: answer from the recorded outcome, never relay twice.
+        {^dispatch_id, {:done, outcome}} = state.interrupt
+        {:reply, outcome, state}
+
+      match?({^dispatch_id, waiters} when is_list(waiters), state.interrupt) ->
+        {^dispatch_id, waiters} = state.interrupt
+        {:noreply, %{state | interrupt: {dispatch_id, [from | waiters]}}}
+
+      not is_nil(state.interrupt) ->
+        {:reply, {:error, :stale_dispatch}, state}
+
+      true ->
+        state = spawn_interrupt_worker(state, dispatch_id)
+        {:noreply, %{state | interrupt: {dispatch_id, [from]}}}
+    end
+  end
+
   defp enqueue(state, from, req) do
     # Stamp the enqueue time (native units) so the worker can emit a `queue_wait`
     # span covering park -> dispatch (Task 9: the FIFO wait is a latency phase the
@@ -297,7 +360,7 @@ defmodule Embervm.Session do
   end
 
   @impl true
-  def handle_cast(:drain, state) do
+  def handle_cast({:drain, deadline}, state) do
     state =
       state
       |> disarm_idle_timer()
@@ -305,7 +368,11 @@ defmodule Embervm.Session do
       |> Map.put(:draining, true)
 
     drain_queue(state, :brick_draining)
-    {:noreply, maybe_drain_bank(%{state | queue: :queue.new()})}
+    deadline = min(deadline, state.drain_deadline || deadline)
+    flush_deadline = min(state.drain_flush_deadline || deadline, state.clock.() + flush_window(deadline, state.clock.(), state.drain_flush_ms, state.drain_bank_budget_ms))
+    state = %{state | queue: :queue.new(), drain_deadline: deadline, drain_flush_deadline: flush_deadline}
+    state = interrupt_for_drain(state)
+    {:noreply, maybe_drain_bank(state)}
   end
 
   def handle_cast({:brick_gone, _metadata}, state) do
@@ -321,23 +388,11 @@ defmodule Embervm.Session do
     # Defensive cancellation: a late {:invoke_timeout, ref} is harmless because
     # the handler compares the ref against the live worker.
     _ = Process.cancel_timer(timer)
-    state = %{state | worker: nil}
+    state = clear_turn(state)
 
     case outcome do
       {:ok, result, usage} ->
-        # Record the invoke durably (usage rides the op, D12.1) BEFORE replying, so
-        # the caller never sees a response the op-log has not accounted. A store
-        # error does not fail the caller's response (the guest already did the work);
-        # it is logged and the response still goes back.
-        _ = record_invoke(state, usage)
-        GenServer.reply(from, {:ok, result})
-        state = disarm_rejoin_failure(state)
-        state =
-          if state.draining,
-            do: maybe_drain_bank(state),
-            else: maybe_start_next(state)
-
-        {:noreply, state}
+        finish_turn(state, from, result, usage)
 
       {:error, reason, status} ->
         # A daemon transport/timeout/suspect failure: the session is failed and its
@@ -359,10 +414,21 @@ defmodule Embervm.Session do
   # a transport failure, same as a reported error (same durable-before-reply order).
   def handle_info({:DOWN, ref, :process, pid, down_reason}, %{worker: {pid, ref, from, timer}} = state) do
     _ = Process.cancel_timer(timer)
-    state = %{state | worker: nil}
+    state = clear_turn(state)
     status = safe_brick_status(state)
     %{reason: reason} = classify_invoke_error({:worker_down, down_reason}, status)
     handle_invoke_error(state, reason, status, from)
+  end
+
+  def handle_info({:DOWN, ref, :process, pid, reason}, state) do
+    case Map.pop(state.interrupt_workers, ref) do
+      {{^pid, tag, dispatch_id}, workers} ->
+        state = %{state | interrupt_workers: workers}
+        handle_info({tag, dispatch_id, {:error, {:interrupt_crashed, reason}}}, state)
+
+      {nil, _} ->
+        {:noreply, state}
+    end
   end
 
   # The invoke wall-clock watchdog fired (#4434): the worker has outlived the
@@ -393,7 +459,7 @@ defmodule Embervm.Session do
     )
 
     Process.exit(pid, :kill)
-    state = %{state | worker: nil}
+    state = clear_turn(state)
     status = safe_brick_status(state)
     %{reason: reason} = classify_invoke_error(:invoke_timeout, status)
 
@@ -412,6 +478,19 @@ defmodule Embervm.Session do
   end
 
   def handle_info({:invoke_timeout, _stale_ref}, state), do: {:noreply, state}
+
+  def handle_info({:interrupt_done, dispatch_id, outcome}, %{interrupt: {dispatch_id, waiters}} = state)
+      when is_list(waiters) do
+    state = clear_interrupt_worker(state, :interrupt_done, dispatch_id)
+    Enum.each(waiters, &GenServer.reply(&1, outcome))
+    # Remember the outcome while the interrupted turn is still in flight so a
+    # repeat interrupt for the same dispatch answers without a second relay.
+    interrupt = if state.dispatch_id == dispatch_id, do: {dispatch_id, {:done, outcome}}, else: nil
+    {:noreply, %{state | interrupt: interrupt}}
+  end
+
+  def handle_info({:interrupt_done, dispatch_id, _outcome}, state),
+    do: {:noreply, clear_interrupt_worker(state, :interrupt_done, dispatch_id)}
 
   # The idle-bank timer fired. ASK the manager to bank ONLY if still quiescent (no
   # worker, empty queue); a stale timer (idle_timer already cleared) is ignored. On
@@ -440,6 +519,40 @@ defmodule Embervm.Session do
     end
   end
 
+  def handle_info({:drain_interrupt_done, dispatch_id, {:error, _}}, %{dispatch_id: dispatch_id, draining: true} = state) do
+    state = clear_interrupt_worker(state, :drain_interrupt_done, dispatch_id)
+    if state.clock.() < state.drain_flush_deadline do
+      Process.send_after(self(), {:retry_drain_interrupt, dispatch_id}, 50)
+    end
+    {:noreply, state}
+  end
+
+  def handle_info({:drain_interrupt_done, dispatch_id, _}, state),
+    do: {:noreply, clear_interrupt_worker(state, :drain_interrupt_done, dispatch_id)}
+
+  def handle_info({:retry_drain_interrupt, dispatch_id}, %{dispatch_id: dispatch_id, draining: true} = state) do
+    remaining = state.drain_flush_deadline - state.clock.()
+    state = if remaining > 0 and not is_nil(state.worker),
+      do: spawn_interrupt_worker(state, dispatch_id, "interrupted_for_drain", remaining),
+      else: state
+    {:noreply, state}
+  end
+
+  def handle_info({:retry_drain_interrupt, _}, state), do: {:noreply, state}
+
+  def handle_info({:drain_flush_expired, dispatch_id}, %{dispatch_id: dispatch_id, draining: true} = state) do
+    # Expiry is not proof of quiescence. Never snapshot a provider still running.
+    # The exact interrupt RPC forces its child to exit within this same window.
+    Logger.warning("session drain flush deadline reached", session_id: state.session_id)
+    {:noreply, %{state | drain_flush_timer: nil}}
+  end
+
+  def handle_info({:drain_flush_expired, _}, state), do: {:noreply, state}
+
+  def handle_info({:persist_drained_turn, from, result, usage}, state) do
+    finish_turn(state, from, result, usage)
+  end
+
   def handle_info(:drain_bank, state) do
     state = %{state | drain_timer: nil}
     {:noreply, maybe_drain_bank(state)}
@@ -451,7 +564,7 @@ defmodule Embervm.Session do
 
   # -- idle-bank -------------------------------------------------------------
 
-  defp quiescent_state?(state), do: is_nil(state.worker) and :queue.is_empty(state.queue)
+  defp quiescent_state?(state), do: is_nil(state.worker) and not state.completion_pending and :queue.is_empty(state.queue)
 
   defp banking_enabled?(%{idle_bank_ms: ms}), do: is_integer(ms) and ms > 0
 
@@ -466,11 +579,28 @@ defmodule Embervm.Session do
     _, _ -> {:error, :bank_call_raised}
   end
 
-  # A drain never interrupts the current guest turn. Once it is the only work
-  # left, keep asking the manager for bank admission until accepted. Refusals
+  # Interrupt the current turn, then ask for bank admission at its safe point.
+  # Refusals
   # such as the per-node bank cap or temporarily unknown disk facts are not
   # cessation evidence and must neither fail the guest nor reopen admission.
   # Kubernetes owns the outer bound through terminationGracePeriodSeconds.
+  defp interrupt_for_drain(%{worker: nil} = state), do: state
+  defp interrupt_for_drain(%{drain_flush_timer: timer} = state) when not is_nil(timer), do: state
+  defp interrupt_for_drain(state) do
+    window = max(0, state.drain_flush_deadline - state.clock.())
+    if window == 0 do
+      # No flush budget remains. Release the caller and let bank admission decide
+      # whether the VM can be banked; do not relay a meaningless 1ms interrupt.
+      {_pid, _ref, from, _timer} = state.worker
+      state = stop_invoke_worker(state)
+      GenServer.reply(from, {:error, :brick_draining})
+      clear_turn(state)
+    else
+      state = spawn_interrupt_worker(state, state.dispatch_id, "interrupted_for_drain", window)
+      %{state | drain_flush_timer: Process.send_after(self(), {:drain_flush_expired, state.dispatch_id}, window)}
+    end
+  end
+
   defp maybe_drain_bank(%{draining: true} = state) do
     if quiescent_state?(state) do
       case ask_bank(state) do
@@ -537,12 +667,14 @@ defmodule Embervm.Session do
         # and assign wait inside the worker. Its cost is accepted because the
         # value authorizes another service to destroy this live guest.
         case record_invoke_started(state) do
-          {:ok, _session} ->
+          {:ok, session} ->
+            session = %{session | interrupted_turn: state.interrupted_turn || session.interrupted_turn}
+            req = prepare_turn(req, session)
             {pid, ref} = spawn_invoke_worker(state, req, enqueued_at)
             # Last-resort wall clock (#4434): must fire AFTER the gRPC deadline the
             # server enforces, so the normal DEADLINE_EXCEEDED path gets first shot.
             timer = Process.send_after(self(), {:invoke_timeout, ref}, invoke_watchdog_ms(state))
-            %{state | queue: rest, worker: {pid, ref, from, timer}}
+            %{state | queue: rest, worker: {pid, ref, from, timer}, dispatch_id: Map.get(req, :dispatch_id), interrupted_turn: nil, turn_seq: session.turn_seq}
 
           {:error, reason} ->
             GenServer.reply(from, {:error, {:invoke_start_not_recorded, reason}})
@@ -560,6 +692,37 @@ defmodule Embervm.Session do
   # already exceeds the guest's timeout_ms by @headroom_ms) plus the margin. Same
   # shape as the dispatcher's assign watchdog; the two must stay strictly above
   # their respective server-enforced deadlines.
+  defp prepare_turn(req, session) do
+    dispatch_id = Map.get(req, :dispatch_id) || "#{session.session_id}:#{session.invoke_started_at}"
+    body =
+      try do
+        payload = :json.decode(req.body)
+        if is_map(payload) and is_binary(payload["message"]) do
+          payload = payload |> Map.put("dispatch_id", dispatch_id) |> Map.put("turn_seq", session.turn_seq)
+          payload = case session.interrupted_turn do
+            %{"seq" => seq} = interrupted ->
+              payload
+              |> Map.put("message", "The previous turn (#{seq}) was interrupted for a drain. Your transcript and workspace are intact. Continue the interrupted turn from your saved progress." <> resume_transcript_hint(interrupted) <> "\n\n" <> payload["message"])
+              |> Map.put("session_id", case interrupted["cli_session_id"] do
+                value when is_binary(value) -> value
+                _ -> payload["session_id"]
+              end)
+            _ -> payload
+          end
+          IO.iodata_to_binary(:json.encode(payload))
+        else
+          req.body
+        end
+      rescue
+        _ -> req.body
+      end
+    req |> Map.put(:dispatch_id, dispatch_id) |> Map.put(:body, body)
+  end
+
+  defp resume_transcript_hint(%{"transcript_path" => path}) when is_binary(path),
+    do: " The interrupted input and partial output are saved at #{path}. Read that transcript if needed."
+  defp resume_transcript_hint(_), do: ""
+
   defp invoke_watchdog_ms(state) do
     state.invoke_watchdog_ms || transport_timeout(state.timeout_ms) + state.invoke_watchdog_margin_ms
   end
@@ -628,6 +791,69 @@ defmodule Embervm.Session do
     end)
   end
 
+  # A turn ended: forget its dispatch and any completed interrupt outcome. Waiters
+  # on a relay still in flight are kept so `:interrupt_done` can answer them.
+  defp clear_turn(%{interrupt: {_dispatch_id, waiters}} = state) when is_list(waiters),
+    do: %{state | worker: nil, dispatch_id: nil}
+
+  defp clear_turn(state), do: %{state | worker: nil, dispatch_id: nil, interrupt: nil}
+
+  defp clear_interrupt_worker(state, tag, dispatch_id) do
+    case Enum.find(state.interrupt_workers, fn {_ref, {_pid, worker_tag, worker_dispatch}} ->
+           worker_tag == tag and worker_dispatch == dispatch_id
+         end) do
+      {ref, _worker} ->
+        Process.demonitor(ref, [:flush])
+        %{state | interrupt_workers: Map.delete(state.interrupt_workers, ref)}
+
+      nil ->
+        state
+    end
+  end
+
+  defp spawn_interrupt_worker(state, dispatch_id, reason \\ "user_interrupt", timeout_ms \\ @interrupt_timeout_ms) do
+    owner = self()
+    dial_id = state.dial_id
+    vm_id = state.vm_id
+    session_id = state.session_id
+    channel_fun = state.channel_fun
+    interrupt_fun = state.interrupt_fun
+
+    tag = if reason == "interrupted_for_drain", do: :drain_interrupt_done, else: :interrupt_done
+    {pid, ref} = spawn_monitor(fn ->
+      outcome =
+        case channel_fun.(dial_id) do
+          {:ok, channel} ->
+            request = %SessionInterruptRequest{
+              vm_id: vm_id,
+              session_id: session_id,
+              dispatch_id: dispatch_id,
+              timeout_ms: timeout_ms,
+              reason: reason
+            }
+
+            case interrupt_fun.(channel, request) do
+              {:ok, %SessionInterruptResponse{} = response} ->
+                {:ok,
+                 %{
+                   terminal_reason: response.terminal_reason,
+                   killed: response.killed,
+                   timeout: response.timeout
+                 }}
+
+              {:error, reason} ->
+                {:error, normalize_interrupt_error(reason)}
+            end
+
+          {:error, reason} ->
+            {:error, {:no_channel, reason}}
+        end
+
+      send(owner, {tag, dispatch_id, outcome})
+    end)
+    %{state | interrupt_workers: Map.put(state.interrupt_workers, ref, {pid, tag, dispatch_id})}
+  end
+
   # The worker body (off this GenServer): acquire the shared channel, SessionAssign,
   # and classify the result. A clean guest response (even a 4xx/5xx) is `{:ok, ...}`:
   # unlike a task, a session invoke's guest error is the guest's answer, not a VM
@@ -651,7 +877,8 @@ defmodule Embervm.Session do
           vm_id: ctx.vm_id,
           request: guest_req,
           timeout_ms: ctx.timeout_ms,
-          session_id: ctx.session_id
+          session_id: ctx.session_id,
+          dispatch_id: Map.get(ctx.req, :dispatch_id)
         }
 
         case ctx.assign_fun.(channel, assign_req) do
@@ -701,6 +928,11 @@ defmodule Embervm.Session do
   defp normalize_invoke_error(%GRPC.RPCError{status: 4}), do: :deadline_exceeded
   defp normalize_invoke_error(%GRPC.RPCError{} = e), do: {:rpc, e.status}
   defp normalize_invoke_error(reason), do: reason
+
+  # FAILED_PRECONDITION means noded or the guest rechecked the identity after
+  # the control-plane validation and found that the exact dispatch had ended.
+  defp normalize_interrupt_error(%GRPC.RPCError{status: 9}), do: :stale_dispatch
+  defp normalize_interrupt_error(reason), do: normalize_invoke_error(reason)
 
   defp handle_invoke_error(state, :brick_gone, status, from) do
     _ = record_brick_gone_outcome(state, Map.put(status, :node_id, state.node_id))
@@ -776,12 +1008,46 @@ defmodule Embervm.Session do
   # Record a successful invoke: append session_invoked with usage (no bodies), which
   # upserts the usage projection in the same transaction (D12.1). Best-effort against
   # the store; a store hiccup does not fail the already-served caller.
-  defp record_invoke(state, usage) do
-    Embervm.SessionStore.record_invoke(state.session_store, state.session_id, usage)
+  defp finish_turn(state, from, result, usage) do
+    turn = try do :json.decode(result.body) rescue _ -> %{} end
+    recorded = if state.completion_pending and state.clock.() >= state.drain_deadline,
+      do: {:error, :drain_deadline}, else: record_invoke(state, usage, turn)
+    interrupted = is_map(turn) and turn["terminal_reason"] == "interrupted_for_drain"
+    failed = not match?({:ok, _}, recorded)
+    state = if interrupted and failed do
+      marker = %{"seq" => state.turn_seq, "dispatch_id" => turn["dispatch_id"],
+        "cli_session_id" => turn["session_id"], "transcript_path" => turn["transcript_path"]}
+      %{state | interrupted_turn: marker}
+    else
+      state
+    end
+
+    if interrupted and retryable_store_error?(recorded) and
+         is_integer(state.drain_deadline) and state.clock.() < state.drain_deadline do
+      Process.send_after(self(), {:persist_drained_turn, from, result, usage}, 50)
+      {:noreply, %{state | completion_pending: true}}
+    else
+      if interrupted and failed do
+        Logger.warning("session drain turn persistence abandoned",
+          session_id: state.session_id, reason: inspect(recorded))
+      end
+      GenServer.reply(from, {:ok, result})
+      state = disarm_rejoin_failure(%{state | completion_pending: false})
+      {:noreply, if(state.draining, do: maybe_drain_bank(state), else: maybe_start_next(state))}
+    end
+  end
+
+  defp retryable_store_error?({:error, reason}) when reason in [:unavailable, :busy, :locked, :timeout], do: true
+  defp retryable_store_error?(_), do: false
+
+  defp record_invoke(state, usage, turn) do
+    Embervm.SessionStore.record_invoke(state.session_store, state.session_id, usage, turn)
   rescue
-    _ -> :error
+    error -> {:error, {:store_exception, error}}
   catch
-    _, _ -> :error
+    :exit, {:timeout, _} -> {:error, :timeout}
+    :exit, {:noproc, _} -> {:error, :unavailable}
+    kind, reason -> {:error, {kind, reason}}
   end
 
   defp record_invoke_started(state) do
@@ -876,6 +1142,12 @@ defmodule Embervm.Session do
   defp default_session_assign(channel, %SessionAssignRequest{timeout_ms: timeout_ms} = req) do
     opts = SessionTrace.rpc_options(timeout: transport_timeout(timeout_ms))
     Embervm.Node.V1.NodeService.Stub.session_assign(channel, req, opts)
+  end
+
+  defp default_session_interrupt(channel, %SessionInterruptRequest{} = req) do
+    Embervm.Node.V1.NodeService.Stub.session_interrupt(channel, req,
+      timeout: req.timeout_ms + 1_000
+    )
   end
 
   defp default_destroy(channel, vm_id) do

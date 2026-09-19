@@ -1015,7 +1015,9 @@ defmodule Embervm.Application do
   # wall-clock watchdog margin (#4434), added on top of the transport deadline so
   # a wedged SessionAssign on an orphaned channel cannot pin the session forever.
   defp session_opts do
-    [invoke_watchdog_margin_ms: env_ms("EMBERVM_SESSION_INVOKE_WATCHDOG_MARGIN_MS", 15_000)]
+    [invoke_watchdog_margin_ms: env_ms("EMBERVM_SESSION_INVOKE_WATCHDOG_MARGIN_MS", 15_000),
+     drain_flush_ms: env_ms("EMBERVM_SESSION_DRAIN_FLUSH_MS", 60_000),
+     drain_bank_budget_ms: env_ms("EMBERVM_SESSION_DRAIN_BANK_BUDGET_MS", 15_000)]
   end
 
   # SessionManager config: the session-process seams plus the R2 policy knobs the

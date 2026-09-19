@@ -255,6 +255,8 @@ defmodule Embervm.OpLog.Postgres do
     # AFTER the ALTER here so the column exists on upgraded DBs too.
     "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS idempotency_key TEXT",
     "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS invoke_started_at BIGINT",
+    "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS turn_seq BIGINT NOT NULL DEFAULT 0",
+    "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS interrupted_turn_json TEXT",
     "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS stop_intent_json TEXT",
     "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS stop_completion_json TEXT",
     "UPDATE sessions SET invoke_started_at=last_invoke_at WHERE invoke_started_at IS NULL AND last_invoke_at IS NOT NULL",
@@ -1129,8 +1131,8 @@ defmodule Embervm.OpLog.Postgres do
     with :ok <-
            exec(
              conn,
-             "UPDATE sessions SET last_invoke_at=$1, invoke_started_at=COALESCE(invoke_started_at, $2), updated_at=$3 WHERE session_id=$4",
-             [op.ts, op.ts, op.ts, op.session_id]
+             "UPDATE sessions SET last_invoke_at=$1, invoke_started_at=COALESCE(invoke_started_at, $2), updated_at=$3, interrupted_turn_json=$4 WHERE session_id=$5",
+             [op.ts, op.ts, op.ts, encode_turn_interruption(op.payload[:interrupted_turn]), op.session_id]
            ) do
       project_usage(conn, op)
     end
@@ -1141,8 +1143,8 @@ defmodule Embervm.OpLog.Postgres do
   defp project(conn, %Op{kind: :session_invoke_started} = op, _seq) do
     exec(
       conn,
-      "UPDATE sessions SET invoke_started_at=GREATEST(COALESCE(invoke_started_at, $1), $1), updated_at=$2 WHERE session_id=$3",
-      [op.ts, op.ts, op.session_id]
+      "UPDATE sessions SET turn_seq=GREATEST(turn_seq, $1), interrupted_turn_json=NULL, invoke_started_at=GREATEST(COALESCE(invoke_started_at, $2), $2), updated_at=$3 WHERE session_id=$4",
+      [Map.get(op.payload, :turn_seq, 0), op.ts, op.ts, op.session_id]
     )
   end
 
@@ -2147,12 +2149,16 @@ defmodule Embervm.OpLog.Postgres do
     }
   end
 
+  defp encode_turn_interruption(nil), do: nil
+  defp encode_turn_interruption(value), do: Embervm.SessionStopProof.encode(value)
+
   defp do_load_sessions(conn, query_fun) do
     sql = """
     SELECT session_id, tenant, principal, workload, state, node_id, volume_node_id,
            base_snapshot_ref, base_digest, generation, snapshot_ref, snapshot_size_bytes,
            token_sha256, created_at, invoke_started_at, last_invoke_at, expires_at, updated_at, terminal_reason,
-           COALESCE(lineage_id, session_id), idempotency_key, stop_intent_json, stop_completion_json
+           COALESCE(lineage_id, session_id), idempotency_key, stop_intent_json, stop_completion_json,
+           turn_seq, interrupted_turn_json
     FROM sessions
     """
 
@@ -2185,7 +2191,9 @@ defmodule Embervm.OpLog.Postgres do
           lineage_id,
           idempotency_key,
           stop_intent_json,
-          stop_completion_json
+          stop_completion_json,
+          turn_seq,
+          interrupted_turn_json
         ]) do
     %{
       session_id: session_id,
@@ -2210,7 +2218,9 @@ defmodule Embervm.OpLog.Postgres do
       lineage_id: lineage_id,
       idempotency_key: idempotency_key,
       stop_intent: Embervm.SessionStopProof.decode(stop_intent_json),
-      stop_completion: Embervm.SessionStopProof.decode(stop_completion_json)
+      stop_completion: Embervm.SessionStopProof.decode(stop_completion_json),
+      turn_seq: turn_seq,
+      interrupted_turn: Embervm.SessionStopProof.decode(interrupted_turn_json)
     }
   end
 

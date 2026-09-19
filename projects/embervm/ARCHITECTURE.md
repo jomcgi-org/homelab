@@ -529,6 +529,36 @@ live thread, so a partially effectful turn can replay up to the ladder's bound.
 A header-based control-plane retry remains open (see Direction) for callers
 that do not go through the monolith transport.
 
+**Why snapshot anywhere uses the between-turns safe point (#6256).** A provider
+stream can run for twelve hours, so waiting for it makes routine rollouts take
+hours and cannot fit a Spot notice. Every drain edge now fences session invoke
+admission and interrupts the exact active dispatch using the interrupt primitive.
+An operator stop surface can be added on top of that primitive when there is a
+caller.
+The shim stops the provider, preserves its native transcript and partial output
+in the workspace, syncs the session volume, and returns
+`terminal_reason: interrupted_for_drain`. Only that ended turn permits banking;
+a signaling acknowledgment or elapsed timer never proves a safe snapshot.
+The flush window is bounded by `EMBERVM_SESSION_DRAIN_FLUSH_MS` (default
+`60000`) and the remaining drain deadline less the bank budget. The shim
+reserves another two seconds for sync and response delivery, with a one-second
+minimum provider wait. An idle guest banks immediately. Deadline expiry is a
+failure to complete evacuation, never permission to snapshot a running provider.
+
+The control plane journals the interrupted turn sequence and CLI identity before
+banking. On the next invoke after relight, on any eligible brick, it prepends a
+continuation hint to the caller's prompt: the previous turn was interrupted for a
+drain and the transcript and workspace are intact. Factory retains the pending
+logical turn, graph attempt and reservation, and records the interrupted prefix
+and its cost. It emits no escalation card or terminal Discord notice. The next
+physical turn resumes the guest's own state; it does not replay the original
+prompt. Filesystem-only sessions use the same flushed safe point for park/archive
+and rejoin. The memory-enabled lane uses the existing memory bank/export path.
+
+| Direction | Status | Tracking |
+| --------- | ------ | -------- |
+| Snapshot anywhere through exact interrupt, bounded flush, bank/export and next-turn continuation | Built; one path for SIGTERM and Spot, sharing the shim handler with user stop | #6256 |
+
 ---
 
 ## 5. The invariants
@@ -861,15 +891,24 @@ to reopen. Implementation is tracked on #5505.
 
 The availability contract is spot semantics with two budgets. The chart
 default gives a routine roll, upgrade, or scale-down 110 seconds of drain
-notice. The GKE hub overrides that ordinary budget to 43,800 seconds because
-factory invokes can run for 12 hours. A GCE Spot preemption still provides
-about 30 seconds (ADR 040). noded's GCE
-preemption-notice watcher (`drain.preemptionNoticeEnabled`, a 20 second
-preemption budget) is armed on the hub since 2026-09-06 (#5819) and off in
-the chart default, so a deployment without the hub overlay is still told
-the 110 second figure when a preemption arrives. State durability within the stated archive interval is
-the guarantee, connection continuity is not. Artifact retention TTLs and the
-GC sweep behaviour are in [deploy/README.md](deploy/README.md).
+notice. A GCE Spot preemption supplies about 20 seconds through noded's
+preemption-notice watcher (`drain.preemptionNoticeEnabled`, armed on the hub
+since 2026-09-06, #5819, off in the chart default). Both edges publish the
+same `drain_deadline_unix_ms` signal. Sessions fence admission, interrupt the
+active turn, give the guest a bounded window to flush progress and state to
+the workspace, then bank and export at the existing between-turns safe
+point. They no longer wait for the twelve-hour invoke bound. New and queued
+invokes receive retryable drain responses until bank completes. A failed bank
+retains the fence. Relight resumes as the next turn on the same factory
+attempt and reservation. The deadline still bounds evacuation: node loss, a
+failed flush, or an export that cannot finish before it can lose progress
+since the last durable archive. The GKE hub overlay still carries the
+interim 7,200 second drain budget from #6216 until the noded and shim image
+with the interrupt relay has rolled (an image lands one publish after its
+merge); the follow-up on #6256 drops it to the ordinary rollout budget. State
+durability within the stated archive interval is the guarantee, connection
+continuity is not. Artifact retention TTLs and the GC sweep behaviour are in
+[deploy/README.md](deploy/README.md).
 
 An ordinary brick rollout closes placement at the node drain edge and closes
 session invoke admission before evacuation. Closing new admission is not a
@@ -901,7 +940,8 @@ effects. No retry is admitted from absence or temporary unavailability alone.
 (`drain_deadline_unix_ms`, SIGTERM or the Spot preemption notice, whichever is
 earlier) and the coordinator answers it one way: force-bank every class in
 durability order inside the deadline. A pod-surge roll keeps the node's disk, so
-the replacement daemon relights locally and no bytes leave the brick. A Spot
+the replacement daemon can relight locally; the bank also exports its durable
+artifacts before shutdown when the store is configured. A Spot
 preemption gives about 20 seconds, enough to bank and export but not to export,
 restore onto a peer, re-anchor, and evict, so pre-drain redistribution would
 race the deadline for no availability gain; when the node is gone, anchor-loss

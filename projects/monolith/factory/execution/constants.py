@@ -18,12 +18,11 @@ SPARK_SYNTHETIC_PROMPT = "Reply with exactly: spark synthetic ok"
 # Terminal reasons that mean the turn ended normally. The claude lane reports
 # "completed" or "end_turn"; the pi lane passes the model's raw stopReason
 # through, which is "stop" for a normal spark turn (see runtimes/claude/shim.py).
-# None and unrecognized values remain warnings.
 CLEAN_TERMINAL_REASONS = {"completed", "end_turn", "stop"}
 
 # A durable record of an attempt that did not finish. The pending message with
 # the same sequence remains live and will replace this turn after re-dispatch.
-INTERRUPTED_TERMINAL_REASONS = {"interrupted"}
+INTERRUPTED_TERMINAL_REASONS = {"interrupted", "interrupted_for_drain"}
 
 UNKNOWN_INVOCATION_MESSAGE = (
     "This session has an unknown invocation outcome. Reconcile the guest and any "

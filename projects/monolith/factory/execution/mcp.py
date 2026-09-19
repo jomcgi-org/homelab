@@ -469,6 +469,8 @@ def _chunk_for_discord(text: str) -> list[str]:
 async def _notify_terminal(
     turn: Turn, summary: str, status: str, row: AgentSession | None = None
 ) -> None:
+    if turn.terminal_reason == "interrupted_for_drain":
+        return
     # The drainer owns its failure notification and suppresses successful jobs.
     # Skipping this generic session post keeps each failed job to one alert.
     if row is not None and row.node_key == DRAINER_NODE_KEY:
@@ -998,6 +1000,8 @@ async def _execute_pending_message(session_id: int) -> None:
                 "on_create": persist_callback,
                 "progress_token": session_row.progress_token,
                 "agent_session_id": session_id,
+                "turn_seq": claimed_seq,
+                "claim_owner": claim_owner,
                 "dispatch_count": row.dispatch_count,
                 "invocation_record": invocation_record,
             }
@@ -1059,13 +1063,20 @@ async def _execute_pending_message(session_id: int) -> None:
             nonlocal claim_released
             if await _abort_stolen_executor_confirmed("brick_gone recovery"):
                 return
-            if row.dispatch_count > store.MAX_PENDING_DISPATCHES:
+            # The retry grant below is only honoured while dispatch_count is
+            # under MAX_PENDING_DISPATCHES (store._retry_permission), so the
+            # bound has to agree here or exhaustion ends as unknown, not error.
+            if row.dispatch_count >= store.MAX_PENDING_DISPATCHES:
+                # The control plane reported the brick gone, so the guest has
+                # ceased: settle the exhausted attempt as a confirmed error
+                # rather than an unknown outcome.
                 await asyncio.to_thread(
                     _mark_turn_error_sync,
                     session_id,
                     claimed_seq,
                     str(exc),
                     claim_owner,
+                    cessation_confirmed=True,
                 )
             else:
                 await asyncio.to_thread(
@@ -1163,6 +1174,12 @@ async def _execute_pending_message(session_id: int) -> None:
             )
             return
         _clear_negative_oracle_verdict(session_id)
+        if turn.terminal_reason == "interrupted_for_drain":
+            # The durable writer released this exact claim for the next turn.
+            # No terminal notification or attempt settlement belongs to a drain.
+            claim_released = True
+            _schedule_next_message(session_id)
+            return
         await asyncio.to_thread(_delete_pending_message_sync, session_id, claimed_seq)
         if session_row.admission_tier == "probe":
             probe_turn_persisted = True

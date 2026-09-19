@@ -158,6 +158,12 @@ service NodeService {
   // mid-request state must not silently accrete more state.
   rpc SessionAssign(SessionAssignRequest) returns (SessionAssignResponse);
 
+  // SessionInterrupt asks the guest to stop one exact in-flight session
+  // dispatch without destroying the VM. The dispatch identity is matched again
+  // by noded and by the guest immediately before signaling, so a delayed or
+  // replayed request can never interrupt a successor.
+  rpc SessionInterrupt(SessionInterruptRequest) returns (SessionInterruptResponse);
+
   // Bank pauses a live session VM, writes a full snapshot (memory image + rootfs
   // delta, the same self-contained bundle format bases use), destroys the VM,
   // and returns the opaque snapshot_ref plus its size. It is how an idle session
@@ -742,6 +748,10 @@ message SessionAssignRequest {
   string volume_mount = 7;
   uint64 volume_size_bytes = 8;
   string lineage_id = 9;
+  // Opaque identity minted by the authenticated caller for this physical
+  // dispatch. Empty keeps legacy callers compatible but makes the invoke
+  // ineligible for SessionInterrupt.
+  string dispatch_id = 10;
 }
 
 message SessionAssignResponse {
@@ -752,6 +762,22 @@ message SessionAssignResponse {
   // plane reads it to decide whether to destroy the session VM. False on a
   // clean response.
   bool suspect = 3;
+}
+
+message SessionInterruptRequest {
+  string vm_id = 1;
+  string session_id = 2;
+  string dispatch_id = 3;
+  // Interrupt budget: at most 30000ms for user interrupts, or 120000ms for
+  // interrupted_for_drain. Drain callers reserve time for banking and export.
+  uint32 timeout_ms = 4;
+  string reason = 5;
+}
+
+message SessionInterruptResponse {
+  string terminal_reason = 1;
+  bool killed = 2;
+  bool timeout = 3;
 }
 
 // BankRequest pauses, snapshots, and destroys a live session VM. session_id is

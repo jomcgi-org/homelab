@@ -23,6 +23,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -63,7 +64,12 @@ const (
 	defaultInvokePath = "/invoke"
 	// defaultAssignTimeout bounds a guest round-trip when the AssignRequest sets
 	// timeout_ms to zero.
-	defaultAssignTimeout = 90 * time.Second
+	defaultAssignTimeout      = 90 * time.Second
+	defaultInterruptTimeout   = 30 * time.Second
+	maxDrainInterruptTimeout  = 120 * time.Second
+	drainExportBudget         = 120 * time.Second
+	drainExportScanErrorLimit = 10
+	interruptPath             = "/shim/interrupt"
 	// livenessInterval is how often WatchNode re-sends NodeStatus absent any
 	// material change. It is below the control plane's 5s "unknown" ageing window
 	// so a healthy node never looks stale.
@@ -1715,7 +1721,7 @@ func (s *Server) slotsExhausted() bool {
 // assigned/adopted, destroyed), which the caller maps to FAILED_PRECONDITION. The
 // physical VM is already a session-base VM (restored from the session workload's
 // base, running the persistent kernel); only its registry bookkeeping changes.
-func (s *Server) adoptPrimedSession(vmID, sessionID, workload string) (*sessionEntry, bool) {
+func (s *Server) adoptPrimedSession(vmID, sessionID, workload, dispatchID string) (*sessionEntry, bool) {
 	s.vmLifecycleMu.Lock()
 	defer s.vmLifecycleMu.Unlock()
 	ve, ok := s.vms.claimForSession(vmID, workload)
@@ -1733,8 +1739,9 @@ func (s *Server) adoptPrimedSession(vmID, sessionID, workload string) (*sessionE
 		// registry bookkeeping changes here, so opening a second forwarder would
 		// collide on the same unix socket, and dropping the cancel would leak the
 		// goroutine past the session's teardown.
-		egressCancel: ve.egressCancel,
-		inFlight:     true, // held for the operation that triggered this adoption
+		egressCancel:   ve.egressCancel,
+		inFlight:       true, // held for the operation that triggered this adoption
+		activeDispatch: dispatchID,
 	}
 	s.sessionVMs.add(se)
 	s.signalChange() // the VM moved primed -> session-live; refresh NodeStatus
@@ -1751,7 +1758,7 @@ func (s *Server) adoptPrimedSession(vmID, sessionID, workload string) (*sessionE
 // control plane decides whether to destroy it.
 func (s *Server) SessionAssign(ctx context.Context, req *nodev1.SessionAssignRequest) (*nodev1.SessionAssignResponse, error) {
 	vmID := req.GetVmId()
-	e, ok := s.sessionVMs.beginInFlight(vmID)
+	e, ok := s.sessionVMs.beginSessionAssign(vmID, req.GetSessionId(), req.GetDispatchId())
 	if !ok {
 		// Not (yet) in the session registry. A freshly CREATED session's VM was
 		// primed/claimed through the shared warm pool, so it still lives in the task
@@ -1760,7 +1767,7 @@ func (s *Server) SessionAssign(ctx context.Context, req *nodev1.SessionAssignReq
 		// already here, so this branch only runs once per session's lifetime. A
 		// genuinely unknown, already-adopted, mid-bank, or in-flight vm_id still
 		// fails FAILED_PRECONDITION.
-		adopted, ok2 := s.adoptPrimedSession(vmID, req.GetSessionId(), req.GetTrace().GetWorkload())
+		adopted, ok2 := s.adoptPrimedSession(vmID, req.GetSessionId(), req.GetTrace().GetWorkload(), req.GetDispatchId())
 		if !ok2 {
 			return nil, status.Errorf(codes.FailedPrecondition, "noded: session vm %q not assignable (unknown, task-class, mid-bank, or a call is already in flight)", vmID)
 		}
@@ -1834,6 +1841,74 @@ func (s *Server) SessionAssign(ctx context.Context, req *nodev1.SessionAssignReq
 	}, nil
 }
 
+// SessionInterrupt relays one exact active session dispatch to the guest shim.
+// It never changes VM lifecycle or releases the SessionAssign guard. The
+// original SessionAssign response remains the sole terminal outcome and usage
+// carrier, while this response reports only whether signaling completed.
+func (s *Server) SessionInterrupt(ctx context.Context, req *nodev1.SessionInterruptRequest) (*nodev1.SessionInterruptResponse, error) {
+	if req.GetVmId() == "" || req.GetSessionId() == "" || req.GetDispatchId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "noded: interrupt requires vm_id, session_id, and dispatch_id")
+	}
+	handle, ok := s.sessionVMs.interruptTarget(req.GetVmId(), req.GetSessionId(), req.GetDispatchId())
+	if !ok {
+		return nil, status.Error(codes.FailedPrecondition, "noded: exact session dispatch is no longer active")
+	}
+	limit := defaultInterruptTimeout
+	if req.GetReason() == "interrupted_for_drain" {
+		limit = maxDrainInterruptTimeout
+	}
+	timeout := time.Duration(req.GetTimeoutMs()) * time.Millisecond
+	if timeout <= 0 || timeout > limit {
+		timeout = limit
+	}
+	rtCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	reason := req.GetReason()
+	if reason == "" {
+		reason = "user_interrupt"
+	}
+	if reason != "user_interrupt" && reason != "interrupted_for_drain" {
+		return nil, status.Error(codes.InvalidArgument, "noded: invalid interrupt reason")
+	}
+	body, _ := json.Marshal(map[string]any{"dispatch_id": req.GetDispatchId(), "reason": reason, "timeout_ms": timeout.Milliseconds()})
+	httpReq, err := http.NewRequestWithContext(rtCtx, http.MethodPost, "http://vsock"+interruptPath, bytes.NewReader(body))
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "noded: build interrupt request: %v", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := s.transport.RoundTrip(rtCtx, s.driver.VsockUDSPath(handle.ThreadID), httpReq)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || rtCtx.Err() == context.DeadlineExceeded {
+			return nil, status.Errorf(codes.DeadlineExceeded, "noded: guest interrupt did not finish within %s", timeout)
+		}
+		return nil, status.Errorf(codes.Unavailable, "noded: guest interrupt transport failed: %v", err)
+	}
+	defer resp.Body.Close()
+	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if err != nil {
+		return nil, status.Errorf(codes.Unavailable, "noded: read guest interrupt response: %v", err)
+	}
+	if resp.StatusCode == http.StatusConflict {
+		return nil, status.Error(codes.FailedPrecondition, "noded: exact guest dispatch is no longer active")
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, status.Errorf(codes.Unavailable, "noded: guest interrupt returned HTTP %d", resp.StatusCode)
+	}
+	var outcome struct {
+		TerminalReason string `json:"terminal_reason"`
+		Killed         bool   `json:"killed"`
+		Timeout        bool   `json:"timeout"`
+	}
+	if err := json.Unmarshal(responseBody, &outcome); err != nil {
+		return nil, status.Errorf(codes.Unavailable, "noded: invalid guest interrupt response: %v", err)
+	}
+	return &nodev1.SessionInterruptResponse{
+		TerminalReason: outcome.TerminalReason,
+		Killed:         outcome.Killed,
+		Timeout:        outcome.Timeout,
+	}, nil
+}
+
 // Bank pauses a live session VM, writes a full self-contained snapshot bundle
 // (memfile + rootfs state, the same format bases use) under the sessions/ prefix,
 // destroys the VM, and returns the opaque {snapshot_ref, size_bytes}. It refuses
@@ -1856,7 +1931,7 @@ func (s *Server) Bank(ctx context.Context, req *nodev1.BankRequest) (*nodev1.Ban
 		// adopt the VM into the session registry now. adoptPrimedSession returns with
 		// the in-flight guard already held; Bank must not acquire it again, and its
 		// existing success and failure paths both remove the guarded entry.
-		adopted, ok2 := s.adoptPrimedSession(vmID, req.GetSessionId(), req.GetTrace().GetWorkload())
+		adopted, ok2 := s.adoptPrimedSession(vmID, req.GetSessionId(), req.GetTrace().GetWorkload(), "")
 		if !ok2 {
 			return nil, status.Errorf(codes.FailedPrecondition, "noded: session vm %q not bankable (unknown, task-class, or a call is already in flight)", vmID)
 		}
@@ -1880,8 +1955,10 @@ func (s *Server) Bank(ctx context.Context, req *nodev1.BankRequest) (*nodev1.Ban
 		if e.lineageID != "" {
 			s.volumes.DetachLineage(e.workload, e.lineageID)
 		}
-		s.sessionVMs.remove(vmID)
-		s.signalChange()
+		if snapshotErr != nil {
+			s.sessionVMs.remove(vmID)
+			s.signalChange()
+		}
 		return nil
 	}); err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: bank session vm %q: %v", vmID, err)
@@ -1902,6 +1979,13 @@ func (s *Server) Bank(ctx context.Context, req *nodev1.BankRequest) (*nodev1.Ban
 	// Async off-node write-back (R6): the banked bundle is now crash-consistent on
 	// disk, so enqueue its export fire-and-forget (never blocking this bank path).
 	s.enqueueCreatedExport(&nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION, Workload: req.GetTrace().GetWorkload(), Ref: ref.ID})
+	// Keep the success entry until the snapshot and its export are registered.
+	// Otherwise WaitForManagedDrain can observe zero live VMs and zero exports
+	// between teardown and publication and exit before saving this snapshot.
+	// The snapshot-error path removes inside teardown because it has no snapshot
+	// to publish; a reapTracked failure returns before any remove and leaves the
+	// entry to the drain deadline (pre-existing, tracked separately).
+	s.sessionVMs.remove(vmID)
 	s.signalChange()
 	return &nodev1.BankResponse{SnapshotRef: ref.ID, SizeBytes: uint64(ref.SizeBytes)}, nil
 }
@@ -2933,19 +3017,125 @@ func (s *Server) WaitForManagedDrain(ctx context.Context, deadline time.Time) in
 	defer timer.Stop()
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
+	exports := newDrainExports()
+	exportDeadline := time.Now().Add(drainExportBudget)
+	if deadline.Before(exportDeadline) {
+		exportDeadline = deadline
+	}
+	exportTimer := time.NewTimer(time.Until(exportDeadline))
+	defer exportTimer.Stop()
+	var exportExpired bool
+	logExports := func() {
+		if len(exports.pending) > 0 {
+			s.logger.Warn("drain export budget exhausted", "artifacts", exports.pending)
+		}
+	}
 	for {
-		if n := s.managedLiveVMCount(); n == 0 {
+		// A later Spot notice may shorten an already-running SIGTERM drain.
+		if published := s.drainDeadline(); published > 0 && published < deadline.UnixMilli() {
+			deadline = time.UnixMilli(published)
+			timer.Reset(time.Until(deadline))
+			if deadline.Before(exportDeadline) {
+				exportDeadline = deadline
+				exportTimer.Reset(time.Until(exportDeadline))
+			}
+		}
+		pendingExports := 0
+		if !exportExpired {
+			pendingExports = s.drainSessionExports(exports)
+			if !time.Now().Before(exportDeadline) {
+				exportExpired = true
+				logExports()
+				pendingExports = 0
+			}
+		}
+		if n := s.managedLiveVMCount(); n == 0 && pendingExports == 0 {
 			return 0
 		}
 		select {
 		case <-ch:
 		case <-ticker.C:
+		case <-exportTimer.C:
+			exportExpired = true
+			logExports()
 		case <-timer.C:
+			if !exportExpired {
+				logExports()
+			}
 			return s.managedLiveVMCount()
 		case <-ctx.Done():
 			return s.managedLiveVMCount()
 		}
 	}
+}
+
+type drainExports struct {
+	workspaces    map[string]bool
+	pending       map[string]bool
+	scanErrors    int
+	nextScanRetry time.Time
+}
+
+func newDrainExports() *drainExports {
+	return &drainExports{workspaces: make(map[string]bool), pending: make(map[string]bool)}
+}
+
+// drainSessionExports keeps session state alive until the store has the flushed
+// copy. Mutable workspace keys are invalidated once after detachment on this
+// drain; failed exports retry within the export sub-deadline.
+func (s *Server) drainSessionExports(exports *drainExports) int {
+	if s.store == nil {
+		return 0
+	}
+	pending := 0
+	clear(exports.pending)
+	queue := func(ref *nodev1.ArtifactRef) {
+		key := artifactPrefix(ref, s.cfg.CpuVendor)
+		if s.unexportable.contains(key) {
+			return
+		}
+		if !s.artifactExported(ref.GetKind(), ref.GetWorkload(), ref.GetRef()) {
+			pending++
+			exports.pending[key] = true
+			s.enqueueExport(ref)
+		}
+	}
+	for _, snapshot := range s.sessionSnap.snapshot() {
+		queue(&nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION, Workload: snapshot.workload, Ref: snapshot.snapshotRef})
+	}
+	if s.volumes != nil {
+		if exports.scanErrors >= drainExportScanErrorLimit {
+			return pending
+		}
+		if time.Now().Before(exports.nextScanRetry) {
+			exports.pending["workspace inventory unavailable"] = true
+			return pending + 1
+		}
+		inventory, err := s.volumes.ScanSessions()
+		if err != nil {
+			exports.scanErrors++
+			if exports.scanErrors >= drainExportScanErrorLimit {
+				s.logger.Warn("drain workspace scan retries exhausted", "error", err)
+				return pending
+			}
+			exports.nextScanRetry = time.Now().Add(500 * time.Millisecond)
+			exports.pending["workspace inventory unavailable"] = true
+			return pending + 1
+		}
+		for _, volume := range inventory {
+			if s.lineageAttached(volume.Workload, volume.LineageID) {
+				continue
+			}
+			ref := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE, Workload: volume.Workload, Ref: volume.LineageID}
+			key := artifactPrefix(ref, s.cfg.CpuVendor)
+			if !exports.workspaces[key] {
+				s.exported.clear(key)
+				exports.workspaces[key] = true
+			}
+			queue(ref)
+		}
+	}
+	return pending
 }
 
 // registerBuild records an in-flight build's cancel func so a drain can abort it,

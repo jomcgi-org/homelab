@@ -1421,3 +1421,130 @@ def test_deferred_recall_uses_first_non_boilerplate_prompt_once(
         assert seen == ["Investigate the guest memory restore bug"]
     finally:
         _restore_schemas(schemas)
+
+
+@pytest.mark.parametrize("reported_costs", [True, False])
+def test_drain_continues_same_pending_attempt_and_reservation(
+    monkeypatch, tmp_path, reported_costs
+):
+    from factory.execution.models import AgentCapacityReservation
+
+    engine, schemas = _database(monkeypatch, tmp_path)
+    try:
+        with Session(engine) as db:
+            agent = store.create_session(db, "factory-drain-attempt-1", "guest", "main")
+            pending = store.create_pending_message(db, agent.id, "implement", "luna")
+            sid, seq = agent.id, pending.seq
+        assert store.claim_pending_message_for_session_sync(sid, "pod-a") == seq
+        with Session(engine) as db:
+            permit = db.exec(select(AgentCapacityReservation)).one()
+            permit_id = permit.id
+            permit.state = "running"
+            db.add(permit)
+            db.commit()
+        interrupted = _successful_uncertain_turn()._replace(
+            result="partial work saved",
+            terminal_reason="interrupted_for_drain",
+            stop_reason="interrupted_for_drain",
+            total_cost_usd=0.02 if reported_costs else None,
+        )
+        store.persist_turn_from_pending_sync(
+            sid,
+            seq,
+            "implement",
+            interrupted,
+            "",
+            "recovering",
+            "cli-done",
+            "luna",
+            "pod-a",
+            1,
+        )
+        with Session(engine) as db:
+            permit = db.exec(select(AgentCapacityReservation)).one()
+            assert permit.id == permit_id
+            assert permit.state == "running"
+            assert not store.has_unknown_outcome(db, sid)
+            pending = store.get_pending_message(db, sid, seq)
+            assert pending.claimed_by_replica is None
+            assert pending.message_text == "implement"
+            assert (
+                store.get_turn(db, sid, seq).terminal_reason == "interrupted_for_drain"
+            )
+        # A prefix whose provider cost was reported never carries a list price;
+        # only the unreported prefix is list-priced, so only that branch seeds it.
+        if not reported_costs:
+            with Session(engine) as db:
+                prefix = store.get_turn(db, sid, seq)
+                prefix.list_cost_usd = 0.04
+                db.add(prefix)
+                db.commit()
+        from types import SimpleNamespace
+
+        monkeypatch.setattr(
+            store, "price_usage", lambda *_: SimpleNamespace(cost_usd=0.05)
+        )
+        assert store.claim_pending_message_for_session_sync(sid, "pod-b") == seq
+        completed = _successful_uncertain_turn()._replace(
+            total_cost_usd=0.01 if reported_costs else None
+        )
+        store.persist_turn_from_pending_sync(
+            sid,
+            seq,
+            "implement",
+            completed,
+            "done",
+            "completed",
+            "cli-done",
+            "luna",
+            "pod-b",
+            2,
+        )
+        with Session(engine) as db:
+            permit = db.exec(select(AgentCapacityReservation)).one()
+            assert permit.id == permit_id
+            assert permit.state == "settled"
+            assert store.get_pending_message(db, sid, seq) is None
+            turn = store.get_turn(db, sid, seq)
+            if reported_costs:
+                assert turn.cost_usd == pytest.approx(0.03)
+                assert turn.list_cost_usd is None
+            else:
+                assert turn.cost_usd is None
+                assert turn.list_cost_usd == pytest.approx(0.09)
+            assert (
+                json.loads(turn.usage_json)["drain_continuations"][0]["result"]
+                == "partial work saved"
+            )
+    finally:
+        _restore_schemas(schemas)
+
+
+@pytest.mark.parametrize(
+    "dispatch_count",
+    [
+        1,
+        store.MAX_PENDING_DISPATCHES - 1,
+        store.MAX_PENDING_DISPATCHES,
+        store.MAX_PENDING_DISPATCHES + 1,
+    ],
+)
+def test_drain_retry_grant_respects_dispatch_bound(dispatch_count):
+    from factory.execution.models import PendingMessage
+
+    turn = AgentTurn(
+        session_id=1,
+        seq=1,
+        prompt="work",
+        result_text="partial",
+        terminal_reason="interrupted_for_drain",
+        usage_json=json.dumps({"retry_dispatch_count": dispatch_count}),
+    )
+    pending = PendingMessage(
+        session_id=1, seq=1, message_text="work", dispatch_count=dispatch_count
+    )
+    assert store._retry_permission(turn, pending) == (
+        dispatch_count < store.MAX_PENDING_DISPATCHES
+    )
+    pending.dispatch_count += 1
+    assert not store._retry_permission(turn, pending)

@@ -157,7 +157,11 @@ defmodule Embervm.SessionStore do
   @spec record_invoke(GenServer.server(), String.t(), map() | nil) ::
           {:ok, map()} | {:error, term()}
   def record_invoke(store \\ __MODULE__, session_id, usage) do
-    GenServer.call(store, {:record_invoke, session_id, usage})
+    record_invoke(store, session_id, usage, %{})
+  end
+
+  def record_invoke(store, session_id, usage, turn) do
+    GenServer.call(store, {:record_invoke, session_id, usage, turn})
   end
 
   @doc """
@@ -425,7 +429,9 @@ defmodule Embervm.SessionStore do
       terminal_reason: row.terminal_reason,
       idempotency_key: Map.get(row, :idempotency_key),
       stop_intent: Map.get(row, :stop_intent),
-      stop_completion: Map.get(row, :stop_completion)
+      stop_completion: Map.get(row, :stop_completion),
+      turn_seq: Map.get(row, :turn_seq, 0),
+      interrupted_turn: Map.get(row, :interrupted_turn)
     }
   end
 
@@ -485,8 +491,8 @@ defmodule Embervm.SessionStore do
     do_mark(state, session_id, event)
   end
 
-  def handle_call({:record_invoke, session_id, usage}, _from, state) do
-    do_record_invoke(state, session_id, usage)
+  def handle_call({:record_invoke, session_id, usage, turn}, _from, state) do
+    do_record_invoke(state, session_id, usage, turn)
   end
 
   def handle_call({:record_invoke_started, session_id}, _from, state) do
@@ -719,6 +725,8 @@ defmodule Embervm.SessionStore do
       terminal_reason: nil,
       stop_intent: nil,
       stop_completion: nil,
+      turn_seq: 0,
+      interrupted_turn: nil,
       idempotency_key: idempotency_key
     }
 
@@ -868,11 +876,17 @@ defmodule Embervm.SessionStore do
   # record an invoke (a banked/relighting session is not serving); a non-running
   # state is `{:error, :not_running}` so a race cannot journal an invoke against a
   # session that already banked or failed.
-  defp do_record_invoke(state, session_id, usage) do
+  defp do_record_invoke(state, session_id, usage, turn) do
     case fetch(state, session_id) do
       {:ok, %{state: :running} = session} ->
         ts = state.clock.()
-        payload = maybe_put_usage(%{}, usage)
+        interrupted =
+          if is_map(turn) and turn["terminal_reason"] == "interrupted_for_drain" do
+            %{"seq" => session.turn_seq, "dispatch_id" => turn["dispatch_id"],
+              "cli_session_id" => turn["session_id"], "transcript_path" => turn["transcript_path"]}
+            |> Map.reject(fn {_key, value} -> value in [nil, :null] end)
+          end
+        payload = maybe_put_usage(%{interrupted_turn: interrupted}, usage)
 
         op = %Op{
           kind: :session_invoked,
@@ -890,6 +904,7 @@ defmodule Embervm.SessionStore do
               session
               | invoke_started_at: session.invoke_started_at || ts,
                 last_invoke_at: ts,
+                interrupted_turn: interrupted,
                 updated_at: ts
             }
             :ets.insert(state.sessions, {session_id, updated})
@@ -926,14 +941,16 @@ defmodule Embervm.SessionStore do
           workload: session.workload,
           session_id: session_id,
           ts: ts,
-          payload: %{}
+          payload: %{turn_seq: session.turn_seq + 1}
         }
 
         case state.op_log_mod.append(state.op_log, op) do
           {:ok, _seq} ->
-            updated = %{session | invoke_started_at: ts, updated_at: ts}
+            updated = %{session | invoke_started_at: ts, turn_seq: session.turn_seq + 1, interrupted_turn: nil, updated_at: ts}
             :ets.insert(state.sessions, {session_id, updated})
-            {:reply, {:ok, updated}, state}
+            # Return the consumed marker to prepare_turn, while clearing it durably
+            # at dispatch so a denied turn cannot replay it on unrelated input.
+            {:reply, {:ok, %{updated | interrupted_turn: session.interrupted_turn}}, state}
 
           {:error, _reason} = error ->
             {:reply, error, state}

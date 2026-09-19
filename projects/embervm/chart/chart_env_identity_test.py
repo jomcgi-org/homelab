@@ -2041,3 +2041,37 @@ def test_egress_catalog_renders_a_broker_grant_pool():
         _render_with_set(
             "embervm", pool + ["egress.secrets[0].brokerGrant=codex-cluster"]
         )
+
+
+def test_gke_drain_uses_bounded_flush_and_ordinary_rollout_budget():
+    rendered = _render(
+        "embervm",
+        [
+            _chart_dir() / "values.yaml",
+            Path(os.environ["PROD_VALUES"]),
+            Path(os.environ["GKE_VALUES"]),
+        ],
+    )
+    bricks = []
+    control = []
+    for doc in yaml.safe_load_all(rendered):
+        if not isinstance(doc, dict) or doc.get("kind") != "Deployment":
+            continue
+        spec = doc["spec"]
+        containers = spec["template"]["spec"]["containers"]
+        for container in containers:
+            env = {
+                entry["name"]: entry.get("value") for entry in container.get("env", [])
+            }
+            if container["name"] == "noded":
+                bricks.append(doc)
+                # Interim #6216 budget until the interrupt-relay image has
+                # rolled; the #6256 follow-up drops these to 150s/180/180.
+                assert env["EMBERVM_NODED_DRAIN_TIMEOUT"] == "7200s"
+                assert spec["template"]["spec"]["terminationGracePeriodSeconds"] == 7230
+                assert spec["progressDeadlineSeconds"] == 10800
+            if "EMBERVM_SESSION_DRAIN_FLUSH_MS" in env:
+                control.append(doc)
+                assert env["EMBERVM_SESSION_DRAIN_FLUSH_MS"] == "60000"
+                assert env["EMBERVM_SESSION_DRAIN_BANK_BUDGET_MS"] == "15000"
+    assert bricks and control

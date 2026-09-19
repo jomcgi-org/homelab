@@ -3073,3 +3073,99 @@ func TestRunExportJobExportsDetachedSessionWorkspace(t *testing.T) {
 		t.Fatal("a detached lineage's workspace export must proceed")
 	}
 }
+
+func TestDrainWaitsForBankedSessionExport(t *testing.T) {
+	fs := newFakeStore()
+	fs.exportStarted = make(chan string, 1)
+	fs.exportRelease = make(chan struct{})
+	s := newStoreTestServer(t, fs)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.startExportQueue(ctx)
+	writeBundleFiles(t, filepath.Join(s.cfg.SnapshotRoot, "sessions", "drain-snapshot"), map[string]string{
+		"memfile": "flushed-memory", "snapfile": "snapshot", "imageref": "base",
+	})
+	s.sessionSnap.add(sessionSnapshotEntry{snapshotRef: "drain-snapshot", sessionID: "s-drain", workload: "sandbox"})
+	deadline := time.Now().Add(20 * time.Second)
+	s.SetDraining(deadline)
+	done := make(chan int, 1)
+	go func() { done <- s.WaitForManagedDrain(ctx, deadline) }()
+	select {
+	case <-fs.exportStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("drain did not export the banked session")
+	}
+	select {
+	case <-done:
+		t.Fatal("drain returned before the export completed")
+	default:
+	}
+	close(fs.exportRelease)
+	select {
+	case remaining := <-done:
+		if remaining != 0 || !time.Now().Before(deadline) {
+			t.Fatal("drain missed its deadline")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("drain did not finish after export")
+	}
+	if !fs.has("session/amd/sandbox/drain-snapshot") {
+		t.Fatal("flushed snapshot missing from store")
+	}
+}
+
+func TestDrainSkipsUnexportableArtifacts(t *testing.T) {
+	s := newStoreTestServer(t, newFakeStore())
+	s.sessionSnap.add(sessionSnapshotEntry{snapshotRef: "rejected", sessionID: "s-rejected", workload: "sandbox"})
+	ref := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION, Workload: "sandbox", Ref: "rejected"}
+	s.unexportable.mark(artifactPrefix(ref, s.cfg.CpuVendor), ref.GetKind().String(), http.StatusNotFound, "unknown_artifact")
+	if pending := s.drainSessionExports(newDrainExports()); pending != 0 {
+		t.Fatalf("unexportable artifact counted as pending: %d", pending)
+	}
+	done := make(chan int, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { done <- s.WaitForManagedDrain(ctx, time.Now().Add(time.Minute)) }()
+	select {
+	case remaining := <-done:
+		if remaining != 0 {
+			t.Fatalf("remaining = %d", remaining)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("drain spun on unexportable artifact")
+	}
+}
+
+func TestDrainBoundsWorkspaceScanErrors(t *testing.T) {
+	s := newStoreTestServer(t, newFakeStore())
+	if err := os.WriteFile(filepath.Join(s.cfg.VolumeRoot, "session"), []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	exports := newDrainExports()
+	for i := 1; i <= drainExportScanErrorLimit; i++ {
+		exports.nextScanRetry = time.Time{}
+		pending := s.drainSessionExports(exports)
+		if i < drainExportScanErrorLimit && pending != 1 {
+			t.Fatalf("tick %d: pending = %d", i, pending)
+		}
+		if i == drainExportScanErrorLimit && pending != 0 {
+			t.Fatalf("exhausted scans still pending: %d", pending)
+		}
+	}
+	if pending := s.drainSessionExports(exports); pending != 0 {
+		t.Fatalf("scan restarted after exhaustion: %d", pending)
+	}
+}
+
+func TestDrainExportDeadlineLogsRemainingArtifacts(t *testing.T) {
+	s := newStoreTestServer(t, newFakeStore())
+	s.sessionSnap.add(sessionSnapshotEntry{snapshotRef: "pending", sessionID: "s-pending", workload: "sandbox"})
+	var logs bytes.Buffer
+	s.logger = slog.New(slog.NewTextHandler(&logs, nil))
+	if remaining := s.WaitForManagedDrain(context.Background(), time.Now().Add(20*time.Millisecond)); remaining != 0 {
+		t.Fatalf("remaining = %d", remaining)
+	}
+	if !strings.Contains(logs.String(), "session/amd/sandbox/pending") {
+		t.Fatalf("missing abandoned artifact log: %s", logs.String())
+	}
+}

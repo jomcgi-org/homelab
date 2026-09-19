@@ -366,12 +366,18 @@ def _retry_permission(turn: AgentTurn | None, pending: PendingMessage) -> bool:
         usage = json.loads(turn.usage_json or "{}")
     except (TypeError, ValueError):
         return False
+    if not isinstance(usage, dict) or pending.dispatch_count <= 0:
+        return False
+    if usage.get("retry_dispatch_count") != pending.dispatch_count:
+        return False
+    # Both grants stop at MAX_PENDING_DISPATCHES. The brick-preempted grant is
+    # only ever written below that bound (mcp.py ends the turn as a confirmed
+    # error at or past it), and the drain grant has no executor-side stop, so
+    # without this a session on a brick that keeps rolling re-dispatches forever.
     return (
-        isinstance(usage, dict)
-        and turn.stop_reason == "brick_preempted"
-        and pending.dispatch_count > 0
-        and usage.get("retry_dispatch_count") == pending.dispatch_count
-    )
+        turn.stop_reason == "brick_preempted"
+        or turn.terminal_reason == "interrupted_for_drain"
+    ) and pending.dispatch_count < MAX_PENDING_DISPATCHES
 
 
 def response_lost_recovery_enabled() -> bool:
@@ -2170,6 +2176,42 @@ def persist_turn_from_pending_sync(
                 artifact_blob = None
                 artifact_outcome = None
         existing_turn = get_turn(session, session_id, turn_seq)
+        cost = turn.total_cost_usd
+        drain_continuation = (
+            existing_turn is not None
+            and existing_turn.terminal_reason == "interrupted_for_drain"
+        )
+        prior_list_cost = existing_turn.list_cost_usd if drain_continuation else None
+        if (
+            existing_turn is not None
+            and existing_turn.terminal_reason == "interrupted_for_drain"
+        ):
+            prior = json.loads(existing_turn.usage_json or "{}")
+            usage["drain_continuations"] = prior.get("drain_continuations", []) + [
+                {
+                    "result": existing_turn.result_text,
+                    "usage": {
+                        key: value
+                        for key, value in prior.items()
+                        if key != "drain_continuations"
+                    },
+                    "cost_usd": existing_turn.cost_usd,
+                }
+            ]
+            if cost is not None and existing_turn.cost_usd is not None:
+                cost += existing_turn.cost_usd
+            else:
+                cost = None
+        if turn.terminal_reason == "interrupted_for_drain":
+            if (
+                pending is None
+                or claim_owner is None
+                or dispatch_count != pending.dispatch_count
+            ):
+                raise PendingClaimLost(
+                    "Drain continuation requires its exact dispatch owner"
+                )
+            usage["retry_dispatch_count"] = pending.dispatch_count
         if (
             existing_turn is not None
             and existing_turn.terminal_reason in INTERRUPTED_TERMINAL_REASONS
@@ -2188,7 +2230,7 @@ def persist_turn_from_pending_sync(
             turn.permission_denials,
             None,
             usage,
-            turn.total_cost_usd,
+            cost,
             cli_session_id,
             model,
             diff_blob=diff_blob,
@@ -2199,6 +2241,24 @@ def persist_turn_from_pending_sync(
             artifact_outcome=artifact_outcome,
             commit=False,
         )
+        if drain_continuation:
+            # Price this physical turn alone, then add the captured prefix. The
+            # replaced ORM row has already been deleted and flushed above.
+            current_list_cost = row.list_cost_usd
+            if current_list_cost is None:
+                try:
+                    priced = price_usage(model, usage)
+                    current_list_cost = priced.cost_usd if priced is not None else None
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to price drain continuation: %s", exc, exc_info=True
+                    )
+            row.list_cost_usd = (
+                current_list_cost + prior_list_cost
+                if current_list_cost is not None and prior_list_cost is not None
+                else None
+            )
+            session.add(row)
         if (
             turn.terminal_reason in CLEAN_TERMINAL_REASONS
             and sess_row.recovery_workspace_loss is not None
@@ -2214,6 +2274,17 @@ def persist_turn_from_pending_sync(
         sess_row.voice_summary = voice_summary
         sess_row.last_turn_at = datetime.now(timezone.utc)
         session.add(sess_row)
+        if turn.terminal_reason == "interrupted_for_drain":
+            # Retain the same pending sequence, factory attempt and reservation.
+            # Only its next physical dispatch may consume this exact grant.
+            pending.claimed_by_replica = None
+            pending.claimed_at = None
+            pending.partial_text = None
+            pending.partial_activities = None
+            session.add(pending)
+            session.commit()
+            session.refresh(row)
+            return row
         if pending is not None:
             session.delete(pending)
         admission.settle(
