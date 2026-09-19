@@ -11,8 +11,15 @@ import {
   ATTR_SERVICE_VERSION,
 } from "@opentelemetry/semantic-conventions";
 import { registerInstrumentations } from "@opentelemetry/instrumentation";
+import { browserTelemetryEnabled } from "./telemetry-gate.js";
 
 export function initTelemetry() {
+  // Same-origin export only reaches the app on a tier whose /otel path the
+  // edge serves; the Access-gated private tier redirects every export
+  // before it arrives, so do not start the exporter there at all.
+  if (!browserTelemetryEnabled(window.location.hostname)) {
+    return;
+  }
   try {
     const resource = resourceFromAttributes({
       [ATTR_SERVICE_NAME]: "monolith-frontend",
