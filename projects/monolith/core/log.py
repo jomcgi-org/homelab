@@ -9,24 +9,24 @@ _PLAIN_FORMAT = "%(levelname)s %(name)s: %(message)s"
 
 
 class _TraceContextFormatter(logging.Formatter):
-    """Append the active recording span IDs without retaining request state."""
+    """Append active recording span IDs to the primary log message line."""
 
-    def format(self, record: logging.LogRecord) -> str:
-        line = super().format(record)
+    def formatMessage(self, record: logging.LogRecord) -> str:
+        message = super().formatMessage(record)
         try:
             span = trace.get_current_span()
             if not span.is_recording():
-                return line
+                return message
             context = span.get_span_context()
             if not context.is_valid:
-                return line
+                return message
             return (
-                f"{line} trace_id={context.trace_id:032x}"
+                f"{message} trace_id={context.trace_id:032x}"
                 f" span_id={context.span_id:016x}"
             )
         except (AttributeError, RuntimeError, TypeError, ValueError):
             # Logging must remain available even if tracing is misconfigured.
-            return line
+            return message
 
 
 class _HealthzFilter(logging.Filter):

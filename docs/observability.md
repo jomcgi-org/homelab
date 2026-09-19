@@ -1,14 +1,15 @@
 # Observability Architecture
 
 One OpenTelemetry Collector Deployment exports admitted telemetry to Honeycomb.
-Production currently sends synthetic probe metrics only. No service is admitted
-to the traces pipeline.
+Production sends synthetic probe metrics plus OTLP traces and metrics from the
+services admitted by the production allowlist.
 
 ## Current signal paths
 
 ```mermaid
 graph LR
     HC[http_check receiver] -->|probe metrics| OC[otel-collector]
+    SVC[allowlisted services] -->|OTLP traces and metrics| OC
     OC -->|OTLP| H[Honeycomb]
     UR[UptimeRobot] -->|direct HTTPRoute| HEALTH[collector health_check]
     DCGM[DCGM exporter] -->|direct scrape| STATS[public stats ticker]
@@ -33,9 +34,9 @@ the DCGM exporter directly. It does not use the collector or a telemetry store.
 ## Trace admission is deny-by-default
 
 `allowedServices` defaults to an empty list in
-`projects/platform/otel-collector/values.yaml`. Read
-`values-prod.yaml` for the services actually admitted; this document does not
-list them, because that list changes and a copy here would go stale.
+`projects/platform/otel-collector/values.yaml`. Production currently admits
+`embervm-control`, `monolith-backend`, `monolith-jobs`, and `monolith-public`.
+Read `values-prod.yaml` as the source of truth for the current list.
 
 While the list is empty the rendered collector has:
 
@@ -57,8 +58,9 @@ not on the list, so a service whose `OTEL_SERVICE_NAME` differs from its
 allowlist entry exports successfully and has every span discarded, with nothing
 reporting the mismatch.
 
-The metrics pipeline remains restricted to `http_check` after a trace service is
-admitted.
+When at least one trace service is admitted, the shared OTLP receiver also feeds
+the metrics pipeline. The trace allowlist remains specific to the traces
+pipeline.
 
 ## Automatic injection is off
 
@@ -69,8 +71,18 @@ collector.
 The OpenTelemetry Operator remains installed, but production disables its
 Python, Node.js, and Go `Instrumentation` resources and configures no endpoint.
 
-The private monolith has no production OTel endpoint. Its demo trace waterfall
-returns no spans until #5363 connects a replacement span store.
+Production configures the private monolith's OTLP/HTTP trace endpoint in
+`projects/monolith/deploy/values.yaml`, and admits it to the Honeycomb-backed
+traces pipeline through the production allowlist above.
+
+## Log correlation limit
+
+The collector has no logs receiver or logs pipeline, and the platform has no
+pod-log collection path. Trace IDs emitted by application log formatters remain
+in pod logs rather than being ingested into Honeycomb. Operators can pivot from
+a pod log line to its Honeycomb trace by `trace_id`, then pivot back by searching
+pod logs for that ID. A bidirectional pivot entirely inside Honeycomb requires a
+separate log-ingestion follow-up.
 
 ## Network visibility
 
