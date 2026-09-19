@@ -1286,6 +1286,101 @@ func TestRankGrantsBandsHysteresisAndSoonerReset(t *testing.T) {
 	}
 }
 
+func TestRankGrantsPrioritizesPerishableQuota(t *testing.T) {
+	now := time.Date(2026, 9, 19, 16, 0, 0, 0, time.UTC)
+	resetAfter := func(after time.Duration) string {
+		return now.Add(after).Format(time.RFC3339)
+	}
+
+	t.Run("production quota shape inside the perishable window", func(t *testing.T) {
+		views := map[string]grantQuotaView{
+			"codex-low":  grantView(true, false, "codex", 83, resetAfter(grantPerishableWindow-time.Minute)),
+			"codex-high": grantView(true, false, "codex", 26, resetAfter(156*time.Hour)),
+		}
+		got := rankGrants([]string{"codex-high", "codex-low"}, views, "", now, nil)
+		if got[0] != "codex-low" {
+			t.Fatalf("17%% remaining near reset must beat durable 74%% remaining, got %v", got)
+		}
+	})
+
+	t.Run("exhausted grant is not promoted", func(t *testing.T) {
+		exhausted := grantView(true, false, "codex", 100, resetAfter(time.Hour))
+		exhausted.Exhausted = true
+		views := map[string]grantQuotaView{
+			"codex-exhausted": exhausted,
+			"codex-healthy":   grantView(true, false, "codex", 90, ""),
+		}
+		if scored := bandFor(exhausted, true, now); scored.band != -1 || scored.perishable {
+			t.Fatalf("exhausted grant must stay out even near reset, got %+v", scored)
+		}
+		got := rankGrants([]string{"codex-exhausted", "codex-healthy"}, views, "", now, nil)
+		if got[0] != "codex-healthy" {
+			t.Fatalf("exhausted grant must rank after a healthy grant, got %v", got)
+		}
+	})
+
+	t.Run("stale exhaustion is not perishable", func(t *testing.T) {
+		stale := grantView(true, true, "codex", 0, "")
+		stale.AgeSeconds = grantExhaustionStaleAfter.Seconds() + 1
+		if scored := bandFor(stale, true, now); scored.band != 0 || scored.perishable {
+			t.Fatalf("stale exhaustion must drop to non-perishable band zero, got %+v", scored)
+		}
+	})
+
+	t.Run("perishable grants prefer band before reset", func(t *testing.T) {
+		views := map[string]grantQuotaView{
+			"codex-low":  grantView(true, false, "codex", 83, resetAfter(30*time.Minute)),
+			"codex-high": grantView(true, false, "codex", 26, resetAfter(90*time.Minute)),
+		}
+		got := rankGrants([]string{"codex-low", "codex-high"}, views, "", now, nil)
+		if got[0] != "codex-high" {
+			t.Fatalf("higher band must win between perishable grants, got %v", got)
+		}
+	})
+
+	t.Run("same-band perishable grants prefer sooner reset", func(t *testing.T) {
+		views := map[string]grantQuotaView{
+			"codex-later":  grantView(true, false, "codex", 55, resetAfter(90*time.Minute)),
+			"codex-sooner": grantView(true, false, "codex", 60, resetAfter(30*time.Minute)),
+		}
+		got := rankGrants([]string{"codex-later", "codex-sooner"}, views, "", now, nil)
+		if got[0] != "codex-sooner" {
+			t.Fatalf("sooner reset must win within a perishable band, got %v", got)
+		}
+	})
+
+	t.Run("non-perishable grants retain band then reset ordering", func(t *testing.T) {
+		views := map[string]grantQuotaView{
+			"codex-low":  grantView(true, false, "codex", 83, resetAfter(grantPerishableWindow+time.Hour)),
+			"codex-high": grantView(true, false, "codex", 26, resetAfter(156*time.Hour)),
+		}
+		got := rankGrants([]string{"codex-low", "codex-high"}, views, "", now, nil)
+		if got[0] != "codex-high" {
+			t.Fatalf("higher band must win outside the perishable window, got %v", got)
+		}
+
+		views = map[string]grantQuotaView{
+			"codex-later":  grantView(true, false, "codex", 55, resetAfter(grantPerishableWindow+2*time.Hour)),
+			"codex-sooner": grantView(true, false, "codex", 60, resetAfter(grantPerishableWindow+time.Hour)),
+		}
+		got = rankGrants([]string{"codex-later", "codex-sooner"}, views, "", now, nil)
+		if got[0] != "codex-sooner" {
+			t.Fatalf("sooner reset must still win within a durable band, got %v", got)
+		}
+	})
+
+	t.Run("perishable grant displaces durable current grant", func(t *testing.T) {
+		views := map[string]grantQuotaView{
+			"codex-perishable": grantView(true, false, "codex", 83, resetAfter(time.Hour)),
+			"codex-current":    grantView(true, false, "codex", 26, resetAfter(156*time.Hour)),
+		}
+		got := rankGrants([]string{"codex-current", "codex-perishable"}, views, "codex-current", now, nil)
+		if got[0] != "codex-perishable" {
+			t.Fatalf("perishable quota must override durable-current hysteresis, got %v", got)
+		}
+	})
+}
+
 func TestBandForUsesTheWorstWindowAndExpiresExhaustion(t *testing.T) {
 	now := time.Date(2026, 9, 9, 16, 0, 0, 0, time.UTC)
 	weekly := grantView(true, false, "codex", 10, "2026-09-09T20:00:00Z")
