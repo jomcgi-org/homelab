@@ -118,8 +118,7 @@ func TestNewFullRoundTrip(t *testing.T) {
 }
 
 // TestHandlerScanErrorLandsInErrors verifies that a scanner error goes into
-// ScanResult.Errors at HTTP 200 rather than propagating as a handler error,
-// matching the partial-results semantics of the legacy scan-port RPC.
+// ScanResult.Errors at HTTP 503, enabling bounded task retries.
 func TestHandlerScanErrorLandsInErrors(t *testing.T) {
 	boom := errors.New("scan exploded")
 	h := New(&fakeScanner{err: boom})
@@ -128,8 +127,8 @@ func TestHandlerScanErrorLandsInErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handler returned unexpected error: %v", err)
 	}
-	if resp.Status != 200 {
-		t.Errorf("status %d, want 200", resp.Status)
+	if resp.Status != 503 {
+		t.Errorf("status %d, want 503", resp.Status)
 	}
 
 	var got vsockproto.ScanResult
@@ -144,6 +143,24 @@ func TestHandlerScanErrorLandsInErrors(t *testing.T) {
 	}
 	if got.CorrelationID != "failed-789" {
 		t.Errorf("correlation_id %q, want failed-789", got.CorrelationID)
+	}
+}
+
+func TestHandlerPartialOutputPreservesFindings(t *testing.T) {
+	raw := json.RawMessage(`{"results":[],"errors":[]}`)
+	h := NewFull(func(req vsockproto.ScanRequest) (vsockproto.ScanResult, error) {
+		return vsockproto.ScanResult{RawCliOutput: raw}, errors.New("partial scan")
+	})
+	resp, err := call(t, h, `{"files":[]}`)
+	if err != nil || resp.Status != 200 {
+		t.Fatalf("partial scan response=%v error=%v", resp, err)
+	}
+	var got vsockproto.ScanResult
+	if err := json.Unmarshal(resp.Body, &got); err != nil {
+		t.Fatal(err)
+	}
+	if string(got.RawCliOutput) != string(raw) || len(got.Errors) != 1 {
+		t.Fatalf("partial result was lost: %+v", got)
 	}
 }
 

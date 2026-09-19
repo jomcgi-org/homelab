@@ -501,6 +501,13 @@ async def _scan_and_report(payload: dict[str, Any], received: float) -> None:
                 pr_number,
                 (scan or {}).get("error") if isinstance(scan, dict) else scan,
             )
+            await _post_commit_status(
+                repo=repo,
+                head_sha=head_sha,
+                state="error",
+                description="scan failed before a reportable result was available",
+                target_url=None,
+            )
             return
 
         t_report = time.monotonic()

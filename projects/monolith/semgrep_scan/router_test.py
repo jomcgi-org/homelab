@@ -24,7 +24,6 @@ import hmac
 import json
 from unittest import mock
 
-import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -287,12 +286,17 @@ def test_scan_error_short_circuits_report(client):
             new=mock.AsyncMock(return_value={"error": "fc-invoke down"}),
         ),
         mock.patch.object(webhook, "report_pr_scan", new=mock.AsyncMock()) as report,
+        mock.patch.object(
+            webhook, "_post_commit_status", new=mock.AsyncMock()
+        ) as status,
     ):
         resp = _post(client, _pr_payload("opened"))
         assert resp.status_code == 200
 
     # A scan error must not reach report_pr_scan.
     report.assert_not_awaited()
+    status.assert_awaited_once()
+    assert status.call_args.kwargs["state"] == "error"
 
 
 def test_commit_status_failure_does_not_crash_scan_job(client):
