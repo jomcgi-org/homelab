@@ -9,6 +9,7 @@ defmodule Embervm.K8sFinchTrustTest do
   @system_ca_file "/etc/ssl/certs/ca-certificates.crt"
   @tls_fixture_dir Path.expand("../fixtures", __DIR__)
   # Long-lived localhost-only fixture from Bandit's own TLS test support.
+  @server_ca Path.join(@tls_fixture_dir, "store_tls_ca.pem")
   @server_cert Path.join(@tls_fixture_dir, "store_tls_server.pem")
   @server_key Path.join(@tls_fixture_dir, "store_tls_server_key.pem")
   @sa_ca_pem """
@@ -78,20 +79,20 @@ defmodule Embervm.K8sFinchTrustTest do
 
     test "the configured pool accepts a trusted TLS peer and rejects untrusted or wrong-host peers" do
       port = start_tls_server()
-      trusted = start_finch(@server_cert)
+      trusted = start_finch(@server_ca)
       untrusted = start_finch(temp_ca_file(@sa_ca_pem))
 
       assert {:ok, %Finch.Response{status: 404}} =
                Finch.build(:get, "https://localhost:#{port}/embervm/probe/.keep")
                |> Finch.request(trusted, receive_timeout: 2_000)
 
-      assert {:error, %Finch.Error{} = untrusted_error} =
+      assert {:error, untrusted_error} =
                Finch.build(:get, "https://localhost:#{port}/embervm/probe/.keep")
                |> Finch.request(untrusted, receive_timeout: 2_000)
 
       assert inspect(untrusted_error) =~ ~r/unknown_ca|certificate/i
 
-      assert {:error, %Finch.Error{} = hostname_error} =
+      assert {:error, hostname_error} =
                Finch.build(:get, "https://127.0.0.1:#{port}/embervm/probe/.keep")
                |> Finch.request(trusted, receive_timeout: 2_000)
 
