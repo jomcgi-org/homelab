@@ -15,6 +15,7 @@ import os
 import re
 from pathlib import Path
 
+import pytest
 import yaml
 
 DIGITS = re.compile(r"^[0-9]+$")
@@ -195,3 +196,153 @@ def test_bake_uses_random_ext4_uuid_and_logs_identity():
     assert "rootfs identity digest=sha256:$digest uuid=" in script, (
         "the post-bake identity log is missing"
     )
+
+
+def _rootfs_download_harness(tmp_path):
+    """Run the actual builder with local fake registry/store executables."""
+    import sys
+    import textwrap
+
+    source = _repo_path(
+        "projects/embervm/chart/templates/noded-rootfs-builder-configmap.yaml"
+    ).read_text()
+    body = source.split("  build-base-rootfs.sh: |\n", 1)[1].split("{{- end }}", 1)[0]
+    script = tmp_path / "builder.sh"
+    script.write_text(textwrap.dedent(body))
+    binaries = tmp_path / "bin"
+    binaries.mkdir()
+    mock = f"#!{sys.executable}\n" + textwrap.dedent("""\
+        import os, sys, time
+        from pathlib import Path
+        root = Path(os.environ["TEST_ROOTFS_DIR"])
+        if Path(sys.argv[0]).name == "crane":
+            assert sys.argv[1] == "digest", sys.argv
+            (root / ("digest-" + os.environ["BUILDER_ID"])).touch()
+            print("sha256:" + "a" * 64)
+        else:
+            assert sys.argv[1] == "get", sys.argv
+            with (root / "downloads").open("a") as log:
+                log.write(os.environ["BUILDER_ID"] + "\\n")
+            deadline = time.monotonic() + 15
+            while not (root / "release").exists():
+                if time.monotonic() > deadline:
+                    sys.exit(1)
+                time.sleep(0.01)
+            Path(sys.argv[sys.argv.index("--out") + 1]).write_bytes(b"x" * 2048)
+        """)
+    for name in ("crane", "rootfs-store"):
+        path = binaries / name
+        path.write_text(mock)
+        path.chmod(0o755)
+    return script, {
+        **os.environ,
+        "PATH": str(binaries) + os.pathsep + os.environ["PATH"],
+        "GUEST_IMAGE": "test-guest",
+        "TEST_ROOTFS_DIR": str(tmp_path),
+    }
+
+
+def _wait_for_file(path):
+    import time
+
+    deadline = time.monotonic() + 10
+    while not path.exists():
+        if time.monotonic() > deadline:
+            raise AssertionError(f"Timed out waiting for {path}")
+        time.sleep(0.01)
+
+
+def _start_builder(script, env, tmp_path, identifier, base_name=None):
+    import subprocess
+
+    return subprocess.Popen(
+        ["bash", str(script)],
+        env={
+            **env,
+            "BUILDER_ID": identifier,
+            "BASE_ROOTFS_PATH": str(
+                tmp_path / "cache" / f"base-{base_name or identifier}.ext4"
+            ),
+        },
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        start_new_session=True,
+    )
+
+
+def _stop_builders(processes):
+    import signal
+
+    for process in processes:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+        process.communicate(timeout=10)
+
+
+@pytest.mark.parametrize("same_path", [False, True])
+def test_concurrent_rootfs_builders_download_once_and_share_inode(tmp_path, same_path):
+    script, env = _rootfs_download_harness(tmp_path)
+    processes = []
+    try:
+        for index in range(4):
+            processes.append(
+                _start_builder(
+                    script, env, tmp_path, str(index), "shared" if same_path else None
+                )
+            )
+        for index in range(4):
+            _wait_for_file(tmp_path / f"digest-{index}")
+        _wait_for_file(tmp_path / "downloads")
+        (tmp_path / "release").touch()
+        for process in processes:
+            output, _ = process.communicate(timeout=15)
+            assert process.returncode == 0, output
+        assert len((tmp_path / "downloads").read_text().splitlines()) == 1
+        paths = [
+            tmp_path / "cache" / f"base-{'shared' if same_path else i}.ext4"
+            for i in range(4)
+        ]
+        assert len({path.stat().st_ino for path in paths}) == 1
+        assert all(path.read_bytes() == b"x" * 2048 for path in paths)
+    finally:
+        _stop_builders(processes)
+
+
+def test_rootfs_waiter_recovers_after_builder_process_group_dies(tmp_path):
+    import signal
+
+    script, env = _rootfs_download_harness(tmp_path)
+    processes = []
+    try:
+        holder = _start_builder(script, env, tmp_path, "holder")
+        processes.append(holder)
+        _wait_for_file(tmp_path / "downloads")
+        waiter = _start_builder(script, env, tmp_path, "waiter")
+        processes.append(waiter)
+        _wait_for_file(tmp_path / "digest-waiter")
+        os.killpg(holder.pid, signal.SIGKILL)
+        holder.communicate(timeout=10)
+        (tmp_path / "release").touch()
+        output, _ = waiter.communicate(timeout=15)
+        assert waiter.returncode == 0, output
+        assert (tmp_path / "cache" / "base-waiter.ext4").read_bytes() == b"x" * 2048
+        assert (tmp_path / "downloads").read_text().splitlines() == ["holder", "waiter"]
+    finally:
+        _stop_builders(processes)
+
+
+def test_rootfs_lock_timeout_fails_without_downloading(tmp_path):
+    script, env = _rootfs_download_harness(tmp_path)
+    lock = tmp_path / "bin" / "flock"
+    lock.write_text('#!/bin/sh\n[ "$*" = "-x -w 900 9" ] || exit 2\nexit 1\n')
+    lock.chmod(0o755)
+    process = _start_builder(script, env, tmp_path, "timeout")
+    try:
+        output, _ = process.communicate(timeout=10)
+        assert process.returncode == 1
+        assert "rootfs cache lock timed out" in output
+        assert not (tmp_path / "downloads").exists()
+        assert not (tmp_path / "cache" / "base-timeout.ext4").exists()
+    finally:
+        _stop_builders([process])
