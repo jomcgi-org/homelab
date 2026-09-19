@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 import json
 
 from fastapi import FastAPI
@@ -123,6 +124,18 @@ def op_kwargs(**overrides):
         "stated_reason": "test operation",
         **overrides,
     }
+
+
+def test_work_item_edge_source_model_matches_migration_contract():
+    source = WorkItemEdge.__table__.c.source
+    assert source.nullable is False
+    assert source.default.arg == "manual"
+    constraint = next(
+        constraint
+        for constraint in WorkItemEdge.__table__.constraints
+        if constraint.name == "work_item_edge_source_check"
+    )
+    assert str(constraint.sqltext) == "source IN ('manual','github_body','decision')"
 
 
 @pytest.mark.parametrize(
@@ -513,8 +526,39 @@ def test_operator_and_browser_routes_serve_the_same_work_item_document(db):
             title="shared", state="ready", source_kind="factory", trust="trusted"
         )
         session.add(item)
+        session.flush()
+        older = FactoryReceipt(
+            repo="owner/repo",
+            issue_number=1,
+            generation=0,
+            title="older",
+            body="body",
+            url="https://github.com/owner/repo/issues/1",
+            actor="test",
+            task_class="docs",
+            state="succeeded",
+            work_item_id=item.id,
+            created_at=datetime.now(timezone.utc) - timedelta(hours=1),
+        )
+        newer = FactoryReceipt(
+            repo="owner/repo",
+            issue_number=1,
+            generation=1,
+            title="newer",
+            body="body",
+            url="https://github.com/owner/repo/issues/1",
+            actor="test",
+            task_class="bug-fix",
+            state="escalated",
+            work_item_id=item.id,
+            created_at=datetime.now(timezone.utc),
+        )
+        session.add_all([older, newer])
         session.commit()
         item_id = item.id
+        older_id = older.id
+        newer_id = newer.id
+        newer_created_at = newer.created_at.isoformat()
 
     browser_app = FastAPI()
     browser_app.include_router(agents_router)
@@ -530,6 +574,18 @@ def test_operator_and_browser_routes_serve_the_same_work_item_document(db):
         via_operator = operator.get(f"/api/swarm/factory/work-items/{item_id}").json()
         via_browser = browser.get(f"/api/agents/factory/work-items/{item_id}").json()
         assert via_operator == via_browser
+        assert [receipt["id"] for receipt in via_operator["receipts"]] == [
+            newer_id,
+            older_id,
+        ]
+        assert via_operator["receipts"][0] == {
+            "id": newer_id,
+            "generation": 1,
+            "task_class": "bug-fix",
+            "state": "escalated",
+            "created_at": newer_created_at,
+            "task_id": None,
+        }
         assert (
             operator.get("/api/swarm/factory/work-items?state=ready").json()
             == browser.get("/api/agents/factory/work-items?state=ready").json()

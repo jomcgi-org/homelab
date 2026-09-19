@@ -2601,3 +2601,296 @@ def test_factory_decisions_need_exactly_one_of_an_option_or_a_chat(client, monke
             ).status_code
             == 422
         )
+
+
+def test_factory_edges_add_blocks_by_work_item_id(tmp_path, monkeypatch):
+    """POST /api/agents/factory/work-items/{id}/edges adds a blocks edge."""
+    from sqlalchemy import event
+
+    from factory.orchestration import factory_controls, work_items
+    from factory.orchestration.factory_models import (
+        FactoryControl,
+        FactoryReceipt,
+        WorkItem,
+        WorkItemEdge,
+        WorkItemEvent,
+    )
+    from factory.orchestration.models import SwarmNodeRun, SwarmTask
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'edge-test.db'}",
+        connect_args={"check_same_thread": False},
+        execution_options={"schema_translate_map": {"swarm": None}},
+    )
+
+    @event.listens_for(engine, "connect")
+    def foreign_keys(connection, _record):
+        connection.execute("PRAGMA foreign_keys=ON")
+
+    SQLModel.metadata.create_all(
+        engine,
+        tables=[
+            model.__table__
+            for model in (
+                SwarmTask,
+                SwarmNodeRun,
+                FactoryControl,
+                FactoryReceipt,
+                WorkItem,
+                WorkItemEdge,
+                WorkItemEvent,
+            )
+        ],
+    )
+    monkeypatch.setattr(work_items, "get_engine", lambda: engine)
+    monkeypatch.setattr(factory_controls, "get_engine", lambda: engine)
+
+    with Session(engine) as session:
+        session.add(FactoryControl(id="factory", actor="test"))
+        item1 = WorkItem(
+            title="item1", state="open", source_kind="factory", trust="trusted"
+        )
+        item2 = WorkItem(
+            title="item2", state="open", source_kind="factory", trust="trusted"
+        )
+        session.add_all([item1, item2])
+        session.flush()
+        item1_id, item2_id = item1.id, item2.id
+        session.add(
+            WorkItemEvent(
+                work_item_id=item1_id,
+                version=1,
+                op="test",
+                author_kind="system",
+                author="test",
+                change_json="{}",
+                cause_kind="test",
+            )
+        )
+        session.commit()
+
+    app = FastAPI()
+    app.include_router(router)
+
+    def session_override():
+        with Session(engine) as db:
+            yield db
+
+    app.dependency_overrides[get_session] = session_override
+    client = TestClient(app)
+    try:
+        # Add a blocks edge
+        response = client.post(
+            f"/api/agents/factory/work-items/{item1_id}/edges",
+            json={"kind": "blocks", "direction": "out", "other": item2_id},
+            headers={"X-Auth-Email": "joe@example.com"},
+        )
+        assert response.status_code == 200
+        doc = response.json()
+        assert len(doc["edges_out"]) == 1
+        assert doc["edges_out"][0]["kind"] == "blocks"
+        assert doc["edges_out"][0]["to_id"] == item2_id
+        assert doc["edges_out"][0]["source"] == "manual"
+
+        # Adding the same edge again is a no-op
+        response = client.post(
+            f"/api/agents/factory/work-items/{item1_id}/edges",
+            json={"kind": "blocks", "direction": "out", "other": item2_id},
+            headers={"X-Auth-Email": "joe@example.com"},
+        )
+        assert response.status_code == 200
+        doc = response.json()
+        assert len(doc["edges_out"]) == 1
+
+        response = client.post(
+            f"/api/agents/factory/work-items/{item1_id}/edges",
+            json={"kind": "blocks", "direction": "out", "other": "#abc"},
+            headers={"X-Auth-Email": "joe@example.com"},
+        )
+        assert response.status_code == 422
+        assert response.json()["detail"] == "other must be an integer or #N format"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_factory_edges_add_missing_header_returns_403(tmp_path, monkeypatch):
+    """POST without X-Auth-Email returns 403."""
+    from sqlalchemy import event
+
+    from factory.orchestration import factory_controls, work_items
+    from factory.orchestration.factory_models import (
+        FactoryControl,
+        FactoryReceipt,
+        WorkItem,
+        WorkItemEdge,
+        WorkItemEvent,
+    )
+    from factory.orchestration.models import SwarmNodeRun, SwarmTask
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'edge-auth-test.db'}",
+        connect_args={"check_same_thread": False},
+        execution_options={"schema_translate_map": {"swarm": None}},
+    )
+
+    @event.listens_for(engine, "connect")
+    def foreign_keys(connection, _record):
+        connection.execute("PRAGMA foreign_keys=ON")
+
+    SQLModel.metadata.create_all(
+        engine,
+        tables=[
+            model.__table__
+            for model in (
+                SwarmTask,
+                SwarmNodeRun,
+                FactoryControl,
+                FactoryReceipt,
+                WorkItem,
+                WorkItemEdge,
+                WorkItemEvent,
+            )
+        ],
+    )
+    monkeypatch.setattr(work_items, "get_engine", lambda: engine)
+    monkeypatch.setattr(factory_controls, "get_engine", lambda: engine)
+
+    with Session(engine) as session:
+        session.add(FactoryControl(id="factory", actor="test"))
+        item1 = WorkItem(
+            title="item1", state="open", source_kind="factory", trust="trusted"
+        )
+        item2 = WorkItem(
+            title="item2", state="open", source_kind="factory", trust="trusted"
+        )
+        session.add_all([item1, item2])
+        session.flush()
+        item1_id, item2_id = item1.id, item2.id
+        session.commit()
+
+    app = FastAPI()
+    app.include_router(router)
+
+    def session_override():
+        with Session(engine) as db:
+            yield db
+
+    app.dependency_overrides[get_session] = session_override
+    client = TestClient(app)
+    try:
+        response = client.post(
+            f"/api/agents/factory/work-items/{item1_id}/edges",
+            json={"kind": "blocks", "direction": "out", "other": item2_id},
+        )
+        assert response.status_code == 403
+
+        # Two headers also returns 403
+        response = client.post(
+            f"/api/agents/factory/work-items/{item1_id}/edges",
+            json={"kind": "blocks", "direction": "out", "other": item2_id},
+            headers=[
+                ("X-Auth-Email", "joe@example.com"),
+                ("X-Auth-Email", "other@example.com"),
+            ],
+        )
+        assert response.status_code == 403
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_factory_edges_delete_removes_edge(tmp_path, monkeypatch):
+    """DELETE /api/agents/factory/work-items/{id}/edges/{edge_id} removes an edge."""
+    from sqlalchemy import event
+
+    from factory.orchestration import factory_controls, work_items
+    from factory.orchestration.factory_models import (
+        FactoryControl,
+        FactoryReceipt,
+        WorkItem,
+        WorkItemEdge,
+        WorkItemEvent,
+    )
+    from factory.orchestration.models import SwarmNodeRun, SwarmTask
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'edge-delete-test.db'}",
+        connect_args={"check_same_thread": False},
+        execution_options={"schema_translate_map": {"swarm": None}},
+    )
+
+    @event.listens_for(engine, "connect")
+    def foreign_keys(connection, _record):
+        connection.execute("PRAGMA foreign_keys=ON")
+
+    SQLModel.metadata.create_all(
+        engine,
+        tables=[
+            model.__table__
+            for model in (
+                SwarmTask,
+                SwarmNodeRun,
+                FactoryControl,
+                FactoryReceipt,
+                WorkItem,
+                WorkItemEdge,
+                WorkItemEvent,
+            )
+        ],
+    )
+    monkeypatch.setattr(work_items, "get_engine", lambda: engine)
+    monkeypatch.setattr(factory_controls, "get_engine", lambda: engine)
+
+    with Session(engine) as session:
+        session.add(FactoryControl(id="factory", actor="test"))
+        item1 = WorkItem(
+            title="item1", state="open", source_kind="factory", trust="trusted"
+        )
+        item2 = WorkItem(
+            title="item2", state="open", source_kind="factory", trust="trusted"
+        )
+        session.add_all([item1, item2])
+        session.flush()
+        item1_id, item2_id = item1.id, item2.id
+        edge = WorkItemEdge(from_id=item1_id, to_id=item2_id, kind="blocks")
+        session.add(edge)
+        session.flush()
+        edge_id = edge.id
+        session.add(
+            WorkItemEvent(
+                work_item_id=item1_id,
+                version=1,
+                op="test",
+                author_kind="system",
+                author="test",
+                change_json="{}",
+                cause_kind="test",
+            )
+        )
+        session.commit()
+
+    app = FastAPI()
+    app.include_router(router)
+
+    def session_override():
+        with Session(engine) as db:
+            yield db
+
+    app.dependency_overrides[get_session] = session_override
+    client = TestClient(app)
+    try:
+        # Delete the edge
+        response = client.delete(
+            f"/api/agents/factory/work-items/{item1_id}/edges/{edge_id}",
+            headers={"X-Auth-Email": "joe@example.com"},
+        )
+        assert response.status_code == 200
+        doc = response.json()
+        assert len(doc["edges_out"]) == 0
+
+        # Missing auth header returns 403
+        response = client.delete(
+            f"/api/agents/factory/work-items/{item1_id}/edges/{edge_id}",
+        )
+        assert response.status_code == 403
+    finally:
+        app.dependency_overrides.clear()

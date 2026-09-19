@@ -596,3 +596,26 @@ describe("escalations page, per card state", () => {
     );
   });
 });
+
+describe("escalations page, work item links", () => {
+  test("renders a work item link when work_item_id is present", () => {
+    const target = renderPage({
+      escalations: [escalation({ work_item_id: 42 })],
+      error: false,
+    });
+
+    const link = target.querySelector('a[href="/factory/work-items/42"]');
+    expect(link).not.toBeNull();
+    expect(link.textContent).toContain("work item 42");
+  });
+
+  test("does not render a work item link when work_item_id is absent", () => {
+    const target = renderPage({
+      escalations: [escalation()],
+      error: false,
+    });
+
+    const link = target.querySelector('a[href*="/factory/work-items/"]');
+    expect(link).toBeNull();
+  });
+});

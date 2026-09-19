@@ -592,6 +592,7 @@ def test_split_creates_parent_edges_and_replay_does_not_duplicate_them(
         ).all()
         assert len(edges) == 2
         assert len({edge.to_id for edge in edges}) == 2
+        assert {edge.source for edge in edges} == {"decision"}
 
 
 def test_split_mint_failure_is_audited_without_failing_decision(

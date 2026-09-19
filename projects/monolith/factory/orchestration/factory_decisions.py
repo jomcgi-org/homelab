@@ -403,6 +403,7 @@ def _link_child(fields: dict, issue: dict) -> None:
                     author_kind="operator",
                     cause_kind="decision_split",
                     cause_ref=str(fields.get("effect_namespace") or fields["id"]),
+                    source="decision",
                     stated_reason="split by operator decision",
                 )
     except Exception as exc:  # noqa: BLE001 - GitHub writes cannot be rolled back

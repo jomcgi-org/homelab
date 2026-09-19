@@ -342,6 +342,21 @@ as `blocked`, and final admission records one `admission_blocked` audit for the
 first queued receipt when it is blocked. Closing the blocking work item
 releases the receipt on the next tick without operator action.
 
+Block edges also derive from issue bodies. During each intake sweep, after
+synchronizing GitHub issues as work items, the factory parses issue body text
+for blocking phrases: "blocked by #N", "depends on #N", "waits on #N" all mean
+that issue N blocks this one, and "blocks #N" means this issue blocks N.
+All phrases are case-insensitive and accept both "#N" and "owner/repo#N"
+formats, where "owner/repo#N" is only recognized if the repository matches the
+current repo. Matches inside fenced code blocks are ignored, and a bare "#N"
+without a phrase is never treated as a link. The factory reconciles these
+derived edges on every sweep: hourly while idle, immediately after a receipt
+settles, and immediately after an admission. It adds edges for newly mentioned
+issues and removes edges for issues no longer mentioned in the body. Manual and
+decision-authored edges are never touched; only edges with source "github_body"
+are updated. Block cycles in body edges produce a throttled
+`work_item_edge_cycle` audit but do not prevent intake from proceeding.
+
 Intake sweeps GitHub at most once an hour while it is finding nothing, again
 immediately after any receipt settles, and again on the tick after it admits
 anything. That last clause is what lets a lane fill: a sweep takes at most one
@@ -1343,8 +1358,9 @@ the nth failure, then retry. A successful write clears the backoff counter. The
 sync excludes closed work items and skips work items lacking a GitHub issue
 number.
 
-The `/factory/work-items/{id}` page does not yet exist. Keep this flag disabled
-until task 3 ships that page.
+The `/factory/work-items/{id}` page ships work item details, edges, and recent
+events. All edges show their source (manual, github_body, or decision) for
+transparency about how each relationship was created.
 
 ### Autonomous correction continuation
 

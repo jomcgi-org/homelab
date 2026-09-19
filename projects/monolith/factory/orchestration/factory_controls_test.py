@@ -106,6 +106,42 @@ def grant(task_id, key="one", **kwargs):
     )
 
 
+def test_escalation_view_carries_work_item_id_from_receipt_snapshot(db):
+    with Session(db) as session:
+        item = WorkItem(
+            title="linked",
+            state="open",
+            source_kind="factory",
+            trust="trusted",
+        )
+        session.add(item)
+        session.flush()
+        receipt = FactoryReceipt(
+            repo="owner/repo",
+            issue_number=42,
+            title="needs a decision",
+            body="body",
+            url="https://github.com/owner/repo/issues/42",
+            actor="test",
+            work_item_id=item.id,
+            escalation_json=json.dumps(
+                {
+                    "recommendation": "hold",
+                    "question": "Wait?",
+                    "options": [],
+                }
+            ),
+        )
+        session.add(receipt)
+        session.commit()
+        session.refresh(receipt)
+
+        view = controls.escalation_view(controls._snapshot(session, receipt))
+
+        assert view is not None
+        assert view["work_item_id"] == item.id
+
+
 def test_issue_body_hash_ignores_whitespace_only_changes():
     original = "First line\n\nSecond\tline"
     whitespace_only = "  First line   Second line\n"

@@ -11,6 +11,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 import factory.orchestration.factory_controls as controls
 import factory.orchestration.factory_intake_loop as intake_loop
+import factory.orchestration.work_item_links as work_item_links
 import factory.orchestration.work_items as work_items
 from factory.orchestration.factory_models import (
     FactoryAudit,
@@ -618,14 +619,45 @@ def test_a_github_failure_is_audited_not_only_logged(db, monkeypatch):
 
 def test_a_truncated_sweep_says_so(db, monkeypatch):
     full = [issue(number) for number in range(1, intake_loop.PAGE_SIZE + 1)]
+    reconcile_truncation = []
+    with Session(db) as session:
+        session.add(
+            WorkItem(
+                title="synced",
+                state="open",
+                source_kind="github",
+                authority="github",
+                github_repo="owner/repo",
+                github_issue_number=1,
+                trust="trusted",
+            )
+        )
+        session.commit()
 
     def github_list(_repo, suffix):
         return [] if suffix.startswith("pulls?") else list(full)
 
+    def reconcile(_db, _repo, _items, *, actor, truncated):
+        reconcile_truncation.append(truncated)
+        return {
+            "added": 0,
+            "removed": 0,
+            "removal_skipped_truncated": 0,
+            "cycles": 0,
+            "skipped_local": 0,
+        }
+
     monkeypatch.setattr(intake_loop, "github_list", github_list)
+    monkeypatch.setattr(
+        work_items,
+        "sync_github_work_items",
+        lambda *_args, **_kwargs: {"minted": 0},
+    )
+    monkeypatch.setattr(work_item_links, "reconcile_body_edges", reconcile)
     assert intake_loop.intake_tick(policy(refine_enabled=False), generation=0) == []
     detail = json.loads(audits(db, "intake_idle")[0].detail_json)
     assert detail["truncated"] is True
+    assert reconcile_truncation == [True]
 
 
 def test_pull_listing_uses_fifty_item_pages_and_reads_after_a_full_page(
