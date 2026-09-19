@@ -31,8 +31,10 @@ type tracingConfig struct {
 	samplerArg     string
 }
 
-type exporterFactory func(context.Context, string) (sdktrace.SpanExporter, error)
-type providerInstaller func(trace.TracerProvider)
+type (
+	exporterFactory   func(context.Context, string) (sdktrace.SpanExporter, error)
+	providerInstaller func(trace.TracerProvider)
+)
 
 // InitializeTracing configures OTLP/gRPC tracing from the standard OTEL
 // environment variables. An unset endpoint or OTEL_SDK_DISABLED=true keeps
