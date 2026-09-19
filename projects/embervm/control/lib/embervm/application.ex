@@ -445,6 +445,12 @@ defmodule Embervm.Application do
       # process performs no listing or writing until a bounded rotation window
       # is explicitly armed. It never raises epoch floors or retires roots.
       {Embervm.EnvelopeRewrapSweeper, envelope_rewrap_sweeper_opts()},
+      # The store trust probe performs one synthetic GET through the same
+      # S3Client/Finch path as restores, at boot and on a bounded interval. It
+      # never gates readiness or lifecycle actions; its current result is an
+      # additive signal on /healthz and /v1/health/store. Placed after Finch and
+      # immediately before the other read-only health evaluator and Bandit.
+      {Embervm.StoreProbe, store_probe_opts()},
       # The durability health detector (#4338, ADR embervm/031): Tier 1
       # aggregates per-kind artifact-export failure streaks from the
       # NodeCapacity projections; Tier 2 measures the age of the newest
@@ -950,6 +956,26 @@ defmodule Embervm.Application do
       access_key_id: trimmed_env("EMBERVM_STORE_ACCESS_KEY_ID"),
       secret_access_key: trimmed_env("EMBERVM_STORE_SECRET_ACCESS_KEY")
     )
+  end
+
+  defp store_probe_opts do
+    [
+      client: artifact_store_client(),
+      interval_ms: store_probe_interval_ms()
+    ]
+  end
+
+  @doc false
+  def store_probe_interval_ms do
+    case trimmed_env("EMBERVM_STORE_PROBE_INTERVAL_SECONDS") do
+      "" -> 300_000
+
+      raw ->
+        case Integer.parse(raw) do
+          {seconds, ""} -> max(seconds, 1) * 1_000
+          _ -> 300_000
+        end
+    end
   end
 
   # The destructive gate for the S3-direct warmth GC, from EMBERVM_WARMTH_S3_GC.

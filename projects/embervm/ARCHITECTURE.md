@@ -937,6 +937,11 @@ baked images) need no chunk store.
 State durability within the stated archive interval is the guarantee. The
 matrix defines the current recovery and the gaps in automated recovery.
 
+The control plane performs one synthetic metadata fetch through its real S3
+client at boot and every five minutes by default. The current TLS result is reported on
+the always-on `/healthz` and authenticated `/v1/health/store` reads without
+changing readiness; plaintext and unconfigured stores are explicitly disabled.
+
 **Vendor pinning**: Firecracker memory snapshots restore only within a CPU
 vendor (and a narrow intra-vendor matrix), so all warmth artifacts are keyed
 by `(vendor, template)` and never cross the boundary; the daemon refuses a

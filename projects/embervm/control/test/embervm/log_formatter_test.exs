@@ -131,4 +131,22 @@ defmodule Embervm.LogFormatterTest do
       assert Map.get(decoded, Atom.to_string(key)) == value
     end
   end
+
+  test "preserves store probe endpoint and reason fields in structured JSON" do
+    metadata = %{
+      endpoint: "https://storage.googleapis.com",
+      reason: "{:tls_alert, {:unknown_ca, :certificate_unknown}}"
+    }
+
+    line =
+      Embervm.LogFormatter.format(
+        %{level: :warning, msg: {:string, "embervm store probe: store fetch failed"}, meta: metadata},
+        %{}
+      )
+      |> IO.iodata_to_binary()
+
+    decoded = :json.decode(line)
+    assert decoded["endpoint"] == metadata.endpoint
+    assert decoded["reason"] == metadata.reason
+  end
 end
