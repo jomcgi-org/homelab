@@ -4423,8 +4423,9 @@ def test_evicted_guest_settles_factory_without_committed_stop_intent(
         )
 
 
-def test_brick_restart_loss_settles_exact_attempt_and_admits_bounded_retry(
-    uncertain_factory, monkeypatch
+@pytest.mark.parametrize("cost_usd", [None, 0.25])
+def test_brick_restart_loss_settles_exact_attempt_and_honors_retry_budget(
+    uncertain_factory, monkeypatch, cost_usd
 ):
     """A durable brick_gone transition releases only the failed graph attempt."""
     from datetime import timedelta
@@ -4434,6 +4435,7 @@ def test_brick_restart_loss_settles_exact_attempt_and_admits_bounded_retry(
     from factory.orchestration.factory_models import FactoryAudit
 
     s = uncertain_factory
+    s.result["cost_usd"] = cost_usd
     monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     s.cp.update(
         state="failed",
@@ -4452,14 +4454,26 @@ def test_brick_restart_loss_settles_exact_attempt_and_admits_bounded_retry(
     settled = _uncertain_snapshot(s)
     assert settled["permits"][0]["state"] == "settled"
     assert settled["runs"][0]["status"] == "failed"
+    assert settled["runs"][0]["accounted_cost_usd"] == (
+        s.run["pin"]["max_cost_usd"] if cost_usd is None else cost_usd
+    )
     assert settled["factory"]["starts"][0]["status"] == "failed"
-    proof = settled["factory"]["stop_events"][0]["completion"]
+    # The public snapshot deliberately omits the private cessation proof.
+    # Read the durable audit from a fresh session to verify it was committed.
+    with Session(s.engine) as db:
+        event = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == s.task["id"],
+                FactoryAudit.action == "stop_settled",
+            )
+        ).one()
+        proof = json.loads(event.detail_json)["completion"]
     assert proof["cessation_evidence"] == "brick_restart"
     assert proof["session_id"] == "s-exact-factory"
     assert proof["node_id"] == "node-1"
 
-    # Re-observing the old workflow is idempotent, including after the ordinary
-    # conductor admits the one remaining graph attempt.
+    # Unknown spend retains the full ceiling; cessation cannot refund it.
+    # A measured partial cost leaves budget for the remaining graph attempt.
     assert supervisor.reconcile_uncertain_attempt(
         s.run["pin"], s.sid, s.result, "SUCCESS"
     )
@@ -4467,23 +4481,31 @@ def test_brick_restart_loss_settles_exact_attempt_and_admits_bounded_retry(
         conductor, "github_get", lambda *_args: {"object": {"sha": "c" * 40}}
     )
     conductor.reconcile_task(s.task["id"], s.policy, s.dbos)
+    expected_runs = [(1, "failed")]
+    if cost_usd is not None:
+        expected_runs.append((2, "admitted"))
     assert [
         (run["attempt"], run["status"])
         for run in conductor.graph.node_runs(s.task["id"])
-    ] == [(1, "failed"), (2, "admitted")]
+    ] == expected_runs
     with Session(s.engine) as db:
         assert (
             len(
                 db.exec(
-                    select(FactoryAudit).where(
-                        FactoryAudit.action == "stop_settled"
-                    )
+                    select(FactoryAudit).where(FactoryAudit.action == "stop_settled")
                 ).all()
             )
             == 1
         )
         starts = controls.task_snapshot(s.task["id"], session=db)["starts"]
-        assert [start["status"] for start in starts] == ["failed", "reserved"]
+        assert [start["status"] for start in starts] == (
+            ["failed"] if cost_usd is None else ["failed", "reserved"]
+        )
+    before = _uncertain_snapshot(s)
+    assert supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    assert _uncertain_snapshot(s) == before
 
 
 @pytest.mark.parametrize(

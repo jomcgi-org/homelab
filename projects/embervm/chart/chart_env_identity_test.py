@@ -772,8 +772,8 @@ def test_gke_brick_rollout_budget_outlasts_factory_invokes() -> None:
             for container in pod_spec["containers"]
             if container["name"] == "noded"
         )
-        env = {entry["name"]: entry["value"] for entry in noded["env"]}
-        assert env["EMBERVM_NODED_DRAIN_TIMEOUT"] == "43800s"
+        env = {entry["name"]: entry for entry in noded["env"]}
+        assert env["EMBERVM_NODED_DRAIN_TIMEOUT"]["value"] == "43800s"
         assert pod_spec["terminationGracePeriodSeconds"] == 43830
         assert spec["progressDeadlineSeconds"] == 46800
 
