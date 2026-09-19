@@ -251,6 +251,7 @@ async def test_dispute_fact_writes_row_raw_and_marks_search_result(db, principal
         assert dispute.state == "open"
         assert dispute.reporter_subject == "agent:reviewer"
         assert dispute.reporter_authority == "delegated"
+        assert dispute.previous_verification_state == "verified"
         assert dispute.evidence == ["source line 12"]
         assert raw.source == "dispute"
         assert raw.extra["note_id"] == dispute.note_id

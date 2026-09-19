@@ -91,6 +91,24 @@ def test_create_raw_rejects_bad_source(client):
     assert response.status_code == 422
 
 
+@pytest.mark.parametrize("source", ["agent-report", "dispute", "distress"])
+def test_create_raw_rejects_mcp_owned_sources(client, session, source):
+    response = client.post(
+        "/api/knowledge/raws",
+        json={
+            "content": "caller-controlled lane evidence",
+            "source": source,
+            "extra": {"note_id": "forged", "reporter_subject": "forged"},
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {
+        "detail": f"source {source!r} is reserved for authenticated MCP tools"
+    }
+    assert session.exec(select(RawInput)).all() == []
+
+
 def test_create_raw_persists_extra(client, session):
     response = client.post(
         "/api/knowledge/raws",
@@ -284,12 +302,12 @@ def test_backfill_raw_usage_never_fails_on_pricing_error(client, session):
     assert "usage_cost_usd" not in raw.extra
 
 
-def test_create_extractable_raw_redacts_before_storage(client, session):
+def test_create_collector_raw_redacts_before_storage(client, session):
     token = "ghp_abcdefghijklmnopqrstuvwxyz123456"
     with patch("knowledge.raw_write.upload_raw") as upload:
         response = client.post(
             "/api/knowledge/raws",
-            json={"content": f"reported token {token}", "source": "agent-report"},
+            json={"content": f"reported token {token}", "source": "codex-session"},
         )
 
     assert response.status_code == 201

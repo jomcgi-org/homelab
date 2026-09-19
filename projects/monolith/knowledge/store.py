@@ -584,13 +584,33 @@ class KnowledgeStore:
         note_by_id = {
             note.id: note
             for note in self.session.exec(
-                select(Note).where(Note.id.in_(top_ids))
+                select(
+                    Note.id,
+                    Note.note_id,
+                    Note.title,
+                    Note.path,
+                    Note.type,
+                    Note.tags,
+                    Note.scope,
+                    Note.verification_state,
+                    Note.confidence,
+                    Note.valid_from,
+                    Note.valid_until,
+                    Note.observed_at,
+                ).where(Note.id.in_(top_ids))
             ).all()
         }
+        chunk_projection = [
+            Chunk.id,
+            Chunk.section_header,
+            Chunk.chunk_text,
+        ]
+        if include_embeddings:
+            chunk_projection.append(Chunk.embedding)
         chunk_by_id = {
             chunk.id: chunk
             for chunk in self.session.exec(
-                select(Chunk).where(Chunk.id.in_(top_chunk_ids))
+                select(*chunk_projection).where(Chunk.id.in_(top_chunk_ids))
             ).all()
         }
         best_chunk_by_note = {

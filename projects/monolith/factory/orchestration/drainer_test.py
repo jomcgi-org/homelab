@@ -643,19 +643,14 @@ def test_empty_queue_exits_immediately(monkeypatch):
     assert destroys == []
 
 
-def test_kg_sweep_runs_at_cycle_start_and_updates_health_value(monkeypatch):
-    health_updates = []
-    monkeypatch.setattr(drainer, "sweep_kg_raws", lambda: 4)
-    monkeypatch.setattr(
-        drainer,
-        "set_kg_swept_last_cycle",
-        lambda count: health_updates.append(count),
-    )
+def test_kg_sweep_runs_at_cycle_start(monkeypatch):
+    sweeps = []
+    monkeypatch.setattr(drainer, "sweep_kg_raws", lambda: sweeps.append(True) or 4)
 
     result, *_ = _run(monkeypatch, [])
 
     assert result == {"status": "complete", "processed": 0}
-    assert health_updates == [4]
+    assert sweeps == [True]
 
 
 def test_empty_job_kinds_pause_claims(monkeypatch):

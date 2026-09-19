@@ -34,7 +34,6 @@ def test_health_includes_kg_component(live_server_with_fake_embedding):
         "cap",
         "effective_cap",
         "burst",
-        "swept_last_cycle",
         "open_disputes",
         "oldest_open_dispute_seconds",
         "repo_diff_last_sha",

@@ -23,7 +23,6 @@ from knowledge.api import (
     ExtractionOutputInvalid,
     KG_JOB_KIND,
     MAX_GARDENER_RETRIES,
-    set_kg_swept_last_cycle,
 )
 from knowledge.api import (
     find_reviewable_docfix_prs,
@@ -1058,7 +1057,7 @@ def drain_cycle() -> dict:
 
         enabled_kinds = _job_kinds(settings)
         if KG_JOB_KIND in enabled_kinds:
-            set_kg_swept_last_cycle(sweep_kg_raws())
+            sweep_kg_raws()
 
         workflow_id = _workflow_id()
         try:
