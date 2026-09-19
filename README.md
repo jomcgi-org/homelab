@@ -39,7 +39,7 @@ See [docs/security.md](docs/security.md) for the defense-in-depth model, [projec
 | Ingress        | Cloudflare Tunnel only; nothing exposed directly                                           |
 | Untrusted code | Firecracker microVMs (EmberVM), STPA hazard model colocated with the monolith              |
 | Networking     | Cilium eBPF CNI: WireGuard pod-to-pod encryption, network policy, Hubble metrics, no sidecars |
-| Observability  | SigNoz: unified metrics, logs, traces. Kyverno auto-injects OTEL env vars                  |
+| Observability  | Opt-in OpenTelemetry collector exporting traces and synthetic probes to Honeycomb           |
 | Policy         | Kyverno enforces non-root (uid 65532), read-only filesystems                               |
 | Secrets        | 1Password Operator, OnePasswordItem CRDs, nothing in Git                                   |
 | Storage        | Longhorn for persistent volumes, SeaweedFS for S3-compatible object storage                |
@@ -53,7 +53,7 @@ See [docs/security.md](docs/security.md) for the defense-in-depth model, [projec
 
 ```
 projects/             # All services, operators, websites, colocated with deploy configs (major dirs shown)
-├── platform/         #   Cluster-critical infrastructure (ArgoCD, Cilium, SigNoz, etc.)
+├── platform/         #   Cluster-critical infrastructure (ArgoCD, Cilium, OTel collector, etc.)
 ├── monolith/         #   Knowledge graph, Discord bot, task management, public apps, frontend
 ├── monolith-public/  #   Read-only public replica of the monolith
 ├── monolith-agents/  #   Agent-facing MCP tier, pruned and with no cluster RBAC
