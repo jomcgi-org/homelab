@@ -6029,6 +6029,7 @@ py_test(
     srcs = ["knowledge/store_scoped_test.py"],
     imports = ["."],
     deps = [
+        ":pkg_auth",
         ":pkg_knowledge",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -7672,6 +7673,7 @@ py_test(
     srcs = ["knowledge/router_test.py"],
     imports = ["."],
     deps = [
+        ":pkg_auth",
         ":pkg_core",
         ":pkg_framework",
         ":pkg_knowledge",
@@ -7745,6 +7747,7 @@ py_test(
     srcs = ["knowledge/mcp_test.py"],
     imports = ["."],
     deps = [
+        ":pkg_auth",
         ":pkg_knowledge",
         "@pip//fastmcp",
         "@pip//httpx",
