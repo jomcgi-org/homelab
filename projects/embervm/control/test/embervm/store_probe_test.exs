@@ -7,11 +7,14 @@ defmodule Embervm.StoreProbeTest do
   defmodule StubS3Client do
     def get(%{results: agent}, "probe/.keep") do
       Agent.get_and_update(agent, fn
-        [{:raise, error} | _rest] -> raise error
-        [{:throw, reason} | _rest] -> throw(reason)
         [result | rest] -> {result, rest}
       end)
     end
+  end
+
+  defmodule ThrowingS3Client do
+    def get(%{mode: :throw}, "probe/.keep"), do: throw(:boom)
+    def get(%{mode: :raise}, "probe/.keep"), do: raise("bad client")
   end
 
   defmodule CountingS3Client do
@@ -69,17 +72,19 @@ defmodule Embervm.StoreProbeTest do
   end
 
   test "a throwing client becomes degraded instead of crashing the probe" do
-    probe = start_probe([{:throw, :boom}, {:raise, RuntimeError.exception("bad client")}])
-    status = eventually_status(probe)
+    for {mode, message} <- [{:throw, "boom"}, {:raise, "bad client"}] do
+      probe =
+        start_supervised_probe(
+          client: %{endpoint: "https://storage.example", mode: mode},
+          s3_client: ThrowingS3Client,
+          interval_ms: 60_000
+        )
 
-    assert status.state == :degraded
-    assert status.reason =~ "boom"
-    assert Process.alive?(probe)
-
-    send(probe, :probe)
-    status = eventually_status(probe, fn status -> status.reason =~ "bad client" end)
-    assert status.state == :degraded
-    assert Process.alive?(probe)
+      status = eventually_status(probe)
+      assert status.state == :degraded
+      assert status.reason =~ message
+      assert Process.alive?(probe)
+    end
   end
 
   test "every degraded check warns and a later recovery logs once" do
