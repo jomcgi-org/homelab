@@ -77,7 +77,7 @@ becomes corrective training data. Current state:
 ## Deployment
 
 The monolith is packaged as a Helm chart (`chart/`) and published as an OCI
-artifact. Images are built dual-arch (x86_64 and aarch64) with apko in CI. A
+artifact. Images are built amd64-only with apko in CI. A
 merge to `main` publishes the chart and writes its new version back to the
 repository. Production runs on the GKE hub, where Kargo promotes new chart
 versions to the `monolith` and `monolith-public` ArgoCD Applications. The home
