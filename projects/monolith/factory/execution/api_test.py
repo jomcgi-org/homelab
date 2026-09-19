@@ -1,4 +1,5 @@
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 from faas.embervm_client import EmberVMTransportError
@@ -81,6 +82,49 @@ def test_run_synthetic_session_claims_pending_before_deliver(
     assert delivered[0][1]["dispatch_count"] == 3
     assert deleted == [(41, 1)]
     assert released == [(41, 1)]
+
+
+def test_run_synthetic_session_exposes_persisted_ember_id_before_failure(
+    monkeypatch, synthetic_claim
+):
+    row = AgentSession(
+        id=47,
+        local_session_id="codex-synthetic-test",
+        workspace="<guest>",
+        branch="main",
+    )
+    ember = SimpleNamespace(
+        session_id="ember-allocated",
+        session_token="token",
+        expires_at=None,
+        lineage_id="lineage",
+        restored=False,
+    )
+    observed = []
+
+    async def deliver(*args, **kwargs):
+        await kwargs["on_create"](ember, None)
+        raise RuntimeError("delivery failed after allocation")
+
+    monkeypatch.setattr(api, "_persist_session", lambda *args, **kwargs: row)
+    monkeypatch.setattr(api, "_persist_pending_message", lambda *args: 1)
+    monkeypatch.setattr(api, "_claim_pending_message_sync", lambda *_args: 1)
+    monkeypatch.setattr(api, "_persist_synthetic_binding_sync", lambda *_args: None)
+    monkeypatch.setattr(api, "_mark_turn_error_sync", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        api, "_release_pending_message_claim_sync", lambda *_args, **_kwargs: True
+    )
+    monkeypatch.setattr(api._transport, "deliver", deliver)
+
+    with pytest.raises(RuntimeError, match="delivery failed after allocation"):
+        asyncio.run(
+            api.run_synthetic_session(
+                "probe",
+                on_ember_session_id=observed.append,
+            )
+        )
+
+    assert observed == ["ember-allocated"]
 
 
 def test_run_synthetic_session_persists_actual_guest_model(
