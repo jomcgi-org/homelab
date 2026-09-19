@@ -3837,8 +3837,16 @@ defmodule Embervm.SessionManagerTest do
     assert {_trace_id, _span_id, 1} = Embervm.SessionTrace.parse_traceparent(traceparent)
 
     root = hd(TestSpanExporter.named(spans, "test.session.invoke"))
-    output_wait = hd(TestSpanExporter.named(spans, "embervm.session.output_wait"))
-    queue_wait = hd(TestSpanExporter.named(spans, "embervm.session.queue_wait"))
+
+    output_wait =
+      spans
+      |> TestSpanExporter.named("embervm.session.output_wait")
+      |> Enum.find(&(TestSpanExporter.attributes(&1)["ember.session_id"] == created.session_id))
+
+    queue_wait =
+      spans
+      |> TestSpanExporter.named("embervm.session.queue_wait")
+      |> Enum.find(&(TestSpanExporter.attributes(&1)["ember.session_id"] == created.session_id))
 
     assert TestSpanExporter.end_time(root) != :undefined
     assert TestSpanExporter.end_time(output_wait) != :undefined
@@ -3850,7 +3858,10 @@ defmodule Embervm.SessionManagerTest do
 
     # The watchdog uses an untrappable :kill, so the worker-owned guest_exec
     # cannot end. The caller-owned output_wait above is the exported failure seam.
-    assert TestSpanExporter.named(spans, "embervm.session.guest_exec") == []
+    refute Enum.any?(
+             TestSpanExporter.named(spans, "embervm.session.guest_exec"),
+             &(TestSpanExporter.attributes(&1)["ember.session_id"] == created.session_id)
+           )
   end
 
   test "the invoke watchdog reports brick_gone when registry health shows preemption" do
