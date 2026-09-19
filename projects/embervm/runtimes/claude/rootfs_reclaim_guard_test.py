@@ -234,6 +234,29 @@ def _rootfs_download_harness(tmp_path):
         path = binaries / name
         path.write_text(mock)
         path.chmod(0o755)
+    flock = binaries / "flock"
+    flock.write_text(
+        f"#!{sys.executable}\n"
+        + textwrap.dedent("""\
+            import fcntl, sys
+
+            args = sys.argv[1:]
+            if "-w" in args:
+                print("flock: unrecognized option", file=sys.stderr)
+                sys.exit(1)
+            if args == ["-n", "9"]:
+                try:
+                    fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    sys.exit(1)
+            elif args == ["-u", "9"]:
+                fcntl.flock(9, fcntl.LOCK_UN)
+            else:
+                print(f"unexpected flock arguments: {args}", file=sys.stderr)
+                sys.exit(2)
+            """)
+    )
+    flock.chmod(0o755)
     return script, {
         **os.environ,
         "PATH": str(binaries) + os.pathsep + os.environ["PATH"],
@@ -335,13 +358,33 @@ def test_rootfs_waiter_recovers_after_builder_process_group_dies(tmp_path):
 def test_rootfs_lock_timeout_fails_without_downloading(tmp_path):
     script, env = _rootfs_download_harness(tmp_path)
     lock = tmp_path / "bin" / "flock"
-    lock.write_text('#!/bin/sh\n[ "$*" = "-x -w 900 9" ] || exit 2\nexit 1\n')
+    lock.write_text(
+        "#!/bin/sh\n"
+        'for arg in "$@"; do\n'
+        '  if [ "$arg" = "-w" ]; then\n'
+        '    echo "flock: unrecognized option" >&2\n'
+        "    exit 1\n"
+        "  fi\n"
+        "done\n"
+        '[ "$*" = "-n 9" ] || exit 2\n'
+        'printf x >> "$TEST_ROOTFS_DIR/flock-attempts"\n'
+        "exit 1\n"
+    )
     lock.chmod(0o755)
+    sleep = tmp_path / "bin" / "sleep"
+    sleep.write_text(
+        '#!/bin/sh\n[ "$*" = "5" ] || exit 2\n'
+        'printf x >> "$TEST_ROOTFS_DIR/lock-sleeps"\n'
+    )
+    sleep.chmod(0o755)
     process = _start_builder(script, env, tmp_path, "timeout")
     try:
         output, _ = process.communicate(timeout=10)
         assert process.returncode == 1
         assert "rootfs cache lock timed out" in output
+        assert "flock: unrecognized option" not in output
+        assert len((tmp_path / "lock-sleeps").read_text()) == 900 // 5
+        assert len((tmp_path / "flock-attempts").read_text()) == 900 // 5 + 1
         assert not (tmp_path / "downloads").exists()
         assert not (tmp_path / "cache" / "base-timeout.ext4").exists()
     finally:
