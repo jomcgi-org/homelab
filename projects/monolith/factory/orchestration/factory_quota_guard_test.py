@@ -29,6 +29,8 @@ POLICY = {
     "worker_model": "luna",
 }
 
+_MISSING = object()
+
 
 @pytest.fixture
 def db(tmp_path, monkeypatch):
@@ -68,15 +70,30 @@ def db(tmp_path, monkeypatch):
     engine.dispose()
 
 
-def observe(monkeypatch, used, *, age=30.0, window="7d", observed=True):
+def observe(
+    monkeypatch,
+    used,
+    *,
+    age=30.0,
+    window="7d",
+    observed=True,
+    resets_at=_MISSING,
+    exhausted=False,
+    status="available",
+):
+    quota_window = {"name": window, "used_percent": used}
+    if resets_at is not _MISSING:
+        quota_window["resets_at"] = resets_at
     payload = {
         "providers": {
             "claude": {
                 "observed": observed,
                 "age_seconds": age,
+                "exhausted": exhausted,
+                "status": status,
                 "windows": [
                     {"name": "5h", "used_percent": 10.0},
-                    {"name": window, "used_percent": used},
+                    quota_window,
                 ],
             }
         }
@@ -126,6 +143,99 @@ def test_a_spent_window_reviews_on_the_next_pool_member(db, monkeypatch):
     assert verdict["used_percent"] == 90.0
     assert guard.reviewer_for(POLICY, "bug-fix")["model"] == "astra"
     assert actions(db, *controls.REVIEWER_ROUTING_ACTIONS) == ["reviewer_fallback"]
+
+
+def test_an_imminent_reset_clears_a_high_window_and_restores_opus(db, monkeypatch):
+    open_quota(monkeypatch)
+    now = controls._now()
+    monkeypatch.setattr(guard, "_now", lambda: now)
+    observe(monkeypatch, 90.0, resets_at=(now + timedelta(minutes=121)).isoformat())
+    assert guard.observe(POLICY)["model"] == "astra"
+
+    observe(monkeypatch, 90.0, resets_at=(now + timedelta(minutes=119)).isoformat())
+    verdict = guard.observe(POLICY)
+
+    assert verdict["imminent_reset"] is True
+    assert verdict["window_high"] is False
+    assert verdict["model"] == "opus"
+    assert guard.reviewer_for(POLICY, "bug-fix")["model"] == "opus"
+    assert actions(db, *controls.REVIEWER_ROUTING_ACTIONS) == [
+        "reviewer_fallback",
+        "reviewer_restored",
+    ]
+
+
+def test_a_reset_outside_the_horizon_keeps_the_high_window(db, monkeypatch):
+    open_quota(monkeypatch)
+    now = controls._now()
+    monkeypatch.setattr(guard, "_now", lambda: now)
+    observe(monkeypatch, 90.0, resets_at=(now + timedelta(minutes=121)).isoformat())
+
+    verdict = guard.observe(POLICY)
+
+    assert verdict["imminent_reset"] is False
+    assert verdict["window_high"] is True
+    assert verdict["model"] == "astra"
+
+
+@pytest.mark.parametrize(
+    ("exhausted", "status"),
+    [(True, "available"), (False, "rejected")],
+)
+def test_an_unavailable_provider_keeps_the_high_window_despite_an_imminent_reset(
+    db, monkeypatch, exhausted, status
+):
+    open_quota(monkeypatch)
+    now = controls._now()
+    monkeypatch.setattr(guard, "_now", lambda: now)
+    observe(
+        monkeypatch,
+        90.0,
+        resets_at=(now + timedelta(minutes=30)).isoformat(),
+        exhausted=exhausted,
+        status=status,
+    )
+
+    verdict = guard.observe(POLICY)
+
+    assert verdict["imminent_reset"] is False
+    assert verdict["window_high"] is True
+    assert verdict["model"] == "astra"
+
+
+@pytest.mark.parametrize("resets_at", [_MISSING, None, "not-a-timestamp"])
+def test_an_unusable_reset_time_falls_back_to_the_usage_level(
+    db, monkeypatch, resets_at
+):
+    open_quota(monkeypatch)
+    observe(monkeypatch, 90.0, resets_at=resets_at)
+
+    verdict = guard.observe(POLICY)
+
+    assert verdict["imminent_reset"] is False
+    assert verdict["window_high"] is True
+    assert verdict["model"] == "astra"
+
+
+def test_the_imminent_reset_decision_is_recorded_in_audit_detail(db, monkeypatch):
+    open_quota(monkeypatch)
+    now = controls._now()
+    monkeypatch.setattr(guard, "_now", lambda: now)
+    observe(monkeypatch, 90.0, resets_at=(now + timedelta(minutes=121)).isoformat())
+    guard.observe(POLICY)
+
+    with Session(db) as session:
+        detail = guard._detail(controls.latest_verdict(session))
+
+    assert detail["imminent_reset"] is False
+
+    observe(monkeypatch, 90.0, resets_at=(now + timedelta(minutes=119)).isoformat())
+    guard.observe(POLICY)
+
+    with Session(db) as session:
+        detail = guard._detail(controls.latest_verdict(session))
+
+    assert detail["imminent_reset"] is True
 
 
 def test_the_fallback_is_audited_once_not_every_tick(db, monkeypatch):
@@ -262,6 +372,36 @@ def test_an_unobserved_provider_reads_as_nothing():
     assert guard._window(None) is None
 
 
+def test_the_window_carries_provider_availability():
+    observed = guard._window(
+        {
+            "providers": {
+                "claude": {
+                    "observed": True,
+                    "exhausted": True,
+                    "status": "rejected",
+                    "windows": [{"name": "7d", "used_percent": 90.0}],
+                }
+            }
+        }
+    )
+    assert observed["exhausted"] is True
+    assert observed["status"] == "rejected"
+
+    defaulted = guard._window(
+        {
+            "providers": {
+                "claude": {
+                    "observed": True,
+                    "windows": [{"name": "7d", "used_percent": 90.0}],
+                }
+            }
+        }
+    )
+    assert defaulted["exhausted"] is False
+    assert defaulted["status"] is None
+
+
 def test_a_sub_one_percent_reading_is_not_re_normalised():
     """The sidecar already converted the fraction; doing it again read 0.86
     percent of the weekly window as 86 percent and tripped the fallback on the
@@ -344,6 +484,13 @@ def test_current_percentage_updates_without_a_reviewer_change(db, monkeypatch):
 
 def test_known_weekly_reset_releases_fallback_after_observation_loss(db, monkeypatch):
     open_quota(monkeypatch)
+    policy = {
+        **POLICY,
+        "quota_guard": {
+            **POLICY["quota_guard"],
+            "claude_7d_imminent_reset_minutes": 0,
+        },
+    }
     now = controls._now()
     reset = now + timedelta(minutes=10)
     monkeypatch.setattr(
@@ -355,12 +502,12 @@ def test_known_weekly_reset_releases_fallback_after_observation_loss(db, monkeyp
             "resets_at": reset.isoformat(),
         },
     )
-    guard.observe(POLICY)
+    guard.observe(policy)
     assert controls.window_high()
     monkeypatch.setattr(guard, "reading", lambda **_kwargs: None)
     monkeypatch.setattr(controls, "_now", lambda: reset + timedelta(seconds=1))
     assert not controls.window_high()
-    verdict = guard.observe(POLICY)
+    verdict = guard.observe(policy)
     assert verdict["model"] == "opus"
     assert verdict["used_percent"] is None
     assert not verdict["window_high"]
@@ -368,6 +515,13 @@ def test_known_weekly_reset_releases_fallback_after_observation_loss(db, monkeyp
 
 def test_waiting_transition_keeps_the_high_windows_known_reset(db, monkeypatch):
     open_quota(monkeypatch)
+    policy = {
+        **POLICY,
+        "quota_guard": {
+            **POLICY["quota_guard"],
+            "claude_7d_imminent_reset_minutes": 0,
+        },
+    }
     reset = controls._now() + timedelta(minutes=10)
     monkeypatch.setattr(
         guard,
@@ -378,15 +532,15 @@ def test_waiting_transition_keeps_the_high_windows_known_reset(db, monkeypatch):
             "resets_at": reset.isoformat(),
         },
     )
-    assert guard.observe(POLICY)["model"] == "astra"
+    assert guard.observe(policy)["model"] == "astra"
     monkeypatch.setattr(guard, "reading", lambda **_kwargs: None)
     open_quota(monkeypatch, codex={"exhausted": True, "age_seconds": 5.0})
-    waiting = guard.observe(POLICY)
+    waiting = guard.observe(policy)
     assert waiting["action"] == "review_waiting"
     assert waiting["resets_at"] == reset.isoformat()
     monkeypatch.setattr(controls, "_now", lambda: reset + timedelta(seconds=1))
     assert not controls.window_high()
-    assert guard.observe(POLICY)["model"] == "opus"
+    assert guard.observe(policy)["model"] == "opus"
 
 
 def test_each_outage_after_recovery_invalidates_the_display_immediately(

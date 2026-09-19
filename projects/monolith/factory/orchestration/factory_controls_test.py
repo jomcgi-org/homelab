@@ -1230,6 +1230,7 @@ def test_a_policy_without_a_quota_guard_gains_the_defaults(policy):
     assert validated["quota_guard"] == {
         "claude_7d_pause_percent": 85,
         "claude_7d_resume_percent": 75,
+        "claude_7d_imminent_reset_minutes": 120,
     }
 
 
@@ -1241,6 +1242,38 @@ def test_the_quota_guard_thresholds_are_operator_owned(policy):
     assert controls.validate_policy(policy)["quota_guard"] == {
         "claude_7d_pause_percent": 95,
         "claude_7d_resume_percent": 60,
+        "claude_7d_imminent_reset_minutes": 120,
+    }
+
+
+def test_the_imminent_reset_horizon_is_operator_owned(policy):
+    policy["quota_guard"] = {"claude_7d_imminent_reset_minutes": 240}
+    assert controls.validate_policy(policy)["quota_guard"] == {
+        "claude_7d_pause_percent": 85,
+        "claude_7d_resume_percent": 75,
+        "claude_7d_imminent_reset_minutes": 240,
+    }
+
+
+def test_zero_disables_the_imminent_reset_horizon(policy):
+    policy["quota_guard"] = {"claude_7d_imminent_reset_minutes": 0}
+    assert (
+        controls.validate_policy(policy)["quota_guard"][
+            "claude_7d_imminent_reset_minutes"
+        ]
+        == 0
+    )
+
+
+def test_a_policy_with_only_the_existing_quota_keys_still_validates(policy):
+    policy["quota_guard"] = {
+        "claude_7d_pause_percent": 90,
+        "claude_7d_resume_percent": 80,
+    }
+    assert controls.validate_policy(policy)["quota_guard"] == {
+        "claude_7d_pause_percent": 90,
+        "claude_7d_resume_percent": 80,
+        "claude_7d_imminent_reset_minutes": 120,
     }
 
 
@@ -1249,6 +1282,7 @@ def test_one_named_threshold_defaults_the_other(policy):
     assert controls.validate_policy(policy)["quota_guard"] == {
         "claude_7d_pause_percent": 85,
         "claude_7d_resume_percent": 50,
+        "claude_7d_imminent_reset_minutes": 120,
     }
 
 
@@ -1267,6 +1301,8 @@ def test_lowering_the_pause_below_the_default_resume_is_refused(policy):
         {"claude_7d_pause_percent": 0},
         {"claude_7d_pause_percent": 101},
         {"claude_7d_pause_percent": 85.5},
+        {"claude_7d_imminent_reset_minutes": -1},
+        {"claude_7d_imminent_reset_minutes": 10081},
         {"unknown": 1},
         [],
     ],
