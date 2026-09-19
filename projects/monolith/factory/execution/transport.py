@@ -87,6 +87,16 @@ class EmberTurnNotInvoked(EmberVMTransportError):
     """
 
 
+class EmberControlPlaneUnavailable(EmberVMTransportError):
+    """The invoke connection to the EmberVM control plane was lost.
+
+    This is deliberately narrower than ``EmberVMTransportError``. An HTTP
+    response from the control plane, including one reporting a guest failure,
+    is not control-plane unavailability. Timeouts are also excluded because a
+    long-running guest can legitimately reach the invoke deadline.
+    """
+
+
 async def _check_delivery_admission() -> None:
     check = _delivery_admission_check.get()
     if check is not None:
@@ -481,31 +491,61 @@ async def _observe_native_result(
             await asyncio.sleep(RECEIPT_POLL_SECONDS)
 
     async def original_post() -> Turn:
-        # httpx's read timeout is per I/O wait. Bound the retained observer's
-        # wall time too, without changing an admitted DAG's original deadline.
-        async with asyncio.timeout(timeout_seconds):
-            result = await post()
-        if not completed(result):
-            return result
-        for attempt in range(3):
-            try:
-                await _receipt_database_call(
-                    result_receipts.mark_response_observed,
-                    **{k: v for k, v in identity.items() if k != "request_sha256"},
-                )
-                break
-            except result_receipts.ReceiptRejected:
-                break
-            except Exception as exc:
-                # A response write is idempotent. Bound retries separately
-                # from the long POST: three 5s waits and two 1s gaps at most.
-                if attempt == 2:
-                    logger.warning(
-                        "Receipt response observation failed: %s", type(exc).__name__
+        observer_identity = {
+            key: value for key, value in identity.items() if key != "request_sha256"
+        }
+        response_observed = False
+        try:
+            # httpx's read timeout is per I/O wait. Bound the retained observer's
+            # wall time too, without changing an admitted DAG's original deadline.
+            async with asyncio.timeout(timeout_seconds):
+                result = await post()
+            if not completed(result):
+                return result
+            for attempt in range(3):
+                try:
+                    response_observed = bool(
+                        await _receipt_database_call(
+                            result_receipts.mark_response_observed,
+                            **observer_identity,
+                        )
                     )
-                else:
-                    await asyncio.sleep(1)
-        return result
+                    break
+                except result_receipts.ReceiptRejected:
+                    break
+                except Exception as exc:
+                    # A response write is idempotent. Bound retries separately
+                    # from the long POST: three 5s waits and two 1s gaps at most.
+                    if attempt == 2:
+                        logger.warning(
+                            "Receipt response observation failed: %s",
+                            type(exc).__name__,
+                        )
+                    else:
+                        await asyncio.sleep(1)
+            return result
+        finally:
+            if not response_observed:
+                # Persist proof that a lost, timed out, or cancelled original
+                # POST cannot still consume the fence. This may race the result
+                # writer in either order, so the receipt row carries the proof.
+                for attempt in range(3):
+                    try:
+                        await _receipt_database_call(
+                            result_receipts.mark_response_observer_released,
+                            **observer_identity,
+                        )
+                        break
+                    except result_receipts.ReceiptRejected:
+                        break
+                    except Exception as exc:
+                        if attempt == 2:
+                            logger.warning(
+                                "Receipt observer release failed: %s",
+                                type(exc).__name__,
+                            )
+                        else:
+                            await asyncio.sleep(1)
 
     posted = asyncio.create_task(original_post())
     received = asyncio.create_task(receive())
@@ -1368,6 +1408,18 @@ class EmberVmShimTransport:
                     _status_error_detail(exc),
                 )
                 raise
+            except (
+                httpx.ConnectError,
+                httpx.ReadError,
+                httpx.WriteError,
+                httpx.RemoteProtocolError,
+            ) as exc:
+                logger.warning(
+                    "embervm invoke transport error for session %s: %s",
+                    current.session_id,
+                    exc,
+                )
+                raise EmberControlPlaneUnavailable(str(exc)) from exc
             except httpx.TransportError as exc:
                 logger.warning(
                     "embervm invoke transport error for session %s: %s",
@@ -1498,6 +1550,8 @@ class EmberVmShimTransport:
                     lambda: invoke(new_ember, cli)
                 )
                 return turn._replace(workspace_recovery=workspace_recovery), new_ember
+            except EmberControlPlaneUnavailable:
+                raise
             except (httpx.HTTPStatusError, EmberVMTransportError) as retry_exc:
                 if isinstance(retry_exc, httpx.HTTPStatusError):
                     raise EmberSessionGone(
@@ -1508,5 +1562,6 @@ class EmberVmShimTransport:
 
 # Keep stored exceptions readable by replicas on either side of a deploy.
 EmberTurnNotInvoked.__module__ = "agent_sessions.transport"
+EmberControlPlaneUnavailable.__module__ = "agent_sessions.transport"
 EmberSessionGone.__module__ = "agent_sessions.transport"
 EmberBrickGone.__module__ = "agent_sessions.transport"

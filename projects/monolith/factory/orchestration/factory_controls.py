@@ -44,6 +44,9 @@ ESCALATED = "escalated"
 # terminal, because a decision can still return it to the lane, but nothing
 # the server does on its own will move it either.
 _SETTLED = (*_TERMINAL, ESCALATED)
+_DELIVERY_BRANCH = re.compile(
+    r"factory/[A-Za-z0-9](?:[A-Za-z0-9._/-]{0,253}[A-Za-z0-9_-])?"
+)
 _POLICY_KEYS = {
     "repo",
     "issue_numbers",
@@ -83,6 +86,58 @@ _OPTIONAL_POLICY_KEYS = {
     "quota_guard",
     "auto_merge",
 }
+
+
+def validate_delivery_branch(branch: object) -> str:
+    """Return an operator-granted factory branch or reject it explicitly."""
+    if branch == "main":
+        raise ValueError("delivery branch main is forbidden")
+    if not isinstance(branch, str) or _DELIVERY_BRANCH.fullmatch(branch) is None:
+        raise ValueError("delivery branch must be in the factory/ namespace")
+    if ".." in branch or "//" in branch or "/." in branch or branch.endswith(".lock"):
+        raise ValueError("delivery branch must be a valid factory/ branch")
+    return branch
+
+
+def granted_delivery_surface(direction: object) -> tuple[str | None, int | None]:
+    """The branch and PR an operator direction grants, if it grants either."""
+    if not isinstance(direction, dict):
+        return None, None
+    number = direction.get("delivery_pr_number", direction.get("prior_pr_number"))
+    if number is None:
+        return None, None
+    if type(number) is not int or number <= 0:
+        raise ValueError("the prior pull request number is invalid")
+    branch = direction.get("delivery_branch", direction.get("prior_branch"))
+    return validate_delivery_branch(branch), number
+
+
+def delivery_branch_owner(
+    db: Session,
+    repo: str,
+    branch: str,
+    *,
+    exclude_receipt_id: int | None = None,
+) -> str | None:
+    """The active task that owns ``branch`` in ``repo``, if there is one."""
+    validate_delivery_branch(branch)
+    rows = db.exec(
+        select(FactoryReceipt).where(
+            FactoryReceipt.repo == repo,
+            FactoryReceipt.state.in_(_ACTIVE),
+        )
+    ).all()
+    for row in rows:
+        if row.id == exclude_receipt_id or not row.task_id:
+            continue
+        direction = json.loads(row.direction_json) if row.direction_json else {}
+        granted, _number = granted_delivery_surface(direction)
+        owned = granted or f"factory/{row.task_id}"
+        if owned == branch:
+            return row.task_id
+    return None
+
+
 # Bounded review, correct and re-review rounds the engine runs on its own before
 # it asks the planner. Absent from a live policy means this default, so the
 # server gains the bound without an operator re-post.
@@ -1264,6 +1319,7 @@ def _snapshot(db: Session, row: FactoryReceipt, *, body: bool = False) -> dict:
                         key: detail[key]
                         for key in (
                             "reason",
+                            "error",
                             "request_number",
                             # Which absence reading this is, so a held slot on
                             # its way to releasing reads as "2 of 3" rather

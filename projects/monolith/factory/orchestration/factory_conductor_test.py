@@ -105,6 +105,7 @@ def test_refine_schema_and_boundary_are_separate_from_delivery():
     assert "do not open a pull request" in boundary
     delivery = conductor._boundary(task)
     assert "dedicated branch factory/t-1" in delivery
+    assert conductor.delivery_branch(task) == "factory/t-1"
     assert "Factory refine task" not in delivery
     # An explicit raise, not an assert: a python -O run strips asserts and
     # would hand a reviewer node the refine boundary instead of refusing.
@@ -2654,6 +2655,27 @@ def _persist_uncertain_not_invoked(s):
     s.run = conductor.graph.node_runs(s.task["id"])[0]
 
 
+def test_dispatch_count_one_remains_the_existing_not_invoked_proof(
+    not_invoked_factory,
+):
+    from sqlmodel import Session
+    from factory.execution.api import (
+        read_never_dispatched_factory_attempt,
+        read_not_invoked_factory_attempt,
+    )
+
+    s = not_invoked_factory
+    with Session(s.engine) as db:
+        assert (
+            read_never_dispatched_factory_attempt(db, s.run["pin"], s.sid, "ERROR")
+            is None
+        )
+        proof = read_not_invoked_factory_attempt(db, s.run["pin"], s.sid)
+        assert proof is not None
+        assert proof["dispatch_count"] == 1
+        assert proof["invocation_phase"] == "not_invoked"
+
+
 @pytest.mark.parametrize("historical", [False, True])
 @pytest.mark.parametrize("bound_guest", [False, True, "prepared_receipt"])
 @pytest.mark.parametrize("supervision", [False, True])
@@ -3151,10 +3173,13 @@ def test_timeout_reconciliation_rollback_preserves_queue_and_ledgers(
 def stranded_factory(queued_factory, monkeypatch):
     """A queued node whose DBOS workflow outlived the image that started it."""
     from dbos._utils import GlobalParams
+    from sqlmodel import SQLModel
+    from factory.execution.models import AgentResultReceipt
     from factory.orchestration import factory_controls as controls
     from factory.orchestration import node_workflows as nodes
 
     s = queued_factory
+    SQLModel.metadata.create_all(s.engine, tables=[AgentResultReceipt.__table__])
     monkeypatch.setattr(controls, "get_engine", lambda: s.engine)
     monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "false")
     monkeypatch.setattr(GlobalParams, "app_version", "running-version")
@@ -3196,8 +3221,20 @@ def _stranded_audits(s):
         ]
 
 
+def _bind_stranded_guest(s):
+    """Keep tests of uncertain remote work outside never-dispatched proof."""
+    from sqlmodel import Session
+    from factory.execution.models import AgentSession
+
+    with Session(s.engine) as db:
+        agent = db.get(AgentSession, s.sid)
+        agent.ember_session_id = "stalled-bound-guest"
+        db.add(agent)
+        db.commit()
+
+
 @pytest.mark.parametrize("workflow_status", ["PENDING", "ENQUEUED"])
-def test_a_version_stranded_node_workflow_is_cancelled_and_settled_uncertain(
+def test_a_version_stranded_never_dispatched_workflow_is_cancelled_and_failed(
     stranded_factory, workflow_status
 ):
     import json
@@ -3215,11 +3252,8 @@ def test_a_version_stranded_node_workflow_is_cancelled_and_settled_uncertain(
         }
     ]
     run = conductor.graph.node_runs(s.task["id"])[0]
-    assert run["status"] == "uncertain"
-    assert (
-        json.loads(run["outcome_json"])["reason"]
-        == "node workflow stranded by application version change"
-    )
+    assert run["status"] == "failed"
+    assert json.loads(run["outcome_json"])["reason"] == "never_dispatched"
 
 
 def test_a_stranded_node_retries_once_its_real_outcome_is_reconciled(
@@ -3248,6 +3282,232 @@ def test_a_stranded_node_retries_once_its_real_outcome_is_reconciled(
         s.task["id"], s.policy, s.dbos_for("PENDING", "old-version")
     )
     assert [r["attempt"] for r in conductor.graph.node_runs(s.task["id"])] == [1, 2]
+
+
+def test_never_dispatched_settles_and_admits_retry_in_one_tick(
+    stranded_factory, monkeypatch
+):
+    import json
+    from sqlmodel import Session, select
+    from factory.execution.models import (
+        AgentCapacityReservation,
+        AgentResultReceipt,
+        AgentSession,
+        AgentTurn,
+        PendingMessage,
+    )
+    from factory.orchestration import factory_controls as controls
+
+    s = stranded_factory
+    monkeypatch.setattr(
+        conductor, "github_get", lambda *_args: {"object": {"sha": "c" * 40}}
+    )
+
+    conductor.reconcile_task(
+        s.task["id"], s.policy, s.dbos_for("PENDING", "old-version")
+    )
+
+    runs = conductor.graph.node_runs(s.task["id"])
+    assert [(run["attempt"], run["status"]) for run in runs] == [
+        (1, "failed"),
+        (2, "admitted"),
+    ]
+    outcome = json.loads(runs[0]["outcome_json"])
+    assert outcome["reason"] == "never_dispatched"
+    assert outcome["cost_usd"] == 0.0
+    assert outcome["never_dispatched"]["dispatch_count"] == 0
+    assert outcome["never_dispatched"]["workflow_status"] == "CANCELLED"
+    assert runs[0]["accounted_cost_usd"] == 0.0
+    starts = controls.task_snapshot(s.task["id"])["starts"]
+    assert [(start["status"], start["cost_usd"]) for start in starts] == [
+        ("failed", 0.0),
+        ("reserved", None),
+    ]
+    with Session(s.engine) as db:
+        session = db.get(AgentSession, s.sid)
+        assert session.status == "failed"
+        assert db.exec(select(PendingMessage)).first() is None
+        assert db.exec(select(AgentTurn)).first() is None
+        assert db.exec(select(AgentResultReceipt)).first() is None
+        assert db.exec(select(AgentCapacityReservation)).first() is None
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "bound_guest",
+        "claimed",
+        "dispatch_count_one",
+        "extra_pending",
+        "turn",
+        "turn",
+        "permit_owner",
+        "permit_uncertain",
+        "receipt",
+    ],
+)
+def test_never_dispatched_refuses_invocation_or_ambiguous_evidence(
+    stranded_factory, case
+):
+    from datetime import datetime, timedelta, timezone
+    from sqlmodel import Session, select
+    from factory.execution.api import read_never_dispatched_factory_attempt
+    from factory.execution.models import (
+        AgentCapacityReservation,
+        AgentResultReceipt,
+        AgentSession,
+        AgentTurn,
+        PendingMessage,
+    )
+
+    s = stranded_factory
+    with Session(s.engine) as db:
+        agent = db.get(AgentSession, s.sid)
+        pending = db.exec(select(PendingMessage)).one()
+        if case == "bound_guest":
+            agent.ember_session_id = "guest-already-bound"
+        elif case == "claimed":
+            pending.claimed_by_replica = "executor"
+            pending.claimed_at = datetime.now(timezone.utc)
+        elif case == "dispatch_count_one":
+            pending.dispatch_count = 1
+            pending.last_dispatch_at = datetime.now(timezone.utc)
+        elif case == "extra_pending":
+            db.add(
+                PendingMessage(
+                    session_id=s.sid,
+                    seq=2,
+                    message_text="ambiguous successor",
+                    model="opus",
+                )
+            )
+        elif case == "turn":
+            db.add(
+                AgentTurn(
+                    session_id=s.sid,
+                    seq=1,
+                    prompt="already attempted",
+                    result_text="failed",
+                    terminal_reason="error",
+                )
+            )
+        elif case in {"permit_owner", "permit_uncertain"}:
+            db.add(
+                AgentCapacityReservation(
+                    local_session_id=agent.local_session_id,
+                    session_id=s.sid,
+                    pending_seq=1,
+                    tier="project",
+                    model="opus",
+                    owner="executor" if case == "permit_owner" else None,
+                    state="uncertain" if case == "permit_uncertain" else "reserved",
+                )
+            )
+        elif case == "receipt":
+            now = datetime.now(timezone.utc)
+            db.add(
+                AgentResultReceipt(
+                    id="a" * 32,
+                    token_sha256="b" * 64,
+                    session_id=s.sid,
+                    local_session_id=agent.local_session_id,
+                    seq=1,
+                    dispatch_count=1,
+                    claim_owner="executor",
+                    guest_id="guest",
+                    request_sha256="c" * 64,
+                    created_at=now,
+                    accept_until=now + timedelta(hours=13),
+                    retain_until=now + timedelta(days=7),
+                )
+            )
+        db.add_all([agent, pending])
+        db.commit()
+        assert (
+            read_never_dispatched_factory_attempt(db, s.run["pin"], s.sid, "ERROR")
+            is None
+        )
+        assert db.exec(select(PendingMessage)).first() is not None
+
+
+@pytest.mark.parametrize(
+    "workflow_status",
+    ["PENDING", "ENQUEUED", "SUCCESS", "MAX_RECOVERY_ATTEMPTS_EXCEEDED"],
+)
+def test_never_dispatched_requires_terminal_error_or_cancelled_workflow(
+    stranded_factory, workflow_status
+):
+    from sqlmodel import Session
+    from factory.execution.api import read_never_dispatched_factory_attempt
+
+    s = stranded_factory
+    with Session(s.engine) as db:
+        assert (
+            read_never_dispatched_factory_attempt(
+                db, s.run["pin"], s.sid, workflow_status
+            )
+            is None
+        )
+
+
+@pytest.mark.parametrize("workflow_status", ["CANCELLED", "ERROR"])
+def test_never_dispatched_accepts_only_the_terminal_owned_workflow_shapes(
+    stranded_factory, workflow_status
+):
+    from sqlmodel import Session
+    from factory.execution.api import read_never_dispatched_factory_attempt
+
+    s = stranded_factory
+    with Session(s.engine) as db:
+        proof = read_never_dispatched_factory_attempt(
+            db, s.run["pin"], s.sid, workflow_status
+        )
+        assert proof is not None
+        assert proof["workflow_id"] == s.run["pin"]["workflow_id"]
+        assert proof["workflow_status"] == workflow_status
+        assert proof["dispatch_count"] == 0
+
+
+def test_never_dispatched_requires_exact_factory_ownership(stranded_factory):
+    from sqlmodel import Session
+    from factory.execution.api import read_never_dispatched_factory_attempt
+    from factory.execution.models import AgentSession
+
+    s = stranded_factory
+    with Session(s.engine) as db:
+        agent = db.get(AgentSession, s.sid)
+        agent.workflow_id = "factory-node:another-task:conductor_1:1"
+        db.add(agent)
+        db.commit()
+        with pytest.raises(ValueError, match="factory session ownership conflict"):
+            read_never_dispatched_factory_attempt(db, s.run["pin"], s.sid, "CANCELLED")
+
+
+def test_never_dispatched_settlement_rolls_back_with_factory_ledgers(
+    stranded_factory, monkeypatch
+):
+    from sqlmodel import Session, select
+    from factory.execution.models import AgentSession, PendingMessage
+    from factory.orchestration import factory_controls as controls
+
+    s = stranded_factory
+    before = controls.task_snapshot(s.task["id"])
+    monkeypatch.setattr(
+        controls,
+        "record_start_outcome",
+        lambda *_args, **_kwargs: {"ok": False, "reason": "injected failure"},
+    )
+    with pytest.raises(ValueError, match="injected failure"):
+        conductor._submit_or_reconcile(
+            s.task, s.run, s.dbos_for("PENDING", "old-version")
+        )
+    assert conductor.graph.node_runs(s.task["id"]) == [s.run]
+    assert controls.task_snapshot(s.task["id"]) == before
+    with Session(s.engine) as db:
+        assert db.get(AgentSession, s.sid).status == "running"
+        pending = db.exec(select(PendingMessage)).one()
+        assert pending.dispatch_count == 0
+        assert pending.claimed_by_replica is None
 
 
 def test_a_pending_node_workflow_on_the_running_version_is_left_alone(stranded_factory):
@@ -3294,11 +3554,14 @@ def _stalled_dbos(s, *, idle_seconds, monkeypatch):
     """A PENDING workflow on the running version whose last step is old.
 
     Also steps past the post-start settling window, which a test process is
-    always inside of.
+    always inside of. This fixture retains a guest binding so it continues to
+    exercise uncertain stop supervision rather than the distinct proof that a
+    first dispatch never happened.
     """
     import time
 
     timeout = s.run["pin"]["turn_timeout_seconds"]
+    _bind_stranded_guest(s)
     monkeypatch.setattr(
         conductor,
         "_last_step_epoch_ms",
@@ -3499,6 +3762,7 @@ def test_no_stall_is_called_in_the_settling_window_after_process_start(
     import time
 
     s = stranded_factory
+    _bind_stranded_guest(s)
     timeout = s.run["pin"]["turn_timeout_seconds"]
     monkeypatch.setattr(
         conductor,
@@ -3531,7 +3795,7 @@ def test_a_stranded_workflow_is_settled_rather_than_called_stalled(
     conductor._submit_or_reconcile(s.task, s.run, s.dbos_for("PENDING", "old-version"))
     assert _stall_audits(s) == []
     assert s.cancelled == [(s.key, True)]
-    assert conductor.graph.node_runs(s.task["id"])[0]["status"] == "uncertain"
+    assert conductor.graph.node_runs(s.task["id"])[0]["status"] == "failed"
 
 
 def test_a_session_less_uncertain_run_resolves_its_session_for_supervision(
@@ -3648,6 +3912,7 @@ def test_a_cost_arriving_on_an_uncertain_run_is_recorded(stranded_factory, monke
     from factory.orchestration import node_workflows as nodes
 
     s = stranded_factory
+    _bind_stranded_guest(s)
     monkeypatch.setattr(nodes, "reconcile_completed_node", lambda *_: None)
     conductor._submit_or_reconcile(s.task, s.run, s.dbos_for("PENDING", "old-version"))
     assert conductor.graph.node_runs(s.task["id"])[0]["cost_usd"] is None
@@ -3675,6 +3940,7 @@ def test_a_cost_less_uncertain_observation_is_not_recorded_again(
     from factory.orchestration.models import SwarmConductorCall
 
     s = stranded_factory
+    _bind_stranded_guest(s)
     monkeypatch.setattr(nodes, "reconcile_completed_node", lambda *_: None)
     conductor._submit_or_reconcile(s.task, s.run, s.dbos_for("PENDING", "old-version"))
     unpriced = {
@@ -4362,6 +4628,125 @@ def test_factory_cessation_rejects_reinvoked_guest(uncertain_factory):
     assert supervisor._control_plane_cessation(s.cp, identity) is not None
 
 
+@pytest.mark.parametrize("evidence", ["generation", "invoke_stamp", "completed_reset"])
+def test_same_guest_restart_evidence_settles_the_old_invocation(
+    uncertain_factory, monkeypatch, evidence
+):
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = uncertain_factory
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    # Commit the exact pre-restart operation identity first.
+    assert not supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    if evidence == "generation":
+        current = {
+            **s.precondition,
+            "generation": s.precondition["generation"] + 1,
+            "invoke_started_at": None,
+            "vm_id": "vm-relit",
+            "instance_id": "node-1/pod-relit",
+            "pod_uid": "pod-relit",
+            "boot_id": "boot-relit",
+        }
+    elif evidence == "invoke_stamp":
+        current = {
+            **s.precondition,
+            "invoke_started_at": s.precondition["invoke_started_at"] + 10_000,
+        }
+    else:
+        current = {**s.precondition, "invoke_started_at": None}
+    s.cp.update(
+        state="running",
+        generation=current["generation"],
+        invoke_started_at=current["invoke_started_at"],
+        last_invoke_at=(
+            s.precondition["invoke_started_at"] + 1
+            if evidence == "completed_reset"
+            else None
+        ),
+        stop_precondition=current,
+        stop_intent=None,
+        stop_completion=None,
+    )
+
+    assert supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    after = _uncertain_snapshot(s)
+    assert after["permits"][0]["state"] == "settled"
+    assert after["permits"][0]["outcome"] == "guest_cessation_confirmed"
+    proof = _stop_events(s)[-1]["completion"]
+    assert proof["session_id"] == "s-exact-factory"
+    assert (
+        proof["replacement_evidence"]
+        == {
+            "generation": "generation_advanced",
+            "invoke_stamp": "invoke_advanced",
+            "completed_reset": "invoke_completed",
+        }[evidence]
+    )
+    # Reconciliation observes only. It does not invoke or relight the guest.
+    assert len([call for call in s.calls if call[1] is not None]) == 1
+
+
+@pytest.mark.parametrize(
+    "mismatch,expected_error",
+    [
+        ("guest", "wrong_stop_observation"),
+        ("precondition_guest", "wrong_stop_session"),
+        ("older_invoke", "changed_stop_invocation"),
+        ("reset_unknown", "changed_stop_invocation"),
+    ],
+)
+def test_restart_evidence_refuses_foreign_or_nonmonotonic_invocations(
+    uncertain_factory, monkeypatch, mismatch, expected_error
+):
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = uncertain_factory
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    assert not supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    current = dict(s.precondition)
+    if mismatch == "guest":
+        s.cp["session_id"] = "s-unrelated"
+    elif mismatch == "precondition_guest":
+        current["session_id"] = "s-unrelated"
+        current["invoke_started_at"] += 10_000
+        s.cp["invoke_started_at"] = current["invoke_started_at"]
+    elif mismatch == "older_invoke":
+        current["invoke_started_at"] -= 1
+        s.cp["invoke_started_at"] = current["invoke_started_at"]
+    else:
+        current["invoke_started_at"] = None
+        s.cp["invoke_started_at"] = None
+    s.cp.update(
+        state="running",
+        last_invoke_at=None,
+        stop_precondition=current,
+        stop_intent=None,
+        stop_completion=None,
+    )
+
+    before = _uncertain_snapshot(s)
+    assert not supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    after = _uncertain_snapshot(s)
+    for key in ("session", "turns", "pending", "permits", "runs"):
+        assert after[key] == before[key]
+    observations = [
+        event
+        for event in after["factory"]["stop_events"]
+        if event.get("reason") == "stop_evidence_or_ownership_changed"
+    ]
+    assert len(observations) == 1
+    assert observations[0]["error"] == expected_error
+
+
 @pytest.mark.parametrize("failure", ["permit", "graph", "start"])
 @pytest.mark.parametrize("cleanup_claim", [False, True])
 def test_stop_settlement_rollback_retains_all_original_holds(
@@ -4626,6 +5011,13 @@ def test_changed_local_owner_after_get_cannot_authorize_stop(
         s.run["pin"], s.sid, s.result, "SUCCESS"
     )
     assert _uncertain_snapshot(s)["permits"][0]["state"] == "uncertain"
+    observations = [
+        event
+        for event in _uncertain_snapshot(s)["factory"]["stop_events"]
+        if event.get("reason") == "stop_evidence_or_ownership_changed"
+    ]
+    assert len(observations) == 1
+    assert observations[0]["error"]
 
 
 @pytest.mark.parametrize(
@@ -5797,8 +6189,37 @@ def conflicting_pull(task, *, head=HEAD_ONE):
         "draft": False,
         "mergeable": False,
         "mergeable_state": "dirty",
-        "head": {"ref": f"factory/{task['id']}", "sha": head},
+        "head": {"ref": conductor.delivery_branch(task), "sha": head},
     }
+
+
+def test_granted_delivery_branch_is_used_for_envelope_conflict_and_dispatch(
+    feedback_db, monkeypatch
+):
+    task, _policy = reviewed_task(verdict="approve")
+    task["delivery_branch"] = "factory/original-task"
+    task["delivery_pr_number"] = 21
+    monkeypatch.setattr(conductor, "github_get", lambda *_args: conflicting_pull(task))
+
+    assert "dedicated branch factory/original-task" in conductor._boundary(task)
+    assert (
+        conductor._dispatch_branch(
+            task["id"],
+            "implement_serial",
+            conductor.graph.load_graph(task["id"]),
+            conductor.graph.node_runs(task["id"]),
+            1,
+            target_branch=conductor.delivery_branch(task),
+        )
+        == "factory/original-task"
+    )
+    recovery = conductor._pending_landing_recovery(
+        task,
+        conductor.graph.load_graph(task["id"]),
+        conductor.graph.node_runs(task["id"]),
+    )
+    assert recovery is not None
+    assert recovery[1]["pr_number"] == 21
 
 
 def test_an_approved_conflicting_delivery_opens_a_rebase_and_re_review_round(
@@ -8641,7 +9062,7 @@ def recovery_github(monkeypatch, task, *, state="success", context="success"):
         "draft": True,
         "head": {
             "sha": HEAD_TWO,
-            "ref": conductor.task_branch(task["id"]),
+            "ref": conductor.delivery_branch(task),
             "repo": {"full_name": task["repo"]},
         },
         "base": {"ref": task["base_branch"]},
@@ -8669,6 +9090,28 @@ def recovery_task(**overrides):
     conductor.reconcile_task(task["id"], policy, object())
     run_correction_round(task, policy, 1, verdict="changes_requested", head=HEAD_TWO)
     return task, policy
+
+
+def test_review_recovery_matches_the_granted_delivery_surface(feedback_db, monkeypatch):
+    task, _policy = recovery_task()
+    task["delivery_branch"] = "factory/original-task"
+    task["delivery_pr_number"] = 21
+    recovery_github(monkeypatch, task)
+    review = max(
+        (
+            run
+            for run in conductor.graph.node_runs(task["id"])
+            if run["node_key"].startswith("review_")
+        ),
+        key=lambda run: run["id"],
+    )
+
+    assert conductor._review_recovery_evidence(task, review) == {
+        "head_sha": HEAD_TWO,
+        "pr_number": 21,
+        "state": "ready",
+        "reason": "reviewed_head_ci_passed",
+    }
 
 
 def test_review_recovery_keeps_task_accounting_and_stops_at_its_durable_cap(

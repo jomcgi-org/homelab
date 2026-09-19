@@ -2,6 +2,7 @@
 
 import ast
 import base64
+import collections
 import copy
 import datetime
 import hashlib
@@ -334,6 +335,30 @@ assert sys.argv[1] == "app-server"
 
 rpc_path = os.environ.get("FAKE_CODEX_RPC")
 scenario = os.environ.get("FAKE_CODEX_SCENARIO", "")
+config_fail_path = os.environ.get("FAKE_CODEX_CONFIG_FAIL_ONCE")
+config_fail_always = os.environ.get("FAKE_CODEX_CONFIG_FAIL_ALWAYS")
+turn_failure = os.environ.get("FAKE_CODEX_TURN_FAILURE", "")
+
+def config_error_now():
+    # Cross-process latch: the FIRST app-server to bind a thread fails with the
+    # real -32600, every later one succeeds. A respawn is a new process with
+    # the same env, so the latch has to live on disk rather than in memory.
+    # FAIL_ALWAYS instead keeps every bind failing, to pin that the retry does
+    # not loop and the second failure propagates.
+    if config_fail_always:
+        return True
+    if not config_fail_path:
+        return False
+    if os.path.exists(config_fail_path):
+        return False
+    with open(config_fail_path, "w") as stream:
+        stream.write("failed")
+    return True
+
+CONFIG_ERROR = {
+    "code": -32600,
+    "message": "failed to load configuration: No such file or directory (os error 2)",
+}
 
 def record(value):
     if rpc_path:
@@ -368,11 +393,17 @@ for line in sys.stdin:
         response({"id": None}, error={"code": -32000, "message": "server request denied"})
         continue
     if method == "thread/start":
+        if config_error_now():
+            response(request, error=CONFIG_ERROR)
+            continue
         response(request, {"thread": {"id": "codex-thread"}, "model": "gpt-5.6-luna", "cwd": "/workspace"})
         emit({"jsonrpc": "2.0", "method": "thread/started", "params": {"thread": {"id": "codex-thread"}}})
     elif method == "thread/resume":
         params = request.get("params", {})
         thread_id = params.get("threadId")
+        if config_error_now():
+            response(request, error=CONFIG_ERROR)
+            continue
         if scenario == "resume-not-found-no-path":
             response(request, error={"code": -32004, "message": "thread not found"})
         else:
@@ -381,6 +412,9 @@ for line in sys.stdin:
     elif method == "turn/start":
         params = request.get("params", {})
         emit({"jsonrpc": "2.0", "method": "turn/started", "params": {"turn": {"id": "turn-1"}}})
+        if turn_failure:
+            emit({"jsonrpc": "2.0", "method": "turn/completed", "params": {"turn": {"id": "turn-1", "status": "failed", "error": {"message": turn_failure}}}})
+            continue
         if scenario == "death-mid-turn":
             print("fake codex died mid-turn", file=sys.stderr, flush=True)
             sys.exit(17)
@@ -2131,6 +2165,282 @@ def test_codex_resume_failure_raises_with_error(tmp_path, monkeypatch):
     assert session_id in error
     assert "thread not found" in error
     manager._close_process()
+
+
+# The strings are real response bodies, taken from the monolith's exception
+# spans for the 14 days to 2026-09-16 (40 events). Their distribution is the
+# reason the classifier is an allowlist rather than "4xx means try again": 16
+# were a missing config file, 8 a missing binary, 11 an unreachable model
+# catalog, and exactly one was the stream disconnect a retry clears. The
+# allowlist therefore matches an ESTABLISHED leg dying, never a bare transport
+# generic, because a permanent egress fault emits those on every attempt.
+@pytest.mark.parametrize(
+    "message, transient",
+    [
+        (
+            "Codex turn failed: stream disconnected before completion: error "
+            "sending request for url (http://chatgpt.com/backend-api/codex/responses)",
+            True,
+        ),
+        (
+            "Codex turn failed: Selected model is at capacity. "
+            "Please try a different model.",
+            True,
+        ),
+        ("muse run failed: connection reset by peer", True),
+        # Structurally permanent, and the reason the reqwest generics are NOT
+        # markers: muse asks for an https catalog URL it cannot trust, and a
+        # dead catalog entry denies api.meta.ai outright. All 17 muse
+        # deliveries in the 2026-09-07 window failed, so a ladder only spends
+        # eight attempts to reach the same place. This string matches BOTH
+        # "transport error" and "error sending request", which is why dropping
+        # the catalog phrase alone would not have been enough.
+        (
+            "failed to fetch model catalog: transport error: error sending "
+            "request for url (https://api.meta.ai/muse-code/models)",
+            False,
+        ),
+        ("error sending request for url (https://api.meta.ai/v1)", False),
+        ("transport error", False),
+        ("connection refused", False),
+        # Deterministic: the next attempt reproduces these exactly.
+        (
+            "-32600: failed to load configuration: No such file or directory "
+            "(os error 2)",
+            False,
+        ),
+        ("[Errno 2] No such file or directory: 'muse'", False),
+        (
+            "muse: cron store backend error: local timezone could not be determined",
+            False,
+        ),
+        # Pinned open for hours, so no bounded ladder outlasts it.
+        (
+            "Codex turn failed: You've hit your usage limit. Visit "
+            "https://chatgpt.com/codex/settings/usage to purchase more credits "
+            "or try again at Sep 15th, 2026 1:25 AM.",
+            False,
+        ),
+        # A persistent marker WINS over a transport marker in the same message,
+        # which is the whole reason the persistent list is checked first.
+        ("usage limit reached: error sending request for url (...)", False),
+        ("", False),
+        (None, False),
+    ],
+)
+def test_transient_turn_failure_classification(message, transient):
+    assert shim._is_transient_turn_failure(message) is transient
+
+
+def test_codex_config_error_detection():
+    # _resume wraps the RPC error in its own message, so the test has to match
+    # the wrapped shape and not just a bare code.
+    assert shim._is_codex_config_error(
+        "unable to resume session codex-thread: -32600: failed to load "
+        "configuration: No such file or directory (os error 2)"
+    )
+    assert not shim._is_codex_config_error("-32004: thread not found")
+    # Both halves are required: a config phrase without the code is some other
+    # failure, and -32600 alone is a generic invalid request.
+    assert not shim._is_codex_config_error("failed to load configuration")
+    assert not shim._is_codex_config_error("-32600: invalid request")
+    assert not shim._is_codex_config_error(None)
+
+
+def test_codex_transient_turn_failure_raises_transient_error(tmp_path, monkeypatch):
+    monkeypatch.setenv(
+        "FAKE_CODEX_TURN_FAILURE",
+        "stream disconnected before completion: error sending request for url "
+        "(http://chatgpt.com/backend-api/codex/responses)",
+    )
+    manager = _codex_manager(tmp_path, monkeypatch)
+    with pytest.raises(shim.TransientTurnError) as exc_info:
+        manager.turn("first", model="luna")
+    assert "stream disconnected" in str(exc_info.value)
+    manager._close_process()
+
+
+def test_codex_usage_limit_turn_failure_is_not_transient(tmp_path, monkeypatch):
+    monkeypatch.setenv(
+        "FAKE_CODEX_TURN_FAILURE",
+        "You've hit your usage limit. Visit "
+        "https://chatgpt.com/codex/settings/usage to purchase more credits or "
+        "try again at Sep 15th, 2026 1:25 AM.",
+    )
+    manager = _codex_manager(tmp_path, monkeypatch)
+    with pytest.raises(RuntimeError) as exc_info:
+        manager.turn("first", model="luna")
+    assert not isinstance(exc_info.value, shim.TransientTurnError)
+    manager._close_process()
+
+
+def test_codex_config_error_respawns_and_completes_the_turn(tmp_path, monkeypatch):
+    monkeypatch.setenv(
+        "FAKE_CODEX_CONFIG_FAIL_ONCE", str(tmp_path / "codex-config-failed")
+    )
+    manager = _codex_manager(tmp_path, monkeypatch)
+    record = manager.turn("first", model="luna")
+
+    assert record["terminal_reason"] == "completed"
+    assert manager.session_id == "codex-thread"
+    methods = [
+        json.loads(line)["method"]
+        for line in (tmp_path / "codex-rpc.jsonl").read_text().splitlines()
+    ]
+    # Two app-servers: the first failed thread/start on stale config, the second
+    # bound cleanly. Before this the turn died as a bare 422, 16 times in 14 days.
+    assert methods.count("initialize") == 2
+    assert methods.count("thread/start") == 2
+    manager._close_process()
+
+
+def test_codex_config_error_on_resume_respawns_and_rebinds(tmp_path, monkeypatch):
+    latch = tmp_path / "codex-config-failed"
+    monkeypatch.setenv("FAKE_CODEX_CONFIG_FAIL_ONCE", str(latch))
+    # Primed, so the FIRST bind succeeds and the failure lands on the resume.
+    latch.write_text("primed")
+    manager = _codex_manager(tmp_path, monkeypatch)
+    manager.turn("first", model="luna")
+    first_process = manager.process
+    session_id = manager.session_id
+
+    # Force the resume arm, then re-arm the latch so that resume fails once.
+    manager.session_id = None
+    latch.unlink()
+    manager.turn("second", session_id=session_id, model="luna")
+
+    assert manager.session_id == session_id
+    assert manager.process is not first_process
+    methods = [
+        json.loads(line)["method"]
+        for line in (tmp_path / "codex-rpc.jsonl").read_text().splitlines()
+    ]
+    # Two resumes: the first died on stale config, the second bound against the
+    # fresh server. This is the arm where reassigning requested_session in the
+    # except branch is load-bearing, and _spawn's _server_threads reset is what
+    # makes the retry rebind instead of skipping the bind entirely.
+    assert methods.count("thread/resume") == 2
+    assert methods.count("initialize") == 2
+    manager._close_process()
+
+
+def test_codex_config_error_on_both_binds_propagates(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_CODEX_CONFIG_FAIL_ALWAYS", "1")
+    manager = _codex_manager(tmp_path, monkeypatch)
+    with pytest.raises(RuntimeError, match="failed to load configuration"):
+        manager.turn("first", model="luna")
+
+    methods = [
+        json.loads(line)["method"]
+        for line in (tmp_path / "codex-rpc.jsonl").read_text().splitlines()
+    ]
+    # Exactly two binds: only the first call is wrapped, so a repeating config
+    # error propagates instead of looping. It is not transient either, so it
+    # reaches the caller as a bare 422.
+    assert methods.count("thread/start") == 2
+    manager._close_process()
+
+
+def test_codex_replaced_workspace_respawns_before_binding(tmp_path, monkeypatch):
+    manager = _codex_manager(tmp_path, monkeypatch)
+    manager.turn("first", model="luna")
+    first_process = manager.process
+    identity = manager._process_workspace_identity
+    assert identity is not None
+
+    # A relit VM mounts a NEW volume at the same path that already carries a
+    # .codex, so the isdir guard is satisfied while the live server still holds
+    # the pre-mount inode. Only the identity compare catches that.
+    assert os.path.isdir(os.path.join(manager.workspace, ".codex"))
+    manager._process_workspace_identity = (identity[0], identity[1] + 1)
+
+    manager.turn("second", model="luna")
+    assert manager.process is not first_process
+    assert manager.process.poll() is None
+    manager._close_process()
+
+
+def test_codex_unchanged_workspace_does_not_respawn(tmp_path, monkeypatch):
+    # The guard above must not fire on the ordinary second turn: a respawn per
+    # turn would throw away the app-server's warm thread every time.
+    manager = _codex_manager(tmp_path, monkeypatch)
+    manager.turn("first", model="luna")
+    first_process = manager.process
+    manager.turn("second", model="luna")
+    assert manager.process is first_process
+    manager._close_process()
+
+
+def test_pi_stale_stderr_ring_does_not_mark_a_failure_retryable(tmp_path, monkeypatch):
+    """pi's process outlives many turns, so its stderr ring goes stale.
+
+    Classification must read the provider detail alone. While the ring was
+    concatenated onto error_detail first, a transport line pi printed and
+    recovered from many turns earlier would mark an unrelated deterministic
+    failure retryable, and the caller would burn its whole ladder on it.
+    """
+    monkeypatch.setenv("FAKE_PI_MODE", "interruptible")
+    manager = _pi_manager(tmp_path, monkeypatch)
+    exception = [None]
+
+    def run_turn():
+        try:
+            manager.turn("block", model="spark")
+        except Exception as exc:
+            exception[0] = exc
+
+    thread = threading.Thread(target=run_turn)
+    thread.start()
+    time.sleep(0.2)
+    # A line from earlier in this long-lived process's life, not from the
+    # failure being classified.
+    manager.stderr_lines.append("pi: connection reset by peer")
+    manager.interrupt()
+    thread.join(timeout=2)
+
+    assert "pi turn produced no output" in str(exception[0])
+    # The stale line is still reported to a human reading the error...
+    assert "connection reset" in str(exception[0])
+    # ...but it must not have driven the classification.
+    assert not isinstance(exception[0], shim.TransientTurnError)
+    manager._close_process()
+
+
+def test_muse_dropped_connection_is_transient(tmp_path, monkeypatch):
+    manager = _muse_manager(tmp_path, monkeypatch)
+    manager._stderr_thread = None
+    # muse exits non-zero with the cause on stderr and nothing on stdout, so
+    # stderr is the only evidence _empty_stream_error has. Classifying on the
+    # ring is safe HERE only because MuseProcess spawns per turn and _spawn
+    # rebuilds stderr_lines, so the ring can only hold this turn's lines.
+    manager.stderr_lines = collections.deque(
+        ["muse run failed: connection reset by peer"], maxlen=5
+    )
+    assert isinstance(manager._empty_stream_error(None), shim.TransientTurnError)
+
+
+def test_muse_catalog_failure_is_not_transient(tmp_path, monkeypatch):
+    manager = _muse_manager(tmp_path, monkeypatch)
+    manager._stderr_thread = None
+    manager.stderr_lines = collections.deque(
+        [
+            "failed to fetch model catalog: transport error: error sending "
+            "request for url (https://api.meta.ai/muse-code/models)"
+        ],
+        maxlen=5,
+    )
+    error = manager._empty_stream_error(None)
+    assert isinstance(error, RuntimeError)
+    assert not isinstance(error, shim.TransientTurnError)
+
+
+def test_muse_failure_without_a_known_cause_is_not_transient(tmp_path, monkeypatch):
+    manager = _muse_manager(tmp_path, monkeypatch)
+    manager._stderr_thread = None
+    manager.stderr_lines = collections.deque(["run ended with Failed"], maxlen=5)
+    error = manager._empty_stream_error(None)
+    assert isinstance(error, RuntimeError)
+    assert not isinstance(error, shim.TransientTurnError)
 
 
 def test_codex_turn_parameters_per_model(tmp_path, monkeypatch):
@@ -5999,9 +6309,195 @@ def test_egress_forwarder_opens_one_vsock_connection_per_accept(monkeypatch):
         forwarder.close()
 
 
+def _install_vsock_pair_factory(monkeypatch):
+    """Replace AF_VSOCK sockets with observable, independent socket pairs."""
+    original_socket = socket.socket
+    socketpair = socket.socketpair
+    created = []
+    created_condition = threading.Condition()
+
+    class FakeVsock:
+        def __init__(self):
+            self.forwarder_socket, peer = socketpair()
+            self.closed = threading.Event()
+            with created_condition:
+                created.append((peer, self.closed))
+                created_condition.notify_all()
+
+        def settimeout(self, timeout):
+            self.forwarder_socket.settimeout(timeout)
+
+        def connect(self, _address):
+            pass
+
+        def recv(self, size):
+            return self.forwarder_socket.recv(size)
+
+        def sendall(self, data):
+            return self.forwarder_socket.sendall(data)
+
+        def shutdown(self, how):
+            return self.forwarder_socket.shutdown(how)
+
+        def close(self):
+            try:
+                self.forwarder_socket.close()
+            finally:
+                self.closed.set()
+
+    def socket_factory(family, *args, **kwargs):
+        if family == shim.VSOCK_ADDRESS_FAMILY:
+            return FakeVsock()
+        return original_socket(family, *args, **kwargs)
+
+    def wait_for_pair(index, timeout=2):
+        deadline = time.monotonic() + timeout
+        with created_condition:
+            while len(created) <= index:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise AssertionError(
+                        "forwarder did not open vsock connection %s" % index
+                    )
+                created_condition.wait(remaining)
+            return created[index]
+
+    monkeypatch.setattr(shim.socket, "socket", socket_factory)
+    return wait_for_pair
+
+
+def _open_proxy_tunnel(
+    forwarder, wait_for_pair, index, port, request, host="example.com"
+):
+    client = socket.create_connection((shim.EGRESS_LOCALHOST, forwarder.port))
+    client.settimeout(2)
+    client.sendall(("CONNECT %s:%s HTTP/1.1\r\n\r\n" % (host, port)).encode())
+    peer, closed = wait_for_pair(index)
+    peer.settimeout(2)
+    preamble = ("%s:%s\n" % (host, port)).encode()
+    assert peer.recv(len(preamble)) == preamble
+    established = b"HTTP/1.1 200 Connection Established\r\n\r\n"
+    assert client.recv(len(established)) == established
+    client.sendall(request)
+    assert peer.recv(len(request)) == request
+    return client, peer, closed
+
+
+def _finish_proxy_tunnel(client, peer, closed, payload):
+    peer.sendall(payload)
+    assert client.recv(len(payload)) == payload
+    peer.shutdown(socket.SHUT_WR)
+    assert client.recv(1) == b""
+    client.close()
+    assert closed.wait(2), "completed tunnel was not cleaned up within 2 seconds"
+    peer.close()
+
+
+def test_egress_forwarder_delivers_two_sequential_fully_closed_connections(
+    monkeypatch,
+):
+    wait_for_pair = _install_vsock_pair_factory(monkeypatch)
+    forwarder = shim.VsockEgressForwarder(port=0)
+    forwarder.listen()
+    try:
+        first = _open_proxy_tunnel(forwarder, wait_for_pair, 0, "443", b"request-a")
+        _finish_proxy_tunnel(*first, b"response-a")
+        second = _open_proxy_tunnel(forwarder, wait_for_pair, 1, "443", b"request-b")
+        _finish_proxy_tunnel(*second, b"response-b")
+    finally:
+        forwarder.close()
+
+
+def test_egress_forwarder_reaps_completed_lingering_https_tunnel_before_second(
+    monkeypatch,
+):
+    wait_for_pair = _install_vsock_pair_factory(monkeypatch)
+    forwarder = shim.VsockEgressForwarder(port=0)
+    forwarder.listen()
+    first_client = first_peer = second_client = second_peer = None
+    try:
+        first_client, first_peer, first_closed = _open_proxy_tunnel(
+            forwarder,
+            wait_for_pair,
+            0,
+            "443",
+            b"\x16\x03\x01\x00\x00",
+            host="github.com",
+        )
+        # The host-side peer has now observed the current git/gh route's
+        # github.com:443 preamble and its first TLS record bytes. Complete the
+        # exchange but deliberately leave the host response side open.
+        first_peer.sendall(b"response-a")
+        assert first_client.recv(len(b"response-a")) == b"response-a"
+        first_client.shutdown(socket.SHUT_WR)
+        assert first_peer.recv(1) == b""
+
+        idle_bound = shim.EGRESS_TUNNEL_COMPLETION_IDLE_CLOSE_SECONDS
+        assert not first_closed.wait(idle_bound - 0.5), (
+            "completed tunnel A closed before its response-idle bound"
+        )
+        assert first_closed.wait(1.5), (
+            "completed tunnel A remained open past its response-idle bound"
+        )
+
+        # The socket-pair harness does not model Firecracker's muxer. It verifies
+        # the lifecycle precondition for a later connection: completed A is
+        # bounded before B sends its first host-side bytes.
+        second_client, second_peer, second_closed = _open_proxy_tunnel(
+            forwarder, wait_for_pair, 1, "443", b"request-b"
+        )
+        _finish_proxy_tunnel(second_client, second_peer, second_closed, b"response-b")
+        second_client = second_peer = None
+    finally:
+        if first_client is not None:
+            first_client.close()
+        if first_peer is not None:
+            first_peer.close()
+        if second_client is not None:
+            second_client.close()
+        if second_peer is not None:
+            second_peer.close()
+        forwarder.close()
+
+
+def test_egress_forwarder_delivers_two_concurrent_active_connections(monkeypatch):
+    wait_for_pair = _install_vsock_pair_factory(monkeypatch)
+    forwarder = shim.VsockEgressForwarder(port=0)
+    forwarder.listen()
+    first_client = first_peer = second_client = second_peer = None
+    try:
+        first_client, first_peer, first_closed = _open_proxy_tunnel(
+            forwarder, wait_for_pair, 0, "443", b"request-a"
+        )
+        second_client, second_peer, second_closed = _open_proxy_tunnel(
+            forwarder, wait_for_pair, 1, "443", b"request-b"
+        )
+
+        second_peer.sendall(b"response-b")
+        first_peer.sendall(b"response-a")
+        assert second_client.recv(len(b"response-b")) == b"response-b"
+        assert first_client.recv(len(b"response-a")) == b"response-a"
+
+        first_peer.shutdown(socket.SHUT_WR)
+        second_peer.shutdown(socket.SHUT_WR)
+        assert first_client.recv(1) == b""
+        assert second_client.recv(1) == b""
+        first_client.close()
+        second_client.close()
+        first_client = second_client = None
+        assert first_closed.wait(2), "concurrent tunnel A cleanup exceeded 2 seconds"
+        assert second_closed.wait(2), "concurrent tunnel B cleanup exceeded 2 seconds"
+    finally:
+        for endpoint in (first_client, first_peer, second_client, second_peer):
+            if endpoint is not None:
+                endpoint.close()
+        forwarder.close()
+
+
 def test_egress_vsock_connect_constants_pinned():
     assert shim.EGRESS_VSOCK_CONNECT_TIMEOUT_SECONDS == 5.0
     assert shim.EGRESS_VSOCK_CONNECT_ATTEMPTS == 3
+    assert shim.EGRESS_TUNNEL_COMPLETION_IDLE_CLOSE_SECONDS == 3.0
 
 
 def test_egress_forwarder_retries_vsock_connect(monkeypatch):
@@ -7034,6 +7530,37 @@ def test_cli_crash_is_422(tmp_path, monkeypatch):
             server, "POST", shim.TURN_PATH, json.dumps({"message": "hi"}).encode()
         )
         assert status == 422 and "crashed" in body["error"]
+        # The default is unchanged and stays unchanged: a cause the shim did
+        # not positively classify must not invite a retry, because the caller
+        # reads the absence of this key as "do not retry".
+        assert "retryable" not in body
+    finally:
+        manager._spawn = original
+        server.shutdown()
+        server.server_close()
+
+
+def test_transient_turn_error_is_422_with_retryable_flag(tmp_path, monkeypatch):
+    manager = _manager(tmp_path, monkeypatch)
+    original = manager._spawn
+
+    def transient_spawn(session_id=None, first_message=None, model=None, **_kwargs):
+        raise shim.TransientTurnError(
+            "Codex turn failed: stream disconnected before completion"
+        )
+
+    manager._spawn = transient_spawn
+    server = _run_server(manager)
+    try:
+        status, body = _request(
+            server, "POST", shim.TURN_PATH, json.dumps({"message": "hi"}).encode()
+        )
+        # Status stays 422 so nothing keyed off the code moves; the body grows
+        # the one bit the caller cannot derive for itself. EmberVM proxies a
+        # guest response verbatim, so this body is the only place to say it.
+        assert status == 422
+        assert body["retryable"] is True
+        assert "stream disconnected" in body["error"]
     finally:
         manager._spawn = original
         server.shutdown()

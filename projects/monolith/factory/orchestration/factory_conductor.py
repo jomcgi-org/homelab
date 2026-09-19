@@ -310,7 +310,7 @@ def closes_issue(body: object, repo: str, number: int) -> bool:
 
 
 def hydration_branch(task: dict) -> str:
-    branch = f"factory/{task['id']}"
+    branch = delivery_branch(task)
     try:
         github_get(task["repo"], f"git/ref/heads/{quote(branch, safe='')}")
     except httpx.HTTPStatusError as exc:
@@ -327,7 +327,7 @@ def branch_hydration(task: dict, branch: str, task_hydration: str) -> str:
     retry of that node resumes its own branch, because hydrating the task
     branch would drop everything the previous attempt pushed.
     """
-    if branch == task_branch(task["id"]):
+    if branch == delivery_branch(task):
         return task_hydration
     try:
         github_get(task["repo"], f"git/ref/heads/{quote(branch, safe='')}")
@@ -389,11 +389,21 @@ def _task(task_id: str) -> dict:
         ).first()
         from factory.orchestration.factory_funding_limits import latest
 
+        from factory.orchestration.factory_controls import granted_delivery_surface
+
+        direction = (
+            json.loads(receipt.direction_json)
+            if receipt is not None and receipt.direction_json
+            else None
+        )
+        granted_branch, granted_pr = granted_delivery_surface(direction)
         return {
             **task.model_dump(),
             "issue_number": None if receipt is None else receipt.issue_number,
             "funding_enrolled": latest(db, task_id, "funding_review_requested")
             is not None,
+            "delivery_branch": granted_branch or task_branch(task_id),
+            "delivery_pr_number": granted_pr,
         }
 
 
@@ -748,6 +758,25 @@ def task_branch(task_id: str) -> str:
     return f"factory/{task_id}"
 
 
+def delivery_branch(task: dict) -> str:
+    """The operator-granted delivery branch, or this task's own namespace."""
+    from factory.orchestration.factory_controls import validate_delivery_branch
+
+    return validate_delivery_branch(
+        task.get("delivery_branch") or task_branch(task["id"])
+    )
+
+
+def delivery_pr_number(task: dict) -> int | None:
+    """The operator-granted existing PR, when this task was re-admitted."""
+    number = task.get("delivery_pr_number")
+    if number is None:
+        return None
+    if type(number) is not int or number <= 0:
+        raise ValueError("invalid delivery_pr_number")
+    return number
+
+
 def node_branch(task_id: str, node_key: str) -> str:
     """A per-node branch, named as a sibling of the task branch rather than a child.
 
@@ -831,7 +860,12 @@ def _merged_keys(nodes: list[dict], runs: list[dict]) -> set[str]:
 
 
 def _on_task_branch(
-    node_key: str, task_id: str, nodes: list[dict], runs: list[dict], merged: set[str]
+    node_key: str,
+    task_id: str,
+    nodes: list[dict],
+    runs: list[dict],
+    merged: set[str],
+    target_branch: str | None = None,
 ) -> bool:
     """True when this node's work is already on the task branch.
 
@@ -843,13 +877,17 @@ def _on_task_branch(
     ):
         return False
     branch = _pinned_branch(node_key, runs)
-    if branch is None or branch == task_branch(task_id):
+    if branch is None or branch == (target_branch or task_branch(task_id)):
         return True
     return node_key in merged
 
 
 def fan_out_wave(
-    task_id: str, nodes: list[dict], runs: list[dict], limit: int
+    task_id: str,
+    nodes: list[dict],
+    runs: list[dict],
+    limit: int,
+    target_branch: str | None = None,
 ) -> list[str]:
     """The next set of nodes that fan out onto their own branches, in key order.
 
@@ -873,7 +911,8 @@ def fan_out_wave(
         if node["node_key"].startswith(_BRANCHED_ROLE_PREFIXES)
         and node["node_key"] not in started
         and all(
-            _on_task_branch(dep, task_id, nodes, runs, merged) for dep in node["deps"]
+            _on_task_branch(dep, task_id, nodes, runs, merged, target_branch)
+            for dep in node["deps"]
         )
     )
     wave = _concurrent(candidates, _ancestors(nodes))
@@ -891,7 +930,12 @@ def _pending_fan_ins(
 
 
 def _dispatch_branch(
-    task_id: str, node_key: str, nodes: list[dict], runs: list[dict], limit: int
+    task_id: str,
+    node_key: str,
+    nodes: list[dict],
+    runs: list[dict],
+    limit: int,
+    target_branch: str | None = None,
 ) -> str | None:
     """The branch to dispatch this attempt on, or None when it must not start.
 
@@ -907,11 +951,12 @@ def _dispatch_branch(
     pinned = _pinned_branch(node_key, runs)
     if pinned is not None:
         return pinned
+    target = target_branch or task_branch(task_id)
     if not node_key.startswith(_BRANCHED_ROLE_PREFIXES):
-        return task_branch(task_id)
-    wave = fan_out_wave(task_id, nodes, runs, limit)
+        return target
+    wave = fan_out_wave(task_id, nodes, runs, limit, target)
     if not wave:
-        return task_branch(task_id)
+        return target
     if node_key not in wave or _covering_integrate(node_key, nodes) is None:
         return None
     return node_branch(task_id, node_key)
@@ -947,7 +992,7 @@ def _boundary(task: dict, *, review: bool = False, refine: bool = False) -> str:
     )
     return (
         f"Factory task {task['id']}, repository {task['repo']}, "
-        f"dedicated branch factory/{task['id']}, base {task['base_branch']}. "
+        f"dedicated branch {delivery_branch(task)}, base {task['base_branch']}. "
         "Only this task is authorized. Follow repository agent instructions. "
         "Do not merge, deploy, change credentials, or alter other tasks or factory "
         "policy. Deliver repository changes through a PR with required Linux CI. "
@@ -1593,8 +1638,11 @@ def verify_delivery(
     should be unreachable; the gate refuses it anyway, because a completion
     gate that trusts an upstream check is not a gate.
     """
+    granted_pr = delivery_pr_number(task)
+    if granted_pr is not None and number != granted_pr:
+        raise ValueError("delivery PR does not match the operator-granted PR")
     pr = github_get(task["repo"], f"pulls/{number}")
-    branch = f"factory/{task['id']}"
+    branch = delivery_branch(task)
     if (
         pr.get("state") != "open"
         or pr.get("draft")
@@ -2131,7 +2179,7 @@ def _escalate_task(task: dict, decision: dict, cause: str, runs: list[dict]) -> 
         raise _EditRefused(
             "pause_without_issue", "this task has no issue to escalate onto"
         )
-    pr_number = _latest_pr(runs)
+    pr_number = _latest_pr(runs) or delivery_pr_number(task)
     document = {
         "kind": "delivery",
         "task_id": task_id,
@@ -2140,7 +2188,7 @@ def _escalate_task(task: dict, decision: dict, cause: str, runs: list[dict]) -> 
         "reason": decision["reason"].strip()[:4000],
         "summary": _escalation_summary(runs),
         "options": options,
-        "branch": task_branch(task_id),
+        "branch": delivery_branch(task),
         "pr_number": pr_number,
         "pr_url": (
             f"https://github.com/{task['repo']}/pull/{pr_number}" if pr_number else None
@@ -2859,13 +2907,15 @@ def _pending_landing_recovery(
     number, head = artifact.get("pr_number"), artifact.get("head_sha")
     if type(number) is not int or not isinstance(head, str):
         return None
+    granted_pr = delivery_pr_number(task)
     try:
         pull = github_get(task["repo"], f"pulls/{number}")
     except (httpx.HTTPError, ValueError):
         return None
     if (
-        (pull.get("head") or {}).get("ref") != task_branch(task["id"])
+        (pull.get("head") or {}).get("ref") != delivery_branch(task)
         or (pull.get("head") or {}).get("sha") != head
+        or (granted_pr is not None and number != granted_pr)
         or not pull_has_merge_conflict(pull)
     ):
         return None
@@ -3027,6 +3077,7 @@ def _review_recovery_evidence(
     artifact = _artifact(review_run)
     head = artifact.get("head_sha")
     number = artifact.get("pr_number")
+    granted_pr = delivery_pr_number(task)
     if (
         artifact.get("verdict") != expected_verdict
         or not isinstance(head, str)
@@ -3034,6 +3085,7 @@ def _review_recovery_evidence(
         or review_run.get("head_sha") != head
         or type(number) is not int
         or number <= 0
+        or (granted_pr is not None and number != granted_pr)
     ):
         return {"state": "refused", "reason": "review_identity_missing"}
     evidence = {"head_sha": head, "pr_number": number}
@@ -3042,7 +3094,7 @@ def _review_recovery_evidence(
         return (
             pr.get("state") == "open"
             and pr.get("head", {}).get("sha") == head
-            and pr.get("head", {}).get("ref") == task_branch(task["id"])
+            and pr.get("head", {}).get("ref") == delivery_branch(task)
             and pr.get("head", {}).get("repo", {}).get("full_name") == task["repo"]
             and pr.get("base", {}).get("ref") == task["base_branch"]
         )
@@ -3377,7 +3429,7 @@ def _insert_review_round(
 
 
 def _integration_group(
-    task_id: str, nodes: list[dict], runs: list[dict], limit: int
+    task: dict | str, nodes: list[dict], runs: list[dict], limit: int
 ) -> list[str]:
     """The next wave that will fan out and that no integrate node covers yet.
 
@@ -3385,7 +3437,9 @@ def _integration_group(
     branch the fan-in merges. A planner may name that node itself; when it did
     not, the engine inserts one before any member is dispatched.
     """
-    wave = fan_out_wave(task_id, nodes, runs, limit)
+    task_id = task["id"] if isinstance(task, dict) else task
+    target = delivery_branch(task) if isinstance(task, dict) else task_branch(task)
+    wave = fan_out_wave(task_id, nodes, runs, limit, target_branch=target)
     if not wave:
         return []
     covered = set(wave)
@@ -3419,9 +3473,9 @@ def _integration_edits(
     )
     prompt = _boundary(task) + (
         "Integrate the parallel implementation branches for this task. Merge "
-        f"each branch below into {task_branch(task['id'])} in dependency order, "
+        f"each branch below into {delivery_branch(task)} in dependency order, "
         "resolve every conflict, run the targeted checks the merged change "
-        f"needs, push {task_branch(task['id'])}, and report the integrated head "
+        f"needs, push {delivery_branch(task)}, and report the integrated head "
         "SHA. Do not start work these branches do not already contain:\n" + branches
     )
     bounds = {
@@ -3831,11 +3885,11 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
         # happened yet and the next tick retries the whole branch.
         if _audit_once(task["id"], key, audit_action, detail) and notify is not None:
             notify()
-        # The workflow is terminal now, so supervision may observe the real
-        # session outcome exactly as it does for any other non-success status,
-        # and a node that then fails with no retry left reaches the planner
-        # through the ordinary deviation path.
-        workflow_status = "CANCELLED"
+        # Re-read rather than inferring a terminal state from the cancellation
+        # request. The never-dispatched proof below requires the owning workflow
+        # itself to report CANCELLED or ERROR.
+        cancelled = dbos.get_workflow_status(key)
+        workflow_status = None if cancelled is None else cancelled.status
         result = {
             "status": "uncertain",
             "reason": reason,
@@ -3892,12 +3946,60 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
                 and result.get("cost_usd") is None
                 and run.get("cost_usd") is None
             ):
-                from factory.execution.api import read_not_invoked_factory_attempt
-
-                proof = read_not_invoked_factory_attempt(
-                    db, pin, result.get("session_id") or run.get("session_id")
+                from factory.execution.api import (
+                    read_never_dispatched_factory_attempt,
+                    read_not_invoked_factory_attempt,
+                    settle_never_dispatched_factory_attempt,
                 )
-                if proof is not None:
+
+                never_dispatched = read_never_dispatched_factory_attempt(
+                    db,
+                    pin,
+                    result.get("session_id") or run.get("session_id"),
+                    workflow_status,
+                )
+                proof = None
+                if never_dispatched is not None:
+                    current = next(
+                        (
+                            value
+                            for value in graph.node_runs(
+                                task["id"], run["node_key"], session=db
+                            )
+                            if value["attempt"] == run["attempt"]
+                        ),
+                        None,
+                    )
+                    if (
+                        current is None
+                        or current["pin"] != pin
+                        or current["dispatch_key"] != key
+                        or current["session_id"]
+                        not in (None, never_dispatched["session_id"])
+                        or current["status"]
+                        not in ("admitted", "dispatched", "uncertain")
+                        or current["cost_usd"] is not None
+                    ):
+                        raise ValueError("never-dispatched factory attempt changed")
+                    settle_never_dispatched_factory_attempt(db, pin, never_dispatched)
+                    result = {
+                        **result,
+                        "status": "failed",
+                        "session_id": never_dispatched["session_id"],
+                        "cost_usd": 0.0,
+                        "cost_basis": "unknown",
+                        "head_sha": current.get("head_sha") or result.get("head_sha"),
+                        "reason": "never_dispatched",
+                        "previous_outcome": _outcome(current) or result,
+                        "never_dispatched": never_dispatched,
+                    }
+                else:
+                    proof = read_not_invoked_factory_attempt(
+                        db,
+                        pin,
+                        result.get("session_id") or run.get("session_id"),
+                    )
+                if never_dispatched is None and proof is not None:
                     current = next(
                         (
                             value
@@ -3944,7 +4046,9 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
                             attempt=run["attempt"],
                             session_id=proof["session_id"],
                         )
-                elif lost_before_guest_settlement_enabled():
+                elif (
+                    never_dispatched is None and lost_before_guest_settlement_enabled()
+                ):
                     # The next window along. The not-invoked proof needs a turn
                     # that never reached its model POST; this one covers a turn
                     # that was invoked and lost its executor before a guest was
@@ -4213,30 +4317,43 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
         for run in active:
             _submit_or_reconcile(task, run, dbos)
         # A submit can settle its own run, so the free slots are read after the
-        # whole in-flight set has had its tick. A tick that reconciled in-flight
-        # work never also plans: it either fills a free parallel slot beside
-        # work still running, or leaves a settled graph to the next tick.
+        # whole in-flight set has had its tick. Ordinarily a tick that reconciles
+        # in-flight work either fills a free parallel slot beside work still
+        # running or leaves a settled graph to the next tick. A positively
+        # never-dispatched attempt is the narrow exception: it may admit its
+        # retry immediately because this tick proved both zero spend and no
+        # external invocation.
         runs = graph.node_runs(task_id)
         running = [
             r for r in runs if r["status"] in ("admitted", "dispatched", "uncertain")
         ]
-        if not running or len(running) >= parallel:
+        if not running:
+            active_keys = {(run["node_key"], run["attempt"]) for run in active}
+            settled_never_dispatched = any(
+                (run["node_key"], run["attempt"]) in active_keys
+                and run["status"] == "failed"
+                and (_outcome(run) or {}).get("reason") == "never_dispatched"
+                for run in runs
+            )
+            if not settled_never_dispatched:
+                return
+        else:
+            if len(running) >= parallel or not can_start(task_id)["ok"]:
+                return
+            # Nothing may be admitted against an allowance the graph has
+            # outgrown, so the top-up path resyncs exactly as the settled path
+            # does.
+            _resync_allowance(task_id, policy, graph.current_version(task_id))
+            _dispatch_ready(
+                task,
+                graph.load_graph(task_id),
+                runs,
+                parallel - len(running),
+                fan_out=True,
+                parallel=parallel,
+                policy=policy,
+            )
             return
-        if not can_start(task_id)["ok"]:
-            return
-        # Nothing may be admitted against an allowance the graph has outgrown,
-        # so the top-up path resyncs exactly as the settled path does.
-        _resync_allowance(task_id, policy, graph.current_version(task_id))
-        _dispatch_ready(
-            task,
-            graph.load_graph(task_id),
-            runs,
-            parallel - len(running),
-            fan_out=True,
-            parallel=parallel,
-            policy=policy,
-        )
-        return
     permission = can_start(task_id)
     from factory.orchestration import factory_funding
 
@@ -4289,7 +4406,7 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
     # node whose fan-in does not exist never gets a branch, so a refused
     # insertion strands nothing: it asks the planner instead.
     integration_refusal = None
-    group = _integration_group(task_id, nodes, runs, parallel)
+    group = _integration_group(task, nodes, runs, parallel)
     if group:
         integrated, integration_refusal = _insert_integration(
             task, policy, nodes, runs, group, insertion_revision
@@ -4610,7 +4727,15 @@ def _dispatch_ready(
     # so it leads the queue. Everything else keeps its graph order behind it.
     rank = {
         key: index
-        for index, key in enumerate(fan_out_wave(task_id, nodes, runs, parallel))
+        for index, key in enumerate(
+            fan_out_wave(
+                task_id,
+                nodes,
+                runs,
+                parallel,
+                delivery_branch(task),
+            )
+        )
     }
     ordered = sorted(ready, key=lambda node: rank.get(node["node_key"], len(rank)))
     dispatched = 0
@@ -4618,7 +4743,14 @@ def _dispatch_ready(
         if dispatched >= limit:
             break
         node_key = node["node_key"]
-        branch = _dispatch_branch(task_id, node_key, nodes, runs, parallel)
+        branch = _dispatch_branch(
+            task_id,
+            node_key,
+            nodes,
+            runs,
+            parallel,
+            delivery_branch(task),
+        )
         if branch is None:
             continue
         reviewer = None

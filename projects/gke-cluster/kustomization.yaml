@@ -4,8 +4,9 @@
 # because a root that syncs itself would reconcile away a manual repair of the
 # root. check-application-drift.sh loads that file directly so the root is still
 # compared against the cluster.
-# 1Password Connect and the 1Password operator must be installed out of band
-# before this root syncs. otel-collector, cloudflare-gateway, and tailscale each
+# 1Password Connect and the 1Password operator are still bootstrapped out of band
+# before this root syncs, but the platform-gke/onepassword overlay (wave 0) then
+# adopts them into GitOps. otel-collector, cloudflare-gateway, and tailscale each
 # render OnePasswordItem resources.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization

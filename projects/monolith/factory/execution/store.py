@@ -489,6 +489,8 @@ def mark_turn_response_lost_sync(
     preemption path already uses, so every existing reader that skips an
     in-progress attempt keeps skipping this one. Only a committed result
     receipt for this exact dispatch can finish it, and only inside the bound.
+    A control-plane outage may leave generation and invoke_started_at unstamped;
+    the recovering owner then checks the guest once the control plane returns.
 
     Returns False and writes nothing whenever the exact dispatch identity, its
     permit, or the turn history has moved, which leaves the caller on its
@@ -1343,6 +1345,13 @@ def clear_ember_bindings_by_ember_id(session: Session, ember_id: str) -> list[in
     unknown outcome is unsendable until its reconciliation owner releases it
     either way, and the remote guest is destroyed regardless.
 
+    An ownerless interactive receipt fence may be released in this same
+    transaction after the exact original POST observer has ended or its
+    acceptance deadline has passed. The destroy already succeeded for this
+    exact Ember id, so clearing both that matching fence and binding leaves the
+    row ready to create a replacement guest. Workflow, factory, drainer,
+    unknown-outcome, and cleanup-owned rows retain their existing owners.
+
     Returns the ids of the affected AgentSession rows.
     """
     admission.lock_pool(session)
@@ -1351,14 +1360,19 @@ def clear_ember_bindings_by_ember_id(session: Session, ember_id: str) -> list[in
     ).all()
     ids: list[int] = []
     for row in rows:
-        # A stale cleanup observation must not erase the identity needed by
-        # the original POST to clear its committed receipt fence.
-        if (
-            row.result_receipt_fence_id is not None
-            or admission.cleanup_pending(session, row)
-            or has_unknown_outcome(session, row.id)
+        # These owners need the fence and binding as evidence. Check them before
+        # release_ownerless_fence_locked, which mutates a releasable fence.
+        if admission.cleanup_pending(session, row) or has_unknown_outcome(
+            session, row.id
         ):
             continue
+        if row.result_receipt_fence_id is not None:
+            from factory.execution import result_receipts
+
+            if not result_receipts.release_ownerless_fence_locked(
+                session, row, row.result_receipt_fence_id
+            ):
+                continue
         if row.ember_lineage_id:
             row.prior_ember_lineage_id = row.ember_lineage_id
         if row.cli_session_id:
@@ -1951,10 +1965,16 @@ def claim_pending_message_for_session_sync(
         if (
             row is None
             or row.status in {"awaiting_login", "failed"}
-            or row.result_receipt_fence_id is not None
             or admission.cleanup_pending(session, row)
         ):
             return None
+        if row.result_receipt_fence_id is not None:
+            from factory.execution import result_receipts
+
+            if not result_receipts.release_ownerless_fence_locked(
+                session, row, row.result_receipt_fence_id
+            ):
+                return None
         try:
             _assert_sendable(session, session_id)
         except SessionOutcomeUnknown:

@@ -115,6 +115,45 @@ def test_exact_turn_hold_distinguishes_other_turns_sessions_and_settlement(
         _restore_schemas(schemas)
 
 
+def test_response_lost_hold_accepts_an_unstamped_control_plane_outage(
+    monkeypatch, tmp_path
+):
+    engine, schemas = _database(monkeypatch, tmp_path)
+    monkeypatch.setenv("AGENT_RESPONSE_LOST_RECOVERY_ENABLED", "true")
+    try:
+        with Session(engine) as session:
+            agent = store.create_session(session, "cp-outage", "<guest>", "main")
+            session_id = agent.id
+            store.set_ember_session(
+                session, session_id, "guest-cp-outage", "token", None
+            )
+            store.create_pending_message(session, session_id, "continue", "luna")
+        assert store.claim_pending_message_for_session_sync(session_id, "owner") == 1
+
+        assert store.mark_turn_response_lost_sync(
+            session_id,
+            1,
+            "owner",
+            1,
+            receipt_id="receipt-cp-outage",
+            guest_id="guest-cp-outage",
+            reason="control_plane_unavailable",
+            hold_seconds=60,
+        )
+
+        hold = store.read_response_lost_hold_sync(session_id)
+        assert hold["reason"] == "control_plane_unavailable"
+        assert hold["generation"] is None
+        assert hold["invoke_started_at"] is None
+        with Session(engine) as session:
+            turn = store.get_turn(session, session_id, 1)
+            assert turn.terminal_reason == "interrupted"
+            assert turn.stop_reason == store.RESPONSE_LOST
+    finally:
+        engine.dispose()
+        _restore_schemas(schemas)
+
+
 def test_write_progress_sync_updates_claimed_row(monkeypatch, tmp_path):
     engine, schemas = _database(monkeypatch, tmp_path)
     try:

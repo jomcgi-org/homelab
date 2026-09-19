@@ -8,6 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	nodev1 "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1"
 )
 
@@ -233,10 +236,12 @@ func TestStatefulActivatorGateClosesIneligiblePort(t *testing.T) {
 	}
 }
 
-func TestStatefulActivatorAbortsCheckpointAndSplices(t *testing.T) {
+func TestStatefulActivatorForwardsCheckpointResolutionToControlPlane(t *testing.T) {
 	port := statefulActivatorEchoServer(t)
 	s, _, driver := newStatefulTestServer(t)
 	listenPort := startStatefulActivator(t, s)
+	controlPlaneIP, cpAccepted := controlPlaneActivatorEchoServer(t, listenPort)
+	s.registry.setControlPlaneActivator(controlPlaneIP)
 	enableStatefulActivatorWorkload(s, "wl-state", listenPort, port)
 	started := startFreshStateful(t, s, port, "wl-state")
 	before, err := s.volumes.Generation("wl-state")
@@ -251,16 +256,125 @@ func TestStatefulActivatorAbortsCheckpointAndSplices(t *testing.T) {
 
 	conn := statefulActivatorConn(t, listenPort)
 	defer conn.Close()
-	statefulActivatorRoundTrip(t, conn, "resumed bytes")
+	statefulActivatorRoundTrip(t, conn, "forwarded checkpoint bytes")
+	select {
+	case <-cpAccepted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("control-plane activator did not receive the checkpointed request")
+	}
 	after, err := s.volumes.Generation("wl-state")
 	if err != nil {
-		t.Fatalf("generation after checkpoint abort: %v", err)
+		t.Fatalf("generation after checkpoint forward: %v", err)
 	}
-	if after != before+1 {
-		t.Errorf("generation after checkpoint abort = %d, want %d", after, before+1)
+	if after != before {
+		t.Errorf("generation after checkpoint forward = %d, want unchanged %d", after, before)
+	}
+	if driver.resumes != 0 {
+		t.Errorf("node-local ResolveStatefulAbort calls = %d, want 0", driver.resumes)
+	}
+	if got := statefulVMStatus(t, s, started.GetVmId()); got == nil || !got.GetCheckpointPending() {
+		t.Fatalf("forwarding must leave checkpoint resolution with the control plane; got %+v", got)
+	}
+}
+
+func TestStatefulActivatorCheckpointFailsClosedWithoutControlPlane(t *testing.T) {
+	port := statefulActivatorEchoServer(t)
+	s, _, driver := newStatefulTestServer(t)
+	listenPort := startStatefulActivator(t, s)
+	enableStatefulActivatorWorkload(s, "wl-state", listenPort, port)
+	started := startFreshStateful(t, s, port, "wl-state")
+	before, err := s.volumes.Generation("wl-state")
+	if err != nil {
+		t.Fatalf("generation before checkpoint: %v", err)
+	}
+	_ = checkpointStateful(t, s, started.GetVmId(), "wl-state")
+
+	conn := statefulActivatorConn(t, listenPort)
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set deadline: %v", err)
+	}
+	if _, err := conn.Write([]byte("must not reach the paused guest")); err == nil {
+		if _, err := conn.Read(make([]byte, 1)); err == nil {
+			t.Fatal("checkpointed request reached the guest without control-plane authorization")
+		}
+	}
+
+	after, err := s.volumes.Generation("wl-state")
+	if err != nil {
+		t.Fatalf("generation after unavailable forward: %v", err)
+	}
+	if after != before || driver.resumes != 0 {
+		t.Fatalf("unavailable control plane mutated checkpoint: generation %d -> %d, resumes %d", before, after, driver.resumes)
+	}
+	if got := statefulVMStatus(t, s, started.GetVmId()); got == nil || !got.GetCheckpointPending() {
+		t.Fatalf("unavailable control plane must leave checkpoint recovery armed; got %+v", got)
+	}
+}
+
+func TestStatefulActivatorInterruptedForwardLeavesAuthorizedRetry(t *testing.T) {
+	port := statefulActivatorEchoServer(t)
+	s, _, driver := newStatefulTestServer(t)
+	listenPort := startStatefulActivator(t, s)
+	const controlPlaneIP = "127.0.0.2"
+	lis, err := net.Listen("tcp", net.JoinHostPort(controlPlaneIP, strconv.FormatUint(uint64(listenPort), 10)))
+	if err != nil {
+		t.Fatalf("control-plane activator listen: %v", err)
+	}
+	t.Cleanup(func() { _ = lis.Close() })
+	accepted := make(chan struct{}, 1)
+	go func() {
+		conn, err := lis.Accept()
+		if err != nil {
+			return
+		}
+		accepted <- struct{}{}
+		_ = conn.Close()
+	}()
+	s.registry.setControlPlaneActivator(controlPlaneIP)
+	enableStatefulActivatorWorkload(s, "wl-state", listenPort, port)
+	started := startFreshStateful(t, s, port, "wl-state")
+	before, err := s.volumes.Generation("wl-state")
+	if err != nil {
+		t.Fatalf("generation before checkpoint: %v", err)
+	}
+	checkpoint := checkpointStateful(t, s, started.GetVmId(), "wl-state")
+
+	conn := statefulActivatorConn(t, listenPort)
+	if err := conn.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set deadline: %v", err)
+	}
+	_, _ = conn.Write([]byte("interrupted"))
+	if _, err := conn.Read(make([]byte, 1)); err == nil {
+		t.Fatal("interrupted control-plane forward unexpectedly served bytes")
+	}
+	_ = conn.Close()
+	select {
+	case <-accepted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("control-plane activator did not receive the interrupted forward")
+	}
+	if got, err := s.volumes.Generation("wl-state"); err != nil || got != before || driver.resumes != 0 {
+		t.Fatalf("interrupted forward mutated checkpoint: generation=%d err=%v resumes=%d", got, err, driver.resumes)
+	}
+
+	request := &nodev1.ResolveStatefulRequest{
+		VmId:              started.GetVmId(),
+		CheckpointToken:   checkpoint.GetCheckpointToken(),
+		Mode:              nodev1.ResolveMode_RESOLVE_MODE_ABORT,
+		BlessedGeneration: before + 1,
+	}
+	if _, err := s.ResolveStateful(context.Background(), request); err != nil {
+		t.Fatalf("authorized retry after interrupted forward: %v", err)
 	}
 	if driver.resumes != 1 {
-		t.Errorf("ResolveStatefulAbort calls = %d, want 1", driver.resumes)
+		t.Fatalf("authorized retry resume calls = %d, want 1", driver.resumes)
+	}
+	if _, err := s.ResolveStateful(context.Background(), request); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("repeated retry after resolution: err = %v, want FailedPrecondition", err)
+	}
+	if driver.resumes != 1 {
+		t.Fatalf("repeated retry resume calls = %d, want still 1", driver.resumes)
 	}
 }
 

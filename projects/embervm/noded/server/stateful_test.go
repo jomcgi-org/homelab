@@ -1040,53 +1040,58 @@ func TestStatefulResolveCommit(t *testing.T) {
 	}
 }
 
-// TestStatefulResolveAbort: ABORT resumes the VM (still live), bumps the
-// generation via the legacy self-bump lane (no blessed_generation on the
-// request), and records NO bundle. The response now reports the bumped
-// generation (R7, ADR embervm/011: ResolveStatefulResponse.Generation is
-// populated on ABORT too, so the control plane can confirm what noded
-// recorded), but the volume must NOT read as blessed since this is the
-// self-bump lane, not a CP-issued blessing.
-func TestStatefulResolveAbort(t *testing.T) {
+// TestStatefulResolveAbortRequiresCurrentBlessing proves an unblessed or stale
+// ABORT is rejected before consuming the checkpoint token. A retry carrying a
+// current control-plane-issued generation is then the one legitimate resolve.
+func TestStatefulResolveAbortRequiresCurrentBlessing(t *testing.T) {
 	port := tcpHealthServer(t)
 	s, _, fsd := newStatefulTestServer(t)
 	started := startFreshStateful(t, s, port, "wl-state")
 	ckpt := checkpointStateful(t, s, started.GetVmId(), "wl-state")
 
-	resp, err := s.ResolveStateful(context.Background(), &nodev1.ResolveStatefulRequest{
+	_, err := s.ResolveStateful(context.Background(), &nodev1.ResolveStatefulRequest{
 		VmId:            started.GetVmId(),
 		CheckpointToken: ckpt.GetCheckpointToken(),
 		Mode:            nodev1.ResolveMode_RESOLVE_MODE_ABORT,
 	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("unblessed abort: err = %v, want FailedPrecondition", err)
+	}
+	_, err = s.ResolveStateful(context.Background(), &nodev1.ResolveStatefulRequest{
+		VmId:              started.GetVmId(),
+		CheckpointToken:   ckpt.GetCheckpointToken(),
+		Mode:              nodev1.ResolveMode_RESOLVE_MODE_ABORT,
+		BlessedGeneration: 1,
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("stale abort blessing: err = %v, want FailedPrecondition", err)
+	}
+	if got := statefulVMStatus(t, s, started.GetVmId()); got == nil || !got.GetCheckpointPending() {
+		t.Fatalf("refused authorization consumed checkpoint ownership; got %+v", got)
+	}
+	if fsd.resumes != 0 {
+		t.Fatalf("refused authorization resumed the VM %d times", fsd.resumes)
+	}
+
+	resp, err := s.ResolveStateful(context.Background(), &nodev1.ResolveStatefulRequest{
+		Trace:             &nodev1.Trace{Workload: "wrong-workload-is-not-authority"},
+		VmId:              started.GetVmId(),
+		CheckpointToken:   ckpt.GetCheckpointToken(),
+		Mode:              nodev1.ResolveMode_RESOLVE_MODE_ABORT,
+		BlessedGeneration: 2,
+	})
 	if err != nil {
-		t.Fatalf("ResolveStateful(abort): %v", err)
+		t.Fatalf("authorized ResolveStateful(abort): %v", err)
 	}
-	if resp.GetSnapshotRef() != "" || resp.GetSizeBytes() != 0 {
-		t.Fatalf("abort response should carry no bundle; got %+v", resp)
+	if resp.GetGeneration() != 2 || !s.volumes.GenerationBlessed("wl-state") {
+		t.Fatalf("authorized abort response = %+v, generation_blessed=%v", resp, s.volumes.GenerationBlessed("wl-state"))
 	}
-	if resp.GetGeneration() != 2 {
-		t.Fatalf("abort response generation = %d want 2 (the self-bumped generation, reported so the control plane can confirm it)", resp.GetGeneration())
+	if s.volumes.GenerationBlessed("wrong-workload-is-not-authority") {
+		t.Error("request trace workload incorrectly selected the generation ledger")
 	}
-	// VM resumed, still live; no bundle.
-	if fsd.liveCount() != 1 {
-		t.Fatalf("live count after abort = %d want 1 (resumed)", fsd.liveCount())
-	}
-	if _, ok := s.statefulBundles.byWorkload("wl-state"); ok {
-		t.Fatal("abort must not record a bundle")
-	}
-	// The abort bumped the generation (1 -> 2); status reports the resumed VM as
-	// no longer checkpoint_pending, at the bumped generation.
 	v := statefulVMStatus(t, s, started.GetVmId())
-	if v == nil || v.GetCheckpointPending() {
-		t.Fatalf("resumed VM should not be checkpoint_pending; got %+v", v)
-	}
-	if v.GetGeneration() != 2 {
-		t.Fatalf("resumed VM generation = %d want 2 (abort bumped)", v.GetGeneration())
-	}
-	// Legacy self-bump lane (blessed_generation unset): the volume must NOT read
-	// as blessed, since no control plane issued this generation.
-	if s.volumes.GenerationBlessed("wl-state") {
-		t.Error("a legacy self-bumped abort must not read as blessed")
+	if v == nil || v.GetCheckpointPending() || v.GetGeneration() != 2 || fsd.resumes != 1 {
+		t.Fatalf("authorized abort did not resume exactly once: vm=%+v resumes=%d", v, fsd.resumes)
 	}
 }
 
@@ -1152,7 +1157,7 @@ func TestStatefulResolveUnknownTokenErrors(t *testing.T) {
 	}
 	// Unknown vm.
 	_, err = s.ResolveStateful(context.Background(), &nodev1.ResolveStatefulRequest{
-		VmId: "no-such-vm", CheckpointToken: ckpt.GetCheckpointToken(), Mode: nodev1.ResolveMode_RESOLVE_MODE_ABORT,
+		VmId: "no-such-vm", CheckpointToken: ckpt.GetCheckpointToken(), Mode: nodev1.ResolveMode_RESOLVE_MODE_ABORT, BlessedGeneration: 2,
 	})
 	if status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("unknown vm: err = %v, want FailedPrecondition", err)
@@ -1185,7 +1190,7 @@ func TestStatefulResolveSingleResolve(t *testing.T) {
 	ckpt := checkpointStateful(t, s, started.GetVmId(), "wl-state")
 
 	if _, err := s.ResolveStateful(context.Background(), &nodev1.ResolveStatefulRequest{
-		VmId: started.GetVmId(), CheckpointToken: ckpt.GetCheckpointToken(), Mode: nodev1.ResolveMode_RESOLVE_MODE_ABORT,
+		VmId: started.GetVmId(), CheckpointToken: ckpt.GetCheckpointToken(), Mode: nodev1.ResolveMode_RESOLVE_MODE_ABORT, BlessedGeneration: 2,
 	}); err != nil {
 		t.Fatalf("first resolve: %v", err)
 	}
@@ -1194,6 +1199,56 @@ func TestStatefulResolveSingleResolve(t *testing.T) {
 	})
 	if status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("second resolve of a consumed token: err = %v, want FailedPrecondition", err)
+	}
+}
+
+// TestStatefulResolveCommitAbortRace proves claimResolve remains the atomic
+// terminal owner when authorized ABORT and COMMIT arrive concurrently.
+func TestStatefulResolveCommitAbortRace(t *testing.T) {
+	port := tcpHealthServer(t)
+	s, _, driver := newStatefulTestServer(t)
+	started := startFreshStateful(t, s, port, "wl-state")
+	ckpt := checkpointStateful(t, s, started.GetVmId(), "wl-state")
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	requests := []*nodev1.ResolveStatefulRequest{
+		{
+			VmId: started.GetVmId(), CheckpointToken: ckpt.GetCheckpointToken(),
+			Mode: nodev1.ResolveMode_RESOLVE_MODE_COMMIT,
+		},
+		{
+			VmId: started.GetVmId(), CheckpointToken: ckpt.GetCheckpointToken(),
+			Mode: nodev1.ResolveMode_RESOLVE_MODE_ABORT, BlessedGeneration: 2,
+		},
+	}
+	for _, request := range requests {
+		go func(req *nodev1.ResolveStatefulRequest) {
+			<-start
+			_, err := s.ResolveStateful(context.Background(), req)
+			errs <- err
+		}(request)
+	}
+	close(start)
+	successes := 0
+	preconditions := 0
+	for range requests {
+		switch err := <-errs; status.Code(err) {
+		case codes.OK:
+			successes++
+		case codes.FailedPrecondition:
+			preconditions++
+		default:
+			t.Fatalf("race resolve error = %v", err)
+		}
+	}
+	if successes != 1 || preconditions != 1 {
+		t.Fatalf("race outcomes: successes=%d failed_preconditions=%d, want 1 and 1", successes, preconditions)
+	}
+	driver.mu.Lock()
+	terminalCalls := driver.resumes + len(driver.banked)
+	driver.mu.Unlock()
+	if terminalCalls != 1 {
+		t.Fatalf("driver terminal resolve calls = %d, want exactly 1", terminalCalls)
 	}
 }
 
@@ -1249,7 +1304,7 @@ func TestStatefulResolveInvalidModeDoesNotConsume(t *testing.T) {
 	}
 	// The checkpoint is still resolvable (not consumed by the invalid attempt).
 	if _, err := s.ResolveStateful(context.Background(), &nodev1.ResolveStatefulRequest{
-		VmId: started.GetVmId(), CheckpointToken: ckpt.GetCheckpointToken(), Mode: nodev1.ResolveMode_RESOLVE_MODE_ABORT,
+		VmId: started.GetVmId(), CheckpointToken: ckpt.GetCheckpointToken(), Mode: nodev1.ResolveMode_RESOLVE_MODE_ABORT, BlessedGeneration: 2,
 	}); err != nil {
 		t.Fatalf("abort after invalid-mode attempt should still work: %v", err)
 	}

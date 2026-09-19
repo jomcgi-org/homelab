@@ -1,0 +1,47 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: onepassword
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: shared-infrastructure
+  annotations:
+    # Wave 0: the Connect API and the operator are what every OnePasswordItem in
+    # the cluster is reconciled through, so they come up before the workloads
+    # whose items they materialise.
+    argocd.argoproj.io/sync-wave: "0"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/jomcgi-org/homelab.git
+    targetRevision: HEAD
+    path: projects/platform/onepassword
+    helm:
+      releaseName: connect
+      valueFiles:
+        - values.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    # The namespace the out-of-band Connect install already lives in. This
+    # Application adopts those resources and manages them from Git, so the
+    # release name and the namespace must match the existing install.
+    namespace: default
+  syncPolicy:
+    automated:
+      # Connect and the operator are installed out of band before this root
+      # syncs (the root's first sync renders OnePasswordItems, which need the
+      # operator). Adopt those resources without pruning, so a render that has
+      # not caught up with the live install cannot delete the secret broker.
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

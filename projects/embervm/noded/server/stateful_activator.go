@@ -124,7 +124,17 @@ func (a *statefulActivator) handle(ctx context.Context, conn net.Conn, listenPor
 		return
 	}
 
-	if live, token, inFlight, ok := a.server.statefulVMs.byWorkloadCheckpoint(reg.Workload); ok && token == "" {
+	if live, token, inFlight, ok := a.server.statefulVMs.byWorkloadCheckpoint(reg.Workload); ok && token != "" {
+		// A checkpoint resolve is owned by the control plane: it serializes the
+		// COMMIT-versus-ABORT decision and durably issues the generation an ABORT
+		// records. Forward the waiting connection so StatefulManager parks it and
+		// StatefulSweeper can authorize the resolve. The forward is only a request
+		// for that owner to act. If it is unavailable, the dial fails closed without
+		// claiming the token or changing the volume generation; noded's existing
+		// resolve-timeout auto-abort remains the recovery backstop.
+		a.forwardToControlPlane(ctx, conn, listenPort)
+		return
+	} else if ok {
 		if !inFlight {
 			a.splice(ctx, conn, live)
 			return
@@ -265,10 +275,10 @@ func (a *statefulActivator) parkMeasurements() (map[string]uint64, map[string]in
 }
 
 // waitForInFlight waits for a stop transition to expose a safe decision. A
-// checkpoint token means wake must claim and abort the paused VM, a removed
-// entry means wake must relight or cold-boot, and a cleared guard permits the
-// existing live VM to be spliced. The bounded fallback preserves the
-// node-local activator's escape hatch when a transition gets stuck.
+// checkpoint token means the request must go to the control-plane resolution
+// owner, a removed entry means wake must relight or cold-boot, and a cleared
+// guard permits the existing live VM to be spliced. The bounded fallback
+// preserves the node-local activator's escape hatch when a transition gets stuck.
 func (a *statefulActivator) waitForInFlight(ctx context.Context, workload string) (*statefulEntry, statefulInFlightWaitResult) {
 	started := time.Now()
 	recordPark := func() {
@@ -336,21 +346,12 @@ func (a *statefulActivator) wake(ctx context.Context, reg workloadEntry) (*state
 			}
 			continue
 		}
-		e, claimed := a.server.statefulVMs.claimResolve(live.vmID, token)
-		if !claimed {
-			if resumed, resumedToken, resumedInFlight, found := a.server.statefulVMs.byWorkloadCheckpoint(reg.Workload); found && resumedToken == "" && !resumedInFlight {
-				return resumed, nil
-			}
-			return nil, fmt.Errorf("noded: checkpoint resolve raced for stateful workload %q", reg.Workload)
-		}
-		if _, err := a.server.abortCheckpoint(ctx, e, token, 0); err != nil {
-			return nil, err
-		}
-		resumed, resumedToken, resumedInFlight, ok := a.server.statefulVMs.byWorkloadCheckpoint(reg.Workload)
-		if !ok || resumedToken != "" || resumedInFlight {
-			return nil, fmt.Errorf("noded: checkpoint abort for stateful workload %q did not restore a live VM", reg.Workload)
-		}
-		return resumed, nil
+		// The control plane owns checkpoint resolution and generation issuance.
+		// Returning an error hands the accepted connection to handle's existing
+		// control-plane forwarding path. A race that resolved the checkpoint between
+		// this read and the forward is harmless: StatefulManager reads current state
+		// and either serves the live endpoint or starts the ordinary wake path.
+		return nil, fmt.Errorf("noded: checkpoint for stateful workload %q requires control-plane resolution", reg.Workload)
 	}
 
 	// Resolve boot_image_ref from the daemon's OWN base registry by workload (the

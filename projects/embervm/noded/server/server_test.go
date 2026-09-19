@@ -1296,6 +1296,79 @@ func TestBuildBaseIdempotent(t *testing.T) {
 	}
 }
 
+// A registry READY row is not enough for an idempotent success. If the bundle
+// disappeared while noded stayed alive, BuildBase must invalidate that stale
+// claim and rebuild instead of returning a signature-derived phantom ref that
+// the control plane would publish as BaseReady (#4400).
+func TestBuildBaseReadyRegistryEntryMissingOnDiskRebuilds(t *testing.T) {
+	snapshotRoot := t.TempDir()
+	rootfs := writeExt4Rootfs(t, t.TempDir(), "rootfs.ext4", testRootfsUUIDA)
+	build := &fakeDriver{snapshotRoot: snapshotRoot}
+	s := New(Options{
+		Config: config.Config{
+			Arch: "amd64", Node: "node-4", SnapshotRoot: snapshotRoot,
+			BootReadyTimeout: time.Second,
+			Images:           map[string]config.Image{"img:1": {RootfsPath: rootfs}},
+		},
+		Driver:         &fakeDriver{},
+		Transport:      &fakeTransport{},
+		NewBuildDriver: func(BuildDriverSpec) BuildDriver { return build },
+		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+
+	req := &nodev1.BuildBaseRequest{
+		Trace:            &nodev1.Trace{Workload: "echo"},
+		ImageRef:         "img:1",
+		WorkloadRevision: "r1",
+		ReadyPath:        "/shim/ready",
+		Resources:        &nodev1.ResourceSpec{Vcpus: 2, MemMib: 2048},
+	}
+	baseKey := baseKeyFor("echo", "img:1", "r1", s.cfg.CpuVendor, testRootfsUUIDA)
+	s.bases.readyBuild(baseKey, "echo", "img:1", rootfs, "/shim/ready", 4096)
+
+	resp, err := s.BuildBase(context.Background(), req)
+	if err != nil {
+		t.Fatalf("BuildBase: %v", err)
+	}
+	if resp.GetAlreadyBuilt() {
+		t.Fatalf("BuildBase response = %+v, want a fresh verified build", resp)
+	}
+	if resp.GetSnapshotRef() != baseKey {
+		t.Fatalf("snapshot_ref = %q, want %q", resp.GetSnapshotRef(), baseKey)
+	}
+	if build.snapshots != 1 {
+		t.Fatalf("snapshots = %d, want 1", build.snapshots)
+	}
+	if !isCompleteBase(filepath.Join(snapshotRoot, "bases", baseKey), nodev1.BaseBuildState_BASE_BUILD_STATE_READY) {
+		t.Fatal("fresh build did not publish a complete base bundle")
+	}
+}
+
+func TestVerifiedReadyBaseReadFailureInvalidatesWithoutRebuilding(t *testing.T) {
+	snapshotRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(snapshotRoot, "bases"), []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("write unreadable bases path: %v", err)
+	}
+	s := New(Options{
+		Config:    config.Config{Arch: "amd64", Node: "node-4", SnapshotRoot: snapshotRoot},
+		Driver:    &fakeDriver{},
+		Transport: &fakeTransport{},
+		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	s.bases.readyBuild("echo__phantom", "echo", "img:1", "/rootfs.ext4", "/shim/ready", 4096)
+
+	resp, ok, err := s.verifiedReadyBase("echo__phantom", "echo", "img:1", "/rootfs.ext4")
+	if resp != nil || ok {
+		t.Fatalf("verifiedReadyBase = (%+v, %v, %v), want no success", resp, ok, err)
+	}
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("verification error code = %v, want Unavailable", status.Code(err))
+	}
+	if _, stillReady := s.bases.get("echo__phantom"); stillReady {
+		t.Fatal("verification error left the stale READY registry entry published")
+	}
+}
+
 // TestBuildBaseUnknownImage rejects a build for an image the node has no rootfs for.
 func TestBuildBaseUnknownImage(t *testing.T) {
 	s := New(Options{
@@ -1378,8 +1451,8 @@ func TestBuildBaseAdoptsSiblingBundleFromDisk(t *testing.T) {
 	if claims, _, _, _ := build.counts(); claims != 0 || build.snapshots != 0 {
 		t.Errorf("build driver claims=%d snapshots=%d, want 0/0 (no guest booted)", claims, build.snapshots)
 	}
-	// The adopted bundle is registered READY so WatchNode advertises it and the
-	// registry short-circuit serves later repeats without re-touching disk.
+	// The adopted bundle is registered READY so WatchNode advertises it and a
+	// later repeat can revalidate it without booting a build guest.
 	entry, ok := s.bases.get(baseKey)
 	if !ok || entry.state != nodev1.BaseBuildState_BASE_BUILD_STATE_READY {
 		t.Errorf("registry entry = %+v ok=%v, want READY", entry, ok)
@@ -1768,6 +1841,33 @@ func TestBuildBaseZipHappyPath(t *testing.T) {
 	}
 	if got := tr.hydrateCount(); got != 1 {
 		t.Errorf("idempotent zip build re-hydrated: hydrate count = %d, want 1", got)
+	}
+
+	// Losing the bundle while the daemon stays alive invalidates the in-memory
+	// READY entry. The next request must fetch, hydrate, and snapshot again rather
+	// than returning the deterministic ref as a phantom idempotent success.
+	if err := os.RemoveAll(filepath.Join(s.cfg.SnapshotRoot, "bases", resp.GetSnapshotRef())); err != nil {
+		t.Fatalf("remove built zip bundle: %v", err)
+	}
+	resp3, err := s.BuildBase(ctx, &nodev1.BuildBaseRequest{
+		Trace: &nodev1.Trace{Workload: "ziphandler"},
+		Source: &nodev1.BuildBaseRequest_Zip{Zip: &nodev1.ZipSource{
+			RuntimeImageRef: "runtime-python:1",
+			ArchiveUrl:      url,
+			ArchiveSha256:   sha256Hex(archive),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("third zip build after bundle loss: %v", err)
+	}
+	if resp3.GetAlreadyBuilt() {
+		t.Fatalf("third zip build resp = %+v, want a fresh verified build", resp3)
+	}
+	if build.snapshots != 2 {
+		t.Errorf("zip rebuild snapshots = %d, want 2", build.snapshots)
+	}
+	if got := tr.hydrateCount(); got != 2 {
+		t.Errorf("zip rebuild hydrate count = %d, want 2", got)
 	}
 }
 

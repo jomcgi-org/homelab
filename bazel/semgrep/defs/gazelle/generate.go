@@ -49,8 +49,8 @@ func generateRules(args language.GenerateArgs) language.GenerateResult {
 		coveredFiles := coveredByTargets(args.File, targets, cfg.targetKinds)
 
 		// Resolve each target and deduplicate by resolved label.
-		// Track which resolved labels we've already emitted.
-		seen := make(map[string]bool)
+		// Track which canonical labels we've already emitted.
+		seen := make(map[string]int)
 
 		// Collect target tests, sorted by rule name for determinism
 		type targetEntry struct {
@@ -61,16 +61,26 @@ func generateRules(args language.GenerateArgs) language.GenerateResult {
 		var entries []targetEntry
 		for _, t := range targets {
 			resolved := resolveTarget(t, cfg.targetKinds)
-			if seen[resolved] {
-				continue
-			}
-			seen[resolved] = true
-			entries = append(entries, targetEntry{
+			canonical := canonicalTargetLabel(resolved, args.Rel)
+			entry := targetEntry{
 				name:   t.Name() + "_semgrep_test",
 				target: resolved,
 				rule:   t,
-			})
+			}
+			if i, ok := seen[canonical]; ok {
+				// Prefer a self-targeting rule because its deps provide lockfile
+				// and SCA metadata that an indirect wrapper may not expose.
+				if cfg.targetKinds[entries[i].rule.Kind()] != "" && cfg.targetKinds[t.Kind()] == "" {
+					entries[i] = entry
+				}
+				continue
+			}
+			seen[canonical] = len(entries)
+			entries = append(entries, entry)
 		}
+		sort.Slice(entries, func(i, j int) bool {
+			return entries[i].name < entries[j].name
+		})
 
 		allRules := rulesForLanguages(cfg.languages)
 
@@ -247,6 +257,15 @@ func resolveTarget(r *rule.Rule, targetKinds map[string]string) string {
 		return ":" + r.Name()
 	}
 	return r.AttrString(attr)
+}
+
+// canonicalTargetLabel returns an absolute label for package-relative targets.
+// This lets deduplication treat :name and //package:name as the same target.
+func canonicalTargetLabel(target, pkg string) string {
+	if strings.HasPrefix(target, ":") {
+		return "//" + pkg + target
+	}
+	return target
 }
 
 // scannableFiles returns the sorted subset of files with extensions matching

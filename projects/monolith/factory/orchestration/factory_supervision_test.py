@@ -241,6 +241,128 @@ def test_destroyed_view_after_node_gone_uses_existing_cessation_path():
     assert proof["state"] == "destroyed"
 
 
+def _restart_precondition(*, generation=4, invoke_started_at=100):
+    return {
+        "session_id": "guest-1",
+        "generation": generation,
+        "invoke_started_at": invoke_started_at,
+        "vm_id": "vm-1",
+        "node_id": "node-1",
+        "instance_id": "node-1/pod-1",
+        "pod_uid": "pod-1",
+        "boot_id": "boot-1",
+    }
+
+
+def test_post_restart_generation_change_is_cessation_evidence():
+    recorded = _restart_precondition()
+    current = {
+        **recorded,
+        "generation": recorded["generation"] + 1,
+        "invoke_started_at": None,
+        "vm_id": "vm-2",
+        "instance_id": "node-1/pod-2",
+        "pod_uid": "pod-2",
+        "boot_id": "boot-2",
+    }
+
+    proof = supervisor._replacement_invocation_cessation(
+        {
+            "session_id": "guest-1",
+            "state": "running",
+            "generation": current["generation"],
+            "invoke_started_at": current["invoke_started_at"],
+            "last_invoke_at": None,
+            "stop_precondition": current,
+        },
+        {"guest_id": "guest-1"},
+        {"precondition": recorded},
+    )
+
+    assert proof["replacement_evidence"] == "generation_advanced"
+    assert proof["previous_generation"] == 4
+    assert proof["generation"] == 5
+
+
+def test_post_restart_invoke_stamp_reset_is_cessation_evidence():
+    recorded = _restart_precondition()
+    current = {**recorded, "invoke_started_at": None}
+
+    proof = supervisor._replacement_invocation_cessation(
+        {
+            "session_id": "guest-1",
+            "state": "running",
+            "generation": current["generation"],
+            "invoke_started_at": None,
+            "last_invoke_at": recorded["invoke_started_at"],
+            "stop_precondition": current,
+        },
+        {"guest_id": "guest-1"},
+        {"precondition": recorded},
+    )
+
+    assert proof["replacement_evidence"] == "invoke_completed"
+    assert proof["previous_invoke_started_at"] == 100
+    assert proof["invoke_started_at"] is None
+
+
+def test_unordered_invoke_stamp_reset_is_not_cessation_evidence():
+    recorded = _restart_precondition()
+    current = {**recorded, "invoke_started_at": None}
+
+    assert (
+        supervisor._replacement_invocation_cessation(
+            {
+                "session_id": "guest-1",
+                "state": "running",
+                "generation": current["generation"],
+                "invoke_started_at": None,
+                "last_invoke_at": None,
+                "stop_precondition": current,
+            },
+            {"guest_id": "guest-1"},
+            {"precondition": recorded},
+        )
+        is None
+    )
+
+
+def test_supervision_note_records_the_value_error_refusal(monkeypatch):
+    import contextlib
+
+    audits = []
+
+    @contextlib.contextmanager
+    def locked():
+        yield ("db", "control")
+
+    monkeypatch.setattr(supervisor.controls, "_locked_session", locked)
+    monkeypatch.setattr(supervisor, "_records", lambda db, pin: [])
+    monkeypatch.setattr(
+        supervisor,
+        "_audit",
+        lambda db, pin, action, **detail: audits.append((action, detail)),
+    )
+
+    supervisor._note(
+        {"task_id": "task-1", "workflow_id": "workflow-1"},
+        "stop_evidence_or_ownership_changed",
+        error="changed_stop_invocation",
+    )
+
+    assert audits == [
+        (
+            "stop_observation",
+            {
+                "reason": "stop_evidence_or_ownership_changed",
+                "error": "changed_stop_invocation",
+                "intervention_required": True,
+                "cessation_confirmed": False,
+            },
+        )
+    ]
+
+
 ABSENT_AT = datetime(2026, 9, 15, 4, 0, tzinfo=timezone.utc)
 ABSENT_IDENTITY = {
     "guest_id": "guest-9",

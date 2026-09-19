@@ -40,6 +40,8 @@ from factory.orchestration.factory_controls import (
     _now,
     _read_session,
     decision_identity,
+    delivery_branch_owner,
+    granted_delivery_surface,
     intake_policy,
     is_advisory,
     terminal_effect,
@@ -910,6 +912,27 @@ def _direction(
     }
 
 
+def _grant_delivery_surface(db, row: FactoryReceipt, direction: dict) -> str | None:
+    """Add the operator-authorized prior PR surface, or name its refusal."""
+    try:
+        branch, number = granted_delivery_surface(direction)
+    except ValueError as exc:
+        return str(exc)
+    if branch is None or number is None:
+        return None
+    owner = delivery_branch_owner(
+        db,
+        row.repo,
+        branch,
+        exclude_receipt_id=row.id,
+    )
+    if owner is not None:
+        return f"delivery branch {branch} is owned by running task {owner}"
+    direction["delivery_branch"] = branch
+    direction["delivery_pr_number"] = number
+    return None
+
+
 def _readmit(
     db,
     row: FactoryReceipt,
@@ -933,11 +956,14 @@ def _readmit(
     refuse itself on its own state.
     """
     queued = row.state == "queued"
-    blocker = None if queued else _requeue_blocker(db, row, ignore_request)
+    direction = _direction(row, escalation, option, actor, note)
+    blocker = _grant_delivery_surface(db, row, direction)
+    if blocker is None and not queued:
+        blocker = _requeue_blocker(db, row, ignore_request)
     if blocker is not None:
         _settle_escalated(row, "cancelled")
         return {"readmitted": False, "blocked_by": blocker}
-    row.direction_json = json.dumps(_direction(row, escalation, option, actor, note))
+    row.direction_json = json.dumps(direction)
     if not queued:
         _requeue(row)
     return {"readmitted": True, "blocked_by": None}
