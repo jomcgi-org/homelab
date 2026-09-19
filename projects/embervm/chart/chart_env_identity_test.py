@@ -773,9 +773,9 @@ def test_gke_brick_rollout_budget_outlasts_factory_invokes() -> None:
             if container["name"] == "noded"
         )
         env = {entry["name"]: entry for entry in noded["env"]}
-        assert env["EMBERVM_NODED_DRAIN_TIMEOUT"]["value"] == "7200s"
-        assert pod_spec["terminationGracePeriodSeconds"] == 7230
-        assert spec["progressDeadlineSeconds"] == 10800
+        assert env["EMBERVM_NODED_DRAIN_TIMEOUT"]["value"] == "150s"
+        assert pod_spec["terminationGracePeriodSeconds"] == 180
+        assert spec["progressDeadlineSeconds"] == 3600
 
 
 def test_noded_onepassword_item_uses_default_shared_secret_name():
@@ -2065,11 +2065,12 @@ def test_gke_drain_uses_bounded_flush_and_ordinary_rollout_budget():
             }
             if container["name"] == "noded":
                 bricks.append(doc)
-                # Interim #6216 budget until the interrupt-relay image has
-                # rolled; the #6256 follow-up drops these to 150s/180/180.
-                assert env["EMBERVM_NODED_DRAIN_TIMEOUT"] == "7200s"
-                assert spec["template"]["spec"]["terminationGracePeriodSeconds"] == 7230
-                assert spec["progressDeadlineSeconds"] == 10800
+                # Flush (60s) plus bank inside 150s; grace adds the chart's
+                # 30s margin; the progress deadline stays the chart default
+                # because a cold rootfs rebuild still needs it.
+                assert env["EMBERVM_NODED_DRAIN_TIMEOUT"] == "150s"
+                assert spec["template"]["spec"]["terminationGracePeriodSeconds"] == 180
+                assert spec["progressDeadlineSeconds"] == 3600
             if "EMBERVM_SESSION_DRAIN_FLUSH_MS" in env:
                 control.append(doc)
                 assert env["EMBERVM_SESSION_DRAIN_FLUSH_MS"] == "60000"
