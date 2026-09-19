@@ -57,6 +57,7 @@ defmodule Embervm.RouterTest do
 
   defmodule UnavailableTaskStore do
     def submit(_server, _attrs), do: {:error, :unavailable}
+    def list_usage(_server, _opts), do: {:error, :unavailable}
   end
 
   # Fakes for the R2 session routes: the router resolves the session manager/store
@@ -1298,6 +1299,15 @@ defmodule Embervm.RouterTest do
     assert mine
     # 3000ms = 3.0 vCPU-s; accumulates across this file's tests, so >=.
     assert mine["vcpu_seconds"] >= 3.0
+  end
+
+  test "GET /v1/usage returns a retryable 503 while the task store is unavailable" do
+    Application.put_env(:embervm, :task_store_mod, UnavailableTaskStore)
+
+    resp = req(:get, "/v1/usage", auth("good"))
+
+    assert resp.status == 503
+    assert json(resp.body) == %{"error" => "usage unavailable", "retryable" => true}
   end
 
   test "GET /v1/usage is self-scoped: a non-admin cannot read another principal" do

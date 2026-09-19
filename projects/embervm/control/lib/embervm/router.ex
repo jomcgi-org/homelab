@@ -551,14 +551,19 @@ defmodule Embervm.Router do
       [since_day: since_day, limit: limit, offset: offset] ++
         if(filter_principal, do: [principal: filter_principal], else: [])
 
-    {:ok, page} = TaskStore.list_usage(store(), opts)
+    case task_store().list_usage(store(), opts) do
+      {:ok, page} ->
+        send_json(conn, 200, %{
+          items: Enum.map(page.items, &usage_view/1),
+          total: page.total,
+          limit: page.limit,
+          offset: page.offset
+        })
 
-    send_json(conn, 200, %{
-      items: Enum.map(page.items, &usage_view/1),
-      total: page.total,
-      limit: page.limit,
-      offset: page.offset
-    })
+      {:error, :unavailable} ->
+        Logger.warning("embervm usage unavailable")
+        send_json(conn, 503, %{error: "usage unavailable", retryable: true})
+    end
   end
 
   defp usage_view(row) do

@@ -42,22 +42,22 @@ defmodule Embervm.TaskStoreTest do
     def load_tasks(server), do: GenServer.call(server, :load_tasks)
 
     def append(server, op) do
-      GenServer.call(server, {:append, op}, 10)
+      GenServer.call(server, {:append, op}, 50)
     end
 
     @impl true
-    def init(owner), do: {:ok, %{owner: owner, rows: [], next_seq: 1}}
+    def init(owner), do: {:ok, %{owner: owner, rows: [], next_seq: 1, pending: nil}}
 
     @impl true
     def handle_call(:load_tasks, _from, state), do: {:reply, {:ok, state.rows}, state}
 
     def handle_call({:append, op}, from, state) do
-      Process.send_after(self(), {:commit, from, op}, 30)
-      {:noreply, state}
+      send(state.owner, {:append_waiting, op.task_id})
+      {:noreply, %{state | pending: {from, op}}}
     end
 
     @impl true
-    def handle_info({:commit, from, op}, state) do
+    def handle_info(:commit, %{pending: {from, op}} = state) do
       row = %{
         task_id: op.task_id,
         tenant: op.tenant,
@@ -75,7 +75,7 @@ defmodule Embervm.TaskStoreTest do
       GenServer.reply(from, {:ok, state.next_seq})
 
       {:noreply,
-       %{state | rows: [row | state.rows], next_seq: state.next_seq + 1}}
+       %{state | rows: [row | state.rows], next_seq: state.next_seq + 1, pending: nil}}
     end
   end
 
@@ -207,10 +207,12 @@ defmodule Embervm.TaskStoreTest do
     {:ok, store} = TaskStore.start_link(store_opts)
 
     assert TaskStore.submit(store, attrs) == {:error, :unavailable}
+    assert_received {:append_waiting, "late-task"}
     assert Process.alive?(store)
     assert TaskStore.get(store, "late-task") == :error
 
-    assert_receive {:late_append_committed, "late-task"}
+    send(op_log, :commit)
+    assert_receive {:late_append_committed, "late-task"}, 1_000
     assert TaskStore.get(store, "late-task") == :error
 
     :ok = GenServer.stop(store)
@@ -220,6 +222,19 @@ defmodule Embervm.TaskStoreTest do
     assert recovered.state == :queued
     assert recovered.attempt == 1
     assert TaskStore.submit(recovered_store, attrs) == {:ok, :existing, "late-task"}
+  end
+
+  test "TaskStore call budgets outlive delegated Postgres work" do
+    alias Embervm.OpLog.Postgres
+
+    assert TaskStore.single_query_call_timeout_ms() > Postgres.single_query_call_timeout_ms()
+    assert TaskStore.double_query_call_timeout_ms() > Postgres.double_query_call_timeout_ms()
+
+    # A terminal idempotent resubmit reads the old result, evicts the old
+    # projection, and then appends the replacement in the same handle_call, so
+    # the outer caller must cover all three serial adapter budgets.
+    assert TaskStore.submit_timeout_ms() >
+             2 * Postgres.single_query_call_timeout_ms() + Postgres.append_timeout_ms()
   end
 
   test "a non-call exit from an op-log remains fatal" do

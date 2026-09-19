@@ -31,10 +31,15 @@ defmodule Embervm.TaskStore do
   alias Embervm.OpLog.Op
   alias Embervm.TaskState
 
-  # The submit caller must outlive the Postgres adapter's 20-second append
-  # budget, otherwise the HTTP process exits before TaskStore can return the
-  # retryable unavailable result.
-  @submit_timeout_ms 25_000
+  # Every caller must outlive the Postgres adapter work performed by its
+  # handler. A fresh resubmit serially reads the expired result, evicts the old
+  # task, and appends its replacement, while standalone result/request reads
+  # issue one query and usage issues two. If these outer budgets expire first,
+  # the HTTP process exits before TaskStore can return the retryable unavailable
+  # result.
+  @submit_timeout_ms 65_000
+  @single_query_call_timeout_ms 25_000
+  @double_query_call_timeout_ms 40_000
 
   @tasks_table :embervm_tasks
   @idem_table :embervm_task_idempotency
@@ -48,6 +53,15 @@ defmodule Embervm.TaskStore do
       name -> GenServer.start_link(__MODULE__, opts, name: name)
     end
   end
+
+  @doc false
+  def submit_timeout_ms, do: @submit_timeout_ms
+
+  @doc false
+  def single_query_call_timeout_ms, do: @single_query_call_timeout_ms
+
+  @doc false
+  def double_query_call_timeout_ms, do: @double_query_call_timeout_ms
 
   @doc """
   Submits a new task, or returns the existing one if `idempotency_key` was
@@ -164,7 +178,7 @@ defmodule Embervm.TaskStore do
   """
   @spec get_result(GenServer.server(), String.t()) :: {:ok, map() | nil} | {:error, term()}
   def get_result(store \\ __MODULE__, task_id) do
-    GenServer.call(store, {:get_result, task_id})
+    GenServer.call(store, {:get_result, task_id}, @single_query_call_timeout_ms)
   end
 
   @doc """
@@ -178,7 +192,7 @@ defmodule Embervm.TaskStore do
   """
   @spec get_request(GenServer.server(), String.t()) :: {:ok, map() | nil} | {:error, term()}
   def get_request(store \\ __MODULE__, task_id) do
-    GenServer.call(store, {:get_request, task_id})
+    GenServer.call(store, {:get_request, task_id}, @single_query_call_timeout_ms)
   end
 
   @doc """
@@ -189,7 +203,7 @@ defmodule Embervm.TaskStore do
   """
   @spec list_usage(GenServer.server(), keyword()) :: {:ok, map()} | {:error, term()}
   def list_usage(store \\ __MODULE__, opts \\ []) do
-    GenServer.call(store, {:list_usage, opts})
+    GenServer.call(store, {:list_usage, opts}, @double_query_call_timeout_ms)
   end
 
   @doc """
