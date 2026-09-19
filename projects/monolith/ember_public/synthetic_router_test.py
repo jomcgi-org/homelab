@@ -5,9 +5,15 @@ Every probe is mocked: the point of these tests is the endpoint's orchestration
 themselves, which are covered in synthetic_probe_test.py.
 """
 
+import asyncio
+import io
+import logging
+
 import pytest
+from core.log import _PLAIN_FORMAT, _TraceContextFormatter
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from opentelemetry.sdk.trace import TracerProvider
 
 from ember_public import synthetic_router
 from ember_public.synthetic_router import internal_router
@@ -69,6 +75,28 @@ def test_probe_failure_still_returns_200_and_records(app, recorded):
     assert resp.status_code == 200
     assert resp.json()["bazel"]["ok"] is False
     assert rows["bazel"]["ok"] is False
+
+
+def test_probe_failure_warning_carries_the_recording_span(recorded, monkeypatch):
+    recorded(ok=False, detail="boom")
+    monkeypatch.setattr(synthetic_router, "_probe_in_flight", False)
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(_TraceContextFormatter(_PLAIN_FORMAT))
+    synthetic_router.logger.addHandler(handler)
+    tracer = TracerProvider().get_tracer(__name__)
+
+    try:
+        with tracer.start_as_current_span("synthetic-probe") as span:
+            context = span.get_span_context()
+            asyncio.run(synthetic_router.synthetic_probe_endpoint())
+    finally:
+        synthetic_router.logger.removeHandler(handler)
+
+    assert (
+        "WARNING ember_public.synthetic_router: ember synthetic bazel failed: boom:bazel"
+        f" trace_id={context.trace_id:032x} span_id={context.span_id:016x}"
+    ) in stream.getvalue()
 
 
 def test_trigger_while_in_flight_is_a_noop(app, recorded, monkeypatch):

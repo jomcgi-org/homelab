@@ -2,6 +2,116 @@ defmodule Embervm.LogFormatterTest do
   use ExUnit.Case, async: true
 
   alias Embervm.CapacityObserver
+  alias Embervm.TraceContextFilter
+  require OpenTelemetry.Tracer, as: Tracer
+
+  defp event(message, metadata \\ %{}) do
+    %{level: :warning, msg: {:string, message}, meta: metadata}
+  end
+
+  defp filtered(message, metadata \\ %{}) do
+    TraceContextFilter.filter(event(message, metadata), [])
+  end
+
+  test "installs the trace context filter on the primary Logger path" do
+    filters = :logger.get_primary_config().filters
+    assert Enum.any?(filters, fn {id, _filter} -> id == :embervm_trace_context end)
+  end
+
+  test "drops stale trace metadata when no span is active and preserves other metadata" do
+    enriched = filtered("outside span", %{trace_id: "stale", task_id: "task-1"})
+
+    refute Map.has_key?(enriched.meta, :trace_id)
+    assert enriched.meta.task_id == "task-1"
+
+    decoded =
+      enriched
+      |> Embervm.LogFormatter.format(%{})
+      |> IO.iodata_to_binary()
+      |> :json.decode()
+
+    refute Map.has_key?(decoded, "trace_id")
+    assert decoded["task_id"] == "task-1"
+  end
+
+  test "does not emit an ID for a valid non-recording remote span" do
+    previous = OpenTelemetry.Ctx.get_current()
+    remote = :otel_tracer.from_remote_span(0x1234, 0x5678, 1)
+
+    try do
+      Tracer.set_current_span(remote)
+      refute Map.has_key?(filtered("remote", %{trace_id: "stale"}).meta, :trace_id)
+    after
+      OpenTelemetry.Ctx.attach(previous)
+    end
+  end
+
+  test "emits the recording trace ID through the JSON formatter" do
+    Tracer.with_span "log-correlation" do
+      span_ctx = Tracer.current_span_ctx()
+      assert OpenTelemetry.Span.is_recording(span_ctx)
+      expected = OpenTelemetry.Span.hex_trace_id(span_ctx)
+
+      decoded =
+        filtered("embervm probe failed", %{task_id: "task-2"})
+        |> Embervm.LogFormatter.format(%{})
+        |> IO.iodata_to_binary()
+        |> :json.decode()
+
+      assert decoded["trace_id"] == expected
+      assert decoded["task_id"] == "task-2"
+      assert decoded["message"] == "embervm probe failed"
+    end
+  end
+
+  test "nested spans restore the parent context and clean metadata after exit" do
+    Tracer.with_span "outer-log" do
+      outer = Tracer.current_span_ctx()
+      outer_span_id = OpenTelemetry.Span.hex_span_id(outer)
+      outer_trace_id = filtered("outer before").meta.trace_id
+
+      Tracer.with_span "inner-log" do
+        inner = Tracer.current_span_ctx()
+        assert OpenTelemetry.Span.hex_span_id(inner) != outer_span_id
+        assert filtered("inner").meta.trace_id == outer_trace_id
+      end
+
+      assert OpenTelemetry.Span.hex_span_id(Tracer.current_span_ctx()) == outer_span_id
+      assert filtered("outer after").meta.trace_id == outer_trace_id
+    end
+
+    refute Map.has_key?(filtered("after", %{trace_id: "stale"}).meta, :trace_id)
+  end
+
+  test "concurrent processes keep independent trace metadata" do
+    caller = self()
+
+    tasks =
+      for name <- ["first-log", "second-log"] do
+        Task.async(fn ->
+          Tracer.with_span name do
+            trace_id = filtered(name).meta.trace_id
+            send(caller, {:ready, self(), trace_id})
+
+            receive do
+              :continue -> {trace_id, filtered(name).meta.trace_id}
+            end
+          end
+        end)
+      end
+
+    ready =
+      for _ <- tasks do
+        assert_receive {:ready, pid, trace_id}
+        {pid, trace_id}
+      end
+
+    Enum.each(ready, fn {pid, _trace_id} -> send(pid, :continue) end)
+    results = Enum.map(tasks, &Task.await/1)
+
+    assert ready |> Enum.map(&elem(&1, 1)) |> Enum.uniq() |> length() == 2
+    assert Enum.all?(results, fn {before, after_wait} -> before == after_wait end)
+  end
 
   test "preserves every CapacityObserver record field in structured JSON" do
     reservation_table =

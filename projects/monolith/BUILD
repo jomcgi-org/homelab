@@ -387,6 +387,7 @@ py_library(
         "@pip//fastapi",
         "@pip//fastmcp",
         "@pip//httpx",
+        "@pip//opentelemetry_api",
         "@pip//opentelemetry_exporter_otlp_proto_http",
         "@pip//opentelemetry_instrumentation_fastapi",
         "@pip//opentelemetry_instrumentation_httpx",
@@ -1683,6 +1684,7 @@ py_library(
         # only transitively through fastmcp.
         "@pip//mcp",
         "@pip//networkx",
+        "@pip//opentelemetry_api",
         "@pip//opentelemetry_exporter_otlp_proto_http",
         "@pip//opentelemetry_instrumentation_fastapi",
         "@pip//opentelemetry_instrumentation_httpx",
@@ -2039,6 +2041,7 @@ py_library(
         "@pip//icalendar",
         "@pip//lxml_html_clean",
         "@pip//networkx",
+        "@pip//opentelemetry_api",
         "@pip//opentelemetry_exporter_otlp_proto_http",
         "@pip//opentelemetry_instrumentation_fastapi",
         "@pip//opentelemetry_instrumentation_httpx",
@@ -2151,6 +2154,7 @@ py_library(
         "@pip//kubernetes_asyncio",
         "@pip//lxml_html_clean",  # explicit: overrides.txt strips lxml[html-clean] extra
         "@pip//networkx",
+        "@pip//opentelemetry_api",
         "@pip//opentelemetry_exporter_otlp_proto_http",
         "@pip//opentelemetry_instrumentation_fastapi",
         "@pip//opentelemetry_instrumentation_httpx",
@@ -3760,6 +3764,8 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_core",
+        "@pip//opentelemetry_api",
+        "@pip//opentelemetry_sdk",
         "@pip//pytest",
     ],
 )
@@ -7907,9 +7913,12 @@ py_test(
     srcs = ["ember_public/synthetic_router_test.py"],
     imports = ["."],
     deps = [
+        ":pkg_core",
         ":pkg_ember_public",
         "@pip//fastapi",
         "@pip//httpx",
+        "@pip//opentelemetry_api",
+        "@pip//opentelemetry_sdk",
         "@pip//pytest",
     ],
 )
