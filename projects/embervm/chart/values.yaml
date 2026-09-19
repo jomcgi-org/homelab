@@ -1864,9 +1864,13 @@ egress:
   # section 9 (ADR agents/023, harvested there).
   ca:
     enabled: false
-    # Secret holding tls.crt/tls.key; defaults to <fullname>-egress-ca. Nothing in
-    # this chart creates it, precisely because where the matching public cert
-    # enters the guest is the hard half of the decision.
+    # Secret holding tls.crt/tls.key; defaults to <fullname>-egress-ca. When
+    # egress and this option are enabled, templates/egress-ca.yaml uses
+    # cert-manager to create it. The Claude runtime fetches the public certificate
+    # from the sidecar over host-local vsock during prewarm, before spawning a CLI,
+    # and again before each turn (fetch_egress_ca, install_egress_ca, and
+    # apply_egress_ca_trust in runtimes/claude/shim.py).
+    # projects/embervm/deploy/values.yaml enables this CA path.
     secretName: ""
   # Phase 6b credential catalog. Each entry names a header the sidecar SETS to the
   # real value (from `env`, delivered by `secretRef`) on a connection to a host in
