@@ -194,6 +194,9 @@ containers:
         value: {{ $ctx.Values.noded.tracing.endpoint | quote }}
       - name: OTEL_SERVICE_NAME
         value: {{ $ctx.Values.noded.tracing.serviceName | default "embervm-noded" | quote }}
+      # The image digest pins latency data to the exact noded build.
+      - name: OTEL_SERVICE_VERSION
+        value: {{ $ctx.Values.noded.image.digest | quote }}
       {{- end }}
       # The daemon self-identifies from the Downward API so snapshot node-
       # pinning is correct wherever it lands.

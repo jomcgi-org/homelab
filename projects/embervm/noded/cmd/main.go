@@ -55,15 +55,8 @@ func run(logger *slog.Logger) error {
 	defer stopSignals()
 	ctx, cancelRun := context.WithCancel(signalCtx)
 	defer cancelRun()
-	tp, err := telemetry.InitializeTracing(ctx)
-	if err != nil {
-		return fmt.Errorf("initialize tracing: %w", err)
-	}
-	defer func() {
-		if err := telemetry.Shutdown(context.Background(), tp); err != nil {
-			logger.Error("could not shut down tracer provider", "err", err)
-		}
-	}()
+	shutdownTracing := setupTracing(ctx, logger)
+	defer shutdownTracing()
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -453,6 +446,22 @@ func run(logger *slog.Logger) error {
 			gs.Stop()
 		}
 		return nil
+	}
+}
+
+// setupTracing is deliberately fail-open. Telemetry configuration must not
+// prevent the node daemon or any brick from serving workloads.
+func setupTracing(ctx context.Context, logger *slog.Logger) func() {
+	tp, err := telemetry.InitializeTracing(ctx)
+	if err != nil {
+		logger.Error("could not initialize tracing; continuing with tracing disabled", "err", err)
+		return func() {}
+	}
+
+	return func() {
+		if err := telemetry.Shutdown(context.Background(), tp); err != nil {
+			logger.Error("could not shut down tracer provider", "err", err)
+		}
 	}
 }
 

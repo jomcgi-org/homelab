@@ -81,6 +81,7 @@ def test_default_endpoint_keeps_noded_tracing_env_absent() -> None:
         env = _env(container)
         assert "OTEL_EXPORTER_OTLP_ENDPOINT" not in env, name
         assert "OTEL_SERVICE_NAME" not in env, name
+        assert "OTEL_SERVICE_VERSION" not in env, name
 
 
 def test_configured_endpoint_uses_default_noded_service_name() -> None:
@@ -90,18 +91,25 @@ def test_configured_endpoint_uses_default_noded_service_name() -> None:
     )
     containers = _noded_containers(objects)
     assert containers
+    image_digest = yaml.safe_load(DEFAULT_VALUES.read_text())["noded"]["image"][
+        "digest"
+    ]
     for _, name, container in containers:
         env = _env(container)
         assert env["OTEL_EXPORTER_OTLP_ENDPOINT"] == (
             "http://collector.example.test:4317"
         ), name
         assert env["OTEL_SERVICE_NAME"] == "embervm-noded", name
+        assert env["OTEL_SERVICE_VERSION"] == image_digest, name
 
 
 def test_production_tracing_reaches_every_shared_template_consumer() -> None:
     objects = _render([DEFAULT_VALUES, _prod_values()], ["noded.enabled=true"])
     containers = _noded_containers(objects)
     identities = {(kind, name) for kind, name, _ in containers}
+    image_digest = yaml.safe_load(DEFAULT_VALUES.read_text())["noded"]["image"][
+        "digest"
+    ]
 
     assert any(kind == "DaemonSet" for kind, _ in identities)
     assert any(
@@ -119,6 +127,8 @@ def test_production_tracing_reaches_every_shared_template_consumer() -> None:
             "http://otel-collector.otel-collector.svc.cluster.local:4317"
         ), name
         assert env["OTEL_SERVICE_NAME"] == "embervm-noded", name
+        assert env["OTEL_SERVICE_VERSION"] == image_digest, name
+        assert env["OTEL_SERVICE_VERSION"] != "dev", name
 
 
 def test_production_service_name_is_collector_allowlisted() -> None:
@@ -127,4 +137,5 @@ def test_production_service_name_is_collector_allowlisted() -> None:
     tracing = deploy_values["noded"]["tracing"]
 
     assert tracing["endpoint"]
+    assert tracing["endpoint"] == deploy_values["tracing"]["endpoint"]
     assert tracing["serviceName"] in collector_values["allowedServices"]
