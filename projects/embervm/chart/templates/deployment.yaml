@@ -518,6 +518,8 @@ spec:
               value: {{ .Values.noded.store.endpoint | quote }}
             - name: EMBERVM_STORE_BUCKET
               value: {{ .Values.noded.store.bucket | quote }}
+            - name: EMBERVM_STORE_PROBE_INTERVAL_SECONDS
+              value: {{ .Values.controlPlane.storeProbe.intervalSeconds | int64 | quote }}
             # Principal-artifact wrap and restore capability gate (#4691).
             # False by default; see artifactEncryption in values for rollout order.
             - name: EMBERVM_ARTIFACT_ENCRYPTION

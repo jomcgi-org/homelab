@@ -165,6 +165,28 @@ def _render_with_set(release: str, settings: list[str]) -> str:
     return result.stdout
 
 
+def test_store_probe_interval_renders_into_control_plane() -> None:
+    values = yaml.safe_load((_chart_dir() / "values.yaml").read_text())
+    assert values["controlPlane"]["storeProbe"]["intervalSeconds"] == 300
+
+    rendered = _render_with_set(
+        "store-probe", ["controlPlane.storeProbe.intervalSeconds=17"]
+    )
+    deployments = [
+        doc
+        for doc in yaml.safe_load_all(rendered)
+        if isinstance(doc, dict) and doc.get("kind") == "Deployment"
+    ]
+    control = next(
+        container
+        for deployment in deployments
+        for container in deployment["spec"]["template"]["spec"]["containers"]
+        if container["name"] == "control-plane"
+    )
+    env = {entry["name"]: entry for entry in control["env"]}
+    assert env["EMBERVM_STORE_PROBE_INTERVAL_SECONDS"]["value"] == "17"
+
+
 def _rootfs_builder_init_containers(rendered: str) -> list[dict]:
     containers = []
     for document in yaml.safe_load_all(rendered):

@@ -7,6 +7,10 @@ defmodule Embervm.K8sFinchTrustTest do
   alias Embervm.K8s
 
   @system_ca_file "/etc/ssl/certs/ca-certificates.crt"
+  @tls_fixture_dir Path.expand("../fixtures", __DIR__)
+  # Long-lived localhost-only fixture from Bandit's own TLS test support.
+  @server_cert Path.join(@tls_fixture_dir, "store_tls_server.pem")
+  @server_key Path.join(@tls_fixture_dir, "store_tls_server_key.pem")
   @sa_ca_pem """
   -----BEGIN CERTIFICATE-----
   MIIBsTCCARoCCQC9Dv27jVwCUTANBgkqhkiG9w0BAQsFADAdMRswGQYDVQQDDBJl
@@ -70,6 +74,79 @@ defmodule Embervm.K8sFinchTrustTest do
 
       assert sa_der in cacerts
       assert MapSet.new(cacerts) == MapSet.new(system_cacerts() ++ [sa_der])
+    end
+
+    test "the configured pool accepts a trusted TLS peer and rejects untrusted or wrong-host peers" do
+      port = start_tls_server()
+      trusted = start_finch(@server_cert)
+      untrusted = start_finch(temp_ca_file(@sa_ca_pem))
+
+      assert {:ok, %Finch.Response{status: 404}} =
+               Finch.build(:get, "https://localhost:#{port}/embervm/probe/.keep")
+               |> Finch.request(trusted, receive_timeout: 2_000)
+
+      assert {:error, %Finch.Error{} = untrusted_error} =
+               Finch.build(:get, "https://localhost:#{port}/embervm/probe/.keep")
+               |> Finch.request(untrusted, receive_timeout: 2_000)
+
+      assert inspect(untrusted_error) =~ ~r/unknown_ca|certificate/i
+
+      assert {:error, %Finch.Error{} = hostname_error} =
+               Finch.build(:get, "https://127.0.0.1:#{port}/embervm/probe/.keep")
+               |> Finch.request(trusted, receive_timeout: 2_000)
+
+      assert inspect(hostname_error) =~ ~r/hostname|name check/i
+    end
+  end
+
+  defp start_finch(ca_file) do
+    name = String.to_atom("finch_trust_test_#{System.unique_integer([:positive, :monotonic])}")
+    assert {Finch, opts} = K8s.finch_child_spec(ca_file)
+    spec = Supervisor.child_spec({Finch, Keyword.put(opts, :name, name)}, id: name)
+    start_supervised!(spec)
+    name
+  end
+
+  defp start_tls_server do
+    opts = [
+      certfile: String.to_charlist(@server_cert),
+      keyfile: String.to_charlist(@server_key),
+      reuseaddr: true,
+      active: false
+    ]
+
+    assert {:ok, listener} = :ssl.listen(0, opts)
+    assert {:ok, {_address, port}} = :ssl.sockname(listener)
+    pid = spawn(fn -> tls_accept_loop(listener) end)
+
+    on_exit(fn ->
+      :ssl.close(listener)
+      if Process.alive?(pid), do: Process.exit(pid, :kill)
+    end)
+
+    port
+  end
+
+  defp tls_accept_loop(listener) do
+    case :ssl.transport_accept(listener) do
+      {:ok, socket} ->
+        spawn(fn -> serve_tls_socket(socket) end)
+        tls_accept_loop(listener)
+
+      {:error, :closed} ->
+        :ok
+    end
+  end
+
+  defp serve_tls_socket(socket) do
+    case :ssl.handshake(socket, 2_000) do
+      {:ok, socket} ->
+        _ = :ssl.recv(socket, 0, 2_000)
+        :ok = :ssl.send(socket, "HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
+        :ssl.close(socket)
+
+      {:error, _reason} ->
+        :ssl.close(socket)
     end
   end
 
