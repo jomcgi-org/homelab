@@ -473,8 +473,11 @@ defmodule Embervm.SessionManager do
       # server address) so a non-default backend never requires editing this
       # module. Defaults to the selected backend module.
       op_log_mod: op_log_mod,
-      # Extra opts threaded into every started Embervm.Session (the daemon seams),
-      # so a test can inject a fake session_assign into the spawned process.
+      # One bounded registry snapshot per adoption pass, including tombstones.
+      expected_instances_fun: Keyword.get(opts, :expected_instances_fun, fn ->
+        GenServer.call(Embervm.NodeRegistry, :expected_instances, @brick_statuses_timeout_ms)
+      end),
+      # Extra opts threaded into every started Embervm.Session (the daemon seams).
       session_opts: session_opts,
       tenant: Keyword.get(opts, :tenant, "homelab"),
       # Per-node concurrent-bank cap: node_id -> count of banks in flight on it. A
@@ -3832,7 +3835,7 @@ defmodule Embervm.SessionManager do
     facts = NodeCapacity.all(state.capacity_table)
     live_vms = index_session_vms(facts)
     snapshots = index_session_snapshots(facts)
-    nodes_reporting_snaps = nodes_reporting_snapshots(facts)
+    inventory_observed_at = complete_inventory_observed_at(state, facts)
     nodes_facts = index_node_facts(facts)
 
     state = clear_changed_unapplicable(state)
@@ -3841,7 +3844,7 @@ defmodule Embervm.SessionManager do
       SessionStore.all(state.session_store)
       |> Enum.reject(&SessionState.terminal?(&1.state))
       |> Enum.reduce(state, fn session, acc ->
-        adopt_one(acc, session, live_vms, snapshots, nodes_reporting_snaps, nodes_facts)
+        adopt_one(acc, session, live_vms, snapshots, inventory_observed_at)
       end)
 
     # Fail-closed reconciliation toward destruction (ADR embervm/014 decision 5),
@@ -4183,23 +4186,43 @@ defmodule Embervm.SessionManager do
   end
 
 
-  # The authoritative-timestamp guard below is the real protection for eviction:
-  # a banked session is only evicted on positive evidence that its snapshot is gone,
-  # never on a missing or lagging report.
-  defp nodes_reporting_snapshots(facts) do
-    result = MapSet.new(facts, fn f ->
-      case Map.get(f, :session_snapshots) do
-        nil -> nil
-        _ -> f.configured_id
+  # A sibling's fresh report cannot establish absence on an unreported brick.
+  # Include registry tombstones until their grace expires, and fail closed if
+  # discovery is unreadable. Compare lifecycle wall time only with the Unix
+  # receipt stamp; updated_at remains exclusively a monotonic freshness clock.
+  defp complete_inventory_observed_at(state, facts) do
+    expected = state.expected_instances_fun.()
+    now = state.monotonic_clock.()
+    by_instance = Map.new(facts, &{fact_dial_id(&1), &1})
+
+    expected
+    |> Enum.group_by(fn {_id, instance} -> instance.configured_id end)
+    |> Enum.reduce(%{}, fn {node_id, instances}, acc ->
+      reports = Enum.map(instances, fn {id, _} -> Map.get(by_instance, id) end)
+
+      complete = Enum.all?(reports, fn
+        %{updated_at: updated, observed_at_unix_ms: observed,
+          session_vms: vms, session_snapshots: snapshots}
+            when is_integer(updated) and is_integer(observed) and observed > 0 and
+                   is_list(vms) and is_list(snapshots) ->
+          now >= updated and now - updated <= state.fleet_freshness_window_ms
+        _ -> false
+      end)
+
+      if complete and reports != [] do
+        Map.put(acc, node_id, Enum.min(Enum.map(reports, & &1.observed_at_unix_ms)))
+      else
+        acc
       end
     end)
-    |> MapSet.delete(nil)
-    result
+  rescue
+    _ -> %{}
+  catch
+    _, _ -> %{}
   end
 
-  # Map of node_id -> node fact, keyed by configured_id (the node name). Used by
-  # adoption to check whether a node's snapshot report was generated after a session
-  # was banked (evidence ordering for vanished detection).
+  # Map of node_id -> freshest capacity fact for volume cleanup. Its updated_at
+  # is monotonic and must not be compared with durable session timestamps.
   defp index_node_facts(facts) do
     facts
     |> Enum.group_by(& &1.configured_id)
@@ -4208,7 +4231,7 @@ defmodule Embervm.SessionManager do
     end)
   end
 
-  defp adopt_one(state, session, live_vms, snapshots, nodes_reporting_snaps, nodes_facts) do
+  defp adopt_one(state, session, live_vms, snapshots, inventory_observed_at) do
     sid = session.session_id
 
     cond do
@@ -4268,12 +4291,12 @@ defmodule Embervm.SessionManager do
       # Under the node-confirmed-destroy gate a grace window (orphan_grace_ms since
       # the row was last updated) is honoured first, so an owner-resolved dial that
       # momentarily omits a just-created VM does not terminalize it (ADR embervm/014).
-      node_reporting?(state, session.node_id) and MapSet.member?(nodes_reporting_snaps, session.node_id) and
+      node_reporting?(state, session.node_id) and Map.has_key?(inventory_observed_at, session.node_id) and
         orphan_grace_elapsed?(state, session) and
         # The snapshot report must also be AUTHORITATIVE in time: the node's fact must
         # postdate the session's bank. A fact older than the session update is a stale
         # report, not evidence the snapshot vanished.
-        node_fact_authoritative?(nodes_facts, session.node_id, session.updated_at) ->
+        Map.fetch!(inventory_observed_at, session.node_id) > session.updated_at ->
         case session.state do
           :banked ->
             evict_banked(state, session, :snapshot_vanished)
@@ -4548,16 +4571,6 @@ defmodule Embervm.SessionManager do
 
   defp orphan_grace_elapsed?(state, session) do
     state.clock.() - session.updated_at >= state.orphan_grace_ms
-  end
-
-  # Check if the node's snapshot report is authoritative (current): the fact's
-  # updated_at must be greater than or equal to the session's updated_at (when it
-  # was banked), meaning the node has had a chance to report the snapshot.
-  defp node_fact_authoritative?(nodes_facts, node_id, session_updated_at) do
-    case Map.get(nodes_facts, node_id) do
-      %{updated_at: fact_updated_at} when fact_updated_at >= session_updated_at -> true
-      _ -> false
-    end
   end
 
   # Evict snapshots a node reports whose session row is terminal or absent: the
