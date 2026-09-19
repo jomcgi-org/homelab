@@ -1,5 +1,7 @@
 """Tests for shared knowledge-pipeline constants and slug normalization."""
 
+import pytest
+
 from knowledge.gardener import GARDENER_VERSION, MAX_GARDENER_RETRIES, _slugify
 
 
@@ -25,7 +27,9 @@ class TestSurvivingConstants:
         assert MAX_GARDENER_RETRIES == 3
 
 
-def test_clone_merge_dry_run_provenance_and_idempotence(tmp_path):
+@pytest.mark.parametrize("distinct_raws", [False, True])
+def test_clone_merge_dry_run_provenance_and_idempotence(tmp_path, distinct_raws):
+    from sqlalchemy import text
     from sqlmodel import Session, SQLModel, create_engine, select
     from knowledge.gardener import merge_clones
     from knowledge.models import (
@@ -52,9 +56,29 @@ def test_clone_merge_dry_run_provenance_and_idempotence(tmp_path):
             NoteLink.__table__,
         ],
     )
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX atom_raw_provenance_real "
+                "ON atom_raw_provenance (atom_fk, raw_fk) "
+                "WHERE atom_fk IS NOT NULL AND raw_fk IS NOT NULL"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX atom_raw_provenance_atom_sentinel "
+                "ON atom_raw_provenance (atom_fk) "
+                "WHERE raw_fk IS NULL AND gardener_version = 'pre-migration'"
+            )
+        )
     with Session(engine) as session:
         raw = RawInput(raw_id="raw", path="raw", content_hash="raw", source="test")
         session.add(raw)
+        session.flush()
+        other_raw = RawInput(
+            raw_id="other", path="other", content_hash="other", source="test"
+        )
+        session.add(other_raw)
         session.flush()
         for key, confidence, scope, state in [
             ("winner", 0.9, "repo:acme/repo", "verified"),
@@ -87,7 +111,9 @@ def test_clone_merge_dry_run_provenance_and_idempotence(tmp_path):
             session.add(
                 AtomRawProvenance(
                     atom_fk=note.id,
-                    raw_fk=raw.id,
+                    raw_fk=other_raw.id
+                    if distinct_raws and key in {"loser", "unverified"}
+                    else raw.id,
                     derived_note_id=key,
                     gardener_version="original",
                 )
@@ -101,10 +127,37 @@ def test_clone_merge_dry_run_provenance_and_idempotence(tmp_path):
         assert merge_clones(session, apply=True) == plan
         assert loser.verification_state == "invalidated"
         assert loser.extra["merged_into"] == "winner"
-        assert len(session.exec(select(AtomRawProvenance)).all()) == 8
-        assert len(provenance_for_notes(session, ["winner"])["winner"]) == 3
+        assert len(session.exec(select(AtomRawProvenance)).all()) == (
+            7 if distinct_raws else 6
+        )
+        assert len(provenance_for_notes(session, ["winner"])["winner"]) == (
+            2 if distinct_raws else 1
+        )
         assert merge_clones(session, apply=True) == []
-        assert len(session.exec(select(AtomRawProvenance)).all()) == 8
+        assert len(session.exec(select(AtomRawProvenance)).all()) == (
+            7 if distinct_raws else 6
+        )
+        winner = session.exec(select(Note).where(Note.note_id == "winner")).one()
+        for note in (winner, loser):
+            session.add(
+                AtomRawProvenance(
+                    atom_fk=note.id,
+                    raw_fk=None,
+                    derived_note_id=note.note_id,
+                    gardener_version="pre-migration",
+                )
+            )
+        loser.verification_state = "verified"
+        loser.valid_until = None
+        session.add(loser)
+        session.commit()
+        assert merge_clones(session, apply=True) == [
+            {"survivor": "winner", "invalidated": ["loser"]}
+        ]
+        assert len(session.exec(select(AtomRawProvenance)).all()) == (
+            9 if distinct_raws else 8
+        )
+        assert merge_clones(session, apply=True) == []
 
 
 def test_multichunk_facts_require_full_coverage(tmp_path):

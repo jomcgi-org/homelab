@@ -360,6 +360,26 @@ def kg_effective_cap(base_cap: int) -> int:
         return _kg_effective_cap(session, base_cap)
 
 
+def _prune_recall_cache(session) -> int:
+    from knowledge.api import prune_recall_embeddings
+    from sqlmodel import select
+    from factory.orchestration.factory_models import FactoryReceipt
+    from factory.orchestration.models import SwarmTask
+
+    def protected_texts():
+        rows = session.exec(
+            select(FactoryReceipt.title, FactoryReceipt.body, SwarmTask.task_text)
+            .outerjoin(SwarmTask, SwarmTask.id == FactoryReceipt.task_id)
+            .where(FactoryReceipt.state.in_(["admitted", "queued"]))
+        )
+        for title, body, task_text in rows:
+            yield f"{title}\n\n{body}"
+            if task_text is not None:
+                yield task_text
+
+    return prune_recall_embeddings(session, protected_texts())
+
+
 @DBOS.step()
 def sweep_kg_raws(limit: int = 50) -> int:
     from core.db import get_engine
@@ -368,6 +388,11 @@ def sweep_kg_raws(limit: int = 50) -> int:
 
     with Session(get_engine()) as session:
         swept = sweep_unqueued_raws(session, limit)
+        try:
+            _prune_recall_cache(session)
+        except Exception:  # noqa: BLE001 - cache maintenance must not stop extraction
+            session.rollback()
+            logger.warning("recall cache cleanup failed", exc_info=True)
         try:
             prune_completed_docfix_reviews(session)
             pr_numbers = find_reviewable_docfix_prs(session)

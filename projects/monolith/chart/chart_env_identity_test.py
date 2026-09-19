@@ -1691,3 +1691,22 @@ def test_recovery_gke_session_dependencies_use_dev_identities(recovery_gke_rende
     assert not (set(_BACKEND_SHARED_ENV) & env.keys())
     assert not (_SHARED_CREDENTIAL_KEYS & _secret_keys(list(env.values())))
     assert "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT" not in env
+
+
+def test_clone_merge_job_is_manual_only_and_receives_database(renders):
+    jobs = _cron_docs(renders["prod"])
+    merge = jobs["knowledge-merge-clones"]
+    seed = jobs["seed-entities"]
+    assert merge["spec"]["schedules"] == ["0 0 1 1 *"]
+    assert merge["spec"]["suspend"] is True
+    assert merge["spec"]["concurrencyPolicy"] == "Forbid"
+    workflow = merge["spec"]["workflowSpec"]
+    assert workflow["activeDeadlineSeconds"] == 600
+    container = workflow["templates"][0]["container"]
+    seed_container = seed["spec"]["workflowSpec"]["templates"][0]["container"]
+    assert container["args"] == ["knowledge-merge-clones", "--apply"]
+    assert container["resources"] == seed_container["resources"]
+    assert (
+        _env_by_name(container["env"])["DATABASE_URL"]
+        == _env_by_name(seed_container["env"])["DATABASE_URL"]
+    )

@@ -185,7 +185,12 @@ def defer_recall(prompt: str | None, *, node_key: str | None) -> bool:
 def attach_recall(
     system_prompt: str | None, prompt: str | None, *, node_key: str | None
 ) -> str | None:
-    """Append recall to a system prompt unless this is the KG drain lane."""
+    """Append recall to a system prompt unless this is the KG drain lane.
+
+    Interactive sessions get recall only when a cached vector exists. A retry
+    keyed on the first ready message is the follow-up; a cache miss currently
+    consumes the session's one recall attempt.
+    """
     if node_key == KG_NODE_KEY:
         return system_prompt
     block = recall_block(prompt)

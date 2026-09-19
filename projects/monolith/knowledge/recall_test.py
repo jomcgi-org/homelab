@@ -448,3 +448,13 @@ def test_recall_dedupes_before_limit_and_keeps_verified_candidate(monkeypatch):
     assert [
         item["note_id"] for item in recall.search_related(object(), [1.0, 0.0], limit=2)
     ] == ["verified", "distinct"]
+
+
+@pytest.mark.parametrize("prefix", ["Factory task ", "Factory refine task "])
+def test_launch_envelopes_do_not_become_recall_queries(prefix):
+    assert recall_cache.query_text(prefix + "t-1, follow the instructions") == ""
+
+
+def test_coding_agent_text_is_not_a_launch_envelope():
+    prompt = "You are a coding agent investigating a real user request"
+    assert recall_cache.query_text(prompt) == prompt

@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 import hashlib
 import logging
 import re
 import threading
 
-from sqlmodel import Session
+from sqlalchemy import delete
+from sqlmodel import Session, select
 
 from knowledge.models import RecallEmbedding
 from shared.embedding import EmbeddingClient
@@ -32,7 +35,7 @@ def query_text(text: str | None) -> str:
     # Session envelopes sometimes precede the actual user request.
     for tag in ("AGENTS.md instructions", "environment_context", "system-reminder"):
         value = re.sub(rf"<{tag}>.*?</{tag}>", "", value, flags=re.S).strip()
-    if value.startswith("Factory task ") or value.startswith("You are a coding agent"):
+    if value.startswith(("Factory task ", "Factory refine task ")):
         return ""
     return value[:RECALL_QUERY_CAP]
 
@@ -98,3 +101,28 @@ def prepare_recall(text: str | None) -> None:
     except RuntimeError:
         with _lock:
             _pending.discard(key)
+
+
+RECALL_RETENTION_DAYS = 30
+RECALL_CLEANUP_LIMIT = 500
+
+
+def prune_recall_embeddings(session: Session, protected_texts: Iterable[str]) -> int:
+    """Delete one bounded batch of old vectors unused by live factory receipts."""
+    protected = {cache_key(query_text(text)) for text in protected_texts}
+    cutoff = datetime.now(timezone.utc) - timedelta(days=RECALL_RETENTION_DAYS)
+    candidates = (
+        select(RecallEmbedding.key)
+        .where(
+            RecallEmbedding.created_at < cutoff,
+            RecallEmbedding.key.notin_(protected),
+        )
+        .order_by(RecallEmbedding.created_at, RecallEmbedding.key)
+        .limit(RECALL_CLEANUP_LIMIT)
+    )
+    result = session.execute(
+        delete(RecallEmbedding).where(RecallEmbedding.key.in_(candidates)),
+        execution_options={"synchronize_session": False},
+    )
+    session.commit()
+    return result.rowcount

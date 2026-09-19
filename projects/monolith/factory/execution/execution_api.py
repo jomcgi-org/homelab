@@ -496,6 +496,11 @@ def start_session_for_swarm(
         existing = store.get_session_by_local_id(session, local_session_id)
     if existing is not None and existing.id is not None:
         return existing.id
+    # Factory keys carry task identity without changing durable step bodies.
+    if task_id is None and local_session_id.startswith("factory:"):
+        parts = local_session_id.split(":", 3)
+        if len(parts) == 4 and parts[1]:
+            task_id = parts[1]
     row = _persist_session(
         local_session_id,
         "<guest>",

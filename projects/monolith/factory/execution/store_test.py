@@ -1357,35 +1357,67 @@ def test_late_progress_after_completion_does_not_hold_untouched_successor(
         assert store.get_pending_message(session, session_id, 2).dispatch_count == 1
 
 
-def test_deferred_recall_uses_first_non_boilerplate_prompt_once(monkeypatch, tmp_path):
-    import knowledge.api as knowledge
+@pytest.mark.parametrize("recall_block", [None, "cached recall"])
+@pytest.mark.parametrize("concurrent_sender", [False, True])
+def test_deferred_recall_uses_first_non_boilerplate_prompt_once(
+    monkeypatch, tmp_path, recall_block, concurrent_sender
+):
+    from factory.execution import mcp
 
     engine, schemas = _database(monkeypatch, tmp_path)
+    monkeypatch.setattr(mcp, "get_engine", lambda: engine)
     seen = []
+    events = []
+    lock_session = store._lock_session
+
+    def lock(session, session_id):
+        events.append("lock")
+        return lock_session(session, session_id)
 
     def attach(system, prompt, **_kwargs):
+        assert events == []  # No admission lock has been taken for this message.
         seen.append(prompt)
-        return system  # A cache miss must still consume the one attempt.
+        events.append("recall")
+        if concurrent_sender:
+            with Session(engine) as session:
+                store.create_pending_message(
+                    session,
+                    session_id,
+                    "Concurrent ready message",
+                    system_prompt="other sender recall",
+                )
+        return recall_block
 
-    monkeypatch.setattr(knowledge, "attach_recall", attach)
+    monkeypatch.setattr(mcp, "attach_recall", attach)
+    monkeypatch.setattr(store, "_lock_session", lock)
     try:
         with Session(engine) as session:
             agent = store.create_session(
                 session, "deferred-recall", "guest", "main", recall_pending=True
             )
-            store.create_pending_message(
-                session,
-                agent.id,
-                "<environment_context>shim boilerplate</environment_context>",
-            )
-            assert agent.recall_pending is True
-            store.create_pending_message(
-                session, agent.id, "Investigate the guest memory restore bug"
-            )
+            session_id = agent.id
+        mcp._persist_pending_message(
+            session_id,
+            "<environment_context>shim boilerplate</environment_context>",
+            None,
+        )
+        with Session(engine) as session:
+            assert session.get(AgentSession, session_id).recall_pending is True
+        events.clear()
+        mcp._persist_pending_message(
+            session_id, "Investigate the guest memory restore bug", None
+        )
+        with Session(engine) as session:
+            agent = session.get(AgentSession, session_id)
             assert agent.recall_pending is False
-            store.create_pending_message(
-                session, agent.id, "Now work on a completely different problem"
+            assert agent.system_prompt == (
+                "other sender recall" if concurrent_sender else recall_block
             )
-            assert seen == ["Investigate the guest memory restore bug"]
+        assert events[0] == "recall"
+        assert events[1:] == ["lock"] * (2 if concurrent_sender else 1)
+        mcp._persist_pending_message(
+            session_id, "Now work on a completely different problem", None
+        )
+        assert seen == ["Investigate the guest memory restore bug"]
     finally:
         _restore_schemas(schemas)

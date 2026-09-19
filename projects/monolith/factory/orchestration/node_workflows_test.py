@@ -516,7 +516,6 @@ def test_start_step_checks_live_guard_inside_effect_and_preserves_parent(monkeyp
     assert len(calls) == 1
     assert calls[0][1] == {
         "workflow_id": "parent-run",
-        "task_id": pin()["task_id"],
         "node_key": "implement",
         "node_attempt": 1,
     }

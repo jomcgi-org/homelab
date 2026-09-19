@@ -1843,8 +1843,16 @@ def lexical_search(session: Session, query_text: str, limit: int = 20) -> list[d
     return rows
 
 
+_RECALL_UNSET = object()
+
+
 def create_pending_message(
-    session: Session, session_id: int, message_text: str, model: str | None = None
+    session: Session,
+    session_id: int,
+    message_text: str,
+    model: str | None = None,
+    *,
+    system_prompt: str | None | object = _RECALL_UNSET,
 ) -> PendingMessage:
     """Enqueue a message durably and return its per-session turn sequence.
 
@@ -1862,18 +1870,12 @@ def create_pending_message(
     max_attempts = 5
     for attempt in range(max_attempts):
         try:
-            if session_row.recall_pending:
-                from knowledge.api import attach_recall, recall_prompt_ready
-
-                if recall_prompt_ready(message_text):
-                    session_row.system_prompt = attach_recall(
-                        session_row.system_prompt,
-                        message_text,
-                        node_key=session_row.node_key,
-                    )
-                    # A cache miss is still the one recall attempt for this session.
-                    session_row.recall_pending = False
-                    session.add(session_row)
+            if session_row.recall_pending and system_prompt is not _RECALL_UNSET:
+                # Re-check under the lock: a concurrent sender may have won.
+                session_row.system_prompt = system_prompt
+                # A cache miss is still the one recall attempt for this session.
+                session_row.recall_pending = False
+                session.add(session_row)
             last_turn = session.exec(
                 select(func.max(AgentTurn.seq)).where(
                     AgentTurn.session_id == session_id
