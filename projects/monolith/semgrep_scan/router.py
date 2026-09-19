@@ -177,9 +177,7 @@ async def _fetch_file_content(
         return None
 
 
-async def _gather_files(
-    repo: str, pr_number: int, head_sha: str
-) -> list[dict]:
+async def _gather_files(repo: str, pr_number: int, head_sha: str) -> list[dict]:
     """Build the ``[{path, content}]`` scan input for a PR.
 
     Lists the scannable changed-file entries, then fetches each file's head
