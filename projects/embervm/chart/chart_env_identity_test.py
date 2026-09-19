@@ -773,9 +773,9 @@ def test_gke_brick_rollout_budget_outlasts_factory_invokes() -> None:
             if container["name"] == "noded"
         )
         env = {entry["name"]: entry for entry in noded["env"]}
-        assert env["EMBERVM_NODED_DRAIN_TIMEOUT"]["value"] == "43800s"
-        assert pod_spec["terminationGracePeriodSeconds"] == 43830
-        assert spec["progressDeadlineSeconds"] == 46800
+        assert env["EMBERVM_NODED_DRAIN_TIMEOUT"]["value"] == "7200s"
+        assert pod_spec["terminationGracePeriodSeconds"] == 7230
+        assert spec["progressDeadlineSeconds"] == 10800
 
 
 def test_noded_onepassword_item_uses_default_shared_secret_name():
