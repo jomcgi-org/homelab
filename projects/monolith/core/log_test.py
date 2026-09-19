@@ -1,11 +1,20 @@
-"""Tests for core.log -- _HealthzFilter and configure_logging()."""
+"""Tests for core.log -- filters, formatting, and configure_logging()."""
 
+import asyncio
+import io
 import logging
 from unittest.mock import MagicMock, patch
 
-import pytest
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags, TraceState
 
-from core.log import _HealthzFilter, configure_logging
+from core.log import (
+    _PLAIN_FORMAT,
+    _HealthzFilter,
+    _TraceContextFormatter,
+    configure_logging,
+)
 
 
 class TestHealthzFilter:
@@ -96,3 +105,120 @@ class TestConfigureLogging:
         assert _HealthzFilter in filter_types, (
             "Expected _HealthzFilter to be attached to uvicorn.access logger"
         )
+
+
+def _record(message: str = "probe failed") -> logging.LogRecord:
+    return logging.LogRecord(
+        name="trace-test",
+        level=logging.WARNING,
+        pathname=__file__,
+        lineno=1,
+        msg=message,
+        args=(),
+        exc_info=None,
+    )
+
+
+def _configured_line(include_trace_context: bool, emit) -> str:
+    stream = io.StringIO()
+    try:
+        with patch("core.log.sys.stdout", stream):
+            configure_logging(include_trace_context=include_trace_context)
+            emit()
+        return stream.getvalue().strip()
+    finally:
+        configure_logging()
+
+
+class TestTraceContextFormatter:
+    def setup_method(self):
+        self.formatter = _TraceContextFormatter(_PLAIN_FORMAT)
+        self.provider = TracerProvider()
+        self.tracer = self.provider.get_tracer(__name__)
+
+    def test_no_span_keeps_plain_line_byte_identical(self):
+        assert self.formatter.format(_record()) == "WARNING trace-test: probe failed"
+
+    def test_non_recording_span_keeps_plain_line_byte_identical(self):
+        context = SpanContext(
+            trace_id=0x1234,
+            span_id=0x5678,
+            is_remote=False,
+            trace_flags=TraceFlags(0),
+            trace_state=TraceState(),
+        )
+
+        with trace.use_span(NonRecordingSpan(context), end_on_exit=False):
+            line = self.formatter.format(_record())
+
+        assert line == "WARNING trace-test: probe failed"
+
+    def test_private_format_appends_fixed_width_ids_for_recording_span(self):
+        with self.tracer.start_as_current_span("synthetic-probe") as span:
+            context = span.get_span_context()
+            line = self.formatter.format(
+                _record("ember synthetic qwen failed: model unavailable")
+            )
+
+        assert line == (
+            "WARNING trace-test: ember synthetic qwen failed: model unavailable"
+            f" trace_id={context.trace_id:032x} span_id={context.span_id:016x}"
+        )
+
+    def test_public_configuration_is_plain_even_during_recording_span(self):
+        with self.tracer.start_as_current_span("public-request"):
+            line = _configured_line(
+                False, lambda: logging.getLogger("trace-test").warning("public line")
+            )
+
+        assert line == "WARNING trace-test: public line"
+
+    def test_private_configuration_uses_emission_context(self):
+        with self.tracer.start_as_current_span("private-request") as span:
+            context = span.get_span_context()
+            line = _configured_line(
+                True, lambda: logging.getLogger("trace-test").warning("private line")
+            )
+
+        assert line == (
+            "WARNING trace-test: private line"
+            f" trace_id={context.trace_id:032x} span_id={context.span_id:016x}"
+        )
+
+    def test_nested_span_exit_restores_parent_and_then_cleans_up(self):
+        with self.tracer.start_as_current_span("outer") as outer:
+            outer_context = outer.get_span_context()
+            before = self.formatter.format(_record("outer before"))
+
+            with self.tracer.start_as_current_span("inner") as inner:
+                inner_context = inner.get_span_context()
+                nested = self.formatter.format(_record("inner"))
+
+            restored = self.formatter.format(_record("outer after"))
+
+        after = self.formatter.format(_record("after"))
+        assert f"span_id={outer_context.span_id:016x}" in before
+        assert f"span_id={inner_context.span_id:016x}" in nested
+        assert f"span_id={outer_context.span_id:016x}" in restored
+        assert inner_context.span_id != outer_context.span_id
+        assert after == "WARNING trace-test: after"
+
+    def test_concurrent_tasks_do_not_cross_contaminate_ids(self):
+        async def emit(name: str):
+            with self.tracer.start_as_current_span(name) as span:
+                context = span.get_span_context()
+                await asyncio.sleep(0)
+                return context, self.formatter.format(_record(name))
+
+        async def run_both():
+            return await asyncio.gather(emit("first"), emit("second"))
+
+        first, second = asyncio.run(run_both())
+        first_context, first_line = first
+        second_context, second_line = second
+
+        assert first_context.trace_id != second_context.trace_id
+        assert f"trace_id={first_context.trace_id:032x}" in first_line
+        assert f"trace_id={second_context.trace_id:032x}" in second_line
+        assert f"trace_id={second_context.trace_id:032x}" not in first_line
+        assert f"trace_id={first_context.trace_id:032x}" not in second_line

@@ -78,6 +78,25 @@ def _mcp_response_json(response: httpx.Response) -> dict:
     return response.json()
 
 
+@pytest.mark.parametrize(
+    ("profile", "include_trace_context"),
+    [(_PLAIN_PRIVATE, True), (PUBLIC_PROFILE, False)],
+)
+def test_build_app_scopes_trace_log_formatting_to_private_profile(
+    monkeypatch, profile, include_trace_context
+):
+    calls = []
+    monkeypatch.setattr(
+        framework_core,
+        "configure_logging",
+        lambda **kwargs: calls.append(kwargs),
+    )
+
+    build_app(profile, [])
+
+    assert calls == [{"include_trace_context": include_trace_context}]
+
+
 def test_build_app_skips_otel_without_an_endpoint(monkeypatch):
     calls: list[tuple[FastAPI, str]] = []
     monkeypatch.delenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", raising=False)

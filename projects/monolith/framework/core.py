@@ -636,7 +636,7 @@ def build_app(profile: Profile, modules: Sequence[Module]) -> FastAPI:
     profile flag and endpoint env are both set.
     """
     _validate(profile, modules)
-    configure_logging()
+    configure_logging(include_trace_context=profile.tier is Tier.PRIVATE)
 
     if profile.tier is Tier.PUBLIC:
         app = FastAPI(title=profile.title)
