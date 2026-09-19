@@ -81,7 +81,7 @@ def test_valid_signature_accepted_and_dispatches(client):
         mock.patch.object(
             webhook,
             "_gather_files",
-            new=mock.AsyncMock(return_value=([], {})),
+            new=mock.AsyncMock(return_value=[]),
         ),
         mock.patch.object(webhook, "scan_files", new=mock.AsyncMock()) as scan,
     ):

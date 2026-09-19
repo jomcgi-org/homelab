@@ -35,7 +35,7 @@ rules:
     resources: ["freights"]
     verbs: ["get", "list"]
   - apiGroups: ["metrics.k8s.io"]
-    resources: ["nodes", "pods"]
+    resources: ["nodes"]
     verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

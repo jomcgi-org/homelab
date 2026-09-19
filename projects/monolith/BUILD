@@ -7,7 +7,6 @@
 # gazelle:exclude cluster
 # gazelle:exclude app
 # gazelle:exclude core
-# gazelle:exclude demos
 # gazelle:exclude ember_public
 # gazelle:exclude e2e
 # gazelle:exclude framework
@@ -136,7 +135,6 @@ _BACKEND_SRCS = glob(
         "chat/**/*.py",
         "chat_public/**/*.py",
         "cluster/**/*.py",
-        "demos/**/*.py",
         "ember_public/**/*.py",
         "goosecracker/**/*.py",
         "knowledge/**/*.py",
@@ -199,12 +197,8 @@ py_venv_binary(
         # 036); the "chat/**/*.py" glob does not capture the .md, so ship it
         # explicitly or every escalation fails open with FileNotFoundError.
         "chat/orchestrator_bundle.md",
-        # loadtest_corpus.load_corpus reads these committed .sample files at
-        # runtime via Path(__file__).parent; the "demos/**/*.py" glob does not
-        # capture non-.py data, so ship them explicitly into runfiles (mirrors
-        # the worldcup Elo snapshot and campsites catalog above).
         ":frontend_dist",
-    ] + glob(["demos/loadtest_corpus/**/*.sample"]),
+    ],
     imports = ["."],  # keep
     main = "app/main.py",
     visibility = ["//:__subpackages__"],
@@ -1609,49 +1603,6 @@ py_library(
 )
 
 py_library(
-    name = "pkg_demos",
-    srcs = glob(
-        [
-            "demos/**/*.py",
-        ],
-        exclude = [
-            "**/*_test.py",
-            "**/test_*.py",
-            "*/tests/**/*.py",
-        ],
-    ),
-    imports = ["."],
-    visibility = ["//:__subpackages__"],
-    deps = [
-        ":pkg_cluster",
-        ":pkg_core",
-        ":pkg_cyclegroup",
-        ":pkg_ember_public",
-        ":pkg_framework",
-        ":pkg_sandbox",
-        ":pkg_semgrep_scan",
-        ":pkg_shared",
-        "@pip//certifi",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//opentelemetry_exporter_otlp_proto_http",
-        "@pip//opentelemetry_instrumentation_fastapi",
-        "@pip//opentelemetry_instrumentation_httpx",
-        "@pip//opentelemetry_sdk",
-        "@pip//pgvector",
-        "@pip//psycopg",
-        "@pip//psycopg_binary",
-        "@pip//pydantic",
-        "@pip//python_multipart",
-        "@pip//pyyaml",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-        "@pip//tzdata",
-        "@pip//uvicorn",
-    ],
-)
-
-py_library(
     name = "monolith_backend",
     srcs = glob(
         [
@@ -1666,7 +1617,6 @@ py_library(
             "chat/**/*.py",
             "chat_public/**/*.py",
             "cluster/**/*.py",
-            "demos/**/*.py",
             "ember_public/**/*.py",
             "goosecracker/**/*.py",
             "knowledge/**/*.py",
@@ -1898,8 +1848,6 @@ _PUBLIC_PRUNE_EXCLUDE = [
     "semgrep_scan/module.py",
     "semgrep_scan/report.py",
     "semgrep_scan/router.py",
-    "semgrep_scan/cohorts.py",
-    "semgrep_scan/perf_*.py",
     "**/test_*.py",
     "*/tests/**/*.py",
     "shared/testing/**/*.py",
@@ -1949,7 +1897,7 @@ _PUBLIC_PRUNE_EXCLUDE = [
     # Private entrypoint + MCP app.
     "app/main.py",
     "app/mcp_app.py",
-    # Private module registry (imports chat/agent/demos/...) and the
+    # Private module registry (imports chat/agent/...) and the
     # single-domain entrypoint: never part of the public composition.
     "app/modules_private.py",
     "app/main_domain.py",
@@ -1981,7 +1929,6 @@ _PUBLIC_PRUNE_EXCLUDE = [
     "home/observability/slo.py",
     "home/observability/rollup.py",
     "home/observability/stats.py",
-    "home/observability/traces.py",
     # Grimoire: only the public read path ships. The daily ingest/extract jobs
     # import the scheduler (a forbidden public module), so they stay out of the
     # public binary; the read path (public/router_public/library/models/
@@ -2022,7 +1969,6 @@ _AGENTS_PRUNE_EXCLUDE = [
     "agent_sessions/**",
     "factory/**",
     "cluster/**",
-    "demos/**",
     "goosecracker/**",
     "moving/**",
     "sandbox/**",
@@ -2078,7 +2024,6 @@ _AGENTS_PRUNE_EXCLUDE = [
     "home/observability/slo.py",
     "home/observability/rollup.py",
     "home/observability/stats.py",
-    "home/observability/traces.py",
 ]
 
 py_library(
@@ -2206,8 +2151,8 @@ py_library(
             # below; main_public_imports_test enforces they stay out of the closure.
             "faas/**/*.py",
             # Ember public tier (docs/plans/2026-07-18-ember-public-pages.md Task 1):
-            # the demo-postgres core, public-safe by construction (never imports
-            # demos/sandbox.client; EMBERVM_URL read directly from the environment).
+            # the demo-postgres core, public-safe by construction (EMBERVM_URL
+            # is read directly from the environment).
             "ember_public/**/*.py",
             # Semgrep demo (ember_public.semgrep_router): only client.py + the
             # package __init__ ship; the rest is pruned below (private-only).
@@ -2334,7 +2279,7 @@ py_venv_binary(
         "chat/directive_seed.md",
         "chat/orchestrator_bundle.md",
         "worldcup/ratings/elo_2026.json",
-    ] + glob(["demos/loadtest_corpus/**/*.sample"]),
+    ],
     imports = ["."],  # keep
     main = "app/main_domain.py",
     visibility = ["//:__subpackages__"],
@@ -2922,81 +2867,6 @@ py_test(
     # Drives the async webhook via FastAPI TestClient (BackgroundTasks run inline
     # after the response), mocking scan_files / report_pr_scan / httpx so no live
     # GitHub, fc-invoke, or Semgrep App is touched.
-    deps = [
-        ":pkg_semgrep_scan",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//pytest",
-    ],
-)
-
-py_test(
-    name = "semgrep_perf_store_test",
-    srcs = ["semgrep_scan/perf_store_test.py"],
-    imports = ["."],
-    # gazelle:exclude semgrep_scan means this py_test is hand-added, not generated.
-    deps = [
-        ":pkg_semgrep_scan",
-        "@pip//pytest",
-        "@pip//sqlmodel",
-    ],
-)
-
-py_test(
-    name = "semgrep_perf_harvest_test",
-    srcs = ["semgrep_scan/perf_harvest_test.py"],
-    imports = ["."],
-    # gazelle:exclude semgrep_scan means this py_test is hand-added, not generated.
-    deps = [
-        ":pkg_semgrep_scan",
-        "@pip//httpx",
-        "@pip//pytest",
-        "@pip//sqlmodel",
-    ],
-)
-
-py_test(
-    name = "semgrep_cohorts_test",
-    srcs = ["semgrep_scan/cohorts_test.py"],
-    imports = ["."],
-    # gazelle:exclude semgrep_scan means this py_test is hand-added, not generated.
-    deps = [
-        ":pkg_semgrep_scan",
-        "@pip//pytest",
-    ],
-)
-
-py_test(
-    name = "semgrep_perf_compare_test",
-    srcs = ["semgrep_scan/perf_compare_test.py"],
-    imports = ["."],
-    # gazelle:exclude semgrep_scan means this py_test is hand-added, not generated.
-    deps = [
-        ":pkg_semgrep_scan",
-        "@pip//pytest",
-    ],
-)
-
-py_test(
-    name = "semgrep_perf_router_test",
-    srcs = ["semgrep_scan/perf_router_test.py"],
-    imports = ["."],
-    # gazelle:exclude semgrep_scan means this py_test is hand-added, not generated.
-    deps = [
-        ":pkg_core",
-        ":pkg_semgrep_scan",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//pytest",
-        "@pip//sqlmodel",
-    ],
-)
-
-py_test(
-    name = "semgrep_perf_webhook_test",
-    srcs = ["semgrep_scan/perf_webhook_test.py"],
-    imports = ["."],
-    # gazelle:exclude semgrep_scan means this py_test is hand-added, not generated.
     deps = [
         ":pkg_semgrep_scan",
         "@pip//fastapi",
@@ -8175,32 +8045,8 @@ py_test(
     ],
 )
 
-py_test(
-    name = "home_observability_traces_test",
-    srcs = ["home/observability/traces_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_cyclegroup",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-    ],
-)
-
-py_test(
-    name = "demos_firecracker_api_test",
-    srcs = ["demos/firecracker_api_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_demos",
-        ":pkg_ember_public",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-    ],
-)
-
 # Hand-registered (ember_public is gazelle-excluded): mounts the demo-postgres
-# router standalone plus asserts it against the composed public app (proving
-# both the route and the demos-absence guarantee).
+# router standalone plus asserts it against the composed public app.
 py_test(
     name = "ember_public_router_test",
     srcs = ["ember_public/router_test.py"],
@@ -8338,31 +8184,6 @@ py_test(
         "@pip//opentelemetry_api",
         "@pip//opentelemetry_sdk",
         "@pip//pytest",
-    ],
-)
-
-py_test(
-    name = "demos_loadtest_corpus_test",
-    srcs = ["demos/loadtest_corpus_test.py"],
-    data = glob(["demos/loadtest_corpus/**/*.sample"]),
-    imports = ["."],
-    deps = [
-        ":pkg_demos",
-        "@pip//pytest",
-    ],
-)
-
-py_test(
-    name = "demos_loadtest_test",
-    srcs = ["demos/loadtest_test.py"],
-    # run_load_test defaults its corpus to load_corpus(workload), which reads
-    # the committed .sample files at runtime.
-    data = glob(["demos/loadtest_corpus/**/*.sample"]),
-    imports = ["."],
-    deps = [
-        ":pkg_demos",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
     ],
 )
 

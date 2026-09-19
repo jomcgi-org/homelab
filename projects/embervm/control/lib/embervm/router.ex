@@ -2505,8 +2505,8 @@ defmodule Embervm.Router do
 
     # Capture the W3C traceparent (Task 13 distributed tracing): stored in the
     # submitted op so the dispatcher can restore the CALLER's trace context and
-    # nest the dispatch/guest_exec spans under it, joining the caller's trace (the
-    # demos waterfall). Async submit means the dispatch happens off-request, so
+    # nest the dispatch/guest_exec spans under it, joining the caller's trace.
+    # Async submit means the dispatch happens off-request, so
     # the context must ride the durable op-log, not the live process context.
     base =
       case header_value(conn, "traceparent") do

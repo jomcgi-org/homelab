@@ -128,6 +128,30 @@ def test_knowledge_router_registered():
     )
 
 
+def test_retired_private_demo_and_perf_routes_are_absent():
+    """Removed UI backends must not remain reachable through composition."""
+    paths = set(_iter_route_paths(app.routes))
+    retired_prefixes = (
+        "/api/demos",
+        "/api/semgrep/perf",
+        "/internal/semgrep",
+        "/webhooks/semgrep",
+    )
+    assert not {
+        path
+        for path in paths
+        if any(path.startswith(prefix) for prefix in retired_prefixes)
+    }
+
+
+def test_retained_semgrep_and_public_ember_routes_are_registered():
+    """Dashboard removal must not prune scanning or public Ember consumers."""
+    paths = set(_iter_route_paths(app.routes))
+    assert "/webhooks/github/semgrep" in paths
+    assert "/api/ember/semgrep/scan" in paths
+    assert "/api/ember/postgres/status" in paths
+
+
 def test_schedule_router_today_endpoint_responds(client):
     """GET /api/home/schedule/today from the home router returns a 200 response."""
     response = client.get("/api/home/schedule/today")

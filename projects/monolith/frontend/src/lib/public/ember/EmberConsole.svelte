@@ -1,18 +1,11 @@
 <script>
-  // Demo-postgres: the embervm R4 stateful sleep/wake exhibit, public edition.
-  // Adapted from the private panel (frontend/src/lib/private/components/demos/
-  // PostgresPanel.svelte): same two-column console, stopwatch, savings ticker,
-  // backoff, and you/visitor markers. Two differences from the private panel:
-  //
-  //   - No reset button. Force-cold-booting is a griefing vector on a public
-  //     page (repeated 30-60s cold-boot purgatory for every other visitor), so
-  //     the destructive control and its caption do not exist here at all.
-  //   - Turnstile-gated inserts. When a site key is configured, a widget
-  //     renders above the controls on first load; the solved token mints a
-  //     session via the session proxy, and INSERT stays disabled with a short
-  //     hint until that mint succeeds. Aggregate never needs a session. When no
-  //     site key is configured (dev), this mints sessionlessly on mount exactly
-  //     like the private panel, matching the backend's private-tier allowance.
+  // Demo-postgres: the EmberVM R4 stateful sleep/wake exhibit. It has no reset
+  // control because force-cold-booting is a griefing vector on a public page.
+  // Turnstile gates inserts: when a site key is configured, a widget renders
+  // above the controls on first load; the solved token mints a session via the
+  // session proxy, and INSERT stays disabled until that mint succeeds.
+  // Aggregate never needs a session. Without a site key, development and the
+  // private tier mint sessionlessly on mount.
   //
   // All three remaining calls are same-origin proxies under /ember/postgres/api
   // (see the +server.js routes beside this component's page), never direct

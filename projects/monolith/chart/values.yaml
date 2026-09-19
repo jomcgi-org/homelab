@@ -993,33 +993,6 @@ jobs:
           memory: 256Mi
         limits:
           memory: 256Mi
-    # Semgrep Managed Scans (SMS) scan-perf harvest for the Route B vs SMS
-    # comparison page: sweeps the deployment's findings for scan ids and
-    # upserts new SMS rows into semgrep.scan_perf. This job only POSTs the API
-    # pod's internal trigger; the actual harvest (API +
-    # DB only, no semgrep engine) runs in the API pod. Every 6h since SMS scans
-    # trickle in from PR activity rather than a single daily baseline.
-    - name: semgrep-scan-harvest
-      args: ["semgrep-harvest-trigger"]
-      # Hourly: SMS (managed scans) run per-PR continuously, not just daily, so
-      # an hourly sweep keeps each PR's SMS counterpart fresh next to its
-      # (real-time) Route B row. Load stays minimal: each run is one findings
-      # request plus a scan fetch for only the newly-seen scan ids (already
-      # stored ids are skipped), so most runs make a single call.
-      schedule: "0 * * * *" # hourly
-      concurrencyPolicy: Forbid
-      activeDeadlineSeconds: 120
-      suspend: false
-      env:
-        # The in-cluster API service the trigger POSTs; injected here (not baked
-        # in code) so a release rename cannot silently break the DNS name.
-        MONOLITH_INTERNAL_URL: "http://monolith.monolith.svc.cluster.local:8000"
-      resources:
-        requests:
-          cpu: 50m
-          memory: 128Mi
-        limits:
-          memory: 256Mi
     # Ember synthetic probes run in the API pod and write a pass/fail latch row
     # that the public tier's /api/health reads. The cron only triggers the API
     # endpoint, so its 180s request timeout plus margin covers a cold Postgres
@@ -1118,7 +1091,6 @@ tokenBroker:
 
 frontend:
   otelCollectorUrl: ""
-  qwenFlashApiBase: "http://inference-bridge-freetoken.tailscale.svc.cluster.local:8090"
   image:
     repository: ghcr.io/jomcgi/homelab/projects/monolith/frontend
     tag: latest
@@ -1442,7 +1414,7 @@ scratchPostgres:
   listenPort: 5400
   # The demo-postgres workload's listenPort (must match the embervm chart's
   # demoPostgres.listenPort). Non-empty renders DEMO_POSTGRES_DSN for the
-  # firecracker demos page's sleep/wake exhibit; empty leaves it unrendered.
+  # public Ember Postgres page's sleep/wake exhibit; empty leaves it unrendered.
   # Same serving Service and password as scratch-postgres, different workload.
   demoListenPort: ""
   # The embervm namespace the serving Service lives in (the DSN host is
@@ -1473,7 +1445,7 @@ faas:
 semgrep:
   # EmberVM control-plane base URL for the semgrep workload.
   embervmUrl: ""
-  # Shadow project override (Route B vs SMS comparison): when set, the relay
+  # Shadow project override for reporting isolation: when set, the relay
   # reports its App scans under THIS project name instead of the real repo, so
   # Route B (self-hosted) scans land in a SEPARATE Semgrep project from SMS's
   # jomcgi/homelab project. Injected as SEMGREP_SHADOW_PROJECT; empty (the
@@ -2101,16 +2073,6 @@ ciliumPolicy:
         matchLabels:
           app: nvidia-dcgm-exporter
         port: 9400
-      # Tailscale operator proxy for frontend.qwenFlashApiBase. These ownership
-      # labels identify one egress Service proxy rather than the whole namespace.
-      inferenceBridge:
-        namespace: tailscale
-        matchLabels:
-          tailscale.com/managed: "true"
-          tailscale.com/parent-resource-type: svc
-          tailscale.com/parent-resource: inference-bridge-freetoken
-          tailscale.com/parent-resource-ns: tailscale
-        port: 8090
     # Exact DNS names only, all on 443. No suffix wildcard is accepted by the
     # regression test. The list covers the private request paths and enabled
     # leader integrations visible in current code and deploy values. A

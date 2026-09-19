@@ -151,7 +151,6 @@ imgproxySigning:
 
 frontend:
   otelCollectorUrl: ""
-  qwenFlashApiBase: "http://inference.inference:8080/v1"
 tailnet:
   enabled: false
 cfIngress:
