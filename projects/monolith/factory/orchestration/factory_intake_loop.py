@@ -28,7 +28,12 @@ from factory.orchestration.factory_intake import (
     open_lanes,
     receive_issue,
 )
-from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt, WorkItem
+from factory.orchestration.factory_models import (
+    FactoryAudit,
+    FactoryReceipt,
+    WorkItem,
+    WorkItemEdge,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +73,7 @@ _EXCLUSION_REASONS = (
     "cooldown",
     "already_received",
     "active_issue",
+    "blocked",
     "deferred",
     "refine_disabled",
     "lane_full",
@@ -356,6 +362,7 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
             if type(item.get("number")) is int and 1 <= item["number"] <= 2**31 - 1
         ]
         work_item_map = {}
+        blocked_numbers: set[int] = set()
         if numbers:
             with _read_session() as db:
                 # Resolve the candidates' work items first, so a receipt that
@@ -372,6 +379,22 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                     for wi in work_items
                     if wi.github_issue_number is not None
                 }
+                if work_item_map:
+                    blocked_item_ids = set(
+                        db.exec(
+                            select(WorkItemEdge.to_id)
+                            .join(WorkItem, WorkItemEdge.from_id == WorkItem.id)
+                            .where(
+                                WorkItemEdge.kind == "blocks",
+                                WorkItemEdge.to_id.in_(list(work_item_map)),
+                                WorkItem.state != "closed",
+                            )
+                            .distinct()
+                        ).all()
+                    )
+                    blocked_numbers = {
+                        work_item_map[item_id] for item_id in blocked_item_ids
+                    }
                 by_number_or_item = FactoryReceipt.issue_number.in_(numbers)
                 if work_item_map:
                     by_number_or_item = by_number_or_item | (
@@ -397,6 +420,9 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                     ):
                         rows.append(row)
             latest = rows[0] if rows else None
+            if number in blocked_numbers:
+                exclude("blocked")
+                continue
             # A delivered issue is done, whatever generation delivered it and
             # whatever the issue's own labels still say. The defect this
             # closes is exactly that: #3877 shipped as PR #6007, the body

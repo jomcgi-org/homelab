@@ -99,6 +99,123 @@ def client_fixture(session):
     app.dependency_overrides.clear()
 
 
+def test_factory_read_models_include_work_item_evidence_and_context_404(
+    tmp_path, monkeypatch
+):
+    # The shared fixture strips schemas from whatever is in metadata when it
+    # runs and cannot resolve string foreign keys across the swarm tables, so
+    # this test builds the factory tables on its own engine.
+    from sqlalchemy import event
+
+    from factory.orchestration import factory_controls, work_items
+    from factory.orchestration.factory_models import (
+        FactoryAudit,
+        FactoryControl,
+        FactoryReceipt,
+        FactoryReviewVerdict,
+        FactoryStart,
+        WorkItem,
+        WorkItemEdge,
+        WorkItemEvent,
+    )
+    from factory.orchestration.models import SwarmNodeRun, SwarmTask
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'work-items.db'}",
+        connect_args={"check_same_thread": False},
+        execution_options={"schema_translate_map": {"swarm": None}},
+    )
+
+    @event.listens_for(engine, "connect")
+    def foreign_keys(connection, _record):
+        connection.execute("PRAGMA foreign_keys=ON")
+
+    SQLModel.metadata.create_all(
+        engine,
+        tables=[
+            model.__table__
+            for model in (
+                SwarmTask,
+                SwarmNodeRun,
+                FactoryControl,
+                FactoryReceipt,
+                FactoryReviewVerdict,
+                FactoryStart,
+                FactoryAudit,
+                WorkItem,
+                WorkItemEdge,
+                WorkItemEvent,
+            )
+        ],
+    )
+    monkeypatch.setattr(work_items, "get_engine", lambda: engine)
+    monkeypatch.setattr(factory_controls, "get_engine", lambda: engine)
+
+    with Session(engine) as session:
+        session.add(FactoryControl(id="factory", actor="test"))
+        parent = WorkItem(
+            title="parent", state="open", source_kind="factory", trust="trusted"
+        )
+        child = WorkItem(
+            title="child", state="ready", source_kind="factory", trust="trusted"
+        )
+        session.add_all([parent, child])
+        session.flush()
+        session.add(WorkItemEdge(from_id=parent.id, to_id=child.id, kind="parent"))
+        session.add(
+            WorkItemEvent(
+                work_item_id=child.id,
+                version=1,
+                op="test",
+                author_kind="system",
+                author="test",
+                change_json="{}",
+                cause_kind="test",
+            )
+        )
+        receipt = FactoryReceipt(
+            repo="owner/repo",
+            issue_number=30,
+            title="context",
+            body="body",
+            url="https://github.com/owner/repo/issues/30",
+            actor="test",
+        )
+        session.add(receipt)
+        session.commit()
+        child_id, receipt_id = child.id, receipt.id
+
+    app = FastAPI()
+    app.include_router(router)
+
+    def session_override():
+        with Session(engine) as db:
+            yield db
+
+    app.dependency_overrides[get_session] = session_override
+    client = TestClient(app)
+    try:
+        detail = client.get(f"/api/agents/factory/work-items/{child_id}")
+        assert detail.status_code == 200
+        assert detail.json()["item"]["title"] == "child"
+        assert detail.json()["edges_in"][0]["kind"] == "parent"
+        assert detail.json()["events"][0]["op"] == "test"
+        listed = client.get(
+            "/api/agents/factory/work-items?state=ready&authority=local"
+        ).json()["work_items"]
+        assert [item["id"] for item in listed] == [child_id]
+        assert client.get("/api/agents/factory/work-items/999999").status_code == 404
+        context = client.get(f"/api/agents/factory/escalations/{receipt_id}/context")
+        assert context.status_code == 200
+        assert context.json()["ask"]["issue_number"] == 30
+        assert (
+            client.get("/api/agents/factory/escalations/999999/context").status_code
+            == 404
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+
 def _session(session: Session, name: str, status: str = "running", **kwargs):
     row = AgentSession(
         local_session_id=name,

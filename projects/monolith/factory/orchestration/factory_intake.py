@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 import json
+from datetime import timezone, timedelta
 
 from sqlalchemy import or_
 from sqlmodel import Session, select
@@ -36,7 +37,9 @@ from factory.orchestration.factory_controls import (
 )
 from factory.orchestration.factory_models import (  # noqa: F401 - same_work re-exported
     FactoryReceipt,
+    FactoryAudit,
     WorkItem,
+    WorkItemEdge,
     same_work,
 )
 from factory.orchestration.models import SwarmTask, mint_task_id
@@ -281,6 +284,54 @@ def open_lanes(policy: dict, rows, lanes=LANES) -> dict:
     return room
 
 
+def _audit_throttled(
+    db: Session,
+    actor: str,
+    action: str,
+    receipt_id: int,
+    *,
+    work_item_id: int | None = None,
+    blocked_by: list[int] | None = None,
+) -> None:
+    """Write one audit per hour, throttled within a locked session.
+
+    Used for repetitive audits like admission_blocked that occur on every tick
+    while the condition holds.
+    """
+    from factory.orchestration.factory_intake_loop import IDLE_AUDIT_SECONDS
+
+    # receipt_id lives in detail_json, not in a column, so scan the newest
+    # rows of this action; the window is small because the audit is throttled.
+    recent = db.exec(
+        select(FactoryAudit)
+        .where(FactoryAudit.action == action)
+        .order_by(FactoryAudit.id.desc())
+        .limit(50)
+    ).all()
+    last = None
+    for row in recent:
+        try:
+            detail = json.loads(row.detail_json or "{}")
+        except ValueError:
+            continue
+        if detail.get("receipt_id") == receipt_id:
+            last = row
+            break
+    # SQLite hands back naive timestamps; treat them as UTC like _now().
+    last_at = None
+    if last is not None:
+        last_at = last.created_at
+        if last_at.tzinfo is None:
+            last_at = last_at.replace(tzinfo=timezone.utc)
+    if last_at is None or _now() - last_at >= timedelta(seconds=IDLE_AUDIT_SECONDS):
+        kwargs = {"receipt_id": receipt_id}
+        if work_item_id is not None:
+            kwargs["work_item_id"] = work_item_id
+        if blocked_by is not None:
+            kwargs["blocked_by"] = blocked_by
+        _audit(db, actor, action, **kwargs)
+
+
 def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> dict:
     """Atomically reserve one WIP slot and pin the operator policy to a new SwarmTask.
 
@@ -387,11 +438,63 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
                 (FactoryReceipt.work_item_id.is_(None))
                 | (FactoryReceipt.work_item_id.not_in(busy_work_items))
             )
-        row = db.exec(
-            base_query.order_by(FactoryReceipt.created_at, FactoryReceipt.id)
-        ).first()
+
+        # Query with blocker predicate to avoid starvation: find the first unblocked receipt
+        # NOT EXISTS (work_item_id IS NOT NULL AND open blockers exist)
+        blocker_predicate = ~(
+            (FactoryReceipt.work_item_id.isnot(None))
+            & select(1)
+            .select_from(WorkItemEdge)
+            .where(
+                WorkItemEdge.to_id == FactoryReceipt.work_item_id,
+                WorkItemEdge.kind == "blocks",
+                select(1)
+                .select_from(WorkItem)
+                .where(
+                    WorkItem.id == WorkItemEdge.from_id,
+                    WorkItem.state != "closed",
+                )
+                .correlate(WorkItemEdge)
+                .exists(),
+            )
+            .correlate(FactoryReceipt)
+            .exists()
+        )
+
+        ordered = base_query.order_by(FactoryReceipt.created_at, FactoryReceipt.id)
+        row = db.exec(ordered.where(blocker_predicate)).first()
+
+        # A blocked receipt at the head of the queue is held silently by the
+        # predicate, so make the hold visible once an hour whether or not a
+        # later receipt was admitted past it.
+        blocked_head = db.exec(ordered.where(~blocker_predicate)).first()
+        if blocked_head is not None and (row is None or blocked_head.id != row.id):
+            head_is_first = row is None or (
+                blocked_head.created_at,
+                blocked_head.id,
+            ) < (row.created_at, row.id)
+            if head_is_first:
+                blockers = db.exec(
+                    select(WorkItem).where(
+                        WorkItemEdge.from_id == WorkItem.id,
+                        WorkItemEdge.to_id == blocked_head.work_item_id,
+                        WorkItemEdge.kind == "blocks",
+                        WorkItem.state != "closed",
+                    )
+                ).all()
+                _audit_throttled(
+                    db,
+                    actor,
+                    "admission_blocked",
+                    receipt_id=blocked_head.id,
+                    work_item_id=blocked_head.work_item_id,
+                    blocked_by=[blocker.id for blocker in blockers] or None,
+                )
         if row is None:
+            if blocked_head is not None:
+                return {"ok": False, "reason": "blocked"}
             return {"ok": False, "reason": "no_eligible_issue"}
+
         route = routes[receipt_task_class(row)]
         direction = json.loads(row.direction_json) if row.direction_json else {}
         if route["tier"] == "delivery" and not direction.get("conductor_gates"):

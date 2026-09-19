@@ -455,6 +455,41 @@ def test_needs_thought_excludes_only_a_refine_candidate(db, monkeypatch):
     assert admitted[0]["receipt"]["task_class"] == "judgment-analysis"
 
 
+def test_open_blocker_excludes_candidate_until_blocker_closes(db, monkeypatch):
+    candidate = issue(2, ["agent-ready"])
+    with Session(db) as session:
+        target, _outcome = work_items.mint_or_sync_from_github(
+            session, "owner/repo", candidate, actor="test"
+        )
+        blocker = WorkItem(
+            title="blocker",
+            state="open",
+            source_kind="factory",
+            trust="trusted",
+        )
+        session.add(blocker)
+        session.flush()
+        session.add(WorkItemEdge(from_id=blocker.id, to_id=target.id, kind="blocks"))
+        session.commit()
+        blocker_id = blocker.id
+
+    fake_pages(monkeypatch, [candidate])
+    assert intake_loop.intake_tick(policy(labels=["agent-ready"]), generation=0) == []
+    detail = json.loads(audits(db, "intake_idle")[-1].detail_json)
+    assert detail["excluded"] == {"blocked": 1}
+
+    with Session(db) as session:
+        blocker = session.get(WorkItem, blocker_id)
+        blocker.state = "closed"
+        blocker.close_reason = "completed"
+        blocker.closed_at = NOW
+        session.add(blocker)
+        session.commit()
+    release_sweep(db)
+    admitted = intake_loop.intake_tick(policy(labels=["agent-ready"]), generation=0)
+    assert admitted[0]["receipt"]["issue_number"] == 2
+
+
 def test_intake_state_reports_policy_usage_and_latest_audits(db):
     with Session(db) as session:
         # The board shows usage against the cap, so it counts what the cap

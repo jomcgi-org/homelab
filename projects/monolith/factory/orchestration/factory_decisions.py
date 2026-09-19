@@ -48,6 +48,7 @@ from factory.orchestration.factory_controls import (
     terminal_resolution,
 )
 from factory.orchestration.factory_intake import INTAKE_ACTOR
+from factory.orchestration import work_items
 from factory.orchestration.factory_models import (
     FactoryAudit,
     FactoryControl,
@@ -280,6 +281,7 @@ def _fields(row: FactoryReceipt) -> dict:
         "title": row.title,
         "url": row.url,
         "task_id": row.task_id,
+        "work_item_id": row.work_item_id,
         "task_class": row.task_class,
         "decision_id": decision_identity(
             {
@@ -383,15 +385,74 @@ def _record_child(
         )
 
 
+def _link_child(fields: dict, issue: dict) -> None:
+    """Mint a split child and attach its durable parent lineage when possible."""
+    child_number = issue.get("number") if isinstance(issue, dict) else None
+    try:
+        with _locked_session() as (db, _control):
+            child, _outcome = work_items.mint_or_sync_from_github(
+                db, fields["repo"], issue, actor=ACTOR
+            )
+            if fields.get("work_item_id") is not None and child is not None:
+                work_items.add_edge(
+                    db,
+                    fields["work_item_id"],
+                    child.id,
+                    "parent",
+                    actor=ACTOR,
+                    author_kind="operator",
+                    cause_kind="decision_split",
+                    cause_ref=str(fields.get("effect_namespace") or fields["id"]),
+                    stated_reason="split by operator decision",
+                )
+    except Exception as exc:  # noqa: BLE001 - GitHub writes cannot be rolled back
+        logger.exception(
+            "decision_child_link_error",
+            extra={"child_number": child_number, "receipt_id": fields["id"]},
+        )
+        with _locked_session() as (db, _control):
+            _audit(
+                db,
+                ACTOR,
+                "decision_child_link_error",
+                task_id=fields["task_id"],
+                receipt_id=fields["id"],
+                child_number=child_number,
+                error=type(exc).__name__,
+            )
+
+
 def _apply_split(fields: dict, option: dict, marker: str) -> dict:
     repo, number = fields["repo"], fields["issue_number"]
-    _get, _list, github_write = _github()
+    github_get, _list, github_write = _github()
     children = (option.get("detail") or {}).get("children") or []
     done = _children_done(fields["id"], fields.get("effect_namespace"))
     opened: list[int] = []
     for index, child in enumerate(children):
         if index in done:
-            opened.append(done[index])
+            child_number = done[index]
+            opened.append(child_number)
+            try:
+                replayed = github_get(repo, f"issues/{child_number}")
+                _link_child(fields, replayed)
+            except Exception as exc:  # noqa: BLE001 - the split already happened
+                logger.exception(
+                    "decision_child_link_error",
+                    extra={
+                        "child_number": child_number,
+                        "receipt_id": fields["id"],
+                    },
+                )
+                with _locked_session() as (db, _control):
+                    _audit(
+                        db,
+                        ACTOR,
+                        "decision_child_link_error",
+                        task_id=fields["task_id"],
+                        receipt_id=fields["id"],
+                        child_number=child_number,
+                        error=type(exc).__name__,
+                    )
             continue
         body = str(child.get("body") or "")
         created = github_write(
@@ -416,6 +477,7 @@ def _apply_split(fields: dict, option: dict, marker: str) -> dict:
             str(child.get("title")),
             fields.get("effect_namespace"),
         )
+        _link_child(fields, created)
         opened.append(child_number)
     listed = "\n".join(f"- #{child}" for child in opened)
     _comment(

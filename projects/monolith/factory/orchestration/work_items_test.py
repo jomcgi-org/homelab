@@ -482,3 +482,57 @@ def test_work_item_routes_get_list_filter_clamp_and_404(db):
     assert all(
         row["state"] == "ready" and row["authority"] == "local" for row in filtered
     )
+
+
+def test_operator_work_item_reads_use_full_extracted_documents(db):
+    with Session(db) as session:
+        parent = local_item(session, title="parent")
+        child = local_item(session, title="child")
+        add_edge(session, parent.id, child.id, "parent", **op_kwargs())
+        session.commit()
+        child_id = child.id
+
+    operator = operator_client(db)
+
+    operator_detail = operator.get(f"/api/swarm/factory/work-items/{child_id}")
+    assert operator_detail.status_code == 200
+    assert operator_detail.json()["edges_in"][0]["kind"] == "parent"
+
+    operator_list = operator.get("/api/swarm/factory/work-items").json()
+    assert {item["title"] for item in operator_list["work_items"]} == {
+        "parent",
+        "child",
+    }
+
+
+def test_operator_and_browser_routes_serve_the_same_work_item_document(db):
+    from factory.execution.router import router as agents_router
+
+    with Session(db) as session:
+        item = WorkItem(
+            title="shared", state="ready", source_kind="factory", trust="trusted"
+        )
+        session.add(item)
+        session.commit()
+        item_id = item.id
+
+    browser_app = FastAPI()
+    browser_app.include_router(agents_router)
+
+    def session_override():
+        with Session(db) as session:
+            yield session
+
+    browser_app.dependency_overrides[get_session] = session_override
+    browser = TestClient(browser_app)
+    operator = operator_client(db)
+    try:
+        via_operator = operator.get(f"/api/swarm/factory/work-items/{item_id}").json()
+        via_browser = browser.get(f"/api/agents/factory/work-items/{item_id}").json()
+        assert via_operator == via_browser
+        assert (
+            operator.get("/api/swarm/factory/work-items?state=ready").json()
+            == browser.get("/api/agents/factory/work-items?state=ready").json()
+        )
+    finally:
+        browser_app.dependency_overrides.clear()
