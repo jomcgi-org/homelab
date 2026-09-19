@@ -84,6 +84,22 @@ defmodule Embervm.OpLog.PostgresTest do
     assert Process.alive?(server)
   end
 
+  test "a returned connection error from the transaction leaves the op-log alive" do
+    error = %DBConnection.ConnectionError{message: "connection is closed"}
+
+    {:ok, server} =
+      Postgres.start_link(
+        name: nil,
+        connection: self(),
+        transaction_fun: fn _connection, _fun -> {:error, error} end
+      )
+
+    op = %Op{kind: :denied, tenant: "t1", ts: 1, payload: %{}}
+
+    assert Postgres.append(server, op) == {:error, :unavailable}
+    assert Process.alive?(server)
+  end
+
   test "a Postgrex connection-loss error leaves the op-log alive" do
     transaction_fun = fn _connection, _fun ->
       raise %Postgrex.Error{
@@ -133,6 +149,47 @@ defmodule Embervm.OpLog.PostgresTest do
     assert Postgres.load_sessions(sessions_server) == {:error, :unavailable}
     assert Process.alive?(tasks_server)
     assert Process.alive?(sessions_server)
+  end
+
+  test "connection exits from append and read handlers leave the op-log alive" do
+    {:ok, append_server} =
+      Postgres.start_link(
+        name: nil,
+        connection: self(),
+        transaction_fun: fn _connection, _fun -> exit(:connection_closed) end
+      )
+
+    {:ok, read_server} =
+      Postgres.start_link(
+        name: nil,
+        connection: self(),
+        query_fun: fn _connection, _sql, _params -> exit(:connection_closed) end
+      )
+
+    op = %Op{kind: :denied, tenant: "t1", ts: 1, payload: %{}}
+
+    assert Postgres.append(append_server, op) == {:error, :unavailable}
+    assert Postgres.load_tasks(read_server) == {:error, :unavailable}
+    assert Process.alive?(append_server)
+    assert Process.alive?(read_server)
+  end
+
+  test "successful append and read results are unchanged" do
+    {:ok, server} =
+      Postgres.start_link(
+        name: nil,
+        connection: self(),
+        transaction_fun: fn _connection, _fun -> {:ok, 42} end,
+        query_fun: fn _connection, _sql, _params ->
+          {:ok, %Postgrex.Result{rows: []}}
+        end
+      )
+
+    op = %Op{kind: :denied, tenant: "t1", ts: 1, payload: %{}}
+
+    assert Postgres.append(server, op) == {:ok, 42}
+    assert Postgres.load_tasks(server) == {:ok, []}
+    assert Process.alive?(server)
   end
 
   test "a returned client-side Postgrex error is not classified as unavailable" do
@@ -221,6 +278,14 @@ defmodule Embervm.OpLog.PostgresTest do
       # restarted too. Whichever way these two numbers are tuned, the database
       # has to be the one that decides.
       assert Postgres.append_timeout_ms() > Postgres.connect_opts(@dsn)[:timeout]
+    end
+
+    test "read and compaction budgets outlive every serial database query" do
+      query_timeout = Postgres.connect_opts(@dsn)[:timeout]
+
+      assert Postgres.single_query_call_timeout_ms() > query_timeout
+      assert Postgres.double_query_call_timeout_ms() > 2 * query_timeout
+      assert Postgres.compact_call_timeout_ms() > 12 * query_timeout
     end
   end
 end

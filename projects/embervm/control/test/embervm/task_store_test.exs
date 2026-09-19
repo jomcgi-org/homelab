@@ -17,6 +17,68 @@ defmodule Embervm.TaskStoreTest do
     def append(_server, _op), do: {:error, :unavailable}
   end
 
+  defmodule MissingOpLog do
+    def load_tasks(_server), do: {:ok, []}
+
+    def append(server, op) do
+      GenServer.call(server, {:append, op})
+    end
+
+    def load_request(server, task_id) do
+      GenServer.call(server, {:load_request, task_id})
+    end
+  end
+
+  defmodule CrashingOpLog do
+    def load_tasks(_server), do: {:ok, []}
+    def append(_server, _op), do: exit(:invalid_op_log_state)
+  end
+
+  defmodule SlowDurableOpLog do
+    use GenServer
+
+    def start_link(owner), do: GenServer.start_link(__MODULE__, owner)
+
+    def load_tasks(server), do: GenServer.call(server, :load_tasks)
+
+    def append(server, op) do
+      GenServer.call(server, {:append, op}, 10)
+    end
+
+    @impl true
+    def init(owner), do: {:ok, %{owner: owner, rows: [], next_seq: 1}}
+
+    @impl true
+    def handle_call(:load_tasks, _from, state), do: {:reply, {:ok, state.rows}, state}
+
+    def handle_call({:append, op}, from, state) do
+      Process.send_after(self(), {:commit, from, op}, 30)
+      {:noreply, state}
+    end
+
+    @impl true
+    def handle_info({:commit, from, op}, state) do
+      row = %{
+        task_id: op.task_id,
+        tenant: op.tenant,
+        principal: op.principal,
+        workload: op.workload,
+        state: "queued",
+        attempt: 0,
+        idempotency_key: op.payload.idempotency_key,
+        submitted_at: op.ts,
+        updated_at: op.ts,
+        expires_at: op.payload.expires_at
+      }
+
+      send(state.owner, {:late_append_committed, op.task_id})
+      GenServer.reply(from, {:ok, state.next_seq})
+
+      {:noreply,
+       %{state | rows: [row | state.rows], next_seq: state.next_seq + 1}}
+    end
+  end
+
   setup do
     path = Path.join(System.tmp_dir!(), "embervm_taskstore_test_#{System.unique_integer([:positive, :monotonic])}.db")
     on_exit(fn -> File.rm_rf!(path) end)
@@ -102,6 +164,80 @@ defmodule Embervm.TaskStoreTest do
              {:error, :unavailable}
 
     assert Process.alive?(store)
+  end
+
+  test "submit contains an unavailable op-log process exit and leaves ETS unchanged" do
+    {:ok, store} =
+      TaskStore.start_link(
+        name: nil,
+        op_log: :op_log_not_running,
+        op_log_mod: MissingOpLog,
+        id_fun: fn -> "missing-op-log-task" end,
+        on_queued: fn _ -> :ok end
+      )
+
+    assert TaskStore.submit(store, %{tenant: "t1", principal: "p1", workload: "wl-a"}) ==
+             {:error, :unavailable}
+
+    assert Process.alive?(store)
+    assert TaskStore.get(store, "missing-op-log-task") == :error
+    assert TaskStore.get_request(store, "missing-op-log-task") == {:error, :unavailable}
+    assert Process.alive?(store)
+  end
+
+  test "a timed-out append may commit late and is recovered durably and idempotently" do
+    {:ok, op_log} = SlowDurableOpLog.start_link(self())
+
+    attrs = %{
+      tenant: "t1",
+      principal: "p1",
+      workload: "wl-a",
+      idempotency_key: "late-append"
+    }
+
+    store_opts = [
+      name: nil,
+      op_log: op_log,
+      op_log_mod: SlowDurableOpLog,
+      id_fun: fn -> "late-task" end,
+      clock: fn -> 1_000 end,
+      on_queued: fn _ -> :ok end
+    ]
+
+    {:ok, store} = TaskStore.start_link(store_opts)
+
+    assert TaskStore.submit(store, attrs) == {:error, :unavailable}
+    assert Process.alive?(store)
+    assert TaskStore.get(store, "late-task") == :error
+
+    assert_receive {:late_append_committed, "late-task"}
+    assert TaskStore.get(store, "late-task") == :error
+
+    :ok = GenServer.stop(store)
+    {:ok, recovered_store} = TaskStore.start_link(store_opts)
+
+    assert {:ok, recovered} = TaskStore.get(recovered_store, "late-task")
+    assert recovered.state == :queued
+    assert recovered.attempt == 1
+    assert TaskStore.submit(recovered_store, attrs) == {:ok, :existing, "late-task"}
+  end
+
+  test "a non-call exit from an op-log remains fatal" do
+    {:ok, store} =
+      GenServer.start(TaskStore,
+        name: nil,
+        op_log: :crashing_op_log,
+        op_log_mod: CrashingOpLog,
+        on_queued: fn _ -> :ok end
+      )
+
+    monitor = Process.monitor(store)
+
+    assert catch_exit(
+             TaskStore.submit(store, %{tenant: "t1", principal: "p1", workload: "wl-a"})
+           )
+
+    assert_receive {:DOWN, ^monitor, :process, ^store, :invalid_op_log_state}
   end
 
   test "idempotency dedupe: same {workload, idempotency_key} returns the existing task, no new op", %{
