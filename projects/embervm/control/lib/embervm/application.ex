@@ -970,7 +970,12 @@ defmodule Embervm.Application do
   def store_probe_interval_ms do
     case trimmed_env("EMBERVM_STORE_PROBE_INTERVAL_SECONDS") do
       "" -> 300_000
-      raw -> max(String.to_integer(raw), 1) * 1_000
+
+      raw ->
+        case Integer.parse(raw) do
+          {seconds, ""} -> max(seconds, 1) * 1_000
+          _ -> 300_000
+        end
     end
   end
 

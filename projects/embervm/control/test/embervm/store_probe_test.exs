@@ -21,6 +21,37 @@ defmodule Embervm.StoreProbeTest do
     def get(%{calls: calls}, _key), do: Agent.update(calls, &(&1 + 1))
   end
 
+  defmodule BlockingS3Client do
+    def get(%{owner: owner}, "probe/.keep") do
+      send(owner, {:store_probe_started, self()})
+
+      receive do
+        {:finish_store_probe, result} -> result
+      end
+    end
+  end
+
+  test "a configured store is unknown while its first check is in flight" do
+    probe =
+      start_supervised_probe(
+        client: %{endpoint: "https://storage.example", owner: self()},
+        s3_client: BlockingS3Client,
+        interval_ms: 60_000
+      )
+
+    assert_receive {:store_probe_started, task}, 1_000
+
+    assert StoreProbe.status(probe) == %{
+             state: :unknown,
+             reason: "not checked",
+             last_ok_at: nil,
+             last_checked_at: nil
+           }
+
+    send(task, {:finish_store_probe, {:error, :not_found}})
+    assert eventually_status(probe, :ok).state == :ok
+  end
+
   test "a missing object and an HTTP error both prove the TLS path" do
     for result <- [{:error, :not_found}, {:error, {:unexpected_status, 403}}] do
       probe = start_probe([result])
@@ -69,6 +100,17 @@ defmodule Embervm.StoreProbeTest do
     assert status.state == :ok
     assert status.reason == nil
     assert status.last_ok_at == status.last_checked_at
+  end
+
+  test "a failure after success retains the last successful check time" do
+    probe = start_probe([{:error, :not_found}, {:error, {:transport_error, :closed}}])
+    first_status = eventually_status(probe, :ok)
+
+    send(probe, :probe)
+    status = eventually_status(probe, :degraded)
+
+    assert status.last_ok_at == first_status.last_ok_at
+    assert status.last_checked_at
   end
 
   test "a throwing client becomes degraded instead of crashing the probe" do

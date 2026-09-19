@@ -80,6 +80,29 @@ defmodule Embervm.RouterTest do
       do: %{state: :disabled, reason: nil, last_ok_at: nil, last_checked_at: "2026-09-19T01:02:03Z"}
   end
 
+  defmodule StoreProbeUnknown do
+    def status,
+      do: %{state: :unknown, reason: "not checked", last_ok_at: nil, last_checked_at: nil}
+  end
+
+  defmodule StoreProbeUnavailable do
+    def status, do: Embervm.StoreProbe.status(:router_store_probe_is_down)
+  end
+
+  defmodule StoreProbeInFlight do
+    def status, do: Embervm.StoreProbe.status(__MODULE__)
+  end
+
+  defmodule BlockingS3Client do
+    def get(%{owner: owner}, "probe/.keep") do
+      send(owner, {:router_store_probe_started, self()})
+
+      receive do
+        {:finish_router_store_probe, result} -> result
+      end
+    end
+  end
+
   # Fakes for the R2 session routes: the router resolves the session manager/store
   # from app-env (the :session_manager / :session_store_mod keys), so a request test
   # can drive the HTTP surface, and especially the SESSION-TOKEN auth boundary,
@@ -1025,7 +1048,7 @@ defmodule Embervm.RouterTest do
     Application.put_env(:embervm, :session_manager_server, self())
     resp = req(:get, "/healthz")
     assert resp.status == 200
-    assert resp.body =~ ~r/^ok\nstore: (ok|disabled)$/
+    assert resp.body =~ ~r/^ok\nstore: (ok|disabled|unknown)$/
   end
 
   test "/healthz reports each store state without changing readiness" do
@@ -1035,13 +1058,54 @@ defmodule Embervm.RouterTest do
     for {probe, line} <- [
           {StoreProbeOk, "store: ok"},
           {StoreProbeDegraded, "store: degraded {:tls_alert, {:unknown_ca, :certificate_unknown}}"},
-          {StoreProbeDisabled, "store: disabled"}
+          {StoreProbeDisabled, "store: disabled"},
+          {StoreProbeUnknown, "store: unknown"}
         ] do
       Application.put_env(:embervm, :store_probe, probe)
       resp = req(:get, "/healthz")
       assert resp.status == 200
       assert resp.body == "ok\n" <> line
     end
+  end
+
+  test "/healthz answers within the readiness budget while a store check is in flight" do
+    Application.put_env(:embervm, :session_manager, RaisingPingSessionManager)
+    Application.put_env(:embervm, :session_manager_server, self())
+
+    spec =
+      Supervisor.child_spec(
+        {Embervm.StoreProbe,
+         name: StoreProbeInFlight,
+         client: %{endpoint: "https://storage.example", owner: self()},
+         s3_client: BlockingS3Client,
+         interval_ms: 60_000},
+        id: make_ref()
+      )
+
+    start_supervised!(spec)
+    assert_receive {:router_store_probe_started, task}, 1_000
+    Application.put_env(:embervm, :store_probe, StoreProbeInFlight)
+
+    started_at = System.monotonic_time(:millisecond)
+    resp = req(:get, "/healthz")
+    elapsed_ms = System.monotonic_time(:millisecond) - started_at
+
+    assert resp.status == 200
+    assert resp.body == "ok\nstore: unknown"
+    assert elapsed_ms < 2_000
+
+    send(task, {:finish_router_store_probe, {:error, :not_found}})
+  end
+
+  test "/healthz remains ready and reports the probe as unavailable when it is down" do
+    Application.put_env(:embervm, :session_manager, RaisingPingSessionManager)
+    Application.put_env(:embervm, :session_manager_server, self())
+    Application.put_env(:embervm, :store_probe, StoreProbeUnavailable)
+
+    resp = req(:get, "/healthz")
+
+    assert resp.status == 200
+    assert resp.body =~ "store: degraded probe unavailable:"
   end
 
   test "/v1/health/store is authenticated and returns the current observation" do
@@ -1092,7 +1156,7 @@ defmodule Embervm.RouterTest do
 
     resp = req(:get, "/healthz")
     assert resp.status == 503
-    assert resp.body =~ ~r/^session manager down\nstore: (ok|disabled)$/
+    assert resp.body =~ ~r/^session manager down\nstore: (ok|disabled|unknown)$/
   end
 
   test "/livez reports a missing session manager" do
