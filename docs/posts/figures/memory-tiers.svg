@@ -9,7 +9,7 @@
   <line x1="270" y1="54" x2="270" y2="128" stroke="currentColor" stroke-width="1.25"/>
   <line x1="420" y1="54" x2="420" y2="128" stroke="currentColor" stroke-width="1.25"/>
   <text x="160" y="74" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">dense layers</text>
-  <text x="160" y="88" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">9.2 GB</text>
+  <text x="160" y="88" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">9.2 GiB</text>
   <text x="280" y="74" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">expert slot cache</text>
   <text x="280" y="88" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">hot set stays</text>
   <text x="280" y="102" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">resident here</text>
@@ -82,11 +82,11 @@
   <rect x="150" y="176" width="400" height="78" fill="none" stroke="currentColor" stroke-width="1.25"/>
   <text x="160" y="194" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">PINNED HOST MEMORY: part of the 64 GB DDR5</text>
   <line x1="150" y1="202" x2="550" y2="202" stroke="currentColor" stroke-width="1.25"/>
-  <line x1="410" y1="202" x2="410" y2="254" stroke="currentColor" stroke-width="1.25"/>
-  <text x="160" y="222" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">expert banks, 40 GB</text>
-  <text x="160" y="236" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">30 whole layers</text>
-  <text x="420" y="222" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">hot rows, 6 GB</text>
-  <text x="420" y="236" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">18 disk layers</text>
+  <line x1="400" y1="202" x2="400" y2="254" stroke="currentColor" stroke-width="1.25"/>
+  <text x="160" y="222" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">expert banks</text>
+  <text x="160" y="236" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">budgeted with page cache</text>
+  <text x="410" y="222" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">transfer buffers</text>
+  <text x="410" y="236" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">bounded staging</text>
   <circle cx="40" cy="215" r="9" fill="none" stroke="currentColor" stroke-width="1" data-key="3"/>
   <text x="40" y="219" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="middle">3</text>
   <line x1="49.0" y1="215.0" x2="150" y2="215" stroke="currentColor" stroke-width="1"/>
@@ -94,7 +94,7 @@
   <rect x="590" y="176" width="96" height="78" fill="none" stroke="currentColor" stroke-width="1.25"/>
   <text x="598" y="203" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">CPU MoE</text>
   <text x="598" y="217" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">executor</text>
-  <text x="598" y="231" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">8 cores</text>
+  <text x="598" y="231" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">host RAM</text>
   <circle cx="638" cy="148" r="9" fill="none" stroke="currentColor" stroke-width="1" data-key="6"/>
   <text x="638" y="152" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="middle">6</text>
   <line x1="638.0" y1="157.0" x2="638" y2="176" stroke="currentColor" stroke-width="1"/>
@@ -103,8 +103,8 @@
   <line x1="590" y1="236" x2="585.9549150281252" y2="238.93892626146237" stroke="currentColor" stroke-width="1"/>
   <line x1="590" y1="236" x2="585.9549150281252" y2="233.06107373853763" stroke="currentColor" stroke-width="1"/>
   <rect x="150" y="280" width="400" height="56" fill="none" stroke="currentColor" stroke-width="1.25" stroke-dasharray="4 3"/>
-  <text x="160" y="298" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">PAGE CACHE: about 16 GB, what the kernel keeps of 5</text>
-  <text x="160" y="316" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">recently used cold expert rows</text>
+  <text x="160" y="298" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">PAGE CACHE: shares the host's 64 GB with 3</text>
+  <text x="160" y="316" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">file pages in RAM; a miss needs NVMe</text>
   <circle cx="40" cy="308" r="9" fill="none" stroke="currentColor" stroke-width="1" data-key="4"/>
   <text x="40" y="312" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="middle">4</text>
   <line x1="49.0" y1="308.0" x2="150" y2="308" stroke="currentColor" stroke-width="1"/>
@@ -113,9 +113,9 @@
   <text x="160" y="384" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">NVMe: 1.9 TB</text>
   <line x1="150" y1="392" x2="550" y2="392" stroke="currentColor" stroke-width="1.25"/>
   <line x1="400" y1="392" x2="400" y2="442" stroke="currentColor" stroke-width="1.25"/>
-  <text x="160" y="412" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">expert banks, 63.5 GB</text>
+  <text x="160" y="412" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">expert banks, 63.5 GiB</text>
   <text x="160" y="426" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">48 layers x 512 experts</text>
-  <text x="410" y="412" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">lookup table, 27 GB</text>
+  <text x="410" y="412" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">lookup table, 27 GiB</text>
   <text x="410" y="426" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">n-gram rows</text>
   <circle cx="40" cy="404" r="9" fill="none" stroke="currentColor" stroke-width="1" data-key="5"/>
   <text x="40" y="408" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="middle">5</text>
