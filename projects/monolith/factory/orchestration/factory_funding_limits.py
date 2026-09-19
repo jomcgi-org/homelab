@@ -3,6 +3,7 @@
 from datetime import datetime
 import json
 import os
+from sqlalchemy import or_
 from sqlmodel import select
 from factory.orchestration import factory_controls as controls
 from factory.orchestration.factory_models import (
@@ -71,12 +72,17 @@ def objective(db, task_id):
     receipt = controls._receipt(db, task_id)
     if receipt is None:
         raise ValueError("unknown funding objective")
-    receipts = db.exec(
-        select(FactoryReceipt).where(
-            FactoryReceipt.repo == receipt.repo,
-            FactoryReceipt.issue_number == receipt.issue_number,
+    # A receipt with NULL work_item_id sums only by issue on purpose
+    # (pre-column history), so the asymmetry is documented.
+    issue_identity = (FactoryReceipt.repo == receipt.repo) & (
+        FactoryReceipt.issue_number == receipt.issue_number
+    )
+    identity = issue_identity
+    if receipt.work_item_id is not None:
+        identity = or_(
+            FactoryReceipt.work_item_id == receipt.work_item_id, issue_identity
         )
-    ).all()
+    receipts = db.exec(select(FactoryReceipt).where(identity)).all()
     receipt_ids = {r.id for r in receipts}
     ids = {r.task_id for r in receipts if r.task_id}
     for audit in db.exec(

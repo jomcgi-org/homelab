@@ -197,6 +197,8 @@ def test_build_factory_view_reads_a_real_control_row(tmp_path):
         FactoryReceipt,
         FactoryStart,
         WorkItem,
+        WorkItemEdge,
+        WorkItemEvent,
     )
     from factory.orchestration.models import SwarmTask
 
@@ -219,6 +221,8 @@ def test_build_factory_view_reads_a_real_control_row(tmp_path):
                 FactoryControl,
                 FactoryReceipt,
                 WorkItem,
+                WorkItemEdge,
+                WorkItemEvent,
                 FactoryStart,
                 FactoryAudit,
             )

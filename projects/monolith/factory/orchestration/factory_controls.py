@@ -2572,12 +2572,9 @@ def request_landing_recovery(
             active = db.exec(
                 select(FactoryReceipt).where(FactoryReceipt.state.in_(_ACTIVE))
             ).all()
-            if any(
-                r.repo == row.repo
-                and r.issue_number == row.issue_number
-                and r.task_id != task_id
-                for r in active
-            ):
+            from factory.orchestration.factory_models import same_work
+
+            if any(same_work(r, row) and r.task_id != task_id for r in active):
                 return {"ok": False, "reason": "issue_already_active"}
             if (
                 sum(

@@ -16,6 +16,8 @@ from factory.orchestration.factory_models import (
     FactoryControl,
     FactoryReceipt,
     WorkItem,
+    WorkItemEdge,
+    WorkItemEvent,
     FactoryReviewVerdict,
     FactoryStart,
 )
@@ -44,6 +46,8 @@ def db(tmp_path, monkeypatch):
                 FactoryControl,
                 FactoryReceipt,
                 WorkItem,
+                WorkItemEdge,
+                WorkItemEvent,
                 FactoryReviewVerdict,
                 FactoryStart,
                 FactoryAudit,
@@ -1516,6 +1520,154 @@ def test_objective_budget_keeps_all_readmissions_beyond_display_history(
         assert total["committed_cost_usd"] == pytest.approx(199.2)
     denied = grant(task, cost=1)
     assert denied["reason"] == "objective_budget_limit"
+
+
+def test_objective_unions_work_item_and_legacy_issue_receipts(db):
+    from factory.orchestration import factory_funding_limits as funding
+
+    with Session(db) as session:
+        item = WorkItem(
+            title="item", state="open", source_kind="factory", trust="trusted"
+        )
+        session.add(item)
+        session.flush()
+        tasks = [
+            SwarmTask(
+                id=name,
+                task_text=name,
+                conductor_model="opus",
+                budget_usd=10,
+            )
+            for name in ("current-work", "moved-work", "legacy-work")
+        ]
+        session.add_all(tasks)
+        session.flush()
+        session.add_all(
+            [
+                FactoryReceipt(
+                    repo="owner/repo",
+                    issue_number=1,
+                    title="current",
+                    body="",
+                    url="https://github.com/owner/repo/issues/1",
+                    actor="test",
+                    task_id="current-work",
+                    work_item_id=item.id,
+                ),
+                FactoryReceipt(
+                    repo="owner/repo",
+                    issue_number=2,
+                    title="moved",
+                    body="",
+                    url="https://github.com/owner/repo/issues/2",
+                    actor="test",
+                    task_id="moved-work",
+                    work_item_id=item.id,
+                ),
+                FactoryReceipt(
+                    repo="owner/repo",
+                    issue_number=1,
+                    generation=1,
+                    title="legacy",
+                    body="",
+                    url="https://github.com/owner/repo/issues/1",
+                    actor="test",
+                    task_id="legacy-work",
+                ),
+            ]
+        )
+        session.add_all(
+            [
+                FactoryStart(
+                    task_id=task.id,
+                    start_key=task.id,
+                    actor="test",
+                    model="opus",
+                    max_cost_usd=10,
+                    cost_usd=cost,
+                    status="succeeded",
+                )
+                for task, cost in zip(tasks, (1.0, 2.0, 3.0), strict=True)
+            ]
+        )
+        session.commit()
+        total = funding.objective(session, "current-work")
+    assert total["task_ids"] == ["current-work", "legacy-work", "moved-work"]
+    assert total["committed_cost_usd"] == pytest.approx(6.0)
+
+
+def test_objective_with_null_work_item_uses_issue_identity_only(db):
+    from factory.orchestration import factory_funding_limits as funding
+
+    with Session(db) as session:
+        item = WorkItem(
+            title="item", state="open", source_kind="factory", trust="trusted"
+        )
+        session.add(item)
+        session.flush()
+        tasks = [
+            SwarmTask(
+                id=name,
+                task_text=name,
+                conductor_model="opus",
+                budget_usd=10,
+            )
+            for name in ("legacy-current", "same-issue", "same-item")
+        ]
+        session.add_all(tasks)
+        session.flush()
+        session.add_all(
+            [
+                FactoryReceipt(
+                    repo="owner/repo",
+                    issue_number=5,
+                    title="current",
+                    body="",
+                    url="https://github.com/owner/repo/issues/5",
+                    actor="test",
+                    task_id="legacy-current",
+                ),
+                FactoryReceipt(
+                    repo="owner/repo",
+                    issue_number=5,
+                    generation=1,
+                    title="same issue",
+                    body="",
+                    url="https://github.com/owner/repo/issues/5",
+                    actor="test",
+                    task_id="same-issue",
+                    work_item_id=item.id,
+                ),
+                FactoryReceipt(
+                    repo="owner/repo",
+                    issue_number=6,
+                    title="same item only",
+                    body="",
+                    url="https://github.com/owner/repo/issues/6",
+                    actor="test",
+                    task_id="same-item",
+                    work_item_id=item.id,
+                ),
+            ]
+        )
+        session.add_all(
+            [
+                FactoryStart(
+                    task_id=task.id,
+                    start_key=task.id,
+                    actor="test",
+                    model="opus",
+                    max_cost_usd=10,
+                    cost_usd=cost,
+                    status="succeeded",
+                )
+                for task, cost in zip(tasks, (1.0, 2.0, 50.0), strict=True)
+            ]
+        )
+        session.commit()
+        total = funding.objective(session, "legacy-current")
+    assert total["task_ids"] == ["legacy-current", "same-issue"]
+    assert total["committed_cost_usd"] == pytest.approx(3.0)
 
 
 def test_concurrent_objective_reservations_cannot_cross_ceiling(

@@ -755,17 +755,13 @@ def _has_supersede_marker(repo: str, sibling: int, marker: str) -> bool:
 
 
 def _active_receipt(repo: str, sibling: int) -> bool:
+    from factory.orchestration.factory_intake import receipts_for_work
+
     with _read_session() as db:
-        return (
-            db.exec(
-                select(FactoryReceipt.id).where(
-                    FactoryReceipt.repo == repo,
-                    FactoryReceipt.issue_number == sibling,
-                    FactoryReceipt.state.in_((*_ACTIVE, "queued", ESCALATED)),
-                )
-            ).first()
-            is not None
+        rows = receipts_for_work(
+            db, repo, sibling, states=[*_ACTIVE, "queued", ESCALATED]
         )
+        return bool(rows)
 
 
 def _supersede_skip(task_id: str, number: int, sibling: int, reason: str) -> None:

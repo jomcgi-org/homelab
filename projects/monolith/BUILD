@@ -5041,6 +5041,21 @@ py_test(
 )
 
 py_test(
+    name = "swarm_work_item_pointer_test",
+    srcs = ["factory/orchestration/work_item_pointer_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_auth",
+        ":pkg_swarm",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "swarm_factory_landing_test",
     srcs = ["factory/orchestration/factory_landing_test.py"],
     imports = ["."],
