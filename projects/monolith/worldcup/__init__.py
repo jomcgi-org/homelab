@@ -27,8 +27,8 @@ def on_startup_jobs(session) -> None:
     """
     from scheduler.api import argo_handled, register_job
 
-    # Skip the in-process job when an active Argo CronWorkflow owns it (the chart
-    # sets ARGO_JOBS from the non-suspended cronWorkflows entries).
+    # Skip legacy registry metadata when a replacing Argo CronWorkflow owns the
+    # name. ARGO_JOBS includes suspended manual-only entries too.
     if argo_handled("worldcup.refresh"):
         return
 

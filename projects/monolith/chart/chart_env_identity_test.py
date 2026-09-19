@@ -1382,6 +1382,103 @@ def _chat_secret_producers(rendered):
     ]
 
 
+@pytest.mark.parametrize("token_item_path", ["", "vaults/test/items/github"])
+@pytest.mark.parametrize(
+    "chat_enabled,semgrep_configured,swarm_enabled,probe_enabled",
+    [
+        (False, False, False, False),
+        (True, False, False, False),
+        (False, True, False, False),
+        (False, False, True, False),
+        (False, False, False, True),
+        (True, True, True, True),
+    ],
+)
+def test_github_api_token_follows_secret_availability_only(
+    tmp_path,
+    token_item_path,
+    chat_enabled,
+    semgrep_configured,
+    swarm_enabled,
+    probe_enabled,
+):
+    override = _write_values(
+        tmp_path,
+        "github-token-gates.yaml",
+        {
+            "chat": {
+                "enabled": chat_enabled,
+                "onepassword": {"itemPath": token_item_path},
+            },
+            "semgrep": {
+                "onepassword": {
+                    "itemPath": (
+                        "vaults/test/items/semgrep" if semgrep_configured else ""
+                    )
+                }
+            },
+            "swarm": {"enabled": swarm_enabled},
+            "cdHealth": {"probeEnabled": probe_enabled},
+        },
+    )
+    rendered = _render("token-gates", [override])
+    entries = [
+        item
+        for item in _deployment_backend_env(rendered)
+        if item["name"] == "GITHUB_API_TOKEN"
+    ]
+    producers = _chat_secret_producers(rendered)
+
+    if not token_item_path:
+        assert entries == []
+        assert len(producers) == (1 if chat_enabled else 0)
+        return
+
+    assert entries == [
+        {
+            "name": "GITHUB_API_TOKEN",
+            "valueFrom": {
+                "secretKeyRef": {
+                    "name": "token-gates-chat-secrets",
+                    "key": "GITHUB_TOKEN",
+                }
+            },
+        }
+    ]
+    assert len(producers) == 1
+    assert producers[0]["spec"]["itemPath"] == token_item_path
+
+
+@pytest.mark.parametrize("chat_enabled", [False, True])
+@pytest.mark.parametrize("whatsapp_enabled", [False, True])
+def test_household_model_follows_whatsapp_and_retired_agent_gate_is_absent(
+    tmp_path, chat_enabled, whatsapp_enabled
+):
+    override = _write_values(
+        tmp_path,
+        "whatsapp-gates.yaml",
+        {
+            "chat": {"enabled": chat_enabled},
+            "whatsapp": {
+                "enabled": whatsapp_enabled,
+                "model": "test-household-model",
+                "onepassword": {"itemPath": "vaults/test/items/whatsapp"},
+            },
+        },
+    )
+    env = _deployment_backend_env(_render("whatsapp-gates", [override]))
+    retired = [item for item in env if item["name"] == "WHATSAPP_AGENT_ENABLED"]
+    household = [item for item in env if item["name"] == "HOUSEHOLD_LLM_MODEL"]
+
+    assert retired == []
+    if whatsapp_enabled:
+        assert household == [
+            {"name": "HOUSEHOLD_LLM_MODEL", "value": "test-household-model"}
+        ]
+    else:
+        assert household == []
+
+
 @pytest.mark.parametrize("policy", [None, "none"])
 def test_session_notification_policy_without_discord_configuration(tmp_path, policy):
     overrides = []
