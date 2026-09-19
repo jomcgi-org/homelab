@@ -1348,7 +1348,9 @@ _TOKEN_REVIEW_RULE = {
     "verbs": ["create"],
 }
 _POD_RULE = {"apiGroups": [""], "resources": ["pods"], "verbs": ["list", "patch"]}
+_NODE_INVENTORY_RULE = {"apiGroups": [""], "resources": ["nodes"], "verbs": ["list"]}
 _DEFAULT_CLUSTER_RULES = [
+    _NODE_INVENTORY_RULE,
     *_WORKLOAD_RULES,
     _TOKEN_REVIEW_RULE,
     {"apiGroups": [""], "resources": ["secrets"], "verbs": ["get"]},
@@ -1551,7 +1553,12 @@ def test_namespace_rbac_effective_grants_and_subject_boundaries(
         ]
     )
     expected = _role_pair(
-        "ClusterRole", name, None, [_TOKEN_REVIEW_RULE], name, "recovery"
+        "ClusterRole",
+        name,
+        None,
+        [_NODE_INVENTORY_RULE, _TOKEN_REVIEW_RULE],
+        name,
+        "recovery",
     )
     expected.update(
         _role_pair(
@@ -1575,7 +1582,7 @@ def test_namespace_rbac_effective_grants_and_subject_boundaries(
         )
     )
     assert objects == expected
-    cp_grants = [(None, _TOKEN_REVIEW_RULE)] + [
+    cp_grants = [(None, _NODE_INVENTORY_RULE), (None, _TOKEN_REVIEW_RULE)] + [
         ("recovery", rule) for rule in runtime_rules
     ]
     if mode == "full":
@@ -1747,7 +1754,7 @@ def test_recovery_namespace_rbac_matches_contract(recovery_render) -> None:
         "ClusterRole",
         _RECOVERY_CP,
         None,
-        [_TOKEN_REVIEW_RULE],
+        [_NODE_INVENTORY_RULE, _TOKEN_REVIEW_RULE],
         _RECOVERY_CP,
         _RECOVERY_NS,
     )
