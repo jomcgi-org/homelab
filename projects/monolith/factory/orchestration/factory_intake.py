@@ -32,7 +32,7 @@ from factory.orchestration.factory_controls import (
     validate_task_class,
     validate_policy,
 )
-from factory.orchestration.factory_models import FactoryReceipt
+from factory.orchestration.factory_models import FactoryReceipt, WorkItem
 from factory.orchestration.models import SwarmTask, mint_task_id
 
 
@@ -98,8 +98,37 @@ def receive_issue(
         ).first()
         if existing is not None:
             return {"ok": True, "created": False, "receipt": _snapshot(db, existing)}
+        # Look up existing work item and set work_item_id if found
+        work_item = db.exec(
+            select(WorkItem).where(
+                WorkItem.github_repo == repo,
+                WorkItem.github_issue_number == issue_number,
+            )
+        ).one_or_none()
+        # Look up existing work item and set work_item_id if found
+        work_item = db.exec(
+            select(WorkItem).where(
+                WorkItem.github_repo == repo,
+                WorkItem.github_issue_number == issue_number,
+            )
+        ).one_or_none()
+        # Look up existing work item and set work_item_id if found
+        work_item = db.exec(
+            select(WorkItem).where(
+                WorkItem.github_repo == repo,
+                WorkItem.github_issue_number == issue_number,
+            )
+        ).one_or_none()
+        # Look up existing work item and set work_item_id if found
+        work_item = db.exec(
+            select(WorkItem).where(
+                WorkItem.github_repo == repo,
+                WorkItem.github_issue_number == issue_number,
+            )
+        ).one_or_none()
         row = FactoryReceipt(
             repo=repo,
+            work_item_id=work_item.id if work_item else None,
             issue_number=issue_number,
             generation=generation,
             title=title,
