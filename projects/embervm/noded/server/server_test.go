@@ -2125,54 +2125,14 @@ func TestBuildBaseServingRegistersImage(t *testing.T) {
 			t.Errorf("serving_image_ref = %q, want %q", resp.GetServingImageRef(), got.baseKey)
 		}
 		// The registration must be DURABLE (#5221): the image-lane branch writes a
-		// runtime-ref marker (no handler.zip) the startup rescan can re-seed.
+		// runtime-ref marker (no handler.zip) the startup rescan can rediscover as a
+		// candidate for replay-driven reconciliation.
 		scan := fsd.ScanServingHandlerArtifacts()
 		if len(scan) != 1 {
 			t.Fatalf("rescan entries = %d, want 1", len(scan))
 		}
 		if scan[0].BaseKey != got.baseKey || scan[0].Path != "" || scan[0].RuntimeImageRef != "runtime-python:1" || scan[0].SizeBytes != 0 {
 			t.Errorf("rescanned marker mismatch: %+v", scan[0])
-		}
-	})
-
-	t.Run("image-lane registration survives a daemon restart", func(t *testing.T) {
-		s, _, fsd, _ := newServer()
-		resp, err := s.BuildBase(ctx, &nodev1.BuildBaseRequest{
-			Trace:            &nodev1.Trace{Workload: "serving-image-lane"},
-			ImageRef:         "runtime-python:1",
-			WorkloadRevision: "r1",
-			ReadyPath:        "/shim/ready",
-			Resources:        &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
-			Serving:          true,
-		})
-		if err != nil {
-			t.Fatalf("BuildBase serving image lane: %v", err)
-		}
-		// A restarted daemon re-seeds its inventory from the driver's disk rescan;
-		// the marker must come back as a wakeable handler-less entry keyed by
-		// workload (recovered from the base-key prefix), not vanish like an
-		// in-memory-only registration.
-		restarted := New(Options{
-			Config: config.Config{
-				Arch: "amd64", Node: "node-4", SnapshotRoot: t.TempDir(),
-				BootReadyTimeout:    time.Second,
-				ArchiveFetchTimeout: 30 * time.Second,
-				ArchiveMaxBytes:     512 << 20,
-				Images:              map[string]config.Image{"runtime-python:1": {RootfsPath: "/runtime.ext4"}},
-			},
-			Driver:         &fakeDriver{},
-			ServingDriver:  fsd,
-			Transport:      &fakeTransport{},
-			NewBuildDriver: func(BuildDriverSpec) BuildDriver { return &fakeDriver{} },
-			Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
-		})
-		images := restarted.servingImage.snapshot()
-		if len(images) != 1 {
-			t.Fatalf("post-restart inventory entries = %d, want 1", len(images))
-		}
-		got := images[0]
-		if got.workload != "serving-image-lane" || got.baseKey != resp.GetSnapshotRef() || got.handlerPath != "" || got.runtimeImageRef != "runtime-python:1" {
-			t.Errorf("post-restart inventory mismatch: %+v", got)
 		}
 	})
 
@@ -2223,6 +2183,167 @@ func TestBuildBaseServingRegistersImage(t *testing.T) {
 			t.Errorf("serving_image_ref = %q, want empty for a task-class base", resp.GetServingImageRef())
 		}
 	})
+}
+
+func TestSyncRegistryRecoversOnlyCurrentValidatedImageLaneBase(t *testing.T) {
+	root := t.TempDir()
+	basesDir := filepath.Join(root, "bases")
+	const (
+		workload   = "image-serving"
+		currentKey = workload + "__current"
+		staleKey   = workload + "__stale"
+		taskKey    = "task-only__current"
+		goneKey    = "unprovisioned__current"
+		orphanKey  = "orphan__marker-only"
+		currentRef = "runtime:current"
+		staleRef   = "runtime:stale"
+	)
+
+	writeReconcileBase(t, basesDir, currentKey, currentRef)
+	writeReconcileBase(t, basesDir, staleKey, staleRef)
+	writeReconcileBase(t, basesDir, taskKey, "runtime:task")
+	writeReconcileBase(t, basesDir, goneKey, "runtime:gone")
+	readRootfs := func(key string) string {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join(basesDir, key, "rootfspath"))
+		if err != nil {
+			t.Fatalf("read rootfspath for %s: %v", key, err)
+		}
+		return strings.TrimSpace(string(data))
+	}
+
+	servingDriver := fcvmdriver.New(fcvmdriver.Config{SnapshotRoot: root}, nil, nil)
+	// A runtime.ref-only directory is not a serving base. It must stay invisible
+	// even when the replay later names the workload and provisions the runtime.
+	if err := servingDriver.WriteServingImageMarker(orphanKey, "runtime:orphan"); err != nil {
+		t.Fatalf("write orphan marker: %v", err)
+	}
+
+	s := New(Options{
+		Config: config.Config{
+			Arch: "amd64", Node: "node-4", SnapshotRoot: root,
+			Images: map[string]config.Image{},
+		},
+		Driver:        &fakeDriver{},
+		ServingDriver: servingDriver,
+		Transport:     &fakeTransport{},
+		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if got := s.servingImage.snapshot(); len(got) != 0 {
+		t.Fatalf("pre-replay serving inventory = %+v, want empty", got)
+	}
+	if err := s.ReconcileBasesFromDisk(); err != nil {
+		t.Fatalf("ReconcileBasesFromDisk: %v", err)
+	}
+	if got := s.servingImage.snapshot(); len(got) != 0 {
+		t.Fatalf("pre-replay reconciled serving inventory = %+v, want empty", got)
+	}
+	if _, err := os.Stat(filepath.Join(basesDir, currentKey, "runtime.ref")); !os.IsNotExist(err) {
+		t.Fatalf("current base unexpectedly has a runtime.ref marker: %v", err)
+	}
+
+	entry := func(name, imageRef, rootfs string, servingPort uint32) *nodev1.RegistryEntry {
+		return &nodev1.RegistryEntry{
+			Workload: name, ImageRef: imageRef, RootfsRef: rootfs,
+			ServingPort: servingPort,
+		}
+	}
+	sync := func(currentImage string, servingPort uint32, rootfsOverride ...string) {
+		t.Helper()
+		rootfs := readRootfs(currentKey)
+		if currentImage == "runtime:next" {
+			// Provision the next ref, but deliberately provide no matching base.
+			rootfs = readRootfs(staleKey)
+		}
+		if len(rootfsOverride) > 0 {
+			rootfs = rootfsOverride[0]
+		}
+		_, err := s.SyncRegistry(context.Background(), &nodev1.SyncRegistryRequest{Entries: []*nodev1.RegistryEntry{
+			entry(workload, currentImage, rootfs, servingPort),
+			// The stale runtime remains provisioned. It still must not win because
+			// the workload's current image ref no longer names it.
+			entry("image:"+staleRef, staleRef, readRootfs(staleKey), 0),
+			entry("task-only", "runtime:task", readRootfs(taskKey), 0),
+			entry("unprovisioned", "runtime:gone", "", 8080),
+			entry("orphan", "runtime:orphan", readRootfs(currentKey), 8080),
+		}})
+		if err != nil {
+			t.Fatalf("SyncRegistry: %v", err)
+		}
+	}
+
+	sync(currentRef, 8080)
+	assertOnlyCurrent := func(stage string) {
+		t.Helper()
+		images := s.servingImage.snapshot()
+		if len(images) != 1 {
+			t.Fatalf("%s serving inventory = %+v, want one current entry", stage, images)
+		}
+		got := images[0]
+		if got.baseKey != currentKey || got.workload != workload || got.runtimeImageRef != currentRef || got.handlerPath != "" || got.sizeBytes != 0 {
+			t.Fatalf("%s current inventory mismatch: %+v", stage, got)
+		}
+	}
+	assertOnlyCurrent("first replay")
+	sync(currentRef, 8080)
+	assertOnlyCurrent("identical replay")
+
+	// Class and image changes are level-triggered: each replay retracts an entry
+	// that no longer satisfies the authoritative join, then a later replay can
+	// recover the unchanged on-disk base again without a rebuild or re-key.
+	sync(currentRef, 0)
+	if got := s.servingImage.snapshot(); len(got) != 0 {
+		t.Fatalf("non-serving replay retained inventory: %+v", got)
+	}
+	sync(currentRef, 8080, readRootfs(staleKey))
+	if got := s.servingImage.snapshot(); len(got) != 0 {
+		t.Fatalf("mismatched provisioned rootfs retained inventory: %+v", got)
+	}
+	sync("runtime:next", 8080)
+	if got := s.servingImage.snapshot(); len(got) != 0 {
+		t.Fatalf("mismatched current ref retained inventory: %+v", got)
+	}
+	sync(currentRef, 8080)
+	assertOnlyCurrent("restored replay")
+
+	if _, err := s.DeregisterWorkload(context.Background(), &nodev1.DeregisterWorkloadRequest{Workload: workload}); err != nil {
+		t.Fatalf("DeregisterWorkload: %v", err)
+	}
+	if got := s.servingImage.snapshot(); len(got) != 0 {
+		t.Fatalf("deregister retained inventory: %+v", got)
+	}
+	if _, err := s.RegisterWorkload(context.Background(), &nodev1.RegisterWorkloadRequest{
+		Entry: entry(workload, currentRef, readRootfs(currentKey), 8080),
+	}); err != nil {
+		t.Fatalf("RegisterWorkload: %v", err)
+	}
+	assertOnlyCurrent("incremental restore")
+}
+
+func TestServingImageReplayPreservesZipLaneBootScan(t *testing.T) {
+	root := t.TempDir()
+	driver := fcvmdriver.New(fcvmdriver.Config{SnapshotRoot: root}, nil, nil)
+	path, size, err := driver.WriteServingHandlerArtifact("zip-serving__base", "runtime:zip", []byte("PK zip"))
+	if err != nil {
+		t.Fatalf("WriteServingHandlerArtifact: %v", err)
+	}
+	s := New(Options{
+		Config:        config.Config{SnapshotRoot: root},
+		ServingDriver: driver,
+		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	assertZip := func(stage string) {
+		t.Helper()
+		images := s.servingImage.snapshot()
+		if len(images) != 1 || images[0].baseKey != "zip-serving__base" || images[0].handlerPath != path || images[0].sizeBytes != size {
+			t.Fatalf("%s zip inventory = %+v, want preserved artifact", stage, images)
+		}
+	}
+	assertZip("boot")
+	if _, err := s.SyncRegistry(context.Background(), &nodev1.SyncRegistryRequest{}); err != nil {
+		t.Fatalf("SyncRegistry: %v", err)
+	}
+	assertZip("empty replay")
 }
 
 // TestWorkloadCapacitiesSkipsStaleServingImage: workloadCapacities reports only a
@@ -3471,8 +3592,17 @@ func TestScratchGenerationChangeReadoptsAndSignals(t *testing.T) {
 	if _, ok := s.bases.get("wl-a__old"); !ok {
 		t.Fatal("first generation base was not adopted")
 	}
+	oldRootfs, err := os.ReadFile(filepath.Join(basesDir, "wl-a__old", "rootfspath"))
+	if err != nil {
+		t.Fatalf("read old rootfspath: %v", err)
+	}
+	if _, err := s.SyncRegistry(context.Background(), &nodev1.SyncRegistryRequest{Entries: []*nodev1.RegistryEntry{
+		{Workload: "wl-a", ImageRef: "img-old", RootfsRef: strings.TrimSpace(string(oldRootfs)), ServingPort: 8080},
+	}}); err != nil {
+		t.Fatalf("SyncRegistry: %v", err)
+	}
 	if _, ok := s.servingImage.get("wl-a__old"); !ok {
-		t.Fatal("first generation serving image was not seeded")
+		t.Fatal("first generation serving image was not seeded after registry replay")
 	}
 	s.sessionSnap.add(sessionSnapshotEntry{snapshotRef: "session-old"})
 
@@ -3482,6 +3612,15 @@ func TestScratchGenerationChangeReadoptsAndSignals(t *testing.T) {
 		t.Fatalf("remove old generation bases: %v", err)
 	}
 	writeReconcileBase(t, basesDir, "wl-b__new", "img-new")
+	newRootfs, err := os.ReadFile(filepath.Join(basesDir, "wl-b__new", "rootfspath"))
+	if err != nil {
+		t.Fatalf("read new rootfspath: %v", err)
+	}
+	if _, err := s.RegisterWorkload(context.Background(), &nodev1.RegisterWorkloadRequest{Entry: &nodev1.RegistryEntry{
+		Workload: "wl-b", ImageRef: "img-new", RootfsRef: strings.TrimSpace(string(newRootfs)), ServingPort: 8080,
+	}}); err != nil {
+		t.Fatalf("RegisterWorkload: %v", err)
+	}
 	if err := servingDriver.WriteServingImageMarker("wl-b__new", "img-new"); err != nil {
 		t.Fatalf("write new serving marker: %v", err)
 	}

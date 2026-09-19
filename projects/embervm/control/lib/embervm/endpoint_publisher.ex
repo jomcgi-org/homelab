@@ -693,9 +693,10 @@ defmodule Embervm.EndpointPublisher do
   end
 
   # Pick a node-advertised activator endpoint for the workload. Among nodes that
-  # advertise one, PREFER a node whose base for this workload is READY (it can
-  # actually cold-boot the workload; #3993 flagged this as easy to get subtly
-  # wrong), falling back to any advertiser. Deterministic: candidates are sorted by
+  # advertise one, PREFER a node that reports a serving image for this workload:
+  # the noded activator refuses a fresh wake when its local inventory has no such
+  # image. If no advertiser holds one, retain the existing READY-base preference,
+  # then fall back to any advertiser. Deterministic: candidates are sorted by
   # configured_id and the first is taken, so the rendered fallback is stable across
   # rebuilds (the byte-identical render property). nil when no node advertises one.
   defp node_advertised_activator(ctx, workload) do
@@ -708,11 +709,19 @@ defmodule Embervm.EndpointPublisher do
       |> Enum.filter(&is_map(Map.get(&1, :activator_endpoint)))
       |> Enum.sort_by(& &1.configured_id)
 
+    holders = Enum.filter(advertisers, &workload_serving_image?(&1, workload))
     ready = Enum.filter(advertisers, &workload_base_ready?(&1, workload))
 
-    case List.first(ready) || List.first(advertisers) do
+    case List.first(holders) || List.first(ready) || List.first(advertisers) do
       nil -> nil
       fact -> fact.activator_endpoint
+    end
+  end
+
+  defp workload_serving_image?(fact, workload) do
+    case Map.get(Map.get(fact, :workloads, %{}), workload) do
+      %{serving_image_ref: ref} when is_binary(ref) and ref != "" -> true
+      _ -> false
     end
   end
 

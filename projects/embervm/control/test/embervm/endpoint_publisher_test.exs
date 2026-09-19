@@ -203,7 +203,7 @@ defmodule Embervm.EndpointPublisherTest do
     assert cluster.health_check == @health_check
   end
 
-  test "ADR embervm/018: cold render prefers a READY node's advertised activator over the CP address" do
+  test "with no image holder, cold render retains the READY-node activator preference" do
     # The CP-injected activator is 10.1.1.1:7000 (start_stack default). A node that
     # advertises its OWN activator must be preferred, so the wake target is a node
     # address that survives a CP Recreate rather than the dying CP pod IP.
@@ -244,6 +244,95 @@ defmodule Embervm.EndpointPublisherTest do
       assert [cluster] = desired.clusters
       assert cluster.endpoints == [%{ip: "10.99.0.5", port: 8081, disable_active_health_check: true}]
       assert cluster.health_check == @health_check
+    end
+  end
+
+  test "cold render prefers the advertised activator on a serving-image holder" do
+    ctx = start_stack()
+    serving_workload(ctx, "wl-a", "wl-a.example")
+
+    # node-4 sorts first and reports a READY task-lane base, but it does not hold
+    # the serving image. A wake sent there would be refused by noded. node-5 is
+    # the only holder, so its activator must win even though its base is BUILDING.
+    NodeCapacity.put(ctx.cap_table, "node-4", %{
+      configured_id: "node-4",
+      node_id: "node-4",
+      serving_subnet_cidr: "10.99.0.0/24",
+      serving_vms: [],
+      serving_snapshots: [],
+      activator_endpoint: %{ip: "10.99.0.4", port: 8081},
+      workloads: %{
+        "wl-a" => %{base_state: :BASE_BUILD_STATE_READY, serving_image_ref: ""}
+      }
+    })
+
+    NodeCapacity.put(ctx.cap_table, "node-5", %{
+      configured_id: "node-5",
+      node_id: "node-5",
+      serving_subnet_cidr: "10.99.0.0/24",
+      serving_vms: [],
+      serving_snapshots: [],
+      activator_endpoint: %{ip: "10.99.0.5", port: 8081},
+      workloads: %{
+        "wl-a" => %{
+          base_state: :BASE_BUILD_STATE_BUILDING,
+          serving_image_ref: "wl-a__image"
+        }
+      }
+    })
+
+    :ok = EndpointPublisher.flush(ctx.pub)
+
+    puts = last_puts(ctx)
+    assert length(puts) == 2
+
+    for {_node, desired} <- puts do
+      assert [cluster] = desired.clusters
+      assert cluster.endpoints == [
+               %{ip: "10.99.0.5", port: 8081, disable_active_health_check: true}
+             ]
+    end
+  end
+
+  test "serving inventory changes move the cold fallback between holders" do
+    ctx = start_stack()
+    serving_workload(ctx, "wl-a", "wl-a.example")
+
+    node = fn id, ip, ref ->
+      %{
+        configured_id: id,
+        node_id: id,
+        serving_subnet_cidr: "10.99.0.0/24",
+        serving_vms: [],
+        serving_snapshots: [],
+        activator_endpoint: %{ip: ip, port: 8081},
+        workloads: %{
+          "wl-a" => %{base_state: :BASE_BUILD_STATE_READY, serving_image_ref: ref}
+        }
+      }
+    end
+
+    NodeCapacity.put(ctx.cap_table, "node-4", node.("node-4", "10.99.0.4", ""))
+    NodeCapacity.put(ctx.cap_table, "node-5", node.("node-5", "10.99.0.5", "wl-a__first"))
+    :ok = EndpointPublisher.flush(ctx.pub)
+
+    NodeCapacity.put(ctx.cap_table, "node-4", node.("node-4", "10.99.0.4", "wl-a__second"))
+    NodeCapacity.put(ctx.cap_table, "node-5", node.("node-5", "10.99.0.5", ""))
+    :ok = EndpointPublisher.flush(ctx.pub)
+
+    puts = last_puts(ctx)
+    assert length(puts) == 4
+
+    for {_node, desired} <- Enum.take(puts, 2) do
+      assert hd(desired.clusters).endpoints == [
+               %{ip: "10.99.0.5", port: 8081, disable_active_health_check: true}
+             ]
+    end
+
+    for {_node, desired} <- Enum.drop(puts, 2) do
+      assert hd(desired.clusters).endpoints == [
+               %{ip: "10.99.0.4", port: 8081, disable_active_health_check: true}
+             ]
     end
   end
 

@@ -731,9 +731,9 @@ func (d *Driver) WriteServingHandlerArtifact(baseKey, runtimeImageRef string, zi
 
 // WriteServingImageMarker persists ONLY the runtime-ref sidecar for an IMAGE-lane
 // serving base (ADR embervm/038): the bundle has no handler.zip, so the marker is
-// what makes the serving-images registration durable. The startup rescan treats
-// bases/<key>/runtime.ref without handler.zip as a handler-less inventory entry,
-// so the entry survives a daemon restart (#5221), exactly like its zip-lane twin.
+// the durable image-lane hint. The startup rescan returns it as a handler-less
+// candidate; after SyncRegistry, the server admits it only when the matching base
+// is valid, current, serving-class, and provisioned (#5221).
 func (d *Driver) WriteServingImageMarker(baseKey, runtimeImageRef string) error {
 	if err := os.MkdirAll(d.baseDir(baseKey), 0o750); err != nil {
 		return fmt.Errorf("driver: mkdir base bundle for serving marker: %w", err)
@@ -756,12 +756,13 @@ func (d *Driver) ServingHandlerArtifactPath(baseKey string) (string, bool) {
 
 // ScanServingHandlerArtifacts globs the base bundles on startup and returns each
 // discovered serving entry with its base key, path, size, and runtime ref (from the
-// runtime.ref sidecar), so the daemon re-seeds its serving-images inventory after a
-// restart. Two shapes come back: a ZIP-lane artifact (handler.zip + runtime.ref,
-// Path set, SizeBytes exact) and an IMAGE-lane marker (runtime.ref alone per ADR
-// embervm/038, Path "" and SizeBytes 0; #5221). A bundle dir with neither file (a
-// task/session-only base) is skipped; either file without its counterpart is
-// handled: zip-without-ref and ref-without-zip each yield their shape above. A
+// runtime.ref sidecar), so the daemon can reconcile its serving-images inventory
+// after a restart. Two shapes come back: a ZIP-lane artifact (handler.zip +
+// runtime.ref, Path set, SizeBytes exact) and an IMAGE-lane candidate (runtime.ref
+// alone per ADR embervm/038, Path "" and SizeBytes 0; #5221). A bundle dir with
+// neither file (a task/session-only base) is skipped; either file without its
+// counterpart is handled: zip-without-ref and ref-without-zip each yield their
+// shape above. A
 // malformed sidecar is skipped with no error (it will be rebuilt on the next
 // BuildBase), keeping the rescan best-effort like the banked-snapshot rescan.
 func (d *Driver) ScanServingHandlerArtifacts() []substrate.ServingHandlerArtifact {
