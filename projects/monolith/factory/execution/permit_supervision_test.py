@@ -535,7 +535,7 @@ def test_lease_expired_settles_only_via_stale_unbound_shape(
     with Session(database) as db, db.begin():
         permit = db.get(AgentCapacityReservation, pid)
         permit.outcome = "lease_expired"
-        with pytest.raises(ValueError, match="unrecognised_outcome"):
+        with pytest.raises(ValueError, match="missing_recovery"):
             supervision._no_guest_delivery(permit, {})
 
     sweep(None)
@@ -598,7 +598,9 @@ def test_lease_expired_stale_unbound_rejects_binding_evidence(database, monkeypa
         assert audit.settled_at is None
 
 
-def test_lease_expired_stale_unbound_settles_with_both_flags(database, monkeypatch):
+def test_lease_expired_exact_delivery_proof_settles_with_both_flags(
+    database, monkeypatch
+):
     monkeypatch.setenv("AGENT_PROBE_SUPERVISION_ENABLED", "true")
     monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(
@@ -615,7 +617,7 @@ def test_lease_expired_stale_unbound_settles_with_both_flags(database, monkeypat
     assert before(database, pid)[0]["state"] == "settled"
     with Session(database) as db:
         audit = db.get(ProbeObservation, pid)
-        assert audit.reason == "stale_unbound_permit"
+        assert audit.reason == "no_guest_bound"
         assert audit.settled_at is not None
 
 

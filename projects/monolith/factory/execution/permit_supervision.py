@@ -42,6 +42,9 @@ MAX_PROOF_AGE_SECONDS = 30
 STALE_UNBOUND_SECONDS = 3600
 NODE_GONE_GRACE_SECONDS = 600
 MAX_NODE_GONE_DESTROY_REQUESTS = 2
+_NO_GUEST_OUTCOMES = frozenset(
+    {"delivery_error", "executor_cancelled", "lease_expired"}
+)
 _TERMINAL_SESSION_STATUSES = frozenset({"failed", "warn", "completed", "cancelled"})
 
 
@@ -162,7 +165,7 @@ def _routine_job_held(db, permit):
 
 
 def _no_guest_delivery(permit, recovery):
-    if permit.outcome not in {"delivery_error", "executor_cancelled"}:
+    if permit.outcome not in _NO_GUEST_OUTCOMES:
         raise ValueError("unrecognised_outcome")
     if not isinstance(recovery, dict) or not recovery:
         raise ValueError("missing_recovery")
@@ -307,7 +310,7 @@ def _identity(db, permit, *, allow_stale_unbound=False):
         # binding would read as "no guest was ever bound".
         if _has_binding_evidence(agent):
             raise ValueError("prior_binding_evidence")
-        if permit.outcome in {"delivery_error", "executor_cancelled"}:
+        if permit.outcome in _NO_GUEST_OUTCOMES:
             # The delivery proof is the fast path. A recognised outcome whose
             # recovery blob is missing or malformed is refused here for the
             # exact no-guest settlement, but the stale unbound path may ask to
@@ -487,19 +490,28 @@ def _record_no_guest(candidate):
                 or agent.ember_session_id is not None
             ):
                 raise ValueError("identity_changed")
-            if permit.outcome not in {"delivery_error", "executor_cancelled"}:
+            if permit.outcome not in _NO_GUEST_OUTCOMES:
                 raise ValueError("unrecognised_outcome")
         except ValueError as exc:
             _reason(audit, str(exc))
             db.add(audit)
             return audit.reason
-        admission.settle(
-            db,
-            agent,
-            permit.pending_seq,
-            outcome="no_guest_bound",
-            cessation_confirmed=True,
-        )
+        if permit.routine_job_name is not None and _routine_job_held(db, permit):
+            try:
+                with db.begin_nested():
+                    _reconcile_routine(db, permit, candidate, None, _now(), {})
+            except ValueError:
+                _reason(audit, "routine_reconciliation_refused")
+                db.add(audit)
+                return audit.reason
+        else:
+            admission.settle(
+                db,
+                agent,
+                permit.pending_seq,
+                outcome="no_guest_bound",
+                cessation_confirmed=True,
+            )
         audit.reason = "no_guest_bound"
         audit.settled_at = _now()
         db.add(audit)
@@ -807,6 +819,13 @@ def _reconcile_routine(db, permit, candidate, observed, observed_at, evidence):
         session_id=permit.session_id,
         expected_state_sha256=state["state_sha256"],
         cessation={
+            "state": "unbound",
+            "permit_id": permit.id,
+            "identity_sha256": candidate["identity"],
+            "observed_at": observed_at.isoformat(),
+        }
+        if observed is None
+        else {
             "session_id": candidate["guest_id"],
             "state": observed["state"],
             "generation": observed["generation"],

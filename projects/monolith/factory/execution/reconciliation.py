@@ -10,6 +10,7 @@ import re
 from sqlmodel import Session, select
 
 from factory.execution import admission
+from factory.execution.constants import UNKNOWN_INVOCATION
 from factory.execution.models import AgentCapacityReservation, AgentSession
 from factory.utils import sanitize_payload
 
@@ -121,6 +122,60 @@ def confirm_reconciled_guest_cessation(
     agent.ember_lineage_id = None
     agent.cli_session_id = None
     db.add(agent)
+
+
+def confirm_reconciled_unbound_attempt(
+    db: Session,
+    session_id: int,
+    routine_job_name: str,
+    permit_id: int,
+    identity_sha256: str,
+) -> None:
+    """Revalidate no guest delivery and settle inside the routine transaction.
+
+    This is not a claim that a remote VM was destroyed. The exact failed claim
+    has no binding or prior-binding evidence, pending executor, or model output.
+    The unknown turn remains immutable and prevents a late executor from binding
+    a guest or sending another turn. An idle VM allocated before response loss
+    remains the control plane's lifecycle responsibility.
+    """
+    from factory.execution.permit_supervision import _identity, _NO_GUEST_OUTCOMES
+
+    permit = db.exec(
+        select(AgentCapacityReservation)
+        .where(AgentCapacityReservation.id == permit_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one_or_none()
+    if (
+        permit is None
+        or permit.session_id != session_id
+        or permit.routine_job_name != routine_job_name
+        or permit.outcome not in _NO_GUEST_OUTCOMES
+    ):
+        raise ValueError("Unbound routine permit changed")
+    agent, turn, identity = _identity(db, permit)
+    if (
+        agent.ember_session_id is not None
+        or identity != identity_sha256
+        or turn.stop_reason != UNKNOWN_INVOCATION
+    ):
+        raise ValueError("Unbound routine proof changed")
+    if db.exec(
+        select(AgentCapacityReservation).where(
+            AgentCapacityReservation.routine_job_name == routine_job_name,
+            AgentCapacityReservation.state != "settled",
+            AgentCapacityReservation.id != permit_id,
+        )
+    ).first():
+        raise ValueError("Another execution owns this job")
+    admission.settle(
+        db,
+        agent,
+        permit.pending_seq,
+        outcome="no_guest_bound",
+        cessation_confirmed=True,
+    )
 
 
 def _factory_owner(db: Session, pin: dict, session_id: int | None):

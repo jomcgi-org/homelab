@@ -1,9 +1,11 @@
-"""Explicit operator reconciliation of ceased routine attempts.
+"""Atomic reconciliation of ceased or demonstrably unbound routine attempts.
 
 The trusted caller obtains fresh authoritative Ember GET evidence and archives
 positive exact cessation evidence. A parked/evicted label alone is insufficient.
 This module has no HTTP/MCP surface and cannot infer cessation from a timeout or
-missing row.
+missing row. An unbound proof instead requires the execution owner to revalidate
+the exact failed claim, absence of any binding history, and a durable late-send
+fence inside this transaction. It does not assert remote guest cessation.
 Old AgentTurns remain unknown and their sessions remain failed and unsendable.
 """
 
@@ -20,6 +22,7 @@ from factory.api import (
     DRAINER_NODE_KEY,
     KG_NODE_KEY,
     confirm_reconciled_guest_cessation,
+    confirm_reconciled_unbound_attempt,
     lock_capacity_pool,
     lock_cessation_session,
 )
@@ -243,6 +246,7 @@ def _reconcile(db, request):
             raise ValueError("Reconciliation key conflicts with recorded evidence")
         return json.loads(previous.result_json)
     proof = request["cessation"]
+    unbound = proof["state"] == "unbound"
     observed = _proof_time(proof)
     now = datetime.now(timezone.utc)
     if not 0 <= (now - observed).total_seconds() <= MAX_EVIDENCE_AGE_SECONDS:
@@ -285,7 +289,7 @@ def _reconcile(db, request):
     if (
         state["job_status"] != UNKNOWN_INVOCATION
         or routine_kind not in {KG_NODE_KEY, DRAINER_NODE_KEY}
-        or state["binding_session_ids"] != [agent["id"]]
+        or state["binding_session_ids"] != ([] if unbound else [agent["id"]])
         or state["latest_routine_session_id"] != agent["id"]
         or state["next_run_at"] is not None
         or state["locked_by"] is not None
@@ -303,19 +307,24 @@ def _reconcile(db, request):
         or len(state["workflow"]) != 1
         or state["workflow"][0]["name"] != "drain_cycle"
         or state["workflow"][0]["status"] not in {"SUCCESS", "ERROR", "CANCELLED"}
-        or proof["session_id"] != state["guest_id"]
+        or (
+            state["guest_id"] is not None
+            if unbound
+            else proof["session_id"] != state["guest_id"]
+        )
     ):
         raise ValueError("Held attempt ownership is not quiescent")
-    turn_at = datetime.fromisoformat(state["latest_turn_at"].replace("Z", "+00:00"))
-    if turn_at.tzinfo is None:
-        turn_at = turn_at.replace(tzinfo=timezone.utc)
-    exact_dispatch = terminal_dispatch_cessation(
-        proof, state["latest_dispatch"], state["reservation_owner"], turn_at
-    )
-    if "invoke_started_at" in proof and not exact_dispatch:
-        raise ValueError("Terminal guest evidence does not match the held dispatch")
-    if not exact_dispatch and proof["updated_at"] < int(turn_at.timestamp() * 1000):
-        raise ValueError("Guest cessation must follow the unknown turn")
+    if not unbound:
+        turn_at = datetime.fromisoformat(state["latest_turn_at"].replace("Z", "+00:00"))
+        if turn_at.tzinfo is None:
+            turn_at = turn_at.replace(tzinfo=timezone.utc)
+        exact_dispatch = terminal_dispatch_cessation(
+            proof, state["latest_dispatch"], state["reservation_owner"], turn_at
+        )
+        if "invoke_started_at" in proof and not exact_dispatch:
+            raise ValueError("Terminal guest evidence does not match the held dispatch")
+        if not exact_dispatch and proof["updated_at"] < int(turn_at.timestamp() * 1000):
+            raise ValueError("Guest cessation must follow the unknown turn")
     if db.exec(
         select(RoutineReconciliation).where(
             RoutineReconciliation.session_id == agent["id"],
@@ -350,7 +359,16 @@ def _reconcile(db, request):
         <= MAX_EVIDENCE_AGE_SECONDS
     ):
         raise ValueError("Cessation evidence expired while acquiring ownership")
-    confirm_reconciled_guest_cessation(db, agent["id"], request["job_name"])
+    if unbound:
+        confirm_reconciled_unbound_attempt(
+            db,
+            agent["id"],
+            request["job_name"],
+            proof["permit_id"],
+            proof["identity_sha256"],
+        )
+    else:
+        confirm_reconciled_guest_cessation(db, agent["id"], request["job_name"])
     next_run = now if request["disposition"] == "rearm" else None
     result = {
         "reconciliation_key": request["reconciliation_key"],
@@ -362,7 +380,8 @@ def _reconcile(db, request):
         "original_outcome": (
             "delivery_error" if delivery_error_hold else UNKNOWN_INVOCATION
         ),
-        "guest_cessation_confirmed": True,
+        "guest_cessation_confirmed": not unbound,
+        **({"no_guest_bound": True} if unbound else {}),
     }
     db.execute(
         text(
@@ -440,42 +459,53 @@ def reconcile_held_job(
         or disposition not in {"rearm", "retain_applied", "stop"}
     ):
         raise ValueError("Invalid reconciliation identity or disposition")
-    required = {
-        "session_id",
-        "state",
-        "generation",
-        "observed_at",
-        "updated_at",
-        "last_invoke_at",
-        "evidence_sha256",
-    }
-    if not isinstance(cessation, dict) or set(cessation) not in (
-        required,
-        required | {"invoke_started_at"},
-    ):
-        raise ValueError("Exact cessation evidence fields are required")
-    if (
-        cessation["state"] not in {"parked", "evicted", "destroyed"}
-        or type(cessation["generation"]) is not int
-        or cessation["generation"] < 0
-    ):
-        raise ValueError("Cessation requires a parked, evicted, or destroyed guest")
-    observed = _proof_time(cessation)
-    updated_at = cessation["updated_at"]
-    last_invoke_at = cessation["last_invoke_at"]
-    if (
-        type(updated_at) is not int
-        or not 0 <= updated_at <= int(observed.timestamp() * 1000)
-        or (
-            last_invoke_at is not None
-            and (
-                type(last_invoke_at) is not int or not 0 <= last_invoke_at <= updated_at
+    if isinstance(cessation, dict) and cessation.get("state") == "unbound":
+        if (
+            set(cessation) != {"state", "permit_id", "identity_sha256", "observed_at"}
+            or type(cessation["permit_id"]) is not int
+            or cessation["permit_id"] <= 0
+        ):
+            raise ValueError("Exact unbound permit evidence fields are required")
+        _proof_time(cessation)
+        _digest(cessation["identity_sha256"])
+    else:
+        required = {
+            "session_id",
+            "state",
+            "generation",
+            "observed_at",
+            "updated_at",
+            "last_invoke_at",
+            "evidence_sha256",
+        }
+        if not isinstance(cessation, dict) or set(cessation) not in (
+            required,
+            required | {"invoke_started_at"},
+        ):
+            raise ValueError("Exact cessation evidence fields are required")
+        if (
+            cessation["state"] not in {"parked", "evicted", "destroyed"}
+            or type(cessation["generation"]) is not int
+            or cessation["generation"] < 0
+        ):
+            raise ValueError("Cessation requires a parked, evicted, or destroyed guest")
+        observed = _proof_time(cessation)
+        updated_at = cessation["updated_at"]
+        last_invoke_at = cessation["last_invoke_at"]
+        if (
+            type(updated_at) is not int
+            or not 0 <= updated_at <= int(observed.timestamp() * 1000)
+            or (
+                last_invoke_at is not None
+                and (
+                    type(last_invoke_at) is not int
+                    or not 0 <= last_invoke_at <= updated_at
+                )
             )
-        )
-    ):
-        raise ValueError("Cessation timestamps conflict")
-    _identifier(cessation["session_id"], "guest identity")
-    _digest(cessation["evidence_sha256"])
+        ):
+            raise ValueError("Cessation timestamps conflict")
+        _identifier(cessation["session_id"], "guest identity")
+        _digest(cessation["evidence_sha256"])
     request = dict(
         reconciliation_key=_identifier(reconciliation_key, "key"),
         actor=_identifier(actor, "actor"),

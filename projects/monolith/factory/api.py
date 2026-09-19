@@ -9,6 +9,7 @@ from factory.execution.api import (
     DRAINER_NODE_KEY as DRAINER_NODE_KEY,
     KG_NODE_KEY as KG_NODE_KEY,
     confirm_reconciled_guest_cessation as confirm_reconciled_guest_cessation,
+    confirm_reconciled_unbound_attempt as confirm_reconciled_unbound_attempt,
     lock_capacity_pool as lock_capacity_pool,
     lock_cessation_session as lock_cessation_session,
 )
