@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -11,6 +12,24 @@ import (
 
 	"github.com/jomcgi/homelab/projects/embervm/noded/server"
 )
+
+func TestSetupTracingContinuesWhenConfigurationIsInvalid(t *testing.T) {
+	t.Setenv("OTEL_SDK_DISABLED", "false")
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.example.test:4317")
+	t.Setenv("OTEL_TRACES_SAMPLER", "parentbased_traceidratio")
+	t.Setenv("OTEL_TRACES_SAMPLER_ARG", "not-a-rate")
+
+	var output bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&output, nil))
+	shutdown := setupTracing(context.Background(), logger)
+	shutdown()
+
+	got := output.String()
+	if !strings.Contains(got, "continuing with tracing disabled") ||
+		!strings.Contains(got, "invalid OTEL_TRACES_SAMPLER_ARG") {
+		t.Fatalf("tracing initialization log = %q, want fail-open error", got)
+	}
+}
 
 func TestHTTPServerErrorLoggerEmitsStructuredJSON(t *testing.T) {
 	var output bytes.Buffer
