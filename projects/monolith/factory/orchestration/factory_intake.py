@@ -307,7 +307,23 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
         if row is None:
             return {"ok": False, "reason": "no_eligible_issue"}
         route = routes[receipt_task_class(row)]
-        direction = json.loads(row.direction_json) if row.direction_json else None
+        direction = json.loads(row.direction_json) if row.direction_json else {}
+        if route["tier"] == "delivery" and not direction.get("conductor_gates"):
+            refined = db.exec(
+                select(FactoryReceipt)
+                .where(
+                    FactoryReceipt.repo == row.repo,
+                    FactoryReceipt.issue_number == row.issue_number,
+                    FactoryReceipt.task_class == "refine",
+                    FactoryReceipt.state == "succeeded",
+                )
+                .order_by(FactoryReceipt.id.desc())
+            ).first()
+            if refined and refined.direction_json:
+                gates = json.loads(refined.direction_json).get("conductor_gates", [])
+                if gates:
+                    direction["conductor_gates"] = gates
+                    row.direction_json = _json(direction)
         try:
             granted_branch, _granted_pr = granted_delivery_surface(direction)
         except ValueError as exc:

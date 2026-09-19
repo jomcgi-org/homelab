@@ -99,6 +99,25 @@ def validate_delivery_branch(branch: object) -> str:
     return branch
 
 
+def validate_pr_branch(branch: object) -> str:
+    """A GitHub-verified adopted head may be outside the factory namespace."""
+    if not isinstance(branch, str) or not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9._/-]{0,254}", branch
+    ):
+        raise ValueError("invalid adopted PR branch")
+    if (
+        branch in ("main", "master")
+        or any(
+            part in ("", ".", "..") or part.startswith(".") or part.endswith(".lock")
+            for part in branch.split("/")
+        )
+        or ".." in branch
+        or branch.endswith(".")
+    ):
+        raise ValueError("unsafe adopted PR branch")
+    return branch
+
+
 def granted_delivery_surface(direction: object) -> tuple[str | None, int | None]:
     """The branch and PR an operator direction grants, if it grants either."""
     if not isinstance(direction, dict):
@@ -109,7 +128,11 @@ def granted_delivery_surface(direction: object) -> tuple[str | None, int | None]
     if type(number) is not int or number <= 0:
         raise ValueError("the prior pull request number is invalid")
     branch = direction.get("delivery_branch", direction.get("prior_branch"))
-    return validate_delivery_branch(branch), number
+    return (
+        validate_pr_branch(branch)
+        if direction.get("delivery_adoption")
+        else validate_delivery_branch(branch)
+    ), number
 
 
 def delivery_branch_owner(
@@ -120,7 +143,7 @@ def delivery_branch_owner(
     exclude_receipt_id: int | None = None,
 ) -> str | None:
     """The active task that owns ``branch`` in ``repo``, if there is one."""
-    validate_delivery_branch(branch)
+    validate_pr_branch(branch)
     rows = db.exec(
         select(FactoryReceipt).where(
             FactoryReceipt.repo == repo,
@@ -133,7 +156,8 @@ def delivery_branch_owner(
         direction = json.loads(row.direction_json) if row.direction_json else {}
         granted, _number = granted_delivery_surface(direction)
         owned = granted or f"factory/{row.task_id}"
-        if owned == branch:
+        if owned == branch or branch.startswith(f"factory/{row.task_id}-"):
+            # Parallel source-writing nodes retain their running task's ownership.
             return row.task_id
     return None
 

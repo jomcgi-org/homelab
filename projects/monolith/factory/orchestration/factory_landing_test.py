@@ -1287,3 +1287,37 @@ def test_incomplete_recovery_resumes_without_new_episode_or_arming(db, monkeypat
     assert receipt_state(db, "t-1") == "admitted"
     assert audits(db, "landing_recovery_requested") == original
     assert calls["graphql"] == []
+
+
+def test_repository_delivery_lands_without_closing_live_acceptance(db, monkeypatch):
+    """#6208 ends landing after merge but preserves outstanding operational checks."""
+    delivered(db, "t-live", 7, 10)
+    with Session(db) as session:
+        row = session.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == "t-live")
+        ).one()
+        row.direction_json = json.dumps(
+            {
+                "conductor_gates": [
+                    {"kind": "live_validation", "live_checks": ["Verify live flows"]}
+                ]
+            }
+        )
+        session.add(row)
+        session.commit()
+    monkeypatch.setattr(
+        landing,
+        "github_write",
+        lambda *a, **kw: pytest.fail("operational issue must remain open"),
+    )
+    item = landing._deliveries(POLICY)[0]
+    landing._close_issue("owner/repo", item)
+    assert item["closed"] is True
+    assert not landing._deliveries(POLICY)
+    with Session(db) as session:
+        audit = session.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.action == "repository_delivery_complete"
+            )
+        ).one()
+        assert json.loads(audit.detail_json)["operational_acceptance_pending"] is True

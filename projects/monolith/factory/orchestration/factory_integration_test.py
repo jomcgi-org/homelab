@@ -101,6 +101,8 @@ def db(tmp_path, monkeypatch):
         return {"object": {"sha": HEAD}}
 
     monkeypatch.setattr(conductor, "github_get", github_branch)
+    # #6208 discovers existing delivery PRs before the first node.
+    monkeypatch.setattr(conductor, "github_list", lambda *_: [])
     yield engine
     engine.dispose()
 
@@ -401,6 +403,8 @@ def escalation_api(monkeypatch):
     notices = []
 
     def listed(_repo, suffix):
+        if suffix.startswith("pulls?"):
+            return []
         assert suffix.startswith("issues/7/comments")
         return comments if suffix.endswith("page=1") else []
 

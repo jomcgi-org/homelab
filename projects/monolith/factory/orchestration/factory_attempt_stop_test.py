@@ -150,6 +150,8 @@ def database(tmp_path, monkeypatch):
         return {"object": {"sha": HEAD}}
 
     monkeypatch.setattr(conductor, "github_get", github)
+    # #6208 discovers existing delivery PRs before the first node.
+    monkeypatch.setattr(conductor, "github_list", lambda *_: [])
     yield engine
     engine.dispose()
 

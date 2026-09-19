@@ -14,7 +14,6 @@ and defers the rest to a later tick.
 
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime, timedelta, timezone
 import json
 import logging
@@ -273,6 +272,7 @@ LANDING_ACTIONS = (
     "merge_arm_refused",
     "merged",
     "issue_closed",
+    "repository_delivery_complete",
 )
 
 
@@ -349,7 +349,7 @@ def _deliveries(policy: dict, *, include_refused: bool = False) -> list[dict]:
     cutoff = _now() - timedelta(hours=LANDING_WINDOW_HOURS)
     with _read_session() as db:
         terminal = select(FactoryAudit.task_id).where(
-            FactoryAudit.action == "issue_closed",
+            FactoryAudit.action.in_(("issue_closed", "repository_delivery_complete")),
             FactoryAudit.task_id.is_not(None),
         )
         rows = db.exec(
@@ -390,6 +390,9 @@ def _deliveries(policy: dict, *, include_refused: bool = False) -> list[dict]:
             {
                 "task_id": row.task_id,
                 "issue_number": row.issue_number,
+                "conductor_gates": (
+                    json.loads(row.direction_json) if row.direction_json else {}
+                ).get("conductor_gates", []),
                 "pr_number": number,
                 # The head the newest arming was measured against, so a branch
                 # that moves under an armed pull request can be caught.
@@ -406,7 +409,9 @@ def _deliveries(policy: dict, *, include_refused: bool = False) -> list[dict]:
                 "armed": len(armed),
                 "ejected": len(ejected),
                 "merged": bool(audits["merged"]),
-                "closed": bool(audits["issue_closed"]),
+                "closed": bool(
+                    audits["issue_closed"] or audits["repository_delivery_complete"]
+                ),
             }
         )
     return result
@@ -489,21 +494,15 @@ def _armed_on_github(repo: str) -> dict | None:
 
 def _notify_stuck(task_id: str, number: int) -> None:
     """One best-effort Discord warning, on the path the conductor already uses."""
-    try:
-        from agent.api import notify
+    from factory.orchestration.factory_conductor import _notify_person_once
 
-        asyncio.run(
-            notify(
-                f"Factory pull request #{number} on task {task_id} exhausted "
-                "its bounded landing recovery. Auto-merge is off "
-                "and the pull request is left for a human.",
-                level="warn",
-            )
-        )
-    except Exception:  # noqa: BLE001 - notification is best effort
-        logger.warning(
-            "factory landing notification failed for task %s", task_id, exc_info=True
-        )
+    _notify_person_once(
+        task_id,
+        f"Factory pull request #{number} on task {task_id} exhausted "
+        "its bounded landing recovery. Auto-merge is off "
+        "and the pull request is left for a human.",
+        kind="landing",
+    )
 
 
 def _refuse(item: dict, reason: str, **detail: object) -> None:
@@ -729,6 +728,19 @@ def _observe(repo: str, item: dict) -> None:
 
 def _close_issue(repo: str, item: dict) -> None:
     issue, number = item["issue_number"], item["pr_number"]
+    from factory.orchestration.factory_gates import live_checks
+
+    if live_checks(item):
+        _record(
+            item["task_id"],
+            "repository_delivery_complete",
+            issue_number=issue,
+            pr_number=number,
+            closed_by_factory=False,
+            operational_acceptance_pending=True,
+        )
+        item["closed"] = True  # Landing is complete; the issue remains open.
+        return
     try:
         current = github_get(repo, f"issues/{issue}")
         closed_here = current.get("state") == "open"
