@@ -470,6 +470,7 @@ def feedback_db(tmp_path, monkeypatch):
         FactoryReceipt,
         FactoryReviewVerdict,
         FactoryStart,
+        WorkItem,
     )
     from factory.orchestration.models import (
         SwarmConductorCall,
@@ -497,6 +498,7 @@ def feedback_db(tmp_path, monkeypatch):
         FactoryClassTier,
         FactoryControl,
         FactoryReceipt,
+        WorkItem,
         FactoryReviewVerdict,
         FactoryStart,
         FactoryAudit,

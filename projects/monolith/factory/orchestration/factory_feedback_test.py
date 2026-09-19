@@ -15,6 +15,7 @@ from factory.orchestration.factory_models import (
     FactoryClassTier,
     FactoryControl,
     FactoryReceipt,
+    WorkItem,
     FactoryReviewVerdict,
     FactoryStart,
 )
@@ -50,6 +51,7 @@ def db(tmp_path, monkeypatch):
         FactoryClassTier,
         FactoryControl,
         FactoryReceipt,
+        WorkItem,
         FactoryStart,
         FactoryAudit,
         FactoryReviewVerdict,

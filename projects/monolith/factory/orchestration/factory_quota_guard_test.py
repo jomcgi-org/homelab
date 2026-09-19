@@ -14,6 +14,7 @@ from factory.orchestration.factory_models import (
     FactoryAudit,
     FactoryControl,
     FactoryReceipt,
+    WorkItem,
     FactoryStart,
 )
 from factory.orchestration.models import SwarmTask
@@ -47,6 +48,7 @@ def db(tmp_path, monkeypatch):
                 SwarmTask,
                 FactoryControl,
                 FactoryReceipt,
+                WorkItem,
                 FactoryStart,
                 FactoryAudit,
             )

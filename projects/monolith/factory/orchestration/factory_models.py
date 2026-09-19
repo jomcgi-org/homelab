@@ -9,10 +9,20 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import BigInteger, CheckConstraint, Index, Integer, UniqueConstraint
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    Column,
+    Index,
+    Integer,
+    UniqueConstraint,
+    JSON,
+)
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
 
 _BIGINT = BigInteger().with_variant(Integer(), "sqlite")
+_JSONB = JSONB().with_variant(JSON(), "sqlite")
 # The class a receipt written before ADR agents/038 carries. It lives here
 # rather than in factory_controls because the column default needs it and
 # this module imports nothing from the package above it.
@@ -119,6 +129,7 @@ class FactoryReceipt(SQLModel, table=True):
     # by the planner prompt on the first round of the task a decision
     # re-admits. Null on every receipt no operator has directed.
     direction_json: str | None = Field(default=None)
+    work_item_id: int | None = Field(default=None, foreign_key="swarm.work_item.id")
     task_paused: bool = Field(default=False)
     cancellation_requested: bool = Field(default=False)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -252,3 +263,119 @@ class FactoryReviewVerdict(SQLModel, table=True):
     summary: str = Field(default="")
     head_sha: str | None = Field(default=None)
     reviewed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class WorkItem(SQLModel, table=True):
+    """Durable work item record synced from GitHub."""
+
+    __tablename__ = "work_item"
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('open','ready','deferred','needs_human','active','done','closed')",
+            name="work_item_state_check",
+        ),
+        CheckConstraint(
+            "close_reason IS NULL OR close_reason IN "
+            "('completed','not_planned','superseded','stale','github_closed')",
+            name="work_item_close_reason_check",
+        ),
+        CheckConstraint(
+            "(state = 'closed') = (close_reason IS NOT NULL)",
+            name="work_item_close_reason_consistency_check",
+        ),
+        CheckConstraint(
+            "source_kind IN ('github','mcp','ui','discord','factory')",
+            name="work_item_source_kind_check",
+        ),
+        CheckConstraint(
+            "trust IN ('trusted','semi_trusted','untrusted')",
+            name="work_item_trust_check",
+        ),
+        CheckConstraint(
+            "authority IN ('github','local')", name="work_item_authority_check"
+        ),
+        CheckConstraint(
+            "(github_repo IS NULL) = (github_issue_number IS NULL)",
+            name="work_item_github_both_check",
+        ),
+        CheckConstraint(
+            "github_issue_number IS NULL OR github_issue_number > 0",
+            name="work_item_github_number_check",
+        ),
+        UniqueConstraint(
+            "github_repo", "github_issue_number", name="work_item_github_key"
+        ),
+        Index("work_item_state_created_at_idx", "state", "created_at"),
+        Index("work_item_authority_state_idx", "authority", "state"),
+        {"schema": "swarm", "extend_existing": True},
+    )
+
+    id: int | None = Field(
+        default=None, primary_key=True, sa_type=_BIGINT, nullable=False
+    )
+    title: str
+    body: str = Field(default="")
+    state: str
+    close_reason: str | None = Field(default=None)
+    task_class: str | None = Field(default=None)
+    labels: list[str] = Field(
+        default_factory=list, sa_column=Column(_JSONB, nullable=False)
+    )
+    source_kind: str
+    source_ref: str | None = Field(default=None)
+    trust: str
+    authority: str = Field(default="local")
+    github_repo: str | None = Field(default=None)
+    github_issue_number: int | None = Field(default=None)
+    github_created_at: datetime | None = Field(default=None)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    closed_at: datetime | None = Field(default=None)
+
+
+class WorkItemEdge(SQLModel, table=True):
+    """Relationship between work items."""
+
+    __tablename__ = "work_item_edge"
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('blocks','parent','supersedes')",
+            name="work_item_edge_kind_check",
+        ),
+        CheckConstraint("from_id <> to_id", name="work_item_edge_self_check"),
+        UniqueConstraint("from_id", "to_id", "kind", name="work_item_edge_unique"),
+        Index("work_item_edge_to_id_idx", "to_id"),
+        {"schema": "swarm", "extend_existing": True},
+    )
+
+    id: int | None = Field(
+        default=None, primary_key=True, sa_type=_BIGINT, nullable=False
+    )
+    from_id: int = Field(foreign_key="swarm.work_item.id")
+    to_id: int = Field(foreign_key="swarm.work_item.id")
+    kind: str
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class WorkItemEvent(SQLModel, table=True):
+    """Version event for a work item."""
+
+    __tablename__ = "work_item_event"
+    __table_args__ = (
+        UniqueConstraint("work_item_id", "version", name="work_item_event_version_key"),
+        {"schema": "swarm", "extend_existing": True},
+    )
+
+    id: int | None = Field(
+        default=None, primary_key=True, sa_type=_BIGINT, nullable=False
+    )
+    work_item_id: int = Field(foreign_key="swarm.work_item.id")
+    version: int
+    op: str
+    author_kind: str
+    author: str
+    change_json: str
+    cause_kind: str
+    cause_ref: str | None = Field(default=None)
+    stated_reason: str | None = Field(default=None)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

@@ -293,6 +293,22 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
             )
             logger.warning("factory intake listing failed", exc_info=True)
             return []
+        try:
+            from factory.orchestration.work_items import sync_github_work_items
+
+            work_item_counts = sync_github_work_items(
+                repo, issues, truncated=issues_cut, actor=ACTOR
+            )
+            logger.info("work_item_sync", extra=work_item_counts)
+        except Exception as exc:  # noqa: BLE001 - intake must survive sync failure
+            logger.exception("work_item_sync_error")
+            _throttled(
+                "work_item_sync_error",
+                {
+                    "error": type(exc).__name__,
+                    "truncated": issues_cut,
+                },
+            )
         truncated = issues_cut or pulls_cut
         linked: set[int] = set()
         for pull in pulls:

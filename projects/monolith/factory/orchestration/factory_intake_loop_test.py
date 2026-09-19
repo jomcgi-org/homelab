@@ -11,11 +11,15 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 import factory.orchestration.factory_controls as controls
 import factory.orchestration.factory_intake_loop as intake_loop
+import factory.orchestration.work_items as work_items
 from factory.orchestration.factory_models import (
     FactoryAudit,
     FactoryControl,
     FactoryReceipt,
     FactoryStart,
+    WorkItem,
+    WorkItemEdge,
+    WorkItemEvent,
 )
 from factory.orchestration.models import SwarmTask
 
@@ -44,6 +48,9 @@ def db(tmp_path, monkeypatch):
                 FactoryReceipt,
                 FactoryStart,
                 FactoryAudit,
+                WorkItem,
+                WorkItemEdge,
+                WorkItemEvent,
             )
         ],
     )
@@ -51,6 +58,7 @@ def db(tmp_path, monkeypatch):
         session.add(FactoryControl(id="factory", actor="migration"))
         session.commit()
     monkeypatch.setattr(controls, "get_engine", lambda: engine)
+    monkeypatch.setattr(work_items, "get_engine", lambda: engine)
     monkeypatch.setattr(intake_loop, "_now", lambda: NOW)
     # intake_state reads the clock from factory_controls, where it lives
     # so the board can render the block without linking the reconciler.
@@ -966,3 +974,16 @@ def test_intake_skips_active_issues_across_generations(db, monkeypatch, state):
             select(FactoryAudit).where(FactoryAudit.action == "intake_idle")
         ).one()
         assert json.loads(idle.detail_json)["excluded"] == {"active_issue": 1}
+
+
+def test_work_item_sync_failure_does_not_change_admission(db, monkeypatch):
+    fake_pages(monkeypatch, [issue(1, ["agent-ready"])])
+
+    def fail_sync(*_args, **_kwargs):
+        raise RuntimeError("work item database unavailable")
+
+    monkeypatch.setattr(work_items, "sync_github_work_items", fail_sync)
+    result = intake_loop.intake_tick(policy(labels=["agent-ready"]), generation=0)
+    assert len(result) == 1
+    assert result[0]["receipt"]["issue_number"] == 1
+    assert len(audits(db, "work_item_sync_error")) == 1

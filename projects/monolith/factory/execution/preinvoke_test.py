@@ -871,6 +871,7 @@ def test_cancelled_create_without_guest_blocks_next_hour_probe(database, monkeyp
         FactoryAudit,
         FactoryControl,
         FactoryReceipt,
+        WorkItem,
     )
 
     # Add the factory ledger to the same file-backed execution database.
@@ -879,7 +880,10 @@ def test_cancelled_create_without_guest_blocks_next_hour_probe(database, monkeyp
     )
     SQLModel.metadata.create_all(
         engine,
-        tables=[m.__table__ for m in (FactoryControl, FactoryReceipt, FactoryAudit)],
+        tables=[
+            m.__table__
+            for m in (FactoryControl, FactoryReceipt, WorkItem, FactoryAudit)
+        ],
     )
     with Session(engine) as db:
         db.add(FactoryControl(id="factory", actor="test"))
