@@ -377,6 +377,7 @@ def test_needs_human_notifies_once(db, monkeypatch):
 
 
 def test_notify_failure_still_settles(db, monkeypatch):
+    """#6208 uses the shared task notification audit, including failed sends."""
     from agent import api as notify_module
 
     task, policy = make_task()
@@ -394,7 +395,7 @@ def test_notify_failure_still_settles(db, monkeypatch):
     )
     refine.reconcile(task, policy, graph.load_graph(task["id"]), [run], 1)
     assert controls.task_snapshot(task["id"])["state"] == "succeeded"
-    assert "refine_notify_failed" in audit_actions(db)
+    assert "task_notification_failed" in audit_actions(db)
 
 
 def test_two_failed_attempts_fail_without_touching_github(db, monkeypatch):
@@ -1748,3 +1749,124 @@ def test_refine_node_pricing(db, monkeypatch, model):
     assert node["model"] == model
     assert node["max_cost_usd"] == 0.5
     assert graph.admit_dispatch(task["id"], node["node_key"]).pin["max_cost_usd"] == 0.5
+
+
+@pytest.mark.parametrize("outcome", ["agent-ready", "needs-human"])
+def test_reversible_refine_default_posts_comment_and_continues(
+    db, monkeypatch, outcome
+):
+    """#6208 replaces the old retention-depth question with a conductor default."""
+    task, policy = make_task()
+    add_refine_node(task, policy)
+    comment = verified_github(monkeypatch, task, outcome)
+    writes = []
+    monkeypatch.setattr(conductor, "github_list", lambda *_: [])
+    monkeypatch.setattr(
+        landing,
+        "github_write",
+        lambda repo, path, payload, **kw: writes.append((path, payload, kw)) or {},
+    )
+    gate = {
+        "kind": "parameter",
+        "classification": "reversible",
+        "value": "N=3, dry-run only",
+        "reason": "Keeps fallback generations without enabling production deletion",
+    }
+    artifact = (
+        human_artifact(comment["html_url"], "deliver")
+        if outcome == "needs-human"
+        else {"outcome": outcome, "comment_url": comment["html_url"]}
+    )
+    run = settle_attempt(task, "succeeded", {**artifact, "gate": gate})
+    refine.reconcile(task, policy, graph.load_graph(task["id"]), [run], 1)
+    assert (
+        controls.task_snapshot(task["id"])["evidence"]["state"] == "refine_agent_ready"
+    )
+    assert any(
+        "Decided by the conductor: N=3, dry-run only, because"
+        in payload.get("body", "")
+        for _, payload, _ in writes
+    )
+    with Session(db) as session:
+        row = session.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == task["id"])
+        ).one()
+        assert row.escalation_json is None
+    assert "refine_needs_human_notified" not in audit_actions(db)
+    receive_issue(
+        "owner/repo",
+        7,
+        "Deliver",
+        "Body",
+        "https://github.com/owner/repo/issues/7",
+        "operator",
+    )
+    delivery = admit_next("scheduler")
+    assert delivery["ok"]
+    assert conductor._task(delivery["task_id"])["conductor_gates"] == [gate]
+
+
+def test_refine_rejects_irreversible_gate_claimed_ready(db, monkeypatch):
+    """A node cannot classify prod deletion and bypass the human gate via its label."""
+    task, policy = make_task()
+    add_refine_node(task, policy)
+    comment = verified_github(monkeypatch, task)
+    run = settle_attempt(
+        task,
+        "succeeded",
+        {
+            "outcome": "agent-ready",
+            "comment_url": comment["html_url"],
+            "gate": {
+                "kind": "parameter",
+                "classification": "prod_deletion",
+                "value": "N=1",
+                "reason": "Delete older production objects",
+            },
+        },
+    )
+    refine.reconcile(task, policy, graph.load_graph(task["id"]), [run], 1)
+    assert controls.task_snapshot(task["id"])["state"] == "failed"
+
+
+def test_reversible_refine_retries_after_label_write_and_deferred_settlement(
+    db, monkeypatch
+):
+    """A crash after replacing needs-human with agent-ready must not wedge the brief."""
+    task, policy = make_task()
+    add_refine_node(task, policy)
+    comment = verified_github(monkeypatch, task, "needs-human")
+    labels = {"needs-human"}
+    monkeypatch.setattr(
+        refine, "github_get", lambda *_: {"labels": [{"name": name} for name in labels]}
+    )
+    monkeypatch.setattr(conductor, "github_list", lambda *_: [])
+
+    def write(repo, path, payload, **kw):
+        if path.endswith("/labels"):
+            labels.update(payload["labels"])
+        elif kw.get("method") == "DELETE":
+            labels.discard("needs-human")
+        return {}
+
+    monkeypatch.setattr(landing, "github_write", write)
+    gate = {
+        "kind": "parameter",
+        "classification": "reversible",
+        "value": "N=3",
+        "reason": "Dry-run default",
+    }
+    run = settle_attempt(
+        task, "succeeded", human_artifact(comment["html_url"], "deliver", gate=gate)
+    )
+    finish = refine.finish_task
+    monkeypatch.setattr(
+        refine, "finish_task", lambda *a, **kw: {"ok": False, "reason": "deferred"}
+    )
+    refine.reconcile(task, policy, graph.load_graph(task["id"]), [run], 1)
+    assert labels == {"agent-ready"}
+    monkeypatch.setattr(refine, "finish_task", finish)
+    refine.reconcile(task, policy, graph.load_graph(task["id"]), [run], 1)
+    assert (
+        controls.task_snapshot(task["id"])["evidence"]["state"] == "refine_agent_ready"
+    )

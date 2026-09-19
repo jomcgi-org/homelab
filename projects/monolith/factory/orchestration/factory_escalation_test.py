@@ -608,7 +608,8 @@ def test_revalidation_off_does_not_read_github(db, github, notices, monkeypatch)
     assert json.loads(receipt_of(db, task_id).escalation_json)["resolved"] is None
 
 
-def test_intervention_required_notifies_once_per_attempt(db, github, notices):
+def test_intervention_required_notifies_once_per_task(db, github, notices):
+    """#6208 folds per-attempt warnings into one task summary; audits retain both."""
     task_id, _policy = admitted(ISSUE)
     add_intervention(
         db,
@@ -637,7 +638,7 @@ def test_intervention_required_notifies_once_per_attempt(db, github, notices):
     conductor._consume_intervention_notifications(task_id)
     conductor._consume_intervention_notifications(task_id)
 
-    assert len(notices) == 2
+    assert len(notices) == 1
     assert all(level == "warn" for _text, level in notices)
     assert any(
         "stop_request_bound_reached" in text and "worker-a" in text
@@ -1134,3 +1135,424 @@ class _NoRows:
 
     def all(self):
         return []
+
+
+def gate_cards():
+    """Real 2026-09-18 questions plus the new typed classification contract."""
+    from pathlib import Path
+
+    return json.loads(
+        (Path(__file__).parent / "fixtures/conductor_gates_20260918.json").read_text()
+    )
+
+
+def existing_pull(task, *, number=6070, branch="factory/earlier-task"):
+    return {
+        "number": number,
+        "state": "open",
+        "draft": True,
+        "body": f"Prior implementation.\n\nCloses #{task['issue_number']}",
+        "head": {"ref": branch, "repo": {"full_name": REPO}},
+        "base": {"ref": "main"},
+    }
+
+
+@pytest.mark.parametrize(
+    "card", gate_cards(), ids=lambda c: f"{c['issue']}-{c['gate']['kind']}"
+)
+def test_today_cards_continue_or_escalate_under_backstop(
+    db, github, notices, monkeypatch, card
+):
+    """Captured gates continue only when their text clears the authority backstop."""
+    from factory.orchestration import factory_gates as gates
+
+    task_id, _policy = admitted(card["issue"])
+    task = task_of(task_id)
+    if card["gate"]["kind"] == "delivery_target":
+        pull = existing_pull(task)
+        monkeypatch.setattr(
+            conductor,
+            "github_list",
+            lambda repo, path: (
+                [pull] if path.startswith("pulls?") else github.list(repo, path)
+            ),
+        )
+    decision = pause(pause_options(), question=card["question"], gate=card["gate"])
+    conductor._escalate_task(task, decision, "replay-card", [])
+    # A retry after settlement cannot emit another comment or card.
+    conductor._escalate_task(task, decision, "replay-card", [])
+    row = receipt_of(db, task_id)
+    if card["issue"] in {6193, 5444}:
+        assert row.state == "escalated"
+        assert row.escalation_json is not None
+        assert "Decided by the conductor:" not in github.bodies()
+        assert len(notices) == 1
+        return
+    assert row.state == "admitted" and row.escalation_json is None
+    assert not notices
+    assert "## Decision needed" not in github.bodies()
+    assert conductor._decision_processed(task_id, "replay-card")
+    fresh = task_of(task_id)
+    if card["gate"]["kind"] == "parameter":
+        assert github.bodies().count("Decided by the conductor:") == 1
+        assert card["gate"]["value"] in github.bodies()
+        assert "; reversible" in github.bodies()
+        assert card["gate"]["value"] in gates.guidance(fresh)
+    elif card["gate"]["kind"] == "live_validation":
+        body_writes = [
+            payload["body"]
+            for method, path, payload in github.writes
+            if method == "PATCH" and path == f"issues/{card['issue']}"
+        ]
+        assert all(
+            f"- [ ] {check}" in body_writes[-1] for check in card["gate"]["live_checks"]
+        )
+        assert gates.live_checks(fresh) == card["gate"]["live_checks"]
+    else:
+        assert conductor.delivery_branch(fresh) == "factory/earlier-task"
+        assert fresh["delivery_pr_number"] == 6070
+        assert json.loads(row.direction_json)["delivery_adoption"] is True
+        assert "re-review" in gates.guidance(fresh)
+
+
+@pytest.mark.parametrize(
+    "classification", ["spending", "prod_deletion", "external_account"]
+)
+def test_parameter_with_irreversible_effect_still_escalates(
+    db, github, notices, classification
+):
+    """Safe defaults do not authorize the operational half of #6193 or #5444."""
+    task_id, _policy = admitted(ISSUE)
+    gate = {**gate_cards()[0]["gate"], "classification": classification}
+    conductor._escalate_task(
+        task_of(task_id), pause(pause_options(), gate=gate), "unsafe", []
+    )
+    assert receipt_of(db, task_id).state == "escalated"
+    assert "Decided by the conductor:" not in github.bodies()
+    assert len(notices) == 1
+
+
+@pytest.mark.parametrize("field", ["value", "reason"])
+def test_model_labelled_reversible_budget_gate_still_escalates(
+    db, github, notices, field
+):
+    task_id, _policy = admitted(ISSUE)
+    gate = {
+        "kind": "parameter",
+        "classification": "reversible",
+        "value": "N=3",
+        "reason": "A reversible default",
+        field: "budget alert 50 USD per month",
+    }
+    conductor._escalate_task(
+        task_of(task_id), pause(pause_options(), gate=gate), "budget", []
+    )
+    assert receipt_of(db, task_id).state == "escalated"
+    assert "## Decision needed" in github.bodies()
+    assert "Decided by the conductor:" not in github.bodies()
+    assert len(notices) == 1
+
+
+def test_plain_retention_count_resolves(db, github, notices):
+    from factory.orchestration import factory_gates as gates
+
+    task_id, _policy = admitted(ISSUE)
+    gate = {
+        "kind": "parameter",
+        "classification": "reversible",
+        "value": "Retention count N=3",
+        "reason": "Keep three fallback generations",
+    }
+    assert gates.resolve(task_of(task_id), {"gate": gate}, "retention")
+    assert task_of(task_id)["conductor_gates"] == [gate]
+    assert "Decided by the conductor: Retention count N=3" in github.bodies()
+    assert not notices
+
+
+def test_adoption_at_first_step_pins_existing_branch(db, github, monkeypatch):
+    """An operator re-post also discovers its existing PR before planning."""
+    task_id, policy = admitted(ISSUE)
+    pull = existing_pull(task_of(task_id), branch="factory/earlier-delivery")
+    monkeypatch.setattr(conductor, "github_list", lambda *_: [pull])
+    # Stop at the next planner operation, after discovery but before dispatch.
+    monkeypatch.setattr(
+        conductor,
+        "_resync_allowance",
+        lambda *a: (_ for _ in ()).throw(RuntimeError("after adoption")),
+    )
+    with pytest.raises(RuntimeError, match="after adoption"):
+        conductor.reconcile_task(task_id, policy, None)
+    task = task_of(task_id)
+    assert task["delivery_pr_number"] == 6070
+    assert conductor.delivery_branch(task) == "factory/earlier-delivery"
+    assert json.loads(receipt_of(db, task_id).direction_json)["delivery_adoption"]
+
+
+@pytest.mark.parametrize("author", [{"login": "earlier-author"}, None])
+def test_adoption_refuses_persons_branch_and_records_owner(
+    db, github, notices, monkeypatch, author
+):
+    from factory.orchestration import factory_gates as gates
+
+    task_id, policy = admitted(ISSUE)
+    task = task_of(task_id)
+    pull = existing_pull(task, branch="fix/earlier-delivery")
+    pull["user"] = author
+    monkeypatch.setattr(
+        conductor,
+        "github_list",
+        lambda repo, path: (
+            [pull] if path.startswith("pulls?") else github.list(repo, path)
+        ),
+    )
+    assert not gates.adopt_delivery(task)
+    owner = "earlier-author" if author else "a person"
+    assert task["delivery_owner"] == owner
+    assert task["conflicting_pr"] == 6070
+    assert not task_of(task_id)["delivery_adoption"]
+    conductor.reconcile_task(task_id, policy, None)
+    assert owner in json.loads(receipt_of(db, task_id).escalation_json)["question"]
+    assert owner in notices[0][0]
+
+
+@pytest.mark.parametrize("head_repo", [{"full_name": "someone/fork"}, None])
+@pytest.mark.parametrize("matching_pr", [False, True])
+def test_adoption_filters_fork_and_deleted_fork_candidates(
+    db, github, monkeypatch, head_repo, matching_pr
+):
+    from factory.orchestration import factory_gates as gates
+
+    task_id, _policy = admitted(ISSUE)
+    task = task_of(task_id)
+    fork = existing_pull(task)
+    fork["head"]["repo"] = head_repo
+    pulls = [fork]
+    if matching_pr:
+        pulls.append(existing_pull(task, number=6071))
+    monkeypatch.setattr(conductor, "github_list", lambda *_: pulls)
+    assert gates.adopt_delivery(task)
+    assert bool(task.get("delivery_adoption")) == matching_pr
+    if matching_pr:
+        assert task["delivery_pr_number"] == 6071
+    else:
+        assert task["delivery_target_checked"]
+
+
+def test_delivery_gate_without_open_pr_escalates(db, github, notices):
+    from factory.orchestration import factory_gates as gates
+
+    task_id, _policy = admitted(ISSUE)
+    gate = {
+        "kind": "delivery_target",
+        "classification": "reversible",
+        "reason": "Continue the earlier delivery",
+    }
+    assert not gates.resolve(task_of(task_id), {"gate": gate}, "no-open-pr")
+    assert not audits(db, "conductor_gate_decided")
+    conductor._escalate_task(
+        task_of(task_id), pause(pause_options(), gate=gate), "no-open-pr", []
+    )
+    assert receipt_of(db, task_id).state == "escalated"
+    assert "## Decision needed" in github.bodies()
+    assert len(notices) == 1
+
+
+def test_rescope_mismatched_pr_logs_and_persists_gate(db, github, monkeypatch, caplog):
+    from factory.orchestration import factory_gates as gates
+
+    task_id, _policy = admitted(ISSUE)
+    task = task_of(task_id)
+    pull = existing_pull(task, branch="fix/unrelated")
+    monkeypatch.setattr(
+        conductor,
+        "github_get",
+        lambda repo, path: (
+            pull if path.startswith("pulls/") else github.get(repo, path)
+        ),
+    )
+    gate = next(
+        c["gate"] for c in gate_cards() if c["gate"]["kind"] == "live_validation"
+    )
+    assert gates.resolve(task, {"gate": gate, "pr_number": pull["number"]}, "rescope")
+    assert "does not match" in caplog.text
+    assert str(pull["number"]) in caplog.text
+    assert task_of(task_id)["conductor_gates"] == [gate]
+    assert not any(path.startswith("pulls/") for _, path, _ in github.writes)
+
+
+@pytest.mark.parametrize(
+    "branch", ["factory/owner-task", "factory/owner-task-investigate_fix"]
+)
+def test_running_owner_is_named_without_stealing_branch(
+    db, github, notices, monkeypatch, branch
+):
+    from factory.orchestration import factory_gates as gates
+    from factory.orchestration.models import SwarmTask
+
+    task_id, policy = admitted(ISSUE)
+    # A running task on a different receipt owns the matching PR's branch.
+    with Session(db) as session:
+        session.add(
+            SwarmTask(
+                id="owner-task",
+                task_text="Other work",
+                repo=REPO,
+                base_branch="main",
+                conductor_model="opus",
+            )
+        )
+        session.flush()
+        session.add(
+            FactoryReceipt(
+                repo=REPO,
+                issue_number=SECOND_ISSUE,
+                generation=0,
+                title="Owner",
+                body="",
+                url=f"https://github.com/{REPO}/issues/8",
+                actor="test",
+                state="admitted",
+                task_id="owner-task",
+            )
+        )
+        session.commit()
+    pull = existing_pull(task_of(task_id), branch=branch)
+    monkeypatch.setattr(
+        conductor,
+        "github_list",
+        lambda repo, path: (
+            [pull] if path.startswith("pulls?") else github.list(repo, path)
+        ),
+    )
+    conductor.reconcile_task(task_id, policy, None)
+    row = receipt_of(db, task_id)
+    assert row.state == "escalated"
+    assert "owner-task" in json.loads(row.escalation_json)["question"]
+    assert "owner-task" in notices[0][0]
+    assert not task_of(task_id)["delivery_adoption"]
+    assert gates.guidance(task_of(task_id)) == ""
+
+
+def test_failed_or_incomplete_pr_discovery_never_starts_work(db, github, monkeypatch):
+    from factory.orchestration import factory_gates as gates
+
+    task_id, _policy = admitted(ISSUE)
+    pull = existing_pull(task_of(task_id))
+    monkeypatch.setattr(conductor, "github_list", lambda *_: [pull] * 100)
+    with pytest.raises(ValueError, match="incomplete"):
+        gates.adopt_delivery(task_of(task_id))
+    assert not task_of(task_id)["delivery_target_checked"]
+    assert not graph.node_runs(task_id)
+
+
+def test_notification_fence_is_per_task_and_kind(db, github, notices):
+    from factory.orchestration import factory_refine as refine
+
+    task_id, _policy = admitted(ISSUE)
+    conductor._notify_escalation(task_id, REPO, ISSUE, "Needs credentials")
+    add_intervention(db, task_id, "attempt-1", required=True, reason="guest missing")
+    conductor._consume_intervention_notifications(task_id)
+    add_intervention(db, task_id, "attempt-2", required=True, reason="stop failed")
+    conductor._consume_intervention_notifications(task_id)
+    refine._notify_once(task_id, REPO, ISSUE, "Needs credentials", "deliver")
+    conductor._notify_escalation(task_id, REPO, ISSUE, "Needs credentials again")
+    refine._notify_once(task_id, REPO, ISSUE, "Needs credentials again", "deliver")
+    assert len(notices) == 3
+    assert {a["kind"] for a in audits(db, "task_needs_person_notified")} == {
+        "escalation",
+        "intervention",
+        "refine",
+    }
+    assert len(audits(db, "stop_observation")) == 2
+    assert len(audits(db, "intervention_required_notified")) == 2
+
+
+@pytest.mark.parametrize(
+    "kind", ["escalation", "intervention", "refine", "deadline", "landing"]
+)
+def test_failed_notification_does_not_consume_kind_fence(db, github, monkeypatch, kind):
+    from types import SimpleNamespace
+    from agent import api as notify_module
+    from factory.orchestration import factory_refine as refine
+
+    task_id, _policy = admitted(ISSUE)
+    attempts = []
+
+    async def notify(text, *, level):
+        attempts.append((text, level))
+        if len(attempts) == 1:
+            raise RuntimeError("Discord unavailable")
+
+    monkeypatch.setattr(notify_module, "notify", notify)
+    monkeypatch.setattr(
+        controls, "_starts", lambda *_: [SimpleNamespace(status="uncertain")]
+    )
+
+    def send():
+        if kind == "escalation":
+            conductor._notify_escalation(task_id, REPO, ISSUE, "Choose scope")
+        elif kind == "intervention":
+            conductor._notify_intervention_required(
+                task_id, "attempt", "Stop failed", None
+            )
+        elif kind == "refine":
+            refine._notify_once(task_id, REPO, ISSUE, "Choose scope", "deliver")
+        elif kind == "deadline":
+            conductor._warn_deadline_tripped(
+                {"task_id": task_id, "limits": {"deadline_expired": True}}
+            )
+        else:
+            landing._notify_stuck(task_id, 6070)
+
+    send()
+    assert len(audits(db, "task_notification_failed")) == 1
+    assert not audits(db, "task_needs_person_notified")
+    assert not audits(db, "refine_needs_human_notified")
+    assert not audits(db, "deadline_tripped_notified")
+    send()
+    send()
+    assert len(attempts) == 2
+    assert (
+        audits(db, "task_needs_person_notified")[0]["workflow_id"]
+        == f"factory-person:{task_id}:{kind}"
+    )
+
+
+def test_settled_intervention_does_not_send_stale_summary(db, github, notices):
+    task_id, _policy = admitted(ISSUE)
+    add_intervention(db, task_id, "attempt", required=True, reason="stop pending")
+    add_intervention(db, task_id, "attempt", required=False, reason="settled")
+    conductor._consume_intervention_notifications(task_id)
+    assert not notices
+
+
+def test_human_readmission_preserves_conductor_scope_and_adoption(db, github, notices):
+    """An unrelated authority question cannot restore Closes on live acceptance."""
+    task_id, _policy = admitted(ISSUE)
+    gate = next(
+        c["gate"] for c in gate_cards() if c["gate"]["kind"] == "live_validation"
+    )
+    with Session(db) as session:
+        row = session.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == task_id)
+        ).one()
+        row.direction_json = json.dumps(
+            {
+                "conductor_gates": [gate],
+                "delivery_adoption": True,
+                "delivery_branch": "fix/prior",
+                "delivery_pr_number": 6070,
+                "delivery_target_checked": True,
+            }
+        )
+        session.add(row)
+        session.commit()
+    conductor._escalate_task(task_of(task_id), pause(pause_options()), "authority", [])
+    row = receipt_of(db, task_id)
+    direction = decisions._direction(
+        row, json.loads(row.escalation_json), pause_options()[0], "operator", None
+    )
+    assert direction["conductor_gates"] == [gate]
+    assert direction["delivery_adoption"] is True
+    assert "delivery_target_checked" not in direction
+    assert controls.granted_delivery_surface(direction) == ("fix/prior", 6070)

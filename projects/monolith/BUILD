@@ -4975,6 +4975,7 @@ py_test(
 py_test(
     name = "swarm_factory_escalation_test",
     srcs = ["factory/orchestration/factory_escalation_test.py"],
+    data = ["factory/orchestration/fixtures/conductor_gates_20260918.json"],
     imports = ["."],
     deps = [
         ":pkg_auth",

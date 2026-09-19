@@ -1314,6 +1314,7 @@ this table when the work ships or the issue closes without it.
 | --- | --- | --- | --- |
 | The orchestration-level graph becomes a mutable DAG dispatched per node, replacing the workflow's Python control flow | section 4 | #5419 | in progress: the factory lane plans its DAG at plan time and runs engine-owned review rounds; legacy swarm runs are still `implement_then_review` |
 | One factory conductor above every per-run conductor selects and coordinates work under a versioned charter, acting on Joe's behalf | The factory conductor | #5784 (children #5785, #5787, #5788, #5789, #5804; #5786 closed 2026-09-14) | not started |
+| The conductor decides reversible defaults, stages repository-only delivery when live checks are unavailable, and adopts unowned existing PRs; one human-needed notification per task | section 11, reversible gates | #6208 | implemented, awaiting validation |
 | The charter document and its loader govern what the conductor may read, coordinate, or act on | The factory conductor | #5785 | not started |
 | Product-goal records, the factory index, and acceptance evidence drive work selection | The factory conductor | #5786 | not started |
 | Conductor journal, memory assembly, and session lifecycle persist across restarts | The factory conductor | #5787 | not started |
@@ -1332,6 +1333,21 @@ this table when the work ships or the issue closes without it.
 | Grimoire post-extraction quality passes (evidence-grounded stat verification, review-approved alias merges) ship | Decision history (services/014) | #3912 | not started |
 | Public chat retention and takedown purge tooling ships | Decision history (security/005) | #3899 | not started |
 | A role-separated GitHub App review gate lets swarm merge autonomously | Decision history (agents/027) | #3835 | not started |
+
+### Reversible gates
+
+**Why.** The escalation cards on 2026-09-18 repeatedly asked for reversible
+parameter choices, permission to separate repository work from live acceptance,
+and permission to reuse an existing delivery branch. These questions consumed
+operator attention without supplying authority the repository work needed.
+The conductor now chooses non-spending defaults with a reason on the issue,
+stages repository work and keeps operational checks on an open issue, and
+adopts the existing PR before any node starts. Spending, production deletion,
+external-account changes and a branch owned by a running task still require a
+person. Independent review and required Linux CI remain delivery gates.
+One task-level Discord summary replaces attempt and supervision-cycle noise;
+the audit retains every observation. This delegates the three reversible gates
+under #6208 without granting deployment or credential authority.
 
 ### The factory conductor
 

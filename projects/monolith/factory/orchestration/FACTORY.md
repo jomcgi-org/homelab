@@ -1355,3 +1355,44 @@ capacity, and the cumulative objective ceiling still apply. Failed or stale
 reviews wait five minutes before another bounded assessment. A stop decision
 retains the issue, PR, and findings without a human restart question. The
 normal independent exact-head delivery review remains required.
+
+
+### Conductor-owned reversible gates
+
+Refine, investigate and planner artifacts carry a typed `gate` when a missing
+parameter, unavailable live check or existing delivery target would otherwise
+raise a decision card. A parameter classification of `reversible` includes its
+proposed `value` and `reason`. The builder chooses it and comments
+`Decided by the conductor: <value>, because <reason>; reversible` once.
+`spending`, `prod_deletion` and `external_account` keep the human decision path.
+A case-insensitive heuristic backstop also escalates restricted terms in the
+gate's value or reason, even when the model labels the gate reversible.
+A documented default does not authorize bucket creation, deletion or credentials.
+Unclassified legacy questions retain their existing escalation path.
+
+For `live_validation`, the conductor records a default-off or staged repository
+`scope` and appends `live_checks` as unchecked lines on the issue. The PR body
+states `Conductor rescope:` and retains references without closing keywords.
+The delivery gate refuses a PR that closes pending operational acceptance, and
+landing records `repository_delivery_complete` after merge without closing the
+issue. Required Linux CI and independent exact-head approval still apply.
+Refine decisions carry into delivery admission; the receipt preserves decisions
+across restarts and every planner and worker receives the current scope.
+
+Before its first node, a delivery task discovers open PRs closing its issue,
+including operator re-posts. It adopts the oldest matching PR (preferring an
+already granted match), records the branch and PR on the receipt, and directs
+rebase onto main, repair and fresh independent review. Discovery failure or
+truncation waits without starting a competing branch. A running branch owner
+is named in an escalation; no second writer starts without that decision.
+Only existing PR heads in this repository under `factory/` may be adopted.
+Heads outside `factory/` escalate with the PR author's login. The base branch
+and another repository's head are never adopted; fork and deleted-fork PRs
+are excluded from discovery candidates.
+
+Discord uses one durable human-needed fence per task and notification kind:
+refine, escalation, intervention, deadline and landing. Supervision combines the attempts
+known at the time into one summary. Later observations remain in the audit
+instead of sending another message. Automatic stall recovery is audit-only.
+A failed notification attempt is audited without consuming the fence, so it
+can be retried, and does not block task settlement.

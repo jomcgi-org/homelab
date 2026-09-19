@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from datetime import datetime, timezone
 import logging
@@ -40,6 +39,7 @@ from factory.orchestration.factory_conductor import (
     github_get,
     github_list,
 )
+from factory.orchestration import factory_gates
 from factory.orchestration.model_pool import select_model, selection_reason
 
 logger = logging.getLogger(__name__)
@@ -119,6 +119,7 @@ REFINE_SCHEMA = {
     "additionalProperties": False,
     "required": ["outcome", "comment_url"],
     "properties": {
+        "gate": factory_gates.GATE_SCHEMA,
         "outcome": {"enum": list(OUTCOMES)},
         "comment_url": {"type": "string", "minLength": 1, "maxLength": 512},
         "question": {"type": "string", "maxLength": 4000},
@@ -189,6 +190,7 @@ def refine_prompt(task: dict, receipt: dict, *, closing: bool) -> str:
         f"Title: {receipt['title']}\n\nIssue body:\n{body}\n\n"
         + _chat_prompt(receipt)
         + ADR_RETIREMENT_RULE
+        + factory_gates.GATE_PROMPT
         + "Research before reading toward a verdict, and cite what you find "
         "under `### Evidence`, in this order. First, call `search_knowledge` "
         "on the `agents` MCP server with the issue title, then once for every "
@@ -210,7 +212,10 @@ def refine_prompt(task: dict, receipt: dict, *, closing: bool) -> str:
         + "Read the issue and the repository, then post EXACTLY ONE issue comment "
         f"whose first line is `{BRIEF_HEADING}`. Include `### Outcome`, "
         "`### Acceptance`, `### Files`, `### Evidence`, and `### Risks` in that "
-        "order.\n\n"
+        "order. State the proposed conductor default or repository rescope in "
+        "Acceptance and the outstanding live checklist in Risks. For a reversible "
+        "gate, apply agent-ready, omit Decision needed and human options, and "
+        "return outcome agent-ready with the typed gate for server settlement.\n\n"
         "Reach exactly one of these verdicts and act on it.\n"
         "`agent-ready` when the brief is actionable with no human decision "
         "left. Apply the `agent-ready` label.\n"
@@ -570,6 +575,16 @@ def _record_escalation(
 def _notify_once(
     task_id: str, repo: str, number: int, question: str, recommendation: str
 ) -> None:
+    from factory.orchestration.factory_conductor import _notify_person_once
+
+    if not _notify_person_once(
+        task_id,
+        f"Factory refine needs a human on {repo}#{number}"
+        f" (recommend: {recommendation}): {question[:500]}\n"
+        f"Decide at {ESCALATIONS_URL}",
+        kind="refine",
+    ):
+        return
     with _locked_session() as (db, _control):
         existing = db.exec(
             select(FactoryAudit.id).where(
@@ -586,27 +601,6 @@ def _notify_once(
             task_id=task_id,
             issue_number=number,
         )
-    try:
-        from agent.api import notify
-
-        asyncio.run(
-            notify(
-                f"Factory refine needs a human on {repo}#{number}"
-                f" (recommend: {recommendation}): {question[:500]}\n"
-                f"Decide at {ESCALATIONS_URL}",
-                level="warn",
-            )
-        )
-    except Exception:  # noqa: BLE001 - notification is best effort
-        logger.warning("factory refine human notification failed", exc_info=True)
-        with _locked_session() as (db, _control):
-            _audit(
-                db,
-                ACTOR,
-                "refine_notify_failed",
-                task_id=task_id,
-                issue_number=number,
-            )
 
 
 def _verify_options(artifact: dict, recommendation: str) -> str | None:
@@ -888,6 +882,17 @@ def _settle(task: dict, run: dict, policy: dict) -> None:
     if outcome not in OUTCOMES:
         _mismatch(task["id"], number, "artifact outcome is invalid", False)
         return
+    if artifact.get("gate"):
+        try:
+            gate = factory_gates.validate_gate(artifact["gate"])
+        except ValueError as exc:
+            _mismatch(task["id"], number, str(exc), False)
+            return
+        if gate["classification"] != "reversible" and outcome != HUMAN_LABEL:
+            _mismatch(
+                task["id"], number, "irreversible gate requires needs-human", False
+            )
+            return
     invalid = _verify_artifact(artifact, outcome)
     if invalid is None:
         invalid = _verify_supersedes(repo, number, artifact, outcome)
@@ -918,6 +923,15 @@ def _settle(task: dict, run: dict, policy: dict) -> None:
 
     expected = OUTCOME_LABEL[effective]
     label_present = expected in issue_labels
+    if (
+        outcome == HUMAN_LABEL
+        and downgrade is None
+        and (artifact.get("gate") or {}).get("classification") == "reversible"
+    ):
+        # A prior settlement may have applied agent-ready and then lost its
+        # response. Replaying the same verified gate must finish, not demand
+        # that the removed human label be put back first.
+        label_present = label_present or READY_LABEL in issue_labels
     if not label_present:
         _mismatch(task["id"], number, f"the {expected} label is absent", False)
         return
@@ -956,6 +970,16 @@ def _settle(task: dict, run: dict, policy: dict) -> None:
                 "recommendation": artifact.get("recommendation"),
             },
         )
+    if artifact.get("gate") and downgrade is None:
+        if factory_gates.resolve(task, artifact, f"refine-gate:{task['id']}"):
+            from factory.orchestration.factory_landing import github_write
+
+            github_write(repo, f"issues/{number}/labels", {"labels": [READY_LABEL]})
+            if HUMAN_LABEL in issue_labels:
+                github_write(
+                    repo, f"issues/{number}/labels/{HUMAN_LABEL}", {}, method="DELETE"
+                )
+            effective = READY_LABEL
     escalation = None
     if effective == HUMAN_LABEL:
         escalation = _record_escalation(

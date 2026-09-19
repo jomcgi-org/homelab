@@ -1,0 +1,162 @@
+[
+  {
+    "issue": 6193,
+    "source": "https://github.com/jomcgi-org/homelab/issues/6193#issuecomment-5726039991",
+    "captured": "2026-09-18",
+    "question": "recommend: deliver\nWhat non-prod bucket name, validation-object lifecycle age in days, and prod backstop (lifecycle rule with age vs budget alert with monthly threshold) should the agent implement and record?\n1. Deliver the non-prod bucket plus lifecycle and prod backstop with the stated names and thresholds\n2. Defer bucket separation until the first GKE stateful bank is scheduled\n3. Close as completed if the buckets and alert were already created out of band",
+    "gate": {
+      "kind": "parameter",
+      "classification": "reversible",
+      "reason": "A documented default can be revised before activation; creation, deletion and external account changes are not authorized.",
+      "value": "Proposed non-prod bucket embervm-validation, lifecycle age 7 days, budget alert $50/month (documentation only)"
+    }
+  },
+  {
+    "issue": 5444,
+    "source": "https://github.com/jomcgi-org/homelab/issues/5444#issuecomment-5645192518",
+    "captured": "2026-09-18",
+    "question": "What retention depth N per (vendor, workload) and what GC arming policy (dry-run manifest first vs armed deletes, and on which bucket) should the agent implement before the first GKE bank?",
+    "gate": {
+      "kind": "parameter",
+      "classification": "reversible",
+      "reason": "A documented default can be revised before activation; creation, deletion and external account changes are not authorized.",
+      "value": "Retention cap N=3, dry-run only"
+    }
+  },
+  {
+    "issue": 5015,
+    "source": "https://github.com/jomcgi-org/homelab/issues/5015#issuecomment-5731581278",
+    "captured": "2026-09-18",
+    "question": "Should this issue be explicitly rescoped to a source-and-regression-test PR with pinned-runtime output evidence, leaving real Firecracker/vsock acceptance to separate follow-up, or should its existing real-sandbox acceptance remain mandatory until an authorized non-production validation runner is available?",
+    "gate": {
+      "kind": "live_validation",
+      "classification": "reversible",
+      "reason": "Deliver the reversible repository portion and retain operational acceptance.",
+      "scope": "Repository implementation and hermetic regression coverage, staged until live validation",
+      "live_checks": [
+        "Verify real Firecracker/vsock stdout with a candidate image."
+      ]
+    }
+  },
+  {
+    "issue": 3856,
+    "source": "https://github.com/jomcgi-org/homelab/issues/3856#issuecomment-5647923862",
+    "captured": "2026-09-18",
+    "question": "May the repository delivery for #3856 be narrowed to the standalone guide, chart profile and regression coverage in draft PR #6070, explicitly leaving clean-host KVM lifecycle validation as outstanding work under #3858, or must the draft remain blocked until independently authorized acceptance evidence exists?",
+    "gate": {
+      "kind": "live_validation",
+      "classification": "reversible",
+      "reason": "Deliver the reversible repository portion and retain operational acceptance.",
+      "scope": "Repository implementation and hermetic regression coverage, staged until live validation",
+      "live_checks": [
+        "Run the clean-host KVM bank and relight drill tracked by #3858."
+      ]
+    }
+  },
+  {
+    "issue": 3856,
+    "source": "https://github.com/jomcgi-org/homelab/issues/3856#issuecomment-5731603574",
+    "captured": "2026-09-18",
+    "question": "May this task replace the recorded PR #6070 delivery target with a new repository-only quickstart PR on its exclusively authorized branch, leaving #6070 and its task untouched for human consolidation, or should this task wait for the existing PR's ownership and delivery to be resolved?",
+    "gate": {
+      "kind": "delivery_target",
+      "classification": "reversible",
+      "reason": "Deliver the reversible repository portion and retain operational acceptance."
+    }
+  },
+  {
+    "issue": 3893,
+    "source": "https://github.com/jomcgi-org/homelab/issues/3893#issuecomment-5648495590",
+    "captured": "2026-09-18",
+    "question": "Can an authorized operator make SEMGREP_APP_TOKEN available to the BuildBuddy PR runner outside this task, then resume validation of draft PR #6074 without weakening fail-closed scanning?",
+    "gate": {
+      "kind": "live_validation",
+      "classification": "reversible",
+      "reason": "Deliver the reversible repository portion and retain operational acceptance.",
+      "scope": "Repository implementation and hermetic regression coverage, staged until live validation",
+      "live_checks": [
+        "Supply SEMGREP_APP_TOKEN out of band and verify fail-closed Linux scanning."
+      ]
+    }
+  },
+  {
+    "issue": 3858,
+    "source": "https://github.com/jomcgi-org/homelab/issues/3858#issuecomment-5648064051",
+    "captured": "2026-09-18",
+    "question": "How should PR #6071 resume given the unavailable full changes-requested report from run 855/session 4597 and the missing clean-Linux KVM lifecycle validation?",
+    "gate": {
+      "kind": "live_validation",
+      "classification": "reversible",
+      "reason": "Deliver the reversible repository portion and retain operational acceptance.",
+      "scope": "Repository implementation and hermetic regression coverage, staged until live validation",
+      "live_checks": [
+        "Run clean-Linux KVM lifecycle validation and obtain independent approval."
+      ]
+    }
+  },
+  {
+    "issue": 3946,
+    "source": "https://github.com/jomcgi-org/homelab/issues/3946#issuecomment-5652643296",
+    "captured": "2026-09-18",
+    "question": "How should delivery of existing draft PR #6103 proceed while required BuildBuddy Linux CI is blocked by the reported free-tier limit?",
+    "gate": {
+      "kind": "delivery_target",
+      "classification": "reversible",
+      "reason": "Deliver the reversible repository portion and retain operational acceptance."
+    }
+  },
+  {
+    "issue": 3897,
+    "source": "https://github.com/jomcgi-org/homelab/issues/3897#issuecomment-5648843765",
+    "captured": "2026-09-18",
+    "question": "May this task be completed as staged, default-off repository policy support in PR 6075, explicitly leaving live enforcement and flow verification outstanding, or must delivery wait for that operational evidence? The current PR retains Closes #3897, so accepting the staged scope would allow the original issue to close on merge despite the live acceptance gap.",
+    "gate": {
+      "kind": "live_validation",
+      "classification": "reversible",
+      "reason": "Deliver the reversible repository portion and retain operational acceptance.",
+      "scope": "Repository implementation and hermetic regression coverage, staged until live validation",
+      "live_checks": [
+        "Verify live flow logging and enforcement before enabling policies."
+      ]
+    }
+  },
+  {
+    "issue": 3911,
+    "source": "https://github.com/jomcgi-org/homelab/issues/3911#issuecomment-5649910421",
+    "captured": "2026-09-18",
+    "question": "Should a new task reuse PR #6084 to repair only the three outstanding Grimoire verifier grounding defects and obtain fresh independent approval, or should this work remain on hold for manual remediation?",
+    "gate": {
+      "kind": "delivery_target",
+      "classification": "reversible",
+      "reason": "Deliver the reversible repository portion and retain operational acceptance."
+    }
+  },
+  {
+    "issue": 3895,
+    "source": "https://github.com/jomcgi-org/homelab/issues/3895#issuecomment-5648547104",
+    "captured": "2026-09-18",
+    "question": "May this tracking issue be explicitly rescoped to repository-only safeguards in draft PR #6076, with production egress enforcement documented as outstanding follow-up work, or must it remain blocked until the production-compatible enforcement approach is settled?",
+    "gate": {
+      "kind": "live_validation",
+      "classification": "reversible",
+      "reason": "Deliver the reversible repository portion and retain operational acceptance.",
+      "scope": "Repository implementation and hermetic regression coverage, staged until live validation",
+      "live_checks": [
+        "Validate production egress enforcement before activation."
+      ]
+    }
+  },
+  {
+    "issue": 3949,
+    "source": "https://github.com/jomcgi-org/homelab/issues/3949#issuecomment-5654968769",
+    "captured": "2026-09-18",
+    "question": "Should a new task finish the repository-only cluster-serving edge change in draft PR #6104, with the live acceptance drills explicitly deferred to separately authorized operational work, or should delivery wait for that live evidence?",
+    "gate": {
+      "kind": "live_validation",
+      "classification": "reversible",
+      "reason": "Deliver the reversible repository portion and retain operational acceptance.",
+      "scope": "Repository implementation and hermetic regression coverage, staged until live validation",
+      "live_checks": ["Run the live cluster-serving acceptance drills."]
+    }
+  }
+]

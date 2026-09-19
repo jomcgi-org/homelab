@@ -517,6 +517,8 @@ def feedback_db(tmp_path, monkeypatch):
     # Dispatch reads the shared background pool now, the serial lane included,
     # and this fixture holds no admission tables. A test that cares about the
     # pool sets its own count afterwards, which wins over this one.
+    # First-step PR discovery is hermetic; delivery tests override it as needed.
+    monkeypatch.setattr(conductor, "github_list", lambda *_: [])
     monkeypatch.setattr(conductor, "_free_background_slots", lambda: 3)
     yield engine
     engine.dispose()
@@ -1396,7 +1398,8 @@ def test_planner_keeps_completed_review_after_recursive_historical_prompts(monke
     # Funding reassessment adds a typed action and separates internal limits
     # from human authority. Class feedback adds one bounded quality snapshot
     # plus the instruction that turns attributed rejections into recipe input.
-    assert len(prompt) < 17_800
+    # #6208 adds the reversible-gate contract alongside class feedback.
+    assert len(prompt) < 19_200
     assert (task, nodes, runs) == before
 
 
@@ -8582,7 +8585,8 @@ def test_a_named_gate_refusal_reaches_the_planner_by_its_own_name(monkeypatch):
     assert recorded == {"code": "pr_missing_close_keyword", "reason": "no closing line"}
 
 
-def test_the_delivery_boundary_demands_the_closing_line_on_every_update():
+def test_the_delivery_boundary_closes_only_without_operational_acceptance():
+    """#6208 makes closure conditional on completing operational acceptance."""
     task = {
         "id": "t-1",
         "repo": "owner/repo",
@@ -8591,7 +8595,8 @@ def test_the_delivery_boundary_demands_the_closing_line_on_every_update():
     }
     boundary = conductor._boundary(task)
     assert "Closes #77" in boundary
-    assert "on every update" in boundary
+    assert "when nothing operational remains" in boundary
+    assert "later conductor rescope" in boundary
     # A review node reads the same boundary, so the requirement it checks the
     # body against is the one the implementer was given.
     assert "Closes #77" in conductor._boundary(task, review=True)
@@ -10876,3 +10881,151 @@ def test_dispatch_refusal_card_distinguishes_envelope_and_allowance(
         {"id": "task"}, "review_delivery", "workflow", refusal, []
     )
     assert cards[0]["options"][0]["label"] == label
+
+
+def live_gate():
+    return {
+        "kind": "live_validation",
+        "classification": "reversible",
+        "reason": "Runner has no KVM",
+        "scope": "Repository quickstart and regression coverage",
+        "live_checks": ["Run clean-host KVM bank and relight drill"],
+    }
+
+
+def test_feedback_advisory_route_skips_delivery_adoption(feedback_db, monkeypatch):
+    from sqlmodel import Session, select
+
+    from factory.orchestration import factory_feedback as feedback
+    from factory.orchestration.factory_models import FactoryReceipt
+
+    task, policy = feedback_task()
+    with Session(feedback_db) as db:
+        receipt = db.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == task["id"])
+        ).one()
+        receipt.routing_tier = feedback.ADVISORY_TIER
+        db.add(receipt)
+        db.commit()
+
+    def unexpected_adoption(*_args, **_kwargs):
+        pytest.fail("A comment-only advisory must not adopt a delivery PR")
+
+    monkeypatch.setattr(conductor.factory_gates, "adopt_delivery", unexpected_adoption)
+    conductor.reconcile_task(task["id"], policy, object())
+
+    assert [node["node_key"] for node in conductor.graph.load_graph(task["id"])] == [
+        feedback.ADVISORY_NODE_KEY
+    ]
+    assert not conductor._task(task["id"])["delivery_target_checked"]
+
+
+def test_rescoped_delivery_keeps_operational_issue_open(monkeypatch):
+    """#6208 allows repository acceptance while retaining real-host acceptance."""
+    from factory.orchestration import factory_gates as gates
+
+    task, runs = delivery(
+        monkeypatch, body="Refs #77\n\n" + gates.rescope_text(live_gate())
+    )
+    task["conductor_gates"] = [live_gate()]
+    assert (
+        conductor.verify_delivery(task, 3, runs, issue_number=77)["state"]
+        == "ready_for_review"
+    )
+    assert "Do not use Closes #77" in conductor._boundary(task)
+
+
+@pytest.mark.parametrize(
+    "body,code",
+    [
+        ("Closes #77\nConductor rescope: staged", "pr_closes_pending_operations"),
+        ("Refs #77", "pr_missing_rescope"),
+    ],
+)
+def test_rescoped_delivery_refuses_closure_or_hidden_rescope(monkeypatch, body, code):
+    task, runs = delivery(monkeypatch, body=body)
+    task["conductor_gates"] = [live_gate()]
+    with pytest.raises(conductor.DeliveryRefused) as exc:
+        conductor.verify_delivery(task, 3, runs, issue_number=77)
+    assert exc.value.code == code
+
+
+@pytest.mark.parametrize(
+    "kwargs", [{"check_state": "failure"}, {"review_head": "b" * 40}]
+)
+def test_rescope_keeps_ci_and_exact_head_review_gates(monkeypatch, kwargs):
+    from factory.orchestration import factory_gates as gates
+
+    task, runs = delivery(monkeypatch, body=gates.rescope_text(live_gate()), **kwargs)
+    task["conductor_gates"] = [live_gate()]
+    with pytest.raises(ValueError):
+        conductor.verify_delivery(task, 3, runs, issue_number=77)
+
+
+@pytest.mark.parametrize(
+    "reference",
+    [
+        "Closes #77",
+        "fixes owner/repo#77",
+        "Resolves https://github.com/owner/repo/issues/77",
+    ],
+)
+def test_rescope_updates_existing_pr_body_without_closing_issue(monkeypatch, reference):
+    from factory.orchestration import factory_gates as gates
+    from factory.orchestration import factory_landing as landing
+
+    task, _runs = delivery(monkeypatch, body=reference + "\nCloses #778")
+    writes = []
+    monkeypatch.setattr(
+        landing,
+        "github_write",
+        lambda repo, path, payload, **kwargs: writes.append((path, payload)),
+    )
+    gates.rescope_pr(task, 3, live_gate())
+    assert writes[0][0] == "pulls/3"
+    body = writes[0][1]["body"]
+    assert not conductor.closes_issue(body, "owner/repo", 77)
+    assert conductor.closes_issue(body, "owner/repo", 778)
+    assert gates.rescope_text(live_gate()) in body
+
+
+def test_investigation_default_is_decided_before_next_planner(feedback_db, monkeypatch):
+    """A typed investigation gate is server-decided without another pause artifact."""
+    from factory.orchestration import factory_landing as landing
+    from factory.orchestration import factory_controls as controls
+
+    task, policy = feedback_task()
+    gate = {
+        "kind": "parameter",
+        "classification": "reversible",
+        "value": "threshold=5",
+        "reason": "A reversible alert default",
+    }
+    complete_feedback_node(
+        task,
+        policy,
+        "investigate_threshold",
+        {
+            "status": "escalate",
+            "summary": "Threshold unspecified",
+            "reason": "Needs a default",
+            "pr_number": None,
+            "head_sha": None,
+            "gate": gate,
+        },
+        status="escalated",
+    )
+    comments = []
+    monkeypatch.setattr(
+        landing,
+        "github_write",
+        lambda repo, path, payload, **kw: comments.append(payload) or {},
+    )
+    conductor.reconcile_task(task["id"], policy, SimpleNamespace())
+    assert len(comments) == 1
+    assert "Decided by the conductor: threshold=5" in comments[0]["body"]
+    assert conductor._task(task["id"])["conductor_gates"] == [gate]
+    assert controls.task_snapshot(task["id"])["state"] == "admitted"
+    assert conductor._decision_processed(
+        task["id"], "investigate-gate:investigate_threshold:1"
+    )

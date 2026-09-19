@@ -910,6 +910,13 @@ def _direction(
         "decided_at": _iso(_now()),
         "question": escalation.get("question"),
         "previous_task_ids": previous[-8:],
+        # Server-owned rescope and adoption survive an unrelated human decision.
+        # Discovery itself is repeated before the new task starts.
+        **{
+            key: stored[key]
+            for key in ("conductor_gates", "delivery_adoption")
+            if key in stored
+        },
         **prior,
     }
 
