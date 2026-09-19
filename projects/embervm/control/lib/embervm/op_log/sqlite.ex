@@ -1239,10 +1239,10 @@ defmodule Embervm.OpLog.SQLite do
   # (principal, day) usage projection tasks do (D12.1), in this same transaction.
   defp project(conn, %Op{kind: :session_invoked} = op, _seq) do
     sql =
-      "UPDATE sessions SET last_invoke_at=?, invoke_started_at=COALESCE(invoke_started_at, ?), updated_at=? WHERE session_id=?"
+      "UPDATE sessions SET last_invoke_at=?, invoke_started_at=COALESCE(invoke_started_at, ?), updated_at=?, interrupted_turn_json=? WHERE session_id=?"
 
     with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
-         :ok <- Sqlite3.bind(stmt, [op.ts, op.ts, op.ts, op.session_id]),
+         :ok <- Sqlite3.bind(stmt, [op.ts, op.ts, op.ts, encode_turn_interruption(op.payload[:interrupted_turn]), op.session_id]),
          :done <- Sqlite3.step(conn, stmt),
          :ok <- Sqlite3.release(conn, stmt) do
       project_usage(conn, op)
@@ -1253,10 +1253,10 @@ defmodule Embervm.OpLog.SQLite do
   # session_invoked, which is emitted only after successful completion.
   defp project(conn, %Op{kind: :session_invoke_started} = op, _seq) do
     sql =
-      "UPDATE sessions SET invoke_started_at=MAX(COALESCE(invoke_started_at, ?), ?), updated_at=? WHERE session_id=?"
+      "UPDATE sessions SET turn_seq=MAX(turn_seq, ?), interrupted_turn_json=NULL, invoke_started_at=MAX(COALESCE(invoke_started_at, ?), ?), updated_at=? WHERE session_id=?"
 
     with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
-         :ok <- Sqlite3.bind(stmt, [op.ts, op.ts, op.ts, op.session_id]),
+         :ok <- Sqlite3.bind(stmt, [Map.get(op.payload, :turn_seq, 0), op.ts, op.ts, op.ts, op.session_id]),
          :done <- Sqlite3.step(conn, stmt),
          :ok <- Sqlite3.release(conn, stmt) do
       :ok
@@ -2756,12 +2756,16 @@ defmodule Embervm.OpLog.SQLite do
     end
   end
 
+  defp encode_turn_interruption(nil), do: nil
+  defp encode_turn_interruption(value), do: Embervm.SessionStopProof.encode(value)
+
   defp do_load_sessions(conn) do
     sql = """
     SELECT session_id, tenant, principal, workload, state, node_id, volume_node_id,
            base_snapshot_ref, base_digest, generation, snapshot_ref, snapshot_size_bytes,
            token_sha256, created_at, invoke_started_at, last_invoke_at, expires_at, updated_at, terminal_reason,
-           COALESCE(lineage_id, session_id), idempotency_key, stop_intent_json, stop_completion_json
+           COALESCE(lineage_id, session_id), idempotency_key, stop_intent_json, stop_completion_json,
+           turn_seq, interrupted_turn_json
     FROM sessions
     """
 
@@ -2798,7 +2802,9 @@ defmodule Embervm.OpLog.SQLite do
          lineage_id,
          idempotency_key,
          stop_intent_json,
-         stop_completion_json
+         stop_completion_json,
+         turn_seq,
+         interrupted_turn_json
        ]} ->
         session = %{
           session_id: session_id,
@@ -2823,7 +2829,9 @@ defmodule Embervm.OpLog.SQLite do
           lineage_id: lineage_id,
           idempotency_key: idempotency_key,
           stop_intent: Embervm.SessionStopProof.decode(stop_intent_json),
-          stop_completion: Embervm.SessionStopProof.decode(stop_completion_json)
+          stop_completion: Embervm.SessionStopProof.decode(stop_completion_json),
+          turn_seq: turn_seq,
+          interrupted_turn: Embervm.SessionStopProof.decode(interrupted_turn_json)
         }
 
         collect_sessions(conn, stmt, [session | acc])
@@ -3741,12 +3749,21 @@ defmodule Embervm.OpLog.SQLite do
          :ok <- migrate_sessions_idempotency_key(conn),
          :ok <- migrate_sessions_invoke_started_at(conn),
          :ok <- migrate_sessions_stop_proof(conn),
+         :ok <- migrate_sessions_turn_state(conn),
          :ok <- migrate_ops_session_id(conn),
          :ok <- migrate_ops_serving_instance_id(conn),
          :ok <- migrate_usage_request_count(conn),
          :ok <- migrate_ops_stateful_instance_id(conn),
          :ok <- migrate_volumes_exported_generation(conn),
          :ok <- migrate_ops_group_instance_id(conn) do
+      :ok
+    end
+  end
+
+  defp migrate_sessions_turn_state(conn) do
+    with {:ok, cols} <- table_columns(conn, "sessions"),
+         :ok <- add_column_if_missing(conn, cols, "turn_seq", "ALTER TABLE sessions ADD COLUMN turn_seq INTEGER NOT NULL DEFAULT 0"),
+         :ok <- add_column_if_missing(conn, cols, "interrupted_turn_json", "ALTER TABLE sessions ADD COLUMN interrupted_turn_json TEXT") do
       :ok
     end
   end

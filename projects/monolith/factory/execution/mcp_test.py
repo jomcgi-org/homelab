@@ -913,7 +913,9 @@ def test_brick_gone_exhaustion_falls_through_to_warn(monkeypatch, session):
     pending = store.create_pending_message(session, row.id, "finish the task")
     session_id = row.id
     turn_seq = pending.seq
-    pending.dispatch_count = store.MAX_PENDING_DISPATCHES
+    # The last permitted retry: the grant is recorded one under the bound, the
+    # claim takes the count to the bound, and the next brick loss exhausts it.
+    pending.dispatch_count = store.MAX_PENDING_DISPATCHES - 1
     session.add(pending)
     session.commit()
     store.mark_turn_interrupted_sync(session_id, turn_seq)
@@ -2635,3 +2637,14 @@ def test_voice_ui_tools_require_private_factory_access(
 # semicolons and were dropped by the gateway while this file stayed green.
 # An in-domain copy answers "do we test this?" at the wrong scope, so do not
 # reintroduce one.
+
+
+def test_drain_continuation_emits_no_terminal_discord_notice(monkeypatch):
+    async def unexpected_notify(*args, **kwargs):
+        pytest.fail("a drain continuation must not notify Discord")
+
+    monkeypatch.setattr(mcp.agent_api, "notify", unexpected_notify)
+    turn = _completed_turn("partial work")._replace(
+        terminal_reason="interrupted_for_drain", stop_reason="interrupted_for_drain"
+    )
+    asyncio.run(mcp._notify_terminal(turn, "partial", "recovering"))

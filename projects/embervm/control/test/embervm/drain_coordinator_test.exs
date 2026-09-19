@@ -25,6 +25,10 @@ defmodule Embervm.DrainCoordinatorTest do
       DrainCoordinator.start_link(
         name: nil,
         drain_fun: drain_fun,
+        session_drain_fun: fn server, node, deadline ->
+          send(test, {:session_deadline, deadline})
+          drain_fun.(:session, server, node)
+        end,
         append_fun: append_fun,
         safety_margin_ms: 15_000,
         clock: fn -> 1_700_000_000_000 end
@@ -35,6 +39,8 @@ defmodule Embervm.DrainCoordinatorTest do
 
   test "a drain edge force-banks all four classes and op-logs the edge", %{pid: pid} do
     send(pid, {:node_draining, "node-4", 1_700_000_120_000})
+
+    assert_receive {:session_deadline, 1_700_000_120_000}
 
     # Every class sweeper is asked to drain the node.
     assert_receive {:drained, :stateful, "node-4"}
@@ -82,7 +88,8 @@ defmodule Embervm.DrainCoordinatorTest do
     end
 
     {:ok, pid} =
-      DrainCoordinator.start_link(name: nil, drain_fun: drain_fun, append_fun: append_fun)
+      DrainCoordinator.start_link(name: nil, drain_fun: drain_fun, append_fun: append_fun,
+        session_drain_fun: fn server, node, _deadline -> drain_fun.(:session, server, node) end)
 
     send(pid, {:node_draining, "node-4", 0})
 

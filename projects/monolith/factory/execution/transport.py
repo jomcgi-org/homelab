@@ -123,6 +123,20 @@ INVOKE_READ_TIMEOUT = 43500.0
 CREATE_SESSION_READ_TIMEOUT = 1800.0
 
 
+def exact_dispatch_id(
+    agent_session_id: int,
+    guest_id: str,
+    turn_seq: int,
+    claim_owner: str,
+    dispatch_count: int,
+) -> str:
+    """Opaque identity shared by invoke, stop validation, and every relay hop."""
+    fields = [agent_session_id, guest_id, turn_seq, claim_owner, dispatch_count]
+    return hashlib.sha256(
+        json.dumps(fields, separators=(",", ":"), ensure_ascii=True).encode()
+    ).hexdigest()
+
+
 def _retryable_from_response(exc: httpx.HTTPStatusError) -> bool:
     try:
         body = exc.response.json()
@@ -740,6 +754,8 @@ class ShimTransport(Protocol):
         reasoning: bool = False,
         artifact_path: str | None = None,
         agent_session_id: int | None = None,
+        turn_seq: int | None = None,
+        claim_owner: str | None = None,
         dispatch_count: int = 0,
         admission_check: Callable[[], Awaitable[None]] | None = None,
         receipt_claim_owner: str | None = None,
@@ -1158,6 +1174,8 @@ class EmberVmShimTransport:
         reasoning: bool = False,
         artifact_path: str | None = None,
         agent_session_id: int | None = None,
+        turn_seq: int | None = None,
+        claim_owner: str | None = None,
         dispatch_count: int = 0,
         admission_check: Callable[[], Awaitable[None]] | None = None,
         receipt_claim_owner: str | None = None,
@@ -1185,6 +1203,8 @@ class EmberVmShimTransport:
                     reasoning=reasoning,
                     artifact_path=artifact_path,
                     agent_session_id=agent_session_id,
+                    turn_seq=turn_seq,
+                    claim_owner=claim_owner,
                     dispatch_count=dispatch_count,
                     receipt_claim_owner=receipt_claim_owner,
                 )
@@ -1220,6 +1240,8 @@ class EmberVmShimTransport:
         reasoning: bool = False,
         artifact_path: str | None = None,
         agent_session_id: int | None = None,
+        turn_seq: int | None = None,
+        claim_owner: str | None = None,
         dispatch_count: int = 0,
         receipt_claim_owner: str | None = None,
     ) -> tuple[Turn, EmberSession]:
@@ -1295,6 +1317,21 @@ class EmberVmShimTransport:
                 "session_id": current_cli_session_id,
                 "thinking": "high" if reasoning else "off",
             }
+            dispatch_id = None
+            if (
+                agent_session_id is not None
+                and turn_seq is not None
+                and claim_owner
+                and dispatch_count > 0
+            ):
+                dispatch_id = exact_dispatch_id(
+                    agent_session_id,
+                    current.session_id,
+                    turn_seq,
+                    claim_owner,
+                    dispatch_count,
+                )
+                payload["dispatch_id"] = dispatch_id
             if model is not None:
                 payload["model"] = model
             if repo is not None:
@@ -1312,6 +1349,8 @@ class EmberVmShimTransport:
                 "Authorization": f"Bearer {current.session_token}",
                 "X-Ember-Guest-Path": "/shim/turn",
             }
+            if dispatch_id is not None:
+                headers["X-Ember-Dispatch-Id"] = dispatch_id
             try:
                 await _check_delivery_admission()
                 receipt = None

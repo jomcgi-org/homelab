@@ -848,6 +848,7 @@ def get_session_detail(
                 "partial_activities": _decode(message.partial_activities, None),
                 "claimed_by_replica": message.claimed_by_replica,
                 "claimed_at": _iso(message.claimed_at),
+                "dispatch_count": message.dispatch_count,
                 "created_at": _iso(message.created_at),
             }
             for message in pending

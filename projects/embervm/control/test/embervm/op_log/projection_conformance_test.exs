@@ -250,6 +250,7 @@ defmodule Embervm.OpLog.ProjectionConformance do
 
     {:ok, _} =
       append(server, backend, :session_invoke_started, 140,
+        payload: %{turn_seq: 1},
         principal: "p1",
         workload: "wl-session",
         session_id: "s-1"
@@ -263,12 +264,16 @@ defmodule Embervm.OpLog.ProjectionConformance do
 
     {:ok, _} =
       append(server, backend, :session_invoked, 150,
+        payload: %{terminal_reason: "interrupted_for_drain", interrupted_turn: %{"seq" => 1}},
         principal: "p1",
         workload: "wl-session",
         session_id: "s-1"
       )
 
     invoked = one(backend, server, :load_sessions)
+    assert_eq(invoked.turn_seq, 1, "turn sequence comes from dispatch event")
+    assert_eq(invoked.terminal_reason, nil, "turn completion does not terminate a session")
+    assert_eq(invoked.interrupted_turn, %{"seq" => 1}, "drain marker is projected separately")
     assert_eq(invoked.last_invoke_at, 150, "invoked stamps last_invoke_at")
     assert_eq(invoked.invoke_started_at, 140, "completion preserves invoke start")
 

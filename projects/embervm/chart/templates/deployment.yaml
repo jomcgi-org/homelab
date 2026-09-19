@@ -291,6 +291,10 @@ spec:
               value: {{ if .Values.dispatcher.placementRetry }}"true"{{ else }}"false"{{ end }}
             # Session invoke wall-clock watchdog margin (#4434): last-resort kill
             # of a SessionAssign worker that outlived the server-enforced deadline.
+            - name: EMBERVM_SESSION_DRAIN_FLUSH_MS
+              value: {{ mul .Values.noded.drain.flushWindowSeconds 1000 | quote }}
+            - name: EMBERVM_SESSION_DRAIN_BANK_BUDGET_MS
+              value: {{ mul .Values.noded.drain.bankBudgetSeconds 1000 | quote }}
             - name: EMBERVM_SESSION_INVOKE_WATCHDOG_MARGIN_MS
               value: {{ .Values.session.invokeWatchdogMarginMs | quote }}
             # Metering + quotas (Task 12). Per-principal daily vCPU-second budgets

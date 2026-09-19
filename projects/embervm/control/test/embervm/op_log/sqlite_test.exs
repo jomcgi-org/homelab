@@ -1075,4 +1075,23 @@ defmodule Embervm.OpLog.SQLiteTest do
 
     :ok = GenServer.stop(server)
   end
+  test "session turn sequence is monotonic under repeated event replay", %{path: path} do
+    server = start_server(path)
+    created = %Op{kind: :session_created, session_id: "s-replay", tenant: "t1",
+      principal: "p1", workload: "sandbox", ts: 1,
+      payload: %{state: "running", node_id: "node", token_sha256: "token"}}
+    assert {:ok, _} = SQLite.append(server, created)
+    for seq <- [1, 2, 1, 2] do
+      assert {:ok, _} = SQLite.append(server, %Op{created | kind: :session_invoke_started,
+        ts: seq + 1, payload: %{turn_seq: seq}})
+    end
+    assert {:ok, [session]} = SQLite.load_sessions(server)
+    assert session.turn_seq == 2
+    GenServer.stop(server)
+    restarted = start_server(path)
+    assert {:ok, [session]} = SQLite.load_sessions(restarted)
+    assert session.turn_seq == 2
+    GenServer.stop(restarted)
+  end
+
 end

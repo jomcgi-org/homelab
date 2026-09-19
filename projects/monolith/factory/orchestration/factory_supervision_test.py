@@ -215,7 +215,8 @@ def test_node_gone_destroy_failure_audits_the_exception_class(monkeypatch):
     )
 
 
-def test_destroyed_view_after_node_gone_uses_existing_cessation_path():
+@pytest.mark.parametrize("state", ["running", "banked", "destroyed"])
+def test_destroyed_view_after_node_gone_uses_existing_cessation_path(state):
     failed_at = datetime(2026, 9, 13, 2, 30, tzinfo=timezone.utc)
     started = int((failed_at - timedelta(minutes=5)).timestamp() * 1000)
     updated = int((failed_at + timedelta(minutes=5)).timestamp() * 1000)
@@ -228,7 +229,8 @@ def test_destroyed_view_after_node_gone_uses_existing_cessation_path():
     proof = supervisor._control_plane_cessation(
         {
             "session_id": "guest-1",
-            "state": "destroyed",
+            "state": state,
+            "interrupted_turn": {"seq": 1},
             "generation": 0,
             "invoke_started_at": started,
             "last_invoke_at": started + 1,
@@ -237,8 +239,11 @@ def test_destroyed_view_after_node_gone_uses_existing_cessation_path():
         identity,
     )
 
-    assert proof is not None
-    assert proof["state"] == "destroyed"
+    if state == "destroyed":
+        assert proof is not None
+        assert proof["state"] == "destroyed"
+    else:
+        assert proof is None
 
 
 def _restart_precondition(*, generation=4, invoke_started_at=100):

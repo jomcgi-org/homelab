@@ -692,6 +692,8 @@ INIT_READ_TIMEOUT = _read_init_timeout()
 # invoke ceiling for interruption, result capture and response delivery.
 TURN_READ_TIMEOUT = 42900.0
 INTERRUPT_TIMEOUT = 30.0
+DRAIN_FLUSH_RESERVE_SECONDS = 2.0
+INTERRUPT_STARTUP_GRACE_SECONDS = 0.25
 CLI_PROBE_TIMEOUT = 10.0
 # A ref read on a local checkout, so this only ever has to cover process spawn.
 # Matches the timeout hydration's own post-clone validation has always used.
@@ -2015,7 +2017,16 @@ def _publish_result_receipt(receipt, record):
         _emit_result_receipt_failure("preparation_failed")
         return False
 
-    for attempt in range(RESULT_RECEIPT_ATTEMPTS):
+    # Drain flush is bounded by EMBERVM_SESSION_DRAIN_FLUSH_MS (default 60000)
+    # less the shim reserve. Optional receipts must not hold it for retries.
+    draining = record.get("terminal_reason") == "interrupted_for_drain"
+    attempts = 1 if draining else RESULT_RECEIPT_ATTEMPTS
+    callback_timeout = (
+        min(1.0, RESULT_RECEIPT_TIMEOUT_SECONDS)
+        if draining
+        else RESULT_RECEIPT_TIMEOUT_SECONDS
+    )
+    for attempt in range(attempts):
         results = []
 
         def send(results=results):
@@ -2024,7 +2035,7 @@ def _publish_result_receipt(receipt, record):
         try:
             worker = threading.Thread(target=send, daemon=True)
             worker.start()
-            worker.join(timeout=RESULT_RECEIPT_TIMEOUT_SECONDS)
+            worker.join(timeout=callback_timeout)
         except Exception:  # noqa: BLE001 - thread startup cannot fail the turn.
             _emit_result_receipt_failure("worker_failed")
             return False
@@ -2037,7 +2048,7 @@ def _publish_result_receipt(receipt, record):
         reason = results[0] if results else "worker_failed"
         if reason == "acknowledged":
             return True
-        if attempt + 1 < RESULT_RECEIPT_ATTEMPTS:
+        if attempt + 1 < attempts:
             time.sleep(RESULT_RECEIPT_BACKOFF_SECONDS)
     _emit_result_receipt_failure(reason)
     return False
@@ -2151,6 +2162,29 @@ class _ProgressPusher:
         """Drain and stop. Waits up to 3 seconds for in-flight push to complete."""
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=3.0)
+
+
+def _partial_turn(adapter, state):
+    """Retain the stream prefix even when SIGINT ends the reader with EOF."""
+    return {
+        "result": state.get("result_text")
+        or (
+            state.get("accumulated_text", "") + state.get("current_message_buffer", "")
+        ),
+        "session_id": getattr(adapter, "session_id", None)
+        or next(
+            (
+                event["session_id"]
+                for event in reversed(state.get("events", []))
+                if isinstance(event.get("session_id"), str) and event["session_id"]
+            ),
+            None,
+        )
+        or state.get("session_id"),
+        "usage": state.get("usage", {}),
+        "activities": state.get("cached_activities", []),
+        "events": state.get("events", []),
+    }
 
 
 class ClaudeProcess:
@@ -2559,7 +2593,11 @@ class ClaudeProcess:
                         system_prompt=system_prompt,
                     )
                 except Exception:
-                    if parked_adoption and not session_was_bound:
+                    if (
+                        parked_adoption
+                        and not session_was_bound
+                        and not getattr(self, "_interrupt_requested", False)
+                    ):
                         self.session_id = None
                     raise
                 process = self.process
@@ -2584,7 +2622,11 @@ class ClaudeProcess:
                         system_prompt=system_prompt,
                     )
                 except Exception:
-                    if parked_adoption and not session_was_bound:
+                    if (
+                        parked_adoption
+                        and not session_was_bound
+                        and not getattr(self, "_interrupt_requested", False)
+                    ):
                         self.session_id = None
                     raise
                 process = self.process
@@ -2612,7 +2654,11 @@ class ClaudeProcess:
                                     system_prompt=system_prompt,
                                 )
                             except Exception:
-                                if parked_adoption and not session_was_bound:
+                                if (
+                                    parked_adoption
+                                    and not session_was_bound
+                                    and not getattr(self, "_interrupt_requested", False)
+                                ):
                                     self.session_id = None
                                 raise
                             process = self.process
@@ -2735,11 +2781,17 @@ class ClaudeProcess:
                         )
                         return record
             except Exception:
-                if parked_adoption and not session_was_bound:
+                if (
+                    parked_adoption
+                    and not session_was_bound
+                    and not getattr(self, "_interrupt_requested", False)
+                ):
                     self.session_id = None
                 raise
             finally:
-                if pusher:
+                if getattr(self, "_interrupt_requested", False):
+                    self._partial_turn = _partial_turn(self, locals())
+                if pusher and not getattr(self, "_drain_requested", False):
                     pusher.stop()
 
     def _timeout_interrupt(self, process, timeout, phase):
@@ -3382,7 +3434,9 @@ url = %s
                             "activities": activity_from_events(events),
                         }
             finally:
-                if pusher:
+                if getattr(self, "_interrupt_requested", False):
+                    self._partial_turn = _partial_turn(self, locals())
+                if pusher and not getattr(self, "_drain_requested", False):
                     try:
                         pusher.stop()
                     except Exception:
@@ -4286,7 +4340,9 @@ class MuseProcess:
                                     ]
                                 )[-300:]
             finally:
-                if pusher:
+                if getattr(self, "_interrupt_requested", False):
+                    self._partial_turn = _partial_turn(self, locals())
+                if pusher and not getattr(self, "_drain_requested", False):
                     try:
                         pusher.stop()
                     except Exception:
@@ -4968,7 +5024,9 @@ class PiProcess:
                                             if item.get("type") == "text"
                                         )
                                     break
-                        if _is_leaked_tool_call(result_text):
+                        if _is_leaked_tool_call(result_text) and not getattr(
+                            self, "_interrupt_requested", False
+                        ):
                             try:
                                 sys.stderr.write(
                                     "ember-claude-shim: pi-tool-call-leak "
@@ -4998,7 +5056,9 @@ class PiProcess:
                                 )
                             except Exception:
                                 pass
-                        if not result_text:
+                        if not result_text and not getattr(
+                            self, "_interrupt_requested", False
+                        ):
                             error_detail = ""
                             for message_event in reversed(event.get("messages", [])):
                                 if message_event.get("errorMessage"):
@@ -5082,7 +5142,9 @@ class PiProcess:
                         )
                         return record
             finally:
-                if pusher:
+                if getattr(self, "_interrupt_requested", False):
+                    self._partial_turn = _partial_turn(self, locals())
+                if pusher and not getattr(self, "_drain_requested", False):
                     try:
                         pusher.stop()
                     except Exception:
@@ -5197,6 +5259,17 @@ class ProcessManager:
         self._remediation_lock = threading.Lock()
         self._remediation_attempts = 0
         self._remediation_thread = None
+        # Exact dispatch identity for turn-level interrupt. This lock is held
+        # through the adapter signal itself, so a completed turn cannot clear
+        # its identity and let a successor start in the validation-to-signal
+        # window. Adapter interrupt waits on adapter-owned completion events and
+        # never needs this lock.
+        self._dispatch_lock = threading.Lock()
+        self._active_dispatch_id = None
+        self._active_dispatch_adapter = None
+        self._last_interrupt_id = None
+        self._last_interrupt_result = None
+        self._interrupt_reason = None
         _write_git_proxy_helper()
         _create_claude_mcp_config_dir()
         cli_workspace = os.path.join(self.workspace, "src")
@@ -5629,6 +5702,8 @@ class ProcessManager:
         system_prompt=None,
         thinking=None,
         artifact_path=None,
+        dispatch_id=None,
+        turn_seq=None,
     ):
         total_start = _turn_timing_now()
         self._turn_started_at = total_start
@@ -5673,33 +5748,88 @@ class ProcessManager:
             getattr(self, "workspace", DEFAULT_WORKSPACE), "src"
         )
         turn_base = _capture_turn_base(checkout_dir)
+        dispatch_bound = False
+        if dispatch_id is not None:
+            with self._dispatch_lock:
+                if self._active_dispatch_id is not None:
+                    raise SessionConflictError("another dispatch is already active")
+                self._active_dispatch_id = dispatch_id
+                self._active_dispatch_adapter = adapter
+                self._active_provider_done = threading.Event()
+                self._interrupt_reason = None
+                adapter._partial_turn = {}
+                adapter._drain_requested = False
+                adapter._interrupt_requested = False
+                dispatch_bound = True
         try:
             extra = {"progress_token": progress_token} if progress_token else {}
             prompt = {"system_prompt": system_prompt} if system_prompt else {}
-            if adapter is self.pi:
-                record = adapter.turn(
-                    message,
-                    session_id,
-                    model or DEFAULT_PI_MODEL,
-                    thinking=thinking,
-                    **(extra | prompt),
+            try:
+                if adapter is self.pi:
+                    record = adapter.turn(
+                        message,
+                        session_id,
+                        model or DEFAULT_PI_MODEL,
+                        thinking=thinking,
+                        **(extra | prompt),
+                    )
+                elif adapter is self.muse:
+                    record = adapter.turn(
+                        message,
+                        session_id,
+                        model or DEFAULT_MUSE_MODEL,
+                        **(extra | prompt),
+                    )
+                elif adapter is self.codex:
+                    record = adapter.turn(
+                        message,
+                        session_id,
+                        model or DEFAULT_CODEX_MODEL,
+                        **(extra | prompt),
+                    )
+                else:
+                    record = adapter.turn(
+                        message, session_id, model, **(extra | prompt)
+                    )
+            except Exception:
+                if not getattr(self, "_interrupt_reason", None):
+                    raise
+                record = dict(getattr(adapter, "_partial_turn", {}))
+            finally:
+                if dispatch_bound:
+                    self._active_provider_done.set()
+            # Interrupt acknowledgments never substitute for this terminal result.
+            # The adapter has stopped; preserve its native transcript plus the
+            # stream prefix before allowing the node's between-turns bank guard.
+            reason = None
+            if dispatch_bound:
+                with self._dispatch_lock:
+                    reason = self._interrupt_reason
+            if reason:
+                record = dict(record)
+                record.update(
+                    terminal_reason=reason,
+                    stop_reason=reason,
+                    is_error=False,
+                    dispatch_id=dispatch_id,
+                    turn_seq=turn_seq,
                 )
-            elif adapter is self.muse:
-                record = adapter.turn(
-                    message,
-                    session_id,
-                    model or DEFAULT_MUSE_MODEL,
-                    **(extra | prompt),
-                )
-            elif adapter is self.codex:
-                record = adapter.turn(
-                    message,
-                    session_id,
-                    model or DEFAULT_CODEX_MODEL,
-                    **(extra | prompt),
-                )
-            else:
-                record = adapter.turn(message, session_id, model, **(extra | prompt))
+                saved = dict(getattr(adapter, "_partial_turn", {}))
+                saved.update(record)
+                saved["message"] = message
+                directory = os.path.join(self.workspace, ".ember", "interrupted-turns")
+                os.makedirs(directory, exist_ok=True)
+                name = hashlib.sha256(dispatch_id.encode()).hexdigest() + ".json"
+                target = os.path.join(directory, name)
+                with open(target + ".tmp", "w") as stream:
+                    json.dump(saved, stream)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(target + ".tmp", target)
+                record["transcript_path"] = target
+            if isinstance(record, dict) and dispatch_bound:
+                record["dispatch_id"] = dispatch_id
+                record["turn_seq"] = turn_seq
             # Only Claude can recover a Claude prewarm failure. Codex, Muse and pi
             # turns must not clear the manager's Claude fatal state.
             if adapter is self.claude:
@@ -5709,7 +5839,7 @@ class ProcessManager:
                     record["workspace_hydration"] = {"failed": self._hydration_error}
                 elif self._hydration_status:
                     record["workspace_hydration"] = self._hydration_status
-            if isinstance(record, dict):
+            if isinstance(record, dict) and not reason:
                 diff = _capture_turn_diff(checkout_dir, turn_base)
                 if diff is not None:
                     record["diff"] = diff
@@ -5727,21 +5857,70 @@ class ProcessManager:
             # is still safe, and a raised turn may still have left durable-
             # worth CLI state that a later park would otherwise lose.
             _sync_session_volume()
+            if dispatch_bound:
+                with self._dispatch_lock:
+                    if self._active_dispatch_id == dispatch_id:
+                        self._active_dispatch_id = None
+                        self._active_dispatch_adapter = None
             _emit_elapsed("total", total_start)
 
-    def interrupt(self):
-        # An interrupt has no model in its request, so interrupt every adapter.
-        pi_result = self.pi.interrupt()
-        muse_result = self.muse.interrupt()
-        codex_result = self.codex.interrupt()
-        claude_result = self.claude.interrupt()
-        if claude_result.get("killed"):
-            return claude_result
-        if codex_result.get("killed"):
-            return codex_result
-        if muse_result.get("killed"):
-            return muse_result
-        return pi_result
+    def interrupt(self, dispatch_id, reason="user_interrupt", timeout_ms=None):
+        with self._dispatch_lock:
+            if (
+                self._last_interrupt_id == dispatch_id
+                and self._last_interrupt_result is not None
+            ):
+                return dict(self._last_interrupt_result)
+            if (
+                not dispatch_id
+                or self._active_dispatch_id != dispatch_id
+                or self._active_dispatch_adapter is None
+            ):
+                raise SessionConflictError("dispatch is no longer active")
+            # Keep the identity lock until the signal is sent and the adapter's
+            # bounded wait returns. A successor cannot bind during this window.
+            self._interrupt_reason = reason
+            self._active_dispatch_adapter._interrupt_requested = True
+            self._active_dispatch_adapter._drain_requested = (
+                reason == "interrupted_for_drain"
+            )
+            # Reserve time for transcript sync and the optional receipt callback.
+            # Re-signal when the first signal raced provider startup. The completion
+            # event is set without this lock, before publishing the terminal record.
+            timeout = INTERRUPT_TIMEOUT
+            if timeout_ms is not None:
+                timeout = max(1.0, timeout_ms / 1000.0 - DRAIN_FLUSH_RESERVE_SECONDS)
+                if reason != "interrupted_for_drain":
+                    timeout = min(timeout, INTERRUPT_TIMEOUT)
+            deadline = time.monotonic() + timeout
+            done = getattr(self, "_active_provider_done", None)
+            adapter = self._active_dispatch_adapter
+            if timeout_ms is None and done is None:
+                result = adapter.interrupt()
+            else:
+                result = adapter.interrupt(timeout=timeout)
+            if done is not None:
+                remaining = max(0.0, deadline - time.monotonic())
+                if not done.wait(min(INTERRUPT_STARTUP_GRACE_SECONDS, remaining)):
+                    remaining = max(0.0, deadline - time.monotonic())
+                    if remaining > 0:
+                        # One retry covers a signal that raced provider startup.
+                        # Keep any killed/timeout flag the first signal observed.
+                        second = adapter.interrupt(timeout=remaining)
+                        result = dict(
+                            second,
+                            killed=bool(result.get("killed"))
+                            or bool(second.get("killed")),
+                            timeout=bool(result.get("timeout"))
+                            or bool(second.get("timeout")),
+                        )
+                    remaining = max(0.0, deadline - time.monotonic())
+                    if not done.wait(remaining):
+                        adapter._close_process(kill=True)
+            result = dict(result, terminal_reason=reason)
+            self._last_interrupt_id = dispatch_id
+            self._last_interrupt_result = dict(result)
+            return result
 
     def _close_process(self, kill=False):
         self.claude._close_process(kill=kill)
@@ -5809,10 +5988,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         self._phase_headers = {}
-        if self.path == INTERRUPT_PATH:
-            self._send(200, self.manager.interrupt())
-            return
-        if self.path not in (TURN_PATH, CLOCK_PATH):
+        if self.path not in (TURN_PATH, CLOCK_PATH, INTERRUPT_PATH):
             self._send(404, {"error": "not found"})
             return
         try:
@@ -5833,6 +6009,43 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             payload = json.loads(raw)
         except (UnicodeDecodeError, json.JSONDecodeError, TypeError):
             self._send(400, {"error": "invalid JSON body"})
+            return
+        if self.path == INTERRUPT_PATH:
+            dispatch_id = (
+                payload.get("dispatch_id") if isinstance(payload, dict) else None
+            )
+            if (
+                not isinstance(dispatch_id, str)
+                or not dispatch_id.strip()
+                or set(payload) - {"dispatch_id", "reason", "timeout_ms"}
+            ):
+                self._send(400, {"error": "dispatch_id must be a non-empty string"})
+                return
+            try:
+                options = {}
+                if "reason" in payload:
+                    if payload["reason"] not in (
+                        "user_interrupt",
+                        "interrupted_for_drain",
+                    ):
+                        self._send(400, {"error": "invalid interrupt reason"})
+                        return
+                    options["reason"] = payload["reason"]
+                if "timeout_ms" in payload:
+                    if (
+                        type(payload["timeout_ms"]) is not int
+                        or payload["timeout_ms"] <= 0
+                    ):
+                        self._send(400, {"error": "invalid interrupt timeout"})
+                        return
+                    options["timeout_ms"] = payload["timeout_ms"]
+                outcome = self.manager.interrupt(dispatch_id.strip(), **options)
+            except SessionConflictError as exc:
+                self._send(409, {"error": str(exc)})
+            except Exception as exc:
+                self._send(503, {"error": str(exc)})
+            else:
+                self._send(200, outcome)
             return
         message = payload.get("message") if isinstance(payload, dict) else None
         if not isinstance(message, str) or not message.strip():
@@ -5887,6 +6100,12 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                 },
             )
             return
+        dispatch_id = payload.get("dispatch_id")
+        if dispatch_id is not None and (
+            not isinstance(dispatch_id, str) or not dispatch_id.strip()
+        ):
+            self._send(400, {"error": "dispatch_id must be a non-empty string"})
+            return
         if "session_id" in payload:
             sid = payload.get("session_id")
             if sid is not None and (not isinstance(sid, str) or not sid.strip()):
@@ -5903,11 +6122,21 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             prompt = {"system_prompt": system_prompt.strip()} if system_prompt else {}
             artifact = {"artifact_path": artifact_path.strip()} if artifact_path else {}
             thinking_override = {"thinking": thinking} if thinking is not None else {}
+            dispatch = {"dispatch_id": dispatch_id.strip()} if dispatch_id else {}
+            if payload.get("turn_seq") is not None:
+                dispatch["turn_seq"] = payload["turn_seq"]
             record = self.manager.turn(
                 message,
                 session_id,
                 payload.get("model"),
-                **(hydration | progress | prompt | artifact | thinking_override),
+                **(
+                    hydration
+                    | progress
+                    | prompt
+                    | artifact
+                    | thinking_override
+                    | dispatch
+                ),
             )
             if repo is not None and isinstance(record, dict):
                 if getattr(self.manager, "_hydration_error", None):

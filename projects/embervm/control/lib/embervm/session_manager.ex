@@ -300,6 +300,18 @@ defmodule Embervm.SessionManager do
     GenServer.call(server, {:route_invoke, session_id, req}, :infinity)
   end
 
+  @doc """
+  Interrupt one exact active session dispatch without relighting or destroying it.
+
+  The drain path relays its own interrupt inside the session process; this
+  entry point has no production caller yet. An operator stop surface builds on
+  it when one is needed (#6256 follow-up).
+  """
+  @spec interrupt(GenServer.server(), String.t(), String.t()) :: {:ok, map()} | {:error, term()}
+  def interrupt(server \\ __MODULE__, session_id, dispatch_id) do
+    GenServer.call(server, {:route_interrupt, session_id, dispatch_id}, :infinity)
+  end
+
   @doc "Records brick loss and moves a session to its safest durable resting state."
   @spec brick_gone(String.t()) :: {:ok, atom()} | {:error, term()}
   def brick_gone(session_id), do: brick_gone(__MODULE__, session_id, %{})
@@ -539,6 +551,7 @@ defmodule Embervm.SessionManager do
       # mirror keeps the fence closed while a bank RPC owns the row and restores
       # it if a failed bank restarts the per-session process.
       draining_sessions: MapSet.new(),
+      drain_deadlines: %{},
       # session_id -> placed instance dial. The capacity table is eventually
       # consistent, so keep the dial that actually created or restarted the VM for
       # bank and destroy when its live-vm fact is temporarily absent.
@@ -859,6 +872,20 @@ defmodule Embervm.SessionManager do
     end
   end
 
+  def handle_call({:route_interrupt, session_id, dispatch_id}, from, state) do
+    case resolve_interrupt_route(state, session_id) do
+      {:live, pid} ->
+        _ = spawn_interrupt_forward(pid, dispatch_id, from)
+        {:noreply, state}
+
+      {:error, _reason} = error ->
+        {:reply, error, state}
+
+      _ ->
+        {:reply, {:error, :not_active}, state}
+    end
+  end
+
   def handle_call({:stop_identity, session_id}, _from, state) do
     identity =
       case SessionStore.get(state.session_store, session_id) do
@@ -979,8 +1006,8 @@ defmodule Embervm.SessionManager do
     end
   end
 
-  def handle_call({:drain_node, node_id}, _from, state) do
-    {count, state} = drain_bank_node(state, node_id)
+  def handle_call({:drain_node, node_id, deadline}, _from, state) do
+    {count, state} = drain_bank_node(state, node_id, deadline)
     {:reply, count, state}
   end
 
@@ -1838,7 +1865,7 @@ defmodule Embervm.SessionManager do
 
     extra_opts =
       if MapSet.member?(state.draining_sessions, session.session_id) do
-        Keyword.put(extra_opts, :draining, true)
+        extra_opts |> Keyword.put(:draining, true) |> Keyword.put(:drain_deadline, Map.get(state.drain_deadlines, session.session_id))
       else
         extra_opts
       end
@@ -2005,6 +2032,41 @@ defmodule Embervm.SessionManager do
     end)
   end
 
+  defp spawn_interrupt_forward(pid, dispatch_id, from) do
+    spawn(fn ->
+      reply =
+        try do
+          Embervm.Session.interrupt(pid, dispatch_id)
+        catch
+          :exit, reason -> {:error, {:session_down, reason}}
+        end
+
+      GenServer.reply(from, reply)
+    end)
+  end
+
+  # Interrupt is deliberately lookup-only. Invoke routing can expire, relight,
+  # or park a session, but a stop acknowledgment must never become a second
+  # lifecycle or cleanup owner.
+  defp resolve_interrupt_route(state, session_id) do
+    case SessionStore.get(state.session_store, session_id) do
+      {:ok, %{state: :running}} ->
+        case Registry.lookup(state.registry, session_id) do
+          [{pid, _}] -> {:live, pid}
+          [] -> {:error, :not_active}
+        end
+
+      {:ok, %{state: session_state}} when session_state in [:failed, :destroyed, :expired] ->
+        {:error, {:gone, terminal_reason(state, session_id, session_state)}}
+
+      {:ok, _session} ->
+        {:error, :not_active}
+
+      :error ->
+        {:error, :not_found}
+    end
+  end
+
   # -- bank (Task 7) ---------------------------------------------------------
 
   # ADMIT a bank (synchronous, fast): enforce the per-node concurrent-bank cap and
@@ -2018,7 +2080,7 @@ defmodule Embervm.SessionManager do
   Drain every live session on a draining node (R6, ADR embervm/009).
 
   Called by the DrainCoordinator on the drain edge. Each live process closes
-  invoke admission, rejects queued turns retryably, lets its current turn finish,
+  invoke admission, rejects queued turns retryably, interrupts and flushes its current turn,
   and then banks through the existing path. A running row whose process is missing
   banks directly. Bank admission refusals retain the drain fence and retry while
   the pod remains alive. A bank RPC failure that restarts a process restores the
@@ -2027,17 +2089,22 @@ defmodule Embervm.SessionManager do
   """
   @spec drain_node(GenServer.server(), String.t()) :: non_neg_integer()
   def drain_node(server \\ __MODULE__, node_id) do
-    GenServer.call(server, {:drain_node, node_id}, :infinity)
+    drain_node(server, node_id, System.system_time(:millisecond) + 180_000)
   end
 
-  defp drain_bank_node(state, node_id) do
+  def drain_node(server, node_id, deadline) do
+    GenServer.call(server, {:drain_node, node_id, deadline}, :infinity)
+  end
+
+  defp drain_bank_node(state, node_id, deadline) do
     node_sessions =
       SessionStore.all(state.session_store)
       |> Enum.filter(&(&1.state in [:running, :banking] and &1.node_id == node_id))
 
     state =
       Enum.reduce(node_sessions, state, fn session, acc ->
-        %{acc | draining_sessions: MapSet.put(acc.draining_sessions, session.session_id)}
+        %{acc | draining_sessions: MapSet.put(acc.draining_sessions, session.session_id),
+          drain_deadlines: Map.put(acc.drain_deadlines, session.session_id, deadline)}
       end)
 
     running = Enum.filter(node_sessions, &(&1.state == :running))
@@ -2046,7 +2113,7 @@ defmodule Embervm.SessionManager do
       Enum.reduce(running, {0, state}, fn session, {n, acc} ->
         case Registry.lookup(acc.registry, session.session_id) do
           [{pid, _}] ->
-            Embervm.Session.drain(pid)
+            Embervm.Session.drain(pid, deadline)
             {n + 1, acc}
 
           [] ->
@@ -2058,7 +2125,7 @@ defmodule Embervm.SessionManager do
       end)
 
     # Archive lineages that were already parked at the drain edge. A live
-    # persistence session parks after its current invoke and archives from the
+    # persistence session parks after its flushed interrupt and archives from the
     # park path. Archive OFF the manager: the RPC is a fast enqueue-ACK on a
     # healthy node, but an unresponsive brick would otherwise stall invoke
     # routing for its 10s deadline once per lineage, serialized on this process.
@@ -2859,7 +2926,8 @@ defmodule Embervm.SessionManager do
   end
 
   defp clear_draining_session(state, session_id) do
-    %{state | draining_sessions: MapSet.delete(state.draining_sessions, session_id)}
+    %{state | draining_sessions: MapSet.delete(state.draining_sessions, session_id),
+      drain_deadlines: Map.delete(state.drain_deadlines, session_id)}
   end
 
   defp clear_session_tracking(state, session_id) do
@@ -2868,7 +2936,8 @@ defmodule Embervm.SessionManager do
       | bank_failures: Map.delete(state.bank_failures, session_id),
         bank_dial_misses: Map.delete(state.bank_dial_misses, session_id),
         session_dials: Map.delete(state.session_dials, session_id),
-        draining_sessions: MapSet.delete(state.draining_sessions, session_id)
+        draining_sessions: MapSet.delete(state.draining_sessions, session_id),
+        drain_deadlines: Map.delete(state.drain_deadlines, session_id)
     }
   end
 

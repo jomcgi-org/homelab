@@ -69,6 +69,9 @@ defmodule Embervm.DrainCoordinator do
         Keyword.get(opts, :drain_fun, fn _class, server, node_id ->
           server.drain_node(server, node_id)
         end),
+      session_drain_fun: Keyword.get(opts, :session_drain_fun, fn server, node_id, deadline ->
+        Embervm.SessionManager.drain_node(server, node_id, deadline)
+      end),
       # The op-log append, seamed for tests. Production appends the audit op to the
       # configured backend (op_log_mod); a test records it instead.
       append_fun: Keyword.get(opts, :append_fun, fn op_log, op -> op_log_mod.append(op_log, op) end)
@@ -134,7 +137,7 @@ defmodule Embervm.DrainCoordinator do
       counts = %{
         stateful: drain_class(state, :stateful, node_id),
         group: drain_class(state, :group, node_id),
-        session: drain_class(state, :session, node_id),
+        session: drain_session(state, node_id, deadline_ms),
         serving: drain_class(state, :serving, node_id)
       }
 
@@ -156,6 +159,16 @@ defmodule Embervm.DrainCoordinator do
   # Best-effort per class: a sweeper that is down or raises must not wedge the drain
   # of the other classes. Returns the count of instances whose bank was started, 0
   # on any failure.
+  defp drain_session(state, node_id, deadline_ms) do
+    state.session_drain_fun.(state.session, node_id, deadline_ms)
+  rescue
+    e ->
+      Logger.warning("embervm session drain raised", error: inspect(e))
+      0
+  catch
+    _, _ -> 0
+  end
+
   defp drain_class(state, class, node_id) do
     state.drain_fun.(class, Map.fetch!(state, class), node_id)
   rescue

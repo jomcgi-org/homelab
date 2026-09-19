@@ -1444,6 +1444,9 @@ noded:
   # shutdown period. terminationGracePeriodSeconds is graceful drain + 30s, so an
   # ordinary rollout has 140s before Kubernetes sends SIGKILL.
   drain:
+    # Maximum only: min(flush, remaining deadline minus bank/export reserve).
+    flushWindowSeconds: 60
+    bankBudgetSeconds: 15
     timeoutSeconds: 110
     # Watches GCE's instance/preempted metadata value with hanging GETs. Landed
     # off so a deployment can verify the mechanism before arming it in values.
