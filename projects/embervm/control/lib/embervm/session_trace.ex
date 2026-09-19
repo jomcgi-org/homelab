@@ -64,10 +64,12 @@ defmodule Embervm.SessionTrace do
     existing = Keyword.get(options, :metadata, %{})
     injected = outbound_metadata(existing)
 
-    if Keyword.has_key?(options, :metadata) or map_size(injected) > 0 do
-      Keyword.put(options, :metadata, injected)
-    else
-      options
+    cond do
+      injected == existing -> options
+      Keyword.has_key?(options, :metadata) or map_size(injected) > 0 ->
+        Keyword.put(options, :metadata, injected)
+      true ->
+        options
     end
   rescue
     _ -> options
