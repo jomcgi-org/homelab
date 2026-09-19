@@ -7,7 +7,10 @@ describe("sessionLineage", () => {
       {
         key: "implement",
         label: "implement",
-        attempts: [{ session_id: 42, n: 2 }],
+        attempts: [
+          { session_id: 41, n: 1 },
+          { session_id: 42, n: 2 },
+        ],
       },
     ],
   };
@@ -17,6 +20,7 @@ describe("sessionLineage", () => {
       nodeKey: "implement",
       nodeLabel: "implement",
       attemptN: 2,
+      attemptCount: 2,
     });
   });
   test("returns null for empty nodes", () => {
@@ -59,12 +63,27 @@ describe("crumbTrail", () => {
         runTitle: "Fixture",
         nodeLabel: "implement",
         attemptN: 2,
+        attemptCount: 2,
       }),
     ).toEqual([
       { label: "runs", to: "home" },
       { label: "Fixture", to: "run" },
       { label: "implement · attempt 2", to: null },
     ]);
+  });
+  test("hides a singleton ordinal and keeps every ordinal for repeated nodes", () => {
+    const trail = (attemptN, attemptCount) =>
+      crumbTrail({
+        kind: "session",
+        runTitle: "Fixture",
+        nodeLabel: "review",
+        attemptN,
+        attemptCount,
+      }).at(-1)?.label;
+
+    expect(trail(1, 1)).toBe("review");
+    expect(trail(1, 2)).toBe("review · attempt 1");
+    expect(trail(2, 2)).toBe("review · attempt 2");
   });
   test("falls back to the session title without lineage", () => {
     expect(

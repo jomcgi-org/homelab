@@ -165,14 +165,14 @@
       const last = node.attempts.at(-1);
       const duration = relSeconds(first.started_at, last.ended_at ?? view.now);
       // The attempt count is only reported once it carries information. An
-      // attempt increments ONLY when the branch head did not move, so "1
-      // attempt" is the healthy case for every node and reads as an iteration
-      // budget the engine does not have. Above one it is a real signal: the
-      // implementer claimed a push that did not land, or the reviewer sent the
-      // work back.
+      // A single attempt is the healthy case for every node and reads as an
+      // iteration budget the engine does not have. Above one it is a real
+      // signal: the implementer claimed a push that did not land, or the
+      // reviewer sent the work back.
       return isRetried(node)
         ? joinMeta(
             `${node.attempts.length} ${P.labels.attempts}`,
+            ...attemptCauseSummary(node),
             fmtDur(duration),
           )
         : fmtDur(duration);
@@ -184,6 +184,29 @@
   // under which an attempt ORDINAL distinguishes anything for the reader.
   function isRetried(node) {
     return (node?.attempts?.length ?? 0) > 1;
+  }
+
+  function attemptCauseSummary(node) {
+    const causes = (node?.attempts ?? []).reduce(
+      (counts, attempt) => {
+        if (attempt.cause === "send_back") counts.sendBack += 1;
+        if (attempt.cause === "delivery_retry") counts.deliveryRetry += 1;
+        return counts;
+      },
+      { sendBack: 0, deliveryRetry: 0 },
+    );
+    return [
+      causes.sendBack === 1
+        ? `${P.labels.sentBack} ${P.labels.once}`
+        : causes.sendBack > 1
+          ? `${P.labels.sentBack} ${causes.sendBack} ${P.labels.times}`
+          : null,
+      causes.deliveryRetry === 1
+        ? P.labels.deliveryRetriedOnce
+        : causes.deliveryRetry > 1
+          ? `${causes.deliveryRetry} ${P.labels.deliveryRetries}`
+          : null,
+    ];
   }
 
   function detailPill(node) {
