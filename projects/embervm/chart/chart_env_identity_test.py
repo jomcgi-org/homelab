@@ -938,16 +938,20 @@ def test_production_renders_the_pi_runtime_target(values_names):
     )
     matches = [
         doc
-        for kind, name, doc in _docs(rendered)
-        if kind == "Workload" and name == "pi-runtime"
+        for doc in yaml.safe_load_all(rendered)
+        if isinstance(doc, dict)
+        and doc.get("kind") == "Workload"
+        and doc.get("metadata", {}).get("name") == "pi-runtime"
     ]
 
     assert len(matches) == 1
     assert matches[0]["spec"]["invocation"]["timeoutSeconds"] == 43_200
     invocation_timeouts = [
         doc["spec"]["invocation"]["timeoutSeconds"]
-        for kind, _name, doc in _docs(rendered)
-        if kind == "Workload" and "invocation" in doc["spec"]
+        for doc in yaml.safe_load_all(rendered)
+        if isinstance(doc, dict)
+        and doc.get("kind") == "Workload"
+        and "invocation" in doc["spec"]
     ]
     assert max(invocation_timeouts) == 43_200
 
