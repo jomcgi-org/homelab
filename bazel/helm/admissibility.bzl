@@ -1,6 +1,5 @@
 """Render targets for first-party chart admissibility validation."""
 
-
 def helm_admissibility_render(
         name,
         chart,

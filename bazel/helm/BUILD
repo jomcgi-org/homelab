@@ -1,9 +1,12 @@
+load("@aspect_rules_py//py:defs.bzl", "py_library")
+load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
+
 # gazelle:exclude **/*.bzl
 load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
 load("@multitool//:tools.bzl", MULTITOOL_TOOLS = "TOOLS")
-load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
 load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load("//bazel/semgrep/defs:defs.bzl", "semgrep_target_test")
 
 exports_files([
     "argocd-live-diff.sh",
@@ -95,12 +98,14 @@ py_venv_binary(
     name = "crd_schemas",
     srcs = ["crd-schemas.py"],
     main = "crd-schemas.py",
+    visibility = ["//:__subpackages__"],
     deps = ["@pip//pyyaml"],
 )
 
 sh_test(
     name = "chart_admissibility_test",
     size = "large",
+    timeout = "long",
     srcs = ["chart-admissibility-test.sh"],
     args = [
         "$(rootpath @multitool//tools/helm)",
@@ -114,14 +119,13 @@ sh_test(
     ],
     data = [
         ":crd_schemas",
-        "@kubernetes_json_schema_1_36_3//:schemas",
-        "@kubernetes_json_schema_1_36_3//:secret-v1.json",
-        "@kubeconform_0_8_0_linux_amd64//:binary",
-        "@multitool//tools/helm",
         "//bazel/helm/testdata/bad-secretkeyref:Chart.yaml",
         "//bazel/helm/testdata/bad-secretkeyref:templates/deployment.yaml",
+        "@kubeconform_0_8_0_linux_amd64//:binary",
+        "@kubernetes_json_schema_1_36_3//:schemas",
+        "@kubernetes_json_schema_1_36_3//:secret-v1.json",
+        "@multitool//tools/helm",
     ] + EXTERNAL_CRD_SOURCES + MANIFEST_SETS,
-    timeout = "long",
 )
 
 sh_test(
@@ -212,4 +216,19 @@ bzl_library(
         "@bazel_skylib//lib:paths",  # keep
         "@rules_shell//shell:rules_bzl",  # keep
     ],
+)
+
+semgrep_target_test(
+    name = "crd_schemas_semgrep_test",
+    lockfiles = ["//bazel/requirements:all.txt"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+    sca_rules = ["//bazel/semgrep/rules:sca_python_rules"],
+    target = ":crd_schemas",
+)
+
+py_library(
+    name = "helm",
+    srcs = ["crd-schemas.py"],
+    visibility = ["//:__subpackages__"],
+    deps = ["@pip//pyyaml"],
 )
