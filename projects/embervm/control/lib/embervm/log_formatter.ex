@@ -17,6 +17,8 @@ defmodule Embervm.LogFormatter do
   # encode only ever sees strings/numbers. A caller adding new metadata MUST add
   # its keys here or they are silently dropped.
   @meta_keys [
+    # Added by TraceContextFilter in the process emitting the log event.
+    :trace_id,
     :task_id,
     :workload,
     :principal,

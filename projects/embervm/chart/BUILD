@@ -82,7 +82,10 @@ helm_chart(
         "conformance.image": "//projects/embervm/conformance:image.info",
     },
     publish = True,
-    visibility = ["//overlays:__subpackages__"],
+    visibility = [
+        "//overlays:__subpackages__",
+        "//projects/embervm:__subpackages__",  # keep
+    ],
 )
 
 # Exposed so the ENOSPC-reclaim guard in the claude runtime package can read the
@@ -343,6 +346,35 @@ py_test(
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
     },
     deps = ["@pip//pyyaml"],
+)
+
+py_test(
+    name = "chart_noded_tracing_test",
+    srcs = ["chart_noded_tracing_test.py"],
+    data = [
+        "Chart.yaml",
+        "values.yaml",
+        "//projects/embervm/deploy:deploy_values",
+        "//projects/platform/otel-collector:gke_values",
+        "//projects/platform/otel-collector:prod_values",
+        "@multitool//tools/helm",
+    ] + glob([
+        "templates/**/*",
+        "crds/**/*",
+    ]),
+    env = {
+        "COLLECTOR_GKE_VALUES": "$(rootpath //projects/platform/otel-collector:gke_values)",
+        "COLLECTOR_PROD_VALUES": "$(rootpath //projects/platform/otel-collector:prod_values)",
+        "DEPLOY_VALUES": "$(rootpath //projects/embervm/deploy:deploy_values)",
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+    },
+    deps = ["@pip//pyyaml"],
+)
+
+semgrep_test(
+    name = "chart_noded_tracing_test_semgrep_test",
+    srcs = ["chart_noded_tracing_test.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
 )
 
 semgrep_test(

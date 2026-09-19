@@ -21,3 +21,20 @@ argocd_app(
         "values-prod.yaml",
     ],
 )
+
+argocd_app(
+    name = "cert-manager-gke",
+    chart = "projects/platform/cert-manager",
+    chart_files = ":chart",
+    generate_semgrep = False,
+    namespace = "cert-manager",
+    release_name = "cert-manager",
+    tags = [
+        "helm",
+        "template",
+    ],
+    target_suffix = "_gke",
+    values_files = [
+        "values.yaml",
+    ],
+)

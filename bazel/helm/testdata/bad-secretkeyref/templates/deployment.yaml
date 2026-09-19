@@ -1,0 +1,22 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bad-secretkeyref
+spec:
+  selector:
+    matchLabels:
+      app: bad-secretkeyref
+  template:
+    metadata:
+      labels:
+        app: bad-secretkeyref
+    spec:
+      containers:
+        - name: app
+          image: example.invalid/app:latest
+          env:
+            - name: TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key:

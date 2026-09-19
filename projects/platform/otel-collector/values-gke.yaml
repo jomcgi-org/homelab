@@ -8,6 +8,7 @@ environment: homelab-hub
 # rendered at all, and every configured sender times out its span exports.
 allowedServices:
   - embervm-control
+  - embervm-noded
   - monolith-backend
   - monolith-jobs
   - monolith-public

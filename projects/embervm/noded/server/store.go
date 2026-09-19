@@ -1435,8 +1435,8 @@ func (s *Server) exportWorker(ctx context.Context) {
 // also skip, but this avoids the round-trip). It always clears the dedupe key so
 // a subsequent change can re-enqueue.
 //
-// No OpenTelemetry span is emitted here (R6, Task 11): noded has no Go otel tracer
-// wired (unlike the control plane), and inventing a tracing dependency for one span
+// No OpenTelemetry span is emitted here (R6, Task 11): noded tracing currently
+// covers the existing cold-boot spans, and adding artifact-export instrumentation
 // is out of scope. Export visibility comes from the structured logs below
 // ("noded: exported artifact off node" / "noded: async export failed") and the
 // export-backlog alert keys on the "export queue full" log. The control-plane

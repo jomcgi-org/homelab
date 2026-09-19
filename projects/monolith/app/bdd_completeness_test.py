@@ -29,7 +29,7 @@ _PAGE_EXCLUSIONS: set[str] = set()
 
 # Public functions excluded from coverage enforcement.
 _PUBLIC_EXCLUSIONS: set[str] = {
-    # register() is tested by architecture_test.py, not BDD tests
+    # register() hooks wire domain routes into the app; they are not BDD routes
     "home.register",
     "chat.register",
     "knowledge.register",

@@ -1,7 +1,21 @@
+load("//bazel/helm:defs.bzl", "helm_admissibility_render")
+
 filegroup(
     name = "deploy_values",
     srcs = ["values.yaml"],
     visibility = ["//projects/monolith:__subpackages__"],
+)
+
+helm_admissibility_render(
+    name = "render_manifests",
+    chart = "projects/monolith/chart",
+    chart_files = "//projects/monolith/chart:chart",
+    namespace = "monolith-dev",
+    release_name = "monolith-dev",
+    values_files = [
+        "//projects/monolith/deploy:deploy_values",
+        ":deploy_values",
+    ],
 )
 
 filegroup(

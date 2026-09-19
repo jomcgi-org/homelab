@@ -29,7 +29,6 @@ argocd_app(
     name = "authentik-gke",
     chart = "projects/platform/authentik",
     chart_files = ":chart",
-    generate_manifests = False,
     generate_semgrep = False,
     namespace = "authentik",
     release_name = "authentik",

@@ -31,6 +31,7 @@ defmodule Embervm.Application do
 
   @impl true
   def start(_type, _args) do
+    :ok = Embervm.TraceContextFilter.install()
     port = http_port()
 
     # Quota + usage-admin config into app-env BEFORE the supervisor starts, so the

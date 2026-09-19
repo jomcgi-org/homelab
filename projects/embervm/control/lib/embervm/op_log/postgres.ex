@@ -139,6 +139,16 @@ defmodule Embervm.OpLog.Postgres do
   # authoritative and a slow append degrades to a slow append.
   @append_timeout_ms 20_000
 
+  # Every client wrapper must outlive the database work it waits for. A single
+  # query gets the same 5-second scheduling/reply margin as append. read_from
+  # and list_usage each issue at most two serial queries, while one compaction
+  # batch issues at most twelve. Keeping the call-side budget above those
+  # database-side ceilings prevents a caller from timing out while work can
+  # still commit and leave its outcome ambiguous.
+  @single_query_call_timeout_ms 20_000
+  @double_query_call_timeout_ms 35_000
+  @compact_call_timeout_ms 185_000
+
   @ddl [
     """
     CREATE TABLE IF NOT EXISTS ops (
@@ -413,6 +423,15 @@ defmodule Embervm.OpLog.Postgres do
   # That ordering is the whole point of the value, and nothing else enforces it.
   def append_timeout_ms, do: @append_timeout_ms
 
+  @doc false
+  def single_query_call_timeout_ms, do: @single_query_call_timeout_ms
+
+  @doc false
+  def double_query_call_timeout_ms, do: @double_query_call_timeout_ms
+
+  @doc false
+  def compact_call_timeout_ms, do: @compact_call_timeout_ms
+
   @impl Embervm.OpLog
   def append(server \\ __MODULE__, %Op{} = op) do
     Embervm.OpLog.safe_server_call(server, {:append, op}, @append_timeout_ms)
@@ -420,92 +439,108 @@ defmodule Embervm.OpLog.Postgres do
 
   @impl Embervm.OpLog
   def read_from(server \\ __MODULE__, seq) do
-    Embervm.OpLog.safe_server_call(server, {:read_from, seq})
+    Embervm.OpLog.safe_server_call(server, {:read_from, seq}, @double_query_call_timeout_ms)
   end
 
   @impl Embervm.OpLog
   def load_tasks(server \\ __MODULE__) do
-    Embervm.OpLog.safe_server_call(server, :load_tasks)
+    Embervm.OpLog.safe_server_call(server, :load_tasks, @single_query_call_timeout_ms)
   end
 
   @impl Embervm.OpLog
   def load_sessions(server \\ __MODULE__) do
-    Embervm.OpLog.safe_server_call(server, :load_sessions)
+    Embervm.OpLog.safe_server_call(server, :load_sessions, @single_query_call_timeout_ms)
   end
 
   @impl Embervm.OpLog
   def load_serving_instances(server \\ __MODULE__) do
-    Embervm.OpLog.safe_server_call(server, :load_serving_instances)
+    Embervm.OpLog.safe_server_call(server, :load_serving_instances, @single_query_call_timeout_ms)
   end
 
   @impl Embervm.OpLog
   def load_stateful_instances(server \\ __MODULE__) do
-    Embervm.OpLog.safe_server_call(server, :load_stateful_instances)
+    Embervm.OpLog.safe_server_call(server, :load_stateful_instances, @single_query_call_timeout_ms)
   end
 
   @impl Embervm.OpLog
   def load_volumes(server \\ __MODULE__) do
-    Embervm.OpLog.safe_server_call(server, :load_volumes)
+    Embervm.OpLog.safe_server_call(server, :load_volumes, @single_query_call_timeout_ms)
   end
 
   @impl Embervm.OpLog
   def load_volume_blessing(server \\ __MODULE__) do
-    Embervm.OpLog.safe_server_call(server, :load_volume_blessing)
+    Embervm.OpLog.safe_server_call(server, :load_volume_blessing, @single_query_call_timeout_ms)
   end
 
   @impl Embervm.OpLog
   def load_key_epochs(server \\ __MODULE__) do
-    Embervm.OpLog.safe_server_call(server, :load_key_epochs)
+    Embervm.OpLog.safe_server_call(server, :load_key_epochs, @single_query_call_timeout_ms)
   end
 
   @impl Embervm.OpLog
   def load_blessing_leases(server \\ __MODULE__) do
-    Embervm.OpLog.safe_server_call(server, :load_blessing_leases)
+    Embervm.OpLog.safe_server_call(server, :load_blessing_leases, @single_query_call_timeout_ms)
   end
 
   @impl Embervm.OpLog
   def load_checkpoint_dispatches(server \\ __MODULE__) do
-    Embervm.OpLog.safe_server_call(server, :load_checkpoint_dispatches)
+    Embervm.OpLog.safe_server_call(server, :load_checkpoint_dispatches, @single_query_call_timeout_ms)
   end
 
   @impl Embervm.OpLog
   def load_group_instances(server \\ __MODULE__) do
-    Embervm.OpLog.safe_server_call(server, :load_group_instances)
+    Embervm.OpLog.safe_server_call(server, :load_group_instances, @single_query_call_timeout_ms)
   end
 
   @impl Embervm.OpLog
   def load_group_members(server \\ __MODULE__) do
-    Embervm.OpLog.safe_server_call(server, :load_group_members)
+    Embervm.OpLog.safe_server_call(server, :load_group_members, @single_query_call_timeout_ms)
   end
 
   @impl Embervm.OpLog
   def load_result(server \\ __MODULE__, task_id) do
-    Embervm.OpLog.safe_server_call(server, {:load_result, task_id})
+    Embervm.OpLog.safe_server_call(
+      server,
+      {:load_result, task_id},
+      @single_query_call_timeout_ms
+    )
   end
 
   @impl Embervm.OpLog
   def load_request(server \\ __MODULE__, task_id) do
-    Embervm.OpLog.safe_server_call(server, {:load_request, task_id})
+    Embervm.OpLog.safe_server_call(
+      server,
+      {:load_request, task_id},
+      @single_query_call_timeout_ms
+    )
   end
 
   @impl Embervm.OpLog
   def list_usage(server \\ __MODULE__, opts \\ []) do
-    Embervm.OpLog.safe_server_call(server, {:list_usage, opts})
+    Embervm.OpLog.safe_server_call(
+      server,
+      {:list_usage, opts},
+      @double_query_call_timeout_ms
+    )
   end
 
   @impl Embervm.OpLog
   def compact(server \\ __MODULE__, now_ms) do
-    Embervm.OpLog.safe_server_call(server, {:compact, now_ms})
+    Embervm.OpLog.safe_server_call(server, {:compact, now_ms}, @compact_call_timeout_ms)
   end
 
   @impl Embervm.OpLog
   def compacted_through(server \\ __MODULE__) do
-    Embervm.OpLog.safe_server_call(server, :compacted_through)
+    Embervm.OpLog.safe_server_call(server, :compacted_through, @single_query_call_timeout_ms)
   end
 
   @impl Embervm.OpLog
   def evict_task(server \\ __MODULE__, task_id) do
-    Embervm.OpLog.safe_server_call(server, {:evict_task, task_id})
+    Embervm.OpLog.safe_server_call(
+      server,
+      {:evict_task, task_id},
+      @single_query_call_timeout_ms
+    )
   end
 
   # db_size/1 is NOT an Embervm.OpLog callback (see moduledoc): there is no

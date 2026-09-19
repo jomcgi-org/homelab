@@ -67,7 +67,10 @@ helm_chart(
     },
     lint = False,
     publish = True,
-    visibility = ["//overlays:__subpackages__"],
+    visibility = [
+        "//overlays:__subpackages__",
+        "//projects/monolith-public:__subpackages__",  # keep
+    ],
 )
 
 # GKE render coverage for the dormant overlay. Lives in the chart package on
