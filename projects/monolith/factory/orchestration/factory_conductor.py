@@ -5155,7 +5155,7 @@ def _dispatch_ready(
         if factory_gates.guidance(task):
             context["retry_context"] = json.dumps(
                 {
-                    "prior_attempts": context["retry_context"][:4000],
+                    "prior_attempts": context["retry_context"][-4000:],
                     "conductor_direction": factory_gates.guidance(task),
                 }
             )[:16000]
