@@ -77,7 +77,9 @@ def _read_manifest(manifest: pathlib.Path) -> frozenset[pathlib.PurePosixPath]:
     try:
         lines = manifest.read_text().splitlines()
     except OSError as exc:
-        raise CoverageError(f"boundary source manifest unavailable: {manifest}") from exc
+        raise CoverageError(
+            f"boundary source manifest unavailable: {manifest}"
+        ) from exc
 
     sources: set[pathlib.PurePosixPath] = set()
     for raw in lines:
@@ -130,7 +132,8 @@ def _covered_sources(
     missing_domains = sorted(domains - covered_domains)
     if missing_domains:
         raise CoverageError(
-            "boundary manifest has no sources for domains: " + ", ".join(missing_domains)
+            "boundary manifest has no sources for domains: "
+            + ", ".join(missing_domains)
         )
 
     missing_inits = sorted(
@@ -242,9 +245,7 @@ from knowledge import models as knowledge_models
 """,
     )
 
-    assert _violations(
-        [auth_init, caller, knowledge_init], tmp_path, domains
-    ) == [
+    assert _violations([auth_init, caller, knowledge_init], tmp_path, domains) == [
         "auth/service.py:6: imports knowledge.store (use knowledge.api)",
         "auth/service.py:7: imports knowledge.models (use knowledge.api)",
     ]
@@ -278,7 +279,9 @@ def test_missing_expected_runfile_cannot_pass(tmp_path: pathlib.Path) -> None:
     _write_source(tmp_path, "auth/__init__.py")
     manifest = tmp_path / "manifest.txt"
     manifest.write_text("auth/__init__.py\nauth/service.py\n")
-    with pytest.raises(CoverageError, match="missing expected runfiles: auth/service.py"):
+    with pytest.raises(
+        CoverageError, match="missing expected runfiles: auth/service.py"
+    ):
         _covered_sources(tmp_path, manifest, frozenset({"auth"}))
 
 
@@ -287,5 +290,7 @@ def test_partial_manifest_cannot_pass(tmp_path: pathlib.Path) -> None:
     _write_source(tmp_path, "auth/service.py")
     manifest = tmp_path / "manifest.txt"
     manifest.write_text("auth/__init__.py\n")
-    with pytest.raises(CoverageError, match="unmanifested domain sources: auth/service.py"):
+    with pytest.raises(
+        CoverageError, match="unmanifested domain sources: auth/service.py"
+    ):
         _covered_sources(tmp_path, manifest, frozenset({"auth"}))
