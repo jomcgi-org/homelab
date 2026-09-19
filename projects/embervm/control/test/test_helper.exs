@@ -87,7 +87,12 @@ defmodule Embervm.TestSpanExporter do
   def parent_span_id(span), do: elem(span, @parent_span_id_index)
   def end_time(span), do: elem(span, @end_time_index)
   def attributes(span), do: span |> elem(@attributes_index) |> :otel_attributes.map()
-  def status_code(span), do: span |> elem(@status_index) |> elem(1)
+  def status_code(span) do
+    case elem(span, @status_index) do
+      :undefined -> :unset
+      status -> elem(status, 1)
+    end
+  end
 
   defp await_spans(table, expected_names) do
     deadline = System.monotonic_time(:millisecond) + 2_000

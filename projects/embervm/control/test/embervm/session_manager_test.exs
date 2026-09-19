@@ -3812,6 +3812,7 @@ defmodule Embervm.SessionManagerTest do
 
     put_session_workload(ctx, "wl-watchdog-trace")
     {:ok, created} = SessionManager.create(ctx.mgr, "wl-watchdog-trace", "p1")
+    test_pid = self()
 
     {result, spans} =
       TestSpanExporter.capture(
@@ -3821,7 +3822,10 @@ defmodule Embervm.SessionManagerTest do
               created.session_id,
               %{workload: "wl-watchdog-trace", principal: "p1"},
               %{body: "turn"},
-              &SessionManager.invoke(ctx.mgr, created.session_id, &1)
+              fn traced_req ->
+                send(test_pid, {:invoke_traceparent, Map.get(traced_req, :traceparent)})
+                SessionManager.invoke(ctx.mgr, created.session_id, traced_req)
+              end
             )
           end
         end,
@@ -3829,6 +3833,8 @@ defmodule Embervm.SessionManagerTest do
       )
 
     assert result == {:error, :invoke_timeout}
+    assert_receive {:invoke_traceparent, traceparent}
+    assert {_trace_id, _span_id, 1} = Embervm.SessionTrace.parse_traceparent(traceparent)
 
     root = hd(TestSpanExporter.named(spans, "test.session.invoke"))
     output_wait = hd(TestSpanExporter.named(spans, "embervm.session.output_wait"))
