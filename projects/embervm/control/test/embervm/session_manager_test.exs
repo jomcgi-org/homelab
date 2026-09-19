@@ -3149,6 +3149,7 @@ defmodule Embervm.SessionManagerTest do
 
   test "reconcile recovers missed node departure without an in-memory tombstone" do
     ctx = start_stack(
+      prime_fun: fake_prime_fun("vm-missed-departure"),
       node_inventory_fun: fn -> {:ok, MapSet.new(["replacement-node"])} end,
       brick_status_fun: fn _ ->
         %{health: :unknown, registered: false, tombstoned: false}
