@@ -1129,8 +1129,9 @@ def test_kg_reconciliation_refuses_mismatched_cleanup_claim(database, change):
 @pytest.mark.parametrize("applied", [False, True])
 @pytest.mark.parametrize("guest_state", ["evicted", "destroyed"])
 @pytest.mark.parametrize("review_mode", ["legacy", "stop", "correction"])
+@pytest.mark.parametrize("early_terminal", [False, True])
 def test_factory_supervision_atomically_reconciles_terminal_held_job(
-    database, monkeypatch, applied, guest_state, review_mode
+    database, monkeypatch, applied, guest_state, review_mode, early_terminal
 ):
     import asyncio
     from factory.execution import permit_supervision as supervision
@@ -1166,6 +1167,11 @@ def test_factory_supervision_atomically_reconciles_terminal_held_job(
     now = datetime.now(timezone.utc)
 
     started = int((now - timedelta(seconds=90)).timestamp() * 1000)
+    if early_terminal:
+        with Session(engine) as db, db.begin():
+            permit = db.exec(select(AgentCapacityReservation)).one()
+            permit.owner = "worker"
+            db.add(permit)
     if review_mode != "legacy":
         from factory.execution import review_leases
 
@@ -1241,6 +1247,36 @@ def test_factory_supervision_atomically_reconciles_terminal_held_job(
                 db, request["job_name"], request["session_id"]
             )
 
+    if early_terminal:
+        with Session(engine) as db:
+            permit = db.exec(
+                select(AgentCapacityReservation).where(
+                    AgentCapacityReservation.state == "uncertain"
+                )
+            ).one()
+            permit.owner = "worker"
+            turn = db.exec(
+                select(AgentTurn).where(
+                    AgentTurn.session_id == permit.session_id,
+                    AgentTurn.seq == permit.pending_seq,
+                )
+            ).one()
+            turn.created_at = now - timedelta(seconds=60)
+            turn.usage_json = json.dumps(
+                {
+                    "recovery": {
+                        "claim_owner": "worker",
+                        "dispatch_count": 1,
+                        "last_dispatch_at": (now - timedelta(seconds=100)).isoformat(),
+                    }
+                }
+            )
+            db.add_all([permit, turn])
+            db.commit()
+            before = reconciliation.read_reconciliation_state(
+                db, request["job_name"], request["session_id"]
+            )
+
     class Transport:
         async def get_session(self, guest):
             assert guest == "guest"
@@ -1251,8 +1287,17 @@ def test_factory_supervision_atomically_reconciles_terminal_held_job(
                 "invoke_started_at": int(
                     (now - timedelta(seconds=90)).timestamp() * 1000
                 ),
-                "last_invoke_at": int((now - timedelta(seconds=30)).timestamp() * 1000),
-                "updated_at": int((now - timedelta(seconds=20)).timestamp() * 1000),
+                "last_invoke_at": None
+                if early_terminal
+                else int((now - timedelta(seconds=30)).timestamp() * 1000),
+                "updated_at": int(
+                    (
+                        now - timedelta(seconds=60, milliseconds=185)
+                        if early_terminal
+                        else now - timedelta(seconds=20)
+                    ).timestamp()
+                    * 1000
+                ),
             }
 
     asyncio.run(supervision.sweep_once(Transport()))
@@ -1334,3 +1379,58 @@ def test_predispatch_review_stop_prevents_routine_failure_retry_and_next_claim(
         assert row.last_status == "factory_stopped"
         assert row.next_run_at is None
         assert db.exec(select(AgentCapacityReservation)).one().state == "settled"
+
+
+@pytest.mark.parametrize(
+    "change", ["old_invoke", "wrong_owner", "parked", "missing_owner", "future_invoke"]
+)
+def test_terminal_dispatch_reconciliation_rejects_unmatched_evidence(database, change):
+    request, _ = held(database, delivery_error=True, completion_recorded=False)
+    now = datetime.now(timezone.utc)
+    with Session(database) as db, db.begin():
+        permit = db.exec(select(AgentCapacityReservation)).one()
+        permit.owner = None if change == "missing_owner" else "worker"
+        turn = db.exec(select(AgentTurn)).one()
+        turn.created_at = now - timedelta(seconds=60)
+        turn.usage_json = json.dumps(
+            {
+                "recovery": {
+                    "claim_owner": "other" if change == "wrong_owner" else "worker",
+                    "dispatch_count": 1,
+                    "last_dispatch_at": (now - timedelta(seconds=100)).isoformat(),
+                }
+            }
+        )
+        db.add_all([permit, turn])
+    request["cessation"].update(
+        state="parked" if change == "parked" else "evicted",
+        invoke_started_at=int(
+            (
+                now
+                - timedelta(
+                    seconds=110
+                    if change == "old_invoke"
+                    else 50
+                    if change == "future_invoke"
+                    else 90
+                )
+            ).timestamp()
+            * 1000
+        ),
+        updated_at=int((now - timedelta(seconds=61)).timestamp() * 1000),
+    )
+    with Session(database) as db:
+        original = reconciliation.read_reconciliation_state(
+            db, request["job_name"], request["session_id"]
+        )
+    request["expected_state_sha256"] = original["state_sha256"]
+    with pytest.raises(ValueError, match="does not match the held dispatch"):
+        reconciliation.reconcile_held_job(**request)
+    with Session(database) as db:
+        assert (
+            reconciliation.read_reconciliation_state(
+                db, request["job_name"], request["session_id"]
+            )
+            == original
+        )
+        assert db.exec(select(RoutineReconciliation)).first() is None

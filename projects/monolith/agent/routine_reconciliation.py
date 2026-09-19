@@ -25,7 +25,7 @@ from factory.api import (
 )
 from core.db import get_engine
 from knowledge.api import EXTRACTION_VERSION
-from shared.invocation_outcomes import UNKNOWN_INVOCATION
+from shared.invocation_outcomes import UNKNOWN_INVOCATION, terminal_dispatch_cessation
 
 MAX_EVIDENCE_AGE_SECONDS = 60
 
@@ -130,7 +130,7 @@ def read_reconciliation_state(db: Session, job_name: str, session_id: int) -> di
     reservations = _rows(
         db,
         f"SELECT id,state,outcome,pending_seq,tier,routine_job_name,session_id,"
-        "local_session_id FROM "
+        "local_session_id,owner FROM "
         f"{_table(db, 'agent_sessions', 'capacity_reservations')} "
         "WHERE session_id=:id AND pending_seq=:seq",
         {"id": session_id, "seq": latest["seq"]},
@@ -141,6 +141,11 @@ def read_reconciliation_state(db: Session, job_name: str, session_id: int) -> di
         "WHERE session_id=:id AND state!='settled' ORDER BY id LIMIT 3",
         {"id": session_id},
     )
+    try:
+        usage = json.loads(latest["usage_json"] or "{}")
+        recovery = usage.get("recovery") if isinstance(usage, dict) else None
+    except (TypeError, ValueError):
+        recovery = None
     state = {
         "job_name": job_name,
         "session_id": session_id,
@@ -162,6 +167,15 @@ def read_reconciliation_state(db: Session, job_name: str, session_id: int) -> di
         if latest_routine
         else None,
         "latest_turn_at": str(latest["created_at"]),
+        "latest_dispatch": {
+            key: recovery.get(key)
+            for key in ("claim_owner", "dispatch_count", "last_dispatch_at")
+        }
+        if isinstance(recovery, dict)
+        else None,
+        "reservation_owner": reservations[0]["owner"]
+        if len(reservations) == 1
+        else None,
         "last_summary": job["last_summary"],
         "next_run_at": job["next_run_at"],
         "locked_by": job["locked_by"],
@@ -295,7 +309,12 @@ def _reconcile(db, request):
     turn_at = datetime.fromisoformat(state["latest_turn_at"].replace("Z", "+00:00"))
     if turn_at.tzinfo is None:
         turn_at = turn_at.replace(tzinfo=timezone.utc)
-    if proof["updated_at"] < int(turn_at.timestamp() * 1000):
+    exact_dispatch = terminal_dispatch_cessation(
+        proof, state["latest_dispatch"], state["reservation_owner"], turn_at
+    )
+    if "invoke_started_at" in proof and not exact_dispatch:
+        raise ValueError("Terminal guest evidence does not match the held dispatch")
+    if not exact_dispatch and proof["updated_at"] < int(turn_at.timestamp() * 1000):
         raise ValueError("Guest cessation must follow the unknown turn")
     if db.exec(
         select(RoutineReconciliation).where(
@@ -407,7 +426,9 @@ def reconcile_held_job(
     and CP timestamps. evidence_sha256 binds an archived packet containing the
     exact GET and positive cessation evidence for that guest; a parked/evicted
     label alone is insufficient. A null last_invoke_at preserves an unrecorded
-    completion and never substitutes for cessation evidence.
+    completion and never substitutes for cessation evidence. Optional
+    invoke_started_at binds a terminal guest to the recorded dispatch when
+    teardown preceded the client error; it is checked against durable ownership.
     It is not accepted from guest/model output. Identical lost-response replays
     return the durable result, even after the ordinary job has run or disappeared.
     For KG jobs, retain_applied is additionally backed by extraction provenance.
@@ -428,7 +449,10 @@ def reconcile_held_job(
         "last_invoke_at",
         "evidence_sha256",
     }
-    if not isinstance(cessation, dict) or set(cessation) != required:
+    if not isinstance(cessation, dict) or set(cessation) not in (
+        required,
+        required | {"invoke_started_at"},
+    ):
         raise ValueError("Exact cessation evidence fields are required")
     if (
         cessation["state"] not in {"parked", "evicted", "destroyed"}

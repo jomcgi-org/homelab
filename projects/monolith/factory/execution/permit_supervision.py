@@ -4,8 +4,8 @@ This loop never invokes or retries a guest. It requests destroy only for an old
 parked or banked guest whose Kubernetes node is known to be gone. Factory-owned
 sessions have their own settlement path, and a permit whose routine job row is
 still parked on this attempt is left to the operator reconciliation path that
-re-arms that job. A terminal control-plane timestamp must follow the failed turn
-so a historical guest state cannot release a current permit.
+re-arms that job. A terminal record must follow the failed turn or match its
+exact durable dispatch, so historical guest state cannot release a current permit.
 """
 
 from __future__ import annotations
@@ -30,6 +30,7 @@ from factory.execution.models import (
     ProbeObservation,
 )
 from core.db import get_engine
+from shared.invocation_outcomes import terminal_dispatch_cessation
 from factory.orchestration.factory_models import FactoryStart
 from factory.orchestration.models import SwarmNodeRun
 
@@ -737,17 +738,30 @@ def _record(candidate, observed, observed_at, node_names=None):
                 stop_completion = _completion(observed, expected)
                 evidence["reviewed_stop_completion"] = stop_completion
                 audit.evidence_json = json.dumps(evidence, sort_keys=True)
-            if not never_invoked and stop_completion is None:
+            try:
+                usage = json.loads(turn.usage_json or "{}")
+                recovery = usage.get("recovery") if isinstance(usage, dict) else None
+            except (TypeError, ValueError):
+                recovery = None
+            exact_dispatch = _general_enabled() and terminal_dispatch_cessation(
+                observed, recovery, permit.owner, _aware(turn.created_at)
+            )
+            if exact_dispatch:
+                evidence["cessation_evidence"] = "terminal_dispatch"
+                audit.evidence_json = json.dumps(evidence, sort_keys=True)
+            if not never_invoked and stop_completion is None and not exact_dispatch:
                 last_invoke = observed.get("last_invoke_at")
                 if (
                     type(last_invoke) is not int
                     or not started <= last_invoke <= updated
                 ):
                     raise ValueError("missing_invoke_completion")
-            # The same cross-clock comparison in the other direction: the gap
-            # from recording the failure to the guest ceasing is an eviction or
-            # teardown, again far larger than plausible skew.
-            if updated <= int(_aware(turn.created_at).timestamp() * 1000):
+            # Without an exact dispatch match, retain the legacy ordering guard.
+            # Exact terminal evidence can precede the error it caused: the
+            # client records the failed turn only after receiving that error.
+            if not exact_dispatch and updated <= int(
+                _aware(turn.created_at).timestamp() * 1000
+            ):
                 raise ValueError("cessation_precedes_turn")
         except ValueError as exc:
             _reason(audit, str(exc))
@@ -800,6 +814,11 @@ def _reconcile_routine(db, permit, candidate, observed, observed_at, evidence):
             "updated_at": observed["updated_at"],
             "last_invoke_at": observed.get("last_invoke_at"),
             "evidence_sha256": _sha(evidence),
+            **(
+                {"invoke_started_at": observed["invoke_started_at"]}
+                if evidence.get("cessation_evidence") == "terminal_dispatch"
+                else {}
+            ),
         },
         disposition=disposition,
         session=db,
