@@ -936,3 +936,137 @@ def test_the_lifespan_drains_in_flight_executors(database, monkeypatch):
 
     asyncio.run(asyncio.wait_for(run(), 15))
     assert_held(database, sid, "replica_shutdown")
+
+
+@pytest.mark.parametrize("terminal", ["evicted", "destroyed"])
+def test_sweep_settles_terminal_guest_without_releasing_capacity(
+    database, monkeypatch, terminal
+):
+    sid, requests = lose_the_response(database, monkeypatch)
+    with Session(database) as db:
+        agent = db.get(AgentSession, sid)
+        agent.admission_tier = "kg"
+        db.add(agent)
+        db.commit()
+    hold = hold_of(sid)
+    view = {**working_guest(sid)(), "state": terminal}
+    monkeypatch.setattr(mcp, "_observe_response_lost_guest", lambda _guest: view)
+
+    assert mcp._adopt_response_lost_results() == []
+    settled = assert_unknown(database, sid)
+    assert settled["permits"][0]["outcome"] == "response_lost_guest_ceased"
+    assert settled["turns"][0]["cost_usd"] is None
+    assert len(requests) == 1
+    assert not store.settle_response_lost_hold(
+        sid, "response_lost_guest_ceased", expected_hold=hold
+    )
+    assert snapshot(database, sid) == settled
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        {"state": "running"},
+        {"state": "parked"},
+        {"session_id": "foreign-guest"},
+        {"generation": 1},
+        {"generation": False},
+        {"invoke_started_at": STARTED_AT - 1},
+        {"invoke_started_at": STARTED_AT + 1},
+        {"invoke_started_at": None},
+    ],
+)
+def test_sweep_preserves_hold_without_exact_terminal_identity(
+    database, monkeypatch, patch
+):
+    sid, _requests = lose_the_response(database, monkeypatch)
+    held = snapshot(database, sid)
+    view = {**working_guest(sid)(), "state": "evicted", **patch}
+    monkeypatch.setattr(mcp, "_observe_response_lost_guest", lambda _guest: view)
+    assert mcp._adopt_response_lost_results() == []
+    assert snapshot(database, sid) == held
+
+
+def test_sweep_retains_hold_when_control_plane_is_unreachable(database, monkeypatch):
+    sid, _requests = lose_the_response(database, monkeypatch)
+    held = snapshot(database, sid)
+
+    async def unavailable(_guest):
+        raise httpx.ConnectError("control plane unavailable")
+
+    monkeypatch.setattr(mcp._transport, "get_session", unavailable)
+    assert mcp._adopt_response_lost_results() == []
+    assert snapshot(database, sid) == held
+
+
+def test_sweep_adopts_receipt_published_during_terminal_observation(
+    database, monkeypatch
+):
+    sid, requests = lose_the_response(database, monkeypatch)
+
+    def observe(_guest):
+        publish(native_record(artifact=False), requests[0])
+        return {**working_guest(sid)(), "state": "evicted"}
+
+    monkeypatch.setattr(mcp, "_observe_response_lost_guest", observe)
+    assert mcp._adopt_response_lost_results() == [sid]
+    after = snapshot(database, sid)
+    assert after["turns"][0]["terminal_reason"] == "end_turn"
+    assert after["permits"][0]["state"] == "settled"
+    assert len(requests) == 1
+
+
+def test_terminal_settlement_preserves_receipt_committed_after_last_poll(
+    database, monkeypatch
+):
+    sid, requests = lose_the_response(database, monkeypatch)
+    hold = hold_of(sid)
+    assert store.adopt_response_lost_result(sid)["status"] == "waiting"
+    publish(native_record(artifact=False), requests[0])
+    assert not store.settle_response_lost_hold(
+        sid, "response_lost_guest_ceased", expected_hold=hold
+    )
+    assert_held(database, sid, "invoke_response_lost")
+    assert store.adopt_response_lost_result(sid)["status"] == "adopted"
+
+
+@pytest.mark.parametrize("changed", ["hold", "guest"])
+def test_terminal_settlement_rechecks_identity_after_observation(
+    database, monkeypatch, changed
+):
+    sid, _requests = lose_the_response(database, monkeypatch)
+    hold = hold_of(sid)
+    with Session(database) as db:
+        if changed == "hold":
+            turn = db.exec(select(AgentTurn).where(AgentTurn.session_id == sid)).one()
+            usage = json.loads(turn.usage_json)
+            usage["recovery"]["response_lost"]["generation"] += 1
+            turn.usage_json = json.dumps(usage)
+            db.add(turn)
+        else:
+            agent = db.get(AgentSession, sid)
+            agent.ember_session_id = "replacement-guest"
+            db.add(agent)
+        db.commit()
+    before = snapshot(database, sid)
+    assert not store.settle_response_lost_hold(
+        sid, "response_lost_guest_ceased", expected_hold=hold
+    )
+    assert snapshot(database, sid) == before
+
+
+def test_sweep_recovers_shutdown_hold_without_invoke_stamps(database, monkeypatch):
+    sid, requests = lose_the_response(database, monkeypatch)
+    with Session(database) as db:
+        turn = db.exec(select(AgentTurn).where(AgentTurn.session_id == sid)).one()
+        usage = json.loads(turn.usage_json)
+        usage["recovery"]["response_lost"]["generation"] = None
+        usage["recovery"]["response_lost"]["invoke_started_at"] = None
+        turn.usage_json = json.dumps(usage)
+        db.add(turn)
+        db.commit()
+    view = {**working_guest(sid)(), "state": "evicted"}
+    monkeypatch.setattr(mcp, "_observe_response_lost_guest", lambda _guest: view)
+    assert mcp._adopt_response_lost_results() == []
+    assert_unknown(database, sid)
+    assert len(requests) == 1

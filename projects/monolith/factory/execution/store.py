@@ -818,7 +818,9 @@ def find_response_lost_session_ids(limit: int = 5) -> list[int]:
         )
 
 
-def settle_response_lost_hold(session_id: int, reason: str) -> bool:
+def settle_response_lost_hold(
+    session_id: int, reason: str, *, expected_hold: dict | None = None
+) -> bool:
     """End a hold that can no longer be recovered, exactly as today's paths do.
 
     Used when the guest has ceased or completed its invoke with no receipt
@@ -835,8 +837,26 @@ def settle_response_lost_hold(session_id: int, reason: str) -> bool:
         if row is None or pending is None:
             return False
         turn = get_turn(session, session_id, pending.seq)
-        if _response_lost_hold(turn, pending) is None:
+        hold = _response_lost_hold(turn, pending)
+        if hold is None:
             return False
+        if expected_hold is not None:
+            if hold != expected_hold or row.ember_session_id != hold["guest_id"]:
+                return False
+            # Serialize with capture_result after locking execution state.
+            # A callback committed before settlement must still be adopted.
+            session.execute(
+                update(AgentResultReceipt)
+                .where(AgentResultReceipt.id == hold["receipt_id"])
+                .values(created_at=AgentResultReceipt.created_at)
+            )
+            receipt = session.exec(
+                select(AgentResultReceipt.id, AgentResultReceipt.result_sha256).where(
+                    AgentResultReceipt.id == hold["receipt_id"]
+                )
+            ).one_or_none()
+            if receipt is None or receipt.result_sha256 is not None:
+                return False
         _finish_unknown_locked(session, row, pending, reason)
         session.commit()
         return True
