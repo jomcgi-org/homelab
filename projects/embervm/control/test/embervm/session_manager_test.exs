@@ -250,6 +250,8 @@ defmodule Embervm.SessionManagerTest do
         archive_volume_fun: Keyword.get(opts, :archive_volume_fun, fn _ch, _req -> {:ok, %{skipped: false}} end),
         retire_volume_fun: Keyword.get(opts, :retire_volume_fun, fn _ch, _req -> {:ok, %{}} end),
         delete_session_volume_fun: Keyword.get(opts, :delete_session_volume_fun, fn _ch, _req -> {:ok, %{}} end),
+        expected_instances_fun: Keyword.get(opts, :expected_instances_fun,
+          fn -> %{"node-4" => %{configured_id: "node-4"}} end),
         session_opts: session_opts,
         async_writer: writer,
         async_lifecycle_writes: async,
@@ -4849,59 +4851,68 @@ defmodule Embervm.SessionManagerTest do
     refute_received {:exact_stop_attempted, _}
   end
 
-  # Both vanished tests pin the store clock BELOW the node facts' 5_000_000 so the
-  # session row predates the fact: the vanish branch requires the node's report to
-  # postdate the row (node_fact_authoritative?), and the store's default wall clock
-  # would leave the fact permanently stale and the branch unreachable.
-  test "test_banked_session_with_vanished_vm_and_snapshot_evicts_not_loops" do
-    ctx = start_stack(evict_fun: fn _ch, _req -> {:ok, %{}} end, store_clock: fn -> 4_000_000 end)
-    put_session_workload(ctx, "wl-vanished-banked")
-    {:ok, created} = SessionManager.create(ctx.mgr, "wl-vanished-banked", "p1")
-    bank_session(ctx, created.session_id)
-    report_empty_node(ctx)
+  for {banked, terminal} <- [{false, :failed}, {true, :evicted}] do
+    test "vanished #{terminal} recovery compares Unix observations, not monotonic clocks" do
+      ctx = start_stack(store_clock: fn -> 4_000_000 end)
+      put_session_workload(ctx, "wl-vanished")
+      {:ok, created} = SessionManager.create(ctx.mgr, "wl-vanished", "p1")
+      if unquote(banked), do: bank_session(ctx, created.session_id)
+      report_empty_node(ctx)
+      {:ok, fact} = NodeCapacity.fetch(ctx.cap_table, "node-4")
+      fact = Map.put(fact, :updated_at, -850_000)
 
-    :ok = SessionManager.reconcile(ctx.mgr)
+      for observed <- [nil, 3_999_999, 4_000_000] do
+        NodeCapacity.put(ctx.cap_table, "node-4", Map.put(fact, :observed_at_unix_ms, observed))
+        assert :ok = SessionManager.reconcile(ctx.mgr)
+        assert {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+        refute session.state == unquote(terminal)
+      end
 
-    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
-    assert session.state == :evicted
+      NodeCapacity.put(ctx.cap_table, "node-4", Map.put(fact, :observed_at_unix_ms, 5_000_000))
+      assert :ok = SessionManager.reconcile(ctx.mgr)
+      assert {:ok, %{state: unquote(terminal)}} = SessionStore.get(ctx.store, created.session_id)
+    end
   end
 
-  test "co-located node facts use the freshest timestamp for vanished snapshot reaping" do
-    ctx = start_stack(evict_fun: fn _ch, _req -> {:ok, %{}} end, store_clock: fn -> 4_500_000 end)
-    put_session_workload(ctx, "wl-fresh-fact")
-    {:ok, created} = SessionManager.create(ctx.mgr, "wl-fresh-fact", "p1")
-    bank_session(ctx, created.session_id)
+  test "vanished recovery waits for every expected sibling's complete current report" do
+    expected = %{"node-4" => %{configured_id: "node-4"},
+                 "node-4/sibling" => %{configured_id: "node-4"}}
+    ctx = start_stack(store_clock: fn -> 4_000_000 end,
+      expected_instances_fun: fn -> expected end)
+    put_session_workload(ctx, "wl-siblings")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-siblings", "p1")
+    report_empty_node(ctx)
+    {:ok, fact} = NodeCapacity.fetch(ctx.cap_table, "node-4")
+    fact = Map.merge(fact, %{updated_at: -850_000, observed_at_unix_ms: 5_000_000})
+    NodeCapacity.put(ctx.cap_table, "node-4", fact)
+    assert :ok = SessionManager.reconcile(ctx.mgr)
+    assert {:ok, %{state: :running}} = SessionStore.get(ctx.store, created.session_id)
 
-    for {pod_uid, updated_at} <- [{"old", 4_000_000}, {"fresh", 5_000_000}] do
-      NodeCapacity.put(ctx.cap_table, {"node-4", pod_uid}, %{
-        node_id: "node-4",
-        configured_id: "node-4",
-        instance_id: "node-4/#{pod_uid}",
-        workloads: %{},
-        session_vms: [],
-        session_snapshots: [],
-        live_vms: 0,
-        max_live_vms: 8,
-        draining: false,
-        updated_at: updated_at
-      })
+    sibling = Map.put(fact, :instance_id, "node-4/sibling")
+    for patch <- [%{session_snapshots: nil}, %{session_vms: nil},
+                  %{updated_at: -1_000_000}, %{updated_at: -700_000},
+                  %{observed_at_unix_ms: 3_000_000}] do
+      NodeCapacity.put(ctx.cap_table, {"node-4", "sibling"}, Map.merge(sibling, patch))
+      assert :ok = SessionManager.reconcile(ctx.mgr)
+      assert {:ok, %{state: :running}} = SessionStore.get(ctx.store, created.session_id)
     end
 
-    :ok = SessionManager.reconcile(ctx.mgr)
-    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
-    assert session.state == :evicted
+    NodeCapacity.put(ctx.cap_table, {"node-4", "sibling"}, sibling)
+    assert :ok = SessionManager.reconcile(ctx.mgr)
+    assert {:ok, %{state: :failed}} = SessionStore.get(ctx.store, created.session_id)
   end
 
-  test "test_running_session_with_vanished_vm_and_snapshot_fails" do
-    ctx = start_stack(store_clock: fn -> 4_000_000 end)
-    put_session_workload(ctx, "wl-vanished-running")
-    {:ok, created} = SessionManager.create(ctx.mgr, "wl-vanished-running", "p1")
+  test "unreadable instance inventory never proves a guest vanished" do
+    ctx = start_stack(store_clock: fn -> 4_000_000 end,
+      expected_instances_fun: fn -> exit(:timeout) end)
+    put_session_workload(ctx, "wl-inventory-outage")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-inventory-outage", "p1")
     report_empty_node(ctx)
-
-    :ok = SessionManager.reconcile(ctx.mgr)
-
-    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
-    assert session.state == :failed
+    {:ok, fact} = NodeCapacity.fetch(ctx.cap_table, "node-4")
+    NodeCapacity.put(ctx.cap_table, "node-4",
+      Map.merge(fact, %{updated_at: -850_000, observed_at_unix_ms: 5_000_000}))
+    assert :ok = SessionManager.reconcile(ctx.mgr)
+    assert {:ok, %{state: :running}} = SessionStore.get(ctx.store, created.session_id)
   end
 
   test "test_repeated_adoption_sweep_does_not_double_log_unapplicable_transition" do
