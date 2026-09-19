@@ -1830,7 +1830,7 @@ py3_image(
 # the API or general-purpose jobs images.
 apko_image(
     name = "stars_grid_apko_base",
-    arm64 = True,
+    arm64 = False,
     config = "stars/grid_gen/apko.yaml",
     contents = "@stars_grid_apko_lock//:contents",
     repository = "ghcr.io/jomcgi/homelab/projects/monolith/stars-grid-base",
@@ -1838,17 +1838,14 @@ apko_image(
 
 py3_image(
     name = "stars_grid_image",
-    base = select({
-        "@platforms//cpu:arm64": ":stars_grid_apko_base_arm64",
-        "@platforms//cpu:x86_64": ":stars_grid_apko_base_amd64",
-    }),
+    base = ":stars_grid_apko_base",
     bash_symlink = False,
     binary = ":stars_grid_job",
     env = {
         "PYTHONPATH": "/projects/monolith/stars_grid_job.runfiles/_main:/projects/monolith/stars_grid_job.runfiles/_main/projects/monolith",
     },
     main = "stars/grid_gen/job.py",
-    multi_platform = True,
+    multi_platform = False,
     repository = "ghcr.io/jomcgi/homelab/projects/monolith/stars-grid",
 )
 
@@ -7266,7 +7263,6 @@ py_test(
     name = "stars_grid_build_config_test",
     srcs = ["stars/grid_gen/build_config_test.py"],
     data = [
-        "ARCHITECTURE.md",
         "BUILD",
         "stars/grid_gen/apko.lock.json",
         "stars/grid_gen/apko.yaml",
