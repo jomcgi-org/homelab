@@ -180,8 +180,11 @@ and has no Pub/Sub automation that could disable services.
 
 ## Render and activate an isolated validation release
 
-Before activation, render the chart with the dev values and the inactive
-overlay. Inspect every control-plane, noded, and rootfs-builder store setting.
+Before activation, render the chart with the dev values, then the existing GKE
+overrides, then the inactive validation overlay. This order keeps the dev
+workload scope, applies the hub's no-Cilium, unpinned-brick, and scratch-prep
+requirements, and finally replaces the production GKE store settings. Inspect
+every control-plane, noded, and rootfs-builder store setting.
 Every bucket must be `h0melab-ember-bases-dev`, no rendered manifest may contain
 `h0melab-ember-bases` as a distinct value, and every store credential reference
 must be a required reference to `embervm-store-validation-gcs`. The render must
@@ -195,6 +198,7 @@ helm template embervm-store-validation projects/embervm/chart \
   --namespace embervm-store-validation \
   --values projects/embervm/chart/values.yaml \
   --values projects/embervm/dev/deploy/values.yaml \
+  --values projects/embervm/deploy/values-gke.yaml \
   --values projects/embervm/dev/deploy/values-store-validation-gke.yaml \
   > /tmp/embervm-store-validation.yaml
 grep -nE 'EMBERVM(_NODED)?_STORE_(ENDPOINT|BUCKET)|secretKeyRef|name: embervm-store-validation-gcs' \

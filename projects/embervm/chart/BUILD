@@ -110,6 +110,8 @@ py_test(
     data = [
         "Chart.yaml",
         "values.yaml",
+        "//projects/gke-apps/embervm:application.yaml",
+        "//projects/gke-apps/embervm:kustomization.yaml",
         "//projects/embervm/deploy:application",
         "//projects/embervm/deploy:deploy_values",
         "//projects/embervm/deploy:gke_values",
@@ -167,6 +169,8 @@ py_test(
         "DEV_APPLICATION": "$(rootpath //projects/embervm/dev/deploy:application)",
         "DEV_KUSTOMIZATION": "$(rootpath //projects/embervm/dev/deploy:kustomization.yaml)",
         "DEV_VALUES": "$(rootpath //projects/embervm/dev/deploy:deploy_values)",
+        "GKE_APPLICATION": "$(rootpath //projects/gke-apps/embervm:application.yaml)",
+        "GKE_KUSTOMIZATION": "$(rootpath //projects/gke-apps/embervm:kustomization.yaml)",
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
         "PROD_APPLICATION": "$(rootpath //projects/embervm/deploy:application)",
         "PROD_GKE_VALUES": "$(rootpath //projects/embervm/deploy:gke_values)",

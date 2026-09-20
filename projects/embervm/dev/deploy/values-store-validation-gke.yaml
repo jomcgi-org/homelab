@@ -1,8 +1,9 @@
 # INACTIVE GKE store-validation preset for issue #6193.
 #
 # No Application or kustomization references this file. An operator must render
-# it over values.yaml in an isolated validation release and complete the
-# store-validation runbook before a later, reviewed activation.
+# it after the dev values and the existing GKE overrides in an isolated
+# validation release and complete the store-validation runbook before a later,
+# reviewed activation.
 #
 # The 1Password item path is deliberately empty. The preset renders required
 # SecretKeyRefs to the named Kubernetes Secret, so pods fail closed while that
