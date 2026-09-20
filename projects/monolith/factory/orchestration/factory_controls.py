@@ -1854,9 +1854,7 @@ def problem_issues_state(policy: dict, *, session: Session | None = None) -> dic
         )
         return {
             "policy": block,
-            "status": (
-                "on" if block["enabled"] and enabled_sources else "off"
-            ),
+            "status": ("on" if block["enabled"] and enabled_sources else "off"),
             "enabled_sources": enabled_sources,
             "writes_started_today": writes,
             "max_per_24_hours": block["max_per_24_hours"],

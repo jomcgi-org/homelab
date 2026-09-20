@@ -236,7 +236,8 @@
       {/if}
       {#if problemIssues?.last_event}
         <span
-          >problem issues {problemIssues.last_event.action.replaceAll("_", " ")} at {new Date(
+          >problem issues {problemIssues.last_event.action.replaceAll("_", " ")} at
+          {new Date(
             problemIssues.last_event.created_at,
           ).toLocaleTimeString()}</span
         >
