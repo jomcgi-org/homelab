@@ -95,9 +95,7 @@ def _dispatch_target(option):
 def _grant_deadline(task, policy):
     from factory.orchestration import factory_conductor as c
 
-    return c._aware(task.created_at) + timedelta(
-        seconds=policy["task_timeout_seconds"]
-    )
+    return c._aware(task.created_at) + timedelta(seconds=policy["task_timeout_seconds"])
 
 
 def grant_dispatch_refusal(db, row, escalation, option):
