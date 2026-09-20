@@ -10,7 +10,9 @@ import httpx
 from sqlmodel import select
 
 from factory.orchestration import factory_controls as controls, graph
+from factory.orchestration.factory_feedback import REVIEW_NODE_KEY
 from factory.orchestration.factory_models import (
+    FactoryAudit,
     FactoryReceipt,
 )
 
@@ -28,6 +30,7 @@ from factory.orchestration.factory_funding_limits import (
 ACTOR = "factory:funding"
 PREFIX = "conductor_funding_"
 REVIEW_SECONDS = 300
+FUNDING_REFUSAL_LIMIT = 6
 SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -478,11 +481,15 @@ def reconcile(task, policy, runs, permission):
         "funding_lease_due",
     }:
         return False
+    if task.get("routing_tier") == "advisory":
+        return False
     # A completed delivery needs no new allocation or planning turn.
     reviews = [
         r
         for r in runs
-        if r["node_key"].startswith("review_") and r["status"] == "succeeded"
+        if r["node_key"].startswith("review_")
+        and r["status"] == "succeeded"
+        and r["node_key"] != REVIEW_NODE_KEY
     ]
     review = max(reviews, key=lambda r: r["id"]) if reviews else None
     completion_revision = graph.current_version(task["id"])
@@ -537,6 +544,39 @@ def reconcile(task, policy, runs, permission):
             return True
     if last and last.get("refusal"):
         if controls._now() < datetime.fromisoformat(last["retry_after"]):
+            return True
+        with controls._read_session() as db:
+            granted = latest(db, task["id"], "funding_granted")
+            refusals = db.exec(
+                select(FactoryAudit)
+                .where(
+                    FactoryAudit.task_id == task["id"],
+                    FactoryAudit.action == "funding_review_settled",
+                    *(
+                        (FactoryAudit.id > granted["audit_id"],)
+                        if granted is not None
+                        else ()
+                    ),
+                )
+                .order_by(FactoryAudit.id.desc())
+            ).all()
+            refusal_count = 0
+            for audit in refusals:
+                detail = json.loads(audit.detail_json)
+                if detail.get("refusal"):
+                    refusal_count += 1
+                else:
+                    break
+        if refusal_count >= FUNDING_REFUSAL_LIMIT:
+            controls.finish_task(
+                task["id"],
+                "failed",
+                ACTOR,
+                evidence={
+                    "state": "funding_review_unavailable",
+                    "reason": "6 consecutive funding reviews could not start",
+                },
+            )
             return True
         return request(task, "Retry Astra decision after " + last["refusal"])
     snapshot = controls.task_snapshot(task["id"])

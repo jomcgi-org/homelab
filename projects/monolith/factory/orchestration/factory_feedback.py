@@ -1,8 +1,8 @@
 """First-pass verdict feedback and bounded class routing.
 
-Delivery and advisory samples stay in separate, per-class windows. Admission
-pins the selected route to a receipt, and a demoted delivery class produces a
-comment that a separate reviewer must assess before it becomes recovery data.
+Delivery and advisory samples stay in separate, per-class windows. Delivery
+classes always route to delivery, and admission heals stored advisory routes.
+Explicit advisory classes retain their dedicated review path.
 """
 
 from __future__ import annotations
@@ -321,16 +321,16 @@ def feedback_for_class(task_class: str, *, session: Session | None = None) -> di
         recovery_rows = rows if previous == ADVISORY_TIER else []
         count = active["sample_count"]
         rate = active["approval_rate"]
-        if count < WINDOW_SIZE:
-            tier, decision = previous, "insufficient_samples"
-        elif previous == DELIVERY_TIER and rate is not None and rate < APPROVAL_FLOOR:
-            tier, decision = ADVISORY_TIER, "below_floor"
-        elif previous == ADVISORY_TIER and rate is not None and rate > APPROVAL_FLOOR:
-            tier, decision = DELIVERY_TIER, "above_floor"
+        if previous == ADVISORY_TIER:
+            tier, decision = DELIVERY_TIER, "advisory_retired"
+        elif count < WINDOW_SIZE:
+            tier, decision = DELIVERY_TIER, "insufficient_samples"
+        elif rate is not None and rate < APPROVAL_FLOOR:
+            tier, decision = DELIVERY_TIER, "below_floor"
         elif rate == APPROVAL_FLOOR:
-            tier, decision = previous, "at_floor_hold"
+            tier, decision = DELIVERY_TIER, "at_floor_hold"
         else:
-            tier, decision = previous, "quality_holds"
+            tier, decision = DELIVERY_TIER, "quality_holds"
         return {
             "task_class": task_class,
             "tier": tier,

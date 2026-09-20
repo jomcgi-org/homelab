@@ -10109,6 +10109,102 @@ def settle_funding(task, value):
     return request
 
 
+def test_advisory_review_settles_without_delivery_pr_number(feedback_db, monkeypatch):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_feedback as feedback,
+    )
+
+    monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "true")
+    task, policy = feedback_task()
+    with Session(feedback_db) as db:
+        receipt = db.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == task["id"])
+        ).one()
+        receipt.routing_tier = feedback.ADVISORY_TIER
+        db.add(receipt)
+        db.commit()
+    task = conductor._task(task["id"])
+
+    conductor.reconcile_task(task["id"], policy, object())
+    run_feedback_node(
+        task,
+        feedback.ADVISORY_NODE_KEY,
+        {
+            "status": "complete",
+            "summary": "Safer recipe",
+            "comment_url": "https://github.com/owner/repo/issues/7#issuecomment-1",
+        },
+    )
+    conductor.reconcile_task(task["id"], policy, object())
+    run_feedback_node(
+        task,
+        feedback.REVIEW_NODE_KEY,
+        {
+            "verdict": "approve",
+            "summary": "Recipe is usable",
+            "comment_url": "https://github.com/owner/repo/issues/7#issuecomment-1",
+        },
+    )
+    monkeypatch.setattr(
+        conductor,
+        "github_list",
+        lambda *_args: [
+            {
+                "html_url": "https://github.com/owner/repo/issues/7#issuecomment-1",
+                "body": (
+                    "## Factory advisory\n\n### Why delivery is paused\n\n"
+                    "Below the floor.\n\n### Suggested recipe\n\n"
+                    "Investigate, implement, test, and review.\n\n"
+                    "### Evidence\n\nRecorded outcomes.\n\n"
+                    f"<!-- factory-feedback-advisory:{task['id']} -->"
+                ),
+            }
+        ],
+    )
+
+    conductor.reconcile_task(task["id"], policy, object())
+
+    assert controls.task_snapshot(task["id"])["state"] == "succeeded"
+
+
+def test_consecutive_funding_refusals_finish_task(feedback_db, monkeypatch):
+    from datetime import timedelta
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_funding as funding,
+    )
+
+    monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "true")
+    task, policy = feedback_task()
+    retry_after = (controls._now() - timedelta(minutes=1)).isoformat()
+    with controls._locked_session() as (db, _control):
+        for ordinal in range(funding.FUNDING_REFUSAL_LIMIT):
+            controls._audit(
+                db,
+                funding.ACTOR,
+                "funding_review_settled",
+                task_id=task["id"],
+                request_id=ordinal,
+                refusal="Astra review could not start",
+                retry_after=retry_after,
+            )
+    monkeypatch.setattr(
+        funding,
+        "request",
+        lambda *_args, **_kwargs: pytest.fail("refusal limit must stop retries"),
+    )
+
+    conductor.reconcile_task(task["id"], policy, object())
+
+    snapshot = controls.task_snapshot(task["id"])
+    assert snapshot["state"] == "failed"
+    assert snapshot["evidence"] == {
+        "state": "funding_review_unavailable",
+        "reason": "6 consecutive funding reviews could not start",
+    }
+
+
 def test_astra_decides_extensions_repeatedly_without_mutating_original_policy(
     feedback_db, monkeypatch
 ):
