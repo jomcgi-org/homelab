@@ -1299,7 +1299,9 @@ def test_muse_pushes_tool_activity_during_turn(tmp_path, monkeypatch):
     assert pushes[-1] == ("OK", activity)
 
 
-def test_muse_empty_retained_projection_preserves_live_tool_activity(tmp_path, monkeypatch):
+def test_muse_empty_retained_projection_preserves_live_tool_activity(
+    tmp_path, monkeypatch
+):
     monkeypatch.setenv("FAKE_MUSE_SCENARIO", "tool-activity")
     manager = _muse_manager(tmp_path, monkeypatch)
 
