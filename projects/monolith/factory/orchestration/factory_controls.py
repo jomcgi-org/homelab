@@ -77,6 +77,7 @@ _POLICY_KEYS = {
     "max_review_rounds",
     "max_review_recovery_rounds",
     "intake",
+    "problem_issues",
     "quota_guard",
     "auto_merge",
 }
@@ -90,6 +91,7 @@ _OPTIONAL_POLICY_KEYS = {
     "max_turns_per_task",
     "max_parallel_nodes",
     "intake",
+    "problem_issues",
     "quota_guard",
     "auto_merge",
 }
@@ -196,6 +198,26 @@ DEFAULT_INTAKE = {
 # thing the reconciler does that changes the repository rather than reading
 # it, so the capability arrives inert and an operator opts in.
 DEFAULT_AUTO_MERGE = False
+# Problem issues turn a deliberately small set of exact factory audits into
+# ordinary GitHub issues. Both the producer and every source arrive off. The
+# remaining values are conservative repository defaults supplied by the
+# conductor rescope for #6002; changing live policy remains an operator act.
+PROBLEM_ISSUE_SOURCES = (
+    "node_stalled",
+    "workflow_stranded",
+    "landing_recovery_exhausted",
+)
+DEFAULT_PROBLEM_ISSUES = {
+    "enabled": False,
+    "sources": {source: False for source in PROBLEM_ISSUE_SOURCES},
+    "source_audit_limit": 50,
+    "issue_pages": 2,
+    "issues_per_page": 100,
+    "max_per_tick": 1,
+    "max_per_24_hours": 3,
+    "labels": ["bug"],
+    "retry_minutes": [2, 4, 8, 16, 32, 60],
+}
 # The shared Claude 7-day window, as a percentage used. Review is what spends
 # it: every delivery task ends in an independent Opus review. Above the pause
 # percent review routes to the next reviewer with quota, and below the resume
@@ -630,6 +652,9 @@ def validate_policy(policy: dict) -> dict:
     if "model_pools" in policy:
         result["model_pools"] = _validate_model_pools(policy["model_pools"], result)
     result["intake"] = _validate_intake(policy.get("intake", {}))
+    result["problem_issues"] = _validate_problem_issues(
+        policy.get("problem_issues", {})
+    )
     result["quota_guard"] = _validate_quota_guard(policy.get("quota_guard", {}))
     # Landing is the one factory step that writes to the repository rather
     # than reading it, so it is a flag of its own and defaults off. A policy
@@ -688,6 +713,48 @@ def _validate_intake(value: object) -> dict:
     return result
 
 
+def _validate_problem_issues(value: object) -> dict:
+    if not isinstance(value, dict) or not set(value) <= set(DEFAULT_PROBLEM_ISSUES):
+        raise ValueError("invalid problem_issues")
+    result = dict(DEFAULT_PROBLEM_ISSUES)
+    enabled = value.get("enabled", result["enabled"])
+    if type(enabled) is not bool:
+        raise ValueError("invalid problem_issues enabled")
+    result["enabled"] = enabled
+
+    sources = value.get("sources", result["sources"])
+    if not isinstance(sources, dict) or not set(sources) <= set(PROBLEM_ISSUE_SOURCES):
+        raise ValueError("invalid problem_issues sources")
+    result["sources"] = dict(DEFAULT_PROBLEM_ISSUES["sources"])
+    for source, source_enabled in sources.items():
+        if type(source_enabled) is not bool:
+            raise ValueError(f"invalid problem_issues source {source}")
+        result["sources"][source] = source_enabled
+
+    for key, low, high in (
+        ("source_audit_limit", 1, 50),
+        ("issue_pages", 1, 2),
+        ("issues_per_page", 1, 100),
+        ("max_per_24_hours", 1, 100),
+    ):
+        result[key] = _integer(value.get(key, result[key]), key, low, high)
+    result["max_per_tick"] = _integer(
+        value.get("max_per_tick", result["max_per_tick"]),
+        "max_per_tick",
+        1,
+        1,
+    )
+    labels = value.get("labels", result["labels"])
+    if labels != ["bug"]:
+        raise ValueError("problem_issues labels must be exactly bug")
+    result["labels"] = ["bug"]
+    retries = value.get("retry_minutes", result["retry_minutes"])
+    if retries != DEFAULT_PROBLEM_ISSUES["retry_minutes"]:
+        raise ValueError("invalid problem_issues retry_minutes")
+    result["retry_minutes"] = list(DEFAULT_PROBLEM_ISSUES["retry_minutes"])
+    return result
+
+
 def _validate_quota_guard(value: object) -> dict:
     if not isinstance(value, dict) or not set(value) <= set(DEFAULT_QUOTA_GUARD):
         raise ValueError("invalid quota_guard")
@@ -715,6 +782,11 @@ def quota_guard_policy(policy: dict) -> dict:
 def intake_policy(policy: dict) -> dict:
     """The intake block, defaulted, so a policy stored before it reads as off."""
     return _validate_intake(policy.get("intake") or {})
+
+
+def problem_issues_policy(policy: dict) -> dict:
+    """The exact-event issue producer block, defaulted fully off."""
+    return _validate_problem_issues(policy.get("problem_issues") or {})
 
 
 def auto_merge_enabled(policy: dict) -> bool:
@@ -1732,6 +1804,66 @@ def intake_state(policy: dict, *, session: Session | None = None) -> dict:
         }
 
 
+_PROBLEM_ISSUE_ACTIONS = (
+    "problem_issue_policy_observed",
+    "problem_issue_scan_capped",
+    "problem_issue_issue_scan_capped",
+    "problem_issue_discovery_failed",
+    "problem_issue_daily_capped",
+    "problem_issue_write_started",
+    "problem_issue_created",
+    "problem_issue_write_refused",
+    "problem_issue_source_refused",
+    "problem_issue_write_uncertain",
+    "problem_issue_reconcile_retry",
+    "problem_issue_reconciled",
+    "problem_issue_unresolved",
+)
+
+
+def problem_issues_state(policy: dict, *, session: Session | None = None) -> dict:
+    """Producer policy and recent durable activity for the factory board."""
+    block = problem_issues_policy(policy)
+    cutoff = _now() - timedelta(hours=24)
+    with _read_session(session) as db:
+        writes = len(
+            db.exec(
+                select(FactoryAudit.id).where(
+                    FactoryAudit.action == "problem_issue_write_started",
+                    FactoryAudit.created_at >= cutoff,
+                )
+            ).all()
+        )
+        last = db.exec(
+            select(FactoryAudit)
+            .where(FactoryAudit.action.in_(_PROBLEM_ISSUE_ACTIONS))
+            .order_by(FactoryAudit.id.desc())
+        ).first()
+        last_event = None
+        if last is not None:
+            created = last.created_at
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            last_event = {
+                "action": last.action,
+                "created_at": created.isoformat(),
+                "detail": json.loads(last.detail_json),
+            }
+        enabled_sources = sorted(
+            source for source, enabled in block["sources"].items() if enabled
+        )
+        return {
+            "policy": block,
+            "status": (
+                "on" if block["enabled"] and enabled_sources else "off"
+            ),
+            "enabled_sources": enabled_sources,
+            "writes_started_today": writes,
+            "max_per_24_hours": block["max_per_24_hours"],
+            "last_event": last_event,
+        }
+
+
 # Transitions the reconciler records, newest first, when review routing
 # changes. They live here, beside the ledger, because the board reads them and
 # the board must not link the module that reaches the token broker.
@@ -1853,6 +1985,7 @@ def status(*, session: Session | None = None) -> dict:
             "state": control.state,
             "policy": policy,
             "intake": intake_state(policy, session=db),
+            "problem_issues": problem_issues_state(policy, session=db),
             "lanes": lane_usage(policy, receipts),
             "review_routing": review_routing_view(policy, session=db),
             "admitted_count": control.admitted_count,

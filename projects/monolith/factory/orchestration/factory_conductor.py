@@ -5957,6 +5957,12 @@ def tick() -> None:
 
     landing_tick(snapshot["policy"])
     try:
+        from factory.orchestration.factory_problem_issues import problem_issues_tick
+
+        problem_issues_tick(snapshot["policy"])
+    except Exception:  # noqa: BLE001 - issue production cannot stop reconciliation
+        logger.exception("factory problem issue reconciliation failed")
+    try:
         from factory.orchestration.work_item_pointer import sync_pointers
 
         sync_pointers(actor=ACTOR)

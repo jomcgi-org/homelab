@@ -441,6 +441,7 @@ def test_tick_syncs_work_item_pointers_while_paused(monkeypatch):
     from factory.orchestration import (
         factory_controls as controls,
         factory_landing,
+        factory_problem_issues,
         work_item_pointer,
     )
 
@@ -459,6 +460,11 @@ def test_tick_syncs_work_item_pointers_while_paused(monkeypatch):
         factory_landing, "landing_tick", lambda value: calls.append(("landing", value))
     )
     monkeypatch.setattr(
+        factory_problem_issues,
+        "problem_issues_tick",
+        lambda value: calls.append(("problem_issues", value)),
+    )
+    monkeypatch.setattr(
         work_item_pointer,
         "sync_pointers",
         lambda **kwargs: calls.append(("pointer", kwargs)),
@@ -466,6 +472,7 @@ def test_tick_syncs_work_item_pointers_while_paused(monkeypatch):
     conductor.tick()
     assert calls == [
         ("landing", policy),
+        ("problem_issues", policy),
         ("pointer", {"actor": conductor.ACTOR}),
     ]
 

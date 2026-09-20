@@ -269,6 +269,8 @@ def test_build_factory_view_reads_a_real_control_row(tmp_path):
     assert view["queued"][0]["nodes"] == []
     assert view["active"] == [] and view["recent"] == []
     assert view["intake"]["policy"]["enabled"] is False
+    assert view["problem_issues"]["status"] == "off"
+    assert view["problem_issues"]["enabled_sources"] == []
     # The control row carries a bare integer max_tasks, so it is the delivery
     # lane and the advisory lane is shut.
     assert view["review_routing"]["action"] is None
