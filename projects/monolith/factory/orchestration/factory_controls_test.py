@@ -1609,9 +1609,7 @@ def test_multiple_generation_bumps_retire_each_old_queue_once(db, policy):
         )["ok"]
 
     with Session(db) as session:
-        states = [
-            session.get(FactoryReceipt, row_id).state for row_id in receipt_ids
-        ]
+        states = [session.get(FactoryReceipt, row_id).state for row_id in receipt_ids]
         assert states == [
             "cancelled",
             "cancelled",

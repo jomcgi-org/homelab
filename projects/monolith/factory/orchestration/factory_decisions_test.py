@@ -828,9 +828,7 @@ def test_generation_bump_waits_for_claimed_issue_effect(db, github, monkeypatch)
     from threading import Event
 
     configure()
-    receipt_id = escalate(
-        db, "deliver", task_class="bug-fix", state="escalated"
-    )
+    receipt_id = escalate(db, "deliver", task_class="bug-fix", state="escalated")
     identity = current_decision_id()
     started, release = Event(), Event()
     apply = decisions._apply
@@ -857,9 +855,7 @@ def test_generation_bump_waits_for_claimed_issue_effect(db, github, monkeypatch)
                     "task_budget_usd": 31,
                 }
             )
-            refused = controls.set_control(
-                "configure", "operator", policy=changed
-            )
+            refused = controls.set_control("configure", "operator", policy=changed)
             assert refused["reason"] == "generation_retirement_decision_in_flight"
             assert controls.status()["policy"]["generation"] == 0
             assert github.writes == []

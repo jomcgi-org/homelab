@@ -1868,9 +1868,7 @@ def _generation_retirement_candidates(
     for row in rows:
         if row.state in _ACTIVE:
             continue
-        escalation = (
-            json.loads(row.escalation_json) if row.escalation_json else None
-        )
+        escalation = json.loads(row.escalation_json) if row.escalation_json else None
         unresolved = isinstance(escalation, dict) and escalation.get("resolved") is None
         if row.state in ("queued", ESCALATED) or unresolved:
             candidates.append(row)
@@ -1886,9 +1884,7 @@ def _retire_generation_candidate(
     """Settle one old queue or card without moving it into the new policy."""
     previous_state = row.state
     escalation = json.loads(row.escalation_json) if row.escalation_json else None
-    card_resolved = (
-        isinstance(escalation, dict) and escalation.get("resolved") is None
-    )
+    card_resolved = isinstance(escalation, dict) and escalation.get("resolved") is None
     receipt_retired = row.state in ("queued", ESCALATED)
     note = (
         f"Policy generation advanced past this receipt from {row.generation} to "
@@ -1966,9 +1962,7 @@ def reconcile_generation_stale_receipts(
             if decision_in_flight(db, row.id):
                 counts["blocked"] += 1
                 continue
-            result = _retire_generation_candidate(
-                db, row, current_generation, actor
-            )
+            result = _retire_generation_candidate(db, row, current_generation, actor)
             reconciled += 1
             counts["retired"] += int(result["receipt_retired"])
             counts["cards_resolved"] += int(result["card_resolved"])
@@ -2033,11 +2027,8 @@ def set_control(
                 reason = "generation_not_advanced"
             else:
                 candidates = (
-                    _generation_retirement_candidates(
-                        db, configured["generation"]
-                    )
-                    if configured["generation"]
-                    > previous.get("generation", -1)
+                    _generation_retirement_candidates(db, configured["generation"])
+                    if configured["generation"] > previous.get("generation", -1)
                     else []
                 )
                 from factory.orchestration.factory_decisions import (
