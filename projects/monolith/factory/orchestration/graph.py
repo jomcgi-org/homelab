@@ -1449,17 +1449,26 @@ def bind_node_session(
     attempt: int,
     session_id: int,
     *,
+    workflow_id: str,
     session: Session | None = None,
 ) -> GraphOp:
     """Persist the session identity before waits or completion evidence exists."""
-    return record_dispatch(
-        task_id,
-        node_key,
-        attempt,
-        session_id,
-        None,
-        session=session,
-    )
+    with _session(session) as db:
+        lock_node_session_binding(
+            task_id,
+            node_key,
+            attempt,
+            workflow_id=workflow_id,
+            session=db,
+        )
+        return record_dispatch(
+            task_id,
+            node_key,
+            attempt,
+            session_id,
+            None,
+            session=db,
+        )
 
 
 def lock_node_session_binding(
@@ -1467,6 +1476,7 @@ def lock_node_session_binding(
     node_key: str,
     attempt: int,
     *,
+    workflow_id: str,
     session: Session | None = None,
 ) -> int | None:
     """Fence session creation against a conflicting or terminal run.
@@ -1479,6 +1489,8 @@ def lock_node_session_binding(
     with _session(session) as db:
         _lock_task(db, task_id)
         run = _get_run(db, task_id, node_key, attempt)
+        if run.dispatch_key != workflow_id:
+            raise ValueError("node session binding ownership conflict")
         if run.session_id is None and run.status not in ("admitted", "uncertain"):
             raise ValueError("node session binding conflict")
         return run.session_id

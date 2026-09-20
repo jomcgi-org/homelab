@@ -576,6 +576,7 @@ def session_binding_db(tmp_path, monkeypatch):
                 task_id="t-11",
                 node_key="implement",
                 attempt=1,
+                dispatch_key="parent-run",
                 status="admitted",
             )
         )
@@ -770,8 +771,9 @@ def test_session_binding_refusal_replays_one_existing_session_and_prompt(
         ]
     )
 
-    def bind(task_id, node_key, attempt, session_id, *, session=None):
+    def bind(task_id, node_key, attempt, session_id, *, workflow_id, session=None):
         assert session is None
+        assert workflow_id == "parent-run"
         bindings.append((task_id, node_key, attempt, session_id))
         return next(outcomes)
 
@@ -836,7 +838,9 @@ def test_conflicting_run_binding_refuses_before_starting_another_session(
     from factory.execution import api as execution_api
     from factory.orchestration import graph
 
-    assert graph.bind_node_session("t-11", "implement", 1, 77).ok
+    assert graph.bind_node_session(
+        "t-11", "implement", 1, 77, workflow_id="parent-run"
+    ).ok
     monkeypatch.setattr(
         execution_api,
         "start_session_for_swarm",
@@ -850,6 +854,32 @@ def test_conflicting_run_binding_refuses_before_starting_another_session(
             "org/repo",
             "factory/11",
             workflow_id="parent-run",
+            node_key="implement",
+            node_attempt=1,
+        )
+    with Session(session_binding_db) as session:
+        assert session.exec(select(AgentSession)).all() == []
+        assert session.exec(select(PendingMessage)).all() == []
+
+
+def test_conflicting_run_workflow_refuses_before_starting_a_session(
+    session_binding_db, monkeypatch
+):
+    from factory.execution import api as execution_api
+
+    monkeypatch.setattr(
+        execution_api,
+        "start_session_for_swarm",
+        lambda *_args, **_kwargs: pytest.fail("foreign workflow started a session"),
+    )
+    with pytest.raises(ValueError, match="binding ownership conflict"):
+        nodes._session_api(
+            "factory:t-11:implement:1",
+            "one prompt",
+            "luna",
+            "org/repo",
+            "factory/11",
+            workflow_id="another-workflow",
             node_key="implement",
             node_attempt=1,
         )
