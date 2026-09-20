@@ -22,14 +22,12 @@ def runner():
 
 
 @pytest.fixture
-def session():
+def session(tmp_path):
     from sqlmodel import Session, SQLModel, create_engine
-    from sqlmodel.pool import StaticPool
 
     engine = create_engine(
-        "sqlite://",
+        f"sqlite:///{tmp_path / 'knowledge.db'}",
         connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
     )
     original_schemas = {}
     for table in SQLModel.metadata.tables.values():
@@ -41,6 +39,7 @@ def session():
         with Session(engine) as s:
             yield s
     finally:
+        engine.dispose()
         for table in SQLModel.metadata.tables.values():
             if table.name in original_schemas:
                 table.schema = original_schemas[table.name]
@@ -56,9 +55,23 @@ def _patch_fastapi(session):
     """
     from fastapi.testclient import TestClient
     from app.main import app as fastapi_app
+    from auth.api import Authority, Principal, PrincipalKind, get_principal
     from core.db import get_session
 
     fastapi_app.dependency_overrides[get_session] = lambda: session
+    fastapi_app.dependency_overrides[get_principal] = lambda: Principal(
+        subject="knowledge-cli-test",
+        actor=(),
+        scope=(
+            "org:jomcgi-org",
+            "repo:jomcgi-org/homelab",
+            "environment:homelab",
+        ),
+        groups=(),
+        email="knowledge-cli-test@example.com",
+        kind=PrincipalKind.HUMAN,
+        authority=Authority.STANDING,
+    )
     test_client = TestClient(fastapi_app)
 
     @contextmanager
@@ -271,6 +284,12 @@ class TestSearch:
                     query_embedding=_FAKE_EMBEDDING,
                     limit=10,
                     type_filter="paper",
+                    scope_filters=(
+                        "org:jomcgi-org",
+                        "repo:jomcgi-org/homelab",
+                        "environment:homelab",
+                    ),
+                    include_unscoped=False,
                 )
         finally:
             del fastapi_app.dependency_overrides[get_embedding_client]
@@ -288,6 +307,12 @@ class TestSearch:
                     query_embedding=_FAKE_EMBEDDING,
                     limit=5,
                     type_filter=None,
+                    scope_filters=(
+                        "org:jomcgi-org",
+                        "repo:jomcgi-org/homelab",
+                        "environment:homelab",
+                    ),
+                    include_unscoped=False,
                 )
         finally:
             del fastapi_app.dependency_overrides[get_embedding_client]
