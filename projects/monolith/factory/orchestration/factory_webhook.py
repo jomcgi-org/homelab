@@ -13,6 +13,7 @@ import hmac
 import json
 import os
 import re
+from datetime import datetime
 
 from core.db import get_session
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
@@ -23,7 +24,9 @@ from factory.orchestration.factory_models import FactoryWebhookDelivery, WorkIte
 from factory.orchestration.work_item_links import reconcile_body_edges
 from factory.orchestration.work_items import (
     WorkItemError,
+    github_issue_updated_at,
     mint_or_sync_from_github,
+    order_github_issue_snapshot,
     transition,
     trust_for_github_author,
 )
@@ -135,6 +138,7 @@ def _claim_delivery(
     action: str | None,
     repo: str,
     issue_number: int | None,
+    source_updated_at: datetime | None = None,
 ) -> FactoryWebhookDelivery | None:
     row = FactoryWebhookDelivery(
         delivery_id=delivery_id,
@@ -142,6 +146,7 @@ def _claim_delivery(
         action=action,
         repo=repo,
         issue_number=issue_number,
+        source_updated_at=source_updated_at,
     )
     session.add(row)
     try:
@@ -152,13 +157,17 @@ def _claim_delivery(
     return row
 
 
-def _existing_item(session: Session, repo: str, issue_number: int) -> WorkItem | None:
-    return session.exec(
-        select(WorkItem).where(
-            WorkItem.github_repo == repo,
-            WorkItem.github_issue_number == issue_number,
-        )
-    ).one_or_none()
+def _locked_repo_items(session: Session, repo: str) -> list[WorkItem]:
+    """Read fresh authority for the issue and dependency endpoints."""
+    return list(
+        session.exec(
+            select(WorkItem)
+            .where(WorkItem.github_repo == repo)
+            .order_by(WorkItem.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).all()
+    )
 
 
 def process_delivery(
@@ -191,6 +200,10 @@ def process_delivery(
 
     issue = _issue(payload)
     number = issue["number"]
+    try:
+        source_updated_at = github_issue_updated_at(issue)
+    except WorkItemError as exc:
+        raise HTTPException(422, str(exc)) from exc
     claim = _claim_delivery(
         session,
         delivery_id=delivery_id,
@@ -198,6 +211,7 @@ def process_delivery(
         action=action,
         repo=repo,
         issue_number=number,
+        source_updated_at=source_updated_at,
     )
     if claim is None:
         return {"status": "duplicate"}
@@ -211,7 +225,10 @@ def process_delivery(
     if state not in ("open", "closed") or action == "closed" and state != "closed":
         raise HTTPException(422, "issue lifecycle state is inconsistent")
 
-    existing = _existing_item(session, repo, number)
+    locked_items = _locked_repo_items(session, repo)
+    existing = next(
+        (item for item in locked_items if item.github_issue_number == number), None
+    )
     if existing is not None and existing.authority == "local":
         claim.outcome = "local_untouched"
         claim.work_item_id = existing.id
@@ -237,9 +254,30 @@ def process_delivery(
         session.commit()
         return {"status": "accepted", "outcome": claim.outcome}
 
+    try:
+        _source_state, ordering_outcome = order_github_issue_snapshot(
+            session,
+            repo,
+            issue,
+            source_ref=f"delivery:{delivery_id}",
+        )
+    except WorkItemError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    if ordering_outcome is not None:
+        claim.outcome = f"trusted_{ordering_outcome}"
+        if existing is not None:
+            claim.work_item_id = existing.id
+        session.add(claim)
+        session.commit()
+        return {
+            "status": "accepted",
+            "outcome": claim.outcome,
+            **({"work_item_id": claim.work_item_id} if claim.work_item_id else {}),
+        }
+
     if state == "closed":
         if existing is None:
-            claim.outcome = "trusted_unchanged"
+            claim.outcome = "trusted_closed"
         elif existing.state == "closed":
             claim.outcome = "trusted_unchanged"
             claim.work_item_id = existing.id

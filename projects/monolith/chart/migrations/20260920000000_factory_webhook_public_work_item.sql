@@ -7,6 +7,7 @@ CREATE TABLE swarm.factory_webhook_delivery (
     action TEXT,
     repo TEXT NOT NULL,
     issue_number INTEGER,
+    source_updated_at TIMESTAMPTZ,
     outcome TEXT NOT NULL,
     CONSTRAINT factory_webhook_delivery_outcome_check CHECK (
         outcome IN (
@@ -17,6 +18,8 @@ CREATE TABLE swarm.factory_webhook_delivery (
             'trusted_synced',
             'trusted_unchanged',
             'trusted_closed',
+            'trusted_stale_ignored',
+            'trusted_missing_timestamp_ignored',
             'local_untouched',
             'semi_trusted_held',
             'untrusted_ignored'
@@ -26,8 +29,28 @@ CREATE TABLE swarm.factory_webhook_delivery (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX factory_webhook_delivery_issue_created_idx
-    ON swarm.factory_webhook_delivery (repo, issue_number, created_at);
+CREATE INDEX factory_webhook_delivery_issue_source_idx
+    ON swarm.factory_webhook_delivery (repo, issue_number, source_updated_at);
+
+-- This source watermark is independent of work-item existence. In particular,
+-- a close that arrives before import prevents an older open delivery or sweep
+-- snapshot from minting a phantom item. Only GitHub issue.updated_at advances
+-- the watermark; delivery arrival time is never used for source ordering.
+CREATE TABLE swarm.factory_github_issue_state (
+    repo TEXT NOT NULL,
+    issue_number INTEGER NOT NULL,
+    source_updated_at TIMESTAMPTZ NOT NULL,
+    source_state TEXT NOT NULL,
+    source_ref TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (repo, issue_number),
+    CONSTRAINT factory_github_issue_state_source_state_check CHECK (
+        source_state IN ('open', 'closed')
+    ),
+    CONSTRAINT factory_github_issue_state_issue_number_check CHECK (
+        issue_number > 0
+    )
+);
 
 -- The public tier receives only deliberately shaped snapshots. It retains no
 -- grant on swarm.* and cannot reach work-item events, receipts, escalations or

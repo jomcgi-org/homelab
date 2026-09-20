@@ -11,6 +11,7 @@ from sqlmodel import Session, select
 from factory.orchestration.factory_models import WorkItem, WorkItemEdge
 from factory.orchestration.work_items import (
     WorkItemError,
+    _lock_items,
     add_edge,
     remove_edge,
 )
@@ -95,6 +96,16 @@ def reconcile_body_edges(
         "cycles": 0,
         "skipped_local": 0,
     }
+    item_ids = [item.id for item, _body in items if item.id is not None]
+    if not item_ids:
+        return counts
+    locked_items = _lock_items(db, *item_ids)
+    items = [
+        (locked_items[item.id], locked_items[item.id].body)
+        for item, _body in items
+        if item.id
+    ]
+    protected_ids = {item.id for item, _body in items if item.authority == "local"}
     skipped_removals: set[int] = set()
     attempted_additions: set[tuple[int, int]] = set()
 
@@ -204,6 +215,8 @@ def reconcile_body_edges(
         # Remove stale edges (edges that exist but are not desired)
         for (from_id, to_id), edge in existing_edges.items():
             if (from_id, to_id) not in item_desired_edges:
+                if from_id in protected_ids or to_id in protected_ids:
+                    continue
                 if edge.id is not None:
                     if truncated:
                         if edge.id not in skipped_removals:
