@@ -563,6 +563,7 @@ def problem_issues_tick(policy: dict) -> None:
     # an intent recorded before an operator removed the block still needs its
     # bounded read-only reconciliation to reach a terminal state.
     if "problem_issues" not in policy:
+        _observe_policy(block)
         with _read_session() as db:
             pending = _pending_started(db)
         if pending is not None:

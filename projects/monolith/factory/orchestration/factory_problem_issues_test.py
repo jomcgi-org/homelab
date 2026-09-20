@@ -206,6 +206,23 @@ def test_omitted_and_disabled_policy_make_no_github_calls_or_writes(db, monkeypa
     assert view["policy"] == controls.DEFAULT_PROBLEM_ISSUES
 
 
+def test_omission_watermarks_events_before_reenable(db, monkeypatch):
+    engine, _clock = db
+    selected = policy()
+    state = github(monkeypatch)
+    enable_after_watermark(engine, selected)
+
+    producer.problem_issues_tick({"repo": "owner/repo"})
+    add_event(engine, workflow="while-omitted")
+    producer.problem_issues_tick(selected)
+    assert state["writes"] == []
+
+    add_event(engine, workflow="after-reenable")
+    producer.problem_issues_tick(selected)
+    assert len(state["writes"]) == 1
+    assert "after-reenable" in state["writes"][0]["body"]
+
+
 def test_first_enabled_tick_watermarks_history_then_creates_source_linked_issue(
     db, monkeypatch
 ):
