@@ -14,6 +14,10 @@ from probe.spans import HOPS, bucket_spans
 
 
 def test_reasoning_flag_sets_session_start_body(monkeypatch):
+    # Parser construction resolves the convenience default eagerly. A Bazel
+    # runfiles tree intentionally has no .git directory, and this test never
+    # consumes the repository path because its task has no snapshot.
+    monkeypatch.setattr("probe.cli._default_repo_path", lambda: Path.cwd())
     args = build_parser().parse_args(["run", "--task", "sample", "--reasoning"])
     task = LoadedTask(
         spec=type(

@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import ember_public.semgrep_core as semgrep_core
+import ember_public.semgrep_router as semgrep_router
 from ember_public.semgrep_router import _DEMO_SG_SESSION_COOKIE, router
 
 
@@ -44,12 +45,9 @@ def _reset_semgrep_core_module_state():
     _reset()
 
 
-def _fake_scan_files_module(monkeypatch, fake):
-    """semgrep_router imports semgrep_scan.client lazily inside the handler,
-    so patch the source module rather than an attribute on semgrep_router."""
-    import semgrep_scan.client as client_module
-
-    monkeypatch.setattr(client_module, "scan_files", fake)
+def _fake_scan_files(monkeypatch, fake):
+    """Patch the router's module-level production client import."""
+    monkeypatch.setattr(semgrep_router, "scan_files", fake)
 
 
 def test_scan_without_session_returns_401():
@@ -76,7 +74,7 @@ def test_scan_rapid_repeat_returns_429(monkeypatch):
     async def fake_scan(files, dedupe=True):
         return {"findings": [], "errors": []}
 
-    _fake_scan_files_module(monkeypatch, fake_scan)
+    _fake_scan_files(monkeypatch, fake_scan)
 
     client = _client()
     client.cookies.set(_DEMO_SG_SESSION_COOKIE, "sess-rate")
@@ -102,7 +100,7 @@ def test_scan_returns_503_when_queue_full(monkeypatch):
     async def fake_scan(files, dedupe=True):
         return {"findings": [], "errors": []}
 
-    _fake_scan_files_module(monkeypatch, fake_scan)
+    _fake_scan_files(monkeypatch, fake_scan)
 
     client = _client()
     client.cookies.set(_DEMO_SG_SESSION_COOKIE, "sess-busy")
@@ -135,7 +133,7 @@ def test_scan_success_passes_through_findings_and_accrues_savings(monkeypatch):
             "errors": [],
         }
 
-    _fake_scan_files_module(monkeypatch, fake_scan)
+    _fake_scan_files(monkeypatch, fake_scan)
 
     recorded = {}
 
@@ -166,7 +164,7 @@ def test_scan_client_error_returns_502_and_does_not_accrue(monkeypatch):
     async def fake_scan(files, dedupe=True):
         return {"error": "could not reach fc-invoke: connection refused"}
 
-    _fake_scan_files_module(monkeypatch, fake_scan)
+    _fake_scan_files(monkeypatch, fake_scan)
 
     called = {"n": 0}
 
