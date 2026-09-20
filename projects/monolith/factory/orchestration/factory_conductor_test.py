@@ -124,6 +124,8 @@ def delivery(
     reviewer="opus",
     review_session=11,
     body="Delivers the fix.\n\nCloses #77",
+    extra_statuses=(),
+    combined_state=None,
 ):
     monkeypatch.setattr(conductor, "_budget_evidence", lambda _task: {})
     head = "a" * 40
@@ -147,8 +149,13 @@ def delivery(
         "html_url": "https://github.com/owner/repo/pull/3",
     }
     checks = {
-        "state": check_state,
-        "statuses": [{"context": "pr-checks", "state": check_state}],
+        # GitHub's combined state goes to failure when any context fails, even
+        # one no ruleset requires, so it is parameterised apart from pr-checks.
+        "state": combined_state or check_state,
+        "statuses": [
+            {"context": "pr-checks", "state": check_state},
+            *({"context": c, "state": st} for c, st in extra_statuses),
+        ],
     }
     monkeypatch.setattr(
         conductor,
@@ -212,6 +219,46 @@ def test_delivery_requires_review_of_current_head(monkeypatch):
 def test_delivery_does_not_complete_with_draft_or_unpassed_ci(monkeypatch, kwargs):
     task, runs = delivery(monkeypatch, **kwargs)
     with pytest.raises(ValueError):
+        conductor.verify_delivery(task, 3, runs)
+
+
+def test_a_dormant_advisory_check_does_not_block_a_finished_delivery(monkeypatch):
+    """route-b/semgrep errors on nearly every PR and no ruleset requires it.
+
+    Ruleset 9180009 requires exactly pr-checks, so gating on GitHub's combined
+    state refused completed, reviewed deliveries. Worse, semgrep posts late, so
+    the same delivery finished or escalated depending on when the gate ran.
+    """
+    task, runs = delivery(
+        monkeypatch,
+        extra_statuses=(("route-b/semgrep", "error"),),
+        combined_state="failure",
+    )
+    result = conductor.verify_delivery(task, 3, runs)
+    assert result["state"] == "ready_for_review"
+    assert result["head_sha"] == "a" * 40
+
+
+def test_a_non_allowlisted_failing_check_still_blocks_delivery(monkeypatch):
+    """The allowlist is narrow: anything not named in it still refuses."""
+    task, runs = delivery(
+        monkeypatch,
+        extra_statuses=(("route-b/typecheck", "failure"),),
+        combined_state="failure",
+    )
+    with pytest.raises(ValueError, match="integrated PR checks"):
+        conductor.verify_delivery(task, 3, runs)
+
+
+def test_pr_checks_itself_is_never_advisory(monkeypatch):
+    """The one required context must pass even if everything else is clean."""
+    task, runs = delivery(
+        monkeypatch,
+        check_state="failure",
+        extra_statuses=(("route-b/semgrep", "error"),),
+        combined_state="failure",
+    )
+    with pytest.raises(ValueError, match="integrated PR checks"):
         conductor.verify_delivery(task, 3, runs)
 
 

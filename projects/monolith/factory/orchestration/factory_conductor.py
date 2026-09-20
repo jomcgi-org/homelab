@@ -53,6 +53,20 @@ from factory.orchestration.models import SwarmConductorCall, SwarmPlanVersion, S
 
 logger = logging.getLogger(__name__)
 ACTOR = "factory:reconciler"
+
+# Checks the repository does not require, which must not block a completed
+# delivery. Ruleset 9180009 requires exactly one context, pr-checks, so gating
+# on the combined commit status refuses deliveries on checks no merge needs.
+#
+# route-b/semgrep reports "scan failed before a reportable result was available"
+# on essentially every PR: its rules enforce nothing (#4777) and its image push
+# fails on GHCR_TOKEN (#5746). Worse, it posts late, so the combined status is
+# success until it reports and failure afterwards, and the same delivery either
+# finished or escalated depending on when the gate happened to run.
+#
+# Keep this list short and evidenced. Anything not named here still blocks.
+ADVISORY_CHECK_CONTEXTS = frozenset({"route-b/semgrep"})
+
 TICK_SECONDS = 15
 # Independent kubelet liveness tolerates forty missed tick intervals before
 # replacing this process. Task duration and task policy do not affect it.
@@ -1817,7 +1831,12 @@ def verify_delivery(
         raise ValueError("independent exact-head review evidence is missing")
     checks = github_get(task["repo"], f"commits/{head}/status")
     contexts = {s["context"]: s["state"] for s in checks.get("statuses", [])}
-    if contexts.get("pr-checks") != "success" or checks.get("state") != "success":
+    failed = {
+        context: state
+        for context, state in contexts.items()
+        if state != "success" and context not in ADVISORY_CHECK_CONTEXTS
+    }
+    if contexts.get("pr-checks") != "success" or failed:
         raise ValueError("integrated PR checks have not passed")
     # Last, so a delivery that is unready for a bigger reason reports that
     # reason. A missing closing keyword is a defect in an otherwise finished
