@@ -167,12 +167,6 @@ def test_event_repository_and_issue_identity_are_validated(tmp_path, monkeypatch
     mismatch["issue"]["number"] = "6257"
     assert _post(client, mismatch, delivery="bad-identity").status_code == 422
 
-    genuine_issues_shape = _payload()
-    assert "number" not in genuine_issues_shape
-    accepted = _post(client, genuine_issues_shape, delivery="real-issues-shape")
-    assert accepted.status_code == 200
-    assert accepted.json()["outcome"] == "trusted_minted"
-
     comment = _post(
         client,
         _payload(action="created"),
@@ -183,6 +177,12 @@ def test_event_repository_and_issue_identity_are_validated(tmp_path, monkeypatch
     assert comment.json() == {"status": "ignored", "reason": "unsupported_event"}
     with Session(engine) as session:
         assert session.exec(select(WorkItem)).all() == []
+
+    genuine_issues_shape = _payload()
+    assert "number" not in genuine_issues_shape
+    accepted = _post(client, genuine_issues_shape, delivery="real-issues-shape")
+    assert accepted.status_code == 200
+    assert accepted.json()["outcome"] == "trusted_minted"
 
 
 def test_payload_size_is_bounded_before_processing(tmp_path, monkeypatch):
