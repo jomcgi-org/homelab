@@ -1203,7 +1203,7 @@ def record_allowance(
 # never to have reached a model, which is the same evidence the graph books at
 # zero, so charging its reserved ceiling here would refuse the retry the graph
 # just released.
-FREE_START_BASES = ("no_model_post", "capacity_denied")
+FREE_START_BASES = ("no_model_post", "capacity_denied", "no_session_created")
 
 
 def _start_node_key(row: FactoryStart) -> str | None:
@@ -2639,7 +2639,7 @@ def settle_lost_attempt(
     *,
     session: Session | None = None,
 ) -> dict:
-    """Release one attempt proven to have been lost before its guest was bound.
+    """Release one attempt lost before its session or guest was created.
 
     The operator repair for #6025, called in process from a backend pod the way
     finish_task is. Confirm the node's DBOS workflow is terminal before calling
@@ -2650,17 +2650,18 @@ def settle_lost_attempt(
     and re-admitting the task under a new generation, which throws away every
     other attempt on it.
 
-    This applies exactly the proof the reconciler branch applies (see
-    agent_sessions/reconciliation.py inspect_lost_before_guest_factory_attempt)
-    and refuses with a ValueError naming the first failed condition when the
-    attempt is any other shape, so a bound guest, a captured receipt or a
-    settled permit is never settled by hand here. Deliberately not gated on
+    This applies one of the exact proofs in execution/reconciliation.py and
+    refuses with a ValueError naming the first failed condition when the
+    attempt is any other shape, so a live start, bound guest, captured receipt
+    or settled permit is never settled by hand here. Deliberately not gated on
     FACTORY_LOST_BEFORE_GUEST_SETTLEMENT_ENABLED: while that flag is off this
     is the repair, and it is a human action either way. There is no HTTP route.
     """
     from factory.execution.api import (
         inspect_lost_before_guest_factory_attempt,
+        inspect_lost_before_session_factory_attempt,
         settle_lost_before_guest_factory_attempt,
+        settle_lost_before_session_factory_attempt,
     )
     from factory.orchestration import graph
     from factory.orchestration.models import SwarmNodeRun
@@ -2707,11 +2708,24 @@ def settle_lost_attempt(
 
             session_id = resolve_node_session_id(pin, session=db)
         if session_id is None:
-            raise ValueError("missing_attempt_session")
-        proof, refusal = inspect_lost_before_guest_factory_attempt(db, pin, session_id)
-        if proof is None:
-            raise ValueError(refusal)
-        settle_lost_before_guest_factory_attempt(db, pin, proof)
+            proof, refusal = inspect_lost_before_session_factory_attempt(db, pin)
+            if proof is None:
+                raise ValueError(refusal)
+            settle_lost_before_session_factory_attempt(db, pin, proof)
+            lost_phase = "lost_before_session"
+        else:
+            proof, refusal = inspect_lost_before_guest_factory_attempt(
+                db, pin, session_id
+            )
+            if proof is None:
+                raise ValueError(refusal)
+            settle_lost_before_guest_factory_attempt(db, pin, proof)
+            lost_phase = "lost_before_guest"
+        reason = (
+            "lost_before_session: operator settled an attempt that never created a session"
+            if lost_phase == "lost_before_session"
+            else "lost_before_guest: operator settled an attempt whose guest was never bound"
+        )
         result = {
             "status": "failed",
             "session_id": proof["session_id"],
@@ -2720,11 +2734,11 @@ def settle_lost_attempt(
             "cost_basis": "unknown",
             "accounting": "unknown_cost",
             "head_sha": run.head_sha,
-            "reason": "lost_before_guest: operator settled an attempt whose guest was never bound",
+            "reason": reason,
             "previous_outcome": json.loads(run.outcome_json or "{}"),
-            "lost_before_guest": proof,
+            lost_phase: proof,
         }
-        if run.session_id is None:
+        if run.session_id is None and proof["session_id"] is not None:
             bound = graph.record_dispatch(
                 task_id,
                 node_key,
@@ -2753,6 +2767,9 @@ def settle_lost_attempt(
             "failed",
             actor,
             cost_usd=0.0,
+            accounting_basis=(
+                "no_session_created" if lost_phase == "lost_before_session" else None
+            ),
             session_id=proof["session_id"],
             reconciled=True,
             session=db,
@@ -2765,7 +2782,7 @@ def settle_lost_attempt(
             "stop_settled",
             task_id=task_id,
             workflow_id=run.dispatch_key,
-            reason="lost_before_guest",
+            reason=lost_phase,
             session_id=proof["session_id"],
             identity=proof,
             cessation_confirmed=True,

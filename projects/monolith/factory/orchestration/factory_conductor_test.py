@@ -9020,6 +9020,222 @@ def lost_before_guest_factory(queued_factory, monkeypatch):
     return s
 
 
+@pytest.fixture
+def lost_before_session_factory(queued_factory, monkeypatch):
+    """An admitted attempt whose reserved start never created a session."""
+    from datetime import datetime, timedelta, timezone
+
+    from sqlmodel import Session, select
+
+    from factory.execution import admission
+    from factory.execution.models import AgentSession, PendingMessage
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryStart
+
+    s = queued_factory
+    for module in (admission, controls):
+        monkeypatch.setattr(module, "get_engine", lambda: s.engine)
+    with Session(s.engine) as db:
+        pending = db.exec(select(PendingMessage)).one()
+        agent = db.get(AgentSession, s.sid)
+        db.delete(pending)
+        db.flush()
+        db.delete(agent)
+        db.flush()
+        start = db.exec(
+            select(FactoryStart).where(FactoryStart.start_key == s.run["dispatch_key"])
+        ).one()
+        start.created_at = datetime.now(timezone.utc) - timedelta(hours=2)
+        db.add(start)
+        db.commit()
+        s.start_id = start.id
+    s.sid = None
+    return s
+
+
+def test_lost_before_session_proof_accepts_exact_unstarted_attempt(
+    lost_before_session_factory,
+):
+    from sqlmodel import Session
+
+    from factory.execution.api import inspect_lost_before_session_factory_attempt
+
+    s = lost_before_session_factory
+    with Session(s.engine) as db:
+        proof, refusal = inspect_lost_before_session_factory_attempt(db, s.run["pin"])
+    assert refusal is None
+    assert proof == {
+        "session_id": None,
+        "workflow_id": s.run["dispatch_key"],
+        "start_id": s.start_id,
+        "seq": 1,
+        "cost_usd": None,
+        "invocation_phase": "lost_before_session",
+    }
+
+
+@pytest.mark.parametrize(
+    "case,expected",
+    [
+        ("not_admitted", "not_admitted"),
+        ("session_exists", "session_exists"),
+        ("carries_cost", "carries_cost"),
+        ("carries_outcome", "carries_outcome"),
+        ("missing_factory_start", "missing_factory_start"),
+        ("start_not_reserved", "start_not_reserved"),
+        ("start_has_session", "start_has_session"),
+        ("capacity_reserved", "capacity_reserved"),
+        ("start_too_recent", "start_too_recent"),
+    ],
+)
+def test_lost_before_session_proof_refuses_conflicting_evidence(
+    lost_before_session_factory, case, expected
+):
+    from datetime import datetime, timezone
+
+    from sqlmodel import Session, select
+
+    from factory.execution.api import inspect_lost_before_session_factory_attempt
+    from factory.execution.models import AgentCapacityReservation
+    from factory.orchestration.factory_models import FactoryStart
+    from factory.orchestration.models import SwarmNodeRun
+
+    s = lost_before_session_factory
+    with Session(s.engine) as db:
+        run = db.exec(select(SwarmNodeRun)).one()
+        start = db.get(FactoryStart, s.start_id)
+        if case == "not_admitted":
+            run.status = "uncertain"
+        elif case == "session_exists":
+            run.session_id = 999
+        elif case == "carries_cost":
+            run.cost_usd = 0.01
+        elif case == "carries_outcome":
+            run.outcome_json = "{}"
+        elif case == "missing_factory_start":
+            db.delete(start)
+        elif case == "start_not_reserved":
+            start.status = "uncertain"
+        elif case == "start_has_session":
+            start.session_id = 999
+        elif case == "capacity_reserved":
+            db.add(
+                AgentCapacityReservation(
+                    local_session_id=(f"factory:{s.task['id']}:{s.run['node_key']}:1"),
+                    pending_seq=1,
+                    tier="project",
+                    model="opus",
+                )
+            )
+        elif case == "start_too_recent":
+            start.created_at = datetime.now(timezone.utc)
+        db.add(run)
+        if case != "missing_factory_start":
+            db.add(start)
+        db.commit()
+    with Session(s.engine) as db:
+        proof, refusal = inspect_lost_before_session_factory_attempt(db, s.run["pin"])
+    assert proof is None
+    assert refusal == expected
+
+
+def test_lost_before_session_proof_refuses_deterministic_session(
+    lost_before_session_factory,
+):
+    from sqlmodel import Session
+
+    from factory.execution.api import inspect_lost_before_session_factory_attempt
+    from factory.execution.models import AgentSession
+
+    s = lost_before_session_factory
+    pin = s.run["pin"]
+    with Session(s.engine) as db:
+        db.add(
+            AgentSession(
+                local_session_id=f"factory:{s.task['id']}:{s.run['node_key']}:1",
+                workspace="guest",
+                branch=pin["hydration_branch"],
+                repo=pin["repo"],
+                model="opus",
+                workflow_id=pin["workflow_id"],
+                node_key=pin["node_key"],
+                node_attempt=pin["attempt"],
+                admission_tier="project",
+            )
+        )
+        db.commit()
+    with Session(s.engine) as db:
+        proof, refusal = inspect_lost_before_session_factory_attempt(db, pin)
+    assert proof is None
+    assert refusal == "session_exists_deterministically"
+
+
+def test_settle_lost_before_session_refuses_changed_attempt(
+    lost_before_session_factory,
+):
+    from sqlmodel import Session, select
+
+    from factory.execution.api import (
+        inspect_lost_before_session_factory_attempt,
+        settle_lost_before_session_factory_attempt,
+    )
+    from factory.orchestration.models import SwarmNodeRun
+
+    s = lost_before_session_factory
+    with Session(s.engine) as db:
+        proof, refusal = inspect_lost_before_session_factory_attempt(db, s.run["pin"])
+        assert refusal is None
+    with Session(s.engine) as db:
+        run = db.exec(select(SwarmNodeRun)).one()
+        run.cost_usd = 0.01
+        db.add(run)
+        db.commit()
+    with Session(s.engine) as db:
+        with pytest.raises(ValueError, match="factory_attempt_changed"):
+            settle_lost_before_session_factory_attempt(db, s.run["pin"], proof)
+
+
+def test_operator_settles_attempt_lost_before_session_end_to_end(
+    lost_before_session_factory,
+):
+    import json
+
+    from sqlmodel import Session
+
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryStart
+
+    s = lost_before_session_factory
+    settled = controls.settle_lost_attempt(
+        s.task["id"], s.run["node_key"], 1, "operator"
+    )
+    assert settled["ok"] and settled["session_id"] is None
+    assert set(settled["outcome"]) == {
+        "status",
+        "session_id",
+        "attempt",
+        "cost_usd",
+        "cost_basis",
+        "accounting",
+        "head_sha",
+        "reason",
+        "previous_outcome",
+        "lost_before_session",
+    }
+    assert settled["outcome"]["lost_before_session"]["session_id"] is None
+    run = conductor.graph.node_runs(s.task["id"])[0]
+    assert run["status"] == "failed" and run["cost_usd"] == 0.0
+    assert "lost_before_session" in json.loads(run["outcome_json"])
+    with Session(s.engine) as db:
+        start = db.get(FactoryStart, s.start_id)
+        assert start.status == "failed" and start.cost_usd == 0.0
+        assert start.accounting_basis == "no_session_created"
+    snapshot = controls.task_snapshot(s.task["id"])
+    assert snapshot["unresolved_starts"] == 0
+    finished = controls.finish_task(s.task["id"], "failed", "operator")
+    assert finished["ok"] and finished.get("reason") != "unresolved_starts"
+
+
 def _persist_uncertain_lost_before_guest(s):
     import json
     from factory.orchestration import factory_controls as controls

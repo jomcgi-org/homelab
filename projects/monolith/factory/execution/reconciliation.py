@@ -6,6 +6,7 @@ session and job locks. These operations never commit or infer cessation.
 
 import json
 import re
+from datetime import timedelta
 
 from sqlmodel import Session, select
 
@@ -13,6 +14,11 @@ from factory.execution import admission
 from factory.execution.constants import UNKNOWN_INVOCATION
 from factory.execution.models import AgentCapacityReservation, AgentSession
 from factory.utils import sanitize_payload
+
+
+# A reserved start is normally transient, sub-minute. Waiting an hour keeps
+# operator repair from settling a live attempt that is still creating its session.
+LOST_BEFORE_SESSION_SETTLEMENT_STALE_AFTER = timedelta(hours=1)
 
 
 _CLEANUP_FIELDS = (
@@ -1166,6 +1172,128 @@ def read_lost_before_guest_factory_attempt(
     read_not_invoked_factory_attempt.
     """
     return inspect_lost_before_guest_factory_attempt(db, pin, session_id)[0]
+
+
+def inspect_lost_before_session_factory_attempt(
+    db: Session, pin: dict
+) -> tuple[dict | None, str | None]:
+    """Validate an attempt that reserved a start but never created a session.
+
+    A reserved start is normally transient. Without the age bound this proof
+    could settle a live attempt while it is still creating its session. Once
+    the bound has passed, the admitted run and reserved start must still carry
+    no session, cost, outcome, deterministic session identity, or capacity
+    reservation. No session means no guest, no receipt and no work product.
+
+    Fail closed: every condition is required, and an unrecognised shape returns
+    no proof. Returns (proof, None) or (None, the first failed condition). Like
+    the other factory proofs, this locks the capacity pool first, then reads the
+    attempt records under row locks. Settlement is a separate call.
+    """
+    from datetime import datetime, timezone
+
+    from factory.orchestration.factory_models import FactoryStart
+    from factory.orchestration.models import SwarmNodeRun
+    from factory.orchestration.node_workflows import (
+        _session_key,
+        resolve_node_session_id,
+    )
+
+    admission.lock_pool(db)
+    run = db.exec(
+        select(SwarmNodeRun)
+        .where(
+            SwarmNodeRun.task_id == pin["task_id"],
+            SwarmNodeRun.node_key == pin["node_key"],
+            SwarmNodeRun.attempt == pin["attempt"],
+            SwarmNodeRun.dispatch_key == pin["workflow_id"],
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one_or_none()
+    if run is None or run.status != "admitted":
+        return None, "not_admitted"
+    if run.session_id is not None:
+        return None, "session_exists"
+    if run.cost_usd is not None:
+        return None, "carries_cost"
+    if run.outcome_json not in (None, ""):
+        return None, "carries_outcome"
+
+    start = db.exec(
+        select(FactoryStart)
+        .where(
+            FactoryStart.task_id == pin["task_id"],
+            FactoryStart.start_key == pin["workflow_id"],
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one_or_none()
+    if start is None:
+        return None, "missing_factory_start"
+    if start.status != "reserved":
+        return None, "start_not_reserved"
+    if start.session_id is not None:
+        return None, "start_has_session"
+    if resolve_node_session_id(pin, session=db) is not None:
+        return None, "session_exists_deterministically"
+
+    # Ask node_workflows for the key rather than restating its format: a
+    # mismatch here would not fail, it would silently stop matching and leave
+    # this capacity guard inert.
+    local_session_id = _session_key(pin["task_id"], pin["node_key"], pin["attempt"])
+    if (
+        db.exec(
+            select(AgentCapacityReservation.id)
+            .where(AgentCapacityReservation.local_session_id == local_session_id)
+            .with_for_update()
+        ).first()
+        is not None
+    ):
+        return None, "capacity_reserved"
+
+    def aware(value):
+        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+
+    if (
+        datetime.now(timezone.utc) - aware(start.created_at)
+        <= LOST_BEFORE_SESSION_SETTLEMENT_STALE_AFTER
+    ):
+        return None, "start_too_recent"
+    return {
+        "session_id": None,
+        "workflow_id": pin["workflow_id"],
+        "start_id": start.id,
+        "seq": 1,
+        "cost_usd": None,
+        "invocation_phase": "lost_before_session",
+    }, None
+
+
+def settle_lost_before_session_factory_attempt(
+    db: Session, pin: dict, proof: dict
+) -> None:
+    """Settle the FactoryStart and attempt records at zero cost.
+
+    No guest, no session and no receipt means nothing was ever invoked on a
+    remote side. Settle at zero cost and clear the reservation. The caller
+    composes the graph, start and audit settlement in the same transaction.
+    """
+    from factory.orchestration.factory_models import FactoryStart
+
+    current, _refusal = inspect_lost_before_session_factory_attempt(db, pin)
+    if current != proof:
+        raise ValueError("factory_attempt_changed")
+    start = db.exec(
+        select(FactoryStart)
+        .where(FactoryStart.id == proof["start_id"])
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one()
+    start.status = "failed"
+    start.cost_usd = 0.0
+    start.accounting_basis = "no_session_created"
+    db.add(start)
 
 
 def settle_lost_before_guest_factory_attempt(
