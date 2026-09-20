@@ -3585,20 +3585,21 @@ MUSE_USAGE_PAGE_SIZE = 100
 MUSE_USAGE_MAX_BYTES = 8 * 1024 * 1024
 
 
-def _muse_activities_from_view_events(events, session_id, command_id):
-    """Normalize authoritative MSP tool-call item revisions for one turn."""
-    item_event_types = {
-        "item/started": "tool_execution_start",
-        "item/updated": "tool_execution_update",
-        "item/completed": "tool_execution_end",
-    }
-    tool_events = []
-    for event in events:
+def _muse_tool_events_from_view_events(events, session_id, command_id):
+    """Fold authoritative MSP tool-call revisions into one event per item."""
+    states = []
+    states_by_identity = {}
+    for position, event in enumerate(events):
         if not isinstance(event, dict):
             continue
-        event_type = item_event_types.get(event.get("method"))
+        if event.get("method") not in (
+            "item/started",
+            "item/updated",
+            "item/completed",
+        ):
+            continue
         params = event.get("params")
-        if event_type is None or not isinstance(params, dict):
+        if not isinstance(params, dict):
             continue
         item = params.get("item")
         if (
@@ -3608,20 +3609,160 @@ def _muse_activities_from_view_events(events, session_id, command_id):
             or item.get("turnId") != command_id
         ):
             continue
-        tool_id = item.get("itemId") or item.get("callId")
-        if not isinstance(tool_id, str) or not tool_id:
+        identities = [
+            identity
+            for identity in (item.get("itemId"), item.get("callId"))
+            if isinstance(identity, str) and identity
+        ]
+        if not identities:
             continue
+        state = next(
+            (
+                states_by_identity[identity]
+                for identity in identities
+                if identity in states_by_identity
+            ),
+            None,
+        )
+        if state is None:
+            state = {"identities": [], "revisions": []}
+            states.append(state)
+        for identity in identities:
+            if identity not in state["identities"]:
+                state["identities"].append(identity)
+            states_by_identity[identity] = state
+        state["revisions"].append((position, item))
+
+    tool_events = []
+    for state in states:
+        revisions = sorted(
+            state["revisions"],
+            key=lambda entry: (
+                entry[1].get("revision")
+                if type(entry[1].get("revision")) is int
+                else entry[0]
+            ),
+        )
+        tool_name = None
+        arguments = _MISSING_TOOL_INPUT
+        item_id = None
+        call_id = None
+        for _position, item in revisions:
+            candidate_name = item.get("toolName")
+            if isinstance(candidate_name, str) and candidate_name:
+                tool_name = candidate_name
+            candidate_item_id = item.get("itemId")
+            if isinstance(candidate_item_id, str) and candidate_item_id:
+                item_id = candidate_item_id
+            candidate_call_id = item.get("callId")
+            if isinstance(candidate_call_id, str) and candidate_call_id:
+                call_id = candidate_call_id
+            candidate_arguments = item.get("arguments", _MISSING_TOOL_INPUT)
+            if isinstance(candidate_arguments, str):
+                try:
+                    json.loads(candidate_arguments)
+                except (TypeError, ValueError):
+                    continue
+                arguments = candidate_arguments
         normalized = {
-            "type": event_type,
-            "toolCallId": tool_id,
+            "type": "tool_execution_start",
+            "toolCallId": item_id or call_id,
         }
-        tool_name = item.get("toolName")
-        if isinstance(tool_name, str) and tool_name:
+        if item_id is not None:
+            normalized["itemId"] = item_id
+        if call_id is not None:
+            normalized["callId"] = call_id
+        if tool_name is not None:
             normalized["toolName"] = tool_name
-        if "arguments" in item:
-            normalized["arguments"] = item["arguments"]
+        if arguments is not _MISSING_TOOL_INPUT:
+            normalized["arguments"] = arguments
         tool_events.append(normalized)
-    return activity_from_events(tool_events)
+    return tool_events
+
+
+def _muse_tool_event_identities(event):
+    return {
+        value
+        for value in (
+            event.get("toolCallId"),
+            event.get("tool_call_id"),
+            event.get("itemId"),
+            event.get("callId"),
+            event.get("id"),
+        )
+        if isinstance(value, str) and value
+    }
+
+
+def _muse_reconciled_activities(live_events, retained_events):
+    """Enrich matching live Bash tools and preserve every unmatched tool."""
+    retained_by_identity = {}
+    for index, event in enumerate(retained_events):
+        for identity in _muse_tool_event_identities(event):
+            retained_by_identity.setdefault(identity, index)
+
+    reconciled = []
+    used_retained = set()
+    for live_event in live_events:
+        match = next(
+            (
+                retained_by_identity[identity]
+                for identity in _muse_tool_event_identities(live_event)
+                if identity in retained_by_identity
+                and retained_by_identity[identity] not in used_retained
+            ),
+            None,
+        )
+        if match is None:
+            reconciled.append(live_event)
+            continue
+        retained_event = retained_events[match]
+        used_retained.add(match)
+        merged = dict(live_event)
+        retained_name = retained_event.get("toolName")
+        if isinstance(retained_name, str) and retained_name:
+            merged["toolName"] = retained_name
+        tool_name = merged.get("toolName") or merged.get("tool_name")
+        if isinstance(tool_name, str) and tool_name.lower() == "bash":
+            if "arguments" in retained_event:
+                merged["arguments"] = retained_event["arguments"]
+        reconciled.append(merged)
+
+    for index, retained_event in enumerate(retained_events):
+        if index in used_retained:
+            continue
+        retained_event = dict(retained_event)
+        tool_name = retained_event.get("toolName")
+        if not isinstance(tool_name, str) or tool_name.lower() != "bash":
+            retained_event.pop("arguments", None)
+        reconciled.append(retained_event)
+    return activity_from_events(reconciled)
+
+
+def _muse_activities_from_view_events(events, session_id, command_id):
+    return _muse_reconciled_activities(
+        [], _muse_tool_events_from_view_events(events, session_id, command_id)
+    )
+
+
+def _muse_live_tool_events(tasks_by_id):
+    events = []
+    for task_id, task in tasks_by_id.items():
+        task_kind = task.get("task_kind")
+        if not isinstance(task_kind, str) or not task_kind.startswith("tool."):
+            continue
+        event = {
+            "type": "tool_execution_start",
+            "toolCallId": task_id,
+            "toolName": task_kind[len("tool.") :],
+        }
+        idempotency_key = task.get("idempotency_key")
+        if isinstance(idempotency_key, str) and idempotency_key.startswith("tool:"):
+            call_id = idempotency_key[len("tool:") :]
+            if call_id:
+                event["callId"] = call_id
+        events.append(event)
+    return events
 
 
 def _muse_usage_projection(events, session_id, command_id, expected_completions):
@@ -3893,7 +4034,7 @@ class MuseProcess:
         self._stdout_queue = None
         self._prompt_file_path = None
         self._mcp_probe_cached = None
-        self._retained_activities = None
+        self._retained_tool_events = None
         # Set on every spawn; None until the first turn resolves a model.
         self._model = None
         self._process_workspace_identity = _workspace_identity(self.workspace)
@@ -4148,7 +4289,7 @@ class MuseProcess:
         return RuntimeError(error_msg)
 
     def _collect_usage(self, command_id, expected_completions):
-        self._retained_activities = None
+        self._retained_tool_events = None
         unavailable = _muse_usage_projection(
             [], self.session_id, command_id, expected_completions
         )
@@ -4213,7 +4354,7 @@ class MuseProcess:
                     and event.get("params", {}).get("commandId") == command_id
                     for event in page_events
                 ):
-                    self._retained_activities = _muse_activities_from_view_events(
+                    self._retained_tool_events = _muse_tool_events_from_view_events(
                         events, self.session_id, command_id
                     )
                     return _muse_usage_projection(
@@ -4225,7 +4366,7 @@ class MuseProcess:
                 if not isinstance(cursor, str) or cursor in cursors:
                     raise ValueError("non-progressing usage page")
                 cursors.add(cursor)
-            self._retained_activities = _muse_activities_from_view_events(
+            self._retained_tool_events = _muse_tool_events_from_view_events(
                 events, self.session_id, command_id
             )
             return _muse_usage_projection(
@@ -4303,6 +4444,7 @@ class MuseProcess:
             completed_model_attempts = set()
             terminal_reason = "completed"
             tasks_by_id = {}
+            live_activity_events = []
             cached_activities = []
             try:
                 pusher = _ProgressPusher(progress_token) if progress_token else None
@@ -4354,7 +4496,7 @@ class MuseProcess:
                         )
                         self._close_process(kill=False)
                         usage_collect_start = _turn_timing_now()
-                        self._retained_activities = None
+                        self._retained_tool_events = None
                         try:
                             usage = self._collect_usage(
                                 payload.get("command_id"),
@@ -4368,8 +4510,11 @@ class MuseProcess:
                                 len(completed_model_attempts),
                             )
                             usage["muse"]["reason"] = "collection_failed"
-                        if self._retained_activities:
-                            cached_activities = self._retained_activities[-300:]
+                        if self._retained_tool_events:
+                            cached_activities = _muse_reconciled_activities(
+                                live_activity_events,
+                                self._retained_tool_events,
+                            )[-300:]
                             if pusher:
                                 try:
                                     pusher.push(
@@ -4440,19 +4585,11 @@ class MuseProcess:
                                 # operation="tool:add_memory" here. Arguments
                                 # are not part of task.lifecycle, so do not
                                 # present that label as a command or tool input.
+                                live_activity_events = _muse_live_tool_events(
+                                    tasks_by_id
+                                )
                                 cached_activities = activity_from_events(
-                                    [
-                                        {
-                                            "type": "tool_execution_start",
-                                            "toolCallId": known_task_id,
-                                            "toolName": task["task_kind"][
-                                                len("tool.") :
-                                            ],
-                                        }
-                                        for known_task_id, task in tasks_by_id.items()
-                                        if isinstance(task.get("task_kind"), str)
-                                        and task["task_kind"].startswith("tool.")
-                                    ]
+                                    live_activity_events
                                 )[-300:]
             finally:
                 if getattr(self, "_interrupt_requested", False):
