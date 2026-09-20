@@ -1385,11 +1385,17 @@ def record_dispatch(
     node_key: str,
     attempt: int,
     session_id: int,
-    base_sha: str,
+    base_sha: str | None,
     *,
     session: Session | None = None,
 ) -> GraphOp:
-    """Bind the admitted attempt to one session; exact replay is harmless."""
+    """Bind dispatch evidence, enriching a matching session with its base SHA.
+
+    Session creation can precede base revision evidence. A later observation
+    may fill an absent base SHA for the exact same session, but it may never
+    replace either an existing session or existing base evidence. Replays that
+    omit already-recorded base evidence are harmless and do not erase it.
+    """
     args = {
         "node_key": node_key,
         "attempt": attempt,
@@ -1404,19 +1410,27 @@ def record_dispatch(
             return _refuse(
                 db, task, "record_dispatch", args, version, "invalid_session_id"
             )
-        if run.session_id is not None:
-            if (run.session_id, run.base_sha) != (session_id, base_sha):
-                return _refuse(
-                    db, task, "record_dispatch", args, version, "dispatch_conflict"
-                )
-        elif run.status not in ("admitted", "uncertain"):
+        if run.session_id is not None and run.session_id != session_id:
             return _refuse(
                 db, task, "record_dispatch", args, version, "dispatch_conflict"
             )
-        else:
+        if (
+            base_sha is not None
+            and run.base_sha is not None
+            and run.base_sha != base_sha
+        ):
+            return _refuse(
+                db, task, "record_dispatch", args, version, "dispatch_conflict"
+            )
+        if run.session_id is None:
+            if run.status not in ("admitted", "uncertain"):
+                return _refuse(
+                    db, task, "record_dispatch", args, version, "dispatch_conflict"
+                )
             if run.status == "admitted":
                 run.status = "dispatched"
             run.session_id = session_id
+        if base_sha is not None and run.base_sha is None:
             run.base_sha = base_sha
             db.add(run)
         return _finish(
@@ -1427,6 +1441,47 @@ def record_dispatch(
             version,
             GraphOp(ok=True, version=version, attempt=attempt),
         )
+
+
+def bind_node_session(
+    task_id: str,
+    node_key: str,
+    attempt: int,
+    session_id: int,
+    *,
+    session: Session | None = None,
+) -> GraphOp:
+    """Persist the session identity before waits or completion evidence exists."""
+    return record_dispatch(
+        task_id,
+        node_key,
+        attempt,
+        session_id,
+        None,
+        session=session,
+    )
+
+
+def lock_node_session_binding(
+    task_id: str,
+    node_key: str,
+    attempt: int,
+    *,
+    session: Session | None = None,
+) -> int | None:
+    """Fence session creation against a conflicting or terminal run.
+
+    The start step calls this with the transaction already holding the factory
+    control lock, preserving the control-then-task lock order through binding.
+    A replay may proceed for an already-bound run, but a fresh binding is only
+    valid while the attempt can still transition to dispatched.
+    """
+    with _session(session) as db:
+        _lock_task(db, task_id)
+        run = _get_run(db, task_id, node_key, attempt)
+        if run.session_id is None and run.status not in ("admitted", "uncertain"):
+            raise ValueError("node session binding conflict")
+        return run.session_id
 
 
 def record_outcome(
