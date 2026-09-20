@@ -12,8 +12,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-import ember_public.semgrep_core as semgrep_core
-import ember_public.semgrep_router as semgrep_router
+from ember_public import semgrep_core, semgrep_router
 from ember_public.semgrep_router import _DEMO_SG_SESSION_COOKIE, router
 
 
@@ -170,7 +169,6 @@ def test_scan_client_error_returns_502_and_does_not_accrue(monkeypatch):
 
     async def fake_record(scan_ms):
         called["n"] += 1
-        return None
 
     monkeypatch.setattr(semgrep_core, "record_demo_sg_savings", fake_record)
 
