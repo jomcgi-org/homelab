@@ -558,12 +558,16 @@ def _next_event(block: dict, observed: dict):
 
 def problem_issues_tick(policy: dict) -> None:
     """Reconcile at most one exact source event and create at most one issue."""
-    # Old policies omit the block. Returning before a database read preserves
-    # their behavior exactly and still renders as off through the defaulted
-    # board view.
-    if "problem_issues" not in policy:
-        return
     block = problem_issues_policy(policy)
+    # Old policies omit the block. They remain inert for new source events, but
+    # an intent recorded before an operator removed the block still needs its
+    # bounded read-only reconciliation to reach a terminal state.
+    if "problem_issues" not in policy:
+        with _read_session() as db:
+            pending = _pending_started(db)
+        if pending is not None:
+            _reconcile_pending(block, *pending)
+        return
     changed, observed = _observe_policy(block)
     with _read_session() as db:
         pending = _pending_started(db)
@@ -698,15 +702,6 @@ def problem_issues_tick(policy: dict) -> None:
             fingerprint,
             issue_numbers=found,
             retry=0,
-        )
-        return
-    if truncated:
-        _record(
-            "problem_issue_source_refused",
-            row,
-            source,
-            fingerprint,
-            reason="issue_discovery_truncated",
         )
         return
     issue = _issue(source, row, source_detail, repo, issue_number, marker)
