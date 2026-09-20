@@ -6,6 +6,8 @@ import hashlib
 import hmac
 import json
 from concurrent.futures import ThreadPoolExecutor
+from datetime import timezone
+from threading import Event as ThreadEvent
 
 import pytest
 from core.db import get_session
@@ -16,6 +18,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from factory.orchestration import factory_webhook as webhook
 from factory.orchestration.factory_models import (
+    FactoryGithubIssueState,
     FactoryReceipt,
     FactoryWebhookDelivery,
     WorkItem,
@@ -23,6 +26,7 @@ from factory.orchestration.factory_models import (
     WorkItemEvent,
 )
 from factory.orchestration.models import SwarmTask
+from factory.orchestration.work_items import set_authority_local
 
 SECRET = "factory-test-secret"
 
@@ -35,6 +39,7 @@ def _issue(
     title="Webhook item",
     body="public issue body",
     labels=("agent-ready",),
+    updated_at="2026-09-20T10:00:00Z",
 ):
     return {
         "number": number,
@@ -45,6 +50,7 @@ def _issue(
         "labels": [{"name": label} for label in labels],
         "user": {"login": login, "type": user_type},
         "created_at": "2026-09-20T10:00:00Z",
+        **({"updated_at": updated_at} if updated_at is not None else {}),
     }
 
 
@@ -101,6 +107,7 @@ def _setup(tmp_path, monkeypatch):
                 WorkItemEvent,
                 FactoryReceipt,
                 FactoryWebhookDelivery,
+                FactoryGithubIssueState,
             )
         ],
     )
@@ -205,7 +212,10 @@ def test_trust_boundaries_and_stable_work_item_identity(tmp_path, monkeypatch):
 
     edited = _post(
         client,
-        _payload(action="edited", issue=_issue(title="Revised title")),
+        _payload(
+            action="edited",
+            issue=_issue(title="Revised title", updated_at="2026-09-20T10:01:00Z"),
+        ),
         delivery="trusted-edit",
     )
     assert edited.status_code == 200
@@ -238,6 +248,7 @@ def test_issue_close_is_a_lifecycle_transition_not_a_comment(tmp_path, monkeypat
     item_id = opened.json()["work_item_id"]
     closed_issue = _issue()
     closed_issue["state"] = "closed"
+    closed_issue["updated_at"] = "2026-09-20T10:01:00Z"
 
     closed = _post(
         client,
@@ -250,6 +261,111 @@ def test_issue_close_is_a_lifecycle_transition_not_a_comment(tmp_path, monkeypat
         item = session.get(WorkItem, item_id)
         assert item.state == "closed"
         assert item.close_reason == "github_closed"
+
+
+def test_close_before_import_persists_watermark_and_rejects_stale_open(
+    tmp_path, monkeypatch
+):
+    engine, client = _setup(tmp_path, monkeypatch)
+    closed_issue = _issue(updated_at="2026-09-20T10:02:00Z")
+    closed_issue["state"] = "closed"
+
+    closed = _post(
+        client,
+        _payload(action="closed", issue=closed_issue),
+        delivery="close-before-import",
+    )
+    stale = _post(
+        client,
+        _payload(
+            action="edited",
+            issue=_issue(title="Stale open", updated_at="2026-09-20T10:01:00Z"),
+        ),
+        delivery="distinct-stale-open",
+    )
+
+    assert closed.json()["outcome"] == "trusted_closed"
+    assert stale.json()["outcome"] == "trusted_stale_ignored"
+    with Session(engine) as session:
+        assert session.exec(select(WorkItem)).all() == []
+        source = session.get(FactoryGithubIssueState, ("owner/repo", 6257))
+        assert source.source_state == "closed"
+        assert (
+            source.source_updated_at.replace(tzinfo=timezone.utc).isoformat()
+            == "2026-09-20T10:02:00+00:00"
+        )
+        delivery = session.get(FactoryWebhookDelivery, "distinct-stale-open")
+        assert (
+            delivery.source_updated_at.replace(tzinfo=timezone.utc).isoformat()
+            == "2026-09-20T10:01:00+00:00"
+        )
+
+
+def test_closed_item_rejects_stale_equal_and_missing_but_later_reopens(
+    tmp_path, monkeypatch
+):
+    engine, client = _setup(tmp_path, monkeypatch)
+    opened = _post(client, _payload(), delivery="ordered-open")
+    item_id = opened.json()["work_item_id"]
+    closed_issue = _issue(updated_at="2026-09-20T10:02:00Z")
+    closed_issue["state"] = "closed"
+    assert (
+        _post(
+            client,
+            _payload(action="closed", issue=closed_issue),
+            delivery="ordered-close",
+        ).json()["outcome"]
+        == "trusted_closed"
+    )
+
+    for delivery, updated_at in (
+        ("stale-distinct-edit", "2026-09-20T10:01:00Z"),
+        ("equal-distinct-reopen", "2026-09-20T10:02:00Z"),
+    ):
+        response = _post(
+            client,
+            _payload(
+                action="reopened",
+                issue=_issue(title="Must not win", updated_at=updated_at),
+            ),
+            delivery=delivery,
+        )
+        assert response.json()["outcome"] == "trusted_stale_ignored"
+
+    missing = _post(
+        client,
+        _payload(
+            action="edited",
+            issue=_issue(title="No source order", updated_at=None),
+        ),
+        delivery="missing-source-time",
+    )
+    assert missing.json()["outcome"] == "trusted_missing_timestamp_ignored"
+
+    reopened = _post(
+        client,
+        _payload(
+            action="reopened",
+            issue=_issue(title="Legitimate reopen", updated_at="2026-09-20T10:03:00Z"),
+        ),
+        delivery="later-reopen",
+    )
+    assert reopened.json()["outcome"] == "trusted_synced"
+
+    with Session(engine) as session:
+        item = session.get(WorkItem, item_id)
+        assert item.state == "ready"
+        assert item.title == "Legitimate reopen"
+        _item, outcome = webhook.mint_or_sync_from_github(
+            session,
+            "owner/repo",
+            _issue(title="Stale sweep", updated_at="2026-09-20T10:02:30Z"),
+            actor="github:sweep",
+            source_ordered=True,
+            source_ref="github:sweep",
+        )
+        assert outcome == "stale_ignored"
+        assert item.title == "Legitimate reopen"
 
 
 def test_duplicate_and_concurrent_delivery_apply_once(tmp_path, monkeypatch):
@@ -266,7 +382,11 @@ def test_duplicate_and_concurrent_delivery_apply_once(tmp_path, monkeypatch):
             pool.map(
                 lambda _unused: _post(
                     client,
-                    _payload(issue=_issue(title="Concurrent")),
+                    _payload(
+                        issue=_issue(
+                            title="Concurrent", updated_at="2026-09-20T10:01:00Z"
+                        )
+                    ),
                     delivery="concurrent-delivery",
                 ),
                 range(2),
@@ -294,6 +414,7 @@ def test_processing_failure_rolls_back_claim_for_safe_retry(tmp_path, monkeypatc
     assert failed.status_code == 500
     with Session(engine) as session:
         assert session.get(FactoryWebhookDelivery, "retryable-delivery") is None
+        assert session.exec(select(FactoryGithubIssueState)).all() == []
         assert session.exec(select(WorkItem)).all() == []
 
     monkeypatch.setattr(webhook, "mint_or_sync_from_github", original)
@@ -313,6 +434,7 @@ def test_dependency_failure_rolls_back_claim_and_work_item(tmp_path, monkeypatch
     assert failed.status_code == 500
     with Session(engine) as session:
         assert session.get(FactoryWebhookDelivery, "dependency-retry") is None
+        assert session.exec(select(FactoryGithubIssueState)).all() == []
         assert session.exec(select(WorkItem)).all() == []
 
 
@@ -374,7 +496,12 @@ def test_dependency_edits_replace_and_remove_stale_edges(tmp_path, monkeypatch):
     assert (
         _post(
             client,
-            _payload(action="edited", issue=_issue(body="Depends on #6259")),
+            _payload(
+                action="edited",
+                issue=_issue(
+                    body="Depends on #6259", updated_at="2026-09-20T10:01:00Z"
+                ),
+            ),
             delivery="dependency-replace",
         ).status_code
         == 200
@@ -385,7 +512,12 @@ def test_dependency_edits_replace_and_remove_stale_edges(tmp_path, monkeypatch):
     assert (
         _post(
             client,
-            _payload(action="edited", issue=_issue(body="No dependency now")),
+            _payload(
+                action="edited",
+                issue=_issue(
+                    body="No dependency now", updated_at="2026-09-20T10:02:00Z"
+                ),
+            ),
             delivery="dependency-remove",
         ).status_code
         == 200
@@ -406,9 +538,67 @@ def test_local_authority_row_cannot_be_changed_by_github(tmp_path, monkeypatch):
 
     changed = _post(
         client,
-        _payload(action="edited", issue=_issue(title="GitHub replacement")),
+        _payload(
+            action="edited",
+            issue=_issue(title="GitHub replacement", updated_at="2026-09-20T10:01:00Z"),
+        ),
         delivery="local-edit",
     )
     assert changed.json()["outcome"] == "local_untouched"
     with Session(engine) as session:
         assert session.get(WorkItem, item_id).title == "Webhook item"
+
+
+def test_concurrent_local_handoff_prevents_webhook_close(tmp_path, monkeypatch):
+    engine, client = _setup(tmp_path, monkeypatch)
+    opened = _post(client, _payload(), delivery="handoff-open")
+    item_id = opened.json()["work_item_id"]
+    handoff_flushed = ThreadEvent()
+    release_handoff = ThreadEvent()
+    claim_started = ThreadEvent()
+    original_claim = webhook._claim_delivery
+
+    def observed_claim(*args, **kwargs):
+        claim_started.set()
+        return original_claim(*args, **kwargs)
+
+    monkeypatch.setattr(webhook, "_claim_delivery", observed_claim)
+
+    def handoff():
+        with Session(engine) as session:
+            set_authority_local(
+                session,
+                item_id,
+                actor="operator:test",
+                author_kind="operator",
+                cause_kind="test",
+                cause_ref="concurrent-handoff",
+                stated_reason="operator accepted ownership",
+            )
+            session.flush()
+            handoff_flushed.set()
+            assert release_handoff.wait(timeout=5)
+            session.commit()
+
+    closed_issue = _issue(updated_at="2026-09-20T10:01:00Z")
+    closed_issue["state"] = "closed"
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        handoff_future = pool.submit(handoff)
+        assert handoff_flushed.wait(timeout=5)
+        webhook_future = pool.submit(
+            _post,
+            client,
+            _payload(action="closed", issue=closed_issue),
+            delivery="concurrent-close",
+        )
+        assert claim_started.wait(timeout=5)
+        release_handoff.set()
+        handoff_future.result(timeout=5)
+        response = webhook_future.result(timeout=5)
+
+    assert response.json()["outcome"] == "local_untouched"
+    with Session(engine) as session:
+        item = session.get(WorkItem, item_id)
+        assert item.authority == "local"
+        assert item.state == "ready"
+        assert item.close_reason is None

@@ -16,6 +16,7 @@ from core.db import get_session
 from factory.orchestration import factory_controls
 from factory.orchestration.factory_models import (
     FactoryControl,
+    FactoryGithubIssueState,
     FactoryReceipt,
     WorkItem,
     WorkItemEdge,
@@ -63,6 +64,7 @@ def db(tmp_path, monkeypatch):
                 WorkItemEdge,
                 WorkItemEvent,
                 FactoryReceipt,
+                FactoryGithubIssueState,
             )
         ],
     )
@@ -87,6 +89,7 @@ def github_issue(number=1, labels=(), **overrides):
         "labels": [{"name": label} for label in labels],
         "user": {"login": "jomcgi", "type": "User"},
         "created_at": "2026-09-19T12:00:00Z",
+        "updated_at": "2026-09-19T12:00:00Z",
     }
     value.update(overrides)
     return value
@@ -418,6 +421,44 @@ def test_truncated_sync_never_closes_missing_items(db):
             select(WorkItem).where(WorkItem.github_issue_number == 2)
         ).one()
         assert second.state == "open"
+
+
+def test_source_ordered_sweep_cannot_overwrite_newer_snapshot(db):
+    newer = github_issue(
+        1,
+        ["agent-ready"],
+        title="Newer webhook state",
+        updated_at="2026-09-19T12:02:00Z",
+    )
+    older = github_issue(
+        1,
+        [],
+        title="Older sweep state",
+        updated_at="2026-09-19T12:01:00Z",
+    )
+    assert (
+        sync_github_work_items(
+            "owner/repo",
+            [newer],
+            truncated=False,
+            actor="github:webhook",
+            source_ordered=True,
+        )["minted"]
+        == 1
+    )
+    counts = sync_github_work_items(
+        "owner/repo",
+        [older],
+        truncated=False,
+        actor="github:sweep",
+        source_ordered=True,
+    )
+    assert counts["stale_ignored"] == 1
+    assert counts["close_skipped"] == "source_ordered"
+    with Session(db) as session:
+        item = session.exec(select(WorkItem)).one()
+        assert item.title == "Newer webhook state"
+        assert item.state == "ready"
 
 
 def operator_client(db):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 from datetime import datetime, timedelta, timezone
 
@@ -550,7 +551,14 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                 from factory.orchestration.work_items import sync_github_work_items
 
                 work_item_counts = sync_github_work_items(
-                    repo, issues, truncated=issues_cut, actor=ACTOR
+                    repo,
+                    issues,
+                    truncated=issues_cut,
+                    actor=ACTOR,
+                    source_ordered=os.getenv(
+                        "FACTORY_GITHUB_WEBHOOK_ENABLED", "false"
+                    ).lower()
+                    == "true",
                 )
                 logger.info("work_item_sync", extra=work_item_counts)
 
@@ -559,22 +567,16 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                     synced_items = db.exec(
                         select(WorkItem).where(
                             WorkItem.github_repo == repo,
-                            WorkItem.authority == "github",
                         )
                     ).all()
-                    # Build list of (item, body) tuples from the GitHub issues
-                    items_with_bodies = []
-                    issue_by_number = {
-                        issue.get("number"): issue
-                        for issue in issues
-                        if isinstance(issue, dict)
-                    }
-                    for item in synced_items:
-                        if item.github_issue_number is not None:
-                            issue = issue_by_number.get(item.github_issue_number)
-                            if issue is not None:
-                                body = issue.get("body") or ""
-                                items_with_bodies.append((item, body))
+                    # Reconcile only from persisted bodies. A stale sweep
+                    # payload rejected by source ordering must not reappear
+                    # here and undo newer webhook dependency state.
+                    items_with_bodies = [
+                        (item, item.body)
+                        for item in synced_items
+                        if item.github_issue_number is not None
+                    ]
 
                     if items_with_bodies:
                         edge_counts = reconcile_body_edges(

@@ -401,14 +401,15 @@ class FactoryWebhookDelivery(SQLModel, table=True):
             "outcome IN "
             "('processing','ignored_event','ignored_action','trusted_minted',"
             "'trusted_synced','trusted_unchanged','trusted_closed',"
+            "'trusted_stale_ignored','trusted_missing_timestamp_ignored',"
             "'local_untouched','semi_trusted_held','untrusted_ignored')",
             name="factory_webhook_delivery_outcome_check",
         ),
         Index(
-            "factory_webhook_delivery_issue_created_idx",
+            "factory_webhook_delivery_issue_source_idx",
             "repo",
             "issue_number",
-            "created_at",
+            "source_updated_at",
         ),
         {"schema": "swarm", "extend_existing": True},
     )
@@ -418,9 +419,34 @@ class FactoryWebhookDelivery(SQLModel, table=True):
     action: str | None = Field(default=None)
     repo: str
     issue_number: int | None = Field(default=None)
+    source_updated_at: datetime | None = Field(default=None)
     outcome: str = Field(default="processing")
     work_item_id: int | None = Field(default=None, foreign_key="swarm.work_item.id")
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class FactoryGithubIssueState(SQLModel, table=True):
+    """Latest applied GitHub source version for one repository issue."""
+
+    __tablename__ = "factory_github_issue_state"
+    __table_args__ = (
+        CheckConstraint(
+            "source_state IN ('open','closed')",
+            name="factory_github_issue_state_source_state_check",
+        ),
+        CheckConstraint(
+            "issue_number > 0",
+            name="factory_github_issue_state_issue_number_check",
+        ),
+        {"schema": "swarm", "extend_existing": True},
+    )
+
+    repo: str = Field(primary_key=True)
+    issue_number: int = Field(primary_key=True)
+    source_updated_at: datetime
+    source_state: str
+    source_ref: str
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 def same_work(row_or_key, other) -> bool:

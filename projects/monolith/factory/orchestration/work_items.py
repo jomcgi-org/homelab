@@ -8,6 +8,7 @@ from typing import Any
 
 from core.db import get_engine  # noqa: F401 - for test monkeypatching
 from sqlalchemy import func, update
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from factory.orchestration.factory_controls import (
@@ -17,6 +18,7 @@ from factory.orchestration.factory_controls import (
 )
 from factory.orchestration.factory_intake_loop import derive_task_class
 from factory.orchestration.factory_models import (
+    FactoryGithubIssueState,
     FactoryReceipt,
     WorkItem,
     WorkItemEdge,
@@ -112,6 +114,96 @@ def _github_created_at(issue: dict) -> datetime | None:
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
 
+def github_issue_updated_at(issue: dict) -> datetime | None:
+    """Return GitHub's source-order timestamp without inventing a fallback."""
+    raw = issue.get("updated_at")
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise WorkItemError("GitHub issue updated_at must be an ISO timestamp")
+    try:
+        value = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise WorkItemError("GitHub issue updated_at must be an ISO timestamp") from exc
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def order_github_issue_snapshot(
+    db: Session,
+    repo: str,
+    issue: dict,
+    *,
+    source_ref: str,
+) -> tuple[FactoryGithubIssueState | None, str | None]:
+    """Lock and advance one issue watermark, or reject a non-new snapshot.
+
+    Missing source timestamps never mutate repository state. Equal timestamps
+    are conservatively treated as stale because GitHub supplies no ordering
+    within a tie. A legitimate reopen therefore needs a strictly newer
+    issue.updated_at than the recorded close.
+    """
+    number = _issue_number(issue)
+    source_updated_at = github_issue_updated_at(issue)
+    if source_updated_at is None:
+        return None, "missing_timestamp_ignored"
+    source_state = issue.get("state")
+    if source_state not in ("open", "closed"):
+        raise WorkItemError("GitHub issue state must be open or closed")
+
+    row = db.exec(
+        select(FactoryGithubIssueState)
+        .where(
+            FactoryGithubIssueState.repo == repo,
+            FactoryGithubIssueState.issue_number == number,
+        )
+        .with_for_update()
+    ).one_or_none()
+    created = False
+    if row is None:
+        candidate = FactoryGithubIssueState(
+            repo=repo,
+            issue_number=number,
+            source_updated_at=source_updated_at,
+            source_state=source_state,
+            source_ref=source_ref,
+            updated_at=_now(),
+        )
+        try:
+            with db.begin_nested():
+                db.add(candidate)
+                db.flush()
+            row = candidate
+            created = True
+        except IntegrityError:
+            # A distinct first delivery for the same issue won the insert.
+            # The savepoint preserves this transaction's delivery claim.
+            row = db.exec(
+                select(FactoryGithubIssueState)
+                .where(
+                    FactoryGithubIssueState.repo == repo,
+                    FactoryGithubIssueState.issue_number == number,
+                )
+                .with_for_update()
+            ).one()
+
+    recorded_updated_at = row.source_updated_at
+    if recorded_updated_at.tzinfo is None:
+        recorded_updated_at = recorded_updated_at.replace(tzinfo=timezone.utc)
+    else:
+        recorded_updated_at = recorded_updated_at.astimezone(timezone.utc)
+    if not created and source_updated_at <= recorded_updated_at:
+        return row, "stale_ignored"
+    if not created:
+        row.source_updated_at = source_updated_at
+        row.source_state = source_state
+        row.source_ref = source_ref
+        row.updated_at = _now()
+        db.add(row)
+    return row, None
+
+
 def _github_values(
     repo: str,
     issue: dict,
@@ -161,6 +253,7 @@ def _lock_items(db: Session, *item_ids: int) -> dict[int, WorkItem]:
         .where(WorkItem.id.in_(wanted))
         .order_by(WorkItem.id)
         .with_for_update()
+        .execution_options(populate_existing=True)
     ).all()
     found = {item.id: item for item in rows if item.id is not None}
     missing = [item_id for item_id in wanted if item_id not in found]
@@ -210,6 +303,8 @@ def mint_or_sync_from_github(
     *,
     actor: str,
     trusted_authors: frozenset[str] | None = None,
+    source_ordered: bool = False,
+    source_ref: str | None = None,
 ) -> tuple[WorkItem | None, str]:
     """Mint or refresh one issue while respecting a local authority handoff."""
     if issue.get("pull_request") is not None:
@@ -229,6 +324,16 @@ def mint_or_sync_from_github(
     ).one_or_none()
     if item is not None and item.authority == "local":
         return item, "local_untouched"
+
+    if source_ordered:
+        _source_state, ordering_outcome = order_github_issue_snapshot(
+            db,
+            repo,
+            issue,
+            source_ref=source_ref or actor,
+        )
+        if ordering_outcome is not None:
+            return item, ordering_outcome
 
     values = _github_values(repo, issue, trusted_authors=trusted_authors)
     now = _now()
@@ -271,6 +376,7 @@ def mint_or_sync_from_github(
         return item, "minted"
 
     changes: dict[str, Any] = {}
+    transitioned = False
     labels_changed = item.labels != values["labels"]
     for field in (
         "title",
@@ -316,13 +422,14 @@ def mint_or_sync_from_github(
                     cause_ref=item.source_ref,
                     stated_reason=f"GitHub labels: {', '.join(sorted(values['labels']))}",
                 )
+            transitioned = True
             # Reload the item after transitions
             item = _lock_item(db, item.id)
         else:
             # Label state is unreachable; record it in sync event without changing state
             changes["label_state"] = label_state
     if not changes:
-        return item, "unchanged"
+        return item, "synced" if transitioned else "unchanged"
     item.updated_at = now
     db.add(item)
     _event(
@@ -687,8 +794,13 @@ def close_missing_from_github(
 
 
 def sync_github_work_items(
-    repo: str, issues: list, *, truncated: bool, actor: str
-) -> dict[str, int]:
+    repo: str,
+    issues: list,
+    *,
+    truncated: bool,
+    actor: str,
+    source_ordered: bool = False,
+) -> dict[str, int | str | None]:
     """Synchronize one bounded GitHub listing in a single transaction."""
     try:
         repo = normalize_repo(repo)
@@ -699,6 +811,8 @@ def sync_github_work_items(
         "synced": 0,
         "unchanged": 0,
         "local_untouched": 0,
+        "stale_ignored": 0,
+        "missing_timestamp_ignored": 0,
         "skipped": 0,
         "closed": 0,
         "close_skipped": None,
@@ -708,16 +822,28 @@ def sync_github_work_items(
         for issue in issues:
             if not isinstance(issue, dict):
                 raise WorkItemError("GitHub issue entries must be objects")
-            item, outcome = mint_or_sync_from_github(db, repo, issue, actor=actor)
+            item, outcome = mint_or_sync_from_github(
+                db,
+                repo,
+                issue,
+                actor=actor,
+                source_ordered=source_ordered,
+                source_ref="github:sweep",
+            )
             counts[outcome] += 1
             if item is not None:
                 open_numbers.add(_issue_number(issue))
-        if not truncated:
+        if not truncated and not source_ordered:
             closed_count = close_missing_from_github(
                 db, repo, open_numbers, actor=actor
             )
             if not open_numbers:
                 counts["close_skipped"] = "empty_listing"
             counts["closed"] = closed_count
+        elif source_ordered:
+            # Absence from an open-issue listing carries no issue.updated_at,
+            # so it cannot safely advance the same source-order watermark.
+            # Webhook close events remain authoritative while ingress is on.
+            counts["close_skipped"] = "source_ordered"
         db.commit()
     return counts
