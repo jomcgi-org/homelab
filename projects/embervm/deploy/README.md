@@ -88,6 +88,29 @@ ArgoCD and SigNoz at `private.jomcgi.dev/app/*`, `kubectl get workloads`
 for definition status, `/v1/usage` for metering, and
 `docs/runbooks/embervm-*.md` for break-glass procedures.
 
+## GKE store validation stage
+
+Issue #6193 has a repository-only, default-off validation stage. The live GKE
+Application remains configured for `h0melab-ember-bases` in `values-gke.yaml`.
+The inactive
+`../dev/deploy/values-store-validation-gke.yaml` preset instead fixes every
+rendered store consumer to `h0melab-ember-bases-dev`, but neither Application
+nor kustomization references it. It cannot change live routing automatically.
+
+The preset enables required Secret references to
+`embervm-store-validation-gcs` and deliberately leaves the 1Password item path
+empty. A missing Secret therefore prevents store-using containers from
+starting, while the repository does not guess an external credential path.
+
+The checked-in desired policies and the inspect-before-apply operator steps are
+in [store-validation/README.md](store-validation/README.md). They specify a
+dev-only delete lifecycle at age seven days and an alerts-only USD 15 monthly
+budget filtered to the `h0melab` project and Cloud Storage service resource
+`services/95FF-2EF5-5EA1`. The budget covers all project Cloud Storage usage,
+not only one bucket. Alerts do not cap spending. No bucket, lifecycle, budget,
+notification channel, credential, or IAM resource is created by this repository
+stage, and production retains its no-lifecycle-deletion safeguard.
+
 ## Warmth GC operations
 
 An empty control-plane store of a kind whose S3 keys exist aborts the sweep

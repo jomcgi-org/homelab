@@ -140,6 +140,54 @@ py_test(
     ],
 )
 
+# Renders the inactive #6193 store-validation preset and validates its provider
+# policy specifications. Registration here makes it part of Linux Bazel CI.
+py_test(
+    name = "store_validation_config_test",
+    srcs = ["store_validation_config_test.py"],
+    data = [
+        "Chart.yaml",
+        "values.yaml",
+        "//projects/embervm/deploy:application",
+        "//projects/embervm/deploy:kustomization.yaml",
+        "//projects/embervm/deploy:store-validation/README.md",
+        "//projects/embervm/deploy:store-validation/cloud-storage-budget.json",
+        "//projects/embervm/deploy:store-validation/h0melab-ember-bases-dev-lifecycle.json",
+        "//projects/embervm/deploy:gke_values",
+        "//projects/embervm/dev/deploy:application",
+        "//projects/embervm/dev/deploy:deploy_values",
+        "//projects/embervm/dev/deploy:kustomization.yaml",
+        "//projects/embervm/dev/deploy:store_validation_values",
+        "@multitool//tools/helm",
+    ] + glob([
+        "templates/**/*",
+        "crds/**/*",
+    ]),
+    env = {
+        "DEV_APPLICATION": "$(rootpath //projects/embervm/dev/deploy:application)",
+        "DEV_KUSTOMIZATION": "$(rootpath //projects/embervm/dev/deploy:kustomization.yaml)",
+        "DEV_VALUES": "$(rootpath //projects/embervm/dev/deploy:deploy_values)",
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+        "PROD_APPLICATION": "$(rootpath //projects/embervm/deploy:application)",
+        "PROD_GKE_VALUES": "$(rootpath //projects/embervm/deploy:gke_values)",
+        "PROD_KUSTOMIZATION": "$(rootpath //projects/embervm/deploy:kustomization.yaml)",
+        "STORE_BUDGET": "$(rootpath //projects/embervm/deploy:store-validation/cloud-storage-budget.json)",
+        "STORE_LIFECYCLE": "$(rootpath //projects/embervm/deploy:store-validation/h0melab-ember-bases-dev-lifecycle.json)",
+        "STORE_RUNBOOK": "$(rootpath //projects/embervm/deploy:store-validation/README.md)",
+        "STORE_VALIDATION_VALUES": "$(rootpath //projects/embervm/dev/deploy:store_validation_values)",
+    },
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)
+
+semgrep_test(
+    name = "store_validation_config_test_semgrep_test",
+    srcs = ["store_validation_config_test.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
 # Keeps the published single-host overlay independent of the homelab reference
 # deployment. The test renders the real chart and checks the exact minimum lane.
 py_test(

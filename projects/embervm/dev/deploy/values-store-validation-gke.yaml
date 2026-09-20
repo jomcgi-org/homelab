@@ -1,0 +1,19 @@
+# INACTIVE GKE store-validation preset for issue #6193.
+#
+# No Application or kustomization references this file. An operator must render
+# it over values.yaml in an isolated validation release and complete the
+# store-validation runbook before a later, reviewed activation.
+#
+# The 1Password item path is deliberately empty. The preset renders required
+# SecretKeyRefs to the named Kubernetes Secret, so pods fail closed while that
+# Secret is absent, but it does not invent an external credential path. A later
+# activation must supply a verified item path without committing credentials.
+noded:
+  store:
+    endpoint: "https://storage.googleapis.com"
+    bucket: "h0melab-ember-bases-dev"
+    credentials:
+      enabled: true
+      secretName: "embervm-store-validation-gcs"
+      onepassword:
+        itemPath: ""

@@ -988,6 +988,18 @@ The marker names the payload key and checksum. A local miss reads the marker fir
 downloads that payload, and verifies its bytes, so bases hydrate across nodes under
 the identity contract, with a local hardlink cache in front.
 
+**GKE validation store (Staged, #6193)**: production continues to use
+`h0melab-ember-bases` with no lifecycle deletion rule. The repository carries
+an unreferenced, default-off dev validation preset for
+`h0melab-ember-bases-dev`, plus a dev-only seven-day delete lifecycle
+definition and an alerts-only USD 15 monthly Cloud Storage budget definition.
+The budget filters the whole `h0melab` project's Cloud Storage service, not one
+bucket, and alerts do not cap spending. The bucket, lifecycle, budget,
+notification recipient, credential, and activation remain operator work. The
+preset cannot become live through either checked-in Application or
+kustomization, and its required Secret references fail closed until a verified
+credential delivery path is supplied.
+
 **Planned rootfs plane (ADR 028, #4182)**: OCI images convert to deterministic
 flattened EROFS manifests and immutable chunks. Private chunks deduplicate under
 `rootfs/account/<account>/...`; allow-listed published platform chunks may use
