@@ -1092,7 +1092,14 @@ defmodule Embervm.ServingSweeper do
 
     with {:ok, channel} <- safe_channel(state.channel_fun, dial_key) do
       try do
-        match?({:ok, %{teardown_confirmed: true}}, state.stop_serving_fun.(channel, req))
+        case state.stop_serving_fun.(channel, req) do
+          {:ok, %{teardown_confirmed: true}} ->
+            Embervm.Scheduler.Reservation.release_confirmed(dial_key, vm_id, true)
+            true
+
+          _ ->
+            false
+        end
       rescue
         _ -> false
       catch

@@ -452,6 +452,7 @@ defmodule Embervm.GroupManager do
     attempt_fun = fn _only ->
       case safe_start_group_member(state, req) do
         {:ok, %StartGroupMemberResponse{vm_id: vm_id, ip: ip} = resp} when is_binary(vm_id) and vm_id != "" ->
+          shadow_claim(state.dial_id, vm_id, state.workload, member.mem_mib || 512)
           case GroupStore.member_started(state.store, state.instance_id, %{
                  member_name: member.expanded_name,
                  member_index: member.index,
@@ -883,6 +884,7 @@ defmodule Embervm.GroupManager do
           case safe_start_group_member(state, req) do
             {:ok, %StartGroupMemberResponse{vm_id: vm_id, was_relight: true} = resp}
             when is_binary(vm_id) and vm_id != "" ->
+              shadow_claim(state.dial_id, vm_id, state.workload, member.mem_mib || 512)
               {:ok, record_member_live(state, member, resp)}
 
             # A RELIGHT that the daemon could not verify (clock-resync out of bounds,
@@ -895,6 +897,7 @@ defmodule Embervm.GroupManager do
             {:ok, %StartGroupMemberResponse{vm_id: vm_id, was_relight: false} = resp}
             when is_binary(vm_id) and vm_id != "" ->
               Tracer.set_attributes(%{"ember.was_relight" => false})
+              shadow_claim(state.dial_id, vm_id, state.workload, member.mem_mib || 512)
               _ = record_member_live(state, member, resp)
               {:error, {:member_relight_unverified, member.expanded_name}}
 
@@ -1248,6 +1251,13 @@ defmodule Embervm.GroupManager do
     end
   end
 
+  defp shadow_claim(instance_id, vm_id, workload, mem_mib) do
+    Embervm.Scheduler.Reservation.claim_shadow(instance_id, vm_id,
+      workload: workload,
+      mem_mib: mem_mib
+    )
+  end
+
   # -- EMBER_GROUP_* env compose (decision 13) -------------------------------
 
   # The FRESH boot env for one expanded member: its declared env, plus the
@@ -1595,7 +1605,14 @@ defmodule Embervm.GroupManager do
 
     with {:ok, channel} <- safe_channel(state, state.dial_id) do
       try do
-        match?({:ok, %{teardown_confirmed: true}}, state.stop_group_member_fun.(channel, req))
+        case state.stop_group_member_fun.(channel, req) do
+          {:ok, %{teardown_confirmed: true}} ->
+            Embervm.Scheduler.Reservation.release_confirmed(state.dial_id, member.vm_id, true)
+            true
+
+          _ ->
+            false
+        end
       rescue
         _ -> false
       catch

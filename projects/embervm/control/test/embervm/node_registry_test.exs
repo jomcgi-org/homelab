@@ -14,7 +14,7 @@ defmodule Embervm.NodeRegistryTest do
 
   alias Embervm.{NodeRegistry, ServingStore, StatefulStore, WorkloadCatalog}
   alias Embervm.OpLog.SQLite
-  alias Embervm.Node.V1.{GroupMemberVm, NodeStatus, ServingVm, StatefulVm, WorkloadCapacity}
+  alias Embervm.Node.V1.{GroupMemberVm, NodeStatus, ServingVm, SessionVm, StatefulVm, WorkloadCapacity}
 
   # -- helpers ---------------------------------------------------------------
 
@@ -113,6 +113,45 @@ defmodule Embervm.NodeRegistryTest do
     snapshot = NodeRegistry.status(reg)
     assert snapshot["node-4"].health == :healthy
     assert snapshot["node-4"].dispatchable
+  end
+
+  test "every accepted status drives idempotent shadow reconciliation" do
+    test_pid = self()
+
+    observer = fn instance_id, refs ->
+      send(test_pid, {:reservation_observed, instance_id, refs})
+      :ok
+    end
+
+    {reg, _table} = start_registry(reservation_observer_fun: observer)
+
+    status = %NodeStatus{
+      node_status()
+      | session_vms: [%SessionVm{vm_id: "session-vm", session_id: "s-1", workload: "session-wl"}],
+        serving_vms: [%ServingVm{vm_id: "serving-vm", workload: "serving-wl"}],
+        stateful_vms: [%StatefulVm{vm_id: "stateful-vm", workload: "stateful-wl"}],
+        group_member_vms: [
+          %GroupMemberVm{vm_id: "group-vm", group_instance_id: "g-1", member_name: "leader"}
+        ]
+    }
+
+    :ok = NodeRegistry.inject_status(reg, "node-4", status)
+    :ok = NodeRegistry.inject_status(reg, "node-4", status)
+
+    for _ <- 1..2 do
+      assert_receive {:reservation_observed, "node-4", refs}
+      assert (Enum.map(refs, & &1.vm_id) |> Enum.sort()) ==
+               ~w(group-vm serving-vm session-vm stateful-vm)
+    end
+  end
+
+  test "brick expiry drops its entire shadow reservation row" do
+    test_pid = self()
+    drop = fn instance_id -> send(test_pid, {:reservation_dropped, instance_id}) end
+    {reg, _table} = start_registry(reservation_drop_fun: drop)
+
+    assert :ok = NodeRegistry.unregister(reg, "node-4", "")
+    assert_receive {:reservation_dropped, "node-4"}
   end
 
   test "a group member's ACTIVATOR origin is retained in node facts for adoption" do

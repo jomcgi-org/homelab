@@ -59,6 +59,8 @@ defmodule Embervm.PoolManagerTest do
           invalidate_fun: invalidate_fun,
           prime_fun: prime_fun,
           deposit_fun: fn _srv, _node, _wl, _vm -> :ok end,
+          reservation_target_fun:
+            Keyword.get(opts, :reservation_target_fun, fn _instance, _workload, _count, _mem_mib -> :ok end),
           op_log: Keyword.get(opts, :op_log),
           op_log_mod: Keyword.get(opts, :op_log_mod, Embervm.OpLog.SQLite),
           tenant: Keyword.get(opts, :tenant, "homelab"),
@@ -253,6 +255,48 @@ defmodule Embervm.PoolManagerTest do
     :ok = PoolManager.refill(ctx.pool)
 
     assert prime_counts(ctx) == %{}
+  end
+
+  test "publishes pool targets and zeros them when the workload retires" do
+    parent = self()
+
+    ctx =
+      start_pool(
+        reservation_target_fun: fn instance, workload, count, mem_mib ->
+          send(parent, {:pool_target, instance, workload, count, mem_mib})
+        end
+      )
+
+    put_catalog(ctx, "wl-a", 1, resources: %{"memMib" => 512})
+    put_facts(ctx, [{"wl-a", 0}], max: 4)
+
+    :ok = PoolManager.refill(ctx.pool)
+    assert_receive {:pool_target, "node-4", "wl-a", 1, 512}
+
+    WorkloadCatalog.drop(ctx.cat_table, "wl-a")
+    put_facts(ctx, [], max: 4)
+    :ok = PoolManager.refill(ctx.pool)
+    assert_receive {:pool_target, "node-4", "wl-a", 0, 512}
+  end
+
+  test "zeros pool targets when a brick leaves capacity" do
+    parent = self()
+
+    ctx =
+      start_pool(
+        reservation_target_fun: fn instance, workload, count, mem_mib ->
+          send(parent, {:pool_target, instance, workload, count, mem_mib})
+        end
+      )
+
+    put_catalog(ctx, "wl-a", 1, resources: %{"memMib" => 256})
+    put_facts(ctx, [{"wl-a", 1}], max: 4)
+    :ok = PoolManager.refill(ctx.pool)
+    assert_receive {:pool_target, "node-4", "wl-a", 1, 256}
+
+    NodeCapacity.drop(ctx.cap_table, {"node-4", "node-4"})
+    :ok = PoolManager.refill(ctx.pool)
+    assert_receive {:pool_target, "node-4", "wl-a", 0, 256}
   end
 
   test "writes primedFloorSatisfied, only on a flip" do
