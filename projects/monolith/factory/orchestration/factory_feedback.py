@@ -427,6 +427,12 @@ def _advisory_premise(feedback: dict) -> str:
     class reads perfectly healthy. Opening with the old unconditional "below
     its quality floor" would hand the model a false premise and it would
     write its advisory around one.
+
+    Only the premise sentence varies. ADVISORY_HEADINGS is the structural key
+    the posted comment is found and verified by, so `### Why delivery is
+    paused` stays mandatory verbatim: soften or rename it and _advisory_comment
+    returns None and the task fails. Where the premise is no longer true in the
+    present tense, the model is told to fill that section historically instead.
     """
     task_class = feedback["task_class"]
     decision = feedback.get("decision")
@@ -437,11 +443,17 @@ def _advisory_premise(feedback: dict) -> str:
             f"Automatic quality routing is retired. Task class `{task_class}` "
             "was pinned to the advisory tier before that change, so this is a "
             "final advisory sample rather than a recovery attempt. "
+            "Fill the required `### Why delivery is paused` section with the "
+            "historical reason this receipt was routed to advisory, not with a "
+            "claim that delivery is paused now. "
         )
     return (
         f"This receipt is pinned to the advisory tier. Task class `{task_class}` "
         "is not currently below its quality floor, so treat the recorded "
         "feedback as history rather than as a live quality finding. "
+        "Fill the required `### Why delivery is paused` section with the "
+        "historical reason this receipt was routed to advisory, not with a "
+        "claim that delivery is paused now. "
     )
 
 
