@@ -105,8 +105,23 @@ defaults to 0; it admits up to two extra rounds under the CI gate below.
 running task keeps its pinned policy, dispatch history, budget and deadline;
 only future admissions take the new policy. While tasks are active, a changed
 policy must supply a generation newer than the current control policy. An
-identical retry is accepted without another generation change. Queued receipts
-from older generations remain inert.
+identical retry is accepted without another generation change. An accepted
+generation advance cancels queued and escalated receipts from older
+generations in the same control-row transaction that publishes the new policy.
+Each retirement is audited with both generations and a reason. The receipt is
+never re-stamped, and admitted or uncertain work keeps running under its pinned
+old policy. Unrelated terminal history is left unchanged.
+
+An unresolved escalation on a retired receipt is dismissed locally in that
+same transaction, with a resolution explaining the generation change. The
+paced escalation reconciler repairs preexisting old-generation queues and
+cards in bounded groups of 50, including cards attached to terminal receipts;
+it resolves those cards without rewriting their terminal receipt state or
+touching GitHub. Repeated passes are idempotent. A claimed decision temporarily
+refuses the generation change, so policy retirement cannot race an external
+issue mutation. Conversely, a decision request whose receipt no longer matches
+the policy generation is refused before labels, comments, child issues, or
+issue state can change.
 
 Configuration preserves control state: enabled work continues, paused
 admissions stay paused, and initial configuration still needs `enable`.
@@ -692,10 +707,10 @@ because it records what was asked rather than any one brief's answer.
 The question is posted whether or not the lane can take the re-brief, so the
 response says which happened. `requeued: false` carries `blocked_by` naming
 the reason: not a refine receipt, a brief already queued or running, a
-generation the policy has moved past, or an issue that is neither in the
-policy allowlist nor discoverable with intake on. The card renders it, because
-a question on an issue with nothing scheduled to answer it looks exactly like
-one that was taken.
+issue that is neither in the policy allowlist nor discoverable with intake on.
+A generation-stale chat is refused before its issue comment is posted, because
+the retirement path owns that card and the old receipt can never be selected by
+the current policy.
 
 Deciding after asking for chat is allowed and cancels the re-brief: the
 resolution returns a `queued` receipt to `succeeded`, so the lane never spends

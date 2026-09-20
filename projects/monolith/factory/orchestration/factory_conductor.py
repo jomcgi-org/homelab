@@ -2140,10 +2140,18 @@ def _github_issue_batch(repo: str, numbers: list[int]) -> dict[int, dict]:
 
 
 def revalidate_escalations() -> dict[str, int]:
-    """Dismiss cards made stale by their issue, using batched GitHub reads."""
+    """Retire stale generations, then dismiss cards made stale by their issue."""
     global _last_escalation_revalidation
 
-    counts = {"cards": 0, "checked": 0, "resolved": 0, "batches": 0}
+    counts = {
+        "cards": 0,
+        "checked": 0,
+        "resolved": 0,
+        "retired": 0,
+        "generation_candidates": 0,
+        "generation_blocked": 0,
+        "batches": 0,
+    }
     if not escalation_revalidation_enabled():
         return counts
     now = _watchdog_clock()
@@ -2155,12 +2163,27 @@ def revalidate_escalations() -> dict[str, int]:
         return counts
     _last_escalation_revalidation = now
     from factory.orchestration.factory_controls import _read_session
+    from factory.orchestration.factory_controls import (
+        reconcile_generation_stale_receipts,
+    )
     from factory.orchestration.factory_decisions import DecisionError
     from factory.orchestration.factory_decisions import apply_decision as decide
-    from factory.orchestration.factory_models import FactoryReceipt
+    from factory.orchestration.factory_models import FactoryControl, FactoryReceipt
+
+    generation = reconcile_generation_stale_receipts(
+        ESCALATION_REVALIDATION_ACTOR
+    )
+    counts["cards"] += generation["cards_resolved"]
+    counts["resolved"] += generation["cards_resolved"]
+    counts["retired"] = generation["retired"]
+    counts["generation_candidates"] = generation["candidates"]
+    counts["generation_blocked"] = generation["blocked"]
 
     by_repo: dict[str, list[dict]] = {}
     with _read_session() as db:
+        control = db.get(FactoryControl, "factory")
+        policy = json.loads(control.policy_json or "{}") if control else {}
+        current_generation = policy.get("generation")
         rows = db.exec(
             select(FactoryReceipt).where(FactoryReceipt.escalation_json.is_not(None))
         ).all()
@@ -2169,6 +2192,15 @@ def revalidate_escalations() -> dict[str, int]:
             if (
                 not isinstance(escalation, dict)
                 or escalation.get("resolved") is not None
+            ):
+                continue
+            counts["cards"] += 1
+            # A bounded local pass above owns old-generation cleanup. Do not
+            # spend a GitHub read or offer an external decision for a stale
+            # card still waiting for a later pass or an in-flight decision.
+            if (
+                type(current_generation) is int
+                and row.generation != current_generation
             ):
                 continue
             snapshot = {
@@ -2186,7 +2218,6 @@ def revalidate_escalations() -> dict[str, int]:
                     "decision_id": decision_identity(snapshot),
                 }
             )
-    counts["cards"] = sum(len(cards) for cards in by_repo.values())
     for repo, cards in by_repo.items():
         for offset in range(0, len(cards), ESCALATION_REVALIDATION_BATCH_SIZE):
             batch = cards[offset : offset + ESCALATION_REVALIDATION_BATCH_SIZE]
