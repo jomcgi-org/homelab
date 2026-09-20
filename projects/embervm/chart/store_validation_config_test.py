@@ -132,6 +132,16 @@ def test_validation_render_routes_every_store_consumer_to_dev() -> None:
         _assert_required_secret_ref(env["EMBERVM_NODED_STORE_ACCESS_KEY_ID"])
         _assert_required_secret_ref(env["EMBERVM_NODED_STORE_SECRET_ACCESS_KEY"])
 
+    destructive_sweep_gates = {
+        "EMBERVM_BASE_RETENTION_SWEEP",
+        "EMBERVM_BASE_RETENTION_DISK_DRIVEN",
+        "EMBERVM_BASE_REMOTE_RETENTION_SWEEP",
+        "EMBERVM_WARMTH_RETENTION_SWEEP",
+        "EMBERVM_WARMTH_S3_GC",
+    }
+    for env in control_planes:
+        assert destructive_sweep_gates.isdisjoint(env)
+
 
 def test_dev_lifecycle_is_the_only_delete_definition() -> None:
     lifecycle = json.loads(_path("STORE_LIFECYCLE").read_text())

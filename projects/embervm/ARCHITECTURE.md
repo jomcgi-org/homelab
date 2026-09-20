@@ -998,7 +998,9 @@ bucket, and alerts do not cap spending. The bucket, lifecycle, budget,
 notification recipient, credential, and activation remain operator work. The
 preset cannot become live through either checked-in Application or
 kustomization, and its required Secret references fail closed until a verified
-credential delivery path is supplied.
+credential delivery path is supplied. It also disarms every application-level
+retention delete gate inherited from the base dev values, so validation does
+not introduce a second deletion path beside the reviewed bucket lifecycle.
 
 **Planned rootfs plane (ADR 028, #4182)**: OCI images convert to deterministic
 flattened EROFS manifests and immutable chunks. Private chunks deduplicate under
