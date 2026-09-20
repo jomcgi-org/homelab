@@ -360,12 +360,12 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
     by hand, rather than anything the lane can do to itself.
 
     A refine re-brief costs one advisory node. A delivery re-admission is a
-    whole new task: a fresh graph, a fresh allowance and a fresh
-    task_budget_usd, because the escalated attempt's spend is history and the
-    new task has to be able to plan and deliver inside its own envelope. The
-    receipt carries its previous task ids so the board can show what the issue
-    has cost across all of them, and the escalations are the place to watch
-    that, since nothing here caps how many times one issue may be re-admitted.
+    whole new task with a fresh graph and allowance. Its task_budget_usd is the
+    pinned policy unless an operator-authorized dispatch-refusal overlay was
+    carried from the settled task. That overlay is revalidated against its
+    append-only source and the cumulative objective bound before admission.
+    The receipt carries its previous task ids so the board can show what the
+    issue has cost across all of them.
     """
     actor = _text(actor, "actor")
     lanes = tuple(lane for lane in LANES if lane in lanes)
@@ -540,6 +540,22 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
                     "task_id": owner,
                     "branch": granted_branch,
                 }
+        from factory.orchestration import factory_funding
+
+        try:
+            dispatch_grant = factory_funding.dispatch_continuation_grant(
+                db, row, policy
+            )
+        except ValueError as exc:
+            return {
+                "ok": False,
+                "reason": "funding_overlay_invalid",
+                "detail": str(exc),
+            }
+        effective_policy = {
+            **policy,
+            **(dispatch_grant["policy_overlay"] if dispatch_grant else {}),
+        }
         task_id = mint_task_id()
         task = SwarmTask(
             id=task_id,
@@ -547,7 +563,7 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
             repo=policy["repo"],
             base_branch=policy["base_branch"],
             conductor_model=policy["conductor_model"],
-            budget_usd=policy["task_budget_usd"],
+            budget_usd=effective_policy["task_budget_usd"],
             workflow_id=f"factory:{task_id}",
             start_state="factory",
             start_triggered_by=actor,
@@ -565,6 +581,10 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
         control.updated_at = _now()
         db.add(row)
         db.add(control)
+        if dispatch_grant:
+            factory_funding.inherit_dispatch_grant(
+                db, row, task, dispatch_grant, policy
+            )
         _audit(
             db,
             actor,
@@ -601,6 +621,6 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
             "task_id": task_id,
             "receipt_id": row.id,
             "lane": lane_of(row),
-            "policy": policy,
+            "policy": effective_policy,
             "receipt": _snapshot(db, row, body=True),
         }

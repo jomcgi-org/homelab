@@ -62,16 +62,13 @@ def effective_policy(db, row):
     return {**policy, **grant["policy_overlay"]} if grant else policy
 
 
-def objective(db, task_id):
-    """Immutable admission audits retain every task after receipt readmission.
+def objective_for_receipt(db, receipt):
+    """Return cumulative accounting for the objective owning ``receipt``.
 
     The audit's task -> receipt association never changes; repo/issue is the
     objective identity across generations and advisory/delivery classes.
     Display-only predecessor lists are deliberately not used as the ledger.
     """
-    receipt = controls._receipt(db, task_id)
-    if receipt is None:
-        raise ValueError("unknown funding objective")
     # A receipt with NULL work_item_id sums only by issue on purpose
     # (pre-column history), so the asymmetry is documented.
     issue_identity = (FactoryReceipt.repo == receipt.repo) & (
@@ -101,6 +98,14 @@ def objective(db, task_id):
         "committed_cost_usd": budget["committed_cost_usd"],
         "ceiling_usd": OBJECTIVE_CEILING_USD,
     }
+
+
+def objective(db, task_id):
+    """Read one task's objective identity before summing its durable ledger."""
+    receipt = controls._receipt(db, task_id)
+    if receipt is None:
+        raise ValueError("unknown funding objective")
+    return objective_for_receipt(db, receipt)
 
 
 def graph_budget(db, task, *, node_key=None, model=None, cost=None):
