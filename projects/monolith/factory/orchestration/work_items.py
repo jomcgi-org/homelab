@@ -2,18 +2,17 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import json
+from datetime import datetime, timezone
 from typing import Any
 
+from core.db import get_engine  # noqa: F401 - for test monkeypatching
 from sqlalchemy import func, update
 from sqlmodel import Session, select
 
-from core.db import get_engine  # noqa: F401 - for test monkeypatching
-
 from factory.orchestration.factory_controls import (
-    normalize_repo,
     _locked_session,
+    normalize_repo,
     receipt_task_class,
 )
 from factory.orchestration.factory_intake_loop import derive_task_class
@@ -50,12 +49,15 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def trust_for_github_author(author: dict | None) -> str:
+def trust_for_github_author(
+    author: dict | None, *, trusted_authors: frozenset[str] | None = None
+) -> str:
     """Map a GitHub user object to the work item's ingestion trust."""
     if not isinstance(author, dict):
         return "untrusted"
     login = author.get("login")
-    if isinstance(login, str) and login.lower() == "jomcgi":
+    configured = trusted_authors or frozenset(("jomcgi",))
+    if isinstance(login, str) and login.lower() in configured:
         return "trusted"
     if author.get("type") == "Bot" or (
         isinstance(login, str)
@@ -110,7 +112,12 @@ def _github_created_at(issue: dict) -> datetime | None:
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
 
-def _github_values(repo: str, issue: dict) -> dict[str, Any]:
+def _github_values(
+    repo: str,
+    issue: dict,
+    *,
+    trusted_authors: frozenset[str] | None = None,
+) -> dict[str, Any]:
     number = _issue_number(issue)
     title = issue.get("title")
     body = issue.get("body") or ""
@@ -130,7 +137,10 @@ def _github_values(repo: str, issue: dict) -> dict[str, Any]:
         "task_class": task_class,
         "labels": sorted(labels),
         "source_ref": source_ref,
-        "trust": trust_for_github_author(issue.get("user") or issue.get("author")),
+        "trust": trust_for_github_author(
+            issue.get("user") or issue.get("author"),
+            trusted_authors=trusted_authors,
+        ),
         "github_created_at": _github_created_at(issue),
     }
 
@@ -194,7 +204,12 @@ def _event(
 
 
 def mint_or_sync_from_github(
-    db: Session, repo: str, issue: dict, *, actor: str
+    db: Session,
+    repo: str,
+    issue: dict,
+    *,
+    actor: str,
+    trusted_authors: frozenset[str] | None = None,
 ) -> tuple[WorkItem | None, str]:
     """Mint or refresh one issue while respecting a local authority handoff."""
     if issue.get("pull_request") is not None:
@@ -215,7 +230,7 @@ def mint_or_sync_from_github(
     if item is not None and item.authority == "local":
         return item, "local_untouched"
 
-    values = _github_values(repo, issue)
+    values = _github_values(repo, issue, trusted_authors=trusted_authors)
     now = _now()
     if item is None:
         item = WorkItem(

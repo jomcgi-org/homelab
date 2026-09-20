@@ -15,11 +15,10 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
+from core.db import get_session
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, text
-
-from core.db import get_session
 
 logger = logging.getLogger(__name__)
 
@@ -282,6 +281,13 @@ _FACTORY_SESSION_QUERY = text(
     WHERE session_key = :session_key
     """
 )
+_FACTORY_WORK_ITEM_QUERY = text(
+    """
+    SELECT payload, snapshotted_at
+    FROM public_api.factory_work_item_snapshot
+    WHERE work_item_id = :work_item_id
+    """
+)
 
 
 def _payload(row: Any) -> dict:
@@ -346,6 +352,22 @@ def get_public_factory_task(
     if row is None:
         raise HTTPException(status_code=404, detail="unknown task")
     return _factory_response(request, response, "task", _payload(row))
+
+
+@router.get("/factory/work-items/{work_item_id}")
+def get_public_factory_work_item(
+    work_item_id: int,
+    request: Request,
+    response: Response,
+    session: Session = Depends(get_session),
+):
+    """One safe work-item snapshot, with no read access to private factory rows."""
+    row = _factory_row(
+        session, _FACTORY_WORK_ITEM_QUERY, {"work_item_id": work_item_id}
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="unknown work item")
+    return _factory_response(request, response, "work-item", _payload(row))
 
 
 # ``:path`` because a session key is factory:<task_id>:<node_key>:<attempt> and

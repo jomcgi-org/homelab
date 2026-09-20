@@ -228,10 +228,16 @@ spec:
               value: {{ .Values.swarm.factoryEnabled | default false | quote }}
             - name: FACTORY_RESERVATION_REVIEW_ENABLED
               value: {{ .Values.swarm.factoryReservationReviewEnabled | default false | quote }}
+            - name: FACTORY_GITHUB_WEBHOOK_ENABLED
+              value: {{ .Values.swarm.factoryGithubWebhookEnabled | default false | quote }}
+            - name: FACTORY_GITHUB_WEBHOOK_REPOSITORY
+              value: {{ .Values.swarm.factoryGithubWebhookRepository | quote }}
+            - name: FACTORY_GITHUB_WEBHOOK_TRUSTED_AUTHORS
+              value: {{ .Values.swarm.factoryGithubWebhookTrustedAuthors | quote }}
             - name: FACTORY_WORK_ITEM_POINTER_ENABLED
               value: {{ .Values.swarm.factoryWorkItemPointerEnabled | default false | quote }}
             - name: FACTORY_WORK_ITEM_BASE_URL
-              value: {{ .Values.swarm.factoryWorkItemBaseUrl | default "https://private.jomcgi.dev" | quote }}
+              value: {{ .Values.swarm.factoryWorkItemBaseUrl | default "https://jomcgi.dev/slop" | quote }}
             - name: FACTORY_CONDUCTOR_FUNDING_ENABLED
               value: {{ .Values.swarm.factoryConductorFundingEnabled | default false | quote }}
             - name: FACTORY_AUTONOMOUS_CONTINUATION_ENABLED
@@ -431,6 +437,14 @@ spec:
                 secretKeyRef:
                   name: {{ include "monolith.fullname" . }}-chat-secrets
                   key: {{ .Values.chat.githubApiTokenSecretKey }}
+            # Optional field in the existing private monolith item. The route
+            # stays disabled by default and fails closed if this field is absent.
+            - name: FACTORY_GITHUB_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "monolith.fullname" . }}-chat-secrets
+                  key: FACTORY_GITHUB_WEBHOOK_SECRET
+                  optional: true
             {{- end }}
             # cd health fault thresholds (issue #4597). The separate writer
             # interval below has an independent 750s reader-staleness constant in

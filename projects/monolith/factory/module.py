@@ -15,6 +15,7 @@ from factory.orchestration.health import drainer_health
 
 def register(app) -> None:
     from factory.orchestration.factory_router import router as factory_router
+    from factory.orchestration.factory_webhook import router as factory_webhook_router
     from factory.orchestration.drain_console_router import (
         router as drain_console_router,
     )
@@ -30,6 +31,7 @@ def register(app) -> None:
     app.include_router(drainer_router)
     app.include_router(drain_console_router)
     app.include_router(factory_router)
+    app.include_router(factory_webhook_router)
 
 
 def _register_mcp() -> None:

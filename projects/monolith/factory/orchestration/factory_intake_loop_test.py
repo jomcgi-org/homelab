@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 import json
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import event
@@ -1159,6 +1159,48 @@ def test_local_ready_item_creates_linked_delivery_receipt(db, monkeypatch):
     assert result[0]["receipt"]["task_class"] == "docs"
     detail = json.loads(audits(db, "intake_admitted")[0].detail_json)
     assert detail["source"] == "local"
+
+
+def test_webhook_cutover_uses_only_stored_trusted_items(db, monkeypatch):
+    monkeypatch.setenv("FACTORY_GITHUB_WEBHOOK_ENABLED", "true")
+
+    def unexpected_github_read(*_args, **_kwargs):
+        raise AssertionError("webhook cutover must not sweep GitHub")
+
+    monkeypatch.setattr(intake_loop, "github_list", unexpected_github_read)
+    with Session(db) as session:
+        for number, trust in (
+            (201, "trusted"),
+            (202, "semi_trusted"),
+            (203, "untrusted"),
+        ):
+            session.add(
+                WorkItem(
+                    title=f"{trust} webhook item",
+                    body="stored payload",
+                    state="ready",
+                    labels=["agent-ready"],
+                    source_kind="github",
+                    source_ref=f"https://github.com/owner/repo/issues/{number}",
+                    trust=trust,
+                    authority="github",
+                    github_repo="owner/repo",
+                    github_issue_number=number,
+                    github_created_at=NOW - timedelta(days=1),
+                )
+            )
+        session.commit()
+
+    admitted = intake_loop.intake_tick(policy(labels=["agent-ready"]), generation=0)
+    assert len(admitted) == 1
+    assert admitted[0]["receipt"]["issue_number"] == 201
+    detail = json.loads(audits(db, "intake_admitted")[0].detail_json)
+    assert detail["source"] == "webhook"
+    assert detail["github"] == "webhook"
+    with Session(db) as session:
+        assert [
+            row.issue_number for row in session.exec(select(FactoryReceipt)).all()
+        ] == [201]
 
 
 def test_local_open_item_follows_refine_flag(db, monkeypatch):

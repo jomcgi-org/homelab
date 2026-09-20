@@ -10,13 +10,13 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from sqlalchemy import (
+    JSON,
     BigInteger,
     CheckConstraint,
     Column,
     Index,
     Integer,
     UniqueConstraint,
-    JSON,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
@@ -389,6 +389,37 @@ class WorkItemEvent(SQLModel, table=True):
     cause_kind: str
     cause_ref: str | None = Field(default=None)
     stated_reason: str | None = Field(default=None)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class FactoryWebhookDelivery(SQLModel, table=True):
+    """One authenticated GitHub delivery, committed with its applied effect."""
+
+    __tablename__ = "factory_webhook_delivery"
+    __table_args__ = (
+        CheckConstraint(
+            "outcome IN "
+            "('processing','ignored_event','ignored_action','trusted_minted',"
+            "'trusted_synced','trusted_unchanged','trusted_closed',"
+            "'local_untouched','semi_trusted_held','untrusted_ignored')",
+            name="factory_webhook_delivery_outcome_check",
+        ),
+        Index(
+            "factory_webhook_delivery_issue_created_idx",
+            "repo",
+            "issue_number",
+            "created_at",
+        ),
+        {"schema": "swarm", "extend_existing": True},
+    )
+
+    delivery_id: str = Field(primary_key=True)
+    event: str
+    action: str | None = Field(default=None)
+    repo: str
+    issue_number: int | None = Field(default=None)
+    outcome: str = Field(default="processing")
+    work_item_id: int | None = Field(default=None, foreign_key="swarm.work_item.id")
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 

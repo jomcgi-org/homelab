@@ -21,14 +21,19 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import text
-from factory.orchestration.factory_controls import validate_policy
-from factory.orchestration.factory_models import FactoryControl, FactoryReceipt
-from factory.orchestration.models import SwarmNodeRun, SwarmPlanNode, SwarmTask
 
 from factory import publication
+from factory.execution.models import AgentSession, AgentTurn
+from factory.orchestration.factory_controls import validate_policy
+from factory.orchestration.factory_models import (
+    FactoryControl,
+    FactoryReceipt,
+    WorkItem,
+    WorkItemEdge,
+)
+from factory.orchestration.models import SwarmNodeRun, SwarmPlanNode, SwarmTask
 from factory.publication import _encode, write_public_snapshot
 from factory.utils import sanitize_payload
-from factory.execution.models import AgentSession, AgentTurn
 
 # Seeded on every identity-bearing column the snapshot must not republish, so
 # one substring search over the JSON proves none of them leaked.
@@ -81,6 +86,13 @@ def _session_rows(session) -> dict[str, tuple[int, dict]]:
         )
     ).all()
     return {row[0]: (row[1], row[2]) for row in rows}
+
+
+def _work_item_payloads(session) -> dict[int, dict]:
+    rows = session.execute(
+        text("SELECT work_item_id, payload FROM public_api.factory_work_item_snapshot")
+    ).all()
+    return {row[0]: row[1] for row in rows}
 
 
 def _seed_board(session, *, state: str = "admitted") -> FactoryReceipt:
@@ -460,6 +472,75 @@ def test_a_second_run_replaces_the_payload_in_place(session):
     assert list(_session_rows(session)) == [SESSION_KEY]
 
 
+def test_writer_publishes_only_safe_github_origin_work_items(session):
+    public = WorkItem(
+        title="<script>public title</script>",
+        body="public issue body",
+        state="ready",
+        task_class="bug-fix",
+        labels=["agent-ready"],
+        source_kind="github",
+        source_ref="javascript:bad",
+        trust="trusted",
+        authority="github",
+        github_repo="owner/repo",
+        github_issue_number=6257,
+    )
+    private = WorkItem(
+        title="private local item",
+        body="contains a private escalation",
+        state="open",
+        source_kind="factory",
+        trust="trusted",
+        authority="local",
+    )
+    related = WorkItem(
+        title="public related item",
+        body="not republished",
+        state="open",
+        source_kind="github",
+        source_ref="https://github.com/owner/repo/issues/6258",
+        trust="trusted",
+        authority="github",
+        github_repo="owner/repo",
+        github_issue_number=6258,
+    )
+    session.add_all([public, private, related])
+    session.flush()
+    session.add_all(
+        [
+            WorkItemEdge(
+                from_id=public.id,
+                to_id=related.id,
+                kind="blocks",
+                source="github_body",
+            ),
+            WorkItemEdge(
+                from_id=public.id,
+                to_id=private.id,
+                kind="parent",
+                source="decision",
+            ),
+        ]
+    )
+
+    report = write_public_snapshot(session)
+    payloads = _work_item_payloads(session)
+
+    assert report["work_items"] == 2
+    assert list(payloads) == [public.id, related.id]
+    payload = payloads[public.id]
+    assert payload["item"]["source_ref"] == "https://github.com/owner/repo/issues/6257"
+    encoded = json.dumps(payload)
+    assert "private local item" not in encoded
+    assert "escalation" not in encoded
+    assert "public issue body" not in encoded
+    assert payload["edges_out"] == [
+        {"to_id": related.id, "kind": "blocks", "source": "github_body"}
+    ]
+    assert str(private.id) not in encoded
+
+
 def test_public_reader_can_read_back_what_the_writer_published(session, pg):
     """The writer's rows are reachable through the role the public tier uses."""
     from sqlmodel import Session, create_engine
@@ -477,6 +558,7 @@ def test_public_reader_can_read_back_what_the_writer_published(session, pg):
                 "factory_activity_snapshot",
                 "factory_task_snapshot",
                 "factory_session_snapshot",
+                "factory_work_item_snapshot",
             ):
                 reader.execute(text(f"SELECT * FROM public_api.{table}")).all()
     finally:

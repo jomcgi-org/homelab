@@ -1516,8 +1516,13 @@ swarm:
   factoryEnabled: false
   # Consume exact durable Ember teardown proof for stopped/expired attempts.
   factoryReservationReviewEnabled: false
+  # Authenticated issue lifecycle ingress. Keep off until the GitHub hook and
+  # optional 1Password field have been configured and live delivery is checked.
+  factoryGithubWebhookEnabled: false
+  factoryGithubWebhookRepository: jomcgi-org/homelab
+  factoryGithubWebhookTrustedAuthors: jomcgi
   factoryWorkItemPointerEnabled: false
-  factoryWorkItemBaseUrl: https://private.jomcgi.dev
+  factoryWorkItemBaseUrl: https://jomcgi.dev/slop
   factoryConductorFundingEnabled: false
   factoryAutonomousContinuationEnabled: false
   factoryStopSupervisionEnabled: false
