@@ -958,6 +958,35 @@ hold would only delay the same unknown outcome. Every owner that writes,
 finishes or ends a hold reads that one flag, so off is the behaviour this lane
 had before any of this existed (#5938, #4322).
 
+The pre-guest response-loss window is intentionally separate. A response-loss
+hold requires the exact persisted guest binding, result receipt, executor
+claim, dispatch count, and permit. If the executor is lost before a guest is
+bound, there is no receipt to recover and no remote invocation to resume. The
+session instead records `invocation_outcome_unknown`; the
+`lost_before_guest` proof requires a terminal failed session, no current or
+prior binding, no pending executor, no receipt or work product, and one exact
+uncertain permit. The factory may then fail the attempt at zero cost and
+release that reservation exactly once. Changing
+`agents.sessions.responseLostRecoveryEnabled` does not widen or disable this
+proof. A bound guest, including one whose generation or invoke stamp changed,
+remains on the response-loss and stop-supervision paths and is never refunded
+by `lost_before_guest`. A message with dispatch count zero remains the separate
+`never_dispatched` proof.
+
+The in-process operator repair is
+`factory.orchestration.factory_controls.settle_lost_attempt(task_id, node_key,
+attempt, actor)`. Before calling it, an operator must confirm the exact node's
+DBOS workflow is terminal. The function has no DBOS handle and cannot perform
+that check itself. It then locks the factory control row and accepts only an
+active, unpriced run with no newer attempt and the exact pinned workflow and
+session ownership. The execution proof is re-read in the settlement
+transaction, so a late guest binding, a new dispatcher, changed ownership, or
+new execution evidence refuses the repair. Repeating the call after success
+also refuses because the attempt is already terminal. This repairs one attempt
+without cancelling or re-admitting the receipt, and it is deliberately
+available while `factoryLostBeforeGuestSettlementEnabled` is off. It is an
+operator action, not an HTTP endpoint.
+
 An attempt whose workflow died mid-way has no session recorded on its run,
 because `record_dispatch` binds one only at completion. The reconciler resolves
 it by the deterministic `local_session_id`, `factory:<task>:<node>:<attempt>`,

@@ -10453,9 +10453,10 @@ def test_lost_before_guest_proof_reads_the_exact_dispatch_identity(
     assert s.native_snapshot() == s.native_snapshot()
 
 
+@pytest.mark.parametrize("response_lost_recovery", [False, True])
 @pytest.mark.parametrize("historical", [False, True])
 def test_lost_before_guest_settles_failed_and_refunds_the_reservation(
-    lost_before_guest_factory, monkeypatch, historical
+    lost_before_guest_factory, monkeypatch, historical, response_lost_recovery
 ):
     import json
     from sqlmodel import Session, select
@@ -10467,6 +10468,10 @@ def test_lost_before_guest_settles_failed_and_refunds_the_reservation(
     from factory.orchestration import factory_controls as controls
 
     s = lost_before_guest_factory
+    monkeypatch.setenv(
+        "AGENT_RESPONSE_LOST_RECOVERY_ENABLED",
+        str(response_lost_recovery).lower(),
+    )
     if historical:
         _persist_uncertain_lost_before_guest(s)
     before = controls.task_snapshot(s.task["id"])
@@ -10509,13 +10514,16 @@ def test_lost_before_guest_settles_failed_and_refunds_the_reservation(
     monkeypatch.setattr(
         conductor, "github_get", lambda *_: {"object": {"sha": "a" * 40}}
     )
+    settled_native = s.native_snapshot()
     conductor.reconcile_task(s.task["id"], s.policy, s.dbos)
     assert conductor.graph.node_runs(s.task["id"])[0] == run
     assert len(_stop_events(s)) == 1
+    assert s.native_snapshot() == settled_native
 
 
+@pytest.mark.parametrize("response_lost_recovery", [False, True])
 def test_lost_before_guest_settlement_is_inert_while_the_flag_is_off(
-    lost_before_guest_factory, monkeypatch
+    lost_before_guest_factory, monkeypatch, response_lost_recovery
 ):
     from sqlmodel import Session, select
     from factory.execution.models import AgentCapacityReservation
@@ -10523,6 +10531,10 @@ def test_lost_before_guest_settlement_is_inert_while_the_flag_is_off(
 
     s = lost_before_guest_factory
     monkeypatch.setenv("FACTORY_LOST_BEFORE_GUEST_SETTLEMENT_ENABLED", "false")
+    monkeypatch.setenv(
+        "AGENT_RESPONSE_LOST_RECOVERY_ENABLED",
+        str(response_lost_recovery).lower(),
+    )
     _persist_uncertain_lost_before_guest(s)
     before = controls.task_snapshot(s.task["id"])
     native = s.native_snapshot()
@@ -10535,6 +10547,27 @@ def test_lost_before_guest_settlement_is_inert_while_the_flag_is_off(
     assert s.native_snapshot() == native
     with Session(s.engine) as db:
         assert db.exec(select(AgentCapacityReservation)).one().state == "uncertain"
+
+
+def test_lost_before_guest_does_not_claim_a_never_dispatched_attempt(
+    stranded_factory,
+):
+    from sqlmodel import Session
+    from factory.execution.api import (
+        inspect_lost_before_guest_factory_attempt,
+        read_never_dispatched_factory_attempt,
+    )
+
+    s = stranded_factory
+    with Session(s.engine) as db:
+        never_dispatched = read_never_dispatched_factory_attempt(
+            db, s.run["pin"], s.sid, "ERROR"
+        )
+        lost_before_guest = inspect_lost_before_guest_factory_attempt(
+            db, s.run["pin"], s.sid
+        )
+    assert never_dispatched["invocation_phase"] == "never_dispatched"
+    assert lost_before_guest == (None, "session_not_terminal")
 
 
 @pytest.mark.parametrize(
@@ -10671,8 +10704,71 @@ def test_lost_before_guest_refuses_conflicting_or_insufficient_proof(
     assert s.native_snapshot() == native
 
 
+@pytest.mark.parametrize(
+    "case",
+    ["late_binding", "active_dispatcher", "execution_evidence", "replacement_owner"],
+)
+def test_lost_before_guest_settlement_revalidates_the_proof(
+    lost_before_guest_factory, case
+):
+    from datetime import datetime, timezone
+    from sqlmodel import Session, select
+    from factory.execution.api import (
+        read_lost_before_guest_factory_attempt,
+        settle_lost_before_guest_factory_attempt,
+    )
+    from factory.execution.models import (
+        AgentCapacityReservation,
+        AgentSession,
+        AgentTurn,
+        PendingMessage,
+    )
+
+    s = lost_before_guest_factory
+    with Session(s.engine) as db:
+        proof = read_lost_before_guest_factory_attempt(db, s.run["pin"], s.sid)
+    assert proof is not None
+
+    with Session(s.engine) as db:
+        agent = db.get(AgentSession, s.sid)
+        turn = db.exec(select(AgentTurn)).one()
+        permit = db.exec(select(AgentCapacityReservation)).one()
+        if case == "late_binding":
+            agent.ember_session_id = "guest-bound-after-proof"
+        elif case == "active_dispatcher":
+            now = datetime.now(timezone.utc)
+            db.add(
+                PendingMessage(
+                    session_id=s.sid,
+                    seq=2,
+                    message_text="new work",
+                    model="opus",
+                    claimed_by_replica="active-executor",
+                    claimed_at=now,
+                    dispatch_count=1,
+                    last_dispatch_at=now,
+                )
+            )
+        elif case == "execution_evidence":
+            turn.artifact_blob = b"{}"
+        elif case == "replacement_owner":
+            permit.owner = "replacement-executor"
+        db.add_all([agent, turn, permit])
+        db.commit()
+
+    with Session(s.engine) as db:
+        with pytest.raises(ValueError, match="factory_attempt_changed"):
+            settle_lost_before_guest_factory_attempt(db, s.run["pin"], proof)
+        db.rollback()
+    with Session(s.engine) as db:
+        permit = db.exec(select(AgentCapacityReservation)).one()
+        assert permit.state == "uncertain" and permit.settled_at is None
+    assert _stop_events(s) == []
+
+
+@pytest.mark.parametrize("response_lost_recovery", [False, True])
 def test_operator_settle_lost_attempt_releases_one_attempt(
-    lost_before_guest_factory, monkeypatch
+    lost_before_guest_factory, monkeypatch, response_lost_recovery
 ):
     from sqlmodel import Session, select
     from factory.execution.models import AgentCapacityReservation
@@ -10681,6 +10777,10 @@ def test_operator_settle_lost_attempt_releases_one_attempt(
     s = lost_before_guest_factory
     # The operator path is deliberately usable while the reconciler flag is off.
     monkeypatch.setenv("FACTORY_LOST_BEFORE_GUEST_SETTLEMENT_ENABLED", "false")
+    monkeypatch.setenv(
+        "AGENT_RESPONSE_LOST_RECOVERY_ENABLED",
+        str(response_lost_recovery).lower(),
+    )
     _persist_uncertain_lost_before_guest(s)
     settled = controls.settle_lost_attempt(
         s.task["id"], s.run["node_key"], 1, "operator"
@@ -10697,8 +10797,11 @@ def test_operator_settle_lost_attempt_releases_one_attempt(
     assert len(events) == 1 and events[0]["reason"] == "lost_before_guest"
     # The receipt is untouched, so every other attempt on the task survives.
     assert current["state"] == "admitted"
+    settled_native = s.native_snapshot()
     with pytest.raises(ValueError, match="attempt_not_active"):
         controls.settle_lost_attempt(s.task["id"], s.run["node_key"], 1, "operator")
+    assert s.native_snapshot() == settled_native
+    assert len(_stop_events(s)) == 1
 
 
 @pytest.mark.parametrize(

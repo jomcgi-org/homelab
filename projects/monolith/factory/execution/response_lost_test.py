@@ -880,7 +880,7 @@ def test_a_guest_that_moved_to_another_invocation_settles_unknown(
 ):
     from factory.orchestration import node_workflows
 
-    sid, _requests = lose_the_response(database, monkeypatch)
+    sid, requests = lose_the_response(database, monkeypatch)
     assert_held(database, sid, "invoke_response_lost")
     # Banked and relit: the generation moved while the invoke stamp did not, so
     # the process that was running our invoke is gone.
@@ -895,7 +895,10 @@ def test_a_guest_that_moved_to_another_invocation_settles_unknown(
         "status": "settled",
         "reason": "response_lost_invocation_changed",
     }
-    assert_unknown(database, sid)
+    unknown = assert_unknown(database, sid)
+    assert unknown["session"]["ember_session_id"] == f"guest-{sid}"
+    assert unknown["permits"][0]["settled_at"] is None
+    assert len(requests) == 1
 
 
 def test_a_receipt_minted_for_another_request_cannot_finish_a_hold(
