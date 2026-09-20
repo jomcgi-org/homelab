@@ -246,8 +246,7 @@ def test_other_selected_exact_sources_create_the_same_bounded_issue_shape(
         sources={
             "node_stalled": False,
             "workflow_stranded": source == "workflow_stranded",
-            "landing_recovery_exhausted": source
-            == "landing_recovery_exhausted",
+            "landing_recovery_exhausted": source == "landing_recovery_exhausted",
         }
     )
     state = github(monkeypatch)
@@ -330,9 +329,9 @@ def test_uncertain_write_reconciles_marker_after_backoff_without_reposting(
     clock["now"] += timedelta(minutes=2)
     producer.problem_issues_tick(selected)
     assert len(state["writes"]) == 1
-    assert details(audits(engine, "problem_issue_reconciled"))[-1][
-        "issue_numbers"
-    ] == [7331]
+    assert details(audits(engine, "problem_issue_reconciled"))[-1]["issue_numbers"] == [
+        7331
+    ]
 
 
 def test_six_reconciled_retries_end_unresolved_without_blind_write_retry(
@@ -371,9 +370,7 @@ def test_definite_github_refusal_is_terminal_and_not_retried(db, monkeypatch):
         state["writes"].append(payload)
         request = httpx.Request("POST", "https://api.github.test/issues")
         response = httpx.Response(422, request=request)
-        raise httpx.HTTPStatusError(
-            "unprocessable", request=request, response=response
-        )
+        raise httpx.HTTPStatusError("unprocessable", request=request, response=response)
 
     monkeypatch.setattr(producer, "github_write", refused)
     producer.problem_issues_tick(selected)

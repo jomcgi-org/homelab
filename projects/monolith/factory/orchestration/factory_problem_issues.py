@@ -153,9 +153,7 @@ def _event_filter(source: str, after: int):
     conditions = [FactoryAudit.action == action, FactoryAudit.id > after]
     if source == "landing_recovery_exhausted":
         conditions.append(
-            FactoryAudit.detail_json.contains(
-                '"reason":"landing_recovery_exhausted"'
-            )
+            FactoryAudit.detail_json.contains('"reason":"landing_recovery_exhausted"')
         )
     return and_(*conditions)
 
@@ -219,8 +217,7 @@ def _matches(row: FactoryAudit, fingerprint: str) -> bool:
 
 def _terminal(db: Session, fingerprint: str) -> bool:
     return any(
-        _matches(row, fingerprint)
-        for row in _producer_rows(db, _TERMINAL_ACTIONS)
+        _matches(row, fingerprint) for row in _producer_rows(db, _TERMINAL_ACTIONS)
     )
 
 
@@ -326,8 +323,7 @@ def _issue(source: str, row: FactoryAudit, detail: dict, repo: str, marker: str)
     pr_number = detail.get("pr_number")
     if type(pr_number) is int and pr_number > 0:
         lines.append(
-            f"- [Pull request #{pr_number}]"
-            f"(https://github.com/{repo}/pull/{pr_number})"
+            f"- [Pull request #{pr_number}](https://github.com/{repo}/pull/{pr_number})"
         )
     lines.extend(
         [
@@ -547,9 +543,7 @@ def problem_issues_tick(policy: dict) -> None:
                 "problem_issue_daily_capped",
             ),
         )
-        already_capped = _last_matching(
-            db, fingerprint, ("problem_issue_scan_capped",)
-        )
+        already_capped = _last_matching(db, fingerprint, ("problem_issue_scan_capped",))
         issue_scan_capped = _last_matching(
             db, fingerprint, ("problem_issue_issue_scan_capped",)
         )
