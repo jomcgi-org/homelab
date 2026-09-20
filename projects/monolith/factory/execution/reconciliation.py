@@ -1182,7 +1182,8 @@ def inspect_lost_before_guest_factory_attempt(
 
     Fail-closed: every condition is required, and an unrecognised shape returns
     no proof. Returns (proof, None) or (None, the first failed condition), the
-    name being what the operator path in swarm/factory_controls.py reports.
+    name being what the operator path in
+    factory/orchestration/factory_controls.py reports.
     Like the not-invoked proof this reads under the pool and session locks,
     settles nothing and clears nothing; settlement is a separate call.
     """
