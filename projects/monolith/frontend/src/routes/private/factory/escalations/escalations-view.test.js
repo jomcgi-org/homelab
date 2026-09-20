@@ -4,6 +4,8 @@ import {
   HOTKEYS,
   chatBody,
   confirmLine,
+  contextKey,
+  contextRows,
   decisionBody,
   effectLine,
   escapeForKey,
@@ -46,6 +48,133 @@ function item(overrides = {}) {
 }
 
 describe("escalations view helpers", () => {
+  test("context rows keep five claims and shape linked evidence", () => {
+    const rows = contextRows({
+      ask: {
+        line: "the ask",
+        issue_number: 6257,
+        url: "https://example.test/issues/6257",
+        task_class: "refine",
+        generation: 3,
+        body_head: "context band",
+      },
+      stopped: null,
+      happened: {
+        line: "one attempt",
+        attempts: 1,
+        last_review: { verdict: "revise", summary: "show evidence" },
+        pr: { number: 71, url: "https://example.test/pulls/71" },
+      },
+      cost: null,
+      lineage: {
+        line: "child of #6200",
+        parent: { id: 8, github_issue_number: 6200, title: "Parent" },
+        children: [{ id: 9, title: "Child" }],
+        prior_receipts: [
+          { id: 4, generation: 1, task_class: "refine", state: "succeeded" },
+        ],
+      },
+    });
+
+    expect(rows.map(({ key }) => key)).toEqual([
+      "ask",
+      "stopped",
+      "happened",
+      "cost",
+      "lineage",
+    ]);
+    expect(rows.map(({ line }) => line)).toEqual([
+      "the ask",
+      "no escalation",
+      "one attempt",
+      "no task cost",
+      "child of #6200",
+    ]);
+    expect(rows[0].evidence[0]).toEqual({
+      label: "issue",
+      value: "#6257",
+      href: "https://example.test/issues/6257",
+    });
+    expect(rows[2].evidence).toContainEqual({
+      label: "last review",
+      value: "revise: show evidence",
+      href: null,
+    });
+    expect(rows[4].evidence).toContainEqual({
+      label: "parent",
+      value: "#6200 Parent",
+      href: "/factory/work-items/8",
+    });
+    expect(rows[4].evidence).toContainEqual({
+      label: "child",
+      value: "work item 9",
+      href: "/factory/work-items/9",
+    });
+    expect(rows[4].evidence).toContainEqual({
+      label: "prior receipt",
+      value: "receipt 4 gen 1 refine succeeded",
+      href: null,
+    });
+  });
+
+  test("context rows use backend placeholder strings", () => {
+    const rows = contextRows({});
+
+    expect(rows[0].line).toBe("no ask recorded");
+    expect(rows[1].line).toBe("no escalation");
+    expect(rows[2].line).toBe("no attempts yet");
+    expect(rows[3].line).toBe("no task cost");
+    expect(rows[4].line).toBe("no work item lineage");
+  });
+
+  test("context rows format cost as currency", () => {
+    const rows = contextRows({
+      cost: {
+        line: "$1.25 of $4.00",
+        committed: 1.25,
+        ceiling: 4.0,
+        num_tasks: 1,
+      },
+    });
+
+    expect(rows[3].evidence).toContainEqual({
+      label: "committed",
+      value: "$1.25",
+      href: null,
+    });
+    expect(rows[3].evidence).toContainEqual({
+      label: "ceiling",
+      value: "$4.00",
+      href: null,
+    });
+  });
+
+  test("context rows render every superseded_by entry", () => {
+    const rows = contextRows({
+      lineage: {
+        line: "lineage",
+        superseded_by: [
+          { id: 1, github_issue_number: 100, title: "Superseded 1" },
+          { id: 2, github_issue_number: 101, title: "Superseded 2" },
+        ],
+      },
+    });
+
+    const supersededBy = rows[4].evidence.filter(
+      (e) => e.label === "superseded by",
+    );
+    expect(supersededBy).toHaveLength(2);
+    expect(supersededBy[0].value).toContain("#100");
+    expect(supersededBy[1].value).toContain("#101");
+  });
+
+  test("context key includes the current decision identity", () => {
+    expect(contextKey({ receipt_id: 3 })).toBe("3:");
+    expect(contextKey({ receipt_id: 3, decision_id: "decision:two" })).toBe(
+      "3:decision:two",
+    );
+  });
+
   test("splits the list into what is waiting and what was decided", () => {
     const list = [item(), item({ receipt_id: 4, open: false })];
     expect(open(list).map((e) => e.receipt_id)).toEqual([3]);

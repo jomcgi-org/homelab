@@ -6,6 +6,7 @@ vi.hoisted(() => {
 
 import { load } from "./+page.server.js";
 import { GET } from "./+server.js";
+import { GET as getContext } from "./context/[id]/+server.js";
 import { POST } from "./decisions/[id]/+server.js";
 
 function jsonResponse(body, ok = true) {
@@ -131,5 +132,66 @@ describe("the decision write proxy", () => {
 
     expect(res.status).toBe(502);
     expect(await res.json()).toEqual({ detail: "decision unavailable" });
+  });
+});
+
+describe("the escalation context proxy", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    globalThis.fetch = undefined;
+  });
+
+  function request(headers = {}) {
+    return { headers: { get: (name) => headers[name] ?? null } };
+  }
+
+  it("forwards only verified identity with a 15 second timeout", async () => {
+    const signal = new AbortController().signal;
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(signal);
+    globalThis.fetch = vi.fn(async () => ({
+      status: 200,
+      text: async () => JSON.stringify({ receipt_id: 3 }),
+    }));
+
+    const res = await getContext({
+      params: { id: "3" },
+      request: request({ "x-auth-email": "joe@example.test" }),
+    });
+
+    expect(res.status).toBe(200);
+    const [url, init] = globalThis.fetch.mock.calls[0];
+    expect(url).toBe("http://backend/api/agents/factory/escalations/3/context");
+    expect(init.headers).toEqual({ "X-Auth-Email": "joe@example.test" });
+    expect(init.signal).toBe(signal);
+    expect(timeout).toHaveBeenCalledWith(15000);
+  });
+
+  it("passes through a backend 404", async () => {
+    globalThis.fetch = vi.fn(async () => ({
+      status: 404,
+      text: async () => JSON.stringify({ detail: "not found" }),
+    }));
+
+    const res = await getContext({
+      params: { id: "missing" },
+      request: request(),
+    });
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ detail: "not found" });
+  });
+
+  it("answers 502 when context cannot be reached", async () => {
+    globalThis.fetch = vi.fn(async () => {
+      throw new Error("down");
+    });
+
+    const res = await getContext({
+      params: { id: "3" },
+      request: request(),
+    });
+
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ detail: "context unavailable" });
   });
 });

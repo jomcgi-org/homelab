@@ -44,6 +44,74 @@ function escalation(overrides = {}) {
   };
 }
 
+function contextDocument(receiptId = 3) {
+  return {
+    receipt_id: receiptId,
+    ask: {
+      line: `#${receiptId} ship the context band`,
+      issue_number: receiptId,
+      url: `https://github.com/example/repo/issues/${receiptId}`,
+      task_class: "refine",
+      generation: 2,
+      body_head: "Show the operator the evidence behind each claim.",
+    },
+    stopped: {
+      line: "waiting for an operator decision",
+      kind: "advisory",
+      recommendation: "split",
+      question: "Should this ship?",
+      summary: "The boundary needs a decision.",
+      reason: "The choice changes scope.",
+    },
+    happened: {
+      line: "2 attempts, last review revise",
+      attempts: 2,
+      last_review: { verdict: "revise", summary: "Add context." },
+      pr: {
+        number: 77,
+        url: "https://github.com/example/repo/pull/77",
+        state: "open",
+      },
+      branch: "factory/context-band",
+    },
+    cost: {
+      line: "$1.25 of $4.00 across 1 task",
+      committed: 1.25,
+      ceiling: 4,
+      num_tasks: 1,
+    },
+    lineage: {
+      line: "child of #6000",
+      parent: { id: 10, github_issue_number: 6000, title: "Parent work" },
+      children: [],
+      blocked_by: [],
+      blocks: [],
+      superseded_by: null,
+      supersedes: [],
+      prior_receipts: [],
+    },
+  };
+}
+
+function contextResponse(receiptId = 3) {
+  return { ok: true, json: async () => contextDocument(receiptId) };
+}
+
+function stubFetch(
+  fetchMock,
+  contextFetch = vi.fn().mockResolvedValue(contextResponse()),
+) {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((url, init) =>
+      /^\/factory\/escalations\/context\/\d+$/.test(url)
+        ? contextFetch(url, init)
+        : fetchMock(url, init),
+    ),
+  );
+  return contextFetch;
+}
+
 /** A fetch that accepts the decision, then returns an empty list. */
 function acceptingFetch() {
   return vi
@@ -65,6 +133,7 @@ async function settle() {
 }
 
 function renderPage(data) {
+  if (!vi.isMockFunction(globalThis.fetch)) stubFetch(vi.fn());
   const target = document.createElement("div");
   document.body.append(target);
   const component = mount(Page, { target, props: { data } });
@@ -184,7 +253,7 @@ describe("escalations page", () => {
           ],
         }),
       });
-    vi.stubGlobal("fetch", fetchMock);
+    stubFetch(fetchMock);
     const target = renderPage({
       escalations: [escalation({ decision_id: "decision:reviewed" })],
       error: false,
@@ -211,7 +280,7 @@ describe("escalations page", () => {
       status: 409,
       json: async () => ({ detail: "already decided as close" }),
     });
-    vi.stubGlobal("fetch", fetchMock);
+    stubFetch(fetchMock);
     const target = renderPage({ escalations: [escalation()], error: false });
 
     target.querySelector(".option").click();
@@ -228,7 +297,7 @@ describe("escalations page", () => {
       .fn()
       .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) })
       .mockResolvedValue({ ok: true, json: async () => ({ escalations: [] }) });
-    vi.stubGlobal("fetch", fetchMock);
+    stubFetch(fetchMock);
     renderPage({ escalations: [escalation()], error: false });
 
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "2" }));
@@ -273,7 +342,7 @@ describe("escalations page", () => {
       .fn()
       .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) })
       .mockResolvedValue({ ok: true, json: async () => ({ escalations: [] }) });
-    vi.stubGlobal("fetch", fetchMock);
+    stubFetch(fetchMock);
     const target = renderPage({ escalations: [escalation()], error: false });
 
     target.querySelector(".chat-button").click();
@@ -298,7 +367,7 @@ describe("escalations page", () => {
 
   test("typing in the note box never triggers a hotkey", async () => {
     const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
+    stubFetch(fetchMock);
     const target = renderPage({ escalations: [escalation()], error: false });
 
     const box = target.querySelector("textarea");
@@ -328,7 +397,7 @@ describe("escalations page", () => {
 
   test("the close arms once and sends on the second press", async () => {
     const fetchMock = acceptingFetch();
-    vi.stubGlobal("fetch", fetchMock);
+    stubFetch(fetchMock);
     const target = renderPage({ escalations: [escalation()], error: false });
 
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "x" }));
@@ -351,7 +420,7 @@ describe("escalations page", () => {
 
   test("Escape cancels an armed close before it dismisses anything", async () => {
     const fetchMock = acceptingFetch();
-    vi.stubGlobal("fetch", fetchMock);
+    stubFetch(fetchMock);
     const target = renderPage({ escalations: [escalation()], error: false });
 
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "x" }));
@@ -370,7 +439,7 @@ describe("escalations page", () => {
 
   test("defer sends at once and carries the card's own note", async () => {
     const fetchMock = acceptingFetch();
-    vi.stubGlobal("fetch", fetchMock);
+    stubFetch(fetchMock);
     const target = renderPage({ escalations: [escalation()], error: false });
 
     const box = target.querySelector("textarea");
@@ -388,7 +457,7 @@ describe("escalations page", () => {
 
   test("arming with the mouse moves the cursor, so a key cannot close another card", async () => {
     const fetchMock = acceptingFetch();
-    vi.stubGlobal("fetch", fetchMock);
+    stubFetch(fetchMock);
     const target = renderPage({
       escalations: [
         escalation(),
@@ -418,7 +487,7 @@ describe("escalations page", () => {
 
   test("clicking a brief option on another card moves the cursor to it", async () => {
     const fetchMock = acceptingFetch();
-    vi.stubGlobal("fetch", fetchMock);
+    stubFetch(fetchMock);
     const target = renderPage({
       escalations: [
         escalation(),
@@ -483,7 +552,7 @@ describe("escalations page, per card state", () => {
       .fn()
       .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) })
       .mockResolvedValue({ ok: true, json: async () => ({ escalations: [] }) });
-    vi.stubGlobal("fetch", fetchMock);
+    stubFetch(fetchMock);
     const target = renderPage({
       escalations: [
         escalation(),
@@ -513,7 +582,7 @@ describe("escalations page, per card state", () => {
       .fn()
       .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) })
       .mockResolvedValue({ ok: true, json: async () => ({ escalations: [] }) });
-    vi.stubGlobal("fetch", fetchMock);
+    stubFetch(fetchMock);
     const target = renderPage({ escalations: [escalation()], error: false });
 
     const box = target.querySelector("textarea");
@@ -557,7 +626,7 @@ describe("escalations page, per card state", () => {
           ],
         }),
       });
-    vi.stubGlobal("fetch", fetchMock);
+    stubFetch(fetchMock);
     const target = renderPage({ escalations: [escalation()], error: false });
 
     const box = target.querySelector("textarea");
@@ -577,7 +646,7 @@ describe("escalations page, per card state", () => {
 
   test("a card the lane is briefing offers no buttons", async () => {
     const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
+    stubFetch(fetchMock);
     const target = renderPage({
       escalations: [escalation({ briefing: true })],
       error: false,
@@ -594,6 +663,163 @@ describe("escalations page, per card state", () => {
     expect(target.querySelector("[role=alert]").textContent).toContain(
       "decide when it settles",
     );
+  });
+});
+
+describe("escalation context band", () => {
+  test("fetches the cursor context once and renders all five lines", async () => {
+    const contextFetch = vi
+      .fn()
+      .mockResolvedValueOnce(contextResponse(3))
+      .mockResolvedValue(contextResponse(3));
+    stubFetch(vi.fn(), contextFetch);
+    const target = renderPage({
+      escalations: [escalation({ receipt_id: 3 })],
+      error: false,
+    });
+
+    await settle();
+
+    expect(contextFetch).toHaveBeenCalledTimes(1);
+    expect(contextFetch.mock.calls[0][0]).toBe(
+      "/factory/escalations/context/3",
+    );
+    expect(
+      [...target.querySelectorAll(".ctx-row summary")].map((node) =>
+        node.textContent.trim(),
+      ),
+    ).toEqual([
+      "#3 ship the context band",
+      "waiting for an operator decision",
+      "2 attempts, last review revise",
+      "$1.25 of $4.00 across 1 task",
+      "child of #6000",
+    ]);
+
+    await tick();
+    await tick();
+    expect(contextFetch).toHaveBeenCalledTimes(1);
+  });
+
+  test("e opens and closes all five context rows together", async () => {
+    stubFetch(vi.fn());
+    const target = renderPage({
+      escalations: [escalation()],
+      error: false,
+    });
+    await settle();
+
+    const rows = [...target.querySelectorAll(".ctx-row")];
+    expect(rows).toHaveLength(5);
+    expect(rows.every((row) => !row.open)).toBe(true);
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "e" }));
+    await tick();
+    expect(rows.every((row) => row.open)).toBe(true);
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "e" }));
+    await tick();
+    expect(rows.every((row) => !row.open)).toBe(true);
+  });
+
+  test("j fetches the next context and keeps the first one cached", async () => {
+    const contextFetch = vi
+      .fn()
+      .mockResolvedValueOnce(contextResponse(3))
+      .mockResolvedValue(contextResponse(4));
+    stubFetch(vi.fn(), contextFetch);
+    const target = renderPage({
+      escalations: [
+        escalation({ receipt_id: 3 }),
+        escalation({ receipt_id: 4, issue_number: 6003 }),
+      ],
+      error: false,
+    });
+    await settle();
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "j" }));
+    await settle();
+
+    expect(contextFetch).toHaveBeenCalledTimes(2);
+    expect(contextFetch.mock.calls.map(([url]) => url)).toEqual([
+      "/factory/escalations/context/3",
+      "/factory/escalations/context/4",
+    ]);
+    const panels = [...target.querySelectorAll(".panel")];
+    expect(panels[0].querySelector(".context")).not.toBeNull();
+    expect(panels[1].querySelector(".context")).not.toBeNull();
+    expect(panels[0].textContent).toContain("#3 ship the context band");
+    expect(panels[1].textContent).toContain("#4 ship the context band");
+  });
+
+  test("a changed decision identity fetches fresh context", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) })
+      .mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          escalations: [escalation({ decision_id: "decision:new" })],
+        }),
+      });
+    const contextFetch = vi
+      .fn()
+      .mockResolvedValueOnce(contextResponse(3))
+      .mockResolvedValue(contextResponse(3));
+    stubFetch(fetchMock, contextFetch);
+    const target = renderPage({
+      escalations: [escalation({ decision_id: "decision:old" })],
+      error: false,
+    });
+    await settle();
+
+    target.querySelector(".option").click();
+    await settle();
+
+    expect(contextFetch).toHaveBeenCalledTimes(2);
+    expect(contextFetch.mock.calls.map(([url]) => url)).toEqual([
+      "/factory/escalations/context/3",
+      "/factory/escalations/context/3",
+    ]);
+  });
+
+  test("renders context unavailable for a 502 response", async () => {
+    const contextFetch = vi.fn().mockResolvedValueOnce({
+      ok: false,
+      status: 502,
+      json: async () => ({ detail: "context unavailable" }),
+    });
+    stubFetch(vi.fn(), contextFetch);
+    const target = renderPage({ escalations: [escalation()], error: false });
+
+    await settle();
+
+    expect(target.querySelector(".context").textContent).toContain(
+      "context unavailable",
+    );
+  });
+
+  test("never fetches context for a resolved card", async () => {
+    const contextFetch = vi.fn().mockResolvedValue(contextResponse());
+    stubFetch(vi.fn(), contextFetch);
+    renderPage({
+      escalations: [
+        escalation({
+          open: false,
+          resolved: {
+            option_key: "hold",
+            label: "Leave it open",
+            actor: "operator@example.test",
+            decided_at: new Date().toISOString(),
+          },
+        }),
+      ],
+      error: false,
+    });
+
+    await settle();
+
+    expect(contextFetch).not.toHaveBeenCalled();
   });
 });
 
@@ -617,5 +843,95 @@ describe("escalations page, work item links", () => {
 
     const link = target.querySelector('a[href*="/factory/work-items/"]');
     expect(link).toBeNull();
+  });
+
+  test("renders all evidence entries even when labels repeat", async () => {
+    const contextFetch = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        receipt_id: 3,
+        ask: {
+          line: "#3 test",
+          issue_number: 3,
+          url: "https://github.com/example/repo/issues/3",
+          task_class: "refine",
+          generation: 1,
+          body_head: "Test body",
+        },
+        stopped: null,
+        happened: { line: "no attempts yet", attempts: 0 },
+        cost: null,
+        lineage: {
+          line: "complex lineage",
+          parent: null,
+          children: [
+            { id: 10, github_issue_number: 1000, title: "Child 1" },
+            { id: 11, github_issue_number: 1001, title: "Child 2" },
+          ],
+          blocked_by: [
+            { id: 20, github_issue_number: 2000, title: "Blocker 1" },
+          ],
+          blocks: [{ id: 21, github_issue_number: 2001, title: "Blocked 1" }],
+          superseded_by: [
+            { id: 30, github_issue_number: 3000, title: "Superseded 1" },
+            { id: 31, github_issue_number: 3001, title: "Superseded 2" },
+          ],
+          supersedes: [],
+          prior_receipts: [
+            {
+              id: 100,
+              generation: 1,
+              task_class: "refine",
+              state: "succeeded",
+            },
+            { id: 101, generation: 2, task_class: "refine", state: "failed" },
+          ],
+        },
+      }),
+    });
+    stubFetch(vi.fn(), contextFetch);
+    const target = renderPage({
+      escalations: [escalation({ receipt_id: 3 })],
+      error: false,
+    });
+
+    await settle();
+
+    const lineageRow = [...target.querySelectorAll(".ctx-row")].find((row) =>
+      row.textContent.includes("complex lineage"),
+    );
+    expect(lineageRow).not.toBeNull();
+
+    const evidenceItems = [...lineageRow.querySelectorAll("dt")].map(
+      (dt) => dt.textContent,
+    );
+
+    expect(evidenceItems).toContain("child");
+    expect(evidenceItems).toContain("blocked by");
+    expect(evidenceItems).toContain("blocks");
+    expect(evidenceItems).toContain("superseded by");
+    expect(evidenceItems).toContain("prior receipt");
+
+    const childCount = evidenceItems.filter(
+      (label) => label === "child",
+    ).length;
+    const blockedByCount = evidenceItems.filter(
+      (label) => label === "blocked by",
+    ).length;
+    const blocksCount = evidenceItems.filter(
+      (label) => label === "blocks",
+    ).length;
+    const supersededByCount = evidenceItems.filter(
+      (label) => label === "superseded by",
+    ).length;
+    const priorReceiptCount = evidenceItems.filter(
+      (label) => label === "prior receipt",
+    ).length;
+
+    expect(childCount).toBe(2);
+    expect(blockedByCount).toBe(1);
+    expect(blocksCount).toBe(1);
+    expect(supersededByCount).toBe(2);
+    expect(priorReceiptCount).toBe(2);
   });
 });
