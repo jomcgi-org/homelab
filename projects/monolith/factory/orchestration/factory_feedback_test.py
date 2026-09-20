@@ -117,11 +117,7 @@ def _sample(
         if recipe:
             recipe_run = SwarmNodeRun(
                 task_id=task_id,
-                node_key=(
-                    feedback.ADVISORY_NODE_KEY
-                    if sample_kind == "advisory"
-                    else "conductor_1"
-                ),
+                node_key="conductor_1",
                 attempt=1,
                 status="succeeded",
                 session_id=number * 10,
@@ -132,11 +128,7 @@ def _sample(
             recipe_run_id = recipe_run.id
         review_run = SwarmNodeRun(
             task_id=task_id,
-            node_key=(
-                feedback.REVIEW_NODE_KEY
-                if sample_kind == "advisory"
-                else "review_initial"
-            ),
+            node_key="review_initial",
             attempt=1,
             status="succeeded",
             session_id=number * 10 + 1,
@@ -463,20 +455,6 @@ def test_planner_recipe_receives_attributed_class_rejections(db, monkeypatch):
     assert "Use class_feedback" in prompt
 
 
-def test_advisory_rejection_does_not_enter_delivery_correction_loop():
-    from factory.orchestration import factory_conductor as conductor
-
-    run = {
-        "id": 1,
-        "node_key": feedback.REVIEW_NODE_KEY,
-        "status": "succeeded",
-        "outcome_json": json.dumps(
-            {"value": {"verdict": "changes_requested", "summary": "revise recipe"}}
-        ),
-    }
-    assert conductor._pending_correction([], [run]) is None
-
-
 def test_full_advisory_window_restores_delivery_with_no_inflight_delivery(db):
     transition = BASE_TIME
     with Session(db) as session:
@@ -519,167 +497,3 @@ def test_full_advisory_window_restores_delivery_with_no_inflight_delivery(db):
         assert session.exec(
             select(FactoryAudit).where(FactoryAudit.action == "class_tier_restored")
         ).one()
-
-
-def _run_node(task: dict, node_key: str, value: dict, session_id: int) -> None:
-    from factory.orchestration import factory_conductor as conductor
-
-    workflow = f"factory-node:{task['id']}:{node_key}:1"
-    context = {
-        "repo": task["repo"],
-        "branch": f"factory/{task['id']}",
-        "workflow_id": workflow,
-        "artifact_path": f".factory/{task['id']}/{node_key}-1.json",
-        "artifact_schema": conductor._schema(node_key),
-        "hydration_branch": "main",
-        "retry_context": "[]",
-    }
-    assert conductor.reserve_node(task["id"], node_key, workflow, context)
-    result = {
-        "status": "succeeded",
-        "session_id": session_id,
-        "cost_usd": 0.25,
-        "head_sha": None,
-        "value": value,
-        "artifact": {"status": "ok", "value": value},
-        "cleanup": {"status": "completed"},
-    }
-    assert conductor.graph.record_dispatch(task["id"], node_key, 1, session_id, None).ok
-    assert conductor.graph.record_outcome(
-        task["id"], node_key, 1, "succeeded", 0.25, None, json.dumps(result)
-    ).ok
-
-
-def test_demoted_task_runs_comment_and_independent_review_end_to_end(db, monkeypatch):
-    from factory.orchestration import factory_conductor as conductor
-
-    for number in range(1, 21):
-        _sample(db, number, "approve" if number <= 11 else "changes_requested")
-    policy = _policy(999)
-    _configure(policy)
-    receive_issue(
-        "owner/repo",
-        999,
-        "new bug",
-        "body",
-        "https://github.com/owner/repo/issues/999",
-        "operator",
-    )
-    admitted = admit_next("scheduler")
-    with Session(db) as session:
-        receipt = session.exec(
-            select(FactoryReceipt).where(FactoryReceipt.task_id == admitted["task_id"])
-        ).one()
-        receipt.routing_tier = feedback.ADVISORY_TIER
-        session.add(receipt)
-        session.commit()
-    task = conductor._task(admitted["task_id"])
-
-    conductor.reconcile_task(task["id"], policy, object())
-    assert [node["node_key"] for node in conductor.graph.load_graph(task["id"])] == [
-        feedback.ADVISORY_NODE_KEY
-    ]
-    url = "https://github.com/owner/repo/issues/999#issuecomment-1"
-    _run_node(
-        task,
-        feedback.ADVISORY_NODE_KEY,
-        {"status": "complete", "summary": "Safer recipe", "comment_url": url},
-        100,
-    )
-    conductor.reconcile_task(task["id"], policy, object())
-    assert [node["node_key"] for node in conductor.graph.load_graph(task["id"])] == [
-        feedback.ADVISORY_NODE_KEY,
-        feedback.REVIEW_NODE_KEY,
-    ]
-    _run_node(
-        task,
-        feedback.REVIEW_NODE_KEY,
-        {"verdict": "approve", "summary": "Recipe is usable", "comment_url": url},
-        101,
-    )
-    monkeypatch.setattr(
-        conductor,
-        "github_list",
-        lambda *_args: [
-            {
-                "html_url": url,
-                "body": (
-                    "## Factory advisory\n\n### Why delivery is paused\n\n"
-                    "Below the floor.\n\n### Suggested recipe\n\n"
-                    "Investigate, implement, test, and review.\n\n"
-                    "### Evidence\n\nRecorded outcomes.\n\n"
-                    f"<!-- factory-feedback-advisory:{task['id']} -->"
-                ),
-            }
-        ],
-    )
-    conductor.reconcile_task(task["id"], policy, object())
-
-    snapshot = controls.task_snapshot(task["id"])
-    assert snapshot["state"] == "succeeded"
-    with Session(db) as session:
-        sample = session.exec(
-            select(FactoryReviewVerdict).where(
-                FactoryReviewVerdict.task_id == task["id"]
-            )
-        ).one()
-        assert sample.sample_kind == "advisory"
-        assert sample.verdict == "approve"
-        assert sample.recipe_run_id is not None
-        assert sample.review_run_id != sample.recipe_run_id
-
-
-def test_unverified_advisory_comment_cannot_approve_recovery(db, monkeypatch):
-    from factory.orchestration import factory_conductor as conductor
-
-    for number in range(1, 21):
-        _sample(db, number, "approve" if number <= 11 else "changes_requested")
-    policy = _policy(999)
-    _configure(policy)
-    receive_issue(
-        "owner/repo",
-        999,
-        "new bug",
-        "body",
-        "https://github.com/owner/repo/issues/999",
-        "operator",
-    )
-    admitted = admit_next("scheduler")
-    with Session(db) as session:
-        receipt = session.exec(
-            select(FactoryReceipt).where(FactoryReceipt.task_id == admitted["task_id"])
-        ).one()
-        receipt.routing_tier = feedback.ADVISORY_TIER
-        session.add(receipt)
-        session.commit()
-    task = conductor._task(admitted["task_id"])
-
-    conductor.reconcile_task(task["id"], policy, object())
-    url = "https://github.com/owner/repo/issues/999#issuecomment-1"
-    _run_node(
-        task,
-        feedback.ADVISORY_NODE_KEY,
-        {"status": "complete", "summary": "Safer recipe", "comment_url": url},
-        100,
-    )
-    conductor.reconcile_task(task["id"], policy, object())
-    _run_node(
-        task,
-        feedback.REVIEW_NODE_KEY,
-        {"verdict": "approve", "summary": "Recipe is usable", "comment_url": url},
-        101,
-    )
-    monkeypatch.setattr(conductor, "github_list", lambda *_args: [])
-    conductor.reconcile_task(task["id"], policy, object())
-
-    assert controls.task_snapshot(task["id"])["state"] == "failed"
-    current = feedback.feedback_for_class("bug-fix")
-    assert current["tier"] == "delivery"
-    assert current["recovery_window"]["sample_count"] == 0
-    with Session(db) as session:
-        sample = session.exec(
-            select(FactoryReviewVerdict).where(
-                FactoryReviewVerdict.task_id == task["id"]
-            )
-        ).one()
-        assert sample.verdict == "unparseable"

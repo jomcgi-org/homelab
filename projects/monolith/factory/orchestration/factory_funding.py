@@ -10,7 +10,6 @@ import httpx
 from sqlmodel import select
 
 from factory.orchestration import factory_controls as controls, graph
-from factory.orchestration.factory_feedback import REVIEW_NODE_KEY
 from factory.orchestration.factory_models import (
     FactoryAudit,
     FactoryReceipt,
@@ -679,15 +678,11 @@ def reconcile(task, policy, runs, permission):
     }:
         return False
     # A completed delivery needs no new allocation or planning turn.
-    # The advisory reviewer is excluded rather than the whole advisory task:
-    # returning early here would sit above the task_deadline escape, so an
-    # advisory task holding a funding grant would never time out.
     reviews = [
         r
         for r in runs
         if r["node_key"].startswith("review_")
         and r["status"] == "succeeded"
-        and r["node_key"] != REVIEW_NODE_KEY
     ]
     review = max(reviews, key=lambda r: r["id"]) if reviews else None
     completion_revision = graph.current_version(task["id"])

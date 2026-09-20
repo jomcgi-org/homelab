@@ -6719,18 +6719,6 @@ def test_plan_preserves_the_reserved_conductor_and_engine_round_prefixes(feedbac
     assert audits[0]["refusal_code"] == "engine_loop_key_reserved"
 
 
-def test_plan_preserves_the_reserved_feedback_review_namespace(feedback_db):
-    task, _policy = planned_task(
-        feedback_task(),
-        [plan_edit("feedback_1", "review")],
-    )
-    assert [n["node_key"] for n in conductor.graph.load_graph(task["id"])] == [
-        "conductor_1"
-    ]
-    audits = feedback_audits(feedback_db, task["id"])
-    assert audits[0]["refusal_code"] == "feedback_review_key_reserved"
-
-
 def test_plan_refuses_a_stale_expected_version_whole(feedback_db):
     task, policy = feedback_task()
     run = complete_feedback_node(
@@ -10750,65 +10738,6 @@ def settle_funding(task, value):
     return request
 
 
-def test_advisory_review_settles_without_delivery_pr_number(feedback_db, monkeypatch):
-    from factory.orchestration import (
-        factory_controls as controls,
-        factory_feedback as feedback,
-    )
-
-    monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "true")
-    task, policy = feedback_task()
-    with Session(feedback_db) as db:
-        receipt = db.exec(
-            select(FactoryReceipt).where(FactoryReceipt.task_id == task["id"])
-        ).one()
-        receipt.routing_tier = feedback.ADVISORY_TIER
-        db.add(receipt)
-        db.commit()
-    task = conductor._task(task["id"])
-
-    conductor.reconcile_task(task["id"], policy, object())
-    run_feedback_node(
-        task,
-        feedback.ADVISORY_NODE_KEY,
-        {
-            "status": "complete",
-            "summary": "Safer recipe",
-            "comment_url": "https://github.com/owner/repo/issues/7#issuecomment-1",
-        },
-    )
-    conductor.reconcile_task(task["id"], policy, object())
-    run_feedback_node(
-        task,
-        feedback.REVIEW_NODE_KEY,
-        {
-            "verdict": "approve",
-            "summary": "Recipe is usable",
-            "comment_url": "https://github.com/owner/repo/issues/7#issuecomment-1",
-        },
-    )
-    monkeypatch.setattr(
-        conductor,
-        "github_list",
-        lambda *_args: [
-            {
-                "html_url": "https://github.com/owner/repo/issues/7#issuecomment-1",
-                "body": (
-                    "## Factory advisory\n\n### Why delivery is paused\n\n"
-                    "Below the floor.\n\n### Suggested recipe\n\n"
-                    "Investigate, implement, test, and review.\n\n"
-                    "### Evidence\n\nRecorded outcomes.\n\n"
-                    f"<!-- factory-feedback-advisory:{task['id']} -->"
-                ),
-            }
-        ],
-    )
-
-    conductor.reconcile_task(task["id"], policy, object())
-
-    assert controls.task_snapshot(task["id"])["state"] == "succeeded"
-
-
 def test_expired_idle_task_stops_after_six_funding_refusals_and_releases_lane(
     feedback_db, monkeypatch
 ):
@@ -12315,7 +12244,7 @@ def live_gate():
     }
 
 
-def test_feedback_advisory_route_skips_delivery_adoption(feedback_db, monkeypatch):
+def test_stale_advisory_receipt_uses_delivery_path(feedback_db, monkeypatch):
     from sqlmodel import Session, select
 
     from factory.orchestration import factory_feedback as feedback
@@ -12330,16 +12259,19 @@ def test_feedback_advisory_route_skips_delivery_adoption(feedback_db, monkeypatc
         db.add(receipt)
         db.commit()
 
-    def unexpected_adoption(*_args, **_kwargs):
-        pytest.fail("A comment-only advisory must not adopt a delivery PR")
+    adopted = []
 
-    monkeypatch.setattr(conductor.factory_gates, "adopt_delivery", unexpected_adoption)
+    def adopt_delivery(current):
+        adopted.append(current["id"])
+        return True
+
+    monkeypatch.setattr(conductor.factory_gates, "adopt_delivery", adopt_delivery)
     conductor.reconcile_task(task["id"], policy, object())
 
+    assert adopted == [task["id"]]
     assert [node["node_key"] for node in conductor.graph.load_graph(task["id"])] == [
-        feedback.ADVISORY_NODE_KEY
+        "conductor_1"
     ]
-    assert not conductor._task(task["id"])["delivery_target_checked"]
 
 
 def test_rescoped_delivery_keeps_operational_issue_open(monkeypatch):

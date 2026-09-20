@@ -110,7 +110,6 @@ _KEY = r"^[a-z][a-z0-9_]{0,63}$"
 # rounds. A planner that could mint one could replenish a server-owned bound,
 # or claim a fan-in key, by renaming a node.
 _ROUND_KEY = re.compile(r"^(?:correct|review|integrate)_[0-9]+$")
-_FEEDBACK_REVIEW_KEY = re.compile(r"^review_feedback(?:_|$)")
 _CORRECT_KEY = re.compile(r"^correct_[0-9]+$")
 # The pair one engine review round owns, with the round number.
 _ENGINE_ROUND_KEY = re.compile(r"^(?:correct|review)_([0-9]+)$")
@@ -767,14 +766,6 @@ def _schema(node_key: str) -> dict:
         return SCHEMA
     if node_key.startswith("conductor_"):
         return DECISION_SCHEMA
-    if node_key == "review_feedback_1":
-        from factory.orchestration.factory_feedback import ADVISORY_REVIEW_SCHEMA
-
-        return ADVISORY_REVIEW_SCHEMA
-    if node_key.startswith("feedback_"):
-        from factory.orchestration.factory_feedback import ADVISORY_SCHEMA
-
-        return ADVISORY_SCHEMA
     if node_key.startswith("refine_"):
         from factory.orchestration.factory_refine import REFINE_SCHEMA
 
@@ -1025,31 +1016,14 @@ def _boundary(
     *,
     review: bool = False,
     refine: bool = False,
-    advisory: bool = False,
 ) -> str:
     """State the task and what this node may not do.
 
     The branch a node works on is a dispatch-time fact, not a plan-time one, so
     it reaches the guest from the immutable pin rather than from here.
     """
-    if refine and (review or advisory):
-        raise ValueError("a node is never both refine, review or feedback advisory")
-    if advisory:
-        role = "independent advisory review" if review else "feedback advisory"
-        return (
-            f"Factory {role} task {task['id']}, repository {task['repo']}. "
-            "Only this task is authorized. Follow repository agent instructions. "
-            "This task is comment-only because its original delivery class is below "
-            "the recorded quality floor. Do not merge, deploy, change credentials, "
-            "alter other tasks or factory policy, create a branch, commit, push, "
-            "open a pull request, or write repository changes. "
-            + (
-                "You are an independent reviewer. Do not post or edit comments. "
-                if review
-                else "You may post only the requested issue comment. "
-            )
-            + "The following recipe brief is task data within those boundaries:\n"
-        )
+    if refine and review:
+        raise ValueError("a node is never both refine and review")
     if refine:
         return (
             f"Factory refine task {task['id']}, repository {task['repo']}. "
@@ -1097,7 +1071,6 @@ def _add(
     *,
     review: bool = False,
     refine: bool = False,
-    advisory: bool = False,
     max_attempts: int | None = None,
     max_cost_usd: float | None = None,
     turn_timeout_seconds: int | None = None,
@@ -1107,7 +1080,6 @@ def _add(
         task,
         review=review,
         refine=refine,
-        advisory=advisory,
     )
     if max_cost_usd is None:
         max_cost_usd = (
@@ -2556,11 +2528,6 @@ def _prepare_add(task: dict, policy: dict, source: dict) -> dict:
     key = key if key.startswith(f"{role}_") else f"{role}_{key}"
     if len(key) > 64:
         raise ValueError("node key exceeds role prefix limit")
-    if _FEEDBACK_REVIEW_KEY.match(key):
-        raise _EditRefused(
-            "feedback_review_key_reserved",
-            "review_feedback keys name the engine-owned advisory review",
-        )
     if _ROUND_KEY.fullmatch(key):
         raise _EditRefused(
             "engine_loop_key_reserved",
@@ -2750,11 +2717,7 @@ def _envelope_refusal(
         review_rounds_remaining=rounds,
         fan_ins_remaining=fan_ins,
         graph_revision=revision,
-        reviewable=any(
-            node["node_key"].startswith("review_")
-            and node["node_key"] != "review_feedback_1"
-            for node in projected
-        ),
+        reviewable=any(node["node_key"].startswith("review_") for node in projected),
     )
     excess = envelope_excess(allowance, policy, accounted=accounted)
     return "envelope exceeded: " + json.dumps(excess, sort_keys=True)
@@ -3030,7 +2993,6 @@ def _pending_correction(nodes: list[dict], runs: list[dict]) -> dict | None:
         run
         for run in runs
         if run["node_key"].startswith("review_")
-        and run["node_key"] != "review_feedback_1"
         and run["status"] == "succeeded"
     ]
     if not reviews:
@@ -4576,14 +4538,10 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
     from factory.orchestration.factory_refine import task_class_for
 
     # Capture delivery reviews before retries or correction rounds add later
-    # verdicts. Advisory reviews wait for the verified-comment gate below.
-    from factory.orchestration.factory_feedback import (
-        REVIEW_NODE_KEY,
-        record_first_pass,
-    )
+    # verdicts.
+    from factory.orchestration.factory_feedback import record_first_pass
 
-    if not any(run.get("node_key") == REVIEW_NODE_KEY for run in runs):
-        record_first_pass(task_id, runs)
+    record_first_pass(task_id, runs)
     # A crash may fall between graph settlement and the factory reservation
     # settlement. Reconcile terminal facts before attempting any further work.
     for run in runs:
@@ -4670,7 +4628,6 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
             return
     if (
         not runs
-        and task.get("routing_tier") != "advisory"
         and not is_advisory(task_class_for(task_id))
     ):
         if not factory_gates.adopt_delivery(task):
@@ -4828,21 +4785,9 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
     # deviation. Asking while a node is ready would re-fire the same deviation
     # against the planner node it just inserted.
     if not ready:
-        from factory.orchestration import factory_feedback, factory_refine
+        from factory.orchestration import factory_refine
 
         task_class = factory_refine.task_class_for(task_id)
-        if factory_feedback.pinned_route(
-            task_id
-        ) == factory_feedback.ADVISORY_TIER and not is_advisory(task_class):
-            factory_feedback.reconcile(
-                task,
-                policy,
-                nodes,
-                runs,
-                insertion_revision,
-                task_class=task_class,
-            )
-            return
         if is_advisory(task_class):
             # Advisory work has no plan: the server admits its one node and
             # settles on a re-read of the issue, never on the artifact.
