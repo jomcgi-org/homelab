@@ -62,6 +62,7 @@ py_library(
     visibility = ["//projects/model-bench:__subpackages__"],
     deps = [
         "//projects/model-bench/bench",
+        "//projects/model-bench/bench/verifiers",
         "@pip//httpx",
     ],
 )
@@ -73,6 +74,5 @@ py_test(
     deps = [
         ":probe",
         "@pip//httpx",
-        "@pip//pytest",
     ],
 )
