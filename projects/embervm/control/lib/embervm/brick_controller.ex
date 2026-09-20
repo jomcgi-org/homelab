@@ -89,6 +89,17 @@ defmodule Embervm.BrickController do
   UP steps (scaling desired past a scheduler that cannot place is runaway) and
   blocks DOWN steps for the idle window after the episode clears.
 
+  ## catalog-derived floors
+
+  Every reconcile derives a per-class minimum from the workload catalog through
+  `Embervm.Brick.Portfolio.floors/2`. The acting minimum is the maximum of the
+  computed floor and the chart's manual minimum, so warmth overrides remain in
+  force. Static desired counts remain lower bounds too. If a computed floor
+  exceeds `max`, the controller raises `:floor_overflow` immediately through a
+  transition-only warning and trace, and performs no scale writes until the
+  contradiction clears. The computation uses declared memory and slot capacity,
+  so it works when a class has zero live replicas.
+
   ## inert until bricks exist
 
   With `bricks.enabled=false` the chart renders no brick classes into the CP env,
@@ -109,7 +120,8 @@ defmodule Embervm.BrickController do
   require Logger
   require OpenTelemetry.Tracer, as: Tracer
 
-  alias Embervm.{Brick, K8s, NodeCapacity}
+  alias Embervm.{Brick, K8s, NodeCapacity, WorkloadCatalog}
+  alias Embervm.Brick.Portfolio
 
   @default_interval_ms 30_000
   @default_fleet_full_after_ms 300_000
@@ -154,6 +166,8 @@ defmodule Embervm.BrickController do
       default derived from `Embervm.Brick.by_class/0` (injected in tests).
     * `:facts_fun`            - `() -> [facts]` raw capacity facts (idle/victim
       inputs), default `NodeCapacity.all/1` (injected in tests).
+    * `:catalog_fun`          - `() -> [catalog_entry]` declared workload floors,
+      default `Embervm.WorkloadCatalog.all/0` (injected in tests).
     * `:up_threshold` / `:up_window_ms` / `:up_cooldown_ms` /
       `:down_idle_ms` / `:down_cooldown_ms` - hysteresis knobs (defaults
       3 / 60s / 60s / 15m / 10m).
@@ -169,6 +183,12 @@ defmodule Embervm.BrickController do
   @spec fleet_full?(GenServer.server(), String.t()) :: boolean()
   def fleet_full?(server \\ __MODULE__, class) do
     GenServer.call(server, {:fleet_full?, class})
+  end
+
+  @doc "Whether a catalog-derived floor currently exceeds `class`'s declared maximum."
+  @spec floor_overflow?(GenServer.server(), String.t()) :: boolean()
+  def floor_overflow?(server \\ __MODULE__, class) do
+    GenServer.call(server, {:floor_overflow?, class})
   end
 
   @doc "The set of currently fleet-full size-class labels (introspection/tests)."
@@ -207,6 +227,7 @@ defmodule Embervm.BrickController do
       annotate_fun: Keyword.get(opts, :annotate_fun, &K8s.annotate_pod/3),
       registered_fun: Keyword.get(opts, :registered_fun, &registered_by_class/0),
       facts_fun: Keyword.get(opts, :facts_fun, fn -> NodeCapacity.all(NodeCapacity.table()) end),
+      catalog_fun: Keyword.get(opts, :catalog_fun, &WorkloadCatalog.all/0),
       up_threshold: Keyword.get(opts, :up_threshold, @default_up_threshold),
       up_window_ms: Keyword.get(opts, :up_window_ms, @default_up_window_ms),
       up_cooldown_ms: Keyword.get(opts, :up_cooldown_ms, @default_up_cooldown_ms),
@@ -216,6 +237,10 @@ defmodule Embervm.BrickController do
       # class => the ms timestamp desired first exceeded registered (cleared when it recovers).
       over_since: %{},
       flagged: MapSet.new(),
+      # Classes whose catalog-derived floor exceeds the declared max. Unlike
+      # fleet-full this is an immediate configuration contradiction, with no
+      # scheduler dwell, and suppresses every scale write until it recovers.
+      floor_overflow: MapSet.new(),
       # Autoscale bookkeeping, all per class-name:
       # recent denial timestamps (pruned to up_window_ms each tick),
       denials: %{},
@@ -265,6 +290,10 @@ defmodule Embervm.BrickController do
   @impl true
   def handle_call({:fleet_full?, class}, _from, state) do
     {:reply, MapSet.member?(state.flagged, class), state}
+  end
+
+  def handle_call({:floor_overflow?, class}, _from, state) do
+    {:reply, MapSet.member?(state.floor_overflow, class), state}
   end
 
   def handle_call(:flagged, _from, state) do
@@ -336,8 +365,27 @@ defmodule Embervm.BrickController do
     state = check_capacity_drift(state, facts)
     state = if state.mode == :off, do: state, else: state |> prune_denials(now) |> track_idle(now)
 
+    portfolio = Portfolio.floors(state.catalog_fun.(), state.classes)
+    state = track_floor_overflow(state, portfolio)
+
+    if MapSet.size(state.floor_overflow) > 0 do
+      state
+    else
+      reconcile_classes(state, registered, now, portfolio)
+    end
+  end
+
+  defp reconcile_classes(state, registered, now, portfolio) do
+    classes =
+      Enum.map(state.classes, fn class ->
+        case Map.get(portfolio, class_name(class)) do
+          %{effective_min: effective_min} -> Map.put(class, :effective_min, effective_min)
+          _ -> class
+        end
+      end)
+
     {over_since, flagged, state} =
-      Enum.reduce(state.classes, {%{}, MapSet.new(), state}, fn class, {os, fl, st} ->
+      Enum.reduce(classes, {%{}, MapSet.new(), state}, fn class, {os, fl, st} ->
         name = class_name(class)
         {acting, st} = plan_class(st, class, now)
 
@@ -374,7 +422,7 @@ defmodule Embervm.BrickController do
   # decision needs a trustworthy current).
   defp plan_class(state, class, now) do
     name = class_name(class)
-    static = class_desired(class)
+    static = class_static_target(class)
 
     with true <- state.mode != :off,
          {:ok, current} <- read_current(state, name) do
@@ -399,7 +447,7 @@ defmodule Embervm.BrickController do
 
     cond do
       state.mode == :observe ->
-        {class_desired(class), note_decision(state, name, current, target, reason, now, false)}
+        {class_static_target(class), note_decision(state, name, current, target, reason, now, false)}
 
       target > current ->
         {target, note_decision(state, name, current, target, reason, now, true)}
@@ -749,6 +797,56 @@ defmodule Embervm.BrickController do
     end
   end
 
+  defp track_floor_overflow(state, portfolio) do
+    overflow =
+      portfolio
+      |> Enum.filter(fn {_class, result} -> result.flag == :floor_overflow end)
+      |> Map.new()
+
+    overflow_names = overflow |> Map.keys() |> MapSet.new()
+
+    overflow_names
+    |> MapSet.difference(state.floor_overflow)
+    |> Enum.each(fn class ->
+      result = Map.fetch!(overflow, class)
+
+      Logger.warning("embervm brick floor overflow",
+        size_class: class,
+        computed_floor: result.computed_floor,
+        max_replicas: class_max_by_name(state.classes, class),
+        reason: :floor_overflow
+      )
+
+      Tracer.with_span "embervm.brick.floor_overflow", %{
+        attributes: %{
+          "ember.size_class" => class,
+          "ember.computed_floor" => result.computed_floor,
+          "ember.max_replicas" => class_max_by_name(state.classes, class)
+        }
+      } do
+        :ok
+      end
+    end)
+
+    state.floor_overflow
+    |> MapSet.difference(overflow_names)
+    |> Enum.each(fn class ->
+      Logger.info("embervm brick floor overflow cleared",
+        size_class: class,
+        reason: :floor_overflow
+      )
+    end)
+
+    %{state | floor_overflow: overflow_names}
+  end
+
+  defp class_max_by_name(classes, name) do
+    case Enum.find(classes, &(class_name(&1) == name)) do
+      nil -> 0
+      class -> class_max(class)
+    end
+  end
+
   # Registered bricks per size-class, from the dial-home capacity ledger. Wildcard
   # ("") bricks (the legacy DaemonSet) are bucketed under "" and simply do not
   # match any concrete class's fleet-full accounting.
@@ -763,7 +861,9 @@ defmodule Embervm.BrickController do
   defp class_desired(%{"desired" => d}), do: d
   defp class_desired(_), do: 0
 
-  defp class_min(class), do: class_field(class, [:min, "min"]) || 0
+  defp class_min(class), do: class_field(class, [:effective_min, "effective_min", :min, "min"]) || 0
+
+  defp class_static_target(class), do: max(class_desired(class), class_min(class))
 
   # Absent max reads max(desired, min): a class the values never granted headroom
   # cannot be scaled past its static count (fail-safe for an env that predates

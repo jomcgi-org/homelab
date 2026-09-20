@@ -1666,12 +1666,14 @@ defmodule Embervm.Application do
 
   defp capacity_observer_opts, do: [register_gauges: true]
 
-  # Parse EMBERVM_BRICK_CLASSES (a JSON array of {"name","desired"} objects, plus
-  # optional autoscale clamp fields "min"/"max") into a list of
-  # %{name, desired, min, max}. nil when unset, malformed, or empty, so the
-  # controller's empty-list default fires (it reconciles nothing). A class missing
-  # a binary name or a non-negative integer desired is dropped, never crashing
-  # boot; an invalid/absent min reads 0 and an invalid/absent max reads nil (the
+  # Parse EMBERVM_BRICK_CLASSES (a JSON array of {"name","desired","usable_mib",
+  # "slots"} objects, plus optional autoscale clamp fields "min"/"max") into a
+  # list of
+  # %{name, desired, min, max, usable_mib, slots}. nil when unset, malformed, or
+  # empty, so the controller's empty-list default fires (it reconciles nothing).
+  # A class missing a binary name, a non-negative integer desired, positive
+  # usable memory, or a non-negative slot limit is dropped, never crashing boot;
+  # an invalid/absent min reads 0 and an invalid/absent max reads nil (the
   # controller then clamps to max(desired, min): no autoscale headroom).
   defp brick_classes_env do
     case trimmed_env("EMBERVM_BRICK_CLASSES") do
@@ -1690,9 +1692,15 @@ defmodule Embervm.Application do
                   name: name,
                   desired: desired,
                   min: non_neg_int_or(Map.get(class, "min"), 0),
-                  max: non_neg_int_or(Map.get(class, "max"), nil)
+                  max: non_neg_int_or(Map.get(class, "max"), nil),
+                  usable_mib: Map.get(class, "usable_mib"),
+                  slots: non_neg_int_or(Map.get(class, "slots"), nil)
                 }
               end
+              |> Enum.filter(fn class ->
+                is_integer(class.usable_mib) and class.usable_mib > 0 and
+                  is_integer(class.slots)
+              end)
 
             if parsed == [], do: nil, else: parsed
 

@@ -235,6 +235,29 @@ defmodule Embervm.LogFormatterTest do
     assert :json.decode(line)["desired_capacity"] == 12
   end
 
+  test "preserves brick floor overflow transition fields" do
+    line =
+      Embervm.LogFormatter.format(
+        %{
+          level: :warning,
+          msg: {:string, "embervm brick floor overflow"},
+          meta: %{
+            size_class: "2gi",
+            computed_floor: 3,
+            max_replicas: 2,
+            reason: :floor_overflow
+          }
+        },
+        %{}
+      )
+      |> IO.iodata_to_binary()
+
+    decoded = :json.decode(line)
+    assert decoded["computed_floor"] == 3
+    assert decoded["max_replicas"] == 2
+    assert decoded["reason"] == "floor_overflow"
+  end
+
   test "preserves volume restore refusal fields in structured JSON" do
     metadata = %{
       workload: "wl-a",

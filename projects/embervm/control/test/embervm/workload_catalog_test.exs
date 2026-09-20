@@ -33,10 +33,16 @@ defmodule Embervm.WorkloadCatalogTest do
 
     WorkloadCatalog.upsert(table, "wl-b", %{name: "wl-b", retry: Retry.default_config()})
     assert Enum.sort(WorkloadCatalog.all_names(table)) == ["wl-a", "wl-b"]
+    assert WorkloadCatalog.all(table) |> Enum.map(& &1.name) |> Enum.sort() == ["wl-a", "wl-b"]
 
     WorkloadCatalog.drop(table, "wl-a")
     assert WorkloadCatalog.fetch(table, "wl-a") == :error
     assert WorkloadCatalog.all_names(table) == ["wl-b"]
+  end
+
+  test "all returns an empty snapshot while the table is unavailable" do
+    missing_table = String.to_atom("wl_cat_never_created_#{System.unique_integer([:positive])}")
+    assert WorkloadCatalog.all(missing_table) == []
   end
 
   test "retry_config returns the entry's own retry config for a known name" do

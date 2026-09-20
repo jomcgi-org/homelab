@@ -60,6 +60,9 @@ defmodule Embervm.LogFormatter do
     :claim_age_ms,
     # Parsed, inert future-facing capacity configuration.
     :desired_capacity,
+    # Brick portfolio floor transitions.
+    :computed_floor,
+    :max_replicas,
     # StatefulSweeper pressure-state transitions.
     :brick_id,
     :from,
