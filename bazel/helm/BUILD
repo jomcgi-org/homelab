@@ -74,6 +74,7 @@ MANIFEST_SETS = [
 # the gate without leaving reviewable evidence here. The completeness test
 # below enforces the record against the source tree.
 SKIPPED_MANIFEST_SETS = {
+    "projects/embervm/dev/deploy/values-store-validation-gke.yaml": "Default-off store validation overlay, rendered by its hermetic config test.",
     "projects/embervm/dev/deploy/values-recovery-gke.yaml": "Recovery overlay, not rendered by CI.",
     "projects/monolith/dev/deploy/values-recovery-gke.yaml": "Recovery overlay, not rendered by CI.",
     "projects/platform/atlas-operator/deploy/values.yaml": "Remote chart with no local Chart.yaml or render target.",
