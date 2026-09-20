@@ -582,10 +582,12 @@ ambiguous write, so uncertainty cannot buy extra external writes.
 Every body links the delivery issue, links the pull request when the signal is
 about landing, names the factory task and source audit, and contains an exact
 `factory-problem` fingerprint marker. Discovery inspects at most two pages of
-100 newest open or closed issues for that marker. A repeated or replayed source
-event reconciles the existing issue. A missing source receipt, malformed event,
-discovery failure, scan cap, daily cap, or rejected GitHub write is audited and
-visible on the factory board.
+100 newest open or closed issues for that marker. If both pages are full and no
+marker is found, the producer audits the cap and refuses the write because an
+older matching issue may exist. A repeated or replayed source event reconciles
+the existing issue. A missing source receipt, malformed event, discovery
+failure, scan cap, daily cap, or rejected GitHub write is audited and visible
+on the factory board.
 
 The producer records `problem_issue_write_started` before the GitHub request.
 A definite client refusal is terminal. A timeout, rate limit, transport loss,
