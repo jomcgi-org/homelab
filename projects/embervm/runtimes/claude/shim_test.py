@@ -954,6 +954,129 @@ def _muse_manager(tmp_path, monkeypatch):
     return shim.MuseProcess(str(workspace), str(executable))
 
 
+def _muse_preflight_manager(tmp_path, monkeypatch, executable):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    # Exercise preflight against the current hermetic test identity. Host root
+    # status must not make this test depend on uid/gid 65532 being available.
+    monkeypatch.setattr(shim, "_cli_privilege_kwargs", lambda: {})
+    monkeypatch.delenv(shim.AGENT_MCP_URL_ENV, raising=False)
+    manager = shim.MuseProcess(str(workspace), executable)
+    manager.session_id = "preflight-session"
+    return manager
+
+
+def test_muse_enabled_preflight_reports_missing_path_binary_before_popen(
+    tmp_path, monkeypatch
+):
+    empty_bin = tmp_path / "empty-bin"
+    empty_bin.mkdir()
+    monkeypatch.setenv("PATH", str(empty_bin))
+    monkeypatch.setenv(shim.MUSE_BINARY_PREFLIGHT_ENV, "1")
+    manager = _muse_preflight_manager(tmp_path, monkeypatch, "muse")
+    popen_calls = []
+
+    def unexpected_popen(*args, **kwargs):
+        popen_calls.append((args, kwargs))
+        raise AssertionError("Popen must not run for a failed preflight")
+
+    monkeypatch.setattr(shim.subprocess, "Popen", unexpected_popen)
+
+    with pytest.raises(shim.StartupError) as exc_info:
+        manager._spawn("hello", "spark")
+
+    message = str(exc_info.value)
+    assert "Muse executable preflight failed before Popen" in message
+    assert "executable='muse'" in message
+    assert "PATH='%s'" % empty_bin in message
+    assert "reason=not_found" in message
+    assert "base_generation=unknown" in message
+    assert popen_calls == []
+
+
+@pytest.mark.parametrize("unusable_kind", ["not-executable", "directory"])
+def test_muse_enabled_preflight_rejects_unusable_custom_executable(
+    tmp_path, monkeypatch, unusable_kind
+):
+    executable = tmp_path / "custom-muse"
+    if unusable_kind == "directory":
+        executable.mkdir()
+        expected_reason = "not_regular"
+    else:
+        executable.write_text("#!/bin/sh\n")
+        executable.chmod(0o644)
+        expected_reason = "not_executable_by_cli_identity"
+    monkeypatch.setenv("PATH", str(tmp_path / "unused-path"))
+    monkeypatch.setenv(shim.MUSE_BINARY_PREFLIGHT_ENV, "true")
+    manager = _muse_preflight_manager(tmp_path, monkeypatch, str(executable))
+    popen_calls = []
+    monkeypatch.setattr(
+        shim.subprocess,
+        "Popen",
+        lambda *args, **kwargs: popen_calls.append((args, kwargs)),
+    )
+
+    with pytest.raises(shim.StartupError) as exc_info:
+        manager._spawn("hello", "spark")
+
+    message = str(exc_info.value)
+    assert "executable=%r" % str(executable) in message
+    assert "candidate=%r" % str(executable) in message
+    assert "reason=%s" % expected_reason in message
+    assert "base_generation=unknown" in message
+    assert popen_calls == []
+
+
+@pytest.mark.parametrize("executable_kind", ["path", "custom"])
+def test_muse_enabled_preflight_allows_valid_resolution(
+    tmp_path, monkeypatch, executable_kind
+):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    binary = bin_dir / "muse"
+    binary.write_text("#!/bin/sh\n")
+    binary.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    monkeypatch.setenv(shim.MUSE_BINARY_PREFLIGHT_ENV, "yes")
+    executable = "muse" if executable_kind == "path" else str(binary)
+    manager = _muse_preflight_manager(tmp_path, monkeypatch, executable)
+
+    class PopenReached(Exception):
+        pass
+
+    def capture_popen(command, **kwargs):
+        assert command[0] == executable
+        assert kwargs["env"]["PATH"] == str(bin_dir)
+        assert "user" not in kwargs
+        assert "group" not in kwargs
+        raise PopenReached
+
+    monkeypatch.setattr(shim.subprocess, "Popen", capture_popen)
+
+    with pytest.raises(PopenReached):
+        manager._spawn("hello", "spark")
+
+
+def test_muse_binary_preflight_is_default_off(tmp_path, monkeypatch):
+    empty_bin = tmp_path / "empty-bin"
+    empty_bin.mkdir()
+    monkeypatch.setenv("PATH", str(empty_bin))
+    monkeypatch.delenv(shim.MUSE_BINARY_PREFLIGHT_ENV, raising=False)
+    manager = _muse_preflight_manager(tmp_path, monkeypatch, "missing-muse")
+
+    class PopenReached(Exception):
+        pass
+
+    def capture_popen(command, **kwargs):
+        assert command[0] == "missing-muse"
+        raise PopenReached
+
+    monkeypatch.setattr(shim.subprocess, "Popen", capture_popen)
+
+    with pytest.raises(PopenReached):
+        manager._spawn("hello", "spark")
+
+
 def _manager_with_empty_cli(tmp_path, monkeypatch, cli, process_type):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
