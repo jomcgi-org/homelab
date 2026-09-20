@@ -114,6 +114,17 @@ def _github_created_at(issue: dict) -> datetime | None:
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
 
+def _same_value(left: Any, right: Any) -> bool:
+    """Compare persisted values without treating SQLite timezone loss as a change."""
+    if isinstance(left, datetime) and isinstance(right, datetime):
+        if left.tzinfo is None:
+            left = left.replace(tzinfo=timezone.utc)
+        if right.tzinfo is None:
+            right = right.replace(tzinfo=timezone.utc)
+        return left.astimezone(timezone.utc) == right.astimezone(timezone.utc)
+    return left == right
+
+
 def github_issue_updated_at(issue: dict) -> datetime | None:
     """Return GitHub's source-order timestamp without inventing a fallback."""
     raw = issue.get("updated_at")
@@ -384,7 +395,7 @@ def _mint_or_sync_from_github_locked(
         "github_created_at",
     ):
         value = values[field]
-        if getattr(item, field) != value:
+        if not _same_value(getattr(item, field), value):
             setattr(item, field, value)
             changes[field] = value.isoformat() if isinstance(value, datetime) else value
     label_state = values["state"]
