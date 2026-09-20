@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Fail when a tracked Python test is not owned by a runnable Bazel test.
 
 The checker deliberately consumes Bazel's evaluated query graph. BUILD files
@@ -11,18 +10,15 @@ runnable.
 from __future__ import annotations
 
 import argparse
-from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
-from pathlib import Path
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
+from pathlib import Path
 
-
-TEST_QUERY = 'kind("py_test rule", //...)'
-SOURCE_GRAPH_QUERY = (
-    'kind("py_test rule", //...) union deps(labels(srcs, kind("py_test rule", //...)))'
-)
+TEST_QUERY = "tests(//...)"
+SOURCE_GRAPH_QUERY = "tests(//...) union deps(labels(srcs, tests(//...)))"
 
 
 class ReachabilityError(RuntimeError):
@@ -47,8 +43,7 @@ def _run(
         args,
         cwd=cwd,
         check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         text=text,
     )
     if result.returncode != 0:
@@ -83,7 +78,7 @@ def tracked_python_tests(repo: Path) -> tuple[str, ...]:
 
 
 def bazel_test_roots(repo: Path) -> tuple[str, ...]:
-    """Return every runnable Python test label selected by Bazel."""
+    """Return every runnable test label selected by Bazel."""
     result = _run(
         [
             "bazel",
@@ -189,7 +184,7 @@ def format_orphans(orphans: Sequence[str]) -> str:
     rendered = "\n".join(f"  {path}" for path in orphans)
     return (
         "tracked Python test sources are not reachable through srcs from any "
-        "runnable Bazel py_test target:\n"
+        "runnable Bazel test target:\n"
         f"{rendered}\n"
         "Add or restore a test target for each path. The check uses Bazel's "
         "evaluated graph, so a comment, data entry, scanner target, or "
