@@ -58,4 +58,10 @@ argo-cd:
       reposerver.repo.cache.expiration: "10m"
 
 cfIngress:
+  # No UI route on the hub: ArgoCD is reached through the Kubernetes API over
+  # the tailnet (docs/security.md). The push webhook route below is independent
+  # and stays on so GitHub push events reach argocd-server instead of falling
+  # through to the monolith's private route and its 401.
   enabled: false
+  githubWebhook:
+    enabled: true

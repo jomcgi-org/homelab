@@ -2,10 +2,41 @@ globals:
   logging:
     format: json
 
-# Path-based private ingress, disabled by default.
-# Cluster-specific config lives in values-cluster.yaml.
+# Path-based private ingress. The connection details below are the same on both
+# clusters; each cluster's values file only toggles the two routes on or off.
+#
+# `enabled` gates the ArgoCD UI route (https://private.jomcgi.dev/app/argocd,
+# which replaced the former argocd.jomcgi.dev tunnel route retired in PR #2534).
+# The hub leaves it off deliberately (docs/security.md) and reaches ArgoCD
+# through the Kubernetes API over the tailnet.
 cfIngress:
   enabled: false
+  tier: trusted
+  hostname: private.jomcgi.dev
+  pathPrefix: /app/argocd
+  serviceName: argocd-server
+  servicePort: 80
+  gateway:
+    name: cloudflare-ingress
+    namespace: envoy-gateway-system
+  # GitHub push webhook ingress, gated separately from the UI route because the
+  # hub serves no UI but still needs GitHub POSTs to reach argocd-server. With
+  # no route here they fall through to the monolith's private route, whose
+  # cf-access SecurityPolicy answers 401.
+  #
+  # Deliberately NO SecurityPolicy on this route: GitHub bypasses Cloudflare
+  # Access at the edge via the "Github Webhooks" Access app's IP-allowlist
+  # Bypass policy and sends no Access JWT, so a cf-access SecurityPolicy would
+  # reject every real delivery. The edge IP allowlist is the access control,
+  # and ArgoCD treats the hook as an unsigned refresh trigger.
+  githubWebhook:
+    enabled: false
+    # The gateway rewrites the external /webhooks/github/argocd path to
+    # argocd-server's real webhook endpoint. That endpoint sits under
+    # server.rootpath, which is per cluster: the hub leaves rootpath at the
+    # default, the home cluster sets it to /app/argocd. Cluster values files
+    # point this at the matching path.
+    rewritePrefix: /api/webhook
 
 argo-cd:
   configs:
