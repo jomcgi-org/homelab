@@ -281,22 +281,15 @@ def _local_candidates(
     exclude_labels = {label.lower() for label in intake["exclude_labels"]}
     candidates = []
 
-    # Webhook ingress adds trusted GitHub-authority rows to the same candidate
-    # policy as local rows. It does not retire the sweep: migration and cutover
-    # are separate operational work outside this repository slice.
-    from factory.orchestration.factory_webhook import webhook_enabled
-
-    item_scope = WorkItem.authority == "local"
-    if webhook_enabled():
-        item_scope = item_scope | (
-            (WorkItem.authority == "github") & (WorkItem.trust == "trusted")
-        )
-
+    # GitHub-authority rows are snapshots, not admission candidates. Until
+    # cutover adds equivalent source guards, the live listing owns assignee,
+    # linked-PR, and open-state validation. Local authority remains eligible
+    # without a GitHub read.
     with _read_session() as db:
         local_items = db.exec(
             select(WorkItem)
             .where(
-                item_scope,
+                WorkItem.authority == "local",
                 WorkItem.state.in_(("ready", "open")),
                 WorkItem.github_repo == repo,
             )
@@ -419,7 +412,7 @@ def _local_candidates(
             {
                 "issue": item,
                 "number": number,
-                "source": ("local" if work_item.authority == "local" else "webhook"),
+                "source": "local",
                 "work_item_id": work_item.id,
                 "lane": lane,
                 "task_class": task_class,
