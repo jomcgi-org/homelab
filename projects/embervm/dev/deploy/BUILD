@@ -37,3 +37,17 @@ filegroup(
         "//projects/monolith:__pkg__",
     ],
 )
+
+# INACTIVE GKE store-validation preset for #6193. No Application or
+# kustomization references it. It is exposed only to the chart regression test
+# until an operator completes the live checklist and reviews an activation.
+filegroup(
+    name = "store_validation_values",
+    srcs = ["values-store-validation-gke.yaml"],
+    visibility = ["//projects/embervm/chart:__pkg__"],
+)
+
+exports_files(
+    ["kustomization.yaml"],
+    visibility = ["//projects/embervm/chart:__pkg__"],
+)
