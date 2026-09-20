@@ -20,6 +20,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from factory.orchestration.factory_models import FactoryWebhookDelivery, WorkItem
+from factory.orchestration.work_item_links import reconcile_body_edges
 from factory.orchestration.work_items import (
     WorkItemError,
     mint_or_sync_from_github,
@@ -105,9 +106,25 @@ def _issue(payload: dict) -> dict:
     if not isinstance(issue, dict) or issue.get("pull_request") is not None:
         raise HTTPException(422, "event does not contain a GitHub issue")
     number = issue.get("number")
-    if type(number) is not int or number <= 0 or payload.get("number") != number:
+    if type(number) is not int or number <= 0:
         raise HTTPException(422, "invalid GitHub issue identity")
     return issue
+
+
+def _reconcile_stored_body_edges(session: Session, repo: str) -> dict:
+    """Reconcile dependencies from the complete stored repository view."""
+    items = session.exec(
+        select(WorkItem).where(
+            WorkItem.github_repo == repo,
+            WorkItem.github_issue_number.is_not(None),
+        )
+    ).all()
+    return reconcile_body_edges(
+        session,
+        repo,
+        [(item, item.body) for item in items],
+        actor="github:webhook",
+    )
 
 
 def _claim_delivery(
@@ -257,6 +274,8 @@ def process_delivery(
             "local_untouched" if outcome == "local_untouched" else f"trusted_{outcome}"
         )
         claim.work_item_id = item.id
+        if item.authority == "github":
+            _reconcile_stored_body_edges(session, repo)
 
     session.add(claim)
     session.commit()

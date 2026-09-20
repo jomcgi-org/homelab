@@ -1161,13 +1161,9 @@ def test_local_ready_item_creates_linked_delivery_receipt(db, monkeypatch):
     assert detail["source"] == "local"
 
 
-def test_webhook_cutover_uses_only_stored_trusted_items(db, monkeypatch):
+def test_webhook_ingress_keeps_sweep_and_uses_stored_trusted_items(db, monkeypatch):
     monkeypatch.setenv("FACTORY_GITHUB_WEBHOOK_ENABLED", "true")
-
-    def unexpected_github_read(*_args, **_kwargs):
-        raise AssertionError("webhook cutover must not sweep GitHub")
-
-    monkeypatch.setattr(intake_loop, "github_list", unexpected_github_read)
+    calls = fake_pages(monkeypatch, [])
     with Session(db) as session:
         for number, trust in (
             (201, "trusted"),
@@ -1196,11 +1192,69 @@ def test_webhook_cutover_uses_only_stored_trusted_items(db, monkeypatch):
     assert admitted[0]["receipt"]["issue_number"] == 201
     detail = json.loads(audits(db, "intake_admitted")[0].detail_json)
     assert detail["source"] == "webhook"
-    assert detail["github"] == "webhook"
+    assert any(call.startswith("issues?") for call in calls)
+    assert any(call.startswith("pulls?") for call in calls)
     with Session(db) as session:
         assert [
             row.issue_number for row in session.exec(select(FactoryReceipt)).all()
         ] == [201]
+
+
+def test_webhook_item_is_blocked_until_its_dependency_closes(db, monkeypatch):
+    monkeypatch.setenv("FACTORY_GITHUB_WEBHOOK_ENABLED", "true")
+    fake_pages(monkeypatch, [])
+    with Session(db) as session:
+        blocked = WorkItem(
+            title="blocked webhook item",
+            body="Blocked by #212",
+            state="ready",
+            labels=["agent-ready"],
+            source_kind="github",
+            trust="trusted",
+            authority="github",
+            github_repo="owner/repo",
+            github_issue_number=211,
+            github_created_at=NOW - timedelta(days=2),
+        )
+        blocker = WorkItem(
+            title="open dependency",
+            state="open",
+            labels=["needs-thought"],
+            source_kind="github",
+            trust="trusted",
+            authority="github",
+            github_repo="owner/repo",
+            github_issue_number=212,
+            github_created_at=NOW - timedelta(days=3),
+        )
+        session.add_all([blocked, blocker])
+        session.flush()
+        session.add(
+            WorkItemEdge(
+                from_id=blocker.id,
+                to_id=blocked.id,
+                kind="blocks",
+                source="github_body",
+            )
+        )
+        session.commit()
+
+    assert intake_loop.intake_tick(policy(), generation=0) == []
+    detail = json.loads(audits(db, "intake_idle")[0].detail_json)
+    assert detail["excluded"] == {"blocked": 1, "deferred": 1}
+
+    with Session(db) as session:
+        blocker = session.exec(
+            select(WorkItem).where(WorkItem.github_issue_number == 212)
+        ).one()
+        blocker.state = "closed"
+        blocker.close_reason = "github_closed"
+        session.add(blocker)
+        session.commit()
+    release_sweep(db)
+
+    admitted = intake_loop.intake_tick(policy(), generation=0)
+    assert [row["receipt"]["issue_number"] for row in admitted] == [211]
 
 
 def test_local_open_item_follows_refine_flag(db, monkeypatch):
