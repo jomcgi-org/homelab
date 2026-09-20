@@ -77,6 +77,8 @@ _EXCLUSION_REASONS = (
     "deferred",
     "refine_disabled",
     "lane_full",
+    "local_malformed",
+    "local_unnumbered",
 )
 
 
@@ -139,6 +141,38 @@ def derive_task_class(labels: set[str], *, refine: bool) -> tuple[str, str]:
         if name in labels:
             return task_class, f"label {name}"
     return DEFAULT_TASK_CLASS, "default"
+
+
+def _receipt_exclusion(
+    rows: list[FactoryReceipt],
+    *,
+    generation: int,
+    task_class: str,
+    cooldown_cutoff: datetime,
+) -> str | None:
+    """Return the first receipt-derived reason that excludes a candidate."""
+    if any(
+        row.state == "succeeded" and not is_advisory(receipt_task_class(row))
+        for row in rows
+    ):
+        return "delivered"
+    if any(row.state in ("admitted", "uncertain") for row in rows):
+        return "active_issue"
+    if any(row.state == "escalated" for row in rows):
+        return "escalated"
+    latest = rows[0] if rows else None
+    if (
+        latest is not None
+        and latest.state in ("failed", "cancelled")
+        and _aware(latest.updated_at) >= cooldown_cutoff
+    ):
+        return "cooldown"
+    if any(
+        row.generation == generation and receipt_task_class(row) == task_class
+        for row in rows
+    ):
+        return "already_received"
+    return None
 
 
 def _created_rank(issue: dict) -> float:
@@ -233,6 +267,168 @@ def _listing_due(now: datetime) -> bool:
         return settled is not None
 
 
+def _local_candidates(
+    repo: str,
+    *,
+    intake: dict,
+    generation: int,
+    room: dict[str, bool],
+    cooldown_cutoff: datetime,
+) -> tuple[list[dict], dict[str, int], int]:
+    """Build candidates from local-authority work scoped to this repository."""
+    excluded = {reason: 0 for reason in _EXCLUSION_REASONS}
+    exclude_labels = {label.lower() for label in intake["exclude_labels"]}
+    candidates = []
+
+    with _read_session() as db:
+        local_items = db.exec(
+            select(WorkItem)
+            .where(
+                WorkItem.authority == "local",
+                WorkItem.state.in_(("ready", "open")),
+                WorkItem.github_repo == repo,
+            )
+            .order_by(WorkItem.github_created_at, WorkItem.created_at)
+        ).all()
+        unnumbered_items = db.exec(
+            select(WorkItem).where(
+                WorkItem.authority == "local",
+                WorkItem.state.in_(("ready", "open")),
+                WorkItem.github_issue_number.is_(None),
+            )
+        ).all()
+        local_ids = [item.id for item in local_items if item.id is not None]
+        local_receipts = (
+            db.exec(
+                select(FactoryReceipt)
+                .where(
+                    FactoryReceipt.repo == repo,
+                    FactoryReceipt.work_item_id.in_(local_ids),
+                )
+                .order_by(FactoryReceipt.id.desc())
+            ).all()
+            if local_ids
+            else []
+        )
+        blocked_local_ids = (
+            set(
+                db.exec(
+                    select(WorkItemEdge.to_id)
+                    .join(WorkItem, WorkItemEdge.from_id == WorkItem.id)
+                    .where(
+                        WorkItemEdge.kind == "blocks",
+                        WorkItemEdge.to_id.in_(local_ids),
+                        WorkItem.state != "closed",
+                    )
+                    .distinct()
+                ).all()
+            )
+            if local_ids
+            else set()
+        )
+
+    excluded["local_unnumbered"] = len(unnumbered_items)
+    for work_item in local_items:
+        number = work_item.github_issue_number
+        if number is None:
+            excluded["local_unnumbered"] += 1
+            continue
+        title = work_item.title
+        body = work_item.body
+        if (
+            not isinstance(title, str)
+            or not title.strip()
+            or len(title) > 512
+            or not isinstance(body, str)
+            or len(body) > 65536
+        ):
+            excluded["local_malformed"] += 1
+            _throttled(
+                "local_item_malformed",
+                {"work_item_id": work_item.id},
+            )
+            continue
+        labels = {label.lower() for label in work_item.labels}
+        if labels & exclude_labels:
+            excluded["excluded_label"] += 1
+            continue
+        if work_item.id in blocked_local_ids:
+            excluded["blocked"] += 1
+            continue
+        delivery = work_item.state == "ready"
+        refine = not delivery
+        task_class, class_reason = derive_task_class(labels, refine=refine)
+        rows = [row for row in local_receipts if row.work_item_id == work_item.id]
+        if refine and "needs-thought" in labels:
+            excluded["deferred"] += 1
+            continue
+        receipt_exclusion = _receipt_exclusion(
+            rows,
+            generation=generation,
+            task_class=task_class,
+            cooldown_cutoff=cooldown_cutoff,
+        )
+        if receipt_exclusion is not None:
+            excluded[receipt_exclusion] += 1
+            continue
+        if refine and not intake["refine_enabled"]:
+            excluded["refine_disabled"] += 1
+            continue
+        if type(number) is not int or not 1 <= number <= 2**31 - 1:
+            excluded["local_malformed"] += 1
+            _throttled(
+                "local_item_malformed",
+                {"work_item_id": work_item.id},
+            )
+            continue
+        label_rank = next(
+            (index for index, label in enumerate(RANK_LABELS) if label in labels),
+            len(RANK_LABELS),
+        )
+        rank_reason = (
+            RANK_LABELS[label_rank] if label_rank < len(RANK_LABELS) else "oldest"
+        )
+        lane = lane_for(task_class)
+        if not room.get(lane):
+            excluded["lane_full"] += 1
+            continue
+        created_at = work_item.github_created_at or work_item.created_at
+        item = {
+            "number": number,
+            "title": title,
+            "body": body,
+            "html_url": work_item.source_ref
+            or f"https://github.com/{repo}/issues/{number}",
+            "labels": work_item.labels,
+            "created_at": _aware(created_at).isoformat(),
+            "user": None,
+        }
+        candidates.append(
+            {
+                "issue": item,
+                "number": number,
+                "source": "local",
+                "work_item_id": work_item.id,
+                "lane": lane,
+                "task_class": task_class,
+                "class_reason": class_reason,
+                "rank_reason": rank_reason,
+                "sort": (
+                    1 if refine else 0,
+                    label_rank,
+                    _created_rank(item),
+                    number,
+                ),
+            }
+        )
+
+    return (
+        candidates,
+        {reason: count for reason, count in excluded.items() if count},
+        len(local_items) + len(unnumbered_items),
+    )
+
+
 def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
     """Queue at most one issue per open lane, or audit why it queued none.
 
@@ -269,86 +465,125 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
             # consulted for one at all: it must never throttle a burn-down.
             admitted_today = delivery_admissions(db, today)
 
-        if not _listing_due(now):
-            return []
-
         repo = policy["repo"]
-        # The clock records the ATTEMPT, not the result. A sweep that fails is
-        # the case most worth rate limiting: a 403 usually means the shared
-        # budget is already spent, and retrying every fifteen seconds is how
-        # it stays spent.
-        with _locked_session() as (db, _control):
-            _audit(db, ACTOR, "intake_swept")
+        excluded: dict[str, int] = {reason: 0 for reason in _EXCLUSION_REASONS}
+
+        def exclude(reason: str) -> None:
+            excluded[reason] += 1
+
+        include_labels = {label.lower() for label in intake["labels"]}
+        exclude_labels = {label.lower() for label in intake["exclude_labels"]}
+        candidates = []
+        cooldown_cutoff = now - timedelta(hours=intake["cooldown_hours"])
+        local_listed = 0
         try:
-            issues, issues_cut = _pages(repo, "issues")
-            pulls, pulls_cut = _pages(repo, "pulls", page_size=PULL_PAGE_SIZE)
-        except Exception as exc:  # noqa: BLE001 - recorded, never swallowed
-            # A 403 from the shared rate limit, or any other read failure,
-            # would otherwise leave intake silently dead: the blanket handler
-            # below logs where nobody looks. Record the shape of the failure
-            # without its response body, URL or credential-bearing text.
+            local_candidates, local_excluded, local_listed = _local_candidates(
+                repo,
+                intake=intake,
+                generation=generation,
+                room=room,
+                cooldown_cutoff=cooldown_cutoff,
+            )
+            candidates.extend(local_candidates)
+            for reason, count in local_excluded.items():
+                excluded[reason] += count
+        except Exception as exc:  # noqa: BLE001 - GitHub intake must still run
             _throttled(
-                "intake_error",
-                {
-                    "stage": "listing",
-                    "error": type(exc).__name__,
-                    "status": getattr(
-                        getattr(exc, "response", None), "status_code", None
-                    ),
-                },
+                "local_intake_error",
+                {"error": type(exc).__name__},
             )
-            logger.warning("factory intake listing failed", exc_info=True)
-            return []
-        try:
-            from factory.orchestration.work_items import sync_github_work_items
-            from factory.orchestration.work_item_links import reconcile_body_edges
+            logger.warning("factory local intake failed", exc_info=True)
 
-            work_item_counts = sync_github_work_items(
-                repo, issues, truncated=issues_cut, actor=ACTOR
-            )
-            logger.info("work_item_sync", extra=work_item_counts)
-
-            # Reconcile body edges in a new transaction
+        issues = []
+        pulls = []
+        issues_cut = False
+        pulls_cut = False
+        github_status = None
+        if _listing_due(now):
+            # The clock records the ATTEMPT, not the result. A sweep that fails
+            # is the case most worth rate limiting: a 403 usually means the shared
+            # budget is already spent, and retrying every fifteen seconds is how
+            # it stays spent.
             with _locked_session() as (db, _control):
-                synced_items = db.exec(
-                    select(WorkItem).where(
-                        WorkItem.github_repo == repo,
-                        WorkItem.authority == "github",
-                    )
-                ).all()
-                # Build list of (item, body) tuples from the GitHub issues
-                items_with_bodies = []
-                issue_by_number = {
-                    issue.get("number"): issue
-                    for issue in issues
-                    if isinstance(issue, dict)
-                }
-                for item in synced_items:
-                    if item.github_issue_number is not None:
-                        issue = issue_by_number.get(item.github_issue_number)
-                        if issue is not None:
-                            body = issue.get("body") or ""
-                            items_with_bodies.append((item, body))
+                _audit(db, ACTOR, "intake_swept")
+            try:
+                issues, issues_cut = _pages(repo, "issues")
+                pulls, pulls_cut = _pages(repo, "pulls", page_size=PULL_PAGE_SIZE)
+            except Exception as exc:  # noqa: BLE001 - recorded, never swallowed
+                # A 403 from the shared rate limit, or any other read failure,
+                # would otherwise leave intake silently dead: the blanket handler
+                # below logs where nobody looks. Record the shape of the failure
+                # without its response body, URL or credential-bearing text.
+                _throttled(
+                    "intake_error",
+                    {
+                        "stage": "listing",
+                        "error": type(exc).__name__,
+                        "status": getattr(
+                            getattr(exc, "response", None), "status_code", None
+                        ),
+                    },
+                )
+                logger.warning("factory intake listing failed", exc_info=True)
+                issues = []
+                pulls = []
+                issues_cut = False
+                pulls_cut = False
+                github_status = "failed"
+        else:
+            github_status = "not_due"
 
-                if items_with_bodies:
-                    edge_counts = reconcile_body_edges(
-                        db,
-                        repo,
-                        items_with_bodies,
-                        actor=ACTOR,
-                        truncated=issues_cut,
-                    )
-                    logger.info("work_item_edge_reconcile", extra=edge_counts)
-                db.commit()
-        except Exception as exc:  # noqa: BLE001 - intake must survive sync failure
-            logger.exception("work_item_sync_error")
-            _throttled(
-                "work_item_sync_error",
-                {
-                    "error": type(exc).__name__,
-                    "truncated": issues_cut,
-                },
-            )
+        if github_status is None:
+            try:
+                from factory.orchestration.work_items import sync_github_work_items
+                from factory.orchestration.work_item_links import reconcile_body_edges
+
+                work_item_counts = sync_github_work_items(
+                    repo, issues, truncated=issues_cut, actor=ACTOR
+                )
+                logger.info("work_item_sync", extra=work_item_counts)
+
+                # Reconcile body edges in a new transaction
+                with _locked_session() as (db, _control):
+                    synced_items = db.exec(
+                        select(WorkItem).where(
+                            WorkItem.github_repo == repo,
+                            WorkItem.authority == "github",
+                        )
+                    ).all()
+                    # Build list of (item, body) tuples from the GitHub issues
+                    items_with_bodies = []
+                    issue_by_number = {
+                        issue.get("number"): issue
+                        for issue in issues
+                        if isinstance(issue, dict)
+                    }
+                    for item in synced_items:
+                        if item.github_issue_number is not None:
+                            issue = issue_by_number.get(item.github_issue_number)
+                            if issue is not None:
+                                body = issue.get("body") or ""
+                                items_with_bodies.append((item, body))
+
+                    if items_with_bodies:
+                        edge_counts = reconcile_body_edges(
+                            db,
+                            repo,
+                            items_with_bodies,
+                            actor=ACTOR,
+                            truncated=issues_cut,
+                        )
+                        logger.info("work_item_edge_reconcile", extra=edge_counts)
+                    db.commit()
+            except Exception as exc:  # noqa: BLE001 - intake survives sync failure
+                logger.exception("work_item_sync_error")
+                _throttled(
+                    "work_item_sync_error",
+                    {
+                        "error": type(exc).__name__,
+                        "truncated": issues_cut,
+                    },
+                )
         truncated = issues_cut or pulls_cut
         linked: set[int] = set()
         for pull in pulls:
@@ -363,13 +598,6 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                     if 1 <= number <= 2**31 - 1:
                         linked.add(number)
 
-        excluded: dict[str, int] = {reason: 0 for reason in _EXCLUSION_REASONS}
-
-        def exclude(reason: str) -> None:
-            excluded[reason] += 1
-
-        include_labels = {label.lower() for label in intake["labels"]}
-        exclude_labels = {label.lower() for label in intake["exclude_labels"]}
         survivors = []
         for item in issues:
             if not isinstance(item, dict):
@@ -396,6 +624,8 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
             if type(item.get("number")) is int and 1 <= item["number"] <= 2**31 - 1
         ]
         work_item_map = {}
+        work_item_by_number = {}
+        local_authority_numbers = set()
         blocked_numbers: set[int] = set()
         if numbers:
             with _read_session() as db:
@@ -412,6 +642,15 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                     wi.id: wi.github_issue_number
                     for wi in work_items
                     if wi.github_issue_number is not None
+                }
+                work_item_by_number = {
+                    number: item_id for item_id, number in work_item_map.items()
+                }
+                local_authority_numbers = {
+                    item.github_issue_number
+                    for item in work_items
+                    if item.authority == "local"
+                    and item.github_issue_number is not None
                 }
                 if work_item_map:
                     blocked_item_ids = set(
@@ -439,10 +678,10 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                     .where(FactoryReceipt.repo == repo, by_number_or_item)
                     .order_by(FactoryReceipt.issue_number, FactoryReceipt.id.desc())
                 ).all()
-        candidates = []
-        cooldown_cutoff = now - timedelta(hours=intake["cooldown_hours"])
         for item, labels in survivors:
             number = item.get("number")
+            if number in local_authority_numbers:
+                continue
             rows = []
             if type(number) is int:
                 for row in receipt_rows:
@@ -453,7 +692,6 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                         and work_item_map.get(row.work_item_id) == number
                     ):
                         rows.append(row)
-            latest = rows[0] if rows else None
             if number in blocked_numbers:
                 exclude("blocked")
                 continue
@@ -477,45 +715,24 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
             # operator who wants a delivered issue worked again names it in
             # the policy issue_numbers allowlist under a new generation, which
             # writes its receipt directly and never consults this sweep.
-            if any(
-                row.state == "succeeded" and not is_advisory(receipt_task_class(row))
-                for row in rows
-            ):
-                exclude("delivered")
-                continue
-            if any(row.state in ("admitted", "uncertain") for row in rows):
-                exclude("active_issue")
-                continue
-            # An escalated receipt is a question in front of a person. The
-            # issue carries needs-human, which the default exclusion list
-            # already drops, but an operator who takes that label out must not
-            # have the lane start a second attempt on the same work while the
-            # first one's decision is still open.
-            if any(row.state == "escalated" for row in rows):
-                exclude("escalated")
-                continue
-            if (
-                latest is not None
-                and latest.state in ("failed", "cancelled")
-                and _aware(latest.updated_at) >= cooldown_cutoff
-            ):
-                exclude("cooldown")
-                continue
             delivery = bool(labels & include_labels)
             refine = not delivery
+            task_class, class_reason = derive_task_class(labels, refine=refine)
             if refine and "needs-thought" in labels:
                 exclude("deferred")
                 continue
-            task_class, class_reason = derive_task_class(labels, refine=refine)
             # Scoped to the class, not just the generation. A refine pass that
             # moved an issue to agent-ready has changed what the lane can do
             # with it, and waiting for an operator to bump the generation
             # would strand the readiness the lane just produced.
-            if any(
-                row.generation == generation and receipt_task_class(row) == task_class
-                for row in rows
-            ):
-                exclude("already_received")
+            receipt_exclusion = _receipt_exclusion(
+                rows,
+                generation=generation,
+                task_class=task_class,
+                cooldown_cutoff=cooldown_cutoff,
+            )
+            if receipt_exclusion is not None:
+                exclude(receipt_exclusion)
                 continue
             if not delivery and not intake["refine_enabled"]:
                 exclude("refine_disabled")
@@ -538,6 +755,8 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                 {
                     "issue": item,
                     "number": number,
+                    "source": "github",
+                    "work_item_id": work_item_by_number.get(number),
                     "lane": lane,
                     "task_class": task_class,
                     "class_reason": class_reason,
@@ -557,6 +776,8 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                 {
                     "excluded": excluded,
                     "listed": len(issues),
+                    "local_listed": local_listed,
+                    **({"github": github_status} if github_status else {}),
                     **({"truncated": True} if truncated else {}),
                 }
             )
@@ -609,6 +830,7 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                 generation=generation,
                 task_class=candidate["task_class"],
                 issue=issue,
+                work_item_id=candidate["work_item_id"],
             )
             if delivery:
                 admitted_today += 1
@@ -620,6 +842,7 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                     "intake_admitted",
                     receipt_id=received["receipt"]["id"],
                     issue_number=candidate["number"],
+                    source=candidate["source"],
                     lane=candidate["lane"],
                     task_class=candidate["task_class"],
                     class_reason=candidate["class_reason"],
@@ -627,6 +850,7 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                     candidates=[
                         {
                             "number": other["number"],
+                            "source": other["source"],
                             "lane": other["lane"],
                             "task_class": other["task_class"],
                             "rank_reason": other["rank_reason"],
@@ -635,6 +859,15 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                     ],
                     excluded=excluded,
                     admitted_today=admitted_today,
+                    **(
+                        {
+                            "github": github_status,
+                            "listed": len(issues),
+                            "local_listed": local_listed,
+                        }
+                        if github_status
+                        else {}
+                    ),
                     **({"truncated": True} if truncated else {}),
                 )
         # Once per tick, and only when the cap actually refused a delivery
@@ -645,6 +878,12 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                     "reason": "daily_cap",
                     "admitted_today": admitted_today,
                     "max_per_day": intake["max_per_day"],
+                    "local_listed": local_listed,
+                    **(
+                        {"github": github_status, "listed": len(issues)}
+                        if github_status
+                        else {}
+                    ),
                 }
             )
         return received_all

@@ -112,6 +112,7 @@ def receive_issue(
     generation: int = 0,
     task_class: str = DEFAULT_TASK_CLASS,
     issue: dict | None = None,
+    work_item_id: int | None = None,
     session: Session | None = None,
 ) -> dict:
     """Store one bounded issue snapshot. A duplicate can never replace its text.
@@ -147,12 +148,16 @@ def receive_issue(
         # tick, so a receipt links to it at creation; an operator-posted
         # receipt for an issue the sweep has not seen yet links on the next
         # mint through the backfill in work_items.
-        work_item = db.exec(
-            select(WorkItem).where(
-                WorkItem.github_repo == repo,
-                WorkItem.github_issue_number == issue_number,
-            )
-        ).one_or_none()
+        work_item = (
+            db.get(WorkItem, work_item_id)
+            if work_item_id is not None
+            else db.exec(
+                select(WorkItem).where(
+                    WorkItem.github_repo == repo,
+                    WorkItem.github_issue_number == issue_number,
+                )
+            ).one_or_none()
+        )
         if work_item is None and issue is not None:
             from factory.orchestration import work_items
 
