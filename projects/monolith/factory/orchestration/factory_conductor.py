@@ -3045,9 +3045,7 @@ def _landing_recovery_requests(task_id: str, *, session=None) -> list[dict]:
                         ).first()
                         or 0
                     )
-                detected.append(
-                    {**detail, "run_id_floor": floor, "request_id": row.id}
-                )
+                detected.append({**detail, "run_id_floor": floor, "request_id": row.id})
             elif isinstance(detail.get("request_id"), int):
                 corrected.add(detail["request_id"])
     return [detail for detail in detected if detail["request_id"] not in corrected]
@@ -3131,9 +3129,7 @@ def _landing_recovery_graph_evidence(
     if type(floor) is not int or type(number) is not int:
         return None
     delivery_keys = {
-        node["node_key"]
-        for node in dependents
-        if _is_implementation(node["node_key"])
+        node["node_key"] for node in dependents if _is_implementation(node["node_key"])
     }
     for run in sorted(runs, key=lambda item: item["id"]):
         if (
