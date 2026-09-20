@@ -249,23 +249,54 @@ def duplicate_pairs():
 @pytest.mark.parametrize(
     "case",
     duplicate_pairs(),
-    ids=lambda case: f"{case['stale_pr']}-{case['survivor_pr']}",
+    ids=lambda case: "-".join(str(pr["number"]) for pr in case["pulls"]),
 )
-def test_historical_duplicate_pairs_retire_after_their_issue_closes(db, github, case):
-    stale = pull(case["stale_pr"], case["issue"], case["stale_branch"])
-    api = github(Github([stale], {case["issue"]: {"state": "closed"}}))
+def test_historical_duplicate_pairs_replay_recorded_outcomes(db, github, case):
+    pulls = [
+        pull(item["number"], case["issue"], item["branch"])
+        for item in case["pulls"]
+    ]
+    merged = [item for item in case["pulls"] if item["outcome"] == "merged"]
+    closed = [
+        item for item in case["pulls"] if item["outcome"] == "closed_unmerged"
+    ]
 
-    lifecycle.sweep_stale_prs(REPO)
+    if merged:
+        assert len(merged) == len(closed) == 1
+        survivor = merged[0]
+        stale = closed[0]
+        task_receipt(
+            db,
+            f"survivor-{survivor['number']}",
+            case["issue"],
+            "admitted",
+            branch=survivor["branch"],
+            pr_number=survivor["number"],
+        )
+        api = github(Github(pulls, {case["issue"]: {"state": "open"}}))
 
-    assert api.pulls[case["stale_pr"]]["state"] == "closed"
-    assert len(api.comments[case["stale_pr"]]) == 1
-    assert (
-        f"issue #{case['issue']} is closed" in api.comments[case["stale_pr"]][0]["body"]
-    )
-    assert audit_details(db, "factory_pr_retired")[-1]["pr_number"] == case["stale_pr"]
+        lifecycle._retire_pull(REPO, api.pulls[stale["number"]])
+
+        assert api.pulls[stale["number"]]["state"] == "closed"
+        assert api.pulls[survivor["number"]]["state"] == "open"
+        assert f"PR #{survivor['number']}" in api.comments[stale["number"]][0]["body"]
+        detail = audit_details(db, "factory_pr_retired")[-1]
+        assert detail["pr_number"] == stale["number"]
+        assert detail["survivor_pr_number"] == survivor["number"]
+    else:
+        assert len(closed) == len(pulls)
+        api = github(Github(pulls, {case["issue"]: {"state": "closed"}}))
+
+        lifecycle.sweep_stale_prs(REPO)
+
+        assert all(api.pulls[item["number"]]["state"] == "closed" for item in closed)
+        retired = audit_details(db, "factory_pr_retired")
+        assert {item["number"] for item in closed} == {
+            detail["pr_number"] for detail in retired
+        }
 
 
-def test_newer_running_owner_is_named_and_survivor_is_never_closed(db, github):
+def test_running_owner_is_named_and_survivor_is_never_closed(db, github):
     old = pull(10, 7, "factory/old")
     new = pull(20, 7, "factory/new")
     task_receipt(db, "new", 7, "admitted", branch="factory/new", pr_number=20)

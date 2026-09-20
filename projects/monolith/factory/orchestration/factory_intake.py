@@ -80,18 +80,25 @@ def receipts_for_work(
     return db.exec(query).all()
 
 
-def get_issue_receipt(repo: str, issue_number: int, generation: int) -> dict | None:
+def get_issue_receipt(
+    repo: str,
+    issue_number: int,
+    generation: int,
+    *,
+    task_class: str = DEFAULT_TASK_CLASS,
+) -> dict | None:
     """Read an existing delivery receipt without depending on GitHub availability."""
     repo = normalize_repo(repo)
     issue_number = _integer(issue_number, "issue_number", 1, 2**31 - 1)
     generation = _integer(generation, "generation", 0, 2**31 - 1)
+    task_class = validate_task_class(task_class)
     with _read_session() as db:
         row = db.exec(
             select(FactoryReceipt).where(
                 FactoryReceipt.repo == repo,
                 FactoryReceipt.issue_number == issue_number,
                 FactoryReceipt.generation == generation,
-                FactoryReceipt.task_class == DEFAULT_TASK_CLASS,
+                FactoryReceipt.task_class == task_class,
             )
         ).one_or_none()
         return (

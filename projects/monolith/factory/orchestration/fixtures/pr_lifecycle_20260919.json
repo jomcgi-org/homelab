@@ -1,30 +1,62 @@
 [
   {
     "issue": 3856,
-    "stale_pr": 6198,
-    "stale_branch": "factory/t-7d5412f0-6dd2-4b07-b1ac-497a943b4cac",
-    "survivor_pr": 6070,
-    "survivor_branch": "factory/t-b98dda3c-681e-4a66-a402-13608cb3a40f"
+    "pulls": [
+      {
+        "number": 6198,
+        "branch": "factory/t-7d5412f0-6dd2-4b07-b1ac-497a943b4cac",
+        "outcome": "closed_unmerged"
+      },
+      {
+        "number": 6070,
+        "branch": "factory/t-b98dda3c-681e-4a66-a402-13608cb3a40f",
+        "outcome": "merged"
+      }
+    ]
   },
   {
     "issue": 3897,
-    "stale_pr": 6199,
-    "stale_branch": "factory/t-511ae62a-732c-4e87-95ae-890211afb336",
-    "survivor_pr": 6075,
-    "survivor_branch": "factory/t-89d3da9a-fdd1-4b17-829f-d5a4f750b0f3"
+    "pulls": [
+      {
+        "number": 6199,
+        "branch": "factory/t-511ae62a-732c-4e87-95ae-890211afb336",
+        "outcome": "closed_unmerged"
+      },
+      {
+        "number": 6075,
+        "branch": "factory/t-89d3da9a-fdd1-4b17-829f-d5a4f750b0f3",
+        "outcome": "closed_unmerged"
+      }
+    ]
   },
   {
     "issue": 3907,
-    "stale_pr": 6209,
-    "stale_branch": "factory/t-4fb770d1-c67c-4a5b-a846-747612644fda",
-    "survivor_pr": 6082,
-    "survivor_branch": "factory/t-185b7916-eecc-4dab-874f-370a2ca5bffd"
+    "pulls": [
+      {
+        "number": 6209,
+        "branch": "factory/t-4fb770d1-c67c-4a5b-a846-747612644fda",
+        "outcome": "merged"
+      },
+      {
+        "number": 6082,
+        "branch": "factory/t-185b7916-eecc-4dab-874f-370a2ca5bffd",
+        "outcome": "closed_unmerged"
+      }
+    ]
   },
   {
     "issue": 3902,
-    "stale_pr": 6215,
-    "stale_branch": "factory/t-8fef3f0c-8d4d-4fa2-bd54-a3bd2aff8a2d",
-    "survivor_pr": 6078,
-    "survivor_branch": "factory/t-0e96fb61-1042-4239-bfe9-06a910498f75"
+    "pulls": [
+      {
+        "number": 6215,
+        "branch": "factory/t-8fef3f0c-8d4d-4fa2-bd54-a3bd2aff8a2d",
+        "outcome": "merged"
+      },
+      {
+        "number": 6078,
+        "branch": "factory/t-0e96fb61-1042-4239-bfe9-06a910498f75",
+        "outcome": "closed_unmerged"
+      }
+    ]
   }
 ]
