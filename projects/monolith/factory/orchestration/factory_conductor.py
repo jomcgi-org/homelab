@@ -2992,8 +2992,7 @@ def _pending_correction(nodes: list[dict], runs: list[dict]) -> dict | None:
     reviews = [
         run
         for run in runs
-        if run["node_key"].startswith("review_")
-        and run["status"] == "succeeded"
+        if run["node_key"].startswith("review_") and run["status"] == "succeeded"
     ]
     if not reviews:
         return None
@@ -4626,10 +4625,7 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
 
         if terminal_grant(task, policy, runs):
             return
-    if (
-        not runs
-        and not is_advisory(task_class_for(task_id))
-    ):
+    if not runs and not is_advisory(task_class_for(task_id)):
         if not factory_gates.adopt_delivery(task):
             _escalate_task(
                 task,
