@@ -1,0 +1,37 @@
+# ruleid: verification-genrule-missing-tag
+genrule(
+    name = "tlc_missing_tag",
+    outs = ["tlc_missing_tag.txt"],
+    cmd = "touch $@",
+)
+
+# ruleid: verification-genrule-missing-tag
+genrule(
+    name = "api_smoke",
+    outs = ["api_smoke.txt"],
+    cmd = "touch $@",
+    tags = [],
+)
+
+# ruleid: verification-genrule-missing-tag
+native.genrule(
+    name = "migration_test",
+    outs = ["migration_test.txt"],
+    cmd = "touch $@",
+    tags = ["manual"],
+)
+
+# ruleid: verification-genrule-missing-tag
+genrule(
+    tags = ["local"],
+    cmd = "touch $@",
+    name = "attribute_order_test",
+    outs = ["attribute_order_test.txt"],
+)
+
+# ok: verification-genrule-missing-tag
+genrule(
+    name = "asset_bundle",
+    outs = ["asset_bundle.txt"],
+    cmd = "touch $@",
+)

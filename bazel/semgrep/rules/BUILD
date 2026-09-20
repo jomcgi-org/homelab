@@ -4,6 +4,8 @@
 # gazelle:exclude typescript
 # gazelle:exclude yaml
 
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("//bazel/semgrep/defs:defs.bzl", "semgrep_test")
 
 package(default_visibility = ["//visibility:public"])
@@ -314,6 +316,31 @@ semgrep_test(
     srcs = glob(["bazel/*.build"]),
     env = {"SEMGREP_TEST_MODE": "1"},
     rules = [":bazel_rules"],
+    tags = ["semgrep"],
+)
+
+# Unlike the annotation tests above, this target invokes the vendored engine
+# without SEMGREP_TEST_MODE. It is also the executable used by pr-checks to
+# scan every BUILD and BUILD.bazel file in the checkout.
+sh_binary(
+    name = "verification_genrule_guard",
+    srcs = ["bazel/verification-genrule-guard.sh"],
+    data = [
+        "bazel/verification-genrule-missing-tag.yaml",
+        "//bazel/semgrep/third_party/semgrep:engine",
+        "@buildifier_prebuilt//:buildifier",
+    ],
+)
+
+sh_test(
+    name = "verification_genrule_guard_test",
+    srcs = ["bazel/verification-genrule-guard-test.sh"],
+    data = [
+        "bazel/verification-genrule-missing-tag-failing.build",
+        "bazel/verification-genrule-missing-tag-ignored.bzl",
+        "bazel/verification-genrule-missing-tag-passing.build",
+        ":verification_genrule_guard",
+    ],
     tags = ["semgrep"],
 )
 
