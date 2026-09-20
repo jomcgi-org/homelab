@@ -68,4 +68,4 @@ as authorization.
 | Authorization is applied before top-N ranking | `store_scoped_test.py::test_search_scope_allow_list_is_applied_before_ranking` |
 | Audit failure denies retrieval, while empty results and embedding failures retain one audit | MCP and HTTP failure-path tests |
 | Cross-scope edge targets do not resolve | `store_scoped_test.py::test_edge_resolution_uses_search_allow_list` |
-| Audit retention and INSERT-only application privileges execute in Postgres | `personal_retrieval_audit_grants_test.py` |
+| Audit retention and INSERT-only application privileges execute in Postgres | `knowledge/personal_retrieval_audit_grants_test.py` |
