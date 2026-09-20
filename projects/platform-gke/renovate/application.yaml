@@ -1,0 +1,41 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: renovate
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  labels:
+    app.kubernetes.io/part-of: shared-infrastructure
+  annotations:
+    # Argo Workflows is installed in wave 1. Enroll the suspended workflows only
+    # after their CRDs and namespace-scoped controller are available.
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/jomcgi-org/homelab.git
+    targetRevision: HEAD
+    path: projects/platform/renovate
+    helm:
+      releaseName: renovate
+      valueFiles:
+        - values.yaml
+        - values-gke.yaml
+      ignoreMissingValueFiles: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monolith-workflows
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

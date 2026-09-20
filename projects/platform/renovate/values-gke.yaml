@@ -1,0 +1,7 @@
+# The hub is enrolled before cutover so its Application, secret reference, and
+# CronWorkflows can be checked safely. Both repository-writing schedules remain
+# off until an operator completes the single-writer handoff in README.md.
+suspend: true
+
+apkoLockMaintenance:
+  suspend: true

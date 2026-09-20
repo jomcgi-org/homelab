@@ -9,6 +9,7 @@ resources:
   - ./cloudnative-pg # CloudNativePG operator for PostgreSQL clusters
   - ./authentik # Identity provider, live on the hub since the 2026-08-31 cutover
   - ./argo-workflows # CronWorkflow executor for the monolith jobs, live since the cutover
+  - ./renovate # Staged dependency and apko lock writers, both suspended until the operator cutover
   - ./otel-collector # GKE telemetry export to Honeycomb
   - ./cloudflare-gateway # Envoy Gateway plus the Cloudflare Tunnel; two connectors since the 2026-08-31 ingress flip
   - ./tailscale # Tailscale operator and tailnet egress services
