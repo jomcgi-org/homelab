@@ -733,6 +733,192 @@ def read_uncertain_factory_attempt(db: Session, pin: dict, session_id: int) -> d
     }
 
 
+def read_drained_lost_factory_attempt(db: Session, pin: dict, session_id: int) -> dict:
+    """Lock one resumable drain without treating it as an unknown invocation.
+
+    This is deliberately disjoint from ``read_uncertain_factory_attempt``.
+    A drain is a successful, durable interruption whose pending row is its
+    continuation grant. It becomes eligible here only while that exact grant
+    is unclaimed and still names the same turn, permit, guest and dispatch.
+    Remote cessation and permanent-loss proof are validated by the factory
+    supervisor before the separate settlement call consumes this identity.
+    """
+    import hashlib
+    from datetime import datetime, timezone
+
+    from factory.execution import normalize_model
+    from factory.execution.models import AgentTurn, PendingMessage
+    from factory.execution.transport import exact_dispatch_id
+
+    admission.lock_pool(db)
+    agent = _factory_owner(db, pin, session_id)
+    if agent is None:
+        raise ValueError("missing_factory_owner")
+    agent = _locked_session(db, agent.id)
+    if _factory_owner(db, pin, session_id) is None:
+        raise ValueError("factory_owner_changed")
+    _matching_cleanup_claim(agent)
+    if (
+        agent.status != "recovering"
+        or not agent.ember_session_id
+        or not agent.ember_lineage_id
+        or not agent.cli_session_id
+        or agent.prior_ember_lineage_id is not None
+        or agent.prior_cli_session_id is not None
+        or agent.result_receipt_fence_id is not None
+        or admission.cleanup_pending(db, agent)
+        or agent.recovery_completed_at is not None
+    ):
+        raise ValueError("factory_drain_not_resumable")
+    owners = db.exec(
+        select(AgentSession.id)
+        .where(AgentSession.ember_session_id == agent.ember_session_id)
+        .limit(2)
+    ).all()
+    turns = db.exec(
+        select(AgentTurn)
+        .where(AgentTurn.session_id == agent.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+        .limit(2)
+    ).all()
+    pending = db.exec(
+        select(PendingMessage)
+        .where(PendingMessage.session_id == agent.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+        .limit(2)
+    ).all()
+    permits = db.exec(
+        select(AgentCapacityReservation)
+        .where(AgentCapacityReservation.session_id == agent.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+        .limit(2)
+    ).all()
+    if (
+        owners != [agent.id]
+        or len(turns) != 1
+        or len(pending) != 1
+        or len(permits) != 1
+    ):
+        raise ValueError("ambiguous_factory_drain")
+    turn, message, permit = turns[0], pending[0], permits[0]
+    if (
+        turn.seq != 1
+        or message.seq != turn.seq
+        or permit.pending_seq != turn.seq
+        or turn.terminal_reason != "interrupted_for_drain"
+        or turn.stop_reason != "interrupted_for_drain"
+        or turn.model != normalize_model(pin["model"])
+        or message.model != normalize_model(pin["model"])
+        or permit.model != normalize_model(pin["model"])
+        or message.claimed_by_replica is not None
+        or message.claimed_at is not None
+        or message.partial_text is not None
+        or message.partial_activities is not None
+        or permit.session_id != agent.id
+        or permit.local_session_id != agent.local_session_id
+        or permit.state != "running"
+        or permit.tier != "project"
+        or permit.routine_job_name is not None
+        or not permit.owner
+        or permit.outcome is not None
+        or permit.settled_at is not None
+    ):
+        raise ValueError("factory_drain_identity_changed")
+    if type(message.dispatch_count) is not int or message.dispatch_count < 1:
+        raise ValueError("missing_factory_dispatch_identity")
+    if not isinstance(message.last_dispatch_at, datetime):
+        raise ValueError("missing_factory_dispatch_identity")
+    try:
+        usage = json.loads(turn.usage_json or "{}")
+    except (TypeError, ValueError) as exc:
+        raise ValueError("missing_factory_dispatch_identity") from exc
+    if (
+        not isinstance(usage, dict)
+        or usage.get("retry_dispatch_count") != message.dispatch_count
+    ):
+        raise ValueError("missing_factory_dispatch_identity")
+
+    def stamp(value: datetime) -> str:
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.isoformat()
+
+    dispatched_at = stamp(message.last_dispatch_at)
+    interrupted_at = stamp(turn.created_at)
+    if datetime.fromisoformat(dispatched_at) > datetime.fromisoformat(interrupted_at):
+        raise ValueError("missing_factory_dispatch_identity")
+    identity = {
+        "session_id": agent.id,
+        "local_session_id": agent.local_session_id,
+        "workflow_id": agent.workflow_id,
+        "guest_id": agent.ember_session_id,
+        "lineage_id": agent.ember_lineage_id,
+        "cli_session_id": agent.cli_session_id,
+        "turn_id": turn.id,
+        "pending_id": message.id,
+        "permit_id": permit.id,
+        "seq": turn.seq,
+        "claim_owner": permit.owner,
+        "dispatch_count": message.dispatch_count,
+        "dispatched_at": dispatched_at,
+        "interrupted_at": interrupted_at,
+        "dispatch_id": exact_dispatch_id(
+            agent.id,
+            agent.ember_session_id,
+            turn.seq,
+            permit.owner,
+            message.dispatch_count,
+        ),
+        "cost_usd": turn.cost_usd,
+    }
+    identity["identity_sha256"] = hashlib.sha256(
+        json.dumps(identity, sort_keys=True).encode()
+    ).hexdigest()
+    return identity
+
+
+def settle_drained_lost_factory_attempt(db: Session, pin: dict, identity: dict) -> None:
+    """Consume only the orphaned continuation after exact permanent loss."""
+    from factory.execution.models import PendingMessage
+
+    current = read_drained_lost_factory_attempt(db, pin, identity["session_id"])
+    if current != identity:
+        raise ValueError("factory_attempt_changed")
+    agent = _locked_session(db, identity["session_id"])
+    message = db.exec(
+        select(PendingMessage)
+        .where(PendingMessage.id == identity["pending_id"])
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one()
+    admission.settle(
+        db,
+        agent,
+        identity["seq"],
+        outcome="drained_guest_permanently_lost",
+        cessation_confirmed=True,
+    )
+    # Preserve the durable turn, transcript handles and accounting history.
+    # Only the now-dead active binding and its exact continuation are retired.
+    agent.prior_ember_lineage_id = agent.ember_lineage_id
+    agent.prior_cli_session_id = agent.cli_session_id
+    _retire_cleanup_claim(agent)
+    agent.ember_session_id = None
+    agent.ember_session_token = None
+    agent.ember_session_expires_at = None
+    agent.ember_lineage_id = None
+    agent.cli_session_id = None
+    agent.progress_token = None
+    agent.recovery_workspace_loss = True
+    agent.status = "failed"
+    db.add(agent)
+    db.delete(message)
+    db.flush()
+
+
 def settle_uncertain_factory_attempt(db: Session, pin: dict, identity: dict) -> None:
     """Settle only after the factory validates its exact durable stop proof.
 

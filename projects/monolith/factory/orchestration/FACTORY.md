@@ -879,6 +879,37 @@ conductor records the turn as an unknown invocation first so the same stop
 supervision path can own the guest. Issue #6091 tracks the control-plane root
 cause.
 
+A drained factory turn has a separate settlement path. The normal pending-row
+rejection remains unchanged because the row is normally the valid continuation
+grant. With `FACTORY_DRAINED_LOSS_SETTLEMENT_ENABLED=true`, the factory consumer
+may remove that row only when every local identity still matches under the
+factory control, capacity-pool, session, turn, pending-message, permit, run and
+start locks. The session must still be `recovering`; the pending message must be
+unclaimed; and its turn, dispatch count, permit owner, guest, lineage and CLI
+transcript must still describe the same first factory attempt. A newer turn,
+dispatch, guest, claim, receipt fence, cleanup claim, prior binding or relight
+refuses settlement.
+
+The remote proof is equally narrow. Ember must return the exact guest as
+durably `failed` with terminal reason `brick_gone`, and its persisted
+`interrupted_turn` must match the opaque dispatch ID, turn sequence, CLI session
+and transcript path computed from the local rows. This is the paired evidence
+that the drained dispatch finished its flush and then permanently lost its
+owning brick. A missing guest, `destroyed` without that proof, timeout, API
+failure, malformed or stale marker, or a guest that is running, banking,
+banked, parked or relighting leaves the continuation untouched. Settlement
+keeps the interrupted turn and its result, transcript and cost history, marks
+the attempt failed without calling it `not_invoked` or `UNKNOWN_INVOCATION`,
+releases its reservation, and feeds the ordinary bounded replanning path.
+
+The feature is staged off in chart defaults. Enabling it and any production
+row remediation are separate operator actions. Before enabling it, exercise a
+real disposable factory drain through the consumer and verify both the exact
+`brick_gone` settlement and refusal of live, restorable, stale-dispatch and
+unavailable-control-plane observations. Sessions 8410 and 8416 are not changed
+by this repository delivery; their remediation and the final issue acceptance
+remain separately authorized live checks.
+
 A replica lost mid-invoke used to cost the attempt outright. The rollout
 cancelled the executor watching the turn, the guest carried on working, and the
 executor recorded an unknown invocation that failed the session and left stop

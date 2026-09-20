@@ -1524,6 +1524,10 @@ swarm:
   # Sample transient stop refusals for a fixed bounded window before notifying.
   # Keep staged off until the brick-roll and restart live checks pass (#6266).
   factoryTransientStopRetryEnabled: false
+  # Settle only a drained factory continuation whose exact dispatch is proven
+  # permanently lost by the control plane. Staged off until the live checks in
+  # FACTORY.md have exercised the proof and refusal paths.
+  factoryDrainedLossSettlementEnabled: false
   # Stop an exact running attempt after provider-measured spend exceeds its
   # max_cost_usd. Settlement keeps the same post-hoc check as a backstop.
   factoryEnforceCostCeilingEnabled: false

@@ -4257,6 +4257,364 @@ def _uncertain_snapshot(s):
         }
 
 
+@pytest.fixture
+def drained_lost_factory(queued_factory, monkeypatch):
+    """The #6271 shape: a durable drain plus its orphaned continuation."""
+    import copy
+    from datetime import datetime, timedelta, timezone
+
+    from sqlmodel import Session
+
+    from factory.execution import admission, store
+    from factory.execution.models import AgentSession, AgentTurn
+    from factory.execution.transport import exact_dispatch_id
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import factory_supervision as supervisor
+    from factory.orchestration import node_workflows
+
+    s = queued_factory
+    for module in (controls, admission, store):
+        monkeypatch.setattr(module, "get_engine", lambda: s.engine)
+    monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "true")
+    monkeypatch.setenv("FACTORY_DRAINED_LOSS_SETTLEMENT_ENABLED", "true")
+    monkeypatch.setattr(node_workflows, "reconcile_completed_node", lambda *_a: None)
+    owner = "drained-factory-executor"
+    assert store.claim_pending_message_for_session_sync(s.sid, owner) == 1
+    assert admission.recheck(s.sid, 1, owner)
+    s.dispatched_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+    s.interrupted_at = s.dispatched_at + timedelta(minutes=1)
+    s.invoke_started_at = int(
+        (s.dispatched_at + timedelta(seconds=1)).timestamp() * 1000
+    )
+    s.last_invoke_at = s.invoke_started_at + 1000
+    with Session(s.engine) as db:
+        agent = db.get(AgentSession, s.sid)
+        agent.status = "recovering"
+        agent.ember_session_id = "s-drained-factory"
+        agent.ember_session_token = "token-drained"
+        agent.ember_lineage_id = "lineage-drained"
+        agent.cli_session_id = "cli-drained"
+        agent.last_turn_at = s.interrupted_at
+        pending = store.get_pending_message(db, s.sid, 1)
+        pending.claimed_by_replica = None
+        pending.claimed_at = None
+        # The live issue had already consumed the relight dispatch, so the
+        # orphaned continuation carried dispatch_count=2.
+        pending.dispatch_count = 2
+        pending.last_dispatch_at = s.dispatched_at
+        db.add(
+            AgentTurn(
+                session_id=s.sid,
+                seq=1,
+                prompt=pending.message_text,
+                model="opus",
+                voice_summary="Work saved for drain",
+                result_text="Durable partial implementation",
+                terminal_reason="interrupted_for_drain",
+                stop_reason="interrupted_for_drain",
+                permission_denials="[]",
+                usage_json=json.dumps({"activities": [], "retry_dispatch_count": 2}),
+                cost_usd=0.25,
+                created_at=s.interrupted_at,
+            )
+        )
+        db.add_all([agent, pending])
+        db.commit()
+    s.dispatch_id = exact_dispatch_id(s.sid, "s-drained-factory", 1, owner, 2)
+    s.result = {
+        "status": "uncertain",
+        "session_id": s.sid,
+        "cost_usd": None,
+        "cost_basis": "unknown",
+        "reason": "node workflow timed out waiting for drain relight",
+        "head_sha": "a" * 40,
+    }
+    conductor.graph.record_dispatch(s.task["id"], s.run["node_key"], 1, s.sid, "b" * 40)
+    assert conductor.graph.record_outcome(
+        s.task["id"],
+        s.run["node_key"],
+        1,
+        "uncertain",
+        None,
+        "a" * 40,
+        json.dumps(s.result),
+    ).ok
+    assert controls.record_start_outcome(
+        s.task["id"],
+        s.run["pin"]["workflow_id"],
+        "uncertain",
+        "executor",
+        session_id=s.sid,
+    )["ok"]
+    s.run = conductor.graph.node_runs(s.task["id"])[0]
+    s.cp = {
+        "session_id": "s-drained-factory",
+        "state": "failed",
+        "terminal_reason": "brick_gone",
+        "generation": 0,
+        "invoke_started_at": s.invoke_started_at,
+        "last_invoke_at": s.last_invoke_at,
+        "updated_at": s.last_invoke_at + 1000,
+        "interrupted_turn": {
+            "seq": 1,
+            "dispatch_id": s.dispatch_id,
+            "cli_session_id": "cli-drained",
+            "transcript_path": "/workspace/.codex/transcript.jsonl",
+        },
+        "node": {"node_id": "node-departed", "health": "down"},
+    }
+    s.calls = []
+
+    def http(guest_id, precondition=None):
+        assert precondition is None
+        s.calls.append(guest_id)
+        return copy.deepcopy(s.cp)
+
+    monkeypatch.setattr(supervisor, "_http", http)
+    s.dbos = SimpleNamespace(
+        get_workflow_status=lambda _key: SimpleNamespace(status="SUCCESS"),
+        retrieve_workflow=lambda _key: SimpleNamespace(get_result=lambda: s.result),
+    )
+    return s
+
+
+def test_factory_consumer_settles_only_proven_drained_loss_and_is_idempotent(
+    drained_lost_factory, monkeypatch
+):
+    from sqlmodel import Session, select
+
+    from factory.execution.constants import UNKNOWN_INVOCATION
+    from factory.execution.models import (
+        AgentCapacityReservation,
+        AgentSession,
+        AgentTurn,
+        PendingMessage,
+    )
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryAudit
+
+    s = drained_lost_factory
+    with Session(s.engine) as db:
+        original_turn = db.exec(select(AgentTurn)).one().model_dump()
+    conductor._submit_or_reconcile(s.task, s.run, s.dbos)
+    with Session(s.engine) as db:
+        agent = db.get(AgentSession, s.sid)
+        turn = db.exec(select(AgentTurn)).one()
+        permit = db.exec(select(AgentCapacityReservation)).one()
+        run = conductor.graph.node_runs(s.task["id"], session=db)[0]
+        start = controls.task_snapshot(s.task["id"], session=db)["starts"][0]
+        assert db.exec(select(PendingMessage)).all() == []
+        assert turn.model_dump() == original_turn
+        assert turn.stop_reason != UNKNOWN_INVOCATION
+        assert agent.status == "failed"
+        assert agent.ember_session_id is None
+        assert agent.prior_ember_lineage_id == "lineage-drained"
+        assert agent.prior_cli_session_id == "cli-drained"
+        assert agent.recovery_workspace_loss is True
+        assert permit.state == "settled"
+        assert permit.outcome == "drained_guest_permanently_lost"
+        assert run["status"] == "failed"
+        assert run["cost_usd"] == pytest.approx(0.25)
+        assert start["status"] == "failed"
+        outcome = json.loads(run["outcome_json"])
+        assert outcome["drained_loss"]["dispatch_id"] == s.dispatch_id
+        assert outcome["drained_loss"]["workspace_recovery"] == "permanently_lost"
+        assert "not_invoked" not in outcome
+        assert UNKNOWN_INVOCATION not in json.dumps(outcome)
+        audit = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == s.task["id"],
+                FactoryAudit.action == "stop_settled",
+            )
+        ).one()
+        detail = json.loads(audit.detail_json)
+        assert detail["drained_loss"]["dispatch_id"] == s.dispatch_id
+        assert detail["cessation_confirmed"] is True
+    after = _uncertain_snapshot(s)
+    conductor._submit_or_reconcile(s.task, s.run, s.dbos)
+    assert _uncertain_snapshot(s) == after
+    assert s.calls == ["s-drained-factory"]
+    monkeypatch.setattr(
+        conductor, "github_get", lambda *_args: {"object": {"sha": "c" * 40}}
+    )
+    conductor.reconcile_task(s.task["id"], s.policy, s.dbos)
+    assert [
+        (run["attempt"], run["status"])
+        for run in conductor.graph.node_runs(s.task["id"])
+    ] == [(1, "failed"), (2, "admitted")]
+
+
+def test_drained_loss_settlement_is_inert_while_staged_off(
+    drained_lost_factory, monkeypatch
+):
+    from sqlmodel import Session, select
+
+    from factory.execution.models import AgentCapacityReservation, PendingMessage
+
+    s = drained_lost_factory
+    monkeypatch.setenv("FACTORY_DRAINED_LOSS_SETTLEMENT_ENABLED", "false")
+    conductor._submit_or_reconcile(s.task, s.run, s.dbos)
+    with Session(s.engine) as db:
+        assert db.exec(select(PendingMessage)).one() is not None
+        assert db.exec(select(AgentCapacityReservation)).one().state == "running"
+        assert conductor.graph.node_runs(s.task["id"], session=db)[0]["status"] == (
+            "uncertain"
+        )
+
+
+@pytest.mark.parametrize(
+    "state,terminal_reason",
+    [
+        ("running", None),
+        ("banking", "interrupted_for_drain"),
+        ("banked", "interrupted_for_drain"),
+        ("parked", "interrupted_for_drain"),
+        ("relighting", "interrupted_for_drain"),
+        ("destroyed", "destroyed"),
+    ],
+)
+def test_live_restorable_or_generic_destroyed_drain_keeps_its_retry(
+    drained_lost_factory, state, terminal_reason
+):
+    from sqlmodel import Session, select
+
+    from factory.execution.models import AgentCapacityReservation, PendingMessage
+
+    s = drained_lost_factory
+    s.cp.update(state=state, terminal_reason=terminal_reason)
+    conductor._submit_or_reconcile(s.task, s.run, s.dbos)
+    with Session(s.engine) as db:
+        pending = db.exec(select(PendingMessage)).one()
+        permit = db.exec(select(AgentCapacityReservation)).one()
+        assert pending.claimed_by_replica is None
+        assert pending.dispatch_count == 2
+        assert permit.state == "running"
+        assert conductor.graph.node_runs(s.task["id"], session=db)[0]["status"] == (
+            "uncertain"
+        )
+
+
+@pytest.mark.parametrize("failure", ["dispatch", "cli", "transcript", "guest"])
+def test_stale_or_ambiguous_drained_loss_evidence_is_refused(
+    drained_lost_factory, failure
+):
+    from sqlmodel import Session, select
+
+    from factory.execution.models import AgentCapacityReservation, PendingMessage
+
+    s = drained_lost_factory
+    if failure == "dispatch":
+        s.cp["interrupted_turn"]["dispatch_id"] = "stale"
+    elif failure == "cli":
+        s.cp["interrupted_turn"]["cli_session_id"] = "cli-newer"
+    elif failure == "transcript":
+        s.cp["interrupted_turn"]["transcript_path"] = None
+    else:
+        s.cp["session_id"] = "s-newer"
+    conductor._submit_or_reconcile(s.task, s.run, s.dbos)
+    with Session(s.engine) as db:
+        assert db.exec(select(PendingMessage)).one() is not None
+        assert db.exec(select(AgentCapacityReservation)).one().state == "running"
+        assert conductor.graph.node_runs(s.task["id"], session=db)[0]["status"] == (
+            "uncertain"
+        )
+
+
+@pytest.mark.parametrize("missing", ["gone", "timeout"])
+def test_missing_guest_or_transient_observation_cannot_prove_drained_loss(
+    drained_lost_factory, monkeypatch, missing
+):
+    from sqlmodel import Session, select
+
+    from factory.execution.models import AgentCapacityReservation, PendingMessage
+    from factory.execution.transport import EmberSessionGone
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = drained_lost_factory
+
+    def unavailable(*_args):
+        if missing == "gone":
+            raise EmberSessionGone("missing")
+        raise TimeoutError("temporary control-plane timeout")
+
+    monkeypatch.setattr(supervisor, "_http", unavailable)
+    conductor._submit_or_reconcile(s.task, s.run, s.dbos)
+    with Session(s.engine) as db:
+        assert db.exec(select(PendingMessage)).one() is not None
+        assert db.exec(select(AgentCapacityReservation)).one().state == "running"
+        assert conductor.graph.node_runs(s.task["id"], session=db)[0]["status"] == (
+            "uncertain"
+        )
+
+
+def test_concurrent_relight_claim_wins_over_drained_loss_settlement(
+    drained_lost_factory, monkeypatch
+):
+    from datetime import datetime, timezone
+
+    from sqlmodel import Session, select
+
+    from factory.execution.models import AgentCapacityReservation, PendingMessage
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = drained_lost_factory
+    prove = supervisor._drained_loss_cessation
+
+    def race(view, identity):
+        proof = prove(view, identity)
+        with Session(s.engine) as db:
+            pending = db.exec(select(PendingMessage)).one()
+            pending.claimed_by_replica = "relight-executor"
+            pending.claimed_at = datetime.now(timezone.utc)
+            db.add(pending)
+            db.commit()
+        return proof
+
+    monkeypatch.setattr(supervisor, "_drained_loss_cessation", race)
+    conductor._submit_or_reconcile(s.task, s.run, s.dbos)
+    with Session(s.engine) as db:
+        pending = db.exec(select(PendingMessage)).one()
+        assert pending.claimed_by_replica == "relight-executor"
+        assert db.exec(select(AgentCapacityReservation)).one().state == "running"
+        assert conductor.graph.node_runs(s.task["id"], session=db)[0]["status"] == (
+            "uncertain"
+        )
+
+
+def test_drained_loss_gate_does_not_change_unknown_invocation_settlement(
+    uncertain_factory, monkeypatch
+):
+    from datetime import timedelta
+
+    from sqlmodel import Session, select
+
+    from factory.execution.constants import UNKNOWN_INVOCATION
+    from factory.execution.models import AgentCapacityReservation, AgentTurn
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = uncertain_factory
+    monkeypatch.setenv("FACTORY_DRAINED_LOSS_SETTLEMENT_ENABLED", "true")
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    s.cp.update(
+        state="failed",
+        terminal_reason="brick_gone",
+        last_invoke_at=None,
+        updated_at=int(
+            (s.failed_turn_at - timedelta(milliseconds=1)).timestamp() * 1000
+        ),
+        node={"node_id": "node-1", "health": "down", "draining": True},
+        stop_precondition=None,
+    )
+    assert supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    with Session(s.engine) as db:
+        assert db.exec(select(AgentTurn)).one().stop_reason == UNKNOWN_INVOCATION
+        permit = db.exec(select(AgentCapacityReservation)).one()
+        assert permit.state == "settled"
+        assert permit.outcome == "guest_cessation_confirmed"
+
+
 def test_attempt_stop_preview_survives_original_observer_loss(
     queued_factory, monkeypatch
 ):
