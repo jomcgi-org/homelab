@@ -197,7 +197,8 @@ def test_window_is_latest_twenty_and_classes_are_isolated(db):
     assert docs["sample_count"] == feedback.WINDOW_SIZE
     assert docs["approval_rate"] == 0
     assert docs["rejection_rate"] == 1
-    assert docs["tier"] == "advisory"
+    assert docs["tier"] == "delivery"
+    assert docs["decision"] == "below_floor"
 
 
 def test_minimum_samples_no_data_and_fixed_advisory_default(db):
@@ -244,7 +245,8 @@ def test_threshold_boundaries_hold_and_recovery_requires_above_floor(db):
         )
     advisory = feedback.route_for_class("docs")
     assert advisory["approval_rate"] == 0.60
-    assert advisory["tier"] == "advisory"
+    assert advisory["tier"] == "delivery"
+    assert advisory["decision"] == "advisory_retired"
     _sample(
         db,
         121,
@@ -255,6 +257,10 @@ def test_threshold_boundaries_hold_and_recovery_requires_above_floor(db):
     )
     assert feedback.route_for_class("docs")["approval_rate"] == 0.65
     assert feedback.route_for_class("docs")["tier"] == "delivery"
+    with Session(db) as session:
+        assert not session.exec(
+            select(FactoryAudit).where(FactoryAudit.action == "class_tier_demoted")
+        ).all()
 
 
 def test_recovery_transition_resets_delivery_window_for_stability(db):
@@ -279,6 +285,7 @@ def test_recovery_transition_resets_delivery_window_for_stability(db):
         )
     recovered = feedback.route_for_class("bug-fix")
     assert recovered["tier"] == "delivery"
+    assert recovered["decision"] == "advisory_retired"
     with Session(db) as session:
         feedback.store_class_route("bug-fix", recovered, session=session)
         session.commit()
@@ -286,6 +293,10 @@ def test_recovery_transition_resets_delivery_window_for_stability(db):
     assert fresh["tier"] == "delivery"
     assert fresh["sample_count"] == 0
     assert fresh["decision"] == "insufficient_samples"
+    with Session(db) as session:
+        assert not session.exec(
+            select(FactoryAudit).where(FactoryAudit.action == "class_tier_demoted")
+        ).all()
 
 
 def _first_pass_runs(engine, *, malformed: bool = False):
@@ -404,21 +415,24 @@ def test_admission_demotes_at_actual_routing_boundary(db):
 
     admitted = admit_next("scheduler")
     assert admitted["ok"]
-    assert admitted["lane"] == "advisory"
+    assert admitted["lane"] == "delivery"
     assert admitted["receipt"]["task_class"] == "bug-fix"
-    assert admitted["receipt"]["routing_tier"] == "advisory"
+    assert admitted["receipt"]["routing_tier"] == "delivery"
     separated = feedback.feedback_for_class("bug-fix")
-    assert separated["sample_count"] == 0
+    assert separated["decision"] == "below_floor"
+    assert separated["tier"] == "delivery"
+    assert separated["sample_count"] == 20
     assert separated["recovery_window"]["sample_count"] == 0
     assert separated["delivery_window"]["sample_count"] == 20
     assert separated["delivery_window"]["approval_rate"] == 0.55
     with Session(db) as session:
-        transition = session.exec(
+        assert not session.exec(
             select(FactoryAudit).where(FactoryAudit.action == "class_tier_demoted")
+        ).all()
+        admission = session.exec(
+            select(FactoryAudit).where(FactoryAudit.action == "admit_next")
         ).one()
-    detail = json.loads(transition.detail_json)
-    assert detail["sample_count"] == 20
-    assert detail["approval_rate"] == 0.55
+    assert json.loads(admission.detail_json)["feedback_decision"] == "below_floor"
 
 
 def test_planner_recipe_receives_attributed_class_rejections(db, monkeypatch):
@@ -483,6 +497,9 @@ def test_full_advisory_window_restores_delivery_with_no_inflight_delivery(db):
             sample_kind="advisory",
             reviewed_at=transition + timedelta(minutes=number),
         )
+    stale = feedback.feedback_for_class("bug-fix")
+    assert stale["tier"] == "delivery"
+    assert stale["decision"] == "advisory_retired"
     _configure(_policy())
     receive_issue(
         "owner/repo",
@@ -549,6 +566,13 @@ def test_demoted_task_runs_comment_and_independent_review_end_to_end(db, monkeyp
         "operator",
     )
     admitted = admit_next("scheduler")
+    with Session(db) as session:
+        receipt = session.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == admitted["task_id"])
+        ).one()
+        receipt.routing_tier = feedback.ADVISORY_TIER
+        session.add(receipt)
+        session.commit()
     task = conductor._task(admitted["task_id"])
 
     conductor.reconcile_task(task["id"], policy, object())
@@ -621,6 +645,13 @@ def test_unverified_advisory_comment_cannot_approve_recovery(db, monkeypatch):
         "operator",
     )
     admitted = admit_next("scheduler")
+    with Session(db) as session:
+        receipt = session.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == admitted["task_id"])
+        ).one()
+        receipt.routing_tier = feedback.ADVISORY_TIER
+        session.add(receipt)
+        session.commit()
     task = conductor._task(admitted["task_id"])
 
     conductor.reconcile_task(task["id"], policy, object())
@@ -642,10 +673,9 @@ def test_unverified_advisory_comment_cannot_approve_recovery(db, monkeypatch):
     conductor.reconcile_task(task["id"], policy, object())
 
     assert controls.task_snapshot(task["id"])["state"] == "failed"
-    recovery = feedback.feedback_for_class("bug-fix")["recovery_window"]
-    assert recovery["sample_count"] == 1
-    assert recovery["approval_count"] == 0
-    assert recovery["rejection_count"] == 1
+    current = feedback.feedback_for_class("bug-fix")
+    assert current["tier"] == "delivery"
+    assert current["recovery_window"]["sample_count"] == 0
     with Session(db) as session:
         sample = session.exec(
             select(FactoryReviewVerdict).where(
