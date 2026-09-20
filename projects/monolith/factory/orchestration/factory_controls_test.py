@@ -1631,6 +1631,29 @@ def test_multiple_generation_bumps_retire_each_old_queue_once(db, policy):
             )
         ).all()
         assert len(audits) == 2
+@pytest.mark.parametrize("historical_value", ["omitted", None])
+def test_inert_problem_issues_default_does_not_advance_active_generation(
+    db, policy, historical_value
+):
+    task = admitted(policy)
+    with Session(db) as session:
+        control = session.get(FactoryControl, "factory")
+        stored = json.loads(control.policy_json)
+        if historical_value == "omitted":
+            stored.pop("problem_issues")
+        else:
+            stored["problem_issues"] = historical_value
+        control.policy_json = json.dumps(stored)
+        session.add(control)
+        session.commit()
+
+    result = controls.set_control("configure", "operator", policy=policy)
+
+    assert result["ok"] and result["reason"] is None
+    assert controls.can_start(task)["ok"]
+    assert controls.status()["policy"]["problem_issues"] == (
+        controls.DEFAULT_PROBLEM_ISSUES
+    )
 
 
 def test_configure_preserves_paused_admissions_and_uncertain_accounting(db, policy):

@@ -789,6 +789,19 @@ def problem_issues_policy(policy: dict) -> dict:
     return _validate_problem_issues(policy.get("problem_issues") or {})
 
 
+def _policy_for_generation_comparison(policy: dict) -> dict:
+    """Default the new inert block before comparing active policies.
+
+    Policies stored before the producer existed omit this key. A briefly
+    accepted nullable representation is equivalent to omission too. Neither
+    should make an otherwise identical configure retry require a new
+    generation while work is active.
+    """
+    comparable = dict(policy)
+    comparable["problem_issues"] = problem_issues_policy(comparable)
+    return comparable
+
+
 def auto_merge_enabled(policy: dict) -> bool:
     """Whether this policy lets the lane arm a merge.
 
@@ -2186,7 +2199,7 @@ def set_control(
             # generation while work is running, keeping the old queue inert.
             if (
                 active
-                and configured != previous
+                and configured != _policy_for_generation_comparison(previous)
                 and configured["generation"] <= previous.get("generation", -1)
             ):
                 reason = "generation_not_advanced"
