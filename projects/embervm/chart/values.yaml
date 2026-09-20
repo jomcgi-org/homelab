@@ -1172,8 +1172,10 @@ envelopeRewrap:
 # the DESTRUCTIVE, capped delete arm (irreversible S3 deletion; flip only for
 # the supervised drain, and flipping back to "" is the entire rollback lever).
 # Fleet membership is derived from the live NodeRegistry on every check. Every
-# registered instance must have fresh capacity facts, and an empty registry
-# aborts. maxPrefixes/maxBytes bound one sweep
+# registered instance must have fresh capacity facts for a modeled CPU vendor,
+# and an empty registry aborts. generationRetentionCap bounds the newest
+# stateful generations retained per (vendor, workload); 1 preserves the shipped
+# newest-1 behavior. maxPrefixes/maxBytes bound one sweep
 # (module defaults 10 / 20GiB, the supervised-first-run caps); intervalMs
 # defaults hourly. The CP's store endpoint/bucket are rendered from
 # noded.store above (one source of truth).
@@ -1185,6 +1187,7 @@ envelopeRewrap:
 warmthS3Gc:
   allowEmptyKinds: ""
   enabled: ""
+  generationRetentionCap: 1
   maxPrefixes: ""
   maxBytes: ""
   statefulTtlMs: ""

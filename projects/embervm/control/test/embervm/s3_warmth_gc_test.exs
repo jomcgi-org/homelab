@@ -97,6 +97,14 @@ defmodule Embervm.S3WarmthGcTest do
     }
   end
 
+  defp stateful_artifacts(vendor, workload, generations) do
+    generations
+    |> Enum.with_index(1)
+    |> Enum.reduce(%{}, fn {ref, age_days}, objects ->
+      Map.merge(objects, artifact("stateful/#{vendor}/#{workload}/#{ref}", @wall - age_days * @day))
+    end)
+  end
+
   defp new_cap_table do
     table = :"s3gc_cap_#{System.unique_integer([:positive])}"
     NodeCapacity.create(table)
@@ -112,12 +120,58 @@ defmodule Embervm.S3WarmthGcTest do
       session_snapshots: Keyword.get(opts, :session_snapshots, []),
       serving_snapshots: Keyword.get(opts, :serving_snapshots, []),
       session_volumes: Keyword.get(opts, :session_volumes, []),
+      cpu_vendor: Keyword.get(opts, :cpu_vendor, "amd"),
       updated_at: updated_at
     })
   end
 
-  defp stateful_row(state, workload, ref) do
-    %{instance_id: "st-#{ref}", workload: workload, state: state, snapshot_ref: ref, node_id: "node-4"}
+  defp stateful_row(state, workload, ref, node_id \\ "node-4") do
+    %{instance_id: "st-#{ref}", workload: workload, state: state, snapshot_ref: ref, node_id: node_id}
+  end
+
+  defp start_registry(table, nodes) do
+    {:ok, registry} =
+      NodeRegistry.start_link(
+        name: nil,
+        table: table,
+        nodes: [],
+        watch_startup: false,
+        registry_resync_ms: 0,
+        clock: fn -> @mono end,
+        unknown_after_ms: 1_000_000,
+        down_after_ms: 2_000_000,
+        expire_after_ms: 3_000_000,
+        base_backoff_ms: 1_000_000,
+        max_backoff_ms: 1_000_000,
+        connect_fun: fn _ -> {:error, :offline} end,
+        channel_updater_fun: fn _, _ -> :ok end,
+        channel_remover_fun: fn _ -> :ok end,
+        base_builder_updater_fun: fn _ -> :ok end,
+        resident_health_fun: fn _, _, _, _ -> :ok end
+      )
+
+    on_exit(fn -> Embervm.TestProcess.stop_safely(registry) end)
+
+    Enum.each(nodes, fn {node_id, pod_uid, vendor} ->
+      instance_id = "#{node_id}/#{pod_uid}"
+
+      :ok =
+        NodeRegistry.register(registry, %{
+          "node" => node_id,
+          "pod_uid" => pod_uid,
+          "address" => "#{node_id}.test:9090",
+          "scratch_generation" => "generation-1"
+        })
+
+      :ok =
+        NodeRegistry.inject_status(registry, instance_id, %NodeStatus{
+          node_id: node_id,
+          cpu_vendor: vendor,
+          scratch_generation: "generation-1"
+        })
+    end)
+
+    registry
   end
 
   defp group_row(state, instance_id, set_id) do
@@ -182,6 +236,27 @@ defmodule Embervm.S3WarmthGcTest do
     ]
 
     %{prefix: prefix, agent: agent, s3: s3, table: table, base_opts: base_opts}
+  end
+
+  defp generation_sweep(generations, retention_cap) do
+    {agent, s3} = new_s3(stateful_artifacts("amd", "live-wl", generations))
+    table = new_cap_table()
+    registry = start_registry(table, [{"node-amd", "pod-amd", "amd"}])
+    stateful = start_store([stateful_row(:serving, "live-wl", "state-current", "node-amd")])
+
+    gc =
+      start_gc(s3,
+        enabled: false,
+        capacity_table: table,
+        stateful_store: stateful,
+        group_store: start_store([]),
+        volume_fun: fn _ -> nil end,
+        generation_retention_cap: retention_cap,
+        node_registry_fun: fn -> NodeRegistry.expected_instances(registry) end
+      )
+
+    {:ok, result} = S3WarmthGc.sweep_now(gc)
+    {agent, result}
   end
 
   # -- destructive happy path --------------------------------------------------
@@ -504,18 +579,154 @@ defmodule Embervm.S3WarmthGcTest do
       assert Enum.map(result.plan, & &1.tier) == [2, 2]
 
       held_reasons = Enum.map(result.held, & &1.reason) |> Enum.sort()
-      assert held_reasons == ["tier2_protected_newest"]
+      assert held_reasons == ["tier2_generation_retained"]
       refute Enum.any?(deleted(agent), &String.contains?(&1, "state-new"))
+    end
+
+    test "generation cap keeps fewer than N generations" do
+      {agent, result} = generation_sweep(["state-new", "state-old"], 3)
+
+      assert result.plan == []
+      assert Enum.sort(Enum.map(result.held, & &1.reason)) ==
+               ["tier2_generation_retained", "tier2_generation_retained"]
+      assert deleted(agent) == []
+    end
+
+    test "generation cap keeps exactly N generations" do
+      {agent, result} = generation_sweep(["state-new", "state-old"], 2)
+
+      assert result.plan == []
+      assert length(result.held) == 2
+      assert Enum.all?(result.held, &(&1.reason == "tier2_generation_retained"))
+      assert deleted(agent) == []
+    end
+
+    test "generation cap keeps N newest generations and trims only older ones" do
+      {agent, result} = generation_sweep(["state-new", "state-mid", "state-old"], 2)
+
+      assert Enum.map(result.plan, & &1.prefix) == ["stateful/amd/live-wl/state-old"]
+      assert Enum.map(result.plan, & &1.tier) == [2]
+
+      assert Enum.sort(Enum.map(result.held, & &1.prefix)) ==
+               ["stateful/amd/live-wl/state-mid", "stateful/amd/live-wl/state-new"]
+
+      assert deleted(agent) == []
+    end
+
+    test "generation cap is isolated per workload within a vendor pool" do
+      objects =
+        stateful_artifacts("amd", "live-a", ["a-new", "a-old"])
+        |> Map.merge(stateful_artifacts("amd", "live-b", ["b-new", "b-old"]))
+
+      {_agent, s3} = new_s3(objects)
+      table = new_cap_table()
+      registry = start_registry(table, [{"node-amd", "pod-amd", "amd"}])
+
+      stateful =
+        start_store([
+          stateful_row(:serving, "live-a", "a-current", "node-amd"),
+          stateful_row(:serving, "live-b", "b-current", "node-amd")
+        ])
+
+      gc =
+        start_gc(s3,
+          enabled: false,
+          capacity_table: table,
+          stateful_store: stateful,
+          group_store: start_store([]),
+          volume_fun: fn _ -> nil end,
+          generation_retention_cap: 1,
+          node_registry_fun: fn -> NodeRegistry.expected_instances(registry) end
+        )
+
+      assert {:ok, result} = S3WarmthGc.sweep_now(gc)
+
+      assert Enum.sort(Enum.map(result.plan, & &1.prefix)) ==
+               ["stateful/amd/live-a/a-old", "stateful/amd/live-b/b-old"]
+
+      assert Enum.sort(Enum.map(result.held, & &1.prefix)) ==
+               ["stateful/amd/live-a/a-new", "stateful/amd/live-b/b-new"]
+    end
+
+    test "a modeled vendor tree with no current owner is Tier 1, not immortal" do
+      objects =
+        stateful_artifacts("amd", "live-wl", ["amd-new", "amd-old"])
+        |> Map.merge(stateful_artifacts("intel", "live-wl", ["intel-new", "intel-old"]))
+
+      {agent, s3} = new_s3(objects)
+      table = new_cap_table()
+      registry = start_registry(table, [{"node-amd", "pod-amd", "amd"}])
+      stateful = start_store([stateful_row(:serving, "live-wl", "current", "node-amd")])
+
+      gc =
+        start_gc(s3,
+          enabled: false,
+          capacity_table: table,
+          stateful_store: stateful,
+          group_store: start_store([]),
+          volume_fun: fn _ -> nil end,
+          generation_retention_cap: 1,
+          node_registry_fun: fn -> NodeRegistry.expected_instances(registry) end
+        )
+
+      assert {:ok, result} = S3WarmthGc.sweep_now(gc)
+
+      assert Enum.sort(for(entry <- result.plan, entry.vendor == "intel", do: {entry.prefix, entry.tier})) ==
+               [
+                 {"stateful/intel/live-wl/intel-new", 1},
+                 {"stateful/intel/live-wl/intel-old", 1}
+               ]
+
+      assert Enum.map(result.held, & &1.prefix) == ["stateful/amd/live-wl/amd-new"]
+      assert deleted(agent) == []
+    end
+
+    test "missing assignment pool evidence holds the modeled tree fail-closed" do
+      {_agent, s3} = new_s3(stateful_artifacts("intel", "live-wl", ["intel-old"]))
+      table = new_cap_table()
+      registry = start_registry(table, [{"node-amd", "pod-amd", "amd"}])
+      stateful = start_store([stateful_row(:serving, "live-wl", "current", "node-intel")])
+
+      gc =
+        start_gc(s3,
+          enabled: false,
+          capacity_table: table,
+          stateful_store: stateful,
+          group_store: start_store([]),
+          volume_fun: fn _ -> nil end,
+          node_registry_fun: fn -> NodeRegistry.expected_instances(registry) end
+        )
+
+      assert {:ok, %{plan: [], held: [%{reason: "vendor_pool_unknown"}]}} = S3WarmthGc.sweep_now(gc)
+    end
+
+    test "an out-of-model vendor tree remains ambiguous" do
+      key = "stateful/arm/live-wl/state-old/meta.json"
+      {_agent, s3} = new_s3(%{key => {100, @wall - 30 * @day, "x"}})
+      table = new_cap_table()
+      registry = start_registry(table, [{"node-amd", "pod-amd", "amd"}])
+
+      gc =
+        start_gc(s3,
+          enabled: false,
+          capacity_table: table,
+          stateful_store: start_store([stateful_row(:serving, "live-wl", "current", "node-amd")]),
+          group_store: start_store([]),
+          volume_fun: fn _ -> nil end,
+          node_registry_fun: fn -> NodeRegistry.expected_instances(registry) end
+        )
+
+      assert {:ok, %{plan: [], held: [], ambiguous: [^key]}} = S3WarmthGc.sweep_now(gc)
     end
 
     test "a volume row alone makes the workload live (Tier 2 protection, not Tier 1 reclaim)" do
       %{agent: agent, s3: s3, base_opts: base_opts} = orphan_fixture()
       # No non-terminal instance, but the volume ledger holds a row: the sole
       # prefix in the namespace lands inside the newest-1 protection.
-      opts = Keyword.put(base_opts, :volume_fun, fn "dead-wl" -> %{workload: "dead-wl"} end)
+      opts = Keyword.put(base_opts, :volume_fun, fn "dead-wl" -> %{workload: "dead-wl", node_id: "node-4"} end)
 
       gc = start_gc(s3, opts ++ [enabled: true])
-      assert {:ok, %{deleted: [], held: [%{reason: "tier2_protected_newest"}]}} = S3WarmthGc.sweep_now(gc)
+      assert {:ok, %{deleted: [], held: [%{reason: "tier2_generation_retained"}]}} = S3WarmthGc.sweep_now(gc)
       assert deleted(agent) == []
     end
 
@@ -571,6 +782,13 @@ defmodule Embervm.S3WarmthGcTest do
   # -- sweep-level aborts ------------------------------------------------------
 
   describe "aborts" do
+    test "generation retention cap rejects zero, negative, and non-integer values" do
+      for invalid <- [0, -1, "2"] do
+        assert {:error, {:invalid_generation_retention_cap, ^invalid}} =
+                 S3WarmthGc.start_link(name: nil, s3: nil, generation_retention_cap: invalid)
+      end
+    end
+
     test "expired node tombstone aborts within grace, then replacement permits sweep" do
       %{prefix: prefix, s3: s3, table: table, base_opts: base_opts} = orphan_fixture()
       {:ok, clock} = Agent.start_link(fn -> @mono end)
@@ -683,6 +901,16 @@ defmodule Embervm.S3WarmthGcTest do
       gc = start_gc(s3, base_opts ++ [enabled: true, freshness_window_ms: 120_000])
       assert {:error, :fleet_stale} = S3WarmthGc.sweep_now(gc)
       assert deleted(agent) == []
+    end
+
+    test "an expected node without a modeled vendor pool aborts the sweep" do
+      %{agent: agent, s3: s3, table: table, base_opts: base_opts} = orphan_fixture()
+      put_node_fact(table, "node-4", [], [], @mono, cpu_vendor: "")
+
+      gc = start_gc(s3, base_opts ++ [enabled: true])
+      assert {:error, :fleet_stale} = S3WarmthGc.sweep_now(gc)
+      assert deleted(agent) == []
+      assert puts(agent) == []
     end
 
     test "an empty live node registry retains the no-fleet abort" do
@@ -899,7 +1127,11 @@ defmodule Embervm.S3WarmthGcTest do
       assert deleted(agent) == []
 
       assert [{"gc-manifests/" <> _, body}] = puts(agent)
-      assert %{"mode" => "dry_run", "plan" => [%{"prefix" => ^prefix, "tier" => 1}]} = :json.decode(body)
+      assert %{
+               "mode" => "dry_run",
+               "generation_retention_cap" => 1,
+               "plan" => [%{"prefix" => ^prefix, "tier" => 1}]
+             } = :json.decode(body)
     end
   end
 

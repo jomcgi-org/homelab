@@ -835,8 +835,9 @@ defmodule Embervm.Application do
   # noded.store values, one source of truth); an empty endpoint leaves the GC
   # inert. The destructive gate parses exactly like the other retention gates.
   # Caps/cadence/freshness are values-overridable; the module carries the
-  # supervised-first-run defaults. Fleet membership comes from NodeRegistry at
-  # check time, so brick registration and expiry cannot leave a stale static
+  # supervised-first-run defaults. The generation cap is explicit and defaults
+  # to the shipped newest-1 behavior. Fleet membership comes from NodeRegistry
+  # at check time, so brick registration and expiry cannot leave a stale static
   # contract behind.
   defp s3_warmth_gc_opts do
     [
@@ -846,6 +847,7 @@ defmodule Embervm.Application do
       access_key_id: trimmed_env("EMBERVM_STORE_ACCESS_KEY_ID"),
       secret_access_key: trimmed_env("EMBERVM_STORE_SECRET_ACCESS_KEY"),
       allow_empty_kinds: warmth_s3_gc_allow_empty_kinds(),
+      generation_retention_cap: int_env_or_nil("EMBERVM_WARMTH_S3_GC_GENERATION_RETENTION_CAP"),
       max_prefixes: int_env_or_nil("EMBERVM_WARMTH_S3_GC_MAX_PREFIXES"),
       max_bytes: int_env_or_nil("EMBERVM_WARMTH_S3_GC_MAX_BYTES"),
       ttls: warmth_s3_gc_ttls(),
