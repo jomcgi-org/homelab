@@ -391,11 +391,15 @@ _ROOTFS_PATH = re.compile(r"BASE_ROOTFS_PATH\"?\s*\n\s*value: \"?(/\S+?)\"?\s*$"
 def renders():
     chart = _chart_dir()
     prod_values = Path(os.environ["PROD_VALUES"])
+    gke_values = Path(os.environ["GKE_VALUES"])
     dev_values = Path(os.environ["DEV_VALUES"])
     prod_release = _application_name(Path(os.environ["PROD_APPLICATION"]))
     dev_release = _application_name(Path(os.environ["DEV_APPLICATION"]))
     return {
         "prod": _render(prod_release, [chart / "values.yaml", prod_values]),
+        "gke": _render(
+            prod_release, [chart / "values.yaml", prod_values, gke_values]
+        ),
         "dev": _render(dev_release, [chart / "values.yaml", dev_values]),
     }
 
@@ -479,9 +483,11 @@ def test_control_plane_runtime_envs_render(renders):
         )
 
     prod_env = control_plane_env(renders["prod"])
+    gke_env = control_plane_env(renders["gke"])
     dev_env = control_plane_env(renders["dev"])
 
-    assert "EMBERVM_BRICK_AUTOSCALE_MODE" in prod_env
+    assert prod_env.get("EMBERVM_BRICK_AUTOSCALE_MODE") == "full"
+    assert gke_env.get("EMBERVM_BRICK_AUTOSCALE_MODE") == "full"
     assert dev_env.get("EMBERVM_BRICK_AUTOSCALE_MODE") == "observe"
     assert "EMBERVM_WARMTH_S3_GC_EXPECTED_NODES" not in dev_env
     assert prod_env.get("EMBERVM_ENVELOPE_REWRAP_ENABLED") == "0"
