@@ -5215,7 +5215,7 @@ def test_persisted_stop_operation_and_current_invocation_must_match(
         assert after[key] == before[key]
 
 
-def test_lost_stop_requests_keep_one_identity_and_persistent_bound(
+def test_flag_off_lost_stop_requests_keep_legacy_bound_and_reasons(
     uncertain_factory, monkeypatch
 ):
     import json
@@ -5234,7 +5234,7 @@ def test_lost_stop_requests_keep_one_identity_and_persistent_bound(
     monkeypatch.setattr(supervisor, "_http", dropped)
     for _ in range(8):
         conductor._submit_or_reconcile(s.task, s.run, s.dbos)
-    assert len(s.calls) == supervisor.MAX_STOP_REQUESTS == 1
+    assert len(s.calls) == supervisor.MAX_STOP_REQUESTS == 3
     assert all(call[1] == s.precondition for call in s.calls)
     assert _uncertain_snapshot(s)["permits"][0]["state"] == "uncertain"
     with Session(s.engine) as db:
@@ -5242,13 +5242,46 @@ def test_lost_stop_requests_keep_one_identity_and_persistent_bound(
             select(FactoryAudit).where(FactoryAudit.action.like("stop_%"))
         ).all()
         assert sum(row.action == "stop_intent" for row in audit) == 1
-        assert sum(row.action == "stop_request" for row in audit) == 1
+        assert sum(row.action == "stop_request" for row in audit) == 3
         notes = [
             json.loads(row.detail_json)["reason"]
             for row in audit
             if row.action == "stop_observation"
         ]
-        assert set(notes) == {"stop_request_unconfirmed"}
+        assert set(notes) == {
+            "stop_request_unconfirmed",
+            "stop_request_bound_reached",
+        }
+
+
+def test_flag_off_missing_precondition_keeps_legacy_refusal_reason(
+    uncertain_factory, monkeypatch
+):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = uncertain_factory
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    monkeypatch.delenv("FACTORY_TRANSIENT_STOP_RETRY_ENABLED", raising=False)
+    s.cp.update(
+        stop_precondition=None,
+        stop_intent=None,
+        stop_completion=None,
+        last_invoke_at=None,
+    )
+
+    assert not supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    events = controls.task_snapshot(s.task["id"])["stop_events"]
+    refusals = [
+        event
+        for event in events
+        if event.get("reason") == "stop_evidence_or_ownership_changed"
+    ]
+    assert len(refusals) == 1
+    assert refusals[0]["error"] == "missing_stop_precondition"
+    assert not any(event.get("retry_kind") for event in events)
 
 
 def test_transient_missing_precondition_retries_on_one_durable_window(
@@ -5318,13 +5351,38 @@ def test_transient_missing_precondition_retries_on_one_durable_window(
     assert exhausted[0]["intervention_required"] is True
     assert exhausted[0]["session_id"] == s.sid
     assert exhausted[0]["guest_id"] == "s-exact-factory"
+    assert exhausted[0]["observations"] == 3
+    assert exhausted[0]["retry_kind"] == "transient_stop_observation"
+    assert exhausted[0]["identity_sha256"]
 
-    # Exhaustion is a durable stop condition, not another polling phase.
-    clock[0] += timedelta(hours=1)
-    assert not supervisor.reconcile_uncertain_attempt(
+    # Exhaustion fences another notification, but later ticks still observe
+    # for positive proof and can settle after the control plane recovers.
+    from factory.execution.transport import EmberSessionGone
+    from factory.orchestration.factory_models import FactoryAudit
+    from sqlmodel import Session, select
+
+    def absent(_guest_id, precondition=None):
+        assert precondition is None
+        raise EmberSessionGone("guest absent")
+
+    monkeypatch.setattr(supervisor, "_http", absent)
+    for _ in range(4):
+        clock[0] += timedelta(seconds=supervisor.ABSENCE_OBSERVATION_INTERVAL_SECONDS)
+        assert not supervisor.reconcile_uncertain_attempt(
+            s.run["pin"], s.sid, s.result, "SUCCESS"
+        )
+        with Session(s.engine) as db:
+            latest = db.exec(
+                select(FactoryAudit)
+                .where(FactoryAudit.action == "stop_absence")
+                .order_by(FactoryAudit.id.desc())
+            ).first()
+            latest.created_at = clock[0]
+            db.add(latest)
+            db.commit()
+    assert supervisor.reconcile_uncertain_attempt(
         s.run["pin"], s.sid, s.result, "SUCCESS"
     )
-    assert len(s.calls) == 3
     assert (
         len(
             [
@@ -5335,6 +5393,23 @@ def test_transient_missing_precondition_retries_on_one_durable_window(
         )
         == 1
     )
+    assert _uncertain_snapshot(s)["runs"][0]["status"] == "failed"
+
+
+def test_healthy_guest_does_not_open_transient_retry_epoch(
+    uncertain_factory, monkeypatch
+):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = uncertain_factory
+    monkeypatch.setenv("FACTORY_TRANSIENT_STOP_RETRY_ENABLED", "true")
+
+    assert not supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    events = controls.task_snapshot(s.task["id"])["stop_events"]
+    assert not any(event.get("retry_kind") for event in events)
 
 
 def test_transient_observation_recovers_before_exhaustion(
@@ -5367,6 +5442,11 @@ def test_transient_observation_recovers_before_exhaustion(
     events = controls.task_snapshot(s.task["id"])["stop_events"]
     assert len([event for event in events if event.get("retry_sample") is True]) == 1
     assert not any(event.get("intervention_required") is True for event in events)
+    resolved = [event for event in events if event.get("retry_resolved") is True]
+    assert len(resolved) == 1
+    assert resolved[0]["retry_kind"] == "transient_stop_observation"
+    assert resolved[0]["resolution"] == "valid_stop_identity_observed"
+    assert resolved[0]["identity_sha256"]
     assert len([call for call in s.calls if call[1] is not None]) == 1
 
 
