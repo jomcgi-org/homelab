@@ -1425,6 +1425,16 @@ def _snapshot(db: Session, row: FactoryReceipt, *, body: bool = False) -> dict:
                             # its way to releasing reads as "2 of 3" rather
                             # than as a row with no detail at all.
                             "observation",
+                            "retry_sample",
+                            "retry_exhausted",
+                            "retry_resolved",
+                            "retry_started_at",
+                            "retry_observed_at",
+                            "retry_deadline_at",
+                            "refusal",
+                            "missing_proof",
+                            "node_key",
+                            "attempt",
                             "cessation_confirmed",
                             "intervention_required",
                         )

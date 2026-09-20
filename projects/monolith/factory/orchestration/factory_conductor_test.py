@@ -5234,7 +5234,7 @@ def test_lost_stop_requests_keep_one_identity_and_persistent_bound(
     monkeypatch.setattr(supervisor, "_http", dropped)
     for _ in range(8):
         conductor._submit_or_reconcile(s.task, s.run, s.dbos)
-    assert len(s.calls) == supervisor.MAX_STOP_REQUESTS == 3
+    assert len(s.calls) == supervisor.MAX_STOP_REQUESTS == 1
     assert all(call[1] == s.precondition for call in s.calls)
     assert _uncertain_snapshot(s)["permits"][0]["state"] == "uncertain"
     with Session(s.engine) as db:
@@ -5242,13 +5242,279 @@ def test_lost_stop_requests_keep_one_identity_and_persistent_bound(
             select(FactoryAudit).where(FactoryAudit.action.like("stop_%"))
         ).all()
         assert sum(row.action == "stop_intent" for row in audit) == 1
-        assert sum(row.action == "stop_request" for row in audit) == 3
+        assert sum(row.action == "stop_request" for row in audit) == 1
         notes = [
             json.loads(row.detail_json)["reason"]
             for row in audit
             if row.action == "stop_observation"
         ]
-        assert set(notes) == {"stop_request_unconfirmed", "stop_request_bound_reached"}
+        assert set(notes) == {"stop_request_unconfirmed"}
+
+
+def test_transient_missing_precondition_retries_on_one_durable_window(
+    uncertain_factory, monkeypatch
+):
+    """A restart reads the audit schedule instead of resetting its deadline."""
+    from datetime import timedelta
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = uncertain_factory
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    monkeypatch.setenv("FACTORY_TRANSIENT_STOP_RETRY_ENABLED", "true")
+    clock = [s.failed_turn_at + timedelta(minutes=3)]
+    monkeypatch.setattr(supervisor, "_now", lambda: clock[0])
+    s.cp.update(
+        stop_precondition=None,
+        stop_intent=None,
+        stop_completion=None,
+        last_invoke_at=None,
+    )
+
+    assert not supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    assert len(s.calls) == 1
+    retry_samples = [
+        event
+        for event in controls.task_snapshot(s.task["id"])["stop_events"]
+        if event.get("retry_sample") is True
+    ]
+    assert retry_samples, [
+        (event.get("reason"), event.get("error"))
+        for event in controls.task_snapshot(s.task["id"])["stop_events"]
+    ]
+    first = retry_samples[0]
+    deadline = first["retry_deadline_at"]
+    assert first["intervention_required"] is False
+
+    # A process restart has no in-memory timer to restore. The durable first
+    # observation still suppresses an early retry and retains its deadline.
+    clock[0] += timedelta(seconds=299)
+    assert not supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    assert len(s.calls) == 1
+    for seconds in (1, 300):
+        clock[0] += timedelta(seconds=seconds)
+        assert not supervisor.reconcile_uncertain_attempt(
+            s.run["pin"], s.sid, s.result, "SUCCESS"
+        )
+    assert len(s.calls) == 3
+
+    clock[0] += timedelta(seconds=300)
+    assert not supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    assert len(s.calls) == 3
+    events = controls.task_snapshot(s.task["id"])["stop_events"]
+    samples = [event for event in events if event.get("retry_sample") is True]
+    exhausted = [event for event in events if event.get("retry_exhausted") is True]
+    assert len(samples) == 3
+    assert {event["retry_deadline_at"] for event in samples} == {deadline}
+    assert len(exhausted) == 1
+    assert exhausted[0]["retry_deadline_at"] == deadline
+    assert exhausted[0]["refusal"] == "missing_stop_precondition"
+    assert exhausted[0]["intervention_required"] is True
+    assert exhausted[0]["session_id"] == s.sid
+    assert exhausted[0]["guest_id"] == "s-exact-factory"
+
+    # Exhaustion is a durable stop condition, not another polling phase.
+    clock[0] += timedelta(hours=1)
+    assert not supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    assert len(s.calls) == 3
+    assert (
+        len(
+            [
+                event
+                for event in controls.task_snapshot(s.task["id"])["stop_events"]
+                if event.get("retry_exhausted") is True
+            ]
+        )
+        == 1
+    )
+
+
+def test_transient_observation_recovers_before_exhaustion(
+    uncertain_factory, monkeypatch
+):
+    from datetime import timedelta
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = uncertain_factory
+    monkeypatch.setenv("FACTORY_TRANSIENT_STOP_RETRY_ENABLED", "true")
+    clock = [s.failed_turn_at + timedelta(minutes=3)]
+    monkeypatch.setattr(supervisor, "_now", lambda: clock[0])
+    available = [False]
+
+    def flaky(guest_id, precondition=None):
+        if not available[0]:
+            raise TimeoutError("control plane unavailable")
+        return s.http(guest_id, precondition)
+
+    monkeypatch.setattr(supervisor, "_http", flaky)
+    assert not supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    available[0] = True
+    clock[0] += timedelta(seconds=supervisor.TRANSIENT_RETRY_INTERVAL_SECONDS)
+    assert not supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    events = controls.task_snapshot(s.task["id"])["stop_events"]
+    assert len([event for event in events if event.get("retry_sample") is True]) == 1
+    assert not any(event.get("intervention_required") is True for event in events)
+    assert len([call for call in s.calls if call[1] is not None]) == 1
+
+
+def test_recovered_observation_allows_absence_samples_to_accumulate(
+    uncertain_factory, monkeypatch
+):
+    from datetime import timedelta
+    from factory.execution.transport import EmberSessionGone
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import factory_supervision as supervisor
+    from factory.orchestration.factory_models import FactoryAudit
+    from sqlmodel import Session, select
+
+    s = uncertain_factory
+    monkeypatch.setenv("FACTORY_TRANSIENT_STOP_RETRY_ENABLED", "true")
+    clock = [s.failed_turn_at + timedelta(minutes=3)]
+    monkeypatch.setattr(supervisor, "_now", lambda: clock[0])
+    available = [False]
+
+    def absent(_guest_id, precondition=None):
+        assert precondition is None
+        if not available[0]:
+            raise TimeoutError("control plane unavailable")
+        raise EmberSessionGone("guest absent")
+
+    monkeypatch.setattr(supervisor, "_http", absent)
+    assert not supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    available[0] = True
+    for _ in range(4):
+        clock[0] += timedelta(seconds=supervisor.ABSENCE_OBSERVATION_INTERVAL_SECONDS)
+        assert not supervisor.reconcile_uncertain_attempt(
+            s.run["pin"], s.sid, s.result, "SUCCESS"
+        )
+        # FactoryAudit uses the database clock. Pin each sampled row to the
+        # controlled clock so this hermetic test advances fifteen minutes
+        # without sleeping.
+        with Session(s.engine) as db:
+            latest = db.exec(
+                select(FactoryAudit)
+                .where(FactoryAudit.action == "stop_absence")
+                .order_by(FactoryAudit.id.desc())
+            ).first()
+            latest.created_at = clock[0]
+            db.add(latest)
+            db.commit()
+    assert supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    events = controls.task_snapshot(s.task["id"])["stop_events"]
+    assert len([event for event in events if event["action"] == "stop_absence"]) == 4
+    assert any(event.get("retry_resolved") is True for event in events)
+    assert not any(event.get("retry_exhausted") is True for event in events)
+    assert _uncertain_snapshot(s)["runs"][0]["status"] == "failed"
+
+
+def test_concurrent_transient_ticks_persist_one_sample(uncertain_factory, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import timedelta
+    from threading import Barrier
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = uncertain_factory
+    monkeypatch.setenv("FACTORY_TRANSIENT_STOP_RETRY_ENABLED", "true")
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    monkeypatch.setattr(
+        supervisor, "_now", lambda: s.failed_turn_at + timedelta(minutes=3)
+    )
+    s.cp.update(stop_precondition=None, last_invoke_at=None)
+    readers = Barrier(2)
+
+    def simultaneous_read(_guest_id, precondition=None):
+        assert precondition is None
+        readers.wait(timeout=5)
+        return dict(s.cp)
+
+    monkeypatch.setattr(supervisor, "_http", simultaneous_read)
+
+    def tick():
+        return supervisor.reconcile_uncertain_attempt(
+            s.run["pin"], s.sid, s.result, "SUCCESS"
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert list(pool.map(lambda _index: tick(), range(2))) == [False, False]
+    events = controls.task_snapshot(s.task["id"])["stop_events"]
+    samples = [event for event in events if event.get("retry_sample") is True]
+    assert len(samples) == 1
+    assert samples[0]["observation"] == 1
+
+
+def test_hard_stop_refusal_is_actionable_without_waiting_for_retry_exhaustion(
+    uncertain_factory, monkeypatch
+):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = uncertain_factory
+    monkeypatch.setenv("FACTORY_TRANSIENT_STOP_RETRY_ENABLED", "true")
+    s.cp["session_id"] = "s-replacement"
+
+    assert not supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    events = controls.task_snapshot(s.task["id"])["stop_events"]
+    hard = [
+        event
+        for event in events
+        if event.get("reason") == "stop_evidence_or_ownership_changed"
+    ]
+    assert len(hard) == 1
+    assert hard[0]["error"] == "wrong_stop_observation"
+    assert hard[0]["intervention_required"] is True
+    assert not any(event.get("retry_sample") is True for event in events)
+
+
+def test_lost_conditional_delete_is_never_reissued_during_retry_window(
+    uncertain_factory, monkeypatch
+):
+    from datetime import timedelta
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = uncertain_factory
+    monkeypatch.setenv("FACTORY_TRANSIENT_STOP_RETRY_ENABLED", "true")
+    clock = [s.failed_turn_at + timedelta(minutes=3)]
+    monkeypatch.setattr(supervisor, "_now", lambda: clock[0])
+
+    def lost(guest_id, precondition=None):
+        if precondition is not None:
+            s.calls.append((guest_id, precondition))
+            raise TimeoutError("conditional DELETE response lost")
+        s.calls.append((guest_id, None))
+        return dict(s.cp)
+
+    monkeypatch.setattr(supervisor, "_http", lost)
+    assert not supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    assert len([call for call in s.calls if call[1] is not None]) == 1
+    for _ in range(2):
+        clock[0] += timedelta(seconds=supervisor.TRANSIENT_RETRY_INTERVAL_SECONDS)
+        assert not supervisor.reconcile_uncertain_attempt(
+            s.run["pin"], s.sid, s.result, "SUCCESS"
+        )
+    assert len([call for call in s.calls if call[1] is not None]) == 1
+    assert len([call for call in s.calls if call[1] is None]) == 3
 
 
 def test_pending_completion_surfaces_one_bounded_intervention_event(

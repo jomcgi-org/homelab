@@ -325,11 +325,14 @@ def github_batch(monkeypatch, issues):
     return calls
 
 
-def add_intervention(db, task_id, workflow_id, *, required, reason, node_id=None):
+def add_intervention(
+    db, task_id, workflow_id, *, required, reason, node_id=None, **context
+):
     detail = {
         "workflow_id": workflow_id,
         "intervention_required": required,
         "reason": reason,
+        **context,
     }
     if node_id is not None:
         detail["node_id"] = node_id
@@ -760,6 +763,47 @@ def test_intervention_required_notifies_once_per_task(db, github, notices):
         "factory-node:first",
         "factory-node:second",
     }
+
+
+def test_exhausted_stop_notification_carries_safe_reconciliation_context(
+    db, github, notices
+):
+    task_id, _policy = admitted(ISSUE)
+    add_intervention(
+        db,
+        task_id,
+        "factory-node:implement:1",
+        required=True,
+        reason="stop_supervision_retry_exhausted",
+        refusal="missing_stop_precondition",
+        node_key="implement",
+        attempt=1,
+        session_id=5381,
+        guest_id="s-exact-factory",
+        retry_deadline_at="2026-09-20T14:15:00+00:00",
+        missing_proof="exact incarnation-bound cessation evidence",
+    )
+
+    conductor._consume_intervention_notifications(task_id)
+
+    assert len(notices) == 1
+    text, level = notices[0]
+    assert level == "warn"
+    for expected in (
+        f"Factory task {task_id}",
+        "workflow=factory-node:implement:1",
+        "node=implement",
+        "attempt=1",
+        "session=5381",
+        "guest=s-exact-factory",
+        "refusal=missing_stop_precondition",
+        "deadline=2026-09-20T14:15:00+00:00",
+        "missing proof=exact incarnation-bound cessation evidence",
+        "Null invoke fields alone are not proof",
+    ):
+        assert expected in text
+    assert "release the slot" in text
+    assert "Settle only from positive cessation evidence" in text
 
 
 def test_intervention_notification_failure_does_not_escape_reconciliation(
