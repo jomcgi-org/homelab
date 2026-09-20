@@ -4937,6 +4937,22 @@ py_test(
 )
 
 py_test(
+    name = "swarm_factory_pr_lifecycle_test",
+    srcs = ["factory/orchestration/factory_pr_lifecycle_test.py"],
+    data = ["factory/orchestration/fixtures/pr_lifecycle_20260919.json"],
+    imports = ["."],
+    deps = [
+        ":pkg_auth",
+        ":pkg_swarm",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "swarm_factory_intake_loop_test",
     srcs = ["factory/orchestration/factory_intake_loop_test.py"],
     imports = ["."],
