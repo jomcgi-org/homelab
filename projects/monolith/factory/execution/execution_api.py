@@ -572,6 +572,28 @@ def _begin_guest_cleanup(session_id: int, guest_id: str, workflow_id: str) -> di
         return store.begin_guest_cleanup(db_session, session_id, guest_id, workflow_id)
 
 
+def _begin_settled_guest_cleanup(
+    session_id: int, guest_id: str, workflow_id: str
+) -> dict:
+    with Session(get_engine()) as db_session:
+        return store.begin_guest_cleanup(
+            db_session, session_id, guest_id, workflow_id, settled_only=True
+        )
+
+
+def _lock_not_available(exc: Exception) -> bool:
+    return getattr(getattr(exc, "orig", exc), "sqlstate", None) == "55P03"
+
+
+async def reap_settled_session(session_id: int) -> dict:
+    """Retry one terminal binding through the workflow cleanup state machine."""
+    row = await asyncio.to_thread(_load_session_row, session_id)
+    rows = [row] if row is not None else []
+    return await _reap_session_rows(
+        rows, row.workflow_id if row else None, settled_only=True
+    )
+
+
 def _release_abandoned_fence(session_id: int, receipt_id: str) -> bool:
     from factory.execution import result_receipts
 
@@ -667,6 +689,10 @@ async def reap_sessions_for_workflow(workflow_id: str) -> dict:
     the factory reconciliation owner's responsibility.
     """
     rows = await asyncio.to_thread(_sessions_for_workflow, workflow_id)
+    return await _reap_session_rows(rows, workflow_id)
+
+
+async def _reap_session_rows(rows, workflow_id, *, settled_only=False) -> dict:
     summary: dict[str, list] = {
         "reaped": [],
         "failed": [],
@@ -689,7 +715,10 @@ async def reap_sessions_for_workflow(workflow_id: str) -> dict:
                     continue
                 released_fence = fence_id
             claim = await asyncio.to_thread(
-                _begin_guest_cleanup, row.id, ember_session_id, workflow_id
+                _begin_settled_guest_cleanup if settled_only else _begin_guest_cleanup,
+                row.id,
+                ember_session_id,
+                workflow_id,
             )
             hold = claim.get("hold")
             if hold is not None:
@@ -728,7 +757,8 @@ async def reap_sessions_for_workflow(workflow_id: str) -> dict:
         except Exception as exc:  # noqa: BLE001 - one bad session must not stop the rest
             # Logged as well as returned: a caller that drops the response would
             # otherwise leave a permanently leaked capacity slot with no trace.
-            logger.warning(
+            log = logger.info if _lock_not_available(exc) else logger.warning
+            log(
                 "swarm reap failed for session %s (ember %s) of workflow %s: %s",
                 row.id,
                 ember_session_id,
@@ -745,8 +775,9 @@ async def reap_sessions_for_workflow(workflow_id: str) -> dict:
                         released_fence,
                         ember_session_id,
                     )
-                except Exception:  # noqa: BLE001 - one bad row cannot stop the rest
-                    logger.exception(
+                except Exception as exc:  # noqa: BLE001 - one bad row cannot stop the rest
+                    log = logger.info if _lock_not_available(exc) else logger.exception
+                    log(
                         "swarm reap could not restore the receipt fence for "
                         "session %s (ember %s) of workflow %s",
                         row.id,

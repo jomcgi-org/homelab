@@ -1253,3 +1253,190 @@ def test_reaper_puts_the_fence_back_when_no_cleanup_claim_follows(
         assert len(requests) == 1
 
     asyncio.run(asyncio.wait_for(run(), 10))
+
+
+def settled_cleanup_candidate(database, key, *, received=True):
+    from datetime import datetime, timezone
+
+    sid = queue(database, key)
+    assert store.claim_pending_message_for_session_sync(sid, "cleanup-owner") == 1
+    assert admission.recheck(sid, 1, "cleanup-owner")
+    receipt = result_receipts.prepare_receipt(
+        sid, "cleanup-owner", 1, f"guest-{sid}", b'{"message":"cleanup"}'
+    )
+    with Session(database) as db, db.begin():
+        agent = db.get(AgentSession, sid)
+        agent.workflow_id = key
+        agent.status = "completed"
+        agent.result_receipt_fence_id = receipt["id"]
+        db.add(agent)
+        db.delete(store.get_pending_message(db, sid, 1))
+        permit = db.exec(
+            select(AgentCapacityReservation).where(
+                AgentCapacityReservation.session_id == sid
+            )
+        ).one()
+        permit.state = "settled"
+        permit.settled_at = datetime.now(timezone.utc)
+        permit.outcome = "completed"
+        db.add(permit)
+        row = db.get(AgentResultReceipt, receipt["id"])
+        if received:
+            row.received_at = datetime.now(timezone.utc)
+        db.add(row)
+    return sid, receipt["id"]
+
+
+def cleanup_sweeper(database, monkeypatch):
+    from factory.execution import guest_cleanup
+
+    monkeypatch.setattr(guest_cleanup, "get_engine", lambda: database)
+    _requests, cleanup = fake_http_allowing_cleanup(
+        monkeypatch, lambda _request: pytest.fail("cleanup must not dispatch")
+    )
+    return guest_cleanup, cleanup
+
+
+def test_guest_sweep_retries_after_receipt_and_observer_release(database, monkeypatch):
+    from datetime import datetime, timezone
+
+    sweeper, cleanup = cleanup_sweeper(database, monkeypatch)
+    sid, receipt_id = settled_cleanup_candidate(
+        database, "delayed-cleanup", received=False
+    )
+    assert asyncio.run(execution_api.reap_sessions_for_workflow("delayed-cleanup"))[
+        "pending"
+    ] == [sid]
+    # The original single-shot cleanup ran before durable receipt completion.
+    with Session(database) as db, db.begin():
+        receipt = db.get(AgentResultReceipt, receipt_id)
+        receipt.received_at = datetime.now(timezone.utc)
+        receipt.response_observer_released_at = datetime.now(timezone.utc)
+        db.add(receipt)
+    assert asyncio.run(sweeper.sweep_once()) == 0
+    assert cleanup["destroyed"] == [f"guest-{sid}"]
+    with Session(database) as db:
+        agent = db.get(AgentSession, sid)
+        assert agent.ember_session_id is None
+        assert agent.result_receipt_fence_id is None
+
+
+@pytest.mark.parametrize("hold", ["unreceived", "guest", "local_session"])
+def test_guest_sweep_preserves_held_or_mismatched_fence(database, monkeypatch, hold):
+    sweeper, cleanup = cleanup_sweeper(database, monkeypatch)
+    sid, receipt_id = settled_cleanup_candidate(
+        database, "held-cleanup", received=hold != "unreceived"
+    )
+    if hold != "unreceived":
+        with Session(database) as db, db.begin():
+            receipt = db.get(AgentResultReceipt, receipt_id)
+            if hold == "guest":
+                receipt.guest_id = "different-guest"
+            else:
+                receipt.local_session_id = "different-local-session"
+            db.add(receipt)
+    before = snapshot(database, sid)
+    asyncio.run(sweeper.sweep_once())
+    assert snapshot(database, sid) == before
+    assert cleanup["destroyed"] == []
+
+
+def test_guest_sweep_defers_pool_lock_and_continues(database, monkeypatch, caplog):
+    sweeper, cleanup = cleanup_sweeper(database, monkeypatch)
+    first, _ = settled_cleanup_candidate(database, "busy-cleanup")
+    second, _ = settled_cleanup_candidate(database, "available-cleanup")
+    original = execution_api._begin_settled_guest_cleanup
+
+    class LockNotAvailable(Exception):
+        sqlstate = "55P03"
+
+    def begin(sid, guest, workflow):
+        if sid == first:
+            raise OperationalError("INSERT capacity_pool", {}, LockNotAvailable())
+        return original(sid, guest, workflow)
+
+    monkeypatch.setattr(execution_api, "_begin_settled_guest_cleanup", begin)
+    before = snapshot(database, first)
+    asyncio.run(sweeper.sweep_once())
+    assert snapshot(database, first) == before
+    assert cleanup["destroyed"] == [f"guest-{second}"]
+    assert not [record for record in caplog.records if record.levelno >= 30]
+    monkeypatch.setattr(execution_api, "_begin_settled_guest_cleanup", original)
+    asyncio.run(sweeper.sweep_once())
+    assert cleanup["destroyed"] == [f"guest-{second}", f"guest-{first}"]
+
+
+def test_guest_sweep_resumes_unconfirmed_cleanup_claim(database, monkeypatch):
+    sweeper, cleanup = cleanup_sweeper(database, monkeypatch)
+    sid, _ = settled_cleanup_candidate(database, "unconfirmed-cleanup")
+    states = iter(["destroying", "destroyed"])
+
+    async def observed(guest):
+        return {"session_id": guest, "state": next(states)}
+
+    async def destroy(guest):
+        cleanup["destroyed"].append(guest)
+
+    monkeypatch.setattr(execution_api._transport, "get_session", observed)
+    monkeypatch.setattr(execution_api._transport, "destroy_session", destroy)
+    asyncio.run(sweeper.sweep_once())
+    with Session(database) as db:
+        agent = db.get(AgentSession, sid)
+        assert agent.result_receipt_fence_id is None
+        assert agent.guest_cleanup_id is not None
+        assert agent.ember_session_id == f"guest-{sid}"
+    asyncio.run(sweeper.sweep_once())
+    with Session(database) as db:
+        assert db.get(AgentSession, sid).ember_session_id is None
+    assert cleanup["destroyed"] == [f"guest-{sid}", f"guest-{sid}"]
+
+
+@pytest.mark.parametrize("changed", ["running", "permit", "pending"])
+def test_guest_sweep_rechecks_eligibility_under_cleanup_lock(
+    database, monkeypatch, changed
+):
+    sweeper, cleanup = cleanup_sweeper(database, monkeypatch)
+    sid, _ = settled_cleanup_candidate(database, "changed-cleanup")
+    original = sweeper._candidates
+
+    def candidates(after_id):
+        selected = original(after_id)
+        assert selected == [sid]
+        with Session(database) as db, db.begin():
+            if changed == "running":
+                agent = db.get(AgentSession, sid)
+                agent.status = "running"
+                db.add(agent)
+            elif changed == "permit":
+                permit = db.exec(select(AgentCapacityReservation)).one()
+                permit.state = "running"
+                permit.settled_at = None
+                db.add(permit)
+            else:
+                db.add(
+                    PendingMessage(
+                        session_id=sid, seq=2, message_text="follow up", model="luna"
+                    )
+                )
+        return selected
+
+    monkeypatch.setattr(sweeper, "_candidates", candidates)
+    asyncio.run(sweeper.sweep_once())
+    assert cleanup["destroyed"] == []
+    with Session(database) as db:
+        assert db.get(AgentSession, sid).result_receipt_fence_id is not None
+    assert original(0) == []
+
+
+def test_guest_sweep_bounded_cursor_moves_past_held_candidates(database, monkeypatch):
+    sweeper, cleanup = cleanup_sweeper(database, monkeypatch)
+    monkeypatch.setattr(sweeper, "BATCH_SIZE", 1)
+    first, _ = settled_cleanup_candidate(database, "held-first", received=False)
+    second, _ = settled_cleanup_candidate(database, "ready-second")
+    cursor = asyncio.run(sweeper.sweep_once())
+    assert cursor == first
+    assert cleanup["destroyed"] == []
+    cursor = asyncio.run(sweeper.sweep_once(cursor))
+    assert cursor == second
+    assert cleanup["destroyed"] == [f"guest-{second}"]
+    assert asyncio.run(sweeper.sweep_once(cursor)) == 0

@@ -144,10 +144,11 @@ async def test_disabled_orchestration_still_starts_session_maintenance(monkeypat
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("loop", ["quota", "review"])
+@pytest.mark.parametrize("loop", ["quota", "review", "guest_cleanup"])
 async def test_supervision_is_owned_by_factory_leader(monkeypatch, loop):
     from factory import quota_probe, reservation_reviews
     from factory.execution import (
+        guest_cleanup,
         kg_feed,
         mcp,
         permit_supervision,
@@ -159,11 +160,17 @@ async def test_supervision_is_owned_by_factory_leader(monkeypatch, loop):
         (mcp, "start_pending_message_sweep"),
         (titles, "start_title_refresh_loop"),
         (kg_feed, "start_kg_feed_loop"),
+        (guest_cleanup, "start_guest_cleanup_loop"),
         (permit_supervision, "start_permit_supervision_loop"),
         (result_receipts, "start_receipt_retention_loop"),
     ):
         monkeypatch.setattr(owner, name, lambda: [])
     task = asyncio.create_task(asyncio.Event().wait())
+    monkeypatch.setattr(
+        guest_cleanup,
+        "start_guest_cleanup_loop",
+        lambda: [task] if loop == "guest_cleanup" else [],
+    )
     monkeypatch.setattr(
         quota_probe, "start_quota_probe_loop", lambda: [task] if loop == "quota" else []
     )
