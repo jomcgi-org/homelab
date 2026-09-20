@@ -3936,7 +3936,11 @@ def test_a_bound_midflight_failure_supervises_by_id_without_legacy_resolution(
 
     s = stranded_factory
     assert conductor.graph.bind_node_session(
-        s.task["id"], s.run["node_key"], s.run["attempt"], s.sid
+        s.task["id"],
+        s.run["node_key"],
+        s.run["attempt"],
+        s.sid,
+        workflow_id=s.run["dispatch_key"],
     ).ok
     s.run = conductor.graph.node_runs(s.task["id"])[0]
     seen = []

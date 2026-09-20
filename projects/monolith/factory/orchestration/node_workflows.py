@@ -445,6 +445,7 @@ def _session_api(
         task_id,
         node_key,
         node_attempt,
+        workflow_id=workflow_id,
         session=start_session,
     )
     if bound_session_id is not None:
@@ -471,6 +472,7 @@ def _session_api(
         node_key,
         node_attempt,
         session_id,
+        workflow_id=workflow_id,
         session=start_session,
     )
     if not binding.ok:

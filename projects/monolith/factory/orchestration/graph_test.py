@@ -737,16 +737,16 @@ def test_dependencies_require_success(db):
 def test_dispatch_outcome_replays_cannot_change_identity_or_terminal_evidence(db):
     task_id = make_task(db)
     assert add_work(task_id, "one", 0).ok
-    assert admit_dispatch(task_id, "one").ok
-    assert bind_node_session(task_id, "one", 1, 42).ok
+    assert admit_dispatch(task_id, "one", dispatch_key="one-1").ok
+    assert bind_node_session(task_id, "one", 1, 42, workflow_id="one-1").ok
     bound = node_runs(task_id)[0]
     assert bound["session_id"] == 42
     assert bound["base_sha"] is None
     assert bound["status"] == "dispatched"
-    assert bind_node_session(task_id, "one", 1, 42).ok
+    assert bind_node_session(task_id, "one", 1, 42, workflow_id="one-1").ok
     assert record_dispatch(task_id, "one", 1, 42, None).ok
     assert record_outcome(task_id, "one", 1, "succeeded", 0.25, "head", "{}").ok
-    assert lock_node_session_binding(task_id, "one", 1) == 42
+    assert lock_node_session_binding(task_id, "one", 1, workflow_id="one-1") == 42
     # Completion evidence can arrive before the branch read. Enrich only the
     # exact terminal session, without reopening or replacing any evidence.
     assert record_dispatch(task_id, "one", 1, 42, "base").ok
@@ -773,6 +773,45 @@ def test_dispatch_outcome_replays_cannot_change_identity_or_terminal_evidence(db
         == "outcome_conflict"
     )
     assert node_runs(task_id)[0] == before
+
+
+def test_session_binding_refuses_a_different_workflow_owner(db):
+    task_id = make_task(db)
+    assert add_work(task_id, "one", 0).ok
+    assert admit_dispatch(task_id, "one", dispatch_key="one-1").ok
+    with pytest.raises(ValueError, match="binding ownership conflict"):
+        lock_node_session_binding(task_id, "one", 1, workflow_id="other-workflow")
+    with pytest.raises(ValueError, match="binding ownership conflict"):
+        bind_node_session(
+            task_id,
+            "one",
+            1,
+            42,
+            workflow_id="other-workflow",
+        )
+    run = node_runs(task_id)[0]
+    assert run["status"] == "admitted"
+    assert run["session_id"] is None
+
+
+def test_session_binding_remains_in_the_callers_start_transaction(db):
+    task_id = make_task(db)
+    assert add_work(task_id, "one", 0).ok
+    assert admit_dispatch(task_id, "one", dispatch_key="one-1").ok
+    with Session(db) as session:
+        assert bind_node_session(
+            task_id,
+            "one",
+            1,
+            42,
+            workflow_id="one-1",
+            session=session,
+        ).ok
+        assert node_runs(task_id, session=session)[0]["session_id"] == 42
+        session.rollback()
+    run = node_runs(task_id)[0]
+    assert run["status"] == "admitted"
+    assert run["session_id"] is None
 
 
 def test_task_budget_accounts_observed_overrun_and_other_reservations(db):
