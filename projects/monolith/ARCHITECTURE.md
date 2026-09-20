@@ -444,6 +444,17 @@ arming back off. Landing stops at the merge: verifying the
 chart write-back and the live rollout is a node that does not exist yet
 (#6002).
 
+**Why.** Landing recovery is recorded from durable recovery structure, not a
+node-name convention. A request-bound engine edit is the normal proof that a
+bounded correction round exists. Plans written before that marker require a
+successful source-writing dependent above the request's run floor with typed
+evidence for the same pull request and exact written head. Other dependents do
+not block the engine from appending its correction and independent re-review,
+and armed or run-bearing nodes remain immutable history. Completion still
+requires the paired recovery audit plus a fresh, independent, approving review
+of the delivered pull request head above that floor; neither the audit, an old
+approval, nor a `changes_requested` result is sufficient.
+
 **Why.** An escalation is a decision, not a message. The refine lane's
 `needs-human` verdict used to end at a warning and a question, so eleven of
 them in one hour on 2026-09-11 were eleven GitHub threads a person had to open,

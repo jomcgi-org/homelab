@@ -104,6 +104,7 @@ PLANNER_TASK_CHARS = 12_000
 REVIEW_FINDINGS_CHARS = 8_000
 MAX_PLAN_EDITS = graph.MAX_PLAN_EDITS
 LOOP_CAUSE = "factory-loop"
+LANDING_RECOVERY_CAUSE = f"{LOOP_CAUSE}:landing-recovery"
 FANIN_CAUSE = "factory-fanin"
 _KEY = r"^[a-z][a-z0-9_]{0,63}$"
 # correct_<n>, review_<n> and integrate_<n> are the engine's own inserted
@@ -3019,14 +3020,36 @@ def _landing_recovery_requests(task_id: str, *, session=None) -> list[dict]:
             )
             .order_by(FactoryAudit.id)
         ).all()
-    detected: list[dict] = []
-    corrected: set[int] = set()
-    for row in rows:
-        detail = json.loads(row.detail_json)
-        if row.action == "landing_recovery_requested":
-            detected.append({**detail, "request_id": row.id})
-        elif isinstance(detail.get("request_id"), int):
-            corrected.add(detail["request_id"])
+        detected: list[dict] = []
+        corrected: set[int] = set()
+        for row in rows:
+            detail = json.loads(row.detail_json)
+            if row.action == "landing_recovery_requested":
+                floor = detail.get("run_id_floor")
+                if type(floor) is not int:
+                    # Requests from the first rollout predate the explicit
+                    # fence. Reconstruct the same boundary as the completion
+                    # gate so legacy graph repair cannot treat an old run as
+                    # post-recovery evidence.
+                    from factory.orchestration.models import SwarmNodeRun
+
+                    floor = (
+                        db.exec(
+                            select(SwarmNodeRun.id)
+                            .where(
+                                SwarmNodeRun.task_id == task_id,
+                                SwarmNodeRun.created_at <= row.created_at,
+                            )
+                            .order_by(SwarmNodeRun.id.desc())
+                            .limit(1)
+                        ).first()
+                        or 0
+                    )
+                detected.append(
+                    {**detail, "run_id_floor": floor, "request_id": row.id}
+                )
+            elif isinstance(detail.get("request_id"), int):
+                corrected.add(detail["request_id"])
     return [detail for detail in detected if detail["request_id"] not in corrected]
 
 
@@ -3064,6 +3087,75 @@ def _record_landing_recovery_round(task_id: str, conflict: dict, ordinal: int) -
             request_id=conflict.get("request_id"),
             round=ordinal,
         )
+
+
+def _landing_recovery_graph_evidence(
+    task_id: str,
+    review: dict,
+    conflict: dict,
+    dependents: list[dict],
+    runs: list[dict],
+) -> int | None:
+    """Return the recovery round proven by durable post-boundary structure.
+
+    New engine rounds name the exact request in their immutable plan-version
+    cause. Legacy plans have no such marker, so their narrower compatibility
+    path requires a successful source-writing direct dependent after the run
+    floor whose typed result names this pull request and its exact written
+    head. A dependency edge, an old run, or a non-delivery dependent is not
+    recovery evidence.
+    """
+
+    request_id = conflict.get("request_id")
+    if type(request_id) is int:
+        prefix = f"{LANDING_RECOVERY_CAUSE}:{request_id}:review_"
+        with Session(get_engine()) as db:
+            versions = db.exec(
+                select(SwarmPlanVersion).where(
+                    SwarmPlanVersion.task_id == task_id,
+                    SwarmPlanVersion.op == "add_node",
+                    SwarmPlanVersion.cause_kind == "factory_loop",
+                    SwarmPlanVersion.cause_ref.startswith(prefix),
+                )
+            ).all()
+        for version in versions:
+            fields = json.loads(version.change_json)
+            if review["node_key"] not in (fields.get("deps") or []):
+                continue
+            suffix = (version.cause_ref or "").removeprefix(prefix)
+            if suffix.isdigit():
+                return int(suffix)
+
+    floor = conflict.get("run_id_floor")
+    number = conflict.get("pr_number")
+    if type(floor) is not int or type(number) is not int:
+        return None
+    delivery_keys = {
+        node["node_key"]
+        for node in dependents
+        if _is_implementation(node["node_key"])
+    }
+    for run in sorted(runs, key=lambda item: item["id"]):
+        if (
+            run["node_key"] not in delivery_keys
+            or run["id"] <= floor
+            or run["status"] != "succeeded"
+        ):
+            continue
+        artifact = _artifact(run)
+        head = artifact.get("head_sha")
+        if (
+            artifact.get("pr_number") == number
+            and isinstance(head, str)
+            and re.fullmatch(r"[0-9a-f]{40}", head) is not None
+            and run.get("head_sha") == head
+        ):
+            # Zero distinguishes a legacy, run-proven repair from numbered
+            # engine review rounds. _landing_recovery_for_round only resolves
+            # positive engine ordinals, so this cannot be mistaken for a
+            # future failed correction round.
+            return 0
+    return None
 
 
 def _pending_landing_recovery(
@@ -3106,20 +3198,17 @@ def _pending_landing_recovery(
             continue
         dependents = [node for node in nodes if review["node_key"] in node["deps"]]
         if dependents:
-            # The graph commit can win just before its audit. Backfill the
-            # event from the durable engine key instead of opening a duplicate.
-            correction = next(
-                (
-                    node
-                    for node in dependents
-                    if node["node_key"].startswith("correct_")
-                ),
-                None,
+            # The graph commit can win just before its audit. Backfill only
+            # from a request-bound engine edit or a legacy delivery run above
+            # the durable floor. An unrelated dependent does not suppress the
+            # bounded engine round, and an armed or run-bearing dependent is
+            # retained rather than discarded.
+            ordinal = _landing_recovery_graph_evidence(
+                task["id"], review, conflict, dependents, runs
             )
-            if correction is not None:
-                ordinal = int(correction["node_key"].removeprefix("correct_"))
+            if ordinal is not None:
                 _record_landing_recovery_round(task["id"], conflict, ordinal)
-            continue
+                continue
         if detect_live:
             return review, conflict
 
@@ -3391,7 +3480,12 @@ def _insert_review_round(
     """
     from factory.orchestration.factory_controls import REVIEW_ROUND_ATTEMPTS
 
-    cause = f"{LOOP_CAUSE}:review_{ordinal}"
+    request_id = (merge_conflict or {}).get("request_id")
+    cause = (
+        f"{LANDING_RECOVERY_CAUSE}:{request_id}:review_{ordinal}"
+        if type(request_id) is int
+        else f"{LOOP_CAUSE}:review_{ordinal}"
+    )
     artifact = _artifact(review_run)
     reviewed_head = artifact.get("head_sha") or review_run.get("head_sha")
     head = reviewed_head

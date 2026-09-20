@@ -2600,6 +2600,8 @@ def landing_recovery_barrier(task_id: str, *, session=None) -> dict | None:
         return {
             "request_id": event.id,
             "run_id_floor": floor,
+            "pr_number": detail.get("pr_number"),
+            "head_sha": detail.get("head_sha"),
             "round_recorded": any(
                 json.loads(raw).get("request_id") == event.id for raw in rounds
             ),
@@ -2661,7 +2663,7 @@ def finish_task(
             if barrier is not None:
                 review = (
                     db.exec(
-                        select(SwarmNodeRun.id).where(
+                        select(SwarmNodeRun).where(
                             SwarmNodeRun.task_id == task_id,
                             SwarmNodeRun.id > barrier["run_id_floor"],
                             SwarmNodeRun.node_key.startswith("review_"),
@@ -2673,7 +2675,67 @@ def finish_task(
                     if (evidence or {}).get("review_session_id")
                     else None
                 )
-                if not barrier["round_recorded"] or review is None:
+                try:
+                    outcome_body = (
+                        json.loads(review.outcome_json or "{}") if review else {}
+                    )
+                except (TypeError, ValueError):
+                    outcome_body = {}
+                artifact = (
+                    outcome_body.get("value") or outcome_body.get("artifact") or {}
+                    if isinstance(outcome_body, dict)
+                    else {}
+                )
+                exact_head = (evidence or {}).get("head_sha")
+                approval_matches = bool(
+                    review is not None
+                    and artifact.get("verdict") == "approve"
+                    and artifact.get("pr_number") == barrier["pr_number"]
+                    and artifact.get("head_sha") == exact_head
+                    and review.head_sha == exact_head
+                )
+                implementer_sessions: set[int] = set()
+                if approval_matches:
+                    candidates = db.exec(
+                        select(SwarmNodeRun).where(
+                            SwarmNodeRun.task_id == task_id,
+                            SwarmNodeRun.status == "succeeded",
+                        )
+                    ).all()
+                    for candidate in candidates:
+                        if not candidate.node_key.startswith(
+                            ("implement_", "integrate_", "correct_")
+                        ):
+                            continue
+                        try:
+                            body = json.loads(candidate.outcome_json or "{}")
+                        except (TypeError, ValueError):
+                            continue
+                        value = (
+                            body.get("value") or body.get("artifact") or {}
+                            if isinstance(body, dict)
+                            else {}
+                        )
+                        if (
+                            value.get("pr_number") == barrier["pr_number"]
+                            and value.get("head_sha") == exact_head
+                            and candidate.head_sha == exact_head
+                            and candidate.id > barrier["run_id_floor"]
+                            and candidate.id < review.id
+                            and candidate.session_id is not None
+                        ):
+                            implementer_sessions.add(candidate.session_id)
+                independent = bool(
+                    review is not None
+                    and review.session_id is not None
+                    and implementer_sessions
+                    and review.session_id not in implementer_sessions
+                )
+                if (
+                    not barrier["round_recorded"]
+                    or not approval_matches
+                    or not independent
+                ):
                     return {"ok": False, "reason": "landing_recovery_pending"}
         if (
             outcome != "uncertain"
