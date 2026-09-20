@@ -11537,6 +11537,10 @@ def test_dispatch_refusal_audit(
             "limit": limit,
             "value": detail["used"] + detail["requested"],
         }
+        assert decision["dispatch_refusal"] == {
+            name: detail[name]
+            for name in ("limit", "used", "requested", "allowed", "allowance")
+        }
         if limit == "task_budget":
             assert decision["options"][0]["label"].startswith("Raise task_budget")
         else:
@@ -11552,27 +11556,17 @@ def test_dispatch_refusal_audit(
             ).one()
             card = json.loads(receipt.escalation_json)
             assert card["options"] == decision["options"]
+            assert card["dispatch_refusal"] == decision["dispatch_refusal"]
             assert card["comment_url"] == "https://example.test/card"
 
 
-def test_raise_envelope_grant_survives_requeue_and_admits_continuation(
-    feedback_db, monkeypatch
-):
-    from factory.orchestration import (
-        factory_controls as controls,
-        factory_decisions as decisions,
-        factory_landing,
-    )
-    from factory.orchestration.factory_intake import admit_next
-    from factory.orchestration.factory_models import (
-        FactoryAudit,
-        FactoryReceipt,
-        FactoryStart,
-    )
-    from factory.orchestration.models import SwarmNodeRun, SwarmTask
+def _budget_refusal(feedback_db, monkeypatch, *, budget=8.0, spent=7.0):
+    from factory.orchestration import factory_landing
+    from factory.orchestration.factory_models import FactoryReceipt, FactoryStart
+    from factory.orchestration.models import SwarmNodeRun
 
     monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "false")
-    task, policy = feedback_task(max_turns=5, task_budget_usd=8.0)
+    task, policy = feedback_task(max_turns=5, task_budget_usd=budget)
     complete_feedback_node(task, policy, "implement_first", {})
     assert conductor._add(
         task,
@@ -11587,10 +11581,10 @@ def test_raise_envelope_grant_survives_requeue_and_admits_continuation(
     with Session(feedback_db) as db:
         db.exec(
             select(SwarmNodeRun).where(SwarmNodeRun.task_id == task["id"])
-        ).one().cost_usd = 7.0
+        ).one().cost_usd = spent
         db.exec(
             select(FactoryStart).where(FactoryStart.task_id == task["id"])
-        ).one().cost_usd = 7.0
+        ).one().cost_usd = spent
         db.commit()
 
     monkeypatch.setattr(conductor, "github_get", lambda *_: {"body": "Issue scope"})
@@ -11610,12 +11604,26 @@ def test_raise_envelope_grant_survives_requeue_and_admits_continuation(
         receipt = db.exec(
             select(FactoryReceipt).where(FactoryReceipt.task_id == task["id"])
         ).one()
-        receipt_id = receipt.id
         card = json.loads(receipt.escalation_json)
-        assert card["options"][0]["detail"]["target"] == {
-            "limit": "task_budget",
-            "value": 9.0,
-        }
+        return task, policy, receipt.id, card
+
+
+def test_raise_envelope_grant_survives_requeue_and_admits_continuation(
+    feedback_db, monkeypatch
+):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_decisions as decisions,
+    )
+    from factory.orchestration.factory_intake import admit_next
+    from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt
+    from factory.orchestration.models import SwarmTask
+
+    task, _policy, receipt_id, card = _budget_refusal(feedback_db, monkeypatch)
+    assert card["options"][0]["detail"]["target"] == {
+        "limit": "task_budget",
+        "value": 9.0,
+    }
 
     first = decisions.apply_decision(receipt_id, "raise_envelope", "operator")
     second = decisions.apply_decision(receipt_id, "raise_envelope", "operator")
@@ -11629,9 +11637,9 @@ def test_raise_envelope_grant_survives_requeue_and_admits_continuation(
             )
         ).all()
         assert len(old_grants) == 1
-        assert json.loads(old_grants[0].detail_json)["policy_overlay"] == {
-            "task_budget_usd": 9.0
-        }
+        old_grant = json.loads(old_grants[0].detail_json)
+        assert old_grant["policy_overlay"] == {"task_budget_usd": 9.0}
+        assert old_grant["dispatch_refusal"]["target"] == 9.0
 
     admitted = admit_next("scheduler")
     assert admitted["ok"]
@@ -11670,6 +11678,10 @@ def test_raise_envelope_grant_survives_requeue_and_admits_continuation(
         cost_usd=7.0,
     )["ok"]
     with Session(feedback_db) as db:
+        receipt = db.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == continuation_id)
+        ).one()
+        assert json.loads(receipt.policy_json)["task_budget_usd"] == 8.0
         refusal = conductor._reservation_refusal(
             db, continuation_id, "budget_limit", 2.0
         )
@@ -11682,6 +11694,117 @@ def test_raise_envelope_grant_survives_requeue_and_admits_continuation(
         model="luna",
         max_cost_usd=2.0,
     )["ok"]
+
+
+@pytest.mark.parametrize("corruption", ["target", "authority"])
+def test_raise_envelope_rejects_invalid_authority_before_github_effects(
+    feedback_db, monkeypatch, corruption
+):
+    from factory.orchestration import (
+        factory_decisions as decisions,
+        factory_funding as funding,
+        factory_landing,
+    )
+    from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt
+
+    task, _policy, receipt_id, _card = _budget_refusal(feedback_db, monkeypatch)
+    with Session(feedback_db) as db:
+        receipt = db.get(FactoryReceipt, receipt_id)
+        card = json.loads(receipt.escalation_json)
+        if corruption == "target":
+            card["options"][0]["detail"]["target"]["value"] += 1
+        else:
+            card["dispatch_refusal"]["used"] += 1
+        receipt.escalation_json = json.dumps(card)
+        db.add(receipt)
+        db.commit()
+
+    writes = []
+    monkeypatch.setattr(
+        factory_landing,
+        "github_write",
+        lambda *args, **kwargs: writes.append((args, kwargs)),
+    )
+    with pytest.raises(decisions.DecisionError, match="funding target changed"):
+        decisions.apply_decision(receipt_id, "raise_envelope", "operator")
+    assert writes == []
+    with Session(feedback_db) as db:
+        receipt = db.get(FactoryReceipt, receipt_id)
+        assert receipt.state == "escalated"
+        grants = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == task["id"],
+                FactoryAudit.action == "funding_granted",
+            )
+        ).all()
+        assert not any(
+            json.loads(grant.detail_json).get("grant_kind")
+            == funding.DISPATCH_GRANT_KIND
+            for grant in grants
+        )
+
+
+def test_raise_envelope_rejects_stale_policy_ceiling(feedback_db, monkeypatch):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_decisions as decisions,
+        factory_landing,
+    )
+
+    task, _policy, receipt_id, _card = _budget_refusal(feedback_db, monkeypatch)
+    with controls._locked_session() as (db, _control):
+        controls._audit(
+            db,
+            "test",
+            "funding_granted",
+            task_id=task["id"],
+            policy_overlay={"task_budget_usd": 8.5},
+        )
+    writes = []
+    monkeypatch.setattr(
+        factory_landing,
+        "github_write",
+        lambda *args, **kwargs: writes.append((args, kwargs)),
+    )
+    with pytest.raises(decisions.DecisionError, match="ceiling changed"):
+        decisions.apply_decision(receipt_id, "raise_envelope", "operator")
+    assert writes == []
+
+
+def test_raise_envelope_revalidates_target_at_continuation_admission(
+    feedback_db, monkeypatch
+):
+    from factory.orchestration import factory_decisions as decisions
+    from factory.orchestration.factory_intake import admit_next
+    from factory.orchestration.factory_models import FactoryReceipt
+
+    _task, _policy, receipt_id, _card = _budget_refusal(feedback_db, monkeypatch)
+    assert decisions.apply_decision(receipt_id, "raise_envelope", "operator")["applied"]
+    with Session(feedback_db) as db:
+        receipt = db.get(FactoryReceipt, receipt_id)
+        direction = json.loads(receipt.direction_json)
+        direction["detail"]["target"]["value"] += 1
+        receipt.direction_json = json.dumps(direction)
+        db.add(receipt)
+        db.commit()
+
+    admitted = admit_next("scheduler")
+    assert admitted["ok"] is False
+    assert admitted["reason"] == "funding_overlay_invalid"
+    assert admitted["detail"] == "dispatch refusal funding target changed"
+
+
+def test_raise_envelope_preserves_cumulative_objective_ceiling(
+    feedback_db, monkeypatch
+):
+    from factory.orchestration import factory_decisions as decisions
+
+    _task, _policy, receipt_id, card = _budget_refusal(
+        feedback_db, monkeypatch, budget=199.0, spent=198.0
+    )
+    assert card["options"][0]["detail"]["target"]["value"] == 200.0
+    with pytest.raises(decisions.DecisionError, match="exceeds objective budget"):
+        decisions.apply_decision(receipt_id, "raise_envelope", "operator")
 
 
 def test_fan_in_reinsertion_prices_a_legacy_review(feedback_db):
@@ -11745,6 +11868,10 @@ def test_dispatch_refusal_card_distinguishes_envelope_and_allowance(
         "value": used + requested,
     }
     assert funding._dispatch_target(option) == (
+        float(used + requested) if limit == "task_budget" else None
+    )
+    authority = funding._dispatch_authority(cards[0], option)
+    assert (authority or {}).get("target") == (
         float(used + requested) if limit == "task_budget" else None
     )
 

@@ -2407,6 +2407,11 @@ def _escalate_task(task: dict, decision: dict, cause: str, runs: list[dict]) -> 
         "downgraded": False,
         "resolved": None,
     }
+    if cause.startswith("dispatch-refused:"):
+        # This is server-owned authority, separate from the option shape that
+        # planner-authored pauses also use. Funding verifies both copies before
+        # treating a raise_envelope choice as a dollar grant.
+        document["dispatch_refusal"] = decision["dispatch_refusal"]
     issue = github_get(task["repo"], f"issues/{number}")
     # The label first. A card posted onto an issue that intake can still pick
     # up is the one ordering that can have the lane re-admit the work while a
@@ -5075,6 +5080,13 @@ def _escalate_dispatch_refusal(
     task: dict, node_key: str, key: str, refusal: ReservationResult, runs: list[dict]
 ) -> None:
     target = refusal.used + refusal.requested
+    dispatch_refusal = {
+        "limit": refusal.limit,
+        "used": refusal.used,
+        "requested": refusal.requested,
+        "allowed": refusal.allowed,
+        "allowance": refusal.allowance,
+    }
     # Funding-disabled path only: with factoryConductorFundingEnabled the
     # refusal goes to factory_funding.request above and this card never posts.
     # The exact server-derived target is retained separately from the label so
@@ -5096,6 +5108,7 @@ def _escalate_dispatch_refusal(
             "action": "pause",
             "reason": reason,
             "question": reason + " Raise the envelope, cancel, or wait?",
+            "dispatch_refusal": dispatch_refusal,
             "options": [
                 {
                     "key": "raise_envelope",

@@ -92,17 +92,47 @@ def _dispatch_target(option):
     return value
 
 
+def _dispatch_authority(escalation, option):
+    """Validate a dollar target against its server-recorded refusal."""
+    target = _dispatch_target(option)
+    if target is None:
+        return None
+    refusal = escalation.get("dispatch_refusal")
+    required = {"limit", "used", "requested", "allowed", "allowance"}
+    if not isinstance(refusal, dict) or set(refusal) != required:
+        raise ValueError("dispatch refusal funding authority is missing")
+    if refusal.get("limit") != "task_budget":
+        raise ValueError("dispatch refusal funding authority changed limit")
+    values = {}
+    for name in ("used", "requested", "allowed", "allowance"):
+        value = refusal.get(name)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("dispatch refusal funding authority is invalid")
+        value = float(value)
+        if not math.isfinite(value) or value < 0:
+            raise ValueError("dispatch refusal funding authority is invalid")
+        values[name] = value
+    if values["requested"] <= 0 or values["allowed"] <= 0:
+        raise ValueError("dispatch refusal funding authority is invalid")
+    if target != values["used"] + values["requested"]:
+        raise ValueError("dispatch refusal funding target changed")
+    if target <= values["allowed"]:
+        raise ValueError("dispatch refusal target does not exceed its ceiling")
+    return {"limit": "task_budget", **values, "target": target}
+
+
 def _grant_deadline(task, policy):
     from factory.orchestration import factory_conductor as c
 
     return c._aware(task.created_at) + timedelta(seconds=policy["task_timeout_seconds"])
 
 
-def grant_dispatch_refusal(db, row, escalation, option):
-    """Record the operator-authorized dollar overlay before receipt requeue."""
-    target = _dispatch_target(option)
-    if target is None:
+def validate_dispatch_refusal(db, row, escalation, option):
+    """Validate a refusal grant while the decision still has no side effects."""
+    authority = _dispatch_authority(escalation, option)
+    if authority is None:
         return None
+    target = authority["target"]
     task_id = row.task_id
     if (
         not task_id
@@ -110,13 +140,34 @@ def grant_dispatch_refusal(db, row, escalation, option):
         or escalation.get("task_id") != task_id
     ):
         raise ValueError("dispatch refusal funding authority is not bound to the task")
+    task = graph._lock_task(db, task_id)
     policy = effective_policy(db, row)
+    if authority["allowed"] != float(policy["task_budget_usd"]):
+        raise ValueError("dispatch refusal ceiling changed since the card was issued")
     if target <= policy["task_budget_usd"]:
         raise ValueError("dispatch refusal target does not raise the task budget")
     total = objective_for_receipt(db, row)
     if total["committed_cost_usd"] + target > OBJECTIVE_CEILING_USD:
         raise ValueError("dispatch refusal target exceeds objective budget")
-    task = graph._lock_task(db, task_id)
+    return {
+        "authority": authority,
+        "policy": policy,
+        "target": target,
+        "task": task,
+        "total": total,
+    }
+
+
+def grant_dispatch_refusal(db, row, escalation, option):
+    """Record the operator-authorized dollar overlay before receipt requeue."""
+    validated = validate_dispatch_refusal(db, row, escalation, option)
+    if validated is None:
+        return None
+    task_id = row.task_id
+    target = validated["target"]
+    policy = validated["policy"]
+    total = validated["total"]
+    task = validated["task"]
     deadline = _grant_deadline(task, policy)
     overlay = {"task_budget_usd": target}
     controls._audit(
@@ -126,6 +177,7 @@ def grant_dispatch_refusal(db, row, escalation, option):
         task_id=task_id,
         grant_kind=DISPATCH_GRANT_KIND,
         source_receipt_id=row.id,
+        dispatch_refusal=validated["authority"],
         policy_overlay=overlay,
         reason="An operator authorized the dispatch-refusal envelope target.",
         next_plan="Continue the same issue and delivery branch under the authorized task budget.",
@@ -146,17 +198,18 @@ def dispatch_continuation_grant(db, row, policy):
     """Validate a queued receipt's carried grant against its append-only source."""
     direction = json.loads(row.direction_json) if row.direction_json else {}
     carried = direction.get("funding_overlay")
-    target = _dispatch_target(
-        {
-            "key": direction.get("option_key"),
-            "effect": direction.get("effect"),
-            "detail": direction.get("detail") or {},
-        }
-    )
-    if target is None:
+    option = {
+        "key": direction.get("option_key"),
+        "effect": direction.get("effect"),
+        "detail": direction.get("detail") or {},
+    }
+    escalation = json.loads(row.escalation_json) if row.escalation_json else {}
+    authority = _dispatch_authority(escalation, option)
+    if authority is None:
         if carried is not None:
             raise ValueError("non-dollar continuation carries a funding overlay")
         return None
+    target = authority["target"]
     if not isinstance(carried, dict) or set(carried) != {
         "source_task_id",
         "source_audit_id",
@@ -183,6 +236,7 @@ def dispatch_continuation_grant(db, row, policy):
         or source.action != "funding_granted"
         or detail.get("grant_kind") != DISPATCH_GRANT_KIND
         or detail.get("source_receipt_id") != row.id
+        or detail.get("dispatch_refusal") != authority
         or detail.get("policy_overlay") != overlay
     ):
         raise ValueError("dispatch continuation funding source is invalid")
