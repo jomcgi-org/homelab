@@ -49,8 +49,7 @@ py_test(
     data = [
         "BUILD",
         ":chart",
-        "//projects/platform:renovate_home_enrollment",
-        "//projects/platform-gke:renovate_migration_files",
+        "//:renovate_migration_manifests",
         "@multitool//tools/helm",
     ],
     env = {
