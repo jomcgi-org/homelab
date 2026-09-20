@@ -330,6 +330,9 @@ sh_binary(
         "//bazel/semgrep/third_party/semgrep:engine",
         "@buildifier_prebuilt//:buildifier",
     ],
+    env = {
+        "VERIFICATION_GUARD_BUILDIFIER": "$(rootpath @buildifier_prebuilt//:buildifier)",
+    },
 )
 
 sh_test(
