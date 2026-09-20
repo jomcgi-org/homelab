@@ -629,6 +629,7 @@ def test_revalidation_repairs_preexisting_stale_terminal_cards_locally(
 
     monkeypatch.setattr(landing, "github_graphql", unexpected)
     monkeypatch.setenv("FACTORY_ESCALATION_REVALIDATION_ENABLED", "true")
+    writes = list(github.writes)
 
     result = conductor.revalidate_escalations()
 
@@ -654,7 +655,7 @@ def test_revalidation_repairs_preexisting_stale_terminal_cards_locally(
                 "receipt_retired": False,
             }
             assert "from 0 to 4" in resolution["note"]
-    assert github.writes == []
+    assert github.writes == writes
 
 
 def test_generation_reconciliation_is_bounded_and_idempotent(
@@ -667,6 +668,7 @@ def test_generation_reconciliation_is_bounded_and_idempotent(
         control.policy_json = json.dumps({**policy, "generation": 3})
         session.add(control)
         session.commit()
+    writes = list(github.writes)
 
     first_pass = controls.reconcile_generation_stale_receipts(limit=1)
     second_pass = controls.reconcile_generation_stale_receipts(limit=1)
@@ -692,7 +694,7 @@ def test_generation_reconciliation_is_bounded_and_idempotent(
         assert len(rows) == 2
         assert all(row.state == "cancelled" for row in rows)
         assert all(json.loads(row.escalation_json)["resolved"] for row in rows)
-    assert github.writes == []
+    assert github.writes == writes
 
 
 def test_revalidation_off_does_not_read_github(db, github, notices, monkeypatch):
@@ -966,10 +968,10 @@ def test_an_ending_decision_settles_the_receipt_rather_than_re_admitting_it(
         assert session.get(SwarmTask, task_id).start_state == "escalated"
 
 
-def test_a_decision_the_lane_cannot_admit_says_so_instead_of_stranding_it(
+def test_a_stale_visible_decision_is_refused_before_issue_effects(
     db, github, notices
 ):
-    """An answered card that schedules nothing is the state this replaced."""
+    """A generation-stale card cannot mutate its issue and schedule nothing."""
     task_id, _policy = escalate(db, github, notices)
     receipt_id = receipt_of(db, task_id).id
     moved = policy_for(ISSUE)
@@ -979,13 +981,19 @@ def test_a_decision_the_lane_cannot_admit_says_so_instead_of_stranding_it(
         control.policy_json = json.dumps(moved)
         session.add(control)
         session.commit()
-    result = decisions.apply_decision(
-        receipt_id, "continue-narrowed", "joe@example.test"
-    )
-    effects = result["resolution"]["effects"]
-    assert effects["readmitted"] is False
-    assert "generation" in effects["blocked_by"]
-    assert receipt_of(db, receipt_id=receipt_id).state == "cancelled"
+    writes = list(github.writes)
+    with pytest.raises(decisions.DecisionError) as raised:
+        decisions.apply_decision(
+            receipt_id, "continue-narrowed", "joe@example.test"
+        )
+    assert raised.value.status == 409
+    assert "receipt generation 0" in raised.value.reason
+    assert "policy is on generation 3" in raised.value.reason
+    assert github.writes == writes
+    with Session(db) as session:
+        row = session.get(FactoryReceipt, receipt_id)
+        assert row.state == "escalated"
+        assert json.loads(row.escalation_json)["resolved"] is None
 
 
 def test_the_chat_action_asks_on_the_issue_and_re_admits_with_the_note(
@@ -1214,7 +1222,17 @@ def test_revalidation_is_paced_independently_of_the_tick(monkeypatch):
     monkeypatch.setattr(conductor, "_watchdog_clock", lambda: clock["now"])
     monkeypatch.setattr(conductor, "escalation_revalidation_enabled", lambda: True)
     monkeypatch.setattr(
-        controls, "_read_session", lambda: calls.append("read") or _NoRows()
+        controls,
+        "reconcile_generation_stale_receipts",
+        lambda _actor: {
+            "candidates": 0,
+            "retired": 0,
+            "cards_resolved": 0,
+            "blocked": 0,
+        },
+    )
+    monkeypatch.setattr(
+        controls, "_read_session", lambda *_args: calls.append("read") or _NoRows()
     )
 
     conductor.revalidate_escalations()
@@ -1236,6 +1254,9 @@ class _NoRows:
 
     def __exit__(self, *_a):
         return False
+
+    def get(self, *_args):
+        return None
 
     def exec(self, _statement):
         return self
