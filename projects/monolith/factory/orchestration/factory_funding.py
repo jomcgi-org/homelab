@@ -681,8 +681,7 @@ def reconcile(task, policy, runs, permission):
     reviews = [
         r
         for r in runs
-        if r["node_key"].startswith("review_")
-        and r["status"] == "succeeded"
+        if r["node_key"].startswith("review_") and r["status"] == "succeeded"
     ]
     review = max(reviews, key=lambda r: r["id"]) if reviews else None
     completion_revision = graph.current_version(task["id"])
