@@ -70,7 +70,9 @@
             {#each edges as edge}
               <li>
                 <span>{edge.label}</span>
-                <a href={`/slop/factory/work-items/${edge.id}`}>work item {edge.id}</a>
+                <a href={`/slop/factory/work-items/${edge.id}`}
+                  >work item {edge.id}</a
+                >
                 <small>{edge.source}</small>
               </li>
             {/each}

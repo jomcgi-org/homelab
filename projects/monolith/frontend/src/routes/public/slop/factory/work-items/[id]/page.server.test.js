@@ -32,7 +32,11 @@ describe("public factory work-item loader", () => {
 
     const unavailable = vi.fn().mockResolvedValue({ ok: false, status: 503 });
     await expect(
-      load({ fetch: unavailable, params: { id: "100123" }, setHeaders: vi.fn() }),
+      load({
+        fetch: unavailable,
+        params: { id: "100123" },
+        setHeaders: vi.fn(),
+      }),
     ).rejects.toMatchObject({ status: 503 });
   });
 });
