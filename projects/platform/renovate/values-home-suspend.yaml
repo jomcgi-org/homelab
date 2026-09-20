@@ -1,0 +1,7 @@
+# This overlay is deliberately not referenced by the home Application yet.
+# Add it after values.yaml only during the operator-controlled cutover described
+# in README.md. Suspending does not terminate a Workflow that is already active.
+suspend: true
+
+apkoLockMaintenance:
+  suspend: true
