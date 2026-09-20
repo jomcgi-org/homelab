@@ -413,7 +413,9 @@ def test_concurrent_observers_claim_one_external_write(db, monkeypatch):
     assert len(audits(engine, "problem_issue_write_started")) == 1
 
 
-def test_issue_lookup_is_bounded_to_two_pages_of_one_hundred(db, monkeypatch):
+def test_issue_lookup_refuses_write_when_two_page_bound_is_exhausted(
+    db, monkeypatch
+):
     engine, _clock = db
     selected = policy()
     enable_after_watermark(engine, selected)
@@ -425,14 +427,14 @@ def test_issue_lookup_is_bounded_to_two_pages_of_one_hundred(db, monkeypatch):
         return [{"number": number, "body": ""} for number in range(100)]
 
     monkeypatch.setattr(producer, "github_list", read)
-    monkeypatch.setattr(
-        producer,
-        "github_write",
-        lambda _repo, payload: {"number": 8000, **payload},
-    )
+    writes = []
+    monkeypatch.setattr(producer, "github_write", lambda *_args: writes.append(1))
     producer.problem_issues_tick(selected)
     assert len(calls) == 2
+    assert writes == []
     assert "per_page=100&page=1" in calls[0]
     assert "per_page=100&page=2" in calls[1]
     capped = details(audits(engine, "problem_issue_issue_scan_capped"))
     assert capped[-1]["pages"] == 2 and capped[-1]["per_page"] == 100
+    refused = details(audits(engine, "problem_issue_source_refused"))
+    assert refused[-1]["reason"] == "issue_discovery_truncated"

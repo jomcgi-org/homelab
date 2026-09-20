@@ -608,6 +608,15 @@ def problem_issues_tick(policy: dict) -> None:
             retry=0,
         )
         return
+    if truncated:
+        _record(
+            "problem_issue_source_refused",
+            row,
+            source,
+            fingerprint,
+            reason="issue_discovery_truncated",
+        )
+        return
     issue = _issue(source, row, source_detail, policy["repo"], marker)
     if issue is None:
         _record(
