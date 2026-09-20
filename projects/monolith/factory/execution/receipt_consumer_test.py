@@ -1343,8 +1343,8 @@ def test_guest_sweep_preserves_held_or_mismatched_fence(database, monkeypatch, h
 
 def test_guest_sweep_defers_pool_lock_and_continues(database, monkeypatch, caplog):
     sweeper, cleanup = cleanup_sweeper(database, monkeypatch)
-    first, _ = settled_cleanup_candidate(database, "busy-cleanup")
     second, _ = settled_cleanup_candidate(database, "available-cleanup")
+    first, _ = settled_cleanup_candidate(database, "busy-cleanup")
     original = execution_api._begin_settled_guest_cleanup
 
     class LockNotAvailable(Exception):
@@ -1431,8 +1431,8 @@ def test_guest_sweep_rechecks_eligibility_under_cleanup_lock(
 def test_guest_sweep_bounded_cursor_moves_past_held_candidates(database, monkeypatch):
     sweeper, cleanup = cleanup_sweeper(database, monkeypatch)
     monkeypatch.setattr(sweeper, "BATCH_SIZE", 1)
-    first, _ = settled_cleanup_candidate(database, "held-first", received=False)
     second, _ = settled_cleanup_candidate(database, "ready-second")
+    first, _ = settled_cleanup_candidate(database, "held-first", received=False)
     cursor = asyncio.run(sweeper.sweep_once())
     assert cursor == first
     assert cleanup["destroyed"] == []
@@ -1440,3 +1440,17 @@ def test_guest_sweep_bounded_cursor_moves_past_held_candidates(database, monkeyp
     assert cursor == second
     assert cleanup["destroyed"] == [f"guest-{second}"]
     assert asyncio.run(sweeper.sweep_once(cursor)) == 0
+
+
+def test_guest_sweep_leaves_unfenced_unclaimed_binding(database, monkeypatch):
+    sweeper, cleanup = cleanup_sweeper(database, monkeypatch)
+    sid, _ = settled_cleanup_candidate(database, "ordinary-completion")
+    with Session(database) as db, db.begin():
+        agent = db.get(AgentSession, sid)
+        agent.result_receipt_fence_id = None
+        db.add(agent)
+    before = snapshot(database, sid)
+    assert sweeper._candidates(0) == []
+    asyncio.run(sweeper.sweep_once())
+    assert snapshot(database, sid) == before
+    assert cleanup["destroyed"] == []

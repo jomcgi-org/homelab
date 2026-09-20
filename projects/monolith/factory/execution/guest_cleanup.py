@@ -3,6 +3,7 @@
 import asyncio
 import logging
 
+from sqlalchemy import or_
 from sqlmodel import Session, select
 
 from core.db import get_engine
@@ -19,10 +20,14 @@ def _candidates(after_id):
         return db.exec(
             select(AgentSession.id)
             .where(
-                AgentSession.id > after_id,
+                AgentSession.id < after_id if after_id else True,
                 *store.settled_guest_cleanup_conditions(),
+                or_(
+                    AgentSession.result_receipt_fence_id.isnot(None),
+                    AgentSession.guest_cleanup_id.isnot(None),
+                ),
             )
-            .order_by(AgentSession.id)
+            .order_by(AgentSession.id.desc())
             .limit(BATCH_SIZE)
         ).all()
 
@@ -30,8 +35,9 @@ def _candidates(after_id):
 async def sweep_once(after_id=0):
     """Bound each pass and advance past held rows so later guests cannot starve.
 
-    Include unfenced bindings and cleanup claims: a prior pass may have released
-    the fence and committed a claim before a DELETE or confirmation failed.
+    Resume cleanup claims even without a fence: a prior pass may have released
+    it before a DELETE or confirmation failed. Start with the newest sessions
+    so historical cleanup claims do not delay fresh leaks on leader startup.
     """
     candidates = await asyncio.to_thread(_candidates, after_id)
     for session_id in candidates:
