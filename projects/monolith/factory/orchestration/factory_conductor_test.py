@@ -9744,6 +9744,7 @@ def test_ingest_eligible_classifies_the_operators_named_issues(monkeypatch):
         },
     )
     monkeypatch.setattr(conductor, "github_list", lambda *_args: [])
+    monkeypatch.setattr(intake, "get_issue_receipt", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         intake,
         "receive_issue",
