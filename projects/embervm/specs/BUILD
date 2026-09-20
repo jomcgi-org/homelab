@@ -1,6 +1,6 @@
 # EmberVM protocol TLA+ specs, checked by TLC in CI (ADR embervm/006).
 #
-# Seven specs, twenty-seven genrules run the //bazel/tla:tlc.sh driver:
+# Eight specs, thirty-five genrules run the //bazel/tla:tlc.sh driver:
 #   adoption.tla (protocol 1: VM lifecycle + adoption) with four cfgs: rich
 #     safety, positive liveness, and two NEGATIVE modes (expectation "fail") that
 #     prove the model still reproduces a historical bug.
@@ -26,6 +26,12 @@
 #     incident wedges, and one NEGATIVE destroy-escape design comparison.
 #   session_lineage.tla (issue #4701: session lineage handoff) with one rich
 #     safety config and four NEGATIVE modes, one for each retained invariant.
+#   warmth_gc.tla (issue #4705: warmth GC racing the durable session-workspace
+#     tier) with one exhaustive safety config and seven NEGATIVE modes, one per
+#     guard, covering protected-reference deletion, silent empty resume,
+#     deletion on an inconsistent inventory, the two eligibility arms
+#     (parked expiry and the per-kind age floor), and the newest-reference
+#     retention of the DISPOSABLE stateful tier.
 # The driver fails the build if a "fail" mode finds NO violation (the model went
 # blind). Safety and liveness are split across cfgs because exhaustive liveness over
 # the rich safety graph is too slow for CI; see README.md for the cfg matrix.
@@ -522,6 +528,149 @@ genrule(
           "\"$(location session_lineage.tla)\" " +
           "\"$(location session_lineage_silent_merge.cfg)\" " +
           "\"$@\" fail ReconnectDetectsDivergence",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+# Issue #4705: warmth GC racing the DURABLE session-workspace tier. One
+# exhaustive positive safety config plus one focused NEGATIVE mutation per
+# guard. Each negative cfg lists only TypeOK and its intended invariant, so an
+# unrelated earlier violation cannot satisfy expectation fail. Two negatives
+# (unexpired, age_floor) target the same eligibility invariant through its two
+# independent arms, and two (protected, stale_fleet) target the same protection
+# invariant through the reference hold and the fleet-freshness assumption.
+genrule(
+    name = "tlc_warmth_gc",
+    srcs = _JRE_SRCS + [
+        "warmth_gc.tla",
+        "warmth_gc.cfg",
+    ],
+    outs = ["warmth_gc.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location warmth_gc.tla)\" " +
+          "\"$(location warmth_gc.cfg)\" " +
+          "\"$@\" pass",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_warmth_gc_protected",
+    srcs = _JRE_SRCS + [
+        "warmth_gc.tla",
+        "warmth_gc_protected.cfg",
+    ],
+    outs = ["warmth_gc_protected.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location warmth_gc.tla)\" " +
+          "\"$(location warmth_gc_protected.cfg)\" " +
+          "\"$@\" fail NoProtectedDeletion",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_warmth_gc_stale_fleet",
+    srcs = _JRE_SRCS + [
+        "warmth_gc.tla",
+        "warmth_gc_stale_fleet.cfg",
+    ],
+    outs = ["warmth_gc_stale_fleet.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location warmth_gc.tla)\" " +
+          "\"$(location warmth_gc_stale_fleet.cfg)\" " +
+          "\"$@\" fail NoProtectedDeletion",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_warmth_gc_empty_resume",
+    srcs = _JRE_SRCS + [
+        "warmth_gc.tla",
+        "warmth_gc_empty_resume.cfg",
+    ],
+    outs = ["warmth_gc_empty_resume.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location warmth_gc.tla)\" " +
+          "\"$(location warmth_gc_empty_resume.cfg)\" " +
+          "\"$@\" fail NoSilentEmptyResume",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_warmth_gc_aborted_sweep",
+    srcs = _JRE_SRCS + [
+        "warmth_gc.tla",
+        "warmth_gc_aborted_sweep.cfg",
+    ],
+    outs = ["warmth_gc_aborted_sweep.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location warmth_gc.tla)\" " +
+          "\"$(location warmth_gc_aborted_sweep.cfg)\" " +
+          "\"$@\" fail NoDeleteOnInconsistentInventory",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_warmth_gc_unexpired",
+    srcs = _JRE_SRCS + [
+        "warmth_gc.tla",
+        "warmth_gc_unexpired.cfg",
+    ],
+    outs = ["warmth_gc_unexpired.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location warmth_gc.tla)\" " +
+          "\"$(location warmth_gc_unexpired.cfg)\" " +
+          "\"$@\" fail EligibilityRequiresExpiryAndAge",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_warmth_gc_age_floor",
+    srcs = _JRE_SRCS + [
+        "warmth_gc.tla",
+        "warmth_gc_age_floor.cfg",
+    ],
+    outs = ["warmth_gc_age_floor.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location warmth_gc.tla)\" " +
+          "\"$(location warmth_gc_age_floor.cfg)\" " +
+          "\"$@\" fail EligibilityRequiresExpiryAndAge",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_warmth_gc_newest_ref",
+    srcs = _JRE_SRCS + [
+        "warmth_gc.tla",
+        "warmth_gc_newest_ref.cfg",
+    ],
+    outs = ["warmth_gc_newest_ref.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location warmth_gc.tla)\" " +
+          "\"$(location warmth_gc_newest_ref.cfg)\" " +
+          "\"$@\" fail NewestStatefulRetainedWhileLive",
     tags = ["verification"],
     tools = ["//bazel/tla:tlc.sh"],
 )

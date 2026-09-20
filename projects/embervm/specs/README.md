@@ -55,7 +55,16 @@ are documented with the individual specs below.
   `session_lineage_double_heir.cfg`, `session_lineage_nonterminal.cfg`,
   `session_lineage_silent_merge.cfg` : the positive model and four focused
   negative mutations for issue #4701 (below).
-- `BUILD` : twenty-seven genrules run TLC over the seven specs, one per cfg, via the
+- `warmth_gc.tla` : the pure TLA+ model of the S3 warmth sweep racing durable
+  session-workspace lifecycle operations (park, expiry, retirement export,
+  brick drain, restore), including interrupted and aborted sweeps, and the
+  contrast between disposable cache retention and durable workspace retention.
+- `warmth_gc.cfg`, `warmth_gc_protected.cfg`, `warmth_gc_stale_fleet.cfg`,
+  `warmth_gc_empty_resume.cfg`, `warmth_gc_aborted_sweep.cfg`,
+  `warmth_gc_unexpired.cfg`, `warmth_gc_age_floor.cfg`,
+  `warmth_gc_newest_ref.cfg` : the positive model and seven focused negative
+  mutations for issue #4705 (below).
+- `BUILD` : thirty-five genrules run TLC over the eight specs, one per cfg, via the
   `//bazel/tla` prebuilt toolchain (tla2tools.jar + a pinned Temurin JRE).
 - `vocabulary.exs` : the layer-1 manifest declaring, per implementation surface
   (proto RPC verbs, health states, op-log kinds), what the specs model vs
@@ -589,9 +598,144 @@ positive cfg. The negative cfgs demonstrate the counterexamples those missing
 mechanisms must prevent. Runtime fixes and a conformance harness remain separate
 decisions; this model does not require #4761.
 
+## Warmth GC vs the durable workspace tier (`warmth_gc.tla`)
+
+Issue #4705 models `Embervm.S3WarmthGc` sweeping while one durable
+`session-workspace/` lineage moves through its lifecycle. The sweep touches five
+allowlisted prefix kinds, and they are not the same kind of thing:
+
+- `stateful/`, `session/`, `serving/`, `group_set/` are **disposable caches**.
+  Losing one costs a cold start.
+- `session-workspace/<workload>/<lineage>/` is **durable user data**. Losing it
+  loses work.
+
+The model carries one lineage of the durable tier and one two-ref namespace of
+the disposable stateful tier, so the two retention contracts sit in one state
+space and can be compared directly.
+
+```
+             live ---- park ----> parked ---- deadline ---> parkedExpired
+              ^                     |                             |
+              |                 brick drain                    do_sweep
+           resume               (export, then                     |
+       (only with data)          local copy gone)                 v
+              |                     |                          terminal
+              +---------------------+-----------------------------+
+                                    |
+   S3 prefix:  absent --files--> partial --meta.json--> complete
+                     <--rest---          <--meta-----
+                                 (GC deletes meta FIRST)
+```
+
+`meta.json` is the completeness marker. Export writes it **last**; the GC
+deletes it **first**. So a half-written export and a half-finished delete both
+read as *incomplete*, and `RestoreArtifact` refuses an incomplete
+`SESSION_WORKSPACE` copy with `codes.NotFound` rather than handing back an empty
+volume. That single ordering is what makes the "no silent empty replacement"
+property hold.
+
+### What authority decides each question
+
+| Question | Authority in the implementation |
+| --- | --- |
+| Is the lineage referenced? | `cp_snapshot/1` `referenced_lineages`, from `session_actively_live?/1` (not terminal, not `:banked`, not `:parked`) |
+| Does a brick still hold it? | `cp_snapshot/1` `reported_lineages`, from NodeCapacity `session_volumes` |
+| Is a parked session still entitled to it? | `parked_lineage_expiries` + `parked_session_not_expired?/4` |
+| Is the prefix old enough? | `@default_ttls`: 7 days for `:session_workspace`, 8 hours for `:stateful` |
+| Is the inventory trustworthy? | `check_uptime/1`, `check_fleet_fresh/1`, `list_or_abort/2`, `check_empty_cp_state/7` |
+| May this specific delete proceed? | `recheck_live/2`, immediately before `delete_prefix/2` |
+
+The per-action source map is in the `warmth_gc.tla` header. Assumptions A1-A8
+are stated there too and are repeated in the findings below where they matter.
+
+### The historical predicates, revalidated
+
+Issue #4705 lists four predicates from the original proposal. Three survive; one
+does not apply to the durable tier at all.
+
+| Historical predicate | Status in the current contract |
+| --- | --- |
+| Newest-reference retention | **Does not apply to workspaces.** `tier2_protected/4` filters `kind == :stateful` and is reachable only through the `workload_live?/3` arm of `classify/6`. A dead workload is evicted whole; the durable workspace tier has no recency retention at all. Its **replacement** is reference plus parked-expiry plus age floor, which is what `EligibilityRequiresExpiryAndAge` and `NoProtectedDeletion` check. The historical predicate is still checked where it actually lives, by `NewestStatefulRetainedWhileLive` over the disposable tier. |
+| Eligibility after session expiry | **Survives, but expiry alone is never sufficient.** Expiry only drops the `:parked` hold; the per-kind age floor still applies independently. `EligibilityRequiresExpiryAndAge` checks both arms, and both are exercised by their own negative cfg. |
+| Explicit expired-session behavior after eviction | **Survives.** `validate_restore_lineage/4` admits only a terminal holder, and `RestoreArtifact` returns `codes.NotFound` for an absent `SESSION_WORKSPACE` copy instead of a fresh empty volume. Modelled by `ResumeRefused` and checked by `NoSilentEmptyResume`. |
+| No deletion on an aborted sweep with inconsistent inventory | **Survives.** Every precondition failure aborts the whole sweep before planning, and any delete failure halts the remainder. Checked by `NoDeleteOnInconsistentInventory`. |
+
+### Bounds, assumptions, and results
+
+The positive cfg declares one workspace lineage, one two-ref stateful namespace
+with `ref2` as the newest, and an unbounded number of sweeps that may abort or
+be interrupted at any phase. Ages are monotone booleans rather than clocks, so
+the model reasons about "past the floor" without an integer time domain.
+Per-sweep caps (`@max_prefixes` / `@max_bytes`) are omitted because they only
+ever shrink a plan. Physical media loss is out of scope, as in
+`session_lineage.tla`.
+
+All results below were produced on Linux by the repository's pinned TLC 1.7.4
+and the `//bazel/tla:tlc.sh` driver. The positive queue drained fully. Negative
+runs are expected counterexamples, so TLC stops at the named violation and they
+are **not** exhaustive passes; their traversal counts are therefore not reported
+as coverage.
+
+| cfg | changed guard | checked result | generated / distinct / queue | depth |
+| --- | --- | --- | --- | --- |
+| `warmth_gc.cfg` | none | all five invariants pass exhaustively | 353,902 / 32,024 / 0 | 22 |
+| `warmth_gc_protected.cfg` | `ReferenceGuard = FALSE` | `NoProtectedDeletion` violated | 2,607 / 639 / 411 | 5 |
+| `warmth_gc_stale_fleet.cfg` | `FleetRevalidationGuard = FALSE` | `NoProtectedDeletion` violated | 52,451 / 7,003 / 2,712 | 9 |
+| `warmth_gc_empty_resume.cfg` | `RestorePresenceGuard = FALSE` | `NoSilentEmptyResume` violated | 96,204 / 10,271 / 2,623 | 11 |
+| `warmth_gc_aborted_sweep.cfg` | `AbortGuard = FALSE` | `NoDeleteOnInconsistentInventory` violated | 17,976 / 3,106 / 1,677 | 7 |
+| `warmth_gc_unexpired.cfg` | `ExpiryGuard = FALSE` | `EligibilityRequiresExpiryAndAge` violated | 40,771 / 5,475 / 2,042 | 9 |
+| `warmth_gc_age_floor.cfg` | `AgeFloorGuard = FALSE` | `EligibilityRequiresExpiryAndAge` violated | 2,214 / 547 / 350 | 5 |
+| `warmth_gc_newest_ref.cfg` | `NewestRefGuard = FALSE` | `NewestStatefulRetainedWhileLive` violated | 11,437 / 2,088 / 1,129 | 7 |
+
+Each negative cfg lists only `TypeOK` and its intended invariant, so a different
+safety failure cannot satisfy the driver's expected-failure mode. The positive
+run is not vacuous: TLC action coverage records 200 workspace `meta.json`
+deletes and 1,365 stateful prefix deletes across the positive state space, none
+of which violated a check.
+
+The seven counterexamples are, in table order: deleting a prefix whose session
+is still live; deleting a prefix whose brick still holds the volume but dropped
+out of NodeCapacity mid-sweep; resuming a session onto a workspace whose
+completeness marker is already gone; sweeping on a store that has not finished
+rebuilding after a CP restart; reaping the only copy of a `:parked` session
+before its deadline; reaping a freshly written export inside the skew window;
+and trimming the newest snapshot of a still-live workload.
+
+### Implementation conformance gaps found by the mapping
+
+A clean abstract model is not proof that the code conforms. This PR changes no
+runtime code; each gap below needs its own bounded issue.
+
+- **Fleet freshness is checked once, not held (A2).** `run_sweep/1` evaluates
+  `check_fleet_fresh/1` before `list_or_abort/2`, then reads NodeCapacity again
+  in `cp_snapshot/1` and once more in `recheck_live/2`, never re-validating the
+  precondition. A brick that stops being dispatchable in that window has its row
+  dropped from NodeCapacity, so a workspace volume it still holds reads as
+  unreported and the prefix looks orphaned. `warmth_gc_stale_fleet.cfg` is that
+  trace: `Terminate`, export, age, `SweepBegin` while fresh, `FleetFlips`,
+  `SweepPlan`, `SweepDeleteWsMeta` with `localVol` still true. The positive cfg
+  assumes the precondition holds through plan and delete; the code does not
+  discharge that assumption.
+- **`recheck_live/2` does not re-apply the parked-expiry hold (A3).**
+  `classify/6` consults `parked_session_not_expired?/4`, but the per-prefix
+  recheck re-reads only `referenced_lineages` and `reported_lineages`, and a
+  `:parked` row is not `session_actively_live?/1`. A lineage that is terminal at
+  plan time can be restored, parked with a fresh deadline, and drained to S3
+  before the delete fires. This gap was found by reading the source, not by a
+  counterexample: the positive cfg applies `ExpiryGuard` at both plan and
+  recheck time, so no registered configuration isolates it.
+- **The recheck and the delete are not atomic (A1).** `apply_deletes/3` calls
+  `recheck_live/2` and then `delete_prefix/2` as two sequential steps in the GC
+  process. The model treats them as one step, so the sub-second window between
+  them is outside every result above.
+
+None of these is a counterexample against a check the code claims to implement;
+they are the distance between the modelled contract and the current code, and
+each is a separately bounded correction.
+
 ## Running TLC
 
-CI runs all twenty-seven genrules through the repository's affected-target
+CI runs all thirty-five genrules through the repository's affected-target
 Linux path. There is
 no local Bazel test loop in this repo. To iterate on a spec locally you need a JRE
 (>= 11) and `tla2tools.jar` (v1.7.4, the version `//bazel/tla` pins); then, from a
@@ -610,7 +754,7 @@ Never hand-edit the translation region.
 
 ## Scope
 
-The pilot now models seven protocols: protocol 1 (VM lifecycle + adoption,
+The pilot now models eight protocols: protocol 1 (VM lifecycle + adoption,
 `adoption.tla`), protocol 2 (session bank/relight generation pairing,
 `bank_relight.tla`, added by the ADR embervm/014 PR 5 follow-through since the
 pilot earned its keep), protocol 3 (the fail-closed quota gate, `quota.tla`),
@@ -619,6 +763,8 @@ quarantine, checkpoint-abort auto-heal, `generation_issuance.tla`, added for
 issue #4700). The SessionManager create-starvation model `session_create.tla`
 covers issue #5051 alongside them. The stateful lifecycle model `stateful.tla`
 covers the bounded destroy and writable-attach escapes. The session lineage
-model covers issue #4701's handoff and no-loss invariants. Layer-2 trace validation
+model covers issue #4701's handoff and no-loss invariants, and the warmth GC
+model `warmth_gc.tla` covers issue #4705's durable-workspace retention contract
+against the S3 sweep. Layer-2 trace validation
 (op-log events mapped to TLA+ actions and checked against a drill trace) is a
 separate follow-up and is deliberately not built here.
