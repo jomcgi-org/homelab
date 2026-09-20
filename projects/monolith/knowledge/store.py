@@ -587,12 +587,16 @@ class KnowledgeStore:
         top_ids = [note_fk for note_fk, _, _ in ranked]
         top_chunk_ids = [chunk_fk for _, chunk_fk, _ in ranked]
         score_by_note = {note_fk: score for note_fk, _, score in ranked}
-        note_by_id = {
-            note.id: note
-            for note in self.session.exec(
-                select(Note).where(Note.id.in_(top_ids))
-            ).all()
-        }
+        note_stmt = select(Note).where(Note.id.in_(top_ids), Note.deleted_at.is_(None))
+        hydration_scope_predicate = _scope_predicate(
+            effective_scope_filters, include_unscoped=include_unscoped
+        )
+        if hydration_scope_predicate is not None:
+            # Repeat the authorization predicate when hydrating ranked IDs. At
+            # READ COMMITTED a concurrent scope change between the two queries
+            # must fail closed rather than expose the newly unauthorized row.
+            note_stmt = note_stmt.where(hydration_scope_predicate)
+        note_by_id = {note.id: note for note in self.session.exec(note_stmt).all()}
         chunk_by_id = {
             chunk.id: chunk
             for chunk in self.session.exec(

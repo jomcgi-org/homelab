@@ -6,6 +6,7 @@ import json
 from dataclasses import dataclass
 
 from auth.api import Authority, Principal
+from sqlalchemy import insert
 from sqlmodel import Session
 
 from knowledge.models import PersonalRetrievalAudit
@@ -129,8 +130,11 @@ def audit_personal_retrieval(
         raise RetrievalAuditError("principal attribution exceeds audit bounds")
 
     try:
-        session.add(
-            PersonalRetrievalAudit(
+        # Use a Core insert without RETURNING. PostgreSQL requires SELECT on
+        # every returned column, while the agents tier deliberately has only
+        # INSERT on this attribution table and USAGE on its identity sequence.
+        session.execute(
+            insert(PersonalRetrievalAudit.__table__).values(
                 principal_subject=principal.subject,
                 principal_actor=actor_chain,
                 principal_authority=principal.authority.value,

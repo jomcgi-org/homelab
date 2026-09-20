@@ -5996,12 +5996,14 @@ py_test(
 py_test(
     name = "knowledge_store_scoped_test",
     srcs = ["knowledge/store_scoped_test.py"],
+    data = ["//projects/monolith/chart:migrations"],
     imports = ["."],
     deps = [
         ":pkg_auth",
         ":pkg_knowledge",
         "@pip//pytest",
         "@pip//pytest_asyncio",
+        "@pip//sqlalchemy",
         "@pip//sqlmodel",
     ],
 )

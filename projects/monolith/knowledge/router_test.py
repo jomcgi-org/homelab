@@ -137,7 +137,7 @@ class TestSearchEndpoint:
             response = client.get("/api/knowledge/search?q=attention")
 
         assert response.status_code == 200
-        fake_session.add.assert_not_called()
+        fake_session.execute.assert_not_called()
         fake_session.commit.assert_not_called()
 
     def test_empty_query_returns_empty_results(self, client, fake_embed_client):
@@ -213,11 +213,15 @@ class TestSearchEndpoint:
             scopes=("openid", "profile")
         )
         unmapped = client.get("/api/knowledge/search?q=attention")
+        app.dependency_overrides[get_principal] = lambda: _principal(scopes=())
+        empty_grants = client.get("/api/knowledge/search?q=attention")
 
         assert anonymous.status_code == 401
         assert anonymous.json()["detail"]["reason"] == "anonymous"
         assert unmapped.status_code == 403
         assert unmapped.json()["detail"]["reason"] == "unmapped_principal"
+        assert empty_grants.status_code == 403
+        assert empty_grants.json()["detail"]["reason"] == "unmapped_principal"
         fake_embed_client.embed.assert_not_awaited()
 
     def test_personal_opt_in_persists_one_audit_and_forwards_null_policy(
@@ -231,12 +235,14 @@ class TestSearchEndpoint:
             )
 
         assert response.status_code == 200
-        fake_session.add.assert_called_once()
+        fake_session.execute.assert_called_once()
         fake_session.commit.assert_called_once_with()
-        audit = fake_session.add.call_args.args[0]
-        assert audit.principal_subject == "browser@example.com"
-        assert audit.personal_scope == "personal:browser@example.com"
-        assert audit.entrypoint == "http"
+        compiled_audit = fake_session.execute.call_args.args[0].compile()
+        assert "RETURNING" not in str(compiled_audit).upper()
+        audit = compiled_audit.params
+        assert audit["principal_subject"] == "browser@example.com"
+        assert audit["personal_scope"] == "personal:browser@example.com"
+        assert audit["entrypoint"] == "http"
         MockStore.return_value.search_notes_with_context.assert_called_once_with(
             query_embedding=FAKE_EMBEDDING,
             limit=20,
@@ -255,9 +261,9 @@ class TestSearchEndpoint:
 
         assert response.status_code == 403
         assert response.json()["detail"]["reason"] == "personal_scope_not_granted"
-        fake_session.add.assert_not_called()
+        fake_session.execute.assert_not_called()
 
-    def test_personal_audit_failure_denies_before_embedding(
+    def test_personal_audit_commit_failure_denies_before_embedding(
         self, client, fake_session, fake_embed_client
     ):
         app.dependency_overrides[get_principal] = lambda: _principal(personal=True)
@@ -266,6 +272,19 @@ class TestSearchEndpoint:
 
         assert response.status_code == 503
         assert response.json()["detail"]["reason"] == "audit_unavailable"
+        fake_session.rollback.assert_called_once_with()
+        fake_embed_client.embed.assert_not_awaited()
+
+    def test_personal_audit_insert_failure_denies_before_embedding(
+        self, client, fake_session, fake_embed_client
+    ):
+        app.dependency_overrides[get_principal] = lambda: _principal(personal=True)
+        fake_session.execute.side_effect = RuntimeError("trigger unavailable")
+        response = client.get("/api/knowledge/search?q=attention&include_personal=true")
+
+        assert response.status_code == 503
+        assert response.json()["detail"]["reason"] == "audit_unavailable"
+        fake_session.commit.assert_not_called()
         fake_session.rollback.assert_called_once_with()
         fake_embed_client.embed.assert_not_awaited()
 
@@ -284,7 +303,7 @@ class TestSearchEndpoint:
 
         assert response.status_code == 503
         assert response.json()["detail"] == "embedding unavailable"
-        fake_session.add.assert_called_once()
+        fake_session.execute.assert_called_once()
         fake_session.commit.assert_called_once_with()
 
     def test_default_limit_is_20(self, client):

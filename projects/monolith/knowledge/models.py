@@ -318,6 +318,10 @@ class PersonalRetrievalAudit(SQLModel, table=True):
             name="personal_retrieval_audit_actor_length_chk",
         ),
         CheckConstraint(
+            "principal_authority IN ('standing', 'delegated')",
+            name="personal_retrieval_audit_authority_chk",
+        ),
+        CheckConstraint(
             "length(personal_scope) BETWEEN 1 AND 1024",
             name="personal_retrieval_audit_scope_length_chk",
         ),
@@ -336,7 +340,11 @@ class PersonalRetrievalAudit(SQLModel, table=True):
     entrypoint: str = Field(sa_column=Column(String, nullable=False))
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
-        sa_column=Column(DateTime(timezone=True), nullable=False),
+        sa_column=Column(
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=text("CURRENT_TIMESTAMP"),
+        ),
     )
 
 

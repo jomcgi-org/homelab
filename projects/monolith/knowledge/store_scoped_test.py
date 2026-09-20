@@ -1,6 +1,7 @@
 """Tests for scoped assertions, disputes, and provenance in the store."""
 
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -19,7 +20,11 @@ from knowledge.models import (
     PersonalRetrievalAudit,
     RawInput,
 )
-from knowledge.retrieval_policy import audit_personal_retrieval, authorize_retrieval
+from knowledge.retrieval_policy import (
+    RetrievalAuditError,
+    audit_personal_retrieval,
+    authorize_retrieval,
+)
 from knowledge.store import (
     KnowledgeStore,
     _rank_search_chunks,
@@ -365,3 +370,65 @@ def test_personal_opt_in_persists_one_bounded_attribution_row(session):
     assert rows[0].entrypoint == "mcp"
     assert not hasattr(rows[0], "query")
     assert not hasattr(rows[0], "results")
+
+
+def test_personal_audit_rejects_oversized_attribution_before_insert():
+    subject = "a" * 513
+    principal = Principal(
+        subject=subject,
+        actor=(),
+        scope=(f"personal:{subject}",),
+        groups=(),
+        email=None,
+        kind=PrincipalKind.WORKLOAD,
+        authority=Authority.STANDING,
+    )
+    authorization = authorize_retrieval(principal, include_personal=True)
+    session = MagicMock()
+
+    with pytest.raises(RetrievalAuditError, match="exceeds audit bounds"):
+        audit_personal_retrieval(session, principal, authorization, entrypoint="mcp")
+
+    session.execute.assert_not_called()
+    session.commit.assert_not_called()
+
+
+def test_search_rechecks_scope_while_hydrating_ranked_notes(session):
+    other_repo = Note(
+        note_id="scope-changed",
+        path="scope-changed.md",
+        title="Scope changed",
+        content_hash="scope-changed",
+        scope="repo:other/repo",
+    )
+    session.add(other_repo)
+    session.commit()
+
+    with patch(
+        "knowledge.store._rank_search_chunks",
+        return_value=[(other_repo.id, 999, 0.9)],
+    ):
+        results = KnowledgeStore(session).search_notes_with_context(
+            [0.0] * 1024,
+            scope_filters=("repo:owner/repo",),
+        )
+
+    assert results == []
+
+
+def test_personal_audit_migration_enforces_retention_and_least_privilege():
+    migration = (
+        Path(__file__).parents[1]
+        / "chart/migrations/20260919231000_personal_retrieval_audit.sql"
+    ).read_text()
+
+    assert "SECURITY DEFINER" in migration
+    assert "SET search_path = pg_catalog" in migration
+    assert "AFTER INSERT ON knowledge.personal_retrieval_audit" in migration
+    assert "FOR EACH STATEMENT" in migration
+    assert "created_at < pg_catalog.now() - INTERVAL '90 days'" in migration
+    assert "ON TABLE knowledge.personal_retrieval_audit" in migration
+    assert "GRANT INSERT (" in migration
+    assert ") ON TABLE knowledge.personal_retrieval_audit" in migration
+    assert "GRANT SELECT" not in migration
+    assert "GRANT DELETE" not in migration
