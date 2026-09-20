@@ -541,6 +541,7 @@ def test_noded_admission_model_defaults_observed_and_accepts_reserved():
             {
                 "EMBERVM_NODED_ADMISSION_MODEL": "observed",
                 "EMBERVM_NODED_VM_OVERHEAD_MIB": "0",
+                "EMBERVM_NODED_MEM_REJECT_FLOOR_MIB": "512",
             },
         ),
         (
@@ -548,10 +549,12 @@ def test_noded_admission_model_defaults_observed_and_accepts_reserved():
                 "bricks.enabled=true",
                 "noded.admissionModel=reserved",
                 "noded.vmOverheadMib=512",
+                "noded.memRejectFloorMib=256",
             ],
             {
                 "EMBERVM_NODED_ADMISSION_MODEL": "reserved",
                 "EMBERVM_NODED_VM_OVERHEAD_MIB": "512",
+                "EMBERVM_NODED_MEM_REJECT_FLOOR_MIB": "256",
             },
         ),
     ]
@@ -623,6 +626,10 @@ def test_noded_max_live_vms_accepts_per_class_override(tmp_path: Path):
         entry["slots"] == int(fleet_value)
         for entry in controller_classes(default_render).values()
     )
+    assert all(
+        entry["desired"] == 0 and entry["mem_reject_floor_mib"] == 512
+        for entry in controller_classes(default_render).values()
+    )
 
     override = tmp_path / "per-class-max-live.yaml"
     override.write_text(
@@ -660,7 +667,7 @@ def test_noded_max_live_vms_accepts_per_class_override(tmp_path: Path):
     override_render = _render(
         "noded-max-live-override",
         [chart / "values.yaml", override],
-        [f"noded.maxLiveVMs={fleet_value}"],
+        [f"noded.maxLiveVMs={fleet_value}", "noded.memRejectFloorMib=256"],
     )
     override_bricks = {
         name: doc
@@ -682,6 +689,10 @@ def test_noded_max_live_vms_accepts_per_class_override(tmp_path: Path):
     assert declared_classes["small"]["slots"] == 3
     assert declared_classes["large"]["slots"] == int(fleet_value)
     assert declared_classes["open"]["slots"] == 0
+    assert all(
+        entry["mem_reject_floor_mib"] == 256
+        for entry in declared_classes.values()
+    )
 
     for rendered in (default_render, override_render):
         wildcard = [

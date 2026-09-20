@@ -96,9 +96,10 @@ defmodule Embervm.BrickController do
   computed floor and the chart's manual minimum, so warmth overrides remain in
   force. Static desired counts remain lower bounds too. If a computed floor
   exceeds `max`, the controller raises `:floor_overflow` immediately through a
-  transition-only warning and trace, and performs no scale writes until the
-  contradiction clears. The computation uses declared memory and slot capacity,
-  so it works when a class has zero live replicas.
+  transition-only warning and trace, and suppresses scale writes for that class
+  until the contradiction clears. Other classes continue reconciling. The
+  computation uses declared memory, admission cushion, and slot capacity, so it
+  works when a class has zero live replicas.
 
   ## inert until bricks exist
 
@@ -368,11 +369,7 @@ defmodule Embervm.BrickController do
     portfolio = Portfolio.floors(state.catalog_fun.(), state.classes)
     state = track_floor_overflow(state, portfolio)
 
-    if MapSet.size(state.floor_overflow) > 0 do
-      state
-    else
-      reconcile_classes(state, registered, now, portfolio)
-    end
+    reconcile_classes(state, registered, now, portfolio)
   end
 
   defp reconcile_classes(state, registered, now, portfolio) do
@@ -384,31 +381,46 @@ defmodule Embervm.BrickController do
         end
       end)
 
+    suppressed = MapSet.to_list(state.floor_overflow)
+    initial_over_since = Map.take(state.over_since, suppressed)
+    initial_flagged = MapSet.intersection(state.flagged, state.floor_overflow)
+
     {over_since, flagged, state} =
-      Enum.reduce(classes, {%{}, MapSet.new(), state}, fn class, {os, fl, st} ->
-        name = class_name(class)
-        {acting, st} = plan_class(st, class, now)
+      Enum.reduce(
+        classes,
+        {initial_over_since, initial_flagged, state},
+        fn class, {os, fl, st} ->
+          name = class_name(class)
 
-        scale(st, name, acting)
-
-        reg = Map.get(registered, name, 0)
-
-        if acting > reg do
-          since = Map.get(st.over_since, name, now)
-          os = Map.put(os, name, since)
-
-          if now - since >= st.fleet_full_after_ms do
-            maybe_flag(st, name, acting, reg)
-            {os, MapSet.put(fl, name), %{st | last_full_at: Map.put(st.last_full_at, name, now)}}
-          else
+          if MapSet.member?(st.floor_overflow, name) do
             {os, fl, st}
+          else
+            {acting, st} = plan_class(st, class, now)
+
+            scale(st, name, acting)
+
+            reg = Map.get(registered, name, 0)
+
+            if acting > reg do
+              since = Map.get(st.over_since, name, now)
+              os = Map.put(os, name, since)
+
+              if now - since >= st.fleet_full_after_ms do
+                maybe_flag(st, name, acting, reg)
+
+                {os, MapSet.put(fl, name),
+                 %{st | last_full_at: Map.put(st.last_full_at, name, now)}}
+              else
+                {os, fl, st}
+              end
+            else
+              # Caught up (or over-provisioned): clear any prior over-window and flag.
+              maybe_unflag(st, name)
+              {os, fl, st}
+            end
           end
-        else
-          # Caught up (or over-provisioned): clear any prior over-window and flag.
-          maybe_unflag(st, name)
-          {os, fl, st}
         end
-      end)
+      )
 
     %{state | over_since: over_since, flagged: flagged}
   end

@@ -1344,6 +1344,12 @@ noded:
   # guest's declared memory; ignored under observed.
   vmOverheadMib: 0
 
+  # Residual memory cushion required after admitting a VM. This is rendered into
+  # every noded pod and into each control-plane class declaration so derived
+  # floors use the same admission capacity even when a class has zero replicas.
+  # Keep this aligned with noded's daemon fallback.
+  memRejectFloorMib: 512
+
   # Use Firecracker dirty-page diffs for repeated memory banks. Disabled by
   # default because the merge-at-bank protocol pays a full-size copy of the
   # previous base on ext4 scratch, which has no reflink support, so the Bank RPC

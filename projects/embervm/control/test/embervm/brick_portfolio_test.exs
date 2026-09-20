@@ -3,9 +3,19 @@ defmodule Embervm.Brick.PortfolioTest do
 
   alias Embervm.Brick.Portfolio
 
-  defp class(name, usable_mib, slots, overrides \\ %{}) do
+  defp class(name, capacity_mib, slots, overrides \\ %{}) do
+    reject_floor_mib = Map.get(overrides, :mem_reject_floor_mib, 512)
+
     Map.merge(
-      %{name: name, usable_mib: usable_mib, slots: slots, min: 0, max: 10, desired: 0},
+      %{
+        name: name,
+        usable_mib: capacity_mib + reject_floor_mib,
+        mem_reject_floor_mib: reject_floor_mib,
+        slots: slots,
+        min: 0,
+        max: 10,
+        desired: 0
+      },
       overrides
     )
   end
@@ -35,6 +45,50 @@ defmodule Embervm.Brick.PortfolioTest do
     ]
 
     assert Portfolio.floors(catalog, [class("pool", 1_000, 8)])["pool"].computed_floor == 2
+  end
+
+  test "the admission cushion is reserved once per bin, not once per VM" do
+    catalog = [%{name: "paired", floor: 2, mem_mib: 640}]
+
+    result =
+      Portfolio.floors(catalog, [
+        class("2gi", 1_280, 8, %{mem_reject_floor_mib: 512})
+      ])
+
+    assert result["2gi"].computed_floor == 1
+  end
+
+  test "production-sized 1536 MiB work moves from 2gi to 4gi" do
+    catalog = [
+      %{name: "semgrep", floor: 1, mem_mib: 1_536},
+      %{name: "bazel-query", floor: 1, mem_mib: 1_024}
+    ]
+
+    classes = [
+      %{
+        name: "2gi",
+        usable_mib: 1_792,
+        mem_reject_floor_mib: 512,
+        slots: 8,
+        min: 0,
+        max: 4,
+        desired: 0
+      },
+      %{
+        name: "4gi",
+        usable_mib: 3_840,
+        mem_reject_floor_mib: 512,
+        slots: 8,
+        min: 0,
+        max: 3,
+        desired: 0
+      }
+    ]
+
+    result = Portfolio.floors(catalog, classes)
+
+    assert result["2gi"].computed_floor == 1
+    assert result["4gi"].computed_floor == 1
   end
 
   test "memory fragmentation can require more bins than aggregate capacity" do
