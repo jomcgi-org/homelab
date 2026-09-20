@@ -371,7 +371,12 @@ def test_daily_cap_counts_deliveries_and_expires(db, monkeypatch):
         session.commit()
     assert intake_loop.intake_tick(policy(max_per_day=2), generation=0) == []
     detail = json.loads(audits(db, "intake_idle")[0].detail_json)
-    assert detail == {"admitted_today": 2, "max_per_day": 2, "reason": "daily_cap"}
+    assert detail == {
+        "admitted_today": 2,
+        "local_listed": 0,
+        "max_per_day": 2,
+        "reason": "daily_cap",
+    }
     with Session(db) as session:
         for row in session.exec(
             select(FactoryReceipt).where(FactoryReceipt.issue_number.in_((90, 91)))
@@ -477,7 +482,7 @@ def test_open_blocker_excludes_candidate_until_blocker_closes(db, monkeypatch):
     fake_pages(monkeypatch, [candidate])
     assert intake_loop.intake_tick(policy(labels=["agent-ready"]), generation=0) == []
     detail = json.loads(audits(db, "intake_idle")[-1].detail_json)
-    assert detail["excluded"] == {"blocked": 1}
+    assert detail["excluded"] == {"blocked": 1, "local_unnumbered": 1}
 
     with Session(db) as session:
         blocker = session.get(WorkItem, blocker_id)
@@ -743,6 +748,72 @@ def test_the_same_class_twice_in_one_generation_is_refused(db, monkeypatch):
     assert detail["excluded"]["already_received"] == 1
 
 
+def test_cooldown_uses_first_receipt_under_issue_number_ordering(db, monkeypatch):
+    candidate = issue(20, ["agent-ready"])
+    fake_pages(monkeypatch, [candidate])
+    with Session(db) as session:
+        work_item, _outcome = work_items.mint_or_sync_from_github(
+            session, "owner/repo", candidate, actor="test"
+        )
+        session.add_all(
+            [
+                FactoryReceipt(
+                    repo="owner/repo",
+                    issue_number=10,
+                    work_item_id=work_item.id,
+                    generation=8,
+                    title="recent lower-number receipt",
+                    body="",
+                    url="https://github.com/owner/repo/issues/10",
+                    actor="test",
+                    state="failed",
+                    updated_at=NOW - timedelta(hours=1),
+                ),
+                FactoryReceipt(
+                    repo="owner/repo",
+                    issue_number=20,
+                    work_item_id=work_item.id,
+                    generation=9,
+                    title="older higher-number receipt",
+                    body="",
+                    url="https://github.com/owner/repo/issues/20",
+                    actor="test",
+                    state="failed",
+                    updated_at=NOW - timedelta(days=2),
+                ),
+            ]
+        )
+        session.commit()
+
+    assert intake_loop.intake_tick(policy(cooldown_hours=24), generation=0) == []
+    detail = json.loads(audits(db, "intake_idle")[0].detail_json)
+    assert detail["excluded"] == {"cooldown": 1}
+
+
+def test_deferred_precedes_existing_receipt_exclusion(db, monkeypatch):
+    fake_pages(monkeypatch, [issue(9, ["needs-thought"])])
+    with Session(db) as session:
+        session.add(
+            FactoryReceipt(
+                repo="owner/repo",
+                issue_number=9,
+                generation=0,
+                task_class="refine",
+                title="existing refine",
+                body="",
+                url="https://github.com/owner/repo/issues/9",
+                actor="test",
+                state="failed",
+                updated_at=NOW - timedelta(days=2),
+            )
+        )
+        session.commit()
+
+    assert intake_loop.intake_tick(policy(refine_enabled=True), generation=0) == []
+    detail = json.loads(audits(db, "intake_idle")[0].detail_json)
+    assert detail["excluded"] == {"deferred": 1}
+
+
 def test_a_malformed_entry_is_not_a_closed_issue(db, monkeypatch):
     fake_pages(monkeypatch, ["not an object", issue(2, state="closed")])
     assert intake_loop.intake_tick(policy(), generation=0) == []
@@ -808,7 +879,12 @@ def test_the_daily_cap_refuses_delivery_and_still_admits_advisory(db, monkeypatc
     )
     assert [row["receipt"]["task_class"] for row in admitted] == ["refine"]
     detail = json.loads(audits(db, "intake_idle")[0].detail_json)
-    assert detail == {"admitted_today": 1, "max_per_day": 1, "reason": "daily_cap"}
+    assert detail == {
+        "admitted_today": 1,
+        "local_listed": 0,
+        "max_per_day": 1,
+        "reason": "daily_cap",
+    }
     # One idle row for the tick, not one per refused candidate.
     assert len(audits(db, "intake_idle")) == 1
 
@@ -1057,3 +1133,498 @@ def test_work_item_sync_failure_does_not_change_admission(db, monkeypatch):
     assert len(result) == 1
     assert result[0]["receipt"]["issue_number"] == 1
     assert len(audits(db, "work_item_sync_error")) == 1
+
+
+def test_local_ready_item_creates_linked_delivery_receipt(db, monkeypatch):
+    fake_pages(monkeypatch, [])
+    with Session(db) as session:
+        item = WorkItem(
+            title="local delivery",
+            body="deliver this",
+            state="ready",
+            labels=["documentation"],
+            source_kind="factory",
+            trust="trusted",
+            authority="local",
+            github_repo="owner/repo",
+            github_issue_number=101,
+            created_at=NOW - timedelta(days=2),
+        )
+        session.add(item)
+        session.commit()
+        item_id = item.id
+
+    result = intake_loop.intake_tick(policy(), generation=0)
+    assert result[0]["receipt"]["work_item_id"] == item_id
+    assert result[0]["receipt"]["task_class"] == "docs"
+    detail = json.loads(audits(db, "intake_admitted")[0].detail_json)
+    assert detail["source"] == "local"
+
+
+def test_local_open_item_follows_refine_flag(db, monkeypatch):
+    fake_pages(monkeypatch, [])
+    with Session(db) as session:
+        item = WorkItem(
+            title="local refine",
+            state="open",
+            source_kind="ui",
+            trust="trusted",
+            authority="local",
+            github_repo="owner/repo",
+            github_issue_number=102,
+        )
+        session.add(item)
+        session.commit()
+        item_id = item.id
+
+    assert intake_loop.intake_tick(policy(refine_enabled=False), generation=0) == []
+    detail = json.loads(audits(db, "intake_idle")[0].detail_json)
+    assert detail["excluded"] == {"refine_disabled": 1}
+    assert detail["local_listed"] == 1
+
+    release_sweep(db)
+    admitted = intake_loop.intake_tick(policy(refine_enabled=True), generation=0)
+    assert admitted[0]["receipt"]["task_class"] == "refine"
+    assert admitted[0]["receipt"]["work_item_id"] == item_id
+
+
+def test_local_authority_state_overrides_github_delivery_label(db, monkeypatch):
+    listed = issue(8, ["agent-ready"])
+    fake_pages(monkeypatch, [listed])
+    with Session(db) as session:
+        session.add(
+            WorkItem(
+                title=listed["title"],
+                body=listed["body"],
+                state="open",
+                labels=["agent-ready"],
+                source_kind="github",
+                source_ref=listed["html_url"],
+                trust="trusted",
+                authority="local",
+                github_repo="owner/repo",
+                github_issue_number=8,
+                github_created_at=NOW - timedelta(days=1),
+            )
+        )
+        session.commit()
+
+    assert intake_loop.intake_tick(policy(refine_enabled=False), generation=0) == []
+    detail = json.loads(audits(db, "intake_idle")[0].detail_json)
+    assert detail["excluded"] == {"refine_disabled": 1}
+
+
+@pytest.mark.parametrize(
+    "state", ["active", "done", "deferred", "needs_human", "closed"]
+)
+def test_terminal_local_states_are_not_candidates(db, monkeypatch, state):
+    fake_pages(monkeypatch, [])
+    with Session(db) as session:
+        session.add(
+            WorkItem(
+                title=state,
+                state=state,
+                close_reason="completed" if state == "closed" else None,
+                source_kind="factory",
+                trust="trusted",
+                authority="local",
+                github_repo="owner/repo",
+                github_issue_number=110,
+            )
+        )
+        session.commit()
+
+    assert intake_loop.intake_tick(policy(refine_enabled=True), generation=0) == []
+    detail = json.loads(audits(db, "intake_idle")[0].detail_json)
+    assert detail["local_listed"] == 0
+
+
+def test_local_items_apply_delivery_cooldown_and_blocker_exclusions(db, monkeypatch):
+    fake_pages(monkeypatch, [])
+    with Session(db) as session:
+        delivered = WorkItem(
+            title="delivered",
+            state="ready",
+            source_kind="factory",
+            trust="trusted",
+            authority="local",
+            github_repo="owner/repo",
+            github_issue_number=120,
+        )
+        cooling = WorkItem(
+            title="cooling",
+            state="ready",
+            source_kind="factory",
+            trust="trusted",
+            authority="local",
+            github_repo="owner/repo",
+            github_issue_number=121,
+        )
+        blocked = WorkItem(
+            title="blocked",
+            state="ready",
+            source_kind="factory",
+            trust="trusted",
+            authority="local",
+            github_repo="owner/repo",
+            github_issue_number=122,
+        )
+        blocker = WorkItem(
+            title="blocker",
+            state="open",
+            source_kind="github",
+            trust="trusted",
+            authority="github",
+            github_repo="other/repo",
+            github_issue_number=1,
+        )
+        session.add_all([delivered, cooling, blocked, blocker])
+        session.flush()
+        session.add_all(
+            [
+                FactoryReceipt(
+                    repo="owner/repo",
+                    issue_number=delivered.github_issue_number,
+                    work_item_id=delivered.id,
+                    generation=0,
+                    title=delivered.title,
+                    body="",
+                    url="https://github.com/owner/repo/issues/120",
+                    actor="test",
+                    state="succeeded",
+                ),
+                FactoryReceipt(
+                    repo="owner/repo",
+                    issue_number=cooling.github_issue_number,
+                    work_item_id=cooling.id,
+                    generation=1,
+                    title=cooling.title,
+                    body="",
+                    url="https://github.com/owner/repo/issues/121",
+                    actor="test",
+                    state="failed",
+                    updated_at=NOW - timedelta(hours=1),
+                ),
+                WorkItemEdge(from_id=blocker.id, to_id=blocked.id, kind="blocks"),
+            ]
+        )
+        session.commit()
+
+    assert intake_loop.intake_tick(policy(cooldown_hours=24), generation=2) == []
+    detail = json.loads(audits(db, "intake_idle")[0].detail_json)
+    assert detail["excluded"] == {"blocked": 1, "cooldown": 1, "delivered": 1}
+    assert detail["local_listed"] == 3
+
+
+def test_local_and_github_delivery_candidates_rank_together_by_age(db, monkeypatch):
+    fake_pages(
+        monkeypatch,
+        [issue(20, ["agent-ready"], created_at="2026-09-05T00:00:00Z")],
+    )
+    with Session(db) as session:
+        local = WorkItem(
+            title="older local item",
+            state="ready",
+            source_kind="factory",
+            trust="trusted",
+            authority="local",
+            github_repo="owner/repo",
+            github_issue_number=21,
+            created_at=datetime(2026, 9, 1, tzinfo=timezone.utc),
+        )
+        session.add(local)
+        session.commit()
+        local_id = local.id
+
+    admitted = intake_loop.intake_tick(policy(), generation=0)
+    assert admitted[0]["receipt"]["work_item_id"] == local_id
+    detail = json.loads(audits(db, "intake_admitted")[0].detail_json)
+    assert detail["source"] == "local"
+    assert {candidate["source"] for candidate in detail["candidates"]} == {
+        "github",
+        "local",
+    }
+
+
+def test_numberless_local_item_is_skipped_without_aliasing_an_issue(db, monkeypatch):
+    fake_pages(monkeypatch, [])
+    with Session(db) as session:
+        session.add(
+            WorkItem(
+                title="numberless local item",
+                state="ready",
+                source_kind="factory",
+                trust="trusted",
+                authority="local",
+            )
+        )
+        session.commit()
+
+    assert intake_loop.intake_tick(policy(), generation=0) == []
+    detail = json.loads(audits(db, "intake_idle")[0].detail_json)
+    assert detail["excluded"] == {"local_unnumbered": 1}
+    with Session(db) as session:
+        assert session.exec(select(FactoryReceipt)).all() == []
+
+
+@pytest.mark.parametrize(
+    ("title", "body"),
+    [
+        ("", "body"),
+        ("   ", "body"),
+        ("x" * 513, "body"),
+        ("valid title", "x" * 65537),
+    ],
+)
+def test_malformed_local_item_is_skipped_and_audited(db, monkeypatch, title, body):
+    fake_pages(monkeypatch, [])
+    with Session(db) as session:
+        item = WorkItem(
+            title=title,
+            body=body,
+            state="ready",
+            source_kind="factory",
+            trust="trusted",
+            authority="local",
+            github_repo="owner/repo",
+            github_issue_number=130,
+        )
+        session.add(item)
+        session.commit()
+        item_id = item.id
+
+    assert intake_loop.intake_tick(policy(), generation=0) == []
+    detail = json.loads(audits(db, "intake_idle")[0].detail_json)
+    assert detail["excluded"] == {"local_malformed": 1}
+    malformed = json.loads(audits(db, "local_item_malformed")[0].detail_json)
+    assert malformed["work_item_id"] == item_id
+
+
+def test_malformed_local_item_does_not_cost_a_github_admission(db, monkeypatch):
+    fake_pages(monkeypatch, [issue(131, ["agent-ready"])])
+    with Session(db) as session:
+        session.add(
+            WorkItem(
+                title=" ",
+                state="ready",
+                source_kind="factory",
+                trust="trusted",
+                authority="local",
+                github_repo="owner/repo",
+                github_issue_number=132,
+            )
+        )
+        session.commit()
+
+    admitted = intake_loop.intake_tick(policy(), generation=0)
+    assert admitted[0]["receipt"]["issue_number"] == 131
+    detail = json.loads(audits(db, "intake_admitted")[0].detail_json)
+    assert detail["excluded"] == {"local_malformed": 1}
+
+
+def test_local_intake_error_does_not_cost_a_github_admission(db, monkeypatch):
+    fake_pages(monkeypatch, [issue(133, ["agent-ready"])])
+
+    def fail_local(*_args, **_kwargs):
+        raise RuntimeError("local database read failed")
+
+    monkeypatch.setattr(intake_loop, "_local_candidates", fail_local)
+    admitted = intake_loop.intake_tick(policy(), generation=0)
+    assert admitted[0]["receipt"]["issue_number"] == 133
+    assert len(audits(db, "local_intake_error")) == 1
+
+
+def test_local_items_are_scoped_to_repo_and_use_source_ref(db, monkeypatch):
+    fake_pages(monkeypatch, [])
+    source_ref = "https://GitHub.com/owner/repo/issues/140"
+    with Session(db) as session:
+        session.add_all(
+            [
+                WorkItem(
+                    title="in scope",
+                    state="ready",
+                    source_kind="ui",
+                    source_ref=source_ref,
+                    trust="trusted",
+                    authority="local",
+                    github_repo="owner/repo",
+                    github_issue_number=140,
+                ),
+                WorkItem(
+                    title="another repo",
+                    state="ready",
+                    source_kind="ui",
+                    trust="trusted",
+                    authority="local",
+                    github_repo="other/repo",
+                    github_issue_number=141,
+                ),
+            ]
+        )
+        session.commit()
+
+    admitted = intake_loop.intake_tick(policy(), generation=0)
+    assert admitted[0]["receipt"]["issue_number"] == 140
+    assert admitted[0]["receipt"]["url"] == source_ref
+    detail = json.loads(audits(db, "intake_admitted")[0].detail_json)
+    assert [candidate["number"] for candidate in detail["candidates"]] == [140]
+
+
+def test_local_item_is_admitted_when_github_listing_is_not_due(db, monkeypatch):
+    calls = fake_pages(monkeypatch, [])
+    with Session(db) as session:
+        session.add_all(
+            [
+                FactoryAudit(
+                    actor=intake_loop.ACTOR,
+                    action="intake_swept",
+                    detail_json="{}",
+                    created_at=NOW,
+                ),
+                WorkItem(
+                    title="local while clock is closed",
+                    state="ready",
+                    source_kind="factory",
+                    trust="trusted",
+                    authority="local",
+                    github_repo="owner/repo",
+                    github_issue_number=150,
+                ),
+            ]
+        )
+        session.commit()
+
+    admitted = intake_loop.intake_tick(policy(), generation=0)
+    assert admitted[0]["receipt"]["issue_number"] == 150
+    assert calls == []
+    detail = json.loads(audits(db, "intake_admitted")[0].detail_json)
+    assert detail["github"] == "not_due"
+    assert detail["listed"] == 0
+
+
+def test_local_item_is_admitted_when_github_listing_fails(db, monkeypatch):
+    def fail_listing(_repo, suffix):
+        if suffix.startswith("issues?"):
+            return [issue(152, ["agent-ready"])]
+        raise RuntimeError("GitHub unavailable")
+
+    monkeypatch.setattr(intake_loop, "github_list", fail_listing)
+    with Session(db) as session:
+        session.add(
+            WorkItem(
+                title="local during listing failure",
+                state="ready",
+                source_kind="factory",
+                trust="trusted",
+                authority="local",
+                github_repo="owner/repo",
+                github_issue_number=151,
+            )
+        )
+        session.commit()
+
+    admitted = intake_loop.intake_tick(policy(), generation=0)
+    assert admitted[0]["receipt"]["issue_number"] == 151
+    assert len(audits(db, "intake_error")) == 1
+    detail = json.loads(audits(db, "intake_admitted")[0].detail_json)
+    assert detail["github"] == "failed"
+    assert detail["listed"] == 0
+
+
+@pytest.mark.parametrize(
+    ("state", "generation", "reason"),
+    [
+        ("admitted", 1, "active_issue"),
+        ("failed", 0, "already_received"),
+        ("escalated", 1, "escalated"),
+    ],
+)
+def test_local_item_receipt_exclusions(db, monkeypatch, state, generation, reason):
+    fake_pages(monkeypatch, [])
+    with Session(db) as session:
+        item = WorkItem(
+            title=f"local {reason}",
+            state="ready",
+            source_kind="factory",
+            trust="trusted",
+            authority="local",
+            github_repo="owner/repo",
+            github_issue_number=160,
+        )
+        session.add(item)
+        session.flush()
+        session.add(
+            FactoryReceipt(
+                repo="owner/repo",
+                issue_number=160,
+                work_item_id=item.id,
+                generation=generation,
+                title=item.title,
+                body="",
+                url="https://github.com/owner/repo/issues/160",
+                actor="test",
+                state=state,
+                updated_at=NOW - timedelta(days=2),
+            )
+        )
+        session.commit()
+
+    assert intake_loop.intake_tick(policy(), generation=0) == []
+    detail = json.loads(audits(db, "intake_idle")[0].detail_json)
+    assert detail["excluded"] == {reason: 1}
+
+
+def test_local_item_applies_excluded_label(db, monkeypatch):
+    fake_pages(monkeypatch, [])
+    with Session(db) as session:
+        session.add(
+            WorkItem(
+                title="excluded local item",
+                state="ready",
+                labels=["blocked"],
+                source_kind="factory",
+                trust="trusted",
+                authority="local",
+                github_repo="owner/repo",
+                github_issue_number=161,
+            )
+        )
+        session.commit()
+
+    assert (
+        intake_loop.intake_tick(policy(exclude_labels=["blocked"]), generation=0) == []
+    )
+    detail = json.loads(audits(db, "intake_idle")[0].detail_json)
+    assert detail["excluded"] == {"excluded_label": 1}
+
+
+def test_local_item_counts_lane_full(db, monkeypatch):
+    fake_pages(monkeypatch, [])
+    with Session(db) as session:
+        item = WorkItem(
+            title="local delivery with full lane",
+            state="ready",
+            source_kind="factory",
+            trust="trusted",
+            authority="local",
+            github_repo="owner/repo",
+            github_issue_number=162,
+        )
+        session.add(item)
+        session.add(
+            FactoryReceipt(
+                repo="owner/repo",
+                issue_number=999,
+                generation=0,
+                title="held delivery",
+                body="",
+                url="https://github.com/owner/repo/issues/999",
+                actor="test",
+                state="queued",
+            )
+        )
+        session.commit()
+
+    assert intake_loop.intake_tick(policy(), generation=0) == []
+    detail = json.loads(audits(db, "intake_idle")[0].detail_json)
+    assert detail["excluded"] == {"lane_full": 1}

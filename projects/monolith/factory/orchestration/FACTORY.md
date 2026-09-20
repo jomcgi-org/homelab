@@ -416,6 +416,17 @@ Delivery candidates rank before every refine candidate. Within either group,
 candidate carrying `critical` never outranks a delivery candidate without a
 rank label.
 
+Local-authority work items are a second intake source alongside GitHub. State
+`ready` makes a local item a delivery candidate, while state `open` makes it a
+refine candidate when `refine_enabled` is true. The same label, receipt,
+cooldown, blocker, lane, and one-per-lane exclusions apply to both sources.
+Local and GitHub candidates rank together by priority and age.
+
+The `not_open`, `assigned`, `linked_pr`, and `pull_request` exclusions do not
+apply to local items. The item is ours, and intake does not read back a human
+closing or assigning its migrated issue on GitHub. A local item's labels are
+ours too and never resync from GitHub.
+
 Each intake receipt carries the task class that sets its verification mode,
 implementer floor, and gate (ADR agents/038 decision 5):
 
