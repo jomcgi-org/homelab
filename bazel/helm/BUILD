@@ -132,7 +132,14 @@ sh_test(
     name = "chart_admissibility_completeness_test",
     srcs = ["chart-admissibility-completeness-test.sh"],
     args = ["$(rootpath chart-admissibility-completeness-test.sh)"],
+    data = ["BUILD"],
     tags = ["local"],
+)
+
+sh_test(
+    name = "chart_admissibility_completeness_regression_test",
+    srcs = ["chart-admissibility-completeness_test.sh"],
+    data = [":chart-admissibility-completeness-test.sh"],
 )
 
 sh_test(
