@@ -3604,6 +3604,62 @@ py_test(
     ],
 )
 
+# Hand-registered because chat is gazelle-excluded. These files were found by
+# the test-source reachability audit: they are executable unit tests, not data.
+py_test(
+    name = "chat_agent_temporal_grounding_test",
+    srcs = ["chat/agent_temporal_grounding_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "chat_bot_safeguards_test",
+    srcs = ["chat/bot_safeguards_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "chat_safeguards_forest_test",
+    srcs = ["chat/safeguards_forest_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "chat_safeguards_test",
+    srcs = ["chat/safeguards_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "chat_safeguards_train_job_test",
+    srcs = ["chat/safeguards_train_job_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
 py_test(
     name = "chat_store_coverage_test",
     srcs = ["chat/store_coverage_test.py"],
@@ -8135,6 +8191,53 @@ py_test(
     ],
 )
 
+py_test(
+    name = "ember_public_bazel_router_test",
+    srcs = ["ember_public/bazel_router_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "ember_public_durability_test",
+    srcs = ["ember_public/durability_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//httpx",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "ember_public_semgrep_core_test",
+    srcs = ["ember_public/semgrep_core_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "ember_public_semgrep_router_test",
+    srcs = ["ember_public/semgrep_router_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+    ],
+)
+
 # Hand-registered (ember_public is gazelle-excluded): the /api/health component
 # registration and the synthetic probe's fail-closed unconfigured branch. This
 # file had no target until 2026-07-28, so nothing in it ran; gazelle cannot
@@ -8552,6 +8655,18 @@ py_test(
 py_test(
     name = "agent_mcp_description_compliance_test",
     srcs = ["agent/mcp_description_compliance_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+    ],
+)
+
+# Registration and description compliance are complementary. This smoke test
+# asserts the exact set of 15 agent tools exported through the real MCP app.
+py_test(
+    name = "agent_mcp_test",
+    srcs = ["agent/mcp_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",

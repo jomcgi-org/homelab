@@ -23,6 +23,24 @@ py_test(
 )
 
 py_library(
+    name = "test_source_reachability_lib",
+    srcs = ["test_source_reachability.py"],
+    imports = ["."],
+)
+
+py_test(
+    # Keep the target name distinct from the test module. rules_python creates
+    # a <target>.pytest_main package, which otherwise collides with a top-level
+    # module named <target>.py during collection.
+    name = "python_test_source_reachability_test",
+    srcs = ["test_source_reachability_test.py"],
+    deps = [
+        ":test_source_reachability_lib",
+        "@pip//pytest",
+    ],
+)
+
+py_library(
     name = "verification_genrule_guard_lib",
     srcs = ["verification_genrule_guard.py"],
     imports = ["."],
