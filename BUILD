@@ -78,20 +78,6 @@ exports_files(
     visibility = ["//bazel/tools/ci:__pkg__"],
 )
 
-# The GKE and home enrollment roots intentionally have no package-local BUILD
-# files. Materialize this migration's hand-maintained manifests for its focused
-# render test without turning either root into a Gazelle package.
-filegroup(
-    name = "renovate_migration_manifests",
-    srcs = [
-        "projects/platform-gke/kustomization.yaml",
-        "projects/platform-gke/renovate/application.yaml",
-        "projects/platform-gke/renovate/kustomization.yaml",
-        "projects/platform/kustomization.yaml",
-    ],
-    visibility = ["//projects/platform/renovate:__pkg__"],
-)
-
 # The EmberVM chart test that couples hypervisorEpoch to the vendored
 # Firecracker version (#4409) reads the kata_firecracker_archive pin from here.
 exports_files(
