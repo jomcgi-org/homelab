@@ -358,6 +358,21 @@ OPTION_SCHEMA = {
             "additionalProperties": False,
             "properties": {
                 "scope": {"type": "string", "maxLength": 2000},
+                "target": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["limit", "value"],
+                    "properties": {
+                        "limit": {
+                            "enum": [
+                                "task_budget",
+                                "max_task_turns_hard",
+                                "max_planner_turns",
+                            ]
+                        },
+                        "value": {"type": "number", "minimum": 0},
+                    },
+                },
                 "reason": {"enum": list(CLOSE_REASONS)},
                 "comment": {"type": "string", "maxLength": 2000},
                 "closes": {

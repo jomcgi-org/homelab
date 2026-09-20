@@ -5014,13 +5014,18 @@ def _reservation_refusal(
 ) -> ReservationResult:
     """Capture the refusing ledger's numbers before its transaction rolls back."""
     from factory.orchestration.factory_controls import (
+        _effective_policy,
+        _receipt,
         task_snapshot,
         task_turn_ceiling,
         planner_turn_cap,
     )
 
     snapshot = task_snapshot(task_id, session=db)
-    policy = snapshot["policy"]
+    row = _receipt(db, task_id)
+    if row is None:
+        return ReservationResult(False, code)
+    policy = _effective_policy(db, row)
     if code == "task_budget_exhausted":
         budget = graph.budget_snapshot(task_id, session=db)
         return ReservationResult(
@@ -5029,7 +5034,7 @@ def _reservation_refusal(
             "task_budget",
             budget["accounted_cost_usd"],
             cost,
-            budget["task_budget_usd"],
+            policy["task_budget_usd"],
             snapshot["allowance"]["usd"],
         )
     if code == "budget_limit":
@@ -5072,10 +5077,12 @@ def _escalate_dispatch_refusal(
     target = refusal.used + refusal.requested
     # Funding-disabled path only: with factoryConductorFundingEnabled the
     # refusal goes to factory_funding.request above and this card never posts.
-    # raise_envelope re-queues the same receipt without moving the envelope
-    # (the #6134 overlay is not wired here yet), so the label says the raise is
-    # by hand; wait is a terminal defer that cancels the task.
-    if target > refusal.allowed:
+    # The exact server-derived target is retained separately from the label so
+    # applying the option can authorize a dollar overlay without parsing prose.
+    # Non-dollar refusals remain manual allowance changes.
+    if refusal.limit == "task_budget":
+        label = f"Raise task_budget to {target:g} and continue"
+    elif target > refusal.allowed:
         label = f"Continue once {refusal.limit} is raised by hand to {target:g}"
     else:
         label = f"Continue once the {refusal.limit} allowance is raised by hand to {target:g}"
@@ -5095,7 +5102,8 @@ def _escalate_dispatch_refusal(
                     "label": label,
                     "effect": CONTINUE_EFFECT,
                     "detail": {
-                        "scope": f"Raise {refusal.limit} and its allowance to at least {target:g} before continuing this delivery on its existing branch."
+                        "scope": f"Raise {refusal.limit} and its allowance to at least {target:g} before continuing this delivery on its existing branch.",
+                        "target": {"limit": refusal.limit, "value": target},
                     },
                 },
                 {

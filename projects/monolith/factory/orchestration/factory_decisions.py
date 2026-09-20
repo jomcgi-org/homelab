@@ -1064,6 +1064,13 @@ def _readmit(
     if blocker is not None:
         _settle_escalated(row, "cancelled")
         return {"readmitted": False, "blocked_by": blocker}
+    from factory.orchestration import factory_funding
+
+    funding_overlay = factory_funding.grant_dispatch_refusal(
+        db, row, escalation, option
+    )
+    if funding_overlay is not None:
+        direction["funding_overlay"] = funding_overlay
     row.direction_json = json.dumps(direction)
     if not queued:
         _requeue(row)
