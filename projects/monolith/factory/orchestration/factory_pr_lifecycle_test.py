@@ -253,13 +253,10 @@ def duplicate_pairs():
 )
 def test_historical_duplicate_pairs_replay_recorded_outcomes(db, github, case):
     pulls = [
-        pull(item["number"], case["issue"], item["branch"])
-        for item in case["pulls"]
+        pull(item["number"], case["issue"], item["branch"]) for item in case["pulls"]
     ]
     merged = [item for item in case["pulls"] if item["outcome"] == "merged"]
-    closed = [
-        item for item in case["pulls"] if item["outcome"] == "closed_unmerged"
-    ]
+    closed = [item for item in case["pulls"] if item["outcome"] == "closed_unmerged"]
 
     if merged:
         assert len(merged) == len(closed) == 1
