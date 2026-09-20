@@ -228,6 +228,9 @@ def factory_receipt(
     if issue.get("state") != "open" or "pull_request" in issue:
         raise HTTPException(409, "issue is not open eligible work")
     try:
+        from factory.orchestration.factory_gates import receive_delivery_target
+
+        delivery_target = receive_delivery_target(body.repo, body.issue_number)
         return receive_issue(
             body.repo,
             body.issue_number,
@@ -237,6 +240,7 @@ def factory_receipt(
             principal.subject,
             generation=body.generation,
             issue=issue,
+            delivery_target=delivery_target,
         )
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc

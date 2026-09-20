@@ -442,6 +442,7 @@ def test_tick_syncs_work_item_pointers_while_paused(monkeypatch):
         factory_controls as controls,
         factory_landing,
         factory_problem_issues,
+        factory_pr_lifecycle,
         work_item_pointer,
     )
 
@@ -457,6 +458,11 @@ def test_tick_syncs_work_item_pointers_while_paused(monkeypatch):
     monkeypatch.setattr(conductor, "observe_reviewer_routing", lambda _policy: None)
     calls = []
     monkeypatch.setattr(
+        factory_pr_lifecycle,
+        "reconcile_tick",
+        lambda value: calls.append(("pr_lifecycle", value)),
+    )
+    monkeypatch.setattr(
         factory_landing, "landing_tick", lambda value: calls.append(("landing", value))
     )
     monkeypatch.setattr(
@@ -471,6 +477,7 @@ def test_tick_syncs_work_item_pointers_while_paused(monkeypatch):
     )
     conductor.tick()
     assert calls == [
+        ("pr_lifecycle", policy),
         ("landing", policy),
         ("problem_issues", policy),
         ("pointer", {"actor": conductor.ACTOR}),
@@ -9728,6 +9735,7 @@ def test_ingest_eligible_classifies_the_operators_named_issues(monkeypatch):
             "labels": [{"name": "needs-thought"}],
         },
     )
+    monkeypatch.setattr(conductor, "github_list", lambda *_args: [])
     monkeypatch.setattr(
         intake,
         "receive_issue",
@@ -9755,6 +9763,7 @@ def test_ingest_eligible_links_receipt_to_work_item(feedback_db, monkeypatch):
             "created_at": "2026-09-19T12:00:00Z",
         },
     )
+    monkeypatch.setattr(conductor, "github_list", lambda *_args: [])
     conductor.ingest_eligible(
         {"repo": "owner/repo", "issue_numbers": [4], "generation": 0}
     )

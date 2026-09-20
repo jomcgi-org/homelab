@@ -249,7 +249,6 @@ def adopt_delivery(
     and receipt update share the admission lock, including operator admissions.
     An incomplete listing never authorizes a competing delivery.
     """
-    from factory.orchestration import factory_conductor as conductor
     from factory.orchestration.factory_controls import (
         delivery_branch_owner,
         validate_pr_branch,
@@ -257,24 +256,7 @@ def adopt_delivery(
 
     if task.get("delivery_target_checked") and not refresh:
         return True
-    candidates = []
-    for page in range(1, 6):
-        pulls = conductor.github_list(
-            task["repo"],
-            f"pulls?state=open&sort=created&direction=asc&per_page=100&page={page}",
-        )
-        candidates.extend(
-            pr
-            for pr in pulls
-            if (pr.get("head", {}).get("repo") or {}).get("full_name") == task["repo"]
-            and conductor.closes_issue(
-                pr.get("body"), task["repo"], task["issue_number"]
-            )
-        )
-        if len(pulls) < 100:
-            break
-    else:
-        raise ValueError("open PR discovery incomplete")
+    candidates = matching_delivery_pulls(task["repo"], task["issue_number"])
     # Prefer an already granted target when it still closes the issue.
     candidates.sort(
         key=lambda pr: (pr["number"] != task.get("delivery_pr_number"), pr["number"])
@@ -326,3 +308,59 @@ def adopt_delivery(
         )
     task.update(direction)
     return True
+
+
+def matching_delivery_pulls(repo: str, issue_number: int) -> list[dict]:
+    """Oldest-first open same-repository PRs that close one issue."""
+    from factory.orchestration import factory_conductor as conductor
+
+    candidates = []
+    for page in range(1, 6):
+        pulls = conductor.github_list(
+            repo,
+            f"pulls?state=open&sort=created&direction=asc&per_page=100&page={page}",
+        )
+        candidates.extend(
+            pr
+            for pr in pulls
+            if (pr.get("head", {}).get("repo") or {}).get("full_name") == repo
+            and conductor.closes_issue(pr.get("body"), repo, issue_number)
+        )
+        if len(pulls) < 100:
+            return sorted(candidates, key=lambda pr: pr["number"])
+    raise ValueError("open PR discovery incomplete")
+
+
+def receive_delivery_target(repo: str, issue_number: int) -> dict | None:
+    """A safe linked PR grant for an operator or allowlist receipt.
+
+    A person's branch and a branch held by another running task are not grants.
+    They retain the ordinary first-reconcile conflict path, which can name the
+    owner without letting receipt creation steal its delivery surface.
+    """
+    from factory.orchestration.factory_controls import (
+        _read_session,
+        delivery_branch_owner,
+        validate_pr_branch,
+    )
+
+    candidates = matching_delivery_pulls(repo, issue_number)
+    if not candidates:
+        return None
+    pull = candidates[0]
+    branch = (pull.get("head") or {}).get("ref")
+    if not isinstance(branch, str) or not branch.startswith("factory/"):
+        return None
+    branch = validate_pr_branch(branch)
+    number = pull.get("number")
+    if type(number) is not int or number <= 0:
+        raise ValueError("existing delivery PR has an invalid number")
+    with _read_session() as db:
+        if delivery_branch_owner(db, repo, branch) is not None:
+            return None
+    return {
+        "delivery_branch": branch,
+        "delivery_pr_number": number,
+        "delivery_adoption": True,
+        "delivery_target_checked": True,
+    }

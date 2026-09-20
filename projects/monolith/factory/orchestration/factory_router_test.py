@@ -172,6 +172,7 @@ def test_issue_endpoint_links_receipt_to_fetched_work_item(receipt_db, monkeypat
     }
     monkeypatch.setattr(factory_router, "REPO_CATALOG", {"owner/repo": {}})
     monkeypatch.setattr(factory_conductor, "github_get", lambda *_args: issue)
+    monkeypatch.setattr(factory_conductor, "github_list", lambda *_args: [])
     response = operator_client().post(
         "/api/swarm/factory/issues",
         json={"repo": "owner/repo", "issue_number": 12},

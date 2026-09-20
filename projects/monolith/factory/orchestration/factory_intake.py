@@ -113,6 +113,7 @@ def receive_issue(
     task_class: str = DEFAULT_TASK_CLASS,
     issue: dict | None = None,
     work_item_id: int | None = None,
+    delivery_target: dict | None = None,
     session: Session | None = None,
 ) -> dict:
     """Store one bounded issue snapshot. A duplicate can never replace its text.
@@ -133,6 +134,23 @@ def receive_issue(
         or url.lower() != f"https://github.com/{repo}/issues/{issue_number}"
     ):
         raise ValueError("url must identify the received GitHub issue")
+    if delivery_target is not None:
+        if not isinstance(delivery_target, dict) or set(delivery_target) != {
+            "delivery_branch",
+            "delivery_pr_number",
+            "delivery_adoption",
+            "delivery_target_checked",
+        }:
+            raise ValueError("invalid delivery target")
+        branch, pr_number = granted_delivery_surface(delivery_target)
+        if (
+            not delivery_target.get("delivery_adoption")
+            or not delivery_target.get("delivery_target_checked")
+            or branch is None
+            or not branch.startswith("factory/")
+            or pr_number is None
+        ):
+            raise ValueError("invalid delivery target")
     with _locked_session(session) as (db, _control):
         existing = db.exec(
             select(FactoryReceipt).where(
@@ -144,6 +162,12 @@ def receive_issue(
         ).first()
         if existing is not None:
             return {"ok": True, "created": False, "receipt": _snapshot(db, existing)}
+        if delivery_target is not None:
+            owner = delivery_branch_owner(db, repo, branch)
+            if owner is not None:
+                raise ValueError(
+                    f"delivery branch {branch} is owned by running task {owner}"
+                )
         # The sweep mints the work item before admission runs on the same
         # tick, so a receipt links to it at creation; an operator-posted
         # receipt for an issue the sweep has not seen yet links on the next
@@ -189,6 +213,7 @@ def receive_issue(
             url=url,
             actor=actor,
             task_class=task_class,
+            direction_json=_json(delivery_target) if delivery_target else None,
         )
         db.add(row)
         db.flush()
@@ -201,6 +226,9 @@ def receive_issue(
             issue_number=issue_number,
             generation=generation,
             task_class=task_class,
+            delivery_pr_number=(
+                delivery_target["delivery_pr_number"] if delivery_target else None
+            ),
         )
         return {"ok": True, "created": True, "receipt": _snapshot(db, row)}
 

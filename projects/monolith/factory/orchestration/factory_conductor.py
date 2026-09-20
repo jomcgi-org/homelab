@@ -379,6 +379,11 @@ def ingest_eligible(policy: dict) -> None:
         # security-finding or needs-thought issue keeps its Opus floor whether
         # the lane discovered it or an operator asked for it.
         task_class, _reason = derive_task_class(_label_names(issue), refine=False)
+        delivery_target = (
+            factory_gates.receive_delivery_target(policy["repo"], number)
+            if not is_advisory(task_class)
+            else None
+        )
         receive_issue(
             policy["repo"],
             number,
@@ -389,6 +394,7 @@ def ingest_eligible(policy: dict) -> None:
             generation=policy.get("generation", 0),
             task_class=task_class,
             issue=issue,
+            delivery_target=delivery_target,
         )
 
 
@@ -5927,6 +5933,12 @@ def tick() -> None:
                 cancel_owned(task["task_id"], dbos)
             except Exception:  # noqa: BLE001 - per-task isolation keeps stop total
                 logger.exception("factory stop failed for task %s", task["task_id"])
+        try:
+            from factory.orchestration.factory_pr_lifecycle import reconcile_tick
+
+            reconcile_tick(snapshot.get("policy") or {})
+        except Exception:  # noqa: BLE001 - PR lifecycle cannot block a factory stop
+            logger.exception("factory PR lifecycle reconciliation failed")
         return
     # The window reading is refreshed before any task reconciles, because the
     # review nodes those tasks are about to start are what spends it.
@@ -5951,6 +5963,12 @@ def tick() -> None:
             logger.exception(
                 "factory deadline backstop failed for task %s", task["task_id"]
             )
+    try:
+        from factory.orchestration.factory_pr_lifecycle import reconcile_tick
+
+        reconcile_tick(snapshot["policy"])
+    except Exception:  # noqa: BLE001 - PR lifecycle cannot stop task reconciliation
+        logger.exception("factory PR lifecycle reconciliation failed")
     # Landing runs for a paused lane too. Pausing stops new admission, and a
     # delivery that is already approved and settled has nothing left to pause.
     from factory.orchestration.factory_landing import landing_tick

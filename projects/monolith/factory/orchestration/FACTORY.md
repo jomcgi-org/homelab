@@ -426,6 +426,17 @@ receipt's identity carries the class for the same reason. Intake-created receipt
 `intake.enabled` is true. Turning intake off therefore leaves the operator's
 `issue_numbers` allowlist exactly as it was.
 
+Operator-posted and allowlisted delivery receipts take a separate linked-PR
+path. Before the receipt is written, the server performs the same bounded open
+PR discovery used at first reconciliation. A same-repository `factory/` PR
+that closes the issue is stored immediately as the receipt's delivery target,
+so an operator repost or a later readmission continues that branch. A person's
+branch or a branch held by another running task is never granted. Failed or
+truncated discovery fails closed instead of creating an unbound receipt that
+could open a competing PR. Ordinary autonomous discovery keeps the
+`linked_pr` exclusion because it has no operator repost to authorize a new
+receipt.
+
 Delivery candidates rank before every refine candidate. Within either group,
 `critical` ranks before `bug`, then the oldest issue ranks first. A refine
 candidate carrying `critical` never outranks a delivery candidate without a
@@ -1268,6 +1279,31 @@ the holder reading as absent. A delivery the lane has never touched is skipped
 once it is a week old, so turning the flag on does not stampede over history,
 but anything the lane has armed is followed to a terminal state whatever its
 age.
+
+The same reconcile tick owns PR retirement independently of `auto_merge`.
+When a receipt settles `escalated`, `cancelled`, or `failed`, including the
+deadline-expired escalation, its open same-repository `factory/` PR is
+converted to draft. One marker-fenced comment names the receipt, settlement
+reason, and the next action: re-admission adopts that branch. A succeeded task
+is untouched. Before the comment and again before the draft mutation, the
+server re-reads the PR and checks active branch ownership. If a successor task
+has adopted it, that task owns readiness and the old settlement does nothing.
+
+The paced sweep on that tick examines at most 20 open PRs from a persisted page
+cursor. It never mutates a non-`factory/` head. An unowned factory PR is closed when one
+of its closing issues is closed, or when that issue has a newer open factory PR
+whose exact branch is owned by a running receipt. The comment names the
+survivor when one exists and otherwise says explicitly that the issue is
+already closed. The survivor is not modified. A prepared audit, a hidden
+comment marker, fresh PR and owner reads, and the `factory_pr_retired` audit
+make partial GitHub failures and repeated ticks safe. Cursor progress is
+durable, so 20 permanently live older PRs cannot hide later stale candidates.
+
+This is configured repository behavior, not an operational rollout claim. The
+2026-09-19 observation of duplicate pairs 6198/6070, 6199/6075, 6209/6082,
+and 6215/6078 is the replay fixture for the gap. This change does not assert
+that a deployed reconciler has run the sweep against GitHub; rollout and its
+first observed audits remain operational evidence.
 
 Later ticks observe the armed pull request:
 
