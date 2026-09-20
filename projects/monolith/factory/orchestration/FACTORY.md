@@ -541,6 +541,80 @@ no attempt in flight, no success, and the node absent from the conductor's
 ready set settles `refine_failed` there and then, naming the limit it hit.
 Idling instead held the advisory slot and its reservation for ever (#6045).
 
+### Exact-event problem issues
+
+The optional top-level `problem_issues` policy block turns three demonstrated
+factory failure signals into ordinary GitHub issues: `node_stalled`,
+`workflow_stranded`, and terminal `landing_recovery_exhausted`. It does not
+create a receipt, post an intake event, or admit a task. Generated issues can
+enter the factory only when the existing GitHub discovery and refine/intake
+policy later selects them.
+
+The block and every source switch default false. Its repository defaults are:
+
+```json
+{
+  "problem_issues": {
+    "enabled": false,
+    "sources": {
+      "node_stalled": false,
+      "workflow_stranded": false,
+      "landing_recovery_exhausted": false
+    },
+    "source_audit_limit": 50,
+    "issue_pages": 2,
+    "issues_per_page": 100,
+    "max_per_tick": 1,
+    "max_per_24_hours": 3,
+    "labels": ["bug"],
+    "retry_minutes": [2, 4, 8, 16, 32, 60]
+  }
+}
+```
+
+The first tick after the top-level switch or an individual source is enabled
+records `problem_issue_policy_observed` with a watermark at the newest matching
+source audit. History from before enablement is never replayed. Each later tick
+scans at most 50 exact source audits and creates at most one issue. The rolling
+24-hour cap counts durable `problem_issue_write_started` intents, including an
+ambiguous write, so uncertainty cannot buy extra external writes.
+
+Every body links the delivery issue, links the pull request when the signal is
+about landing, names the factory task and source audit, and contains an exact
+`factory-problem` fingerprint marker. Discovery inspects at most two pages of
+100 newest open or closed issues for that marker. A repeated or replayed source
+event reconciles the existing issue. A missing source receipt, malformed event,
+discovery failure, scan cap, daily cap, or rejected GitHub write is audited and
+visible on the factory board.
+
+The producer records `problem_issue_write_started` before the GitHub request.
+A definite client refusal is terminal. A timeout, rate limit, transport loss,
+server error, oversized response, or response that does not confirm the marker
+is ambiguous. The lane
+does not repeat that create request. It performs six marker reconciliation
+reads after 2, 4, 8, 16, 32, and 60 minutes, recording
+`problem_issue_write_uncertain`, `problem_issue_reconcile_retry`, and finally
+either `problem_issue_reconciled` or `problem_issue_unresolved`. This makes a
+crash immediately before the request conservative too: it can omit an issue,
+but cannot create the same one twice by guessing whether the write happened.
+
+Repository delivery is staged and does not complete #6002 operationally. The
+rollout checklist remains:
+
+- Deploy with `problem_issues` omitted or disabled. Confirm there are no issue
+  writes and the board reports the producer off without affecting factory
+  reconciliation.
+- Enable one source in a staged window and replay one safe known audit. Confirm
+  exactly one issue has only the `bug` label, the exact marker and source links,
+  with no receipt or task directly admitted.
+- Repeat the event across a reconciler restart and an uncertain-write drill.
+  Confirm marker reconciliation, visible retry/backoff audits, no duplicate,
+  the one-per-tick cap and the three-per-day cap.
+- Leave intake/refine policy unchanged, observe the generated issue using only
+  normal GitHub discovery, then disable the source and confirm writes stop.
+- Validate phase 4 chart write-back and live rollout separately before any
+  future change claims the parent programme complete.
+
 ### Escalation decisions
 
 A `needs-human` verdict is a decision waiting on a person, so it arrives as
