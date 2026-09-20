@@ -567,7 +567,7 @@ def test_ejection_requests_assessment_and_releases_holder(db, monkeypatch):
 
 
 def reviewed_recovery(db, head=HEAD):
-    """Model the assessment and fresh independent review before settlement."""
+    """Model exact-head recovery work and its fresh independent review."""
     with Session(db) as session:
         event = session.exec(
             select(FactoryAudit)
@@ -588,11 +588,39 @@ def reviewed_recovery(db, head=HEAD):
         session.add(
             SwarmNodeRun(
                 task_id="t-1",
+                node_key=f"integrate_recovery_{event.id}",
+                attempt=1,
+                status="succeeded",
+                session_id=11,
+                head_sha=head,
+                outcome_json=json.dumps(
+                    {
+                        "value": {
+                            "status": "complete",
+                            "pr_number": 3,
+                            "head_sha": head,
+                        }
+                    }
+                ),
+            )
+        )
+        session.add(
+            SwarmNodeRun(
+                task_id="t-1",
                 node_key=f"review_recovery_{event.id}",
                 attempt=1,
                 status="succeeded",
                 session_id=12,
                 head_sha=head,
+                outcome_json=json.dumps(
+                    {
+                        "value": {
+                            "verdict": "approve",
+                            "pr_number": 3,
+                            "head_sha": head,
+                        }
+                    }
+                ),
             )
         )
         session.commit()
