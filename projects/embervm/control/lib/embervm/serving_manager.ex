@@ -639,6 +639,7 @@ defmodule Embervm.ServingManager do
     case safe_start_serving(state, dial_id, req) do
       {:ok, %StartServingResponse{vm_id: vm_id, ip: ip, port: port}}
       when is_binary(vm_id) and vm_id != "" ->
+        shadow_claim(dial_id, vm_id, instance.workload, catalog_entry(state, instance.workload))
         {:relit, instance.instance_id, node_id, %{vm_id: vm_id, ip: ip, port: port}}
 
       other ->
@@ -656,6 +657,7 @@ defmodule Embervm.ServingManager do
       case safe_start_serving(state, dial_id, req) do
         {:ok, %StartServingResponse{vm_id: vm_id, ip: ip, port: port}}
         when is_binary(vm_id) and vm_id != "" ->
+          shadow_claim(dial_id, vm_id, workload, entry)
           attrs = %{
             tenant: state.tenant,
             principal: wake_principal(state, workload),
@@ -871,6 +873,15 @@ defmodule Embervm.ServingManager do
   defp reply_all(waiters, reply) do
     for {from, _req, _principal} <- waiters, do: GenServer.reply(from, reply)
     :ok
+  end
+
+  defp shadow_claim(instance_id, vm_id, workload, entry) do
+    mem_mib = if is_map(entry), do: Map.get(entry, :mem_mib) || 512, else: 512
+
+    Embervm.Scheduler.Reservation.claim_shadow(instance_id, vm_id,
+      workload: workload,
+      mem_mib: mem_mib
+    )
   end
 
   # -- miss tracing (Task 10) ------------------------------------------------
@@ -1489,7 +1500,14 @@ defmodule Embervm.ServingManager do
 
     with {:ok, channel} <- safe_channel(state.channel_fun, dial_key) do
       try do
-        match?({:ok, %{teardown_confirmed: true}}, state.stop_serving_fun.(channel, req))
+        case state.stop_serving_fun.(channel, req) do
+          {:ok, %{teardown_confirmed: true}} ->
+            Embervm.Scheduler.Reservation.release_confirmed(dial_key, vm_id, true)
+            true
+
+          _ ->
+            false
+        end
       rescue
         _ -> false
       catch

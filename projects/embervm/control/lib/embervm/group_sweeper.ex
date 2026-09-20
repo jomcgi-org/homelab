@@ -1155,9 +1155,18 @@ defmodule Embervm.GroupSweeper do
       member_name: member.member_name
     }
 
-    with {:ok, channel} <- safe_channel(state, dial_for_group(state, instance)) do
+    dial_id = dial_for_group(state, instance)
+
+    with {:ok, channel} <- safe_channel(state, dial_id) do
       try do
-        match?({:ok, %{teardown_confirmed: true}}, state.stop_group_member_fun.(channel, req))
+        case state.stop_group_member_fun.(channel, req) do
+          {:ok, %{teardown_confirmed: true}} ->
+            Embervm.Scheduler.Reservation.release_confirmed(dial_id, member.vm_id, true)
+            true
+
+          _ ->
+            false
+        end
       rescue
         _ -> false
       catch

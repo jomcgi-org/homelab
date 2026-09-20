@@ -2197,6 +2197,7 @@ defmodule Embervm.StatefulManager do
       case safe_start_stateful(state, dial_id, req) do
         {:ok, %StartStatefulResponse{vm_id: vm_id, ip: ip, port: port, generation: generation, was_relight: true}}
         when is_binary(vm_id) and vm_id != "" ->
+          shadow_claim(dial_id, vm_id, instance.workload, catalog_entry(state, instance.workload))
           {:ok, {:relit, instance.instance_id, node_id, %{vm_id: vm_id, ip: ip, port: port, generation: generation}}}
 
         # A RELIGHT call that fell back to a cold boot on the daemon side
@@ -2206,6 +2207,7 @@ defmodule Embervm.StatefulManager do
         # a RELIGHT-mode response is exactly that fallback signal.
         {:ok, %StartStatefulResponse{vm_id: vm_id, ip: ip, port: port, generation: generation, was_relight: false, cold_boot_reason: reason}}
         when is_binary(vm_id) and vm_id != "" ->
+          shadow_claim(dial_id, vm_id, instance.workload, catalog_entry(state, instance.workload))
           {:ok, {:relight_fell_back, instance.instance_id, node_id, %{vm_id: vm_id, ip: ip, port: port, generation: generation}, reason}}
 
         {:error, %GRPC.RPCError{status: 8}} = rejected ->
@@ -2228,6 +2230,7 @@ defmodule Embervm.StatefulManager do
       case safe_start_stateful(state, dial_id, req) do
         {:ok, %StartStatefulResponse{vm_id: vm_id, ip: ip, port: port, generation: generation}}
         when is_binary(vm_id) and vm_id != "" ->
+          shadow_claim(dial_id, vm_id, workload, catalog_entry(state, workload))
           attrs = %{
             tenant: state.tenant,
             principal: wake_principal(workload),
@@ -2523,6 +2526,15 @@ defmodule Embervm.StatefulManager do
     :ok
   end
 
+  defp shadow_claim(instance_id, vm_id, workload, entry) do
+    mem_mib = if is_map(entry), do: Map.get(entry, :mem_mib) || 512, else: 512
+
+    Embervm.Scheduler.Reservation.claim_shadow(instance_id, vm_id,
+      workload: workload,
+      mem_mib: mem_mib
+    )
+  end
+
   # -- wake tracing (Task 10) --------------------------------------------------
 
   # Merge boundary stamps into a workload's tracing bundle. A no-op when the
@@ -2717,7 +2729,10 @@ defmodule Embervm.StatefulManager do
          {:ok, channel} <- safe_channel(state.channel_fun, dial_id) do
       try do
         case state.stop_stateful_fun.(channel, req) do
-          {:ok, %{teardown_confirmed: true}} -> true
+          {:ok, %{teardown_confirmed: true}} ->
+            Embervm.Scheduler.Reservation.release_confirmed(dial_id, vm_id, true)
+            true
+
           _ -> false
         end
       rescue

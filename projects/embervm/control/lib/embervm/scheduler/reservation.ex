@@ -28,6 +28,7 @@ defmodule Embervm.Scheduler.Reservation do
   """
 
   use GenServer
+  require Logger
 
   @table :embervm_reservations
   @default_liveness_interval_ms 5_000
@@ -63,6 +64,13 @@ defmodule Embervm.Scheduler.Reservation do
     GenServer.call(server, {:claim, instance_id, ref, opts})
   end
 
+  @doc "Records a shadow claim without blocking or failing the lifecycle caller."
+  @spec claim_shadow(term(), term(), keyword()) :: :ok
+  def claim_shadow(instance_id, ref, opts) when is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    safe_cast(server, {:claim, instance_id, ref, opts})
+  end
+
   @spec release(term(), term()) :: :ok
   def release(instance_id, ref), do: release(__MODULE__, instance_id, ref)
 
@@ -71,6 +79,17 @@ defmodule Embervm.Scheduler.Reservation do
     GenServer.call(server, {:release, instance_id, ref})
   end
 
+  @doc "Releases a claim only when the node explicitly confirmed teardown."
+  @spec release_confirmed(term(), term(), boolean(), keyword()) :: :ok
+  def release_confirmed(instance_id, ref, confirmed, opts \\ [])
+
+  def release_confirmed(instance_id, ref, true, opts) when is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    safe_cast(server, {:release, instance_id, ref, :node_confirmed_teardown})
+  end
+
+  def release_confirmed(_instance_id, _ref, false, _opts), do: :ok
+
   @spec set_pool_target(term(), term(), non_neg_integer(), non_neg_integer()) :: :ok
   def set_pool_target(instance_id, workload, count, mem_mib),
     do: set_pool_target(__MODULE__, instance_id, workload, count, mem_mib)
@@ -78,6 +97,13 @@ defmodule Embervm.Scheduler.Reservation do
   @spec set_pool_target(GenServer.server(), term(), term(), non_neg_integer(), non_neg_integer()) :: :ok
   def set_pool_target(server, instance_id, workload, count, mem_mib) do
     GenServer.call(server, {:set_pool_target, instance_id, workload, count, mem_mib})
+  end
+
+  @doc "Updates a task-pool target without making refill depend on the ledger."
+  @spec set_pool_target_shadow(term(), term(), non_neg_integer(), non_neg_integer(), keyword()) :: :ok
+  def set_pool_target_shadow(instance_id, workload, count, mem_mib, opts \\ []) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    safe_cast(server, {:set_pool_target, instance_id, workload, count, mem_mib})
   end
 
   @spec reserved_mib(term(), atom()) :: non_neg_integer()
@@ -99,11 +125,32 @@ defmodule Embervm.Scheduler.Reservation do
     GenServer.call(server, {:reconcile, instance_id, MapSet.new(live_refs), now_ms})
   end
 
+  @doc "Adopts node-reported live VMs and absence-collects old claims."
+  @spec observe(GenServer.server(), term(), Enumerable.t(), keyword()) ::
+          {:ok, %{adopted: non_neg_integer(), skipped: non_neg_integer(), released: [term()]}}
+  def observe(server, instance_id, live_refs, opts) when is_list(opts) do
+    GenServer.call(server, {:observe, instance_id, Enum.to_list(live_refs), opts})
+  end
+
+  @doc "Queues node truth for reconciliation without making NodeRegistry depend on the ledger."
+  @spec observe_shadow(term(), Enumerable.t(), keyword()) :: :ok
+  def observe_shadow(instance_id, live_refs, opts \\ []) when is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    safe_cast(server, {:observe, instance_id, Enum.to_list(live_refs), opts})
+  end
+
   @spec drop_instance(term()) :: :ok
   def drop_instance(instance_id), do: drop_instance(__MODULE__, instance_id)
 
   @spec drop_instance(GenServer.server(), term()) :: :ok
   def drop_instance(server, instance_id), do: GenServer.call(server, {:drop_instance, instance_id})
+
+  @doc "Drops an expired brick row without making expiry depend on the ledger."
+  @spec drop_instance_shadow(term(), keyword()) :: :ok
+  def drop_instance_shadow(instance_id, opts \\ []) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    safe_cast(server, {:drop_instance, instance_id})
+  end
 
   @spec all(atom()) :: %{term() => [entry()]}
   def all(table \\ @table) do
@@ -169,62 +216,29 @@ defmodule Embervm.Scheduler.Reservation do
   @impl true
   def handle_call({:claim, instance_id, ref, opts}, _from, state) do
     now_ms = Keyword.get(opts, :now_ms, System.system_time(:millisecond))
-    existing = Map.get(row_map(instance_id, state.table), ref)
-    confirmed_at_ms = if existing, do: existing.confirmed_at_ms, else: nil
-    entry = build_entry(ref, opts, now_ms, confirmed_at_ms)
-    put_entry(state.table, instance_id, entry)
+    put_claim_entry(state.table, instance_id, ref, opts, now_ms)
     {:reply, :ok, state}
   end
 
   def handle_call({:release, instance_id, ref}, _from, state) do
-    update_row(state.table, instance_id, fn row -> Map.delete(row, ref) end)
+    release_entry(state.table, instance_id, ref, :explicit)
     {:reply, :ok, state}
   end
 
   def handle_call({:set_pool_target, instance_id, workload, count, mem_mib}, _from, state) do
-    ref = {:pool, workload}
-
-    update_row(state.table, instance_id, fn row ->
-      if count == 0 do
-        Map.delete(row, ref)
-      else
-        existing = Map.get(row, ref)
-        claimed_at_ms = if existing, do: existing.claimed_at_ms, else: System.system_time(:millisecond)
-
-        Map.put(row, ref, %{
-          ref: ref,
-          workload: workload,
-          mem_mib: mem_mib,
-          count: count,
-          kind: :pool_target,
-          claimed_at_ms: claimed_at_ms,
-          confirmed_at_ms: nil
-        })
-      end
-    end)
-
+    set_pool_target_entry(state.table, instance_id, workload, count, mem_mib)
     {:reply, :ok, state}
   end
 
   def handle_call({:reconcile, instance_id, live_refs, now_ms}, _from, state) do
-    current = row_map(instance_id, state.table)
-
-    {next, released} =
-      Enum.reduce(current, {%{}, []}, fn {ref, entry}, {kept, released} ->
-        cond do
-          entry.kind == :pool_target -> {Map.put(kept, ref, entry), released}
-          MapSet.member?(live_refs, ref) ->
-            confirmed = if is_nil(entry.confirmed_at_ms), do: %{entry | confirmed_at_ms: now_ms}, else: entry
-            {Map.put(kept, ref, confirmed), released}
-          now_ms - entry.claimed_at_ms >= state.grace_age_ms ->
-            {kept, [ref | released]}
-          true ->
-            {Map.put(kept, ref, entry), released}
-        end
-      end)
-
+    {next, released} = reconcile_row(row_map(instance_id, state.table), live_refs, now_ms, state.grace_age_ms)
     write_row(state.table, instance_id, next)
     {:reply, {:ok, Enum.reverse(released)}, state}
+  end
+
+  def handle_call({:observe, instance_id, live_refs, opts}, _from, state) do
+    {result, state} = observe_live(state, instance_id, live_refs, opts)
+    {:reply, {:ok, result}, state}
   end
 
   def handle_call({:drop_instance, instance_id}, _from, state) do
@@ -256,6 +270,33 @@ defmodule Embervm.Scheduler.Reservation do
     {:reply, {:ok, counts}, state}
   end
 
+  @impl true
+  def handle_cast({:claim, instance_id, ref, opts}, state) do
+    now_ms = Keyword.get(opts, :now_ms, System.system_time(:millisecond))
+    put_claim_entry(state.table, instance_id, ref, opts, now_ms)
+    {:noreply, state}
+  end
+
+  def handle_cast({:release, instance_id, ref, reason}, state) do
+    release_entry(state.table, instance_id, ref, reason)
+    {:noreply, state}
+  end
+
+  def handle_cast({:set_pool_target, instance_id, workload, count, mem_mib}, state) do
+    set_pool_target_entry(state.table, instance_id, workload, count, mem_mib)
+    {:noreply, state}
+  end
+
+  def handle_cast({:observe, instance_id, live_refs, opts}, state) do
+    {_result, state} = observe_live(state, instance_id, live_refs, opts)
+    {:noreply, state}
+  end
+
+  def handle_cast({:drop_instance, instance_id}, state) do
+    :ets.delete(state.table, instance_id)
+    {:noreply, state}
+  end
+
   defp build_entry(ref, opts, now_ms, confirmed_at_ms) do
     %{
       ref: ref,
@@ -270,10 +311,17 @@ defmodule Embervm.Scheduler.Reservation do
 
   defp live_ref(%{ref: ref, workload: workload}), do: {ref, workload}
   defp live_ref(%{vm_id: ref, workload: workload}), do: {ref, workload}
+  defp live_ref(%{ref: ref}), do: {ref, nil}
+  defp live_ref(%{vm_id: ref}), do: {ref, nil}
   defp live_ref({ref, workload}), do: {ref, workload}
 
   defp catalog_memory(workload, opts) do
-    source = Keyword.get(opts, :mem_mib, Keyword.get(opts, :memory_by_workload, Keyword.get(opts, :catalog)))
+    source =
+      Keyword.get(
+        opts,
+        :mem_mib,
+        Keyword.get(opts, :memory_by_workload, Keyword.get(opts, :catalog, :workload_catalog))
+      )
     live = Keyword.get(opts, :live)
 
     value =
@@ -282,6 +330,7 @@ defmodule Embervm.Scheduler.Reservation do
         is_map(source) -> Map.get(source, workload)
         is_integer(source) -> source
         is_map(live) and is_integer(live[:mem_mib]) -> live[:mem_mib]
+        source == :workload_catalog -> catalog_entry_memory(workload, live)
         true -> nil
       end
 
@@ -292,9 +341,186 @@ defmodule Embervm.Scheduler.Reservation do
     end
   end
 
+  defp catalog_entry_memory(workload, live) do
+    case Embervm.WorkloadCatalog.fetch(workload) do
+      {:ok, entry} -> Map.get(entry, :mem_mib) || group_member_memory(entry, live)
+      :error -> nil
+    end
+  rescue
+    _ -> nil
+  catch
+    _, _ -> nil
+  end
+
+  defp group_member_memory(%{group: %{members: members}}, %{member_name: member_name})
+       when is_list(members) and is_binary(member_name) do
+    members
+    |> Enum.find(&group_member_name?(&1, member_name))
+    |> case do
+      nil -> nil
+      member -> Map.get(member, :mem_mib)
+    end
+  end
+
+  defp group_member_memory(_entry, _live), do: nil
+
+  defp group_member_name?(member, member_name) do
+    name = Map.get(member, :name)
+
+    case Map.get(member, :replicas) do
+      replicas when is_integer(replicas) and replicas > 1 ->
+        Enum.any?(0..(replicas - 1), &(member_name == "#{name}-#{&1}"))
+
+      _ ->
+        member_name == name
+    end
+  end
+
+  defp observe_live(state, instance_id, live_refs, opts) do
+    now_ms = Keyword.get(opts, :now_ms, System.system_time(:millisecond))
+    current = row_map(instance_id, state.table)
+
+    {adopted, counts} =
+      Enum.reduce(live_refs, {current, %{adopted: 0, skipped: 0}}, fn live, {row, counts} ->
+        {ref, reported_workload} = live_ref(live)
+        workload = reported_workload || group_workload(live)
+
+        cond do
+          Map.has_key?(row, ref) ->
+            {row, counts}
+
+          is_nil(workload) ->
+            {row, %{counts | skipped: counts.skipped + 1}}
+
+          true ->
+            case catalog_memory(workload, Keyword.put(opts, :live, live)) do
+              {:ok, mem_mib} ->
+                entry = build_entry(ref, [workload: workload, mem_mib: mem_mib], now_ms, now_ms)
+                {Map.put(row, ref, entry), %{counts | adopted: counts.adopted + 1}}
+
+              :error ->
+                {row, %{counts | skipped: counts.skipped + 1}}
+            end
+        end
+      end)
+
+    live_ref_set = MapSet.new(live_refs, fn live -> elem(live_ref(live), 0) end)
+    {next, released} = reconcile_row(adopted, live_ref_set, now_ms, state.grace_age_ms)
+    write_row(state.table, instance_id, next)
+
+    Enum.each(released, fn ref ->
+      entry = Map.fetch!(adopted, ref)
+
+      Logger.info("embervm reservation released",
+        reservation_event: :absence_gc,
+        release_reason: :absence_gc,
+        instance_id: instance_id,
+        vm_id: ref,
+        workload: entry.workload,
+        mem_mib: entry.mem_mib,
+        claim_age_ms: max(0, now_ms - entry.claimed_at_ms)
+      )
+    end)
+
+    {%{adopted: counts.adopted, skipped: counts.skipped, released: Enum.reverse(released)}, state}
+  end
+
+  defp group_workload(%{group_instance_id: group_instance_id}) when is_binary(group_instance_id) do
+    case Embervm.GroupStore.get(group_instance_id) do
+      {:ok, instance} -> Map.get(instance, :workload)
+      :error -> nil
+    end
+  rescue
+    _ -> nil
+  catch
+    _, _ -> nil
+  end
+
+  defp group_workload(_live), do: nil
+
+  defp reconcile_row(current, live_refs, now_ms, grace_age_ms) do
+    Enum.reduce(current, {%{}, []}, fn {ref, entry}, {kept, released} ->
+      cond do
+        entry.kind == :pool_target ->
+          {Map.put(kept, ref, entry), released}
+
+        MapSet.member?(live_refs, ref) ->
+          confirmed = if is_nil(entry.confirmed_at_ms), do: %{entry | confirmed_at_ms: now_ms}, else: entry
+          {Map.put(kept, ref, confirmed), released}
+
+        now_ms - entry.claimed_at_ms >= grace_age_ms ->
+          {kept, [ref | released]}
+
+        true ->
+          {Map.put(kept, ref, entry), released}
+      end
+    end)
+  end
+
+  defp release_entry(table, instance_id, ref, reason) do
+    row = row_map(instance_id, table)
+
+    case Map.pop(row, ref) do
+      {nil, _row} ->
+        :ok
+
+      {entry, next} ->
+        write_row(table, instance_id, next)
+
+        Logger.info("embervm reservation released",
+          reservation_event: :release,
+          release_reason: reason,
+          instance_id: instance_id,
+          vm_id: ref,
+          workload: entry.workload,
+          mem_mib: entry.mem_mib
+        )
+    end
+  end
+
+  defp set_pool_target_entry(table, instance_id, workload, count, mem_mib) do
+    ref = {:pool, workload}
+
+    update_row(table, instance_id, fn row ->
+      if count == 0 do
+        Map.delete(row, ref)
+      else
+        existing = Map.get(row, ref)
+        claimed_at_ms = if existing, do: existing.claimed_at_ms, else: System.system_time(:millisecond)
+
+        Map.put(row, ref, %{
+          ref: ref,
+          workload: workload,
+          mem_mib: mem_mib,
+          count: count,
+          kind: :pool_target,
+          claimed_at_ms: claimed_at_ms,
+          confirmed_at_ms: nil
+        })
+      end
+    end)
+  end
+
+  defp safe_cast(server, message) do
+    GenServer.cast(server, message)
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
   defp put_entry(table, instance_id, entry) do
     row = row_map(instance_id, table)
     write_row(table, instance_id, Map.put(row, entry.ref, entry))
+  end
+
+  defp put_claim_entry(table, instance_id, ref, opts, now_ms) do
+    existing = Map.get(row_map(instance_id, table), ref)
+    confirmed_at_ms = if existing, do: existing.confirmed_at_ms, else: nil
+    entry = build_entry(ref, opts, now_ms, confirmed_at_ms)
+    entry = if existing, do: %{entry | claimed_at_ms: existing.claimed_at_ms}, else: entry
+    put_entry(table, instance_id, entry)
   end
 
   defp update_row(table, instance_id, fun) do

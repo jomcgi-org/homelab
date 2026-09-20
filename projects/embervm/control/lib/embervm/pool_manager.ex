@@ -122,6 +122,8 @@ defmodule Embervm.PoolManager do
       invalidate_fun: Keyword.get(opts, :invalidate_fun, &Embervm.NodeChannel.invalidate/2),
       prime_fun: Keyword.get(opts, :prime_fun, &default_prime/2),
       deposit_fun: Keyword.get(opts, :deposit_fun, &Embervm.Dispatcher.deposit/4),
+      reservation_target_fun:
+        Keyword.get(opts, :reservation_target_fun, &Embervm.Scheduler.Reservation.set_pool_target_shadow/4),
       op_log: Keyword.get(opts, :op_log, nil),
       op_log_mod: Keyword.get(opts, :op_log_mod, Embervm.OpLog.SQLite),
       tenant: Keyword.get(opts, :tenant, "homelab"),
@@ -132,7 +134,8 @@ defmodule Embervm.PoolManager do
       # Dynamic.
       inflight_primes: %{},
       prime_workers: %{},
-      floor_satisfied: %{}
+      floor_satisfied: %{},
+      reservation_targets: %{}
     }
 
     if Keyword.get(opts, :start_refill, true) do
@@ -222,7 +225,43 @@ defmodule Embervm.PoolManager do
     state = update_floor_status(state, instances, fleet_totals)
     global_room = max(0, state.max_concurrent_primes - map_size(state.prime_workers))
     allocation = plan_fleet_allocation(state, instances, fleet_totals, global_room)
-    spawn_primes(state, allocation)
+    state
+    |> publish_reservation_targets(instances, allocation)
+    |> spawn_primes(allocation)
+  end
+
+  # Pool reservations are the declared-memory intent for parked task VMs. The
+  # target includes VMs already reported free, primes currently in flight, and
+  # primes this pass is about to start. Keys that disappear because a workload
+  # retired or a brick left capacity are explicitly zeroed; pool targets are not
+  # eligible for absence GC because no one node-reported vm_id represents them.
+  defp publish_reservation_targets(state, instances, allocation) do
+    planned = Map.new(allocation, &{{&1.node_id, &1.workload}, &1.count})
+
+    targets =
+      for instance <- instances,
+          {workload, facts} <- instance.workloads,
+          is_integer(facts.mem_mib) and facts.mem_mib >= 0,
+          into: %{} do
+        key = {instance.node_id, workload}
+        count = facts.free + inflight_for(state, instance.node_id, workload) + Map.get(planned, key, 0)
+        {key, %{count: count, mem_mib: facts.mem_mib}}
+      end
+
+    Enum.each(targets, fn {{instance_id, workload}, target} ->
+      _ =
+        safe(fn ->
+          state.reservation_target_fun.(instance_id, workload, target.count, target.mem_mib)
+        end)
+    end)
+
+    state.reservation_targets
+    |> Map.drop(Map.keys(targets))
+    |> Enum.each(fn {{instance_id, workload}, old} ->
+      _ = safe(fn -> state.reservation_target_fun.(instance_id, workload, 0, old.mem_mib) end)
+    end)
+
+    %{state | reservation_targets: targets}
   end
 
   defp instance_facts(state, facts) do

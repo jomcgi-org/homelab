@@ -2,7 +2,7 @@ defmodule Embervm.SchedulerTest do
   use ExUnit.Case, async: true
 
   alias Embervm.{Brick, Scheduler}
-  alias Embervm.Scheduler.{Request, Score}
+  alias Embervm.Scheduler.{Request, Reservation, Score}
 
   defp brick(opts \\ []) do
     %{
@@ -62,6 +62,20 @@ defmodule Embervm.SchedulerTest do
     low = brick(mem_headroom_mib: 1, mem_reject_floor_mib: 512)
     assert Scheduler.place(%Request{bricks: [low], need_mib: nil}) == [low]
     assert Scheduler.place(%Request{bricks: [low], need_mib: 0}) == []
+  end
+
+  test "shadow reservations never change observed-memory placement" do
+    table = String.to_atom("scheduler_shadow_#{System.unique_integer([:positive])}")
+    {:ok, ledger} = Reservation.start_link(name: nil, table: table)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(ledger) end)
+
+    candidate = brick(mem_headroom_mib: 1_024, mem_reject_floor_mib: 0)
+    request = %Request{bricks: [candidate], need_mib: 512}
+    assert Scheduler.place(request) == [candidate]
+
+    Reservation.claim(ledger, candidate.instance_id, "vm", workload: "wl", mem_mib: 1_000_000)
+    assert Reservation.reserved_mib(candidate.instance_id, table) == 1_000_000
+    assert Scheduler.place(request) == [candidate]
   end
 
   test "base none applies no gate" do
