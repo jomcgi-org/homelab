@@ -5113,6 +5113,13 @@ py_test(
     ],
 )
 
+# Hand-registered real-PostgreSQL coverage for source-fence row locking and
+# fresh first-creation decisions across concurrent webhook and sweep writers.
+bdd_test(
+    name = "swarm_factory_webhook_postgres_test",
+    srcs = ["factory/orchestration/factory_webhook_postgres_test.py"],
+)
+
 py_test(
     name = "swarm_work_item_links_test",
     srcs = ["factory/orchestration/work_item_links_test.py"],

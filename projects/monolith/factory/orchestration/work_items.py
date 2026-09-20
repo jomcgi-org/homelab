@@ -159,6 +159,7 @@ def order_github_issue_snapshot(
             FactoryGithubIssueState.issue_number == number,
         )
         .with_for_update()
+        .execution_options(populate_existing=True)
     ).one_or_none()
     created = False
     if row is None:
@@ -186,6 +187,7 @@ def order_github_issue_snapshot(
                     FactoryGithubIssueState.issue_number == number,
                 )
                 .with_for_update()
+                .execution_options(populate_existing=True)
             ).one()
 
     recorded_updated_at = row.source_updated_at
@@ -262,6 +264,25 @@ def _lock_items(db: Session, *item_ids: int) -> dict[int, WorkItem]:
     return found
 
 
+def _lock_github_repo_items(db: Session, repo: str) -> dict[int, WorkItem]:
+    """Lock GitHub work items after source fences, in stable ID order."""
+    rows = db.exec(
+        select(WorkItem)
+        .where(
+            WorkItem.github_repo == repo,
+            WorkItem.github_issue_number.is_not(None),
+        )
+        .order_by(WorkItem.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).all()
+    return {
+        item.github_issue_number: item
+        for item in rows
+        if item.github_issue_number is not None
+    }
+
+
 def _event(
     db: Session,
     item: WorkItem,
@@ -296,44 +317,19 @@ def _event(
     )
 
 
-def mint_or_sync_from_github(
+def _mint_or_sync_from_github_locked(
     db: Session,
     repo: str,
     issue: dict,
+    item: WorkItem | None,
     *,
     actor: str,
     trusted_authors: frozenset[str] | None = None,
-    source_ordered: bool = False,
-    source_ref: str | None = None,
 ) -> tuple[WorkItem | None, str]:
-    """Mint or refresh one issue while respecting a local authority handoff."""
-    if issue.get("pull_request") is not None:
-        return None, "skipped"
-    try:
-        repo = normalize_repo(repo)
-    except ValueError as exc:
-        raise WorkItemError("invalid GitHub repository") from exc
+    """Apply one snapshot after its source fence and item lock are held."""
     number = _issue_number(issue)
-    item = db.exec(
-        select(WorkItem)
-        .where(
-            WorkItem.github_repo == repo,
-            WorkItem.github_issue_number == number,
-        )
-        .with_for_update()
-    ).one_or_none()
     if item is not None and item.authority == "local":
         return item, "local_untouched"
-
-    if source_ordered:
-        _source_state, ordering_outcome = order_github_issue_snapshot(
-            db,
-            repo,
-            issue,
-            source_ref=source_ref or actor,
-        )
-        if ordering_outcome is not None:
-            return item, ordering_outcome
 
     values = _github_values(repo, issue, trusted_authors=trusted_authors)
     now = _now()
@@ -444,6 +440,59 @@ def mint_or_sync_from_github(
         stated_reason="synced from GitHub issue",
     )
     return item, "synced"
+
+
+def mint_or_sync_from_github(
+    db: Session,
+    repo: str,
+    issue: dict,
+    *,
+    actor: str,
+    trusted_authors: frozenset[str] | None = None,
+    source_ordered: bool = False,
+    source_ref: str | None = None,
+) -> tuple[WorkItem | None, str]:
+    """Mint or refresh one issue while respecting a local authority handoff."""
+    if issue.get("pull_request") is not None:
+        return None, "skipped"
+    try:
+        repo = normalize_repo(repo)
+    except ValueError as exc:
+        raise WorkItemError("invalid GitHub repository") from exc
+    number = _issue_number(issue)
+    ordering_outcome = None
+    if source_ordered:
+        _source_state, ordering_outcome = order_github_issue_snapshot(
+            db,
+            repo,
+            issue,
+            source_ref=source_ref or actor,
+        )
+        # Source fences always precede work-item locks. Locking the repository
+        # set also gives dependency reconciliation the same stable ID order.
+        item = _lock_github_repo_items(db, repo).get(number)
+    else:
+        item = db.exec(
+            select(WorkItem)
+            .where(
+                WorkItem.github_repo == repo,
+                WorkItem.github_issue_number == number,
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).one_or_none()
+    if item is not None and item.authority == "local":
+        return item, "local_untouched"
+    if ordering_outcome is not None:
+        return item, ordering_outcome
+    return _mint_or_sync_from_github_locked(
+        db,
+        repo,
+        issue,
+        item,
+        actor=actor,
+        trusted_authors=trusted_authors,
+    )
 
 
 def transition(
@@ -819,20 +868,55 @@ def sync_github_work_items(
     }
     open_numbers: set[int] = set()
     with _locked_session() as (db, _control):
-        for issue in issues:
+        indexed_issues: list[tuple[int, dict]] = []
+        for index, issue in enumerate(issues):
             if not isinstance(issue, dict):
                 raise WorkItemError("GitHub issue entries must be objects")
-            item, outcome = mint_or_sync_from_github(
-                db,
-                repo,
-                issue,
-                actor=actor,
-                source_ordered=source_ordered,
-                source_ref="github:sweep",
-            )
+            if issue.get("pull_request") is not None:
+                counts["skipped"] += 1
+                continue
+            _issue_number(issue)
+            indexed_issues.append((index, issue))
+
+        ordering_outcomes: dict[int, str | None] = {}
+        if source_ordered:
+            # Acquire every issue fence in source identity order before taking
+            # any work-item lock. This matches the webhook lock order and
+            # prevents a multi-issue sweep from deadlocking with delivery
+            # dependency reconciliation.
+            for index, issue in sorted(
+                indexed_issues, key=lambda indexed: _issue_number(indexed[1])
+            ):
+                _source_state, ordering_outcomes[index] = (
+                    order_github_issue_snapshot(
+                        db,
+                        repo,
+                        issue,
+                        source_ref="github:sweep",
+                    )
+                )
+
+        locked_items = _lock_github_repo_items(db, repo)
+        for index, issue in indexed_issues:
+            number = _issue_number(issue)
+            item = locked_items.get(number)
+            if item is not None and item.authority == "local":
+                outcome = "local_untouched"
+            elif ordering_outcomes.get(index) is not None:
+                outcome = ordering_outcomes[index]
+            else:
+                item, outcome = _mint_or_sync_from_github_locked(
+                    db,
+                    repo,
+                    issue,
+                    item,
+                    actor=actor,
+                )
+                if item is not None:
+                    locked_items[number] = item
             counts[outcome] += 1
             if item is not None:
-                open_numbers.add(_issue_number(issue))
+                open_numbers.add(number)
         if not truncated and not source_ordered:
             closed_count = close_missing_from_github(
                 db, repo, open_numbers, actor=actor
