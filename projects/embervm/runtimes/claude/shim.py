@@ -713,6 +713,8 @@ CLI_UID_ENV = "EMBER_CLI_UID"
 CLI_GID_ENV = "EMBER_CLI_GID"
 DEFAULT_CLI_UID = 65532
 DEFAULT_CLI_GID = 65532
+# Staged only. No chart or base setting enables this by default.
+MUSE_BINARY_PREFLIGHT_ENV = "EMBER_MUSE_BINARY_PREFLIGHT"
 PERSISTENCE_MOUNT_PATH_ENV = "EMBER_PERSISTENCE_MOUNT_PATH"
 DEFAULT_PERSISTENCE_MOUNT_PATH = "/session"
 GUEST_INIT_PATH = "/usr/local/bin/ember-runtime-guest-init"
@@ -783,6 +785,130 @@ def _cli_privilege_kwargs():
         "user": int(os.environ.get(CLI_UID_ENV, str(DEFAULT_CLI_UID))),
         "group": int(os.environ.get(CLI_GID_ENV, str(DEFAULT_CLI_GID))),
     }
+
+
+def _diagnostic_value(value, limit):
+    """Return a bounded representation for non-secret spawn context."""
+    rendered = repr(value)
+    if len(rendered) <= limit:
+        return rendered
+    return rendered[: limit - 3] + "..."
+
+
+def _identity_has_execute_permission(path_stat, uid, gids):
+    """Check mode-bit execute permission for the identity used by Popen."""
+    mode = path_stat.st_mode
+    if uid == 0:
+        # Linux still requires at least one execute bit when root executes a
+        # regular file. The same rule is sufficient for directory traversal.
+        return bool(mode & 0o111)
+    if path_stat.st_uid == uid:
+        return bool(mode & stat.S_IXUSR)
+    if path_stat.st_gid in gids:
+        return bool(mode & stat.S_IXGRP)
+    return bool(mode & stat.S_IXOTH)
+
+
+def _cli_executable_status(path, privilege_kwargs):
+    """Return whether path is statically executable by the Popen identity."""
+    uid = privilege_kwargs.get("user", os.geteuid())
+    gid = privilege_kwargs.get("group", os.getegid())
+    gids = set(os.getgroups())
+    gids.add(gid)
+    try:
+        executable_stat = os.stat(path)
+    except FileNotFoundError:
+        return False, "missing"
+    except OSError as exc:
+        return False, "stat_errno_%s" % (exc.errno or "unknown")
+    if not stat.S_ISREG(executable_stat.st_mode):
+        return False, "not_regular"
+    if not _identity_has_execute_permission(executable_stat, uid, gids):
+        return False, "not_executable_by_cli_identity"
+
+    # A file execute bit is not enough if the child cannot traverse a parent.
+    # Check both lexical and resolved parents so a symlink cannot hide a
+    # directory that the dropped CLI identity cannot enter.
+    directories = []
+    seen_directories = set()
+    for candidate in (path, os.path.realpath(path)):
+        directory = os.path.dirname(candidate)
+        while directory:
+            if directory not in seen_directories:
+                directories.append(directory)
+                seen_directories.add(directory)
+            parent = os.path.dirname(directory)
+            if parent == directory:
+                break
+            directory = parent
+    for directory in directories:
+        try:
+            directory_stat = os.stat(directory)
+        except OSError as exc:
+            return False, "parent_stat_errno_%s" % (exc.errno or "unknown")
+        if not stat.S_ISDIR(directory_stat.st_mode):
+            return False, "parent_not_directory"
+        if not _identity_has_execute_permission(directory_stat, uid, gids):
+            return False, "parent_not_traversable_by_cli_identity"
+    return True, "executable"
+
+
+def _muse_executable_candidates(executable, child_env, cwd):
+    """Resolve candidates with the cwd and PATH semantics Popen will use."""
+    if os.path.dirname(executable):
+        if os.path.isabs(executable):
+            return [executable]
+        return [os.path.abspath(os.path.join(cwd, executable))]
+
+    search_path = child_env.get("PATH")
+    if search_path is None:
+        search_path = os.defpath
+    candidates = []
+    seen = set()
+    for directory in search_path.split(os.pathsep):
+        directory = directory or cwd
+        if not os.path.isabs(directory):
+            directory = os.path.join(cwd, directory)
+        candidate = os.path.abspath(os.path.join(directory, executable))
+        if candidate not in seen:
+            candidates.append(candidate)
+            seen.add(candidate)
+    return candidates
+
+
+def _require_muse_executable(executable, child_env, cwd, privilege_kwargs):
+    """Raise a bounded StartupError when Muse cannot be executed by the child."""
+    first_unusable = None
+    candidates = _muse_executable_candidates(executable, child_env, cwd)
+    for candidate in candidates:
+        usable, reason = _cli_executable_status(candidate, privilege_kwargs)
+        if usable:
+            return
+        if reason != "missing" and first_unusable is None:
+            first_unusable = (candidate, reason)
+
+    uid = privilege_kwargs.get("user", os.geteuid())
+    gid = privilege_kwargs.get("group", os.getegid())
+    if first_unusable:
+        candidate, reason = first_unusable
+    else:
+        candidate, reason = None, "not_found"
+    path_context = child_env.get("PATH")
+    if path_context is None:
+        path_context = os.defpath
+    raise StartupError(
+        "Muse executable preflight failed before Popen: "
+        "executable=%s PATH=%s candidate=%s reason=%s cli_uid=%s cli_gid=%s "
+        "base_generation=unknown"
+        % (
+            _diagnostic_value(executable, 256),
+            _diagnostic_value(path_context, 512),
+            _diagnostic_value(candidate, 256),
+            reason,
+            uid,
+            gid,
+        )
+    )
 
 
 def _checkout_is_usable(path):
@@ -3973,14 +4099,28 @@ class MuseProcess:
             self._prompt_file_path,
         ]
         try:
+            child_env = self._child_env()
+            privilege_kwargs = _cli_privilege_kwargs()
+            if child_env.get(MUSE_BINARY_PREFLIGHT_ENV, "").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+                "on",
+            ):
+                _require_muse_executable(
+                    self.executable,
+                    child_env,
+                    self.workspace,
+                    privilege_kwargs,
+                )
             process = subprocess.Popen(
                 command,
                 cwd=self.workspace,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                env=self._child_env(),
-                **_cli_privilege_kwargs(),
+                env=child_env,
+                **privilege_kwargs,
             )
         except Exception:
             try:
