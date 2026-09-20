@@ -153,7 +153,8 @@ class FactoryStart(SQLModel, table=True):
         ),
         CheckConstraint(
             "accounting_basis IS NULL "
-            "OR accounting_basis IN ('no_model_post', 'capacity_denied')",
+            "OR accounting_basis IN "
+            "('no_model_post', 'capacity_denied', 'no_session_created')",
             name="factory_start_accounting_basis_check",
         ),
         Index("factory_start_task_status_idx", "task_id", "status"),
