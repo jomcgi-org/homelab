@@ -481,9 +481,10 @@ def reconcile(task, policy, runs, permission):
         "funding_lease_due",
     }:
         return False
-    if task.get("routing_tier") == "advisory":
-        return False
     # A completed delivery needs no new allocation or planning turn.
+    # The advisory reviewer is excluded rather than the whole advisory task:
+    # returning early here would sit above the task_deadline escape, so an
+    # advisory task holding a funding grant would never time out.
     reviews = [
         r
         for r in runs
@@ -559,6 +560,7 @@ def reconcile(task, policy, runs, permission):
                     ),
                 )
                 .order_by(FactoryAudit.id.desc())
+                .limit(FUNDING_REFUSAL_LIMIT)
             ).all()
             refusal_count = 0
             for audit in refusals:
@@ -574,7 +576,10 @@ def reconcile(task, policy, runs, permission):
                 ACTOR,
                 evidence={
                     "state": "funding_review_unavailable",
-                    "reason": "6 consecutive funding reviews could not start",
+                    "reason": (
+                        f"{FUNDING_REFUSAL_LIMIT} consecutive funding reviews "
+                        "could not start"
+                    ),
                 },
             )
             return True
