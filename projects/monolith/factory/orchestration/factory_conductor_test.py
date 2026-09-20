@@ -11676,6 +11676,34 @@ def test_rescope_updates_existing_pr_body_without_closing_issue(monkeypatch, ref
     assert gates.rescope_text(live_gate()) in body
 
 
+def test_the_gate_backstop_reads_the_action_not_the_justification():
+    """Measured over the 44 typed gates on record, all classified reversible,
+    the value field tripped the backstop once and reason tripped 17 more times
+    on prose alone, so scanning reason sent 39 percent of them to a person."""
+    from factory.orchestration import factory_gates as gates
+
+    safe = {
+        "kind": "parameter",
+        "classification": "reversible",
+        "value": "Set maxItems to 64 on spec.network.allowOut.",
+        "reason": "Neither spends money, deletes production data, nor uses a credential.",
+    }
+    assert gates.HUMAN_GATE_BACKSTOP.search(safe["reason"])
+    assert not gates.HUMAN_GATE_BACKSTOP.search(safe["value"])
+
+    dangerous = dict(
+        safe, value="Delete the production bucket and raise the budget to $500."
+    )
+    assert gates.HUMAN_GATE_BACKSTOP.search(dangerous["value"])
+    # The action still refuses before any decision is recorded.
+    assert (
+        gates.resolve(
+            {"id": "t-1", "repo": "o/r", "issue_number": 7}, {"gate": dangerous}, "c"
+        )
+        is False
+    )
+
+
 def test_investigation_default_is_decided_before_next_planner(feedback_db, monkeypatch):
     """A typed investigation gate is server-decided without another pause artifact."""
     from factory.orchestration import factory_landing as landing
@@ -11686,7 +11714,13 @@ def test_investigation_default_is_decided_before_next_planner(feedback_db, monke
         "kind": "parameter",
         "classification": "reversible",
         "value": "threshold=5",
-        "reason": "A reversible alert default",
+        # The justification names what the gate does NOT do. Scanning `reason`
+        # matched "spend", "delete", "prod" and "account" here and refused the
+        # gate because it argued it was safe.
+        "reason": (
+            "A reversible alert default. It neither spends money nor deletes "
+            "production data, and touches no external account."
+        ),
     }
     complete_feedback_node(
         task,

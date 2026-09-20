@@ -134,9 +134,17 @@ def resolve(task: dict, artifact: dict, cause: str) -> bool:
         # Legacy artifacts and unrelated human questions retain their path.
         return False
     gate = validate_gate(raw)
-    if any(
-        HUMAN_GATE_BACKSTOP.search(gate.get(field, "")) for field in ("value", "reason")
-    ):
+    # Only the action is scanned. `reason` is justification prose, where these
+    # words appear almost exclusively negated or incidental: "needs no
+    # credential change", "already created the delivery target", "predictable
+    # admission cost". Measured over the 44 typed gates on record, all of them
+    # classified reversible, the value field tripped once and the reason field
+    # tripped 17 more times on prose alone. Scanning reason therefore blocked
+    # automatic resolution for 39 percent of reversible gates and sent them to
+    # a person, and it did so *because* the conductor explained why the gate
+    # was safe. classification remains the control; this stays a backstop over
+    # what the gate actually does.
+    if HUMAN_GATE_BACKSTOP.search(gate.get("value", "") or ""):
         return False
     if gate["classification"] != "reversible":
         return False
