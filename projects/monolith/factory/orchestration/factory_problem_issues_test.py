@@ -106,6 +106,24 @@ def test_policy_defaults_every_source_off_and_refuses_broader_writes():
         controls._validate_problem_issues({"max_per_tick": 2})
 
 
+def test_github_write_streams_and_refuses_an_oversized_response(monkeypatch):
+    client_class = httpx.Client
+    transport = httpx.MockTransport(
+        lambda _request: httpx.Response(
+            201,
+            content=b"x" * (producer.RESPONSE_LIMIT_BYTES + 1),
+        )
+    )
+    monkeypatch.setattr(
+        producer.httpx,
+        "Client",
+        lambda **kwargs: client_class(transport=transport, **kwargs),
+    )
+
+    with pytest.raises(ValueError, match="response exceeds factory limit"):
+        producer.github_write("owner/repo", {"title": "bounded", "body": "body"})
+
+
 def add_event(engine, *, workflow="wf-1", action="node_stalled", **detail):
     payload = {"workflow_id": workflow, "node_key": "implement", **detail}
     with Session(engine) as session:
@@ -146,6 +164,7 @@ def github(monkeypatch, issues=None):
         "writes": [],
         "reads": [],
         "read_repos": [],
+        "write_repos": [],
     }
 
     def read(repo, suffix):
@@ -153,7 +172,8 @@ def github(monkeypatch, issues=None):
         state["reads"].append(suffix)
         return list(state["issues"])
 
-    def write(_repo, payload):
+    def write(repo, payload):
+        state["write_repos"].append(repo)
         state["writes"].append(payload)
         created = {"number": 7000 + len(state["writes"]), **payload}
         state["issues"].insert(0, created)
@@ -335,12 +355,53 @@ def test_uncertain_write_reconciles_marker_after_backoff_without_reposting(
     producer.problem_issues_tick(selected)
     assert len(state["reads"]) == 1
     clock["now"] += timedelta(minutes=2)
-    producer.problem_issues_tick({**selected, "repo": "moved/repo"})
+    producer.problem_issues_tick(
+        {
+            **selected,
+            "repo": "moved/repo",
+            "problem_issues": {"enabled": False},
+        }
+    )
     assert len(state["writes"]) == 1
     assert state["read_repos"] == ["owner/repo", "owner/repo"]
     assert details(audits(engine, "problem_issue_reconciled"))[-1]["issue_numbers"] == [
         7331
     ]
+
+
+@pytest.mark.parametrize(
+    ("headers", "expected_action"),
+    [
+        ({"X-RateLimit-Remaining": "0"}, "problem_issue_write_uncertain"),
+        ({}, "problem_issue_write_refused"),
+    ],
+)
+def test_github_403_distinguishes_rate_limit_from_permission_refusal(
+    db, monkeypatch, headers, expected_action
+):
+    engine, _clock = db
+    selected = policy()
+    state = github(monkeypatch)
+    enable_after_watermark(engine, selected)
+    add_event(engine, workflow=expected_action)
+
+    def forbidden(_repo, payload):
+        state["writes"].append(payload)
+        request = httpx.Request("POST", "https://api.github.test/issues")
+        response = httpx.Response(403, headers=headers, request=request)
+        raise httpx.HTTPStatusError("forbidden", request=request, response=response)
+
+    monkeypatch.setattr(producer, "github_write", forbidden)
+    producer.problem_issues_tick(selected)
+
+    assert len(state["writes"]) == 1
+    assert details(audits(engine, expected_action))[-1]["status"] == 403
+    other = (
+        "problem_issue_write_refused"
+        if expected_action == "problem_issue_write_uncertain"
+        else "problem_issue_write_uncertain"
+    )
+    assert audits(engine, other) == []
 
 
 def test_six_reconciled_retries_end_unresolved_without_blind_write_retry(
@@ -420,6 +481,46 @@ def test_concurrent_observers_claim_one_external_write(db, monkeypatch):
 
     assert len(state["writes"]) == 1
     assert len(audits(engine, "problem_issue_write_started")) == 1
+
+
+def test_malformed_source_is_refused_and_does_not_block_the_next_event(db, monkeypatch):
+    engine, _clock = db
+    selected = policy()
+    state = github(monkeypatch)
+    enable_after_watermark(engine, selected)
+    with Session(engine) as session:
+        session.add(
+            FactoryAudit(
+                actor="factory:conductor",
+                action="node_stalled",
+                task_id="t-1",
+                detail_json="not-json",
+            )
+        )
+        session.commit()
+    add_event(engine, workflow="after-malformed")
+
+    producer.problem_issues_tick(selected)
+    assert state["writes"] == []
+    refusal = details(audits(engine, "problem_issue_source_refused"))[-1]
+    assert refusal["reason"] == "malformed_source_audit"
+
+    producer.problem_issues_tick(selected)
+    assert len(state["writes"]) == 1
+
+
+def test_source_receipt_repository_owns_discovery_links_and_write(db, monkeypatch):
+    engine, _clock = db
+    selected = {**policy(), "repo": "new-owner/new-repo"}
+    state = github(monkeypatch)
+    enable_after_watermark(engine, selected)
+    add_event(engine, workflow="pinned-repo")
+
+    producer.problem_issues_tick(selected)
+
+    assert state["read_repos"] == ["owner/repo"]
+    assert state["write_repos"] == ["owner/repo"]
+    assert "https://github.com/owner/repo/issues/6002" in state["writes"][0]["body"]
 
 
 def test_pull_request_marker_does_not_deduplicate_an_issue(db, monkeypatch):

@@ -81,15 +81,19 @@ def github_write(repo: str, payload: dict) -> object:
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
         raise ValueError("invalid repository")
     with httpx.Client(timeout=WRITE_TIMEOUT_SECONDS) as client:
-        response = client.post(
+        with client.stream(
+            "POST",
             f"{GITHUB_API}/repos/{repo}/issues",
             headers=_headers(),
             json=payload,
-        )
-        response.raise_for_status()
-        if len(response.content) > RESPONSE_LIMIT_BYTES:
-            raise ValueError("GitHub response exceeds factory limit")
-        return json.loads(response.content or b"{}")
+        ) as response:
+            response.raise_for_status()
+            content = bytearray()
+            for chunk in response.iter_bytes():
+                if len(content) + len(chunk) > RESPONSE_LIMIT_BYTES:
+                    raise ValueError("GitHub response exceeds factory limit")
+                content.extend(chunk)
+    return json.loads(bytes(content) or b"{}")
 
 
 def _source(row: FactoryAudit) -> tuple[str, dict] | None:
@@ -308,21 +312,30 @@ def _receipt(db: Session, task_id: str | None) -> FactoryReceipt | None:
     ).first()
 
 
-def _issue(source: str, row: FactoryAudit, detail: dict, repo: str, marker: str):
+def _source_receipt(row: FactoryAudit) -> tuple[str, int] | None:
     with _read_session() as db:
         receipt = _receipt(db, row.task_id)
-    if receipt is None:
-        return None
-    source_url = f"https://github.com/{repo}/issues/{receipt.issue_number}"
+        if receipt is None:
+            return None
+        return receipt.repo, receipt.issue_number
+
+
+def _issue(
+    source: str,
+    row: FactoryAudit,
+    detail: dict,
+    repo: str,
+    issue_number: int,
+    marker: str,
+):
+    source_url = f"https://github.com/{repo}/issues/{issue_number}"
     titles = {
-        "node_stalled": (
-            f"factory: node stalled while delivering #{receipt.issue_number}"
-        ),
+        "node_stalled": f"factory: node stalled while delivering #{issue_number}",
         "workflow_stranded": (
-            f"factory: workflow stranded while delivering #{receipt.issue_number}"
+            f"factory: workflow stranded while delivering #{issue_number}"
         ),
         "landing_recovery_exhausted": (
-            f"factory: landing recovery exhausted for #{receipt.issue_number}"
+            f"factory: landing recovery exhausted for #{issue_number}"
         ),
     }
     lines = [
@@ -334,7 +347,7 @@ def _issue(source: str, row: FactoryAudit, detail: dict, repo: str, marker: str)
         "",
         "## Source links",
         "",
-        f"- [Delivery issue #{receipt.issue_number}]({source_url})",
+        f"- [Delivery issue #{issue_number}]({source_url})",
     ]
     pr_number = detail.get("pr_number")
     if type(pr_number) is int and pr_number > 0:
@@ -404,7 +417,11 @@ def _ambiguous(exc: Exception) -> bool:
     if not isinstance(exc, httpx.HTTPStatusError):
         return True
     status = exc.response.status_code
-    return status >= 500 or status in (408, 429)
+    rate_limited = status == 403 and (
+        "retry-after" in exc.response.headers
+        or exc.response.headers.get("x-ratelimit-remaining") == "0"
+    )
+    return status >= 500 or status in (408, 429) or rate_limited
 
 
 def _due(value: object) -> bool:
@@ -548,13 +565,12 @@ def problem_issues_tick(policy: dict) -> None:
         return
     block = problem_issues_policy(policy)
     changed, observed = _observe_policy(block)
-    if changed or not any(observed["effective_sources"].values()):
-        return
-
     with _read_session() as db:
         pending = _pending_started(db)
     if pending is not None:
         _reconcile_pending(block, *pending)
+        return
+    if changed or not any(observed["effective_sources"].values()):
         return
 
     row, capped = _next_event(block, observed)
@@ -562,6 +578,18 @@ def problem_issues_tick(policy: dict) -> None:
         return
     parsed = _source(row)
     if parsed is None:
+        source = (
+            row.action
+            if row.action in ("node_stalled", "workflow_stranded")
+            else "landing_recovery_exhausted"
+        )
+        _record(
+            "problem_issue_source_refused",
+            row,
+            source,
+            hashlib.sha256(f"malformed:{row.id}".encode()).hexdigest(),
+            reason="malformed_source_audit",
+        )
         return
     source, source_detail = parsed
     fingerprint = _fingerprint(source, row, source_detail)
@@ -620,8 +648,28 @@ def problem_issues_tick(policy: dict) -> None:
                 limit=block["source_audit_limit"],
             )
     marker = _marker(fingerprint)
+    receipt = _source_receipt(row)
+    if receipt is None:
+        _record(
+            "problem_issue_source_refused",
+            row,
+            source,
+            fingerprint,
+            reason="source_receipt_missing",
+        )
+        return
+    repo, issue_number = receipt
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
+        _record(
+            "problem_issue_source_refused",
+            row,
+            source,
+            fingerprint,
+            reason="source_receipt_repository_invalid",
+        )
+        return
     try:
-        found, truncated = _discover(policy["repo"], marker, block)
+        found, truncated = _discover(repo, marker, block)
     except Exception as exc:  # noqa: BLE001 - no discovery means no write
         next_retry = _now() + timedelta(minutes=block["retry_minutes"][0])
         _record(
@@ -661,16 +709,7 @@ def problem_issues_tick(policy: dict) -> None:
             reason="issue_discovery_truncated",
         )
         return
-    issue = _issue(source, row, source_detail, policy["repo"], marker)
-    if issue is None:
-        _record(
-            "problem_issue_source_refused",
-            row,
-            source,
-            fingerprint,
-            reason="source_receipt_missing",
-        )
-        return
+    issue = _issue(source, row, source_detail, repo, issue_number, marker)
 
     with _locked_session() as (db, _control):
         if _terminal(db, fingerprint, row.task_id) or _last_matching(
@@ -713,13 +752,13 @@ def problem_issues_tick(policy: dict) -> None:
                 source,
                 fingerprint,
                 marker=marker,
-                repo=policy["repo"],
+                repo=repo,
             ),
         )
 
     payload = {**issue, "labels": list(block["labels"])}
     try:
-        created = github_write(policy["repo"], payload)
+        created = github_write(repo, payload)
         if (
             not isinstance(created, dict)
             or type(created.get("number")) is not int
