@@ -6,6 +6,12 @@ creates a bucket, budget, credential, notification channel, or IAM binding.
 Application or either kustomization. Production remains on
 `h0melab-ember-bases` and has no lifecycle deletion rule.
 
+The overlay explicitly disarms base retention, remote base retention, warmth
+retention, and direct S3 warmth GC inherited from the base dev values. Confirm
+those environment gates are absent in the rendered control plane. The
+seven-day GCS bucket lifecycle below is the only deletion mechanism intended
+for this validation release.
+
 The validation bucket is `h0melab-ember-bases-dev`. Its only lifecycle action
 deletes objects at age seven days. The budget is an alerts-only USD 15 monthly
 budget for the `h0melab` project's entire Cloud Storage service, identified by
@@ -170,7 +176,11 @@ Before activation, render the chart with the dev values and the inactive
 overlay. Inspect every control-plane, noded, and rootfs-builder store setting.
 Every bucket must be `h0melab-ember-bases-dev`, no rendered manifest may contain
 `h0melab-ember-bases` as a distinct value, and every store credential reference
-must be a required reference to `embervm-store-validation-gcs`.
+must be a required reference to `embervm-store-validation-gcs`. The render must
+not contain `EMBERVM_BASE_RETENTION_SWEEP`,
+`EMBERVM_BASE_RETENTION_DISK_DRIVEN`,
+`EMBERVM_BASE_REMOTE_RETENTION_SWEEP`, `EMBERVM_WARMTH_RETENTION_SWEEP`, or
+`EMBERVM_WARMTH_S3_GC`.
 
 ```bash
 helm template embervm-store-validation projects/embervm/chart \

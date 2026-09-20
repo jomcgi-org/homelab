@@ -100,7 +100,10 @@ nor kustomization references it. It cannot change live routing automatically.
 The preset enables required Secret references to
 `embervm-store-validation-gcs` and deliberately leaves the 1Password item path
 empty. A missing Secret therefore prevents store-using containers from
-starting, while the repository does not guess an external credential path.
+starting, while the repository does not guess an external credential path. It
+also overrides the base dev values to disarm all application-level retention
+delete gates, leaving the separately applied seven-day GCS lifecycle as the
+only intended deletion policy for the validation bucket.
 
 The checked-in desired policies and the inspect-before-apply operator steps are
 in [store-validation/README.md](store-validation/README.md). They specify a
