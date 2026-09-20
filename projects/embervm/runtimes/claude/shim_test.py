@@ -1299,6 +1299,24 @@ def test_muse_pushes_tool_activity_during_turn(tmp_path, monkeypatch):
     assert pushes[-1] == ("OK", activity)
 
 
+def test_muse_empty_retained_projection_preserves_live_tool_activity(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_MUSE_SCENARIO", "tool-activity")
+    manager = _muse_manager(tmp_path, monkeypatch)
+
+    def collect(command_id, completions):
+        manager._retained_activities = []
+        return {
+            "muse": {"status": "complete", "reason": "reported"},
+            "input_tokens": 1,
+        }
+
+    monkeypatch.setattr(manager, "_collect_usage", collect)
+
+    record = manager.turn("use a tool", model="spark")
+
+    assert record["activities"] == [{"type": "tool_use", "name": "add_memory"}]
+
+
 def test_pi_first_turn_returns_text_session_and_usage(tmp_path, monkeypatch):
     manager = _pi_manager(tmp_path, monkeypatch)
     record = manager.turn("hello", model="spark")
@@ -6235,6 +6253,21 @@ def test_bash_activity_does_not_fabricate_command_from_missing_or_malformed_args
             },
         ]
     ) == [{"type": "bash"}, {"type": "bash"}]
+
+
+def test_pi_activity_translation_preserves_empty_input_for_non_bash_tools():
+    translated = shim.PiProcess("/tmp/workspace")._translate_activity_event(
+        {
+            "type": "tool_execution_start",
+            "toolCallId": "read-1",
+            "toolName": "read",
+        }
+    )
+
+    assert translated["args"] == {}
+    assert shim.activity_from_events([translated]) == [
+        {"type": "tool_use", "name": "read", "input": {}}
+    ]
 
 
 def test_child_reaper_preserves_managed_exit_status_and_reaps_unmanaged_child():

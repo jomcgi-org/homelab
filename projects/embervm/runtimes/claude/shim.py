@@ -4368,7 +4368,7 @@ class MuseProcess:
                                 len(completed_model_attempts),
                             )
                             usage["muse"]["reason"] = "collection_failed"
-                        if self._retained_activities is not None:
+                        if self._retained_activities:
                             cached_activities = self._retained_activities[-300:]
                             if pusher:
                                 try:
@@ -4826,6 +4826,8 @@ class PiProcess:
                     translated["args"] = event["args"]
                 elif "input" in event:
                     translated["input"] = event["input"]
+                else:
+                    translated["args"] = {}
                 return translated
         return event
 
