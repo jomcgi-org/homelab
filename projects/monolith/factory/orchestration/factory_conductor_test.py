@@ -7730,6 +7730,325 @@ def test_a_direct_conflict_backfills_a_lost_correction_audit(feedback_db, monkey
         assert len(events) == 1
 
 
+def test_run_bearing_unrelated_dependent_gets_a_structural_recovery_round(
+    feedback_db, monkeypatch
+):
+    """A dependent is not proof, and immutable history does not block repair."""
+    from sqlmodel import Session, select
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryAudit
+    from factory.orchestration.models import SwarmPlanVersion
+
+    task, policy = reviewed_task(verdict="approve")
+    assert controls.request_landing_recovery(
+        task["id"], 21, HEAD_ONE, "merge_queue", "test"
+    )["ok"]
+    assert conductor._add(
+        task,
+        policy,
+        "integrate_delivery",
+        "Integrate unrelated work",
+        ["review_fix"],
+        "luna",
+        "test:unrelated-dependent",
+        "Existing dependent",
+    ).ok
+    unrelated = run_feedback_node(
+        task,
+        "integrate_delivery",
+        {
+            "status": "complete",
+            "summary": "Delivered a different pull request",
+            "pr_number": 22,
+            "head_sha": HEAD_TWO,
+        },
+        head=HEAD_TWO,
+    )
+    record = conductor._record_landing_recovery_round
+    calls = []
+
+    def lose_first_audit(task_id, conflict, ordinal):
+        calls.append(ordinal)
+        if len(calls) > 1:
+            record(task_id, conflict, ordinal)
+
+    monkeypatch.setattr(conductor, "_record_landing_recovery_round", lose_first_audit)
+    conductor.reconcile_task(task["id"], policy, object())
+
+    nodes = {node["node_key"]: node for node in conductor.graph.load_graph(task["id"])}
+    assert {"integrate_delivery", "correct_1", "review_1"} <= set(nodes)
+    assert nodes["correct_1"]["deps"] == ["review_fix"]
+    # The run-bearing node is retained exactly as durable history.
+    assert next(
+        run
+        for run in conductor.graph.node_runs(task["id"])
+        if run["node_key"] == "integrate_delivery"
+    )["id"] == unrelated["id"]
+    with Session(feedback_db) as db:
+        causes = db.exec(
+            select(SwarmPlanVersion.cause_ref).where(
+                SwarmPlanVersion.task_id == task["id"],
+                SwarmPlanVersion.op == "add_node",
+            )
+        ).all()
+    assert any(
+        cause.startswith(conductor.LANDING_RECOVERY_CAUSE + ":")
+        for cause in causes
+    )
+
+    # A repeated tick repairs the graph-commit/audit race from the immutable
+    # request-bound cause and neither inserts a duplicate nor rewrites history.
+    version = conductor.graph.current_version(task["id"])
+    monkeypatch.setattr(conductor, "_dispatch_ready", lambda *_a, **_k: False)
+    conductor.reconcile_task(task["id"], policy, object())
+    conductor.reconcile_task(task["id"], policy, object())
+    assert conductor.graph.current_version(task["id"]) == version
+    assert calls == [1, 1]
+    with Session(feedback_db) as db:
+        rounds = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == task["id"],
+                FactoryAudit.action == "landing_recovery_round",
+            )
+        ).all()
+    assert len(rounds) == 1
+
+
+def test_legacy_integrate_dependent_backfills_from_post_boundary_run(
+    feedback_db,
+):
+    """The receipt 582 graph shape repairs without discarding old nodes."""
+    from sqlmodel import Session, select
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryAudit
+
+    task, policy = feedback_task()
+    complete_feedback_node(
+        task,
+        policy,
+        "implement_delivery",
+        {
+            "status": "complete",
+            "summary": "Delivered the original head",
+            "pr_number": 21,
+            "head_sha": HEAD_ONE,
+        },
+        head=HEAD_ONE,
+    )
+    complete_feedback_node(
+        task,
+        policy,
+        "review_settlement",
+        {
+            "verdict": "approve",
+            "summary": "Approved the original head",
+            "pr_number": 21,
+            "head_sha": HEAD_ONE,
+        },
+        head=HEAD_ONE,
+        deps=["implement_delivery"],
+    )
+    assert controls.request_landing_recovery(
+        task["id"], 21, HEAD_ONE, "merge_queue", "test"
+    )["ok"]
+    assert conductor._add(
+        task,
+        policy,
+        "integrate_delivery",
+        "Rebase and integrate the delivery",
+        ["review_settlement"],
+        "luna",
+        "test:legacy-recovery",
+        "Legacy recovery graph",
+    ).ok
+    run_feedback_node(
+        task,
+        "integrate_delivery",
+        {
+            "status": "complete",
+            "summary": "Rebased the same pull request",
+            "pr_number": 21,
+            "head_sha": HEAD_TWO,
+        },
+        head=HEAD_TWO,
+    )
+
+    for _ in range(2):
+        assert (
+            conductor._pending_landing_recovery(
+                task,
+                conductor.graph.load_graph(task["id"]),
+                conductor.graph.node_runs(task["id"]),
+                detect_live=False,
+            )
+            is None
+        )
+    with Session(feedback_db) as db:
+        rounds = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == task["id"],
+                FactoryAudit.action == "landing_recovery_round",
+            )
+        ).all()
+    assert len(rounds) == 1
+    assert json.loads(rounds[0].detail_json)["round"] == 0
+
+    fresh = complete_feedback_node(
+        task,
+        policy,
+        "review_recovered_head",
+        {
+            "verdict": "approve",
+            "summary": "Approved the rebased exact head",
+            "pr_number": 21,
+            "head_sha": HEAD_TWO,
+        },
+        head=HEAD_TWO,
+        deps=["integrate_delivery"],
+    )
+    assert controls.finish_task(
+        task["id"],
+        "succeeded",
+        "test",
+        evidence={
+            "pr_url": "https://github.com/owner/repo/pull/21",
+            "head_sha": HEAD_TWO,
+            "review_session_id": fresh["session_id"],
+            "state": "ready_for_review",
+        },
+    )["ok"]
+
+
+@pytest.mark.parametrize(
+    ("verdict", "pr_number", "artifact_head", "evidence_head"),
+    [
+        ("changes_requested", 21, HEAD_TWO, HEAD_TWO),
+        ("approve", 22, HEAD_TWO, HEAD_TWO),
+        ("approve", 21, HEAD_TWO, HEAD_ONE),
+    ],
+)
+def test_recovery_audit_does_not_replace_exact_approving_review_evidence(
+    feedback_db, verdict, pr_number, artifact_head, evidence_head
+):
+    from factory.orchestration import factory_controls as controls
+
+    task, policy = reviewed_task(verdict="approve")
+    assert controls.request_landing_recovery(
+        task["id"], 21, HEAD_ONE, "merge_queue", "test"
+    )["ok"]
+    conflict = conductor._landing_recovery_requests(task["id"])[0]
+    conductor._record_landing_recovery_round(task["id"], conflict, 0)
+    assert conductor._add(
+        task,
+        policy,
+        "integrate_recovery_evidence",
+        "Write the recovered head",
+        ["review_fix"],
+        "luna",
+        "test:recovery-evidence",
+        "Recovery boundary evidence",
+    ).ok
+    run_feedback_node(
+        task,
+        "integrate_recovery_evidence",
+        {
+            "status": "complete",
+            "summary": "Wrote the recovered exact head",
+            "pr_number": 21,
+            "head_sha": HEAD_TWO,
+        },
+        head=HEAD_TWO,
+    )
+    fresh = complete_feedback_node(
+        task,
+        policy,
+        "review_recovery_evidence",
+        {
+            "verdict": verdict,
+            "summary": "Candidate recovery review",
+            "pr_number": pr_number,
+            "head_sha": artifact_head,
+        },
+        head=artifact_head,
+    )
+    assert controls.finish_task(
+        task["id"],
+        "succeeded",
+        "test",
+        evidence={
+            "pr_url": "https://github.com/owner/repo/pull/21",
+            "head_sha": evidence_head,
+            "review_session_id": fresh["session_id"],
+            "state": "ready_for_review",
+        },
+    ) == {"ok": False, "reason": "landing_recovery_pending"}
+
+
+def test_recovery_review_must_be_independent_of_the_head_writer(feedback_db):
+    from sqlmodel import Session, select
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.models import SwarmNodeRun
+
+    task, policy = reviewed_task(verdict="approve")
+    assert controls.request_landing_recovery(
+        task["id"], 21, HEAD_ONE, "merge_queue", "test"
+    )["ok"]
+    conflict = conductor._landing_recovery_requests(task["id"])[0]
+    conductor._record_landing_recovery_round(task["id"], conflict, 0)
+    assert conductor._add(
+        task,
+        policy,
+        "integrate_recovery_head",
+        "Write the recovered head",
+        ["review_fix"],
+        "luna",
+        "test:recovery-head",
+        "Recovery boundary evidence",
+    ).ok
+    writer = run_feedback_node(
+        task,
+        "integrate_recovery_head",
+        {
+            "status": "complete",
+            "summary": "Wrote the recovered exact head",
+            "pr_number": 21,
+            "head_sha": HEAD_TWO,
+        },
+        head=HEAD_TWO,
+    )
+    review = complete_feedback_node(
+        task,
+        policy,
+        "review_recovery_head",
+        {
+            "verdict": "approve",
+            "summary": "Approved the recovered exact head",
+            "pr_number": 21,
+            "head_sha": HEAD_TWO,
+        },
+        head=HEAD_TWO,
+        deps=["integrate_recovery_head"],
+    )
+    with Session(feedback_db) as db:
+        row = db.exec(
+            select(SwarmNodeRun).where(SwarmNodeRun.id == review["id"])
+        ).one()
+        row.session_id = writer["session_id"]
+        db.add(row)
+        db.commit()
+    assert controls.finish_task(
+        task["id"],
+        "succeeded",
+        "test",
+        evidence={
+            "pr_url": "https://github.com/owner/repo/pull/21",
+            "head_sha": HEAD_TWO,
+            "review_session_id": writer["session_id"],
+            "state": "ready_for_review",
+        },
+    ) == {"ok": False, "reason": "landing_recovery_pending"}
+
+
 def test_a_failed_correction_opens_the_next_round_against_the_same_review(
     feedback_db, monkeypatch
 ):
