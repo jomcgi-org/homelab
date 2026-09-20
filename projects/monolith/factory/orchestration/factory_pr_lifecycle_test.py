@@ -280,6 +280,20 @@ def test_newer_running_owner_is_named_and_survivor_is_never_closed(db, github):
     assert audit_details(db, "factory_pr_retired")[-1]["survivor_pr_number"] == 20
 
 
+def test_survivor_retirement_names_the_shared_closing_issue(db, github):
+    old = pull(21, 7, "factory/old")
+    new = pull(22, 99, "factory/new")
+    new["body"] += "\nCloses #7"
+    task_receipt(db, "new", 7, "admitted", branch="factory/new", pr_number=22)
+    api = github(Github([old, new], {7: {"state": "open"}}))
+
+    lifecycle._retire_pull(REPO, old)
+
+    assert "issue #7" in api.comments[21][0]["body"]
+    assert "issue #99" not in api.comments[21][0]["body"]
+    assert audit_details(db, "factory_pr_retired")[-1]["issue_number"] == 7
+
+
 def test_active_owner_and_non_factory_branch_are_never_retired(db, github):
     active = pull(30, 8, "factory/active")
     human = pull(31, 9, "fix/human")
@@ -308,6 +322,38 @@ def test_partial_close_failure_retries_without_duplicate_comment(db, github):
     assert api.pulls[40]["state"] == "closed"
     assert len(api.comments[40]) == 1
     assert len(audit_details(db, "factory_pr_retired")) == 1
+
+
+def test_retirement_intent_ignores_unrelated_and_malformed_audits(db):
+    with Session(db) as session:
+        session.add_all(
+            [
+                FactoryAudit(
+                    actor="test",
+                    action="factory_pr_retired",
+                    detail_json="not json",
+                ),
+                FactoryAudit(
+                    actor="test",
+                    action="factory_pr_retired",
+                    detail_json=(f'{{"pr_number":41,"repo":"{REPO}","unterminated":'),
+                ),
+            ]
+        )
+        session.commit()
+
+    lifecycle._record_retirement_intent(REPO, 41, issue_number=10)
+    lifecycle._record_retirement_intent(REPO, 41, issue_number=10)
+
+    with Session(db) as session:
+        rows = session.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.action == "factory_pr_retired",
+                FactoryAudit.actor == lifecycle.ACTOR,
+            )
+        ).all()
+        assert len(rows) == 1
+        assert json.loads(rows[0].detail_json)["pr_number"] == 41
 
 
 def test_successor_read_failure_leaves_candidate_open(db, github):
@@ -452,6 +498,60 @@ def test_operator_receipt_is_created_with_safe_delivery_target(db, monkeypatch):
         assert direction["delivery_pr_number"] == 100
         assert direction["delivery_branch"] == "factory/existing"
         assert direction["delivery_adoption"] is True
+        assert "delivery_target_checked" not in direction
+
+
+def test_receipt_target_is_reverified_before_adoption(db, monkeypatch):
+    initial = pull(102, 18, "factory/initial")
+    monkeypatch.setattr(conductor, "github_list", lambda *_args: [initial])
+    target = gates.receive_delivery_target(REPO, 18)
+    assert target is not None
+    received = receive_issue(
+        REPO,
+        18,
+        "test",
+        "body",
+        f"https://github.com/{REPO}/issues/18",
+        "operator",
+        delivery_target=target,
+    )
+    with Session(db) as session:
+        session.add(
+            SwarmTask(
+                id="replacement",
+                task_text="test",
+                repo=REPO,
+                base_branch="main",
+                conductor_model="opus",
+                start_state="admitted",
+            )
+        )
+        session.flush()
+        row = session.get(FactoryReceipt, received["receipt"]["id"])
+        row.task_id = "replacement"
+        row.state = "admitted"
+        session.add(row)
+        session.commit()
+
+    replacement = pull(103, 18, "factory/replacement")
+    monkeypatch.setattr(conductor, "github_list", lambda *_args: [replacement])
+    task = {
+        "id": "replacement",
+        "repo": REPO,
+        "issue_number": 18,
+        "base_branch": "main",
+        **target,
+        "delivery_target_checked": False,
+    }
+
+    assert gates.adopt_delivery(task)
+    assert task["delivery_pr_number"] == 103
+    assert task["delivery_branch"] == "factory/replacement"
+    assert task["delivery_target_checked"] is True
+    with Session(db) as session:
+        row = session.get(FactoryReceipt, received["receipt"]["id"])
+        direction = json.loads(row.direction_json)
+        assert direction["delivery_pr_number"] == 103
         assert direction["delivery_target_checked"] is True
 
 

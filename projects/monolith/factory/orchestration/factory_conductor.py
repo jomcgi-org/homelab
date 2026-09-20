@@ -5933,12 +5933,6 @@ def tick() -> None:
                 cancel_owned(task["task_id"], dbos)
             except Exception:  # noqa: BLE001 - per-task isolation keeps stop total
                 logger.exception("factory stop failed for task %s", task["task_id"])
-        try:
-            from factory.orchestration.factory_pr_lifecycle import reconcile_tick
-
-            reconcile_tick(snapshot.get("policy") or {})
-        except Exception:  # noqa: BLE001 - PR lifecycle cannot block a factory stop
-            logger.exception("factory PR lifecycle reconciliation failed")
         return
     # The window reading is refreshed before any task reconciles, because the
     # review nodes those tasks are about to start are what spends it.
