@@ -29,7 +29,13 @@ RULE_FILE=$(resolve_main_file "bazel/semgrep/rules/bazel/verification-genrule-mi
 	exit 2
 }
 
-BUILDIFIER=$(find "$RUNFILES_ROOT" -name buildifier \( -type f -o -type l \) 2>/dev/null | head -1)
+BUILDIFIER=""
+if [[ -n "${VERIFICATION_GUARD_BUILDIFIER:-}" ]]; then
+	BUILDIFIER=$(resolve_main_file "$VERIFICATION_GUARD_BUILDIFIER" || true)
+fi
+if [[ -z "$BUILDIFIER" ]]; then
+	BUILDIFIER=$(find "$RUNFILES_ROOT" -name buildifier \( -type f -o -type l \) 2>/dev/null | head -1)
+fi
 if [[ -z "$BUILDIFIER" ]]; then
 	echo "ERROR: buildifier not found in runfiles" >&2
 	exit 2
