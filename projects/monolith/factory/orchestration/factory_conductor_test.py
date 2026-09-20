@@ -4349,8 +4349,8 @@ def drained_lost_factory(queued_factory, monkeypatch):
     s.run = conductor.graph.node_runs(s.task["id"])[0]
     s.cp = {
         "session_id": "s-drained-factory",
-        "state": "failed",
-        "terminal_reason": "brick_gone",
+        "state": "evicted",
+        "terminal_reason": "node_gone",
         "generation": 0,
         "invoke_started_at": s.invoke_started_at,
         "last_invoke_at": s.last_invoke_at,
@@ -4470,6 +4470,7 @@ def test_drained_loss_settlement_is_inert_while_staged_off(
         ("banked", "interrupted_for_drain"),
         ("parked", "interrupted_for_drain"),
         ("relighting", "interrupted_for_drain"),
+        ("failed", "brick_gone"),
         ("destroyed", "destroyed"),
     ],
 )
@@ -4515,6 +4516,69 @@ def test_stale_or_ambiguous_drained_loss_evidence_is_refused(
     with Session(s.engine) as db:
         assert db.exec(select(PendingMessage)).one() is not None
         assert db.exec(select(AgentCapacityReservation)).one().state == "running"
+        assert conductor.graph.node_runs(s.task["id"], session=db)[0]["status"] == (
+            "uncertain"
+        )
+
+
+@pytest.mark.parametrize("change", ["claim", "dispatch", "turn", "permit"])
+def test_newer_or_ambiguous_local_drain_identity_is_refused(
+    drained_lost_factory, change
+):
+    from datetime import datetime, timezone
+
+    from sqlmodel import Session, select
+
+    from factory.execution.models import (
+        AgentCapacityReservation,
+        AgentSession,
+        AgentTurn,
+        PendingMessage,
+    )
+
+    s = drained_lost_factory
+    with Session(s.engine) as db:
+        agent = db.get(AgentSession, s.sid)
+        pending = db.exec(select(PendingMessage)).one()
+        if change == "claim":
+            pending.claimed_by_replica = "relight-executor"
+            pending.claimed_at = datetime.now(timezone.utc)
+            db.add(pending)
+        elif change == "dispatch":
+            pending.dispatch_count += 1
+            pending.last_dispatch_at = datetime.now(timezone.utc)
+            db.add(pending)
+        elif change == "turn":
+            db.add(
+                AgentTurn(
+                    session_id=s.sid,
+                    seq=2,
+                    prompt="newer turn",
+                    model="opus",
+                    result_text="newer result",
+                )
+            )
+        else:
+            db.add(
+                AgentCapacityReservation(
+                    local_session_id=agent.local_session_id,
+                    pending_seq=2,
+                    tier="project",
+                    model="opus",
+                )
+            )
+        db.commit()
+
+    conductor._submit_or_reconcile(s.task, s.run, s.dbos)
+    with Session(s.engine) as db:
+        pending = db.exec(select(PendingMessage)).one()
+        permit = db.exec(
+            select(AgentCapacityReservation).where(
+                AgentCapacityReservation.session_id == s.sid
+            )
+        ).one()
+        assert pending is not None
+        assert permit.state == "running"
         assert conductor.graph.node_runs(s.task["id"], session=db)[0]["status"] == (
             "uncertain"
         )

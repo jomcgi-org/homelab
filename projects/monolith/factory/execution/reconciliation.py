@@ -746,6 +746,8 @@ def read_drained_lost_factory_attempt(db: Session, pin: dict, session_id: int) -
     import hashlib
     from datetime import datetime, timezone
 
+    from sqlalchemy import or_
+
     from factory.execution import normalize_model
     from factory.execution.models import AgentTurn, PendingMessage
     from factory.execution.transport import exact_dispatch_id
@@ -791,7 +793,12 @@ def read_drained_lost_factory_attempt(db: Session, pin: dict, session_id: int) -
     ).all()
     permits = db.exec(
         select(AgentCapacityReservation)
-        .where(AgentCapacityReservation.session_id == agent.id)
+        .where(
+            or_(
+                AgentCapacityReservation.session_id == agent.id,
+                AgentCapacityReservation.local_session_id == agent.local_session_id,
+            )
+        )
         .with_for_update()
         .execution_options(populate_existing=True)
         .limit(2)
