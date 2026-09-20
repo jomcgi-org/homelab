@@ -148,8 +148,6 @@ py_test(
     data = [
         "Chart.yaml",
         "values.yaml",
-        "//projects/gke-apps/embervm:application.yaml",
-        "//projects/gke-apps/embervm:kustomization.yaml",
         "//projects/embervm/deploy:application",
         "//projects/embervm/deploy:gke_values",
         "//projects/embervm/deploy:kustomization.yaml",
@@ -160,6 +158,8 @@ py_test(
         "//projects/embervm/dev/deploy:deploy_values",
         "//projects/embervm/dev/deploy:kustomization.yaml",
         "//projects/embervm/dev/deploy:store_validation_values",
+        "//projects/gke-apps/embervm:application.yaml",
+        "//projects/gke-apps/embervm:kustomization.yaml",
         "@multitool//tools/helm",
     ] + glob([
         "templates/**/*",
