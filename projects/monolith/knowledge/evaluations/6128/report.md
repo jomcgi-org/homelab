@@ -59,7 +59,10 @@ The aggregate metrics are:
 latency, rank, returned metadata, and candidate-level judgments. Candidate
 content outside the requested public repository scope is withheld while rank,
 score, scope class, and denominator remain present. This is a public-artifact
-redaction, not a claim that the authorized tool exposed data improperly.
+redaction, not a claim that the authorized tool exposed data improperly. Three
+snippets name retired ADR files; those displayed paths use a placeholder and
+the exact path is stored as reconstructable segments so this frozen evidence
+does not become a live documentation reference.
 
 ## Observed retrieval failures
 

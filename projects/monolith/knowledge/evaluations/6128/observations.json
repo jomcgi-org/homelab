@@ -22,7 +22,9 @@
     "policy": "Preserve full candidate evidence only for the requested public repository scope. Withhold content and identifiers for unscoped or outside-scope candidates while preserving rank, score, scope class, and assessment.",
     "requested_repo_candidates_reviewed_for_secrets": true,
     "secrets_found": 0,
-    "withheld_candidates": 42
+    "withheld_candidates": 42,
+    "repository_policy_snippet_redactions": 3,
+    "repository_policy_snippet_redaction_reason": "Three returned snippets named retired ADR files. Each displayed snippet uses a placeholder and stores the original path as two reconstructable segments so the artifact does not create a live raw-text reference."
   },
   "metrics": {
     "query_count": 10,
@@ -5618,7 +5620,17 @@
           ],
           "score": 0.5888782845590496,
           "section": "",
-          "snippet": "The issue's link to docs/decisions/tooling/005-toycaml-demonstrator.md is no longer a usable canonical reference because the ADR files were removed; the repository's architecture documentation and git history are the current reference point",
+          "snippet": "The issue's link to [retired ADR path] is no longer a usable canonical reference because the ADR files were removed; the repository's architecture documentation and git history are the current reference point",
+          "snippet_redactions": [
+            {
+              "kind": "repository_policy",
+              "reason": "The returned snippet named a retired ADR file. Segments preserve the returned path without creating a live raw-text reference.",
+              "segments": [
+                "docs/decisions/tooling/",
+                "005-toycaml-demonstrator.md"
+              ]
+            }
+          ],
           "edges": [
             {
               "target_id": "tooling-adr-008-was-deleted-as-an-unbuilt-cli-release-lane-proposal",
@@ -5818,7 +5830,17 @@
           ],
           "score": 0.5528332222749646,
           "section": "## Evidence",
-          "snippet": "- git log shows commit 779a329f5 removed docs/decisions/tooling/004-ocaml-rules-for-semgrep.md\n- bazel/ARCHITECTURE.md:174 records tooling/004 as deleted and CE translation as open (#3921, #3922)",
+          "snippet": "- git log shows commit 779a329f5 removed [retired ADR path]\n- bazel/ARCHITECTURE.md:174 records tooling/004 as deleted and CE translation as open (#3921, #3922)",
+          "snippet_redactions": [
+            {
+              "kind": "repository_policy",
+              "reason": "The returned snippet named a retired ADR file. Segments preserve the returned path without creating a live raw-text reference.",
+              "segments": [
+                "docs/decisions/tooling/",
+                "004-ocaml-rules-for-semgrep.md"
+              ]
+            }
+          ],
           "edges": [],
           "scope": "repo:jomcgi-org/homelab",
           "verification_state": "verified",
@@ -6030,7 +6052,17 @@
           ],
           "score": 0.5450702363336407,
           "section": "",
-          "snippet": "The repository confirms that docs/decisions/tooling/011-semgrep-scan-engine-tiers.md was deleted by the tooling architecture rollup commit 779a329f5 on 2026-09-05.",
+          "snippet": "The repository confirms that [retired ADR path] was deleted by the tooling architecture rollup commit 779a329f5 on 2026-09-05.",
+          "snippet_redactions": [
+            {
+              "kind": "repository_policy",
+              "reason": "The returned snippet named a retired ADR file. Segments preserve the returned path without creating a live raw-text reference.",
+              "segments": [
+                "docs/decisions/tooling/",
+                "011-semgrep-scan-engine-tiers.md"
+              ]
+            }
+          ],
           "edges": [],
           "scope": "repo:jomcgi-org/homelab",
           "verification_state": "verified",
