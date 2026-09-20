@@ -17,6 +17,7 @@ from factory.orchestration.factory_models import (
     FactoryAudit,
     FactoryControl,
     FactoryReceipt,
+    WorkItem,
 )
 from factory.orchestration.models import SwarmTask
 
@@ -39,7 +40,13 @@ def db(tmp_path, monkeypatch):
         engine,
         tables=[
             model.__table__
-            for model in (SwarmTask, FactoryControl, FactoryReceipt, FactoryAudit)
+            for model in (
+                SwarmTask,
+                FactoryControl,
+                WorkItem,
+                FactoryReceipt,
+                FactoryAudit,
+            )
         ],
     )
     with Session(engine) as session:
@@ -53,6 +60,7 @@ def db(tmp_path, monkeypatch):
                 conductor_model="astra",
             )
         )
+        session.commit()
         session.add(
             FactoryReceipt(
                 repo="owner/repo",
