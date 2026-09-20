@@ -2279,8 +2279,13 @@ def _notify_intervention_required(
     """Task summary; exact attempts and every observation remain in the audit."""
     _notify_person_once(
         task_id,
-        f"Factory task {task_id} requires operator intervention: {reason[:1500]}\n"
-        "Per-attempt details remain in the factory audit table.",
+        f"Factory task {task_id} requires operator intervention.\n"
+        f"{reason[:2500]}\n"
+        "Safe reconciliation: inspect the factory audit and the current Ember "
+        "session view. Match the exact workflow, session, guest, dispatch owner, "
+        "incarnation, and timestamp ordering. Settle only from positive cessation "
+        "evidence. Null invoke fields alone are not proof, and must not be used "
+        "to release the slot.",
         kind="intervention",
     )
 
@@ -2310,15 +2315,44 @@ def _consume_intervention_notifications(task_id: str) -> None:
                     required.pop(workflow_id, None)
         summary = []
         for workflow_id, detail in required.items():
-            reason = str(detail.get("reason") or "supervision could not settle attempt")
+            refusal = str(
+                detail.get("refusal")
+                or detail.get("error")
+                or detail.get("reason")
+                or "supervision could not settle attempt"
+            )
             node_id = detail.get("node_id")
+            context = {
+                "reason": detail.get("reason"),
+                "refusal": refusal,
+                "node_id": node_id,
+                "node_key": detail.get("node_key"),
+                "attempt": detail.get("attempt"),
+                "session_id": detail.get("session_id"),
+                "guest_id": detail.get("guest_id"),
+                "retry_deadline_at": detail.get("retry_deadline_at"),
+                "missing_proof": detail.get("missing_proof"),
+            }
             _audit_once(
                 task_id,
                 workflow_id,
                 "intervention_required_notified",
-                {"reason": reason, "node_id": node_id},
+                context,
             )
-            summary.append(f"{workflow_id} on {node_id or 'unknown node'}: {reason}")
+            summary.append(
+                ", ".join(
+                    (
+                        f"workflow={workflow_id}",
+                        f"node={detail.get('node_key') or node_id or 'unknown'}",
+                        f"attempt={detail.get('attempt') or 'unknown'}",
+                        f"session={detail.get('session_id') or 'unknown'}",
+                        f"guest={detail.get('guest_id') or 'unknown'}",
+                        f"refusal={refusal}",
+                        f"deadline={detail.get('retry_deadline_at') or 'not recorded'}",
+                        f"missing proof={detail.get('missing_proof') or 'exact guest cessation'}",
+                    )
+                )
+            )
         if summary:
             _notify_intervention_required(
                 task_id, "task-summary", "; ".join(summary), None

@@ -1521,6 +1521,9 @@ swarm:
   factoryConductorFundingEnabled: false
   factoryAutonomousContinuationEnabled: false
   factoryStopSupervisionEnabled: false
+  # Sample transient stop refusals for a fixed bounded window before notifying.
+  # Keep staged off until the brick-roll and restart live checks pass (#6266).
+  factoryTransientStopRetryEnabled: false
   # Stop an exact running attempt after provider-measured spend exceeds its
   # max_cost_usd. Settlement keeps the same post-hoc check as a backstop.
   factoryEnforceCostCeilingEnabled: false

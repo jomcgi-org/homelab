@@ -18,6 +18,9 @@ swarm:
   factoryConductorFundingEnabled: true
   factoryAutonomousContinuationEnabled: true
   factoryStopSupervisionEnabled: true
+  # Repository-staged for #6266. Live brick-roll, restart, and uncertain DELETE
+  # checks must pass before this hub behavior is enabled.
+  factoryTransientStopRetryEnabled: false
   # Settle attempts lost between "invoke sent" and "guest bound" (#6025):
   # the template landed one PR earlier; this is the behaviour flip.
   factoryLostBeforeGuestSettlementEnabled: true

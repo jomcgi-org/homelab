@@ -27,10 +27,14 @@ from factory.orchestration.factory_models import FactoryAudit, FactoryStart
 from factory.orchestration.models import SwarmNodeRun
 
 ACTOR = "factory:stop-supervision"
-MAX_STOP_REQUESTS = 3
+# A conditional DELETE whose response is lost has an unknown external outcome.
+# Retrying it would be redispatching uncertain work. Later ticks only observe.
+MAX_STOP_REQUESTS = 1
 MAX_NODE_GONE_DESTROY_REQUESTS = 2
 HTTP_SECONDS = 5
 COMPLETION_ALARM_SECONDS = 120
+TRANSIENT_RETRY_INTERVAL_SECONDS = 300
+TRANSIENT_RETRY_WINDOW_SECONDS = 900
 # How long after the attempt's failed turn the guest stop becomes due. Long
 # enough for the conductor's own native completion check to settle the attempt
 # first, short enough that a four-hour policy timeout never decides it.
@@ -620,6 +624,177 @@ def _note(pin, reason, *, error=None):
             _audit(db, pin, "stop_observation", **detail)
 
 
+def _transient_retry_enabled():
+    return (
+        os.environ.get("FACTORY_TRANSIENT_STOP_RETRY_ENABLED", "false").lower()
+        == "true"
+    )
+
+
+def _retry_details(pin, identity, *, refusal, deadline, error=None):
+    detail = {
+        "retry_kind": "transient_stop_observation",
+        "refusal": refusal,
+        "retry_deadline_at": deadline.isoformat(),
+        "node_key": pin.get("node_key"),
+        "attempt": pin.get("attempt"),
+        "session_id": identity["session_id"],
+        "guest_id": identity["guest_id"],
+        "identity_sha256": identity["identity_sha256"],
+        "missing_proof": (
+            "No positive cessation proof bound to this exact factory dispatch "
+            "and guest incarnation was observed."
+        ),
+    }
+    if error is not None:
+        detail["error"] = error
+    return detail
+
+
+def _transient_records(records, identity):
+    matching = [
+        detail
+        for action, detail in records
+        if action == "stop_observation"
+        and detail.get("retry_kind") == "transient_stop_observation"
+        and detail.get("identity_sha256") == identity["identity_sha256"]
+    ]
+    for index in range(len(matching) - 1, -1, -1):
+        if matching[index].get("retry_resolved") is True:
+            return matching[index + 1 :]
+    return matching
+
+
+def _transient_retry_gate(db, pin, identity, records):
+    """Return due, waiting, or exhausted for one durable retry window.
+
+    The first failed observation fixes the deadline. Audit rows are the retry
+    schedule, so a process restart cannot reset it and concurrent ticks cannot
+    add more than one sample per interval. Exhaustion is also fenced here and
+    prevents every later tick from touching the control plane.
+    """
+    if not _transient_retry_enabled():
+        return "due"
+    attempts = _transient_records(records, identity)
+    if any(detail.get("retry_exhausted") is True for detail in attempts):
+        return "exhausted"
+    samples = [detail for detail in attempts if detail.get("retry_sample") is True]
+    if not samples:
+        return "due"
+    deadline = _timestamp(samples[0]["retry_deadline_at"])
+    now = _now()
+    if now >= deadline:
+        last = samples[-1]
+        _audit(
+            db,
+            pin,
+            "stop_observation",
+            reason="stop_supervision_retry_exhausted",
+            retry_exhausted=True,
+            retry_started_at=samples[0]["retry_started_at"],
+            observations=len(samples),
+            intervention_required=True,
+            cessation_confirmed=False,
+            **_retry_details(
+                pin,
+                identity,
+                refusal=last["refusal"],
+                deadline=deadline,
+                error=last.get("error"),
+            ),
+        )
+        return "exhausted"
+    latest = _timestamp(
+        samples[-1].get("retry_observed_at", samples[-1]["recorded_at"])
+    )
+    if (now - latest).total_seconds() < TRANSIENT_RETRY_INTERVAL_SECONDS:
+        return "waiting"
+    return "due"
+
+
+def _record_transient_refusal(pin, session_id, identity, refusal, *, error=None):
+    """Persist one sampled refusal or the single exhaustion intervention."""
+    with controls._locked_session() as (db, control):
+        current, _run = _locked_attempt(
+            db, control, pin, session_id, require_stop_due=True
+        )
+        if current != identity:
+            raise ValueError("factory_attempt_changed")
+        records = _records(db, pin)
+        gate = _transient_retry_gate(db, pin, identity, records)
+        if gate != "due":
+            return gate
+        samples = _transient_records(records, identity)
+        started_at = _now()
+        if samples:
+            started_at = _timestamp(samples[0]["retry_started_at"])
+        deadline = started_at + timedelta(seconds=TRANSIENT_RETRY_WINDOW_SECONDS)
+        _audit(
+            db,
+            pin,
+            "stop_observation",
+            reason=refusal,
+            retry_sample=True,
+            retry_started_at=started_at.isoformat(),
+            retry_observed_at=_now().isoformat(),
+            observation=len(samples) + 1,
+            intervention_required=False,
+            cessation_confirmed=False,
+            **_retry_details(
+                pin,
+                identity,
+                refusal=refusal,
+                deadline=deadline,
+                error=error,
+            ),
+        )
+        return "waiting"
+
+
+def _resolve_transient_retry(pin, session_id, identity, resolution):
+    """Close a recovered transient epoch before another proof path begins."""
+    if not _transient_retry_enabled():
+        return
+    with controls._locked_session() as (db, control):
+        current, _run = _locked_attempt(
+            db, control, pin, session_id, require_stop_due=True
+        )
+        if current != identity:
+            raise ValueError("factory_attempt_changed")
+        attempts = _transient_records(_records(db, pin), identity)
+        if not attempts or any(
+            detail.get("retry_exhausted") is True for detail in attempts
+        ):
+            return
+        _audit(
+            db,
+            pin,
+            "stop_observation",
+            reason="stop_supervision_retry_resolved",
+            retry_kind="transient_stop_observation",
+            retry_resolved=True,
+            resolution=resolution,
+            identity_sha256=identity["identity_sha256"],
+            session_id=identity["session_id"],
+            guest_id=identity["guest_id"],
+            intervention_required=False,
+            cessation_confirmed=False,
+        )
+
+
+def _defer_transient_refusal(pin, session_id, identity, refusal, *, error=None):
+    if not _transient_retry_enabled():
+        if error is None:
+            _note(pin, refusal)
+        else:
+            _note(pin, refusal, error=error)
+        return
+    try:
+        _record_transient_refusal(pin, session_id, identity, refusal, error=error)
+    except ValueError as exc:
+        _note(pin, "local_identity_unconfirmed", error=str(exc))
+
+
 def _node_gone_note(
     pin, reason, node_id, *, exception=None, intervention_required=True
 ):
@@ -1008,8 +1183,8 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
     """One bounded supervision tick for an already terminal DBOS workflow.
 
     A live DBOS workflow still owns its deadline/cancellation path. No work is
-    started or cancelled here. Three conditional requests maximum are retained
-    across observer restart; Ember owns retrying its accepted durable intent.
+    started or cancelled here. One conditional request is retained across
+    observer restart; Ember owns retrying its accepted durable intent.
     """
     if os.environ.get("FACTORY_STOP_SUPERVISION_ENABLED", "false").lower() != "true":
         return False
@@ -1047,6 +1222,9 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
             saved = intents[0] if intents else None
             if saved is not None and saved["identity"] != identity:
                 raise ValueError("factory_attempt_changed")
+            retry_gate = _transient_retry_gate(db, pin, identity, _records(db, pin))
+            if retry_gate != "due":
+                return False
     except ValueError as exc:
         if str(exc) != "factory_stop_not_due":
             _note(pin, "local_identity_unconfirmed", error=str(exc))
@@ -1064,6 +1242,9 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
         # stop_observation_unavailable, so an unreachable control plane can
         # never be read as a torn-down guest.
         try:
+            _resolve_transient_retry(
+                pin, session_id, identity, "authoritative_guest_absence"
+            )
             return _absence_settled(pin, session_id, identity, original_result)
         except ValueError as exc:
             if str(exc) != "factory_stop_not_due":
@@ -1074,7 +1255,12 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
                 )
             return False
     except Exception:
-        _note(pin, "stop_observation_unavailable")
+        _defer_transient_refusal(
+            pin,
+            session_id,
+            identity,
+            "stop_observation_unavailable",
+        )
         return False
     try:
         if not isinstance(view, dict) or view.get("session_id") != identity["guest_id"]:
@@ -1085,6 +1271,9 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
         if view.get("terminal_reason") == "interrupted_for_drain" and view.get(
             "state"
         ) in {"running", "banking", "banked", "parked", "relighting"}:
+            _resolve_transient_retry(
+                pin, session_id, identity, "drain_interruption_observed"
+            )
             return False
         if _destroy_guest_on_departed_node(pin, identity, view):
             return False
@@ -1174,15 +1363,32 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
                 )
                 dispatch = True
         if dispatch:
+            _resolve_transient_retry(
+                pin, session_id, identity, "valid_stop_identity_observed"
+            )
             # The durable local request budget was consumed before the external
-            # effect. An observation timeout never creates another identity.
+            # effect. An observation timeout never creates another identity or
+            # another request. Later ticks can only observe this operation.
             try:
                 _http(identity["guest_id"], expected)
             except Exception:
-                _note(pin, "stop_request_unconfirmed")
+                _defer_transient_refusal(
+                    pin,
+                    session_id,
+                    identity,
+                    "stop_request_unconfirmed",
+                )
         elif requests >= MAX_STOP_REQUESTS and view.get("stop_intent") is None:
-            _note(pin, "stop_request_bound_reached")
+            _defer_transient_refusal(
+                pin,
+                session_id,
+                identity,
+                "stop_request_unconfirmed",
+            )
         elif view.get("stop_intent") is not None:
+            _resolve_transient_retry(
+                pin, session_id, identity, "accepted_stop_intent_observed"
+            )
             accepted = [
                 detail for action, detail in records if action == "stop_accepted"
             ]
@@ -1193,7 +1399,15 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
             ):
                 _note(pin, "node_completion_pending")
     except ValueError as exc:
-        if not (cessation_enabled and str(exc) == "factory_stop_not_due"):
+        if str(exc) == "missing_stop_precondition":
+            _defer_transient_refusal(
+                pin,
+                session_id,
+                identity,
+                "missing_stop_precondition",
+                error=str(exc),
+            )
+        elif not (cessation_enabled and str(exc) == "factory_stop_not_due"):
             _note(
                 pin,
                 "stop_evidence_or_ownership_changed",
