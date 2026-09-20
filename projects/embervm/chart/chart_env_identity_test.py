@@ -592,6 +592,19 @@ def test_noded_max_live_vms_accepts_per_class_override(tmp_path: Path):
         assert rendered_env, "noded pod is missing EMBERVM_NODED_MAX_LIVE_VMS"
         return rendered_env.group(1)
 
+    def controller_classes(rendered: str) -> dict[str, dict]:
+        values = []
+        for document in yaml.safe_load_all(rendered):
+            if not isinstance(document, dict) or document.get("kind") != "Deployment":
+                continue
+            containers = document["spec"]["template"]["spec"].get("containers", [])
+            for container in containers:
+                for entry in container.get("env", []):
+                    if entry.get("name") == "EMBERVM_BRICK_CLASSES":
+                        values.append(json.loads(entry["value"]))
+        assert len(values) == 1, "expected one control-plane brick class environment"
+        return {entry["name"]: entry for entry in values[0]}
+
     default_render = _render(
         "noded-max-live-default",
         [chart / "values.yaml"],
@@ -606,6 +619,10 @@ def test_noded_max_live_vms_accepts_per_class_override(tmp_path: Path):
         "default max-live render produced no brick Deployment; this test is inert"
     )
     assert all(max_live_vms(brick) == fleet_value for brick in default_bricks)
+    assert all(
+        entry["slots"] == int(fleet_value)
+        for entry in controller_classes(default_render).values()
+    )
 
     override = tmp_path / "per-class-max-live.yaml"
     override.write_text(
@@ -660,6 +677,11 @@ def test_noded_max_live_vms_accepts_per_class_override(tmp_path: Path):
         else:
             expected = fleet_value
         assert max_live_vms(deployment) == expected
+
+    declared_classes = controller_classes(override_render)
+    assert declared_classes["small"]["slots"] == 3
+    assert declared_classes["large"]["slots"] == int(fleet_value)
+    assert declared_classes["open"]["slots"] == 0
 
     for rendered in (default_render, override_render):
         wildcard = [
