@@ -332,6 +332,7 @@ sh_binary(
     ],
     env = {
         "VERIFICATION_GUARD_BUILDIFIER": "$(rootpath @buildifier_prebuilt//:buildifier)",
+        "VERIFICATION_GUARD_ENGINE_FILES": "$(rootpaths //bazel/semgrep/third_party/semgrep:engine)",
     },
 )
 
