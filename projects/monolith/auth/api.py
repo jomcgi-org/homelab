@@ -8,9 +8,13 @@ from auth.dependencies import (
 )
 from auth.errors import AuthError, AuthErrorReason
 from auth.middleware import PrincipalMiddleware
+from auth.settings import AuthSettings
+from auth.verifier import AuthentikStandingVerifier
 from auth.principal import Authority, Principal, PrincipalKind, anonymous_principal
 
 __all__ = [
+    "AuthSettings",
+    "AuthentikStandingVerifier",
     "AuthError",
     "AuthErrorReason",
     "Authority",

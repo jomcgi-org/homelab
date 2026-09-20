@@ -92,6 +92,7 @@ async def test_valid_human_token_maps_all_identity_facts():
 
     assert principal == Principal(
         subject="user-123",
+        issuer=ISSUER,
         actor=(),
         scope=("openid", "profile", "tools:read"),
         groups=("friends", "operators"),

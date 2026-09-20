@@ -9,7 +9,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from grimoire.access import get_authenticated_identity
+from grimoire.access import get_authenticated_identity, get_grimoire_operator_email
 from grimoire.models import CharacterSheetVersion, Entity, PlayerCharacter
 from grimoire.router import router
 
@@ -97,12 +97,14 @@ def _member(
     player: str,
     character_id: str,
 ) -> dict:
+    client.app.dependency_overrides[get_grimoire_operator_email] = lambda: dm
     response = _post(
         client,
         f"/api/grimoire/campaigns/{campaign_id}/members",
         dm,
         {"email": player, "player_character_id": character_id},
     )
+    del client.app.dependency_overrides[get_grimoire_operator_email]
     assert response.status_code == 200
     return response.json()
 

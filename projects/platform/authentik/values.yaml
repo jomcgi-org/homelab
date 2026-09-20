@@ -46,6 +46,11 @@ authentik:
     # secret, so the PostgreSQL connection settings must be supplied here too.
     # Without these values authentik falls back to localhost:5432.
     env:
+      - name: GRIMOIRE_OIDC_CLIENT_SECRET
+        valueFrom:
+          secretKeyRef:
+            name: grimoire-oidc-client
+            key: client-secret
       - name: AUTHENTIK_POSTGRESQL__HOST
         value: authentik-pg-rw
       - name: AUTHENTIK_POSTGRESQL__NAME

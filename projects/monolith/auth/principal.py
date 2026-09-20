@@ -32,6 +32,9 @@ class Principal:
     email: str | None
     kind: PrincipalKind
     authority: Authority
+    issuer: str = ""
+    display_name: str | None = None
+    email_verified: bool = False
 
     def has_group(self, name: str) -> bool:
         return name in self.groups

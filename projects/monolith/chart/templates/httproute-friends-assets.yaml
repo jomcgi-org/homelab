@@ -1,0 +1,54 @@
+{{- if or .Values.cfIngress.friends.enabled .Values.cfIngress.grimoire.enabled }}
+# Shared compiled assets, authenticated independently of either app's OIDC
+# redirects. JWT providers are ORed. This route serves no page or API data.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "monolith.fullname" . }}-friends-assets
+  labels:
+    {{- include "monolith.labels" . | nindent 4 }}
+    ingress-tier: {{ .Values.cfIngress.friends.tier }}
+spec:
+  parentRefs:
+    - name: {{ .Values.cfIngress.friends.gateway.name }}
+      namespace: {{ .Values.cfIngress.friends.gateway.namespace }}
+  hostnames: [{{ .Values.cfIngress.friends.hostname | quote }}]
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /_app/
+      backendRefs:
+        - name: {{ include "monolith.fullname" . }}
+          port: {{ .Values.cfIngress.friends.servicePort | int }}
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: {{ include "monolith.fullname" . }}-friends-assets
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: {{ include "monolith.fullname" . }}-friends-assets
+  jwt:
+    providers:
+      {{- if .Values.cfIngress.friends.enabled }}
+      - name: moving
+        issuer: {{ .Values.cfIngress.friends.authentik.issuer | quote }}
+        audiences: [{{ .Values.cfIngress.friends.authentik.clientID | quote }}]
+        remoteJWKS:
+          uri: {{ .Values.cfIngress.friends.authentik.jwksUri | quote }}
+        extractFrom:
+          cookies: [moving-id-token]
+      {{- end }}
+      {{- if .Values.cfIngress.grimoire.enabled }}
+      - name: grimoire
+        issuer: {{ .Values.cfIngress.grimoire.issuer | quote }}
+        audiences: [{{ .Values.cfIngress.grimoire.clientID | quote }}]
+        remoteJWKS:
+          uri: {{ .Values.cfIngress.grimoire.jwksUri | quote }}
+        extractFrom:
+          cookies: [grimoire-id-token]
+      {{- end }}
+{{- end }}

@@ -29,12 +29,17 @@ from sqlalchemy import func
 from sqlmodel import Session, or_, select
 
 from grimoire import aliases, library
-from grimoire.access import get_authenticated_email, get_grimoire_operator_email
+from grimoire.access import (
+    get_authenticated_email,
+    get_authenticated_identity,
+    get_grimoire_operator_email,
+)
 from grimoire.models import (
     ENTITY_DETAIL_MODELS,
     AppUser,
     Campaign,
     CampaignMember,
+    CampaignInvitation,
     CharacterSheetStatus,
     CharacterSheetVersion,
     Entity,
@@ -190,8 +195,10 @@ async def execute_alias_candidate(
 
 
 class CampaignCreateRequest(BaseModel):
-    name: str
-    dm_name: str | None = None
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    name: str = Field(min_length=1, max_length=120)
+    dm_name: str | None = Field(default=None, max_length=120)
 
 
 class CampaignView(BaseModel):
@@ -217,7 +224,9 @@ def _get_member_or_404(
         .join(AppUser, AppUser.id == CampaignMember.app_user_id)
         .where(
             CampaignMember.campaign_id == campaign_id,
-            AppUser.email == email,
+            AppUser.id == session.info["grimoire_user_id"]
+            if "grimoire_user_id" in session.info
+            else AppUser.email == email,
         )
     ).first()
     if member is None:
@@ -232,6 +241,15 @@ def _require_dm(session: Session, campaign_id: str, email: str) -> CampaignMembe
     return member
 
 
+def _require_owner(session: Session, campaign_id: str, email: str) -> AppUser:
+    _get_member_or_404(session, campaign_id, email)
+    campaign = _get_campaign_or_404(session, campaign_id)
+    user = _request_user(session, email)
+    if user is None or campaign.owner_app_user_id != user.id:
+        raise HTTPException(403, detail="campaign owner required")
+    return user
+
+
 def _viewer_for_member(
     session: Session, campaign_id: str, member: CampaignMember
 ) -> Viewer:
@@ -241,6 +259,14 @@ def _viewer_for_member(
         return None
     _get_character_in_campaign_or_404(session, campaign_id, member.player_character_id)
     return member.player_character_id
+
+
+def _request_user(session: Session, email: str) -> AppUser | None:
+    user_id = session.info.get("grimoire_user_id")
+    if user_id is not None:
+        return session.get(AppUser, user_id)
+    # Compatibility for the existing dependency seam and legacy operator jobs.
+    return session.exec(select(AppUser).where(AppUser.email == email)).first()
 
 
 def _get_or_create_user(session: Session, email: str) -> AppUser:
@@ -258,8 +284,8 @@ def create_campaign(
     email: str = Depends(get_authenticated_email),
     session: Session = Depends(get_session),
 ) -> Campaign:
-    user = _get_or_create_user(session, email)
-    campaign = Campaign(name=body.name, dm_name=body.dm_name)
+    user = _request_user(session, email) or _get_or_create_user(session, email)
+    campaign = Campaign(name=body.name, dm_name=body.dm_name, owner_app_user_id=user.id)
     session.add(campaign)
     session.flush()
     session.add(
@@ -283,7 +309,11 @@ def list_campaigns(
         select(Campaign)
         .join(CampaignMember, CampaignMember.campaign_id == Campaign.id)
         .join(AppUser, AppUser.id == CampaignMember.app_user_id)
-        .where(AppUser.email == email)
+        .where(
+            AppUser.id == session.info["grimoire_user_id"]
+            if "grimoire_user_id" in session.info
+            else AppUser.email == email
+        )
         .order_by(Campaign.created_at)
     ).all()
 
@@ -727,7 +757,7 @@ def bootstrap_existing_campaign_dm(
     session: Session = Depends(get_session),
 ) -> MemberView:
     """Explicitly attach the first DM to an upgraded existing campaign."""
-    _get_campaign_or_404(session, campaign_id)
+    campaign = _get_campaign_or_404(session, campaign_id)
     existing_dm = session.exec(
         select(CampaignMember).where(
             CampaignMember.campaign_id == campaign_id,
@@ -750,6 +780,8 @@ def bootstrap_existing_campaign_dm(
     if existing_member is not None:
         raise HTTPException(status_code=409, detail="campaign member already exists")
 
+    campaign.owner_app_user_id = user.id
+    session.add(campaign)
     member = CampaignMember(
         campaign_id=campaign_id,
         app_user_id=user.id,
@@ -765,10 +797,11 @@ def bootstrap_existing_campaign_dm(
 def provision_player(
     campaign_id: str,
     body: MemberCreateRequest,
+    _operator: str = Depends(get_grimoire_operator_email),
     email: str = Depends(get_authenticated_email),
     session: Session = Depends(get_session),
 ) -> MemberView:
-    """Provision one player, optionally associating an existing character."""
+    """Operator repair path for legacy memberships."""
     _require_dm(session, campaign_id, email)
     invited_email = body.email.strip().lower()
     if not invited_email or len(invited_email) > 320:
@@ -833,10 +866,21 @@ def revoke_player(
     email: str = Depends(get_authenticated_email),
     session: Session = Depends(get_session),
 ) -> None:
-    _require_dm(session, campaign_id, email)
+    _require_owner(session, campaign_id, email)
     member = session.get(CampaignMember, member_id)
     if member is None or member.campaign_id != campaign_id or member.role != "player":
         raise HTTPException(status_code=404, detail="player membership not found")
+    invitation = session.exec(
+        select(CampaignInvitation)
+        .where(
+            CampaignInvitation.campaign_id == campaign_id,
+            CampaignInvitation.invitee_id == member.app_user_id,
+        )
+        .with_for_update()
+    ).first()
+    if invitation is not None:
+        invitation.status = "revoked"
+        session.add(invitation)
     session.delete(member)
     session.commit()
 
@@ -1500,3 +1544,236 @@ def update_game_session(
     session.commit()
     session.refresh(game_session)
     return game_session
+
+
+# --- Registered-user lobby and accepted invitations --------------------
+
+
+class LobbyUserView(BaseModel):
+    id: str
+    email: str
+    display_name: str | None
+
+
+class LobbyCampaignView(CampaignView):
+    role: MemberRole
+    is_owner: bool
+
+
+class InvitationView(BaseModel):
+    invitee_email: str
+    id: str
+    campaign_id: str
+    campaign_name: str
+    status: str
+
+
+class LobbyView(BaseModel):
+    can_administer_accounts: bool
+    user: LobbyUserView
+    campaigns: list[LobbyCampaignView]
+    invitations: list[InvitationView]
+
+
+def _registered_user(session: Session, email: str) -> AppUser:
+    user = _request_user(session, email)
+    if user is None or user.issuer is None:
+        raise HTTPException(403, detail="sign in to register with Grimoire first")
+    return user
+
+
+def _invitation_view(
+    session: Session, invitation: CampaignInvitation
+) -> InvitationView:
+    campaign = _get_campaign_or_404(session, invitation.campaign_id)
+    return InvitationView(
+        invitee_email=session.get(AppUser, invitation.invitee_id).email,
+        id=invitation.id,
+        campaign_id=campaign.id,
+        campaign_name=campaign.name,
+        status=invitation.status,
+    )
+
+
+@router.get("/lobby", response_model=LobbyView)
+def get_lobby(
+    principal: Principal = Depends(get_authenticated_identity),
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> LobbyView:
+    user = _registered_user(session, email)
+    memberships = session.exec(
+        select(CampaignMember).where(
+            CampaignMember.app_user_id == user.id,
+        )
+    ).all()
+    campaigns = []
+    for member in memberships:
+        campaign = _get_campaign_or_404(session, member.campaign_id)
+        campaigns.append(
+            LobbyCampaignView(
+                id=campaign.id,
+                name=campaign.name,
+                dm_name=campaign.dm_name,
+                created_at=campaign.created_at,
+                role=member.role,
+                is_owner=campaign.owner_app_user_id == user.id,
+            )
+        )
+    invitations = session.exec(
+        select(CampaignInvitation)
+        .where(
+            CampaignInvitation.invitee_id == user.id,
+            CampaignInvitation.status == "pending",
+        )
+        .order_by(CampaignInvitation.created_at)
+    ).all()
+    return LobbyView(
+        can_administer_accounts=principal.has_group("operators"),
+        user=LobbyUserView(
+            id=user.id, email=user.email, display_name=user.display_name
+        ),
+        campaigns=campaigns,
+        invitations=[_invitation_view(session, row) for row in invitations],
+    )
+
+
+class InviteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    email: str = Field(min_length=3, max_length=320)
+
+
+@router.post("/campaigns/{campaign_id}/invitations", response_model=InvitationView)
+def invite_registered_player(
+    campaign_id: str,
+    body: InviteRequest,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> InvitationView:
+    owner = _require_owner(session, campaign_id, email)
+    # Serialize invitations and membership changes for this campaign.
+    session.exec(
+        select(Campaign).where(Campaign.id == campaign_id).with_for_update()
+    ).one()
+    recipient = session.exec(
+        select(AppUser).where(
+            AppUser.email == body.email.lower(),
+            AppUser.issuer.is_not(None),
+        )
+    ).first()
+    if recipient is None:
+        raise HTTPException(404, detail="no registered player with that email")
+    existing = session.exec(
+        select(CampaignMember).where(
+            CampaignMember.campaign_id == campaign_id,
+            CampaignMember.app_user_id == recipient.id,
+        )
+    ).first()
+    if existing is not None:
+        raise HTTPException(409, detail="player is already a campaign member")
+    invitation = session.exec(
+        select(CampaignInvitation)
+        .where(
+            CampaignInvitation.campaign_id == campaign_id,
+            CampaignInvitation.invitee_id == recipient.id,
+        )
+        .with_for_update()
+    ).first()
+    if invitation is None:
+        invitation = CampaignInvitation(
+            campaign_id=campaign_id, invitee_id=recipient.id, invited_by_id=owner.id
+        )
+    elif invitation.status != "pending":
+        # A fresh ID prevents an old accept request from consuming a new invite.
+        session.delete(invitation)
+        session.flush()
+        invitation = CampaignInvitation(
+            campaign_id=campaign_id, invitee_id=recipient.id, invited_by_id=owner.id
+        )
+    session.add(invitation)
+    session.commit()
+    session.refresh(invitation)
+    return _invitation_view(session, invitation)
+
+
+@router.get("/campaigns/{campaign_id}/invitations", response_model=list[InvitationView])
+def list_sent_invitations(
+    campaign_id: str,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> list[InvitationView]:
+    _require_owner(session, campaign_id, email)
+    rows = session.exec(
+        select(CampaignInvitation).where(
+            CampaignInvitation.campaign_id == campaign_id,
+            CampaignInvitation.status == "pending",
+        )
+    ).all()
+    return [_invitation_view(session, row) for row in rows]
+
+
+@router.delete("/campaigns/{campaign_id}/invitations/{invitation_id}", status_code=204)
+def cancel_invitation(
+    campaign_id: str,
+    invitation_id: str,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> None:
+    _require_owner(session, campaign_id, email)
+    row = session.exec(
+        select(CampaignInvitation)
+        .where(
+            CampaignInvitation.id == invitation_id,
+            CampaignInvitation.campaign_id == campaign_id,
+        )
+        .with_for_update()
+    ).first()
+    if row is None:
+        raise HTTPException(404, detail="invitation not found")
+    if row.status != "pending":
+        raise HTTPException(409, detail="invitation is no longer pending")
+    row.status = "revoked"
+    session.add(row)
+    session.commit()
+
+
+@router.post("/invitations/{invitation_id}/{decision}", response_model=InvitationView)
+def decide_invitation(
+    invitation_id: str,
+    decision: Literal["accept", "decline"],
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> InvitationView:
+    user = _registered_user(session, email)
+    row = session.exec(
+        select(CampaignInvitation)
+        .where(
+            CampaignInvitation.id == invitation_id,
+            CampaignInvitation.invitee_id == user.id,
+        )
+        .with_for_update()
+    ).first()
+    if row is None:
+        raise HTTPException(404, detail="invitation not found")
+    if row.status != "pending":
+        raise HTTPException(409, detail="invitation is no longer pending")
+    if decision == "accept":
+        existing = session.exec(
+            select(CampaignMember).where(
+                CampaignMember.campaign_id == row.campaign_id,
+                CampaignMember.app_user_id == user.id,
+            )
+        ).first()
+        if existing is not None:
+            raise HTTPException(409, detail="already a campaign member")
+        session.add(
+            CampaignMember(
+                campaign_id=row.campaign_id, app_user_id=user.id, role="player"
+            )
+        )
+        row.status = "accepted"
+    else:
+        row.status = "declined"
+    session.add(row)
+    session.commit()
+    return _invitation_view(session, row)

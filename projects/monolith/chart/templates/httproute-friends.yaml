@@ -55,21 +55,6 @@ spec:
       backendRefs:
         - name: {{ include "monolith.fullname" . }}
           port: {{ .Values.service.apiPort | int }}
-    # SvelteKit client assets. Nothing else on this hostname claims /_app/:
-    # the preview route carries exactly one rule, for /preview/. Two routes
-    # claiming one prefix would be a genuine conflict, so re-check this if the
-    # preview lane ever grows a SvelteKit surface of its own.
-    #
-    # These sit INSIDE this route on purpose, so the SecurityPolicy below
-    # covers them. Serving the bundle unauthenticated would leak the page's
-    # structure and copy to anyone who guessed the path.
-    - matches:
-        - path:
-            type: PathPrefix
-            value: /_app/
-      backendRefs:
-        - name: {{ include "monolith.fullname" . }}
-          port: {{ .Values.cfIngress.friends.servicePort | int }}
     # The page itself. The SvelteKit reroute hook maps friends.jomcgi.dev/moving
     # to /friends/moving internally, so no gateway-level rewrite is needed.
     #
