@@ -168,8 +168,35 @@ def _cleanup_dispatches_unchanged(row: AgentSession, dispatches: list[dict]) -> 
     return isinstance(issued, list) and all(item in issued for item in dispatches)
 
 
+def settled_guest_cleanup_conditions():
+    """Select terminal workflow bindings with settled permits and no queued turn."""
+    return (
+        AgentSession.status.in_(("completed", "failed", "warn", "cancelled")),
+        AgentSession.workflow_id.isnot(None),
+        AgentSession.ember_session_id.isnot(None),
+        exists().where(
+            AgentCapacityReservation.session_id == AgentSession.id,
+            AgentCapacityReservation.state == "settled",
+            AgentCapacityReservation.settled_at.isnot(None),
+        ),
+        ~exists().where(
+            AgentCapacityReservation.session_id == AgentSession.id,
+            or_(
+                AgentCapacityReservation.state != "settled",
+                AgentCapacityReservation.settled_at.is_(None),
+            ),
+        ),
+        ~exists().where(PendingMessage.session_id == AgentSession.id),
+    )
+
+
 def begin_guest_cleanup(
-    session: Session, session_id: int, guest_id: str, workflow_id: str
+    session: Session,
+    session_id: int,
+    guest_id: str,
+    workflow_id: str,
+    *,
+    settled_only: bool = False,
 ) -> dict:
     """Commit exact cleanup ownership before the workflow performs a DELETE.
 
@@ -188,6 +215,16 @@ def begin_guest_cleanup(
         or not workflow_id
     ):
         return {"hold": "binding_changed"}
+    if (
+        settled_only
+        and session.exec(
+            select(AgentSession.id).where(
+                AgentSession.id == session_id, *settled_guest_cleanup_conditions()
+            )
+        ).first()
+        is None
+    ):
+        return {"hold": "session_not_settled"}
     resuming = row.guest_cleanup_id is not None
     if resuming:
         if (
