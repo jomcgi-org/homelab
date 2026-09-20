@@ -397,9 +397,7 @@ def renders():
     dev_release = _application_name(Path(os.environ["DEV_APPLICATION"]))
     return {
         "prod": _render(prod_release, [chart / "values.yaml", prod_values]),
-        "gke": _render(
-            prod_release, [chart / "values.yaml", prod_values, gke_values]
-        ),
+        "gke": _render(prod_release, [chart / "values.yaml", prod_values, gke_values]),
         "dev": _render(dev_release, [chart / "values.yaml", dev_values]),
     }
 
