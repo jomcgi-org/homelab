@@ -361,7 +361,7 @@ def branch_hydration(task: dict, branch: str, task_hydration: str) -> str:
 def ingest_eligible(policy: dict) -> None:
     # Imported here rather than at module scope: the intake loop reaches back
     # into this module for its bounded GitHub reads.
-    from factory.orchestration.factory_intake import receive_issue
+    from factory.orchestration.factory_intake import get_issue_receipt, receive_issue
     from factory.orchestration.factory_intake_loop import (
         _label_names,
         derive_task_class,
@@ -379,6 +379,14 @@ def ingest_eligible(policy: dict) -> None:
         # security-finding or needs-thought issue keeps its Opus floor whether
         # the lane discovered it or an operator asked for it.
         task_class, _reason = derive_task_class(_label_names(issue), refine=False)
+        generation = policy.get("generation", 0)
+        if (
+            get_issue_receipt(
+                policy["repo"], number, generation, task_class=task_class
+            )
+            is not None
+        ):
+            continue
         delivery_target = (
             factory_gates.receive_delivery_target(policy["repo"], number)
             if not is_advisory(task_class)
@@ -391,7 +399,7 @@ def ingest_eligible(policy: dict) -> None:
             issue.get("body") or "",
             issue["html_url"],
             ACTOR,
-            generation=policy.get("generation", 0),
+            generation=generation,
             task_class=task_class,
             issue=issue,
             delivery_target=delivery_target,

@@ -154,7 +154,7 @@ def _pull_for_owner(repo: str, row: FactoryReceipt) -> dict | None:
 def _successor(
     repo: str, issue_number: int, candidate_number: int
 ) -> tuple[dict, FactoryReceipt] | None:
-    """A fresh newer PR whose exact branch is held by a running receipt."""
+    """A fresh peer PR whose exact branch is held by a running receipt."""
     survivors = []
     for row in _active_receipts(repo, issue_number):
         pull = _pull_for_owner(repo, row)
@@ -163,7 +163,7 @@ def _successor(
         number = pull.get("number")
         if (
             type(number) is int
-            and number > candidate_number
+            and number != candidate_number
             and issue_number in closing_issue_numbers(pull.get("body"), repo)
         ):
             survivors.append((pull, row))
@@ -311,7 +311,7 @@ def _retire_pull(repo: str, listed: dict) -> None:
         survivor_branch = survivor["head"]["ref"]
         text = (
             f"Factory lifecycle retired PR #{number} because issue #{issue_number} "
-            f"has newer PR #{survivor_number} on `{survivor_branch}`, owned by "
+            f"has PR #{survivor_number} on `{survivor_branch}`, owned by "
             f"running task `{survivor_row.task_id}`. PR #{survivor_number} remains "
             "open and was not modified."
         )
@@ -320,7 +320,7 @@ def _retire_pull(repo: str, listed: dict) -> None:
         survivor_branch = None
         text = (
             f"Factory lifecycle retired PR #{number} because its closing issue "
-            f"#{issue_number} is closed. No newer running-task survivor was "
+            f"#{issue_number} is closed. No running-task survivor was "
             "found, so this retirement is for the closed issue rather than a handoff."
         )
     _record(

@@ -9787,6 +9787,47 @@ def test_ingest_eligible_links_receipt_to_work_item(feedback_db, monkeypatch):
         )
 
 
+def test_ingest_eligible_skips_delivery_discovery_for_existing_receipt(
+    feedback_db, monkeypatch
+):
+    import factory.orchestration.factory_intake as intake
+
+    issue = {
+        "number": 4,
+        "state": "open",
+        "assignees": [],
+        "title": "Existing receipt",
+        "body": "body",
+        "html_url": "https://github.com/owner/repo/issues/4",
+        "labels": [{"name": "needs-thought"}],
+    }
+    intake.receive_issue(
+        "owner/repo",
+        4,
+        issue["title"],
+        issue["body"],
+        issue["html_url"],
+        "test",
+        generation=3,
+        task_class="judgment-analysis",
+    )
+    monkeypatch.setattr(conductor, "github_get", lambda _repo, _suffix: issue)
+    monkeypatch.setattr(
+        conductor.factory_gates,
+        "receive_delivery_target",
+        lambda *_args: pytest.fail("rediscovered delivery target"),
+    )
+    monkeypatch.setattr(
+        intake,
+        "receive_issue",
+        lambda *_args, **_kwargs: pytest.fail("re-received existing issue"),
+    )
+
+    conductor.ingest_eligible(
+        {"repo": "owner/repo", "issue_numbers": [4], "generation": 3}
+    )
+
+
 def test_task_dict_includes_receipt_work_item_id(feedback_db):
     with Session(feedback_db) as db:
         item = WorkItem(

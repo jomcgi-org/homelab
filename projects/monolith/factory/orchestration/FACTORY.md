@@ -1291,7 +1291,7 @@ has adopted it, that task owns readiness and the old settlement does nothing.
 
 The paced sweep on that tick examines at most 20 open PRs from a persisted page
 cursor. It never mutates a non-`factory/` head. An unowned factory PR is closed when one
-of its closing issues is closed, or when that issue has a newer open factory PR
+of its closing issues is closed, or when that issue has another open factory PR
 whose exact branch is owned by a running receipt. The comment names the
 survivor when one exists and otherwise says explicitly that the issue is
 already closed. The survivor is not modified. A prepared audit, a hidden
