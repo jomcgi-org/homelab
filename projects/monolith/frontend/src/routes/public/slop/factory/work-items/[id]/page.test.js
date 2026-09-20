@@ -40,7 +40,9 @@ describe("public work-item page", () => {
       },
     });
 
-    expect(target.textContent).toContain("<script>window.pwned = true</script>");
+    expect(target.textContent).toContain(
+      "<script>window.pwned = true</script>",
+    );
     expect(target.textContent).toContain("<svg onload=window.pwned=true>");
     expect(target.querySelector("script")).toBeNull();
     expect(target.querySelector("img")).toBeNull();

@@ -16,7 +16,10 @@ export async function GET({ fetch, params, setHeaders }) {
     { signal: AbortSignal.timeout(10_000) },
   );
   if (!res.ok) {
-    throw error(res.status === 404 ? 404 : 503, "factory work item unavailable");
+    throw error(
+      res.status === 404 ? 404 : 503,
+      "factory work item unavailable",
+    );
   }
 
   const headers = cloudflareCacheHeaders(FACTORY_ACTIVITY_CACHE_CONTROL);
