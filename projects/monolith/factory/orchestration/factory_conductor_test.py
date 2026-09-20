@@ -10463,17 +10463,52 @@ def test_advisory_review_settles_without_delivery_pr_number(feedback_db, monkeyp
     assert controls.task_snapshot(task["id"])["state"] == "succeeded"
 
 
-def test_consecutive_funding_refusals_finish_task(feedback_db, monkeypatch):
-    from datetime import timedelta
+def test_expired_idle_task_stops_after_six_funding_refusals_and_releases_lane(
+    feedback_db, monkeypatch
+):
+    from datetime import datetime, timedelta, timezone
+    import factory.orchestration.factory_intake_loop as intake_loop
+    import factory.orchestration.factory_landing as landing
+    import factory.orchestration.work_item_pointer as work_item_pointer
     from factory.orchestration import (
         factory_controls as controls,
         factory_funding as funding,
     )
+    from factory.orchestration.factory_intake import receive_issue
+    from factory.orchestration.factory_models import FactoryAudit
+    from factory.orchestration.models import SwarmTask
 
     monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "true")
-    task, policy = feedback_task()
-    retry_after = (controls._now() - timedelta(minutes=1)).isoformat()
+    now = datetime(2026, 9, 20, 12, tzinfo=timezone.utc)
+    monkeypatch.setattr(controls, "_now", lambda: now)
+    task, policy = feedback_task(
+        issue_numbers=[7, 8], max_tasks={"delivery": 1, "advisory": 0}
+    )
+    assert conductor._add(
+        task,
+        policy,
+        "implement_pending",
+        "Implement the bounded change.",
+        [],
+        "luna",
+        "test:expired-idle-funding",
+        "Reproduce an expired admitted task with pending work.",
+    ).ok
+    receive_issue(
+        "owner/repo",
+        8,
+        "Next eligible issue",
+        "Queued behind the occupied delivery lane.",
+        "https://github.com/owner/repo/issues/8",
+        "poller",
+    )
+    retry_after = (now - timedelta(minutes=1)).isoformat()
     with controls._locked_session() as (db, _control):
+        stored = db.get(SwarmTask, task["id"])
+        stored.created_at = now - timedelta(
+            seconds=policy["task_timeout_seconds"] + 1
+        )
+        db.add(stored)
         for ordinal in range(funding.FUNDING_REFUSAL_LIMIT):
             controls._audit(
                 db,
@@ -10481,26 +10516,76 @@ def test_consecutive_funding_refusals_finish_task(feedback_db, monkeypatch):
                 "funding_review_settled",
                 task_id=task["id"],
                 request_id=ordinal,
-                refusal="Astra review could not start",
+                refusal=(
+                    "Review could not acquire execution capacity before its deadline"
+                ),
                 retry_after=retry_after,
             )
+
+    before = controls.task_snapshot(task["id"])
+    assert before["state"] == "admitted"
+    assert before["limits"]["deadline_expired"] is True
+    assert before["unresolved_starts"] == 0
+    assert conductor.graph.node_runs(task["id"]) == []
+    assert {node["node_key"] for node in conductor.graph.load_graph(task["id"])} == {
+        "implement_pending"
+    }
     monkeypatch.setattr(
         funding,
         "request",
         lambda *_args, **_kwargs: pytest.fail("refusal limit must stop retries"),
     )
+    monkeypatch.setattr(conductor.runtime, "is_launched", lambda: True)
+    monkeypatch.setattr(conductor.runtime, "init_dbos", lambda: object())
+    monkeypatch.setattr(conductor, "revalidate_escalations", lambda: None)
+    monkeypatch.setattr(conductor, "observe_reviewer_routing", lambda _policy: None)
+    monkeypatch.setattr(conductor, "ingest_eligible", lambda _policy: None)
+    monkeypatch.setattr(intake_loop, "intake_tick", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(landing, "landing_tick", lambda _policy: None)
+    monkeypatch.setattr(work_item_pointer, "sync_pointers", lambda **_kwargs: None)
 
-    conductor.reconcile_task(task["id"], policy, object())
+    conductor.tick()
 
-    snapshot = controls.task_snapshot(task["id"])
-    assert snapshot["state"] == "failed"
-    assert snapshot["evidence"] == {
+    with Session(feedback_db) as db:
+        settled = db.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == task["id"])
+        ).one()
+        queued = db.exec(
+            select(FactoryReceipt).where(FactoryReceipt.issue_number == 8)
+        ).one()
+        refusals = [
+            json.loads(row.detail_json)
+            for row in db.exec(
+                select(FactoryAudit).where(
+                    FactoryAudit.task_id == task["id"],
+                    FactoryAudit.action == "funding_review_settled",
+                )
+            ).all()
+        ]
+        assert settled.state == "failed"
+        assert queued.state == "queued"
+        assert len(refusals) == funding.FUNDING_REFUSAL_LIMIT
+        assert all(detail.get("refusal") for detail in refusals)
+    assert controls.task_snapshot(task["id"])["evidence"] == {
         "state": "funding_review_unavailable",
         "reason": (
             f"{funding.FUNDING_REFUSAL_LIMIT} consecutive funding "
             "reviews could not start"
         ),
     }
+
+    conductor.tick()
+
+    with Session(feedback_db) as db:
+        settled = db.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == task["id"])
+        ).one()
+        admitted = db.exec(
+            select(FactoryReceipt).where(FactoryReceipt.issue_number == 8)
+        ).one()
+        assert settled.state == "failed"
+        assert admitted.state == "admitted"
+        assert admitted.task_id is not None
 
 
 def test_astra_decides_extensions_repeatedly_without_mutating_original_policy(
