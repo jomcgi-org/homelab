@@ -554,3 +554,27 @@ def live_server_with_fake_embedding(live_server):
     app.dependency_overrides[get_embedding_client] = lambda: fake
     yield live_server
     app.dependency_overrides.pop(get_embedding_client, None)
+
+
+@pytest.fixture()
+def authorized_knowledge_server(live_server_with_fake_embedding):
+    """Run knowledge search as an explicitly mapped repository caller."""
+    from app.main import app  # noqa: E402
+    from auth.api import Authority, Principal, PrincipalKind, get_principal  # noqa: E402
+
+    principal = Principal(
+        subject="knowledge-test",
+        actor=(),
+        scope=(
+            "org:jomcgi-org",
+            "repo:jomcgi-org/homelab",
+            "environment:homelab",
+        ),
+        groups=(),
+        email="knowledge-test@example.com",
+        kind=PrincipalKind.HUMAN,
+        authority=Authority.STANDING,
+    )
+    app.dependency_overrides[get_principal] = lambda: principal
+    yield live_server_with_fake_embedding
+    app.dependency_overrides.pop(get_principal, None)
