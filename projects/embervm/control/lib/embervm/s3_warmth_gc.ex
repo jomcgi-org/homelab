@@ -915,8 +915,8 @@ defmodule Embervm.S3WarmthGc do
   # Tier-2 predecessor retention: within each (vendor, workload) stateful
   # namespace, the configured number of newest refs by created-at are protected
   # regardless of age.
-  # Computed over ALL parsed refs, desired or not, so the protection is at least
-  # as wide as the retention contract. Session and serving have no such guard.
+  # Desired, node-reported, and unreadable refs are held independently and do
+  # not consume predecessor slots. Session and serving have no such guard.
   defp tier2_protected(state, snapshot, candidates, created) do
     candidates
     |> Enum.filter(&(&1.kind == :stateful))
@@ -938,8 +938,8 @@ defmodule Embervm.S3WarmthGc do
     |> MapSet.new()
   end
 
-  # An unreadable meta sorts as NEWEST so it also lands inside the protected
-  # window rather than aging a sibling out of it incorrectly.
+  # Defensive fallback if another caller ever ranks an unreadable meta. The
+  # selector above excludes unreadable candidates from the retention window.
   defp sort_created(:error, _fallback), do: :infinity
   defp sort_created(nil, fallback), do: fallback
   defp sort_created(ms, _fallback), do: ms
