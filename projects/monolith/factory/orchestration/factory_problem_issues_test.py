@@ -328,8 +328,9 @@ def test_issue_discovery_failure_refuses_the_write_and_backs_off(db, monkeypatch
     ] + timedelta(minutes=2)
 
 
+@pytest.mark.parametrize("omit_policy", [False, True])
 def test_uncertain_write_reconciles_marker_after_backoff_without_reposting(
-    db, monkeypatch
+    db, monkeypatch, omit_policy
 ):
     engine, clock = db
     selected = policy()
@@ -355,13 +356,12 @@ def test_uncertain_write_reconciles_marker_after_backoff_without_reposting(
     producer.problem_issues_tick(selected)
     assert len(state["reads"]) == 1
     clock["now"] += timedelta(minutes=2)
-    producer.problem_issues_tick(
-        {
-            **selected,
-            "repo": "moved/repo",
-            "problem_issues": {"enabled": False},
-        }
-    )
+    disabled = {**selected, "repo": "moved/repo"}
+    if omit_policy:
+        disabled.pop("problem_issues")
+    else:
+        disabled["problem_issues"] = {"enabled": False}
+    producer.problem_issues_tick(disabled)
     assert len(state["writes"]) == 1
     assert state["read_repos"] == ["owner/repo", "owner/repo"]
     assert details(audits(engine, "problem_issue_reconciled"))[-1]["issue_numbers"] == [
@@ -551,7 +551,7 @@ def test_pull_request_marker_does_not_deduplicate_an_issue(db, monkeypatch):
     assert details(audits(engine, "problem_issue_created"))[-1]["issue_number"] == 7001
 
 
-def test_issue_lookup_refuses_write_when_two_page_bound_is_exhausted(db, monkeypatch):
+def test_issue_lookup_stays_bounded_when_two_pages_are_full(db, monkeypatch):
     engine, _clock = db
     selected = policy()
     enable_after_watermark(engine, selected)
@@ -564,13 +564,18 @@ def test_issue_lookup_refuses_write_when_two_page_bound_is_exhausted(db, monkeyp
 
     monkeypatch.setattr(producer, "github_list", read)
     writes = []
-    monkeypatch.setattr(producer, "github_write", lambda *_args: writes.append(1))
+
+    def write(_repo, payload):
+        writes.append(payload)
+        return {"number": 8000, **payload}
+
+    monkeypatch.setattr(producer, "github_write", write)
     producer.problem_issues_tick(selected)
     assert len(calls) == 2
-    assert writes == []
+    assert len(writes) == 1
     assert "per_page=100&page=1" in calls[0]
     assert "per_page=100&page=2" in calls[1]
     capped = details(audits(engine, "problem_issue_issue_scan_capped"))
     assert capped[-1]["pages"] == 2 and capped[-1]["per_page"] == 100
-    refused = details(audits(engine, "problem_issue_source_refused"))
-    assert refused[-1]["reason"] == "issue_discovery_truncated"
+    assert audits(engine, "problem_issue_source_refused") == []
+    assert details(audits(engine, "problem_issue_created"))[-1]["issue_number"] == 8000
