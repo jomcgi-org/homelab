@@ -381,9 +381,7 @@ def ingest_eligible(policy: dict) -> None:
         task_class, _reason = derive_task_class(_label_names(issue), refine=False)
         generation = policy.get("generation", 0)
         if (
-            get_issue_receipt(
-                policy["repo"], number, generation, task_class=task_class
-            )
+            get_issue_receipt(policy["repo"], number, generation, task_class=task_class)
             is not None
         ):
             continue
