@@ -499,9 +499,7 @@ def _validate_or_recover_started_session(
     normalized = {**expected, "model": normalize_model(expected["model"])}
     with Session(get_engine()) as session:
         owner = session.exec(
-            select(AgentSession)
-            .where(AgentSession.id == session_id)
-            .with_for_update()
+            select(AgentSession).where(AgentSession.id == session_id).with_for_update()
         ).one_or_none()
         if owner is None:
             raise ValueError("node session ownership conflict: id")
@@ -540,8 +538,7 @@ def _validate_or_recover_started_session(
             )
         ).first()
         if any(
-            value is not None
-            for value in (extra_pending, extra_turn, extra_receipt)
+            value is not None for value in (extra_pending, extra_turn, extra_receipt)
         ):
             raise ValueError("node session ownership conflict: prompt")
         for row, field in ((pending, "message_text"), (turn, "prompt")):

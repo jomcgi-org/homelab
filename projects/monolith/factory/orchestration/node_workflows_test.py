@@ -802,9 +802,7 @@ def test_session_binding_refusal_replays_one_existing_session_and_prompt(
         assert pending[0].message_text == "one prompt"
 
 
-def test_missing_prompt_with_execution_evidence_is_never_recreated(
-    session_binding_db
-):
+def test_missing_prompt_with_execution_evidence_is_never_recreated(session_binding_db):
     args = (
         "factory:t-11:implement:1",
         "one prompt",
