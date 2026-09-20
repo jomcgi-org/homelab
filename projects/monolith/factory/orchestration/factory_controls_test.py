@@ -1631,6 +1631,8 @@ def test_multiple_generation_bumps_retire_each_old_queue_once(db, policy):
             )
         ).all()
         assert len(audits) == 2
+
+
 @pytest.mark.parametrize("historical_value", ["omitted", None])
 def test_inert_problem_issues_default_does_not_advance_active_generation(
     db, policy, historical_value
