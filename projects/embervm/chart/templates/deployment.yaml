@@ -552,6 +552,12 @@ spec:
             - name: EMBERVM_WARMTH_S3_GC
               value: {{ .Values.warmthS3Gc.enabled | quote }}
             {{- end }}
+            {{- $generationRetentionCap := toString .Values.warmthS3Gc.generationRetentionCap }}
+            {{- if not (regexMatch "^[1-9][0-9]*$" $generationRetentionCap) }}
+            {{- fail "warmthS3Gc.generationRetentionCap must be a positive integer" }}
+            {{- end }}
+            - name: EMBERVM_WARMTH_S3_GC_GENERATION_RETENTION_CAP
+              value: {{ $generationRetentionCap | quote }}
             {{- if .Values.warmthS3Gc.maxPrefixes }}
             - name: EMBERVM_WARMTH_S3_GC_MAX_PREFIXES
               value: {{ .Values.warmthS3Gc.maxPrefixes | quote }}
