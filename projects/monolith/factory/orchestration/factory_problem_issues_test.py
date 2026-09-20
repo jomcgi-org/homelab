@@ -413,9 +413,7 @@ def test_concurrent_observers_claim_one_external_write(db, monkeypatch):
     assert len(audits(engine, "problem_issue_write_started")) == 1
 
 
-def test_issue_lookup_refuses_write_when_two_page_bound_is_exhausted(
-    db, monkeypatch
-):
+def test_issue_lookup_refuses_write_when_two_page_bound_is_exhausted(db, monkeypatch):
     engine, _clock = db
     selected = policy()
     enable_after_watermark(engine, selected)
