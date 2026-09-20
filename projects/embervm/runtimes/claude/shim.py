@@ -3722,20 +3722,14 @@ def _muse_reconciled_activities(live_events, retained_events):
         retained_name = retained_event.get("toolName")
         if isinstance(retained_name, str) and retained_name:
             merged["toolName"] = retained_name
-        tool_name = merged.get("toolName") or merged.get("tool_name")
-        if isinstance(tool_name, str) and tool_name.lower() == "bash":
-            if "arguments" in retained_event:
-                merged["arguments"] = retained_event["arguments"]
+        if "arguments" in retained_event:
+            merged["arguments"] = retained_event["arguments"]
         reconciled.append(merged)
 
     for index, retained_event in enumerate(retained_events):
         if index in used_retained:
             continue
-        retained_event = dict(retained_event)
-        tool_name = retained_event.get("toolName")
-        if not isinstance(tool_name, str) or tool_name.lower() != "bash":
-            retained_event.pop("arguments", None)
-        reconciled.append(retained_event)
+        reconciled.append(dict(retained_event))
     return activity_from_events(reconciled)
 
 
