@@ -139,9 +139,15 @@ defmodule Embervm.S3WarmthGc do
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
-    case Keyword.get(opts, :name, __MODULE__) do
-      nil -> GenServer.start_link(__MODULE__, opts)
-      name -> GenServer.start_link(__MODULE__, opts, name: name)
+    generation_retention_cap = Keyword.get(opts, :generation_retention_cap, @generation_retention_cap)
+
+    if is_integer(generation_retention_cap) and generation_retention_cap > 0 do
+      case Keyword.get(opts, :name, __MODULE__) do
+        nil -> GenServer.start_link(__MODULE__, opts)
+        name -> GenServer.start_link(__MODULE__, opts, name: name)
+      end
+    else
+      {:error, {:invalid_generation_retention_cap, generation_retention_cap}}
     end
   end
 
@@ -232,12 +238,8 @@ defmodule Embervm.S3WarmthGc do
       started_at: clock.()
     }
 
-    if is_integer(generation_retention_cap) and generation_retention_cap > 0 do
-      schedule_sweep(state)
-      {:ok, state}
-    else
-      {:stop, {:invalid_generation_retention_cap, generation_retention_cap}}
-    end
+    schedule_sweep(state)
+    {:ok, state}
   end
 
   @impl true
@@ -271,13 +273,13 @@ defmodule Embervm.S3WarmthGc do
 
   defp run_sweep(state) do
     with :ok <- check_uptime(state),
-         :ok <- check_fleet_fresh(state),
+         {:ok, fleet} <- fleet_snapshot(state),
          {:ok, stateful_keys} <- list_or_abort(state, "stateful/"),
          {:ok, session_keys} <- list_or_abort(state, "session/"),
          {:ok, serving_keys} <- list_or_abort(state, "serving/"),
          {:ok, workspace_keys} <- list_or_abort(state, "session-workspace/"),
          {:ok, group_keys} <- list_or_abort(state, "group_set/"),
-         {:ok, snapshot} <- cp_snapshot(state),
+         {:ok, snapshot} <- cp_snapshot(state, fleet),
          :ok <- check_empty_cp_state(snapshot, stateful_keys, session_keys, serving_keys, workspace_keys, group_keys, state.allow_empty_kinds) do
       {candidates, shadowed, ambiguous} = parse_candidates(state, stateful_keys, session_keys, serving_keys, workspace_keys, group_keys)
       {eligible, held} = build_plan(state, snapshot, candidates)
@@ -320,35 +322,54 @@ defmodule Embervm.S3WarmthGc do
   # a modeled CPU vendor so stateful assignments can be matched to their vendor
   # pool. An empty registry aborts because brick capacity is expected and there
   # is no basis to claim the inventory is complete.
-  defp check_fleet_fresh(state) do
+  defp fleet_snapshot(state) do
     now = state.clock.()
     expected_instances = expected_instances(state)
 
     if expected_instances == [] do
       abort(:no_expected_nodes, "node registry is empty while brick capacity is expected")
     else
-      stale =
-        Enum.filter(expected_instances, fn instance ->
+      {facts, stale} =
+        Enum.reduce(expected_instances, {[], []}, fn instance, {facts, stale} ->
           case NodeCapacity.fetch(state.capacity_table, {instance.node_id, instance.pod_uid}) do
-            {:ok, facts} ->
-              vendor = normalized_vendor(facts)
+            {:ok, capacity} ->
+              vendor = normalized_vendor(capacity)
+              age = now - Map.get(capacity, :updated_at, now - state.freshness_window_ms - 1)
 
-              now - Map.get(facts, :updated_at, now - state.freshness_window_ms - 1) >
-                  state.freshness_window_ms or
-                vendor not in state.vendors
+              if age <= state.freshness_window_ms and vendor in state.vendors do
+                {[capacity | facts], stale}
+              else
+                {facts, [instance.instance_id | stale]}
+              end
 
             :error ->
-              true
+              {facts, [instance.instance_id | stale]}
           end
         end)
 
       if stale == [] do
-        :ok
+        facts = Enum.reverse(facts)
+        expected_ids = MapSet.new(expected_instances, & &1.instance_id)
+
+        unexpected =
+          state.capacity_table
+          |> NodeCapacity.all()
+          |> Enum.reject(&MapSet.member?(expected_ids, Map.get(&1, :instance_id)))
+
+        if unexpected == [] do
+          {:ok, %{facts: facts, node_vendors: node_vendors(facts, state.vendors)}}
+        else
+          abort(
+            :fleet_stale,
+            "NodeCapacity contains instances absent from NodeRegistry: " <>
+              inspect(Enum.map(unexpected, &Map.get(&1, :instance_id)))
+          )
+        end
       else
         abort(
           :fleet_stale,
           "instances missing, stale, or outside modeled vendor pools in NodeCapacity: " <>
-            inspect(Enum.map(stale, & &1.instance_id))
+            inspect(Enum.reverse(stale))
         )
       end
     end
@@ -395,12 +416,12 @@ defmodule Embervm.S3WarmthGc do
 
   # One consistent read of every CP truth source. Store call failures abort (a
   # dead store must read as "unknown", never as "empty").
-  defp cp_snapshot(state) do
+  defp cp_snapshot(state, fleet) do
     stateful_rows = StatefulStore.all(state.stateful_store)
     group_rows = GroupStore.all(state.group_store)
     session_rows = SessionStore.all(state.session_store)
     serving_rows = ServingStore.all(state.serving_store)
-    facts = NodeCapacity.all(state.capacity_table)
+    facts = fleet.facts
 
     reported_refs =
       for fact <- facts,
@@ -455,7 +476,7 @@ defmodule Embervm.S3WarmthGc do
           into: MapSet.new(), do: row.snapshot_ref
 
     non_terminal_stateful = Enum.reject(stateful_rows, &StatefulState.terminal?(&1.state))
-    assignment_evidence = stateful_assignment_evidence(non_terminal_stateful, facts, state.vendors)
+    assignment_evidence = stateful_assignment_evidence(non_terminal_stateful, fleet.node_vendors)
 
     snapshot = %{
       stateful_count: length(stateful_rows),
@@ -516,22 +537,7 @@ defmodule Embervm.S3WarmthGc do
     kind, reason -> abort(:cp_snapshot_failed, inspect({kind, reason}))
   end
 
-  defp stateful_assignment_evidence(rows, facts, vendors) do
-    node_vendors =
-      Enum.reduce(facts, %{}, fn fact, acc ->
-        node_id = Map.get(fact, :configured_id) || Map.get(fact, :node_id)
-        vendor = normalized_vendor(fact)
-
-        if is_binary(node_id) and node_id != "" and vendor in vendors do
-          Map.update(acc, node_id, vendor, fn
-            ^vendor -> vendor
-            _other -> :unknown
-          end)
-        else
-          if is_binary(node_id) and node_id != "", do: Map.put(acc, node_id, :unknown), else: acc
-        end
-      end)
-
+  defp stateful_assignment_evidence(rows, node_vendors) do
     initial = %{
       node_vendors: node_vendors,
       live_vendor_workloads: MapSet.new(),
@@ -559,6 +565,22 @@ defmodule Embervm.S3WarmthGc do
             | unknown_vendor_workloads:
                 MapSet.put(evidence.unknown_vendor_workloads, workload)
           }
+      end
+    end)
+  end
+
+  defp node_vendors(facts, vendors) do
+    Enum.reduce(facts, %{}, fn fact, acc ->
+      node_id = Map.get(fact, :configured_id) || Map.get(fact, :node_id)
+      vendor = normalized_vendor(fact)
+
+      if is_binary(node_id) and node_id != "" and vendor in vendors do
+        Map.update(acc, node_id, vendor, fn
+          ^vendor -> vendor
+          _other -> :unknown
+        end)
+      else
+        if is_binary(node_id) and node_id != "", do: Map.put(acc, node_id, :unknown), else: acc
       end
     end)
   end
@@ -901,7 +923,10 @@ defmodule Embervm.S3WarmthGc do
     |> Enum.group_by(&{&1.vendor, &1.workload})
     |> Enum.flat_map(fn {_vw, cands} ->
       cands
-      |> Enum.sort_by(fn c -> sort_created(Map.get(created, c.prefix), c.newest_modified_ms) end, :desc)
+      |> Enum.sort_by(
+        fn c -> {sort_created(Map.get(created, c.prefix), c.newest_modified_ms), c.prefix} end,
+        :desc
+      )
       |> Enum.take(state.generation_retention_cap)
       |> Enum.map(& &1.prefix)
     end)
@@ -1033,85 +1058,102 @@ defmodule Embervm.S3WarmthGc do
   # ref, a node re-reporting a bundle, a workload waking). Age and parse cannot
   # regress, so they are not re-evaluated.
   defp recheck_live(state, %{kind: :stateful} = entry) do
-    facts = NodeCapacity.all(state.capacity_table)
+    with {:ok, fleet} <- fleet_snapshot(state) do
+      reported? =
+        Enum.any?(fleet.facts, fn fact ->
+          Enum.any?(Map.get(fact, :stateful_bundles, []) || [], &(&1.snapshot_ref == entry.ref))
+        end)
 
-    reported? =
-      Enum.any?(facts, fn fact ->
-        Enum.any?(Map.get(fact, :stateful_bundles, []) || [], &(&1.snapshot_ref == entry.ref))
-      end)
+      desired? =
+        Enum.any?(StatefulStore.all(state.stateful_store), fn row ->
+          not StatefulState.terminal?(row.state) and row.snapshot_ref == entry.ref
+        end)
 
-    desired? =
-      Enum.any?(StatefulStore.all(state.stateful_store), fn row ->
-        not StatefulState.terminal?(row.state) and row.snapshot_ref == entry.ref
-      end)
+      tier1_liveness =
+        if entry.tier == 1,
+          do: workload_liveness_now(state, fleet, entry.vendor, entry.workload),
+          else: :dead
 
-    tier1_liveness = if entry.tier == 1, do: workload_liveness_now(state, entry.vendor, entry.workload), else: :dead
-
-    cond do
-      desired? -> {:blocked, "ref became desired"}
-      reported? -> {:blocked, "ref became node-reported"}
-      tier1_liveness == :live -> {:blocked, "vendor/workload owner came alive since plan"}
-      tier1_liveness == :unknown -> {:blocked, "vendor pool evidence became unknown"}
-      true -> :ok
+      cond do
+        desired? -> {:blocked, "ref became desired"}
+        reported? -> {:blocked, "ref became node-reported"}
+        tier1_liveness == :live -> {:blocked, "vendor/workload owner came alive since plan"}
+        tier1_liveness == :unknown -> {:blocked, "vendor pool evidence became unknown"}
+        true -> :ok
+      end
+    else
+      {:error, _reason} -> {:blocked, "fleet evidence became incomplete"}
     end
   end
 
   defp recheck_live(state, %{kind: :group} = entry) do
-    facts = NodeCapacity.all(state.capacity_table)
+    with {:ok, fleet} <- fleet_snapshot(state) do
+      reported? =
+        Enum.any?(fleet.facts, fn fact ->
+          Enum.any?(Map.get(fact, :group_bundle_sets, []) || [], &(&1.set_id == entry.set_id))
+        end)
 
-    reported? =
-      Enum.any?(facts, fn fact ->
-        Enum.any?(Map.get(fact, :group_bundle_sets, []) || [], &(&1.set_id == entry.set_id))
-      end)
+      live? =
+        Enum.any?(GroupStore.all(state.group_store), fn row ->
+          not GroupState.terminal?(row.state) and (row.set_id == entry.set_id or row.instance_id == entry.group_instance_id)
+        end)
 
-    live? =
-      Enum.any?(GroupStore.all(state.group_store), fn row ->
-        not GroupState.terminal?(row.state) and (row.set_id == entry.set_id or row.instance_id == entry.group_instance_id)
-      end)
-
-    cond do
-      live? -> {:blocked, "group became live/desired"}
-      reported? -> {:blocked, "set became node-reported"}
-      true -> :ok
+      cond do
+        live? -> {:blocked, "group became live/desired"}
+        reported? -> {:blocked, "set became node-reported"}
+        true -> :ok
+      end
+    else
+      {:error, _reason} -> {:blocked, "fleet evidence became incomplete"}
     end
   end
 
   defp recheck_live(state, %{kind: kind} = entry) when kind in [:session, :serving, :session_workspace] do
-    try do
-      facts = NodeCapacity.all(state.capacity_table)
-      session_rows = SessionStore.all(state.session_store)
-      serving_rows = ServingStore.all(state.serving_store)
+    with {:ok, fleet} <- fleet_snapshot(state) do
+      try do
+        facts = fleet.facts
+        session_rows = SessionStore.all(state.session_store)
+        serving_rows = ServingStore.all(state.serving_store)
 
-      cond do
-        kind == :session and
-            (Enum.any?(facts, fn f -> Enum.any?(Map.get(f, :session_snapshots, []) || [], &(&1.snapshot_ref == entry.ref)) end) or
-               Enum.any?(session_rows, fn r -> session_actively_live?(r) and r.snapshot_ref == entry.ref end)) ->
-          {:blocked, "session ref became referenced"}
+        cond do
+          kind == :session and
+              (Enum.any?(facts, fn f ->
+                 Enum.any?(Map.get(f, :session_snapshots, []) || [], &(&1.snapshot_ref == entry.ref))
+               end) or
+                 Enum.any?(session_rows, fn r -> session_actively_live?(r) and r.snapshot_ref == entry.ref end)) ->
+            {:blocked, "session ref became referenced"}
 
-        kind == :serving and
-            (Enum.any?(facts, fn f -> Enum.any?(Map.get(f, :serving_snapshots, []) || [], &(&1.snapshot_ref == entry.ref)) end) or
-               Enum.any?(serving_rows, fn r -> serving_actively_live?(r) and r.snapshot_ref == entry.ref end)) ->
-          {:blocked, "serving ref became referenced"}
+          kind == :serving and
+              (Enum.any?(facts, fn f ->
+                 Enum.any?(Map.get(f, :serving_snapshots, []) || [], &(&1.snapshot_ref == entry.ref))
+               end) or
+                 Enum.any?(serving_rows, fn r -> serving_actively_live?(r) and r.snapshot_ref == entry.ref end)) ->
+            {:blocked, "serving ref became referenced"}
 
-        kind == :session_workspace and
-            (Enum.any?(facts, fn f -> Enum.any?(Map.get(f, :session_volumes, []) || [], &(&1.lineage_id == entry.lineage)) end) or
-               Enum.any?(session_rows, fn r -> session_actively_live?(r) and r.lineage_id == entry.lineage end)) ->
-          {:blocked, "lineage became referenced"}
+          kind == :session_workspace and
+              (Enum.any?(facts, fn f ->
+                 Enum.any?(Map.get(f, :session_volumes, []) || [], &(&1.lineage_id == entry.lineage))
+               end) or
+                 Enum.any?(session_rows, fn r -> session_actively_live?(r) and r.lineage_id == entry.lineage end)) ->
+            {:blocked, "lineage became referenced"}
 
-        true -> :ok
+          true ->
+            :ok
+        end
+      rescue
+        _ -> {:blocked, "registry_unreadable"}
+      catch
+        _, _ -> {:blocked, "registry_unreadable"}
       end
-    rescue
-      _ -> {:blocked, "registry_unreadable"}
-    catch
-      _, _ -> {:blocked, "registry_unreadable"}
+    else
+      {:error, _reason} -> {:blocked, "fleet evidence became incomplete"}
     end
   end
 
-  defp workload_liveness_now(state, vendor, workload) do
+  defp workload_liveness_now(state, fleet, vendor, workload) do
     rows = StatefulStore.all(state.stateful_store)
     non_terminal = Enum.reject(rows, &StatefulState.terminal?(&1.state))
-    facts = NodeCapacity.all(state.capacity_table)
-    evidence = stateful_assignment_evidence(non_terminal, facts, state.vendors)
+    evidence = stateful_assignment_evidence(non_terminal, fleet.node_vendors)
 
     snapshot = %{
       live_workloads: MapSet.new(non_terminal, & &1.workload),
