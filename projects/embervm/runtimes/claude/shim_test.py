@@ -1306,7 +1306,7 @@ def test_muse_empty_retained_projection_preserves_live_tool_activity(
     manager = _muse_manager(tmp_path, monkeypatch)
 
     def collect(command_id, completions):
-        manager._retained_activities = []
+        manager._retained_tool_events = []
         return {
             "muse": {"status": "complete", "reason": "reported"},
             "input_tokens": 1,
@@ -6235,7 +6235,100 @@ def test_muse_activity_uses_arguments_from_authoritative_item_revision(
 
     assert shim._muse_activities_from_view_events(events, session_id, command_id) == [
         {"type": "bash", "command": "printf 'spark command content\\n'"},
-        {"type": "tool_use", "name": "read", "input": {"path": "README.md"}},
+        {"type": "tool_use", "name": "read"},
+    ]
+
+
+def test_muse_reconciles_retained_revisions_with_live_tool_identities():
+    session_id = "018f0000-0000-7000-8000-000000000001"
+    command_id = "018f0000-0000-7000-8000-000000000002"
+
+    def retained(
+        method,
+        item_id,
+        call_id,
+        tool_name,
+        arguments=None,
+        event_session=None,
+        event_turn=None,
+    ):
+        item = {
+            "itemId": item_id,
+            "callId": call_id,
+            "kind": "toolCall",
+            "turnId": event_turn or command_id,
+            "toolName": tool_name,
+        }
+        if arguments is not None:
+            item["arguments"] = json.dumps(arguments)
+        return {
+            "method": method,
+            "params": {"sessionId": event_session or session_id, "item": item},
+        }
+
+    events = [
+        retained("item/started", "item-bash", "call-bash", "bash"),
+        retained(
+            "item/updated",
+            "item-bash",
+            "call-bash",
+            "bash",
+            {"command": "printf 'retained\\n'"},
+        ),
+        retained("item/completed", "item-bash", "call-bash", "bash"),
+        retained(
+            "item/completed",
+            "item-read",
+            "call-read",
+            "read",
+            {"path": "README.md"},
+        ),
+        retained(
+            "item/updated",
+            "item-only",
+            "call-only",
+            "bash",
+            {"command": "printf 'retained only\\n'"},
+        ),
+        retained(
+            "item/started",
+            "wrong-session",
+            "wrong-session-call",
+            "bash",
+            {"command": "wrong session"},
+            event_session="another-session",
+        ),
+        retained(
+            "item/started",
+            "wrong-turn",
+            "wrong-turn-call",
+            "bash",
+            {"command": "wrong turn"},
+            event_turn="another-turn",
+        ),
+    ]
+    retained_events = shim._muse_tool_events_from_view_events(
+        events, session_id, command_id
+    )
+    live_events = shim._muse_live_tool_events(
+        {
+            "live-bash": {
+                "task_kind": "tool.bash",
+                "idempotency_key": "tool:call-bash",
+            },
+            "live-read": {
+                "task_kind": "tool.read",
+                "idempotency_key": "tool:call-read",
+            },
+            "live-only": {"task_kind": "tool.add_memory"},
+        }
+    )
+
+    assert shim._muse_reconciled_activities(live_events, retained_events) == [
+        {"type": "bash", "command": "printf 'retained\\n'"},
+        {"type": "tool_use", "name": "read"},
+        {"type": "tool_use", "name": "add_memory"},
+        {"type": "bash", "command": "printf 'retained only\\n'"},
     ]
 
 
@@ -6253,8 +6346,46 @@ def test_bash_activity_does_not_fabricate_command_from_missing_or_malformed_args
                 "toolName": "bash",
                 "arguments": "{not-json",
             },
+            {
+                "type": "tool_execution_start",
+                "toolCallId": "non-string-command",
+                "toolName": "bash",
+                "args": {"command": 42},
+            },
         ]
-    ) == [{"type": "bash"}, {"type": "bash"}]
+    ) == [{"type": "bash"}, {"type": "bash"}, {"type": "bash"}]
+
+
+@pytest.mark.parametrize(
+    "argument_event_type",
+    ["tool_execution_start", "tool_execution_update", "tool_execution_end"],
+)
+def test_pi_bash_activity_retains_command_from_each_tool_phase(argument_event_type):
+    manager = shim.PiProcess("/tmp/workspace")
+    events = [
+        {
+            "type": "tool_execution_start",
+            "toolCallId": "bash-1",
+            "toolName": "bash",
+        }
+    ]
+    arguments = {"command": "printf 'pi phase\\n'"}
+    if argument_event_type == "tool_execution_start":
+        events[0]["args"] = arguments
+    else:
+        events.append(
+            {
+                "type": argument_event_type,
+                "toolCallId": "bash-1",
+                "args": arguments,
+            }
+        )
+
+    translated = [manager._translate_activity_event(event) for event in events]
+
+    assert shim.activity_from_events(translated) == [
+        {"type": "bash", "command": "printf 'pi phase\\n'"}
+    ]
 
 
 def test_pi_activity_translation_preserves_empty_input_for_non_bash_tools():
