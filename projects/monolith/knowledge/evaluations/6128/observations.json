@@ -114,12 +114,7 @@
           "title": "MCP sync clears wedged ArgoCD operations",
           "path": "_processed/mcp-sync-clears-wedged-argocd-operations.md",
           "type": "fact",
-          "tags": [
-            "argocd",
-            "kargo",
-            "embervm",
-            "runbook"
-          ],
+          "tags": ["argocd", "kargo", "embervm", "runbook"],
           "score": 0.6338605502926986,
           "section": "",
           "snippet": "When kubectl is unavailable off-LAN, monolith-k8s-sync-argocd-app patches the Application operation directly; the controller then finalizes the stale operation as Succeeded and queued Kargo argocd-update proceeds.",
@@ -156,10 +151,7 @@
             "relevance": "unrelated",
             "scope_match": false,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "scope_mismatch",
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["scope_mismatch", "unrelated_to_declared_question"]
           }
         },
         {
@@ -168,12 +160,7 @@
           "title": "CD lag uses the deployed ArgoCD revision",
           "path": "_processed/cd-lag-uses-the-deployed-argocd-revision.md",
           "type": "fact",
-          "tags": [
-            "argocd",
-            "kargo",
-            "deployments",
-            "health"
-          ],
+          "tags": ["argocd", "kargo", "deployments", "health"],
           "score": 0.5437651276588479,
           "section": "",
           "snippet": "The CD lag check reads the revision currently deployed by ArgoCD from status rather than the desired target revision, because Kargo can patch targetRevision before a promotion finishes and fails.",
@@ -213,11 +200,7 @@
           "title": "Hand-applied orphan resources lack a GitOps removal path",
           "path": "_processed/hand-applied-orphan-resources-lack-a-gitops-removal-path.md",
           "type": "fact",
-          "tags": [
-            "gitops",
-            "kubernetes",
-            "orphaned-resources"
-          ],
+          "tags": ["gitops", "kubernetes", "orphaned-resources"],
           "score": 0.5391145897967112,
           "section": "",
           "snippet": "When resources from the decommissioned claude release are absent from Git and have no corresponding ArgoCD Application, removing them requires a human-operated cluster action rather than a repository change.",
@@ -240,9 +223,7 @@
             "relevance": "unrelated",
             "scope_match": true,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["unrelated_to_declared_question"]
           }
         },
         {
@@ -251,11 +232,7 @@
           "title": "Factory recovery requires unbroken absence before settlement",
           "path": "_processed/factory-recovery-requires-unbroken-absence-before-settlement.md",
           "type": "fact",
-          "tags": [
-            "factory",
-            "recovery",
-            "supervision"
-          ],
+          "tags": ["factory", "recovery", "supervision"],
           "score": 0.5342663485686363,
           "section": "",
           "snippet": "Factory supervision does not settle a backstop after an interrupted absence run, and resume handling preserves the first applicable recovery option while recording guest presence.",
@@ -278,9 +255,7 @@
             "relevance": "unrelated",
             "scope_match": true,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["unrelated_to_declared_question"]
           }
         },
         {
@@ -294,9 +269,7 @@
             "relevance": "related",
             "scope_match": false,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "scope_mismatch"
-            ]
+            "reasons": ["scope_mismatch"]
           }
         },
         {
@@ -305,11 +278,7 @@
           "title": "Run-now no longer changes scheduler next_run_at",
           "path": "_processed/run-now-no-longer-changes-scheduler-next-run-at.md",
           "type": "fact",
-          "tags": [
-            "scheduler",
-            "database",
-            "argo"
-          ],
+          "tags": ["scheduler", "database", "argo"],
           "score": 0.533279387159385,
           "section": "",
           "snippet": "The run-now path leaves next_run_at unchanged because it submits an Argo Workflow instead of marking the database job due.",
@@ -332,9 +301,7 @@
             "relevance": "unrelated",
             "scope_match": true,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["unrelated_to_declared_question"]
           }
         },
         {
@@ -343,11 +310,7 @@
           "title": "Monolith development overlays are not currently deployable through ArgoCD",
           "path": "_processed/monolith-development-overlays-are-not-currently-deployable-through-argocd.md",
           "type": "fact",
-          "tags": [
-            "argocd",
-            "deployment",
-            "development"
-          ],
+          "tags": ["argocd", "deployment", "development"],
           "score": 0.5327213247799499,
           "section": "",
           "snippet": "Because the monolith development overlays are not backed by ArgoCD Applications and are not wired into an ArgoCD root, the repository cannot provide runtime readiness confirmation by deploying those overlays through the configured GitOps pa",
@@ -379,11 +342,7 @@
           "title": "The rebuilt fleet reached Ready state for all workloads",
           "path": "_processed/the-rebuilt-fleet-reached-ready-state-for-all-workloads.md",
           "type": "fact",
-          "tags": [
-            "embervm",
-            "deployment",
-            "readiness"
-          ],
+          "tags": ["embervm", "deployment", "readiness"],
           "score": 0.5303677004356572,
           "section": "",
           "snippet": "After the r2 epoch rollout, Argo CD reported the embervm application Synced and Healthy, and all six Workload resources reported Ready=True.",
@@ -415,12 +374,7 @@
           "title": "GKE ArgoCD has no Cloudflare HTTPRoute and is intended to use the tailnet Kubernetes API",
           "path": "_processed/gke-argocd-has-no-cloudflare-httproute-and-is-intended-to-use-the-tailnet-kubernetes-api.md",
           "type": "fact",
-          "tags": [
-            "gke",
-            "argocd",
-            "tailscale",
-            "cloudflare"
-          ],
+          "tags": ["gke", "argocd", "tailscale", "cloudflare"],
           "score": 0.5192520308940402,
           "section": "",
           "snippet": "The GKE ArgoCD values disable cfIngress, so the conditional ArgoCD HTTPRoute resources are not rendered for the hub. Repository security documentation states that ArgoCD is reached through the Kubernetes API over the tailnet. The report's 2",
@@ -460,11 +414,7 @@
           "title": "ArgoCD server-side diff can fail on malformed live StatefulSet data",
           "path": "_processed/argocd-server-side-diff-can-fail-on-malformed-live-statefulset-data.md",
           "type": "fact",
-          "tags": [
-            "argocd",
-            "server-side-diff",
-            "spire"
-          ],
+          "tags": ["argocd", "server-side-diff", "spire"],
           "score": 0.5179076349111744,
           "section": "## Evidence",
           "snippet": "- Session report described the live StatefulSet conversion error and subsequent Synced state\n- Stored ArgoCD diagnostic note distinguishes this from the phantom-diff failure mode",
@@ -496,12 +446,7 @@
           "title": "EmberVM dev reached Synced and Healthy at chart revision 0.12.2",
           "path": "_processed/embervm-dev-reached-synced-and-healthy-at-chart-revision-0-12-2.md",
           "type": "fact",
-          "tags": [
-            "embervm",
-            "deployment",
-            "argocd",
-            "operational-state"
-          ],
+          "tags": ["embervm", "deployment", "argocd", "operational-state"],
           "score": 0.5130581244160981,
           "section": "",
           "snippet": "The live embervm-dev ArgoCD Application reported Synced and Healthy with deployed revision 0.12.2 after the environment-isolation guard was shipped.",
@@ -548,11 +493,7 @@
           "title": "ArgoCD UI unreachability was observed on 2026-09-05",
           "path": "_processed/argocd-ui-unreachability-was-observed-on-2026-09-05.md",
           "type": "fact",
-          "tags": [
-            "argocd",
-            "operations",
-            "reachability"
-          ],
+          "tags": ["argocd", "operations", "reachability"],
           "score": 0.5127235651016272,
           "section": "",
           "snippet": "An agent report states that kubectl inspection on 2026-09-05 found no ArgoCD HTTPRoute on the hub and that the ArgoCD web UI was unreachable on both clusters. The checkout supports the hub route absence and drained home connectors, but cann",
@@ -584,11 +525,7 @@
           "title": "Landing recovery fences stale completion decisions",
           "path": "_processed/landing-recovery-fences-stale-completion-decisions.md",
           "type": "fact",
-          "tags": [
-            "factory",
-            "recovery",
-            "landing"
-          ],
+          "tags": ["factory", "recovery", "landing"],
           "score": 0.5121603431653894,
           "section": "",
           "snippet": "The deployed factory recovery guard prevents stale completion decisions during landing recovery.",
@@ -619,9 +556,7 @@
             "relevance": "unrelated",
             "scope_match": true,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["unrelated_to_declared_question"]
           }
         },
         {
@@ -630,12 +565,7 @@
           "title": "The APPLICATION_FILE environment variable creates an unused file dependency",
           "path": "_processed/the-application-file-environment-variable-creates-an-unused-file-dependency.md",
           "type": "fact",
-          "tags": [
-            "bazel",
-            "argocd",
-            "live-diff",
-            "tooling"
-          ],
+          "tags": ["bazel", "argocd", "live-diff", "tooling"],
           "score": 0.5114084177369832,
           "section": "",
           "snippet": "When the argocd_app macro sets APPLICATION_FILE to the application.yaml runfile but the live-diff script never reads it, hand-written targets still require an in-package application.yaml at analysis time without affecting runtime behavior.",
@@ -667,11 +597,7 @@
           "title": "Preemption copy varies by recovery phase",
           "path": "_processed/preemption-copy-varies-by-recovery-phase.md",
           "type": "fact",
-          "tags": [
-            "frontend",
-            "preemption",
-            "copy"
-          ],
+          "tags": ["frontend", "preemption", "copy"],
           "score": 0.5113793306720665,
           "section": "",
           "snippet": "When the preemption phase is confirming, restoring, or cold, the public copy appends a phase-specific explanation: checking whether the machine is gone, coming back with its data, or starting fresh.",
@@ -702,9 +628,7 @@
             "relevance": "unrelated",
             "scope_match": true,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["unrelated_to_declared_question"]
           }
         },
         {
@@ -713,12 +637,7 @@
           "title": "Recovery adopts the original receipt without duplicate invocation",
           "path": "_processed/recovery-adopts-the-original-receipt-without-duplicate-invocation.md",
           "type": "fact",
-          "tags": [
-            "embervm",
-            "recovery",
-            "receipts",
-            "idempotency"
-          ],
+          "tags": ["embervm", "recovery", "receipts", "idempotency"],
           "score": 0.5092815453242343,
           "section": "",
           "snippet": "When control-plane liveness later recovers, the recovery tick can settle the held operation by adopting its original receipt, and the reviewed regression test verifies that only one invoke request is sent across hold, recovery, and adoption",
@@ -741,9 +660,7 @@
             "relevance": "unrelated",
             "scope_match": true,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["unrelated_to_declared_question"]
           }
         },
         {
@@ -752,12 +669,7 @@
           "title": "Rotating the Polylane API key requires restarting the agent",
           "path": "_processed/rotating-the-polylane-api-key-requires-restarting-the-agent.md",
           "type": "fact",
-          "tags": [
-            "polylane",
-            "secrets",
-            "rotation",
-            "operations"
-          ],
+          "tags": ["polylane", "secrets", "rotation", "operations"],
           "score": 0.5089909726982738,
           "section": "## Evidence",
           "snippet": "- Session's final operational note reports AUTO_RESTART=false and recommends kubectl rollout restart deployment/polylane-k8s after rotation.",
@@ -788,9 +700,7 @@
             "relevance": "unrelated",
             "scope_match": true,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["unrelated_to_declared_question"]
           }
         },
         {
@@ -827,9 +737,7 @@
             "relevance": "unrelated",
             "scope_match": true,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["unrelated_to_declared_question"]
           }
         },
         {
@@ -838,11 +746,7 @@
           "title": "Unavailable resolution forwarding preserves recovery state",
           "path": "_processed/unavailable-resolution-forwarding-preserves-recovery-state.md",
           "type": "fact",
-          "tags": [
-            "embervm",
-            "fail-closed",
-            "recovery"
-          ],
+          "tags": ["embervm", "fail-closed", "recovery"],
           "score": 0.505178302217824,
           "section": "",
           "snippet": "When forwarding checkpoint resolution to the control plane is unavailable or interrupted, the token, generation, and recovery timer remain unchanged, preserving fail-closed recovery state.",
@@ -865,9 +769,7 @@
             "relevance": "unrelated",
             "scope_match": true,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["unrelated_to_declared_question"]
           }
         }
       ]
@@ -899,13 +801,7 @@
           "title": "CAKE did not protect node-4 during the measured tcx setup",
           "path": "_processed/cake-did-not-protect-node-4-during-the-measured-tcx-setup.md",
           "type": "fact",
-          "tags": [
-            "networking",
-            "cake",
-            "tcx",
-            "node-4",
-            "cloudflare-tunnel"
-          ],
+          "tags": ["networking", "cake", "tcx", "node-4", "cloudflare-tunnel"],
           "score": 0.6403177166174493,
           "section": "",
           "snippet": "The 2026-07-30 measurements documented for issue #4171 recorded zero shaped-byte deltas and no node-4 ingress qdisc, so node-local CAKE does not explain tunnel survival in that setup. This is not a universal claim about tcx or CAKE.",
@@ -937,11 +833,7 @@
           "title": "Cumulative traffic counters do not establish current CAKE liveness",
           "path": "_processed/cumulative-traffic-counters-do-not-establish-current-cake-liveness.md",
           "type": "fact",
-          "tags": [
-            "home-cluster",
-            "traffic-shaping",
-            "observability"
-          ],
+          "tags": ["home-cluster", "traffic-shaping", "observability"],
           "score": 0.614098484584554,
           "section": "",
           "snippet": "Old cumulative IFB traffic counters cannot establish that node-local CAKE protection is currently alive; future checks must compare counter deltas or use an action counter such as tcx mirred Sent.",
@@ -978,10 +870,7 @@
             "relevance": "unrelated",
             "scope_match": false,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "scope_mismatch",
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["scope_mismatch", "unrelated_to_declared_question"]
           }
         },
         {
@@ -995,10 +884,7 @@
             "relevance": "unrelated",
             "scope_match": false,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "scope_mismatch",
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["scope_mismatch", "unrelated_to_declared_question"]
           }
         },
         {
@@ -1007,13 +893,7 @@
           "title": "Cilium egress-after-DNAT and CAKE tcx behavior are documented as home-cluster-only",
           "path": "_processed/cilium-egress-after-dnat-and-cake-tcx-behavior-are-documented-as-home-cluster-only.md",
           "type": "fact",
-          "tags": [
-            "home-cluster",
-            "gke",
-            "cilium",
-            "cake",
-            "tcx"
-          ],
+          "tags": ["home-cluster", "gke", "cilium", "cake", "tcx"],
           "score": 0.5967727063162759,
           "section": "",
           "snippet": "The repository documents Cilium egress enforcement after DNAT and the CAKE shaper's inertness under Cilium tcx as behaviors of the home cluster, not the GKE hub.",
@@ -1050,10 +930,7 @@
             "relevance": "unrelated",
             "scope_match": false,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "scope_mismatch",
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["scope_mismatch", "unrelated_to_declared_question"]
           }
         },
         {
@@ -1067,10 +944,7 @@
             "relevance": "unrelated",
             "scope_match": false,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "scope_mismatch",
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["scope_mismatch", "unrelated_to_declared_question"]
           }
         },
         {
@@ -1084,10 +958,7 @@
             "relevance": "unrelated",
             "scope_match": false,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "scope_mismatch",
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["scope_mismatch", "unrelated_to_declared_question"]
           }
         },
         {
@@ -1101,10 +972,7 @@
             "relevance": "unrelated",
             "scope_match": false,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "scope_mismatch",
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["scope_mismatch", "unrelated_to_declared_question"]
           }
         },
         {
@@ -1118,10 +986,7 @@
             "relevance": "unrelated",
             "scope_match": false,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "scope_mismatch",
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["scope_mismatch", "unrelated_to_declared_question"]
           }
         },
         {
@@ -1135,10 +1000,7 @@
             "relevance": "unrelated",
             "scope_match": false,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "scope_mismatch",
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["scope_mismatch", "unrelated_to_declared_question"]
           }
         },
         {
@@ -1147,11 +1009,7 @@
           "title": "Intra-campaign player isolation is implemented but untested",
           "path": "_processed/intra-campaign-player-isolation-is-implemented-but-untested.md",
           "type": "fact",
-          "tags": [
-            "authorization",
-            "testing",
-            "campaigns"
-          ],
+          "tags": ["authorization", "testing", "campaigns"],
           "score": 0.5696048223501232,
           "section": "## Evidence",
           "snippet": "- Review result identifies router.py:406 as enforcing isolation and explicitly notes the behavior is untested.",
@@ -1174,9 +1032,7 @@
             "relevance": "unrelated",
             "scope_match": true,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["unrelated_to_declared_question"]
           }
         },
         {
@@ -1190,10 +1046,7 @@
             "relevance": "unrelated",
             "scope_match": false,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "scope_mismatch",
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["scope_mismatch", "unrelated_to_declared_question"]
           }
         },
         {
@@ -1207,10 +1060,7 @@
             "relevance": "unrelated",
             "scope_match": false,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "scope_mismatch",
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["scope_mismatch", "unrelated_to_declared_question"]
           }
         },
         {
@@ -1224,10 +1074,7 @@
             "relevance": "unrelated",
             "scope_match": false,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "scope_mismatch",
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["scope_mismatch", "unrelated_to_declared_question"]
           }
         },
         {
@@ -1241,10 +1088,7 @@
             "relevance": "unrelated",
             "scope_match": false,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "scope_mismatch",
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["scope_mismatch", "unrelated_to_declared_question"]
           }
         },
         {
@@ -1258,10 +1102,7 @@
             "relevance": "unrelated",
             "scope_match": false,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "scope_mismatch",
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["scope_mismatch", "unrelated_to_declared_question"]
           }
         },
         {
@@ -1275,10 +1116,7 @@
             "relevance": "unrelated",
             "scope_match": false,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "scope_mismatch",
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["scope_mismatch", "unrelated_to_declared_question"]
           }
         },
         {
@@ -1292,10 +1130,7 @@
             "relevance": "unrelated",
             "scope_match": false,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "scope_mismatch",
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["scope_mismatch", "unrelated_to_declared_question"]
           }
         },
         {
@@ -1304,10 +1139,7 @@
           "title": "The session interrupt endpoint has no external caller",
           "path": "_processed/the-session-interrupt-endpoint-has-no-external-caller.md",
           "type": "fact",
-          "tags": [
-            "interrupt",
-            "session-control"
-          ],
+          "tags": ["interrupt", "session-control"],
           "score": 0.5557267997102032,
           "section": "## Evidence",
           "snippet": "- Raw result: wiring gap reported after checkout inspection; /shim/interrupt has no monolith, control-plane, or noded caller.",
@@ -1330,9 +1162,7 @@
             "relevance": "unrelated",
             "scope_match": true,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["unrelated_to_declared_question"]
           }
         }
       ]
@@ -1364,12 +1194,7 @@
           "title": "Issue #3926 has conflicting evidence about the ARM64 OCaml CI shard",
           "path": "_processed/issue-3926-has-conflicting-evidence-about-the-arm64-ocaml-ci-shard.md",
           "type": "fact",
-          "tags": [
-            "tooling",
-            "ci",
-            "arm64",
-            "issue-tracking"
-          ],
+          "tags": ["tooling", "ci", "arm64", "issue-tracking"],
           "score": 0.7304203945649023,
           "section": "",
           "snippet": "Issue #3926 reports that the ARM64 OCaml command is commented out, while also citing a live ARM64 OCaml shard at HEAD; this conflict prevents confidently closing #3927 before dependency-ordered delivery.",
@@ -1416,13 +1241,7 @@
           "title": "tOyCaml acceptance requires both Linux CI architecture gates",
           "path": "_processed/toycaml-acceptance-requires-both-linux-ci-architecture-gates.md",
           "type": "fact",
-          "tags": [
-            "tooling",
-            "ci",
-            "linux",
-            "arm64",
-            "amd64"
-          ],
+          "tags": ["tooling", "ci", "linux", "arm64", "amd64"],
           "score": 0.6295896768569991,
           "section": "## Evidence",
           "snippet": "- Factory investigation result for issue #3924: required implementation CI is BuildBuddy pr-checks, including the Linux amd64 full gate and mandatory Linux arm64 //bazel/ocaml/... shard.",
@@ -1454,12 +1273,7 @@
           "title": "ADR agents/059 remains a draft with execution issues still open",
           "path": "_processed/adr-agents-059-remains-a-draft-with-execution-issues-still-open.md",
           "type": "fact",
-          "tags": [
-            "adr",
-            "mcp",
-            "context-forge",
-            "github-issues"
-          ],
+          "tags": ["adr", "mcp", "context-forge", "github-issues"],
           "score": 0.6065373655237348,
           "section": "",
           "snippet": "ADR agents/059 remains Draft and not executed; issue #3831 is closed as obsolete while #3832 and #3833 remain open for cutover and decommission.",
@@ -1482,9 +1296,7 @@
             "relevance": "unrelated",
             "scope_match": true,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["unrelated_to_declared_question"]
           }
         },
         {
@@ -1493,12 +1305,7 @@
           "title": "PR #6082 reportedly has arm64 and pkg_stars packaging findings",
           "path": "_processed/pr-6082-reportedly-has-arm64-and-pkg-stars-packaging-findings.md",
           "type": "fact",
-          "tags": [
-            "pull-request",
-            "bazel",
-            "packaging",
-            "review"
-          ],
+          "tags": ["pull-request", "bazel", "packaging", "review"],
           "score": 0.6018630503497701,
           "section": "## Evidence",
           "snippet": "- Raw decision note in agent report\n- https://github.com/jomcgi-org/homelab/issues/3907\n- .claude/CLAUDE.md:251-254 confirms amd64-only convention and arm64 default\n- No checkout record for PR #6082 or :pkg_stars closure",
@@ -1538,12 +1345,7 @@
           "title": "OCaml CI actively routes the ARM64 shard to Linux aarch64",
           "path": "_processed/ocaml-ci-actively-routes-the-arm64-shard-to-linux-aarch64.md",
           "type": "fact",
-          "tags": [
-            "ocaml",
-            "ci",
-            "arm64",
-            "buildbuddy"
-          ],
+          "tags": ["ocaml", "ci", "arm64", "buildbuddy"],
           "score": 0.5906884318179837,
           "section": "",
           "snippet": "The active BuildBuddy workflow selects the linux_aarch64 platform for the OCaml shard and runs PCRE2, tree-sitter, and tree-sitter C++ scanner tests without excluding C-dependent cases, so the issue claim that no ARM64 OCaml shard remains i",
@@ -1590,12 +1392,7 @@
           "title": "Issue 3940 remains open while its child work is unresolved",
           "path": "_processed/issue-3940-remains-open-while-its-child-work-is-unresolved.md",
           "type": "fact",
-          "tags": [
-            "embervm",
-            "health",
-            "observability",
-            "tracking"
-          ],
+          "tags": ["embervm", "health", "observability", "tracking"],
           "score": 0.5875114448361738,
           "section": "## Evidence",
           "snippet": "- Issue 3940 triage status in raw prompt\n- Raw session result says live state confirms children #3949-3953 open and #3954 closed",
@@ -1618,9 +1415,7 @@
             "relevance": "unrelated",
             "scope_match": true,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["unrelated_to_declared_question"]
           }
         },
         {
@@ -1629,12 +1424,7 @@
           "title": "Existing OCaml engine support is not wired into tOyCaml",
           "path": "_processed/existing-ocaml-engine-support-is-not-wired-into-toycaml.md",
           "type": "fact",
-          "tags": [
-            "tooling",
-            "ocaml",
-            "code-generation",
-            "grammar"
-          ],
+          "tags": ["tooling", "ocaml", "code-generation", "grammar"],
           "score": 0.5854880111827837,
           "section": "## Evidence",
           "snippet": "- Factory investigation result for issue #3924: atdgen, visitors/PPX, vendored libraries, and fetched grammars have engine support, while all seven remain unwired in tOyCaml.",
@@ -1657,9 +1447,7 @@
             "relevance": "unrelated",
             "scope_match": true,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["unrelated_to_declared_question"]
           }
         },
         {
@@ -1668,10 +1456,7 @@
           "title": "Issue #3940 was reportedly closed as NOT_PLANNED",
           "path": "_processed/issue-3940-was-reportedly-closed-as-not-planned.md",
           "type": "fact",
-          "tags": [
-            "issue-tracking",
-            "triage"
-          ],
+          "tags": ["issue-tracking", "triage"],
           "score": 0.5805021524429362,
           "section": "## Evidence",
           "snippet": "- Factory decision note: issue #3940 was closed NOT_PLANNED on 2026-09-14\n- https://github.com/jomcgi-org/homelab/issues/3940\n- Checkout search found no confirming record for issue #3940",
@@ -1694,9 +1479,7 @@
             "relevance": "unrelated",
             "scope_match": true,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["unrelated_to_declared_question"]
           }
         },
         {
@@ -1705,11 +1488,7 @@
           "title": "STPA follow-up issues 3965 and 3966 remained unimplemented during investigation",
           "path": "_processed/stpa-follow-up-issues-3965-and-3966-remained-unimplemented-during-investigation.md",
           "type": "fact",
-          "tags": [
-            "stpa",
-            "issue-tracking",
-            "implementation-status"
-          ],
+          "tags": ["stpa", "issue-tracking", "implementation-status"],
           "score": 0.5757001295268469,
           "section": "",
           "snippet": "The investigation reported that child issues #3965 and #3966, covering the generated colocated-analysis index and freshness nudge work, remained unimplemented at the time of observation.",
@@ -1732,9 +1511,7 @@
             "relevance": "unrelated",
             "scope_match": true,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["unrelated_to_declared_question"]
           }
         },
         {
@@ -1743,10 +1520,7 @@
           "title": "Issue #3841 was reportedly closed as NOT_PLANNED",
           "path": "_processed/issue-3841-was-reportedly-closed-as-not-planned.md",
           "type": "fact",
-          "tags": [
-            "issue-tracking",
-            "triage"
-          ],
+          "tags": ["issue-tracking", "triage"],
           "score": 0.5713309305113009,
           "section": "",
           "snippet": "The report claims issue #3841 was closed with status NOT_PLANNED on 2026-09-13, making the still-open escalation moot.",
@@ -1769,9 +1543,7 @@
             "relevance": "unrelated",
             "scope_match": true,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["unrelated_to_declared_question"]
           }
         },
         {
@@ -1780,11 +1552,7 @@
           "title": "Issue 3940 is a coordination tracker without independent delivery scope",
           "path": "_processed/issue-3940-is-a-coordination-tracker-without-independent-delivery-scope.md",
           "type": "fact",
-          "tags": [
-            "embervm",
-            "tracking",
-            "triage"
-          ],
+          "tags": ["embervm", "tracking", "triage"],
           "score": 0.5672215739224465,
           "section": "## Evidence",
           "snippet": "- Raw session result: live state described children #3949-3953 as actionable and #3952 as agent-ready",
@@ -1807,9 +1575,7 @@
             "relevance": "unrelated",
             "scope_match": true,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["unrelated_to_declared_question"]
           }
         },
         {
@@ -1818,13 +1584,7 @@
           "title": "Factory decision 1fc10c dismissed issue #3943 escalation as stale",
           "path": "_processed/factory-decision-1fc10c-dismissed-issue-3943-escalation-as-stale.md",
           "type": "fact",
-          "tags": [
-            "factory",
-            "decision",
-            "issue-tracking",
-            "triage",
-            "stale"
-          ],
+          "tags": ["factory", "decision", "issue-tracking", "triage", "stale"],
           "score": 0.5667285243596406,
           "section": "## Evidence",
           "snippet": "- Agent report factory receipt 368\n- https://github.com/jomcgi-org/homelab/issues/3943\n- Checkout search found no confirming record for issue #3943 or decision 1fc10c",
@@ -1847,9 +1607,7 @@
             "relevance": "unrelated",
             "scope_match": true,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["unrelated_to_declared_question"]
           }
         },
         {
@@ -1858,13 +1616,7 @@
           "title": "Factory decision 1937b6e4 dismissed issue #3930 escalation as stale",
           "path": "_processed/factory-decision-1937b6e4-dismissed-issue-3930-escalation-as-stale.md",
           "type": "fact",
-          "tags": [
-            "factory",
-            "decision",
-            "issue-tracking",
-            "triage",
-            "stale"
-          ],
+          "tags": ["factory", "decision", "issue-tracking", "triage", "stale"],
           "score": 0.5665627976320516,
           "section": "## Evidence",
           "snippet": "- Factory receipt 366 and decision record in the agent report\n- https://github.com/jomcgi-org/homelab/issues/3930\n- Checkout confirms only that #3930 tracks tooling/009 in bazel/ARCHITECTURE.md",
@@ -1887,9 +1639,7 @@
             "relevance": "unrelated",
             "scope_match": true,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["unrelated_to_declared_question"]
           }
         },
         {
@@ -1898,11 +1648,7 @@
           "title": "Minecraft Phase 1 remains unstarted pending confirmation",
           "path": "_processed/minecraft-phase-1-remains-unstarted-pending-confirmation.md",
           "type": "fact",
-          "tags": [
-            "minecraft",
-            "triage",
-            "control-plane"
-          ],
+          "tags": ["minecraft", "triage", "control-plane"],
           "score": 0.5644863767044095,
           "section": "## Evidence",
           "snippet": "- Issue #3980 triage note: projects/minecraft does not exist and confirmation is requested\n- Refinement result: no minecraft hook found in agent.py or acl.py",
@@ -1925,9 +1671,7 @@
             "relevance": "unrelated",
             "scope_match": true,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["unrelated_to_declared_question"]
           }
         },
         {
@@ -1936,11 +1680,7 @@
           "title": "isolated per-request execution remains gated",
           "path": "_processed/isolated-per-request-execution-remains-gated.md",
           "type": "fact",
-          "tags": [
-            "embervm",
-            "execution",
-            "gating"
-          ],
+          "tags": ["embervm", "execution", "gating"],
           "score": 0.5635897181278645,
           "section": "",
           "snippet": "Isolated per-request execution must remain gated on issue #6132 until that work is approved and shipped.",
@@ -1963,9 +1703,7 @@
             "relevance": "unrelated",
             "scope_match": true,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["unrelated_to_declared_question"]
           }
         },
         {
@@ -2018,9 +1756,7 @@
             "relevance": "unrelated",
             "scope_match": true,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["unrelated_to_declared_question"]
           }
         },
         {
@@ -2029,11 +1765,7 @@
           "title": "Issue 3853 remains open after its child issues closed",
           "path": "_processed/issue-3853-remains-open-after-its-child-issues-closed.md",
           "type": "fact",
-          "tags": [
-            "issue-tracking",
-            "embervm",
-            "operational-state"
-          ],
+          "tags": ["issue-tracking", "embervm", "operational-state"],
           "score": 0.562716774616626,
           "section": "",
           "snippet": "Issue #3853 remains open even though child issues #3854 and #3855 are closed, so closing both children does not automatically close the parent tracker.",
@@ -2056,9 +1788,7 @@
             "relevance": "unrelated",
             "scope_match": true,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["unrelated_to_declared_question"]
           }
         },
         {
@@ -2067,11 +1797,7 @@
           "title": "Unaccepted preview-environment design causes implementation deferral",
           "path": "_processed/unaccepted-preview-environment-design-causes-implementation-deferral.md",
           "type": "fact",
-          "tags": [
-            "workflow",
-            "argocd",
-            "preview-environments"
-          ],
+          "tags": ["workflow", "argocd", "preview-environments"],
           "score": 0.5605667233467142,
           "section": "## Evidence",
           "snippet": "- Raw session result: parent issue #3882 was OPEN and ADR platform/005 was Draft.\n- Raw session result: issue #3886 was assigned verdict needs-human with recommendation defer.",
@@ -2102,9 +1828,7 @@
             "relevance": "unrelated",
             "scope_match": true,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["unrelated_to_declared_question"]
           }
         },
         {
@@ -2113,12 +1837,7 @@
           "title": "Unverified Context Forge cutover blocks destructive decommissioning",
           "path": "_processed/unverified-context-forge-cutover-blocks-destructive-decommissioning.md",
           "type": "fact",
-          "tags": [
-            "mcp",
-            "context-forge",
-            "decommissioning",
-            "cutover"
-          ],
+          "tags": ["mcp", "context-forge", "decommissioning", "cutover"],
           "score": 0.5585185815669796,
           "section": "## Evidence",
           "snippet": "- Raw session result: issue #3832 lacked verified cutover delivery; Polylane and live cluster inventory were unavailable; destructive implementation was blocked.",
@@ -2149,9 +1868,7 @@
             "relevance": "unrelated",
             "scope_match": true,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["unrelated_to_declared_question"]
           }
         },
         {
@@ -2160,12 +1877,7 @@
           "title": "Consumer DNS migration must be coordinated with the workload rename",
           "path": "_processed/consumer-dns-migration-must-be-coordinated-with-the-workload-rename.md",
           "type": "fact",
-          "tags": [
-            "embervm",
-            "kubernetes",
-            "dns",
-            "migration"
-          ],
+          "tags": ["embervm", "kubernetes", "dns", "migration"],
           "score": 0.5577839280495697,
           "section": "## Evidence",
           "snippet": "- Issue #3972 acceptance plan requires aliases during transition; agent repository inspection report says monolith consumer values still reference embervm-embervm* DNS names.",
@@ -2188,9 +1900,7 @@
             "relevance": "unrelated",
             "scope_match": true,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["unrelated_to_declared_question"]
           }
         }
       ]
@@ -2222,12 +1932,7 @@
           "title": "Factory stop is a terminal durable admission fence",
           "path": "_processed/factory-stop-is-a-terminal-durable-admission-fence.md",
           "type": "fact",
-          "tags": [
-            "swarm",
-            "factory",
-            "authorization",
-            "safety"
-          ],
+          "tags": ["swarm", "factory", "authorization", "safety"],
           "score": 0.8348123083952761,
           "section": "## Evidence",
           "snippet": "- projects/monolith/swarm/factory_router.py:14-21\n- projects/monolith/swarm/factory_controls.py:332-412\n- projects/monolith/swarm/FACTORY.md:16-21\n- projects/monolith/swarm/FACTORY.md:78-83",
@@ -2259,12 +1964,7 @@
           "title": "Factory refine supports autonomous defer for needs-thought issues",
           "path": "_processed/factory-refine-supports-autonomous-defer-for-needs-thought-issues.md",
           "type": "fact",
-          "tags": [
-            "factory",
-            "refine",
-            "defer",
-            "intake"
-          ],
+          "tags": ["factory", "refine", "defer", "intake"],
           "score": 0.7903860086432715,
           "section": "## Evidence",
           "snippet": "- projects/monolith/factory/orchestration/factory_refine.py:188-191\n- projects/monolith/factory/orchestration/factory_intake_loop.py:406-410\n- projects/monolith/factory/orchestration/FACTORY.md:367-371",
@@ -2304,12 +2004,7 @@
           "title": "Reconciler pause expiry did not settle unpaused factory tasks",
           "path": "_processed/reconciler-pause-expiry-did-not-settle-unpaused-factory-tasks.md",
           "type": "fact",
-          "tags": [
-            "factory",
-            "reconciliation",
-            "pause",
-            "task-lifecycle"
-          ],
+          "tags": ["factory", "reconciliation", "pause", "task-lifecycle"],
           "score": 0.7732561365809373,
           "section": "## Evidence",
           "snippet": "- projects/monolith/factory/orchestration/factory_conductor.py:69\n- projects/monolith/factory/orchestration/factory_conductor.py:4768-4798",
@@ -2356,12 +2051,7 @@
           "title": "Engine refusal spare-turn reports omit forward reserve",
           "path": "_processed/engine-refusal-spare-turn-reports-omit-forward-reserve.md",
           "type": "fact",
-          "tags": [
-            "factory",
-            "envelope",
-            "planner",
-            "review"
-          ],
+          "tags": ["factory", "envelope", "planner", "review"],
           "score": 0.760882147629456,
           "section": "## Evidence",
           "snippet": "- projects/monolith/factory/orchestration/factory_conductor.py:2987\n- projects/monolith/factory/orchestration/factory_conductor.py:3175\n- projects/monolith/factory/orchestration/factory_conductor_test.py:6035",
@@ -2401,12 +2091,7 @@
           "title": "Factory close policy was reportedly enabled and its daily cap increased",
           "path": "_processed/factory-close-policy-was-reportedly-enabled-and-its-daily-cap-increased.md",
           "type": "fact",
-          "tags": [
-            "factory",
-            "policy",
-            "closing",
-            "operations"
-          ],
+          "tags": ["factory", "policy", "closing", "operations"],
           "score": 0.753244087293393,
           "section": "## Evidence",
           "snippet": "- agent-report: swarm.factory_control version 85 to 86 and configure audit\n- projects/monolith/factory/orchestration/factory_controls.py:96-108 confirms defaults false and 3\n- projects/monolith/factory/orchestration/FACTORY.md:334-337",
@@ -2491,12 +2176,7 @@
           "title": "Factory admission accepts allowlisted or intake receipts at the current generation",
           "path": "_processed/factory-admission-accepts-allowlisted-or-intake-receipts-at-the-current-generation.md",
           "type": "fact",
-          "tags": [
-            "factory",
-            "admission",
-            "intake",
-            "policy-generation"
-          ],
+          "tags": ["factory", "admission", "intake", "policy-generation"],
           "score": 0.746835470199585,
           "section": "## Evidence",
           "snippet": "- projects/monolith/factory/orchestration/factory_intake.py:210-283\n- projects/monolith/factory/orchestration/factory_controls.py:216",
@@ -2528,12 +2208,7 @@
           "title": "A 2026-09-15 production incident reportedly pinned the delivery lane through multiple reclaim paths",
           "path": "_processed/a-2026-09-15-production-incident-reportedly-pinned-the-delivery-lane-through-multiple-reclaim-paths.md",
           "type": "fact",
-          "tags": [
-            "factory",
-            "incident",
-            "capacity",
-            "uncertain-outcome"
-          ],
+          "tags": ["factory", "incident", "capacity", "uncertain-outcome"],
           "score": 0.7447858078713959,
           "section": "## Evidence",
           "snippet": "- Raw agent report observed metrics and logs\n- projects/monolith/factory/reservation_reviews.py:318-325\n- projects/monolith/factory/orchestration/factory_conductor.py:4747-4764\n- projects/monolith/factory/orchestration/factory_conductor.py:",
@@ -2580,11 +2255,7 @@
           "title": "Factory admission rejects receipts from older policy generations",
           "path": "_processed/factory-admission-rejects-receipts-from-older-policy-generations.md",
           "type": "fact",
-          "tags": [
-            "factory",
-            "admission",
-            "policy-generation"
-          ],
+          "tags": ["factory", "admission", "policy-generation"],
           "score": 0.7433390617370605,
           "section": "## Evidence",
           "snippet": "- projects/monolith/factory/orchestration/factory_intake.py:293-294\n- projects/monolith/factory/orchestration/factory_decisions.py:816-820",
@@ -2616,12 +2287,7 @@
           "title": "Review retries pass feedback to the implementer and fail closed on unclear verdicts",
           "path": "_processed/review-retries-pass-feedback-to-the-implementer-and-fail-closed-on-unclear-verdicts.md",
           "type": "fact",
-          "tags": [
-            "factory",
-            "reviews",
-            "retries",
-            "feedback"
-          ],
+          "tags": ["factory", "reviews", "retries", "feedback"],
           "score": 0.7385279251899861,
           "section": "## Evidence",
           "snippet": "- projects/monolith/factory/orchestration/workflows.py:590-668\n- projects/monolith/factory/orchestration/policy.py:101-118",
@@ -2661,12 +2327,7 @@
           "title": "Factory admission allows one active task and pins policy at admission",
           "path": "_processed/factory-admission-allows-one-active-task-and-pins-policy-at-admission.md",
           "type": "fact",
-          "tags": [
-            "swarm",
-            "factory",
-            "admission",
-            "policy"
-          ],
+          "tags": ["swarm", "factory", "admission", "policy"],
           "score": 0.7381237901375431,
           "section": "## Evidence",
           "snippet": "- projects/monolith/swarm/factory_intake.py:85-147\n- projects/monolith/swarm/factory_controls.py:87-122",
@@ -2698,11 +2359,7 @@
           "title": "Factory issue closing is gated twice by policy and capacity",
           "path": "_processed/factory-issue-closing-is-gated-twice-by-policy-and-capacity.md",
           "type": "fact",
-          "tags": [
-            "factory",
-            "safety",
-            "github"
-          ],
+          "tags": ["factory", "safety", "github"],
           "score": 0.7313343446651505,
           "section": "## Evidence",
           "snippet": "- projects/monolith/factory/orchestration/factory_refine.py:332-348\n- projects/monolith/factory/orchestration/factory_refine.py:873-889\n- projects/monolith/factory/orchestration/factory_refine.py:754-799",
@@ -2734,13 +2391,7 @@
           "title": "Factory review fallback is valid only for machine-verified work",
           "path": "_processed/factory-review-fallback-is-valid-only-for-machine-verified-work.md",
           "type": "fact",
-          "tags": [
-            "factory",
-            "review",
-            "routing",
-            "opus",
-            "astra"
-          ],
+          "tags": ["factory", "review", "routing", "opus", "astra"],
           "score": 0.729353129863739,
           "section": "## Evidence",
           "snippet": "- projects/monolith/factory/orchestration/model_pool.py:38-48, 346-393\n- projects/monolith/factory/orchestration/factory_conductor.py:1463-1482",
@@ -2787,12 +2438,7 @@
           "title": "Factory node runs can remain session-less when workflows die before completion",
           "path": "_processed/factory-node-runs-can-remain-session-less-when-workflows-die-before-completion.md",
           "type": "fact",
-          "tags": [
-            "factory",
-            "swarm",
-            "reconciliation",
-            "failure"
-          ],
+          "tags": ["factory", "swarm", "reconciliation", "failure"],
           "score": 0.7264058589935303,
           "section": "## Evidence",
           "snippet": "- projects/monolith/factory/orchestration/factory_conductor.py:3694-3702\n- projects/monolith/factory/orchestration/node_workflows.py:942-950",
@@ -2824,11 +2470,7 @@
           "title": "Factory refine uses autonomous defer for non-quick decisions",
           "path": "_processed/factory-refine-uses-autonomous-defer-for-non-quick-decisions.md",
           "type": "fact",
-          "tags": [
-            "factory",
-            "refine",
-            "escalation"
-          ],
+          "tags": ["factory", "refine", "escalation"],
           "score": 0.7251225709915161,
           "section": "## Evidence",
           "snippet": "- projects/monolith/factory/orchestration/factory_refine.py:183-208\n- projects/monolith/factory/orchestration/factory_refine.py:210-218",
@@ -2860,13 +2502,7 @@
           "title": "Failed intake listings suppress retries for up to an hour",
           "path": "_processed/failed-intake-listings-suppress-retries-for-up-to-an-hour.md",
           "type": "fact",
-          "tags": [
-            "factory",
-            "intake",
-            "github",
-            "retry",
-            "reliability"
-          ],
+          "tags": ["factory", "intake", "github", "retry", "reliability"],
           "score": 0.7233772708998497,
           "section": "## Evidence",
           "snippet": "- projects/monolith/factory/orchestration/factory_intake_loop.py:181-218\n- projects/monolith/factory/orchestration/factory_intake_loop.py:269-292",
@@ -2898,11 +2534,7 @@
           "title": "Attempt causes are derived from prior evidence",
           "path": "_processed/attempt-causes-are-derived-from-prior-evidence.md",
           "type": "fact",
-          "tags": [
-            "factory",
-            "attempts",
-            "causes"
-          ],
+          "tags": ["factory", "attempts", "causes"],
           "score": 0.7221707751307613,
           "section": "## Evidence",
           "snippet": "- projects/monolith/factory/orchestration/view.py:188-204\n- projects/monolith/factory/orchestration/view.py:207-257",
@@ -2934,11 +2566,7 @@
           "title": "Review attempts use distinct local ordinals",
           "path": "_processed/review-attempts-use-distinct-local-ordinals.md",
           "type": "fact",
-          "tags": [
-            "factory",
-            "review",
-            "attempts"
-          ],
+          "tags": ["factory", "review", "attempts"],
           "score": 0.719866855136566,
           "section": "## Evidence",
           "snippet": "- projects/monolith/factory/orchestration/workflows.py:614-622\n- projects/monolith/factory/orchestration/view.py:221-256\n- git commit 331d22b17",
@@ -2978,12 +2606,7 @@
           "title": "Funding grants do not raise existing node cost ceilings",
           "path": "_processed/funding-grants-do-not-raise-existing-node-cost-ceilings.md",
           "type": "fact",
-          "tags": [
-            "factory",
-            "funding",
-            "review",
-            "budgets"
-          ],
+          "tags": ["factory", "funding", "review", "budgets"],
           "score": 0.7198569178581238,
           "section": "## Evidence",
           "snippet": "- projects/monolith/factory/orchestration/factory_funding.py:326-373\n- projects/monolith/factory/orchestration/graph.py:406-415",
@@ -3015,11 +2638,7 @@
           "title": "Factory graph insertion rejects structurally invalid nodes",
           "path": "_processed/factory-graph-insertion-rejects-structurally-invalid-nodes.md",
           "type": "fact",
-          "tags": [
-            "factory",
-            "graph",
-            "validation"
-          ],
+          "tags": ["factory", "graph", "validation"],
           "score": 0.7192998742848601,
           "section": "## Evidence",
           "snippet": "- projects/monolith/factory/orchestration/graph.py:378-459\n- projects/monolith/factory/orchestration/graph.py:460-530",
@@ -3074,12 +2693,7 @@
           "title": "Factory closed issue #5651 as not planned",
           "path": "_processed/factory-closed-issue-5651-as-not-planned.md",
           "type": "fact",
-          "tags": [
-            "factory",
-            "decision",
-            "issue-tracking",
-            "not-planned"
-          ],
+          "tags": ["factory", "decision", "issue-tracking", "not-planned"],
           "score": 0.6303472518920943,
           "section": "",
           "snippet": "Factory decision 1ab5a058 was applied and completed on 2026-09-18, closing issue #5651, removing the needs-human label, and recording reason not_planned in favor of issue #5650.",
@@ -3203,11 +2817,7 @@
           "title": "Issue #5354 was considered stale after editorial revision",
           "path": "_processed/issue-5354-was-considered-stale-after-editorial-revision.md",
           "type": "fact",
-          "tags": [
-            "factory",
-            "issue-tracking",
-            "triage"
-          ],
+          "tags": ["factory", "issue-tracking", "triage"],
           "score": 0.606505906969662,
           "section": "",
           "snippet": "The factory decision note states that issue #5354 was retitled and rewritten on 2026-09-13, and that its body superseded the inline turn-card diff view referenced by the escalation.",
@@ -3247,12 +2857,7 @@
           "title": "Factory deferred MCP federation pending identity gate #5633",
           "path": "_processed/factory-deferred-mcp-federation-pending-identity-gate-5633.md",
           "type": "fact",
-          "tags": [
-            "mcp",
-            "identity",
-            "federation",
-            "factory"
-          ],
+          "tags": ["mcp", "identity", "federation", "factory"],
           "score": 0.6063408851623578,
           "section": "",
           "snippet": "Factory receipt 249 records a completed defer decision for issue #5636, adding needs-thought and removing needs-human, until per-identity filtering in #5633 lands.",
@@ -3292,12 +2897,7 @@
           "title": "Issue 5574 required human disposition after backend delivery",
           "path": "_processed/issue-5574-required-human-disposition-after-backend-delivery.md",
           "type": "fact",
-          "tags": [
-            "knowledge",
-            "distress",
-            "issue-tracking",
-            "production"
-          ],
+          "tags": ["knowledge", "distress", "issue-tracking", "production"],
           "score": 0.6059503085554014,
           "section": "",
           "snippet": "The #5574 briefing classified the issue as needs-human because the requested backend slice appeared already delivered by merged PR #5877, while production operator access and the live distress-to-disposition demonstration remained follow-up",
@@ -3337,11 +2937,7 @@
           "title": "Factory decision deferred issue #5527",
           "path": "_processed/factory-decision-deferred-issue-5527.md",
           "type": "fact",
-          "tags": [
-            "factory",
-            "issue-tracking",
-            "decision"
-          ],
+          "tags": ["factory", "issue-tracking", "decision"],
           "score": 0.6001063108570946,
           "section": "",
           "snippet": "Factory decision 6dde9d41... was applied and completed on 2026-09-15, deferring issue #5527 and adding needs-thought while removing needs-human.",
@@ -3381,12 +2977,7 @@
           "title": "Workspace-size budgeting is gated on a concrete growth problem",
           "path": "_processed/workspace-size-budgeting-is-gated-on-a-concrete-growth-problem.md",
           "type": "fact",
-          "tags": [
-            "embervm",
-            "workspace",
-            "storage",
-            "triage"
-          ],
+          "tags": ["embervm", "workspace", "storage", "triage"],
           "score": 0.5938490741072981,
           "section": "## Evidence",
           "snippet": "- User approved: \"Gate on a concrete workspace-growth problem\"\n- Issue #5074 tool output showed needs-thought and no longer needs-human",
@@ -3418,11 +3009,7 @@
           "title": "Factory decision 52fe17 dismissed issue #4759",
           "path": "_processed/factory-decision-52fe17-dismissed-issue-4759.md",
           "type": "fact",
-          "tags": [
-            "factory",
-            "issue-tracking",
-            "stale-sweep"
-          ],
+          "tags": ["factory", "issue-tracking", "stale-sweep"],
           "score": 0.5935101862853887,
           "section": "",
           "snippet": "The report claims factory decision 52fe17 was applied and completed on 2026-09-15, dismissing issue #4759 as stale. The checkout does not independently confirm the factory receipt or issue state.",
@@ -3462,11 +3049,7 @@
           "title": "Factory decision 51df2ad5 reportedly closed issue #5428 as not planned",
           "path": "_processed/factory-decision-51df2ad5-reportedly-closed-issue-5428-as-not-planned.md",
           "type": "fact",
-          "tags": [
-            "factory-decision",
-            "issue-tracking",
-            "calendar-sync"
-          ],
+          "tags": ["factory-decision", "issue-tracking", "calendar-sync"],
           "score": 0.5886366718194895,
           "section": "",
           "snippet": "The agent report claims receipt 230 completed an escape-close decision for issue #5428, closing it as not planned and removing the needs-human label.",
@@ -3498,11 +3081,7 @@
           "title": "Issue #5527 remains open pending child work",
           "path": "_processed/issue-5527-remains-open-pending-child-work.md",
           "type": "fact",
-          "tags": [
-            "factory",
-            "issue-tracking",
-            "knowledge-graph"
-          ],
+          "tags": ["factory", "issue-tracking", "knowledge-graph"],
           "score": 0.5834082712774449,
           "section": "",
           "snippet": "The report claims #5527 should remain open as the epic tracker until #5569, #5571, #5573, #5574, and #5587 land; #5572 is closed NOT_PLANNED and #5698 is completed.",
@@ -3542,11 +3121,7 @@
           "title": "The issue refresh corrected a stale SPIFFE phase-2 handoff",
           "path": "_processed/the-issue-refresh-corrected-a-stale-spiffe-phase-2-handoff.md",
           "type": "fact",
-          "tags": [
-            "correction",
-            "issue-tracking",
-            "spiffe"
-          ],
+          "tags": ["correction", "issue-tracking", "spiffe"],
           "score": 0.5831984802959993,
           "section": "",
           "snippet": "When reviewing the handoff, the worker found that #5706 was incorrectly presented as an open decision even though its phase-2 choice was already recorded; the refresh changed the issue text to describe the decision as made and implementatio",
@@ -3578,11 +3153,7 @@
           "title": "External completion is not automatically dispositioned",
           "path": "_processed/external-completion-is-not-automatically-dispositioned.md",
           "type": "fact",
-          "tags": [
-            "factory",
-            "issue-settlement",
-            "manual-intervention"
-          ],
+          "tags": ["factory", "issue-settlement", "manual-intervention"],
           "score": 0.5814363110921579,
           "section": "",
           "snippet": "As of 2026-09-12, the requested automatic terminal disposition for work completed through an external merged PR was not implemented, and issue #5902 still required hand settlement.",
@@ -3629,12 +3200,7 @@
           "title": "Factory decision closed issue #5525 as not planned",
           "path": "_processed/factory-decision-closed-issue-5525-as-not-planned.md",
           "type": "fact",
-          "tags": [
-            "factory",
-            "issue-tracking",
-            "inference",
-            "model-bench"
-          ],
+          "tags": ["factory", "issue-tracking", "inference", "model-bench"],
           "score": 0.5788347376087557,
           "section": "",
           "snippet": "Factory decision decision:a8ea3cb91435831bdb201e34162c5338f1505994639b11b150141c428d15c882 was applied and completed on 2026-09-18, closing issue #5525, removing the needs-human label, and recording the reason as not_planned.",
@@ -3688,12 +3254,7 @@
           "title": "Factory refinement routes issues by human decision",
           "path": "_processed/factory-refinement-routes-issues-by-human-decision.md",
           "type": "fact",
-          "tags": [
-            "factory",
-            "refinement",
-            "admission",
-            "escalation"
-          ],
+          "tags": ["factory", "refinement", "admission", "escalation"],
           "score": 0.578482304721017,
           "section": "## Evidence",
           "snippet": "- Database audit showed #3923 refine_settled as agent-ready and re-admitted for delivery.\n- Database audit showed #5250 refine_settled as needs-human; the issue carried the needs-human label and was skipped pending decision.",
@@ -3725,12 +3286,7 @@
           "title": "Factory decision 967cd279 dismissed issue #5356 escalation as stale",
           "path": "_processed/factory-decision-967cd279-dismissed-issue-5356-escalation-as-stale.md",
           "type": "fact",
-          "tags": [
-            "factory",
-            "decision",
-            "issue-tracking",
-            "triage"
-          ],
+          "tags": ["factory", "decision", "issue-tracking", "triage"],
           "score": 0.5767876253597524,
           "section": "## Evidence",
           "snippet": "- Raw agent report: factory receipt 220 records applied=true, state=completed, effect=escape-dismiss, dismissed=true.\n- Raw report note: issue #5356 was retitled and rewritten on 2026-09-13, superseding the one-click publishing proposal and",
@@ -3770,12 +3326,7 @@
           "title": "Promotion verification is gated on a demonstrated functional gap",
           "path": "_processed/promotion-verification-is-gated-on-a-demonstrated-functional-gap.md",
           "type": "fact",
-          "tags": [
-            "embervm",
-            "promotion",
-            "verification",
-            "triage"
-          ],
+          "tags": ["embervm", "promotion", "verification", "triage"],
           "score": 0.5752318501472514,
           "section": "## Evidence",
           "snippet": "- User approved: \"Gate a minimal functional promotion check\"\n- Issue #5224 tool output showed the needs-thought label",
@@ -3852,11 +3403,7 @@
           "title": "Issue #4170 is obsolete while #5485 owns current Longhorn teardown",
           "path": "_processed/issue-4170-is-obsolete-while-5485-owns-current-longhorn-teardown.md",
           "type": "fact",
-          "tags": [
-            "longhorn",
-            "issue-tracking",
-            "teardown"
-          ],
+          "tags": ["longhorn", "issue-tracking", "teardown"],
           "score": 0.5704086166863819,
           "section": "",
           "snippet": "Because issue #5485 owns teardown of the only current Longhorn deployment, implementing the reconciler proposed by issue #4170 should be escalated instead of proceeding.",
@@ -3888,12 +3435,7 @@
           "title": "Factory decision 7f59944b dismissed issue #5072 as moot",
           "path": "_processed/factory-decision-7f59944b-dismissed-issue-5072-as-moot.md",
           "type": "fact",
-          "tags": [
-            "factory",
-            "decision",
-            "issue-tracking",
-            "triage"
-          ],
+          "tags": ["factory", "decision", "issue-tracking", "triage"],
           "score": 0.5701324683506778,
           "section": "",
           "snippet": "The agent report claims factory decision 7f59944bee5228b7b0e8834296f69cb207bdc81af167f92bd2b14c4cd02531e0 was applied and completed on 2026-09-15, dismissing the escalation because issue #5072 had been closed NOT_PLANNED on 2026-09-14. The ",
@@ -3963,11 +3505,7 @@
           "title": "The report claims PR #6070 received Opus approval at commit e98579ca",
           "path": "_processed/the-report-claims-pr-6070-received-opus-approval-at-commit-e98579ca.md",
           "type": "fact",
-          "tags": [
-            "pull-request",
-            "review",
-            "opus"
-          ],
+          "tags": ["pull-request", "review", "opus"],
           "score": 0.6240365505218506,
           "section": "",
           "snippet": "The agent report states that PR #6070 was Opus-approved at commit e98579ca before being rebased and marked ready.",
@@ -3999,11 +3537,7 @@
           "title": "Reposting issue #3856 while PR #6070 is open would recreate duplicate quickstart delivery",
           "path": "_processed/reposting-issue-3856-while-pr-6070-is-open-would-recreate-duplicate-quickstart-delivery.md",
           "type": "fact",
-          "tags": [
-            "pull-request",
-            "issue-tracking",
-            "duplicate-work"
-          ],
+          "tags": ["pull-request", "issue-tracking", "duplicate-work"],
           "score": 0.6037628054618835,
           "section": "",
           "snippet": "The report claims that creating a second quickstart PR while the existing PR #6070 remains open would recreate the duplicate delivery that issue #3856 had shed.",
@@ -4035,12 +3569,7 @@
           "title": "Decision 365 marked the factory request agent-ready without readmitting it",
           "path": "_processed/decision-365-marked-the-factory-request-agent-ready-without-readmitting-it.md",
           "type": "fact",
-          "tags": [
-            "factory",
-            "labels",
-            "admission",
-            "operator-decision"
-          ],
+          "tags": ["factory", "labels", "admission", "operator-decision"],
           "score": 0.5955235600471497,
           "section": "## Evidence",
           "snippet": "- Decision receipt 365 resolution.effects\n- GitHub issue #6091 currently has the agent-ready label",
@@ -4082,12 +3611,7 @@
           "title": "Pre-guest response-loss recovery remains an open gap",
           "path": "_processed/pre-guest-response-loss-recovery-remains-an-open-gap.md",
           "type": "fact",
-          "tags": [
-            "factory",
-            "response-loss",
-            "reconciliation",
-            "recovery"
-          ],
+          "tags": ["factory", "response-loss", "reconciliation", "recovery"],
           "score": 0.5915367603302002,
           "section": "## Evidence",
           "snippet": "- Session conclusion: issue #6025 item 3 remains open pending a check of response-loss recovery against the pre-guest window.",
@@ -4127,11 +3651,7 @@
           "title": "Issue #5088 was directed to adopt PR #6223",
           "path": "_processed/issue-5088-was-directed-to-adopt-pr-6223.md",
           "type": "fact",
-          "tags": [
-            "factory",
-            "pull-request",
-            "delivery"
-          ],
+          "tags": ["factory", "pull-request", "delivery"],
           "score": 0.5881949663162231,
           "section": "",
           "snippet": "The factory decision note states that only review of PR #6223 was in flight and directs adoption of that pull request.",
@@ -4208,11 +3728,7 @@
           "title": "The re-admitted work was directed to reuse PR #6216",
           "path": "_processed/the-re-admitted-work-was-directed-to-reuse-pr-6216.md",
           "type": "fact",
-          "tags": [
-            "factory",
-            "pull-request",
-            "readmission"
-          ],
+          "tags": ["factory", "pull-request", "readmission"],
           "score": 0.5877590704940941,
           "section": "",
           "snippet": "The decision note stated that the re-admitted attempt should adopt the existing PR #6216 branch instead of opening a second PR.",
@@ -4290,11 +3806,7 @@
           "title": "isolated per-request execution remains gated",
           "path": "_processed/isolated-per-request-execution-remains-gated.md",
           "type": "fact",
-          "tags": [
-            "embervm",
-            "execution",
-            "gating"
-          ],
+          "tags": ["embervm", "execution", "gating"],
           "score": 0.577272355556488,
           "section": "",
           "snippet": "Isolated per-request execution must remain gated on issue #6132 until that work is approved and shipped.",
@@ -4326,11 +3838,7 @@
           "title": "Literal backslash-n sequences do not create standalone pull-request body lines",
           "path": "_processed/literal-backslash-n-sequences-do-not-create-standalone-pull-request-body-lines.md",
           "type": "fact",
-          "tags": [
-            "github",
-            "pull-request",
-            "formatting"
-          ],
+          "tags": ["github", "pull-request", "formatting"],
           "score": 0.576762284233435,
           "section": "## Evidence",
           "snippet": "- Factory result: PR #6047 body required correction because literal `\\n` sequences prevented `Closes #6029` from appearing as a standalone line.",
@@ -4362,12 +3870,7 @@
           "title": "Factory completion pauses when review findings are unavailable",
           "path": "_processed/factory-completion-pauses-when-review-findings-are-unavailable.md",
           "type": "fact",
-          "tags": [
-            "factory",
-            "review",
-            "pull-request",
-            "ci"
-          ],
+          "tags": ["factory", "review", "pull-request", "ci"],
           "score": 0.574264977828562,
           "section": "## Evidence",
           "snippet": "- ember-session 4204 result: PR #6048 had passing Linux pr-checks, but later independent review requested changes and its findings were missing",
@@ -4445,12 +3948,7 @@
           "title": "Factory decision 00ad58f0 authorized recovery on PR #6047",
           "path": "_processed/factory-decision-00ad58f0-authorized-recovery-on-pr-6047.md",
           "type": "fact",
-          "tags": [
-            "factory",
-            "operator-decision",
-            "pull-request",
-            "recovery"
-          ],
+          "tags": ["factory", "operator-decision", "pull-request", "recovery"],
           "score": 0.568624308880359,
           "section": "## Evidence",
           "snippet": "- Factory receipt 68 in the supplied agent report\n- GitHub issue https://github.com/jomcgi-org/homelab/issues/6029\n- Checkout search found no confirming record for the decision or issue",
@@ -4542,11 +4040,7 @@
           "title": "PR #6215 was the delivery target adopted by the readmission decision",
           "path": "_processed/pr-6215-was-the-delivery-target-adopted-by-the-readmission-decision.md",
           "type": "fact",
-          "tags": [
-            "factory",
-            "pull-request",
-            "issue-tracking"
-          ],
+          "tags": ["factory", "pull-request", "issue-tracking"],
           "score": 0.5627036690711975,
           "section": "## Evidence",
           "snippet": "- Agent report decision note says only PR #6215 was in flight and should be adopted\n- GitHub PR #6215 is closed with merged_at 2026-09-19T17:16:29Z\n- Checkout search found no confirming record",
@@ -4578,12 +4072,7 @@
           "title": "Publish protection requires a start fence followed by drain-to-zero sequencing",
           "path": "_processed/publish-protection-requires-a-start-fence-followed-by-drain-to-zero-sequencing.md",
           "type": "fact",
-          "tags": [
-            "publish",
-            "draining",
-            "rollout",
-            "admission-control"
-          ],
+          "tags": ["publish", "draining", "rollout", "admission-control"],
           "score": 0.5625251866892101,
           "section": "## Evidence",
           "snippet": "- Transient investigation result for issue #6204 recommends a durable publish start fence with drain-to-zero sequencing as the rollout protection.",
@@ -4615,12 +4104,7 @@
           "title": "Exact lost-attempt recovery requires incarnation-bound cessation proof",
           "path": "_processed/exact-lost-attempt-recovery-requires-incarnation-bound-cessation-proof.md",
           "type": "fact",
-          "tags": [
-            "recovery",
-            "retry",
-            "incarnation",
-            "cessation-proof"
-          ],
+          "tags": ["recovery", "retry", "incarnation", "cessation-proof"],
           "score": 0.5591519474983215,
           "section": "## Evidence",
           "snippet": "- Transient investigation result for issue #6204 states that safe recovery requires durable brick_gone proof bound to the exact invocation and old brick incarnation, followed by transactional settlement and bounded retry.",
@@ -4652,12 +4136,7 @@
           "title": "Factory keeps PR draft while mandatory KVM acceptance is missing",
           "path": "_processed/factory-keeps-pr-draft-while-mandatory-kvm-acceptance-is-missing.md",
           "type": "fact",
-          "tags": [
-            "factory",
-            "pull-request",
-            "kvm",
-            "acceptance-gate"
-          ],
+          "tags": ["factory", "pull-request", "kvm", "acceptance-gate"],
           "score": 0.5569961335065295,
           "section": "## Evidence",
           "snippet": "- Raw session result: PR #6172 remained draft because mandatory KVM acceptance evidence was outstanding despite passing checks and independent approval.",
@@ -4697,11 +4176,7 @@
           "title": "Semgrep target generation re-sorts rules after replacement",
           "path": "_processed/semgrep-target-generation-re-sorts-rules-after-replacement.md",
           "type": "fact",
-          "tags": [
-            "semgrep",
-            "code-generation",
-            "determinism"
-          ],
+          "tags": ["semgrep", "code-generation", "determinism"],
           "score": 0.5565341379324126,
           "section": "## Evidence",
           "snippet": "- Independent review of PR 6144\n- Review identifies the added sort.Slice as load-bearing because replacement rewrites a rule name",
@@ -4724,9 +4199,7 @@
             "relevance": "unrelated",
             "scope_match": true,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["unrelated_to_declared_question"]
           }
         },
         {
@@ -4735,12 +4208,7 @@
           "title": "Static inspection cannot satisfy visual theme acceptance",
           "path": "_processed/static-inspection-cannot-satisfy-visual-theme-acceptance.md",
           "type": "fact",
-          "tags": [
-            "factory",
-            "review",
-            "visual-verification",
-            "acceptance"
-          ],
+          "tags": ["factory", "review", "visual-verification", "acceptance"],
           "score": 0.5548516777246201,
           "section": "## Evidence",
           "snippet": "- Independent review result for PR #6221 states that appearance and navigation evidence was absent and that the visual suite had been removed.",
@@ -4771,9 +4239,7 @@
             "relevance": "unrelated",
             "scope_match": true,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["unrelated_to_declared_question"]
           }
         }
       ]
@@ -4810,9 +4276,7 @@
             "relevance": "related",
             "scope_match": false,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "scope_mismatch"
-            ]
+            "reasons": ["scope_mismatch"]
           }
         },
         {
@@ -4826,9 +4290,7 @@
             "relevance": "related",
             "scope_match": false,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "scope_mismatch"
-            ]
+            "reasons": ["scope_mismatch"]
           }
         },
         {
@@ -4842,9 +4304,7 @@
             "relevance": "related",
             "scope_match": false,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "scope_mismatch"
-            ]
+            "reasons": ["scope_mismatch"]
           }
         },
         {
@@ -4853,11 +4313,7 @@
           "title": "Knowledge retrieval ranks embedding candidates before adding graph context",
           "path": "_processed/knowledge-retrieval-ranks-embedding-candidates-before-adding-graph-context.md",
           "type": "fact",
-          "tags": [
-            "knowledge-graph",
-            "retrieval",
-            "embeddings"
-          ],
+          "tags": ["knowledge-graph", "retrieval", "embeddings"],
           "score": 0.6768164038658142,
           "section": "",
           "snippet": "Knowledge search first ranks notes by embedding similarity, then attaches graph edges and verification metadata; graph relationships do not participate in candidate discovery.",
@@ -4894,9 +4350,7 @@
             "relevance": "related",
             "scope_match": false,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "scope_mismatch"
-            ]
+            "reasons": ["scope_mismatch"]
           }
         },
         {
@@ -4910,9 +4364,7 @@
             "relevance": "related",
             "scope_match": false,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "scope_mismatch"
-            ]
+            "reasons": ["scope_mismatch"]
           }
         },
         {
@@ -4926,9 +4378,7 @@
             "relevance": "related",
             "scope_match": false,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "scope_mismatch"
-            ]
+            "reasons": ["scope_mismatch"]
           }
         },
         {
@@ -4942,9 +4392,7 @@
             "relevance": "related",
             "scope_match": false,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "scope_mismatch"
-            ]
+            "reasons": ["scope_mismatch"]
           }
         },
         {
@@ -4958,9 +4406,7 @@
             "relevance": "related",
             "scope_match": false,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "scope_mismatch"
-            ]
+            "reasons": ["scope_mismatch"]
           }
         },
         {
@@ -4974,9 +4420,7 @@
             "relevance": "related",
             "scope_match": false,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "scope_mismatch"
-            ]
+            "reasons": ["scope_mismatch"]
           }
         },
         {
@@ -4990,9 +4434,7 @@
             "relevance": "related",
             "scope_match": false,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "scope_mismatch"
-            ]
+            "reasons": ["scope_mismatch"]
           }
         },
         {
@@ -5006,9 +4448,7 @@
             "relevance": "related",
             "scope_match": false,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "scope_mismatch"
-            ]
+            "reasons": ["scope_mismatch"]
           }
         },
         {
@@ -5017,11 +4457,7 @@
           "title": "No live agent-orchestrator implementation was found",
           "path": "_processed/no-live-agent-orchestrator-implementation-was-found.md",
           "type": "fact",
-          "tags": [
-            "agents",
-            "patrol-loop",
-            "missing-implementation"
-          ],
+          "tags": ["agents", "patrol-loop", "missing-implementation"],
           "score": 0.6437453223390976,
           "section": "",
           "snippet": "Repository searches found no live agent-orchestrator or cluster-agents implementation, and no matching sweep-resilience implementation or regression test for the accepted patrol-loop ADR.",
@@ -5058,9 +4494,7 @@
             "relevance": "related",
             "scope_match": false,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "scope_mismatch"
-            ]
+            "reasons": ["scope_mismatch"]
           }
         },
         {
@@ -5074,9 +4508,7 @@
             "relevance": "related",
             "scope_match": false,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "scope_mismatch"
-            ]
+            "reasons": ["scope_mismatch"]
           }
         },
         {
@@ -5085,10 +4517,7 @@
           "title": "Legacy knowledge notes are excluded from normal search",
           "path": "_processed/legacy-knowledge-notes-are-excluded-from-normal-search.md",
           "type": "fact",
-          "tags": [
-            "knowledge-graph",
-            "legacy-notes"
-          ],
+          "tags": ["knowledge-graph", "legacy-notes"],
           "score": 0.6397020816802979,
           "section": "",
           "snippet": "The knowledge graph keeps legacy vault rows stored but excludes them from normal search because they lack scope, provenance, and verification, preventing them from outranking gardened notes.",
@@ -5120,11 +4549,7 @@
           "title": "Factory context search becomes in-memory after one index fetch",
           "path": "_processed/factory-context-search-becomes-in-memory-after-one-index-fetch.md",
           "type": "fact",
-          "tags": [
-            "factory",
-            "search",
-            "frontend"
-          ],
+          "tags": ["factory", "search", "frontend"],
           "score": 0.6379748367056165,
           "section": "",
           "snippet": "The factory context page fetches its public search index once after mount, then ranks title matches in memory on each keystroke without issuing further search requests.",
@@ -5161,9 +4586,7 @@
             "relevance": "related",
             "scope_match": false,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "scope_mismatch"
-            ]
+            "reasons": ["scope_mismatch"]
           }
         },
         {
@@ -5177,9 +4600,7 @@
             "relevance": "related",
             "scope_match": false,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "scope_mismatch"
-            ]
+            "reasons": ["scope_mismatch"]
           }
         },
         {
@@ -5188,11 +4609,7 @@
           "title": "Knowledge recall excludes invalidated notes outside the repository scope",
           "path": "_processed/knowledge-recall-excludes-invalidated-notes-outside-the-repository-scope.md",
           "type": "fact",
-          "tags": [
-            "knowledge",
-            "recall",
-            "repository-scope"
-          ],
+          "tags": ["knowledge", "recall", "repository-scope"],
           "score": 0.6315550804138184,
           "section": "",
           "snippet": "When session recall searches the knowledge graph, it applies the configured repository scope, excludes invalidated notes, and removes results below the configured relevance floor before rendering them.",
@@ -5255,13 +4672,7 @@
           "title": "The OCaml ARM64 CI shard includes C-dependent examples",
           "path": "_processed/the-ocaml-arm64-ci-shard-includes-c-dependent-examples.md",
           "type": "fact",
-          "tags": [
-            "arm64",
-            "ocaml",
-            "ci",
-            "pcre",
-            "tree-sitter"
-          ],
+          "tags": ["arm64", "ocaml", "ci", "pcre", "tree-sitter"],
           "score": 0.6683494848533724,
           "section": "",
           "snippet": "The full OCaml ARM64 CI shard runs C-dependent examples instead of excluding them, enabling PCRE and tree-sitter dependencies to build and test on ARM64.",
@@ -5301,12 +4712,7 @@
           "title": "ARM64 OCaml C toolchain compatibility requires GCC platform constraints",
           "path": "_processed/arm64-ocaml-c-toolchain-compatibility-requires-gcc-platform-constraints.md",
           "type": "fact",
-          "tags": [
-            "arm64",
-            "bazel",
-            "ocaml",
-            "toolchain"
-          ],
+          "tags": ["arm64", "bazel", "ocaml", "toolchain"],
           "score": 0.659083921800132,
           "section": "",
           "snippet": "The ARM64 OCaml execution platform cannot satisfy the ARM64 C toolchain until the platform declares the GCC constraint; adding the GCC constraint enables toolchain resolution.",
@@ -5338,11 +4744,7 @@
           "title": "The ARM64 validation run produced native ARM64 compilation evidence",
           "path": "_processed/the-arm64-validation-run-produced-native-arm64-compilation-evidence.md",
           "type": "fact",
-          "tags": [
-            "arm64",
-            "ci",
-            "validation"
-          ],
+          "tags": ["arm64", "ci", "validation"],
           "score": 0.6288262384430413,
           "section": "",
           "snippet": "The cold ARM64 validation run built the OCaml sysroot on aarch64, performed hundreds of aarch64 compilations, and executed the full set of ARM64 tests, providing evidence beyond a toolchain probe.",
@@ -5374,12 +4776,7 @@
           "title": "OCaml CI actively routes the ARM64 shard to Linux aarch64",
           "path": "_processed/ocaml-ci-actively-routes-the-arm64-shard-to-linux-aarch64.md",
           "type": "fact",
-          "tags": [
-            "ocaml",
-            "ci",
-            "arm64",
-            "buildbuddy"
-          ],
+          "tags": ["ocaml", "ci", "arm64", "buildbuddy"],
           "score": 0.6284921918502128,
           "section": "",
           "snippet": "The active BuildBuddy workflow selects the linux_aarch64 platform for the OCaml shard and runs PCRE2, tree-sitter, and tree-sitter C++ scanner tests without excluding C-dependent cases, so the issue claim that no ARM64 OCaml shard remains i",
@@ -5426,12 +4823,7 @@
           "title": "Issue #3926 has conflicting evidence about the ARM64 OCaml CI shard",
           "path": "_processed/issue-3926-has-conflicting-evidence-about-the-arm64-ocaml-ci-shard.md",
           "type": "fact",
-          "tags": [
-            "tooling",
-            "ci",
-            "arm64",
-            "issue-tracking"
-          ],
+          "tags": ["tooling", "ci", "arm64", "issue-tracking"],
           "score": 0.6207094480298634,
           "section": "",
           "snippet": "Issue #3926 reports that the ARM64 OCaml command is commented out, while also citing a live ARM64 OCaml shard at HEAD; this conflict prevents confidently closing #3927 before dependency-ordered delivery.",
@@ -5478,12 +4870,7 @@
           "title": "Native acceptance shards may leave packaged tools unverified",
           "path": "_processed/native-acceptance-shards-may-leave-packaged-tools-unverified.md",
           "type": "fact",
-          "tags": [
-            "arm64",
-            "darwin",
-            "runtime-acceptance",
-            "factory-review"
-          ],
+          "tags": ["arm64", "darwin", "runtime-acceptance", "factory-review"],
           "score": 0.6189276121768533,
           "section": "",
           "snippet": "When reported native acceptance shards exercise OCaml rather than the packaged tools, Linux/arm64 and Darwin/arm64 runtime acceptance for those tools remains unverified.",
@@ -5523,12 +4910,7 @@
           "title": "OCaml CI routes C-dependent tests to Linux aarch64",
           "path": "_processed/ocaml-ci-routes-c-dependent-tests-to-linux-aarch64.md",
           "type": "fact",
-          "tags": [
-            "ocaml",
-            "ci",
-            "arm64",
-            "tooling"
-          ],
+          "tags": ["ocaml", "ci", "arm64", "tooling"],
           "score": 0.60365761562081,
           "section": "",
           "snippet": "The OCaml CI shard selects the linux_aarch64 platform and runs PCRE, tree-sitter, and C++ scanner tests without excluding C-dependent cases.",
@@ -5568,12 +4950,7 @@
           "title": "OCaml CI routes the selected ladder to native Linux ARM64 execution",
           "path": "_processed/ocaml-ci-routes-the-selected-ladder-to-native-linux-arm64-execution.md",
           "type": "fact",
-          "tags": [
-            "ocaml",
-            "ci",
-            "arm64",
-            "buildbuddy"
-          ],
+          "tags": ["ocaml", "ci", "arm64", "buildbuddy"],
           "score": 0.599568134456186,
           "section": "",
           "snippet": "The selected OCaml CI ladder runs on a linux_aarch64 BuildBuddy executor while the workflow runner may remain amd64.",
@@ -5613,11 +4990,7 @@
           "title": "Issue #3924's ADR pointer is stale after ADR-file removal",
           "path": "_processed/issue-3924-s-adr-pointer-is-stale-after-adr-file-removal.md",
           "type": "fact",
-          "tags": [
-            "documentation",
-            "adr",
-            "tooling"
-          ],
+          "tags": ["documentation", "adr", "tooling"],
           "score": 0.5888782845590496,
           "section": "",
           "snippet": "The issue's link to [retired ADR path] is no longer a usable canonical reference because the ADR files were removed; the repository's architecture documentation and git history are the current reference point",
@@ -5674,12 +5047,7 @@
           "title": "OCaml no-arm64 tags are not excluded by current CI filters",
           "path": "_processed/ocaml-no-arm64-tags-are-not-excluded-by-current-ci-filters.md",
           "type": "fact",
-          "tags": [
-            "ocaml",
-            "bazel",
-            "ci",
-            "test-tags"
-          ],
+          "tags": ["ocaml", "bazel", "ci", "test-tags"],
           "score": 0.5804262603091477,
           "section": "",
           "snippet": "There are 20 occurrences of the no-arm64 tag in OCaml BUILD files, but current buildbuddy.yaml test filters exclude external and future tags, not no-arm64; therefore those tags do not exclude targets from the repository-wide CI test invocat",
@@ -5711,13 +5079,7 @@
           "title": "ARM64 C-dependent OCaml examples execute instead of being silently excluded",
           "path": "_processed/arm64-c-dependent-ocaml-examples-execute-instead-of-being-silently-excluded.md",
           "type": "fact",
-          "tags": [
-            "arm64",
-            "ocaml",
-            "pcre2",
-            "tree-sitter",
-            "ci"
-          ],
+          "tags": ["arm64", "ocaml", "pcre2", "tree-sitter", "ci"],
           "score": 0.5725961668846798,
           "section": "",
           "snippet": "When the ARM64 shard runs, the C-dependent PCRE2 and tree-sitter examples execute and report successful results; removing ARM64 exclusions prevents tag or target-compatibility filtering from dropping them.",
@@ -5749,11 +5111,7 @@
           "title": "OCaml native actions resolve host toolchain binaries",
           "path": "_processed/ocaml-native-actions-resolve-host-toolchain-binaries.md",
           "type": "fact",
-          "tags": [
-            "hermeticity",
-            "ocaml",
-            "toolchain"
-          ],
+          "tags": ["hermeticity", "ocaml", "toolchain"],
           "score": 0.5665467371293058,
           "section": "",
           "snippet": "The OCaml compiler construction and native driver actions resolve tools such as `cc`, `as`, and `ar` from the host environment, so pinned source inputs alone do not establish a hermetic native tool closure.",
@@ -5785,12 +5143,7 @@
           "title": "BuildBuddy can execute OCaml actions natively on ARM64 while the workflow runner remains amd64",
           "path": "_processed/buildbuddy-can-execute-ocaml-actions-natively-on-arm64-while-the-workflow-runner-remains-amd64.md",
           "type": "fact",
-          "tags": [
-            "buildbuddy",
-            "arm64",
-            "ocaml",
-            "execution-architecture"
-          ],
+          "tags": ["buildbuddy", "arm64", "ocaml", "execution-architecture"],
           "score": 0.555079304438728,
           "section": "## Evidence",
           "snippet": "- Raw session result cites BuildBuddy invocation 6694ef71-795c-4124-b6ca-49ea4f26dc3d and reports amd64 workflow runner with native aarch64 OCaml execution.",
@@ -5822,12 +5175,7 @@
           "title": "Tooling ADR 004 was rolled into architecture documentation while CE translation remained open",
           "path": "_processed/tooling-adr-004-was-rolled-into-architecture-documentation-while-ce-translation-remained-open.md",
           "type": "fact",
-          "tags": [
-            "tooling",
-            "ocaml",
-            "adr",
-            "semgrep"
-          ],
+          "tags": ["tooling", "ocaml", "adr", "semgrep"],
           "score": 0.5528332222749646,
           "section": "## Evidence",
           "snippet": "- git log shows commit 779a329f5 removed [retired ADR path]\n- bazel/ARCHITECTURE.md:174 records tooling/004 as deleted and CE translation as open (#3921, #3922)",
@@ -5869,12 +5217,7 @@
           "title": "OCaml native compilation resolves assembler and C compiler from the executor host",
           "path": "_processed/ocaml-native-compilation-resolves-assembler-and-c-compiler-from-the-executor-host.md",
           "type": "fact",
-          "tags": [
-            "bazel",
-            "ocaml",
-            "hermeticity",
-            "toolchain"
-          ],
+          "tags": ["bazel", "ocaml", "hermeticity", "toolchain"],
           "score": 0.5526722897100902,
           "section": "",
           "snippet": "The OCaml toolchain build and compile driver resolve native assembler and C compiler tools from the executor PATH rather than bundling them, so builds depend on undeclared host toolchain inputs and cannot claim complete hermeticity.",
@@ -5906,12 +5249,7 @@
           "title": "Tooling ADR 007 was deleted as an unbuilt Gazelle extension proposal",
           "path": "_processed/tooling-adr-007-was-deleted-as-an-unbuilt-gazelle-extension-proposal.md",
           "type": "fact",
-          "tags": [
-            "tooling",
-            "adr",
-            "gazelle",
-            "ocaml"
-          ],
+          "tags": ["tooling", "adr", "gazelle", "ocaml"],
           "score": 0.5524421726063808,
           "section": "",
           "snippet": "Tooling/007 proposed a Gazelle extension to generate first-party OCaml BUILD files, but it remained unbuilt. No bazel/ocaml/gazelle path exists. The ADR was deleted during the tooling rollup, with issue #3925 tracking the work.",
@@ -5948,10 +5286,7 @@
             "relevance": "unrelated",
             "scope_match": false,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "scope_mismatch",
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["scope_mismatch", "unrelated_to_declared_question"]
           }
         },
         {
@@ -5960,13 +5295,7 @@
           "title": "The OCaml arm64 executor probe remains the only arm64-routed OCaml CI target",
           "path": "_processed/the-ocaml-arm64-executor-probe-remains-the-only-arm64-routed-ocaml-ci-target.md",
           "type": "fact",
-          "tags": [
-            "ocaml",
-            "buildbuddy",
-            "ci",
-            "arm64",
-            "executor"
-          ],
+          "tags": ["ocaml", "buildbuddy", "ci", "arm64", "executor"],
           "score": 0.5501469761396017,
           "section": "",
           "snippet": "bazel/ocaml/platforms/BUILD defines executor_arch_probe_arm64 with exec_properties Arch=arm64, while current CI does not select the aarch64 platform. This probe is included by the repository-wide bazel test invocation and is the only config",
@@ -6006,13 +5335,7 @@
           "title": "Tooling ADR 008 was deleted as an unbuilt CLI release-lane proposal",
           "path": "_processed/tooling-adr-008-was-deleted-as-an-unbuilt-cli-release-lane-proposal.md",
           "type": "fact",
-          "tags": [
-            "tooling",
-            "adr",
-            "cli",
-            "release",
-            "multiarch"
-          ],
+          "tags": ["tooling", "adr", "cli", "release", "multiarch"],
           "score": 0.5496957629737801,
           "section": "",
           "snippet": "Tooling/008 proposed native multi-platform CLI releases using cloud arm64 and self-hosted darwin execution, without cross-compilation, QEMU, or wasm. It remained unbuilt, and the arm64 CI shard was removed on 2026-08-09. The ADR was deleted",
@@ -6044,12 +5367,7 @@
           "title": "Tooling ADR 011 was deleted after its decisions were rolled up",
           "path": "_processed/tooling-adr-011-was-deleted-after-its-decisions-were-rolled-up.md",
           "type": "fact",
-          "tags": [
-            "adr",
-            "tooling",
-            "semgrep",
-            "documentation"
-          ],
+          "tags": ["adr", "tooling", "semgrep", "documentation"],
           "score": 0.5450702363336407,
           "section": "",
           "snippet": "The repository confirms that [retired ADR path] was deleted by the tooling architecture rollup commit 779a329f5 on 2026-09-05.",
@@ -6114,12 +5432,7 @@
           "title": "Repository approval does not establish live Cloudflare cache acceptance",
           "path": "_processed/repository-approval-does-not-establish-live-cloudflare-cache-acceptance.md",
           "type": "fact",
-          "tags": [
-            "cloudflare",
-            "caching",
-            "review",
-            "operations"
-          ],
+          "tags": ["cloudflare", "caching", "review", "operations"],
           "score": 0.6439734121584894,
           "section": "",
           "snippet": "A repository PR can be approved while live acceptance remains unresolved when a deployed second fetch has not demonstrated a Cloudflare cache HIT; the live verification remains required and the associated issue stays open.",
@@ -6159,11 +5472,7 @@
           "title": "Volume test validation skipped Go tests under task guardrails",
           "path": "_processed/volume-test-validation-skipped-go-tests-under-task-guardrails.md",
           "type": "fact",
-          "tags": [
-            "testing",
-            "guardrails",
-            "embervm"
-          ],
+          "tags": ["testing", "guardrails", "embervm"],
           "score": 0.6398556589865202,
           "section": "## Evidence",
           "snippet": "- Raw transcript final assistant message: \"Verified formatting and git diff --check.\" and \"Tests were not run per repo guardrails.\"",
@@ -6186,9 +5495,7 @@
             "relevance": "unrelated",
             "scope_match": true,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["unrelated_to_declared_question"]
           }
         },
         {
@@ -6202,9 +5509,7 @@
             "relevance": "related",
             "scope_match": false,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "scope_mismatch"
-            ]
+            "reasons": ["scope_mismatch"]
           }
         },
         {
@@ -6259,11 +5564,7 @@
           "title": "Kargo owns the monolith's live deployment revision",
           "path": "_processed/kargo-owns-the-monolith-s-live-deployment-revision.md",
           "type": "fact",
-          "tags": [
-            "kargo",
-            "argocd",
-            "deployment"
-          ],
+          "tags": ["kargo", "argocd", "deployment"],
           "score": 0.6292369111235332,
           "section": "",
           "snippet": "Kargo patches the live monolith and monolith-dev Application targetRevision, while ArgoCD's RespectIgnoreDifferences prevents Git's targetRevision from overwriting that promotion state.",
@@ -6303,11 +5604,7 @@
           "title": "Knowledge reporting fails when the service lacks knowledge.ingest_queue",
           "path": "_processed/knowledge-reporting-fails-when-the-service-lacks-knowledge-ingest-queue.md",
           "type": "fact",
-          "tags": [
-            "knowledge-graph",
-            "tooling",
-            "failure-mode"
-          ],
+          "tags": ["knowledge-graph", "tooling", "failure-mode"],
           "score": 0.6274099162992886,
           "section": "",
           "snippet": "Knowledge reporting cannot complete when the knowledge service does not provide the knowledge.ingest_queue capability.",
@@ -6344,9 +5641,7 @@
             "relevance": "related",
             "scope_match": false,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "scope_mismatch"
-            ]
+            "reasons": ["scope_mismatch"]
           }
         },
         {
@@ -6408,11 +5703,7 @@
           "title": "Context Forge Gateway deploys from Git HEAD",
           "path": "_processed/context-forge-gateway-deploys-from-git-head.md",
           "type": "fact",
-          "tags": [
-            "gke",
-            "context-forge-gateway",
-            "gitops"
-          ],
+          "tags": ["gke", "context-forge-gateway", "gitops"],
           "score": 0.622823316539029,
           "section": "",
           "snippet": "The GKE Context Forge Gateway Application deploys directly from the Git repository at targetRevision HEAD and does not use an OCI chart version.",
@@ -6444,12 +5735,7 @@
           "title": "The implementation changed files outside the requested values-only chart edit",
           "path": "_processed/the-implementation-changed-files-outside-the-requested-values-only-chart-edit.md",
           "type": "fact",
-          "tags": [
-            "spec-violation",
-            "embervm",
-            "charts",
-            "sqlite"
-          ],
+          "tags": ["spec-violation", "embervm", "charts", "sqlite"],
           "score": 0.6205251401819333,
           "section": "## Evidence",
           "snippet": "- git status output listed deployment.yaml and sqlite.ex among modified files\n- Specification said: \"Liveness margin (values only)\" and \"Keep the SQLite backend's behaviour unchanged\"",
@@ -6472,9 +5758,7 @@
             "relevance": "unrelated",
             "scope_match": true,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["unrelated_to_declared_question"]
           }
         },
         {
@@ -6483,11 +5767,7 @@
           "title": "Inference deploys from Git HEAD",
           "path": "_processed/inference-deploys-from-git-head.md",
           "type": "fact",
-          "tags": [
-            "gke",
-            "inference",
-            "gitops"
-          ],
+          "tags": ["gke", "inference", "gitops"],
           "score": 0.6204824036503557,
           "section": "",
           "snippet": "The GKE inference Application deploys from the Git repository at targetRevision HEAD rather than an OCI chart version.",
@@ -6524,9 +5804,7 @@
             "relevance": "related",
             "scope_match": false,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "scope_mismatch"
-            ]
+            "reasons": ["scope_mismatch"]
           }
         },
         {
@@ -6535,11 +5813,7 @@
           "title": "Workspace hydration uses the direct GitHub clone path",
           "path": "_processed/workspace-hydration-uses-the-direct-github-clone-path.md",
           "type": "fact",
-          "tags": [
-            "embervm",
-            "hydration",
-            "git"
-          ],
+          "tags": ["embervm", "hydration", "git"],
           "score": 0.6197801005709231,
           "section": "",
           "snippet": "The hydration implementation clones the repository directly from GitHub over HTTPS, rather than using the in-cluster Git mirror.",
@@ -6570,9 +5844,7 @@
             "relevance": "unrelated",
             "scope_match": true,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["unrelated_to_declared_question"]
           }
         },
         {
@@ -6581,12 +5853,7 @@
           "title": "EmberVM production deployment truth is the live ArgoCD target revision",
           "path": "_processed/embervm-production-deployment-truth-is-the-live-argocd-target-revision.md",
           "type": "fact",
-          "tags": [
-            "kargo",
-            "argocd",
-            "deployment",
-            "gitops"
-          ],
+          "tags": ["kargo", "argocd", "deployment", "gitops"],
           "score": 0.6162495796754833,
           "section": "## Evidence",
           "snippet": "- Git write-back changed embervm chart version to 0.21.6 while live targetRevision remained 0.21.5\n- Later kubectl polling observed live targetRevision 0.21.6\n- ARCHITECTURE.md states Kargo owns runtime targetRevision",
@@ -6631,10 +5898,7 @@
             "relevance": "unrelated",
             "scope_match": false,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "scope_mismatch",
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["scope_mismatch", "unrelated_to_declared_question"]
           }
         },
         {
@@ -6648,10 +5912,7 @@
             "relevance": "unrelated",
             "scope_match": false,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "scope_mismatch",
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["scope_mismatch", "unrelated_to_declared_question"]
           }
         },
         {
@@ -6660,11 +5921,7 @@
           "title": "Context Forge has monolith and GitHub upstream registrations, with only monolith enabled",
           "path": "_processed/context-forge-has-monolith-and-github-upstream-registrations-with-only-monolith-enabled.md",
           "type": "fact",
-          "tags": [
-            "context-forge",
-            "mcp",
-            "upstreams"
-          ],
+          "tags": ["context-forge", "mcp", "upstreams"],
           "score": 0.613248926006292,
           "section": "",
           "snippet": "The report claims Context Forge registered monolith and GitHub upstreams on 2026-09-05, with GitHub disabled and no tools. The checkout confirms this topology, but not the exact live database row fields or URLs.",
@@ -6695,9 +5952,7 @@
             "relevance": "unrelated",
             "scope_match": true,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["unrelated_to_declared_question"]
           }
         },
         {
@@ -6711,9 +5966,7 @@
             "relevance": "related",
             "scope_match": false,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "scope_mismatch"
-            ]
+            "reasons": ["scope_mismatch"]
           }
         },
         {
@@ -6727,9 +5980,7 @@
             "relevance": "related",
             "scope_match": false,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "scope_mismatch"
-            ]
+            "reasons": ["scope_mismatch"]
           }
         },
         {
@@ -6738,11 +5989,7 @@
           "title": "The revised regression test was not executed locally",
           "path": "_processed/the-revised-regression-test-was-not-executed-locally.md",
           "type": "fact",
-          "tags": [
-            "testing",
-            "guardrails",
-            "embervm"
-          ],
+          "tags": ["testing", "guardrails", "embervm"],
           "score": 0.6077641792086526,
           "section": "## Evidence",
           "snippet": "- Final transcript line: `Validation: git diff --check passed. Tests were not run per repository guardrails.`",
@@ -6765,9 +6012,7 @@
             "relevance": "unrelated",
             "scope_match": true,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["unrelated_to_declared_question"]
           }
         }
       ]
@@ -6799,11 +6044,7 @@
           "title": "The reported closure cancels staging a node-4 host cutover",
           "path": "_processed/the-reported-closure-cancels-staging-a-node-4-host-cutover.md",
           "type": "fact",
-          "tags": [
-            "home-cluster",
-            "inference",
-            "teardown"
-          ],
+          "tags": ["home-cluster", "inference", "teardown"],
           "score": 0.5736606550801971,
           "section": "",
           "snippet": "The factory decision note states that the RTX 4090 is being sold and the household is moving, so no node-4 host cutover will be staged and the Vancouver teardown will occur with the move. The checkout documents node-4 as the home inference ",
@@ -6843,10 +6084,7 @@
           "title": "The session interrupt endpoint has no external caller",
           "path": "_processed/the-session-interrupt-endpoint-has-no-external-caller.md",
           "type": "fact",
-          "tags": [
-            "interrupt",
-            "session-control"
-          ],
+          "tags": ["interrupt", "session-control"],
           "score": 0.5558547874559294,
           "section": "",
           "snippet": "Because /shim/interrupt is referenced only within the shim and has no monolith, control-plane, or noded caller, running turns cannot be stopped through that endpoint.",
@@ -6869,9 +6107,7 @@
             "relevance": "unrelated",
             "scope_match": true,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["unrelated_to_declared_question"]
           }
         },
         {
@@ -6880,12 +6116,7 @@
           "title": "Longhorn can drain node-4 nvme-02 to ssd-01 without duplicating the affected replicas",
           "path": "_processed/longhorn-can-drain-node-4-nvme-02-to-ssd-01-without-duplicating-the-affected-replicas.md",
           "type": "fact",
-          "tags": [
-            "longhorn",
-            "eviction",
-            "storage-isolation",
-            "node-4"
-          ],
+          "tags": ["longhorn", "eviction", "storage-isolation", "node-4"],
           "score": 0.5523489611460852,
           "section": "## Evidence",
           "snippet": "- Transcript: node-4/ssd-01 reported 3079.4 GiB available.\n- Transcript: affected volumes were placed on node-4/nvme-02 but none on node-4/ssd-01.",
@@ -6922,10 +6153,7 @@
             "relevance": "unrelated",
             "scope_match": false,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "scope_mismatch",
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["scope_mismatch", "unrelated_to_declared_question"]
           }
         },
         {
@@ -6934,11 +6162,7 @@
           "title": "Confirmed destroy uses the same stale-inventory cleanup seam",
           "path": "_processed/confirmed-destroy-uses-the-same-stale-inventory-cleanup-seam.md",
           "type": "fact",
-          "tags": [
-            "embervm",
-            "destroy",
-            "inventory"
-          ],
+          "tags": ["embervm", "destroy", "inventory"],
           "score": 0.5468206354303496,
           "section": "",
           "snippet": "Because Destroy also removes the VM from noded, confirmed teardown must invoke the same dispatcher inventory removal; unconfirmed teardown does not safely establish that consumption occurred.",
@@ -6970,12 +6194,7 @@
           "title": "Idle hot adaptation fires during request gaps",
           "path": "_processed/idle-hot-adaptation-fires-during-request-gaps.md",
           "type": "fact",
-          "tags": [
-            "freetoken",
-            "moe",
-            "hot-adaptation",
-            "idle"
-          ],
+          "tags": ["freetoken", "moe", "hot-adaptation", "idle"],
           "score": 0.5458774784024775,
           "section": "## Evidence",
           "snippet": "- Node-4 deployment output reported idle ticks during the four-turn chat test.\n- The idle adaptation implementation was tested with the target suites and merged into the deployed tier.",
@@ -6998,9 +6217,7 @@
             "relevance": "unrelated",
             "scope_match": true,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["unrelated_to_declared_question"]
           }
         },
         {
@@ -7046,11 +6263,7 @@
           "title": "Serving tap forwarding is filtered but host-local input is not",
           "path": "_processed/serving-tap-forwarding-is-filtered-but-host-local-input-is-not.md",
           "type": "fact",
-          "tags": [
-            "embervm",
-            "networking",
-            "security"
-          ],
+          "tags": ["embervm", "networking", "security"],
           "score": 0.5292763148875621,
           "section": "",
           "snippet": "The serving network rules drop new VM-originated forwarding at the inet forward hook and accept established return traffic, but they leave host-local input unfiltered.",
@@ -7073,9 +6286,7 @@
             "relevance": "unrelated",
             "scope_match": true,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["unrelated_to_declared_question"]
           }
         },
         {
@@ -7084,12 +6295,7 @@
           "title": "Stateful node-confirmed destroy persists intent before teardown",
           "path": "_processed/stateful-node-confirmed-destroy-persists-intent-before-teardown.md",
           "type": "fact",
-          "tags": [
-            "embervm",
-            "stateful",
-            "destroy",
-            "node-confirmed"
-          ],
+          "tags": ["embervm", "stateful", "destroy", "node-confirmed"],
           "score": 0.5258382432912231,
           "section": "## Evidence",
           "snippet": "- stateful_manager.ex diff introduces `force_destroy_live_node_confirmed` and `force_destroy_live_legacy`\n- worker comment states gate-on intent is persisted before contacting the node",
@@ -7129,12 +6335,7 @@
           "title": "The reported 2026-09-13 spot-preemption incident stranded three factory guests and held three delivery slots",
           "path": "_processed/the-reported-2026-09-13-spot-preemption-incident-stranded-three-factory-guests-and-held-three-delivery-slots.md",
           "type": "fact",
-          "tags": [
-            "incident",
-            "factory",
-            "spot-preemption",
-            "capacity"
-          ],
+          "tags": ["incident", "factory", "spot-preemption", "capacity"],
           "score": 0.525452974492667,
           "section": "",
           "snippet": "The agent report claims that replacing node 8gjx with 8il3 at 02:19 UTC left three factory guests parked on the departed node, leaving three of four delivery slots occupied and causing a delivery-lane wedge. The checkout contains implementa",
@@ -7165,9 +6366,7 @@
             "relevance": "unrelated",
             "scope_match": true,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["unrelated_to_declared_question"]
           }
         },
         {
@@ -7176,11 +6375,7 @@
           "title": "The operator reported the stranded guest was gone before re-admission",
           "path": "_processed/the-operator-reported-the-stranded-guest-was-gone-before-re-admission.md",
           "type": "fact",
-          "tags": [
-            "embervm",
-            "guest-lifecycle",
-            "brick-rollout"
-          ],
+          "tags": ["embervm", "guest-lifecycle", "brick-rollout"],
           "score": 0.5241698651516286,
           "section": "",
           "snippet": "The operator reported that node gke-homelab-hub-ember-bricks-05aff74a-s657 was a spot replacement created after the attempt began, all four noded pods were newer than the attempt, and guests lived on brick scratch without cross-brick religh",
@@ -7211,9 +6406,7 @@
             "relevance": "unrelated",
             "scope_match": true,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["unrelated_to_declared_question"]
           }
         },
         {
@@ -7222,11 +6415,7 @@
           "title": "Issue #4170 is obsolete while #5485 owns current Longhorn teardown",
           "path": "_processed/issue-4170-is-obsolete-while-5485-owns-current-longhorn-teardown.md",
           "type": "fact",
-          "tags": [
-            "longhorn",
-            "issue-tracking",
-            "teardown"
-          ],
+          "tags": ["longhorn", "issue-tracking", "teardown"],
           "score": 0.5227936377638871,
           "section": "",
           "snippet": "Because issue #5485 owns teardown of the only current Longhorn deployment, implementing the reconciler proposed by issue #4170 should be escalated instead of proceeding.",
@@ -7258,12 +6447,7 @@
           "title": "Router test registrations leaked reconnecting streamers across tests",
           "path": "_processed/router-test-registrations-leaked-reconnecting-streamers-across-tests.md",
           "type": "fact",
-          "tags": [
-            "embervm",
-            "testing",
-            "flaky-tests",
-            "node-registry"
-          ],
+          "tags": ["embervm", "testing", "flaky-tests", "node-registry"],
           "score": 0.5222076644487101,
           "section": "",
           "snippet": "`router_test.exs` registered `node-4` against a real network address; the registry's streamer could outlive the test and write health records into a later test's shared trace store because the test module runs with `async: false`.",
@@ -7286,9 +6470,7 @@
             "relevance": "unrelated",
             "scope_match": true,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["unrelated_to_declared_question"]
           }
         },
         {
@@ -7297,12 +6479,7 @@
           "title": "Pre-sidecar group orphans are filtered out before the warmth reaper plan",
           "path": "_processed/pre-sidecar-group-orphans-are-filtered-out-before-the-warmth-reaper-plan.md",
           "type": "fact",
-          "tags": [
-            "embervm",
-            "garbage-collection",
-            "reaper",
-            "snapshots"
-          ],
+          "tags": ["embervm", "garbage-collection", "reaper", "snapshots"],
           "score": 0.5221381627876228,
           "section": "## Evidence",
           "snippet": "- Live node inspection showed orphan member directories with only memfile and snapfile.\n- The reaper remained silent and 18 memfiles totaling 61440 MiB remained after deployment of #4939.\n- Noded logs showed group activator listeners, while",
@@ -7325,9 +6502,7 @@
             "relevance": "unrelated",
             "scope_match": true,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["unrelated_to_declared_question"]
           }
         },
         {
@@ -7336,12 +6511,7 @@
           "title": "The noded health handler exposes only health and readiness endpoints",
           "path": "_processed/the-noded-health-handler-exposes-only-health-and-readiness-endpoints.md",
           "type": "fact",
-          "tags": [
-            "embervm",
-            "noded",
-            "security",
-            "http"
-          ],
+          "tags": ["embervm", "noded", "security", "http"],
           "score": 0.5211850274668679,
           "section": "",
           "snippet": "The unauthenticated debug handler was removed from the noded command health server, leaving `/healthz` and `/readyz` as the registered handlers.",
@@ -7364,9 +6534,7 @@
             "relevance": "unrelated",
             "scope_match": true,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["unrelated_to_declared_question"]
           }
         },
         {
@@ -7380,9 +6548,7 @@
             "relevance": "related",
             "scope_match": false,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "scope_mismatch"
-            ]
+            "reasons": ["scope_mismatch"]
           }
         },
         {
@@ -7391,12 +6557,7 @@
           "title": "EmberVM tap policy blocks new VM-originated forwarding",
           "path": "_processed/embervm-tap-policy-blocks-new-vm-originated-forwarding.md",
           "type": "fact",
-          "tags": [
-            "embervm",
-            "networking",
-            "security",
-            "tap-policy"
-          ],
+          "tags": ["embervm", "networking", "security", "tap-policy"],
           "score": 0.5177250062741399,
           "section": "## Evidence",
           "snippet": "- Raw session Turn 8 command output: source inspection of projects/embervm/noded/serving/net.go reported drops at the inet forward hook, established-return acceptance, and unfiltered host-local input.",
@@ -7427,9 +6588,7 @@
             "relevance": "unrelated",
             "scope_match": true,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["unrelated_to_declared_question"]
           }
         },
         {
@@ -7438,11 +6597,7 @@
           "title": "Codex and Pi session interrupts are ineffective",
           "path": "_processed/codex-and-pi-session-interrupts-are-ineffective.md",
           "type": "fact",
-          "tags": [
-            "embervm",
-            "agent-sessions",
-            "cancellation"
-          ],
+          "tags": ["embervm", "agent-sessions", "cancellation"],
           "score": 0.5170867309349854,
           "section": "## Evidence",
           "snippet": "- required-issues-before.json issue #4321: “/shim/interrupt has zero callers”; “interrupt() is a no-op”",
@@ -7465,9 +6620,7 @@
             "relevance": "unrelated",
             "scope_match": true,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["unrelated_to_declared_question"]
           }
         },
         {
@@ -7476,12 +6629,7 @@
           "title": "The monolith live revision was reported as 0.443.4 on 2026-09-05",
           "path": "_processed/the-monolith-live-revision-was-reported-as-0-443-4-on-2026-09-05.md",
           "type": "fact",
-          "tags": [
-            "gke",
-            "argocd",
-            "monolith",
-            "runtime-observation"
-          ],
+          "tags": ["gke", "argocd", "monolith", "runtime-observation"],
           "score": 0.5168641229705966,
           "section": "",
           "snippet": "An agent reported that the hub Argo CD monolith Application had live targetRevision 0.443.4 on 2026-09-05, while the GKE Git bootstrap pin was 0.407.29.",
@@ -7512,9 +6660,7 @@
             "relevance": "unrelated",
             "scope_match": true,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["unrelated_to_declared_question"]
           }
         },
         {
@@ -7523,11 +6669,7 @@
           "title": "Discarding a blocked implementation does not satisfy delivery",
           "path": "_processed/discarding-a-blocked-implementation-does-not-satisfy-delivery.md",
           "type": "fact",
-          "tags": [
-            "factory",
-            "graph",
-            "delivery"
-          ],
+          "tags": ["factory", "graph", "delivery"],
           "score": 0.5161941205321048,
           "section": "",
           "snippet": "The conductor does not treat discarding a blocked, unstarted implementation node as satisfying delivery; a replacement implementation and independent review remain required.",
@@ -7558,9 +6700,7 @@
             "relevance": "unrelated",
             "scope_match": true,
             "inappropriate_for_declared_budget": true,
-            "reasons": [
-              "unrelated_to_declared_question"
-            ]
+            "reasons": ["unrelated_to_declared_question"]
           }
         }
       ]
