@@ -362,5 +362,4 @@ def receive_delivery_target(repo: str, issue_number: int) -> dict | None:
         "delivery_branch": branch,
         "delivery_pr_number": number,
         "delivery_adoption": True,
-        "delivery_target_checked": True,
     }

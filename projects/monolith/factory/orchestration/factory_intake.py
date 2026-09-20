@@ -139,13 +139,11 @@ def receive_issue(
             "delivery_branch",
             "delivery_pr_number",
             "delivery_adoption",
-            "delivery_target_checked",
         }:
             raise ValueError("invalid delivery target")
         branch, pr_number = granted_delivery_surface(delivery_target)
         if (
             not delivery_target.get("delivery_adoption")
-            or not delivery_target.get("delivery_target_checked")
             or branch is None
             or not branch.startswith("factory/")
             or pr_number is None

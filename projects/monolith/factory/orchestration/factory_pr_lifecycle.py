@@ -9,6 +9,7 @@ import time
 from urllib.parse import quote
 
 import httpx
+from sqlalchemy import or_
 from sqlmodel import select
 
 from factory.orchestration.factory_controls import (
@@ -209,18 +210,26 @@ def _record(action: str, *, task_id: str | None = None, **detail: object) -> Non
 
 def _record_retirement_intent(repo: str, number: int, **detail: object) -> None:
     """Persist the close authority once before the non-transactional API write."""
+    repo_fragment = f'"repo":{json.dumps(repo)}'
+    number_fragment = f'"pr_number":{number}'
     with _locked_session() as (db, _control):
         previous = db.exec(
             select(FactoryAudit.detail_json).where(
-                FactoryAudit.action == "factory_pr_retired"
+                FactoryAudit.action == "factory_pr_retired",
+                FactoryAudit.detail_json.contains(repo_fragment),
+                or_(
+                    FactoryAudit.detail_json.contains(number_fragment + ","),
+                    FactoryAudit.detail_json.contains(number_fragment + "}"),
+                ),
             )
         ).all()
-        if any(
-            (value := json.loads(raw)).get("repo") == repo
-            and value.get("pr_number") == number
-            for raw in previous
-        ):
-            return
+        for raw in previous:
+            try:
+                value = json.loads(raw)
+            except (TypeError, ValueError):
+                continue
+            if value.get("repo") == repo and value.get("pr_number") == number:
+                return
         _audit(
             db,
             ACTOR,
@@ -268,16 +277,17 @@ def _retirement_reason(
     closed_issue = None
     survivor = None
     survivor_row = None
+    survivor_issue = None
     for issue_number in closing_issue_numbers(pull.get("body"), repo):
         issue = github_get(repo, f"issues/{issue_number}")
         found = _successor(repo, issue_number, number)
         if found is not None and survivor is None:
             survivor, survivor_row = found
+            survivor_issue = issue_number
         if issue.get("state") == "closed" and closed_issue is None:
             closed_issue = issue_number
-    if survivor is not None:
-        issues = closing_issue_numbers(survivor.get("body"), repo)
-        return issues[0], survivor, survivor_row
+    if survivor is not None and survivor_issue is not None:
+        return survivor_issue, survivor, survivor_row
     if closed_issue is not None:
         return closed_issue, None, None
     return None

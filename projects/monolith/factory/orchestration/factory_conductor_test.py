@@ -527,13 +527,16 @@ def test_tick_isolates_a_failing_task_and_a_failing_ingest(monkeypatch):
 
 
 def test_stopped_factory_never_polls_or_admits(monkeypatch):
-    import factory.orchestration.factory_controls as controls
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import factory_pr_lifecycle
 
+    policy = {"repo": "owner/repo"}
     monkeypatch.setattr(
         controls,
         "status",
         lambda: {
             "state": "stopped",
+            "policy": policy,
             "active_tasks": [{"task_id": "t-1"}, {"task_id": "t-2"}],
         },
     )
@@ -541,6 +544,11 @@ def test_stopped_factory_never_polls_or_admits(monkeypatch):
     monkeypatch.setattr(conductor.runtime, "init_dbos", lambda: object())
     monkeypatch.setattr(
         conductor, "ingest_eligible", lambda _: pytest.fail("stopped admission")
+    )
+    monkeypatch.setattr(
+        factory_pr_lifecycle,
+        "reconcile_tick",
+        lambda _policy: pytest.fail("stopped PR lifecycle write"),
     )
     cancelled = []
 
