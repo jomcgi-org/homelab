@@ -190,6 +190,8 @@ class FactoryAudit(SQLModel, table=True):
         # Landing reads this trail by task and action on every tick, for the
         # per-task landing state and for the once-only fences.
         Index("factory_audit_task_action_idx", "task_id", "action"),
+        # Global reconcilers select the newest rows for a small action set.
+        Index("factory_audit_action_id_idx", "action", "id"),
         {"schema": "swarm", "extend_existing": True},
     )
 

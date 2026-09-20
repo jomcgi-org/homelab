@@ -584,15 +584,18 @@ about landing, names the factory task and source audit, and contains an exact
 `factory-problem` fingerprint marker. Discovery inspects at most two pages of
 100 newest open or closed issues for that marker. If both pages are full and no
 marker is found, the producer audits the cap and refuses the write because an
-older matching issue may exist. A repeated or replayed source event reconciles
-the existing issue. A missing source receipt, malformed event, discovery
-failure, scan cap, daily cap, or rejected GitHub write is audited and visible
-on the factory board.
+older matching issue may exist. Pull requests returned by the GitHub issues API
+never satisfy an issue marker. A repeated or replayed source event reconciles
+the existing issue. Fingerprint lookups use the audit trail's action index and
+database predicates rather than loading producer history. A missing source
+receipt, malformed event, discovery failure, scan cap, daily cap, or rejected
+GitHub write is audited and visible on the factory board.
 
 The producer records `problem_issue_write_started` before the GitHub request.
-A definite client refusal is terminal. A timeout, rate limit, transport loss,
-server error, oversized response, or response that does not confirm the marker
-is ambiguous. The lane
+A pending intent retains its original repository even if later policy points at
+a different repository. A definite client refusal is terminal. A timeout, rate
+limit, transport loss, server error, oversized response, or response that does
+not confirm the marker is ambiguous. The lane
 does not repeat that create request. It performs six marker reconciliation
 reads after 2, 4, 8, 16, 32, and 60 minutes, recording
 `problem_issue_write_uncertain`, `problem_issue_reconcile_retry`, and finally

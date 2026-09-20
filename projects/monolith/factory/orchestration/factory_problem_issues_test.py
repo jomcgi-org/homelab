@@ -141,9 +141,15 @@ def enable_after_watermark(engine, selected_policy):
 
 
 def github(monkeypatch, issues=None):
-    state = {"issues": list(issues or []), "writes": [], "reads": []}
+    state = {
+        "issues": list(issues or []),
+        "writes": [],
+        "reads": [],
+        "read_repos": [],
+    }
 
-    def read(_repo, suffix):
+    def read(repo, suffix):
+        state["read_repos"].append(repo)
         state["reads"].append(suffix)
         return list(state["issues"])
 
@@ -319,6 +325,8 @@ def test_uncertain_write_reconciles_marker_after_backoff_without_reposting(
     monkeypatch.setattr(producer, "github_write", uncertain)
     producer.problem_issues_tick(selected)
     assert len(state["writes"]) == 1
+    started = details(audits(engine, "problem_issue_write_started"))[0]
+    assert started["repo"] == "owner/repo"
     uncertain_audit = details(audits(engine, "problem_issue_write_uncertain"))[0]
     assert datetime.fromisoformat(uncertain_audit["next_retry_at"]) == clock[
         "now"
@@ -327,8 +335,9 @@ def test_uncertain_write_reconciles_marker_after_backoff_without_reposting(
     producer.problem_issues_tick(selected)
     assert len(state["reads"]) == 1
     clock["now"] += timedelta(minutes=2)
-    producer.problem_issues_tick(selected)
+    producer.problem_issues_tick({**selected, "repo": "moved/repo"})
     assert len(state["writes"]) == 1
+    assert state["read_repos"] == ["owner/repo", "owner/repo"]
     assert details(audits(engine, "problem_issue_reconciled"))[-1]["issue_numbers"] == [
         7331
     ]
@@ -411,6 +420,34 @@ def test_concurrent_observers_claim_one_external_write(db, monkeypatch):
 
     assert len(state["writes"]) == 1
     assert len(audits(engine, "problem_issue_write_started")) == 1
+
+
+def test_pull_request_marker_does_not_deduplicate_an_issue(db, monkeypatch):
+    engine, _clock = db
+    selected = policy()
+    enable_after_watermark(engine, selected)
+    source_id = add_event(engine, workflow="pr-marker")
+    with Session(engine) as session:
+        row = session.get(FactoryAudit, source_id)
+        assert row is not None
+        detail = json.loads(row.detail_json)
+        fingerprint = producer._fingerprint("node_stalled", row, detail)
+    assert fingerprint is not None
+    state = github(
+        monkeypatch,
+        issues=[
+            {
+                "number": 6999,
+                "body": producer._marker(fingerprint),
+                "pull_request": {"url": "https://api.github.test/pulls/6999"},
+            }
+        ],
+    )
+
+    producer.problem_issues_tick(selected)
+
+    assert len(state["writes"]) == 1
+    assert details(audits(engine, "problem_issue_created"))[-1]["issue_number"] == 7001
 
 
 def test_issue_lookup_refuses_write_when_two_page_bound_is_exhausted(db, monkeypatch):
