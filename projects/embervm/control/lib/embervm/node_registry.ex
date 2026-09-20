@@ -381,6 +381,15 @@ defmodule Embervm.NodeRegistry do
     resident_health_fun =
       Keyword.get(opts, :resident_health_fun, &__MODULE__.withdraw_resident_health/4)
 
+    # Reservation is shadow-only. These callbacks are deliberately best-effort:
+    # node truth and capacity publication must continue while the ledger is absent
+    # or restarting. Tests inject recorders through the same seams.
+    reservation_observer_fun =
+      Keyword.get(opts, :reservation_observer_fun, &Embervm.Scheduler.Reservation.observe_shadow/2)
+
+    reservation_drop_fun =
+      Keyword.get(opts, :reservation_drop_fun, &Embervm.Scheduler.Reservation.drop_instance_shadow/1)
+
     NodeCapacity.create(table)
 
     now = clock.()
@@ -416,6 +425,8 @@ defmodule Embervm.NodeRegistry do
       base_builder_updater_fun: base_builder_updater_fun,
       workload_redrive_fun: workload_redrive_fun,
       resident_health_fun: resident_health_fun,
+      reservation_observer_fun: reservation_observer_fun,
+      reservation_drop_fun: reservation_drop_fun,
       stateful_store: Keyword.get(opts, :stateful_store, Embervm.StatefulStore),
       serving_store: Keyword.get(opts, :serving_store, Embervm.ServingStore),
       registry_resync_ms: registry_resync_ms,
@@ -747,6 +758,7 @@ defmodule Embervm.NodeRegistry do
     })
     notify_drain_edge(state, rt, prev, status)
     state = refresh_capacity(state, instance_id, status)
+    safe_reservation_observe(state.reservation_observer_fun, instance_id, reservation_live_refs(status))
 
     # Registration can race the final status from the old generation. Consume
     # the repair only when the projection identifies the generation that was
@@ -786,6 +798,19 @@ defmodule Embervm.NodeRegistry do
   end
 
   defp resident_vm_ids(_), do: []
+
+  # The daemon enumerates every non-task live VM by id. Task assignments are
+  # intentionally absent from these lists (only the aggregate live_vms count
+  # crosses the wire), so task accounting stays at pool-target granularity.
+  # Group reports do not carry workload; their ids still keep an existing claim
+  # alive, while restart adoption skips them until a later dispatch can supply
+  # the declared per-member memory.
+  defp reservation_live_refs(%NodeStatus{} = status) do
+    session_vms_from_status(status) ++
+      serving_vms_from_status(status) ++
+      stateful_vms_from_status(status) ++
+      group_member_vms_from_status(status)
+  end
 
   # On the RISING edge of draining (false -> true) notify the drain listener exactly
   # once with the instance's published deadline, so it force-banks the instance's
@@ -1867,6 +1892,7 @@ defmodule Embervm.NodeRegistry do
     end
 
     state = retract_capacity(state, instance_id)
+    safe_reservation_drop(state.reservation_drop_fun, instance_id)
 
     state =
       case state.node_runtime[instance_id] do
@@ -1909,6 +1935,24 @@ defmodule Embervm.NodeRegistry do
     else
       state
     end
+  end
+
+  defp safe_reservation_observe(fun, instance_id, live_refs) do
+    fun.(instance_id, live_refs)
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
+  defp safe_reservation_drop(fun, instance_id) do
+    fun.(instance_id)
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
   end
 
   defp prune_instance_tombstones(state, now) do

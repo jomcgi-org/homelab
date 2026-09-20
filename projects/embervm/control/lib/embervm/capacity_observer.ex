@@ -28,7 +28,8 @@ defmodule Embervm.CapacityObserver do
           nameplate_mib: non_neg_integer() | nil,
           total_working_set_mib: integer() | nil,
           guest_free?: boolean(),
-          cp_reserved_mib: non_neg_integer() | nil
+          cp_reserved_mib: non_neg_integer() | nil,
+          reservation_divergence_mib: integer() | nil
         }
 
   @doc false
@@ -54,6 +55,7 @@ defmodule Embervm.CapacityObserver do
     headroom_mib = Map.get(brick, :mem_headroom_mib, 0)
     mem_reserved_mib = Map.get(brick, :mem_reserved_mib, 0)
     live_vms = Map.get(brick, :live_vms, 0)
+    cp_reserved_mib = reservation_mib(Map.get(brick, :instance_id, ""), reservation_table)
 
     %{
       instance_id: Map.get(brick, :instance_id, ""),
@@ -68,7 +70,9 @@ defmodule Embervm.CapacityObserver do
       nameplate_mib: nameplate_mib,
       total_working_set_mib: if(is_integer(nameplate_mib), do: nameplate_mib - headroom_mib),
       guest_free?: mem_reserved_mib == 0 and live_vms == 0,
-      cp_reserved_mib: reservation_mib(Map.get(brick, :instance_id, ""), reservation_table)
+      cp_reserved_mib: cp_reserved_mib,
+      reservation_divergence_mib:
+        if(is_integer(cp_reserved_mib), do: cp_reserved_mib - mem_reserved_mib)
     }
   end
 

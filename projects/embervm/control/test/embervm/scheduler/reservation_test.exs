@@ -28,10 +28,31 @@ defmodule Embervm.Scheduler.ReservationTest do
     assert [%{ref: "same", mem_mib: 300, count: 2}] = Reservation.entries("n/a", table)
   end
 
+  test "duplicate shadow claim events remain one entry", %{server: server, table: table} do
+    opts = [server: server, workload: "wl", mem_mib: 256, now_ms: 10]
+    assert :ok = Reservation.claim_shadow("n/a", "same", opts)
+    assert :ok = Reservation.claim_shadow("n/a", "same", opts)
+
+    assert {:ok, %{released: []}} = Reservation.observe(server, "n/a", [%{vm_id: "same", workload: "wl"}], now_ms: 20, catalog: %{"wl" => 256})
+    assert [%{ref: "same", mem_mib: 256, count: 1, claimed_at_ms: 10}] =
+             Reservation.entries("n/a", table)
+  end
+
   test "release removes and unknown release is a no-op", %{server: server, table: table} do
     claim(server, "n/a", "a")
     assert :ok = Reservation.release(server, "n/a", "missing")
     assert :ok = Reservation.release(server, "n/a", "a")
+    assert Reservation.entries("n/a", table) == []
+  end
+
+  test "failed dispatch does not masquerade as confirmed teardown", %{server: server, table: table} do
+    claim(server, "n/a", "vm", now_ms: 0)
+    assert :ok = Reservation.release_confirmed("n/a", "vm", false, server: server)
+    assert {:ok, []} = Reservation.reconcile(server, "n/a", ["vm"], 10)
+    assert [%{ref: "vm"}] = Reservation.entries("n/a", table)
+
+    assert :ok = Reservation.release_confirmed("n/a", "vm", true, server: server)
+    assert {:ok, []} = Reservation.reconcile(server, "n/a", [], 10)
     assert Reservation.entries("n/a", table) == []
   end
 
@@ -56,6 +77,26 @@ defmodule Embervm.Scheduler.ReservationTest do
     assert Reservation.reserved_mib("n/a", table) == 100
   end
 
+  test "node observations adopt live VMs and grace-delay absence GC", %{server: server, table: table} do
+    live = [%{vm_id: "adopted", workload: "known"}]
+
+    assert {:ok, %{adopted: 1, skipped: 0, released: []}} =
+             Reservation.observe(server, "n/a", live, now_ms: 100, catalog: %{"known" => 384})
+
+    assert {:ok, %{adopted: 0, skipped: 0, released: []}} =
+             Reservation.observe(server, "n/a", live, now_ms: 120, catalog: %{"known" => 384})
+
+    assert Reservation.reserved_mib("n/a", table) == 384
+
+    assert {:ok, %{released: []}} =
+             Reservation.observe(server, "n/a", [], now_ms: 199, catalog: %{"known" => 384})
+
+    assert {:ok, %{released: ["adopted"]}} =
+             Reservation.observe(server, "n/a", [], now_ms: 200, catalog: %{"known" => 384})
+
+    assert Reservation.entries("n/a", table) == []
+  end
+
   test "reconcile never absence-collects pool targets", %{server: server, table: table} do
     Reservation.set_pool_target(server, "n/a", "wl", 3, 512)
     assert {:ok, []} = Reservation.reconcile(server, "n/a", [], 100_000)
@@ -75,6 +116,15 @@ defmodule Embervm.Scheduler.ReservationTest do
     Reservation.set_pool_target(server, "n/a", "wl", 2, 512)
     assert :ok = Reservation.drop_instance(server, "n/a")
     assert Reservation.entries("n/a", table) == []
+  end
+
+  test "shadow calls are non-refusing while the ledger is unavailable" do
+    missing = String.to_atom("reservation_missing_#{System.unique_integer([:positive])}")
+
+    assert :ok = Reservation.claim_shadow("n/a", "vm", server: missing, workload: "wl", mem_mib: 128)
+    assert :ok = Reservation.set_pool_target_shadow("n/a", "wl", 2, 128, server: missing)
+    assert :ok = Reservation.observe_shadow("n/a", [], server: missing)
+    assert :ok = Reservation.drop_instance_shadow("n/a", server: missing)
   end
 
   test "adoption skips workloads absent from the catalog and keeps the server alive", %{

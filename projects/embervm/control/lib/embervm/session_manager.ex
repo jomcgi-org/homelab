@@ -1611,10 +1611,11 @@ defmodule Embervm.SessionManager do
     else
       case state.claim_fun.(state.dispatcher, node_id, workload) do
         {:ok, vm_id} ->
-        # A warm claim from the primed pool: pool_hit=true (parity with the
-        # dispatcher's warm-dispatch marking).
-        Tracer.set_attributes(%{"ember.pool_hit" => true})
-        {:ok, vm_id}
+          # A warm claim from the primed pool: pool_hit=true (parity with the
+          # dispatcher's warm-dispatch marking).
+          Tracer.set_attributes(%{"ember.pool_hit" => true})
+          shadow_claim(node_id, vm_id, workload, entry)
+          {:ok, vm_id}
 
         :miss ->
           Tracer.set_attributes(%{"ember.pool_hit" => false})
@@ -1659,6 +1660,7 @@ defmodule Embervm.SessionManager do
         case safe_prime(state, channel, snapshot_ref, entry, lineage_id) do
           {:ok, %PrimeResponse{vm_id: vm_id}} when is_binary(vm_id) and vm_id != "" ->
             _ = safe(fn -> append_primed(state, workload, vm_id, node_id) end)
+            shadow_claim(node_id, vm_id, workload, entry)
             {:ok, vm_id}
 
           other ->
@@ -3349,6 +3351,7 @@ defmodule Embervm.SessionManager do
                      safe_relight(relight_fun, channel, session) do
                 relight_ms = clock.() - t0
                 Tracer.set_attributes(%{"ember.relight_ms" => relight_ms})
+                shadow_claim(dial_id, vm_id, session.workload, session_workload_entry(state, session.workload))
                 {:ok, session.node_id, vm_id, relight_ms, dial_id}
               else
                 {:error, reason} -> classify_relight_error(reason)
@@ -5517,6 +5520,7 @@ defmodule Embervm.SessionManager do
 
       with {:ok, response} <- destroy_fun.(channel, request),
            {:ok, completion} <- Embervm.SessionStopProof.validate(intent, response) do
+        Embervm.Scheduler.Reservation.release_confirmed(intent["instance_id"], intent["vm_id"], true)
         {:stop_completion, completion}
       else
         _ -> false
@@ -5547,6 +5551,7 @@ defmodule Embervm.SessionManager do
           case destroy_fun.(channel, vm_id) do
             {:ok, %{teardown_confirmed: true}} ->
               :ok = Embervm.Dispatcher.drop_vm(state.dispatcher, vm_id)
+              Embervm.Scheduler.Reservation.release_confirmed(dial_key, vm_id, true)
               true
 
             _ -> false
@@ -5808,6 +5813,15 @@ defmodule Embervm.SessionManager do
   end
 
   defp retire_session_volume(_state, _session), do: :ok
+
+  defp shadow_claim(instance_id, vm_id, workload, entry) do
+    mem_mib = if is_map(entry), do: Map.get(entry, :mem_mib) || 512, else: 512
+
+    Embervm.Scheduler.Reservation.claim_shadow(instance_id, vm_id,
+      workload: workload,
+      mem_mib: mem_mib
+    )
+  end
 
   defp default_clock, do: System.system_time(:millisecond)
 end

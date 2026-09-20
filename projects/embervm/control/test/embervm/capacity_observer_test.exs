@@ -34,6 +34,11 @@ defmodule Embervm.CapacityObserverTest do
     put_brick(capacity_table, "a", mem_headroom_mib: 777, mem_reserved_mib: 321, live_vms: 2)
     put_brick(capacity_table, "b", size_class: "4gi", mem_headroom_mib: 2_222)
 
+    :ets.insert(reservation_table, {
+      "node-a/a",
+      %{"vm-a" => %{mem_mib: 512, count: 2}}
+    })
+
     records = CapacityObserver.records(capacity_table, reservation_table)
     assert length(records) == 2
 
@@ -49,7 +54,8 @@ defmodule Embervm.CapacityObserverTest do
     assert record.nameplate_mib == 2_048
     assert record.total_working_set_mib == 1_271
     assert record.guest_free? == false
-    assert record.cp_reserved_mib == 0
+    assert record.cp_reserved_mib == 1_024
+    assert record.reservation_divergence_mib == 703
   end
 
   test "guest_free? requires both an empty declared sum and no live VMs" do
@@ -87,5 +93,6 @@ defmodule Embervm.CapacityObserverTest do
     missing_table = String.to_atom("capacity_observer_missing_#{System.unique_integer([:positive])}")
     [record] = CapacityObserver.records(capacity_table, missing_table)
     assert record.cp_reserved_mib == nil
+    assert record.reservation_divergence_mib == nil
   end
 end

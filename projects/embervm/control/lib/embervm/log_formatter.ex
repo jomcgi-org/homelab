@@ -51,6 +51,12 @@ defmodule Embervm.LogFormatter do
     :total_working_set_mib,
     :guest_free?,
     :cp_reserved_mib,
+    :reservation_divergence_mib,
+    # Shadow reservation lifecycle events.
+    :reservation_event,
+    :release_reason,
+    :mem_mib,
+    :claim_age_ms,
     # Parsed, inert future-facing capacity configuration.
     :desired_capacity,
     # StatefulSweeper pressure-state transitions.
