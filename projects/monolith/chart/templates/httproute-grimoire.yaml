@@ -1,0 +1,64 @@
+{{- if .Values.cfIngress.grimoire.enabled }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "monolith.fullname" . }}-grimoire
+  labels:
+    {{- include "monolith.labels" . | nindent 4 }}
+    ingress-tier: {{ .Values.cfIngress.friends.tier }}
+spec:
+  parentRefs:
+    - name: {{ .Values.cfIngress.friends.gateway.name }}
+      namespace: {{ .Values.cfIngress.friends.gateway.namespace }}
+  hostnames:
+    - {{ .Values.cfIngress.friends.hostname | quote }}
+  rules:
+    # Only the Svelte BFF is reachable. Never expose the private API wholesale.
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /grimoire
+      backendRefs:
+        - name: {{ include "monolith.fullname" . }}
+          port: {{ .Values.cfIngress.friends.servicePort | int }}
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: {{ include "monolith.fullname" . }}-grimoire
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: {{ include "monolith.fullname" . }}-grimoire
+  oidc:
+    provider:
+      issuer: {{ .Values.cfIngress.grimoire.issuer | quote }}
+    clientID: {{ .Values.cfIngress.grimoire.clientID | quote }}
+    clientSecret:
+      name: {{ .Values.cfIngress.grimoire.clientSecretName | quote }}
+    redirectURL: {{ printf "https://%s/grimoire/oauth2/callback" .Values.cfIngress.friends.hostname | quote }}
+    logoutPath: /grimoire/oauth2/logout
+    cookieDomain: {{ .Values.cfIngress.friends.hostname | quote }}
+    cookieNames:
+      accessToken: grimoire-access-token
+      idToken: grimoire-id-token
+    scopes: [email, profile]
+  jwt:
+    providers:
+      - name: grimoire
+        issuer: {{ .Values.cfIngress.grimoire.issuer | quote }}
+        audiences: [{{ .Values.cfIngress.grimoire.clientID | quote }}]
+        remoteJWKS:
+          uri: {{ .Values.cfIngress.grimoire.jwksUri | quote }}
+        extractFrom:
+          cookies: [grimoire-id-token]
+---
+apiVersion: onepassword.com/v1
+kind: OnePasswordItem
+metadata:
+  name: {{ .Values.cfIngress.grimoire.clientSecretName | quote }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  itemPath: {{ .Values.cfIngress.grimoire.onepasswordItemPath | quote }}
+{{- end }}

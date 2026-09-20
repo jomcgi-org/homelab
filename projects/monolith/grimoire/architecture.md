@@ -108,3 +108,67 @@ The retired prototype's Cloud Run services, Firestore, Redis fan-out,
 standalone authentication, Gemini Live voice pipeline, and separate React UI
 are not supported architecture. New Grimoire work belongs in the Monolith
 domain, its Svelte frontend, or its batch jobs.
+
+## Friend onboarding and campaign ownership
+
+The friend UI lives at `https://friends.jomcgi.dev/grimoire`. Its dedicated
+Authentik provider and OIDC cookies are separate from the operator and moving
+applications. Only the Svelte BFF is exposed on this path. It forwards the
+signed Grimoire ID token, which the backend independently checks against the
+Grimoire issuer, audience, signature and expiry. This provider is not added to
+the shared operator/MCP token resolver.
+
+An administrator uses **Account invitations** in the lobby to open Authentik's
+invitation management page. Choose **Grimoire enrollment**, enable **Single
+use**, set an expiry, and put the recipient's email in **Fixed data**, for
+example `{"email": "friend@example.com"}`. Deliver the generated link to that
+person. Enrollment requires the invitation and fixes the email to its supplied
+value; it asks for username, display name and password. New users are external
+users, with no operator or family group membership. After enrollment they land
+in Grimoire. Existing human Authentik users can sign in directly.
+
+First login creates the Grimoire account. Subsequent logins update its email
+and display name using the verified `(issuer, subject)` identity. Memberships,
+ownership and invitations reference the account ID, not the email. Legacy
+email-only rows can be linked by a verified mailbox or their existing trusted
+Cloudflare identity. An email collision between established identities fails
+closed and requires explicit operator reconciliation; signing in through a
+new provider never silently takes over another identity's memberships.
+
+Every registered user can create a campaign and becomes its owner and initial
+DM. Owners invite registered players by exact email, without a user directory.
+Recipients must accept in their lobby before any campaign data becomes
+available. Decline, cancellation and membership revocation are durable;
+re-inviting creates a fresh invitation ID so an old acceptance cannot be
+replayed. Ownership controls invitations and membership removal; the existing
+DM role continues to control gameplay. The old direct provisioning endpoint is
+an operator repair path and is not exposed through the friend UI.
+
+The first delivery includes the lobby and access to the existing sheet editor.
+Player-created characters and a session screen remain separate follow-up work.
+
+### Deployment and verification
+
+The `k8s-homelab/grimoire-oidc` 1Password item holds a concealed `client-secret`.
+The Operator mirrors this item into both Authentik and Monolith namespaces.
+Authentik reads it as `GRIMOIRE_OIDC_CLIENT_SECRET`; Envoy reads the same value
+from `grimoire-oidc-client`. No secret is stored in Git. Provision the item
+before deploying the blueprint and route. Production enables the route; dev
+explicitly disables it to avoid claiming the production hostname.
+
+After the normal Linux CI and deployment gates, verify with two fresh accounts:
+
+1. The account invitation link enrolls its recipient; enrollment without a
+   token fails. The recipient cannot replace the invitation's email.
+2. The new user arrives at an empty Grimoire lobby and can create a campaign.
+3. Inviting the second registered user leaves them without campaign access
+   until they accept. Declining or cancelling grants no membership.
+4. An accepted player can see their campaign but cannot invite or remove
+   members. Removal takes effect on the next request.
+5. Ordinary users do not see the account-admin link and cannot access
+   Authentik administration. Operators see a link to
+   `/if/admin/#/flow/stages/invitations`.
+6. The moving app and preview lane retain their original access policies.
+   Shared `/_app/` assets accept either app's signed cookie, while page and API
+   permissions remain separate. Requests to `/api/grimoire` on the friends
+   hostname have no backend route.

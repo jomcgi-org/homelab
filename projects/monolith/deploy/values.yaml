@@ -154,6 +154,8 @@ cfIngress:
   #   3. in `family`           -> the page renders
   #   4. https://friends.jomcgi.dev/preview/ still works, and every other
   #      path on this hostname still 404s
+  grimoire:
+    enabled: true
   friends:
     enabled: true
     authentik:

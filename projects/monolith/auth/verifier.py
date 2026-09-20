@@ -174,6 +174,11 @@ class AuthentikStandingVerifier:
         kind = PrincipalKind.HUMAN if email is not None else PrincipalKind.WORKLOAD
         return Principal(
             subject=subject,
+            issuer=claims["iss"],
+            display_name=claims.get("name")
+            if isinstance(claims.get("name"), str)
+            else None,
+            email_verified=claims.get("email_verified") is True,
             actor=(),
             scope=tuple(scope_claim.split()),
             groups=tuple(groups_claim),

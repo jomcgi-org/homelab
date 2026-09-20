@@ -677,6 +677,14 @@ spec:
             - name: ORCHESTRATOR_TIMEOUT_S
               value: {{ .Values.orchestrator.timeoutSeconds | quote }}
             {{- end }}
+            {{- if .Values.cfIngress.grimoire.enabled }}
+            - name: GRIMOIRE_AUTH_ISSUER
+              value: {{ .Values.cfIngress.grimoire.issuer | quote }}
+            - name: GRIMOIRE_AUTH_AUDIENCE
+              value: {{ .Values.cfIngress.grimoire.clientID | quote }}
+            - name: GRIMOIRE_AUTH_JWKS_URL
+              value: {{ printf "%s/application/o/grimoire/jwks/" .Values.grimoire.authentikBaseUrl | quote }}
+            {{- end }}
             - name: AUTH_AUTHENTIK_JWKS_URL
               value: {{ .Values.auth.authentik.jwksUrl | quote }}
             - name: AUTH_AUTHENTIK_ISSUER

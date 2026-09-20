@@ -6173,6 +6173,24 @@ py_test(
 # Hand-registered because grimoire is gazelle-excluded: authenticated campaign
 # ACL enforcement across the private HTTP surface.
 py_test(
+    name = "grimoire_onboarding_test",
+    srcs = ["grimoire/onboarding_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_auth",
+        ":pkg_core",
+        ":pkg_grimoire",
+        ":pkg_knowledge",
+        "@pip//cryptography",
+        "@pip//pyjwt",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "grimoire_acl_test",
     srcs = ["grimoire/acl_test.py"],
     imports = ["."],

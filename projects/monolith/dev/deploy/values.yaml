@@ -91,6 +91,8 @@ cfIngress:
   # render a second HTTPRoute claiming friends.jomcgi.dev on the shared Gateway,
   # a second SecurityPolicy targeting it, and a moving-oidc-client
   # OnePasswordItem in this namespace. The planner is production only.
+  grimoire:
+    enabled: false
   friends:
     enabled: false
 
