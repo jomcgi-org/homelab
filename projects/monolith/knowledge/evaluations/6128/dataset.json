@@ -1,0 +1,188 @@
+{
+  "schema_version": 1,
+  "benchmark_id": "knowledge-retrieval-baseline-6128",
+  "declared_at": "2026-09-20T06:20:19Z",
+  "base_revision": "cad4d9a343e6c9456e7bb01aa58a1a186dcc50ae",
+  "requested_scope": "repo:jomcgi-org/homelab",
+  "retrieval": {
+    "tool": "search_knowledge",
+    "limit": 20,
+    "type": null,
+    "scope_filter_requested": "repo:jomcgi-org/homelab",
+    "scope_filter_effective": null,
+    "scope_limit_reason": "The supported agent MCP tool accepts query, limit, and type only. It does not expose the store's scope_filter parameter."
+  },
+  "rubric": {
+    "top_result_usefulness": "Pass when rank 1 supplies source-aligned support needed for the agent task, or safely signals that the requested fact is unavailable. A merely related result fails.",
+    "evidence_coverage": {
+      "full": "The returned set contains support for every required expected evidence item.",
+      "partial": "The returned set contains support for at least one, but not every, required expected evidence item.",
+      "none": "The returned set contains no required expected evidence."
+    },
+    "stale_or_conflicting_handling": "For applicable cases, pass when current or superseding evidence ranks ahead of stale or conflicting evidence and the metadata lets an agent identify the distinction. Fail on an unqualified stale answer. Mark not_applicable for other cases.",
+    "inappropriate_result": "A result is inappropriate when it is unrelated, private material that should not have crossed the requested repository scope, or an unsupported assertion presented as applicable. Related background that cannot answer the query is still inappropriate for this bounded result budget.",
+    "acceptable_abstention": "For no-answer cases, pass only when the returned evidence does not claim the unavailable operational fact. Search results are evidence candidates, not a generated answer, so abstention is assessed as the absence of a result that purports to establish the fact.",
+    "latency": "Measure client-observed wall time for exactly one tool call per frozen query. Server processing latency is unavailable unless returned by the tool and must not be inferred."
+  },
+  "queries": [
+    {
+      "id": "q01",
+      "category": "known_issue_workaround",
+      "query": "How do I recover an ArgoCD Application whose operation is stuck at phase Running with finishedAt set when I am off-LAN without kubectl?",
+      "agent_work_provenance": [
+        "https://github.com/jomcgi-org/homelab/issues/5250",
+        "https://github.com/jomcgi-org/homelab/blob/cad4d9a343e6c9456e7bb01aa58a1a186dcc50ae/docs/runbooks/argocd-outofsync.md#L93"
+      ],
+      "expectation_basis": "source_backed",
+      "expected_evidence": [
+        "The phase=Running plus finishedAt signature is a known wedged ArgoCD operation.",
+        "Off-LAN recovery uses monolith-k8s-sync-argocd-app, and the operationState JSON should be captured before clearing on recurrence."
+      ],
+      "acceptable_abstention": false,
+      "stale_or_conflicting_handling_applicable": false
+    },
+    {
+      "id": "q02",
+      "category": "known_issue_workaround",
+      "query": "Is the node-4 CAKE traffic shaper a working control, and what is the safe workaround or removal path?",
+      "agent_work_provenance": [
+        "https://github.com/jomcgi-org/homelab/issues/4171",
+        "https://github.com/jomcgi-org/homelab/blob/cad4d9a343e6c9456e7bb01aa58a1a186dcc50ae/projects/platform/node-traffic-shaper/README.md#L1"
+      ],
+      "expectation_basis": "source_backed",
+      "expected_evidence": [
+        "The legacy CAKE/IFB shaper is inert under Cilium tcx and must not be treated as protection or copied to more nodes.",
+        "Removal is a separate SSH and systemd operation; liveness must use a byte delta or mirred Sent delta rather than cumulative qdisc counters."
+      ],
+      "acceptable_abstention": false,
+      "stale_or_conflicting_handling_applicable": true
+    },
+    {
+      "id": "q03",
+      "category": "current_vs_stale",
+      "query": "Is issue #3923 still open for an agent, or has ARM64 OCaml C-stub support already landed?",
+      "agent_work_provenance": [
+        "https://github.com/jomcgi-org/homelab/issues/3923",
+        "https://github.com/jomcgi-org/homelab/blob/cad4d9a343e6c9456e7bb01aa58a1a186dcc50ae/bazel/ARCHITECTURE.md#L137"
+      ],
+      "expectation_basis": "source_backed",
+      "expected_evidence": [
+        "Issue #3923 is closed, not an open agent-ready task.",
+        "The current architecture says the aarch64 OCaml platform and matching C/C++ toolchains run the C-dependent examples in CI."
+      ],
+      "acceptable_abstention": false,
+      "stale_or_conflicting_handling_applicable": true
+    },
+    {
+      "id": "q04",
+      "category": "current_vs_stale",
+      "query": "Which path contains the current Factory operator guide: projects/monolith/swarm/FACTORY.md or projects/monolith/factory/orchestration/FACTORY.md?",
+      "agent_work_provenance": [
+        "https://github.com/jomcgi-org/homelab/issues/5956#issuecomment-5746520490",
+        "https://github.com/jomcgi-org/homelab/blob/cad4d9a343e6c9456e7bb01aa58a1a186dcc50ae/projects/monolith/factory/orchestration/FACTORY.md#L1"
+      ],
+      "expectation_basis": "source_backed",
+      "expected_evidence": [
+        "The current guide is projects/monolith/factory/orchestration/FACTORY.md.",
+        "projects/monolith/swarm/FACTORY.md is a stale path and does not exist at the declared revision."
+      ],
+      "acceptable_abstention": false,
+      "stale_or_conflicting_handling_applicable": true
+    },
+    {
+      "id": "q05",
+      "category": "conflicting_facts",
+      "query": "What is the current disposition of issue #5250, and does it still need a human decision after the runbook fix landed?",
+      "agent_work_provenance": [
+        "https://github.com/jomcgi-org/homelab/issues/5250",
+        "https://github.com/jomcgi-org/homelab/issues/5250#issuecomment-5640433979"
+      ],
+      "expectation_basis": "source_backed",
+      "expected_evidence": [
+        "The earlier agent brief said needs-human, but the later decision closed #5250 as done on 2026-09-11.",
+        "The runbook remediation landed and the decision was not to file an upstream ArgoCD report."
+      ],
+      "acceptable_abstention": false,
+      "stale_or_conflicting_handling_applicable": true
+    },
+    {
+      "id": "q06",
+      "category": "conflicting_facts",
+      "query": "What is the current disposition of issue #6043 and should an agent continue PR #6048?",
+      "agent_work_provenance": [
+        "https://github.com/jomcgi-org/homelab/issues/6043",
+        "https://github.com/jomcgi-org/homelab/issues/6043#issuecomment-5675771377",
+        "https://github.com/jomcgi-org/homelab/pull/6048"
+      ],
+      "expectation_basis": "source_backed",
+      "expected_evidence": [
+        "Older comments proposed continuing PR #6048, then a later decision required a fresh investigation on a newly assigned branch.",
+        "Issue #6043 and PR #6048 are now closed, so no current delivery action should be inferred from the older continue decision."
+      ],
+      "acceptable_abstention": false,
+      "stale_or_conflicting_handling_applicable": true
+    },
+    {
+      "id": "q07",
+      "category": "component_path_lookup",
+      "query": "Which repository modules expose search_knowledge to agents and perform ranked vector retrieval with graph context?",
+      "agent_work_provenance": [
+        "https://github.com/jomcgi-org/homelab/issues/6128",
+        "https://github.com/jomcgi-org/homelab/blob/cad4d9a343e6c9456e7bb01aa58a1a186dcc50ae/projects/monolith/knowledge/mcp.py#L190",
+        "https://github.com/jomcgi-org/homelab/blob/cad4d9a343e6c9456e7bb01aa58a1a186dcc50ae/projects/monolith/knowledge/store.py#L522"
+      ],
+      "expectation_basis": "source_backed",
+      "expected_evidence": [
+        "projects/monolith/knowledge/mcp.py exposes search_knowledge and defaults to 20 results.",
+        "projects/monolith/knowledge/store.py ranks embedding candidates and then attaches chunk, graph, scope, verification, dispute, and provenance metadata."
+      ],
+      "acceptable_abstention": false,
+      "stale_or_conflicting_handling_applicable": false
+    },
+    {
+      "id": "q08",
+      "category": "component_path_lookup",
+      "query": "Where is the current documentation for OCaml ARM64 C-stub and C++ toolchain support after docs/decisions/tooling/004 was deleted?",
+      "agent_work_provenance": [
+        "https://github.com/jomcgi-org/homelab/issues/3923#issuecomment-5640283015",
+        "https://github.com/jomcgi-org/homelab/blob/cad4d9a343e6c9456e7bb01aa58a1a186dcc50ae/bazel/ARCHITECTURE.md#L137",
+        "https://github.com/jomcgi-org/homelab/blob/cad4d9a343e6c9456e7bb01aa58a1a186dcc50ae/bazel/ocaml/README.md#L137"
+      ],
+      "expectation_basis": "source_backed",
+      "expected_evidence": [
+        "Current rationale and architecture live in bazel/ARCHITECTURE.md.",
+        "Usage and multi-architecture details live in bazel/ocaml/README.md; the old ADR path is stale."
+      ],
+      "acceptable_abstention": false,
+      "stale_or_conflicting_handling_applicable": true
+    },
+    {
+      "id": "q09",
+      "category": "no_answer",
+      "query": "Which exact git revision is the live knowledge retrieval service currently running?",
+      "agent_work_provenance": [
+        "https://github.com/jomcgi-org/homelab/issues/6128",
+        "https://github.com/jomcgi-org/homelab/blob/cad4d9a343e6c9456e7bb01aa58a1a186dcc50ae/projects/monolith/knowledge/mcp.py#L190"
+      ],
+      "expectation_basis": "source_backed",
+      "expected_evidence": [],
+      "unavailable_reason": "The supported search response exposes note and provenance metadata but no deployed service revision. The checkout revision is not evidence of live rollout state.",
+      "acceptable_abstention": true,
+      "stale_or_conflicting_handling_applicable": false
+    },
+    {
+      "id": "q10",
+      "category": "no_answer",
+      "query": "Has the hand-installed node-4 traffic shaper systemd unit been removed from the live host?",
+      "agent_work_provenance": [
+        "https://github.com/jomcgi-org/homelab/issues/4171",
+        "https://github.com/jomcgi-org/homelab/blob/cad4d9a343e6c9456e7bb01aa58a1a186dcc50ae/projects/platform/node-traffic-shaper/README.md#L91"
+      ],
+      "expectation_basis": "source_backed",
+      "expected_evidence": [],
+      "unavailable_reason": "The install is outside GitOps and the repository records decommission as pending. Only a dated live host observation can establish removal.",
+      "acceptable_abstention": true,
+      "stale_or_conflicting_handling_applicable": false
+    }
+  ]
+}
