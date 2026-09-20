@@ -260,6 +260,8 @@ containers:
         value: {{ $ctx.Values.noded.admissionModel | quote }}
       - name: EMBERVM_NODED_VM_OVERHEAD_MIB
         value: {{ $ctx.Values.noded.vmOverheadMib | quote }}
+      - name: EMBERVM_NODED_MEM_REJECT_FLOOR_MIB
+        value: {{ $ctx.Values.noded.memRejectFloorMib | default 512 | quote }}
       - name: EMBERVM_NODED_DIFF_BANKING
         value: {{ $ctx.Values.noded.diffBanking | quote }}
       - name: EMBERVM_NODED_DIFF_BANKING_WORKLOADS

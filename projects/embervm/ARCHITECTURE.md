@@ -878,6 +878,14 @@ acts, clamped to the chart's maxReplicas. **Planned**: promoting to `full`
 adds drain-aware scale-down. The current brick mix is deployment state and
 lives in the fleet section.
 
+Catalog-derived class floors apply only to the scalable, unpinned class
+Deployment. Same-class `nodeFloors` are additive topology guarantees and are
+not credited against that derived count: the controller never scales their
+separate pinned Deployments, and a topology guarantee cannot silently become
+the spare capacity of the demand-driven pool. This is deliberately
+conservative when both exist, but keeps the `nodeFloors` contract orthogonal
+and untouched.
+
 **Decided direction** (ADR embervm/042, Accepted 2026-09-05, not yet built): the
 `maxReplicas` ceiling itself becomes denial-driven, not only the replica count
 clamped inside it. A class stuck at a ceiling of 0 today needs a human to raise

@@ -3,10 +3,12 @@ defmodule Embervm.Brick.Portfolio do
   Derives the minimum size-class portfolio from declared workload floors.
 
   Every positive workload floor emits that many memory-sized items. Items are
-  assigned to the smallest declared class whose usable memory can hold them,
-  then packed within that exact class using deterministic first-fit-decreasing.
-  A bin is capped by both usable memory and the declared live-VM slot limit.
-  Items never move to a larger class to reduce the number of bins.
+  assigned to the smallest declared class whose admission capacity can hold
+  them, then packed within that exact class using deterministic
+  first-fit-decreasing. Admission capacity is usable memory minus the daemon's
+  memory rejection cushion. The cushion is reserved once per bin, while the bin
+  is also capped by the declared live-VM slot limit. Items never move to a
+  larger class to reduce the number of bins.
 
   `floors/2` returns one result per declared class, keyed by class name:
 
@@ -26,8 +28,8 @@ defmodule Embervm.Brick.Portfolio do
   Catalog entries and class declarations are already validated at their input
   boundaries. This function remains total for stale or legacy maps: entries
   without a positive integer floor and memory size contribute nothing, while a
-  class without positive usable memory cannot receive an item. A zero slot
-  limit means no node-side slot ceiling, matching noded's configuration
+  class without positive admission capacity cannot receive an item. A zero
+  slot limit means no node-side slot ceiling, matching noded's configuration
   contract.
   """
 
@@ -64,9 +66,13 @@ defmodule Embervm.Brick.Portfolio do
     |> Enum.flat_map(fn class ->
       name = field(class, [:name, "name"])
       usable_mib = field(class, [:usable_mib, "usable_mib"])
+      reject_floor_mib =
+        field(class, [:mem_reject_floor_mib, "mem_reject_floor_mib"])
+
       slots = field(class, [:slots, "slots", :max_live_vms, "max_live_vms", "maxLiveVMs"])
 
       if is_binary(name) and is_integer(usable_mib) and usable_mib > 0 and
+           is_integer(reject_floor_mib) and reject_floor_mib >= 0 and
            is_integer(slots) and slots >= 0 do
         min = non_negative(field(class, [:min, "min"]), 0)
         desired = non_negative(field(class, [:desired, "desired"]), 0)
@@ -76,6 +82,7 @@ defmodule Embervm.Brick.Portfolio do
           %{
             name: name,
             usable_mib: usable_mib,
+            capacity_mib: max(usable_mib - reject_floor_mib, 0),
             slots: slots,
             min: min,
             max: max_replicas
@@ -85,7 +92,7 @@ defmodule Embervm.Brick.Portfolio do
         []
       end
     end)
-    |> Enum.sort_by(&{&1.usable_mib, &1.name})
+    |> Enum.sort_by(&{&1.capacity_mib, &1.name})
   end
 
   defp floor_items(catalog) do
@@ -106,7 +113,7 @@ defmodule Embervm.Brick.Portfolio do
   end
 
   defp pack_item(item, classes, bins_by_class) do
-    case Enum.find(classes, &(&1.usable_mib >= item.mem_mib)) do
+    case Enum.find(classes, &(&1.capacity_mib >= item.mem_mib)) do
       nil ->
         mark_unplaceable(item, classes, bins_by_class)
 
@@ -142,7 +149,7 @@ defmodule Embervm.Brick.Portfolio do
   end
 
   defp fits?(bin, mem_mib, class) do
-    bin.used_mib + mem_mib <= class.usable_mib and
+    bin.used_mib + mem_mib <= class.capacity_mib and
       (class.slots == 0 or bin.used_slots < class.slots)
   end
 
