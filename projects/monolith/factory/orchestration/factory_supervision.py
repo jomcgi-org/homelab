@@ -496,20 +496,22 @@ def _brick_restart_cessation(view, identity, saved=None):
 
 
 def _drained_loss_cessation(view, identity):
-    """Prove the exact drained dispatch ended with its departed brick.
+    """Prove the exact drained dispatch has no valid restoration path.
 
-    ``brick_gone`` is a durable control-plane terminal transition written only
-    after the owning brick instance departed. The interrupted marker was
-    committed by the guest before banking and carries the opaque dispatch ID,
-    CLI transcript and sequence. Requiring both facts distinguishes permanent
-    loss of this drained incarnation from a generic missing guest, a transient
-    read failure, or a banked/relighting session that remains resumable.
+    ``evicted/node_gone`` is written for a dormant session only after the
+    control plane confirms the owning brick instance departed and finds no
+    surviving local artifact or exported bundle target that can relight it.
+    The interrupted marker was committed by the guest before banking and
+    carries the opaque dispatch ID, CLI transcript and sequence. Requiring both
+    facts distinguishes permanent loss of this drained incarnation from mere
+    cessation, a generic missing guest, a transient read failure, or a
+    banked/relighting session that remains resumable.
     """
     if (
         not isinstance(view, dict)
         or view.get("session_id") != identity["guest_id"]
-        or view.get("state") != "failed"
-        or view.get("terminal_reason") != "brick_gone"
+        or view.get("state") != "evicted"
+        or view.get("terminal_reason") != "node_gone"
     ):
         return None
     generation = view.get("generation")
@@ -540,8 +542,8 @@ def _drained_loss_cessation(view, identity):
         return None
     return {
         "session_id": identity["guest_id"],
-        "state": "failed",
-        "terminal_reason": "brick_gone",
+        "state": "evicted",
+        "terminal_reason": "node_gone",
         "generation": generation,
         "invoke_started_at": started,
         "last_invoke_at": completed,
@@ -551,7 +553,7 @@ def _drained_loss_cessation(view, identity):
         "dispatch_id": identity["dispatch_id"],
         "cli_session_id": identity["cli_session_id"],
         "transcript_path": interrupted["transcript_path"],
-        "cessation_evidence": "drained_brick_gone",
+        "cessation_evidence": "drained_node_gone_no_relight_target",
         "workspace_recovery": "permanently_lost",
     }
 
@@ -1121,8 +1123,8 @@ def _reconcile_drained_lost_attempt(pin, session_id, original_result):
     if proof is None:
         if (
             isinstance(view, dict)
-            and view.get("state") == "failed"
-            and view.get("terminal_reason") == "brick_gone"
+            and view.get("state") == "evicted"
+            and view.get("terminal_reason") == "node_gone"
         ):
             _note(pin, "drained_loss_evidence_changed")
         return True, False
@@ -1150,7 +1152,7 @@ def _reconcile_drained_lost_attempt(pin, session_id, original_result):
                 original_result,
                 reason=(
                     "drained_guest_permanently_lost: exact interrupted dispatch "
-                    "ended with its departed brick"
+                    "has no control-plane relight target after node departure"
                 ),
                 evidence_key="drained_loss",
                 evidence=proof,

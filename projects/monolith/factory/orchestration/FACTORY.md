@@ -891,24 +891,28 @@ dispatch, guest, claim, receipt fence, cleanup claim, prior binding or relight
 refuses settlement.
 
 The remote proof is equally narrow. Ember must return the exact guest as
-durably `failed` with terminal reason `brick_gone`, and its persisted
-`interrupted_turn` must match the opaque dispatch ID, turn sequence, CLI session
-and transcript path computed from the local rows. This is the paired evidence
-that the drained dispatch finished its flush and then permanently lost its
-owning brick. A missing guest, `destroyed` without that proof, timeout, API
-failure, malformed or stale marker, or a guest that is running, banking,
-banked, parked or relighting leaves the continuation untouched. Settlement
-keeps the interrupted turn and its result, transcript and cost history, marks
-the attempt failed without calling it `not_invoked` or `UNKNOWN_INVOCATION`,
-releases its reservation, and feeds the ordinary bounded replanning path.
+durably `evicted` with terminal reason `node_gone`, a transition its dormant
+departure reconciler writes only after the owning brick is authoritatively gone
+and neither a surviving local artifact nor an exported bundle has a valid
+relight target. Its persisted `interrupted_turn` must match the opaque dispatch
+ID, turn sequence, CLI session and transcript path computed from the local
+rows. This is the paired evidence that the drained dispatch finished its flush
+and then permanently lost its only restoration paths. `failed/brick_gone`
+proves cessation but not permanent loss and is insufficient here. A missing
+guest, generic `destroyed`, timeout, API failure, malformed or stale marker, or
+a guest that is running, banking, banked, parked or relighting leaves the
+continuation untouched. Settlement keeps the interrupted turn and its result,
+transcript and cost history, marks the attempt failed without calling it
+`not_invoked` or `UNKNOWN_INVOCATION`, releases its reservation, and feeds the
+ordinary bounded replanning path.
 
 The feature is staged off in chart defaults. Enabling it and any production
 row remediation are separate operator actions. Before enabling it, exercise a
 real disposable factory drain through the consumer and verify both the exact
-`brick_gone` settlement and refusal of live, restorable, stale-dispatch and
-unavailable-control-plane observations. Sessions 8410 and 8416 are not changed
-by this repository delivery; their remediation and the final issue acceptance
-remain separately authorized live checks.
+`evicted/node_gone` settlement and refusal of `failed/brick_gone`, live,
+restorable, stale-dispatch and unavailable-control-plane observations. Sessions
+8410 and 8416 are not changed by this repository delivery; their remediation
+and the final issue acceptance remain separately authorized live checks.
 
 A replica lost mid-invoke used to cost the attempt outright. The rollout
 cancelled the executor watching the turn, the guest carried on working, and the
