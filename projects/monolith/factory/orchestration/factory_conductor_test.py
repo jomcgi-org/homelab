@@ -10505,9 +10505,7 @@ def test_expired_idle_task_stops_after_six_funding_refusals_and_releases_lane(
     retry_after = (now - timedelta(minutes=1)).isoformat()
     with controls._locked_session() as (db, _control):
         stored = db.get(SwarmTask, task["id"])
-        stored.created_at = now - timedelta(
-            seconds=policy["task_timeout_seconds"] + 1
-        )
+        stored.created_at = now - timedelta(seconds=policy["task_timeout_seconds"] + 1)
         db.add(stored)
         for ordinal in range(funding.FUNDING_REFUSAL_LIMIT):
             controls._audit(
