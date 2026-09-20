@@ -581,21 +581,25 @@ ambiguous write, so uncertainty cannot buy extra external writes.
 
 Every body links the delivery issue, links the pull request when the signal is
 about landing, names the factory task and source audit, and contains an exact
-`factory-problem` fingerprint marker. Discovery inspects at most two pages of
-100 newest open or closed issues for that marker. If both pages are full and no
-marker is found, the producer audits the cap and refuses the write because an
-older matching issue may exist. Pull requests returned by the GitHub issues API
-never satisfy an issue marker. A repeated or replayed source event reconciles
-the existing issue. Fingerprint lookups use the audit trail's action index and
-database predicates rather than loading producer history. A missing source
-receipt, malformed event, discovery failure, scan cap, daily cap, or rejected
-GitHub write is audited and visible on the factory board.
+`factory-problem` fingerprint marker. The receipt's repository owns discovery,
+links and creation even if later global policy names another repository.
+Discovery inspects at most two pages of 100 newest open or closed issues for
+that marker. If both pages are full and no marker is found, the producer audits
+the cap and refuses the write because an older matching issue may exist. Pull
+requests returned by the GitHub issues API never satisfy an issue marker. A
+repeated or replayed source event reconciles the existing issue. Fingerprint
+lookups use the audit trail's action index and database predicates rather than
+loading producer history. A missing source receipt, malformed event, discovery
+failure, scan cap, daily cap, or rejected GitHub write is audited and visible
+on the factory board.
 
 The producer records `problem_issue_write_started` before the GitHub request.
 A pending intent retains its original repository even if later policy points at
 a different repository. A definite client refusal is terminal. A timeout, rate
-limit, transport loss, server error, oversized response, or response that does
-not confirm the marker is ambiguous. The lane
+limit (including a rate-limit `403`), transport loss, server error, oversized
+response, or response that does not confirm the marker is ambiguous. Response
+bytes are streamed into the documented bounded buffer. Disabling the producer
+stops new writes but lets these read-only reconciliations finish. The lane
 does not repeat that create request. It performs six marker reconciliation
 reads after 2, 4, 8, 16, 32, and 60 minutes, recording
 `problem_issue_write_uncertain`, `problem_issue_reconcile_retry`, and finally
