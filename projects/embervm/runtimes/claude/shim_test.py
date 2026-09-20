@@ -506,6 +506,20 @@ for line in sys.stdin:
             emit({"type": "agent_end", "messages": []})
         elif os.environ.get("FAKE_PI_MODE") == "no-output":
             emit({"type": "agent_end", "messages": []})
+        elif os.environ.get("FAKE_PI_MODE") == "activity-updates":
+            # Recorded pi RPC shape: arguments are complete on start; updates
+            # and completion carry results for the same toolCallId.
+            emit({"type": "tool_execution_start", "toolCallId": "bash-1",
+                  "toolName": "bash", "args": {"command": "printf 'pi\\n'"}})
+            emit({"type": "tool_execution_update", "toolCallId": "bash-1",
+                  "partialResult": {"content": [{"type": "text", "text": "pi"}]}})
+            emit({"type": "tool_execution_end", "toolCallId": "bash-1",
+                  "result": {"content": [{"type": "text", "text": "pi"}]},
+                  "isError": False})
+            emit({"type": "message_end", "message": {"role": "assistant",
+                  "content": [{"type": "text", "text": "Updated"}],
+                  "stopReason": "stop", "usage": {"input": 5, "output": 7}}})
+            emit({"type": "agent_end", "messages": []})
         elif os.environ.get("FAKE_PI_MODE") == "telemetry":
             emit({"type": "message_start", "message": {"role": "assistant"}})
             emit({"type": "message_end", "message": {"role": "assistant",
@@ -1681,6 +1695,35 @@ def test_pi_pushes_progress_during_turn(tmp_path, monkeypatch):
             for text, activities in pushes
         ]
     )
+
+
+def test_pi_retains_bash_command_through_update_completion_and_publication(
+    tmp_path, monkeypatch
+):
+    pushes = []
+
+    class FakePusher:
+        def __init__(self, token):
+            assert token == "pi-token"
+
+        def push(self, text, activities):
+            pushes.append((text, copy.deepcopy(activities)))
+
+        def stop(self):
+            pass
+
+    monkeypatch.setenv("FAKE_PI_MODE", "activity-updates")
+    monkeypatch.setattr(shim, "_ProgressPusher", FakePusher)
+    manager = _pi_manager(tmp_path, monkeypatch)
+
+    record = manager.turn("hello", model="spark", progress_token="pi-token")
+    manager._close_process()
+
+    expected = [{"type": "bash", "command": "printf 'pi\\n'"}]
+    assert record["activities"] == expected
+    published = [activities for _text, activities in pushes if activities]
+    assert published
+    assert all(activities == expected for activities in published)
 
 
 def test_pi_no_progress_without_token(tmp_path, monkeypatch):
@@ -6120,6 +6163,80 @@ def test_activity_ignores_malformed_messages_and_bounds_tool_input():
     ]
 
 
+@pytest.mark.parametrize(
+    "argument_method", ["item/started", "item/updated", "item/completed"]
+)
+def test_muse_activity_uses_arguments_from_authoritative_item_revision(
+    argument_method,
+):
+    session_id = "018f0000-0000-7000-8000-000000000001"
+    command_id = "018f0000-0000-7000-8000-000000000002"
+    events = []
+    for revision, method in enumerate(
+        ("item/started", "item/updated", "item/completed"), 1
+    ):
+        item = {
+            "itemId": "018f0000-0000-7000-8000-000000000003",
+            "kind": "toolCall",
+            "turnId": command_id,
+            "revision": revision,
+            "status": "inProgress" if method != "item/completed" else "completed",
+            "toolName": "bash",
+            "callId": "call_bash_1",
+        }
+        if method == argument_method:
+            item["arguments"] = json.dumps(
+                {"command": "printf 'spark command content\\n'"}
+            )
+        events.append(
+            {
+                "method": method,
+                "params": {"sessionId": session_id, "item": item},
+            }
+        )
+    events.append(
+        {
+            "method": "item/started",
+            "params": {
+                "sessionId": session_id,
+                "item": {
+                    "itemId": "018f0000-0000-7000-8000-000000000004",
+                    "kind": "toolCall",
+                    "turnId": command_id,
+                    "revision": 1,
+                    "status": "inProgress",
+                    "toolName": "read",
+                    "callId": "call_read_1",
+                    "arguments": json.dumps({"path": "README.md"}),
+                },
+            },
+        }
+    )
+
+    assert shim._muse_activities_from_view_events(events, session_id, command_id) == [
+        {"type": "bash", "command": "printf 'spark command content\\n'"},
+        {"type": "tool_use", "name": "read", "input": {"path": "README.md"}},
+    ]
+
+
+def test_bash_activity_does_not_fabricate_command_from_missing_or_malformed_args():
+    assert shim.activity_from_events(
+        [
+            {
+                "type": "tool_execution_start",
+                "toolCallId": "missing",
+                "toolName": "bash",
+            },
+            {
+                "type": "tool_execution_start",
+                "toolCallId": "malformed",
+                "toolName": "bash",
+                "arguments": "{not-json",
+            },
+        ]
+    ) == [{"type": "bash"}, {"type": "bash"}]
+
+
 def test_child_reaper_preserves_managed_exit_status_and_reaps_unmanaged_child():
     previous_handler = signal.getsignal(signal.SIGCHLD)
     shim.install_child_reaper()
@@ -8551,6 +8668,89 @@ def test_muse_usage_reader_pages_back_to_exact_turn_and_drops_content(
         "initialized",
         "session/read",
     ]
+
+
+def test_muse_turn_publishes_retained_bash_command(tmp_path, monkeypatch):
+    session_id = _MUSE_USAGE_RECORDED_EVENTS[0]["params"]["sessionId"]
+    command_id = "15cf6510-9de2-4c3d-aa2e-07c039e42394"
+    item_id = "018f0000-0000-7000-8000-000000000003"
+    base_item = {
+        "itemId": item_id,
+        "kind": "toolCall",
+        "turnId": command_id,
+        "toolName": "bash",
+        "callId": "call_bash_1",
+    }
+    pages = [
+        {
+            "events": [
+                {
+                    "method": "turn/started",
+                    "params": {
+                        "sessionId": session_id,
+                        "commandId": command_id,
+                    },
+                },
+                {
+                    "method": "item/started",
+                    "params": {
+                        "sessionId": session_id,
+                        "item": {
+                            **base_item,
+                            "revision": 1,
+                            "status": "inProgress",
+                        },
+                    },
+                },
+                {
+                    "method": "item/updated",
+                    "params": {
+                        "sessionId": session_id,
+                        "item": {
+                            **base_item,
+                            "revision": 2,
+                            "status": "inProgress",
+                            "arguments": json.dumps(
+                                {"command": "printf 'spark retained\\n'"}
+                            ),
+                        },
+                    },
+                },
+                {
+                    "method": "item/completed",
+                    "params": {
+                        "sessionId": session_id,
+                        "item": {
+                            **base_item,
+                            "revision": 3,
+                            "status": "completed",
+                        },
+                    },
+                },
+            ],
+            "nextCursor": None,
+        }
+    ]
+    manager = _muse_usage_transport_manager(tmp_path, monkeypatch, pages)
+    pushes = []
+
+    class FakePusher:
+        def __init__(self, token):
+            assert token == "muse-token"
+
+        def push(self, text, activities):
+            pushes.append((text, copy.deepcopy(activities)))
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(shim, "_ProgressPusher", FakePusher)
+
+    record = manager.turn("run a command", model="spark", progress_token="muse-token")
+
+    expected = [{"type": "bash", "command": "printf 'spark retained\\n'"}]
+    assert record["activities"] == expected
+    assert pushes[-1] == ("pong", expected)
 
 
 @pytest.mark.parametrize("scenario", ["hang", "oversized"])
