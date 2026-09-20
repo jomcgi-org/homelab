@@ -7779,11 +7779,14 @@ def test_run_bearing_unrelated_dependent_gets_a_structural_recovery_round(
     assert {"integrate_delivery", "correct_1", "review_1"} <= set(nodes)
     assert nodes["correct_1"]["deps"] == ["review_fix"]
     # The run-bearing node is retained exactly as durable history.
-    assert next(
-        run
-        for run in conductor.graph.node_runs(task["id"])
-        if run["node_key"] == "integrate_delivery"
-    )["id"] == unrelated["id"]
+    assert (
+        next(
+            run
+            for run in conductor.graph.node_runs(task["id"])
+            if run["node_key"] == "integrate_delivery"
+        )["id"]
+        == unrelated["id"]
+    )
     with Session(feedback_db) as db:
         causes = db.exec(
             select(SwarmPlanVersion.cause_ref).where(
@@ -7792,8 +7795,7 @@ def test_run_bearing_unrelated_dependent_gets_a_structural_recovery_round(
             )
         ).all()
     assert any(
-        cause.startswith(conductor.LANDING_RECOVERY_CAUSE + ":")
-        for cause in causes
+        cause.startswith(conductor.LANDING_RECOVERY_CAUSE + ":") for cause in causes
     )
 
     # A repeated tick repairs the graph-commit/audit race from the immutable
@@ -8030,9 +8032,7 @@ def test_recovery_review_must_be_independent_of_the_head_writer(feedback_db):
         deps=["integrate_recovery_head"],
     )
     with Session(feedback_db) as db:
-        row = db.exec(
-            select(SwarmNodeRun).where(SwarmNodeRun.id == review["id"])
-        ).one()
+        row = db.exec(select(SwarmNodeRun).where(SwarmNodeRun.id == review["id"])).one()
         row.session_id = writer["session_id"]
         db.add(row)
         db.commit()
