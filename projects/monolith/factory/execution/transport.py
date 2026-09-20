@@ -30,6 +30,7 @@ from opentelemetry import trace
 
 from factory import execution as agent_sessions
 from factory.execution import model_family
+from factory.execution.constants import exact_dispatch_id
 from faas.embervm_client import (
     EmberVMTimeout,
     EmberVMTransportError,
@@ -121,20 +122,6 @@ PREWARM_SESSION_TIMEOUT = 2.0
 # provisioning or other control operations into twelve-hour waits.
 INVOKE_READ_TIMEOUT = 43500.0
 CREATE_SESSION_READ_TIMEOUT = 1800.0
-
-
-def exact_dispatch_id(
-    agent_session_id: int,
-    guest_id: str,
-    turn_seq: int,
-    claim_owner: str,
-    dispatch_count: int,
-) -> str:
-    """Opaque identity shared by invoke, stop validation, and every relay hop."""
-    fields = [agent_session_id, guest_id, turn_seq, claim_owner, dispatch_count]
-    return hashlib.sha256(
-        json.dumps(fields, separators=(",", ":"), ensure_ascii=True).encode()
-    ).hexdigest()
 
 
 def _retryable_from_response(exc: httpx.HTTPStatusError) -> bool:

@@ -749,8 +749,8 @@ def read_drained_lost_factory_attempt(db: Session, pin: dict, session_id: int) -
     from sqlalchemy import or_
 
     from factory.execution import normalize_model
+    from factory.execution.constants import exact_dispatch_id
     from factory.execution.models import AgentTurn, PendingMessage
-    from factory.execution.transport import exact_dispatch_id
 
     admission.lock_pool(db)
     agent = _factory_owner(db, pin, session_id)
