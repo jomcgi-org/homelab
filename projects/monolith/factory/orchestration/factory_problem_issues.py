@@ -200,64 +200,76 @@ def _observe_policy(block: dict) -> tuple[bool, dict]:
         }
 
 
-def _producer_rows(db: Session, actions: tuple[str, ...]):
-    return db.exec(
-        select(FactoryAudit)
-        .where(FactoryAudit.action.in_(actions))
-        .order_by(FactoryAudit.id)
-    ).all()
+def _fingerprint_clause(fingerprint: str):
+    return FactoryAudit.detail_json.contains(f'"fingerprint":"{fingerprint}"')
 
 
-def _matches(row: FactoryAudit, fingerprint: str) -> bool:
-    try:
-        return json.loads(row.detail_json).get("fingerprint") == fingerprint
-    except (TypeError, ValueError, AttributeError):
-        return False
-
-
-def _terminal(db: Session, fingerprint: str) -> bool:
-    return any(
-        _matches(row, fingerprint) for row in _producer_rows(db, _TERMINAL_ACTIONS)
+def _task_clause(task_id: str | None):
+    return (
+        FactoryAudit.task_id.is_(None)
+        if task_id is None
+        else FactoryAudit.task_id == task_id
     )
 
 
-def _last_matching(db: Session, fingerprint: str, actions: tuple[str, ...]):
-    rows = _producer_rows(db, actions)
-    return next((row for row in reversed(rows) if _matches(row, fingerprint)), None)
+def _last_matching(
+    db: Session,
+    fingerprint: str,
+    actions: tuple[str, ...],
+    task_id: str | None,
+):
+    return db.exec(
+        select(FactoryAudit)
+        .where(
+            FactoryAudit.action.in_(actions),
+            _task_clause(task_id),
+            _fingerprint_clause(fingerprint),
+        )
+        .order_by(FactoryAudit.id.desc())
+        .limit(1)
+    ).first()
+
+
+def _terminal(db: Session, fingerprint: str, task_id: str | None) -> bool:
+    return _last_matching(db, fingerprint, _TERMINAL_ACTIONS, task_id) is not None
 
 
 def _cursor(db: Session, source: str, watermark: int) -> int:
-    cursor = watermark
-    rows = db.exec(
-        select(FactoryAudit).where(FactoryAudit.action.in_(_TERMINAL_ACTIONS))
-    ).all()
-    for row in rows:
-        try:
-            detail = json.loads(row.detail_json)
-        except (TypeError, ValueError):
-            continue
-        if (
-            detail.get("source") == source
-            and type(detail.get("source_audit_id")) is int
-        ):
-            cursor = max(cursor, detail["source_audit_id"])
-    return cursor
+    row = db.exec(
+        select(FactoryAudit)
+        .where(
+            FactoryAudit.action.in_(_TERMINAL_ACTIONS),
+            FactoryAudit.detail_json.contains(f'"source":"{source}"'),
+        )
+        .order_by(FactoryAudit.id.desc())
+        .limit(1)
+    ).first()
+    if row is None:
+        return watermark
+    try:
+        detail = json.loads(row.detail_json)
+    except (TypeError, ValueError):
+        return watermark
+    source_id = detail.get("source_audit_id")
+    return max(watermark, source_id) if type(source_id) is int else watermark
 
 
 def _pending_started(db: Session):
-    rows = db.exec(
+    row = db.exec(
         select(FactoryAudit)
         .where(FactoryAudit.action == "problem_issue_write_started")
-        .order_by(FactoryAudit.id)
-    ).all()
-    for row in rows:
-        try:
-            detail = json.loads(row.detail_json)
-            fingerprint = detail["fingerprint"]
-        except (TypeError, ValueError, KeyError):
-            continue
-        if not _terminal(db, fingerprint):
-            return row, detail
+        .order_by(FactoryAudit.id.desc())
+        .limit(1)
+    ).first()
+    if row is None:
+        return None
+    try:
+        detail = json.loads(row.detail_json)
+        fingerprint = detail["fingerprint"]
+    except (TypeError, ValueError, KeyError):
+        return None
+    if not _terminal(db, fingerprint, row.task_id):
+        return row, detail
     return None
 
 
@@ -273,7 +285,11 @@ def _discover(repo: str, marker: str, block: dict) -> tuple[list[int], bool]:
         if not isinstance(issues, list):
             raise ValueError("GitHub returned a non-array")
         for issue in issues:
-            if not isinstance(issue, dict) or marker not in (issue.get("body") or ""):
+            if (
+                not isinstance(issue, dict)
+                or "pull_request" in issue
+                or marker not in (issue.get("body") or "")
+            ):
                 continue
             number = issue.get("number")
             if type(number) is int and number > 0:
@@ -368,7 +384,13 @@ def _detail(row: FactoryAudit, source: str, fingerprint: str, **extra) -> dict:
 
 def _record(action: str, row: FactoryAudit, source: str, fingerprint: str, **extra):
     with _locked_session() as (db, _control):
-        _audit(db, ACTOR, action, **_detail(row, source, fingerprint, **extra))
+        _audit(
+            db,
+            ACTOR,
+            action,
+            task_id=row.task_id,
+            **_detail(row, source, fingerprint, **extra),
+        )
 
 
 def _exception_detail(exc: Exception) -> dict:
@@ -395,14 +417,32 @@ def _due(value: object) -> bool:
     return parsed.tzinfo is not None and parsed <= _now()
 
 
-def _reconcile_pending(repo: str, block: dict, started: FactoryAudit, detail: dict):
+def _reconcile_pending(block: dict, started: FactoryAudit, detail: dict):
     fingerprint = detail["fingerprint"]
     source = detail["source"]
     source_id = detail["source_audit_id"]
+    repo = detail.get("repo")
+    if not isinstance(repo, str) or not re.fullmatch(
+        r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo
+    ):
+        _record(
+            "problem_issue_unresolved",
+            started,
+            source,
+            fingerprint,
+            source_audit_id=source_id,
+            reason="write_repository_missing",
+        )
+        return
     with _read_session() as db:
-        retries = sum(
-            _matches(row, fingerprint)
-            for row in _producer_rows(db, ("problem_issue_reconcile_retry",))
+        retries = len(
+            db.exec(
+                select(FactoryAudit.id).where(
+                    FactoryAudit.action == "problem_issue_reconcile_retry",
+                    _task_clause(started.task_id),
+                    _fingerprint_clause(fingerprint),
+                )
+            ).all()
         )
         last = _last_matching(
             db,
@@ -411,6 +451,7 @@ def _reconcile_pending(repo: str, block: dict, started: FactoryAudit, detail: di
                 "problem_issue_write_uncertain",
                 "problem_issue_reconcile_retry",
             ),
+            started.task_id,
         )
     last_detail = (
         json.loads(last.detail_json)
@@ -513,7 +554,7 @@ def problem_issues_tick(policy: dict) -> None:
     with _read_session() as db:
         pending = _pending_started(db)
     if pending is not None:
-        _reconcile_pending(policy["repo"], block, *pending)
+        _reconcile_pending(block, *pending)
         return
 
     row, capped = _next_event(block, observed)
@@ -534,7 +575,7 @@ def problem_issues_tick(policy: dict) -> None:
         )
         return
     with _read_session() as db:
-        completed = _last_matching(db, fingerprint, _TERMINAL_ACTIONS)
+        completed = _last_matching(db, fingerprint, _TERMINAL_ACTIONS, row.task_id)
         delayed = _last_matching(
             db,
             fingerprint,
@@ -542,10 +583,13 @@ def problem_issues_tick(policy: dict) -> None:
                 "problem_issue_discovery_failed",
                 "problem_issue_daily_capped",
             ),
+            row.task_id,
         )
-        already_capped = _last_matching(db, fingerprint, ("problem_issue_scan_capped",))
+        already_capped = _last_matching(
+            db, fingerprint, ("problem_issue_scan_capped",), row.task_id
+        )
         issue_scan_capped = _last_matching(
-            db, fingerprint, ("problem_issue_issue_scan_capped",)
+            db, fingerprint, ("problem_issue_issue_scan_capped",), row.task_id
         )
     if completed is not None:
         completed_detail = json.loads(completed.detail_json)
@@ -629,8 +673,8 @@ def problem_issues_tick(policy: dict) -> None:
         return
 
     with _locked_session() as (db, _control):
-        if _terminal(db, fingerprint) or _last_matching(
-            db, fingerprint, ("problem_issue_write_started",)
+        if _terminal(db, fingerprint, row.task_id) or _last_matching(
+            db, fingerprint, ("problem_issue_write_started",), row.task_id
         ):
             return
         cutoff = _now() - timedelta(hours=24)
@@ -648,6 +692,7 @@ def problem_issues_tick(policy: dict) -> None:
                 db,
                 ACTOR,
                 "problem_issue_daily_capped",
+                task_id=row.task_id,
                 **_detail(
                     row,
                     source,
@@ -662,7 +707,14 @@ def problem_issues_tick(policy: dict) -> None:
             db,
             ACTOR,
             "problem_issue_write_started",
-            **_detail(row, source, fingerprint, marker=marker),
+            task_id=row.task_id,
+            **_detail(
+                row,
+                source,
+                fingerprint,
+                marker=marker,
+                repo=policy["repo"],
+            ),
         )
 
     payload = {**issue, "labels": list(block["labels"])}
