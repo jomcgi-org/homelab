@@ -106,23 +106,6 @@ The `tests/rules/` subdirectory holds additional experimental rule YAML files
 (e.g. `goroutine-without-sync.yaml`) that are paired with their own fixtures
 in `tests/fixtures/` but are not yet wired into the public rule filegroups.
 
-### Verification genrule guard
-
-`//bazel/semgrep/rules:verification_genrule_guard` scans every exact `BUILD`
-and `BUILD.bazel` file for `genrule` and `native.genrule` calls whose names
-start with `tlc_` or end with `_smoke` or `_test`. Those suite-shaped rules
-must include `verification` in their literal `tags` list so
-`affected-targets.sh` can select them outside Bazel's `tests()` query.
-
-This is deliberately a naming heuristic, not universal suite detection. It can
-miss a suite with a different name and can flag a build-only genrule that uses
-a suite-like name. The latter is resolved by adding the tag when the rule
-really performs verification, or by choosing a name that describes its build
-output. The guard parses each input with buildifier, runs the Python parser in
-the vendored Semgrep engine, and fails closed on engine or parse errors. Its
-dedicated regression target does not set `SEMGREP_TEST_MODE`, so it cannot take
-the annotation suite's skip path.
-
 ## Third-party engines
 
 Both the open-source engine (`semgrep-core`) and the Pro engine
