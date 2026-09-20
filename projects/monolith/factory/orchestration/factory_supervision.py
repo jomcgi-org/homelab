@@ -1012,7 +1012,7 @@ def _settle_failed_attempt(
     reason,
     evidence_key,
     evidence,
-    settle_attempt=settle_uncertain_factory_attempt,
+    settle_attempt=None,
 ):
     """Record one uncertain attempt as failed, under a lock the caller holds.
 
@@ -1050,6 +1050,8 @@ def _settle_failed_attempt(
         "previous_outcome": json.loads(run.outcome_json or "{}"),
         evidence_key: evidence,
     }
+    if settle_attempt is None:
+        settle_attempt = settle_uncertain_factory_attempt
     settle_attempt(db, pin, identity)
     if run.session_id is None:
         bound = graph.record_dispatch(
