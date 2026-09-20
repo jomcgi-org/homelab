@@ -343,6 +343,17 @@ def test_stop_orders_after_inflight_creation_guard_and_before_next(db, policy):
         assert decision["reason"] == "stopped"
 
 
+def test_start_guard_publishes_only_its_live_transaction(db, policy):
+    task = admitted(policy)
+    assert controls.active_start_session() is None
+    with controls.start_guard(task) as decision:
+        active = controls.active_start_session()
+        assert decision["ok"]
+        assert isinstance(active, Session)
+        assert active.in_transaction()
+    assert controls.active_start_session() is None
+
+
 def test_supplied_session_can_rollback_reservation_with_caller_graph_changes(
     db, policy
 ):

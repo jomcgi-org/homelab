@@ -7,10 +7,16 @@ from types import SimpleNamespace
 import zlib
 
 import pytest
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 
 from factory.execution.constants import UNKNOWN_INVOCATION
-from factory.execution.models import AgentSession, AgentTurn
+from factory.execution.models import (
+    AgentCapacityReservation,
+    AgentResultReceipt,
+    AgentSession,
+    AgentTurn,
+    PendingMessage,
+)
 import core.db
 import factory.orchestration.node_workflows as nodes
 
@@ -521,6 +527,379 @@ def test_start_step_checks_live_guard_inside_effect_and_preserves_parent(monkeyp
         "node_key": "implement",
         "node_attempt": 1,
     }
+
+
+@pytest.fixture
+def session_binding_db(tmp_path, monkeypatch):
+    """The persisted-session boundary, without a guest or network service."""
+    from factory.execution import api as execution_api
+    from factory.orchestration import graph
+    from factory.orchestration.models import (
+        SwarmConductorCall,
+        SwarmNodeRun,
+        SwarmPlanVersion,
+        SwarmTask,
+    )
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'session-binding.db'}"
+    ).execution_options(
+        schema_translate_map={"agent_sessions": None, "swarm": None},
+    )
+    SQLModel.metadata.create_all(
+        engine,
+        tables=[
+            AgentSession.__table__,
+            AgentCapacityReservation.__table__,
+            AgentTurn.__table__,
+            PendingMessage.__table__,
+            AgentResultReceipt.__table__,
+            SwarmTask.__table__,
+            SwarmPlanVersion.__table__,
+            SwarmNodeRun.__table__,
+            SwarmConductorCall.__table__,
+        ],
+    )
+    monkeypatch.setattr(core.db, "get_engine", lambda: engine)
+    monkeypatch.setattr(graph, "get_engine", lambda: engine)
+    with Session(engine) as session:
+        session.add(
+            SwarmTask(
+                id="t-11",
+                task_text="bind the session",
+                conductor_model="opus",
+                budget_usd=2.0,
+            )
+        )
+        session.add(
+            SwarmNodeRun(
+                task_id="t-11",
+                node_key="implement",
+                attempt=1,
+                status="admitted",
+            )
+        )
+        session.commit()
+
+    def start(
+        local_session_id,
+        prompt,
+        model,
+        repo,
+        branch,
+        *,
+        workflow_id,
+        node_key,
+        node_attempt,
+    ):
+        with Session(engine) as session:
+            owner = session.exec(
+                select(AgentSession).where(
+                    AgentSession.local_session_id == local_session_id
+                )
+            ).one_or_none()
+            if owner is not None:
+                return owner.id
+            owner = AgentSession(
+                local_session_id=local_session_id,
+                workspace="<guest>",
+                branch=branch,
+                repo=repo,
+                model=model,
+                workflow_id=workflow_id,
+                node_key=node_key,
+                node_attempt=node_attempt,
+                admission_tier="project",
+            )
+            session.add(owner)
+            session.flush()
+            session.add(
+                PendingMessage(
+                    session_id=owner.id,
+                    seq=1,
+                    message_text=prompt,
+                    model=model,
+                )
+            )
+            session.commit()
+            return owner.id
+
+    monkeypatch.setattr(execution_api, "start_session_for_swarm", start)
+    yield engine
+    engine.dispose()
+
+
+def test_binding_survives_a_crash_before_the_step_result_and_replays_exactly(
+    session_binding_db, monkeypatch
+):
+    from factory.orchestration import graph
+    from factory.orchestration.models import SwarmNodeRun
+
+    real_bind = graph.bind_node_session
+
+    def bind_then_crash(*args, **kwargs):
+        result = real_bind(*args, **kwargs)
+        assert result.ok
+        raise RuntimeError("lost step acknowledgement")
+
+    monkeypatch.setattr(graph, "bind_node_session", bind_then_crash)
+    args = (
+        "factory:t-11:implement:1",
+        "one prompt",
+        "luna",
+        "org/repo",
+        "factory/11",
+    )
+    kwargs = {
+        "workflow_id": "parent-run",
+        "node_key": "implement",
+        "node_attempt": 1,
+    }
+    with pytest.raises(RuntimeError, match="lost step acknowledgement"):
+        nodes._session_api(*args, **kwargs)
+    with Session(session_binding_db) as session:
+        run = session.exec(select(SwarmNodeRun)).one()
+        assert run.status == "dispatched"
+        assert run.session_id == 1
+        assert run.base_sha is None
+        assert len(session.exec(select(AgentSession)).all()) == 1
+        assert len(session.exec(select(PendingMessage)).all()) == 1
+
+    monkeypatch.setattr(graph, "bind_node_session", real_bind)
+    assert nodes._session_api(*args, **kwargs) == 1
+    with Session(session_binding_db) as session:
+        run = session.exec(select(SwarmNodeRun)).one()
+        assert run.session_id == 1
+        assert len(session.exec(select(AgentSession)).all()) == 1
+        assert len(session.exec(select(PendingMessage)).all()) == 1
+
+
+def test_replay_repairs_a_session_persisted_before_its_prompt(
+    session_binding_db, monkeypatch
+):
+    from factory.execution import api as execution_api
+    from factory.orchestration.models import SwarmNodeRun
+
+    calls = 0
+
+    def persist_then_crash(
+        local_session_id,
+        _prompt,
+        model,
+        repo,
+        branch,
+        *,
+        workflow_id,
+        node_key,
+        node_attempt,
+    ):
+        nonlocal calls
+        calls += 1
+        with Session(session_binding_db) as session:
+            owner = session.exec(
+                select(AgentSession).where(
+                    AgentSession.local_session_id == local_session_id
+                )
+            ).one_or_none()
+            if owner is None:
+                owner = AgentSession(
+                    local_session_id=local_session_id,
+                    workspace="<guest>",
+                    branch=branch,
+                    repo=repo,
+                    model=model,
+                    workflow_id=workflow_id,
+                    node_key=node_key,
+                    node_attempt=node_attempt,
+                    admission_tier="project",
+                )
+                session.add(owner)
+                session.commit()
+                session.refresh(owner)
+                raise RuntimeError("process died before prompt persistence")
+            return owner.id
+
+    monkeypatch.setattr(execution_api, "start_session_for_swarm", persist_then_crash)
+    args = (
+        "factory:t-11:implement:1",
+        "one prompt",
+        "luna",
+        "org/repo",
+        "factory/11",
+    )
+    kwargs = {
+        "workflow_id": "parent-run",
+        "node_key": "implement",
+        "node_attempt": 1,
+    }
+    with pytest.raises(RuntimeError, match="before prompt persistence"):
+        nodes._session_api(*args, **kwargs)
+    with Session(session_binding_db) as session:
+        run = session.exec(select(SwarmNodeRun)).one()
+        assert run.status == "admitted"
+        assert run.session_id is None
+        assert len(session.exec(select(AgentSession)).all()) == 1
+        assert session.exec(select(PendingMessage)).all() == []
+
+    assert nodes._session_api(*args, **kwargs) == 1
+    assert nodes._session_api(*args, **kwargs) == 1
+    assert calls == 3
+    with Session(session_binding_db) as session:
+        run = session.exec(select(SwarmNodeRun)).one()
+        pending = session.exec(select(PendingMessage)).all()
+        assert run.status == "dispatched"
+        assert run.session_id == 1
+        assert len(session.exec(select(AgentSession)).all()) == 1
+        assert len(pending) == 1
+        assert pending[0].seq == 1
+        assert pending[0].message_text == "one prompt"
+
+
+def test_session_binding_refusal_replays_one_existing_session_and_prompt(
+    session_binding_db, monkeypatch
+):
+    """A crash boundary after session commit never creates a second turn."""
+    from factory.orchestration import graph
+
+    bindings = []
+    outcomes = iter(
+        [
+            SimpleNamespace(ok=False, refusal_code="dispatch_conflict"),
+            SimpleNamespace(ok=True, refusal_code=None),
+            SimpleNamespace(ok=True, refusal_code=None),
+        ]
+    )
+
+    def bind(task_id, node_key, attempt, session_id, *, session=None):
+        assert session is None
+        bindings.append((task_id, node_key, attempt, session_id))
+        return next(outcomes)
+
+    monkeypatch.setattr(graph, "bind_node_session", bind)
+    args = (
+        "factory:t-11:implement:1",
+        "one prompt",
+        "luna",
+        "org/repo",
+        "factory/11",
+    )
+    kwargs = {
+        "workflow_id": "parent-run",
+        "node_key": "implement",
+        "node_attempt": 1,
+    }
+    with pytest.raises(ValueError, match="binding refused: dispatch_conflict"):
+        nodes._session_api(*args, **kwargs)
+    assert nodes._session_api(*args, **kwargs) == 1
+    assert nodes._session_api(*args, **kwargs) == 1
+    assert bindings == [("t-11", "implement", 1, 1)] * 3
+    with Session(session_binding_db) as session:
+        owners = session.exec(select(AgentSession)).all()
+        pending = session.exec(select(PendingMessage)).all()
+        assert len(owners) == 1
+        assert owners[0].workflow_id == "parent-run"
+        assert len(pending) == 1
+        assert pending[0].message_text == "one prompt"
+
+
+def test_missing_prompt_with_execution_evidence_is_never_recreated(
+    session_binding_db
+):
+    args = (
+        "factory:t-11:implement:1",
+        "one prompt",
+        "luna",
+        "org/repo",
+        "factory/11",
+    )
+    kwargs = {
+        "workflow_id": "parent-run",
+        "node_key": "implement",
+        "node_attempt": 1,
+    }
+    assert nodes._session_api(*args, **kwargs) == 1
+    with Session(session_binding_db) as session:
+        pending = session.exec(select(PendingMessage)).one()
+        session.delete(pending)
+        owner = session.exec(select(AgentSession)).one()
+        owner.ember_session_id = "already-started-guest"
+        session.add(owner)
+        session.commit()
+
+    with pytest.raises(ValueError, match="ownership conflict: missing prompt"):
+        nodes._session_api(*args, **kwargs)
+    with Session(session_binding_db) as session:
+        assert session.exec(select(PendingMessage)).all() == []
+
+
+def test_conflicting_run_binding_refuses_before_starting_another_session(
+    session_binding_db, monkeypatch
+):
+    from factory.execution import api as execution_api
+    from factory.orchestration import graph
+
+    assert graph.bind_node_session("t-11", "implement", 1, 77).ok
+    monkeypatch.setattr(
+        execution_api,
+        "start_session_for_swarm",
+        lambda *_args, **_kwargs: pytest.fail("conflicting run started a session"),
+    )
+    with pytest.raises(ValueError, match="ownership conflict: id"):
+        nodes._session_api(
+            "factory:t-11:implement:1",
+            "one prompt",
+            "luna",
+            "org/repo",
+            "factory/11",
+            workflow_id="parent-run",
+            node_key="implement",
+            node_attempt=1,
+        )
+    with Session(session_binding_db) as session:
+        assert session.exec(select(AgentSession)).all() == []
+        assert session.exec(select(PendingMessage)).all() == []
+
+
+def test_existing_session_ownership_conflict_is_not_bound(
+    session_binding_db, monkeypatch
+):
+    from factory.orchestration import graph
+
+    with Session(session_binding_db) as session:
+        session.add(
+            AgentSession(
+                id=7,
+                local_session_id="factory:t-11:implement:1",
+                workspace="<guest>",
+                branch="factory/11",
+                repo="org/repo",
+                model="luna",
+                workflow_id="another-workflow",
+                node_key="implement",
+                node_attempt=1,
+                admission_tier="project",
+            )
+        )
+        session.commit()
+    monkeypatch.setattr(
+        graph,
+        "bind_node_session",
+        lambda *_args, **_kwargs: pytest.fail("conflicting owner was bound"),
+    )
+    with pytest.raises(ValueError, match="ownership conflict: workflow_id"):
+        nodes._session_api(
+            "factory:t-11:implement:1",
+            "prompt",
+            "luna",
+            "org/repo",
+            "factory/11",
+            workflow_id="parent-run",
+            node_key="implement",
+            node_attempt=1,
+        )
+    with Session(session_binding_db) as session:
+        assert len(session.exec(select(AgentSession)).all()) == 1
+        assert session.exec(select(PendingMessage)).all() == []
 
 
 def test_stored_turn_read_matches_exact_session_sequence_and_declaration(

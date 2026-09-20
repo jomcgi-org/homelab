@@ -3904,10 +3904,10 @@ def test_a_stranded_workflow_is_settled_rather_than_called_stalled(
 def test_a_session_less_uncertain_run_resolves_its_session_for_supervision(
     stranded_factory, monkeypatch
 ):
-    """record_dispatch binds a session only at completion, so resolve it here.
+    """A legacy NULL row still resolves its exact session for supervision.
 
-    Without this the attempt is handed to supervision as None, refused at its
-    int guard, and the guest is never confirmed ceased.
+    This covers rows written before dispatch-time binding and workflows whose
+    old cached start-step output cannot execute the new compatibility seam.
     """
     from factory.orchestration import factory_supervision
 
@@ -3926,6 +3926,34 @@ def test_a_session_less_uncertain_run_resolves_its_session_for_supervision(
     # The resolved session is bound to the run, so the next tick reads it
     # directly rather than resolving again.
     assert conductor.graph.node_runs(s.task["id"])[0]["session_id"] == s.sid
+
+
+def test_a_bound_midflight_failure_supervises_by_id_without_legacy_resolution(
+    stranded_factory, monkeypatch
+):
+    from factory.orchestration import factory_supervision
+    from factory.orchestration import node_workflows as nodes
+
+    s = stranded_factory
+    assert conductor.graph.bind_node_session(
+        s.task["id"], s.run["node_key"], s.run["attempt"], s.sid
+    ).ok
+    s.run = conductor.graph.node_runs(s.task["id"])[0]
+    seen = []
+    monkeypatch.setattr(
+        nodes,
+        "resolve_node_session_id",
+        lambda *_args, **_kwargs: pytest.fail("bound run used legacy resolution"),
+    )
+    monkeypatch.setattr(
+        factory_supervision,
+        "reconcile_uncertain_attempt",
+        lambda _pin, session_id, _result, status: (
+            seen.append((session_id, status)) or False
+        ),
+    )
+    conductor._submit_or_reconcile(s.task, s.run, s.dbos_for("PENDING", "old-version"))
+    assert seen == [(s.sid, "CANCELLED")]
 
 
 def test_an_unresolvable_session_records_one_outcome_not_one_per_tick(

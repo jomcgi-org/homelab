@@ -1,11 +1,12 @@
 """One durable admitted factory DAG node attempt.
 
 One invocation of :func:`execute_node` runs exactly one already admitted
-attempt. The conductor owns the graph, so this module never reads mutable
-graph state and never mutates it. The pin is validated up front and treated
-as immutable after that. Every replay-sensitive effect (session start,
-session reconcile, turn read, branch head read) goes through a DBOS step.
-The body itself only threads immutable pin values and pure helpers.
+attempt. The start step binds the newly persisted session to that admitted
+attempt before returning; all later graph transitions remain conductor-owned.
+The pin is validated up front and treated as immutable after that. Every
+replay-sensitive effect (session start, session reconcile, turn read, branch
+head read) goes through a DBOS step. The body itself only threads immutable pin
+values and pure helpers.
 """
 
 from __future__ import annotations
@@ -402,10 +403,190 @@ def _evaluate_stored_artifact(
     }
 
 
-def _session_api(*args, **kwargs) -> int:
-    from factory.execution.api import start_session_for_swarm
+def _session_api(
+    local_session_id: str,
+    prompt: str,
+    model: str,
+    repo: str,
+    branch: str,
+    *,
+    workflow_id: str,
+    node_key: str,
+    node_attempt: int,
+) -> int:
+    """Create or recover one exact session and bind it before the step returns.
 
-    return start_session_for_swarm(*args, **kwargs)
+    This helper is deliberately called inside ``_start_node_session`` rather
+    than adding another durable checkpoint. Existing workflows therefore keep
+    their step sequence and application version. If the process dies after the
+    session commits but before the graph bind or step result, the idempotency
+    key recovers that same session and pending prompt on replay.
+    """
+    from factory.execution.api import start_session_for_swarm
+    from factory.orchestration import factory_controls, graph
+
+    parts = local_session_id.split(":")
+    if len(parts) != 4 or parts[0] != "factory" or not parts[1]:
+        raise ValueError("invalid factory node session key")
+    task_id = parts[1]
+    if local_session_id != _session_key(task_id, node_key, node_attempt):
+        raise ValueError("factory node session key conflicts with attempt identity")
+    expected = {
+        "local_session_id": local_session_id,
+        "workflow_id": workflow_id,
+        "node_key": node_key,
+        "node_attempt": node_attempt,
+        "repo": repo,
+        "branch": branch,
+        "model": model,
+    }
+    start_session = factory_controls.active_start_session()
+    bound_session_id = graph.lock_node_session_binding(
+        task_id,
+        node_key,
+        node_attempt,
+        session=start_session,
+    )
+    if bound_session_id is not None:
+        _validate_or_recover_started_session(bound_session_id, expected, prompt)
+    session_id = start_session_for_swarm(
+        local_session_id,
+        prompt,
+        model,
+        repo,
+        branch,
+        workflow_id=workflow_id,
+        node_key=node_key,
+        node_attempt=node_attempt,
+    )
+    _validate_or_recover_started_session(
+        session_id,
+        expected,
+        prompt,
+    )
+    if bound_session_id is not None and session_id != bound_session_id:
+        raise ValueError("node session binding conflicts with persisted session")
+    binding = graph.bind_node_session(
+        task_id,
+        node_key,
+        node_attempt,
+        session_id,
+        session=start_session,
+    )
+    if not binding.ok:
+        raise ValueError(f"node session binding refused: {binding.refusal_code}")
+    return session_id
+
+
+def _validate_or_recover_started_session(
+    session_id: int, expected: dict, prompt: str
+) -> None:
+    """Validate exact ownership and close the session-before-prompt crash gap."""
+    from sqlmodel import Session, select
+
+    from factory.execution import normalize_model
+    from factory.execution.models import (
+        AgentCapacityReservation,
+        AgentResultReceipt,
+        AgentSession,
+        AgentTurn,
+        PendingMessage,
+    )
+    from core.db import get_engine
+
+    if not _is_int(session_id) or session_id < 1:
+        raise ValueError("node session ownership conflict: id")
+    normalized = {**expected, "model": normalize_model(expected["model"])}
+    with Session(get_engine()) as session:
+        owner = session.exec(
+            select(AgentSession)
+            .where(AgentSession.id == session_id)
+            .with_for_update()
+        ).one_or_none()
+        if owner is None:
+            raise ValueError("node session ownership conflict: id")
+        for field, value in normalized.items():
+            if getattr(owner, field) != value:
+                raise ValueError(f"node session ownership conflict: {field}")
+
+        pending = session.exec(
+            select(PendingMessage).where(
+                PendingMessage.session_id == session_id,
+                PendingMessage.seq == 1,
+            )
+        ).one_or_none()
+        turn = session.exec(
+            select(AgentTurn).where(
+                AgentTurn.session_id == session_id,
+                AgentTurn.seq == 1,
+            )
+        ).one_or_none()
+        extra_pending = session.exec(
+            select(PendingMessage.id).where(
+                PendingMessage.session_id == session_id,
+                PendingMessage.seq != 1,
+            )
+        ).first()
+        extra_turn = session.exec(
+            select(AgentTurn.id).where(
+                AgentTurn.session_id == session_id,
+                AgentTurn.seq != 1,
+            )
+        ).first()
+        extra_receipt = session.exec(
+            select(AgentResultReceipt.id).where(
+                AgentResultReceipt.session_id == session_id,
+                AgentResultReceipt.seq != 1,
+            )
+        ).first()
+        if any(
+            value is not None
+            for value in (extra_pending, extra_turn, extra_receipt)
+        ):
+            raise ValueError("node session ownership conflict: prompt")
+        for row, field in ((pending, "message_text"), (turn, "prompt")):
+            if row is not None and (
+                getattr(row, field) != prompt or row.model != normalized["model"]
+            ):
+                raise ValueError("node session ownership conflict: prompt")
+        if pending is not None or turn is not None:
+            return
+
+        reservation = session.exec(
+            select(AgentCapacityReservation.id).where(
+                AgentCapacityReservation.local_session_id
+                == normalized["local_session_id"],
+                AgentCapacityReservation.pending_seq == 1,
+            )
+        ).first()
+        receipt = session.exec(
+            select(AgentResultReceipt.id).where(
+                AgentResultReceipt.session_id == session_id,
+                AgentResultReceipt.seq == 1,
+            )
+        ).first()
+        if (
+            reservation is not None
+            or receipt is not None
+            or owner.ember_session_id is not None
+            or owner.cli_session_id is not None
+            or owner.status != "running"
+        ):
+            raise ValueError("node session ownership conflict: missing prompt")
+
+        # start_session_for_swarm persists these in separate transactions. If
+        # its process died between them, this locked recovery is the only safe
+        # place to recreate seq 1. Any execution evidence above refuses rather
+        # than risking a duplicate turn.
+        session.add(
+            PendingMessage(
+                session_id=session_id,
+                seq=1,
+                message_text=prompt,
+                model=normalized["model"],
+            )
+        )
+        session.commit()
 
 
 def _start_guard(task_id: str):
@@ -940,13 +1121,11 @@ def _expected_session_identity(pin: dict) -> dict:
 
 
 def resolve_node_session_id(pin: dict, *, session=None) -> int | None:
-    """Find one attempt's session by its deterministic local identity.
+    """Recover one legacy attempt's session by deterministic local identity.
 
-    graph.record_dispatch writes SwarmNodeRun.session_id only once a workflow
-    finishes, so a workflow that dies mid-way leaves the run with no session id
-    at all. Stop supervision then refuses the attempt outright, because
-    reconcile_uncertain_attempt requires an int, and the reconciler rewrites the
-    same uncertain outcome every tick while the guest is never confirmed ceased.
+    Current start steps bind SwarmNodeRun.session_id before returning. This is
+    retained for rows created before that fix and for old cached step outputs
+    whose workflow body cannot execute the compatibility seam.
 
     The identity is deterministic, so the exact session can still be found by
     the key the attempt started under, under the same ownership checks

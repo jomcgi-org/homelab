@@ -8,8 +8,10 @@ import factory.orchestration.graph as graph
 from factory.orchestration.graph import (
     add_node,
     admit_dispatch,
+    bind_node_session,
     current_version,
     discard_node,
+    lock_node_session_binding,
     load_graph,
     node_runs,
     record_dispatch,
@@ -736,13 +738,29 @@ def test_dispatch_outcome_replays_cannot_change_identity_or_terminal_evidence(db
     task_id = make_task(db)
     assert add_work(task_id, "one", 0).ok
     assert admit_dispatch(task_id, "one").ok
+    assert bind_node_session(task_id, "one", 1, 42).ok
+    bound = node_runs(task_id)[0]
+    assert bound["session_id"] == 42
+    assert bound["base_sha"] is None
+    assert bound["status"] == "dispatched"
+    assert bind_node_session(task_id, "one", 1, 42).ok
+    assert record_dispatch(task_id, "one", 1, 42, None).ok
+    assert record_outcome(task_id, "one", 1, "succeeded", 0.25, "head", "{}").ok
+    assert lock_node_session_binding(task_id, "one", 1) == 42
+    # Completion evidence can arrive before the branch read. Enrich only the
+    # exact terminal session, without reopening or replacing any evidence.
     assert record_dispatch(task_id, "one", 1, 42, "base").ok
     assert record_dispatch(task_id, "one", 1, 42, "base").ok
+    assert record_dispatch(task_id, "one", 1, 42, None).ok
     assert (
         record_dispatch(task_id, "one", 1, 43, "base").refusal_code
         == "dispatch_conflict"
     )
-    assert record_outcome(task_id, "one", 1, "succeeded", 0.25, "head", "{}").ok
+    assert (
+        record_dispatch(task_id, "one", 1, 42, "other-base").refusal_code
+        == "dispatch_conflict"
+    )
+    assert node_runs(task_id)[0]["base_sha"] == "base"
     before = node_runs(task_id)[0]
     assert record_dispatch(task_id, "one", 1, 42, "base").ok
     assert record_outcome(task_id, "one", 1, "succeeded", 0.25, "head", "{}").ok

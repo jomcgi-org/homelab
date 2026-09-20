@@ -8,6 +8,7 @@ an unlocked count. Issue text and conductor artifacts cannot configure policy.
 from __future__ import annotations
 
 from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
@@ -29,6 +30,10 @@ from factory.orchestration.factory_models import (
     MAX_CAPACITY_DENIED_ATTEMPTS,
 )
 from factory.orchestration.models import SwarmNodeRun, SwarmTask
+
+_ACTIVE_START_SESSION: ContextVar[Session | None] = ContextVar(
+    "factory_active_start_session", default=None
+)
 
 MAX_LANDING_RECOVERIES = 2
 LANDING_RECOVERY_TIMEOUT_SECONDS = 3600
@@ -2152,7 +2157,16 @@ def start_guard(
     cancellation/reconciliation. A supplied session must commit before any wait.
     """
     with _locked_session(session) as (db, control):
-        yield _can_start(db, control, task_id, start_key)
+        token = _ACTIVE_START_SESSION.set(db)
+        try:
+            yield _can_start(db, control, task_id, start_key)
+        finally:
+            _ACTIVE_START_SESSION.reset(token)
+
+
+def active_start_session() -> Session | None:
+    """Return the transaction holding the current synchronous start fence."""
+    return _ACTIVE_START_SESSION.get()
 
 
 def authorize_start(
@@ -2701,9 +2715,8 @@ def settle_lost_attempt(
             raise ValueError("missing_attempt_pin")
         session_id = run.session_id
         if session_id is None:
-            # record_dispatch binds the session only once a workflow finishes,
-            # so a workflow lost mid-way leaves none. The identity is
-            # deterministic, so resolve the exact session this attempt started.
+            # Legacy rows and cached pre-binding step outputs can still be
+            # session-less. Resolve only the exact deterministic owner.
             from factory.orchestration.node_workflows import resolve_node_session_id
 
             session_id = resolve_node_session_id(pin, session=db)

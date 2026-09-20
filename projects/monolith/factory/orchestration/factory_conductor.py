@@ -4145,10 +4145,9 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
 
             session_id = result.get("session_id") or run.get("session_id")
             if session_id is None:
-                # The run carries no session because record_dispatch binds one
-                # only at completion, and supervision refuses a None outright.
-                # The identity is deterministic, so resolve the exact session
-                # this attempt started and bind it below.
+                # Legacy rows and cached pre-binding start-step outputs may
+                # carry no session. Resolve only their exact deterministic
+                # owner; newly executed start steps bind before returning.
                 # The conductor's engine, not core.db's: this read has to see
                 # the same database the rest of the reconciliation writes.
                 with Session(get_engine()) as db:
@@ -4366,7 +4365,13 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
                         "reason": "cancelled_before_dispatch: factory timeout reconciliation",
                     }
             status = result["status"]
-            if result.get("session_id") and not run.get("session_id"):
+            if result.get("session_id") and (
+                run.get("session_id") != result["session_id"]
+                or (
+                    result.get("base_sha") is not None
+                    and run.get("base_sha") != result["base_sha"]
+                )
+            ):
                 binding = graph.record_dispatch(
                     task["id"],
                     run["node_key"],
