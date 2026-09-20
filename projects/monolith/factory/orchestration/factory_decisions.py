@@ -133,6 +133,27 @@ def _receipt(db, receipt_id: int) -> FactoryReceipt:
     return row
 
 
+def _require_current_generation(
+    db, row: FactoryReceipt, control: FactoryControl | None = None
+) -> None:
+    """Refuse a stale card while the control-row lock still fences configure."""
+    if control is None:
+        control = db.exec(
+            select(FactoryControl)
+            .where(FactoryControl.id == "factory")
+            .execution_options(populate_existing=True)
+        ).one()
+    policy = json.loads(control.policy_json or "{}")
+    current_generation = policy.get("generation")
+    if type(current_generation) is int and row.generation != current_generation:
+        raise DecisionError(
+            409,
+            f"this escalation belongs to receipt generation {row.generation}, "
+            f"but the policy is on generation {current_generation}; refresh "
+            "the escalations page because no issue changes were made",
+        )
+
+
 def _option(escalation: dict, option_key: str) -> dict:
     for option in escalation.get("options") or []:
         if option.get("key") == option_key:
@@ -162,8 +183,9 @@ def _claim(
     who clicks twice sees the first click's outcome rather than a conflict.
     """
     context = _locked_session() if session is None else nullcontext((session, None))
-    with context as (db, _control):
+    with context as (db, control):
         row = _receipt(db, receipt_id)
+        _require_current_generation(db, row, control)
         if _pending_request(db, receipt_id):
             raise DecisionError(
                 409, "a durable decision request has an unresolved outcome"
@@ -270,6 +292,13 @@ def _live_claim(
         else:
             held.discard(key)
     return next((key for key in sorted(held) if key != option_key), None)
+
+
+def decision_in_flight(db, receipt_id: int) -> bool:
+    """Whether policy retirement must wait for a claimed external mutation."""
+    if _pending_request(db, receipt_id):
+        return True
+    return _live_claim(db, receipt_id, "") is not None
 
 
 def _fields(row: FactoryReceipt) -> dict:
@@ -1104,40 +1133,45 @@ def request_chat(receipt_id: int, note: str, actor: str) -> dict:
         return {"ok": False, "reason": "a chat request needs a note"}
     if len(note) > MAX_NOTE:
         raise DecisionError(422, "the note is too long")
-    with _read_session() as db:
+    with _locked_session() as (db, control):
         row = _receipt(db, receipt_id)
+        _require_current_generation(db, row, control)
         if _pending_request(db, receipt_id):
             raise DecisionError(
                 409, "a durable decision request has an unresolved outcome"
             )
         escalation = escalation_of(row)
         fields = _fields(row)
-    if escalation is None:
-        raise DecisionError(409, "this receipt raised no escalation")
-    # A dismiss is not a decision, so asking about a card you cleared is
-    # allowed: it is the way back from one keypress that wrote nothing.
-    if terminal_resolution(escalation.get("resolved")):
-        raise DecisionError(409, "this escalation was already decided")
-    # Keyed on how many times chat has been asked, so a second, different
-    # question posts a second comment while a retry of the first does not.
-    sequence = len(escalation.get("chat") or [])
-    marker = _marker(receipt_id, f"chat-{sequence}")
-    answer = (
-        "Re-queued for another brief that answers this."
-        if fields["task_class"] == TASK_CLASS
-        else "Re-admitted to the delivery lane with this as the direction."
-    )
-    try:
-        _comment(
-            fields["repo"],
-            fields["issue_number"],
-            marker,
-            f"{CHAT_PREFIX} {note}\n\n{answer}",
+        if escalation is None:
+            raise DecisionError(409, "this receipt raised no escalation")
+        # A dismiss is not a decision, so asking about a card you cleared is
+        # allowed: it is the way back from one keypress that wrote nothing.
+        if terminal_resolution(escalation.get("resolved")):
+            raise DecisionError(409, "this escalation was already decided")
+        # Keyed on how many times chat has been asked, so a second, different
+        # question posts a second comment while a retry of the first does not.
+        sequence = len(escalation.get("chat") or [])
+        marker = _marker(receipt_id, f"chat-{sequence}")
+        answer = (
+            "Re-queued for another brief that answers this."
+            if fields["task_class"] == TASK_CLASS
+            else "Re-admitted to the delivery lane with this as the direction."
         )
-    except (httpx.HTTPError, ValueError) as exc:
-        raise DecisionError(502, "the question could not be posted on GitHub") from exc
-    with _locked_session() as (db, _control):
-        row = _receipt(db, receipt_id)
+        try:
+            # Keep the control-row fence until the receipt is re-queued. A
+            # generation bump can therefore happen before this operation, in
+            # which case it is refused above, or afterwards, when configure
+            # retires it. It cannot land between the GitHub write and state.
+            _comment(
+                fields["repo"],
+                fields["issue_number"],
+                marker,
+                f"{CHAT_PREFIX} {note}\n\n{answer}",
+            )
+        except (httpx.HTTPError, ValueError) as exc:
+            raise DecisionError(
+                502, "the question could not be posted on GitHub"
+            ) from exc
         task_id = row.task_id
         blocker = _requeue_refine(db, row, note, actor)
         _audit(
@@ -1275,6 +1309,7 @@ def request_decision(
                 )
             else:
                 row = _receipt(db, receipt_id)
+                _require_current_generation(db, row, _control)
                 fields, escalation, resolved = _fields(row), escalation_of(row), None
                 if fields["decision_id"] != decision_id or not escalation:
                     raise DecisionError(
@@ -1397,6 +1432,7 @@ def _apply_chat_request(fields: dict, request: dict, actor: str) -> dict:
 __all__ = [
     "DecisionError",
     "apply_decision",
+    "decision_in_flight",
     "request_chat",
     "request_decision",
     "resume_escalated",

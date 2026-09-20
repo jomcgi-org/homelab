@@ -524,7 +524,15 @@ def test_closed_issue_cards_are_dismissed_together_with_close_times(
 
     result = conductor.revalidate_escalations()
 
-    assert result == {"cards": 2, "checked": 2, "resolved": 2, "batches": 1}
+    assert result == {
+        "cards": 2,
+        "checked": 2,
+        "resolved": 2,
+        "retired": 0,
+        "generation_candidates": 0,
+        "generation_blocked": 0,
+        "batches": 1,
+    }
     assert len(calls) == 1
     query, variables = calls[0]
     assert variables == {"owner": "owner", "name": "repo"}
@@ -597,6 +605,96 @@ def test_changed_issue_body_supersedes_card_without_inferring_an_answer(
     assert resolution["effects"] == {"dismissed": True}
 
 
+def test_revalidation_repairs_preexisting_stale_terminal_cards_locally(
+    db, github, notices, monkeypatch
+):
+    first, second = escalate_two(db, github, notices)
+    with Session(db) as session:
+        first_row = session.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == first)
+        ).one()
+        second_row = session.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == second)
+        ).one()
+        first_row.state = "succeeded"
+        second_row.state = "failed"
+        control = session.get(FactoryControl, "factory")
+        policy = json.loads(control.policy_json)
+        control.policy_json = json.dumps({**policy, "generation": 4})
+        session.add_all([first_row, second_row, control])
+        session.commit()
+
+    def unexpected(*_args):
+        pytest.fail("generation-stale cards need no GitHub read or write")
+
+    monkeypatch.setattr(landing, "github_graphql", unexpected)
+    monkeypatch.setenv("FACTORY_ESCALATION_REVALIDATION_ENABLED", "true")
+
+    result = conductor.revalidate_escalations()
+
+    assert result == {
+        "cards": 2,
+        "checked": 0,
+        "resolved": 2,
+        "retired": 0,
+        "generation_candidates": 2,
+        "generation_blocked": 0,
+        "batches": 0,
+    }
+    with Session(db) as session:
+        for task_id, state in ((first, "succeeded"), (second, "failed")):
+            row = session.exec(
+                select(FactoryReceipt).where(FactoryReceipt.task_id == task_id)
+            ).one()
+            assert row.state == state
+            resolution = json.loads(row.escalation_json)["resolved"]
+            assert resolution["effect"] == "escape-dismiss"
+            assert resolution["effects"] == {
+                "dismissed": True,
+                "receipt_retired": False,
+            }
+            assert "from 0 to 4" in resolution["note"]
+    assert github.writes == []
+
+
+def test_generation_reconciliation_is_bounded_and_idempotent(
+    db, github, notices
+):
+    first, second = escalate_two(db, github, notices)
+    with Session(db) as session:
+        control = session.get(FactoryControl, "factory")
+        policy = json.loads(control.policy_json)
+        control.policy_json = json.dumps({**policy, "generation": 3})
+        session.add(control)
+        session.commit()
+
+    first_pass = controls.reconcile_generation_stale_receipts(limit=1)
+    second_pass = controls.reconcile_generation_stale_receipts(limit=1)
+    third_pass = controls.reconcile_generation_stale_receipts(limit=1)
+
+    assert first_pass == {
+        "candidates": 1,
+        "retired": 1,
+        "cards_resolved": 1,
+        "blocked": 0,
+    }
+    assert second_pass == first_pass
+    assert third_pass == {
+        "candidates": 0,
+        "retired": 0,
+        "cards_resolved": 0,
+        "blocked": 0,
+    }
+    with Session(db) as session:
+        rows = session.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id.in_((first, second)))
+        ).all()
+        assert len(rows) == 2
+        assert all(row.state == "cancelled" for row in rows)
+        assert all(json.loads(row.escalation_json)["resolved"] for row in rows)
+    assert github.writes == []
+
+
 def test_revalidation_off_does_not_read_github(db, github, notices, monkeypatch):
     task_id, _policy = escalate(db, github, notices)
 
@@ -609,6 +707,9 @@ def test_revalidation_off_does_not_read_github(db, github, notices, monkeypatch)
         "cards": 0,
         "checked": 0,
         "resolved": 0,
+        "retired": 0,
+        "generation_candidates": 0,
+        "generation_blocked": 0,
         "batches": 0,
     }
     assert json.loads(receipt_of(db, task_id).escalation_json)["resolved"] is None

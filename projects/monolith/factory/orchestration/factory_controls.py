@@ -44,6 +44,8 @@ ESCALATED = "escalated"
 # terminal, because a decision can still return it to the lane, but nothing
 # the server does on its own will move it either.
 _SETTLED = (*_TERMINAL, ESCALATED)
+GENERATION_RECONCILIATION_LIMIT = 50
+GENERATION_RETIREMENT_ACTOR = "factory:generation-retirement"
 _DELIVERY_BRANCH = re.compile(
     r"factory/[A-Za-z0-9](?:[A-Za-z0-9._/-]{0,253}[A-Za-z0-9_-])?"
 )
@@ -1853,6 +1855,126 @@ def task_snapshot(task_id: str, *, session: Session | None = None) -> dict:
         )
 
 
+def _generation_retirement_candidates(
+    db: Session, current_generation: int
+) -> list[FactoryReceipt]:
+    """Old inert receipts and old unresolved cards, never live old work."""
+    candidates = []
+    rows = db.exec(
+        select(FactoryReceipt)
+        .where(FactoryReceipt.generation < current_generation)
+        .order_by(FactoryReceipt.id)
+    ).all()
+    for row in rows:
+        if row.state in _ACTIVE:
+            continue
+        escalation = (
+            json.loads(row.escalation_json) if row.escalation_json else None
+        )
+        unresolved = isinstance(escalation, dict) and escalation.get("resolved") is None
+        if row.state in ("queued", ESCALATED) or unresolved:
+            candidates.append(row)
+    return candidates
+
+
+def _retire_generation_candidate(
+    db: Session,
+    row: FactoryReceipt,
+    current_generation: int,
+    actor: str,
+) -> dict:
+    """Settle one old queue or card without moving it into the new policy."""
+    previous_state = row.state
+    escalation = json.loads(row.escalation_json) if row.escalation_json else None
+    card_resolved = (
+        isinstance(escalation, dict) and escalation.get("resolved") is None
+    )
+    receipt_retired = row.state in ("queued", ESCALATED)
+    note = (
+        f"Policy generation advanced past this receipt from {row.generation} to "
+        f"{current_generation}; the old-generation work was retired without "
+        "being re-stamped or resumed under the new policy."
+    )
+    if card_resolved:
+        identity = decision_identity(
+            {
+                "id": row.id,
+                "repo": row.repo,
+                "generation": row.generation,
+                "escalation": escalation,
+            }
+        )
+        escalation["resolved"] = {
+            "option_key": "escape:dismiss",
+            "label": "Dismiss the escalation",
+            "effect": "escape-dismiss",
+            "actor": GENERATION_RETIREMENT_ACTOR,
+            "note": note,
+            "effects": {
+                "dismissed": True,
+                "receipt_retired": receipt_retired,
+            },
+            "decided_at": _now().isoformat(),
+            "decision_id": identity,
+        }
+        row.escalation_json = _json(escalation)
+    if receipt_retired:
+        row.state = "cancelled"
+    row.updated_at = _now()
+    db.add(row)
+    _audit(
+        db,
+        GENERATION_RETIREMENT_ACTOR,
+        "generation_stale_receipt_retired",
+        task_id=row.task_id,
+        receipt_id=row.id,
+        issue_number=row.issue_number,
+        receipt_generation=row.generation,
+        policy_generation=current_generation,
+        previous_state=previous_state,
+        state=row.state,
+        receipt_retired=receipt_retired,
+        escalation_resolved=card_resolved,
+        configured_by=actor,
+        reason=note,
+    )
+    return {"receipt_retired": receipt_retired, "card_resolved": card_resolved}
+
+
+def reconcile_generation_stale_receipts(
+    actor: str = GENERATION_RETIREMENT_ACTOR,
+    *,
+    limit: int = GENERATION_RECONCILIATION_LIMIT,
+    session: Session | None = None,
+) -> dict[str, int]:
+    """Bounded repair for receipts stranded before configure gained retirement."""
+    if type(limit) is not int or not 1 <= limit <= GENERATION_RECONCILIATION_LIMIT:
+        raise ValueError("invalid generation reconciliation limit")
+    from factory.orchestration.factory_decisions import decision_in_flight
+
+    counts = {"candidates": 0, "retired": 0, "cards_resolved": 0, "blocked": 0}
+    with _locked_session(session) as (db, control):
+        policy = json.loads(control.policy_json or "{}")
+        current_generation = policy.get("generation")
+        if type(current_generation) is not int:
+            return counts
+        reconciled = 0
+        for row in _generation_retirement_candidates(db, current_generation):
+            if reconciled >= limit:
+                break
+            counts["candidates"] += 1
+            if decision_in_flight(db, row.id):
+                counts["blocked"] += 1
+                continue
+            result = _retire_generation_candidate(
+                db, row, current_generation, actor
+            )
+            reconciled += 1
+            counts["retired"] += int(result["receipt_retired"])
+            counts["cards_resolved"] += int(result["card_resolved"])
+    return counts
+
+
 def set_control(
     action: str,
     actor: str,
@@ -1910,10 +2032,43 @@ def set_control(
             ):
                 reason = "generation_not_advanced"
             else:
-                control.policy_json = _json(configured)
-                # Configuration does not change execution authority: enabled
-                # work continues, paused admissions stay paused, and initial
-                # configuration remains disabled until an explicit enable.
+                candidates = (
+                    _generation_retirement_candidates(
+                        db, configured["generation"]
+                    )
+                    if configured["generation"]
+                    > previous.get("generation", -1)
+                    else []
+                )
+                from factory.orchestration.factory_decisions import (
+                    decision_in_flight,
+                )
+
+                blocked = [
+                    row.id for row in candidates if decision_in_flight(db, row.id)
+                ]
+                if blocked:
+                    reason = "generation_retirement_decision_in_flight"
+                    configure_detail["blocked_receipt_ids"] = blocked
+                else:
+                    retired = [
+                        _retire_generation_candidate(
+                            db, row, configured["generation"], actor
+                        )
+                        for row in candidates
+                    ]
+                    configure_detail.update(
+                        generation_receipts_retired=sum(
+                            int(item["receipt_retired"]) for item in retired
+                        ),
+                        generation_escalations_resolved=sum(
+                            int(item["card_resolved"]) for item in retired
+                        ),
+                    )
+                    control.policy_json = _json(configured)
+                    # Configuration does not change execution authority: enabled
+                    # work continues, paused admissions stay paused, and initial
+                    # configuration remains disabled until an explicit enable.
         elif action == "enable":
             if not json.loads(control.policy_json):
                 reason = "not_configured"
