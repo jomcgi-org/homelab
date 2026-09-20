@@ -1,15 +1,12 @@
 # Path-based private ingress: https://private.jomcgi.dev/app/argocd
 # Replaced the former argocd.jomcgi.dev tunnel route (retired in PR #2534).
+# Connection details live in values.yaml; this overlay only toggles the routes.
 cfIngress:
   enabled: true
-  tier: trusted
-  hostname: private.jomcgi.dev
-  pathPrefix: /app/argocd
-  serviceName: argocd-server
-  servicePort: 80
-  gateway:
-    name: cloudflare-ingress
-    namespace: envoy-gateway-system
+  githubWebhook:
+    enabled: true
+    # server.rootpath=/app/argocd below moves the API under the prefix.
+    rewritePrefix: /app/argocd/api/webhook
 
 argo-cd:
   global:

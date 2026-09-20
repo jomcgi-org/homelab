@@ -100,9 +100,10 @@ dashboard; the repo carries only the verification half,
 renders an Envoy `SecurityPolicy` that validates `Cf-Access-Jwt-Assertion`
 and projects the `email` claim to `X-Auth-Email`. Live consumers on the hub:
 `monolith-private-cf-access` and `kargo-private-cf-access`
-(`kubectl get securitypolicies -A`). ArgoCD has no route on the hub
+(`kubectl get securitypolicies -A`). ArgoCD has no UI route on the hub
 (`cfIngress.enabled: false` in `projects/platform/argocd/values-gke.yaml`);
-it is reached through the Kubernetes API over the tailnet.
+the UI is reached through the Kubernetes API over the tailnet, and only the
+push webhook route below is exposed here.
 
 Documented holes in that gate, each deliberate:
 
@@ -110,6 +111,12 @@ Documented holes in that gate, each deliberate:
   with no `SecurityPolicy`, reachable through an IP-allowlist bypass in the
   Access policy and authenticated by HMAC in the handler
   (`projects/monolith/chart/templates/httproute-private.yaml`).
+- `/webhooks/github/argocd` is the ArgoCD push-sync webhook route, enabled on
+  the hub by `cfIngress.githubWebhook.enabled: true` in
+  `projects/platform/argocd/values-gke.yaml`. It is a separate route with no
+  `SecurityPolicy`, reachable through the same IP-allowlist bypass, so GitHub
+  push events reach `argocd-server` instead of falling through to the
+  monolith's private route. ArgoCD treats it as an unsigned refresh trigger.
 - `/img/` on `private.jomcgi.dev` is the public tier's imgproxy route and
   carries no `SecurityPolicy`; the edge Access policy is the only gate.
 - `friends.jomcgi.dev` has no Access application. The authentik
