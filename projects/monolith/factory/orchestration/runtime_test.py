@@ -264,6 +264,19 @@ def test_the_node_workflow_version_changes_when_a_step_body_changes(monkeypatch)
     assert runtime.node_workflow_version() != before
 
 
+def test_session_binding_compatibility_seam_keeps_the_node_version(monkeypatch):
+    """Early binding can repair in-flight starts without changing their identity."""
+    from factory.orchestration import node_workflows
+
+    before = runtime.node_workflow_version()
+
+    def session_api(*_args, **_kwargs) -> int:
+        return 42
+
+    monkeypatch.setattr(node_workflows, "_session_api", session_api)
+    assert runtime.node_workflow_version() == before
+
+
 def test_an_unreadable_source_fails_launch_rather_than_falling_back(monkeypatch):
     """Falling back to the DBOS-computed version is not the neutral choice.
 
