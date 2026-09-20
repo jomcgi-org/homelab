@@ -26,7 +26,10 @@ from factory.orchestration.factory_models import (
     WorkItemEvent,
 )
 from factory.orchestration.models import SwarmTask
-from factory.orchestration.work_items import set_authority_local
+from factory.orchestration.work_items import (
+    mint_or_sync_from_github,
+    set_authority_local,
+)
 
 SECRET = "factory-test-secret"
 
@@ -356,7 +359,7 @@ def test_closed_item_rejects_stale_equal_and_missing_but_later_reopens(
         item = session.get(WorkItem, item_id)
         assert item.state == "ready"
         assert item.title == "Legitimate reopen"
-        _item, outcome = webhook.mint_or_sync_from_github(
+        _item, outcome = mint_or_sync_from_github(
             session,
             "owner/repo",
             _issue(title="Stale sweep", updated_at="2026-09-20T10:02:30Z"),
@@ -404,12 +407,12 @@ def test_duplicate_and_concurrent_delivery_apply_once(tmp_path, monkeypatch):
 
 def test_processing_failure_rolls_back_claim_for_safe_retry(tmp_path, monkeypatch):
     engine, client = _setup(tmp_path, monkeypatch)
-    original = webhook.mint_or_sync_from_github
+    original = webhook._mint_or_sync_from_github_locked
 
     def fail(*_args, **_kwargs):
         raise RuntimeError("transient database failure")
 
-    monkeypatch.setattr(webhook, "mint_or_sync_from_github", fail)
+    monkeypatch.setattr(webhook, "_mint_or_sync_from_github_locked", fail)
     failed = _post(client, _payload(), delivery="retryable-delivery")
     assert failed.status_code == 500
     with Session(engine) as session:
@@ -417,7 +420,7 @@ def test_processing_failure_rolls_back_claim_for_safe_retry(tmp_path, monkeypatc
         assert session.exec(select(FactoryGithubIssueState)).all() == []
         assert session.exec(select(WorkItem)).all() == []
 
-    monkeypatch.setattr(webhook, "mint_or_sync_from_github", original)
+    monkeypatch.setattr(webhook, "_mint_or_sync_from_github_locked", original)
     retried = _post(client, _payload(), delivery="retryable-delivery")
     assert retried.status_code == 200
     assert retried.json()["outcome"] == "trusted_minted"

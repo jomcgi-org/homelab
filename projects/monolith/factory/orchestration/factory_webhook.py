@@ -24,8 +24,9 @@ from factory.orchestration.factory_models import FactoryWebhookDelivery, WorkIte
 from factory.orchestration.work_item_links import reconcile_body_edges
 from factory.orchestration.work_items import (
     WorkItemError,
+    _lock_github_repo_items,
+    _mint_or_sync_from_github_locked,
     github_issue_updated_at,
-    mint_or_sync_from_github,
     order_github_issue_snapshot,
     transition,
     trust_for_github_author,
@@ -157,19 +158,6 @@ def _claim_delivery(
     return row
 
 
-def _locked_repo_items(session: Session, repo: str) -> list[WorkItem]:
-    """Read fresh authority for the issue and dependency endpoints."""
-    return list(
-        session.exec(
-            select(WorkItem)
-            .where(WorkItem.github_repo == repo)
-            .order_by(WorkItem.id)
-            .with_for_update()
-            .execution_options(populate_existing=True)
-        ).all()
-    )
-
-
 def process_delivery(
     session: Session,
     *,
@@ -225,21 +213,6 @@ def process_delivery(
     if state not in ("open", "closed") or action == "closed" and state != "closed":
         raise HTTPException(422, "issue lifecycle state is inconsistent")
 
-    locked_items = _locked_repo_items(session, repo)
-    existing = next(
-        (item for item in locked_items if item.github_issue_number == number), None
-    )
-    if existing is not None and existing.authority == "local":
-        claim.outcome = "local_untouched"
-        claim.work_item_id = existing.id
-        session.add(claim)
-        session.commit()
-        return {
-            "status": "accepted",
-            "outcome": claim.outcome,
-            "work_item_id": existing.id,
-        }
-
     trust = trust_for_github_author(
         issue.get("user"), trusted_authors=trusted_authors()
     )
@@ -263,6 +236,19 @@ def process_delivery(
         )
     except WorkItemError as exc:
         raise HTTPException(422, str(exc)) from exc
+    # The per-issue source fence is always acquired before any work-item lock.
+    # Fetch existence and authority only after a possible wait on that fence.
+    existing = _lock_github_repo_items(session, repo).get(number)
+    if existing is not None and existing.authority == "local":
+        claim.outcome = "local_untouched"
+        claim.work_item_id = existing.id
+        session.add(claim)
+        session.commit()
+        return {
+            "status": "accepted",
+            "outcome": claim.outcome,
+            "work_item_id": existing.id,
+        }
     if ordering_outcome is not None:
         claim.outcome = f"trusted_{ordering_outcome}"
         if existing is not None:
@@ -297,10 +283,11 @@ def process_delivery(
             claim.work_item_id = item.id
     else:
         try:
-            item, outcome = mint_or_sync_from_github(
+            item, outcome = _mint_or_sync_from_github_locked(
                 session,
                 repo,
                 issue,
+                existing,
                 actor="github:webhook",
                 trusted_authors=trusted_authors(),
             )
