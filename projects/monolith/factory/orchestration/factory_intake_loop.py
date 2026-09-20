@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 import logging
 import re
+from datetime import datetime, timedelta, timezone
 
 from sqlmodel import select
 
@@ -12,15 +12,15 @@ from factory.orchestration.factory_controls import (
     DEFAULT_TASK_CLASS,
     LANES,
     _audit,
-    is_advisory,
-    receipt_task_class,
     _locked_session,
     _now,
     _read_session,
     delivery_admissions,
     intake_policy,
     intake_state,
+    is_advisory,
     lane_for,
+    receipt_task_class,
 )
 from factory.orchestration.factory_intake import (
     INTAKE_ACTOR,
@@ -275,16 +275,27 @@ def _local_candidates(
     room: dict[str, bool],
     cooldown_cutoff: datetime,
 ) -> tuple[list[dict], dict[str, int], int]:
-    """Build candidates from local-authority work scoped to this repository."""
+    """Build candidates from authoritative local rows without a GitHub read."""
     excluded = {reason: 0 for reason in _EXCLUSION_REASONS}
     exclude_labels = {label.lower() for label in intake["exclude_labels"]}
     candidates = []
+
+    # Enabling webhook ingress is also the reversible sweep cutover. Trusted
+    # GitHub-authority rows then enter the same candidate policy as local rows;
+    # held semi-trusted and ignored untrusted deliveries never reach admission.
+    from factory.orchestration.factory_webhook import webhook_enabled
+
+    item_scope = WorkItem.authority == "local"
+    if webhook_enabled():
+        item_scope = item_scope | (
+            (WorkItem.authority == "github") & (WorkItem.trust == "trusted")
+        )
 
     with _read_session() as db:
         local_items = db.exec(
             select(WorkItem)
             .where(
-                WorkItem.authority == "local",
+                item_scope,
                 WorkItem.state.in_(("ready", "open")),
                 WorkItem.github_repo == repo,
             )
@@ -407,7 +418,7 @@ def _local_candidates(
             {
                 "issue": item,
                 "number": number,
-                "source": "local",
+                "source": ("local" if work_item.authority == "local" else "webhook"),
                 "work_item_id": work_item.id,
                 "lane": lane,
                 "task_class": task_class,
@@ -499,7 +510,14 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
         issues_cut = False
         pulls_cut = False
         github_status = None
-        if _listing_due(now):
+        from factory.orchestration.factory_webhook import webhook_enabled
+
+        if webhook_enabled():
+            # Webhook ingress and the hourly sweep are mutually exclusive. The
+            # stored trusted rows above still pass every existing intake and
+            # admission gate, without a render or selection read from GitHub.
+            github_status = "webhook"
+        elif _listing_due(now):
             # The clock records the ATTEMPT, not the result. A sweep that fails
             # is the case most worth rate limiting: a 403 usually means the shared
             # budget is already spent, and retrying every fifteen seconds is how
@@ -535,8 +553,8 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
 
         if github_status is None:
             try:
-                from factory.orchestration.work_items import sync_github_work_items
                 from factory.orchestration.work_item_links import reconcile_body_edges
+                from factory.orchestration.work_items import sync_github_work_items
 
                 work_item_counts = sync_github_work_items(
                     repo, issues, truncated=issues_cut, actor=ACTOR

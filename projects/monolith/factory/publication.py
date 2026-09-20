@@ -5,10 +5,10 @@ grant on the swarm or agent_sessions schemas, and the public image is pruned of
 private execution and publication code, so there is nothing on that side that could assemble
 a board even if the rows were reachable. This module is the private half of the
 snapshot pattern that answers that: it reads the real tables with the real
-code, shapes three payload kinds, and writes them to public_api tables that
+code, shapes four payload kinds, and writes them to public_api tables that
 factory/public_view.py serves with plain SQL.
 
-Three payload kinds, because the three pages differ by an order of magnitude in
+Four payload kinds, because the pages differ by an order of magnitude in
 size:
 
 * the activity payload is the board (in flight, queued, recent) and is read on
@@ -17,6 +17,8 @@ size:
   a digest of every turn),
 * one session payload is the full record of one attempt, every turn with its
   prompt, result, diff and rationale.
+* one work-item payload is the safe GitHub-origin record and public-to-public
+  edges, without receipts, events, escalation data or execution identifiers.
 
 Prompts, results and diffs go out verbatim: that is the point of the pages, and
 the repo owner approved it. Identity does not. ``actor``, ``triggered_by``,
@@ -38,7 +40,7 @@ import zlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from sqlalchemy import Integer, String, bindparam
+from sqlalchemy import BigInteger, Integer, String, bindparam
 from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, select, text
 
@@ -286,6 +288,48 @@ def task_summary(receipt: dict) -> dict:
     }
 
 
+def shape_work_item(
+    item: dict,
+    edges_out: list[dict],
+    edges_in: list[dict],
+    snapshotted_at: str,
+) -> dict:
+    """A public GitHub-origin work item, without private execution records."""
+    repo = item.get("github_repo")
+    number = item.get("github_issue_number")
+    source_ref = (
+        f"https://github.com/{repo}/issues/{number}"
+        if isinstance(repo, str) and type(number) is int and number > 0
+        else None
+    )
+
+    def edge(row: dict, other: str) -> dict:
+        return {
+            other: row.get(other),
+            "kind": row.get("kind"),
+            "source": row.get("source"),
+        }
+
+    return {
+        "snapshotted_at": snapshotted_at,
+        "item": {
+            "id": item.get("id"),
+            "title": item.get("title"),
+            "state": item.get("state"),
+            "task_class": item.get("task_class"),
+            "labels": list(item.get("labels") or []),
+            "trust": item.get("trust"),
+            "authority": item.get("authority"),
+            "github_issue_number": number,
+            "source_ref": source_ref,
+            "created_at": _iso(item.get("created_at")),
+            "updated_at": _iso(item.get("updated_at")),
+        },
+        "edges_out": [edge(row, "to_id") for row in edges_out],
+        "edges_in": [edge(row, "from_id") for row in edges_in],
+    }
+
+
 def load_usage(usage_json: str | None) -> dict | None:
     """``usage_json`` is stored as a JSON string; a bad one is not a failure."""
     if not usage_json:
@@ -493,12 +537,68 @@ def session_payload(
 
 @dataclass(frozen=True)
 class PublicSnapshot:
-    """The three payload kinds, keyed the way the snapshot tables key them."""
+    """The public payload kinds, keyed the way the snapshot tables key them."""
 
     activity: dict
     tasks: dict[int, dict]
     sessions: dict[str, dict]
     session_issues: dict[str, int | None]
+    work_items: dict[int, dict]
+
+
+def _public_work_items(db: Session, snapshotted_at: str) -> dict[int, dict]:
+    """Shape only GitHub-origin rows and edges whose endpoints are both public."""
+    from factory.orchestration.factory_models import WorkItem, WorkItemEdge
+
+    rows = db.exec(
+        select(WorkItem)
+        .where(
+            WorkItem.source_kind == "github",
+            WorkItem.github_repo.is_not(None),
+            WorkItem.github_issue_number.is_not(None),
+        )
+        .order_by(WorkItem.id)
+    ).all()
+    ids = {row.id for row in rows if row.id is not None}
+    edges = (
+        db.exec(
+            select(WorkItemEdge)
+            .where(
+                WorkItemEdge.from_id.in_(ids),
+                WorkItemEdge.to_id.in_(ids),
+            )
+            .order_by(WorkItemEdge.id)
+        ).all()
+        if ids
+        else []
+    )
+    result = {}
+    for row in rows:
+        if row.id is None:
+            continue
+        item = {
+            key: getattr(row, key)
+            for key in (
+                "id",
+                "title",
+                "state",
+                "task_class",
+                "labels",
+                "trust",
+                "authority",
+                "github_repo",
+                "github_issue_number",
+                "created_at",
+                "updated_at",
+            )
+        }
+        result[row.id] = shape_work_item(
+            item,
+            [edge.model_dump() for edge in edges if edge.from_id == row.id],
+            [edge.model_dump() for edge in edges if edge.to_id == row.id],
+            snapshotted_at,
+        )
+    return result
 
 
 def _board_task_ids(db: Session) -> tuple[set[str], dict[int, str]]:
@@ -509,7 +609,6 @@ def _board_task_ids(db: Session) -> tuple[set[str], dict[int, str]]:
     out not to be on the board only costs a plan read that nothing renders.
     """
     from factory.orchestration.factory_models import FactoryReceipt
-
     from factory.private_view import ACTIVE_STATES, QUEUED_STATES, RECENT_LIMIT
 
     rows = db.exec(
@@ -602,6 +701,7 @@ def build_public_snapshot(session: Session) -> PublicSnapshot:
     from factory.private_view import build_factory_view
 
     snapshotted_at = _iso(datetime.now(timezone.utc))
+    work_items = _public_work_items(session, snapshotted_at)
     task_ids, bodies = _board_task_ids(session)
     board = build_factory_view(session=session, plan_tasks=task_ids)
     policy = shape_policy(board.get("policy"), _raw_policy(session))
@@ -619,6 +719,7 @@ def build_public_snapshot(session: Session) -> PublicSnapshot:
             tasks={},
             sessions={},
             session_issues={},
+            work_items=work_items,
         )
 
     cards = [
@@ -682,6 +783,7 @@ def build_public_snapshot(session: Session) -> PublicSnapshot:
         tasks=tasks,
         sessions=sessions,
         session_issues=session_issues,
+        work_items=work_items,
     )
 
 
@@ -713,6 +815,15 @@ _SESSION_UPSERT = text(
         snapshotted_at = EXCLUDED.snapshotted_at
     """
 )
+_WORK_ITEM_UPSERT = text(
+    """
+    INSERT INTO public_api.factory_work_item_snapshot
+        (work_item_id, payload, snapshotted_at)
+    VALUES (:work_item_id, CAST(:payload AS jsonb), :snapshotted_at)
+    ON CONFLICT (work_item_id) DO UPDATE
+    SET payload = EXCLUDED.payload, snapshotted_at = EXCLUDED.snapshotted_at
+    """
+)
 # The board is a rolling window, so a task that falls off the recent list stops
 # being published. Without these the tables would grow without bound.
 # The expanding bindparams carry an explicit type: with an EMPTY keep-list
@@ -724,6 +835,9 @@ _TASK_PRUNE = text(
 _SESSION_PRUNE = text(
     "DELETE FROM public_api.factory_session_snapshot WHERE session_key NOT IN :keep"
 ).bindparams(bindparam("keep", expanding=True, type_=String()))
+_WORK_ITEM_PRUNE = text(
+    "DELETE FROM public_api.factory_work_item_snapshot WHERE work_item_id NOT IN :keep"
+).bindparams(bindparam("keep", expanding=True, type_=BigInteger()))
 
 
 def _encode(payload: dict) -> str:
@@ -799,14 +913,39 @@ def write_public_snapshot(session: Session) -> dict:
             )
             sessions_skipped += 1
 
+    work_items_skipped = 0
+    for work_item_id, payload in snapshot.work_items.items():
+        savepoint = session.begin_nested()
+        try:
+            session.execute(
+                _WORK_ITEM_UPSERT,
+                {
+                    "work_item_id": work_item_id,
+                    "payload": _encode(payload),
+                    "snapshotted_at": at,
+                },
+            )
+            savepoint.commit()
+        except SQLAlchemyError as exc:
+            savepoint.rollback()
+            logger.warning(
+                "factory_public.work_item_upsert_failed: work item %s skipped (%s)",
+                work_item_id,
+                type(exc).__name__,
+            )
+            work_items_skipped += 1
+
     session.execute(_TASK_PRUNE, {"keep": list(snapshot.tasks)})
     session.execute(_SESSION_PRUNE, {"keep": list(snapshot.sessions)})
+    session.execute(_WORK_ITEM_PRUNE, {"keep": list(snapshot.work_items)})
     session.commit()
 
     return {
         "tasks": len(snapshot.tasks),
         "sessions": len(snapshot.sessions),
+        "work_items": len(snapshot.work_items),
         "tasks_skipped": tasks_skipped,
         "sessions_skipped": sessions_skipped,
+        "work_items_skipped": work_items_skipped,
         "snapshotted_at": at,
     }

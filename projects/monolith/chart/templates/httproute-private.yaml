@@ -254,7 +254,7 @@ spec:
 {{- end }}
 ---
 {{- if .Values.cfIngress.private.githubWebhook.enabled }}
-# GitHub Semgrep webhook route — a SEPARATE HTTPRoute on the same private gateway
+# GitHub webhook route, a SEPARATE HTTPRoute on the same private gateway
 # and hostname, carrying ONLY the webhook path and routed to the FastAPI backend
 # port. It is deliberately its own route so the cf-access SecurityPolicy above
 # (which targets the -private route as a whole) does NOT apply to it: GitHub
@@ -279,6 +279,11 @@ spec:
         - path:
             type: PathPrefix
             value: /webhooks/github/semgrep
+        # Factory issue lifecycle ingress uses the same authenticated GitHub
+        # edge path and verifies its own distinct HMAC secret over raw bytes.
+        - path:
+            type: PathPrefix
+            value: /webhooks/github/factory
         # Semgrep AppSec Platform scan webhook (semgrep_scan/perf_webhook.py).
         # Same no-SecurityPolicy treatment: Semgrep sends no Access JWT, so it
         # reaches this route via a Cloudflare Access IP-Bypass for Semgrep's

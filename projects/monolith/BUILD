@@ -5096,6 +5096,23 @@ py_test(
     ],
 )
 
+# Hand-registered (factory is gazelle-excluded): raw-body HMAC authentication,
+# trust admission, durable replay fencing, safe retries and local authority.
+py_test(
+    name = "swarm_factory_webhook_test",
+    srcs = ["factory/orchestration/factory_webhook_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_auth",
+        ":pkg_swarm",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
 py_test(
     name = "swarm_work_item_links_test",
     srcs = ["factory/orchestration/work_item_links_test.py"],

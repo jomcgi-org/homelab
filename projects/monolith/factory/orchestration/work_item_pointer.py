@@ -42,7 +42,7 @@ def pointer_enabled() -> bool:
 
 
 def pointer_base_url() -> str:
-    return os.getenv("FACTORY_WORK_ITEM_BASE_URL", "https://private.jomcgi.dev")
+    return os.getenv("FACTORY_WORK_ITEM_BASE_URL", "https://jomcgi.dev/slop")
 
 
 def render_pointer(item: WorkItem) -> str:
