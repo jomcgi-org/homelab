@@ -154,11 +154,24 @@ def test_dev_lifecycle_is_the_only_delete_definition() -> None:
     runbook = _path("STORE_RUNBOOK").read_text()
     assert 'gcloud storage buckets update "gs://$validation_bucket"' in runbook
     assert "--lifecycle-file=" in runbook
-    assert "Production remains on" in runbook
+    assert "default_storage_class" in runbook
+    assert "uniform_bucket_level_access" in runbook
+    assert "public_access_prevention" in runbook
+    assert "lifecycle_config" in runbook
+    assert "storage_class: .storage_class" not in runbook
+    assert "jq '.lifecycle'" not in runbook
+    assert "production Application remains on" in runbook
+    assert "live production bucket still requires verification" in runbook
 
 
 def test_budget_schema_is_alert_only_and_cloud_storage_scoped() -> None:
     specification = json.loads(_path("STORE_BUDGET").read_text())
+    assert set(specification) == {
+        "schemaVersion",
+        "provider",
+        "operatorInputs",
+        "budget",
+    }
     assert specification["schemaVersion"] == 1
     assert specification["provider"] == {
         "api": "billingbudgets.googleapis.com/v1",
@@ -174,6 +187,14 @@ def test_budget_schema_is_alert_only_and_cloud_storage_scoped() -> None:
     }
 
     budget = specification["budget"]
+    assert set(budget) == {
+        "displayName",
+        "budgetFilter",
+        "amount",
+        "thresholdRules",
+        "notificationsRule",
+    }
+    assert budget["displayName"] == "h0melab Cloud Storage monthly alert"
     assert budget["budgetFilter"] == {
         "calendarPeriod": "MONTH",
         "projects": ["projects/OPERATOR_PROJECT_NUMBER"],
@@ -185,7 +206,7 @@ def test_budget_schema_is_alert_only_and_cloud_storage_scoped() -> None:
     assert budget["thresholdRules"] == [
         {"thresholdPercent": 1.0, "spendBasis": "CURRENT_SPEND"}
     ]
-    assert budget["allUpdatesRule"] == {
+    assert budget["notificationsRule"] == {
         "monitoringNotificationChannels": [
             (
                 "projects/OPERATOR_PROJECT_NUMBER/notificationChannels/"
@@ -194,7 +215,13 @@ def test_budget_schema_is_alert_only_and_cloud_storage_scoped() -> None:
         ],
         "disableDefaultIamRecipients": True,
     }
-    assert "pubsubTopic" not in budget["allUpdatesRule"]
+    assert "allUpdatesRule" not in budget
+    assert "pubsubTopic" not in budget["notificationsRule"]
     runbook = _path("STORE_RUNBOOK").read_text()
     assert "entire Cloud Storage service" in runbook
     assert "does not cap or stop spending" in runbook
+    assert "--notifications-rule-monitoring-notification-channels" in runbook
+    assert "--disable-default-iam-recipients" in runbook
+    assert "--notifications-rule-disable-default-iam-recipients" not in runbook
+    assert 'gcloud billing budgets describe "$validation_budget_name"' in runbook
+    assert "budgetFilter, thresholdRules, notificationsRule" in runbook

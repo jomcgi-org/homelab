@@ -112,7 +112,8 @@ budget filtered to the `h0melab` project and Cloud Storage service resource
 `services/95FF-2EF5-5EA1`. The budget covers all project Cloud Storage usage,
 not only one bucket. Alerts do not cap spending. No bucket, lifecycle, budget,
 notification channel, credential, or IAM resource is created by this repository
-stage, and production retains its no-lifecycle-deletion safeguard.
+stage. It defines no production lifecycle deletion rule. An operator must still
+verify the live production bucket has none before and after validation.
 
 ## Warmth GC operations
 
