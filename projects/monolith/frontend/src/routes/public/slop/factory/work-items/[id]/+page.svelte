@@ -116,9 +116,6 @@
     font-family: var(--font-code);
     font-size: 0.68rem;
   }
-  section + section {
-    margin-top: 1.8rem;
-  }
   .edge-list {
     padding: 0;
     margin: 0;
