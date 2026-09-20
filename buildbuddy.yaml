@@ -236,9 +236,10 @@ actions:
           # Suite-shaped genrules are not Bazel tests. Scan every BUILD and
           # BUILD.bazel file before affected-target selection so a newly added
           # package cannot omit the verification tag and silently miss CI.
-          # This executable invokes semgrep-core directly and fails if the
-          # engine cannot run; it never uses the annotation-test skip mode.
-          bazel run //bazel/semgrep/rules:verification_genrule_guard --config=ci -- .
+          # The repository-local AST guard has no scanner artifact dependency.
+          # It reports the number of BUILD files parsed and fails closed on
+          # syntax errors, so zero scan coverage cannot pass silently.
+          python3 ./bazel/tools/ci/verification_genrule_guard.py .
 
           python3 ./bazel/tools/ci/central_build_ratchet.py "$base_ref" HEAD
 

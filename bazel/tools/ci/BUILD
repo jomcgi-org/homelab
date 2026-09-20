@@ -22,6 +22,21 @@ py_test(
     ],
 )
 
+py_library(
+    name = "verification_genrule_guard_lib",
+    srcs = ["verification_genrule_guard.py"],
+    imports = ["."],
+)
+
+py_test(
+    name = "verification_genrule_guard_test",
+    srcs = ["verification_genrule_guard_test.py"],
+    deps = [
+        ":verification_genrule_guard_lib",
+        "@pip//pytest",
+    ],
+)
+
 sh_test(
     name = "ci_test",
     srcs = ["ci_test.sh"],
