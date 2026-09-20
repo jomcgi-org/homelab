@@ -739,6 +739,13 @@ never stores or witnesses anything that scales with the fleet.
 - **Bounded node dials**: every node dial carries a 3 s TCP connect timeout,
   and channel dials run in callers so they never block the `NodeChannel`
   process (#5124).
+- **Staged OTLP capacity metrics**: the endpoint-less default has no metric
+  reader. When `OTEL_EXPORTER_OTLP_ENDPOINT` is present, the control plane adds
+  a 60 s periodic reader backed by `otel_exporter_metrics_otlp` from the pinned
+  official experimental metrics API and SDK 0.6.0 packages. Release boot fails
+  immediately if that exporter module is missing, and the Linux release-boot
+  smoke exercises this configured path without requiring a live collector.
+  Production delivery and stability checks remain outstanding on #6258.
 - **Health surface tiers** (ADR embervm/031): `/health` latches unhealthy
   immediately on a sustained artifact-export failure streak (tier 1, a user's
   data at risk now) and only after more than 24 h without a completed warmth

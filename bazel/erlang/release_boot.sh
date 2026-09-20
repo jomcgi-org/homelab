@@ -35,6 +35,11 @@ export RELEASE_DISTRIBUTION=none
 export LANG=C.UTF-8
 export LC_ALL=C.UTF-8
 export EMBERVM_HTTP_PORT=8080
+# Exercise the endpoint-enabled runtime configuration in Linux CI. The metric
+# reader initializes its gRPC channel asynchronously, so this unreachable local
+# endpoint needs no collector. If its configured exporter module is absent, the
+# runtime guard fails before /healthz can become ready.
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317
 mkdir -p "$RELEASE_TMP"
 
 # `start` runs the release in the foreground (Elixir convention); background it
