@@ -28,7 +28,7 @@
         "spendBasis": "CURRENT_SPEND"
       }
     ],
-    "allUpdatesRule": {
+    "notificationsRule": {
       "monitoringNotificationChannels": [
         "projects/OPERATOR_PROJECT_NUMBER/notificationChannels/OPERATOR_NOTIFICATION_CHANNEL_ID"
       ],

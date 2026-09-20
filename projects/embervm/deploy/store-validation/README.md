@@ -3,8 +3,10 @@
 This runbook stages the repository side of #6193. Nothing in this directory
 creates a bucket, budget, credential, notification channel, or IAM binding.
 `values-store-validation-gke.yaml` is not referenced by either Argo CD
-Application or either kustomization. Production remains on
-`h0melab-ember-bases` and has no lifecycle deletion rule.
+Application or either kustomization. The production Application remains on
+`h0melab-ember-bases`, and this stage defines no production lifecycle deletion
+rule. The live production bucket still requires verification before and after
+the validation run.
 
 The overlay explicitly disarms base retention, remote base retention, warmth
 retention, and direct S3 warmth GC inherited from the base dev values. Confirm
@@ -61,7 +63,7 @@ location or class is empty, or if a production deletion rule exists.
 ```bash
 gcloud storage buckets describe "gs://$production_bucket" --format=json \
   > /tmp/embervm-production-bucket-before.json
-jq '{location, storage_class: .storage_class, lifecycle: .lifecycle}' \
+jq '{location, default_storage_class, lifecycle_config}' \
   /tmp/embervm-production-bucket-before.json
 ```
 
@@ -103,10 +105,8 @@ gcloud storage buckets describe "gs://$validation_bucket" --format=json \
   > /tmp/embervm-validation-bucket-before-lifecycle.json
 gcloud storage buckets get-iam-policy "gs://$validation_bucket" --format=json \
   > /tmp/embervm-validation-bucket-iam.json
-jq '{location, storage_class: .storage_class,
-     uniform: .uniform_bucket_level_access,
-     public_access_prevention: .public_access_prevention,
-     lifecycle: .lifecycle}' \
+jq '{location, default_storage_class, uniform_bucket_level_access,
+     public_access_prevention, lifecycle_config}' \
   /tmp/embervm-validation-bucket-before-lifecycle.json
 if grep -Eq 'allUsers|allAuthenticatedUsers' \
   /tmp/embervm-validation-bucket-iam.json; then
@@ -126,8 +126,8 @@ gcloud storage buckets describe "gs://$validation_bucket" --format=json \
   > /tmp/embervm-validation-bucket-after-lifecycle.json
 gcloud storage buckets describe "gs://$production_bucket" --format=json \
   > /tmp/embervm-production-bucket-after.json
-jq '.lifecycle' /tmp/embervm-validation-bucket-after-lifecycle.json
-jq '.lifecycle' /tmp/embervm-production-bucket-after.json
+jq '.lifecycle_config' /tmp/embervm-validation-bucket-after-lifecycle.json
+jq '.lifecycle_config' /tmp/embervm-production-bucket-after.json
 ```
 
 ## Create the alerts-only budget
@@ -161,7 +161,15 @@ gcloud billing budgets create \
   --filter-services=services/95FF-2EF5-5EA1 \
   --threshold-rule=percent=1.0,basis=current-spend \
   --notifications-rule-monitoring-notification-channels="$validation_notification_channel" \
-  --notifications-rule-disable-default-iam-recipients
+  --disable-default-iam-recipients \
+  --format=json > /tmp/embervm-store-validation-budget-created.json
+
+validation_budget_name=$(jq -er '.name' \
+  /tmp/embervm-store-validation-budget-created.json)
+gcloud billing budgets describe "$validation_budget_name" --format=json \
+  > /tmp/embervm-store-validation-budget-readback.json
+jq '{displayName, amount, budgetFilter, thresholdRules, notificationsRule}' \
+  /tmp/embervm-store-validation-budget-readback.json
 ```
 
 Read the created budget back. Verify USD 15, monthly calendar period, the
