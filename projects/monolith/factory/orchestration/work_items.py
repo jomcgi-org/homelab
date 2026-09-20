@@ -898,13 +898,11 @@ def sync_github_work_items(
             for index, issue in sorted(
                 indexed_issues, key=lambda indexed: _issue_number(indexed[1])
             ):
-                _source_state, ordering_outcomes[index] = (
-                    order_github_issue_snapshot(
-                        db,
-                        repo,
-                        issue,
-                        source_ref="github:sweep",
-                    )
+                _source_state, ordering_outcomes[index] = order_github_issue_snapshot(
+                    db,
+                    repo,
+                    issue,
+                    source_ref="github:sweep",
                 )
 
         locked_items = _lock_github_repo_items(db, repo)

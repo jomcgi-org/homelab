@@ -34,9 +34,7 @@ def _issue(case, *, title: str, updated_at: str, state: str = "open") -> dict:
         "number": case.issue_number,
         "title": title,
         "body": "public issue body",
-        "html_url": (
-            f"https://github.com/{case.repo}/issues/{case.issue_number}"
-        ),
+        "html_url": (f"https://github.com/{case.repo}/issues/{case.issue_number}"),
         "state": state,
         "labels": [{"name": "agent-ready"}],
         "user": {"login": "jomcgi", "type": "User"},
@@ -198,9 +196,7 @@ def test_concurrent_first_open_then_newer_close_rechecks_item_after_fence(
     case, monkeypatch
 ):
     locked, proceed = _hold_after_source_fence(monkeypatch, "delivery:older-open")
-    older_open = _issue(
-        case, title="Older open", updated_at="2026-09-20T10:01:00Z"
-    )
+    older_open = _issue(case, title="Older open", updated_at="2026-09-20T10:01:00Z")
     newer_close = _issue(
         case,
         title="Newer close",
@@ -209,9 +205,7 @@ def test_concurrent_first_open_then_newer_close_rechecks_item_after_fence(
     )
 
     with ThreadPoolExecutor(max_workers=2) as pool:
-        first = pool.submit(
-            _deliver, case, "older", "older-open", "opened", older_open
-        )
+        first = pool.submit(_deliver, case, "older", "older-open", "opened", older_open)
         try:
             blocker_pid = locked.get(timeout=WAIT_SECONDS)
             second = pool.submit(
@@ -241,9 +235,7 @@ def test_reversed_arrival_newer_close_prevents_waiting_stale_first_open(
         updated_at="2026-09-20T10:02:00Z",
         state="closed",
     )
-    older_open = _issue(
-        case, title="Older open", updated_at="2026-09-20T10:01:00Z"
-    )
+    older_open = _issue(case, title="Older open", updated_at="2026-09-20T10:01:00Z")
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         first = pool.submit(
@@ -258,10 +250,7 @@ def test_reversed_arrival_newer_close_prevents_waiting_stale_first_open(
         finally:
             proceed.set()
         assert first.result(timeout=WAIT_SECONDS)["outcome"] == "trusted_closed"
-        assert (
-            second.result(timeout=WAIT_SECONDS)["outcome"]
-            == "trusted_stale_ignored"
-        )
+        assert second.result(timeout=WAIT_SECONDS)["outcome"] == "trusted_stale_ignored"
 
     with Session(case.engine_for("verify")) as session:
         assert (
@@ -274,9 +263,7 @@ def test_reversed_arrival_newer_close_prevents_waiting_stale_first_open(
 
 def test_sweep_and_webhook_first_creation_share_source_fence(case, monkeypatch):
     locked, proceed = _hold_after_source_fence(monkeypatch, "github:sweep")
-    sweep_open = _issue(
-        case, title="Sweep snapshot", updated_at="2026-09-20T10:01:00Z"
-    )
+    sweep_open = _issue(case, title="Sweep snapshot", updated_at="2026-09-20T10:01:00Z")
     webhook_open = _issue(
         case, title="Webhook snapshot", updated_at="2026-09-20T10:02:00Z"
     )
@@ -306,7 +293,5 @@ def test_sweep_and_webhook_first_creation_share_source_fence(case, monkeypatch):
         ).all()
         assert len(items) == 1
         assert items[0].title == "Webhook snapshot"
-        source = session.get(
-            FactoryGithubIssueState, (case.repo, case.issue_number)
-        )
+        source = session.get(FactoryGithubIssueState, (case.repo, case.issue_number))
         assert source.source_ref == "delivery:newer-webhook"
