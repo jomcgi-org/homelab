@@ -917,9 +917,14 @@ defmodule Embervm.S3WarmthGc do
   # regardless of age.
   # Computed over ALL parsed refs, desired or not, so the protection is at least
   # as wide as the retention contract. Session and serving have no such guard.
-  defp tier2_protected(state, _snapshot, candidates, created) do
+  defp tier2_protected(state, snapshot, candidates, created) do
     candidates
     |> Enum.filter(&(&1.kind == :stateful))
+    |> Enum.reject(fn candidate ->
+      MapSet.member?(snapshot.desired_refs, candidate.ref) or
+        MapSet.member?(snapshot.reported_refs, candidate.ref) or
+        Map.get(created, candidate.prefix) == :error
+    end)
     |> Enum.group_by(&{&1.vendor, &1.workload})
     |> Enum.flat_map(fn {_vw, cands} ->
       cands

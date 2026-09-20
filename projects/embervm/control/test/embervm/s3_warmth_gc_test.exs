@@ -613,6 +613,45 @@ defmodule Embervm.S3WarmthGcTest do
       assert deleted(agent) == []
     end
 
+    test "independently held refs do not consume predecessor retention slots" do
+      objects =
+        stateful_artifacts("amd", "live-wl", [
+          "state-desired",
+          "state-reported",
+          "state-unreadable",
+          "state-predecessor",
+          "state-old"
+        ])
+        |> Map.update!("stateful/amd/live-wl/state-unreadable/meta.json", fn {size, modified, _body} ->
+          {size, modified, "not-json"}
+        end)
+
+      {_agent, s3} = new_s3(objects)
+      table = new_cap_table()
+      put_node_fact(table, "node-4", [%{snapshot_ref: "state-reported"}], [])
+
+      gc =
+        start_gc(s3,
+          enabled: false,
+          capacity_table: table,
+          stateful_store: start_store([stateful_row(:serving, "live-wl", "state-desired")]),
+          group_store: start_store([]),
+          volume_fun: fn _ -> nil end,
+          generation_retention_cap: 1
+        )
+
+      assert {:ok, result} = S3WarmthGc.sweep_now(gc)
+      assert Enum.map(result.plan, & &1.prefix) == ["stateful/amd/live-wl/state-old"]
+
+      assert Enum.sort(for(entry <- result.held, do: {entry.prefix, entry.reason})) ==
+               [
+                 {"stateful/amd/live-wl/state-desired", "desired_ref"},
+                 {"stateful/amd/live-wl/state-predecessor", "tier2_generation_retained"},
+                 {"stateful/amd/live-wl/state-reported", "node_reported"},
+                 {"stateful/amd/live-wl/state-unreadable", "meta_unreadable"}
+               ]
+    end
+
     test "generation cap resolves equal timestamps deterministically" do
       objects =
         ["state-a", "state-b", "state-c"]
