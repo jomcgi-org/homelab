@@ -41,7 +41,18 @@ if [[ -z "$BUILDIFIER" ]]; then
 	exit 2
 fi
 
-SEMGREP_CORE=$(find "$RUNFILES_ROOT" -name semgrep-core -not -name '*proprietary*' \( -type f -o -type l \) 2>/dev/null | head -1)
+SEMGREP_CORE=""
+ENGINE_RUNFILES=()
+read -r -a ENGINE_RUNFILES <<<"${VERIFICATION_GUARD_ENGINE_FILES:-}"
+for engine_runfile in "${ENGINE_RUNFILES[@]}"; do
+	if [[ "${engine_runfile##*/}" == "semgrep-core" ]]; then
+		SEMGREP_CORE=$(resolve_main_file "$engine_runfile" || true)
+		[[ -n "$SEMGREP_CORE" ]] && break
+	fi
+done
+if [[ -z "$SEMGREP_CORE" ]]; then
+	SEMGREP_CORE=$(find "$RUNFILES_ROOT" -name semgrep-core -not -name '*proprietary*' \( -type f -o -type l \) 2>/dev/null | head -1)
+fi
 if [[ -z "$SEMGREP_CORE" ]]; then
 	echo "ERROR: semgrep-core not found in runfiles" >&2
 	exit 2
