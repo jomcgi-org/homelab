@@ -24,12 +24,14 @@
   # protocol 2) models the Bank and Relight generation-pairing verbs. stateful.tla
   # models the R4 StartStateful, StopStateful, and ResolveStateful lifecycle.
   # session_lineage.tla models RetireVolume's durable relinquish record and the
-  # RestoreArtifact side of a cross-brick lineage handoff.
+  # RestoreArtifact side of a cross-brick lineage handoff. warmth_gc.tla models
+  # the same two verbs against the S3 warmth sweep, plus ExportArtifact's
+  # files-first/meta.json-last publication order.
   proto_rpcs: %{
     modeled:
       ~w(Prime Assign Destroy WatchNode GetNodeStatus Bank Relight
          StartStateful StopStateful ResolveStateful RetireVolume
-         RestoreArtifact)a,
+         RestoreArtifact ExportArtifact)a,
     excluded:
       ~w(
         BuildBase
@@ -46,11 +48,16 @@
         ~w(DeleteVolume)a ++
         # R5 groups: composite multi-member workloads, out of scope.
         ~w(CreateGroupNetwork DeleteGroupNetwork StartGroupMember StopGroupMember)a ++
-        # R6 continuity: off-node artifact durability, out of scope. ListArtifacts
-        # is the remote (store) inventory read that remote base retention computes
-        # its keep-set from; like its siblings it is durability plumbing, not VM
-        # lifecycle or adoption.
-        ~w(ExportArtifact EvictArtifact ListArtifacts ArchiveVolume)a ++
+        # R6 continuity: off-node artifact durability. ExportArtifact moved to
+        # `modeled` above: warmth_gc.tla models its files-first/meta.json-last
+        # publication order, which is what makes a half-written or half-deleted
+        # prefix read as incomplete rather than stale-valid. EvictArtifact stays
+        # excluded because the S3 warmth GC deletes listed keys through its own
+        # CP-side S3 client, not through this verb. ListArtifacts is the remote
+        # (store) inventory read that remote base retention computes its keep-set
+        # from; like ArchiveVolume it is durability plumbing, not VM lifecycle or
+        # adoption.
+        ~w(EvictArtifact ListArtifacts ArchiveVolume)a ++
         # Artifact-decoupling Phase 2: control-plane -> daemon workload-registry
         # push verbs (SyncRegistry converges the pushed set; Register/Deregister
         # are the incremental forms). They deliver node-side image identity, not
