@@ -55,6 +55,7 @@
 # gazelle:exclude public_faas_rate_limit_test.py
 # gazelle:exclude public_faas_token_projection_test.py
 # gazelle:exclude public_api_chunks_grants_test.py
+# gazelle:exclude personal_retrieval_audit_grants_test.py
 # gazelle:exclude public_turnstile_secret_isolation_test.py
 # gazelle:exclude ember_public_savings_grants_test.py
 # gazelle:exclude ember_synthetic_probe_grants_test.py
@@ -8383,6 +8384,14 @@ bdd_test(
 bdd_test(
     name = "public_api_chunks_grants_test",
     srcs = ["public_api_chunks_grants_test.py"],
+)
+
+# Real-Postgres test: agents_writer can insert audit rows through the narrow
+# column grant, cannot read or delete them, and insert-triggered retention runs
+# atomically through the definer-rights function.
+bdd_test(
+    name = "personal_retrieval_audit_grants_test",
+    srcs = ["personal_retrieval_audit_grants_test.py"],
 )
 
 # Real-Postgres test: public_writer can SELECT/INSERT/UPDATE demo_pg_savings

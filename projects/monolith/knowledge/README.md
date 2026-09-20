@@ -29,6 +29,11 @@ The generic `operators` group, generic OAuth scopes, and server defaults do not
 authorize a search. Anonymous callers and authenticated callers without a
 mapped grant fail closed.
 
+The `kg search` CLI currently supplies only its Cloudflare Access cookie, not
+the Authentik bearer required by this policy, so human CLI search is denied.
+Issue #6306 tracks acquiring and sending a separate Authentik bearer while
+retaining the Cloudflare cookie for edge authentication.
+
 Personal notes are excluded by default. `include_personal=true` is accepted only
 when the same principal carries `personal:<subject>` or one of the two mapped
 knowledge groups. It includes only `personal:<subject>` and legacy NULL-scoped
@@ -43,6 +48,8 @@ retention work succeeding too.
 Internal recall and extraction callers remain separate: they pass explicit
 store filters and never inherit public-entrypoint authorization. Typed graph
 edges resolve only when their target is within the same search allow-list.
+`POST /api/chat/explore` remains an unscoped retrieval surface and can return
+personal and legacy NULL-scoped notes; issue #6307 tracks authorizing it.
 
 `get_note` and `GET /api/knowledge/notes/{note_id}` remain separate direct-ID
 authorization surfaces. This change does not make those paths safe merely
@@ -61,3 +68,4 @@ as authorization.
 | Authorization is applied before top-N ranking | `store_scoped_test.py::test_search_scope_allow_list_is_applied_before_ranking` |
 | Audit failure denies retrieval, while empty results and embedding failures retain one audit | MCP and HTTP failure-path tests |
 | Cross-scope edge targets do not resolve | `store_scoped_test.py::test_edge_resolution_uses_search_allow_list` |
+| Audit retention and INSERT-only application privileges execute in Postgres | `personal_retrieval_audit_grants_test.py` |
