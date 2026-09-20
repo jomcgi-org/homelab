@@ -280,9 +280,9 @@ def _local_candidates(
     exclude_labels = {label.lower() for label in intake["exclude_labels"]}
     candidates = []
 
-    # Enabling webhook ingress is also the reversible sweep cutover. Trusted
-    # GitHub-authority rows then enter the same candidate policy as local rows;
-    # held semi-trusted and ignored untrusted deliveries never reach admission.
+    # Webhook ingress adds trusted GitHub-authority rows to the same candidate
+    # policy as local rows. It does not retire the sweep: migration and cutover
+    # are separate operational work outside this repository slice.
     from factory.orchestration.factory_webhook import webhook_enabled
 
     item_scope = WorkItem.authority == "local"
@@ -510,14 +510,7 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
         issues_cut = False
         pulls_cut = False
         github_status = None
-        from factory.orchestration.factory_webhook import webhook_enabled
-
-        if webhook_enabled():
-            # Webhook ingress and the hourly sweep are mutually exclusive. The
-            # stored trusted rows above still pass every existing intake and
-            # admission gate, without a render or selection read from GitHub.
-            github_status = "webhook"
-        elif _listing_due(now):
+        if _listing_due(now):
             # The clock records the ATTEMPT, not the result. A sweep that fails
             # is the case most worth rate limiting: a 403 usually means the shared
             # budget is already spent, and retrying every fifteen seconds is how

@@ -7,6 +7,7 @@ import hmac
 import json
 from concurrent.futures import ThreadPoolExecutor
 
+import pytest
 from core.db import get_session
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -18,6 +19,7 @@ from factory.orchestration.factory_models import (
     FactoryReceipt,
     FactoryWebhookDelivery,
     WorkItem,
+    WorkItemEdge,
     WorkItemEvent,
 )
 from factory.orchestration.models import SwarmTask
@@ -25,14 +27,22 @@ from factory.orchestration.models import SwarmTask
 SECRET = "factory-test-secret"
 
 
-def _issue(*, login="jomcgi", user_type="User", title="Webhook item"):
+def _issue(
+    *,
+    number=6257,
+    login="jomcgi",
+    user_type="User",
+    title="Webhook item",
+    body="public issue body",
+    labels=("agent-ready",),
+):
     return {
-        "number": 6257,
+        "number": number,
         "title": title,
-        "body": "public issue body",
-        "html_url": "https://github.com/owner/repo/issues/6257",
+        "body": body,
+        "html_url": f"https://github.com/owner/repo/issues/{number}",
         "state": "open",
-        "labels": [{"name": "agent-ready"}],
+        "labels": [{"name": label} for label in labels],
         "user": {"login": login, "type": user_type},
         "created_at": "2026-09-20T10:00:00Z",
     }
@@ -42,7 +52,6 @@ def _payload(*, action="opened", issue=None, repo="owner/repo"):
     issue = issue or _issue()
     return {
         "action": action,
-        "number": issue["number"],
         "issue": issue,
         "repository": {"full_name": repo},
         "sender": {"login": "delivery-sender"},
@@ -88,6 +97,7 @@ def _setup(tmp_path, monkeypatch):
             for model in (
                 SwarmTask,
                 WorkItem,
+                WorkItemEdge,
                 WorkItemEvent,
                 FactoryReceipt,
                 FactoryWebhookDelivery,
@@ -154,8 +164,14 @@ def test_event_repository_and_issue_identity_are_validated(tmp_path, monkeypatch
     assert _post(client, _payload(repo="elsewhere/repo")).status_code == 403
 
     mismatch = _payload()
-    mismatch["number"] = 1
+    mismatch["issue"]["number"] = "6257"
     assert _post(client, mismatch, delivery="bad-identity").status_code == 422
+
+    genuine_issues_shape = _payload()
+    assert "number" not in genuine_issues_shape
+    accepted = _post(client, genuine_issues_shape, delivery="real-issues-shape")
+    assert accepted.status_code == 200
+    assert accepted.json()["outcome"] == "trusted_minted"
 
     comment = _post(
         client,
@@ -284,6 +300,98 @@ def test_processing_failure_rolls_back_claim_for_safe_retry(tmp_path, monkeypatc
     retried = _post(client, _payload(), delivery="retryable-delivery")
     assert retried.status_code == 200
     assert retried.json()["outcome"] == "trusted_minted"
+
+
+def test_dependency_failure_rolls_back_claim_and_work_item(tmp_path, monkeypatch):
+    engine, client = _setup(tmp_path, monkeypatch)
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("transient dependency reconciliation failure")
+
+    monkeypatch.setattr(webhook, "reconcile_body_edges", fail)
+    failed = _post(client, _payload(), delivery="dependency-retry")
+    assert failed.status_code == 500
+    with Session(engine) as session:
+        assert session.get(FactoryWebhookDelivery, "dependency-retry") is None
+        assert session.exec(select(WorkItem)).all() == []
+
+
+def _edge_numbers(session):
+    items = {
+        item.id: item.github_issue_number
+        for item in session.exec(select(WorkItem)).all()
+    }
+    return {
+        (items[edge.from_id], items[edge.to_id])
+        for edge in session.exec(select(WorkItemEdge)).all()
+    }
+
+
+@pytest.mark.parametrize("blocked_first", [True, False])
+def test_dependencies_reconcile_when_endpoints_arrive_in_either_order(
+    tmp_path, monkeypatch, blocked_first
+):
+    engine, client = _setup(tmp_path, monkeypatch)
+    blocked = _issue(number=6257, body="Blocked by #6258")
+    blocker = _issue(number=6258, labels=())
+
+    ordered = (blocked, blocker) if blocked_first else (blocker, blocked)
+    for index, issue in enumerate(ordered):
+        assert (
+            _post(
+                client,
+                _payload(issue=issue),
+                delivery=f"endpoint-{index}",
+            ).status_code
+            == 200
+        )
+
+    with Session(engine) as session:
+        assert _edge_numbers(session) == {(6258, 6257)}
+
+
+def test_dependency_edits_replace_and_remove_stale_edges(tmp_path, monkeypatch):
+    engine, client = _setup(tmp_path, monkeypatch)
+    for number in (6258, 6259):
+        response = _post(
+            client,
+            _payload(issue=_issue(number=number, labels=())),
+            delivery=f"endpoint-{number}",
+        )
+        assert response.status_code == 200
+
+    assert (
+        _post(
+            client,
+            _payload(issue=_issue(body="Blocked by #6258")),
+            delivery="dependency-add",
+        ).status_code
+        == 200
+    )
+    with Session(engine) as session:
+        assert _edge_numbers(session) == {(6258, 6257)}
+
+    assert (
+        _post(
+            client,
+            _payload(action="edited", issue=_issue(body="Depends on #6259")),
+            delivery="dependency-replace",
+        ).status_code
+        == 200
+    )
+    with Session(engine) as session:
+        assert _edge_numbers(session) == {(6259, 6257)}
+
+    assert (
+        _post(
+            client,
+            _payload(action="edited", issue=_issue(body="No dependency now")),
+            delivery="dependency-remove",
+        ).status_code
+        == 200
+    )
+    with Session(engine) as session:
+        assert _edge_numbers(session) == set()
 
 
 def test_local_authority_row_cannot_be_changed_by_github(tmp_path, monkeypatch):
