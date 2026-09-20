@@ -224,6 +224,12 @@ def _claim(
             raise DecisionError(
                 409, "a brief is running on this issue; decide when it settles"
             )
+        from factory.orchestration import factory_funding
+
+        try:
+            factory_funding.validate_dispatch_refusal(db, row, escalation, option)
+        except ValueError as exc:
+            raise DecisionError(409, str(exc)) from exc
         holder = _live_claim(db, receipt_id, option_key, _fields(row)["decision_id"])
         if holder is not None:
             raise DecisionError(409, f"a decision for {holder} is already in flight")
