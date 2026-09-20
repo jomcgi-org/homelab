@@ -13,12 +13,8 @@
     "displayName": "h0melab Cloud Storage monthly alert",
     "budgetFilter": {
       "calendarPeriod": "MONTH",
-      "projects": [
-        "projects/OPERATOR_PROJECT_NUMBER"
-      ],
-      "services": [
-        "services/95FF-2EF5-5EA1"
-      ]
+      "projects": ["projects/OPERATOR_PROJECT_NUMBER"],
+      "services": ["services/95FF-2EF5-5EA1"]
     },
     "amount": {
       "specifiedAmount": {

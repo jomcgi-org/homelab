@@ -149,11 +149,11 @@ py_test(
         "Chart.yaml",
         "values.yaml",
         "//projects/embervm/deploy:application",
+        "//projects/embervm/deploy:gke_values",
         "//projects/embervm/deploy:kustomization.yaml",
         "//projects/embervm/deploy:store-validation/README.md",
         "//projects/embervm/deploy:store-validation/cloud-storage-budget.json",
         "//projects/embervm/deploy:store-validation/h0melab-ember-bases-dev-lifecycle.json",
-        "//projects/embervm/deploy:gke_values",
         "//projects/embervm/dev/deploy:application",
         "//projects/embervm/dev/deploy:deploy_values",
         "//projects/embervm/dev/deploy:kustomization.yaml",
@@ -176,10 +176,7 @@ py_test(
         "STORE_RUNBOOK": "$(rootpath //projects/embervm/deploy:store-validation/README.md)",
         "STORE_VALIDATION_VALUES": "$(rootpath //projects/embervm/dev/deploy:store_validation_values)",
     },
-    deps = [
-        "@pip//pytest",
-        "@pip//pyyaml",
-    ],
+    deps = ["@pip//pyyaml"],
 )
 
 semgrep_test(
