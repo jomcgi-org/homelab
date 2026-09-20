@@ -240,6 +240,8 @@ spec:
               value: {{ .Values.swarm.factoryStopSupervisionEnabled | default false | quote }}
             - name: FACTORY_TRANSIENT_STOP_RETRY_ENABLED
               value: {{ .Values.swarm.factoryTransientStopRetryEnabled | default false | quote }}
+            - name: FACTORY_DRAINED_LOSS_SETTLEMENT_ENABLED
+              value: {{ .Values.swarm.factoryDrainedLossSettlementEnabled | default false | quote }}
             - name: FACTORY_ENFORCE_COST_CEILING_ENABLED
               value: {{ .Values.swarm.factoryEnforceCostCeilingEnabled | default false | quote }}
             - name: FACTORY_LOST_BEFORE_GUEST_SETTLEMENT_ENABLED

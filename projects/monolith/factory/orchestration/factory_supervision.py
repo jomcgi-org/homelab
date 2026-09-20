@@ -18,7 +18,9 @@ import os
 from sqlmodel import select
 
 from factory.execution.api import (
+    read_drained_lost_factory_attempt,
     read_uncertain_factory_attempt,
+    settle_drained_lost_factory_attempt,
     settle_uncertain_factory_attempt,
 )
 from factory.orchestration import graph
@@ -163,7 +165,15 @@ def _stop_deadline(snapshot: dict, identity: dict, pin: dict) -> datetime:
     return deadline
 
 
-def _locked_attempt(db, control, pin, sid, *, require_stop_due=True):
+def _locked_attempt(
+    db,
+    control,
+    pin,
+    sid,
+    *,
+    require_stop_due=True,
+    identity_reader=None,
+):
     run = db.exec(
         select(SwarmNodeRun)
         .where(
@@ -205,7 +215,8 @@ def _locked_attempt(db, control, pin, sid, *, require_stop_due=True):
         or start.max_cost_usd != pin["max_cost_usd"]
     ):
         raise ValueError("factory_start_changed")
-    identity = read_uncertain_factory_attempt(db, pin, sid)
+    reader = identity_reader or read_uncertain_factory_attempt
+    identity = reader(db, pin, sid)
     snapshot = controls.task_snapshot(pin["task_id"], session=db)
     deadline = _stop_deadline(snapshot, identity, pin)
     from factory.orchestration.factory_attempt_stop import matching_request
@@ -481,6 +492,67 @@ def _brick_restart_cessation(view, identity, saved=None):
         "updated_at": updated_at,
         "node_id": node_id,
         "cessation_evidence": "brick_restart",
+    }
+
+
+def _drained_loss_cessation(view, identity):
+    """Prove the exact drained dispatch ended with its departed brick.
+
+    ``brick_gone`` is a durable control-plane terminal transition written only
+    after the owning brick instance departed. The interrupted marker was
+    committed by the guest before banking and carries the opaque dispatch ID,
+    CLI transcript and sequence. Requiring both facts distinguishes permanent
+    loss of this drained incarnation from a generic missing guest, a transient
+    read failure, or a banked/relighting session that remains resumable.
+    """
+    if (
+        not isinstance(view, dict)
+        or view.get("session_id") != identity["guest_id"]
+        or view.get("state") != "failed"
+        or view.get("terminal_reason") != "brick_gone"
+    ):
+        return None
+    generation = view.get("generation")
+    started = view.get("invoke_started_at")
+    completed = view.get("last_invoke_at")
+    updated = view.get("updated_at")
+    interrupted = view.get("interrupted_turn")
+    node = view.get("node")
+    node_id = node.get("node_id") if isinstance(node, dict) else None
+    if (
+        type(generation) is not int
+        or generation < 0
+        or type(started) is not int
+        or started < 1
+        or type(completed) is not int
+        or completed < started
+        or type(updated) is not int
+        or updated < completed
+        or not isinstance(node_id, str)
+        or not node_id
+        or not isinstance(interrupted, dict)
+        or interrupted.get("seq") != identity["seq"]
+        or interrupted.get("dispatch_id") != identity["dispatch_id"]
+        or interrupted.get("cli_session_id") != identity["cli_session_id"]
+        or not isinstance(interrupted.get("transcript_path"), str)
+        or not interrupted["transcript_path"]
+    ):
+        return None
+    return {
+        "session_id": identity["guest_id"],
+        "state": "failed",
+        "terminal_reason": "brick_gone",
+        "generation": generation,
+        "invoke_started_at": started,
+        "last_invoke_at": completed,
+        "updated_at": updated,
+        "node_id": node_id,
+        "turn_seq": identity["seq"],
+        "dispatch_id": identity["dispatch_id"],
+        "cli_session_id": identity["cli_session_id"],
+        "transcript_path": interrupted["transcript_path"],
+        "cessation_evidence": "drained_brick_gone",
+        "workspace_recovery": "permanently_lost",
     }
 
 
@@ -938,6 +1010,7 @@ def _settle_failed_attempt(
     reason,
     evidence_key,
     evidence,
+    settle_attempt=settle_uncertain_factory_attempt,
 ):
     """Record one uncertain attempt as failed, under a lock the caller holds.
 
@@ -975,7 +1048,7 @@ def _settle_failed_attempt(
         "previous_outcome": json.loads(run.outcome_json or "{}"),
         evidence_key: evidence,
     }
-    settle_uncertain_factory_attempt(db, pin, identity)
+    settle_attempt(db, pin, identity)
     if run.session_id is None:
         bound = graph.record_dispatch(
             pin["task_id"],
@@ -1012,6 +1085,90 @@ def _settle_failed_attempt(
     if not charged["ok"]:
         raise ValueError("factory_start_outcome_refused")
     return result
+
+
+def _reconcile_drained_lost_attempt(pin, session_id, original_result):
+    """Settle one exact orphaned drain, or report that this is another shape.
+
+    Returns ``(applicable, settled)``. Once a drain is applicable, every
+    uncertain or live observation leaves it on its ordinary resumable path and
+    prevents the general UNKNOWN settlement loop from consuming its retry.
+    """
+    if (
+        os.environ.get("FACTORY_DRAINED_LOSS_SETTLEMENT_ENABLED", "false").lower()
+        != "true"
+    ):
+        return False, False
+    try:
+        with controls._locked_session() as (db, control):
+            identity, _run = _locked_attempt(
+                db,
+                control,
+                pin,
+                session_id,
+                require_stop_due=False,
+                identity_reader=read_drained_lost_factory_attempt,
+            )
+    except ValueError:
+        return False, False
+
+    try:
+        view = _http(identity["guest_id"])
+    except Exception:
+        _note(pin, "drained_loss_observation_unavailable")
+        return True, False
+    proof = _drained_loss_cessation(view, identity)
+    if proof is None:
+        if (
+            isinstance(view, dict)
+            and view.get("state") == "failed"
+            and view.get("terminal_reason") == "brick_gone"
+        ):
+            _note(pin, "drained_loss_evidence_changed")
+        return True, False
+    try:
+        with controls._locked_session() as (db, control):
+            current, run = _locked_attempt(
+                db,
+                control,
+                pin,
+                session_id,
+                require_stop_due=False,
+                identity_reader=read_drained_lost_factory_attempt,
+            )
+            if current != identity:
+                raise ValueError("factory_attempt_changed")
+            records = _records(db, pin)
+            if any(action == "stop_settled" for action, _ in records):
+                return True, True
+            _settle_failed_attempt(
+                db,
+                pin,
+                session_id,
+                identity,
+                run,
+                original_result,
+                reason=(
+                    "drained_guest_permanently_lost: exact interrupted dispatch "
+                    "ended with its departed brick"
+                ),
+                evidence_key="drained_loss",
+                evidence=proof,
+                settle_attempt=settle_drained_lost_factory_attempt,
+            )
+            _audit(
+                db,
+                pin,
+                "stop_settled",
+                identity=identity,
+                drained_loss=proof,
+                cessation_confirmed=True,
+                intervention_required=False,
+            )
+            return True, True
+    except ValueError as exc:
+        _note(pin, "drained_loss_evidence_or_ownership_changed", error=str(exc))
+        return True, False
 
 
 def _absence_run(records, identity):
@@ -1206,6 +1363,9 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
         return False
     if original_result.get("status") != "uncertain" or type(session_id) is not int:
         return False
+    drained, settled = _reconcile_drained_lost_attempt(pin, session_id, original_result)
+    if drained:
+        return settled
     cessation_enabled = (
         os.environ.get("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "false").lower()
         == "true"

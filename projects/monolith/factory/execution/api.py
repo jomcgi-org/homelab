@@ -8,17 +8,19 @@ from factory.execution import admission as _admission
 from factory.execution.constants import DRAINER_NODE_KEY as DRAINER_NODE_KEY
 from factory.execution.constants import KG_NODE_KEY as KG_NODE_KEY
 from factory.execution.reconciliation import (
-    read_factory_dispatch as read_factory_dispatch,
     cancel_queued_factory_attempt as cancel_queued_factory_attempt,
     confirm_reconciled_guest_cessation as confirm_reconciled_guest_cessation,
     confirm_reconciled_unbound_attempt as confirm_reconciled_unbound_attempt,
     inspect_lost_before_guest_factory_attempt as inspect_lost_before_guest_factory_attempt,
     inspect_lost_before_session_factory_attempt as inspect_lost_before_session_factory_attempt,
     lock_cessation_session as lock_cessation_session,
+    read_drained_lost_factory_attempt as read_drained_lost_factory_attempt,
+    read_factory_dispatch as read_factory_dispatch,
     read_lost_before_guest_factory_attempt as read_lost_before_guest_factory_attempt,
     read_never_dispatched_factory_attempt as read_never_dispatched_factory_attempt,
     read_not_invoked_factory_attempt as read_not_invoked_factory_attempt,
     read_uncertain_factory_attempt as read_uncertain_factory_attempt,
+    settle_drained_lost_factory_attempt as settle_drained_lost_factory_attempt,
     settle_lost_before_guest_factory_attempt as settle_lost_before_guest_factory_attempt,
     settle_lost_before_session_factory_attempt as settle_lost_before_session_factory_attempt,
     settle_never_dispatched_factory_attempt as settle_never_dispatched_factory_attempt,
