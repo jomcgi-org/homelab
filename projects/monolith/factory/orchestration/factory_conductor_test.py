@@ -10417,7 +10417,10 @@ def test_consecutive_funding_refusals_finish_task(feedback_db, monkeypatch):
     assert snapshot["state"] == "failed"
     assert snapshot["evidence"] == {
         "state": "funding_review_unavailable",
-        "reason": "6 consecutive funding reviews could not start",
+        "reason": (
+            f"{funding.FUNDING_REFUSAL_LIMIT} consecutive funding "
+            "reviews could not start"
+        ),
     }
 
 
