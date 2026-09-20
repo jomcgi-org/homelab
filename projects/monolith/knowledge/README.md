@@ -35,7 +35,10 @@ knowledge groups. It includes only `personal:<subject>` and legacy NULL-scoped
 notes, and commits one attribution-only audit row before embedding or retrieval.
 The audit row contains no raw query or returned content. An audit failure denies
 the search. An empty result or a later embedding failure retains the one
-committed attempt row.
+committed attempt row. Rows are retained for 90 days. An insert trigger owned by
+the migration role prunes older rows in the same transaction, so the agents
+tier retains INSERT-only access and an audit commit cannot succeed without its
+retention work succeeding too.
 
 Internal recall and extraction callers remain separate: they pass explicit
 store filters and never inherit public-entrypoint authorization. Typed graph

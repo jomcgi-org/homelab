@@ -242,9 +242,33 @@ class TestSearchKnowledge:
             return_value=_principal(scopes=("openid", "profile")),
         ):
             unmapped = await search_knowledge("attention")
+        with patch(
+            "knowledge.mcp.current_principal",
+            return_value=_principal(scopes=(), groups=()),
+        ):
+            empty_grants = await search_knowledge("attention")
 
         assert anonymous["reason"] == "anonymous"
         assert unmapped["reason"] == "unmapped_principal"
+        assert empty_grants["reason"] == "unmapped_principal"
+        mock_embed.embed.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_cross_subject_personal_opt_in_is_denied_before_audit(self):
+        mock_embed = AsyncMock()
+        with (
+            patch(
+                "knowledge.mcp.current_principal",
+                return_value=_principal(
+                    scopes=(*DEFAULT_SCOPES, "personal:someone-else")
+                ),
+            ),
+            patch("knowledge.mcp.audit_personal_retrieval") as audit,
+        ):
+            result = await search_knowledge("attention", include_personal=True)
+
+        assert result["reason"] == "personal_scope_not_granted"
+        audit.assert_not_called()
         mock_embed.embed.assert_not_awaited()
 
     @pytest.mark.asyncio
