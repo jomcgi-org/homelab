@@ -658,9 +658,7 @@ def test_revalidation_repairs_preexisting_stale_terminal_cards_locally(
     assert github.writes == writes
 
 
-def test_generation_reconciliation_is_bounded_and_idempotent(
-    db, github, notices
-):
+def test_generation_reconciliation_is_bounded_and_idempotent(db, github, notices):
     first, second = escalate_two(db, github, notices)
     with Session(db) as session:
         control = session.get(FactoryControl, "factory")
@@ -968,9 +966,7 @@ def test_an_ending_decision_settles_the_receipt_rather_than_re_admitting_it(
         assert session.get(SwarmTask, task_id).start_state == "escalated"
 
 
-def test_a_stale_visible_decision_is_refused_before_issue_effects(
-    db, github, notices
-):
+def test_a_stale_visible_decision_is_refused_before_issue_effects(db, github, notices):
     """A generation-stale card cannot mutate its issue and schedule nothing."""
     task_id, _policy = escalate(db, github, notices)
     receipt_id = receipt_of(db, task_id).id
@@ -983,9 +979,7 @@ def test_a_stale_visible_decision_is_refused_before_issue_effects(
         session.commit()
     writes = list(github.writes)
     with pytest.raises(decisions.DecisionError) as raised:
-        decisions.apply_decision(
-            receipt_id, "continue-narrowed", "joe@example.test"
-        )
+        decisions.apply_decision(receipt_id, "continue-narrowed", "joe@example.test")
     assert raised.value.status == 409
     assert "receipt generation 0" in raised.value.reason
     assert "policy is on generation 3" in raised.value.reason

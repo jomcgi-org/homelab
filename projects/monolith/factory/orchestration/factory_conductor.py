@@ -2170,9 +2170,7 @@ def revalidate_escalations() -> dict[str, int]:
     from factory.orchestration.factory_decisions import apply_decision as decide
     from factory.orchestration.factory_models import FactoryControl, FactoryReceipt
 
-    generation = reconcile_generation_stale_receipts(
-        ESCALATION_REVALIDATION_ACTOR
-    )
+    generation = reconcile_generation_stale_receipts(ESCALATION_REVALIDATION_ACTOR)
     counts["cards"] += generation["cards_resolved"]
     counts["resolved"] += generation["cards_resolved"]
     counts["retired"] = generation["retired"]
@@ -2198,10 +2196,7 @@ def revalidate_escalations() -> dict[str, int]:
             # A bounded local pass above owns old-generation cleanup. Do not
             # spend a GitHub read or offer an external decision for a stale
             # card still waiting for a later pass or an in-flight decision.
-            if (
-                type(current_generation) is int
-                and row.generation != current_generation
-            ):
+            if type(current_generation) is int and row.generation != current_generation:
                 continue
             snapshot = {
                 "id": row.id,
