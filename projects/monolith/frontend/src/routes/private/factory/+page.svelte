@@ -207,7 +207,7 @@
         <span class="k">problem issues</span>
         <span class="v"
           >{problemIssues?.status === "on"
-            ? `${problemIssues.writes_started_today}/${problemIssues.max_per_24_hours} writes today`
+            ? `${problemIssues.writes_started_today}/${problemIssues.max_per_24_hours} writes / 24h`
             : "off"}</span
         >
       </div>
