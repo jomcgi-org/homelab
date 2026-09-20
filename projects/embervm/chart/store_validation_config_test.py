@@ -11,7 +11,7 @@ import yaml
 
 DEV_BUCKET = "h0melab-ember-bases-dev"
 PROD_BUCKET = "h0melab-ember-bases"
-STORE_SECRET = "embervm-store-validation-gcs"
+STORE_CREDENTIAL_NAME = "embervm-store-validation-gcs"
 STORAGE_ENDPOINT = "https://storage.googleapis.com"
 STORAGE_SERVICE = "services/95FF-2EF5-5EA1"
 
@@ -39,7 +39,9 @@ def _render_validation_release() -> list[dict]:
         "--values",
         str(_path("STORE_VALIDATION_VALUES")),
     ]
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    result = subprocess.run(
+        command, capture_output=True, text=True, check=False, timeout=120
+    )
     assert result.returncode == 0, result.stderr
     return [doc for doc in yaml.safe_load_all(result.stdout) if isinstance(doc, dict)]
 
@@ -63,7 +65,7 @@ def _strings(value) -> list[str]:
 
 def _assert_required_secret_ref(entry: dict) -> None:
     secret_ref = entry["valueFrom"]["secretKeyRef"]
-    assert secret_ref["name"] == STORE_SECRET
+    assert secret_ref["name"] == STORE_CREDENTIAL_NAME
     assert secret_ref.get("optional", False) is False
 
 
@@ -74,7 +76,7 @@ def test_validation_overlay_is_unreferenced_and_production_is_unchanged() -> Non
     assert store["bucket"] == DEV_BUCKET
     assert store["credentials"] == {
         "enabled": True,
-        "secretName": STORE_SECRET,
+        "secretName": STORE_CREDENTIAL_NAME,
         "onepassword": {"itemPath": ""},
     }
 
@@ -100,7 +102,7 @@ def test_validation_render_routes_every_store_consumer_to_dev() -> None:
         doc
         for doc in documents
         if doc.get("kind") == "OnePasswordItem"
-        and doc.get("metadata", {}).get("name") == STORE_SECRET
+        and doc.get("metadata", {}).get("name") == STORE_CREDENTIAL_NAME
     ]
 
     control_planes = []
