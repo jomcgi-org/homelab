@@ -203,7 +203,7 @@ async def test_lifespan_creates_background_tasks_on_startup():
             await _start_singletons(app)
 
     # Ships, pending-message sweep, titles, KG feed, receipt retention, cd probe, quota refresh.
-    assert len(created_tasks) == 7
+    assert len(created_tasks) == 8
 
 
 @pytest.mark.asyncio
@@ -226,7 +226,7 @@ async def test_lifespan_cancels_all_tasks_on_shutdown():
             await _stop_singletons(app)
 
     # Ships, pending-message sweep, titles, KG feed, receipt retention, cd probe, quota refresh.
-    assert len(mock_tasks) == 7
+    assert len(mock_tasks) == 8
     for task in mock_tasks:
         task.cancel.assert_called_once()
 
@@ -249,7 +249,7 @@ async def test_lifespan_no_tasks_cancelled_before_shutdown():
         with patches[0], patches[1], patches[2], patches[3], patches[4]:
             await _start_singletons(app)
             # Ships, pending-message sweep, titles, KG feed, retention, cd probe, quota refresh.
-            assert len(mock_tasks) == 7
+            assert len(mock_tasks) == 8
             for task in mock_tasks:
                 task.cancel.assert_not_called()
             await _stop_singletons(app)
@@ -504,8 +504,8 @@ async def test_lifespan_creates_discord_and_service_tasks_when_token_set():
             ):
                 await _start_singletons(app)
 
-    # Bot, outbox, scheduled tasks, lock sweep, and seven service loops.
-    assert len(created_tasks) == 11
+    # Bot, outbox, scheduled tasks, lock sweep, and eight service loops.
+    assert len(created_tasks) == 12
 
 
 @pytest.mark.asyncio
