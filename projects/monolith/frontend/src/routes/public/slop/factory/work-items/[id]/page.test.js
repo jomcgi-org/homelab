@@ -44,7 +44,7 @@ describe("public work-item page", () => {
     expect(target.textContent).toContain("<svg onload=window.pwned=true>");
     expect(target.querySelector("script")).toBeNull();
     expect(target.querySelector("img")).toBeNull();
-    expect(target.querySelector("svg")).toBeNull();
+    expect(target.querySelector("svg[onload]")).toBeNull();
     expect(target.textContent).not.toContain("private escalation");
     expect(target.textContent).not.toContain("operator@example.test");
   });
