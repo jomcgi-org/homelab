@@ -31,6 +31,150 @@ export const ESCAPE_HOTKEYS = {
 /** How a key name reads on a button, where the event name is not the label. */
 export const ESCAPE_KEY_LABEL = { Escape: "Esc" };
 
+function hasValue(value) {
+  return value !== null && value !== undefined && value !== "";
+}
+
+function evidence(label, value, href = null) {
+  if (!label || !hasValue(value)) return null;
+  if (href && typeof href !== "string") return null;
+  if (href && !href.startsWith("/") && !href.startsWith("https://"))
+    return null;
+  return { label, value, href };
+}
+
+function evidenceList(entries) {
+  return entries.filter(Boolean);
+}
+
+function workItemReference(item) {
+  if (!item) return null;
+  const issueNumber = item.issue_number ?? item.github_issue_number;
+  const value =
+    issueNumber !== null && issueNumber !== undefined
+      ? `#${issueNumber}${item.title ? ` ${item.title}` : ""}`
+      : item.id !== null && item.id !== undefined
+        ? `work item ${item.id}`
+        : null;
+  const href =
+    item.id !== null && item.id !== undefined
+      ? `/factory/work-items/${item.id}`
+      : null;
+  return value && href ? { value, href } : null;
+}
+
+function workItemEvidence(label, item) {
+  const reference = workItemReference(item);
+  return reference ? evidence(label, reference.value, reference.href) : null;
+}
+
+function workItemEvidenceList(label, items) {
+  return (items ?? []).map((item) => workItemEvidence(label, item));
+}
+
+/** The five context claims and their compact evidence for one escalation. */
+export function contextRows(document) {
+  const ask = document?.ask ?? {};
+  const stopped = document?.stopped;
+  const happened = document?.happened;
+  const cost = document?.cost;
+  const lineage = document?.lineage;
+  const issue =
+    ask.issue_number !== null && ask.issue_number !== undefined
+      ? `#${ask.issue_number}`
+      : ask.work_item_id !== null && ask.work_item_id !== undefined
+        ? `work item ${ask.work_item_id}`
+        : null;
+  const review = happened?.last_review;
+  const reviewValue = review
+    ? `${review.verdict}${review.summary ? `: ${review.summary}` : ""}`
+    : null;
+  const pr = happened?.pr;
+  const prValue = pr
+    ? `${pr.number !== null && pr.number !== undefined ? `#${pr.number}` : "pull request"}${pr.state ? ` ${pr.state}` : ""}`
+    : null;
+
+  return [
+    {
+      key: "ask",
+      line: ask.line ?? "no ask recorded",
+      evidence: evidenceList([
+        evidence("issue", issue, ask.url ?? null),
+        evidence("class", ask.task_class),
+        evidence("generation", ask.generation),
+        evidence("body", ask.body_head?.slice(0, 400)),
+      ]),
+    },
+    {
+      key: "stopped",
+      line: stopped?.line ?? "no escalation",
+      evidence: evidenceList([
+        evidence("kind", stopped?.kind),
+        evidence("recommendation", stopped?.recommendation),
+        evidence("question", stopped?.question),
+        evidence("summary", stopped?.summary),
+        evidence("reason", stopped?.reason),
+      ]),
+    },
+    {
+      key: "happened",
+      line: happened?.line ?? "no attempts yet",
+      evidence: evidenceList([
+        evidence("attempts", happened?.attempts),
+        evidence("last review", reviewValue),
+        evidence("pr", prValue, pr?.url ?? null),
+        evidence("branch", happened?.branch),
+      ]),
+    },
+    {
+      key: "cost",
+      line: cost?.line ?? "no task cost",
+      evidence: evidenceList([
+        evidence(
+          "committed",
+          typeof cost?.committed === "number"
+            ? `$${cost.committed.toFixed(2)}`
+            : null,
+        ),
+        evidence(
+          "ceiling",
+          typeof cost?.ceiling === "number"
+            ? `$${cost.ceiling.toFixed(2)}`
+            : null,
+        ),
+        evidence("tasks", cost?.num_tasks),
+      ]),
+    },
+    {
+      key: "lineage",
+      line: lineage?.line ?? "no work item lineage",
+      evidence: evidenceList([
+        workItemEvidence("parent", lineage?.parent),
+        ...workItemEvidenceList("child", lineage?.children),
+        ...workItemEvidenceList("blocked by", lineage?.blocked_by),
+        ...workItemEvidenceList("blocks", lineage?.blocks),
+        ...(Array.isArray(lineage?.superseded_by)
+          ? lineage.superseded_by.map((item) =>
+              workItemEvidence("superseded by", item),
+            )
+          : [workItemEvidence("superseded by", lineage?.superseded_by)]),
+        ...workItemEvidenceList("supersedes", lineage?.supersedes),
+        ...(lineage?.prior_receipts ?? []).map((receipt) =>
+          evidence(
+            "prior receipt",
+            `receipt ${receipt.id} gen ${receipt.generation} ${receipt.task_class} ${receipt.state}`,
+          ),
+        ),
+      ]),
+    },
+  ];
+}
+
+/** A context cache identity that changes when a new decision replaces one. */
+export function contextKey(item) {
+  return item.receipt_id + ":" + (item.decision_id ?? "");
+}
+
 export function open(escalations) {
   return (escalations ?? []).filter((item) => item.open);
 }

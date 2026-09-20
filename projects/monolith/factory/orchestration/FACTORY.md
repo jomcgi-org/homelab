@@ -550,6 +550,9 @@ fields beneath it are the evidence for that claim. The private read endpoint is
 `GET /api/agents/factory/escalations/{receipt_id}/context`. It reads only the
 factory database and performs no GitHub reads.
 
+The private card renders the five context lines above its options, and pressing
+`e` expands their evidence.
+
 The first option is the recommendation, and its effect has to be the one the
 `recommend:` line names: deliver is `agent-ready`, close is `close` or
 `supersede`, and split is `split`. `defer` remains available as an alternative

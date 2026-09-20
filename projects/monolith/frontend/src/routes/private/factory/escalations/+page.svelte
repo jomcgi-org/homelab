@@ -7,6 +7,8 @@
     HOTKEYS,
     chatBody,
     confirmLine,
+    contextKey,
+    contextRows,
     decisionBody,
     effectLine,
     escapeForKey,
@@ -38,6 +40,9 @@
   // on another, so a scope note written about one issue could land as the
   // comment on a different one.
   let notes = $state({});
+  let contexts = $state({});
+  let contextErrors = $state({});
+  let expanded = $state({});
   let busy = $state(null);
   let failure = $state(null);
   let notice = $state(null);
@@ -46,6 +51,7 @@
   // The receipt whose close is armed, or null. Closing is the one escape
   // another button cannot undo, so it is asked about once before it is sent.
   let confirming = $state(null);
+  const pendingContexts = new Set();
 
   const pending = $derived(openOnes(escalations));
   const settled = $derived(resolvedOnes(escalations));
@@ -58,6 +64,31 @@
       pending[cursor] ??
       null,
   );
+
+  async function loadContext(item) {
+    if (!item?.open) return;
+    const key = contextKey(item);
+    if (contexts[key] || contextErrors[key] || pendingContexts.has(key)) return;
+    pendingContexts.add(key);
+    try {
+      const response = await fetch(
+        `/factory/escalations/context/${item.receipt_id}`,
+      );
+      if (!response.ok) throw new Error("context unavailable");
+      const document = await response.json();
+      contexts = { ...contexts, [key]: { rows: contextRows(document) } };
+      const { [key]: _error, ...rest } = contextErrors;
+      contextErrors = rest;
+    } catch {
+      contextErrors = { ...contextErrors, [key]: true };
+    } finally {
+      pendingContexts.delete(key);
+    }
+  }
+
+  $effect(() => {
+    loadContext(pending[cursor]);
+  });
 
   async function refresh() {
     try {
@@ -208,6 +239,14 @@
       event.preventDefault();
       return;
     }
+    if (event.key === "e" && pending[cursor]) {
+      expanded = {
+        ...expanded,
+        [pending[cursor].receipt_id]: !expanded[pending[cursor].receipt_id],
+      };
+      event.preventDefault();
+      return;
+    }
     if (event.key === "c") {
       noteBox?.focus();
       event.preventDefault();
@@ -283,7 +322,7 @@
       </div>
       <div>
         <span class="k">keys</span>
-        <span class="v keys">j k 1-4 c x d esc</span>
+        <span class="v keys">j k e 1-4 c x d esc</span>
       </div>
     </section>
 
@@ -345,6 +384,35 @@
                 {/if}
               </p>
             {/each}
+
+            {#if index === cursor || contexts[contextKey(item)]}
+              {@const context = contexts[contextKey(item)]}
+              {@const error = contextErrors[contextKey(item)]}
+              <section class="context" aria-label="context">
+                {#if context?.rows}
+                  {#each context.rows as row (row.key)}
+                    <details class="ctx-row" open={!!expanded[item.receipt_id]}>
+                      <summary><span class="ctx-line">{row.line}</span></summary
+                      >
+                      <dl>
+                        {#each row.evidence as entry, index (entry.label + ":" + entry.value + ":" + index)}
+                          <dt>{entry.label}</dt>
+                          {#if entry.href}
+                            <dd><a href={entry.href}>{entry.value}</a></dd>
+                          {:else}
+                            <dd>{entry.value}</dd>
+                          {/if}
+                        {/each}
+                      </dl>
+                    </details>
+                  {/each}
+                {:else if error}
+                  <p class="context-state">context unavailable</p>
+                {:else}
+                  <p class="context-state">context loading</p>
+                {/if}
+              </section>
+            {/if}
 
             <div class="options">
               {#each item.options as option, i (option.key)}
@@ -691,6 +759,53 @@
   .badge.briefing {
     border-color: var(--warn);
     color: var(--warn);
+  }
+
+  .context {
+    margin: 0 0 0.8rem;
+    border: 1px solid var(--stroke);
+    background: var(--band);
+  }
+  .ctx-row + .ctx-row {
+    border-top: 1px solid var(--stroke);
+  }
+  .ctx-row summary {
+    padding: 0.35rem 0.55rem;
+    color: var(--accent-ink);
+    font-family: var(--font-code);
+    font-size: 0.72rem;
+    cursor: pointer;
+  }
+  .ctx-line {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .ctx-row dl {
+    display: grid;
+    grid-template-columns: minmax(5rem, auto) minmax(0, 1fr);
+    gap: 0.15rem 0.65rem;
+    margin: 0;
+    padding: 0.35rem 0.55rem 0.5rem;
+    border-top: 1px solid var(--stroke);
+    font-size: 0.7rem;
+  }
+  .ctx-row dt {
+    color: var(--ink-2);
+    font-family: var(--font-code);
+  }
+  .ctx-row dd {
+    min-width: 0;
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
+  .context-state {
+    margin: 0;
+    padding: 0.35rem 0.55rem;
+    color: var(--ink-2);
+    font-family: var(--font-code);
+    font-size: 0.72rem;
   }
 
   .options {
