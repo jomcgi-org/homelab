@@ -27,9 +27,11 @@ from factory.orchestration.factory_models import FactoryAudit, FactoryStart
 from factory.orchestration.models import SwarmNodeRun
 
 ACTOR = "factory:stop-supervision"
-# A conditional DELETE whose response is lost has an unknown external outcome.
-# Retrying it would be redispatching uncertain work. Later ticks only observe.
-MAX_STOP_REQUESTS = 1
+# Preserve the existing request budget unless the staged transient behavior is
+# enabled. Under the staged behavior, a conditional DELETE whose response is
+# lost has an unknown external outcome, so later ticks only observe.
+MAX_STOP_REQUESTS = 3
+TRANSIENT_MAX_STOP_REQUESTS = 1
 MAX_NODE_GONE_DESTROY_REQUESTS = 2
 HTTP_SECONDS = 5
 COMPLETION_ALARM_SECONDS = 120
@@ -631,6 +633,12 @@ def _transient_retry_enabled():
     )
 
 
+def _max_stop_requests():
+    if _transient_retry_enabled():
+        return TRANSIENT_MAX_STOP_REQUESTS
+    return MAX_STOP_REQUESTS
+
+
 def _retry_details(pin, identity, *, refusal, deadline, error=None):
     detail = {
         "retry_kind": "transient_stop_observation",
@@ -666,12 +674,12 @@ def _transient_records(records, identity):
 
 
 def _transient_retry_gate(db, pin, identity, records):
-    """Return due, waiting, or exhausted for one durable retry window.
+    """Return the durable state of one transient retry window.
 
     The first failed observation fixes the deadline. Audit rows are the retry
     schedule, so a process restart cannot reset it and concurrent ticks cannot
-    add more than one sample per interval. Exhaustion is also fenced here and
-    prevents every later tick from touching the control plane.
+    add more than one sample per interval. Exhaustion fences further retry
+    samples and notifications, but does not prevent later proof observation.
     """
     if not _transient_retry_enabled():
         return "due"
@@ -703,7 +711,7 @@ def _transient_retry_gate(db, pin, identity, records):
                 error=last.get("error"),
             ),
         )
-        return "exhausted"
+        return "newly_exhausted"
     latest = _timestamp(
         samples[-1].get("retry_observed_at", samples[-1]["recorded_at"])
     )
@@ -1183,8 +1191,9 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
     """One bounded supervision tick for an already terminal DBOS workflow.
 
     A live DBOS workflow still owns its deadline/cancellation path. No work is
-    started or cancelled here. One conditional request is retained across
-    observer restart; Ember owns retrying its accepted durable intent.
+    started or cancelled here. The legacy conditional request budget remains
+    unless staged transient supervision is enabled; Ember owns retrying its
+    accepted durable intent.
     """
     if os.environ.get("FACTORY_STOP_SUPERVISION_ENABLED", "false").lower() != "true":
         return False
@@ -1223,7 +1232,7 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
             if saved is not None and saved["identity"] != identity:
                 raise ValueError("factory_attempt_changed")
             retry_gate = _transient_retry_gate(db, pin, identity, _records(db, pin))
-            if retry_gate != "due":
+            if retry_gate in {"waiting", "newly_exhausted"}:
                 return False
     except ValueError as exc:
         if str(exc) != "factory_stop_not_due":
@@ -1350,7 +1359,8 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
                 )
                 return True
             requests = sum(action == "stop_request" for action, _ in records)
-            if view.get("stop_intent") is not None or requests >= MAX_STOP_REQUESTS:
+            max_stop_requests = _max_stop_requests()
+            if view.get("stop_intent") is not None or requests >= max_stop_requests:
                 dispatch = False
             else:
                 _audit(
@@ -1378,13 +1388,16 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
                     identity,
                     "stop_request_unconfirmed",
                 )
-        elif requests >= MAX_STOP_REQUESTS and view.get("stop_intent") is None:
-            _defer_transient_refusal(
-                pin,
-                session_id,
-                identity,
-                "stop_request_unconfirmed",
-            )
+        elif requests >= max_stop_requests and view.get("stop_intent") is None:
+            if _transient_retry_enabled():
+                _defer_transient_refusal(
+                    pin,
+                    session_id,
+                    identity,
+                    "stop_request_unconfirmed",
+                )
+            else:
+                _note(pin, "stop_request_bound_reached")
         elif view.get("stop_intent") is not None:
             _resolve_transient_retry(
                 pin, session_id, identity, "accepted_stop_intent_observed"
@@ -1399,7 +1412,7 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
             ):
                 _note(pin, "node_completion_pending")
     except ValueError as exc:
-        if str(exc) == "missing_stop_precondition":
+        if str(exc) == "missing_stop_precondition" and _transient_retry_enabled():
             _defer_transient_refusal(
                 pin,
                 session_id,
