@@ -6235,7 +6235,7 @@ def test_muse_activity_uses_arguments_from_authoritative_item_revision(
 
     assert shim._muse_activities_from_view_events(events, session_id, command_id) == [
         {"type": "bash", "command": "printf 'spark command content\\n'"},
-        {"type": "tool_use", "name": "read"},
+        {"type": "tool_use", "name": "read", "input": {"path": "README.md"}},
     ]
 
 
@@ -6326,7 +6326,7 @@ def test_muse_reconciles_retained_revisions_with_live_tool_identities():
 
     assert shim._muse_reconciled_activities(live_events, retained_events) == [
         {"type": "bash", "command": "printf 'retained\\n'"},
-        {"type": "tool_use", "name": "read"},
+        {"type": "tool_use", "name": "read", "input": {"path": "README.md"}},
         {"type": "tool_use", "name": "add_memory"},
         {"type": "bash", "command": "printf 'retained only\\n'"},
     ]
