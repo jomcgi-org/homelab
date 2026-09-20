@@ -431,6 +431,16 @@ def test_planner_recipe_receives_attributed_class_rejections(db, monkeypatch):
     from factory.orchestration import factory_conductor as conductor
 
     _sample(db, 1, "changes_requested")
+    with Session(db) as session:
+        session.add(
+            FactoryClassTier(
+                task_class="bug-fix",
+                routing_tier="advisory",
+                transitioned_at=BASE_TIME + timedelta(days=1),
+                updated_at=BASE_TIME + timedelta(days=1),
+            )
+        )
+        session.commit()
     monkeypatch.setattr(
         conductor,
         "_budget_evidence",
@@ -448,7 +458,7 @@ def test_planner_recipe_receives_attributed_class_rejections(db, monkeypatch):
 
     prompt = conductor.planner_prompt(task, [], [], task_class="bug-fix")
     context = json.loads(prompt.rsplit("\n", 1)[1])
-    rejection = context["class_feedback"]["recent_rejections"][0]
+    rejection = context["class_feedback"]["delivery_rejections"][0]
     assert rejection["task_class"] == "bug-fix"
     assert rejection["verdict"] == "changes_requested"
     assert rejection["recipe_run_id"] is not None
