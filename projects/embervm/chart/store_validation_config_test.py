@@ -37,6 +37,8 @@ def _render_validation_release() -> list[dict]:
         "--values",
         str(_path("DEV_VALUES")),
         "--values",
+        str(_path("PROD_GKE_VALUES")),
+        "--values",
         str(_path("STORE_VALIDATION_VALUES")),
     ]
     result = subprocess.run(
@@ -83,10 +85,28 @@ def test_validation_overlay_is_unreferenced_and_production_is_unchanged() -> Non
     for name in (
         "PROD_APPLICATION",
         "DEV_APPLICATION",
+        "GKE_APPLICATION",
         "PROD_KUSTOMIZATION",
         "DEV_KUSTOMIZATION",
+        "GKE_KUSTOMIZATION",
     ):
         assert "values-store-validation-gke.yaml" not in _path(name).read_text()
+
+    gke_application = _load_yaml("GKE_APPLICATION")
+    assert gke_application["spec"]["sources"][0]["helm"]["valueFiles"] == [
+        "$values/projects/embervm/deploy/values.yaml",
+        "$values/projects/embervm/deploy/values-gke.yaml",
+    ]
+
+    runbook = _path("STORE_RUNBOOK").read_text()
+    validation_value_order = [
+        "--values projects/embervm/chart/values.yaml",
+        "--values projects/embervm/dev/deploy/values.yaml",
+        "--values projects/embervm/deploy/values-gke.yaml",
+        "--values projects/embervm/dev/deploy/values-store-validation-gke.yaml",
+    ]
+    positions = [runbook.index(value_file) for value_file in validation_value_order]
+    assert positions == sorted(positions)
 
     production = _load_yaml("PROD_GKE_VALUES")
     assert production["noded"]["store"]["bucket"] == PROD_BUCKET
@@ -98,6 +118,18 @@ def test_validation_render_routes_every_store_consumer_to_dev() -> None:
     strings = _strings(documents)
     assert PROD_BUCKET not in strings
     assert DEV_BUCKET in strings
+    assert "node-4" not in strings
+    assert not [
+        doc
+        for doc in documents
+        if str(doc.get("apiVersion", "")).startswith("cilium.io/")
+    ]
+    assert [
+        doc
+        for doc in documents
+        if doc.get("kind") == "DaemonSet"
+        and doc.get("metadata", {}).get("name", "").endswith("scratch-prep")
+    ]
     assert not [
         doc
         for doc in documents

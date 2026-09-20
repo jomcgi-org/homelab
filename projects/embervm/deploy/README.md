@@ -96,6 +96,10 @@ The inactive
 `../dev/deploy/values-store-validation-gke.yaml` preset instead fixes every
 rendered store consumer to `h0melab-ember-bases-dev`, but neither Application
 nor kustomization references it. It cannot change live routing automatically.
+The isolated render order is chart defaults, dev values, GKE overrides, then
+the validation preset. That preserves the dev workload scope while the GKE
+layer removes the home-only node pin and Cilium policies and enables GKE
+scratch preparation.
 
 The preset enables required Secret references to
 `embervm-store-validation-gcs` and deliberately leaves the 1Password item path
