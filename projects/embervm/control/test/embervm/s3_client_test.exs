@@ -24,7 +24,13 @@ defmodule Embervm.S3ClientTest do
           "ok"
         end
 
-      status = if if_match == ["\"stale\""], do: 412, else: 200
+      status =
+        cond do
+          if_match == ["\"stale\""] -> 412
+          String.contains?(conn.request_path, "missing-marker") -> 404
+          String.contains?(conn.request_path, "forbidden-marker") -> 403
+          true -> 200
+        end
 
       conn =
         if String.contains?(conn.request_path, "missing-etag") do
@@ -45,22 +51,33 @@ defmodule Embervm.S3ClientTest do
     :ok
   end
 
-  test "GET, PUT, DELETE, and ListObjectsV2 are signed when credentials are set" do
+  test "HEAD, GET, PUT, DELETE, and ListObjectsV2 are signed when credentials are set" do
     client =
       S3Client.new("http://127.0.0.1:#{@port}", "embervm",
         access_key_id: "embervm",
         secret_access_key: "secret"
       )
 
+    assert :ok = S3Client.head(client, "base/amd/demo/meta.json")
     assert {:ok, "ok"} = S3Client.get(client, "base/amd/demo/meta.json")
     assert :ok = S3Client.put(client, "manifests/latest.json", "{}")
     assert :ok = S3Client.delete(client, "stateful/amd/old/meta.json")
     assert {:ok, []} = S3Client.list_all(client, "base/amd/")
 
-    for method <- ["GET", "PUT", "DELETE", "GET"] do
+    for method <- ["HEAD", "GET", "PUT", "DELETE", "GET"] do
       assert_receive {:s3_request, ^method, _path, _query, [authorization]}
       assert authorization =~ @auth_shape
     end
+  end
+
+  test "HEAD distinguishes an absent marker and refuses authorization failures" do
+    client = S3Client.new("http://127.0.0.1:#{@port}", "embervm")
+
+    assert {:error, :not_found} =
+             S3Client.head(client, "base/amd/demo/missing-marker/meta.json")
+
+    assert {:error, {:unexpected_status, 403}} =
+             S3Client.head(client, "base/amd/demo/forbidden-marker/meta.json")
   end
 
   test "anonymous client sends no Authorization header" do

@@ -391,6 +391,14 @@ defmodule Embervm.BaseBuilder do
     # takes (channel, workload, ref) so it can compose the vendor-keyed store prefix
     # (the BASE key is base/<vendor>/<workload>/<ref>).
     evict_fun = Keyword.get(opts, :evict_fun, &default_evict/3)
+    # Local base eviction destroys only the node-local replica, but that copy
+    # may be the last durable copy if an earlier export was lost. Every local
+    # eviction therefore HEADs the exact vendored meta.json completion marker
+    # through the same control-plane S3 client immediately before asking noded
+    # to remove local bytes. A missing client or any non-success result holds the
+    # base. Tests inject head_fun to exercise the production decision seam.
+    store_client = Keyword.get(opts, :store_client)
+    head_fun = Keyword.get(opts, :head_fun, &default_head/2)
     # Remote base retention (#3947 PR-4): the ListArtifacts seam that reads the
     # STORE inventory for one (workload, vendor). Takes (channel, workload,
     # vendor) and returns {:ok, entries, truncated} or {:error, reason}. Tests
@@ -531,6 +539,8 @@ defmodule Embervm.BaseBuilder do
       connect_fun: connect_fun,
       disconnect_fun: disconnect_fun,
       evict_fun: evict_fun,
+      store_client: store_client,
+      head_fun: head_fun,
       list_fun: list_fun,
       remote_evict_fun: remote_evict_fun,
       remote_retention_sweep_enabled: remote_retention_sweep_enabled,
@@ -826,6 +836,28 @@ defmodule Embervm.BaseBuilder do
           end
 
         {:noreply, put_in(state.workloads[workload], %{w | store_confirmed: confirmed})}
+    end
+  end
+
+  def handle_info({:local_evict_failed, workload, ref}, state) do
+    # The event-driven refcount arm marks a ref evicted before spawning work to
+    # suppress duplicate RPCs. If the exact remote marker HEAD or noded's local
+    # in-use guard refuses the action, restore that ref to retryable state. The
+    # disk-driven arm does not mark refs and naturally retries on its next sweep.
+    case Map.get(state.workloads, workload) do
+      %{base_refs: base_refs} = w ->
+        case Map.get(base_refs, ref) do
+          nil ->
+            {:noreply, state}
+
+          entry ->
+            updated = Map.put(base_refs, ref, Map.put(entry, :evicted, false))
+            superseded = Enum.uniq([ref | w.superseded_refs])
+            {:noreply, put_in(state.workloads[workload], %{w | base_refs: updated, superseded_refs: superseded})}
+        end
+
+      _ ->
+        {:noreply, state}
     end
   end
 
@@ -3429,22 +3461,25 @@ defmodule Embervm.BaseBuilder do
   # backstop) and log the reclaim.
   defp apply_retention(state, workload, node_id, refs, bytes, manifest \\ nil) do
     if manifest != nil do
-      apply_disk_driven_retention(state, workload, node_id, refs, bytes)
+      apply_disk_driven_retention(state, workload, node_id, refs, bytes, manifest)
     else
       apply_legacy_retention(state, workload, node_id, refs, bytes)
     end
   end
 
-  defp apply_disk_driven_retention(state, workload, node_id, refs, bytes) do
+  defp apply_disk_driven_retention(state, workload, node_id, refs, bytes, manifest) do
     if state.retention_disk_driven_enabled do
       remaining = @retention_max_evictions_per_sweep - state.retention_sweep_evictions
-      refs_to_evict = Enum.take(refs, max(remaining, 0))
+      candidates_to_evict = Enum.take(manifest, max(remaining, 0))
       Logger.info(
-        "embervm base builder: base-retention sweep evicting #{length(refs_to_evict)} superseded local base(s) for #{workload} (~#{bytes} bytes planned) on #{node_id}"
+        "embervm base builder: base-retention sweep checking #{length(candidates_to_evict)} superseded local base(s) for #{workload} (~#{bytes} bytes planned) on #{node_id}"
       )
 
-      Enum.each(refs_to_evict, fn ref -> spawn_evict(state, node_id, workload, ref) end)
-      %{state | retention_sweep_evictions: state.retention_sweep_evictions + length(refs_to_evict)}
+      Enum.each(candidates_to_evict, fn candidate ->
+        spawn_evict(state, node_id, workload, candidate.ref, candidate.vendor)
+      end)
+
+      %{state | retention_sweep_evictions: state.retention_sweep_evictions + length(candidates_to_evict)}
     else
       Logger.info(
         "embervm base builder: base-retention sweep (DRY RUN, gate off) WOULD evict #{length(refs)} superseded local base(s) for #{workload} (~#{bytes} bytes) on #{node_id}"
@@ -3709,6 +3744,7 @@ defmodule Embervm.BaseBuilder do
       path = if is_binary(snapshot_path) and snapshot_path != "", do: snapshot_path, else: "/var/lib/embervm/scratch/bases/#{base.ref}"
 
       %{
+        ref: base.ref,
         node_id: fact[:instance_id],
         path: path,
         size_bytes: Map.get(base, :size_bytes, 0) || 0,
@@ -3777,8 +3813,9 @@ defmodule Embervm.BaseBuilder do
       bytes = Enum.reduce(evicted, 0, fn c, acc -> acc + (c.size_bytes || 0) end)
 
       Logger.info(
-        "embervm base builder: base retention sweep (ARMED, DELETING) covers #{nodes_processed} nodes, " <>
-          "#{length(evicted)} candidates, #{bytes} bytes evicted"
+        "embervm base builder: base retention sweep (ARMED, EXACT HEAD REQUIRED) covers " <>
+          "#{nodes_processed} nodes, #{length(evicted)} candidates, #{bytes} bytes scheduled " <>
+          "for guarded local eviction"
       )
     else
       bytes = Enum.reduce(candidates, 0, fn c, acc -> acc + (c.size_bytes || 0) end)
@@ -3836,45 +3873,183 @@ defmodule Embervm.BaseBuilder do
     end
   end
 
-  # Spawn a fire-and-forget eviction worker. EvictArtifact{remote: false} is
-  # idempotent (an already-gone base is success), so a lost result or a retry is
-  # harmless; failures are logged, not retried here (the next report, or the
-  # reconciled retention sweep, is the backstop). Not monitored: a crash cannot
-  # un-evict the already-marked ref.
-  defp spawn_evict(state, node_id, workload, ref) do
+  # Spawn a fire-and-forget local-only eviction worker. The worker connects to
+  # the exact planned noded instance, re-reads that instance's current vendor
+  # identity, HEADs the exact authoritative vendored meta.json marker, then asks
+  # noded to evict. noded performs its own immediate in-use check under the base
+  # lock, closing the relight/build race after this control-plane proof. No branch
+  # deletes remote bytes or owner records.
+  defp spawn_evict(state, node_id, workload, ref, expected_vendor \\ nil) do
     address = state.node_addr[node_id]
     connect_fun = state.connect_fun
     disconnect_fun = state.disconnect_fun
     evict_fun = state.evict_fun
+    store_client = state.store_client
+    head_fun = state.head_fun
+    capacity_table = state.capacity_table
+    owner = self()
 
     spawn(fn ->
       result =
-        case connect_fun.(address) do
-          {:ok, channel} ->
-            try do
-              evict_fun.(channel, workload, ref)
-            catch
-              kind, reason -> {:error, {kind, reason}}
-            after
-              disconnect_fun.(channel)
-            end
-
+        case valid_address(address) do
           {:error, reason} ->
-            {:error, {:connect, reason}}
+            {:error, reason}
+
+          :ok ->
+            try do
+              do_guarded_local_evict(
+                connect_fun,
+                disconnect_fun,
+                evict_fun,
+                head_fun,
+                store_client,
+                capacity_table,
+                address,
+                node_id,
+                workload,
+                ref,
+                expected_vendor
+              )
+            rescue
+              error -> {:error, {:worker_raised, error}}
+            catch
+              kind, reason -> {:error, {:worker_threw, kind, reason}}
+            end
         end
 
       case result do
-        {:ok, _} ->
-          :ok
-
-        other ->
-          Logger.warning(
-            "embervm base builder: EvictArtifact #{workload}/#{ref} failed: #{inspect(other)}"
+        {:ok, store_key} ->
+          Logger.info("embervm base builder: local base eviction complete",
+            workload: workload,
+            ref: ref,
+            node_id: node_id,
+            store_key: store_key,
+            owner_proof: "exact_remote_marker_head_2xx",
+            decision: "deleted_local_only",
+            retry_outcome: "success"
           )
+
+        {:error, reason, store_key} ->
+          Logger.warning("embervm base builder: local base eviction held",
+            workload: workload,
+            ref: ref,
+            node_id: node_id,
+            store_key: store_key || "unresolved",
+            owner_proof: "unproven",
+            decision: "hold_local",
+            retry_outcome: "retry_next_reconcile",
+            reason: inspect(reason)
+          )
+
+          send(owner, {:local_evict_failed, workload, ref})
+
+        {:error, reason} ->
+          Logger.warning("embervm base builder: local base eviction held",
+            workload: workload,
+            ref: ref,
+            node_id: node_id,
+            store_key: "unresolved",
+            owner_proof: "unproven",
+            decision: "hold_local",
+            retry_outcome: "retry_next_reconcile",
+            reason: inspect(reason)
+          )
+
+          send(owner, {:local_evict_failed, workload, ref})
       end
     end)
 
     :ok
+  end
+
+  defp do_guarded_local_evict(
+         connect_fun,
+         disconnect_fun,
+         evict_fun,
+         head_fun,
+         store_client,
+         capacity_table,
+         address,
+         node_id,
+         workload,
+         ref,
+         expected_vendor
+       ) do
+    case connect_fun.(address) do
+      {:ok, channel} ->
+        try do
+          with {:ok, store_key} <-
+                 local_base_marker_key(
+                   capacity_table,
+                   node_id,
+                   workload,
+                   ref,
+                   expected_vendor
+                 ),
+               :ok <- guarded_head(head_fun, store_client, store_key) do
+            case evict_fun.(channel, workload, ref) do
+              {:ok, _} -> {:ok, store_key}
+              {:error, reason} -> {:error, {:evict_failed, reason}, store_key}
+              other -> {:error, {:malformed_evict_result, other}, store_key}
+            end
+          else
+            {:error, reason, store_key} -> {:error, reason, store_key}
+            {:error, reason} -> {:error, reason}
+          end
+        catch
+          kind, reason -> {:error, {kind, reason}}
+        after
+          disconnect_fun.(channel)
+        end
+
+      {:error, reason} ->
+        {:error, {:connect, reason}}
+    end
+  end
+
+  defp valid_address(address) when is_binary(address) and address != "", do: :ok
+  defp valid_address(_address), do: {:error, :missing_node_address}
+
+  defp local_base_marker_key(capacity_table, node_id, workload, ref, expected_vendor) do
+    with {:ok, fact} <- find_capacity_fact(capacity_table, node_id),
+         vendor when vendor in ["amd", "intel"] <- cpu_vendor(fact),
+         :ok <- expected_vendor_matches(expected_vendor, vendor),
+         :ok <- valid_store_segment(:workload, workload),
+         :ok <- valid_store_segment(:ref, ref) do
+      {:ok, "base/#{vendor}/#{workload}/#{ref}/meta.json"}
+    else
+      :error -> {:error, :node_identity_unavailable}
+      vendor when is_binary(vendor) -> {:error, {:invalid_cpu_vendor, vendor}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp expected_vendor_matches(nil, _actual), do: :ok
+  defp expected_vendor_matches(vendor, vendor), do: :ok
+  defp expected_vendor_matches(expected, actual), do: {:error, {:vendor_changed, expected, actual}}
+
+  defp valid_store_segment(kind, value)
+       when is_binary(value) and value != "" and not is_nil(value) do
+    if Regex.match?(~r/\A[a-zA-Z0-9._-]+\z/, value),
+      do: :ok,
+      else: {:error, {:invalid_store_segment, kind}}
+  end
+
+  defp valid_store_segment(kind, _value), do: {:error, {:invalid_store_segment, kind}}
+
+  defp guarded_head(_head_fun, nil, store_key),
+    do: {:error, :store_client_unavailable, store_key}
+
+  defp guarded_head(head_fun, store_client, store_key) do
+    case head_fun.(store_client, store_key) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:head_failed, reason}, store_key}
+      other -> {:error, {:malformed_head_result, other}, store_key}
+    end
+  rescue
+    error -> {:error, {:head_raised, error}, store_key}
+  catch
+    kind, reason -> {:error, {:head_threw, kind, reason}, store_key}
   end
 
   # Build workers return the raw RPC error; hydration already normalizes it.
@@ -4346,6 +4521,8 @@ defmodule Embervm.BaseBuilder do
       trace: %Trace{workload: workload}
     })
   end
+
+  defp default_head(client, key), do: Embervm.S3Client.head(client, key)
 
   # ExportArtifact one base ref to the object store (base-durability PR-1). The
   # node stamps its own cpu vendor into the store key and meta.json, so the

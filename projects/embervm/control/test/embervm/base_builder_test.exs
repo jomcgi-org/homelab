@@ -104,6 +104,11 @@ defmodule Embervm.BaseBuilderTest do
           nodes: nodes,
           connect_fun: Keyword.get(opts, :connect_fun, fn _addr -> {:ok, :fake_channel} end),
           disconnect_fun: fn :fake_channel -> :ok end,
+          # Every local eviction is guarded by an exact remote marker HEAD.
+          # Tests not about that guard get a successful inert store seam; guard
+          # tests override head_fun and assert the exact key and failure policy.
+          store_client: Keyword.get(opts, :store_client, :fake_store),
+          head_fun: Keyword.get(opts, :head_fun, fn :fake_store, _key -> :ok end),
           # Base-durability PR-1 defaults for tests that do not exercise export:
           # a no-op export seam (so a build's immediate export never dials the real
           # stub against the fake channel) and a disabled reconcile timer (so no
@@ -123,6 +128,8 @@ defmodule Embervm.BaseBuilderTest do
           Keyword.drop(opts, [
             :export_fun,
             :connect_fun,
+            :store_client,
+            :head_fun,
             :export_reconcile_interval_ms,
             :retention_sweep_interval_ms,
             :op_log,
@@ -815,6 +822,8 @@ defmodule Embervm.BaseBuilderTest do
   test "a superseded base is not evicted while sessions reference it, and evicts on drain" do
     agent = start_recorder()
     test_pid = self()
+    table = new_cap_table()
+    put_node_capacity_fact(table, "w", "snap1", true)
 
     # Each build returns a snapshot ref derived from the image so gen1/gen2 differ.
     build_fun = fn :fake_channel, req ->
@@ -831,7 +840,8 @@ defmodule Embervm.BaseBuilderTest do
       start_builder(
         status_writer: recording_status_writer(agent),
         build_fun: build_fun,
-        evict_fun: evict_fun
+        evict_fun: evict_fun,
+        capacity_table: table
       )
 
     turnover_to_snap2(builder, agent)
@@ -861,6 +871,8 @@ defmodule Embervm.BaseBuilderTest do
   test "eviction fires only once even under repeated zero reports" do
     agent = start_recorder()
     test_pid = self()
+    table = new_cap_table()
+    put_node_capacity_fact(table, "w", "snap1", true)
 
     build_fun = fn :fake_channel, req ->
       ref = if req.image_ref == "imgA", do: "snap1", else: "snap2"
@@ -876,7 +888,8 @@ defmodule Embervm.BaseBuilderTest do
       start_builder(
         status_writer: recording_status_writer(agent),
         build_fun: build_fun,
-        evict_fun: evict_fun
+        evict_fun: evict_fun,
+        capacity_table: table
       )
 
     turnover_to_snap2(builder, agent)
@@ -905,6 +918,8 @@ defmodule Embervm.BaseBuilderTest do
   test "a legacy :serving refcount does not alter task and session eviction" do
     agent = start_recorder()
     test_pid = self()
+    table = new_cap_table()
+    put_node_capacity_fact(table, "w", "snap1", true)
 
     build_fun = fn :fake_channel, req ->
       ref = if req.image_ref == "imgA", do: "snap1", else: "snap2"
@@ -920,7 +935,8 @@ defmodule Embervm.BaseBuilderTest do
       start_builder(
         status_writer: recording_status_writer(agent),
         build_fun: build_fun,
-        evict_fun: evict_fun
+        evict_fun: evict_fun,
+        capacity_table: table
       )
 
     turnover_to_snap2(builder, agent)
@@ -950,6 +966,7 @@ defmodule Embervm.BaseBuilderTest do
       node_id: "node-4",
       configured_id: "node-4",
       instance_id: "node-4",
+      cpu_vendor: "amd",
       workloads: %{
         workload => %{
           snapshot_ref: current_ref,
@@ -966,7 +983,12 @@ defmodule Embervm.BaseBuilderTest do
     existing =
       case :ets.lookup(table, {node_id, pod_uid}) do
         [{_key, facts}] -> facts
-        [] -> %{node_id: node_id, configured_id: node_id, instance_id: "#{node_id}/#{pod_uid}"}
+        [] -> %{
+          node_id: node_id,
+          configured_id: node_id,
+          instance_id: "#{node_id}/#{pod_uid}",
+          cpu_vendor: "amd"
+        }
       end
 
     workloads =
@@ -988,6 +1010,7 @@ defmodule Embervm.BaseBuilderTest do
       node_id: node_id,
       configured_id: node_id,
       instance_id: "#{node_id}/#{pod_uid}",
+      cpu_vendor: "amd",
       workloads: %{},
       local_bases: local_bases,
       updated_at: 0
@@ -1508,6 +1531,176 @@ defmodule Embervm.BaseBuilderTest do
     assert length(entry.evict_refs) == 21
     for _ <- 1..20, do: assert_receive({:evicted, "w", _}, 1_000)
     refute_receive {:evicted, "w", _}, 200
+  end
+
+  test "local eviction HEADs the exact authoritative marker before deleting only local bytes" do
+    test_pid = self()
+    table = new_cap_table()
+    agent = start_recorder()
+
+    builder =
+      start_builder(
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: fn :fake_channel, _req -> {:ok, resp("w__current")} end,
+        retention_disk_driven_enabled: true,
+        head_fun: fn :fake_store, key ->
+          send(test_pid, {:headed, key})
+          :ok
+        end,
+        evict_fun: fn :fake_channel, workload, ref ->
+          send(test_pid, {:local_evict, workload, ref})
+          {:ok, %Embervm.Node.V1.EvictArtifactResponse{}}
+        end,
+        remote_evict_fun: fn _channel, _workload, _vendor, _ref ->
+          send(test_pid, :remote_evict)
+          {:ok, %Embervm.Node.V1.EvictArtifactResponse{}}
+        end
+      )
+
+    put_node_capacity_fact(table, "w", "placeholder", true)
+    build_current(builder, agent, "w__current")
+
+    put_local_bases_fact(table, "w", "w__current", true, [
+      ready_base("w__current", "w", 512),
+      ready_base("w__old", "w", 1_024)
+    ])
+
+    BaseBuilder.retention_sweep_now(builder)
+
+    assert_receive {:headed, "base/amd/w/w__old/meta.json"}, 1_000
+    assert_receive {:local_evict, "w", "w__old"}, 1_000
+    refute_receive :remote_evict, 100
+  end
+
+  test "every failed or malformed remote marker proof holds local bytes and retries" do
+    test_pid = self()
+    table = new_cap_table()
+    agent = start_recorder()
+    {:ok, outcomes} = Agent.start_link(fn -> [
+      {:error, :not_found},
+      {:error, {:unexpected_status, 403}},
+      {:error, {:unexpected_status, 500}},
+      {:error, :timeout},
+      {:ok, :unrelated_object},
+      :ok
+    ] end)
+
+    head_fun = fn :fake_store, key ->
+      outcome = Agent.get_and_update(outcomes, fn [next | rest] -> {next, rest} end)
+      send(test_pid, {:head_outcome, key, outcome})
+      outcome
+    end
+
+    builder =
+      start_builder(
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: fn :fake_channel, _req -> {:ok, resp("w__current")} end,
+        retention_disk_driven_enabled: true,
+        head_fun: head_fun,
+        evict_fun: fn :fake_channel, workload, ref ->
+          send(test_pid, {:evicted_after_proof, workload, ref})
+          {:ok, %Embervm.Node.V1.EvictArtifactResponse{}}
+        end
+      )
+
+    put_node_capacity_fact(table, "w", "placeholder", true)
+    build_current(builder, agent, "w__current")
+
+    put_local_bases_fact(table, "w", "w__current", true, [
+      ready_base("w__current", "w", 512),
+      ready_base("w__old", "w", 1_024)
+    ])
+
+    for expected <- [
+          {:error, :not_found},
+          {:error, {:unexpected_status, 403}},
+          {:error, {:unexpected_status, 500}},
+          {:error, :timeout},
+          {:ok, :unrelated_object}
+        ] do
+      BaseBuilder.retention_sweep_now(builder)
+      assert_receive {:head_outcome, "base/amd/w/w__old/meta.json", ^expected}, 1_000
+      refute_receive {:evicted_after_proof, "w", "w__old"}, 100
+    end
+
+    BaseBuilder.retention_sweep_now(builder)
+    assert_receive {:head_outcome, "base/amd/w/w__old/meta.json", :ok}, 1_000
+    assert_receive {:evicted_after_proof, "w", "w__old"}, 1_000
+  end
+
+  test "fresh vendor identity and noded in-use refusal both fail closed and remain retryable" do
+    test_pid = self()
+    table = new_cap_table()
+    agent = start_recorder()
+    {:ok, evict_attempts} = Agent.start_link(fn -> 0 end)
+
+    evict_fun = fn :fake_channel, workload, ref ->
+      attempt = Agent.get_and_update(evict_attempts, fn n -> {n, n + 1} end)
+      send(test_pid, {:evict_attempt, workload, ref, attempt})
+
+      if attempt == 0,
+        do: {:error, :base_in_use},
+        else: {:ok, %Embervm.Node.V1.EvictArtifactResponse{}}
+    end
+
+    builder =
+      start_builder(
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: fn :fake_channel, _req -> {:ok, resp("w__current")} end,
+        retention_disk_driven_enabled: true,
+        head_fun: fn :fake_store, key ->
+          send(test_pid, {:headed_for_race, key})
+          :ok
+        end,
+        evict_fun: evict_fun
+      )
+
+    put_node_capacity_fact(table, "w", "placeholder", true)
+    build_current(builder, agent, "w__current")
+
+    bases = [ready_base("w__current", "w", 512), ready_base("w__old", "w", 1_024)]
+    put_local_bases_fact(table, "w", "w__current", true, bases)
+
+    BaseBuilder.retention_sweep_now(builder)
+    assert_receive {:headed_for_race, "base/amd/w/w__old/meta.json"}, 1_000
+    assert_receive {:evict_attempt, "w", "w__old", 0}, 1_000
+
+    # noded's refusal leaves the local base reported, so the next sweep retries.
+    BaseBuilder.retention_sweep_now(builder)
+    assert_receive {:headed_for_race, "base/amd/w/w__old/meta.json"}, 1_000
+    assert_receive {:evict_attempt, "w", "w__old", 1}, 1_000
+
+    # A vendor change after planning is not allowed to reuse the old amd proof.
+    :sys.replace_state(builder, fn state ->
+      %{
+        state
+        | connect_fun: fn _address ->
+            if self() == builder do
+              {:error, :skip_remote_inventory}
+            else
+              send(test_pid, {:connected_for_identity_check, self()})
+
+              receive do
+                :continue_identity_check -> {:ok, :fake_channel}
+              end
+            end
+          end
+      }
+    end)
+
+    put_local_bases_fact(table, "w", "w__current", true, bases)
+    BaseBuilder.retention_sweep_now(builder)
+    assert_receive {:connected_for_identity_check, worker}, 1_000
+
+    [{key, fact}] = :ets.lookup(table, {"node-4", "ds"})
+    NodeCapacity.put(table, key, %{fact | cpu_vendor: "intel"})
+    send(worker, :continue_identity_check)
+
+    refute_receive {:headed_for_race, _key}, 200
+    refute_receive {:evict_attempt, "w", "w__old", _attempt}, 200
   end
 
   test "disk-driven retention log wording is DRY RUN when its gate is off" do
