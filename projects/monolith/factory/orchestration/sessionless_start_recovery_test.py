@@ -91,6 +91,7 @@ def database(tmp_path, monkeypatch):
         monkeypatch.setattr(module, "get_engine", lambda: engine)
     monkeypatch.setattr(reconciliation, "_utcnow", lambda: NOW)
     monkeypatch.setattr(conductor, "github_list", lambda *_args: [])
+    monkeypatch.setattr(conductor, "hydration_branch", lambda _task: "main")
     monkeypatch.setattr(conductor, "_free_background_slots", lambda: 3)
     monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "2")
     monkeypatch.setenv("FACTORY_BACKGROUND_RESERVE", "0")
