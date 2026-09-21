@@ -1130,8 +1130,10 @@ grpcConnectionSweeper:
 # workload's desired set (current ref plus still-refcounted refs) are evicted,
 # first as the supervised one-shot backlog reclaim, then as the ongoing
 # retention backstop. Durability is checked before any eviction: a workload is
-# skipped whole unless its current base shows exported=true in S3. Flipping
-# this value back to "" is the entire rollback lever.
+# skipped whole unless its current base is present. Immediately before each
+# local removal, the control plane must also HEAD the exact vendored meta.json
+# completion marker successfully; any identity or store failure retains the
+# local copy. Flipping this value back to "" is the entire rollback lever.
 baseRetention:
   sweepEnabled: ""
   diskDrivenEnabled: ""

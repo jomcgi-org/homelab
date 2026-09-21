@@ -1,7 +1,7 @@
 defmodule Embervm.S3Client do
   @moduledoc """
   Minimal raw-HTTP S3 client for the control plane's S3-direct warmth GC
-  (task #39): ListObjectsV2 (with pagination), GET, PUT, and single-key DELETE
+  (task #39): ListObjectsV2 (with pagination), HEAD, GET, PUT, and single-key DELETE
   against the in-cluster SeaweedFS S3 gateway, over the shared `Embervm.Finch`
   pool. The structural mirror of noded's non-SDK store client
   (noded/store/store.go): plain HTTP verbs on `<endpoint>/<bucket>/<key>`,
@@ -15,7 +15,7 @@ defmodule Embervm.S3Client do
   can never even ENUMERATE the pre-sidecar orphan backlog (workload binding
   lost, see Embervm.S3WarmthGc). The GC needs List, which noded's client never
   grew, so a small CP-side client is the whole cost of the design. No SDK: the
-  four verbs over Finch are ~as many lines as an SDK's config, match the noded
+  five verbs over Finch are ~as many lines as an SDK's config, match the noded
   precedent, and add zero deps to the hermetic hex closure.
 
   ## retries and fail-closed listing
@@ -109,6 +109,22 @@ defmodule Embervm.S3Client do
     case request(client, :get, object_url(client, key), "") do
       {:ok, %{status: 404}} -> {:error, :not_found}
       {:ok, %{status: status, body: body}} when status in 200..299 -> {:ok, body}
+      {:ok, %{status: status}} -> {:error, {:unexpected_status, status}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  HEAD one exact object key. Only a successful 2xx response proves presence.
+  A 404, authorization failure, malformed response, transport error, timeout,
+  or exhausted server-error retry is returned as an error so destructive
+  callers fail closed.
+  """
+  @spec head(t(), String.t()) :: :ok | {:error, :not_found} | {:error, term()}
+  def head(%__MODULE__{} = client, key) do
+    case request(client, :head, object_url(client, key), "") do
+      {:ok, %{status: 404}} -> {:error, :not_found}
+      {:ok, %{status: status}} when status in 200..299 -> :ok
       {:ok, %{status: status}} -> {:error, {:unexpected_status, status}}
       {:error, reason} -> {:error, reason}
     end

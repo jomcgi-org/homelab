@@ -166,6 +166,7 @@ defmodule Embervm.Application do
        retention_sweep_enabled: base_retention_sweep_enabled(),
        retention_disk_driven_enabled: base_retention_disk_driven_enabled(),
        remote_retention_sweep_enabled: base_remote_retention_sweep_enabled(),
+       store_client: artifact_store_client(),
        op_log: op_log_mod(),
        op_log_mod: op_log_mod()},
       # The Workload informer (Task 5): LISTs then WATCHes Workload CRs over the
