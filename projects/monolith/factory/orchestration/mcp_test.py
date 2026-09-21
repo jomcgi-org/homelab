@@ -152,7 +152,9 @@ def test_status_payload_trims_the_board_and_stamps_coverage(monkeypatch):
         "lanes": {"delivery": 1},
         "review_routing": {"model": "opus"},
         "active": [{"issue_number": 1, "title": "a", "limits": {}}],
-        "queued": [{"issue_number": 2, "title": "b"}],
+        "queued": [
+            {"issue_number": 2, "title": "b", "state": "queued", "generation": 0}
+        ],
         "recent": [{"issue_number": 3, "title": "c"}],
         "escalations": [
             {"issue_number": 4, "title": "d", "question": "which?", "open": True},
@@ -197,7 +199,10 @@ def test_status_payload_pages_each_bucket_and_keeps_queue_positions(monkeypatch)
         "ok": True,
         "state": "enabled",
         "active": [{"issue_number": number} for number in range(1, 7)],
-        "queued": [{"issue_number": number} for number in range(11, 18)],
+        "queued": [
+            {"issue_number": number, "state": "queued", "generation": 0}
+            for number in range(11, 18)
+        ],
         "recent": [],
         "escalations": [],
     }
@@ -231,9 +236,27 @@ def test_status_queue_positions_exclude_stale_generations(monkeypatch):
         "policy": {"generation": 2},
         "active": [],
         "queued": [
-            {"id": 1, "repo": "old/repo", "generation": 1, "issue_number": 1},
-            {"id": 2, "repo": "one/repo", "generation": 2, "issue_number": 2},
-            {"id": 3, "repo": "two/repo", "generation": 2, "issue_number": 3},
+            {
+                "id": 1,
+                "repo": "old/repo",
+                "generation": 1,
+                "issue_number": 1,
+                "state": "queued",
+            },
+            {
+                "id": 2,
+                "repo": "one/repo",
+                "generation": 2,
+                "issue_number": 2,
+                "state": "queued",
+            },
+            {
+                "id": 3,
+                "repo": "two/repo",
+                "generation": 2,
+                "issue_number": 3,
+                "state": "queued",
+            },
         ],
         "recent": [],
         "escalations": [],
