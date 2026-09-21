@@ -89,6 +89,7 @@ defmodule Embervm.LogFormatter do
     :bases_protected_by_refcounts,
     :bases_excluded_as_too_young,
     :bases_selected_as_candidates,
+    :bases_kept_current_unverified,
     :total_candidates,
     :shown,
     :hidden

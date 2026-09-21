@@ -890,6 +890,101 @@ defmodule Embervm.BaseBuilderTest do
     refute "snap1" in st2.workloads["w"].superseded_refs
   end
 
+  test "a failed event-driven marker proof restores the ref for retry" do
+    agent = start_recorder()
+    test_pid = self()
+    table = new_cap_table()
+    put_node_capacity_fact(table, "w", "snap1", true)
+
+    build_fun = fn :fake_channel, req ->
+      ref = if req.image_ref == "imgA", do: "snap1", else: "snap2"
+      {:ok, resp(ref)}
+    end
+
+    builder =
+      start_builder(
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun,
+        capacity_table: table,
+        head_fun: fn :fake_store, key ->
+          send(test_pid, {:failed_event_head, key})
+          {:error, :not_found}
+        end,
+        evict_fun: fn :fake_channel, workload, ref ->
+          send(test_pid, {:unexpected_event_evict, workload, ref})
+          {:ok, %Embervm.Node.V1.EvictArtifactResponse{}}
+        end
+      )
+
+    turnover_to_snap2(builder, agent)
+
+    :ok = BaseBuilder.report_base_refs(builder, "snap1", primed: 0, sessions: 0)
+    assert_receive {:failed_event_head, "base/amd/w/snap1/meta.json"}, 1_000
+    refute_receive {:unexpected_event_evict, "w", "snap1"}, 100
+
+    assert_eventually(fn ->
+      status = BaseBuilder.status(builder).workloads["w"]
+      status.base_refs["snap1"].evicted == false and "snap1" in status.superseded_refs
+    end)
+  end
+
+  test "a disk-driven failure preserves event-driven eviction state and retries" do
+    agent = start_recorder()
+    test_pid = self()
+    table = new_cap_table()
+    put_node_capacity_fact(table, "w", "snap1", true)
+
+    {:ok, outcomes} = Agent.start_link(fn -> [:ok, {:error, :not_found}, :ok] end)
+
+    builder =
+      start_builder(
+        status_writer: recording_status_writer(agent),
+        build_fun: fn :fake_channel, req ->
+          ref = if req.image_ref == "imgA", do: "snap1", else: "snap2"
+          {:ok, resp(ref)}
+        end,
+        capacity_table: table,
+        retention_disk_driven_enabled: true,
+        head_fun: fn :fake_store, key ->
+          outcome = Agent.get_and_update(outcomes, fn [next | rest] -> {next, rest} end)
+          send(test_pid, {:event_then_disk_head, key, outcome})
+          outcome
+        end,
+        evict_fun: fn :fake_channel, workload, ref ->
+          send(test_pid, {:event_then_disk_evict, workload, ref})
+          {:ok, %Embervm.Node.V1.EvictArtifactResponse{}}
+        end
+      )
+
+    turnover_to_snap2(builder, agent)
+
+    :ok = BaseBuilder.report_base_refs(builder, "snap1", primed: 0, sessions: 0)
+    assert_receive {:event_then_disk_head, "base/amd/w/snap1/meta.json", :ok}, 1_000
+    assert_receive {:event_then_disk_evict, "w", "snap1"}, 1_000
+    assert BaseBuilder.status(builder).workloads["w"].base_refs["snap1"].evicted
+
+    put_local_bases_fact(table, "w", "snap2", true, [
+      ready_base("snap2", "w", 512),
+      ready_base("snap1", "w", 1_024)
+    ])
+
+    BaseBuilder.retention_sweep_now(builder)
+
+    assert_receive {:event_then_disk_head, "base/amd/w/snap1/meta.json",
+                    {:error, :not_found}},
+                   1_000
+
+    refute_receive {:event_then_disk_evict, "w", "snap1"}, 100
+
+    status = BaseBuilder.status(builder).workloads["w"]
+    assert status.base_refs["snap1"].evicted
+    refute "snap1" in status.superseded_refs
+
+    BaseBuilder.retention_sweep_now(builder)
+    assert_receive {:event_then_disk_head, "base/amd/w/snap1/meta.json", :ok}, 1_000
+    assert_receive {:event_then_disk_evict, "w", "snap1"}, 1_000
+  end
+
   test "eviction fires only once even under repeated zero reports" do
     agent = start_recorder()
     test_pid = self()
@@ -1666,6 +1761,9 @@ defmodule Embervm.BaseBuilderTest do
       ready_base("w__current", "w", 512),
       ready_base("w__old", "w", 1_024)
     ])
+
+    [{key, fact}] = :ets.lookup(table, {"node-4", "ds"})
+    NodeCapacity.put(table, key, %{fact | cpu_vendor: " amd "})
 
     BaseBuilder.retention_sweep_now(builder)
 

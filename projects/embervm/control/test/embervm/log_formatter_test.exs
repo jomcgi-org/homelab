@@ -234,6 +234,22 @@ defmodule Embervm.LogFormatterTest do
     end
   end
 
+  test "preserves held-current-base accounting in structured JSON" do
+    decoded =
+      Embervm.LogFormatter.format(
+        %{
+          level: :warning,
+          msg: {:string, "embervm base retention summary"},
+          meta: %{bases_kept_current_unverified: 2}
+        },
+        %{}
+      )
+      |> IO.iodata_to_binary()
+      |> :json.decode()
+
+    assert decoded["bases_kept_current_unverified"] == 2
+  end
+
   test "preserves StatefulSweeper pressure transition fields in structured JSON" do
     metadata = %{brick_id: "node-4/pod-a", from: :high, to: :shedding}
 
