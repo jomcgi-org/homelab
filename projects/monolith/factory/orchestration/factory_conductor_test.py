@@ -4799,6 +4799,7 @@ def test_bound_zero_turn_live_view_releases_persisted_absence_fence(
         b'{"message":"queued planner"}',
     )
     _fence_bound_zero_turn_absence_with_refused_settlement(s, monkeypatch)
+    before_release = _uncertain_snapshot(s)
     with Session(s.engine) as db:
         fenced = db.get(AgentResultReceipt, receipt["id"])
         accept_until = fenced.accept_until
@@ -4815,6 +4816,8 @@ def test_bound_zero_turn_live_view_releases_persisted_absence_fence(
     assert released["turns"] == []
     assert len(released["pending"]) == 1
     assert released["permits"][0]["state"] == "running"
+    for key in ("turns", "pending", "permits", "runs"):
+        assert released[key] == before_release[key]
     assert store.refresh_claim_sync(s.sid, 1, "lost-bound-executor")
     assert s.calls == [(s.precondition["session_id"], None)]
     with Session(s.engine) as db:
@@ -4905,10 +4908,12 @@ def test_bound_zero_turn_absence_release_rematures_newest_live_epoch(
 
     records = supervisor._records_for_pin(s.run["pin"])
     fences = [detail for action, detail in records if action == "bound_zero_turn_fence"]
-    assert [detail["evidence"]["kind"] for detail in fences] == [
-        "authoritative_absence",
-        "completed_invoke",
-    ]
+    assert fences[0]["evidence"] == {
+        "kind": "authoritative_absence",
+        "session_id": s.precondition["session_id"],
+    }
+    assert fences[1]["evidence"]["kind"] == "completed_invoke"
+    assert fences[1]["evidence"]["precondition"] == s.precondition
     active = supervisor._active_bound_zero_turn_fence(records, fences[-1]["identity"])
     assert active == fences[-1]
 
