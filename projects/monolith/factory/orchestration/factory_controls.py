@@ -3026,6 +3026,111 @@ def request_landing_recovery(
         return {"ok": True, "replayed": False, "state": row.state}
 
 
+def reconcile_sessionless_start(
+    task_id: str,
+    node_key: str,
+    attempt: int,
+    actor: str,
+    *,
+    session: Session | None = None,
+) -> dict:
+    """Atomically fail one aged start proven never to have made a session.
+
+    The factory control lock is the same fence held by ``start_guard`` while a
+    node persists its session and prompt. The proof then locks the capacity
+    pool, run, start, deterministic session identity, permit, and receipt
+    evidence. A delayed creator therefore finishes before this read or finds a
+    terminal run after this commit; it cannot cross the settlement.
+
+    Refusals are ordinary observations for the periodic sweeper. Unexpected
+    lookup failures raise and roll the whole transaction back, so unavailable
+    evidence can never become a no-session proof.
+    """
+    from factory.execution.api import inspect_lost_before_session_factory_attempt
+    from factory.orchestration import graph
+
+    actor = _text(actor, "actor")
+    node_key = _text(node_key, "node_key")
+    _integer(attempt, "attempt", 1, 2**31 - 1)
+    with _locked_session(session) as (db, _control):
+        run = db.exec(
+            select(SwarmNodeRun)
+            .where(
+                SwarmNodeRun.task_id == task_id,
+                SwarmNodeRun.node_key == node_key,
+                SwarmNodeRun.attempt == attempt,
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).one_or_none()
+        if run is None:
+            return {"ok": False, "reason": "unknown_attempt"}
+        if run.status != "admitted":
+            return {"ok": False, "reason": "attempt_not_admitted"}
+        try:
+            pin = json.loads(run.pin_json or "null")
+        except (TypeError, ValueError):
+            pin = None
+        if not isinstance(pin, dict) or pin.get("workflow_id") != run.dispatch_key:
+            return {"ok": False, "reason": "missing_attempt_pin"}
+        proof, refusal = inspect_lost_before_session_factory_attempt(db, pin)
+        if proof is None:
+            return {"ok": False, "reason": refusal}
+
+        # The start ledger is ordered first, matching task settlement's
+        # unresolved-start constraint. Both writes still share this transaction,
+        # so any graph refusal rolls the start back to reserved.
+        charged = record_start_outcome(
+            task_id,
+            run.dispatch_key,
+            "failed",
+            actor,
+            cost_usd=0.0,
+            accounting_basis="no_model_post",
+            session_id=None,
+            reconciled=True,
+            session=db,
+        )
+        if not charged["ok"]:
+            raise ValueError(f"start_outcome_refused: {charged['reason']}")
+        result = {
+            "status": "failed",
+            "session_id": None,
+            "attempt": attempt,
+            "cost_usd": 0.0,
+            "cost_basis": "unknown",
+            "accounting": "unknown_cost",
+            "head_sha": run.head_sha,
+            "reason": "never_dispatched",
+            "previous_outcome": json.loads(run.outcome_json or "{}"),
+            "never_dispatched": proof,
+        }
+        settled = graph.record_outcome(
+            task_id,
+            node_key,
+            attempt,
+            "failed",
+            0.0,
+            run.head_sha,
+            _json(result),
+            session=db,
+        )
+        if not settled.ok:
+            raise ValueError(f"outcome_refused: {settled.refusal_code}")
+        _audit(
+            db,
+            actor,
+            "sessionless_start_settled",
+            task_id=task_id,
+            workflow_id=run.dispatch_key,
+            node_key=node_key,
+            attempt=attempt,
+            reason="never_dispatched",
+            identity=proof,
+        )
+        return {"ok": True, "session_id": None, "outcome": result}
+
+
 def settle_lost_attempt(
     task_id: str,
     node_key: str,
@@ -3162,7 +3267,7 @@ def settle_lost_attempt(
             actor,
             cost_usd=0.0,
             accounting_basis=(
-                "no_session_created" if lost_phase == "lost_before_session" else None
+                "no_model_post" if lost_phase == "lost_before_session" else None
             ),
             session_id=proof["session_id"],
             reconciled=True,

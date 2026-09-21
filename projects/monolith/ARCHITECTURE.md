@@ -717,6 +717,24 @@ settles them, and covering them needs a check that their DBOS workflow is
 terminal, which this loop does not have.
 (see: /projects/monolith/factory/execution/permit_supervision.py)
 
+**Why.** A node can reserve its `FactoryStart` and admitted graph run before
+the durable workflow creates an agent session. If session creation never
+happens, funding refuses the unresolved start and the deadline backstop refuses
+every reserved start, so the task holds its delivery slot indefinitely. The
+periodic conductor now examines that exact pre-session window after the node's
+pinned `turn_timeout_seconds` has elapsed. Under the same control lock that
+fences session creation, it requires the immutable run and start ownership,
+no bound or deterministic session, no cost or outcome, and no permit or result
+receipt. Failed ownership or lookup evidence leaves the attempt untouched. A
+matching attempt settles both ledgers atomically as `failed` at zero cost with
+`no_model_post` and `never_dispatched`, after which ordinary bounded conductor
+reconciliation decides whether the node may retry. This is separate from the
+deadline backstop and from uncertain-execution release: neither elapsed time
+nor a missing binding can refund an attempt that carries contradictory
+execution evidence (#6285).
+(see: /projects/monolith/factory/execution/reconciliation.py)
+(see: /projects/monolith/factory/orchestration/factory_conductor.py)
+
 **Why.** A lost invoke response is not a lost invocation. Every monolith
 rollout cancelled the executor watching an in-flight turn, and the guest went
 on working while the executor recorded `invocation_outcome_unknown`, failed the
@@ -1338,6 +1356,7 @@ this table when the work ships or the issue closes without it.
 | One operator-facing Conductor above every per-task Planner selects and coordinates work, acting on Joe's behalf | The factory conductor | #5784 (children #5785, #5787, #5788, #5789, #5804; #5786 closed 2026-09-14) | not started |
 | The conductor decides reversible defaults, stages repository-only delivery when live checks are unavailable, and adopts unowned existing PRs; one human-needed notification per task | section 11, reversible gates | #6208 | implemented, awaiting validation |
 | Factory PR lifecycle follows settlement, adopts linked delivery targets at receipt creation, and incrementally retires stale duplicate or closed-issue factory PRs | section 11, factory PR lifecycle | #6255 | implemented in repository; operational rollout and first live `factory_pr_retired` audit not yet observed |
+| A sessionless reserved factory start is recovered only after its pinned turn timeout by an ownership-fenced no-dispatch proof, then ordinary bounded reconciliation may retry it | section 4, factory settlement | #6285 | implemented in repository; live wedge settlement and next-tick re-plan remain to be observed |
 | Product-goal records, the factory index, and acceptance evidence drive work selection | The factory conductor | #5786 | not started |
 | Conductor journal, memory assembly, and session lifecycle persist across restarts | The factory conductor | #5787 | not started |
 | One factory conversation spans web, Discord, and voice for the same conductor | The factory conductor | #5788 | not started |

@@ -6,7 +6,7 @@ session and job locks. These operations never commit or infer cessation.
 
 import json
 import re
-from datetime import timedelta
+from datetime import datetime, timezone
 
 from sqlmodel import Session, select
 
@@ -16,9 +16,8 @@ from factory.execution.models import AgentCapacityReservation, AgentSession
 from factory.utils import sanitize_payload
 
 
-# A reserved start is normally transient, sub-minute. Waiting an hour keeps
-# operator repair from settling a live attempt that is still creating its session.
-LOST_BEFORE_SESSION_SETTLEMENT_STALE_AFTER = timedelta(hours=1)
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 _CLEANUP_FIELDS = (
@@ -1373,19 +1372,19 @@ def inspect_lost_before_session_factory_attempt(
 ) -> tuple[dict | None, str | None]:
     """Validate an attempt that reserved a start but never created a session.
 
-    A reserved start is normally transient. Without the age bound this proof
-    could settle a live attempt while it is still creating its session. Once
-    the bound has passed, the admitted run and reserved start must still carry
-    no session, cost, outcome, deterministic session identity, or capacity
-    reservation. No session means no guest, no receipt and no work product.
+    A reserved start is normally transient. Without the pinned turn-timeout
+    age bound this proof could settle a live attempt while it is still creating
+    its session. Once that strict bound has passed, the admitted run and exact
+    reserved start must still carry no session, cost, outcome, deterministic
+    session identity, capacity reservation, or result receipt. No session and
+    no execution evidence mean no model call was dispatched.
 
     Fail closed: every condition is required, and an unrecognised shape returns
     no proof. Returns (proof, None) or (None, the first failed condition). Like
     the other factory proofs, this locks the capacity pool first, then reads the
     attempt records under row locks. Settlement is a separate call.
     """
-    from datetime import datetime, timezone
-
+    from factory.execution.models import AgentResultReceipt
     from factory.orchestration.factory_models import FactoryStart
     from factory.orchestration.models import SwarmNodeRun
     from factory.orchestration.node_workflows import (
@@ -1407,12 +1406,31 @@ def inspect_lost_before_session_factory_attempt(
     ).one_or_none()
     if run is None or run.status != "admitted":
         return None, "not_admitted"
+    try:
+        stored_pin = json.loads(run.pin_json or "null")
+    except (TypeError, ValueError):
+        return None, "invalid_attempt_pin"
+    if stored_pin != pin or run.dispatch_key != pin.get("workflow_id"):
+        return None, "attempt_ownership_conflict"
+    if run.reserved_cost_usd != pin.get("max_cost_usd"):
+        return None, "attempt_ownership_conflict"
     if run.session_id is not None:
         return None, "session_exists"
     if run.cost_usd is not None:
         return None, "carries_cost"
     if run.outcome_json not in (None, ""):
         return None, "carries_outcome"
+    if (
+        db.exec(
+            select(SwarmNodeRun.id).where(
+                SwarmNodeRun.task_id == pin["task_id"],
+                SwarmNodeRun.node_key == pin["node_key"],
+                SwarmNodeRun.attempt > pin["attempt"],
+            )
+        ).first()
+        is not None
+    ):
+        return None, "newer_attempt_exists"
 
     start = db.exec(
         select(FactoryStart)
@@ -1427,6 +1445,10 @@ def inspect_lost_before_session_factory_attempt(
         return None, "missing_factory_start"
     if start.status != "reserved":
         return None, "start_not_reserved"
+    if start.model != pin.get("model") or start.max_cost_usd != pin.get(
+        "max_cost_usd"
+    ):
+        return None, "start_ownership_conflict"
     if start.session_id is not None:
         return None, "start_has_session"
     if resolve_node_session_id(pin, session=db) is not None:
@@ -1445,13 +1467,22 @@ def inspect_lost_before_session_factory_attempt(
         is not None
     ):
         return None, "capacity_reserved"
+    if (
+        db.exec(
+            select(AgentResultReceipt.id)
+            .where(AgentResultReceipt.local_session_id == local_session_id)
+            .with_for_update()
+        ).first()
+        is not None
+    ):
+        return None, "result_receipt_exists"
 
     def aware(value):
         return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
     if (
-        datetime.now(timezone.utc) - aware(start.created_at)
-        <= LOST_BEFORE_SESSION_SETTLEMENT_STALE_AFTER
+        (_utcnow() - aware(start.created_at)).total_seconds()
+        <= pin["turn_timeout_seconds"]
     ):
         return None, "start_too_recent"
     return {
@@ -1459,8 +1490,8 @@ def inspect_lost_before_session_factory_attempt(
         "workflow_id": pin["workflow_id"],
         "start_id": start.id,
         "seq": 1,
-        "cost_usd": None,
-        "invocation_phase": "lost_before_session",
+        "cost_usd": 0.0,
+        "invocation_phase": "never_dispatched",
     }, None
 
 
@@ -1486,7 +1517,7 @@ def settle_lost_before_session_factory_attempt(
     ).one()
     start.status = "failed"
     start.cost_usd = 0.0
-    start.accounting_basis = "no_session_created"
+    start.accounting_basis = "no_model_post"
     db.add(start)
 
 
