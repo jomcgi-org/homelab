@@ -116,11 +116,13 @@ tag commit `e363b08c9175ac1cbe5893615dd2cb9ddf95043b`.
   replaying the persisted usage of the last completed turn. The shim now binds
   a turn from its `turn/start` response or matching `turn/started` notification,
   then accepts usage and completion only for that thread and turn. The focused
-  fake-server coverage reproduces an 11-input, 7-output replay before an
-  interrupted next turn, stale completion, wrong-thread and wrong-turn usage,
-  and late usage followed by a consecutive turn. Usage that arrives only after
-  the matching completion remains `{}` because that turn has already returned;
-  the shim neither moves it to the next turn nor manufactures a total.
+  fake-server coverage accepts matching usage received after `turn/started` but
+  before the `turn/start` response, reproduces an 11-input, 7-output replay
+  before an interrupted next turn, and covers stale completion, wrong-thread
+  and wrong-turn usage, plus late usage followed by a consecutive turn. Usage
+  that arrives only after the matching completion remains `{}` because that
+  turn has already returned; the shim neither moves it to the next turn nor
+  manufactures a total.
   Factory's native-turn parser preserves that empty mapping, the turn store
   records it once for that turn, and `price_usage` returns no price for it.
 - **Session storage and hydration:** Factory and conductor entry points create
