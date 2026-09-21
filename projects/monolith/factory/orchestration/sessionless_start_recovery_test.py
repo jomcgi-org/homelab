@@ -243,9 +243,7 @@ def test_real_authorize_without_session_settles_both_ledgers_and_replays(
 def test_timeout_is_strictly_beyond_the_pinned_boundary(database, age_seconds, settled):
     state = _sessionless_attempt(database, age_seconds=age_seconds)
     assert (
-        conductor._sweep_sessionless_starts(
-            {"task_id": state.task["id"]}, _dbos()
-        )
+        conductor._sweep_sessionless_starts({"task_id": state.task["id"]}, _dbos())
         == settled
     )
     run, start = _rows(state)
@@ -297,7 +295,9 @@ def test_workflow_lookup_error_leaves_attempt_untouched(database):
     assert (run.status, start.status) == ("admitted", "reserved")
 
 
-@pytest.mark.parametrize("with_turn", [False, True], ids=["session", "session-and-turn"])
+@pytest.mark.parametrize(
+    "with_turn", [False, True], ids=["session", "session-and-turn"]
+)
 def test_deterministic_session_or_turn_refuses_sweep(database, with_turn):
     from factory.execution.models import AgentSession, AgentTurn
 
@@ -305,9 +305,7 @@ def test_deterministic_session_or_turn_refuses_sweep(database, with_turn):
     pin = state.run["pin"]
     with Session(database) as db:
         agent = AgentSession(
-            local_session_id=(
-                f"factory:{state.task['id']}:{state.run['node_key']}:1"
-            ),
+            local_session_id=(f"factory:{state.task['id']}:{state.run['node_key']}:1"),
             workspace="guest",
             branch=pin["hydration_branch"],
             repo=pin["repo"],
@@ -329,9 +327,9 @@ def test_deterministic_session_or_turn_refuses_sweep(database, with_turn):
                 )
             )
         db.commit()
-    assert conductor._sweep_sessionless_starts(
-        {"task_id": state.task["id"]}, _dbos()
-    ) == 0
+    assert (
+        conductor._sweep_sessionless_starts({"task_id": state.task["id"]}, _dbos()) == 0
+    )
     run, start = _rows(state)
     assert (run.status, start.status) == ("admitted", "reserved")
 
@@ -388,9 +386,9 @@ def test_contradictory_attempt_evidence_refuses_sweep(database, conflict):
                 )
             )
         db.commit()
-    assert conductor._sweep_sessionless_starts(
-        {"task_id": state.task["id"]}, _dbos()
-    ) == 0
+    assert (
+        conductor._sweep_sessionless_starts({"task_id": state.task["id"]}, _dbos()) == 0
+    )
     run, start = _rows(state)
     assert (run.status, start.status) == ("admitted", "reserved")
 
@@ -407,9 +405,7 @@ def test_failed_deterministic_lookup_rolls_back_without_settlement(
 
     monkeypatch.setattr(node_workflows, "resolve_node_session_id", unavailable)
     with pytest.raises(RuntimeError, match="lookup unavailable"):
-        conductor._sweep_sessionless_starts(
-            {"task_id": state.task["id"]}, _dbos()
-        )
+        conductor._sweep_sessionless_starts({"task_id": state.task["id"]}, _dbos())
     run, start = _rows(state)
     assert (run.status, start.status) == ("admitted", "reserved")
 
@@ -424,9 +420,7 @@ def test_atomic_rollback_when_graph_settlement_refuses(database, monkeypatch):
         ),
     )
     with pytest.raises(ValueError, match="outcome_refused: changed_attempt"):
-        conductor._sweep_sessionless_starts(
-            {"task_id": state.task["id"]}, _dbos()
-        )
+        conductor._sweep_sessionless_starts({"task_id": state.task["id"]}, _dbos())
     run, start = _rows(state)
     assert (run.status, start.status, start.accounting_basis) == (
         "admitted",
@@ -497,9 +491,9 @@ def test_sweep_releases_ceiling_then_normal_reconciliation_retries_once(database
     from factory.orchestration import factory_controls as controls
 
     state = _sessionless_attempt(database)
-    assert conductor._sweep_sessionless_starts(
-        {"task_id": state.task["id"]}, _dbos()
-    ) == 1
+    assert (
+        conductor._sweep_sessionless_starts({"task_id": state.task["id"]}, _dbos()) == 1
+    )
     before = controls.task_snapshot(state.task["id"])
     assert before["committed_cost_usd"] == 0.0
 
