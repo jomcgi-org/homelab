@@ -4515,6 +4515,24 @@ def _tick_bound_zero_turn(s):
     )
 
 
+def _fence_bound_zero_turn_without_stop(s, monkeypatch):
+    import copy
+    from datetime import timedelta
+
+    from factory.orchestration import factory_supervision as supervisor
+
+    def unchanged(guest_id, precondition=None):
+        s.calls.append((guest_id, copy.deepcopy(precondition)))
+        return copy.deepcopy(s.cp)
+
+    monkeypatch.setattr(supervisor, "_http", unchanged)
+    assert not _tick_bound_zero_turn(s)
+    s.now[0] += timedelta(seconds=s.run["pin"]["turn_timeout_seconds"] + 1)
+    assert not _tick_bound_zero_turn(s)
+    assert _uncertain_snapshot(s)["session"]["guest_cleanup_id"]
+    return supervisor
+
+
 def test_bound_zero_turn_proof_is_off_by_default(bound_zero_turn_factory, monkeypatch):
     s = bound_zero_turn_factory
     monkeypatch.setenv("FACTORY_BOUND_ZERO_TURN_SETTLEMENT_ENABLED", "false")
@@ -5100,6 +5118,88 @@ def test_bound_zero_turn_remote_progress_reopens_fenced_receipt(
         ).encode(),
     )
     assert captured["receipt_id"] == receipt["id"]
+
+
+@pytest.mark.parametrize(
+    ("change", "reason"),
+    [
+        ("invoke_started_at", "changed_stop_invocation"),
+        ("foreign_stop_intent", "stop_intent_changed"),
+    ],
+)
+def test_bound_zero_turn_completion_refusal_releases_fence(
+    bound_zero_turn_factory, monkeypatch, change, reason
+):
+    from factory.execution import store
+
+    s = bound_zero_turn_factory
+    _fence_bound_zero_turn_without_stop(s, monkeypatch)
+
+    if change == "invoke_started_at":
+        s.cp["invoke_started_at"] += 1
+        s.cp["last_invoke_at"] += 1
+        s.cp["updated_at"] += 1
+    else:
+        s.cp["stop_intent"] = {
+            **s.precondition,
+            "generation": s.precondition["generation"] + 1,
+            "operation_id": "foreign-stop",
+            "requested_at_unix_ms": s.cp["updated_at"] + 1,
+        }
+
+    assert not _tick_bound_zero_turn(s)
+    after = _uncertain_snapshot(s)
+    assert after["session"]["guest_cleanup_id"] is None
+    assert len(after["pending"]) == 1
+    assert after["permits"][0]["state"] == "running"
+    assert store.refresh_claim_sync(s.sid, 1, "lost-bound-executor")
+    resets = [
+        event
+        for event in after["factory"]["stop_events"]
+        if event["action"] == "bound_zero_turn_reset"
+    ]
+    assert resets[-1]["reason"] == reason
+
+
+def test_bound_zero_turn_release_can_mature_and_settle_a_new_fence(
+    bound_zero_turn_factory, monkeypatch
+):
+    from datetime import timedelta
+
+    s = bound_zero_turn_factory
+    supervisor = _fence_bound_zero_turn_without_stop(s, monkeypatch)
+
+    s.cp["turn_seq"] += 1
+    assert not _tick_bound_zero_turn(s)
+    assert _uncertain_snapshot(s)["session"]["guest_cleanup_id"] is None
+
+    assert not _tick_bound_zero_turn(s)
+    s.now[0] += timedelta(seconds=s.run["pin"]["turn_timeout_seconds"] + 1)
+    monkeypatch.setattr(supervisor, "_http", s.http)
+    assert not _tick_bound_zero_turn(s)
+
+    refenced = _uncertain_snapshot(s)
+    assert refenced["session"]["guest_cleanup_id"]
+    fences = [
+        event
+        for event in refenced["factory"]["stop_events"]
+        if event["action"] == "bound_zero_turn_fence"
+    ]
+    assert len(fences) == 2
+    assert fences[-1]["evidence"]["turn_seq"] == s.cp["turn_seq"]
+    requests = [
+        event
+        for event in refenced["factory"]["stop_events"]
+        if event["action"] == "bound_zero_turn_request"
+    ]
+    assert [request["request_number"] for request in requests] == [1, 1]
+
+    s.complete()
+    assert _tick_bound_zero_turn(s)
+    settled = _uncertain_snapshot(s)
+    assert settled["pending"] == []
+    assert settled["permits"][0]["state"] == "settled"
+    assert settled["permits"][0]["outcome"] == "delivery_error"
 
 
 def test_bound_zero_turn_fence_rejects_late_receipt_callback(

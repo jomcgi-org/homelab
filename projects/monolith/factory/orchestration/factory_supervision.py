@@ -1454,6 +1454,32 @@ def _bound_zero_turn_reset(pin, session_id, identity, reason, *, release=False):
     return True
 
 
+def _bound_zero_turn_epoch(records, identity):
+    """Return this identity's audit records since its latest fence reset."""
+    identity_sha256 = identity["identity_sha256"]
+    current = []
+    for action, detail in records:
+        recorded_identity = detail.get("identity_sha256")
+        if recorded_identity is None:
+            recorded_identity = detail.get("identity", {}).get("identity_sha256")
+        if recorded_identity != identity_sha256:
+            continue
+        if action == "bound_zero_turn_reset":
+            current = []
+            continue
+        current.append((action, detail))
+    return current
+
+
+def _active_bound_zero_turn_fence(records, identity):
+    fences = [
+        detail
+        for action, detail in _bound_zero_turn_epoch(records, identity)
+        if action == "bound_zero_turn_fence"
+    ]
+    return fences[-1] if fences else None
+
+
 def _bound_zero_turn_observe(pin, session_id, identity, evidence):
     """Persist two unchanged samples strictly beyond the node turn timeout."""
     now = _now()
@@ -1613,7 +1639,17 @@ def _drive_bound_zero_turn_fence(
         )
     if not isinstance(view, dict) or view.get("session_id") != identity["guest_id"]:
         raise ValueError("wrong_bound_zero_turn_session")
-    proof = _completion(view, saved["evidence"]["precondition"])
+    try:
+        proof = _completion(view, saved["evidence"]["precondition"])
+    except ValueError as exc:
+        _bound_zero_turn_reset(
+            pin,
+            session_id,
+            identity,
+            str(exc),
+            release=True,
+        )
+        return False
     if proof is not None:
         return _settle_bound_zero_turn(
             pin,
@@ -1657,7 +1693,7 @@ def _drive_bound_zero_turn_fence(
         )
         if current != identity:
             raise ValueError("factory_attempt_changed")
-        records = _records(db, pin)
+        records = _bound_zero_turn_epoch(_records(db, pin), identity)
         if not _reserve_bound_zero_turn_request(
             db,
             pin,
@@ -1702,21 +1738,14 @@ def _reconcile_bound_zero_turn_attempt(pin, session_id, original_result):
                 require_stop_due=False,
                 identity_reader=read_bound_zero_turn_factory_attempt,
             )
-            records = _records(db, pin)
-            fences = [
-                detail
-                for action, detail in records
-                if action == "bound_zero_turn_fence"
-                and detail.get("identity", {}).get("identity_sha256")
-                == identity["identity_sha256"]
-            ]
+            fence = _active_bound_zero_turn_fence(_records(db, pin), identity)
     except ValueError as exc:
         if str(exc) == "factory_bound_zero_turn_not_applicable":
             return False, False
         _note(pin, "bound_zero_turn_local_identity_unconfirmed", error=str(exc))
         return True, False
     if identity["cleanup_fenced"]:
-        if len(fences) != 1:
+        if fence is None:
             _note(pin, "bound_zero_turn_fence_unconfirmed")
             return True, False
         from factory.execution.transport import EmberSessionGone
@@ -1726,7 +1755,7 @@ def _reconcile_bound_zero_turn_attempt(pin, session_id, original_result):
         except EmberSessionGone as exc:
             view = exc
         except Exception as exc:
-            held_since = _timestamp(fences[0]["observed_at"])
+            held_since = _timestamp(fence["observed_at"])
             if (_now() - held_since).total_seconds() >= COMPLETION_ALARM_SECONDS:
                 _note(
                     pin,
@@ -1736,7 +1765,7 @@ def _reconcile_bound_zero_turn_attempt(pin, session_id, original_result):
             return True, False
         try:
             return True, _drive_bound_zero_turn_fence(
-                pin, session_id, identity, original_result, fences[0], view
+                pin, session_id, identity, original_result, fence, view
             )
         except ValueError as exc:
             _note(pin, "bound_zero_turn_fenced_evidence_changed", error=str(exc))
@@ -1766,13 +1795,9 @@ def _reconcile_bound_zero_turn_attempt(pin, session_id, original_result):
         state, identity = _bound_zero_turn_observe(pin, session_id, identity, evidence)
         if state != "fenced":
             return True, False
-        fence = next(
-            detail
-            for action, detail in _records_for_pin(pin)
-            if action == "bound_zero_turn_fence"
-            and detail.get("identity", {}).get("identity_sha256")
-            == identity["identity_sha256"]
-        )
+        fence = _active_bound_zero_turn_fence(_records_for_pin(pin), identity)
+        if fence is None:
+            raise ValueError("bound_zero_turn_fence_unconfirmed")
         if evidence["kind"] == "authoritative_absence":
             return True, _settle_bound_zero_turn(
                 pin,
