@@ -2166,9 +2166,7 @@ def test_codex_parent_waits_for_its_own_completion(tmp_path, monkeypatch, scenar
         manager._close_process(kill=True)
 
 
-def test_codex_resume_replay_is_not_charged_to_interrupted_turn(
-    tmp_path, monkeypatch
-):
+def test_codex_resume_replay_is_not_charged_to_interrupted_turn(tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_CODEX_SCENARIO", "resume-replay")
     manager = _codex_manager(tmp_path, monkeypatch)
 
