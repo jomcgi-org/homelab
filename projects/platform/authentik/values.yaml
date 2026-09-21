@@ -109,6 +109,16 @@ authentik:
   worker:
     # WINDOW: stopped for the cutover.
     replicas: 0
+    # The worker's probes are exec (`ak healthcheck`), which boots Django and
+    # checks the database, unlike the server's fast httpGet probes. The chart
+    # ships the same 3s timeout for both, and on 2026-09-21 kubelet restarted a
+    # healthy worker five times in four and a half hours because the command
+    # exceeded 3s. Give it room to finish; failureThreshold 3 with period 10
+    # still restarts a genuinely hung worker within about 40s.
+    livenessProbe:
+      timeoutSeconds: 10
+    readinessProbe:
+      timeoutSeconds: 10
     resources:
       requests:
         cpu: 100m
