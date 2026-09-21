@@ -1375,7 +1375,7 @@ def _accounting(starts: list[FactoryStart]) -> dict:
 
 
 def _start_dict(row: FactoryStart) -> dict:
-    return {
+    result = {
         key: getattr(row, key)
         for key in (
             "id",
@@ -1388,9 +1388,13 @@ def _start_dict(row: FactoryStart) -> dict:
             "cost_usd",
             "accounting_basis",
             "session_id",
-            "created_at",
         )
     }
+    created_at = row.created_at
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    result["created_at"] = created_at.isoformat()
+    return result
 
 
 def _recovery_deadline(db: Session, task_id: str, ordinary: datetime) -> datetime:
