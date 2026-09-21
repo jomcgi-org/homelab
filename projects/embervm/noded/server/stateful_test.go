@@ -514,7 +514,7 @@ func TestStartStatefulAttachLockRefusesSecondAttach(t *testing.T) {
 // TestReleaseOrphanedAttachDropsDeadRegistryVM proves a registry entry is not
 // accepted as attach-health testimony after its Firecracker API socket dies.
 // The live socket preserves the attach; removing it drops the registry entry
-// and lets ReleaseOrphaned reclaim the stale writable lock.
+// only after tracked process cleanup releases the stale writable lock.
 func TestReleaseOrphanedAttachDropsDeadRegistryVM(t *testing.T) {
 	port := tcpHealthServer(t)
 	s, _, fsd := newStatefulTestServer(t)
@@ -1028,6 +1028,43 @@ func TestStatefulDestroyReleaseFailureRetainsRetryableOwner(t *testing.T) {
 		BootImageRef: "img-a", Port: port, VolumeMount: "/data", BlessedGeneration: 2,
 	}); err != nil {
 		t.Fatalf("wake after retry completed: %v", err)
+	}
+}
+
+// TestStatefulWakeRetriesDeadOwnerCleanup proves the existing wake-time
+// recovery owner obeys the same fail-closed contract. A definitive dead socket
+// triggers tracked cleanup, but a release error retains the registry identity
+// and attach for a later wake to retry.
+func TestStatefulWakeRetriesDeadOwnerCleanup(t *testing.T) {
+	port := tcpHealthServer(t)
+	s, _, fsd := newStatefulTestServer(t)
+	started := startFreshStateful(t, s, port, "wl-state")
+	fsd.mu.Lock()
+	fsd.apiSocketPath = t.TempDir() + "/missing-api.sock"
+	fsd.failRelease = errors.New("process state uncertain")
+	fsd.mu.Unlock()
+
+	wake := func(generation uint64) (*nodev1.StartStatefulResponse, error) {
+		return s.StartStateful(context.Background(), &nodev1.StartStatefulRequest{
+			Trace: &nodev1.Trace{Workload: "wl-state"}, Mode: nodev1.StartStatefulMode_START_STATEFUL_MODE_COLD,
+			BootImageRef: "img-a", Port: port, VolumeMount: "/data", BlessedGeneration: generation,
+		})
+	}
+	if _, err := wake(2); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("wake after failed dead-owner reap = %v, want FailedPrecondition", err)
+	}
+	if entry, ok := s.statefulVMs.byWorkload("wl-state"); !ok || entry.vmID != started.GetVmId() {
+		t.Fatalf("wake recovery lost uncertain owner: entry = %+v, ok = %v", entry, ok)
+	}
+	if !s.volumes.IsAttached("wl-state") {
+		t.Fatal("wake recovery detached an uncertain owner")
+	}
+
+	fsd.mu.Lock()
+	fsd.failRelease = nil
+	fsd.mu.Unlock()
+	if response, err := wake(2); err != nil || response.GetVmId() == "" {
+		t.Fatalf("wake after dead-owner cleanup recovery = %v, %v", response, err)
 	}
 }
 

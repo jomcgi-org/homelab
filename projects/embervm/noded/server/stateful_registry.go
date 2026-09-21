@@ -122,6 +122,7 @@ type statefulEntry struct {
 
 	mu       sync.Mutex // guards inFlight
 	inFlight bool
+	teardown vmTeardown
 }
 
 // statefulRegistry is the daemon's inventory of LIVE stateful microVMs, keyed
@@ -162,6 +163,27 @@ func (r *statefulRegistry) beginStop(id string) (*statefulEntry, bool) {
 		return nil, false
 	}
 	e.inFlight = true
+	return e, true
+}
+
+// beginDestroy claims teardown ownership while retaining the registry entry.
+// An entry already claimed by destroy remains retryable, while another stop
+// mode keeps its existing serialization guard. An unknown id is an idempotent
+// success and returns (nil, true).
+func (r *statefulRegistry) beginDestroy(id string) (*statefulEntry, bool) {
+	r.mu.Lock()
+	e := r.vms[id]
+	r.mu.Unlock()
+	if e == nil {
+		return nil, true
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.inFlight && !e.teardown.started.Load() {
+		return nil, false
+	}
+	e.inFlight = true
+	e.teardown.started.Store(true)
 	return e, true
 }
 
