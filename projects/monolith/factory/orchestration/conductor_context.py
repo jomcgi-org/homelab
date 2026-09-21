@@ -83,6 +83,16 @@ def _factory_context(receipt_id: int) -> dict:
             "observed_at": _now(),
             "updated_at": _iso(row.updated_at),
             "source": "factory_records",
+            # This is the stable receipt-scoped conversation supported by the
+            # shared context contract. It deliberately does not pretend a
+            # standalone cross-surface conductor session owner exists.
+            "conversation": {
+                "id": f"factory-receipt:{row.repo}:{row.id}",
+                "kind": "receipt_context",
+                "receipt_id": row.id,
+                "task_id": row.task_id,
+                "selectable_in_fresh_session": True,
+            },
             "receipt": {
                 key: snapshot.get(key)
                 for key in (
@@ -105,6 +115,7 @@ def _factory_context(receipt_id: int) -> dict:
             "coverage": {
                 "receipt_conversation": "covered",
                 "external_chat_history": "not_stored",
+                "standalone_conductor_conversations": "unavailable_no_shared_owner",
             },
         }
 

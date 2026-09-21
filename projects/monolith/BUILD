@@ -2804,6 +2804,7 @@ py_test(
         "@pip//fastmcp",
         "@pip//pytest",
         "@pip//pytest_asyncio",
+        "@pip//sqlmodel",
     ],
 )
 

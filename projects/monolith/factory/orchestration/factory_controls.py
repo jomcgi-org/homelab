@@ -1423,10 +1423,13 @@ def _snapshot(db: Session, row: FactoryReceipt, *, body: bool = False) -> dict:
             "generation",
             "title",
             "url",
+            "actor",
             "state",
             "task_id",
             "task_paused",
             "cancellation_requested",
+            "created_at",
+            "updated_at",
         )
     }
     result["task_class"] = receipt_task_class(row)
@@ -2016,6 +2019,7 @@ def status(*, session: Session | None = None) -> dict:
             "admitted_count": control.admitted_count,
             "version": control.version,
             "actor": control.actor,
+            "control_updated_at": control.updated_at,
             "receipts": receipts,
             "active_tasks": [r for r in receipts if r["state"] in _ACTIVE],
         }
