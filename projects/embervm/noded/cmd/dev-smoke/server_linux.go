@@ -303,12 +303,12 @@ func serveScans(ctx context.Context, d *driver.Driver, transport *vsockhttp.Tran
 	var wg sync.WaitGroup
 	for _, slot := range p.slots {
 		wg.Add(1)
-		go func() {
+		go func(slot *scanSlot) {
 			defer wg.Done()
 			if err := p.worker(poolCtx, slot, primes, d, transport, ref); err != nil {
 				failures <- err
 			}
-		}()
+		}(slot)
 	}
 	wg.Add(1)
 	go func() {
