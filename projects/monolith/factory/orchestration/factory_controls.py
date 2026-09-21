@@ -900,7 +900,6 @@ def lane_usage(policy: dict, receipts: list[dict]) -> dict:
     receipts are generation-scoped, because older queues cannot be admitted.
     """
     limits = lane_limits(policy)
-    generation = policy.get("generation", 0)
     usage = {lane: {"limit": limits[lane], "active": 0, "queued": 0} for lane in LANES}
     for receipt in receipts:
         lane = receipt.get("routing_tier") or lane_for(
@@ -908,11 +907,21 @@ def lane_usage(policy: dict, receipts: list[dict]) -> dict:
         )
         if receipt.get("state") in _ACTIVE:
             usage[lane]["active"] += 1
-        elif (
-            receipt.get("state") == "queued" and receipt.get("generation") == generation
-        ):
+        elif is_current_generation_queue(policy, receipt):
             usage[lane]["queued"] += 1
     return usage
+
+
+def is_current_generation_queue(policy: dict, receipt: object) -> bool:
+    """Whether a receipt belongs to the only queue admission can consume."""
+    generation = policy.get("generation", 0)
+    if isinstance(receipt, dict):
+        state = receipt.get("state")
+        receipt_generation = receipt.get("generation", 0)
+    else:
+        state = getattr(receipt, "state", None)
+        receipt_generation = getattr(receipt, "generation", 0)
+    return state == "queued" and receipt_generation == generation
 
 
 def _validate_model_pools(pools: object, policy: dict) -> dict:
@@ -1379,6 +1388,7 @@ def _start_dict(row: FactoryStart) -> dict:
             "cost_usd",
             "accounting_basis",
             "session_id",
+            "created_at",
         )
     }
 

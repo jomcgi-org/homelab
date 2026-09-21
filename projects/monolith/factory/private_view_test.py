@@ -118,6 +118,7 @@ def test_shape_receipt_joins_nodes_runs_and_sessions():
         "unresolved_starts": 0,
         "limits": {"deadline_expired": False},
         "evidence": None,
+        "direction": {"option_key": "retry", "note": "operator free text"},
     }
     nodes = [
         _node("conductor_1", kind="conductor", model="spark"),
@@ -138,6 +139,7 @@ def test_shape_receipt_joins_nodes_runs_and_sessions():
     assert "repo" not in shaped["policy"]
     assert shaped["turns_used"] == 1 and shaped["planner_turns_used"] == 2
     assert shaped["task_class"] == "docs"
+    assert "direction" not in shaped
     assert shaped["starts"][0]["session_id"] == 3
     assert "actor" not in shaped["starts"][0]
     states = {n["node_key"]: n["state"] for n in shaped["nodes"]}
