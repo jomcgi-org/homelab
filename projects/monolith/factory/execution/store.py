@@ -2557,10 +2557,14 @@ def refresh_claim_sync(session_id: int, turn_seq: int, replica_id: str) -> bool:
     Returns True if claim is still held, False if claim was stolen.
     """
     with Session(get_engine()) as session:
-        _lock_session(session, session_id)
+        row = _lock_session(session, session_id)
+        if row is None or _bound_zero_turn_cleanup_pending(row):
+            return False
         # Match the owner in the UPDATE itself. A recovery transaction that
         # clears claimed_by_replica while this call is waiting for the row lock
-        # therefore makes this return False instead of reviving the lease.
+        # therefore makes this return False instead of reviving the lease. The
+        # bound-zero-turn fence is checked under that same session lock, so a
+        # heartbeat waiting behind the fence cannot revive the executor.
         result = session.execute(
             update(PendingMessage)
             .where(

@@ -732,6 +732,306 @@ def read_uncertain_factory_attempt(db: Session, pin: dict, session_id: int) -> d
     }
 
 
+def read_bound_zero_turn_factory_attempt(
+    db: Session, pin: dict, session_id: int
+) -> dict:
+    """Lock the exact bound dispatch that has no local turn result.
+
+    This is the narrow post-guest response-loss shape from #6288. A binding is
+    evidence that a guest may have run, never evidence that it did not. The
+    caller must separately prove unchanged control-plane completion or
+    sustained authoritative absence before fencing or settling this identity.
+
+    The cleanup fields may contain this proof's exact durable fence. Any other
+    cleanup owner, receipt result, turn, message mutation, replacement owner,
+    or permit mutation refuses the proof.
+    """
+    import hashlib
+    from datetime import datetime, timezone
+
+    from sqlalchemy import or_
+
+    from factory.execution.models import (
+        AgentResultReceipt,
+        AgentTurn,
+        PendingMessage,
+    )
+
+    admission.lock_pool(db)
+    agent = _factory_owner(db, pin, session_id)
+    if agent is None:
+        raise ValueError("missing_factory_owner")
+    agent = _locked_session(db, agent.id)
+    if _factory_owner(db, pin, session_id) is None:
+        raise ValueError("factory_owner_changed")
+    claim = _matching_cleanup_claim(agent)
+    owners = db.exec(
+        select(AgentSession.id)
+        .where(AgentSession.ember_session_id == agent.ember_session_id)
+        .limit(2)
+    ).all()
+    turns = db.exec(
+        select(AgentTurn.id)
+        .where(AgentTurn.session_id == agent.id)
+        .with_for_update()
+        .limit(1)
+    ).all()
+    pending = db.exec(
+        select(PendingMessage)
+        .where(PendingMessage.session_id == agent.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+        .limit(2)
+    ).all()
+    permits = db.exec(
+        select(AgentCapacityReservation)
+        .where(
+            or_(
+                AgentCapacityReservation.session_id == agent.id,
+                AgentCapacityReservation.local_session_id == agent.local_session_id,
+            )
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+        .limit(2)
+    ).all()
+    receipts = db.exec(
+        select(AgentResultReceipt)
+        .where(
+            or_(
+                AgentResultReceipt.session_id == agent.id,
+                AgentResultReceipt.local_session_id == agent.local_session_id,
+            )
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+        .limit(2)
+    ).all()
+    if (
+        agent.status != "running"
+        or not agent.ember_session_id
+        or agent.result_receipt_fence_id is not None
+        or agent.recovery_completed_at is not None
+        or owners != [agent.id]
+        or turns
+        or len(pending) != 1
+        or len(permits) != 1
+        or len(receipts) > 1
+    ):
+        raise ValueError("factory_bound_zero_turn_not_applicable")
+    message, permit = pending[0], permits[0]
+    if (
+        message.seq != 1
+        or message.model != permit.model
+        or message.claimed_by_replica is None
+        or message.claimed_by_replica != permit.owner
+        or not isinstance(message.claimed_at, datetime)
+        or type(message.dispatch_count) is not int
+        or message.dispatch_count < 1
+        or not isinstance(message.last_dispatch_at, datetime)
+        or message.partial_text is not None
+        or message.partial_activities is not None
+        or permit.pending_seq != message.seq
+        or permit.session_id != agent.id
+        or permit.local_session_id != agent.local_session_id
+        or permit.state not in {"running", "uncertain"}
+        or permit.tier != "project"
+        or permit.routine_job_name is not None
+        or not permit.owner
+        or permit.settled_at is not None
+        or permit.outcome not in {None, "delivery_error"}
+    ):
+        raise ValueError("factory_bound_zero_turn_identity_changed")
+    receipt_id = None
+    if receipts:
+        receipt = receipts[0]
+        if (
+            receipt.session_id != agent.id
+            or receipt.local_session_id != agent.local_session_id
+            or receipt.seq != message.seq
+            or receipt.dispatch_count != message.dispatch_count
+            or receipt.claim_owner != message.claimed_by_replica
+            or receipt.guest_id != agent.ember_session_id
+            or receipt.superseded_at is not None
+        ):
+            raise ValueError("factory_bound_zero_turn_receipt_changed")
+        if receipt.result_sha256 is not None or receipt.received_at is not None:
+            raise ValueError("factory_bound_zero_turn_result_committed")
+        receipt_id = receipt.id
+
+    def stamp(value: datetime) -> str:
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.isoformat()
+
+    protected = {
+        "pin": pin,
+        "session_id": agent.id,
+        "local_session_id": agent.local_session_id,
+        "workflow_id": agent.workflow_id,
+        "guest_id": agent.ember_session_id,
+        "status": agent.status,
+        "lineage_id": agent.ember_lineage_id,
+        "cli_session_id": agent.cli_session_id,
+        "pending_id": message.id,
+        "seq": message.seq,
+        "model": message.model,
+        "dispatch_count": message.dispatch_count,
+        "claim_owner": message.claimed_by_replica,
+        "claimed_at": stamp(message.claimed_at),
+        "dispatched_at": stamp(message.last_dispatch_at),
+        "permit_id": permit.id,
+        "permit_state": permit.state,
+        "permit_outcome": permit.outcome,
+        "receipt_id": receipt_id,
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(protected, sort_keys=True).encode()
+    ).hexdigest()
+    dispatches = [
+        {
+            "session_id": agent.id,
+            "seq": message.seq,
+            "dispatch_count": message.dispatch_count,
+            "claim_owner": message.claimed_by_replica,
+        }
+    ]
+    from factory.execution.constants import BOUND_ZERO_TURN_CLEANUP_PREFIX
+
+    cleanup_claim_id = BOUND_ZERO_TURN_CLEANUP_PREFIX + fingerprint[:24]
+    expected_claim = {
+        "guest_cleanup_id": cleanup_claim_id,
+        "guest_cleanup_guest_id": agent.ember_session_id,
+        "guest_cleanup_workflow_id": agent.workflow_id,
+        "guest_cleanup_dispatch_json": json.dumps(dispatches, sort_keys=True),
+    }
+    if claim is not None and any(
+        claim[field] != value for field, value in expected_claim.items()
+    ):
+        raise ValueError("factory_bound_zero_turn_cleanup_changed")
+    return {
+        **protected,
+        "identity_sha256": fingerprint,
+        "cleanup_claim_id": cleanup_claim_id,
+        "cleanup_fenced": claim is not None,
+        "cost_usd": None,
+    }
+
+
+def fence_bound_zero_turn_factory_attempt(
+    db: Session, pin: dict, identity: dict
+) -> None:
+    """Fence the exact pending dispatch before conditional guest cleanup.
+
+    Closing an existing receipt's acceptance window under the same receipt-row
+    lock gives its callback an exact ordering against this fence. A body that
+    committed first makes the identity read fail. Once this transaction wins,
+    the stale callback is rejected and cannot strand the fenced settlement.
+    """
+    current = read_bound_zero_turn_factory_attempt(db, pin, identity["session_id"])
+    if current != identity:
+        raise ValueError("factory_bound_zero_turn_attempt_changed")
+    if current["cleanup_fenced"]:
+        return
+    agent = _locked_session(db, identity["session_id"])
+    dispatches = [
+        {
+            "session_id": identity["session_id"],
+            "seq": identity["seq"],
+            "dispatch_count": identity["dispatch_count"],
+            "claim_owner": identity["claim_owner"],
+        }
+    ]
+    agent.guest_cleanup_id = identity["cleanup_claim_id"]
+    agent.guest_cleanup_guest_id = identity["guest_id"]
+    agent.guest_cleanup_workflow_id = identity["workflow_id"]
+    agent.guest_cleanup_dispatch_json = json.dumps(dispatches, sort_keys=True)
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    if identity["receipt_id"] is not None:
+        from factory.execution.models import AgentResultReceipt
+
+        receipt = db.exec(
+            select(AgentResultReceipt)
+            .where(AgentResultReceipt.id == identity["receipt_id"])
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).one()
+        if receipt.result_sha256 is not None or receipt.received_at is not None:
+            raise ValueError("factory_bound_zero_turn_result_committed")
+        receipt.accept_until = now
+        db.add(receipt)
+    agent.guest_cleanup_started_at = now
+    db.add(agent)
+    db.flush()
+
+
+def release_bound_zero_turn_factory_fence(
+    db: Session, pin: dict, identity: dict
+) -> None:
+    """Release only this proof's fence when remote progress invalidates it."""
+    current = read_bound_zero_turn_factory_attempt(db, pin, identity["session_id"])
+    if (
+        current["identity_sha256"] != identity["identity_sha256"]
+        or not current["cleanup_fenced"]
+    ):
+        raise ValueError("factory_bound_zero_turn_attempt_changed")
+    agent = _locked_session(db, identity["session_id"])
+    _retire_cleanup_claim(agent)
+    db.add(agent)
+    db.flush()
+
+
+def settle_bound_zero_turn_factory_attempt(
+    db: Session, pin: dict, identity: dict
+) -> None:
+    """Consume one fenced post-guest loss after exact cessation proof.
+
+    The bound guest may have spent money, so this deliberately creates no
+    measured-zero turn. The caller records cost_usd=None, retaining the
+    reservation ceiling, while this storage transaction consumes the exact
+    pending row and settles its permit as delivery_error.
+    """
+    from datetime import datetime, timezone
+
+    from factory.execution.models import PendingMessage
+
+    current = read_bound_zero_turn_factory_attempt(db, pin, identity["session_id"])
+    if current != identity or not current["cleanup_fenced"]:
+        raise ValueError("factory_bound_zero_turn_attempt_changed")
+    agent = _locked_session(db, identity["session_id"])
+    message = db.exec(
+        select(PendingMessage)
+        .where(PendingMessage.id == identity["pending_id"])
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one()
+    admission.settle(
+        db,
+        agent,
+        identity["seq"],
+        outcome="delivery_error",
+        cessation_confirmed=True,
+    )
+    if agent.ember_lineage_id:
+        agent.prior_ember_lineage_id = agent.ember_lineage_id
+    if agent.cli_session_id:
+        agent.prior_cli_session_id = agent.cli_session_id
+    _retire_cleanup_claim(agent)
+    agent.ember_session_id = None
+    agent.ember_session_token = None
+    agent.ember_session_expires_at = None
+    agent.ember_lineage_id = None
+    agent.cli_session_id = None
+    agent.progress_token = None
+    agent.status = "failed"
+    agent.last_turn_at = datetime.now(timezone.utc)
+    db.add(agent)
+    db.delete(message)
+    db.flush()
+
+
 def read_drained_lost_factory_attempt(db: Session, pin: dict, session_id: int) -> dict:
     """Lock one resumable drain without treating it as an unknown invocation.
 

@@ -4370,6 +4370,623 @@ def uncertain_factory(queued_factory, monkeypatch):
     return s
 
 
+@pytest.fixture
+def bound_zero_turn_factory(queued_factory, monkeypatch):
+    """The production #6288 shape with the real SessionView field contract."""
+    import copy
+    import json
+    from datetime import datetime, timedelta, timezone
+
+    from sqlmodel import Session
+
+    from factory.execution import admission, result_receipts, store
+    from factory.execution.models import AgentSession
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = queued_factory
+    for module in (controls, admission, result_receipts, store):
+        monkeypatch.setattr(module, "get_engine", lambda: s.engine)
+    monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "true")
+    monkeypatch.setenv("FACTORY_BOUND_ZERO_TURN_SETTLEMENT_ENABLED", "true")
+    owner = "lost-bound-executor"
+    assert store.claim_pending_message_for_session_sync(s.sid, owner) == 1
+    assert admission.recheck(s.sid, 1, owner)
+    s.dispatched_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+    s.invoke_started_at = int(
+        (s.dispatched_at + timedelta(seconds=1)).timestamp() * 1000
+    )
+    s.last_invoke_at = s.invoke_started_at + 1000
+    with Session(s.engine) as db:
+        agent = db.get(AgentSession, s.sid)
+        agent.ember_session_id = "s-bound-zero-turn"
+        agent.ember_session_token = "token-bound"
+        agent.ember_lineage_id = "lineage-bound"
+        agent.cli_session_id = "cli-bound"
+        agent.progress_token = "progress-bound"
+        pending = store.get_pending_message(db, s.sid, 1)
+        pending.last_dispatch_at = s.dispatched_at
+        db.add_all([agent, pending])
+        db.commit()
+    s.result = {
+        "status": "uncertain",
+        "session_id": s.sid,
+        "cost_usd": None,
+        "cost_basis": "unknown",
+        "reason": "node workflow completed without a local turn",
+        "head_sha": "a" * 40,
+    }
+    conductor.graph.record_dispatch(s.task["id"], s.run["node_key"], 1, s.sid, "b" * 40)
+    assert conductor.graph.record_outcome(
+        s.task["id"],
+        s.run["node_key"],
+        1,
+        "uncertain",
+        None,
+        "a" * 40,
+        json.dumps(s.result),
+    ).ok
+    assert controls.record_start_outcome(
+        s.task["id"],
+        s.run["pin"]["workflow_id"],
+        "uncertain",
+        "executor",
+        session_id=s.sid,
+    )["ok"]
+    s.run = conductor.graph.node_runs(s.task["id"])[0]
+    s.precondition = {
+        "session_id": "s-bound-zero-turn",
+        "generation": 0,
+        "invoke_started_at": s.invoke_started_at,
+        "vm_id": "vm-bound",
+        "node_id": "node-healthy",
+        "instance_id": "node-healthy/pod-bound",
+        "pod_uid": "pod-bound",
+        "boot_id": "boot-bound",
+    }
+    # Keep this aligned with Embervm.Router.session_view/2, including fields
+    # the proof does not consume. An invented minimal fixture previously hid a
+    # provider-contract mismatch during review.
+    s.cp = {
+        "session_id": "s-bound-zero-turn",
+        "workload": "claude-runtime",
+        "principal": "factory",
+        "state": "running",
+        "generation": 0,
+        "base_digest": "sha256:" + "c" * 64,
+        "created_at": s.invoke_started_at - 10_000,
+        "invoke_started_at": s.invoke_started_at,
+        "last_invoke_at": s.last_invoke_at,
+        "expires_at": s.last_invoke_at + 3_600_000,
+        "updated_at": s.last_invoke_at,
+        "terminal_reason": None,
+        "turn_seq": 2,
+        "interrupted_turn": None,
+        "stop_precondition": s.precondition,
+        "stop_intent": None,
+        "stop_completion": None,
+        "node": {
+            "node_id": "node-healthy",
+            "health": "healthy",
+            "draining": False,
+        },
+    }
+    s.calls = []
+
+    def http(guest_id, precondition=None):
+        s.calls.append((guest_id, copy.deepcopy(precondition)))
+        if precondition is not None:
+            assert precondition == s.precondition
+            s.cp["state"] = "destroying"
+            s.cp["updated_at"] += 1
+            s.cp["stop_intent"] = {
+                **s.precondition,
+                "operation_id": "stop-bound-zero-turn",
+                "requested_at_unix_ms": s.cp["updated_at"],
+            }
+        return copy.deepcopy(s.cp)
+
+    s.http = http
+    monkeypatch.setattr(supervisor, "_http", http)
+    s.now = [datetime.now(timezone.utc)]
+    monkeypatch.setattr(supervisor, "_now", lambda: s.now[0])
+    s.dbos = SimpleNamespace(
+        get_workflow_status=lambda _: SimpleNamespace(status="SUCCESS"),
+        retrieve_workflow=lambda _: SimpleNamespace(get_result=lambda: s.result),
+    )
+
+    def complete():
+        s.cp["state"] = "destroyed"
+        s.cp["updated_at"] += 1
+        s.cp["stop_completion"] = {
+            **s.cp["stop_intent"],
+            "completed_at_unix_ms": s.cp["updated_at"],
+        }
+
+    s.complete = complete
+    return s
+
+
+def _tick_bound_zero_turn(s):
+    from factory.orchestration import factory_supervision as supervisor
+
+    return supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+
+
+def test_bound_zero_turn_proof_is_off_by_default(bound_zero_turn_factory, monkeypatch):
+    s = bound_zero_turn_factory
+    monkeypatch.setenv("FACTORY_BOUND_ZERO_TURN_SETTLEMENT_ENABLED", "false")
+    before = _uncertain_snapshot(s)
+
+    assert not _tick_bound_zero_turn(s)
+    after = _uncertain_snapshot(s)
+    for key in ("session", "turns", "pending", "permits", "runs"):
+        assert after[key] == before[key]
+    assert s.calls == []
+
+
+def test_bound_zero_turn_settlement_waits_strictly_past_timeout_and_is_atomic(
+    bound_zero_turn_factory,
+):
+    from datetime import timedelta
+
+    from factory.orchestration import factory_controls as controls
+
+    s = bound_zero_turn_factory
+    timeout = s.run["pin"]["turn_timeout_seconds"]
+    assert not _tick_bound_zero_turn(s)
+    s.now[0] += timedelta(seconds=timeout)
+    assert not _tick_bound_zero_turn(s)
+    assert all(call[1] is None for call in s.calls)
+    s.now[0] += timedelta(seconds=1)
+    assert not _tick_bound_zero_turn(s)
+    fenced = _uncertain_snapshot(s)
+    assert fenced["turns"] == []
+    assert len(fenced["pending"]) == 1
+    assert fenced["session"]["guest_cleanup_id"]
+    assert fenced["permits"][0]["state"] == "running"
+    assert len([call for call in s.calls if call[1] is not None]) == 1
+
+    s.complete()
+    s.now[0] += timedelta(seconds=1)
+    assert _tick_bound_zero_turn(s)
+    after = _uncertain_snapshot(s)
+    assert after["turns"] == []
+    assert after["pending"] == []
+    assert after["session"]["status"] == "failed"
+    assert after["session"]["ember_session_id"] is None
+    assert after["session"]["guest_cleanup_id"] is None
+    assert after["permits"][0]["state"] == "settled"
+    assert after["permits"][0]["outcome"] == "delivery_error"
+    assert after["runs"][0]["status"] == "failed"
+    assert after["runs"][0]["cost_usd"] is None
+    assert after["factory"]["starts"][0]["status"] == "failed"
+    assert after["factory"]["starts"][0]["cost_usd"] is None
+    assert controls.can_start(s.task["id"])["ok"]
+    nodes = conductor.graph.load_graph(s.task["id"])
+    runs = conductor.graph.node_runs(s.task["id"])
+    assert runs[0]["pin"]["max_attempts"] == 2
+    assert conductor.graph.attempts_spent(runs, s.run["node_key"]) == 1
+    # Unknown cost retains this attempt's reserved ceiling. The second attempt
+    # remains part of the node policy, but is not admitted without budget.
+    assert conductor._ready_nodes(nodes, runs) == []
+    assert not _tick_bound_zero_turn(s)
+    repeated = _uncertain_snapshot(s)
+    for key in ("session", "turns", "pending", "permits", "runs"):
+        assert repeated[key] == after[key]
+    assert (
+        len(
+            [
+                event
+                for event in repeated["factory"]["stop_events"]
+                if event["action"] == "stop_settled"
+            ]
+        )
+        == 1
+    )
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "turn_seq",
+        "last_invoke_at",
+        "generation",
+        "draining",
+        "wrong_session",
+        "malformed_payload",
+    ],
+)
+def test_bound_zero_turn_progress_or_identity_change_restarts_proof(
+    bound_zero_turn_factory, change
+):
+    from datetime import timedelta
+
+    s = bound_zero_turn_factory
+    timeout = s.run["pin"]["turn_timeout_seconds"]
+    assert not _tick_bound_zero_turn(s)
+    s.now[0] += timedelta(seconds=timeout + 1)
+    if change == "turn_seq":
+        s.cp["turn_seq"] += 1
+    elif change == "last_invoke_at":
+        s.cp["last_invoke_at"] += 1
+        s.cp["updated_at"] += 1
+    elif change == "generation":
+        s.cp["generation"] += 1
+        s.precondition["generation"] += 1
+        s.cp["stop_precondition"] = s.precondition
+    elif change == "draining":
+        s.cp["node"]["draining"] = True
+    elif change == "wrong_session":
+        s.cp["session_id"] = "s-replacement"
+    else:
+        s.cp.pop("turn_seq")
+
+    assert not _tick_bound_zero_turn(s)
+    after = _uncertain_snapshot(s)
+    assert after["session"]["guest_cleanup_id"] is None
+    assert after["pending"]
+    assert after["permits"][0]["state"] == "running"
+    assert all(call[1] is None for call in s.calls)
+
+
+def test_bound_zero_turn_claim_heartbeat_restarts_window_and_fence_stops_refresh(
+    bound_zero_turn_factory,
+):
+    from datetime import datetime, timedelta, timezone
+
+    from sqlmodel import Session, select
+
+    from factory.execution import store
+    from factory.execution.models import PendingMessage
+
+    s = bound_zero_turn_factory
+    with Session(s.engine) as db:
+        pending = db.exec(select(PendingMessage)).one()
+        pending.claimed_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+        db.add(pending)
+        db.commit()
+
+    timeout = s.run["pin"]["turn_timeout_seconds"]
+    assert not _tick_bound_zero_turn(s)
+    s.now[0] += timedelta(seconds=timeout + 1)
+    assert store.refresh_claim_sync(s.sid, 1, "lost-bound-executor")
+    assert not _tick_bound_zero_turn(s)
+    assert _uncertain_snapshot(s)["session"]["guest_cleanup_id"] is None
+
+    s.now[0] += timedelta(seconds=timeout + 1)
+    assert not _tick_bound_zero_turn(s)
+    fenced = _uncertain_snapshot(s)
+    assert fenced["session"]["guest_cleanup_id"]
+    heartbeat = fenced["pending"][0]["claimed_at"]
+    assert not store.refresh_claim_sync(s.sid, 1, "lost-bound-executor")
+    assert _uncertain_snapshot(s)["pending"][0]["claimed_at"] == heartbeat
+
+
+def test_bound_zero_turn_lookup_failure_breaks_the_absence_window(
+    bound_zero_turn_factory, monkeypatch
+):
+    from datetime import timedelta
+
+    from factory.execution.transport import EmberSessionGone
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = bound_zero_turn_factory
+    timeout = s.run["pin"]["turn_timeout_seconds"]
+    mode = ["absent"]
+
+    def read(_guest, precondition=None):
+        assert precondition is None
+        if mode[0] == "absent":
+            raise EmberSessionGone("missing")
+        if mode[0] == "timeout":
+            raise TimeoutError("control plane unavailable")
+        return s.http(_guest, precondition)
+
+    monkeypatch.setattr(supervisor, "_http", read)
+    assert not _tick_bound_zero_turn(s)
+    s.now[0] += timedelta(seconds=timeout + 1)
+    mode[0] = "timeout"
+    assert not _tick_bound_zero_turn(s)
+    mode[0] = "absent"
+    assert not _tick_bound_zero_turn(s)
+    assert _uncertain_snapshot(s)["permits"][0]["state"] == "running"
+    s.now[0] += timedelta(seconds=timeout + 1)
+    assert _tick_bound_zero_turn(s)
+    assert _uncertain_snapshot(s)["permits"][0]["outcome"] == "delivery_error"
+
+
+@pytest.mark.parametrize("error_name", ["timeout", "403_forbidden", "500_server_error"])
+def test_bound_zero_turn_transient_lookup_failures_retain_every_row(
+    bound_zero_turn_factory, monkeypatch, error_name
+):
+    from datetime import timedelta
+
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = bound_zero_turn_factory
+    assert not _tick_bound_zero_turn(s)
+    before = _uncertain_snapshot(s)
+    s.now[0] += timedelta(seconds=s.run["pin"]["turn_timeout_seconds"] + 1)
+
+    def unavailable(*_args, **_kwargs):
+        errors = {
+            "timeout": TimeoutError("timeout"),
+            "403_forbidden": PermissionError("403 forbidden"),
+            "500_server_error": RuntimeError("500 server error"),
+        }
+        raise errors[error_name]
+
+    monkeypatch.setattr(supervisor, "_http", unavailable)
+    assert not _tick_bound_zero_turn(s)
+    after = _uncertain_snapshot(s)
+    for key in ("session", "turns", "pending", "permits", "runs"):
+        assert after[key] == before[key]
+
+
+def test_committed_synchronous_result_wins_before_bound_zero_turn_fence(
+    bound_zero_turn_factory, monkeypatch
+):
+    from datetime import timedelta
+
+    from factory.execution import store
+    from factory.execution.transport import parse_native_turn
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = bound_zero_turn_factory
+    assert not _tick_bound_zero_turn(s)
+    s.now[0] += timedelta(seconds=s.run["pin"]["turn_timeout_seconds"] + 1)
+    original = s.http
+    delivered = [False]
+
+    def response_wins(guest_id, precondition=None):
+        view = original(guest_id, precondition)
+        if precondition is None and not delivered[0]:
+            delivered[0] = True
+            turn = parse_native_turn(
+                {
+                    "result": "completed implementation",
+                    "terminal_reason": "completed",
+                    "stop_reason": None,
+                    "is_error": False,
+                    "permission_denials": [],
+                    "num_turns": 1,
+                    "session_id": "cli-bound",
+                    "usage": {"input_tokens": 10, "output_tokens": 5},
+                    "total_cost_usd": 0.25,
+                    "duration_ms": 1000,
+                    "activities": [],
+                    "model": "opus",
+                },
+                "s-bound-zero-turn",
+            )
+            store.persist_turn_from_pending_sync(
+                s.sid,
+                1,
+                "queued planner",
+                turn,
+                "completed implementation",
+                "completed",
+                cli_session_id="cli-bound",
+                model="opus",
+                claim_owner="lost-bound-executor",
+                dispatch_count=1,
+            )
+        return view
+
+    monkeypatch.setattr(supervisor, "_http", response_wins)
+    assert not _tick_bound_zero_turn(s)
+    after = _uncertain_snapshot(s)
+    assert len(after["turns"]) == 1
+    assert after["turns"][0]["result_text"] == "completed implementation"
+    assert after["pending"] == []
+    assert after["permits"][0]["state"] == "settled"
+    assert after["session"]["guest_cleanup_id"] is None
+    assert all(call[1] is None for call in s.calls)
+
+
+def test_bound_zero_turn_fence_rejects_late_result_and_release(
+    bound_zero_turn_factory,
+):
+    from datetime import timedelta
+
+    from factory.execution import store
+    from factory.execution.store import PendingClaimLost
+    from factory.execution.transport import parse_native_turn
+
+    s = bound_zero_turn_factory
+    assert not _tick_bound_zero_turn(s)
+    s.now[0] += timedelta(seconds=s.run["pin"]["turn_timeout_seconds"] + 1)
+    assert not _tick_bound_zero_turn(s)
+    turn = parse_native_turn(
+        {
+            "result": "late implementation",
+            "terminal_reason": "completed",
+            "usage": {},
+            "activities": [],
+            "total_cost_usd": 0.25,
+        },
+        "s-bound-zero-turn",
+    )
+    with pytest.raises(PendingClaimLost):
+        store.persist_turn_from_pending_sync(
+            s.sid,
+            1,
+            "queued planner",
+            turn,
+            "late implementation",
+            "completed",
+            cli_session_id="cli-bound",
+            model="opus",
+            claim_owner="lost-bound-executor",
+            dispatch_count=1,
+        )
+    assert not store.release_pending_message_claim_sync(
+        s.sid, 1, "lost-bound-executor", dispatch_count=1
+    )
+    fenced = _uncertain_snapshot(s)
+    assert fenced["turns"] == []
+    assert len(fenced["pending"]) == 1
+    assert fenced["permits"][0]["state"] == "running"
+
+
+def test_committed_receipt_wins_before_bound_zero_turn_fence(
+    bound_zero_turn_factory, monkeypatch
+):
+    import json
+    from datetime import timedelta
+
+    from factory.execution import result_receipts
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = bound_zero_turn_factory
+    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "true")
+    receipt = result_receipts.prepare_receipt(
+        s.sid,
+        "lost-bound-executor",
+        1,
+        "s-bound-zero-turn",
+        b'{"message":"queued planner"}',
+    )
+    assert not _tick_bound_zero_turn(s)
+    s.now[0] += timedelta(seconds=s.run["pin"]["turn_timeout_seconds"] + 1)
+    original = s.http
+    captured = [False]
+
+    def callback_wins(guest_id, precondition=None):
+        view = original(guest_id, precondition)
+        if precondition is None and not captured[0]:
+            captured[0] = True
+            result_receipts.capture_result(
+                receipt["id"],
+                receipt["token"],
+                json.dumps(
+                    {
+                        "result": "receipt completed",
+                        "terminal_reason": "completed",
+                        "usage": {},
+                        "activities": [],
+                    }
+                ).encode(),
+            )
+        return view
+
+    monkeypatch.setattr(supervisor, "_http", callback_wins)
+    assert not _tick_bound_zero_turn(s)
+    after = _uncertain_snapshot(s)
+    assert after["session"]["guest_cleanup_id"] is None
+    assert after["pending"]
+    assert after["permits"][0]["state"] == "running"
+
+
+def test_bound_zero_turn_fence_rejects_late_receipt_callback(
+    bound_zero_turn_factory, monkeypatch
+):
+    import json
+    from datetime import timedelta
+
+    from sqlmodel import Session
+
+    from factory.execution import result_receipts
+    from factory.execution.models import AgentResultReceipt
+
+    s = bound_zero_turn_factory
+    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "true")
+    receipt = result_receipts.prepare_receipt(
+        s.sid,
+        "lost-bound-executor",
+        1,
+        "s-bound-zero-turn",
+        b'{"message":"queued planner"}',
+    )
+    assert not _tick_bound_zero_turn(s)
+    s.now[0] += timedelta(seconds=s.run["pin"]["turn_timeout_seconds"] + 1)
+    assert not _tick_bound_zero_turn(s)
+
+    with pytest.raises(result_receipts.ReceiptRejected) as caught:
+        result_receipts.capture_result(
+            receipt["id"],
+            receipt["token"],
+            json.dumps(
+                {
+                    "result": "late receipt",
+                    "terminal_reason": "completed",
+                    "usage": {},
+                    "activities": [],
+                }
+            ).encode(),
+        )
+    assert caught.value.status == 410
+    with Session(s.engine) as db:
+        stored = db.get(AgentResultReceipt, receipt["id"])
+        assert stored.result_sha256 is None
+        assert stored.received_at is None
+
+    s.complete()
+    assert _tick_bound_zero_turn(s)
+    after = _uncertain_snapshot(s)
+    assert after["turns"] == []
+    assert after["pending"] == []
+    assert after["permits"][0]["outcome"] == "delivery_error"
+
+
+@pytest.mark.parametrize(
+    "mutation", ["pending_seq", "permit_owner", "second_turn", "replacement_guest"]
+)
+def test_bound_zero_turn_settlement_revalidates_local_ownership(
+    bound_zero_turn_factory, monkeypatch, mutation
+):
+    from datetime import timedelta
+
+    from sqlmodel import Session, select
+
+    from factory.execution.models import (
+        AgentCapacityReservation,
+        AgentSession,
+        AgentTurn,
+        PendingMessage,
+    )
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = bound_zero_turn_factory
+    assert not _tick_bound_zero_turn(s)
+    s.now[0] += timedelta(seconds=s.run["pin"]["turn_timeout_seconds"] + 1)
+    original = s.http
+
+    def changed(guest_id, precondition=None):
+        view = original(guest_id, precondition)
+        if precondition is None:
+            with Session(s.engine) as db:
+                if mutation == "pending_seq":
+                    db.exec(select(PendingMessage)).one().seq = 2
+                elif mutation == "permit_owner":
+                    db.exec(
+                        select(AgentCapacityReservation)
+                    ).one().owner = "replacement"
+                elif mutation == "second_turn":
+                    db.add(
+                        AgentTurn(
+                            session_id=s.sid,
+                            seq=1,
+                            prompt="queued planner",
+                            result_text="late result",
+                            terminal_reason="completed",
+                        )
+                    )
+                else:
+                    db.get(AgentSession, s.sid).ember_session_id = "s-replacement"
+                db.commit()
+        return view
+
+    monkeypatch.setattr(supervisor, "_http", changed)
+    assert not _tick_bound_zero_turn(s)
+    after = _uncertain_snapshot(s)
+    assert after["session"]["guest_cleanup_id"] is None
+    assert after["permits"][0]["state"] != "settled"
+
+
 def _uncertain_snapshot(s):
     from sqlmodel import Session, select
     from factory.execution.models import (
