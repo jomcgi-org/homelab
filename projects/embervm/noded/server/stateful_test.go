@@ -987,6 +987,88 @@ func TestStatefulDestroyKeepsOwnershipUntilReleaseCompletes(t *testing.T) {
 	}
 }
 
+// TestStatefulBankKeepsExclusiveCleanupUntilReleaseCompletes proves BANK does
+// not become a retryable DESTROY while its process release is still in flight.
+func TestStatefulBankKeepsExclusiveCleanupUntilReleaseCompletes(t *testing.T) {
+	port := tcpHealthServer(t)
+	s, _, fsd := newStatefulTestServer(t)
+	started := startFreshStateful(t, s, port, "wl-state")
+
+	releaseStarted := make(chan struct{}, 1)
+	allowRelease := make(chan struct{})
+	fsd.mu.Lock()
+	fsd.releaseStarted = releaseStarted
+	fsd.blockRelease = allowRelease
+	fsd.mu.Unlock()
+
+	bankDone := make(chan error, 1)
+	go func() {
+		_, err := s.StopStateful(context.Background(), &nodev1.StopStatefulRequest{
+			VmId: started.GetVmId(), Mode: nodev1.StopStatefulMode_STOP_STATEFUL_MODE_BANK,
+		})
+		bankDone <- err
+	}()
+	select {
+	case <-releaseStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("bank did not reach process release")
+	}
+
+	if response, err := s.StopStateful(context.Background(), &nodev1.StopStatefulRequest{
+		VmId: started.GetVmId(), Mode: nodev1.StopStatefulMode_STOP_STATEFUL_MODE_DESTROY,
+	}); status.Code(err) != codes.FailedPrecondition || response.GetTeardownConfirmed() {
+		t.Fatalf("destroy during bank cleanup = %v, %v, want unconfirmed FailedPrecondition", response, err)
+	}
+	if !s.volumes.IsAttached("wl-state") {
+		t.Fatal("blocked bank released volume ownership before process cessation")
+	}
+
+	close(allowRelease)
+	select {
+	case err := <-bankDone:
+		if err != nil {
+			t.Fatalf("bank after release: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("bank did not finish after release")
+	}
+}
+
+// TestStatefulBankCleanupFailureBecomesRetryable proves a failed ancillary
+// cleanup does not permanently pin the bank owner after process termination.
+func TestStatefulBankCleanupFailureBecomesRetryable(t *testing.T) {
+	port := tcpHealthServer(t)
+	s, _, fsd := newStatefulTestServer(t)
+	started := startFreshStateful(t, s, port, "wl-state")
+	fsd.mu.Lock()
+	fsd.failRemoveBundle = errors.New("bundle cleanup failed")
+	fsd.mu.Unlock()
+
+	if response, err := s.StopStateful(context.Background(), &nodev1.StopStatefulRequest{
+		VmId: started.GetVmId(), Mode: nodev1.StopStatefulMode_STOP_STATEFUL_MODE_BANK,
+	}); err == nil || response.GetTeardownConfirmed() {
+		t.Fatalf("failed bank cleanup = %v, %v, want unconfirmed error", response, err)
+	}
+	if !s.volumes.IsAttached("wl-state") {
+		t.Fatal("failed bank cleanup released volume ownership")
+	}
+
+	fsd.mu.Lock()
+	fsd.failRemoveBundle = nil
+	fsd.mu.Unlock()
+	if response, err := s.StopStateful(context.Background(), &nodev1.StopStatefulRequest{
+		VmId: started.GetVmId(), Mode: nodev1.StopStatefulMode_STOP_STATEFUL_MODE_DESTROY,
+	}); err != nil || !response.GetTeardownConfirmed() {
+		t.Fatalf("destroy retry after failed bank cleanup = %v, %v", response, err)
+	}
+	fsd.mu.Lock()
+	releases := fsd.releases
+	fsd.mu.Unlock()
+	if releases != 1 {
+		t.Fatalf("process releases = %d, want 1 across bank cleanup retry", releases)
+	}
+}
+
 // TestStatefulDestroyReleaseFailureRetainsRetryableOwner proves an uncertain
 // process remains the writable owner and a later destroy can retry the same
 // retained entry before a legitimate wake proceeds.
