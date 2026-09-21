@@ -102,6 +102,51 @@ Two cautions when consuming it:
   nothing is charged at that rate, so it is a valid unit of account for internal
   quota but is not an invoice.
 
+### Codex app-server acceptance map
+
+Issue #4361 was verified against the Codex app-server pinned in `MODULE.bazel`:
+release `rust-v0.146.0`, amd64 archive SHA256
+`5ba3b9405543953081f661d0854d266f76e2abbe51d41349355a36de7673776a`, and
+tag commit `e363b08c9175ac1cbe5893615dd2cb9ddf95043b`.
+
+- **Turn accounting:** the pinned protocol puts `threadId` and `turnId` on
+  `thread/tokenUsage/updated`, and puts `threadId` plus `turn.id` on both
+  start and completion notifications. It also sends the `thread/resume`
+  response before
+  replaying the persisted usage of the last completed turn. The shim now binds
+  a turn from its `turn/start` response or matching `turn/started` notification,
+  then accepts usage and completion only for that thread and turn. The focused
+  fake-server coverage reproduces an 11-input, 7-output replay before an
+  interrupted next turn, stale completion, wrong-thread and wrong-turn usage,
+  and late usage followed by a consecutive turn. Usage that arrives only after
+  the matching completion remains `{}` because that turn has already returned;
+  the shim neither moves it to the next turn nor manufactures a total.
+  Factory's native-turn parser preserves that empty mapping, the turn store
+  records it once for that turn, and `price_usage` returns no price for it.
+- **Session storage and hydration:** Factory and conductor entry points create
+  sessions with a repository and branch, persist both on the session row, and
+  include both in every delivery. `ProcessManager.turn` hydrates before adapter
+  selection, assigns the checkout to `CodexProcess.workspace`, and only then
+  invokes Codex. `CODEX_HOME` is therefore `<checkout>/.codex` for the first and
+  resumed turns. Existing hydration tests cover first-turn clone, restored
+  volume reuse, and consecutive-turn reuse. The historical sequence that first
+  starts without a repository and later switches the same session to a checkout
+  is not a supported Factory or conductor path: repository choice is fixed when
+  the session row is created and later deliveries read that stored choice. No
+  storage-path correction was made because the supported path did not reproduce
+  the fault.
+- **Non-git startup:** Factory conductor and drainer paths require non-empty
+  repository and branch values, so bare-workspace startup is inapplicable to
+  them. The separate MCP voice surface deliberately supports a checkoutless
+  talking session selected at session creation. Codex retains its directory-only
+  startup check for that supported use, with no new compatibility mechanism.
+
+Validation is repository-local: focused hermetic pytest exercises the adapter
+and the existing Linux `//projects/embervm/runtimes/claude:shim_test` target is
+the delivery gate. No deployment, credential operation, or production session
+was needed to establish the pinned producer ordering or the supported caller
+paths.
+
 ## Preemption
 
 SIGINT mid-turn exits 0, persists the partial output, and appends a synthetic
