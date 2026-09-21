@@ -145,9 +145,9 @@ defmodule Embervm.S3Client do
   ETag is refused because its body cannot safely anchor a compare-and-swap.
   """
   @spec get_with_etag(t(), String.t()) ::
-          {:ok, binary(), String.t()} |
-            {:error, :not_found | :missing_etag} |
-            {:error, term()}
+          {:ok, binary(), String.t()}
+          | {:error, :not_found | :missing_etag}
+          | {:error, term()}
   def get_with_etag(%__MODULE__{} = client, key) do
     case request(client, :get, object_url(client, key), "") do
       {:ok, %{status: 404}} ->
@@ -208,7 +208,8 @@ defmodule Embervm.S3Client do
 
     url = client.endpoint <> "/" <> client.bucket <> "/?" <> URI.encode_query(query)
 
-    with {:ok, %{status: status, body: body}} when status in 200..299 <- request(client, :get, url, ""),
+    with {:ok, %{status: status, body: body}} when status in 200..299 <-
+           request(client, :get, url, ""),
          {:ok, entries, truncated?, next_token} <- parse_list_response(body) do
       acc = acc ++ entries
 
@@ -235,7 +236,8 @@ defmodule Embervm.S3Client do
   def parse_list_response(body) when is_binary(body) do
     if String.contains?(body, "<ListBucketResult") do
       entries =
-        for [contents] <- Regex.scan(~r{<Contents>(.*?)</Contents>}s, body, capture: :all_but_first) do
+        for [contents] <-
+              Regex.scan(~r{<Contents>(.*?)</Contents>}s, body, capture: :all_but_first) do
           %{
             key: xml_unescape(field(contents, "Key") || ""),
             size: String.to_integer(field(contents, "Size") || "0"),
@@ -298,12 +300,30 @@ defmodule Embervm.S3Client do
 
   defp request_with_retry(client, method, url, body, request_headers, attempt) do
     creds = %{access_key_id: client.access_key_id, secret_access_key: client.secret_access_key}
-    headers = SigV4.sign(method, url, request_headers, SigV4.unsigned_payload(), creds, DateTime.utc_now())
+
+    headers =
+      SigV4.sign(
+        method,
+        url,
+        request_headers,
+        SigV4.unsigned_payload(),
+        creds,
+        DateTime.utc_now()
+      )
+
     req = Finch.build(method, url, headers, body)
 
     case Finch.request(req, Embervm.Finch, receive_timeout: @receive_timeout) do
       {:ok, %Finch.Response{status: status}} when status >= 500 ->
-        retry_or_fail(client, method, url, body, request_headers, attempt, {:unexpected_status, status})
+        retry_or_fail(
+          client,
+          method,
+          url,
+          body,
+          request_headers,
+          attempt,
+          {:unexpected_status, status}
+        )
 
       {:ok, %Finch.Response{} = resp} ->
         {:ok, %{status: resp.status, body: resp.body, headers: resp.headers}}
@@ -320,7 +340,10 @@ defmodule Embervm.S3Client do
       Process.sleep(@backoff_base_ms * Integer.pow(2, attempt - 1))
       request_with_retry(client, method, url, body, headers, attempt + 1)
     else
-      Logger.warning("embervm s3 client: #{method} #{url} failed after #{@attempts} attempts: #{inspect(reason)}")
+      Logger.warning(
+        "embervm s3 client: #{method} #{url} failed after #{@attempts} attempts: #{inspect(reason)}"
+      )
+
       {:error, reason}
     end
   end

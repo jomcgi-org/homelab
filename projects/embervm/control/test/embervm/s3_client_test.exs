@@ -12,7 +12,11 @@ defmodule Embervm.S3ClientTest do
 
     @impl true
     def call(conn, test_pid) do
-      send(test_pid, {:s3_request, conn.method, conn.request_path, conn.query_string, Plug.Conn.get_req_header(conn, "authorization")})
+      send(
+        test_pid,
+        {:s3_request, conn.method, conn.request_path, conn.query_string,
+         Plug.Conn.get_req_header(conn, "authorization")}
+      )
 
       if_match = Plug.Conn.get_req_header(conn, "if-match")
       if if_match != [], do: send(test_pid, {:s3_if_match, if_match})

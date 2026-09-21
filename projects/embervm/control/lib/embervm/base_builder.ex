@@ -193,12 +193,14 @@ defmodule Embervm.BaseBuilder do
           required(:generation) => integer() | nil,
           optional(:class) => String.t() | nil,
           required(:image_ref) => String.t() | nil,
-          optional(:zip) => %{
-            required(:runtime) => String.t(),
-            required(:code_uri) => String.t(),
-            required(:sha256) => String.t(),
-            required(:handler) => String.t()
-          } | nil,
+          optional(:zip) =>
+            %{
+              required(:runtime) => String.t(),
+              required(:code_uri) => String.t(),
+              required(:sha256) => String.t(),
+              required(:handler) => String.t()
+            }
+            | nil,
           required(:guest_port) => integer() | nil,
           required(:ready_path) => String.t(),
           required(:vcpus) => integer() | nil,
@@ -470,6 +472,7 @@ defmodule Embervm.BaseBuilder do
     # lets an unavailable store fail toward retaining bytes instead of crashing
     # the sweep.
     serving_store = Keyword.get(opts, :serving_store, Embervm.ServingStore)
+
     serving_instances_fun =
       Keyword.get(opts, :serving_instances_fun, &Embervm.ServingStore.all/1)
 
@@ -586,7 +589,10 @@ defmodule Embervm.BaseBuilder do
     handle_force_rebuild(state, workload_name, signature_at_start, nil)
   end
 
-  def handle_cast({:reconcile_force_rebuild, workload_name, signature_at_start, anchor_node}, state) do
+  def handle_cast(
+        {:reconcile_force_rebuild, workload_name, signature_at_start, anchor_node},
+        state
+      ) do
     handle_force_rebuild(state, workload_name, signature_at_start, anchor_node)
   end
 
@@ -853,7 +859,13 @@ defmodule Embervm.BaseBuilder do
           entry ->
             updated = Map.put(base_refs, ref, Map.put(entry, :evicted, false))
             superseded = Enum.uniq([ref | w.superseded_refs])
-            {:noreply, put_in(state.workloads[workload], %{w | base_refs: updated, superseded_refs: superseded})}
+
+            {:noreply,
+             put_in(state.workloads[workload], %{
+               w
+               | base_refs: updated,
+                 superseded_refs: superseded
+             })}
         end
 
       _ ->
@@ -1410,7 +1422,10 @@ defmodule Embervm.BaseBuilder do
               "embervm base builder: hydrate #{name}/#{ref} fell back, forcing a rebuild (#{inspect(reason)})"
             )
 
-            GenServer.cast(owner, {:reconcile_force_rebuild, name, signature_at_start, anchor_node})
+            GenServer.cast(
+              owner,
+              {:reconcile_force_rebuild, name, signature_at_start, anchor_node}
+            )
         end
       after
         send(owner, {:hydrate_done, name})
@@ -2449,7 +2464,9 @@ defmodule Embervm.BaseBuilder do
 
   defp worker_signature(state, node_id) do
     case state.nodes[node_id] do
-      nil -> nil
+      nil ->
+        nil
+
       n ->
         case n.worker do
           {pid, _ref} -> get_in(state.workers, [pid, :signature])
@@ -2627,7 +2644,12 @@ defmodule Embervm.BaseBuilder do
   # A build finished. Clear the node's building slot and worker index, apply the
   # result to the Workload's state and status (unless it was forgotten or its
   # spec changed under us), then start the next queued build on that node.
-  defp finish_build(state, pid, %{node_id: node_id, name: name, signature: built_sig} = worker_meta, result) do
+  defp finish_build(
+         state,
+         pid,
+         %{node_id: node_id, name: name, signature: built_sig} = worker_meta,
+         result
+       ) do
     state =
       state
       |> update_in([:workers], &Map.delete(&1, pid))
@@ -3133,7 +3155,9 @@ defmodule Embervm.BaseBuilder do
             "#{MapSet.size(keep)} ref(s)#{trunc_note}: #{inspect(refs)}"
         )
 
-        Enum.each(refs, fn ref -> spawn_remote_evict(state, instance_id, workload, vendor, ref) end)
+        Enum.each(refs, fn ref ->
+          spawn_remote_evict(state, instance_id, workload, vendor, ref)
+        end)
       else
         Logger.info(
           "embervm base builder: remote base retention (DRY RUN, gate off) WOULD evict " <>
@@ -3210,32 +3234,61 @@ defmodule Embervm.BaseBuilder do
   # construction. This avoids the old durability guard deadlocking against #4893.
   defp retention_sweep_plan(state) do
     state = %{state | retention_sweep_evictions: 0}
-    {plan, state} = Enum.reduce(state.workloads, {[], state}, fn {name, w}, {plan, acc} ->
-      per_node_outcomes = workload_retention(acc, w)
 
-      Enum.reduce(per_node_outcomes, {plan, acc}, fn outcome, {p, a} ->
-        case outcome do
-          :skip ->
-            {p, a}
+    {plan, state} =
+      Enum.reduce(state.workloads, {[], state}, fn {name, w}, {plan, acc} ->
+        per_node_outcomes = workload_retention(acc, w)
 
-          {:skip, node_id, accounting} ->
-            entry = %{workload: name, evict_refs: [], evict_bytes: 0, candidates: [],
-              skipped_unexported: false, node_id: node_id, retention_accounting: accounting}
-            {[entry | p], a}
+        Enum.reduce(per_node_outcomes, {plan, acc}, fn outcome, {p, a} ->
+          case outcome do
+            :skip ->
+              {p, a}
 
-          {:evict, node_id, refs, bytes, manifest, accounting} ->
-            entry = %{workload: name, evict_refs: refs, evict_bytes: bytes, candidates: manifest,
-              skipped_unexported: false, node_id: node_id, retention_accounting: accounting}
-            {[entry | p], apply_retention(a, name, node_id, refs, bytes, manifest)}
-        end
+            {:skip, node_id, accounting} ->
+              entry = %{
+                workload: name,
+                evict_refs: [],
+                evict_bytes: 0,
+                candidates: [],
+                skipped_unexported: false,
+                node_id: node_id,
+                retention_accounting: accounting
+              }
+
+              {[entry | p], a}
+
+            {:evict, node_id, refs, bytes, manifest, accounting} ->
+              entry = %{
+                workload: name,
+                evict_refs: refs,
+                evict_bytes: bytes,
+                candidates: manifest,
+                skipped_unexported: false,
+                node_id: node_id,
+                retention_accounting: accounting
+              }
+
+              {[entry | p], apply_retention(a, name, node_id, refs, bytes, manifest)}
+          end
+        end)
       end)
-    end)
 
     {plan, state} =
       if state.workload_sync_done do
-        Enum.reduce(unknown_workload_retention(state), {plan, state}, fn {workload, node_id, refs, bytes, manifest, accounting}, {p, a} ->
-          entry = %{workload: workload, evict_refs: refs, evict_bytes: bytes, candidates: manifest,
-            skipped_unexported: false, node_id: node_id, retention_accounting: accounting}
+        Enum.reduce(unknown_workload_retention(state), {plan, state}, fn {workload, node_id, refs,
+                                                                          bytes, manifest,
+                                                                          accounting},
+                                                                         {p, a} ->
+          entry = %{
+            workload: workload,
+            evict_refs: refs,
+            evict_bytes: bytes,
+            candidates: manifest,
+            skipped_unexported: false,
+            node_id: node_id,
+            retention_accounting: accounting
+          }
+
           {[entry | p], apply_retention(a, workload, node_id, refs, bytes, manifest)}
         end)
       else
@@ -3252,7 +3305,8 @@ defmodule Embervm.BaseBuilder do
   #   {:evict, node_id, refs, bytes} - this node's local bases to evict + bytes
   defp workload_retention(state, %{class: class} = w) when class in ["serving", :serving] do
     case serving_retention_workload(state, w) do
-      {:ok, serving_w} -> workload_retention(state, serving_w, :serving_image_ref)
+      {:ok, serving_w} ->
+        workload_retention(state, serving_w, :serving_image_ref)
 
       {:error, reason} ->
         Logger.warning(
@@ -3436,13 +3490,17 @@ defmodule Embervm.BaseBuilder do
          bases_kept_current_unverified \\ 0
        ) do
     desired_count = Enum.count(local_bases, &(&1.ref in desired))
-    protected_count = Enum.count(local_bases, fn base ->
-      base.ref not in desired and base_protected?(base_refs, base.ref)
-    end)
-    too_young_count = Enum.count(local_bases, fn base ->
-      base.ref not in desired and not base_protected?(base_refs, base.ref) and
-        base_age_seconds(base) < @retention_min_age_seconds
-    end)
+
+    protected_count =
+      Enum.count(local_bases, fn base ->
+        base.ref not in desired and base_protected?(base_refs, base.ref)
+      end)
+
+    too_young_count =
+      Enum.count(local_bases, fn base ->
+        base.ref not in desired and not base_protected?(base_refs, base.ref) and
+          base_age_seconds(base) < @retention_min_age_seconds
+      end)
 
     %{
       bases_seen_on_disk: length(local_bases),
@@ -3453,7 +3511,6 @@ defmodule Embervm.BaseBuilder do
       bases_kept_current_unverified: bases_kept_current_unverified
     }
   end
-
 
   # Apply the gated retention action for one workload. Gate OFF: log the dry-run
   # (count + total bytes) and change nothing. Gate ON: spawn an idempotent
@@ -3471,6 +3528,7 @@ defmodule Embervm.BaseBuilder do
     if state.retention_disk_driven_enabled do
       remaining = @retention_max_evictions_per_sweep - state.retention_sweep_evictions
       candidates_to_evict = Enum.take(manifest, max(remaining, 0))
+
       Logger.info(
         "embervm base builder: base-retention sweep checking #{length(candidates_to_evict)} superseded local base(s) for #{workload} (~#{bytes} bytes planned) on #{node_id}"
       )
@@ -3479,7 +3537,10 @@ defmodule Embervm.BaseBuilder do
         spawn_evict(state, node_id, workload, candidate.ref, candidate.vendor)
       end)
 
-      %{state | retention_sweep_evictions: state.retention_sweep_evictions + length(candidates_to_evict)}
+      %{
+        state
+        | retention_sweep_evictions: state.retention_sweep_evictions + length(candidates_to_evict)
+      }
     else
       Logger.info(
         "embervm base builder: base-retention sweep (DRY RUN, gate off) WOULD evict #{length(refs)} superseded local base(s) for #{workload} (~#{bytes} bytes) on #{node_id}"
@@ -3718,14 +3779,17 @@ defmodule Embervm.BaseBuilder do
       |> Enum.map(fn {workload, bases} ->
         refs = Enum.map(bases, & &1.ref)
         bytes = Enum.map(bases, &(&1.size_bytes || 0)) |> Enum.sum()
-        {workload, fact[:instance_id], refs, bytes, retention_manifest(fact, workload, bases, nil),
-          retention_accounting(bases, [], protected_refs, bases)}
+
+        {workload, fact[:instance_id], refs, bytes,
+         retention_manifest(fact, workload, bases, nil),
+         retention_accounting(bases, [], protected_refs, bases)}
       end)
     end)
   end
 
   defp base_age_seconds(base) do
     created = Map.get(base, :created_at_unix_ms, 0)
+
     if is_integer(created) and created > 0 do
       max(System.system_time(:millisecond) - created, 0) |> div(1_000)
     else
@@ -3741,7 +3805,11 @@ defmodule Embervm.BaseBuilder do
       created = Map.get(base, :created_at_unix_ms, 0)
       age = if is_integer(created) and created > 0, do: max(div(now - created, 1_000), 0), else: 0
       snapshot_path = Map.get(base, :snapshot_path)
-      path = if is_binary(snapshot_path) and snapshot_path != "", do: snapshot_path, else: "/var/lib/embervm/scratch/bases/#{base.ref}"
+
+      path =
+        if is_binary(snapshot_path) and snapshot_path != "",
+          do: snapshot_path,
+          else: "/var/lib/embervm/scratch/bases/#{base.ref}"
 
       %{
         ref: base.ref,
@@ -3752,9 +3820,11 @@ defmodule Embervm.BaseBuilder do
         vendor: vendor,
         base_generation: workload_generation,
         age_seconds: age,
-        reason_unreferenced: if(is_nil(workload_generation),
-          do: "unknown workload: not in control plane, or workload was deleted",
-          else: "known workload superseded: not in current, CP snapshot, or active base_refs")
+        reason_unreferenced:
+          if(is_nil(workload_generation),
+            do: "unknown workload: not in control plane, or workload was deleted",
+            else: "known workload superseded: not in current, CP snapshot, or active base_refs"
+          )
       }
     end)
   end
@@ -3783,16 +3853,29 @@ defmodule Embervm.BaseBuilder do
     |> Enum.group_by(&Map.get(&1, :node_id))
     |> Enum.each(fn {node_id, entries} ->
       accounting =
-        Enum.reduce(entries, %{bases_seen_on_disk: 0, bases_in_desired_set: 0,
-          bases_protected_by_refcounts: 0, bases_excluded_as_too_young: 0,
-          bases_selected_as_candidates: 0, bases_kept_current_unverified: 0}, fn entry, acc ->
-          Enum.reduce(Map.get(entry, :retention_accounting, %{}), acc, fn {key, value}, totals ->
-            Map.update!(totals, key, &(&1 + value))
-          end)
-        end)
+        Enum.reduce(
+          entries,
+          %{
+            bases_seen_on_disk: 0,
+            bases_in_desired_set: 0,
+            bases_protected_by_refcounts: 0,
+            bases_excluded_as_too_young: 0,
+            bases_selected_as_candidates: 0,
+            bases_kept_current_unverified: 0
+          },
+          fn entry, acc ->
+            Enum.reduce(Map.get(entry, :retention_accounting, %{}), acc, fn {key, value},
+                                                                            totals ->
+              Map.update!(totals, key, &(&1 + value))
+            end)
+          end
+        )
 
       if accounting.bases_seen_on_disk > 0 do
-        Logger.info("embervm base retention node accounting", Keyword.merge([node_id: node_id], Map.to_list(accounting)))
+        Logger.info(
+          "embervm base retention node accounting",
+          Keyword.merge([node_id: node_id], Map.to_list(accounting))
+        )
       end
     end)
 
@@ -3805,8 +3888,11 @@ defmodule Embervm.BaseBuilder do
     end
 
     disk_driven_plan? = Enum.any?(plan, &Map.has_key?(&1, :candidates))
+
     deletion_enabled? =
-      if disk_driven_plan?, do: state.retention_disk_driven_enabled, else: state.retention_sweep_enabled
+      if disk_driven_plan?,
+        do: state.retention_disk_driven_enabled,
+        else: state.retention_sweep_enabled
 
     if deletion_enabled? do
       evicted = Enum.take(candidates, @retention_max_evictions_per_sweep)
@@ -4026,7 +4112,9 @@ defmodule Embervm.BaseBuilder do
 
   defp expected_vendor_matches(nil, _actual), do: :ok
   defp expected_vendor_matches(vendor, vendor), do: :ok
-  defp expected_vendor_matches(expected, actual), do: {:error, {:vendor_changed, expected, actual}}
+
+  defp expected_vendor_matches(expected, actual),
+    do: {:error, {:vendor_changed, expected, actual}}
 
   defp valid_store_segment(kind, value)
        when is_binary(value) and value != "" and not is_nil(value) do
@@ -4070,9 +4158,13 @@ defmodule Embervm.BaseBuilder do
   defp apply_result(state, w, _worker_meta, {:error, reason}) do
     message = format_build_error(reason)
 
-    Logger.warning("embervm base builder: BuildBase for #{w.namespace}/#{w.name} failed: #{message}")
+    Logger.warning(
+      "embervm base builder: BuildBase for #{w.namespace}/#{w.name} failed: #{message}"
+    )
 
-    next_backoff = min((w.backoff_ms || state.base_backoff_ms) * backoff_factor(w), state.max_backoff_ms)
+    next_backoff =
+      min((w.backoff_ms || state.base_backoff_ms) * backoff_factor(w), state.max_backoff_ms)
+
     timer = Process.send_after(self(), {:retry, w.name}, next_backoff)
 
     w = %{w | backoff_ms: next_backoff, retry_timer: timer}
@@ -4241,7 +4333,8 @@ defmodule Embervm.BaseBuilder do
   # value with {} while its capacity view is still empty.
   defp put_snapshot_refs(status_map, refs, previous_refs) do
     case refs do
-      empty when map_size(empty) == 0 -> status_map
+      empty when map_size(empty) == 0 ->
+        status_map
 
       refs ->
         stale_vendors = Map.keys(previous_refs || %{}) -- Map.keys(refs)
@@ -4367,7 +4460,13 @@ defmodule Embervm.BaseBuilder do
   end
 
   defp base_built_condition(state, {:pending, :no_node}) do
-    condition(state, "BaseBuilt", "Unknown", "NoNodeAvailable", "no node daemon is configured to build the base")
+    condition(
+      state,
+      "BaseBuilt",
+      "Unknown",
+      "NoNodeAvailable",
+      "no node daemon is configured to build the base"
+    )
   end
 
   defp base_vendor_coverage_condition(state, w) do
@@ -4386,7 +4485,8 @@ defmodule Embervm.BaseBuilder do
         not Map.has_key?(w.vendor_built, vendor) and Map.has_key?(observed_refs, vendor)
       end)
 
-    stale = Enum.filter(vendors, &(Map.has_key?(w.vendor_built, &1) and vendor_needs_build?(w, &1)))
+    stale =
+      Enum.filter(vendors, &(Map.has_key?(w.vendor_built, &1) and vendor_needs_build?(w, &1)))
 
     if missing == [] and stale == [] and unverified == [] do
       condition(
