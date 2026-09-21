@@ -4873,9 +4873,10 @@ def test_bound_zero_turn_persisted_absence_fence_resumes_fail_closed(
         assert after[key] == before[key]
     assert after["session"]["guest_cleanup_id"]
     records = supervisor._records_for_pin(s.run["pin"])
-    assert len(
-        [detail for action, detail in records if action == "bound_zero_turn_fence"]
-    ) == 1
+    assert (
+        len([detail for action, detail in records if action == "bound_zero_turn_fence"])
+        == 1
+    )
     assert not any(action == "bound_zero_turn_request" for action, _ in records)
 
 
