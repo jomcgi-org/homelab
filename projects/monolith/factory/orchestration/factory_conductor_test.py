@@ -7008,6 +7008,16 @@ def test_planner_prompt_names_only_the_judgment_floor(feedback_db):
     assert floor not in machine
 
 
+def test_planner_prompt_maps_legacy_conductor_names_without_granting_authority(
+    feedback_db,
+):
+    task, _policy = feedback_task()
+    prompt = conductor.planner_prompt(task, [], [], task_class="docs")
+    assert prompt.startswith("You are the per-task Planner")
+    assert "not the operator-facing Conductor" in prompt
+    assert "Role names grant no permissions" in prompt
+
+
 @pytest.mark.parametrize("task_class", ["bug-fix", "mechanical-refactor", "docs"])
 def test_planner_review_contract_accepts_pinned_fallback(feedback_db, task_class):
     task, _policy = feedback_task(task_class=task_class)
