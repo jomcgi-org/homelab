@@ -4632,6 +4632,30 @@ def test_bound_zero_turn_progress_or_identity_change_restarts_proof(
     assert all(call[1] is None for call in s.calls)
 
 
+def test_bound_zero_turn_slow_live_invoke_never_starts_proof(
+    bound_zero_turn_factory,
+):
+    from datetime import timedelta
+
+    s = bound_zero_turn_factory
+    s.cp["last_invoke_at"] = s.cp["invoke_started_at"] - 1
+
+    assert not _tick_bound_zero_turn(s)
+    s.now[0] += timedelta(seconds=s.run["pin"]["turn_timeout_seconds"] + 1)
+    assert not _tick_bound_zero_turn(s)
+
+    after = _uncertain_snapshot(s)
+    assert after["session"]["guest_cleanup_id"] is None
+    assert after["turns"] == []
+    assert len(after["pending"]) == 1
+    assert after["permits"][0]["state"] == "running"
+    assert all(call[1] is None for call in s.calls)
+    assert not any(
+        event["action"] == "bound_zero_turn_observation"
+        for event in after["factory"]["stop_events"]
+    )
+
+
 def test_bound_zero_turn_claim_heartbeat_restarts_window_and_fence_stops_refresh(
     bound_zero_turn_factory,
 ):
@@ -4829,6 +4853,31 @@ def test_bound_zero_turn_fence_rejects_late_result_and_release(
     assert not store.release_pending_message_claim_sync(
         s.sid, 1, "lost-bound-executor", dispatch_count=1
     )
+    assert (
+        store.write_progress_sync("progress-bound", "late progress")
+        == "unknown_token"
+    )
+    store.mark_turn_error_sync(
+        s.sid,
+        1,
+        "late delivery error",
+        "lost-bound-executor",
+        dispatch_count=1,
+    )
+    assert not store.finish_unknown_pending_sync(
+        s.sid, 1, "lost-bound-executor", 1, "late_unknown"
+    )
+    with Session(s.engine) as db:
+        assert not store.finish_unknown_pending_in_session(
+            db,
+            s.sid,
+            1,
+            "lost-bound-executor",
+            1,
+            "late_unknown",
+            expected_guest_id="s-bound-zero-turn",
+            expected_workflow_id=s.run["pin"]["workflow_id"],
+        )
     store.mark_turn_interrupted_sync(s.sid, 1, "lost-bound-executor")
     with Session(s.engine) as db:
         now = datetime.now(timezone.utc)
@@ -4853,6 +4902,91 @@ def test_bound_zero_turn_fence_rejects_late_result_and_release(
     assert len(fenced["pending"]) == 1
     assert fenced["pending"][0]["claimed_by_replica"] == "lost-bound-executor"
     assert fenced["permits"][0]["state"] == "running"
+
+
+def test_bound_zero_turn_destroy_requests_are_durably_capped(
+    bound_zero_turn_factory, monkeypatch
+):
+    import copy
+    from datetime import timedelta
+
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = bound_zero_turn_factory
+
+    def unchanged(guest_id, precondition=None):
+        s.calls.append((guest_id, copy.deepcopy(precondition)))
+        return copy.deepcopy(s.cp)
+
+    monkeypatch.setattr(supervisor, "_http", unchanged)
+    assert not _tick_bound_zero_turn(s)
+    s.now[0] += timedelta(seconds=s.run["pin"]["turn_timeout_seconds"] + 1)
+    assert not _tick_bound_zero_turn(s)
+    for _ in range(3):
+        s.now[0] += timedelta(
+            seconds=supervisor.BOUND_ZERO_TURN_REQUEST_INTERVAL_SECONDS
+        )
+        assert not _tick_bound_zero_turn(s)
+
+    after = _uncertain_snapshot(s)
+    assert len([call for call in s.calls if call[1] is not None]) == 2
+    exhausted = [
+        event
+        for event in after["factory"]["stop_events"]
+        if event["action"] == "bound_zero_turn_request_exhausted"
+    ]
+    assert len(exhausted) == 1
+    assert exhausted[0]["destroy_requests"] == 2
+    assert exhausted[0]["intervention_required"] is True
+    assert after["session"]["guest_cleanup_id"]
+    assert len(after["pending"]) == 1
+    assert after["permits"][0]["state"] == "running"
+
+
+def test_bound_zero_turn_fenced_lookup_outage_raises_one_liveness_alarm(
+    bound_zero_turn_factory, monkeypatch
+):
+    import copy
+    from datetime import timedelta
+
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = bound_zero_turn_factory
+
+    def unchanged(guest_id, precondition=None):
+        s.calls.append((guest_id, copy.deepcopy(precondition)))
+        return copy.deepcopy(s.cp)
+
+    monkeypatch.setattr(supervisor, "_http", unchanged)
+    assert not _tick_bound_zero_turn(s)
+    s.now[0] += timedelta(seconds=s.run["pin"]["turn_timeout_seconds"] + 1)
+    assert not _tick_bound_zero_turn(s)
+
+    def unavailable(*_args, **_kwargs):
+        raise TimeoutError("control plane unavailable")
+
+    monkeypatch.setattr(supervisor, "_http", unavailable)
+    s.now[0] += timedelta(seconds=supervisor.COMPLETION_ALARM_SECONDS - 1)
+    assert not _tick_bound_zero_turn(s)
+    assert not any(
+        event.get("reason") == "bound_zero_turn_fenced_lookup_unavailable"
+        for event in _uncertain_snapshot(s)["factory"]["stop_events"]
+    )
+    s.now[0] += timedelta(seconds=1)
+    assert not _tick_bound_zero_turn(s)
+    assert not _tick_bound_zero_turn(s)
+
+    after = _uncertain_snapshot(s)
+    alarms = [
+        event
+        for event in after["factory"]["stop_events"]
+        if event.get("reason") == "bound_zero_turn_fenced_lookup_unavailable"
+    ]
+    assert len(alarms) == 1
+    assert alarms[0]["intervention_required"] is True
+    assert after["session"]["guest_cleanup_id"]
+    assert len(after["pending"]) == 1
+    assert after["permits"][0]["state"] == "running"
 
 
 def test_committed_receipt_wins_before_bound_zero_turn_fence(
@@ -4902,6 +5036,72 @@ def test_committed_receipt_wins_before_bound_zero_turn_fence(
     assert after["session"]["guest_cleanup_id"] is None
     assert after["pending"]
     assert after["permits"][0]["state"] == "running"
+
+
+def test_bound_zero_turn_remote_progress_reopens_fenced_receipt(
+    bound_zero_turn_factory, monkeypatch
+):
+    import copy
+    import json
+    from datetime import datetime, timedelta, timezone
+
+    from sqlmodel import Session
+
+    from factory.execution import result_receipts
+    from factory.execution.models import AgentResultReceipt
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = bound_zero_turn_factory
+    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "true")
+    receipt = result_receipts.prepare_receipt(
+        s.sid,
+        "lost-bound-executor",
+        1,
+        "s-bound-zero-turn",
+        b'{"message":"queued planner"}',
+    )
+
+    def unchanged(guest_id, precondition=None):
+        s.calls.append((guest_id, copy.deepcopy(precondition)))
+        return copy.deepcopy(s.cp)
+
+    monkeypatch.setattr(supervisor, "_http", unchanged)
+    assert not _tick_bound_zero_turn(s)
+    s.now[0] += timedelta(seconds=s.run["pin"]["turn_timeout_seconds"] + 1)
+    assert not _tick_bound_zero_turn(s)
+    with Session(s.engine) as db:
+        fenced = db.get(AgentResultReceipt, receipt["id"])
+        accept_until = fenced.accept_until
+        if accept_until.tzinfo is None:
+            accept_until = accept_until.replace(tzinfo=timezone.utc)
+        assert accept_until <= datetime.now(timezone.utc)
+
+    s.cp["turn_seq"] += 1
+    assert not _tick_bound_zero_turn(s)
+    after = _uncertain_snapshot(s)
+    assert after["session"]["guest_cleanup_id"] is None
+    assert len(after["pending"]) == 1
+    assert after["permits"][0]["state"] == "running"
+    with Session(s.engine) as db:
+        reopened = db.get(AgentResultReceipt, receipt["id"])
+        accept_until = reopened.accept_until
+        if accept_until.tzinfo is None:
+            accept_until = accept_until.replace(tzinfo=timezone.utc)
+        assert accept_until > datetime.now(timezone.utc)
+
+    captured = result_receipts.capture_result(
+        receipt["id"],
+        receipt["token"],
+        json.dumps(
+            {
+                "result": "late receipt after genuine progress",
+                "terminal_reason": "completed",
+                "usage": {},
+                "activities": [],
+            }
+        ).encode(),
+    )
+    assert captured["receipt_id"] == receipt["id"]
 
 
 def test_bound_zero_turn_fence_rejects_late_receipt_callback(

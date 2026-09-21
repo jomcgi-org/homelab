@@ -1195,6 +1195,63 @@ remains on the response-loss and stop-supervision paths and is never refunded
 by `lost_before_guest`. A message with dispatch count zero remains the separate
 `never_dispatched` proof.
 
+#### Bound zero-turn settlement runbook
+
+`FACTORY_BOUND_ZERO_TURN_SETTLEMENT_ENABLED` stages the post-guest proof from
+#6288 and defaults to false in both chart defaults and the GKE overlay. It is
+not a general uncertain-attempt sweeper. The owning DBOS workflow must already
+be terminal, and the exact factory run and start must still be active and
+unpriced. The session must still own one bound guest, zero `AgentTurn` rows, one
+claimed and unconsumed sequence-one `PendingMessage`, and one matching project
+permit in `running` or `uncertain`. The local reader also rejects a newer run,
+a replacement guest or owner, changed `pending_seq` or dispatch count, partial
+progress, a receipt with a committed body, another turn, or an unrelated
+cleanup claim.
+
+For a present guest, Ember must return the producer's complete `SessionView`
+identity: the same session, a completed invoke, a positive and unchanged
+`turn_seq`, unchanged generation and invoke timestamps, and a healthy,
+non-draining owning node. The supervisor samples that exact evidence twice,
+strictly more than the node's own `turn_timeout_seconds` apart. Fresh progress,
+drain, replacement generation, malformed data, wrong identity, timeout, 403 or
+5xx breaks or retains the proof and a later tick starts a new window. A 404 or
+410 is authoritative absence only after it survives that same bounded sampling
+window. One missing read is never cessation proof.
+
+After the bound matures, the supervisor commits an exact cleanup fence before
+issuing a conditional destroy for the observed generation and invoke. The
+fence blocks claim release, error completion, progress and turn delivery, and
+settlement rechecks the pending message, permit, zero-turn condition, receipt,
+guest and factory ownership under the same lock order. A result committed
+before the fence wins. A stale synchronous response or callback after the fence
+cannot write a turn, settle capacity or affect a replacement attempt. Repeated
+ticks reuse the same identity and may issue at most two conditional destroy
+requests, at least five minutes apart. Exhausting that durable request budget
+records one intervention-required audit instead of polling DELETE forever. A
+control-plane lookup outage that holds the fence for two minutes likewise
+records one intervention-required audit while retaining every row. Repeated
+settlement does not add another result, notification, stop request or retry.
+
+If fresh remote progress or a changed remote identity invalidates a held fence,
+the supervisor retires only its exact cleanup claim. It also reopens the exact
+uncommitted result receipt under the receipt row lock, capped by the receipt's
+retention deadline, so the still-running invocation can deliver normally.
+
+Successful settlement marks the run, start and session failed in one
+transaction, consumes the pending message, settles the permit as
+`delivery_error`, and clears only the exact ceased guest binding. Its
+`cost_usd=None` is deliberate: a bound guest with completed invoke evidence may
+have spent money, so the reserved ceiling remains charged. Only the separate
+never-bound proofs may use measured zero and `no_model_post` accounting.
+
+Do not destroy the guest before collecting this proof. Destroying first merely
+removes the current binding or record and cannot establish that no guest ever
+ran. Do not apply the SQL-shaped snippets from incident notes directly to
+production. They omit the run/start consistency, receipt, ownership and race
+fences above. If staged supervision cannot establish every prerequisite, leave
+all rows intact and use the issue's live-validation checklist rather than a
+blind database edit.
+
 The in-process operator repair is
 `factory.orchestration.factory_controls.settle_lost_attempt(task_id, node_key,
 attempt, actor)`. Before calling it, an operator must confirm the exact node's

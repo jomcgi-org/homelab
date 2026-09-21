@@ -970,13 +970,39 @@ def fence_bound_zero_turn_factory_attempt(
 def release_bound_zero_turn_factory_fence(
     db: Session, pin: dict, identity: dict
 ) -> None:
-    """Release only this proof's fence when remote progress invalidates it."""
+    """Release only this proof's fence when remote progress invalidates it.
+
+    Fencing closes the callback window so a result cannot race conditional
+    cleanup. If the remote view later disproves the fence, reopen that exact
+    receipt while its row is still locked. Otherwise the guest can keep
+    running but its already-issued callback credential is permanently dead.
+    """
     current = read_bound_zero_turn_factory_attempt(db, pin, identity["session_id"])
     if (
         current["identity_sha256"] != identity["identity_sha256"]
         or not current["cleanup_fenced"]
     ):
         raise ValueError("factory_bound_zero_turn_attempt_changed")
+    if current["receipt_id"] is not None:
+        from datetime import datetime, timedelta, timezone
+
+        from factory.execution.models import AgentResultReceipt
+        from factory.execution.result_receipts import ACCEPT_HOURS
+
+        receipt = db.exec(
+            select(AgentResultReceipt)
+            .where(AgentResultReceipt.id == current["receipt_id"])
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).one()
+        if receipt.result_sha256 is not None or receipt.received_at is not None:
+            raise ValueError("factory_bound_zero_turn_result_committed")
+        now = datetime.now(timezone.utc)
+        retain_until = receipt.retain_until
+        if retain_until.tzinfo is None:
+            retain_until = retain_until.replace(tzinfo=timezone.utc)
+        receipt.accept_until = min(now + timedelta(hours=ACCEPT_HOURS), retain_until)
+        db.add(receipt)
     agent = _locked_session(db, identity["session_id"])
     _retire_cleanup_claim(agent)
     db.add(agent)
