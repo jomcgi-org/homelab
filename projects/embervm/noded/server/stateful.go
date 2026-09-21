@@ -378,9 +378,9 @@ func (s *Server) coldBootStateful(ctx context.Context, req *nodev1.StartStateful
 
 // finishStatefulStart is the shared tail of every StartStateful path: health-
 // gate the guest over the tap by TCP CONNECT, and on success register the live
-// stateful VM and start its TCP probe. On a readiness failure it reaps the VM,
-// releases the tap, and DETACHES the volume (never rolling the generation
-// back), returning FAILED_PRECONDITION.
+// stateful VM and start its TCP probe. On a readiness failure it reaps the VM
+// and, once process cessation is confirmed, releases the tap and DETACHES the
+// volume (never rolling the generation back), returning FAILED_PRECONDITION.
 func (s *Server) finishStatefulStart(ctx context.Context, h substrate.Handle, workload, sourceRef string, ip net.IP, port uint32, generation uint64, wasRelight bool, coldBootReason string, readyBudget time.Duration, origin nodev1.InstanceOrigin) (*nodev1.StartStatefulResponse, error) {
 	if err := s.waitStatefulReady(ctx, ip, port, readyBudget); err != nil {
 		s.reapStateful(h, ip, workload)
@@ -826,19 +826,21 @@ func (s *Server) reapStatefulEntry(e *statefulEntry) error {
 	})
 }
 
-// reapStateful tears a stateful VM down (release the FC process + bundle),
-// releases its tap + IP, and detaches its volume so a subsequent StartStateful
-// for the same workload is not refused by a stale attach lock. Best-effort,
-// mirroring reapServing plus the volume detach.
+// reapStateful tears a stateful VM down (release the FC process + bundle), then
+// releases its tap + IP and detaches its volume so a subsequent StartStateful
+// for the same workload is not refused by a stale attach lock. A failed reap
+// retains the tap and writable attach because process cessation is uncertain.
 func (s *Server) reapStateful(h substrate.Handle, ip net.IP, workload string) error {
-	err := s.reap(h, func() {})
+	if err := s.reap(h, func() {}); err != nil {
+		return err
+	}
 	if s.servingNet != nil {
 		s.servingNet.ReleaseTap(context.Background(), ip)
 	}
 	if s.volumes != nil {
 		s.volumes.Detach(workload)
 	}
-	return err
+	return nil
 }
 
 // DeleteVolume removes a workload's volume file and its generation ledger. It

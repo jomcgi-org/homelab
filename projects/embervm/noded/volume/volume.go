@@ -174,9 +174,9 @@ func (m *Manager) Attach(workload string) error {
 }
 
 // Bind records the vmID that owns workload's writable attach, once the VM
-// exists. A bound attach can be reclaimed by a later start when the registry
-// says that vm is gone; an unbound one can only age out. No-op if the workload
-// is not attached.
+// exists. A bound attach can be reclaimed only when the registry identifies a
+// different live owner; registry absence alone is not cessation evidence. An
+// unbound attach can only age out. No-op if the workload is not attached.
 func (m *Manager) Bind(workload, vmID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

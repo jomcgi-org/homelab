@@ -596,6 +596,52 @@ func TestStartStatefulGenerationBumpedBeforeBootAndNotRolledBackOnFailure(t *tes
 	}
 }
 
+// TestStartStatefulReadyFailureRetainsAttachWhenReleaseFails proves a guest
+// that misses its readiness deadline cannot surrender its writable attach when
+// process cessation is uncertain.
+func TestStartStatefulReadyFailureRetainsAttachWhenReleaseFails(t *testing.T) {
+	s, fsn, fsd := newStatefulTestServer(t)
+	s.cfg.BootReadyTimeout = 0
+	fsd.mu.Lock()
+	fsd.failRelease = errors.New("process still running")
+	fsd.mu.Unlock()
+
+	_, err := s.StartStateful(context.Background(), &nodev1.StartStatefulRequest{
+		Trace:             &nodev1.Trace{Workload: "wl-state"},
+		Mode:              nodev1.StartStatefulMode_START_STATEFUL_MODE_FRESH,
+		BootImageRef:      "img-a",
+		Port:              1,
+		VolumeSizeBytes:   1 << 20,
+		VolumeMount:       "/data",
+		CreateIfMissing:   true,
+		BlessedGeneration: 1,
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("readiness failure: got %v want FailedPrecondition", err)
+	}
+	if !s.volumes.IsAttached("wl-state") {
+		t.Fatal("failed process release detached the writable volume")
+	}
+	if got := fsd.liveCount(); got != 1 {
+		t.Fatalf("live processes = %d want 1 after failed release", got)
+	}
+	if got := fsn.releaseCount(); got != 0 {
+		t.Fatalf("released taps = %d want 0 while process cessation is uncertain", got)
+	}
+	if _, retryErr := s.StartStateful(context.Background(), &nodev1.StartStatefulRequest{
+		Trace:        &nodev1.Trace{Workload: "wl-state"},
+		Mode:         nodev1.StartStatefulMode_START_STATEFUL_MODE_COLD,
+		BootImageRef: "img-a",
+		Port:         1,
+		VolumeMount:  "/data",
+	}); status.Code(retryErr) != codes.FailedPrecondition {
+		t.Fatalf("retry with uncertain owner: got %v want FailedPrecondition", retryErr)
+	}
+	if fsd.claimCount != 1 {
+		t.Fatalf("ClaimStateful calls = %d want 1", fsd.claimCount)
+	}
+}
+
 // TestStartStatefulBlessedGenerationRecordedVerbatim proves a nonzero
 // blessed_generation on the request (R7, ADR embervm/011) is recorded onto
 // the ledger EXACTLY as issued, not self-bumped, and the volume reads blessed
