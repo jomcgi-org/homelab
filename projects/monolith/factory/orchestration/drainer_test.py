@@ -707,22 +707,15 @@ def test_kg_cap_defers_once_then_drains_qwen_jobs(monkeypatch):
     monkeypatch.setattr(drainer, "DBOS", FakeDBOS)
     monkeypatch.setattr(drainer, "claim_drainer_job", claim)
     monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 40)
-    monkeypatch.setattr(
-        drainer,
-        "finish_drainer_job",
-        lambda *args: completions.append(args) or True,
-    )
-    monkeypatch.setattr(
-        drainer,
-        "defer_drainer_job",
-        lambda name, seconds: (
-            (
-                deferred.append((name, seconds)),
-                queue.remove(next(job for job in queue if job["name"] == name)),
-            )
-            and True
-        ),
-    )
+
+    def finish(name, status, summary, *, defer_seconds=None):
+        completions.append((name, status, summary))
+        if defer_seconds is not None:
+            deferred.append((name, defer_seconds))
+            queue.remove(next(job for job in queue if job["name"] == name))
+        return True
+
+    monkeypatch.setattr(drainer, "finish_drainer_job", finish)
     monkeypatch.setattr(drainer, "start_agent_session", remove_claimed)
     monkeypatch.setattr(
         drainer,

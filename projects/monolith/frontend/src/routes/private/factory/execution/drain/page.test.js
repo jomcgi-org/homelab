@@ -192,7 +192,9 @@ describe("job row outcome text", () => {
 
     expect(row.textContent).toContain("kg daily cap reached");
     expect(row.querySelector(".job-state").textContent.trim()).toBe("deferred");
-    expect(target.querySelector(".chip-attn").textContent).toContain("deferred");
+    expect(target.querySelector(".chip-attn").textContent).toContain(
+      "deferred",
+    );
   });
 
   test("error rows show the summary and never the prompt", async () => {
