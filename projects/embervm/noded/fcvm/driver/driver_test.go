@@ -3,6 +3,8 @@ package driver
 import (
 	"context"
 	"encoding/base64"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -234,6 +236,226 @@ func executableSnapshotEditor(t *testing.T) string {
 		t.Fatalf("write snapshot-editor: %v", err)
 	}
 	return path
+}
+
+const testBundleRootfsIdentity = "550e8400-e29b-41d4-a716-446655440000"
+
+func writeTestExt4Rootfs(t *testing.T, path, identity string) {
+	t.Helper()
+	raw, err := hex.DecodeString(strings.ReplaceAll(identity, "-", ""))
+	if err != nil || len(raw) != 16 {
+		t.Fatalf("decode test rootfs identity %q: %v", identity, err)
+	}
+	b := make([]byte, ext4HeaderSize)
+	binary.LittleEndian.PutUint16(b[ext4MagicOffset:], 0xEF53)
+	copy(b[ext4UUIDOffset:], raw)
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatalf("write test ext4 rootfs: %v", err)
+	}
+}
+
+func TestBankableClassesWriteV1RootfsIdentity(t *testing.T) {
+	for _, class := range []string{"session", "serving", "stateful", "composite"} {
+		t.Run(class, func(t *testing.T) {
+			root := shortTempDir(t)
+			rootfs := filepath.Join(root, "rootfs.ext4")
+			writeTestExt4Rootfs(t, rootfs, testBundleRootfsIdentity)
+			d := New(Config{
+				KernelImagePath: "/kernel",
+				RootfsPath:      rootfs,
+				SnapshotRoot:    root,
+			}, &fakeLauncher{}, nil)
+			h, err := d.Claim(context.Background(), substrate.ClaimSpec{ThreadID: "birth-" + class})
+			if err != nil {
+				t.Fatalf("Claim: %v", err)
+			}
+			var ref substrate.SnapshotRef
+			var dir string
+			switch class {
+			case "session":
+				ref, err = d.SnapshotSession(context.Background(), h, "bank-session")
+				dir = d.sessionDir("bank-session")
+			case "serving":
+				ref, err = d.SnapshotServing(context.Background(), h, "bank-serving", "10.0.0.2")
+				dir = d.servingDir("bank-serving")
+			case "stateful":
+				ref, err = d.SnapshotStateful(context.Background(), h, "bank-stateful", 7, "10.0.0.3")
+				dir = d.statefulDir("bank-stateful")
+			case "composite":
+				ref, err = d.SnapshotGroupMember(context.Background(), h, "set-a", "member-a")
+				dir = d.groupMemberDir("set-a", "member-a")
+			}
+			if err != nil {
+				t.Fatalf("bank %s: %v", class, err)
+			}
+			t.Cleanup(func() { _ = d.Release(context.Background(), h) })
+			if ref.BundleSchemaVersion != 1 || ref.RootfsIdentity != testBundleRootfsIdentity {
+				t.Fatalf("bank response metadata = (%d, %q)", ref.BundleSchemaVersion, ref.RootfsIdentity)
+			}
+			meta, present, err := substrate.ReadBundleMetadata(dir)
+			if err != nil || !present {
+				t.Fatalf("ReadBundleMetadata = (%+v, %v, %v)", meta, present, err)
+			}
+			if meta.SchemaVersion != 1 || meta.RootfsIdentity != testBundleRootfsIdentity {
+				t.Fatalf("bundle metadata = %+v", meta)
+			}
+		})
+	}
+}
+
+func TestStatefulCheckpointCommitPreservesV1RootfsIdentity(t *testing.T) {
+	root := shortTempDir(t)
+	rootfs := filepath.Join(root, "rootfs.ext4")
+	writeTestExt4Rootfs(t, rootfs, testBundleRootfsIdentity)
+	d := New(Config{KernelImagePath: "/kernel", RootfsPath: rootfs, SnapshotRoot: root}, &fakeLauncher{}, nil)
+	h, err := d.Claim(context.Background(), substrate.ClaimSpec{ThreadID: "checkpoint-birth"})
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	token, err := d.CheckpointStateful(context.Background(), h, "checkpoint-bank", 11, "10.0.0.4")
+	if err != nil {
+		t.Fatalf("CheckpointStateful: %v", err)
+	}
+	ref, err := d.ResolveStatefulCommit(context.Background(), token)
+	if err != nil {
+		t.Fatalf("ResolveStatefulCommit: %v", err)
+	}
+	if ref.BundleSchemaVersion != 1 || ref.RootfsIdentity != testBundleRootfsIdentity {
+		t.Fatalf("checkpoint commit metadata = (%d, %q)", ref.BundleSchemaVersion, ref.RootfsIdentity)
+	}
+}
+
+func TestBundleRootfsIdentityCompatibilityEveryClass(t *testing.T) {
+	type scenario struct {
+		name       string
+		enforce    bool
+		metadata   string
+		wantReject bool
+	}
+	scenarios := []scenario{
+		{name: "unstamped-v0-grandfathered", enforce: true},
+		{name: "unstamped-v0-disabled", enforce: false},
+		{name: "stamped-match", enforce: true, metadata: `{"schema_version":1,"rootfs_identity":"` + testBundleRootfsIdentity + `"}`},
+		{name: "stamped-mismatch", enforce: true, metadata: `{"schema_version":1,"rootfs_identity":"650e8400-e29b-41d4-a716-446655440000"}`, wantReject: true},
+		{name: "disabled-observes-mismatch", enforce: false, metadata: `{"schema_version":1,"rootfs_identity":"650e8400-e29b-41d4-a716-446655440000"}`},
+		{name: "malformed", enforce: true, metadata: `{`, wantReject: true},
+		{name: "disabled-observes-malformed", enforce: false, metadata: `{`},
+		{name: "unsupported-version", enforce: true, metadata: `{"schema_version":2,"rootfs_identity":"` + testBundleRootfsIdentity + `"}`, wantReject: true},
+		{name: "disabled-observes-unsupported-version", enforce: false, metadata: `{"schema_version":2,"rootfs_identity":"` + testBundleRootfsIdentity + `"}`},
+		{name: "missing-provenance", enforce: true, metadata: `{"schema_version":1}`, wantReject: true},
+		{name: "disabled-observes-missing-provenance", enforce: false, metadata: `{"schema_version":1}`},
+	}
+	for _, class := range []string{"session", "serving", "stateful", "composite"} {
+		for _, tc := range scenarios {
+			t.Run(class+"/"+tc.name, func(t *testing.T) {
+				root := shortTempDir(t)
+				rootfs := filepath.Join(root, "rootfs.ext4")
+				writeTestExt4Rootfs(t, rootfs, testBundleRootfsIdentity)
+				volume := filepath.Join(root, "volume.ext4")
+				if err := os.WriteFile(volume, []byte("volume"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				launcher := &fakeLauncher{}
+				d := New(Config{
+					KernelImagePath:             "/kernel",
+					SnapshotRoot:                root,
+					EnforceBundleRootfsIdentity: tc.enforce,
+				}, launcher, nil)
+				var dir string
+				switch class {
+				case "session":
+					dir = d.sessionDir("restore-ref")
+				case "serving":
+					dir = d.servingDir("restore-ref")
+				case "stateful":
+					dir = d.statefulDir("restore-ref")
+				case "composite":
+					dir = d.groupMemberDir("set-a", "member-a")
+				}
+				if err := os.MkdirAll(dir, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "snapfile"), []byte("snap"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "memfile"), []byte("memory"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				resources := []JailResource{{Role: "rootfs", HostPath: rootfs, JailPath: rootfs}}
+				if class == "stateful" {
+					resources = append(resources, JailResource{Role: "volume", HostPath: volume, JailPath: volume, Writable: true})
+				}
+				if err := writeJailResources(dir, resources); err != nil {
+					t.Fatal(err)
+				}
+				if tc.metadata != "" {
+					if err := os.WriteFile(filepath.Join(dir, substrate.BundleMetadataFile), []byte(tc.metadata), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+
+				var h substrate.Handle
+				var err error
+				switch class {
+				case "session":
+					h, err = d.RestoreSession(context.Background(), "workload", "restore-ref", false)
+				case "serving":
+					h, err = d.RestoreServing(context.Background(), "workload", "restore-ref")
+				case "stateful":
+					h, err = d.RestoreStateful(context.Background(), "workload", "restore-ref", volume)
+				case "composite":
+					h, err = d.RestoreGroupMember(context.Background(), "workload", "set-a", "member-a")
+				}
+				if tc.wantReject {
+					if err == nil {
+						t.Fatalf("restore accepted invalid v1 metadata")
+					}
+					if launcher.launched != 0 {
+						t.Fatalf("Firecracker launches = %d, want 0 for pre-load rejection", launcher.launched)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatalf("restore rejected compatible bundle: %v", err)
+				}
+				if launcher.launched != 1 {
+					t.Fatalf("Firecracker launches = %d, want 1", launcher.launched)
+				}
+				t.Cleanup(func() { _ = d.Release(context.Background(), h) })
+			})
+		}
+	}
+}
+
+func TestUnstampedWarmBaseRemainsAcceptedWithEnforcement(t *testing.T) {
+	root := shortTempDir(t)
+	baseDir := filepath.Join(root, "bases", "legacy-base")
+	if err := os.MkdirAll(baseDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{"snapfile": "snap", "memfile": "memory"} {
+		if err := os.WriteFile(filepath.Join(baseDir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	launcher := &fakeLauncher{}
+	d := New(Config{
+		KernelImagePath:             "/kernel",
+		SnapshotRoot:                root,
+		EnforceBundleRootfsIdentity: true,
+	}, launcher, nil)
+	h, err := d.Claim(context.Background(), substrate.ClaimSpec{
+		Workload:        "legacy-workload",
+		ThreadID:        "legacy-thread",
+		BaseSnapshotRef: substrate.SnapshotRef{ID: "legacy-base"},
+	})
+	if err != nil {
+		t.Fatalf("legacy v0 base restore: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Release(context.Background(), h) })
+	if launcher.launched != 1 {
+		t.Fatalf("Firecracker launches = %d, want 1", launcher.launched)
+	}
 }
 
 func testDriver(t *testing.T) *Driver {
@@ -2479,7 +2701,8 @@ func TestDriverGroupMemberSnapshotRestoreRoundTrip(t *testing.T) {
 	if _, err := os.Stat(d.groupMemberSnapfile("set-abc", "worker-0")); err != nil {
 		t.Fatalf("member bundle snapfile missing under group/set-abc/worker-0: %v", err)
 	}
-	// SnapshotGroupMember itself writes no sidecar; the server owns member.json.
+	// SnapshotGroupMember writes common bundle provenance but no network
+	// sidecar; the server owns member.json.
 	if _, err := os.Stat(filepath.Join(d.groupMemberDir("set-abc", "worker-0"), "ip")); !os.IsNotExist(err) {
 		t.Errorf("SnapshotGroupMember unexpectedly wrote an ip sidecar, stat err=%v", err)
 	}

@@ -637,7 +637,13 @@ func (s *Server) commitCheckpoint(ctx context.Context, e *statefulEntry, token s
 	s.enqueueCreatedExport(&nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_STATEFUL, Workload: e.workload, Ref: ref.ID})
 	s.enqueueCreatedExport(&nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_VOLUME, Workload: e.workload})
 	s.signalChange()
-	return &nodev1.ResolveStatefulResponse{SnapshotRef: ref.ID, Generation: e.generation, SizeBytes: uint64(ref.SizeBytes)}, nil
+	return &nodev1.ResolveStatefulResponse{
+		SnapshotRef:         ref.ID,
+		Generation:          e.generation,
+		SizeBytes:           uint64(ref.SizeBytes),
+		BundleSchemaVersion: ref.BundleSchemaVersion,
+		RootfsIdentity:      ref.RootfsIdentity,
+	}, nil
 }
 
 // abortCheckpoint returns a checkpointed VM to serving on the same process image.
@@ -779,7 +785,13 @@ func (s *Server) stopStatefulBank(ctx context.Context, vmID string) (*nodev1.Sto
 	s.enqueueCreatedExport(&nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_STATEFUL, Workload: e.workload, Ref: ref.ID})
 	s.enqueueCreatedExport(&nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_VOLUME, Workload: e.workload})
 	s.signalChange()
-	return &nodev1.StopStatefulResponse{SnapshotRef: ref.ID, Generation: e.generation, SizeBytes: uint64(ref.SizeBytes)}, nil
+	return &nodev1.StopStatefulResponse{
+		SnapshotRef:         ref.ID,
+		Generation:          e.generation,
+		SizeBytes:           uint64(ref.SizeBytes),
+		BundleSchemaVersion: ref.BundleSchemaVersion,
+		RootfsIdentity:      ref.RootfsIdentity,
+	}, nil
 }
 
 // stopStatefulDestroy tears a stateful VM down with no snapshot, releases its

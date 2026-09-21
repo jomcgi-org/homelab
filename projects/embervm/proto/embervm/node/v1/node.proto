@@ -795,6 +795,8 @@ message BankResponse {
   // EvictSnapshot. NOT a file path.
   string snapshot_ref = 1;
   uint64 size_bytes = 2;
+  uint32 bundle_schema_version = 3;
+  string rootfs_identity = 4;
 }
 
 // RelightRequest restores a VM from a session snapshot. session_id is opaque to
@@ -901,6 +903,8 @@ message StopServingResponse {
   // was fully reaped (process gone, bundle removed, tap released) or was already
   // unknown. See DestroyResponse.teardown_confirmed (ADR embervm/014 decision 5).
   bool teardown_confirmed = 3;
+  uint32 bundle_schema_version = 4;
+  string rootfs_identity = 5;
 }
 
 // ---- Stateful verbs (R4) ---------------------------------------------------
@@ -1020,6 +1024,8 @@ message StopStatefulResponse {
   // or was already unknown. See DestroyResponse.teardown_confirmed (ADR embervm/014
   // decision 5).
   bool teardown_confirmed = 5;
+  uint32 bundle_schema_version = 6;
+  string rootfs_identity = 7;
 }
 
 enum ResolveMode {
@@ -1061,6 +1067,8 @@ message ResolveStatefulResponse {
   string snapshot_ref = 1;
   uint64 generation = 2;
   uint64 size_bytes = 3;
+  uint32 bundle_schema_version = 4;
+  string rootfs_identity = 5;
 }
 
 // DeleteVolumeRequest removes one workload's volume file and generation ledger.
@@ -1253,6 +1261,8 @@ message StopGroupMemberResponse {
   // fully reaped (process gone, bundle removed, member tap removed) or was already
   // unknown. See DestroyResponse.teardown_confirmed (ADR embervm/014 decision 5).
   bool teardown_confirmed = 3;
+  uint32 bundle_schema_version = 4;
+  string rootfs_identity = 5;
 }
 
 // ---- Node status -----------------------------------------------------------
@@ -1591,6 +1601,8 @@ message SessionSnapshot {
   // reads it to know a wake could restore-on-miss and that a roll that exits now
   // loses nothing (R6, additive; false on a pre-R6 daemon).
   bool exported = 6;
+  uint32 bundle_schema_version = 7;
+  string rootfs_identity = 8;
 }
 
 message SessionVolume {
@@ -1669,6 +1681,8 @@ message ServingSnapshot {
   int64 created_at_unix_ms = 4;
   // exported: see SessionSnapshot.exported (R6, additive).
   bool exported = 5;
+  uint32 bundle_schema_version = 6;
+  string rootfs_identity = 7;
 }
 
 // StatefulVm is one LIVE stateful VM the node currently holds, reported so a
@@ -1747,6 +1761,8 @@ message StatefulBundle {
   int64 created_at_unix_ms = 5;
   // exported: see SessionSnapshot.exported (R6, additive).
   bool exported = 6;
+  uint32 bundle_schema_version = 7;
+  string rootfs_identity = 8;
 }
 
 // Volume is one workload's raw volume file on node NVMe, the durable data that
@@ -1812,6 +1828,8 @@ message GroupBundleMember {
   string member_name = 1;
   string snapshot_ref = 2;
   uint64 size_bytes = 3;
+  uint32 bundle_schema_version = 4;
+  string rootfs_identity = 5;
 }
 
 // GroupBundleSet is the per-member banked snapshots the daemon found grouped under

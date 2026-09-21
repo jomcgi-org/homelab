@@ -173,6 +173,8 @@ artifactEncryption:
 # below because #4180 deliberately removed the old per-brick rescale; observed
 # cgroup headroom remains the real memory gate.
 noded:
+  # Staged #4204 rollout: write and observe v1 metadata, do not reject yet.
+  enforceBundleRootfsIdentity: false
   # Node-daemon tracing uses its own resource identity while sharing the
   # platform collector with the control plane. The collector allowlist must
   # contain this exact serviceName or it silently drops every noded span.

@@ -119,8 +119,10 @@ func (*fakeServer) SessionAssign(_ context.Context, req *nodev1.SessionAssignReq
 // request field crossed the wire, and returns a fixed size.
 func (*fakeServer) Bank(_ context.Context, req *nodev1.BankRequest) (*nodev1.BankResponse, error) {
 	return &nodev1.BankResponse{
-		SnapshotRef: "sessions/" + req.GetSessionId(),
-		SizeBytes:   2048,
+		SnapshotRef:         "sessions/" + req.GetSessionId(),
+		SizeBytes:           2048,
+		BundleSchemaVersion: 1,
+		RootfsIdentity:      "550e8400-e29b-41d4-a716-446655440000",
 	}, nil
 }
 
@@ -428,11 +430,13 @@ func (s *fakeServer) GetNodeStatus(_ context.Context, req *nodev1.GetNodeStatusR
 		},
 		SessionSnapshots: []*nodev1.SessionSnapshot{
 			{
-				SnapshotRef:     "sessions/s-sess2",
-				SessionId:       "s-sess2",
-				Workload:        "sandbox-session",
-				SizeBytes:       4096,
-				CreatedAtUnixMs: 1_700_000_000_000,
+				SnapshotRef:         "sessions/s-sess2",
+				SessionId:           "s-sess2",
+				Workload:            "sandbox-session",
+				SizeBytes:           4096,
+				CreatedAtUnixMs:     1_700_000_000_000,
+				BundleSchemaVersion: 1,
+				RootfsIdentity:      "550e8400-e29b-41d4-a716-446655440000",
 			},
 		},
 		SessionVolumes: []*nodev1.SessionVolume{
@@ -458,10 +462,12 @@ func (s *fakeServer) GetNodeStatus(_ context.Context, req *nodev1.GetNodeStatusR
 		},
 		ServingSnapshots: []*nodev1.ServingSnapshot{
 			{
-				SnapshotRef:     "serving/s-srv2",
-				Workload:        "sandbox-serving",
-				SizeBytes:       8192,
-				CreatedAtUnixMs: 1_700_000_002_000,
+				SnapshotRef:         "serving/s-srv2",
+				Workload:            "sandbox-serving",
+				SizeBytes:           8192,
+				CreatedAtUnixMs:     1_700_000_002_000,
+				BundleSchemaVersion: 1,
+				RootfsIdentity:      "550e8400-e29b-41d4-a716-446655440000",
 			},
 		},
 		ServingSubnetCidr: "10.99.0.0/24",
@@ -504,7 +510,9 @@ func (s *fakeServer) GetNodeStatus(_ context.Context, req *nodev1.GetNodeStatusR
 				SizeBytes:       16384,
 				CreatedAtUnixMs: 1_700_000_004_000,
 				// exported (R6): this bundle's store copy is present and current.
-				Exported: true,
+				Exported:            true,
+				BundleSchemaVersion: 1,
+				RootfsIdentity:      "550e8400-e29b-41d4-a716-446655440000",
 			},
 		},
 		Volumes: []*nodev1.Volume{
@@ -551,7 +559,10 @@ func (s *fakeServer) GetNodeStatus(_ context.Context, req *nodev1.GetNodeStatusR
 				SetId:           "set-abc",
 				GroupInstanceId: "grp-inst1",
 				Members: []*nodev1.GroupBundleMember{
-					{MemberName: "worker-0", SnapshotRef: "group/set-abc/worker-0", SizeBytes: 5120},
+					{
+						MemberName: "worker-0", SnapshotRef: "group/set-abc/worker-0", SizeBytes: 5120,
+						BundleSchemaVersion: 1, RootfsIdentity: "550e8400-e29b-41d4-a716-446655440000",
+					},
 				},
 				CreatedAtUnixMs: 1_700_000_006_000,
 				// exported (R6): the whole set's store copy is present and current.

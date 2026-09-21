@@ -26,6 +26,7 @@ warmthS3Gc:
   enabled: ""
 
 noded:
+  enforceBundleRootfsIdentity: false
   store:
     endpoint: "https://storage.googleapis.com"
     bucket: "h0melab-ember-bases-dev"

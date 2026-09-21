@@ -347,6 +347,8 @@ containers:
         value: {{ $ctx.Values.noded.diffBanking | quote }}
       - name: EMBERVM_NODED_DIFF_BANKING_WORKLOADS
         value: {{ $ctx.Values.noded.diffBankingWorkloads | quote }}
+      - name: EMBERVM_NODED_ENFORCE_BUNDLE_ROOTFS_IDENTITY
+        value: {{ $ctx.Values.noded.enforceBundleRootfsIdentity | quote }}
       # Brick silence timeout (ADR embervm/037, #5073), seconds. Rendered only
       # when armed: empty or 0 keeps the daemon-side gate off.
       {{- if $ctx.Values.noded.silenceTimeoutSeconds }}

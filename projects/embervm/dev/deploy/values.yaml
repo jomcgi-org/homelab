@@ -73,6 +73,8 @@ kekRoot:
     itemPath: "vaults/k8s-homelab/items/embervm-kek-root"
 
 noded:
+  # Staged #4204 rollout: write and observe v1 metadata, do not reject yet.
+  enforceBundleRootfsIdentity: false
   # 31s rather than the chart default 30s: a deliberate brick roll on
   # 2026-08-23 so a banked session has to restore from S3 through a capability
   # (the #4691 end-to-end test); harmless to keep.

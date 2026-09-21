@@ -73,6 +73,7 @@ def _assert_required_secret_ref(entry: dict) -> None:
 
 def test_validation_overlay_is_unreferenced_and_production_is_unchanged() -> None:
     overlay = _load_yaml("STORE_VALIDATION_VALUES")
+    assert overlay["noded"]["enforceBundleRootfsIdentity"] is False
     store = overlay["noded"]["store"]
     assert store["endpoint"] == STORAGE_ENDPOINT
     assert store["bucket"] == DEV_BUCKET

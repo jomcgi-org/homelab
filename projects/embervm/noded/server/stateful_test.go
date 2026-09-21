@@ -34,13 +34,14 @@ type fakeStatefulDriver struct {
 	releases int
 	removes  int
 	// banked maps snapshotRef -> the generation it was stamped with.
-	banked       map[string]uint64
-	statefulDir  string
-	failClaim    error
-	lastVolPath  string
-	lastVolMount string
-	claimCount   int
-	lastMmdsEnv  map[string]string
+	banked         map[string]uint64
+	statefulDir    string
+	failClaim      error
+	lastVolPath    string
+	lastVolMount   string
+	lastRootfsPath string
+	claimCount     int
+	lastMmdsEnv    map[string]string
 	// checkpoints maps a checkpoint token -> the pending checkpoint (ADR 008). A
 	// checkpointed VM stays live (paused). failCheckpoint / failResume script the
 	// failure paths.
@@ -77,7 +78,7 @@ func newFakeStatefulDriver(dir string) *fakeStatefulDriver {
 	}
 }
 
-func (f *fakeStatefulDriver) ClaimStateful(_ context.Context, workload, _ string, _ string, _ int, _ int, _ substrate.NICSpec, _ string, _ int64, volumeDiskPath, volumeMount string, mmdsEnv map[string]string) (substrate.Handle, error) {
+func (f *fakeStatefulDriver) ClaimStateful(_ context.Context, workload, rootfsPath string, _ string, _ int, _ int, _ substrate.NICSpec, _ string, _ int64, volumeDiskPath, volumeMount string, mmdsEnv map[string]string) (substrate.Handle, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failClaim != nil {
@@ -87,6 +88,7 @@ func (f *fakeStatefulDriver) ClaimStateful(_ context.Context, workload, _ string
 	f.claims++
 	f.claimCount++
 	f.lastWorkload = workload
+	f.lastRootfsPath = rootfsPath
 	f.lastVolPath = volumeDiskPath
 	f.lastVolMount = volumeMount
 	f.lastMmdsEnv = mmdsEnv
