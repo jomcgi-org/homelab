@@ -1514,6 +1514,9 @@ swarm:
   # Flipped on in a follow-up PR after review, never in the PR adding the
   # template, so a behaviour change never rides in on a template change.
   factoryLostBeforeGuestSettlementEnabled: false
+  # Recover an aged reserved start only after the no-session and no-model-use
+  # proof succeeds. Keep staged off until #6285's live checks are complete.
+  factoryLostBeforeSessionSweepEnabled: false
   # Re-read open escalation cards from GitHub in bounded batches. Off until
   # the reconciliation path is reviewed and deliberately enabled.
   factoryEscalationRevalidationEnabled: false

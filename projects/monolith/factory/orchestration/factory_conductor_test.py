@@ -437,6 +437,68 @@ def test_tick_at_the_limit_reconciles_without_ingesting_or_admitting(monkeypatch
     assert reconciled == ["t-1"]
 
 
+@pytest.mark.parametrize(
+    "configured, expected",
+    [(None, []), ("false", []), ("true", ["t-1"])],
+)
+def test_tick_gates_only_the_automatic_sessionless_sweep(
+    monkeypatch, configured, expected
+):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_landing,
+        factory_pr_lifecycle,
+        factory_problem_issues,
+        work_item_pointer,
+    )
+
+    policy = {"max_tasks": 1}
+    task = {"task_id": "t-1", "policy": policy}
+    if configured is None:
+        monkeypatch.delenv("FACTORY_LOST_BEFORE_SESSION_SWEEP_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("FACTORY_LOST_BEFORE_SESSION_SWEEP_ENABLED", configured)
+    monkeypatch.setattr(
+        controls,
+        "status",
+        lambda: {"state": "paused", "policy": policy, "active_tasks": [task]},
+    )
+    monkeypatch.setattr(conductor.runtime, "is_launched", lambda: True)
+    monkeypatch.setattr(conductor.runtime, "init_dbos", lambda: object())
+    monkeypatch.setattr(conductor, "revalidate_escalations", lambda: None)
+    monkeypatch.setattr(conductor, "observe_reviewer_routing", lambda _policy: None)
+    monkeypatch.setattr(factory_pr_lifecycle, "reconcile_tick", lambda _policy: None)
+    monkeypatch.setattr(factory_landing, "landing_tick", lambda _policy: None)
+    monkeypatch.setattr(
+        factory_problem_issues, "problem_issues_tick", lambda _policy: None
+    )
+    monkeypatch.setattr(work_item_pointer, "sync_pointers", lambda **_kwargs: None)
+    swept = []
+    reconciled = []
+    deadlines = []
+    monkeypatch.setattr(
+        conductor,
+        "_sweep_sessionless_starts",
+        lambda current, _dbos: swept.append(current["task_id"]),
+    )
+    monkeypatch.setattr(
+        conductor,
+        "reconcile_task",
+        lambda task_id, _policy, _dbos: reconciled.append(task_id),
+    )
+    monkeypatch.setattr(
+        conductor,
+        "_expire_task_deadline",
+        lambda current: deadlines.append(current["task_id"]),
+    )
+
+    conductor.tick()
+
+    assert swept == expected
+    assert reconciled == ["t-1"]
+    assert deadlines == ["t-1"]
+
+
 def test_tick_syncs_work_item_pointers_while_paused(monkeypatch):
     from factory.orchestration import (
         factory_controls as controls,

@@ -228,6 +228,16 @@ def test_factory_webhook_and_pointer_ship_staged_off(chart_context):
     )
 
 
+def test_factory_lost_before_session_sweep_ships_staged_off(chart_context):
+    """The chart wires the runtime gate without enabling the new sweep."""
+    rendered = chart_context["rendered"]
+
+    assert re.search(
+        r'- name: FACTORY_LOST_BEFORE_SESSION_SWEEP_ENABLED\n\s+value: "false"',
+        rendered,
+    )
+
+
 def test_knowledge_recall_enabled_in_deploy_with_five_notes(chart_context):
     """The API deployment receives both knowledge recall controls.
 
