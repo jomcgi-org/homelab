@@ -1639,8 +1639,28 @@ def _drive_bound_zero_turn_fence(
         )
     if not isinstance(view, dict) or view.get("session_id") != identity["guest_id"]:
         raise ValueError("wrong_bound_zero_turn_session")
+    evidence = saved.get("evidence")
+    if not isinstance(evidence, dict):
+        raise ValueError("malformed_bound_zero_turn_fence")
+    evidence_kind = evidence.get("kind")
+    if evidence_kind == "authoritative_absence":
+        # A producer-shaped live view disproves the persisted absence fence.
+        # Validate the full additive contract before reopening local delivery,
+        # so a malformed or wrong-shard response remains fail closed.
+        _bound_zero_turn_evidence(view, identity)
+        _bound_zero_turn_reset(
+            pin,
+            session_id,
+            identity,
+            "bound_zero_turn_authoritative_absence_disproved",
+            release=True,
+        )
+        return False
+    if evidence_kind != "completed_invoke":
+        raise ValueError("malformed_bound_zero_turn_fence")
+    precondition = _precondition(evidence.get("precondition"), identity["guest_id"])
     try:
-        proof = _completion(view, saved["evidence"]["precondition"])
+        proof = _completion(view, precondition)
     except ValueError as exc:
         _bound_zero_turn_reset(
             pin,
@@ -1699,11 +1719,11 @@ def _drive_bound_zero_turn_fence(
             pin,
             records,
             identity,
-            saved["evidence"]["precondition"],
+            precondition,
         ):
             return False
     try:
-        _http(identity["guest_id"], saved["evidence"]["precondition"])
+        _http(identity["guest_id"], precondition)
     except EmberSessionGone:
         return _settle_bound_zero_turn(
             pin,

@@ -4533,6 +4533,44 @@ def _fence_bound_zero_turn_without_stop(s, monkeypatch):
     return supervisor
 
 
+def _fence_bound_zero_turn_absence_with_refused_settlement(s, monkeypatch):
+    """Persist the absence fence while its separate settlement rolls back."""
+    from datetime import timedelta
+
+    from factory.execution.transport import EmberSessionGone
+    from factory.orchestration import factory_supervision as supervisor
+
+    def absent(_guest_id, precondition=None):
+        assert precondition is None
+        s.calls.append((_guest_id, precondition))
+        raise EmberSessionGone("missing")
+
+    monkeypatch.setattr(supervisor, "_http", absent)
+    assert not _tick_bound_zero_turn(s)
+    s.now[0] += timedelta(seconds=s.run["pin"]["turn_timeout_seconds"] + 1)
+    record_outcome = supervisor.graph.record_outcome
+    monkeypatch.setattr(
+        supervisor.graph,
+        "record_outcome",
+        lambda *_args, **_kwargs: SimpleNamespace(ok=False),
+    )
+    assert not _tick_bound_zero_turn(s)
+    monkeypatch.setattr(supervisor.graph, "record_outcome", record_outcome)
+
+    fenced = _uncertain_snapshot(s)
+    assert fenced["session"]["guest_cleanup_id"]
+    assert len(fenced["pending"]) == 1
+    assert fenced["permits"][0]["state"] == "running"
+    records = supervisor._records_for_pin(s.run["pin"])
+    fences = [detail for action, detail in records if action == "bound_zero_turn_fence"]
+    assert len(fences) == 1
+    assert fences[0]["evidence"] == {
+        "kind": "authoritative_absence",
+        "session_id": s.precondition["session_id"],
+    }
+    return supervisor
+
+
 def test_bound_zero_turn_proof_is_off_by_default(bound_zero_turn_factory, monkeypatch):
     s = bound_zero_turn_factory
     monkeypatch.setenv("FACTORY_BOUND_ZERO_TURN_SETTLEMENT_ENABLED", "false")
@@ -4738,6 +4776,140 @@ def test_bound_zero_turn_lookup_failure_breaks_the_absence_window(
     s.now[0] += timedelta(seconds=timeout + 1)
     assert _tick_bound_zero_turn(s)
     assert _uncertain_snapshot(s)["permits"][0]["outcome"] == "delivery_error"
+
+
+def test_bound_zero_turn_live_view_releases_persisted_absence_fence(
+    bound_zero_turn_factory, monkeypatch
+):
+    from datetime import datetime, timezone
+
+    from sqlmodel import Session
+
+    from factory.execution import result_receipts, store
+    from factory.execution.models import AgentResultReceipt
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = bound_zero_turn_factory
+    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "true")
+    receipt = result_receipts.prepare_receipt(
+        s.sid,
+        "lost-bound-executor",
+        1,
+        s.precondition["session_id"],
+        b'{"message":"queued planner"}',
+    )
+    _fence_bound_zero_turn_absence_with_refused_settlement(s, monkeypatch)
+    with Session(s.engine) as db:
+        fenced = db.get(AgentResultReceipt, receipt["id"])
+        accept_until = fenced.accept_until
+        if accept_until.tzinfo is None:
+            accept_until = accept_until.replace(tzinfo=timezone.utc)
+        assert accept_until <= datetime.now(timezone.utc)
+
+    s.calls.clear()
+    monkeypatch.setattr(supervisor, "_http", s.http)
+    assert not _tick_bound_zero_turn(s)
+
+    released = _uncertain_snapshot(s)
+    assert released["session"]["guest_cleanup_id"] is None
+    assert released["turns"] == []
+    assert len(released["pending"]) == 1
+    assert released["permits"][0]["state"] == "running"
+    assert store.refresh_claim_sync(s.sid, 1, "lost-bound-executor")
+    assert s.calls == [(s.precondition["session_id"], None)]
+    with Session(s.engine) as db:
+        reopened = db.get(AgentResultReceipt, receipt["id"])
+        accept_until = reopened.accept_until
+        if accept_until.tzinfo is None:
+            accept_until = accept_until.replace(tzinfo=timezone.utc)
+        assert accept_until > datetime.now(timezone.utc)
+    records = supervisor._records_for_pin(s.run["pin"])
+    assert not any(action == "bound_zero_turn_request" for action, _ in records)
+    resets = [detail for action, detail in records if action == "bound_zero_turn_reset"]
+    assert [detail["reason"] for detail in resets] == [
+        "bound_zero_turn_authoritative_absence_disproved"
+    ]
+
+
+@pytest.mark.parametrize(
+    "observation", ["continued_absence", "timeout", "malformed", "wrong_session"]
+)
+def test_bound_zero_turn_persisted_absence_fence_resumes_fail_closed(
+    bound_zero_turn_factory, monkeypatch, observation
+):
+    import copy
+
+    from factory.execution.transport import EmberSessionGone
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = bound_zero_turn_factory
+    _fence_bound_zero_turn_absence_with_refused_settlement(s, monkeypatch)
+    before = _uncertain_snapshot(s)
+
+    def read(_guest_id, precondition=None):
+        assert precondition is None
+        if observation == "continued_absence":
+            raise EmberSessionGone("still missing")
+        if observation == "timeout":
+            raise TimeoutError("control plane unavailable")
+        view = copy.deepcopy(s.cp)
+        if observation == "malformed":
+            view.pop("turn_seq")
+        else:
+            view["session_id"] = "s-wrong-shard"
+        return view
+
+    monkeypatch.setattr(supervisor, "_http", read)
+    settled = _tick_bound_zero_turn(s)
+    after = _uncertain_snapshot(s)
+    if observation == "continued_absence":
+        assert settled
+        assert after["pending"] == []
+        assert after["permits"][0]["outcome"] == "delivery_error"
+        return
+
+    assert not settled
+    for key in ("session", "turns", "pending", "permits", "runs"):
+        assert after[key] == before[key]
+    assert after["session"]["guest_cleanup_id"]
+    records = supervisor._records_for_pin(s.run["pin"])
+    assert len(
+        [detail for action, detail in records if action == "bound_zero_turn_fence"]
+    ) == 1
+    assert not any(action == "bound_zero_turn_request" for action, _ in records)
+
+
+def test_bound_zero_turn_absence_release_rematures_newest_live_epoch(
+    bound_zero_turn_factory, monkeypatch
+):
+    import copy
+    from datetime import timedelta
+
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = bound_zero_turn_factory
+    _fence_bound_zero_turn_absence_with_refused_settlement(s, monkeypatch)
+    monkeypatch.setattr(supervisor, "_http", s.http)
+    assert not _tick_bound_zero_turn(s)
+    assert _uncertain_snapshot(s)["session"]["guest_cleanup_id"] is None
+
+    def unchanged(guest_id, precondition=None):
+        s.calls.append((guest_id, copy.deepcopy(precondition)))
+        return copy.deepcopy(s.cp)
+
+    monkeypatch.setattr(supervisor, "_http", unchanged)
+    assert not _tick_bound_zero_turn(s)
+    s.now[0] += timedelta(seconds=s.run["pin"]["turn_timeout_seconds"] + 1)
+    assert not _tick_bound_zero_turn(s)
+
+    records = supervisor._records_for_pin(s.run["pin"])
+    fences = [detail for action, detail in records if action == "bound_zero_turn_fence"]
+    assert [detail["evidence"]["kind"] for detail in fences] == [
+        "authoritative_absence",
+        "completed_invoke",
+    ]
+    active = supervisor._active_bound_zero_turn_fence(records, fences[-1]["identity"])
+    assert active == fences[-1]
 
 
 @pytest.mark.parametrize("error_name", ["timeout", "403_forbidden", "500_server_error"])
