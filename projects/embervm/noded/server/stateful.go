@@ -463,30 +463,24 @@ const statefulPendingAttachGrace = 5 * time.Minute
 
 const statefulAPISocketProbeTimeout = 100 * time.Millisecond
 
-// releaseOrphanedAttach clears a writable-attach lock whose owning VM the
-// registry no longer knows about, so a workload wedged by a lost Detach
-// self-heals on its next wake instead of needing a noded restart (#3648).
+// releaseOrphanedAttach reaps a registry owner whose Firecracker process is
+// definitively dead, then clears a stale writable-attach lock. The owner stays
+// registered until the tracked reap completes, so registry absence can never
+// substitute for confirmed process cessation during a racing wake (#3648).
 func (s *Server) releaseOrphanedAttach(workload string) {
-	live := ""
 	if e, ok := s.statefulVMs.byWorkload(workload); ok {
 		socketPath := s.statefulDriver.StatefulAPISocketPath(e.handle)
 		if socketPath == "" || statefulAPISocketDead(socketPath) {
-			if removed := s.statefulVMs.remove(e.vmID); removed != nil {
-				removed.probe.Stop()
-				if err := s.driver.Release(context.Background(), removed.handle); err != nil {
-					s.logger.Warn("noded: release dead stateful vm", "vm_id", removed.vmID, "err", err)
+			owner, claimed := s.statefulVMs.beginDestroy(e.vmID)
+			if claimed && owner != nil {
+				if err := s.reapStatefulEntry(owner); err != nil {
+					s.logger.Warn("noded: reap dead stateful vm", "vm_id", owner.vmID, "err", err)
 				}
-				if err := s.driver.RemoveBundle(removed.handle.ThreadID); err != nil {
-					s.logger.Warn("noded: remove dead stateful vm bundle", "vm_id", removed.vmID, "err", err)
-				}
-				s.servingNet.ReleaseTap(context.Background(), removed.ip)
-				s.signalChange()
 			}
-		} else {
-			live = e.vmID
 		}
+		return
 	}
-	if reason, released := s.volumes.ReleaseOrphaned(workload, live, statefulPendingAttachGrace); released {
+	if reason, released := s.volumes.ReleaseOrphaned(workload, "", statefulPendingAttachGrace); released {
 		s.logger.Warn("noded: reclaimed orphaned writable attach", "workload", workload, "reason", reason)
 	}
 }
@@ -748,8 +742,9 @@ func (s *Server) stopStatefulBank(ctx context.Context, vmID string) (*nodev1.Sto
 		s.volumes.Detach(e.workload)
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: bank stateful vm %q: %v", vmID, err)
 	}
-	if removed := s.statefulVMs.remove(vmID); removed != nil {
-		s.reapStateful(removed.handle, removed.ip, removed.workload)
+	e.teardown.started.Store(true)
+	if err := s.reapStatefulEntry(e); err != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "noded: reap banked stateful vm %q: %v", vmID, err)
 	}
 	// Evict any PRIOR bundle for this workload BEFORE recording the new one: at
 	// most one banked bundle per workload, so the old bundle would otherwise be
@@ -793,14 +788,41 @@ func (s *Server) stopStatefulBank(ctx context.Context, vmID string) (*nodev1.Sto
 // FILE survives (destroy tears down the VM, not its durable volume); DeleteVolume
 // is the separate explicit data verb.
 func (s *Server) stopStatefulDestroy(vmID string) (*nodev1.StopStatefulResponse, error) {
-	if removed := s.statefulVMs.remove(vmID); removed != nil {
-		removed.probe.Stop()
-		if err := s.reapStateful(removed.handle, removed.ip, removed.workload); err != nil {
-			return nil, status.Errorf(codes.Internal, "noded: reap stateful vm %q: %v", vmID, err)
+	e, ok := s.statefulVMs.beginDestroy(vmID)
+	if !ok {
+		return nil, status.Errorf(codes.FailedPrecondition, "noded: stateful vm %q has another stop in flight", vmID)
+	}
+	if e == nil {
+		return &nodev1.StopStatefulResponse{TeardownConfirmed: true}, nil
+	}
+	if err := s.reapStatefulEntry(e); err != nil {
+		if errors.Is(err, errTeardownInProgress) {
+			return nil, status.Errorf(codes.Unavailable, "noded: stateful vm %q teardown in progress", vmID)
 		}
-		s.signalChange()
+		return nil, status.Errorf(codes.Internal, "noded: reap stateful vm %q: %v", vmID, err)
 	}
 	return &nodev1.StopStatefulResponse{TeardownConfirmed: true}, nil
+}
+
+// reapStatefulEntry retains a published owner and its writable attach until
+// process and bundle cleanup complete. vmTeardown records a successful process
+// release so an ancillary cleanup retry does not release the process twice.
+func (s *Server) reapStatefulEntry(e *statefulEntry) error {
+	return e.teardown.run(func() error {
+		e.probe.Stop()
+		if err := s.reapTracked(e.handle, func() {}, &e.teardown); err != nil {
+			return err
+		}
+		if s.servingNet != nil {
+			s.servingNet.ReleaseTap(context.Background(), e.ip)
+		}
+		if s.volumes != nil {
+			s.volumes.Detach(e.workload)
+		}
+		s.statefulVMs.remove(e.vmID)
+		s.signalChange()
+		return nil
+	})
 }
 
 // reapStateful tears a stateful VM down (release the FC process + bundle),

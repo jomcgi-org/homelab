@@ -2805,9 +2805,10 @@ defmodule Embervm.StatefulManager do
 
   # DELETE /v1/stateful/:name/volume: refused while ANY non-terminal instance
   # exists (live or banked; see the doc). On a clean workload, calls the
-  # daemon's DeleteVolume (best-effort; the durable volume_deleted append lands
-  # regardless, exactly the destroy_instance pattern of "the record is
-  # authoritative even if the RPC silently no-ops on an already-gone file").
+  # daemon's DeleteVolume. A required reporting or quiet-window node failure
+  # returns delete_incomplete before the durable volume_deleted append. Nodes
+  # already beyond the quiet window get one bounded best-effort attempt, and an
+  # unreachable node does not prevent durable deletion (#5632).
   defp do_delete_volume(state, workload) do
     instances = StatefulStore.list(state.store, workload)
 
