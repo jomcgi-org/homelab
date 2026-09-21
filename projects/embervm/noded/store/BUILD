@@ -10,6 +10,7 @@ go_library(
     importpath = "github.com/jomcgi/homelab/projects/embervm/noded/store",
     visibility = ["//projects/embervm/noded:__subpackages__"],
     deps = [
+        "//projects/embervm/noded/snapshotmeta",
         "//projects/embervm/noded/sparse",
         "@com_github_klauspost_compress//zstd",
     ],

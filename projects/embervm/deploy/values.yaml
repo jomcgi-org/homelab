@@ -275,11 +275,10 @@ noded:
   # park/relight conversation continuity (#4386). Uniform arming is the point,
   # not just breadth: base refs exclude noded config, so a mixed fleet builds
   # SAME-REF bases with DIFFERENT device sets (flag-off bricks omit the
-  # placeholder drive) and the bundle records nothing that tells them apart.
-  # S3 export is first-writer-wins, so a placeholder-less twin exported by a
-  # flag-off brick would break session creates on any brick that later
-  # hydrates it, with nothing on disk to explain why. All classes armed means
-  # every base built anywhere carries the placeholder. Task bases keep their
+  # placeholder drive). Base bundles now carry their captured drive resources,
+  # and restore/export/hydration fence incompatible same-ref shapes (#4388), but
+  # uniform arming remains the deployment default so every newly built base can
+  # take the volume warm-restore path. Task bases keep their
   # old refs until their guest images next move; volume-less restores of
   # placeholder-bearing bases reopen the node-stable placeholder file that
   # every brick ensures at startup.

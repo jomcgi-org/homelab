@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -191,8 +192,13 @@ func (f *fakeDriver) SnapshotBase(_ context.Context, _ substrate.Handle, baseKey
 		if err := os.WriteFile(filepath.Join(dir, "memfile"), []byte("mem"), 0o600); err != nil {
 			return substrate.SnapshotRef{}, err
 		}
+		// Mirror the real producer contract: base capture writes its drive-resource
+		// metadata before publishing the bundle. This fake captures rootfs-only.
+		if err := os.WriteFile(filepath.Join(dir, "jail-resources.json"), []byte(`[{"role":"rootfs","host_path":"/rootfs","jail_path":"/rootfs"}]`), 0o600); err != nil {
+			return substrate.SnapshotRef{}, err
+		}
 	}
-	return substrate.SnapshotRef{ID: baseKey, Base: true, SizeBytes: 4096}, nil
+	return substrate.SnapshotRef{ID: baseKey, Base: true, SizeBytes: 4096, DeviceSetKnown: true}, nil
 }
 
 // SnapshotSession banks the fake VM: it persists the pre-bank marker (nextBankMarker)
@@ -3587,6 +3593,48 @@ func TestReconcileBasesFromDiskRestoresRefAndGCsRefless(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(basesDir, "wl-b__noref")); !os.IsNotExist(err) {
 		t.Error("refless base dir should have been removed from disk")
+	}
+}
+
+func TestReconcileBasesFromDiskCarriesCapturedDeviceShape(t *testing.T) {
+	root := t.TempDir()
+	basesDir := filepath.Join(root, "bases")
+	writeReconcileBase(t, basesDir, "echo__root-only", "img-root")
+	writeReconcileBase(t, basesDir, "echo__volume", "img-volume")
+	writeReconcileBase(t, basesDir, "echo__legacy", "img-legacy")
+	writeReconcileBase(t, basesDir, "echo__invalid", "img-invalid")
+	if err := os.WriteFile(filepath.Join(basesDir, "echo__root-only", "jail-resources.json"), []byte(`[{"role":"rootfs"}]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(basesDir, "echo__volume", "jail-resources.json"), []byte(`[{"role":"rootfs"},{"role":"volume"}]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(basesDir, "echo__invalid", "jail-resources.json"), []byte(`{"not":"an array"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	s := New(Options{Config: config.Config{SnapshotRoot: root}})
+	if err := s.ReconcileBasesFromDisk(); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		key       string
+		known     bool
+		ids       []string
+		wantState nodev1.BaseBuildState
+	}{
+		{key: "echo__root-only", known: true, wantState: nodev1.BaseBuildState_BASE_BUILD_STATE_READY},
+		{key: "echo__volume", known: true, ids: []string{"volume"}, wantState: nodev1.BaseBuildState_BASE_BUILD_STATE_READY},
+		{key: "echo__legacy", known: false, wantState: nodev1.BaseBuildState_BASE_BUILD_STATE_READY},
+		{key: "echo__invalid", known: true, wantState: nodev1.BaseBuildState_BASE_BUILD_STATE_NONE},
+	} {
+		got, ok := s.bases.get(tc.key)
+		if !ok {
+			t.Fatalf("base %q was not registered", tc.key)
+		}
+		if got.state != tc.wantState || got.devices.Known != tc.known || !slices.Equal(got.devices.IDs, tc.ids) {
+			t.Errorf("base %q = state %s devices %+v, want state %s known=%v ids=%v", tc.key, got.state, got.devices, tc.wantState, tc.known, tc.ids)
+		}
 	}
 }
 

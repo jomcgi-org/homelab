@@ -162,6 +162,13 @@ type SnapshotRef struct {
 	// guessing a template (unlike guessing node-4's vendor, a real historical
 	// fact) has no safe default.
 	Template string
+	// DeviceSetKnown distinguishes current bundles whose captured non-root drive
+	// table was read from producer metadata from legacy bundles where that
+	// metadata is absent. DeviceIDs is sorted and contains Firecracker drive IDs
+	// such as "volume". An empty known set means rootfs-only; an unknown set must
+	// never be guessed from current node configuration.
+	DeviceSetKnown bool
+	DeviceIDs      []string
 	// SizeBytes is the on-disk bundle size, used for capacity reporting.
 	SizeBytes int64
 	// Base reports whether this is a warm base template rather than a per-thread
