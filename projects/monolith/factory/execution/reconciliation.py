@@ -1445,9 +1445,7 @@ def inspect_lost_before_session_factory_attempt(
         return None, "missing_factory_start"
     if start.status != "reserved":
         return None, "start_not_reserved"
-    if start.model != pin.get("model") or start.max_cost_usd != pin.get(
-        "max_cost_usd"
-    ):
+    if start.model != pin.get("model") or start.max_cost_usd != pin.get("max_cost_usd"):
         return None, "start_ownership_conflict"
     if start.session_id is not None:
         return None, "start_has_session"
@@ -1480,10 +1478,9 @@ def inspect_lost_before_session_factory_attempt(
     def aware(value):
         return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
-    if (
-        (_utcnow() - aware(start.created_at)).total_seconds()
-        <= pin["turn_timeout_seconds"]
-    ):
+    if (_utcnow() - aware(start.created_at)).total_seconds() <= pin[
+        "turn_timeout_seconds"
+    ]:
         return None, "start_too_recent"
     return {
         "session_id": None,
