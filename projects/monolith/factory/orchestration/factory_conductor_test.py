@@ -7015,7 +7015,7 @@ def test_planner_prompt_maps_legacy_conductor_names_without_granting_authority(
     prompt = conductor.planner_prompt(task, [], [], task_class="docs")
     assert prompt.startswith("You are the per-task Planner")
     assert "not the operator-facing Conductor" in prompt
-    assert "Role names grant no permissions" in prompt
+    assert "Names grant no authority" in prompt
 
 
 @pytest.mark.parametrize("task_class", ["bug-fix", "mechanical-refactor", "docs"])
