@@ -690,8 +690,7 @@ def test_noded_max_live_vms_accepts_per_class_override(tmp_path: Path):
     assert declared_classes["large"]["slots"] == int(fleet_value)
     assert declared_classes["open"]["slots"] == 0
     assert all(
-        entry["mem_reject_floor_mib"] == 256
-        for entry in declared_classes.values()
+        entry["mem_reject_floor_mib"] == 256 for entry in declared_classes.values()
     )
 
     for rendered in (default_render, override_render):
