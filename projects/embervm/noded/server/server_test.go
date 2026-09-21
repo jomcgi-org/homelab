@@ -1508,14 +1508,15 @@ func TestBuildBaseAdoptsSiblingBundleFromDisk(t *testing.T) {
 // completeness rule, so the build proceeds normally. The stale debris itself is
 // cleared by the driver at publish time (covered driver-side).
 func TestBuildBaseIncompleteBundleFallsThroughToBuild(t *testing.T) {
-	build := &fakeDriver{}
+	snapshotRoot := t.TempDir()
+	build := &fakeDriver{snapshotRoot: snapshotRoot}
 	// The backing rootfs must EXIST: adoption declines a bundle whose recorded
 	// rootfs is missing (it could not restore), so a nonexistent path here would
 	// silently exercise the decline path instead of the adoption path.
 	rootfs := writeExt4Rootfs(t, t.TempDir(), "rootfs.ext4", testRootfsUUIDA)
 	s := New(Options{
 		Config: config.Config{
-			Arch: "amd64", Node: "node-4", SnapshotRoot: t.TempDir(),
+			Arch: "amd64", Node: "node-4", SnapshotRoot: snapshotRoot,
 			BootReadyTimeout: time.Second,
 			Images:           map[string]config.Image{"img:1": {RootfsPath: rootfs}},
 		},
