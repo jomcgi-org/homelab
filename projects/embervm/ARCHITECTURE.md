@@ -481,6 +481,11 @@ authorizes deletion, and the sequence does not imply Fork B.
 | Warm bank | 7 days from last bank | memory snapshot in S3 | CPU-vendor + base-generation |
 | Durable workspace | 7 days from last use | zstd content-addressed file set | none |
 
+**Why.** The historical durable-workspace proposal set a 30-day window, but PR
+#4319 implemented a narrower seven-day default through `sessionWorkspaceTtlMs`.
+Parked sessions expire earlier at the control-plane layer, so seven days bounds
+the S3 storage tier.
+
 Resume is one interface with four verbs: cold boot; base-snapshot restore;
 warm (memory) restore; base + workspace hydration. The CP picks the cheapest
 unexpired artifact. Two different windows apply: the same banked session
