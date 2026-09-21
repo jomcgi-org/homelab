@@ -185,9 +185,7 @@ def _rows(state):
     with Session(state.engine) as db:
         return SimpleNamespace(
             **db.get(SwarmNodeRun, state.run["id"]).model_dump()
-        ), SimpleNamespace(
-            **db.get(FactoryStart, state.start_id).model_dump()
-        )
+        ), SimpleNamespace(**db.get(FactoryStart, state.start_id).model_dump())
 
 
 def test_real_authorize_without_session_settles_both_ledgers_and_replays(database):
@@ -222,14 +220,9 @@ def test_real_authorize_without_session_settles_both_ledgers_and_replays(databas
 
 
 @pytest.mark.parametrize("age_seconds,settled", [(59, 0), (60, 0), (61, 1)])
-def test_timeout_is_strictly_beyond_the_pinned_boundary(
-    database, age_seconds, settled
-):
+def test_timeout_is_strictly_beyond_the_pinned_boundary(database, age_seconds, settled):
     state = _sessionless_attempt(database, age_seconds=age_seconds)
-    assert (
-        conductor._sweep_sessionless_starts({"task_id": state.task["id"]})
-        == settled
-    )
+    assert conductor._sweep_sessionless_starts({"task_id": state.task["id"]}) == settled
     run, start = _rows(state)
     assert (run.status, start.status) == (
         ("failed", "failed") if settled else ("admitted", "reserved")
