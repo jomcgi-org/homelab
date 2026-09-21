@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -4119,7 +4120,7 @@ func TestSiblingBaseDiscoveryConvergesWithoutBuildOrLiveVMChanges(t *testing.T) 
 	if ids := primedIDs(status, "echo"); len(ids) != 1 || ids[0] != "task-live" {
 		t.Fatalf("primed residency changed: %v", ids)
 	}
-	if old, _ := follower.bases.get(oldRef); old != oldEntry {
+	if old, _ := follower.bases.get(oldRef); !reflect.DeepEqual(old, oldEntry) {
 		t.Fatal("discovery modified the old READY entry")
 	}
 	if got := follower.discoverSiblingBases(context.Background()); got != 0 {
