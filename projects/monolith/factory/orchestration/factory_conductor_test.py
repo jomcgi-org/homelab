@@ -5133,7 +5133,7 @@ def test_bound_zero_turn_completion_refusal_releases_fence(
     from factory.execution import store
 
     s = bound_zero_turn_factory
-    _fence_bound_zero_turn_without_stop(s, monkeypatch)
+    supervisor = _fence_bound_zero_turn_without_stop(s, monkeypatch)
 
     if change == "invoke_started_at":
         s.cp["invoke_started_at"] += 1
@@ -5154,9 +5154,9 @@ def test_bound_zero_turn_completion_refusal_releases_fence(
     assert after["permits"][0]["state"] == "running"
     assert store.refresh_claim_sync(s.sid, 1, "lost-bound-executor")
     resets = [
-        event
-        for event in after["factory"]["stop_events"]
-        if event["action"] == "bound_zero_turn_reset"
+        detail
+        for action, detail in supervisor._records_for_pin(s.run["pin"])
+        if action == "bound_zero_turn_reset"
     ]
     assert resets[-1]["reason"] == reason
 
@@ -5180,17 +5180,12 @@ def test_bound_zero_turn_release_can_mature_and_settle_a_new_fence(
 
     refenced = _uncertain_snapshot(s)
     assert refenced["session"]["guest_cleanup_id"]
-    fences = [
-        event
-        for event in refenced["factory"]["stop_events"]
-        if event["action"] == "bound_zero_turn_fence"
-    ]
+    records = supervisor._records_for_pin(s.run["pin"])
+    fences = [detail for action, detail in records if action == "bound_zero_turn_fence"]
     assert len(fences) == 2
     assert fences[-1]["evidence"]["turn_seq"] == s.cp["turn_seq"]
     requests = [
-        event
-        for event in refenced["factory"]["stop_events"]
-        if event["action"] == "bound_zero_turn_request"
+        detail for action, detail in records if action == "bound_zero_turn_request"
     ]
     assert [request["request_number"] for request in requests] == [1, 1]
 
