@@ -4790,9 +4790,12 @@ def test_committed_synchronous_result_wins_before_bound_zero_turn_fence(
 def test_bound_zero_turn_fence_rejects_late_result_and_release(
     bound_zero_turn_factory,
 ):
-    from datetime import timedelta
+    from datetime import datetime, timedelta, timezone
+
+    from sqlmodel import Session, select
 
     from factory.execution import store
+    from factory.execution.models import PendingMessage
     from factory.execution.store import PendingClaimLost
     from factory.execution.transport import parse_native_turn
 
@@ -4826,9 +4829,29 @@ def test_bound_zero_turn_fence_rejects_late_result_and_release(
     assert not store.release_pending_message_claim_sync(
         s.sid, 1, "lost-bound-executor", dispatch_count=1
     )
+    store.mark_turn_interrupted_sync(s.sid, 1, "lost-bound-executor")
+    with Session(s.engine) as db:
+        now = datetime.now(timezone.utc)
+        assert (
+            store.claim_hung_zombie_session_recovery(
+                db,
+                s.sid,
+                now + timedelta(seconds=1),
+                now,
+                "s-bound-zero-turn",
+            )
+            is None
+        )
+    with Session(s.engine) as db:
+        pending = db.exec(select(PendingMessage)).one()
+        pending.claimed_at = datetime.now(timezone.utc) - store.RECLAIM_LEASE * 2
+        db.add(pending)
+        db.commit()
+    assert store.reclaim_stale_claims_sync() == 0
     fenced = _uncertain_snapshot(s)
     assert fenced["turns"] == []
     assert len(fenced["pending"]) == 1
+    assert fenced["pending"][0]["claimed_by_replica"] == "lost-bound-executor"
     assert fenced["permits"][0]["state"] == "running"
 
 

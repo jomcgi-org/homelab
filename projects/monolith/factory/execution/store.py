@@ -1643,7 +1643,10 @@ def _claim_zombie_session_recovery(
     """CAS one zombie shape into the shared recovery state."""
     # Acquire the same lock as heartbeats before evaluating pending predicates.
     # PostgreSQL may evaluate a subquery before an UPDATE waits for a row lock.
-    _lock_session(session, session_id)
+    locked = _lock_session(session, session_id)
+    if _bound_zero_turn_cleanup_pending(locked):
+        session.rollback()
+        return None
     result = session.execute(
         update(AgentSession)
         .where(AgentSession.id == session_id, predicate)
@@ -2454,7 +2457,7 @@ def mark_turn_interrupted_sync(
     with Session(get_engine()) as session:
         sess = _lock_session(session, session_id)
         pending = get_pending_message(session, session_id, turn_seq)
-        if sess is None or pending is None:
+        if sess is None or pending is None or _bound_zero_turn_cleanup_pending(sess):
             return
         if claim_owner is not None and pending.claimed_by_replica != claim_owner:
             return
@@ -2528,7 +2531,7 @@ def reclaim_stale_claims_sync() -> int:
                     _no_live_pending_claim(PendingMessage.session_id, now),
                 )
             ).first()
-            if row is None or pending is None:
+            if row is None or pending is None or _bound_zero_turn_cleanup_pending(row):
                 continue
             previous = get_turn(session, session_id, seq)
             if _response_lost_hold(previous, pending, now) is not None:
