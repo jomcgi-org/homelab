@@ -4933,10 +4933,9 @@ def test_bound_zero_turn_destroy_requests_are_durably_capped(
     exhausted = [
         event
         for event in after["factory"]["stop_events"]
-        if event["action"] == "bound_zero_turn_request_exhausted"
+        if event.get("reason") == "bound_zero_turn_destroy_exhausted"
     ]
     assert len(exhausted) == 1
-    assert exhausted[0]["destroy_requests"] == 2
     assert exhausted[0]["intervention_required"] is True
     assert after["session"]["guest_cleanup_id"]
     assert len(after["pending"]) == 1

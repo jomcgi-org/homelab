@@ -77,7 +77,6 @@ _ACTIONS = (
     "bound_zero_turn_reset",
     "bound_zero_turn_fence",
     "bound_zero_turn_request",
-    "bound_zero_turn_request_exhausted",
     "stop_intent",
     "stop_request",
     "stop_accepted",
@@ -1559,13 +1558,15 @@ def _reserve_bound_zero_turn_request(db, pin, records, identity, precondition) -
     ]
     if len(requests) >= MAX_BOUND_ZERO_TURN_DESTROY_REQUESTS:
         if not any(
-            action == "bound_zero_turn_request_exhausted"
-            for action, _detail in records
+            action == "stop_observation"
+            and detail.get("reason") == "bound_zero_turn_destroy_exhausted"
+            for action, detail in records
         ):
             _audit(
                 db,
                 pin,
-                "bound_zero_turn_request_exhausted",
+                "stop_observation",
+                reason="bound_zero_turn_destroy_exhausted",
                 identity_sha256=identity["identity_sha256"],
                 destroy_requests=len(requests),
                 intervention_required=True,
