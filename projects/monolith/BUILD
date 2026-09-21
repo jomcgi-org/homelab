@@ -4865,6 +4865,23 @@ py_test(
 )
 
 py_test(
+    name = "swarm_sessionless_start_recovery_test",
+    srcs = ["factory/orchestration/sessionless_start_recovery_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_agent_sessions",
+        ":pkg_auth",
+        ":pkg_factory",
+        ":pkg_swarm",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "swarm_model_pool_test",
     srcs = ["factory/orchestration/model_pool_test.py"],
     imports = ["."],

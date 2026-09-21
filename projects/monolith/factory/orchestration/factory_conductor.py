@@ -5580,6 +5580,35 @@ def _deadline_backstop_due(task: dict) -> bool:
     return datetime.now(timezone.utc) - deadline >= grace
 
 
+def _sweep_sessionless_starts(task: dict) -> int:
+    """Settle aged reserved starts whose exact attempt never made a session.
+
+    This evidence-based sweep runs before ordinary task reconciliation and the
+    deadline backstop. It therefore reaches the reserved-start shape even when
+    funding refuses unresolved starts or the deadline path deliberately skips
+    every reserved row. Settlement only changes the two attempt ledgers; normal
+    conductor reconciliation decides whether a bounded retry or re-plan is
+    allowed next.
+    """
+    from factory.orchestration.factory_controls import reconcile_sessionless_start
+
+    task_id = task.get("task_id") or task.get("id")
+    if not isinstance(task_id, str) or not task_id:
+        raise ValueError("sessionless sweep requires a task identity")
+    settled = 0
+    for run in graph.node_runs(task_id):
+        if run["status"] != "admitted" or run.get("session_id") is not None:
+            continue
+        result = reconcile_sessionless_start(
+            task_id,
+            run["node_key"],
+            run["attempt"],
+            ACTOR,
+        )
+        settled += bool(result["ok"])
+    return settled
+
+
 def _warn_deadline_tripped(task: dict) -> None:
     """One warn the moment a task holds a slot past its deadline.
 
@@ -5950,6 +5979,13 @@ def tick() -> None:
     # must not starve its neighbours of their tick, and a stale issue number
     # in the policy must not stall every in-flight task behind the ingest.
     for task in active:
+        try:
+            _sweep_sessionless_starts(task)
+        except Exception:  # noqa: BLE001 - missing proof never stalls neighbours
+            logger.exception(
+                "factory sessionless-start sweep failed for task %s",
+                task["task_id"],
+            )
         try:
             if task.get("task_paused") and _expire_reconciler_pause(task["task_id"]):
                 continue

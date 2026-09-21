@@ -2161,6 +2161,7 @@ def queued_factory(feedback_db, monkeypatch):
         PendingMessage,
         AgentCapacityPool,
         AgentCapacityReservation,
+        AgentResultReceipt,
     )
 
     engine = feedback_db.execution_options(
@@ -2176,6 +2177,7 @@ def queued_factory(feedback_db, monkeypatch):
                 PendingMessage,
                 AgentCapacityPool,
                 AgentCapacityReservation,
+                AgentResultReceipt,
             )
         ],
     )
@@ -10299,8 +10301,8 @@ def test_lost_before_session_proof_accepts_exact_unstarted_attempt(
         "workflow_id": s.run["dispatch_key"],
         "start_id": s.start_id,
         "seq": 1,
-        "cost_usd": None,
-        "invocation_phase": "lost_before_session",
+        "cost_usd": 0.0,
+        "invocation_phase": "never_dispatched",
     }
 
 
@@ -10459,7 +10461,7 @@ def test_operator_settles_attempt_lost_before_session_end_to_end(
     with Session(s.engine) as db:
         start = db.get(FactoryStart, s.start_id)
         assert start.status == "failed" and start.cost_usd == 0.0
-        assert start.accounting_basis == "no_session_created"
+        assert start.accounting_basis == "no_model_post"
     snapshot = controls.task_snapshot(s.task["id"])
     assert snapshot["unresolved_starts"] == 0
     finished = controls.finish_task(s.task["id"], "failed", "operator")
