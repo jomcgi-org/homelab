@@ -926,6 +926,10 @@ defmodule Embervm.BaseBuilderTest do
       status = BaseBuilder.status(builder).workloads["w"]
       status.base_refs["snap1"].evicted == false and "snap1" in status.superseded_refs
     end)
+
+    :ok = BaseBuilder.report_base_refs(builder, "snap1", primed: 0, sessions: 0)
+    assert_receive {:failed_event_head, "base/amd/w/snap1/meta.json"}, 1_000
+    refute_receive {:unexpected_event_evict, "w", "snap1"}, 100
   end
 
   test "a disk-driven failure preserves event-driven eviction state and retries" do
