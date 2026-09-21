@@ -424,11 +424,17 @@ for line in sys.stdin:
                   "params": {"threadId": thread, "turnId": turn, **payload}})
         if scenario == "child-before-start":
             notification("turn/started", {"turn": {"id": "child-turn"}}, thread="review-child")
-        started = {"turn": {"id": turn_id}}
+        started = {"turn": {"id": turn_id, "status": "inProgress", "items": []}}
         if scenario == "started-before-response":
+            # turn/start submits work before its JSON-RPC response is sent, so
+            # the pinned server can publish notifications first. The matching
+            # turn/started establishes identity for those early events.
             notification("turn/started", started)
-        response(request, {"turn": {"id": turn_id}})
-        notification("turn/started", started)
+            notification("thread/tokenUsage/updated", {"tokenUsage": {"last": {"inputTokens": 13, "outputTokens": 9, "cachedInputTokens": 2, "cacheWriteInputTokens": 1, "reasoningOutputTokens": 0, "totalTokens": 22}}})
+            response(request, {"turn": started["turn"]})
+        else:
+            response(request, {"turn": started["turn"]})
+            notification("turn/started", started)
         if turn_failure:
             notification("turn/completed", {"turn": {"id": turn_id, "status": "failed", "error": {"message": turn_failure}}})
             continue
@@ -464,7 +470,7 @@ for line in sys.stdin:
                 notification("turn/completed", {"turn": {"id": turn_id, "status": "completed"}})
                 continue
             notification("thread/tokenUsage/updated", {"tokenUsage": {"last": {"inputTokens": 5, "outputTokens": 6, "cachedInputTokens": 1, "cacheWriteInputTokens": 2, "reasoningOutputTokens": 0, "totalTokens": 11}}})
-        else:
+        elif scenario != "started-before-response":
             notification("thread/tokenUsage/updated", {"tokenUsage": {"last": {"inputTokens": 3, "outputTokens": 4, "cachedInputTokens": 0, "cacheWriteInputTokens": 0, "reasoningOutputTokens": 0, "totalTokens": 7}}})
         notification("turn/completed", {"turn": {"id": turn_id, "status": "completed"}})
     elif method == "turn/interrupt":
@@ -2176,6 +2182,21 @@ def test_codex_resume_replay_is_not_charged_to_interrupted_turn(tmp_path, monkey
 
     assert record["terminal_reason"] == "user_interrupt"
     assert record["usage"] == {}
+    manager._close_process()
+
+
+def test_codex_accepts_matching_usage_before_turn_start_response(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_CODEX_SCENARIO", "started-before-response")
+    manager = _codex_manager(tmp_path, monkeypatch)
+
+    record = manager.turn("early matching usage", model="luna")
+
+    assert record["usage"] == {
+        "input_tokens": 13,
+        "output_tokens": 9,
+        "cache_read_tokens": 2,
+        "cache_write_tokens": 1,
+    }
     manager._close_process()
 
 
