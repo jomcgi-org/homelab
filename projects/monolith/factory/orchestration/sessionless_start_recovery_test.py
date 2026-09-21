@@ -188,7 +188,16 @@ def _rows(state):
         ), SimpleNamespace(**db.get(FactoryStart, state.start_id).model_dump())
 
 
-def test_real_authorize_without_session_settles_both_ledgers_and_replays(database):
+def _dbos(status="ERROR"):
+    return SimpleNamespace(
+        get_workflow_status=lambda _workflow_id: SimpleNamespace(status=status)
+    )
+
+
+@pytest.mark.parametrize("workflow_status", ["CANCELLED", "ERROR"])
+def test_real_authorize_without_session_settles_both_ledgers_and_replays(
+    database, workflow_status
+):
     from factory.execution.models import AgentSession
     from factory.orchestration import factory_controls as controls
     from factory.orchestration.factory_models import FactoryAudit
@@ -197,19 +206,30 @@ def test_real_authorize_without_session_settles_both_ledgers_and_replays(databas
     with Session(database) as db:
         assert db.exec(select(AgentSession)).first() is None
 
-    assert conductor._sweep_sessionless_starts({"task_id": state.task["id"]}) == 1
+    assert (
+        conductor._sweep_sessionless_starts(
+            {"task_id": state.task["id"]}, _dbos(workflow_status)
+        )
+        == 1
+    )
     run, start = _rows(state)
     outcome = json.loads(run.outcome_json)
     assert run.status == "failed" and run.cost_usd == 0.0
     assert outcome["reason"] == "never_dispatched"
     assert outcome["never_dispatched"]["invocation_phase"] == "never_dispatched"
+    assert outcome["never_dispatched"]["workflow_status"] == workflow_status
     assert start.status == "failed" and start.cost_usd == 0.0
     assert start.accounting_basis == "no_model_post"
     accounting = controls.task_snapshot(state.task["id"])
     assert accounting["committed_cost_usd"] == 0.0
     assert accounting["unresolved_starts"] == 0
 
-    assert conductor._sweep_sessionless_starts({"task_id": state.task["id"]}) == 0
+    assert (
+        conductor._sweep_sessionless_starts(
+            {"task_id": state.task["id"]}, _dbos(workflow_status)
+        )
+        == 0
+    )
     with Session(database) as db:
         audits = db.exec(
             select(FactoryAudit).where(
@@ -222,36 +242,96 @@ def test_real_authorize_without_session_settles_both_ledgers_and_replays(databas
 @pytest.mark.parametrize("age_seconds,settled", [(59, 0), (60, 0), (61, 1)])
 def test_timeout_is_strictly_beyond_the_pinned_boundary(database, age_seconds, settled):
     state = _sessionless_attempt(database, age_seconds=age_seconds)
-    assert conductor._sweep_sessionless_starts({"task_id": state.task["id"]}) == settled
+    assert (
+        conductor._sweep_sessionless_starts(
+            {"task_id": state.task["id"]}, _dbos()
+        )
+        == settled
+    )
     run, start = _rows(state)
     assert (run.status, start.status) == (
         ("failed", "failed") if settled else ("admitted", "reserved")
     )
 
 
-def test_deterministic_session_without_ledger_bindings_refuses_sweep(database):
-    from factory.execution.models import AgentSession
+@pytest.mark.parametrize(
+    "workflow_status",
+    [None, "PENDING", "ENQUEUED", "SUCCESS", "MAX_RECOVERY_ATTEMPTS_EXCEEDED"],
+)
+def test_missing_or_nonterminal_owning_workflow_refuses_sweep(
+    database, workflow_status
+):
+    state = _sessionless_attempt(database)
+    seen = []
+
+    def lookup(workflow_id):
+        seen.append(workflow_id)
+        if workflow_status is None:
+            return None
+        return SimpleNamespace(status=workflow_status)
+
+    assert (
+        conductor._sweep_sessionless_starts(
+            {"task_id": state.task["id"]},
+            SimpleNamespace(get_workflow_status=lookup),
+        )
+        == 0
+    )
+    assert seen == [state.workflow]
+    run, start = _rows(state)
+    assert (run.status, start.status) == ("admitted", "reserved")
+
+
+def test_workflow_lookup_error_leaves_attempt_untouched(database):
+    state = _sessionless_attempt(database)
+
+    def unavailable(_workflow_id):
+        raise RuntimeError("workflow lookup unavailable")
+
+    with pytest.raises(RuntimeError, match="workflow lookup unavailable"):
+        conductor._sweep_sessionless_starts(
+            {"task_id": state.task["id"]},
+            SimpleNamespace(get_workflow_status=unavailable),
+        )
+    run, start = _rows(state)
+    assert (run.status, start.status) == ("admitted", "reserved")
+
+
+@pytest.mark.parametrize("with_turn", [False, True], ids=["session", "session-and-turn"])
+def test_deterministic_session_or_turn_refuses_sweep(database, with_turn):
+    from factory.execution.models import AgentSession, AgentTurn
 
     state = _sessionless_attempt(database)
     pin = state.run["pin"]
     with Session(database) as db:
-        db.add(
-            AgentSession(
-                local_session_id=(
-                    f"factory:{state.task['id']}:{state.run['node_key']}:1"
-                ),
-                workspace="guest",
-                branch=pin["hydration_branch"],
-                repo=pin["repo"],
-                model="luna",
-                workflow_id=pin["workflow_id"],
-                node_key=pin["node_key"],
-                node_attempt=pin["attempt"],
-                admission_tier="project",
-            )
+        agent = AgentSession(
+            local_session_id=(
+                f"factory:{state.task['id']}:{state.run['node_key']}:1"
+            ),
+            workspace="guest",
+            branch=pin["hydration_branch"],
+            repo=pin["repo"],
+            model="luna",
+            workflow_id=pin["workflow_id"],
+            node_key=pin["node_key"],
+            node_attempt=pin["attempt"],
+            admission_tier="project",
         )
+        db.add(agent)
+        db.flush()
+        if with_turn:
+            db.add(
+                AgentTurn(
+                    session_id=agent.id,
+                    seq=1,
+                    prompt="work",
+                    result_text="started",
+                )
+            )
         db.commit()
-    assert conductor._sweep_sessionless_starts({"task_id": state.task["id"]}) == 0
+    assert conductor._sweep_sessionless_starts(
+        {"task_id": state.task["id"]}, _dbos()
+    ) == 0
     run, start = _rows(state)
     assert (run.status, start.status) == ("admitted", "reserved")
 
@@ -308,7 +388,9 @@ def test_contradictory_attempt_evidence_refuses_sweep(database, conflict):
                 )
             )
         db.commit()
-    assert conductor._sweep_sessionless_starts({"task_id": state.task["id"]}) == 0
+    assert conductor._sweep_sessionless_starts(
+        {"task_id": state.task["id"]}, _dbos()
+    ) == 0
     run, start = _rows(state)
     assert (run.status, start.status) == ("admitted", "reserved")
 
@@ -325,7 +407,9 @@ def test_failed_deterministic_lookup_rolls_back_without_settlement(
 
     monkeypatch.setattr(node_workflows, "resolve_node_session_id", unavailable)
     with pytest.raises(RuntimeError, match="lookup unavailable"):
-        conductor._sweep_sessionless_starts({"task_id": state.task["id"]})
+        conductor._sweep_sessionless_starts(
+            {"task_id": state.task["id"]}, _dbos()
+        )
     run, start = _rows(state)
     assert (run.status, start.status) == ("admitted", "reserved")
 
@@ -340,7 +424,9 @@ def test_atomic_rollback_when_graph_settlement_refuses(database, monkeypatch):
         ),
     )
     with pytest.raises(ValueError, match="outcome_refused: changed_attempt"):
-        conductor._sweep_sessionless_starts({"task_id": state.task["id"]})
+        conductor._sweep_sessionless_starts(
+            {"task_id": state.task["id"]}, _dbos()
+        )
     run, start = _rows(state)
     assert (run.status, start.status, start.accounting_basis) == (
         "admitted",
@@ -369,7 +455,7 @@ def test_late_session_binding_cannot_cross_atomic_settlement(database, monkeypat
 
     def sweep():
         results["sweep"] = conductor._sweep_sessionless_starts(
-            {"task_id": state.task["id"]}
+            {"task_id": state.task["id"]}, _dbos()
         )
 
     def create_late():
@@ -411,7 +497,9 @@ def test_sweep_releases_ceiling_then_normal_reconciliation_retries_once(database
     from factory.orchestration import factory_controls as controls
 
     state = _sessionless_attempt(database)
-    assert conductor._sweep_sessionless_starts({"task_id": state.task["id"]}) == 1
+    assert conductor._sweep_sessionless_starts(
+        {"task_id": state.task["id"]}, _dbos()
+    ) == 1
     before = controls.task_snapshot(state.task["id"])
     assert before["committed_cost_usd"] == 0.0
 

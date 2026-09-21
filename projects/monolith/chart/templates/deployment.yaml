@@ -302,6 +302,8 @@ spec:
               value: {{ .Values.swarm.decisionTimeoutSeconds | quote }}
             - name: SWARM_CODEX_CONCURRENCY
               value: {{ .Values.swarm.codexConcurrency | quote }}
+            - name: FACTORY_LOST_BEFORE_SESSION_SWEEP_ENABLED
+              value: {{ .Values.swarm.factoryLostBeforeSessionSweepEnabled | quote }}
             - name: SWARM_QUOTA_FLOORS
               value: {{ .Values.swarm.quotaFloors | default dict | toJson | quote }}
             {{- end }}
