@@ -4,7 +4,7 @@ annotated-types==0.7.0
     # via
     #   -c bazel/requirements/runtime.txt
     #   pydantic
-anyio==4.12.1
+anyio==4.14.2
     # via
     #   -c bazel/requirements/runtime.txt
     #   httpx
@@ -305,6 +305,8 @@ typing-extensions==4.15.0
     # via
     #   -c bazel/requirements/runtime.txt
     #   anyio
+    #   copier
+    #   cryptography
     #   exceptiongroup
     #   mcp
     #   opentelemetry-api
@@ -313,10 +315,12 @@ typing-extensions==4.15.0
     #   opentelemetry-semantic-conventions
     #   pydantic
     #   pydantic-core
+    #   pyjwt
     #   referencing
     #   semgrep
     #   starlette
     #   typing-inspection
+    #   uvicorn
 typing-inspection==0.4.2
     # via
     #   -c bazel/requirements/runtime.txt
