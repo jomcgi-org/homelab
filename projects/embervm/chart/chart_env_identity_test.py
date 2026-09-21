@@ -1226,6 +1226,63 @@ def test_brick_renders_default_warmth_heartbeat_env():
             )
 
 
+def _rendered_noded_env_values(rendered: str, name: str) -> list[str]:
+    values = []
+    for document in yaml.safe_load_all(rendered):
+        if not isinstance(document, dict):
+            continue
+        pod_spec = document.get("spec", {}).get("template", {}).get("spec", {})
+        for container in pod_spec.get("containers", []):
+            if container.get("name") != "noded":
+                continue
+            env = {entry["name"]: entry for entry in container.get("env", [])}
+            values.append(env[name]["value"])
+    return values
+
+
+def test_bundle_rootfs_identity_enforcement_is_staged_off_end_to_end():
+    chart = _chart_dir()
+    default_values = yaml.safe_load((chart / "values.yaml").read_text())
+    prod_values = yaml.safe_load(Path(os.environ["PROD_VALUES"]).read_text())
+    gke_values = yaml.safe_load(Path(os.environ["GKE_VALUES"]).read_text())
+    dev_values = yaml.safe_load(Path(os.environ["DEV_VALUES"]).read_text())
+    recovery_values = yaml.safe_load(Path(os.environ["RECOVERY_VALUES"]).read_text())
+    assert default_values["noded"]["enforceBundleRootfsIdentity"] is False
+    assert prod_values["noded"]["enforceBundleRootfsIdentity"] is False
+    assert gke_values["noded"]["enforceBundleRootfsIdentity"] is False
+    assert dev_values["noded"]["enforceBundleRootfsIdentity"] is False
+    assert recovery_values["noded"]["enforceBundleRootfsIdentity"] is False
+
+    for release, values in (
+        ("default", [chart / "values.yaml"]),
+        ("prod", [Path(os.environ["PROD_VALUES"])]),
+        (
+            "gke",
+            [Path(os.environ["PROD_VALUES"]), Path(os.environ["GKE_VALUES"])],
+        ),
+        ("dev", [Path(os.environ["DEV_VALUES"])]),
+        ("recovery", [Path(os.environ["RECOVERY_VALUES"])]),
+    ):
+        rendered = _render(release, values, ["bricks.enabled=true"])
+        gates = _rendered_noded_env_values(
+            rendered, "EMBERVM_NODED_ENFORCE_BUNDLE_ROOTFS_IDENTITY"
+        )
+        assert gates, f"{release} rendered no noded enforcement gates"
+        assert set(gates) == {"false"}, f"{release} unexpectedly enables {gates}"
+
+
+def test_bundle_rootfs_identity_enforcement_can_be_staged_on():
+    rendered = _render_with_set(
+        "identity-on",
+        ["noded.enforceBundleRootfsIdentity=true", "bricks.enabled=true"],
+    )
+    gates = _rendered_noded_env_values(
+        rendered, "EMBERVM_NODED_ENFORCE_BUNDLE_ROOTFS_IDENTITY"
+    )
+    assert gates
+    assert set(gates) == {"true"}
+
+
 def test_brick_renders_inert_artifact_encryption_envs():
     """Envelope writing and restore enforcement default off on every brick."""
     chart = _chart_dir()

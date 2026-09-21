@@ -342,6 +342,11 @@ type Config struct {
 	// tracking off. Env
 	// EMBERVM_NODED_DIFF_BANKING_WORKLOADS.
 	DiffBankingWorkloads []string
+	// EnforceBundleRootfsIdentity rejects invalid stamped v1 bundles before
+	// Firecracker restore. Missing sidecars remain grandfathered v0. Default
+	// false for the write-and-observe rollout stage.
+	// Env EMBERVM_NODED_ENFORCE_BUNDLE_ROOTFS_IDENTITY.
+	EnforceBundleRootfsIdentity bool
 	// ControlPlaneURL is the control plane's HTTP base URL the daemon dials home to
 	// (EMBERVM_NODED_CONTROL_PLANE_URL, e.g. "http://embervm.embervm.svc:8080").
 	// On start and on a jittered interval the daemon POSTs its identity
@@ -530,14 +535,15 @@ func Load() (Config, error) {
 		PodIP: os.Getenv("EMBERVM_NODED_POD_IP"),
 		// Dial-home registration (R0 PR-2): the daemon advertises its identity to
 		// the control plane instead of being discovered via EndpointSlices.
-		PodUID:                os.Getenv("EMBERVM_POD_UID"),
-		SizeClass:             os.Getenv("EMBERVM_NODED_SIZE_CLASS"),
-		WarmRestoreWithVolume: boolDefault("EMBERVM_NODED_WARM_RESTORE_WITH_VOLUME", false),
-		DiffBanking:           boolDefault("EMBERVM_NODED_DIFF_BANKING", false),
-		DiffBankingWorkloads:  csvDefault("EMBERVM_NODED_DIFF_BANKING_WORKLOADS"),
-		ControlPlaneURL:       os.Getenv("EMBERVM_NODED_CONTROL_PLANE_URL"),
-		ControlPlaneTokenPath: getenvDefault("EMBERVM_NODED_CONTROL_PLANE_TOKEN_PATH", "/var/run/secrets/kubernetes.io/serviceaccount/token"),
-		RegisterInterval:      30 * time.Second,
+		PodUID:                      os.Getenv("EMBERVM_POD_UID"),
+		SizeClass:                   os.Getenv("EMBERVM_NODED_SIZE_CLASS"),
+		WarmRestoreWithVolume:       boolDefault("EMBERVM_NODED_WARM_RESTORE_WITH_VOLUME", false),
+		DiffBanking:                 boolDefault("EMBERVM_NODED_DIFF_BANKING", false),
+		DiffBankingWorkloads:        csvDefault("EMBERVM_NODED_DIFF_BANKING_WORKLOADS"),
+		EnforceBundleRootfsIdentity: boolDefault("EMBERVM_NODED_ENFORCE_BUNDLE_ROOTFS_IDENTITY", false),
+		ControlPlaneURL:             os.Getenv("EMBERVM_NODED_CONTROL_PLANE_URL"),
+		ControlPlaneTokenPath:       getenvDefault("EMBERVM_NODED_CONTROL_PLANE_TOKEN_PATH", "/var/run/secrets/kubernetes.io/serviceaccount/token"),
+		RegisterInterval:            30 * time.Second,
 
 		TapPrealloc:               atoiDefault("EMBERVM_NODED_TAP_PREALLOC", 0),
 		ServingPortBase:           atoiDefault("EMBERVM_NODED_SERVING_PORT_BASE", 30000),

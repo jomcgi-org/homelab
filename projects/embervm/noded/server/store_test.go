@@ -1924,7 +1924,10 @@ func TestRestoreArtifactRoundTrip(t *testing.T) {
 	// throwaway source layout.
 	bundleRef := "state-xyz"
 	srcBundle := filepath.Join(s.cfg.SnapshotRoot, "stateful", bundleRef)
-	writeBundleFiles(t, srcBundle, map[string]string{"snapfile": "snapdata", "memfile": "memdata", "gen": "4"})
+	writeBundleFiles(t, srcBundle, map[string]string{
+		"snapfile": "snapdata", "memfile": "memdata", "gen": "4",
+		substrate.BundleMetadataFile: `{"schema_version":1,"rootfs_identity":"550e8400-e29b-41d4-a716-446655440000"}`,
+	})
 	s.statefulBundles.add(statefulBundleEntry{snapshotRef: bundleRef, workload: "scratch-postgres", generation: 4})
 	if _, err := s.ExportArtifact(ctx, &nodev1.ExportArtifactRequest{
 		Artifact: &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_STATEFUL, Workload: "scratch-postgres", Ref: bundleRef},
@@ -1968,9 +1971,17 @@ func TestRestoreArtifactRoundTrip(t *testing.T) {
 	if got, _ := os.ReadFile(filepath.Join(srcBundle, "snapfile")); string(got) != "snapdata" {
 		t.Fatalf("restored snapfile = %q, want snapdata", got)
 	}
+	meta, present, metaErr := substrate.ReadBundleMetadata(srcBundle)
+	if metaErr != nil || !present || meta.SchemaVersion != 1 || meta.RootfsIdentity != testRootfsUUIDA {
+		t.Fatalf("restored bundle metadata = (%+v, %v, %v)", meta, present, metaErr)
+	}
 	// The reconcile re-registered the bundle so a rescan sees it.
 	if _, ok := s.statefulBundles.get(bundleRef); !ok {
 		t.Fatal("restored stateful bundle not re-registered")
+	}
+	statusBundles := s.statefulBundlesStatus()
+	if len(statusBundles) != 1 || statusBundles[0].GetBundleSchemaVersion() != 1 || statusBundles[0].GetRootfsIdentity() != testRootfsUUIDA {
+		t.Fatalf("restored bundle status provenance = %+v", statusBundles)
 	}
 
 	// Restore the volume pair.

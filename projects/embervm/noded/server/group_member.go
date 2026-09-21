@@ -359,7 +359,12 @@ func (s *Server) stopGroupMemberBank(ctx context.Context, req *nodev1.StopGroupM
 	// on the next member bank until the set converges complete. Never blocks the bank.
 	s.enqueueCreatedExport(&nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_GROUP_SET, Workload: e.groupInstanceID, Ref: setID})
 	s.signalChange()
-	return &nodev1.StopGroupMemberResponse{SnapshotRef: ref.ID, SizeBytes: uint64(ref.SizeBytes)}, nil
+	return &nodev1.StopGroupMemberResponse{
+		SnapshotRef:         ref.ID,
+		SizeBytes:           uint64(ref.SizeBytes),
+		BundleSchemaVersion: ref.BundleSchemaVersion,
+		RootfsIdentity:      ref.RootfsIdentity,
+	}, nil
 }
 
 // stopGroupMemberDestroy tears a member VM down with no snapshot, removes its tap,

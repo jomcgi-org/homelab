@@ -13,7 +13,10 @@ package substrate
 
 import (
 	"context"
+	"encoding/json"
 	"io"
+	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -171,9 +174,58 @@ type SnapshotRef struct {
 	DeviceIDs      []string
 	// SizeBytes is the on-disk bundle size, used for capacity reporting.
 	SizeBytes int64
+	// BundleSchemaVersion and RootfsIdentity report the versioned bundle
+	// provenance written beside the snapshot. Both are zero for grandfathered
+	// v0 bundles that predate bundle.json.
+	BundleSchemaVersion uint32
+	RootfsIdentity      string
 	// Base reports whether this is a warm base template rather than a per-thread
 	// idle snapshot.
 	Base bool
+}
+
+const (
+	BundleMetadataFile         = "bundle.json"
+	CurrentBundleSchemaVersion = 1
+)
+
+// BundleMetadata is the versioned provenance sidecar shared by every bankable
+// workload class. RootfsIdentity is the canonical ext4 filesystem UUID, the
+// identity a restored guest kernel has cached in memory.
+type BundleMetadata struct {
+	SchemaVersion  int    `json:"schema_version"`
+	RootfsIdentity string `json:"rootfs_identity"`
+}
+
+// ReadBundleMetadata reads bundle.json. present=false is the legacy v0 shape,
+// which callers grandfather rather than interpreting as a malformed v1 stamp.
+func ReadBundleMetadata(dir string) (meta BundleMetadata, present bool, err error) {
+	b, err := os.ReadFile(filepath.Join(dir, BundleMetadataFile))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return BundleMetadata{}, false, nil
+		}
+		return BundleMetadata{}, true, err
+	}
+	if err := json.Unmarshal(b, &meta); err != nil {
+		return BundleMetadata{}, true, err
+	}
+	return meta, true, nil
+}
+
+// WriteBundleMetadata publishes bundle.json atomically within the bundle dir.
+// Snapshot producers call it before publishing snapfile, the completeness
+// marker, so a complete v1 bundle always has its provenance.
+func WriteBundleMetadata(dir string, meta BundleMetadata) error {
+	b, err := json.Marshal(meta)
+	if err != nil {
+		return err
+	}
+	tmp := filepath.Join(dir, BundleMetadataFile+".tmp")
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, filepath.Join(dir, BundleMetadataFile))
 }
 
 // ServingHandlerArtifact is one discovered serving-images entry on disk, returned

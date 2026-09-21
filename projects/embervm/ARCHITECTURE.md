@@ -278,6 +278,26 @@ are fetched and unpacked inside the disposable guest).
 | **stateful** | Scale-to-zero singleton datastore; L4 wake-on-connect; volume owns data, snapshot owns warmth | L4 via node Envoy | `vol.img` on node NVMe (authoritative) | demo-postgres |
 | **composite** | Multi-VM group, private per-group /24, all-or-none bundle-set bank/relight; warmth only, no member volumes | per-group bridge | group snapshot set | no current consumer |
 
+### Banked bundle rootfs identity
+
+Every newly banked session, serving, stateful, and composite member bundle
+writes `bundle.json` schema v1 before publishing its `snapfile` completeness
+marker. The provenance is `rootfs_identity`, the canonical ext4 filesystem UUID
+read from the exact rootfs resource recorded in `jail-resources.json`. This is
+the identity a restored guest kernel has cached, so an OCI digest or a byte hash
+is not a substitute.
+
+Compatibility is intentionally asymmetric. No `bundle.json` means legacy v0 and
+is always grandfathered, including stateful bundles and every other bankable
+class. A present v1 stamp is valid only when its version and identity are well
+formed, the persisted rootfs path is readable, and its current ext4 UUID
+matches. Malformed or unsupported metadata, missing v1 provenance, an unreadable
+rootfs, and a UUID mismatch are invalid-v1 signals. With
+`EMBERVM_NODED_ENFORCE_BUNDLE_ROOTFS_IDENTITY=false`, the daemon logs those
+signals and continues the pre-v1 restore path. With the gate true, it refuses an
+invalid v1 bundle before launching Firecracker. The chart, production, and dev
+values keep the gate false for the initial write-and-observe rollout.
+
 A serving base built from an image registers its rootfs as the serving-images
 entry with no handler path, and a fresh boot runs the image's own entrypoint as
 the HTTP server; only zip-lane boots attach a handler drive (**Built**, ADR

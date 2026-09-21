@@ -1399,6 +1399,12 @@ noded:
   # Relight. Keep task and park-only workloads outside the diff path.
   diffBankingWorkloads: sandbox-session
 
+  # New banks write bundle.json v1 with the ext4 UUID of their actual rootfs.
+  # Keep rejection off for the observation roll: unstamped v0 is always
+  # grandfathered, while invalid stamped v1 bundles are logged. A staged values
+  # change may enable pre-load rejection after the live checklist is complete.
+  enforceBundleRootfsIdentity: false
+
   # Brick silence timeout (ADR embervm/037, #5073), in seconds. Empty or 0
   # disables; 21600 (~6h) arms the ADR 037 bound: a brick with no dial-home or
   # WatchNode activity past it refuses new node-local work while its live VMs

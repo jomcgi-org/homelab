@@ -49,6 +49,7 @@ egress:
   enabled: false
 
 noded:
+  enforceBundleRootfsIdentity: false
   enabled: true
   nodeSelector:
     # Remove the chart's reference-deployment selector before adding the

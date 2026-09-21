@@ -70,6 +70,7 @@ bricks:
       16gi: 0
   nodeFloors: []
 noded:
+  enforceBundleRootfsIdentity: false
   enabled: false
   maxLiveVMs: 1
   admissionModel: observed

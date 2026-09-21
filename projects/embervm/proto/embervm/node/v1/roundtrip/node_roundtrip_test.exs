@@ -132,6 +132,8 @@ defmodule Embervm.NodeRoundtripTest do
     # Bank: derives the snapshot_ref from the session_id.
     {:ok, bank} = NodeService.Stub.bank(ch, %BankRequest{vm_id: "vm-s1", session_id: "s-abc"})
     assert bank.snapshot_ref == "sessions/s-abc"
+    assert bank.bundle_schema_version == 1
+    assert bank.rootfs_identity == "550e8400-e29b-41d4-a716-446655440000"
     assert bank.size_bytes == 2048
 
     # Relight: derives the vm_id from the snapshot_ref.
@@ -813,14 +815,27 @@ defmodule Embervm.NodeRoundtripTest do
     assert ns.drain_deadline_unix_ms == 1_700_000_009_000
     assert ns.store_reachable == true
 
+    assert [session] = ns.session_snapshots
+    assert session.bundle_schema_version == 1
+    assert session.rootfs_identity == "550e8400-e29b-41d4-a716-446655440000"
+
+    assert [serving] = ns.serving_snapshots
+    assert serving.bundle_schema_version == 1
+    assert serving.rootfs_identity == "550e8400-e29b-41d4-a716-446655440000"
+
     assert [bundle] = ns.stateful_bundles
     assert bundle.exported == true
+    assert bundle.bundle_schema_version == 1
+    assert bundle.rootfs_identity == "550e8400-e29b-41d4-a716-446655440000"
 
     assert [vol] = ns.volumes
     assert vol.exported_generation == 5
 
     assert [set] = ns.group_bundle_sets
     assert set.exported == true
+    assert [member] = set.members
+    assert member.bundle_schema_version == 1
+    assert member.rootfs_identity == "550e8400-e29b-41d4-a716-446655440000"
   end
 
   test "NodeStatus reports distribution facts (R7 additive fields)", %{channel: ch} do

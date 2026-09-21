@@ -2028,7 +2028,12 @@ func (s *Server) Bank(ctx context.Context, req *nodev1.BankRequest) (*nodev1.Ban
 	// entry to the drain deadline (pre-existing, tracked separately).
 	s.sessionVMs.remove(vmID)
 	s.signalChange()
-	return &nodev1.BankResponse{SnapshotRef: ref.ID, SizeBytes: uint64(ref.SizeBytes)}, nil
+	return &nodev1.BankResponse{
+		SnapshotRef:         ref.ID,
+		SizeBytes:           uint64(ref.SizeBytes),
+		BundleSchemaVersion: ref.BundleSchemaVersion,
+		RootfsIdentity:      ref.RootfsIdentity,
+	}, nil
 }
 
 // Relight restores a VM from a banked session snapshot_ref (the deliver-without-
@@ -2700,12 +2705,15 @@ func (s *Server) servingSnapshotsStatus() []*nodev1.ServingSnapshot {
 	snaps := s.servingSnap.snapshot()
 	out := make([]*nodev1.ServingSnapshot, 0, len(snaps))
 	for _, e := range snaps {
+		schemaVersion, rootfsIdentity := bundleMetadataStatus(filepath.Join(s.servingDriver.ServingDir(), e.snapshotRef))
 		out = append(out, &nodev1.ServingSnapshot{
-			SnapshotRef:     e.snapshotRef,
-			Workload:        e.workload,
-			SizeBytes:       uint64(e.sizeBytes),
-			CreatedAtUnixMs: e.createdAtUnixMs,
-			Exported:        s.artifactExported(nodev1.ArtifactKind_ARTIFACT_KIND_SERVING, e.workload, e.snapshotRef),
+			SnapshotRef:         e.snapshotRef,
+			Workload:            e.workload,
+			SizeBytes:           uint64(e.sizeBytes),
+			CreatedAtUnixMs:     e.createdAtUnixMs,
+			Exported:            s.artifactExported(nodev1.ArtifactKind_ARTIFACT_KIND_SERVING, e.workload, e.snapshotRef),
+			BundleSchemaVersion: schemaVersion,
+			RootfsIdentity:      rootfsIdentity,
 		})
 	}
 	return out
@@ -2782,13 +2790,16 @@ func (s *Server) statefulBundlesStatus() []*nodev1.StatefulBundle {
 	bundles := s.statefulBundles.snapshot()
 	out := make([]*nodev1.StatefulBundle, 0, len(bundles))
 	for _, e := range bundles {
+		schemaVersion, rootfsIdentity := bundleMetadataStatus(filepath.Join(s.statefulDriver.StatefulDir(), e.snapshotRef))
 		out = append(out, &nodev1.StatefulBundle{
-			SnapshotRef:     e.snapshotRef,
-			Workload:        e.workload,
-			Generation:      e.generation,
-			SizeBytes:       uint64(e.sizeBytes),
-			CreatedAtUnixMs: e.createdAtUnixMs,
-			Exported:        s.artifactExported(nodev1.ArtifactKind_ARTIFACT_KIND_STATEFUL, e.workload, e.snapshotRef),
+			SnapshotRef:         e.snapshotRef,
+			Workload:            e.workload,
+			Generation:          e.generation,
+			SizeBytes:           uint64(e.sizeBytes),
+			CreatedAtUnixMs:     e.createdAtUnixMs,
+			Exported:            s.artifactExported(nodev1.ArtifactKind_ARTIFACT_KIND_STATEFUL, e.workload, e.snapshotRef),
+			BundleSchemaVersion: schemaVersion,
+			RootfsIdentity:      rootfsIdentity,
 		})
 	}
 	return out
@@ -2849,16 +2860,27 @@ func (s *Server) sessionSnapshotsStatus() []*nodev1.SessionSnapshot {
 	snaps := s.sessionSnap.snapshot()
 	out := make([]*nodev1.SessionSnapshot, 0, len(snaps))
 	for _, e := range snaps {
+		schemaVersion, rootfsIdentity := bundleMetadataStatus(filepath.Join(s.snapshotSessionsDir(), e.snapshotRef))
 		out = append(out, &nodev1.SessionSnapshot{
-			SnapshotRef:     e.snapshotRef,
-			SessionId:       e.sessionID,
-			Workload:        e.workload,
-			SizeBytes:       uint64(e.sizeBytes),
-			CreatedAtUnixMs: e.createdAtUnixMs,
-			Exported:        s.artifactExported(nodev1.ArtifactKind_ARTIFACT_KIND_SESSION, e.workload, e.snapshotRef),
+			SnapshotRef:         e.snapshotRef,
+			SessionId:           e.sessionID,
+			Workload:            e.workload,
+			SizeBytes:           uint64(e.sizeBytes),
+			CreatedAtUnixMs:     e.createdAtUnixMs,
+			Exported:            s.artifactExported(nodev1.ArtifactKind_ARTIFACT_KIND_SESSION, e.workload, e.snapshotRef),
+			BundleSchemaVersion: schemaVersion,
+			RootfsIdentity:      rootfsIdentity,
 		})
 	}
 	return out
+}
+
+func bundleMetadataStatus(dir string) (uint32, string) {
+	meta, present, err := substrate.ReadBundleMetadata(dir)
+	if err != nil || !present {
+		return 0, ""
+	}
+	return uint32(meta.SchemaVersion), meta.RootfsIdentity
 }
 
 func (s *Server) sessionVolumesStatus() []*nodev1.SessionVolume {

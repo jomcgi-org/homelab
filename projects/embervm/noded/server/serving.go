@@ -319,7 +319,12 @@ func (s *Server) stopServingBank(ctx context.Context, req *nodev1.StopServingReq
 	// fire-and-forget (never blocking this bank path).
 	s.enqueueCreatedExport(&nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SERVING, Workload: req.GetTrace().GetWorkload(), Ref: ref.ID})
 	s.signalChange()
-	return &nodev1.StopServingResponse{SnapshotRef: ref.ID, SizeBytes: uint64(ref.SizeBytes)}, nil
+	return &nodev1.StopServingResponse{
+		SnapshotRef:         ref.ID,
+		SizeBytes:           uint64(ref.SizeBytes),
+		BundleSchemaVersion: ref.BundleSchemaVersion,
+		RootfsIdentity:      ref.RootfsIdentity,
+	}, nil
 }
 
 // stopServingDestroy tears a serving VM down with no snapshot and releases its tap.

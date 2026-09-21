@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"sort"
 	"time"
 
@@ -244,6 +245,7 @@ func (s *Server) groupBundleSetsStatus() []*nodev1.GroupBundleSet {
 	}
 	bySet := make(map[string]*setAgg)
 	for _, e := range entries {
+		schemaVersion, rootfsIdentity := bundleMetadataStatus(filepath.Join(s.groupDriver.GroupSetsDir(), e.setID, e.memberName))
 		agg, ok := bySet[e.setID]
 		if !ok {
 			agg = &setAgg{}
@@ -256,9 +258,11 @@ func (s *Server) groupBundleSetsStatus() []*nodev1.GroupBundleSet {
 			agg.createdAtUnixMs = e.createdAtUnixMs
 		}
 		agg.members = append(agg.members, &nodev1.GroupBundleMember{
-			MemberName:  e.memberName,
-			SnapshotRef: e.snapshotRef,
-			SizeBytes:   uint64(e.sizeBytes),
+			MemberName:          e.memberName,
+			SnapshotRef:         e.snapshotRef,
+			SizeBytes:           uint64(e.sizeBytes),
+			BundleSchemaVersion: schemaVersion,
+			RootfsIdentity:      rootfsIdentity,
 		})
 	}
 	out := make([]*nodev1.GroupBundleSet, 0, len(bySet))

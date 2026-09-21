@@ -11,6 +11,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/jomcgi/homelab/projects/embervm/noded/config"
 	nodev1 "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1"
 )
 
@@ -55,6 +56,23 @@ func enableStatefulActivatorWorkload(s *Server, workload string, listenPort, gue
 		VCPUs:                1,
 		MemMib:               128,
 	}})
+}
+
+func enableStatefulActivatorFromPushedRegistry(s *Server, workload string, listenPort, guestPort uint32) {
+	s.cfg.Images = map[string]config.Image{}
+	s.registry.sync([]workloadEntry{
+		{
+			Workload:             workload,
+			NodeLocalWake:        true,
+			StatefulListenPort:   listenPort,
+			StatefulPort:         guestPort,
+			StatefulVolumeMount:  "/var/lib/postgresql/data",
+			StatefulBootImageRef: "not-a-node-local-base-key",
+			VCPUs:                1,
+			MemMib:               128,
+		},
+		{Workload: "image:img-a", ImageRef: "img-a", RootfsRef: "/registry/rootfs-a", HarnessInit: "/init"},
+	})
 }
 
 func startStatefulActivator(t *testing.T, s *Server) uint32 {
@@ -132,7 +150,12 @@ func TestStatefulActivatorColdBootResolvesBaseLocally(t *testing.T) {
 	port := statefulActivatorEchoServer(t)
 	s, _, driver := newStatefulTestServer(t)
 	listenPort := startStatefulActivator(t, s)
-	enableStatefulActivatorWorkload(s, "wl-state", listenPort, port)
+	// Production no longer has a node-local cfg.Images table. Sync the real
+	// pushed registry shape: one workload activation entry plus the image entry
+	// behind the READY base's image_ref. This makes the assertion exercise the
+	// complete activator -> StartStatefulRequest.boot_image_ref -> server registry
+	// lookup contract instead of succeeding through the retired config fallback.
+	enableStatefulActivatorFromPushedRegistry(s, "wl-state", listenPort, port)
 	// A volume exists but there is NO banked bundle, so the activator must COLD-boot.
 	// The COLD path needs boot_image_ref, which the control plane does not push (it
 	// is node-local); the activator resolves it from the daemon's own base registry
@@ -147,13 +170,50 @@ func TestStatefulActivatorColdBootResolvesBaseLocally(t *testing.T) {
 
 	driver.mu.Lock()
 	claims := driver.claims
+	rootfsPath := driver.lastRootfsPath
 	driver.mu.Unlock()
 	if claims != 1 {
 		t.Errorf("ClaimStateful calls = %d, want 1 (one cold boot)", claims)
 	}
+	if rootfsPath != "/registry/rootfs-a" {
+		t.Errorf("activator cold rootfs = %q, want pushed registry rootfs", rootfsPath)
+	}
 	status := s.statefulVMsStatus()
 	if len(status) != 1 || status[0].GetOrigin() != nodev1.InstanceOrigin_INSTANCE_ORIGIN_ACTIVATOR {
 		t.Errorf("expected one ACTIVATOR-origin stateful VM, got %+v", status)
+	}
+}
+
+func TestStatefulActivatorRelightFallbackCarriesReadyBootImage(t *testing.T) {
+	port := statefulActivatorEchoServer(t)
+	s, _, driver := newStatefulTestServer(t)
+	listenPort := startStatefulActivator(t, s)
+	enableStatefulActivatorFromPushedRegistry(s, "wl-state", listenPort, port)
+	addStatefulActivatorBundle(t, s, driver, "wl-state", "bundle-stale")
+	// The volume ledger is generation 0. Make the banked pair stale so the
+	// activator enters through RELIGHT, then the server falls back to COLD using
+	// the READY base key the activator placed in boot_image_ref.
+	s.statefulBundles.remove("bundle-stale")
+	s.statefulBundles.add(statefulBundleEntry{snapshotRef: "bundle-stale", workload: "wl-state", generation: 99})
+
+	conn := statefulActivatorConn(t, listenPort)
+	defer conn.Close()
+	statefulActivatorRoundTrip(t, conn, "fallback-hello")
+
+	driver.mu.Lock()
+	claims := driver.claims
+	restores := driver.restores
+	rootfsPath := driver.lastRootfsPath
+	_, staleStillPresent := driver.banked["bundle-stale"]
+	driver.mu.Unlock()
+	if claims != 1 || restores != 0 {
+		t.Fatalf("fallback wake calls = claims:%d restores:%d, want 1:0", claims, restores)
+	}
+	if rootfsPath != "/registry/rootfs-a" {
+		t.Fatalf("fallback cold rootfs = %q, want pushed registry rootfs", rootfsPath)
+	}
+	if staleStillPresent {
+		t.Fatal("generation-mismatched bundle was not evicted before cold fallback")
 	}
 }
 

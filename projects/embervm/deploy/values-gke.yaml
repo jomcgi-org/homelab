@@ -7,6 +7,7 @@ claudeRuntimeWorkload:
 # The hub starts with node-local state only. An empty endpoint is the chart's
 # safe store-disabled mode, and no object-store credentials are rendered.
 noded:
+  enforceBundleRootfsIdentity: false
   jailer:
     # Disarmed again on 2026-09-06 after the arming (#5843) broke every VM
     # restore on the rolled bricks: the jailed Firecracker cannot open the

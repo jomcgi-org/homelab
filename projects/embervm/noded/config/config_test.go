@@ -331,6 +331,7 @@ func TestLoadDefaults(t *testing.T) {
 		"EMBERVM_NODED_BOOT_READY_TIMEOUT", "EMBERVM_NODED_RESTORE_READY_TIMEOUT",
 		"EMBERVM_NODED_DRAIN_TIMEOUT", "EMBERVM_NODED_PREEMPTION_NOTICE_ENABLED",
 		"EMBERVM_NODED_PREEMPTION_DRAIN_TIMEOUT", "EMBERVM_NODED_DIFF_BANKING", "EMBERVM_NODED_DIFF_BANKING_WORKLOADS",
+		"EMBERVM_NODED_ENFORCE_BUNDLE_ROOTFS_IDENTITY",
 		"EMBERVM_NODED_WARMTH_HEARTBEAT_INTERVAL", "EMBERVM_NODED_WARMTH_STALE_AFTER",
 		"EMBERVM_NODED_REAP_UNCLAIMED_WARMTH",
 		"EMBERVM_NODED_JAILER_ENABLED", "EMBERVM_NODED_JAILER_BIN",
@@ -367,6 +368,9 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if c.DiffBanking {
 		t.Error("DiffBanking should default false")
+	}
+	if c.EnforceBundleRootfsIdentity {
+		t.Error("EnforceBundleRootfsIdentity should default false")
 	}
 	if c.WarmthHeartbeatInterval != 30*time.Second {
 		t.Errorf("WarmthHeartbeatInterval = %s, want 30s", c.WarmthHeartbeatInterval)
@@ -538,6 +542,17 @@ func TestLoadDiffBankingOverride(t *testing.T) {
 	}
 	if got, want := strings.Join(c.DiffBankingWorkloads, ","), "sandbox-session,another-session"; got != want {
 		t.Errorf("DiffBankingWorkloads = %q, want %q", got, want)
+	}
+}
+
+func TestLoadBundleRootfsIdentityEnforcementOverride(t *testing.T) {
+	t.Setenv("EMBERVM_NODED_ENFORCE_BUNDLE_ROOTFS_IDENTITY", "true")
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !c.EnforceBundleRootfsIdentity {
+		t.Error("EnforceBundleRootfsIdentity should follow the environment gate")
 	}
 }
 

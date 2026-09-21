@@ -13,10 +13,12 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net"
@@ -152,6 +154,10 @@ type Config struct {
 	// session diffs. Empty defaults to the editor vendored beside Firecracker. New
 	// disables diff banking when the configured path is missing or not executable.
 	SnapshotEditorPath string
+	// EnforceBundleRootfsIdentity rejects an invalid stamped v1 bundle before
+	// Firecracker launch. Missing bundle.json remains grandfathered v0. The
+	// default is false so the first rollout writes and observes metadata only.
+	EnforceBundleRootfsIdentity bool
 }
 
 func (c Config) withDefaults() Config {
@@ -264,6 +270,141 @@ type instance struct {
 	// bankBaseMemPath is non-empty only for a session restored from a committed
 	// bank. It is the full memory image the next sequential diff rebases onto.
 	bankBaseMemPath string
+}
+
+const (
+	ext4MagicOffset = 1024 + 0x38
+	ext4UUIDOffset  = 1024 + 0x68
+	ext4HeaderSize  = 0x48c
+)
+
+func ext4RootfsIdentity(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("open ext4 rootfs %q: %w", path, err)
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return "", fmt.Errorf("stat ext4 rootfs %q: %w", path, err)
+	}
+	if info.Size() < ext4HeaderSize {
+		return "", fmt.Errorf("read ext4 UUID from %q: file is %d bytes, need at least %d: %w", path, info.Size(), ext4HeaderSize, io.ErrUnexpectedEOF)
+	}
+	magic := make([]byte, 2)
+	if _, err := f.ReadAt(magic, ext4MagicOffset); err != nil {
+		return "", fmt.Errorf("read ext4 magic from %q: %w", path, err)
+	}
+	if got := binary.LittleEndian.Uint16(magic); got != 0xEF53 {
+		return "", fmt.Errorf("read ext4 UUID from %q: bad ext4 magic 0x%04x", path, got)
+	}
+	uuid := make([]byte, 16)
+	if _, err := f.ReadAt(uuid, ext4UUIDOffset); err != nil {
+		return "", fmt.Errorf("read ext4 UUID from %q: %w", path, err)
+	}
+	hexUUID := hex.EncodeToString(uuid)
+	return fmt.Sprintf("%s-%s-%s-%s-%s", hexUUID[:8], hexUUID[8:12], hexUUID[12:16], hexUUID[16:20], hexUUID[20:]), nil
+}
+
+func canonicalRootfsIdentity(identity string) bool {
+	if len(identity) != 36 {
+		return false
+	}
+	for i, c := range identity {
+		if i == 8 || i == 13 || i == 18 || i == 23 {
+			if c != '-' {
+				return false
+			}
+			continue
+		}
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
+func rootfsPathFromResources(resources []JailResource) string {
+	for _, resource := range resources {
+		if resource.Role == "rootfs" {
+			return resource.HostPath
+		}
+	}
+	return ""
+}
+
+func instanceSnapshotResources(inst *instance) []JailResource {
+	resources := inst.resources
+	if provider, ok := inst.proc.(jailProvider); ok && provider.Jail() != nil {
+		resources = provider.Jail().Resources()
+	}
+	return snapshotDriveResources(resources)
+}
+
+func (d *Driver) stampBundleMetadata(inst *instance, dir, class, ref string) (substrate.BundleMetadata, error) {
+	rootfsPath := rootfsPathFromResources(instanceSnapshotResources(inst))
+	identity, err := ext4RootfsIdentity(rootfsPath)
+	if err != nil {
+		wrapped := fmt.Errorf("driver: stamp %s bundle %q rootfs identity: %w", class, ref, err)
+		if d.cfg.EnforceBundleRootfsIdentity {
+			return substrate.BundleMetadata{}, wrapped
+		}
+		meta := substrate.BundleMetadata{SchemaVersion: substrate.CurrentBundleSchemaVersion}
+		if writeErr := substrate.WriteBundleMetadata(dir, meta); writeErr != nil {
+			return substrate.BundleMetadata{}, fmt.Errorf("driver: write invalid-v1 %s bundle metadata: %w", class, writeErr)
+		}
+		d.logger.Warn("driver: bundle rootfs identity unavailable; publishing observable invalid v1 while enforcement is disabled",
+			"class", class, "snapshot_ref", ref, "err", wrapped)
+		return meta, nil
+	}
+	meta := substrate.BundleMetadata{
+		SchemaVersion:  substrate.CurrentBundleSchemaVersion,
+		RootfsIdentity: identity,
+	}
+	if err := substrate.WriteBundleMetadata(dir, meta); err != nil {
+		return substrate.BundleMetadata{}, fmt.Errorf("driver: write %s bundle metadata: %w", class, err)
+	}
+	d.logger.Info("driver: wrote v1 bundle rootfs identity",
+		"class", class, "snapshot_ref", ref, "rootfs_identity", identity)
+	return meta, nil
+}
+
+func (d *Driver) verifyBundleMetadata(dir, class, ref string, resources []JailResource) error {
+	meta, present, err := substrate.ReadBundleMetadata(dir)
+	if !present {
+		d.logger.Info("driver: grandfathering legacy v0 bundle without rootfs identity",
+			"class", class, "snapshot_ref", ref)
+		return nil
+	}
+	if err == nil && meta.SchemaVersion != substrate.CurrentBundleSchemaVersion {
+		err = fmt.Errorf("unsupported schema_version %d", meta.SchemaVersion)
+	}
+	if err == nil && !canonicalRootfsIdentity(meta.RootfsIdentity) {
+		err = fmt.Errorf("missing or malformed rootfs_identity %q", meta.RootfsIdentity)
+	}
+	rootfsPath := rootfsPathFromResources(resources)
+	if err == nil && rootfsPath == "" {
+		err = errors.New("jail resource metadata has no rootfs path")
+	}
+	var actual string
+	if err == nil {
+		actual, err = ext4RootfsIdentity(rootfsPath)
+	}
+	if err == nil && actual != meta.RootfsIdentity {
+		err = fmt.Errorf("rootfs identity mismatch: got %q want %q", actual, meta.RootfsIdentity)
+	}
+	if err != nil {
+		wrapped := fmt.Errorf("driver: invalid v1 %s bundle %q: %w", class, ref, err)
+		if d.cfg.EnforceBundleRootfsIdentity {
+			return wrapped
+		}
+		d.logger.Warn("driver: observed invalid v1 bundle while rootfs identity enforcement is disabled",
+			"class", class, "snapshot_ref", ref, "err", wrapped)
+		return nil
+	}
+	d.logger.Info("driver: verified v1 bundle rootfs identity",
+		"class", class, "snapshot_ref", ref, "rootfs_identity", meta.RootfsIdentity)
+	return nil
 }
 
 var (
@@ -990,6 +1131,16 @@ func (d *Driver) loadPatchAndResumeWithDiff(ctx context.Context, workload, threa
 			slog.Warn("driver: restoring legacy bundle without jail resource metadata via direct exec",
 				"snapshot", snapPath, "vm", vmID)
 		}
+	}
+	bundleDir := filepath.Dir(snapPath)
+	class := filepath.Base(filepath.Dir(bundleDir))
+	ref := filepath.Base(bundleDir)
+	if filepath.Base(filepath.Dir(filepath.Dir(bundleDir))) == "group" {
+		class = "composite"
+		ref = filepath.Join(filepath.Base(filepath.Dir(bundleDir)), ref)
+	}
+	if err := d.verifyBundleMetadata(bundleDir, class, ref, resources); err != nil {
+		return substrate.Handle{}, err
 	}
 	if volumeDiskPath != "" && !patchVolume && hasMetadata {
 		stagedVolume := false
@@ -1832,8 +1983,8 @@ func (e *snapshotTeardownError) TeardownConfirmed() bool { return e.releaseErr =
 
 // SnapshotSession captures a LIVE session microVM into a self-contained session
 // bundle keyed by the opaque snapshot_ref, under sessions/<ref>. It is the R2
-// session-bank mechanic and REUSES the base-bundle format exactly (a full memfile
-// + snapfile, no archive backing file), so a session snapshot is as portable and
+// session-bank mechanic and reuses the base snapshot payload layout (a full
+// memfile + snapfile, no archive backing file), so a session snapshot is as portable and
 // restorable as a base: the memory image IS the session state.
 //
 // The first bank writes a full and leaves the guest paused for the caller to
@@ -1867,6 +2018,13 @@ func (d *Driver) SnapshotSession(ctx context.Context, h substrate.Handle, snapsh
 	}()
 	if err := os.MkdirAll(d.sessionDir(snapshotRef), 0o700); err != nil {
 		return substrate.SnapshotRef{}, fmt.Errorf("driver: mkdir session bundle: %w", err)
+	}
+	if err := writeInstanceJailMetadata(inst, d.sessionDir(snapshotRef)); err != nil {
+		return substrate.SnapshotRef{}, err
+	}
+	bundleMeta, err := d.stampBundleMetadata(inst, d.sessionDir(snapshotRef), "session", snapshotRef)
+	if err != nil {
+		return substrate.SnapshotRef{}, err
 	}
 	snapPath := d.sessionSnapfile(snapshotRef)
 	memPath := d.sessionMemfile(snapshotRef)
@@ -1964,17 +2122,16 @@ func (d *Driver) SnapshotSession(ctx context.Context, h substrate.Handle, snapsh
 	} else if err := publishFull(nil); err != nil {
 		return substrate.SnapshotRef{}, err
 	}
-	if err := writeInstanceJailMetadata(inst, d.sessionDir(snapshotRef)); err != nil {
-		return substrate.SnapshotRef{}, err
-	}
 	banked = true
 	return substrate.SnapshotRef{
-		ID:        snapshotRef,
-		Node:      d.cfg.Node,
-		Arch:      d.cfg.Arch,
-		Vendor:    d.cfg.Vendor,
-		Template:  d.cfg.Template,
-		SizeBytes: bundleSize(snapPath, memPath),
+		ID:                  snapshotRef,
+		Node:                d.cfg.Node,
+		Arch:                d.cfg.Arch,
+		Vendor:              d.cfg.Vendor,
+		Template:            d.cfg.Template,
+		SizeBytes:           bundleSize(snapPath, memPath),
+		BundleSchemaVersion: uint32(bundleMeta.SchemaVersion),
+		RootfsIdentity:      bundleMeta.RootfsIdentity,
 	}, nil
 }
 
@@ -2019,7 +2176,7 @@ func (d *Driver) RemoveSessionBundle(snapshotRef string) error {
 // serving/ prefix instead of sessions/, with ONE addition: the pinned tap IP is
 // written to an "ip" sidecar in the bundle at bank and returned by rescan, because a
 // serving guest's eth0 IP is baked at fresh boot and a resume cannot change it, so a
-// relight must re-acquire the same host IP (D-R3.4.1). The digest-versioned bundle
+// relight must re-acquire the same host IP (D-R3.4.1). The versioned-provenance bundle
 // layout (D-R2.7: snapshots embed host paths, so each bundle is self-contained) is
 // unchanged. A serving snapshot carries a NIC because the fresh cold boot created one
 // before the bank; restoring it resumes a VM that already has its eth0.
@@ -2064,6 +2221,10 @@ func (d *Driver) SnapshotServing(ctx context.Context, h substrate.Handle, snapsh
 	if err := writeInstanceJailMetadata(inst, d.servingDir(snapshotRef)); err != nil {
 		return substrate.SnapshotRef{}, err
 	}
+	bundleMeta, err := d.stampBundleMetadata(inst, d.servingDir(snapshotRef), "serving", snapshotRef)
+	if err != nil {
+		return substrate.SnapshotRef{}, err
+	}
 	sparse.BestEffort(memTmp, "serving-bank")
 	// Publish memfile before snapfile (a restore reads the snapfile to locate the
 	// memfile), then the IP sidecar. A rescan treats a bundle without a snapfile as
@@ -2081,12 +2242,14 @@ func (d *Driver) SnapshotServing(ctx context.Context, h substrate.Handle, snapsh
 	}
 	banked = true
 	return substrate.SnapshotRef{
-		ID:        snapshotRef,
-		Node:      d.cfg.Node,
-		Arch:      d.cfg.Arch,
-		Vendor:    d.cfg.Vendor,
-		Template:  d.cfg.Template,
-		SizeBytes: bundleSize(snapPath, memPath),
+		ID:                  snapshotRef,
+		Node:                d.cfg.Node,
+		Arch:                d.cfg.Arch,
+		Vendor:              d.cfg.Vendor,
+		Template:            d.cfg.Template,
+		SizeBytes:           bundleSize(snapPath, memPath),
+		BundleSchemaVersion: uint32(bundleMeta.SchemaVersion),
+		RootfsIdentity:      bundleMeta.RootfsIdentity,
 	}, nil
 }
 
@@ -2252,6 +2415,10 @@ func (d *Driver) SnapshotStateful(ctx context.Context, h substrate.Handle, snaps
 	if err := writeInstanceJailMetadata(inst, d.statefulDir(snapshotRef)); err != nil {
 		return substrate.SnapshotRef{}, err
 	}
+	bundleMeta, err := d.stampBundleMetadata(inst, d.statefulDir(snapshotRef), "stateful", snapshotRef)
+	if err != nil {
+		return substrate.SnapshotRef{}, err
+	}
 	sparse.BestEffort(memTmp, "stateful-bank")
 	// Publish memfile before snapfile (a restore reads the snapfile to locate the
 	// memfile), then the generation sidecar, then the snapfile LAST so a rescan
@@ -2271,12 +2438,14 @@ func (d *Driver) SnapshotStateful(ctx context.Context, h substrate.Handle, snaps
 	}
 	banked = true
 	return substrate.SnapshotRef{
-		ID:        snapshotRef,
-		Node:      d.cfg.Node,
-		Arch:      d.cfg.Arch,
-		Vendor:    d.cfg.Vendor,
-		Template:  d.cfg.Template,
-		SizeBytes: bundleSize(snapPath, memPath),
+		ID:                  snapshotRef,
+		Node:                d.cfg.Node,
+		Arch:                d.cfg.Arch,
+		Vendor:              d.cfg.Vendor,
+		Template:            d.cfg.Template,
+		SizeBytes:           bundleSize(snapPath, memPath),
+		BundleSchemaVersion: uint32(bundleMeta.SchemaVersion),
+		RootfsIdentity:      bundleMeta.RootfsIdentity,
 	}, nil
 }
 
@@ -2342,6 +2511,11 @@ func (d *Driver) CheckpointStateful(ctx context.Context, h substrate.Handle, sna
 		_ = os.RemoveAll(tmpDir)
 		return "", err
 	}
+	if _, err := d.stampBundleMetadata(inst, tmpDir, "stateful", snapshotRef); err != nil {
+		_ = inst.client.Resume(ctx)
+		_ = os.RemoveAll(tmpDir)
+		return "", err
+	}
 	sparse.BestEffort(memPath, "stateful-checkpoint")
 	d.mu.Lock()
 	d.checkpoints[token] = &statefulCheckpoint{handle: h, snapshotRef: snapshotRef, generation: generation, tmpDir: tmpDir, pinnedIP: pinnedIP}
@@ -2400,7 +2574,7 @@ func (d *Driver) ResolveStatefulCommit(ctx context.Context, token string) (subst
 	if err := d.writeStatefulPinnedIP(ref, cp.pinnedIP); err != nil {
 		return substrate.SnapshotRef{}, err
 	}
-	for _, name := range []string{jailResourcesName, "mem_mib"} {
+	for _, name := range []string{jailResourcesName, "mem_mib", substrate.BundleMetadataFile} {
 		source := filepath.Join(cp.tmpDir, name)
 		if _, err := os.Stat(source); err != nil {
 			if os.IsNotExist(err) {
@@ -2420,13 +2594,16 @@ func (d *Driver) ResolveStatefulCommit(ctx context.Context, token string) (subst
 	// The bundle is published; tear the now-banked VM down best-effort (a Release
 	// error here does not invalidate the bundle, mirroring the reap discipline).
 	_ = d.Release(ctx, cp.handle)
+	bundleMeta, _, _ := substrate.ReadBundleMetadata(d.statefulDir(ref))
 	return substrate.SnapshotRef{
-		ID:        ref,
-		Node:      d.cfg.Node,
-		Arch:      d.cfg.Arch,
-		Vendor:    d.cfg.Vendor,
-		Template:  d.cfg.Template,
-		SizeBytes: bundleSize(snapPath, memPath),
+		ID:                  ref,
+		Node:                d.cfg.Node,
+		Arch:                d.cfg.Arch,
+		Vendor:              d.cfg.Vendor,
+		Template:            d.cfg.Template,
+		SizeBytes:           bundleSize(snapPath, memPath),
+		BundleSchemaVersion: uint32(bundleMeta.SchemaVersion),
+		RootfsIdentity:      bundleMeta.RootfsIdentity,
 	}, nil
 }
 
@@ -2766,6 +2943,10 @@ func (d *Driver) SnapshotGroupMember(ctx context.Context, h substrate.Handle, se
 	if err := writeInstanceJailMetadata(inst, d.groupMemberDir(setID, memberName)); err != nil {
 		return substrate.SnapshotRef{}, err
 	}
+	bundleMeta, err := d.stampBundleMetadata(inst, d.groupMemberDir(setID, memberName), "composite", filepath.Join(setID, memberName))
+	if err != nil {
+		return substrate.SnapshotRef{}, err
+	}
 	sparse.BestEffort(memTmp, "group-member-bank")
 	// Publish memfile before snapfile (a restore reads the snapfile to locate the
 	// memfile), then the snapfile LAST so a rescan that finds a snapfile always
@@ -2779,12 +2960,14 @@ func (d *Driver) SnapshotGroupMember(ctx context.Context, h substrate.Handle, se
 	}
 	banked = true
 	return substrate.SnapshotRef{
-		ID:        filepath.Join("group", setID, memberName),
-		Node:      d.cfg.Node,
-		Arch:      d.cfg.Arch,
-		Vendor:    d.cfg.Vendor,
-		Template:  d.cfg.Template,
-		SizeBytes: bundleSize(snapPath, memPath),
+		ID:                  filepath.Join("group", setID, memberName),
+		Node:                d.cfg.Node,
+		Arch:                d.cfg.Arch,
+		Vendor:              d.cfg.Vendor,
+		Template:            d.cfg.Template,
+		SizeBytes:           bundleSize(snapPath, memPath),
+		BundleSchemaVersion: uint32(bundleMeta.SchemaVersion),
+		RootfsIdentity:      bundleMeta.RootfsIdentity,
 	}, nil
 }
 
@@ -3024,12 +3207,7 @@ func hasResourceRole(resources []JailResource, role string) bool {
 }
 
 func writeInstanceJailMetadata(inst *instance, dir string) error {
-	resources := inst.resources
-	provider, ok := inst.proc.(jailProvider)
-	if ok && provider.Jail() != nil {
-		resources = provider.Jail().Resources()
-	}
-	resources = snapshotDriveResources(resources)
+	resources := instanceSnapshotResources(inst)
 	if err := writeJailResources(dir, resources); err != nil {
 		return fmt.Errorf("driver: write jail resource metadata: %w", err)
 	}
