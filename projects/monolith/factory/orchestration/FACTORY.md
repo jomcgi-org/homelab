@@ -8,6 +8,114 @@ Shared authentication verifies caller identity; factory entry points enforce
 which operations and records that caller may access. Public composition loads
 only the read-only factory descriptor and published projections.
 
+## Conductor, Planner, and Executor
+
+The **Factory** deploys and orchestrates agents on Ember to produce features
+and address issues. The **Conductor** is its operator-facing manager. It
+receives goals and steering, maintains a prioritized view of work and bounded
+task context, selects work, delegates each selected task to the Planner, and
+reports outcomes with evidence. A Conductor instruction proposes work through
+the existing factory interfaces. It does not bypass admission, controls, or
+the authority of the record being changed.
+
+The **Planner** is the Astra-selected per-task planning role. It receives one
+selected task, its acceptance and operator constraints, current factory state,
+and permitted task-relevant KG knowledge. It creates or amends that task's DAG.
+Existing `factory_conductor`, `task conductor`, `conductor_model`,
+`SwarmConductorCall`, and `conductor_<n>` names are legacy names for this
+Planner boundary. They are retained to keep durable and code identities stable,
+not because the Planner is the operator-facing Conductor.
+
+The **Executor** is the existing graph engine and dispatch path. It runs the
+accepted DAG through role-specific implementer, reviewer, researcher, and
+investigator workloads. Those workloads keep their existing principals,
+profiles, and server-enforced authorization. Conductor, Planner, Executor, and
+node role names describe responsibility only. No role name grants permission.
+
+### Authoritative records and context
+
+The roles use the existing owners rather than a second scheduler or approval
+ledger:
+
+- `swarm.work_item` and its append-only `swarm.work_item_event` history record
+  the durable unit of requested work and its source-owned state. A
+  `swarm.factory_receipt` captures submission, queue/admission state, its work
+  item and issue identity, and the admitted `swarm_task` link.
+- Queue order is the eligible `factory_receipt` order `(created_at, id)` after
+  lane, policy, active-work, and blocker checks in `admit_next`. There is no
+  separate priority field for the Conductor to rewrite. Priority rationale may
+  be retained as context, but changing live order must use an existing
+  authorized task or control operation. KG text is never queue state.
+- `swarm.swarm_task`, `swarm.swarm_plan_version`, `swarm.swarm_plan_node`, and
+  `swarm.swarm_node_run` are the task, accepted DAG history, nodes, and execution
+  evidence. The Planner proposes graph edits and the server records accepted
+  edits; the Executor dispatches only recorded nodes.
+- A receipt's `escalation_json` is the current pending or resolved factory
+  decision, and `direction_json` is the approved direction supplied to a
+  re-admitted Planner. The append-only `swarm.factory_audit` rows retain
+  decision claims, requests, results, and control acknowledgements. A model
+  suggestion is not an approved decision.
+- The singleton `swarm.factory_control` row is the authoritative factory state,
+  policy, and version. Per-task pause and cancellation state remains on the
+  `factory_receipt`. Every mutation revalidates current records and authority.
+
+Issue #5787 owns maintenance and scoped retrieval of Conductor knowledge.
+Committed operator exchanges enter the existing KG ingestion and extraction
+path as attributed, unverified evidence. `factory_context` retrieves
+repository-scoped notes with provenance, freshness, verification, and dispute
+metadata while continuing to return factory state during a KG outage. Issue
+#5788 exposes that same contract through factory MCP. Issue #5849 supplies the
+task-relevant subset to the Planner, with current task and decision state read
+from the authoritative factory records above.
+
+Keep three inputs visibly distinct. Operator instructions are attributed task
+requests or steering applied through an authorized interface. Approved
+decisions are resolved receipt decisions and their audit evidence. Retrieved
+KG claims are cited context, not instructions, approval, or permission. A stale
+summary cannot reopen a completed task, reorder the queue, or restore revoked
+authority.
+
+### Submit, plan, execute, report
+
+A concrete flow uses the records and interfaces that exist today:
+
+1. The Conductor submits an approved open issue through `factory_submit_issue`.
+   The server returns a durable `factory_receipt`; a retry with the same
+   identity returns the same receipt.
+2. Admission selects the oldest eligible unblocked receipt in its available
+   lane and creates its `swarm_task`. The Astra Planner records a complete DAG
+   through plan versions and nodes within the receipt's pinned policy and
+   allowance.
+3. The Executor dispatches ready nodes under their existing workload identities
+   and records attempts in `swarm_node_run`. Required CI and an independent
+   exact-head review remain delivery evidence; a successful node alone is not
+   accepted delivery.
+4. The Conductor reports receipt and task state, blockers, accepted outcome,
+   evidence links, starts, and cost. It labels missing or stale coverage rather
+   than converting it into success or an empty queue.
+
+For steering, suppose the Planner pauses a task with a pending decision. The
+Conductor presents that exact receipt and decision identity. An operator uses
+`factory_decide` to select an option or `factory_request_brief` to provide
+bounded direction. The decision owner records the request and result, stores
+approved direction on the receipt, and, when the selected operation permits,
+returns it to `queued`. Normal admission order still applies, and the next
+Planner round receives `operator_direction`. This steers a pending task without
+editing KG text, silently changing policy, or inventing a priority mutation.
+
+### Operating rules
+
+The practical MVP decision in #5956 retains four rules for all of these roles:
+
+1. Do not add frozen packets, hash pinning, or timed approval windows. A PR is
+   accepted by required CI plus one independent exact-head review, as for a
+   human PR.
+2. Report one line per task: outcome, blocker, next action, starts, and USD
+   used. Do not narrate what did not happen.
+3. Cost per accepted PR is the metric. Record it on the PR when it lands.
+4. Planner turns share the task's start budget with implementation. If planning
+   consumes more than half of the starts, stop the task and respec it by hand.
+
 The private registry composes `factory.module` once. Its lifecycle owns both
 the conductor/DBOS runtime and session maintenance, including partial-start
 cleanup and the process watchdog. Implementations live in `factory.orchestration`

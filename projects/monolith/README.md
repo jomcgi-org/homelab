@@ -49,11 +49,11 @@ The hazard model for this boundary is [STPA.md](STPA.md).
 The shipped **Factory** selects bounded issue work, asks a per-task **Planner**
 to build a DAG, and has an **Executor** run its role-specific nodes. Legacy
 `factory_conductor` names refer to that task planner, not to the proposed
-operator-facing Conductor. The top-level Conductor specification and expanded
-MCP review and steering interface remain follow-up work in
-[#5785](https://github.com/jomcgi-org/homelab/issues/5785) and
-[#5788](https://github.com/jomcgi-org/homelab/issues/5788); this README does not
-present them as shipped.
+operator-facing Conductor. The maintained
+[role and record contract](factory/orchestration/FACTORY.md#conductor-planner-and-executor)
+specifies the top-level Conductor without presenting it as shipped. The
+expanded MCP review and steering interface remains follow-up work in
+[#5788](https://github.com/jomcgi-org/homelab/issues/5788).
 
 ## Trust and safety
 

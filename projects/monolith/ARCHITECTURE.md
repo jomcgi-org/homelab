@@ -1335,10 +1335,10 @@ this table when the work ships or the issue closes without it.
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
 | The orchestration-level graph becomes a mutable DAG dispatched per node, replacing the workflow's Python control flow | section 4 | #5419 | in progress: the factory lane plans its DAG at plan time and runs engine-owned review rounds; legacy swarm runs are still `implement_then_review` |
-| One factory conductor above every per-run conductor selects and coordinates work under a versioned charter, acting on Joe's behalf | The factory conductor | #5784 (children #5785, #5787, #5788, #5789, #5804; #5786 closed 2026-09-14) | not started |
+| One operator-facing Conductor above every per-task Planner selects and coordinates work, acting on Joe's behalf | The factory conductor | #5784 (children #5785, #5787, #5788, #5789, #5804; #5786 closed 2026-09-14) | not started |
 | The conductor decides reversible defaults, stages repository-only delivery when live checks are unavailable, and adopts unowned existing PRs; one human-needed notification per task | section 11, reversible gates | #6208 | implemented, awaiting validation |
 | Factory PR lifecycle follows settlement, adopts linked delivery targets at receipt creation, and incrementally retires stale duplicate or closed-issue factory PRs | section 11, factory PR lifecycle | #6255 | implemented in repository; operational rollout and first live `factory_pr_retired` audit not yet observed |
-| The charter document and its loader govern what the conductor may read, coordinate, or act on | The factory conductor | #5785 | not started |
+| Factory, Conductor, Planner, and Executor have one documented role and record contract; legacy per-task conductor names mean Planner | The factory conductor | #5785 | in progress |
 | Product-goal records, the factory index, and acceptance evidence drive work selection | The factory conductor | #5786 | not started |
 | Conductor journal, memory assembly, and session lifecycle persist across restarts | The factory conductor | #5787 | not started |
 | One factory conversation spans web, Discord, and voice for the same conductor | The factory conductor | #5788 | not started |
@@ -1374,10 +1374,9 @@ under #6208 without granting deployment or credential authority.
 
 ### The factory conductor
 
-One logical conductor per operator sits above every per-run conductor and drain
+One logical Conductor per operator sits above every per-task Planner and drain
 lane. It runs in a replaceable fenced EmberVM session, on Astra since policy
-generation 11, and selects and coordinates work on Joe's behalf under a
-versioned charter. An
+generation 11, and selects and coordinates work on Joe's behalf. An
 escalation means Joe is needed. Its default view answers what advanced, what is
 running, what needs Joe, and why capacity is idle. Its objective is to keep all
 safely available subscription quota doing useful work toward agreed product
@@ -1391,7 +1390,7 @@ design text is on #5784.
 | --- | --- | --- |
 | Entry point | One factory conversation across web, Discord, and voice, integrating the existing launcher (#4781) on the private agents page; no choice of model, session, run, or conductor is required | #5788 |
 | Responsiveness | Input is persisted and acknowledged before model execution; one durable ordered queue feeds one executor, operator input ahead of coalesced background events; pause and stop are authenticated deterministic controls that bypass the model; status reads from records when the model is busy | #5787 |
-| Charter | A versioned document under `projects/monolith`, changed by reviewed PR, with a stable identifier per clause; goals in priority order are platform stability, useful product progress, efficient quota use; the loader, prompt, admission layer and ledger expose the same version hash; a retained prompt or a replaced session cannot preserve revoked authority; the ask-first set is charter or quota-policy changes, security-relevant changes, anything needing a new or amended decision record, and irreversible or production-impacting actions outside the allowed GitOps operations, and no clause authorises a cluster write the GitOps invariant forbids | #5785 |
+| Roles and context | Factory deploys and orchestrates agents on Ember; the operator-facing Conductor selects work and delegates one bounded task to the Astra Planner; the Planner creates or amends its DAG; the Executor dispatches recorded nodes under existing identities and authorization; operator instructions, approved decisions, and retrieved KG claims remain distinct | #5785 |
 | Work selection | Durable records link product outcome to milestone, task, and acceptance evidence; a completion claim or a session count does not satisfy acceptance; every selected task advances an agreed goal or has a bounded maintenance allocation | #5786 |
 | Factory index | A materialised join of goal and task records, sessions, runs, drainer jobs, issues and PRs, decision rows, distress, platform health, provider quota, and reservations, served as MCP tools (`factory_status`, `task_status`, `queue_next`, `overlaps`), where `queue_next` only recommends; every row carries source time and freshness, and cloud sessions are an explicit coverage gap; index rows are untrusted evidence, so every mutation revalidates target state, ownership, health, and reservations at execution time | #5786 |
 | Scheduling | The conductor proposes work through #3840's existing dispatch boundary, with no second queue; the server admits it against every active provider window, observation freshness, in-flight reservations, VM and CI and review throughput, and work-in-progress limits; capacity for Joe's interactive work, the conductor, and the review and correction needed to finish admitted work is reserved first, and unknown capacity is not headroom; reservations are atomic and shared across lanes; a reset permits only a probe | #5804 |
@@ -1411,7 +1410,7 @@ before the matching autonomous control is enabled. Fable is evaluated against
 recorded coordination correctness, unnecessary escalations, latency, and cost
 as an escalation model, not a lane.
 
-**Why.** A per-run conductor owns one DAG and cannot pick priorities or
+**Why.** A per-task Planner owns one DAG and cannot pick priorities or
 reconcile overlap across local and cloud Claude sessions, Codex workers,
 drainer lanes, and swarm runs, so every added run adds coordination work for
 Joe. Quota observation and per-lane routing (#5752, #5753) see headroom but do
