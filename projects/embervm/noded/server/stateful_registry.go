@@ -121,9 +121,9 @@ type statefulEntry struct {
 	checkpointTimer *time.Timer
 
 	mu                sync.Mutex // guards inFlight and teardownRetryable
-	inFlight           bool
+	inFlight          bool
 	teardownRetryable bool
-	teardown           vmTeardown
+	teardown          vmTeardown
 }
 
 // statefulRegistry is the daemon's inventory of LIVE stateful microVMs, keyed
