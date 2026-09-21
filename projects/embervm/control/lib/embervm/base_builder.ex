@@ -845,7 +845,7 @@ defmodule Embervm.BaseBuilder do
     end
   end
 
-  def handle_info({:local_evict_failed, workload, ref}, state) do
+  def handle_info({:local_evict_failed, :event_driven, workload, ref}, state) do
     # The event-driven refcount arm marks a ref evicted before spawning work to
     # suppress duplicate RPCs. If the exact remote marker HEAD or noded's local
     # in-use guard refuses the action, restore that ref to retryable state. The
@@ -3798,7 +3798,7 @@ defmodule Embervm.BaseBuilder do
   end
 
   defp retention_manifest(fact, workload, bases, workload_generation) do
-    vendor = fact |> Map.get(:cpu_vendor, "") |> to_string()
+    vendor = cpu_vendor(fact)
     now = System.system_time(:millisecond)
 
     Enum.map(bases, fn base ->
@@ -3952,7 +3952,7 @@ defmodule Embervm.BaseBuilder do
       }
 
       state = put_in(state.workloads[name], w)
-      spawn_evict(state, entry.node_id, name, ref)
+      spawn_evict(state, entry.node_id, name, ref, nil, :event_driven)
       state
     else
       state
@@ -3965,7 +3965,14 @@ defmodule Embervm.BaseBuilder do
   # noded to evict. noded performs its own immediate in-use check under the base
   # lock, closing the relight/build race after this control-plane proof. No branch
   # deletes remote bytes or owner records.
-  defp spawn_evict(state, node_id, workload, ref, expected_vendor \\ nil) do
+  defp spawn_evict(
+         state,
+         node_id,
+         workload,
+         ref,
+         expected_vendor \\ nil,
+         failure_owner \\ :retention
+       ) do
     address = state.node_addr[node_id]
     connect_fun = state.connect_fun
     disconnect_fun = state.disconnect_fun
@@ -4027,7 +4034,7 @@ defmodule Embervm.BaseBuilder do
             reason: inspect(reason)
           )
 
-          send(owner, {:local_evict_failed, workload, ref})
+          notify_local_evict_failure(owner, failure_owner, workload, ref)
 
         {:error, reason} ->
           Logger.warning("embervm base builder: local base eviction held",
@@ -4041,12 +4048,17 @@ defmodule Embervm.BaseBuilder do
             reason: inspect(reason)
           )
 
-          send(owner, {:local_evict_failed, workload, ref})
+          notify_local_evict_failure(owner, failure_owner, workload, ref)
       end
     end)
 
     :ok
   end
+
+  defp notify_local_evict_failure(owner, :event_driven, workload, ref),
+    do: send(owner, {:local_evict_failed, :event_driven, workload, ref})
+
+  defp notify_local_evict_failure(_owner, :retention, _workload, _ref), do: :ok
 
   defp do_guarded_local_evict(
          connect_fun,
