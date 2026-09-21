@@ -22,6 +22,7 @@ import (
 	"github.com/jomcgi/homelab/projects/embervm/noded/config"
 	nodev1 "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1"
 
+	"github.com/jomcgi/homelab/projects/embervm/noded/snapshotmeta"
 	"github.com/jomcgi/homelab/projects/embervm/noded/store"
 	"github.com/jomcgi/homelab/projects/embervm/noded/substrate"
 	"github.com/jomcgi/homelab/projects/embervm/noded/volume"
@@ -52,6 +53,7 @@ type artifactStore interface {
 	// fields list and restore consume, including generation and opaque envelope.
 	// It stays flat so callers depend only on the fields they consume.
 	ArtifactInfo(ctx context.Context, prefix string) (present bool, createdAtUnixMs int64, sizeBytes uint64, cpuVendor, cpuTemplate, rootfsID, imageRef string, generation uint64, envelope []byte, err error)
+	ArtifactDeviceShape(ctx context.Context, prefix string) (present, known bool, deviceIDs []string, err error)
 	ArtifactFileSHA256(ctx context.Context, prefix, name string) (artifactPresent, filePresent bool, checksum string, err error)
 	RewrapEnvelope(ctx context.Context, prefix string, options store.ExportOptions) (changed bool, err error)
 }
@@ -698,11 +700,33 @@ func (s *Server) RestoreArtifact(ctx context.Context, req *nodev1.RestoreArtifac
 	// already held locally. Enveloped artifacts have already passed capability
 	// validation above, so a local copy cannot bypass download authorization.
 	if local, err := enumerateArtifactFiles(localDir); err == nil && len(local) > 0 {
-		s.reregisterRestored(ref)
-		if len(envelope) > 0 {
-			s.rewrapEnvelopeAfterAccess(ref, prefix)
+		if ref.GetKind() != nodev1.ArtifactKind_ARTIFACT_KIND_BASE || isCompleteBase(localDir, nodev1.BaseBuildState_BASE_BUILD_STATE_UNSPECIFIED) {
+			if ref.GetKind() == nodev1.ArtifactKind_ARTIFACT_KIND_BASE {
+				localDevices, derr := snapshotmeta.ReadDeviceSet(localDir)
+				if derr != nil {
+					return nil, status.Errorf(codes.FailedPrecondition, "noded: local base %q has invalid device metadata: %v", prefix, derr)
+				}
+				_, remoteKnown, remoteIDs, derr := s.store.ArtifactDeviceShape(ctx, prefix)
+				if derr != nil {
+					return nil, status.Errorf(codes.FailedPrecondition, "noded: read store device shape for %q: %v", prefix, derr)
+				}
+				remoteDevices := snapshotmeta.DeviceSet{Known: remoteKnown, IDs: remoteIDs}
+				if remoteKnown && !remoteDevices.Equal(localDevices) {
+					return nil, status.Errorf(codes.FailedPrecondition,
+						"noded: refusing incompatible same-ref base replacement for %q: local %s, store %s",
+						prefix, localDevices, remoteDevices)
+				}
+				if !remoteKnown {
+					s.logger.Warn("noded: store base device shape unknown; retaining existing local same-ref bundle",
+						"artifact", prefix, "local_device_shape", localDevices.String())
+				}
+			}
+			s.reregisterRestored(ref)
+			if len(envelope) > 0 {
+				s.rewrapEnvelopeAfterAccess(ref, prefix)
+			}
+			return &nodev1.RestoreArtifactResponse{Skipped: true, Generation: gen}, nil
 		}
-		return &nodev1.RestoreArtifactResponse{Skipped: true, Generation: gen}, nil
 	}
 
 	if ref.GetKind() == nodev1.ArtifactKind_ARTIFACT_KIND_BASE {
@@ -833,6 +857,7 @@ func (s *Server) exportWithKeys(ctx context.Context, ref *nodev1.ArtifactRef, pr
 		opts.DataKeySucceededFn = func() { s.unexportable.clear(prefix) }
 	}
 	if ref.GetKind() == nodev1.ArtifactKind_ARTIFACT_KIND_BASE {
+		opts.EnforceDeviceShape = true
 		stale, err := s.baseStoreCopyIsStale(ctx, prefix, localDir)
 		if err != nil {
 			s.logger.Warn("noded: baseStoreCopyIsStale", "artifact", prefix, "err", err)
@@ -842,7 +867,7 @@ func (s *Server) exportWithKeys(ctx context.Context, ref *nodev1.ArtifactRef, pr
 		}
 	}
 	var options []store.ExportOptions
-	if opts.Kind != "" || opts.Overwrite {
+	if opts.Kind != "" || opts.Overwrite || opts.EnforceDeviceShape {
 		options = append(options, opts)
 	}
 	moved, skipped, err := s.store.Export(ctx, prefix, localDir, files, generation, time.Now().UnixMilli(), s.cfg.CpuVendor, s.cfg.CpuTemplate, options...)
@@ -1865,9 +1890,44 @@ func (s *Server) runRestoreJob(ctx context.Context, job restoreJob) {
 			return
 		}
 	}
-	moved, generation, err := s.store.Restore(ctx, job.prefix, job.localDir, dataKey)
+	_, remoteKnown, remoteIDs, shapeErr := s.store.ArtifactDeviceShape(ctx, job.prefix)
+	if shapeErr != nil {
+		s.logger.Warn("noded: async base restore failed reading device shape", "artifact", job.prefix, "err", shapeErr)
+		return
+	}
+	parent := filepath.Dir(job.localDir)
+	if err := os.MkdirAll(parent, 0o750); err != nil {
+		s.logger.Warn("noded: async base restore failed creating parent", "artifact", job.prefix, "err", err)
+		return
+	}
+	stagingDir, err := os.MkdirTemp(parent, ".base-restore-")
+	if err != nil {
+		s.logger.Warn("noded: async base restore failed creating staging dir", "artifact", job.prefix, "err", err)
+		return
+	}
+	defer os.RemoveAll(stagingDir)
+	moved, generation, err := s.store.Restore(ctx, job.prefix, stagingDir, dataKey)
 	if err != nil {
 		s.logger.Warn("noded: async base restore failed (CP will re-trigger or rebuild)", "artifact", job.prefix, "err", err)
+		return
+	}
+	stagedDevices, err := snapshotmeta.ReadDeviceSet(stagingDir)
+	if err != nil {
+		s.logger.Warn("noded: async base restore refused invalid captured device metadata", "artifact", job.prefix, "err", err)
+		return
+	}
+	remoteDevices := snapshotmeta.DeviceSet{Known: remoteKnown, IDs: remoteIDs}
+	if remoteKnown && !remoteDevices.Equal(stagedDevices) {
+		s.logger.Warn("noded: async base restore refused conflicting device metadata",
+			"artifact", job.prefix, "store_device_shape", remoteDevices.String(), "bundle_device_shape", stagedDevices.String())
+		return
+	}
+	if !isCompleteBase(stagingDir, nodev1.BaseBuildState_BASE_BUILD_STATE_UNSPECIFIED) {
+		s.logger.Warn("noded: async base restore refused incomplete staged bundle", "artifact", job.prefix)
+		return
+	}
+	if err := publishRestoredBase(stagingDir, job.localDir); err != nil {
+		s.logger.Warn("noded: async base restore refused local replacement", "artifact", job.prefix, "err", err)
 		return
 	}
 	s.reregisterRestored(job.ref)
@@ -1880,6 +1940,46 @@ func (s *Server) runRestoreJob(ctx context.Context, job restoreJob) {
 	s.exported.mark(job.prefix, generation)
 	s.logger.Info("noded: restored base off store", "artifact", job.prefix, "bytesMoved", moved, "generation", generation)
 	s.signalChange()
+}
+
+// publishRestoredBase makes the artifact-level commit atomic. A complete local
+// bundle is never replaced; matching content is retained and an incompatible
+// shape is reported. An incomplete destination is moved aside until the staged
+// bundle publishes, then removed only after that rename succeeds.
+func publishRestoredBase(stagingDir, finalDir string) error {
+	stagedDevices, err := snapshotmeta.ReadDeviceSet(stagingDir)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(finalDir); errors.Is(err, os.ErrNotExist) {
+		return os.Rename(stagingDir, finalDir)
+	} else if err != nil {
+		return err
+	}
+	if isCompleteBase(finalDir, nodev1.BaseBuildState_BASE_BUILD_STATE_UNSPECIFIED) {
+		localDevices, err := snapshotmeta.ReadDeviceSet(finalDir)
+		if err != nil {
+			return err
+		}
+		if !localDevices.Known || !stagedDevices.Known || !localDevices.Equal(stagedDevices) {
+			return fmt.Errorf("same-ref base device shape is not proven compatible: local %s, restored %s", localDevices, stagedDevices)
+		}
+		return nil
+	}
+	aside := fmt.Sprintf("%s.incomplete.%d", finalDir, time.Now().UnixNano())
+	if err := os.Rename(finalDir, aside); err != nil {
+		return fmt.Errorf("move incomplete destination aside: %w", err)
+	}
+	if err := os.Rename(stagingDir, finalDir); err != nil {
+		if rollbackErr := os.Rename(aside, finalDir); rollbackErr != nil {
+			return fmt.Errorf("publish staged base: %w (rollback failed: %v)", err, rollbackErr)
+		}
+		return fmt.Errorf("publish staged base: %w", err)
+	}
+	if err := os.RemoveAll(aside); err != nil {
+		return fmt.Errorf("remove replaced incomplete destination: %w", err)
+	}
+	return nil
 }
 
 // ---- store reachability probe ----------------------------------------------

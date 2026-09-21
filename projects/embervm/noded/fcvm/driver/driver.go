@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/jomcgi/homelab/projects/embervm/noded/fcvm/fcclient"
+	"github.com/jomcgi/homelab/projects/embervm/noded/snapshotmeta"
 	"github.com/jomcgi/homelab/projects/embervm/noded/sparse"
 	"github.com/jomcgi/homelab/projects/embervm/noded/substrate"
 	"github.com/jomcgi/homelab/projects/embervm/noded/vsockproto"
@@ -969,6 +970,20 @@ func (d *Driver) loadPatchAndResumeWithDiff(ctx context.Context, workload, threa
 	directExec := false
 	if !hasMetadata {
 		resources = legacyJailResources(filepath.Dir(snapPath), volumeDiskPath)
+		// Pre-jailer base bundles have no resource metadata and can represent
+		// either historical device shape. Make the node-stable placeholder path
+		// visible inside the jail without claiming that the snapshot has a volume
+		// drive. A rootfs-only snapshot ignores the extra file; a placeholder-
+		// bearing snapshot can reopen its baked path. The distinct role is filtered
+		// from any later snapshot metadata, so unknown never becomes a guessed
+		// volume device.
+		if volumeDiskPath == "" && filepath.Dir(filepath.Dir(snapPath)) == filepath.Join(d.cfg.SnapshotRoot, "bases") {
+			placeholder, placeholderErr := d.ensurePlaceholderVolume()
+			if placeholderErr != nil {
+				return substrate.Handle{}, placeholderErr
+			}
+			resources = append(resources, JailResource{Role: "legacy-placeholder-backing", HostPath: placeholder, JailPath: placeholder, Writable: true})
+		}
 		if !hasResourceRole(resources, "rootfs") {
 			directExec = true
 			slog.Warn("driver: restoring legacy bundle without jail resource metadata via direct exec",
@@ -993,6 +1008,14 @@ func (d *Driver) loadPatchAndResumeWithDiff(ctx context.Context, workload, threa
 		JailResource{Role: "snapshot-memory", HostPath: memPath, JailPath: "/snapshot/memfile"},
 	)
 	if patchVolume {
+		// A current base declares its exact captured drive table. Refuse before
+		// launching Firecracker when that table has no volume drive, so a
+		// placeholder-less base never receives PATCH /drives/volume. Legacy
+		// metadata absence is also not evidence that the drive exists; Claim
+		// routes that case through the cold-boot compatibility path.
+		if !hasMetadata || !hasResourceRole(resources, "volume") {
+			return substrate.Handle{}, fmt.Errorf("driver: base snapshot %q cannot patch volume: captured device set does not prove a volume drive", snapPath)
+		}
 		resources = append(resources, JailResource{Role: "volume-patch", HostPath: volumeDiskPath, JailPath: volumeDiskPath, Writable: true})
 	}
 
@@ -1074,7 +1097,7 @@ func (d *Driver) Claim(ctx context.Context, spec substrate.ClaimSpec) (substrate
 
 	// Warm-base start: restore the new thread from a base bundle for an instant
 	// ready start, skipping boot + harness init.
-	if spec.BaseSnapshotRef.ID != "" && (spec.VolumeDiskPath == "" || d.cfg.WarmRestoreWithVolume) {
+	if spec.BaseSnapshotRef.ID != "" {
 		ref := spec.BaseSnapshotRef
 		if ref.Arch != "" && d.cfg.Arch != "" && ref.Arch != d.cfg.Arch {
 			return substrate.Handle{}, fmt.Errorf("driver: base arch mismatch: ref %q != node %q", ref.Arch, d.cfg.Arch)
@@ -1088,6 +1111,31 @@ func (d *Driver) Claim(ctx context.Context, spec substrate.ClaimSpec) (substrate
 		snap := d.baseSnapfile(ref.ID)
 		if _, err := os.Stat(snap); err != nil {
 			return substrate.Handle{}, fmt.Errorf("driver: base bundle missing for %q: %w", ref.ID, err)
+		}
+		capturedDevices, err := snapshotmeta.ReadDeviceSet(d.baseDir(ref.ID))
+		if err != nil {
+			return substrate.Handle{}, fmt.Errorf("driver: read captured device set for base %q: %w", ref.ID, err)
+		}
+		registeredDevices := snapshotmeta.DeviceSet{Known: ref.DeviceSetKnown, IDs: ref.DeviceIDs}
+		if ref.DeviceSetKnown && !registeredDevices.Equal(capturedDevices) {
+			return substrate.Handle{}, fmt.Errorf("driver: base %q device metadata changed after registration: registered %s, disk %s", ref.ID, registeredDevices, capturedDevices)
+		}
+		// A volume request may use a warm base only when producer metadata proves
+		// that the captured Firecracker device table contains that drive. Known
+		// rootfs-only and legacy-unknown bases remain usable: they take the normal
+		// cold-boot path below, which attaches the requested volume from scratch.
+		if spec.VolumeDiskPath != "" && !capturedDevices.Has("volume") {
+			return d.coldBoot(ctx, threadID, coldBootSpec{
+				workload:        spec.Workload,
+				rootfsPath:      spec.ColdBootRootfsPath,
+				vcpus:           d.cfg.VCPUs,
+				memMib:          d.cfg.MemMib,
+				trackDirtyPages: trackDirtyPages,
+				nic:             spec.NIC,
+				volumeDiskPath:  spec.VolumeDiskPath,
+				volumeMount:     spec.VolumeMount,
+				harnessInit:     spec.ColdBootHarnessInit,
+			})
 		}
 		if spec.VolumeDiskPath != "" {
 			return d.loadPatchAndResumeWithDiff(ctx, spec.Workload, threadID, snap, d.baseMemfile(ref.ID), "api.sock", spec.VolumeDiskPath, true, trackDirtyPages, false)
@@ -1634,14 +1682,23 @@ func (d *Driver) SnapshotBase(ctx context.Context, h substrate.Handle, baseKey s
 			}
 		}
 	}
+	devices, err := snapshotmeta.ReadDeviceSet(finalDir)
+	if err != nil {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: read published base device set: %w", err)
+	}
+	if !devices.Known {
+		return substrate.SnapshotRef{}, errors.New("driver: published base omitted device metadata")
+	}
 	return substrate.SnapshotRef{
-		ID:        baseKey,
-		Node:      d.cfg.Node,
-		Arch:      d.cfg.Arch,
-		Vendor:    d.cfg.Vendor,
-		Template:  d.cfg.Template,
-		Base:      true,
-		SizeBytes: bundleSize(filepath.Join(finalDir, "snapfile"), filepath.Join(finalDir, "memfile")),
+		ID:             baseKey,
+		Node:           d.cfg.Node,
+		Arch:           d.cfg.Arch,
+		Vendor:         d.cfg.Vendor,
+		Template:       d.cfg.Template,
+		DeviceSetKnown: devices.Known,
+		DeviceIDs:      append([]string(nil), devices.IDs...),
+		Base:           true,
+		SizeBytes:      bundleSize(filepath.Join(finalDir, "snapfile"), filepath.Join(finalDir, "memfile")),
 	}, nil
 }
 
@@ -1720,6 +1777,17 @@ func resolveBasePublishCollision(buildingDir, finalDir string) (adopted bool, er
 		return false, statErr
 	}
 	if baseBundlePublished(finalDir) {
+		buildingDevices, buildingErr := snapshotmeta.ReadDeviceSet(buildingDir)
+		finalDevices, finalErr := snapshotmeta.ReadDeviceSet(finalDir)
+		if buildingErr != nil || finalErr != nil {
+			return false, fmt.Errorf("compare colliding base device sets: %w", errors.Join(buildingErr, finalErr))
+		}
+		if !buildingDevices.Known || !finalDevices.Known {
+			return false, fmt.Errorf("refuse base publish collision with unknown device shape: staging %s, destination %s", buildingDevices, finalDevices)
+		}
+		if !buildingDevices.Equal(finalDevices) {
+			return false, fmt.Errorf("refuse incompatible base publish collision: staging %s, destination %s", buildingDevices, finalDevices)
+		}
 		if rmErr := os.RemoveAll(buildingDir); rmErr != nil {
 			return false, fmt.Errorf("discard redundant staging bundle: %w", rmErr)
 		}

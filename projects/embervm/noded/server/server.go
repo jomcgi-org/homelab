@@ -47,6 +47,7 @@ import (
 	"github.com/jomcgi/homelab/projects/embervm/noded/config"
 	"github.com/jomcgi/homelab/projects/embervm/noded/egress"
 	"github.com/jomcgi/homelab/projects/embervm/noded/serving"
+	"github.com/jomcgi/homelab/projects/embervm/noded/snapshotmeta"
 	"github.com/jomcgi/homelab/projects/embervm/noded/substrate"
 	"github.com/jomcgi/homelab/projects/embervm/noded/volume"
 )
@@ -908,7 +909,16 @@ func (s *Server) driveBuild(ctx context.Context, req *nodev1.BuildBaseRequest, b
 		s.signalChange()
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: persist base rootfs identity: %v", err)
 	}
-	s.bases.readyBuild(baseKey, workload, imageDigest, img.RootfsPath, readyPath, sizeBytes)
+	devices, err := snapshotmeta.ReadDeviceSet(filepath.Join(s.cfg.SnapshotRoot, "bases", baseKey))
+	if err != nil || !devices.Known {
+		if err == nil {
+			err = errors.New("snapshot producer omitted device metadata")
+		}
+		s.bases.failBuild(baseKey, workload, img.RootfsPath, readyPath, err.Error())
+		s.signalChange()
+		return nil, status.Errorf(codes.FailedPrecondition, "noded: persist base device shape: %v", err)
+	}
+	s.bases.readyBuild(baseKey, workload, imageDigest, img.RootfsPath, readyPath, sizeBytes, devices)
 
 	// Serving base (R3, D-R3.11.2): additionally persist a cold-boot-readable handler
 	// artifact from the SAME verified archive bytes noded already holds, so a serving
@@ -980,6 +990,16 @@ func (s *Server) verifiedReadyBase(baseKey, workload, imageDigest, rootfsPath st
 	}
 
 	usable, verifyErr := s.verifyReadyBaseBundle(baseKey, rootfsPath)
+	if usable {
+		diskDevices, err := snapshotmeta.ReadDeviceSet(filepath.Join(s.cfg.SnapshotRoot, "bases", baseKey))
+		if err != nil {
+			usable, verifyErr = false, fmt.Errorf("read base device set: %w", err)
+		} else if !existing.devices.Equal(diskDevices) {
+			usable = false
+			s.logger.Warn("noded: READY base device metadata changed after registration",
+				"base", baseKey, "registered", existing.devices.String(), "disk", diskDevices.String())
+		}
+	}
 	if usable {
 		return &nodev1.BuildBaseResponse{
 			SnapshotRef:   existing.snapshotRef,
@@ -1071,6 +1091,9 @@ func (s *Server) verifyReadyBaseBundle(baseKey, rootfsPath string) (bool, error)
 	if refusal := s.snapshotFormatRefusal(filepath.Join(dir, "snapfile")); refusal != "" {
 		return false, nil
 	}
+	if _, err := snapshotmeta.ReadDeviceSet(dir); err != nil {
+		return false, fmt.Errorf("read base device set: %w", err)
+	}
 	return true, nil
 }
 
@@ -1096,6 +1119,12 @@ func (s *Server) adoptSiblingBaseBundle(baseKey, workload, imageDigest, rootfsPa
 	if refusal := s.snapshotFormatRefusal(snapfile); refusal != "" {
 		s.logger.Warn("noded: declining to adopt sibling base bundle with unusable snapshot format",
 			"base", baseKey, "reason", refusal)
+		return nil, false
+	}
+	devices, err := snapshotmeta.ReadDeviceSet(dir)
+	if err != nil {
+		s.logger.Warn("noded: declining to adopt sibling base bundle with invalid device metadata",
+			"base", baseKey, "err", err)
 		return nil, false
 	}
 	if rootfsPath != "" {
@@ -1132,6 +1161,7 @@ func (s *Server) adoptSiblingBaseBundle(baseKey, workload, imageDigest, rootfsPa
 		sizeBytes:       size,
 		createdAtUnixMs: baseCreatedAtUnixMs(dir),
 		state:           nodev1.BaseBuildState_BASE_BUILD_STATE_READY,
+		devices:         devices,
 	})
 	s.signalChange()
 	s.logger.Info("noded: adopted sibling-published base bundle",
@@ -1304,6 +1334,15 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 		rootfsPath = base.rootfsPath
 	}
 	baseDir := filepath.Join(s.cfg.SnapshotRoot, "bases", ref)
+	diskDevices, err := snapshotmeta.ReadDeviceSet(baseDir)
+	if err != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "noded: base %q device metadata invalid: %v", ref, err)
+	}
+	if !base.devices.Equal(diskDevices) {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"noded: base %q device metadata changed after registration: registered %s, disk %s",
+			ref, base.devices, diskDevices)
+	}
 	if ok, mismatch := baseRootfsMatches(baseDir, rootfsPath); !ok {
 		args := []any{"base", ref, "expected", s.readBaseRootfsID(ref)}
 		if mismatch.Mismatch {
@@ -1384,11 +1423,13 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 		ThreadID:        newID("vm"),
 		TrackDirtyPages: s.cfg.DiffBanking && diffBankingWorkload(s.cfg.DiffBankingWorkloads, base.workload),
 		BaseSnapshotRef: substrate.SnapshotRef{
-			ID:     ref,
-			Node:   s.cfg.Node,
-			Arch:   s.cfg.Arch,
-			Vendor: s.cfg.CpuVendor,
-			Base:   true,
+			ID:             ref,
+			Node:           s.cfg.Node,
+			Arch:           s.cfg.Arch,
+			Vendor:         s.cfg.CpuVendor,
+			Base:           true,
+			DeviceSetKnown: base.devices.Known,
+			DeviceIDs:      append([]string(nil), base.devices.IDs...),
 		},
 		VolumeDiskPath: volumeDiskPath,
 		VolumeMount:    req.GetVolumeMount(),
@@ -3535,6 +3576,18 @@ func (s *Server) inspectSiblingBase(ctx context.Context, key string) (baseEntry,
 		}
 		files = append(files, baseDiscoveryFile{path: path, info: info})
 	}
+	devices, err := snapshotmeta.ReadDeviceSet(dir)
+	if err != nil {
+		return baseEntry{}, nil, false
+	}
+	if devices.Known {
+		path := filepath.Join(dir, snapshotmeta.JailResourcesFile)
+		info, err := os.Lstat(path)
+		if err != nil || !info.Mode().IsRegular() {
+			return baseEntry{}, nil, false
+		}
+		files = append(files, baseDiscoveryFile{path: path, info: info})
+	}
 	imageRef := s.readBaseImageRef(key)
 	rootfsPath := s.readBaseRootfsPath(key)
 	if imageRef == "" || rootfsPath == "" {
@@ -3554,10 +3607,19 @@ func (s *Server) inspectSiblingBase(ctx context.Context, key string) (baseEntry,
 	return baseEntry{
 		snapshotRef: key, workload: workloadFromBaseKey(key), imageDigest: imageRef,
 		rootfsPath: rootfsPath, readyPath: defaultReadyPath,
-		sizeBytes:       files[4].info.Size() + files[5].info.Size(),
+		sizeBytes:       fileSize(filepath.Join(dir, "snapfile")) + fileSize(filepath.Join(dir, "memfile")),
 		createdAtUnixMs: files[0].info.ModTime().UnixMilli(),
 		state:           nodev1.BaseBuildState_BASE_BUILD_STATE_READY,
+		devices:         devices,
 	}, files, true
+}
+
+func fileSize(path string) int64 {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	return info.Size()
 }
 
 func (s *Server) commitDiscoveredBase(ctx context.Context, generation string, epoch uint64, base baseEntry, files []baseDiscoveryFile) bool {
@@ -3721,6 +3783,13 @@ func (s *Server) ReconcileBasesFromDisk() error {
 		rootfsPath := s.readBaseRootfsPath(baseKey)
 		state := nodev1.BaseBuildState_BASE_BUILD_STATE_READY
 		buildErr := ""
+		devices, deviceErr := snapshotmeta.ReadDeviceSet(filepath.Join(root, baseKey))
+		if deviceErr != nil {
+			state = nodev1.BaseBuildState_BASE_BUILD_STATE_NONE
+			buildErr = fmt.Sprintf("invalid captured device metadata: %v", deviceErr)
+			s.logger.Warn("noded: refusing base with invalid captured device metadata, reporting base absent",
+				"base", baseKey, "err", deviceErr)
+		}
 		if rootfsPath != "" {
 			if _, err := os.Stat(rootfsPath); err != nil {
 				state = nodev1.BaseBuildState_BASE_BUILD_STATE_NONE
@@ -3809,6 +3878,7 @@ func (s *Server) ReconcileBasesFromDisk() error {
 			createdAtUnixMs: baseCreatedAtUnixMs(filepath.Join(root, baseKey)),
 			state:           state,
 			buildErr:        buildErr,
+			devices:         devices,
 		})
 	}
 	if generationChanged {
