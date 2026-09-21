@@ -2,8 +2,7 @@
 
 The monolith is the FastAPI + SvelteKit application suite behind most of this
 homelab. It combines a personal knowledge graph, a Discord chat agent, the
-EmberVM-backed software factory, and small public apps (including Grimoire,
-hikes, trips, stars, and ships) over a shared Postgres data plane. Separate
+EmberVM-backed software factory, and small apps (including Grimoire, hikes, trips, stars, and ships) over a shared Postgres data plane. Separate
 private, public, and agent compositions ship only the routes and code each
 audience needs; [jomcgi.dev](https://jomcgi.dev) is the public surface.
 
@@ -32,8 +31,9 @@ The deployed application has distinct audience surfaces:
 - **Agent tier**: a separate pruned MCP server for EmberVM guests. It exposes
   the bounded knowledge and Kubernetes observation tools described in
   [ARCHITECTURE.md](ARCHITECTURE.md#7-mcp-surface), not the private catalogue.
-- **Friends surface**: only the moving planner and its browser API, protected by
-  its own authentik policy.
+- **Friends surface**: the moving planner and Grimoire campaign lobby, each
+  protected by its own Authentik policy. Grimoire supports invitation-only
+  account registration, campaign ownership, and player invitations.
 
 The tier boundaries are enforced through separate compositions, database
 roles, and ingress policy; see [ARCHITECTURE.md](ARCHITECTURE.md) sections 1 to
@@ -71,7 +71,7 @@ becomes corrective training data. Current state:
 | `factory/`                                                                                 | Factory execution, task planning, DAG orchestration, operator controls, and public snapshots |
 | `scheduler/`                                                                               | Postgres-backed job scheduler shared by all domains                                        |
 | `shared/`                                                                                  | Cross-domain database session/engine setup and test helpers                                |
-| `grimoire/`, `hikes/`, `ships/`, `stars/`, `trips/`, `worldcup/`, `campsites/`, `dr_jobs/` | Individual public data products, each with its own routes and models                       |
+| `grimoire/`, `hikes/`, `ships/`, `stars/`, `trips/`, `worldcup/`, `campsites/`, `dr_jobs/` | Individual apps, each with its own routes and models                       |
 | `e2e/`                                                                                     | End-to-end tests spanning the frontend and backend together                                |
 
 ## Deployment
