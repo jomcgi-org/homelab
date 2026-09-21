@@ -265,6 +265,7 @@ func (a statefulVMDriverAdapter) Release(_ context.Context, _ substrate.Handle) 
 	}
 	return nil
 }
+
 func (a statefulVMDriverAdapter) RemoveBundle(_ string) error {
 	a.fakeStatefulDriver.mu.Lock()
 	defer a.fakeStatefulDriver.mu.Unlock()
