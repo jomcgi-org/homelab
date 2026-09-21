@@ -182,13 +182,18 @@ defmodule Embervm.LogFormatterTest do
       workload: "claude-runtime",
       vendor: "intel",
       age_seconds: 72_000,
-      reason_unreferenced: "known workload superseded: not in current, CP snapshot, or active base_refs",
+      reason_unreferenced:
+        "known workload superseded: not in current, CP snapshot, or active base_refs",
       base_generation: 17
     ]
 
     line =
       Embervm.LogFormatter.format(
-        %{level: :info, msg: {:string, "embervm base retention candidate"}, meta: Map.new(metadata)},
+        %{
+          level: :info,
+          msg: {:string, "embervm base retention candidate"},
+          meta: Map.new(metadata)
+        },
         %{}
       )
       |> IO.iodata_to_binary()
@@ -214,7 +219,11 @@ defmodule Embervm.LogFormatterTest do
 
     decoded =
       Embervm.LogFormatter.format(
-        %{level: :info, msg: {:string, "embervm base builder: local base eviction complete"}, meta: metadata},
+        %{
+          level: :info,
+          msg: {:string, "embervm base builder: local base eviction complete"},
+          meta: metadata
+        },
         %{}
       )
       |> IO.iodata_to_binary()
@@ -318,7 +327,11 @@ defmodule Embervm.LogFormatterTest do
 
     line =
       Embervm.LogFormatter.format(
-        %{level: :warning, msg: {:string, "embervm store probe: store fetch failed"}, meta: metadata},
+        %{
+          level: :warning,
+          msg: {:string, "embervm store probe: store fetch failed"},
+          meta: metadata
+        },
         %{}
       )
       |> IO.iodata_to_binary()

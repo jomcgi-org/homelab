@@ -46,7 +46,11 @@ defmodule Embervm.Application do
     # BEFORE the supervisor starts so the Router (reads it per request) sees it.
     # Empty ("") accepts any valid ServiceAccount token (a permissive fallback for
     # a cluster that has not pinned the SA); it never accepts an invalid token.
-    Application.put_env(:embervm, :noded_service_account, trimmed_env("EMBERVM_NODED_SERVICE_ACCOUNT"))
+    Application.put_env(
+      :embervm,
+      :noded_service_account,
+      trimmed_env("EMBERVM_NODED_SERVICE_ACCOUNT")
+    )
 
     # Shared chart secret for noded gRPC authentication. Read and trim it before
     # any child opens a channel; an empty value deliberately attaches no header.
@@ -602,7 +606,8 @@ defmodule Embervm.Application do
         {Embervm.OpLog.SQLite, path: oplog_path(), journal_horizon_ms: journal_horizon_ms()}
 
       Embervm.OpLog.Postgres ->
-        {Embervm.OpLog.Postgres, dsn: trimmed_env("EMBERVM_OPLOG_DSN"), journal_horizon_ms: journal_horizon_ms()}
+        {Embervm.OpLog.Postgres,
+         dsn: trimmed_env("EMBERVM_OPLOG_DSN"), journal_horizon_ms: journal_horizon_ms()}
     end
   end
 
@@ -627,10 +632,17 @@ defmodule Embervm.Application do
 
     previous_generation =
       case {previous, trimmed_env("EMBERVM_KEK_ROOT_PREVIOUS_GENERATION")} do
-        {nil, ""} -> nil
-        {nil, _generation} -> raise "EMBERVM_KEK_ROOT_PREVIOUS_GENERATION requires a previous root"
-        {_root, ""} -> raise "EMBERVM_KEK_ROOT_PREVIOUS requires its generation"
-        {_root, _generation} -> root_generation("EMBERVM_KEK_ROOT_PREVIOUS_GENERATION", nil)
+        {nil, ""} ->
+          nil
+
+        {nil, _generation} ->
+          raise "EMBERVM_KEK_ROOT_PREVIOUS_GENERATION requires a previous root"
+
+        {_root, ""} ->
+          raise "EMBERVM_KEK_ROOT_PREVIOUS requires its generation"
+
+        {_root, _generation} ->
+          root_generation("EMBERVM_KEK_ROOT_PREVIOUS_GENERATION", nil)
       end
 
     cond do
@@ -668,13 +680,17 @@ defmodule Embervm.Application do
 
   defp root_generation(name, default) do
     case trimmed_env(name) do
-      "" when is_integer(default) -> default
+      "" when is_integer(default) ->
+        default
+
       raw ->
         case Integer.parse(raw) do
           {generation, ""}
           when generation > 0 and generation <= 18_446_744_073_709_551_615 ->
             generation
-          _ -> raise "invalid #{name}: expected a positive integer"
+
+          _ ->
+            raise "invalid #{name}: expected a positive integer"
         end
     end
   end
@@ -972,7 +988,8 @@ defmodule Embervm.Application do
   @doc false
   def store_probe_interval_ms do
     case trimmed_env("EMBERVM_STORE_PROBE_INTERVAL_SECONDS") do
-      "" -> 300_000
+      "" ->
+        300_000
 
       raw ->
         case Integer.parse(raw) do
@@ -1007,7 +1024,12 @@ defmodule Embervm.Application do
   # at render time, so a GitOps typo is caught before it ever deploys.
   @doc false
   def parse_allow_empty_kinds(value) do
-    allowed = %{"stateful" => :stateful, "group" => :group, "session" => :session, "serving" => :serving}
+    allowed = %{
+      "stateful" => :stateful,
+      "group" => :group,
+      "session" => :session,
+      "serving" => :serving
+    }
 
     value
     |> String.split(",", trim: true)
@@ -1033,7 +1055,8 @@ defmodule Embervm.Application do
   # set, caps each principal at that fraction of a workload's cap; unset (the
   # default) means the dynamic cap/active-principals split.
   defp dispatcher_opts do
-    [queue_depth_cap: queue_depth_cap(), op_log: op_log_mod(), op_log_mod: op_log_mod()] ++ share_fraction_opt()
+    [queue_depth_cap: queue_depth_cap(), op_log: op_log_mod(), op_log_mod: op_log_mod()] ++
+      share_fraction_opt()
   end
 
   defp pool_opts, do: [op_log: op_log_mod(), op_log_mod: op_log_mod()]
@@ -1044,9 +1067,11 @@ defmodule Embervm.Application do
   # wall-clock watchdog margin (#4434), added on top of the transport deadline so
   # a wedged SessionAssign on an orphaned channel cannot pin the session forever.
   defp session_opts do
-    [invoke_watchdog_margin_ms: env_ms("EMBERVM_SESSION_INVOKE_WATCHDOG_MARGIN_MS", 15_000),
-     drain_flush_ms: env_ms("EMBERVM_SESSION_DRAIN_FLUSH_MS", 60_000),
-     drain_bank_budget_ms: env_ms("EMBERVM_SESSION_DRAIN_BANK_BUDGET_MS", 15_000)]
+    [
+      invoke_watchdog_margin_ms: env_ms("EMBERVM_SESSION_INVOKE_WATCHDOG_MARGIN_MS", 15_000),
+      drain_flush_ms: env_ms("EMBERVM_SESSION_DRAIN_FLUSH_MS", 60_000),
+      drain_bank_budget_ms: env_ms("EMBERVM_SESSION_DRAIN_BANK_BUDGET_MS", 15_000)
+    ]
   end
 
   # SessionManager config: the session-process seams plus the R2 policy knobs the
@@ -1249,7 +1274,6 @@ defmodule Embervm.Application do
       _ -> false
     end
   end
-
 
   # The activator endpoint the node Envoy routes to when a serving workload has no
   # healthy published instance, from EMBERVM_SERVING_ACTIVATOR_IP + _PORT (Task 8
@@ -1537,8 +1561,13 @@ defmodule Embervm.Application do
   defp composite_activator_port_range do
     if stateful_activator_ip() do
       case composite_listen_range_env() do
-        nil -> Enum.to_list(@default_composite_activator_port_start..@default_composite_activator_port_end)
-        range -> Enum.to_list(range)
+        nil ->
+          Enum.to_list(
+            @default_composite_activator_port_start..@default_composite_activator_port_end
+          )
+
+        range ->
+          Enum.to_list(range)
       end
     else
       []
@@ -1559,8 +1588,14 @@ defmodule Embervm.Application do
     if stateful_activator_ip() do
       case trimmed_env("EMBERVM_STATEFUL_ACTIVATOR_PORT_RANGE") do
         "" ->
-          start_port = int_env_or_nil("EMBERVM_STATEFUL_ACTIVATOR_PORT_START") || @default_stateful_activator_port_start
-          end_port = int_env_or_nil("EMBERVM_STATEFUL_ACTIVATOR_PORT_END") || @default_stateful_activator_port_end
+          start_port =
+            int_env_or_nil("EMBERVM_STATEFUL_ACTIVATOR_PORT_START") ||
+              @default_stateful_activator_port_start
+
+          end_port =
+            int_env_or_nil("EMBERVM_STATEFUL_ACTIVATOR_PORT_END") ||
+              @default_stateful_activator_port_end
+
           Enum.to_list(start_port..end_port)
 
         raw ->
@@ -1981,7 +2016,8 @@ defmodule Embervm.Application do
   # never through the Kubernetes API-audience compatibility review.
   defp audience_bound_service_accounts do
     case System.get_env("EMBERVM_AUDIENCE_BOUND_SERVICE_ACCOUNTS") do
-      nil -> []
+      nil ->
+        []
 
       raw ->
         raw
