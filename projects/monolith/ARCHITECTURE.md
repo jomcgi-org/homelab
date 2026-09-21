@@ -796,6 +796,13 @@ would only delay the same unknown outcome. Every owner that writes, finishes or
 ends a hold reads that one flag, including the lease backstop and the node
 recovery, so off is byte-for-byte the behaviour that preceded this whatever the
 receipt flags say.
+
+A separate control-plane result cache is not planned. The gate in
+[#4322](https://github.com/jomcgi-org/homelab/issues/4322) can be reconsidered
+only if [#5938](https://github.com/jomcgi-org/homelab/issues/5938)'s bounded
+native canary demonstrates a completed-result recovery gap that the receipt path
+cannot cover and a bounded receipt fix cannot address.
+
 (see: /projects/monolith/factory/execution/store.py)
 
 **Why.** The guest reuse fence had a hold and no release. A receipt that beat
@@ -1053,9 +1060,12 @@ pipeline (#3961) remain proposals, each gated on membership landing and on Joe
 naming the concrete table workflow it serves with a bounded first deliverable;
 finishing membership does not authorise sheets, transcription, auto-reveals,
 combat automation or public replays. Voice capture with in-cluster transcription
-is deliberately last because the hub has no GPU pool for an ASR service (#5461),
-and derived character-knowledge automation (#3910) was dropped in favour of
-explicit DM grants until manual assignment is shown to be a burden.
+is deliberately last because the hub has no selected GPU capacity for an ASR
+service. The former GKE GPU proposal
+([#5461](https://github.com/jomcgi-org/homelab/issues/5461)) closed as not planned,
+so a new capacity decision would be required. Derived character-knowledge
+automation (#3910) was dropped in favour of explicit DM grants until manual
+assignment is shown to be a burden.
 
 The Grimoire ingest path converts extracted documents into ordered text and
 image-derived chunks, records section hierarchy and image references, embeds
@@ -1337,9 +1347,11 @@ deploy. Read the live one:
 (see: /projects/platform/kargo/values.yaml)
 
 The home Application is dormant (backend replicas zero by values commit,
-WhatsApp off) and keeps its write-back-maintained revision as the revert lever
-until the home cluster is wiped (#4964); the development overlays are inert
-until development Applications exist on the hub.
+WhatsApp off) and keeps its write-back-maintained revision as the revert lever.
+The home-plus-GKE direction in
+[#4964](https://github.com/jomcgi-org/homelab/issues/4964) authorizes no wipe;
+revalidate the selected UK placement before reusing the overlay. The development
+overlays are inert until development Applications exist on the hub.
 (see: /projects/monolith/deploy/application.yaml)
 
 **Why.** Branch-side version bumps made concurrent pull requests collide and
@@ -1376,7 +1388,7 @@ this table when the work ships or the issue closes without it.
 | Evidence-lane follow-ons: deployment observations (#5571), default retrieval scopes with personal opt-in (#5573), distress inbox (#5574), #5569, #5587 | section 6 (agents/063) | #5527 | in progress: slice live 2026-09-03, children open |
 | Grimoire private routes enforce campaign membership instead of the `?as=` override | section 6 | #3959 | in progress (PR #6125) |
 | Approved character sheets with DM approval become Grimoire's mechanical source of truth | section 6 | #3960 | proposal, gated on #3959 and a selected table workflow |
-| A Discord-backed session transcript pipeline with ACL-filtered surfacing and reviewed replays | section 6 | #3961 | proposal, gated on #3959, a selected table workflow and ASR capacity (#5461) |
+| A Discord-backed session transcript pipeline with ACL-filtered surfacing and reviewed replays | section 6 | #3961 | proposal, gated on #3959, a selected table workflow and a new ASR-capacity decision; #5461 closed as not planned |
 | Discord chat automation gets persisted scheduled tasks, configurable message triggers, and per-channel memory notes | Decision history (services/002) | #3901 | in progress: configurable message triggers are implemented; persisted scheduled tasks and per-channel memory notes remain |
 | Grimoire post-extraction quality passes (evidence-grounded stat verification, review-approved alias merges) ship | Decision history (services/014) | #3912 | not started |
 | Public chat retention and takedown purge tooling ships | Decision history (security/005) | #3899 | not started |

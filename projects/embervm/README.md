@@ -8,15 +8,16 @@ scale-to-zero / warm-serve behaviour without a hosted FaaS product,
 without a Kubernetes object per invocation, and without etcd in the
 execution path.
 
-Five workload classes ride one substrate:
+Three core workload classes and two optional advanced classes ride one
+substrate:
 
-| Class | One line |
-| ----- | -------- |
-| **task** | Fresh VM per invocation, destroyed after one task; vsock only, no NIC |
-| **session** | Bank/relight sandbox: idle snapshot to disk, restored on next invoke |
-| **serving** | Warm HTTP endpoint; Envoy routes hits, control plane only on miss/wake |
-| **stateful** | Scale-to-zero singleton datastore with a node-local authoritative volume |
-| **composite** | Multi-VM group with whole-set bank/relight |
+| Class | Role | One line |
+| ----- | ---- | -------- |
+| **task** | Core | Fresh VM per invocation, destroyed after one task; vsock only, no NIC |
+| **session** | Core | Bank/relight sandbox: idle snapshot to disk, restored on next invoke |
+| **serving** | Core | Warm HTTP endpoint; Envoy routes hits, control plane only on miss/wake |
+| **stateful** | Optional advanced | Scale-to-zero singleton datastore with a node-local authoritative volume |
+| **composite** | Optional advanced | Multi-VM group with whole-set bank/relight |
 
 ## Where everything is
 
