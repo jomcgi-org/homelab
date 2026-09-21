@@ -8,6 +8,47 @@ Shared authentication verifies caller identity; factory entry points enforce
 which operations and records that caller may access. Public composition loads
 only the read-only factory descriptor and published projections.
 
+The private registry composes `factory.module` once. Its lifecycle owns both
+the conductor/DBOS runtime and session maintenance, including partial-start
+cleanup and the process watchdog. Implementations live in `factory.orchestration`
+and `factory.execution`. The old `swarm` and `agent_sessions` packages contain
+compatibility shims for durable exception identities and the existing Discord
+adapter. Database schemas and durable workflow identities remain stable.
+
+The private interface starts at `/factory`, with decisions at
+`/factory/escalations` and run, session, and voice details at
+`/factory/execution`. The launcher presents one Factory entry. Legacy `/agents`
+links and browser API requests resolve internally to the corresponding factory
+routes on the private host, preserving query parameters and request methods.
+The backend `/api/agents` contracts remain stable. Both legacy and canonical
+prefixed VM stream paths retain the gateway's 600-second timeout.
+
+The public reader ships `factory.public_view` and excludes private execution,
+orchestration, access, and projection modules. It reads only published public API
+views and snapshots with the existing restricted database role.
+
+Discord integration is outside this consolidation. Existing integration behavior
+is preserved pending an explicit retirement or redesign. This change introduces
+no general-purpose cross-domain factory API or separate factory deployment.
+
+
+The first autonomous lane reads explicitly selected GitHub issues, records one
+durable receipt per repository/issue/generation, and admits up to the policy's
+per-lane `max_tasks` at a time, with the chart's
+`swarm.factoryMaxConcurrentTasks` (4 today) bounding the sum of the two lanes.
+`max_tasks` is a concurrency, not a lifetime count: as tasks settle the lane
+keeps admitting until its issue list is exhausted, so it runs without an
+operator re-arming it.
+A planning session in Ember builds the whole graph at plan time and is called
+back only when the plan deviates. The server reconciles the mutable graph and
+dispatches each admitted node as an independent DBOS workflow with immutable
+inputs. Planning does not run in the monolith process.
+
+This slice prepares a reviewable PR. The broader factory conductor in #5784,
+shared admission across all execution surfaces, other incident feeds and
+autonomous landing retain their own acceptance gates. A successful node is not
+evidence that its task delivered the requested outcome.
+
 ## Conductor, Planner, and Executor
 
 The **Factory** deploys and orchestrates agents on Ember to produce features
@@ -26,11 +67,20 @@ Existing `factory_conductor`, `task conductor`, `conductor_model`,
 Planner boundary. They are retained to keep durable and code identities stable,
 not because the Planner is the operator-facing Conductor.
 
-The **Executor** is the existing graph engine and dispatch path. It runs the
-accepted DAG through role-specific implementer, reviewer, researcher, and
-investigator workloads. Those workloads keep their existing principals,
-profiles, and server-enforced authorization. Conductor, Planner, Executor, and
-node role names describe responsibility only. No role name grants permission.
+The **Executor** is the existing graph engine and dispatch path. It runs
+accepted DAG nodes for the existing `implement_`, `investigate_`, `review_`,
+`refine_`, `integrate_`, and legacy `conductor_` role prefixes. Those workloads
+keep their existing principals, profiles, and server-enforced authorization.
+Conductor, Planner, Executor, and node role names describe responsibility only.
+No role name grants permission.
+
+The broader #5784 direction retains the Conductor's goal priority order:
+platform stability, useful product progress, then efficient quota use. It also
+retains the ask-first boundary for charter or quota-policy changes,
+security-relevant changes, anything needing a new or amended decision record,
+and irreversible or production-impacting actions outside the allowed GitOps
+operations. No clause authorizes a cluster write that the GitOps invariant
+forbids.
 
 ### Authoritative records and context
 
@@ -115,47 +165,6 @@ The practical MVP decision in #5956 retains four rules for all of these roles:
 3. Cost per accepted PR is the metric. Record it on the PR when it lands.
 4. Planner turns share the task's start budget with implementation. If planning
    consumes more than half of the starts, stop the task and respec it by hand.
-
-The private registry composes `factory.module` once. Its lifecycle owns both
-the conductor/DBOS runtime and session maintenance, including partial-start
-cleanup and the process watchdog. Implementations live in `factory.orchestration`
-and `factory.execution`. The old `swarm` and `agent_sessions` packages contain
-compatibility shims for durable exception identities and the existing Discord
-adapter. Database schemas and durable workflow identities remain stable.
-
-The private interface starts at `/factory`, with decisions at
-`/factory/escalations` and run, session, and voice details at
-`/factory/execution`. The launcher presents one Factory entry. Legacy `/agents`
-links and browser API requests resolve internally to the corresponding factory
-routes on the private host, preserving query parameters and request methods.
-The backend `/api/agents` contracts remain stable. Both legacy and canonical
-prefixed VM stream paths retain the gateway's 600-second timeout.
-
-The public reader ships `factory.public_view` and excludes private execution,
-orchestration, access, and projection modules. It reads only published public API
-views and snapshots with the existing restricted database role.
-
-Discord integration is outside this consolidation. Existing integration behavior
-is preserved pending an explicit retirement or redesign. This change introduces
-no general-purpose cross-domain factory API or separate factory deployment.
-
-
-The first autonomous lane reads explicitly selected GitHub issues, records one
-durable receipt per repository/issue/generation, and admits up to the policy's
-per-lane `max_tasks` at a time, with the chart's
-`swarm.factoryMaxConcurrentTasks` (4 today) bounding the sum of the two lanes.
-`max_tasks` is a concurrency, not a lifetime count: as tasks settle the lane
-keeps admitting until its issue list is exhausted, so it runs without an
-operator re-arming it.
-A planning session in Ember builds the whole graph at plan time and is called
-back only when the plan deviates. The server reconciles the mutable graph and
-dispatches each admitted node as an independent DBOS workflow with immutable
-inputs. Planning does not run in the monolith process.
-
-This slice prepares a reviewable PR. The broader factory conductor in #5784,
-shared admission across all execution surfaces, other incident feeds and
-autonomous landing retain their own acceptance gates. A successful node is not
-evidence that its task delivered the requested outcome.
 
 ## Availability and operator policy
 

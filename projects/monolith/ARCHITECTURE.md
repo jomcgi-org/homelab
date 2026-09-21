@@ -1338,7 +1338,6 @@ this table when the work ships or the issue closes without it.
 | One operator-facing Conductor above every per-task Planner selects and coordinates work, acting on Joe's behalf | The factory conductor | #5784 (children #5785, #5787, #5788, #5789, #5804; #5786 closed 2026-09-14) | not started |
 | The conductor decides reversible defaults, stages repository-only delivery when live checks are unavailable, and adopts unowned existing PRs; one human-needed notification per task | section 11, reversible gates | #6208 | implemented, awaiting validation |
 | Factory PR lifecycle follows settlement, adopts linked delivery targets at receipt creation, and incrementally retires stale duplicate or closed-issue factory PRs | section 11, factory PR lifecycle | #6255 | implemented in repository; operational rollout and first live `factory_pr_retired` audit not yet observed |
-| Factory, Conductor, Planner, and Executor have one documented role and record contract; legacy per-task conductor names mean Planner | The factory conductor | #5785 | in progress |
 | Product-goal records, the factory index, and acceptance evidence drive work selection | The factory conductor | #5786 | not started |
 | Conductor journal, memory assembly, and session lifecycle persist across restarts | The factory conductor | #5787 | not started |
 | One factory conversation spans web, Discord, and voice for the same conductor | The factory conductor | #5788 | not started |
