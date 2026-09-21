@@ -3603,9 +3603,7 @@ url = %s
                             usage = {
                                 "input_tokens": last.get("inputTokens", 0),
                                 "output_tokens": last.get("outputTokens", 0),
-                                "cache_read_tokens": last.get(
-                                    "cachedInputTokens", 0
-                                ),
+                                "cache_read_tokens": last.get("cachedInputTokens", 0),
                                 "cache_write_tokens": last.get(
                                     "cacheWriteInputTokens", 0
                                 ),
