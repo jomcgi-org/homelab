@@ -744,6 +744,7 @@ func (s *Server) stopStatefulBank(ctx context.Context, vmID string) (*nodev1.Sto
 	}
 	e.teardown.started.Store(true)
 	if err := s.reapStatefulEntry(e); err != nil {
+		s.statefulVMs.allowTeardownRetry(vmID)
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: reap banked stateful vm %q: %v", vmID, err)
 	}
 	// Evict any PRIOR bundle for this workload BEFORE recording the new one: at
