@@ -4854,8 +4854,7 @@ def test_bound_zero_turn_fence_rejects_late_result_and_release(
         s.sid, 1, "lost-bound-executor", dispatch_count=1
     )
     assert (
-        store.write_progress_sync("progress-bound", "late progress")
-        == "unknown_token"
+        store.write_progress_sync("progress-bound", "late progress") == "unknown_token"
     )
     store.mark_turn_error_sync(
         s.sid,

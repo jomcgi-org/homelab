@@ -1573,9 +1573,11 @@ def _reserve_bound_zero_turn_request(db, pin, records, identity, precondition) -
                 cessation_confirmed=False,
             )
         return False
-    if requests and (
-        _now() - _timestamp(requests[-1]["observed_at"])
-    ).total_seconds() < BOUND_ZERO_TURN_REQUEST_INTERVAL_SECONDS:
+    if (
+        requests
+        and (_now() - _timestamp(requests[-1]["observed_at"])).total_seconds()
+        < BOUND_ZERO_TURN_REQUEST_INTERVAL_SECONDS
+    ):
         return False
     _audit(
         db,
