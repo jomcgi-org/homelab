@@ -2,9 +2,15 @@
 
 A two-cluster Kubernetes homelab at
 [jomcgi/homelab](https://github.com/jomcgi/homelab): a GKE hub (`homelab-hub`)
-has served every workload since 2026-08-31, and the home k3s cluster is a
-residual under teardown (#5485). `projects/platform/ARCHITECTURE.md` has the
-shape. Services, operators, and
+has served every workload since 2026-08-31 and remains the always-on, more
+reliable hub. The current operator direction is to bring at least three
+already-owned nodes shipped to the UK back as primary home capacity alongside
+GKE, with placement still to be planned and validated
+([#4964](https://github.com/jomcgi-org/homelab/issues/4964)). The closed
+[#5485](https://github.com/jomcgi-org/homelab/issues/5485) and
+[#5461](https://github.com/jomcgi-org/homelab/issues/5461) programmes authorize
+no teardown or disposal.
+`projects/platform/ARCHITECTURE.md` has the shape. Services, operators, and
 websites live under `projects/<name>/`, each colocating its Helm `chart/` with
 the `deploy/` config ArgoCD ships it from. Everything builds with Bazel (bzlmod,
 not WORKSPACE) and deploys from Git. Go, Python, JavaScript, and Starlark. The

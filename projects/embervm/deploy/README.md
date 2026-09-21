@@ -1,26 +1,43 @@
 # EmberVM reference deployment (homelab)
 
 The architecture is deployment-agnostic and lives in
-[../ARCHITECTURE.md](../ARCHITECTURE.md). This file is the concrete shape
-of the reference deployment in this monorepo.
+[../ARCHITECTURE.md](../ARCHITECTURE.md). This file records the checked-in
+reference overlays and their operational caveats.
 
-## Fleet
+## Checked-in home fleet overlay
+
+The table and commands in this section describe the home deployment overlay,
+not verified current UK deployment or approved workload placement. The operator
+confirmed that at least three already-owned nodes were shipped to the UK, each
+with at least 12 CPUs and 16 GB RAM
+([#4964](https://github.com/jomcgi-org/homelab/issues/4964)). Shipping does not
+establish installation, usable capacity, virtualization readiness or data
+placement.
+
+The intended direction is primary home workloads alongside the always-on, more
+reliable GKE hub, with bare metal a useful candidate for EmberVM. A bounded UK
+bring-up and placement plan is still required before treating that direction as
+deployed. The closed Vancouver teardown and GPU-serving proposals
+([#5485](https://github.com/jomcgi-org/homelab/issues/5485) and
+[#5461](https://github.com/jomcgi-org/homelab/issues/5461)) remain separate
+decisions and authorize no hardware wipe or disposal.
 
 | Node | CPU | Memory | Role |
 | ---- | --- | ------ | ---- |
 | node-1/2/3 | Intel Alder Lake-S, 12 vCPU each | ~15.3 GiB (~12.3 allocatable) | k3s control-plane/etcd masters; cold/CPU-rich tier (task-class, semgrep scans, bazel clones) |
 | node-4 | AMD Zen4, 16 threads | 62 GiB | warm tier: banked sessions, serving, stateful volumes |
 
-- The guest/etcd co-location clause from the architecture's deployment
-  section is exercised here: the etcd masters carry task-class guests.
-- Live brick mix: `desiredReplicas` 2gi 1 and 16gi 1, plus per-node 2gi
+- The home overlay encodes the guest/etcd co-location clause from the
+  architecture's deployment section: its etcd masters carry task-class guests
+  when that overlay is deployed.
+- Home overlay brick mix: `desiredReplicas` 2gi 1 and 16gi 1, plus per-node 2gi
   floor bricks pinned on node-1, node-2, node-3 and a second 16gi brick
   pinned on node-4 (doubles session admission headroom and keeps one 16gi
   brick up through every roll); the 4gi and 8gi classes are at zero
   replicas; chart clamps are min 16gi 1 and max 2gi 4 / 4gi 3 / 8gi 2 /
   16gi 2.
-- Warmth is vendor-keyed, so the Intel pool restores from intel-keyed
-  bases and node-4 holds the AMD tier's; labelling a node of a new vendor
+- Warmth is vendor-keyed, so the overlay's Intel pool restores from intel-keyed
+  bases and node-4 is assigned the AMD tier's; labelling a node of a new vendor
   into the pool refuses cross-vendor restores loudly rather than
   mis-placing them.
 - The reference values configure the CP op-log on the `monolith-pg` CNPG

@@ -99,9 +99,10 @@ Retiring it needs interactive sudo on node-4 and is Joe's to run. Grounded in
 the files in this directory, the operation is the `Remove` block below, which
 runs `node-traffic-shaper-down.sh` by way of `ExecStop` in
 `node-traffic-shaper.service` and then deletes all three installed paths.
-Node-4 is also in scope for the home-cluster teardown
-([#5485](https://github.com/jomcgi/homelab/issues/5485)), so the retirement may
-land there instead of on its own.
+The former home-cluster teardown
+([#5485](https://github.com/jomcgi/homelab/issues/5485)) closed as not planned.
+It no longer schedules this retirement, and no wipe or disposal is authorized;
+any node-side removal needs its own current decision.
 
 Because nothing here is under GitOps, deleting this directory from the repo
 would **not** stop the unit. The node-side step is independent of the repo-side

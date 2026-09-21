@@ -419,8 +419,14 @@ mount or unrelated host data.
 
 This is the native EmberVM API, not the Kubernetes Agent Sandbox API. EmberVM
 does not currently ship an Agent Sandbox adapter, and no adapter is required by
-this quickstart. The compatibility gate and its still-open review are tracked in
-[#5806](https://github.com/jomcgi-org/homelab/issues/5806).
+this quickstart. The Agent Sandbox adapter
+([#5806](https://github.com/jomcgi-org/homelab/issues/5806)) and generic
+Kubernetes/Helm adapter
+([#5807](https://github.com/jomcgi-org/homelab/issues/5807)) are not planned.
+The separately dropped service migrations and bindings in
+[#5808](https://github.com/jomcgi-org/homelab/issues/5808) through
+[#5813](https://github.com/jomcgi-org/homelab/issues/5813) do not remove the
+native API, chart, or any shipped workload.
 
 The chart/overlay combination is regression-tested by rendering the real Helm
 templates and asserting that it contains one control plane, one noded, one
