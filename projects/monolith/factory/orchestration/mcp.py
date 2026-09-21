@@ -570,9 +570,7 @@ def _queue_context(db, row) -> dict | None:
     position = db.exec(
         select(func.count(FactoryReceipt.id)).where(*queue_filter, before_or_same)
     ).one()
-    count = db.exec(
-        select(func.count(FactoryReceipt.id)).where(*queue_filter)
-    ).one()
+    count = db.exec(select(func.count(FactoryReceipt.id)).where(*queue_filter)).one()
     return {
         "position": position,
         "count": count,
@@ -595,8 +593,9 @@ def _lifecycle_evidence(db, row, snapshot: dict) -> dict:
     starts = snapshot.get("starts") or []
     review = (
         db.exec(
-            select(FactoryReviewVerdict)
-            .where(FactoryReviewVerdict.task_id == row.task_id)
+            select(FactoryReviewVerdict).where(
+                FactoryReviewVerdict.task_id == row.task_id
+            )
         ).one_or_none()
         if getattr(row, "task_id", None)
         else None

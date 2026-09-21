@@ -976,7 +976,7 @@ def test_lifecycle_keeps_artifact_acceptance_and_deployment_distinct(tmp_path):
                     "pr_url": "https://github.com/owner/repo/pull/9",
                     "head_sha": "a" * 40,
                     "reviewer_model": "opus",
-                }
+                },
             },
         )
 
