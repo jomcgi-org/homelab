@@ -2679,6 +2679,7 @@ def test_kg_provider_requires_confirmed_observation(monkeypatch):
             "codex": {
                 "observed": True,
                 "grant_inventory_complete": True,
+                "grant_inventory_valid": True,
                 "age_seconds": 30.0,
                 "windows": [
                     {
@@ -2736,6 +2737,7 @@ def test_unconfirmed_kg_defers_before_lease_reservation_or_burst_consumption(
             "codex": {
                 "observed": True,
                 "grant_inventory_complete": True,
+                "grant_inventory_valid": True,
                 "grant_views": [
                     {
                         "grant": "account-a",
@@ -2781,6 +2783,7 @@ def test_unconfirmed_kg_defers_before_lease_reservation_or_burst_consumption(
             "codex": {
                 "observed": True,
                 "grant_inventory_complete": True,
+                "grant_inventory_valid": True,
                 "grant_views": [
                     {
                         "grant": grant,
@@ -2806,6 +2809,80 @@ def test_unconfirmed_kg_defers_before_lease_reservation_or_burst_consumption(
         lambda *_args: burst.KGBurstState(),
     )
     claimed = _admitted_claim("wf-admitted")
+    assert claimed is not None and claimed["name"] == "kg-one"
+    with Session(admission_database) as db:
+        reservations = db.exec(select(AgentCapacityReservation)).all()
+        assert len(reservations) == 1
+        assert reservations[0].model == drainer.DRAIN_MODEL == "luna"
+
+
+def test_malformed_broker_inventory_defers_then_complete_inventory_admits(
+    admission_database, monkeypatch
+):
+    import knowledge.api as knowledge_api
+    from knowledge import burst
+    from sqlmodel import select
+
+    from factory.execution import provider_quota
+    from factory.execution.models import AgentCapacityReservation, AgentSession
+
+    _queued_job(admission_database, "kg-one")
+    monkeypatch.setattr(drainer, "provider_walled", lambda: (False, "available"))
+    monkeypatch.setattr(drainer, "kg_provider_walled", _KG_PROVIDER_WALLED)
+
+    def grant(name):
+        return {
+            "provider": "codex",
+            "grant": name,
+            "observed": True,
+            "status": "allowed",
+            "exhausted": False,
+            "age_seconds": 10.0,
+            "windows": [
+                {
+                    "name": "primary",
+                    "used_percent": 10.0,
+                    "expired": False,
+                }
+            ],
+        }
+
+    raw = {
+        "providers": {"codex": grant("provider-headline")},
+        "grants_complete": True,
+        "grants": {"account-a": grant("account-a"), "account-b": "malformed"},
+    }
+    monkeypatch.setattr(
+        provider_quota,
+        "fetch_provider_quota_sync",
+        lambda **_kwargs: provider_quota._available_result(raw),
+    )
+    burst_reads = []
+    monkeypatch.setattr(
+        knowledge_api,
+        "kg_burst_state",
+        lambda *_args: (
+            burst_reads.append(True) or pytest.fail("burst must not be read")
+        ),
+    )
+
+    assert _admitted_claim("wf-malformed") is None
+    assert burst_reads == []
+    with Session(admission_database) as db:
+        job = db.execute(
+            text("SELECT locked_by, locked_at FROM routine_jobs WHERE name='kg-one'")
+        ).one()
+        assert job.locked_by is None and job.locked_at is None
+        assert db.exec(select(AgentCapacityReservation)).all() == []
+        assert db.exec(select(AgentSession)).all() == []
+
+    raw["grants"]["account-b"] = grant("account-b")
+    monkeypatch.setattr(
+        knowledge_api,
+        "kg_burst_state",
+        lambda *_args: burst.KGBurstState(),
+    )
+    claimed = _admitted_claim("wf-complete")
     assert claimed is not None and claimed["name"] == "kg-one"
     with Session(admission_database) as db:
         reservations = db.exec(select(AgentCapacityReservation)).all()

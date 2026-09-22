@@ -471,9 +471,11 @@ def test_available_result_keeps_grants_and_summarises_them():
     result = _available_result(payload)
     assert result["grants"] == payload["grants"]
     assert result["grants_complete"] is True
+    assert result["grants_valid"] is True
     assert _available_result({"providers": {}})["grants"] == {}
     assert _available_result({"providers": {}})["grants_complete"] is False
-    summary = summarise_grants(result["grants"])
+    summary, validity = summarise_grants(result["grants"])
+    assert validity == {"codex": True, "claude": True}
     assert list(summary) == ["codex-b", "codex-cluster"]
     assert summary["codex-b"]["grant"] == "codex-b"
     assert summary["codex-b"]["provider"] == "codex"
@@ -484,3 +486,25 @@ def test_available_result_keeps_grants_and_summarises_them():
         "provider": "codex",
         "observed": False,
     }
+
+
+def test_malformed_grant_inventory_keeps_completeness_and_validity_separate():
+    from factory.execution.provider_quota import _available_result, summarise_grants
+
+    normalised = _available_result(
+        {"providers": {}, "grants": ["not-an-object"], "grants_complete": True}
+    )
+    assert normalised["grants"] == {}
+    assert normalised["grants_complete"] is True
+    assert normalised["grants_valid"] is False
+
+    summary, validity = summarise_grants(
+        {
+            "codex-good": {"provider": "codex", "observed": False},
+            "claude-bad": {"provider": "claude", "observed": "maybe"},
+            "agent-mcp": {"provider": "authentik", "observed": True},
+        }
+    )
+    assert summary["codex-good"]["observed"] is False
+    assert "agent-mcp" not in summary
+    assert validity == {"codex": True, "claude": False}

@@ -51,6 +51,7 @@ def _available_result(payload: object) -> dict:
         # complete so admission never trusts an older partial response.
         "grants": grants if isinstance(grants, dict) else {},
         "grants_complete": payload.get("grants_complete") is True,
+        "grants_valid": isinstance(grants, dict),
         "fetched_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -201,30 +202,51 @@ def _preferred_window_name(provider: str) -> str:
     return "primary" if provider == "codex" else "5h"
 
 
-def summarise_grants(grants: object) -> dict:
-    """Summarise every configured quota grant, including unobserved grants."""
+def summarise_grants(grants: object) -> tuple[dict, dict[str, bool]]:
+    """Summarise grants and retain provider-scoped inventory validity."""
+    providers = ("codex", "claude")
+    validity = {provider: isinstance(grants, dict) for provider in providers}
     if not isinstance(grants, dict):
-        return {}
+        return {}, validity
     summary = {}
     for name, value in grants.items():
         if not isinstance(value, dict):
+            # Without a provider this entry could describe either quota class.
+            # Keep the valid siblings, but neither class may trust completeness.
+            validity = {provider: False for provider in providers}
             continue
         provider = value.get("provider")
-        if provider not in ("codex", "claude"):
+        if not isinstance(provider, str) or not provider:
+            validity = {known: False for known in providers}
             continue
-        if value.get("observed") is True:
+        if provider not in providers:
+            # Non-quota service-account grants are unrelated to this contract.
+            continue
+        if not isinstance(name, str) or not name:
+            validity[provider] = False
+            continue
+        observed = value.get("observed")
+        if observed is True:
             summary[name] = {
                 **_summarise_view(provider, value),
                 "grant": name,
                 "provider": provider,
             }
-        else:
+        elif observed is False:
             summary[name] = {
                 "grant": name,
                 "provider": provider,
                 "observed": False,
             }
-    return summary
+        else:
+            validity[provider] = False
+            summary[name] = {
+                "grant": name,
+                "provider": provider,
+                "observed": False,
+                "usable": False,
+            }
+    return summary, validity
 
 
 def summarise(providers: dict) -> dict:

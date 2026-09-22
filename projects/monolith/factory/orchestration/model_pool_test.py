@@ -55,6 +55,7 @@ def _confirmed_quota(windows, *, age=30.0, exhausted=False):
         "codex": {
             "observed": True,
             "grant_inventory_complete": True,
+            "grant_inventory_valid": True,
             "age_seconds": age,
             "exhausted": exhausted,
             "windows": windows,
@@ -491,6 +492,35 @@ def test_incomplete_grant_inventory_cannot_confirm_room():
     assert model_pool.confirmed_availability("luna", quota) == (
         False,
         "grant_inventory_incomplete",
+    )
+
+
+def test_malformed_inventory_cannot_be_hidden_by_a_healthy_headline(monkeypatch):
+    import factory.execution.provider_quota as quota
+
+    raw = {
+        "providers": {
+            "codex": {
+                "observed": True,
+                "age_seconds": 10.0,
+                "windows": [{"name": "primary", "used_percent": 10.0}],
+            }
+        },
+        "grants_complete": True,
+        "grants": "not-an-inventory",
+    }
+    monkeypatch.setattr(
+        quota,
+        "fetch_provider_quota_sync",
+        lambda **_kwargs: quota._available_result(raw),
+    )
+
+    rolled = model_pool.quota_summary()
+
+    assert model_pool.availability("luna", rolled) == (True, "available")
+    assert model_pool.confirmed_availability("luna", rolled) == (
+        False,
+        "grant_inventory_unusable",
     )
 
 
