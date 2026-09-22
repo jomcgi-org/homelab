@@ -1702,6 +1702,29 @@ defmodule Embervm.SessionManagerTest do
       })
     end
 
+    defp put_other_node_fact(ctx, wl) do
+      NodeCapacity.put(ctx.cap_table, "node-5", %{
+        node_id: "node-5",
+        pod_uid: "pod-node-5",
+        configured_id: "node-5",
+        workloads: %{
+          wl => %{
+            free_primed_slots: 1,
+            snapshot_ref: "snap-#{wl}",
+            base_state: :BASE_BUILD_STATE_READY,
+            primed_vm_ids: []
+          }
+        },
+        live_vms: 0,
+        max_live_vms: 8,
+        session_vms: [],
+        session_snapshots: [],
+        draining: false,
+        store_reachable: true,
+        updated_at: 5_000_000
+      })
+    end
+
     defp pressure_error do
       %GRPC.RPCError{status: 8, message: "noded: pressure:mem (need 4096 MiB, floor 512 MiB)"}
     end
@@ -1774,6 +1797,124 @@ defmodule Embervm.SessionManagerTest do
       assert {:ok, resp} = Task.await(task)
       assert resp.status_code == 200
       assert resp.body == "wait-for-brick"
+    end
+
+    test "partial registration protects a banked snapshot and recovers when its node returns at the bound" do
+      parent = self()
+      {:ok, mono} = Agent.start_link(fn -> 0 end)
+
+      relight_fun = fn _channel, _req ->
+        send(parent, {:relight_started, self()})
+
+        receive do
+          :finish_relight -> {:ok, %RelightResponse{vm_id: "vm-after-registration"}}
+        end
+      end
+
+      evict_fun = fn _channel, req -> send(parent, {:evicted, req.snapshot_ref}) && {:ok, %{}} end
+
+      ctx =
+        start_stack(
+          relight_fun: relight_fun,
+          evict_fun: evict_fun,
+          monotonic_clock: fn -> Agent.get(mono, & &1) end,
+          pressure_retry_interval_ms: 60_000,
+          pressure_wait_bound_ms: 100
+        )
+
+      put_session_workload(ctx, "wl-partial-return")
+      {:ok, created} = SessionManager.create(ctx.mgr, "wl-partial-return", "p1")
+      assert :ok = SessionManager.bank(ctx.mgr, created.session_id)
+      wait_for_state(ctx, created.session_id, :banked)
+      put_other_node_fact(ctx, "wl-partial-return")
+      NodeCapacity.drop(ctx.cap_table, "node-4")
+
+      task =
+        Task.async(fn ->
+          SessionManager.invoke(ctx.mgr, created.session_id, %{body: "registration-returned"})
+        end)
+
+      assert eventually(fn ->
+               get_in(:sys.get_state(ctx.mgr), [:pressure_waits, created.session_id, :last_reason]) ==
+                 {:node_unreported, "node-4"}
+             end)
+
+      assert wait_for_state(ctx, created.session_id, :banked).terminal_reason == nil
+      assert Task.yield(task, 0) == nil
+      refute_received {:evicted, _}
+
+      # At the exact boundary, a newly reported owner wins the final recheck.
+      :ok = Agent.update(mono, fn _ -> 100 end)
+      put_snapshot_fact(ctx, "wl-partial-return", created.session_id)
+      send(ctx.mgr, {:relight_pressure_retry, created.session_id})
+      assert_receive {:relight_started, relight_worker}, 1_000
+
+      # A duplicate timer from the prior parked attempt is stale while this worker
+      # owns the row. It must not drain the caller or evict the snapshot.
+      send(ctx.mgr, {:relight_pressure_retry, created.session_id})
+      _ = :sys.get_state(ctx.mgr)
+      assert Task.yield(task, 0) == nil
+      refute_received {:evicted, _}
+
+      send(relight_worker, :finish_relight)
+      assert {:ok, %{status_code: 200, body: "registration-returned"}} = Task.await(task)
+      assert wait_for_state(ctx, created.session_id, :running).vm_id == "vm-after-registration"
+      refute Map.has_key?(:sys.get_state(ctx.mgr).pressure_waits, created.session_id)
+      refute_received {:evicted, _}
+    end
+
+    test "partial registration terminalizes a banked snapshot when its node stays absent through the bound" do
+      parent = self()
+      {:ok, mono} = Agent.start_link(fn -> 0 end)
+      evict_fun = fn _channel, req -> send(parent, {:evicted, req.snapshot_ref}) && {:ok, %{}} end
+
+      ctx =
+        start_stack(
+          evict_fun: evict_fun,
+          monotonic_clock: fn -> Agent.get(mono, & &1) end,
+          pressure_retry_interval_ms: 60_000,
+          pressure_wait_bound_ms: 100
+        )
+
+      put_session_workload(ctx, "wl-partial-gone")
+      {:ok, created} = SessionManager.create(ctx.mgr, "wl-partial-gone", "p1")
+      assert :ok = SessionManager.bank(ctx.mgr, created.session_id)
+      banked = wait_for_state(ctx, created.session_id, :banked)
+      put_other_node_fact(ctx, "wl-partial-gone")
+      NodeCapacity.drop(ctx.cap_table, "node-4")
+
+      task =
+        Task.async(fn ->
+          SessionManager.invoke(ctx.mgr, created.session_id, %{body: "owner-never-returned"})
+        end)
+
+      assert eventually(fn ->
+               get_in(:sys.get_state(ctx.mgr), [:pressure_waits, created.session_id, :last_reason]) ==
+                 {:node_unreported, "node-4"}
+             end)
+
+      assert wait_for_state(ctx, created.session_id, :banked).terminal_reason == nil
+      assert Task.yield(task, 0) == nil
+      refute_received {:evicted, _}
+
+      # The comparison is inclusive: at exactly 100ms the still-absent owner is
+      # bounded into the established snapshot_lost failure and eviction path.
+      :ok = Agent.update(mono, fn _ -> 100 end)
+      send(ctx.mgr, {:relight_pressure_retry, created.session_id})
+
+      assert {:error, {:gone, "snapshot_lost"}} = Task.await(task)
+      assert_receive {:evicted, snapshot_ref}, 1_000
+      assert snapshot_ref == banked.snapshot_ref
+
+      failed = wait_for_state(ctx, created.session_id, :failed)
+      assert failed.terminal_reason == "snapshot_lost"
+      refute Map.has_key?(:sys.get_state(ctx.mgr).pressure_waits, created.session_id)
+
+      # A queued duplicate retry after terminalization is harmless and cannot
+      # trigger a second eviction.
+      send(ctx.mgr, {:relight_pressure_retry, created.session_id})
+      _ = :sys.get_state(ctx.mgr)
+      refute_received {:evicted, _}
     end
 
     test "a failed relight mark clears the existing pressure wait" do
