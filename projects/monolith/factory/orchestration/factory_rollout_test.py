@@ -330,7 +330,9 @@ def test_git_managed_application_uses_observed_single_source_revision():
     assert verify(state)["reason"] == "deployed_revision_missing"
 
 
-def test_short_cache_expires_and_does_not_cache_failed_observation(monkeypatch):
+def test_short_cache_expires_and_shares_failures_without_turning_them_into_success(
+    monkeypatch,
+):
     monkeypatch.setattr(rollout, "_recent", {})
     now = [10.0]
     monkeypatch.setattr(rollout.time, "monotonic", lambda: now[0])
@@ -346,12 +348,20 @@ def test_short_cache_expires_and_does_not_cache_failed_observation(monkeypatch):
     now[0] += 1
     assert rollout._cached(("ci",), read) == 2
 
+    failures = []
+
     def failed():
+        failures.append(True)
         raise RuntimeError("unavailable")
 
-    with pytest.raises(RuntimeError):
-        rollout._cached(("snapshot",), failed)
-    assert ("snapshot",) not in rollout._recent
+    for _ in range(20):
+        with pytest.raises(RuntimeError, match="unavailable"):
+            rollout._cached(("snapshot",), failed)
+    assert len(failures) == 1
+    now[0] += 30
+    assert rollout._cached(("snapshot",), lambda: {"recovered": True}) == {
+        "recovered": True
+    }
 
 
 def test_external_tagged_sidecar_does_not_require_our_publication_digest():

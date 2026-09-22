@@ -1487,7 +1487,9 @@ that have no live application.
 
 Unknown, missing, paginated or unavailable observations fail closed. Each task
 records at most one pending observation per minute; mutable reads are shared
-for at most 30 seconds, and immutable SHA reads have a bounded cache. Reads do
+for at most 30 seconds, including failed reads that remain failures rather than
+empty successful inventories. This prevents a cluster timeout from repeating
+for every pending delivery in one tick. Immutable SHA reads have a bounded cache. Reads do
 not mutate Argo, restart guests, or grant credentials. A durable
 `rollout_verified` audit binds the approved PR head, merge, publication and
 source SHAs to observed application revisions and workload images. Only that
