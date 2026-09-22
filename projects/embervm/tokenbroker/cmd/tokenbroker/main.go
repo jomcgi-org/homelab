@@ -140,7 +140,16 @@ func run(logger *slog.Logger) error {
 	}
 	m := metrics.New()
 	m.Register(prometheus.DefaultRegisterer)
-	quotaStore := quota.NewStore()
+	quotaStore, quotaRestoreErr := quota.NewPersistentStore(&store.QuotaStateStore{
+		Client: client, Namespace: namespace,
+		Name: env("TOKENBROKER_QUOTA_CONFIGMAP", "embervm-tokenbroker-quota"),
+	})
+	if quotaRestoreErr != nil {
+		// The store remains usable but empty after a restore failure. This keeps
+		// every quota read explicitly unobserved until a fresh report can be
+		// durably committed.
+		logger.Error("tokenbroker quota state unavailable", "err", quotaRestoreErr)
+	}
 	tokenRequests := newTokenRequestsCounter()
 	prometheus.MustRegister(metrics.NewQuotaCollector(quotaStore, quotaProviders), tokenRequests)
 	quotaProviderSet := make(map[string]struct{}, len(quotaProviders))
@@ -355,11 +364,10 @@ func (s *server) quotaGrantViews() map[string]quota.View {
 	return views
 }
 
-// quota serves an in-memory view of subscription quota reported by egress
-// proxies. POST /quota/{provider} replaces that provider's latest observation,
+// quota serves the durable view of subscription quota reported by egress
+// proxies. POST /quota/{provider} conditionally advances that provider's observation,
 // GET /quota/{provider} reads one view, and GET /quota reads every allowlisted
-// provider. Observations are intentionally not persisted and are lost whenever
-// tokenbroker restarts.
+// provider. Original observation and receipt timestamps survive broker restarts.
 func (s *server) quota(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/quota" {
 		if r.Method != http.MethodGet {
@@ -439,15 +447,21 @@ func (s *server) acceptQuota(provider, grant string, w http.ResponseWriter, r *h
 		return
 	}
 	obs.Provider = provider
-	if !quota.ValidObservation(obs) {
+	receivedAt := time.Now().UTC()
+	if !quota.ValidObservation(obs, receivedAt) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"reason": "invalid_observation"})
 		return
 	}
-	receivedAt := time.Now().UTC()
+	var err error
 	if grant != "" {
-		s.quotaStore.PutGrant(grant, provider, obs, receivedAt)
+		err = s.quotaStore.PutGrant(grant, provider, obs, receivedAt)
 	} else {
-		s.quotaStore.Put(provider, obs, receivedAt)
+		err = s.quotaStore.Put(provider, obs, receivedAt)
+	}
+	if err != nil {
+		s.logger.Error("tokenbroker quota observation persistence failed", "provider", provider, "grant", grant, "err", err)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"reason": "quota_persistence_failed"})
+		return
 	}
 	s.logger.Info("tokenbroker quota observation accepted", "provider", provider, "grant", grant, "status", obs.Status, "windows", len(obs.Windows))
 	w.WriteHeader(http.StatusNoContent)
