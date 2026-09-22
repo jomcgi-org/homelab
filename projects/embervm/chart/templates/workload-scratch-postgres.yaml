@@ -41,7 +41,7 @@ spec:
     # (D-R3.11.1 / the fc-base-build-sizing-coupling note). vcpus 1 is ample for a
     # scratch datastore.
     vcpus: 1
-    memMib: 512
+    memMib: {{ .Values.scratchPostgres.memMib }}
   # No concurrency block: the stateful class is a singleton (exactly one live
   # VM), so spec.concurrency is forbidden by the watcher.
   stateful:

@@ -283,6 +283,38 @@ the path noded attaches are byte-identical.
 {{- end -}}
 
 {{/*
+Declared guest memory used only by the opt-in rootfs class filter. Values come
+from the same workload settings that render the Workload CRs, so deploy overlays
+such as the production pi and GKE semgrep sizes stay aligned with scheduling.
+An unknown image lane, including the variable-size zip runtime, deliberately
+returns empty. The driver treats missing or malformed memory as eligible and
+bakes it with an explicit fail-closed log.
+
+Input: (dict "ctx" $ctx "name" $name).
+*/}}
+{{- define "embervm.rootfs.workloadMemoryMib" -}}
+{{- $ctx := .ctx -}}
+{{- $name := .name -}}
+{{- if hasKey $ctx.Values.sandboxWorkloads $name -}}
+{{- (index $ctx.Values.sandboxWorkloads $name).memMib -}}
+{{- else if eq $name "semgrep" -}}
+{{- $ctx.Values.semgrepWorkload.memMib -}}
+{{- else if eq $name "runtimeClaude" -}}
+{{- $ctx.Values.claudeRuntimeWorkload.memMib -}}
+{{- else if eq $name "runtimePi" -}}
+{{- $ctx.Values.piRuntimeWorkload.memMib -}}
+{{- else if eq $name "pingWorkload" -}}
+{{- $ctx.Values.pingWorkload.memMib -}}
+{{- else if eq $name "scratchPostgres" -}}
+{{- min ($ctx.Values.scratchPostgres.memMib | int) ($ctx.Values.demoPostgres.memMib | int) -}}
+{{- else if eq $name "bazelQuery" -}}
+{{- $ctx.Values.bazelQueryWorkload.memMib -}}
+{{- else if eq $name "shotter" -}}
+{{- $ctx.Values.shotterWorkload.memMib -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 KEK root Secret name (ADR embervm/036). Generated from the release when the
 1Password item is named; a pre-existing Secret must be named explicitly.
 */}}
