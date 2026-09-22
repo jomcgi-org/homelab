@@ -28,8 +28,15 @@ go_library(
         "//projects/embervm/noded/substrate",
         "//projects/embervm/noded/vsockproto",
         "@io_opentelemetry_go_otel//:otel",
-        "@org_golang_x_sys//unix",
-    ],
+    ] + select({
+        "@rules_go//go/platform:android": [
+            "@org_golang_x_sys//unix",
+        ],
+        "@rules_go//go/platform:linux": [
+            "@org_golang_x_sys//unix",
+        ],
+        "//conditions:default": [],
+    }),
 )
 
 go_test(
@@ -55,6 +62,13 @@ go_test(
         "@io_opentelemetry_go_otel_sdk//trace",
         "@io_opentelemetry_go_otel_sdk//trace/tracetest",
         "@io_opentelemetry_go_otel_trace//:trace",
-        "@org_golang_x_sys//unix",
-    ],
+    ] + select({
+        "@rules_go//go/platform:android": [
+            "@org_golang_x_sys//unix",
+        ],
+        "@rules_go//go/platform:linux": [
+            "@org_golang_x_sys//unix",
+        ],
+        "//conditions:default": [],
+    }),
 )
