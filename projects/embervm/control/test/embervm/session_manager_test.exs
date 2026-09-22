@@ -659,6 +659,42 @@ defmodule Embervm.SessionManagerTest do
     assert session.node_id == "node-4"
   end
 
+  for {selected_ref, sibling_ref} <- [{"base-old", "base-fresh"}, {"base-fresh", "base-old"}] do
+    @selected_ref selected_ref
+    @sibling_ref sibling_ref
+    test "staged registry observation leaves chosen-instance placement unchanged for #{selected_ref}" do
+      parent = self()
+
+      ctx =
+        start_stack(
+          claim_fun: fn _dispatcher, _dial_id, _workload -> :miss end,
+          channel_fun: fn dial_id -> {:ok, {:channel, dial_id}} end,
+          prime_fun: fn {:channel, dial_id}, req ->
+            send(parent, {:primed_instance, dial_id, req.snapshot_ref})
+            {:ok, %PrimeResponse{vm_id: "vm-selected-instance"}}
+          end
+        )
+
+      put_session_workload(ctx, "wl-registry-observation", mem_mib: 4_000)
+      NodeCapacity.drop(ctx.cap_table, "node-4")
+      put_brick(ctx, "wl-registry-observation", "small",
+        size_class: "2gi", mem_headroom: 100, mem_budget: 2_048, snapshot_ref: @sibling_ref)
+      put_brick(ctx, "wl-registry-observation", "big",
+        size_class: "8gi", mem_headroom: 8_000, mem_budget: 8_192, snapshot_ref: @selected_ref)
+
+      # No freshness option or application setting: the staged condition does
+      # not fence an old but READY ref. The exact selected brick supplies Prime,
+      # while existing size/headroom checks still exclude its smaller sibling.
+      {:ok, created} = SessionManager.create(ctx.mgr, "wl-registry-observation", "p1")
+      assert_receive {:primed_instance, "node-4/big", ref}, 1_000
+      assert ref == @selected_ref
+      refute_received {:primed_instance, "node-4/small", _}
+      {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+      assert session.node_id == "node-4"
+      assert session.vm_id == "vm-selected-instance"
+    end
+  end
+
   test "fleet placement skips a too-small rendezvous winner" do
     parent = self()
     suffix =

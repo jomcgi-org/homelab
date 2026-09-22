@@ -3,7 +3,7 @@ defmodule Embervm.BaseBuilder do
   Turns a `Workload`'s OCI image into a pristine base snapshot by driving the
   node daemon's `BuildBase` RPC, then reports the result back into the
   Workload's `status` subresource (`snapshotRef`, `snapshotDigest`, and the
-  `Ready`/`BaseBuilt`/`BaseVendorCoverage` conditions).
+  `Ready`/`BaseBuilt`/`BaseVendorCoverage`/`BaseRegistryConverged` conditions).
 
   This is the first control-plane component that DRIVES the node daemon (issues
   a mutating RPC and reconciles its result into CR status), where
@@ -97,6 +97,9 @@ defmodule Embervm.BaseBuilder do
     * `Ready`/`snapshotRef`: a built base exists (a local-presence claim; #4937
       keeps health out of it, #5009 keeps the claim at BOOT);
     * `vendor_built`: which vendor's build the CP can vouch for, at signature;
+    * `BaseRegistryConverged`: whether every observed eligible instance advertises
+      that vendor's exact recorded ref READY. Unknown evidence is not convergence.
+      This is observation only, not a placement gate or proof of live discovery;
     * `store_confirmed`: the store provably holds that vendor's current ref;
     * hydrate (restore-first): requires the ref recorded AND absent locally
       AND affirmatively fetchable from the store. "Recorded" alone never
@@ -122,7 +125,7 @@ defmodule Embervm.BaseBuilder do
   Status is patched with a JSON merge-patch, which REPLACES arrays wholesale, so
   two writers touching `conditions` would clobber each other. Ownership is split
   by key: this module owns `conditions` (`Ready` + `BaseBuilt` +
-  `BaseVendorCoverage`), `snapshotRef`, and `snapshotDigest` for valid task
+  `BaseVendorCoverage` + `BaseRegistryConverged`), `snapshotRef`, and `snapshotDigest` for valid task
   Workloads; the watcher owns
   `observedGeneration` and `primedFloorSatisfied` (disjoint keys, no lost
   update) and keeps `conditions` only for the invalid-CR validation lane, which
@@ -2326,6 +2329,7 @@ defmodule Embervm.BaseBuilder do
       # Ready or BaseBuilt semantics.
       last_status_phase: nil,
       last_vendor_coverage: nil,
+      last_registry_convergence: nil,
       backoff_ms: nil,
       retry_timer: nil
     }
@@ -4273,18 +4277,18 @@ defmodule Embervm.BaseBuilder do
 
   # -- status writing ----------------------------------------------------------
 
-  # Build and patch the three conditions this module owns. Ready is derived purely
+  # Build and patch the four conditions this module owns. Ready is derived purely
   # from whether a restorable base exists (snapshot_ref present); BaseBuilt tracks
   # the DESIRED scalar base. BaseVendorCoverage exposes the per-vendor gap behind
   # pi-runtime's observed amd-only Ready=True state, but does not change Ready or
   # enqueue work. Only a :built result writes snapshotRef/Digest, so a build in
   # progress or failure never clears an existing (still restorable) ref.
-  # The periodic fleet refresh uses the same status owner. A coverage change
+  # The periodic fleet refresh uses the same status owner. A coverage/convergence change
   # republishes the full condition array using the last written phase. A pure
   # snapshotRefs change remains an additive map patch and does not replace the
   # unchanged condition array.
-  defp write_base_status(state, w, {:fleet_refresh, phase, coverage_changed?}) do
-    write_base_status(state, w, phase, coverage_changed?, false)
+  defp write_base_status(state, w, {:fleet_refresh, phase, conditions_changed?}) do
+    write_base_status(state, w, phase, conditions_changed?, false)
   end
 
   defp write_base_status(state, w, phase) do
@@ -4294,12 +4298,13 @@ defmodule Embervm.BaseBuilder do
   defp write_base_status(state, w, phase, include_conditions?, include_snapshot?) do
     ready = ready_condition(state, w)
     base_built = base_built_condition(state, phase)
-    vendor_coverage = base_vendor_coverage_condition(state, w)
     refs = observed_snapshot_refs_by_vendor(state, w)
+    vendor_coverage = observed_vendor_coverage(state, w, refs)
+    convergence = base_registry_convergence_condition(state, w)
 
     status_map =
       if(include_conditions?,
-        do: %{"conditions" => [ready, base_built, vendor_coverage]},
+        do: %{"conditions" => [ready, base_built, vendor_coverage, convergence]},
         else: %{}
       )
       |> maybe_put_snapshot(w, phase, include_snapshot?)
@@ -4313,6 +4318,8 @@ defmodule Embervm.BaseBuilder do
             | last_status_phase: phase,
               last_vendor_coverage:
                 if(include_conditions?, do: vendor_coverage, else: current.last_vendor_coverage),
+              last_registry_convergence:
+                if(include_conditions?, do: convergence, else: current.last_registry_convergence),
               last_snapshot_refs:
                 if(map_size(refs) == 0, do: current.last_snapshot_refs, else: refs)
           }
@@ -4377,27 +4384,29 @@ defmodule Embervm.BaseBuilder do
   defp refresh_snapshot_refs(state) do
     Enum.reduce(state.workloads, state, fn {_name, w}, acc ->
       refs = observed_snapshot_refs_by_vendor(acc, w)
-      coverage = base_vendor_coverage_condition(acc, w)
+      coverage = observed_vendor_coverage(acc, w, refs)
+      convergence = base_registry_convergence_condition(acc, w)
 
       refs_changed? = map_size(refs) > 0 and refs != w.last_snapshot_refs
 
       coverage_changed? =
         condition_identity(coverage) != condition_identity(w.last_vendor_coverage)
 
+      conditions_changed? =
+        coverage_changed? or
+          condition_identity(convergence) != condition_identity(w.last_registry_convergence)
+
       cond do
         w.last_status_phase == nil ->
           acc
 
-        # A total capacity-fact gap is not evidence that every known vendor or
-        # base vanished. Preserve the last published view until facts return.
-        map_size(refs) == 0 and MapSet.size(fleet_vendors(acc, w)) == 0 ->
-          acc
-
-        refs_changed? or coverage_changed? ->
+        # Preserve refs/coverage through a total fact gap, but invalidate the
+        # observational convergence claim even when the union did not change.
+        refs_changed? or conditions_changed? ->
           write_base_status(
             acc,
             w,
-            {:fleet_refresh, w.last_status_phase, coverage_changed?}
+            {:fleet_refresh, w.last_status_phase, conditions_changed?}
           )
 
         true ->
@@ -4405,6 +4414,82 @@ defmodule Embervm.BaseBuilder do
       end
     end)
   end
+
+  defp observed_vendor_coverage(state, w, refs) do
+    if map_size(refs) == 0 and MapSet.size(fleet_vendors(state, w)) == 0 do
+      w.last_vendor_coverage || base_vendor_coverage_condition(state, w)
+    else
+      base_vendor_coverage_condition(state, w)
+    end
+  end
+
+  # Observation only. Use the existing build-envelope eligibility (including
+  # wildcard bricks), NOT transient free slots/headroom: a busy stale sibling
+  # can accept work later. Examine every instance, never a node representative.
+  # Registered instances without facts have unknown eligibility and must not
+  # disappear from the evidence. Facts also cover dispatchable instances not
+  # yet registered with this builder, just as the scheduler's table read does.
+  #
+  # The expected ref comes only from a successful desired-signature vendor build.
+  # Exact ref equality preserves the base's encoded rootfs identity; neither a
+  # shared host nor ref sort order proves freshness. Distinct refs can reflect
+  # different rootfs identities, so disagreement is NOT a claim of supersession.
+  # No ownership, hydration, retention, or placement caller consumes this status.
+  defp base_registry_convergence_condition(state, w) do
+    facts = Embervm.NodeCapacity.all(state.capacity_table)
+    observed_ids = MapSet.new(facts, &Map.get(&1, :instance_id))
+    missing_facts = Enum.count(state.node_ids, &(not MapSet.member?(observed_ids, &1)))
+    eligible = Enum.filter(facts, &build_eligible?(&1, w.mem_mib || 0))
+    evidence = Enum.frequencies_by(eligible, &registry_evidence(&1, w))
+    matching = Map.get(evidence, :matching, 0)
+    disagreeing = Map.get(evidence, :disagreeing, 0)
+    unknown = Map.get(evidence, :unknown, 0) + missing_facts
+
+    {status, reason} =
+      cond do
+        disagreeing > 0 -> {"False", "RegistryDisagreement"}
+        unknown > 0 or eligible == [] -> {"Unknown", "RegistryEvidenceIncomplete"}
+        true -> {"True", "ObservedRegistriesMatch"}
+      end
+
+    condition(
+      state,
+      "BaseRegistryConverged",
+      status,
+      reason,
+      "eligible instances: #{length(eligible)}; matching: #{matching}; " <>
+        "disagreeing: #{disagreeing}; unknown: #{unknown}; " <>
+        "registered without facts: #{missing_facts}. " <>
+        "Exact desired-signature vendor ref observations only, not live rollout proof or placement enforcement."
+    )
+  end
+
+  defp registry_evidence(fact, w) do
+    vendor = cpu_vendor(fact)
+    ref = get_in(fact, [:workloads, w.name, :snapshot_ref])
+    expected = Map.get(w.vendor_built, vendor)
+
+    cond do
+      not nonempty_string?(Map.get(fact, :instance_id)) or
+          not nonempty_string?(Map.get(fact, :node_id)) or vendor == "" ->
+        :unknown
+
+      not nonempty_string?(ref) or not is_map(expected) ->
+        :unknown
+
+      Map.get(expected, :signature) != signature(w) or
+          not nonempty_string?(Map.get(expected, :ref)) ->
+        :unknown
+
+      ref == expected.ref and Embervm.Scheduler.base_ready?(fact, w.name) ->
+        :matching
+
+      true ->
+        :disagreeing
+    end
+  end
+
+  defp nonempty_string?(value), do: is_binary(value) and value != ""
 
   # Status observes EVERY instance, including disagreeing siblings on one host.
   # Physical-node deduplication remains in the operational helper below: its
