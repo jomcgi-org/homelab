@@ -4533,10 +4533,34 @@ def _fence_bound_zero_turn_without_stop(s, monkeypatch):
     return supervisor
 
 
-def _fence_bound_zero_turn_absence_with_refused_settlement(s, monkeypatch):
-    """Persist the absence fence while its separate settlement rolls back."""
+def _mature_bound_zero_turn_absence(s):
+    """Sample one already-open absence run until it is eligible to fence."""
     from datetime import timedelta
 
+    from factory.orchestration import factory_supervision as supervisor
+
+    elapsed = 0
+    observations = 1
+    timeout = s.run["pin"]["turn_timeout_seconds"]
+    while elapsed <= timeout or observations < supervisor.MIN_ABSENCE_OBSERVATIONS:
+        remaining = timeout - elapsed + 1
+        if (
+            observations + 1 >= supervisor.MIN_ABSENCE_OBSERVATIONS
+            and remaining <= supervisor.ABSENCE_MAX_GAP_SECONDS
+        ):
+            step = max(supervisor.ABSENCE_OBSERVATION_INTERVAL_SECONDS, remaining)
+        else:
+            step = supervisor.ABSENCE_OBSERVATION_INTERVAL_SECONDS
+        assert step <= supervisor.ABSENCE_MAX_GAP_SECONDS
+        s.now[0] += timedelta(seconds=step)
+        elapsed += step
+        observations += 1
+        result = _tick_bound_zero_turn(s)
+    return result
+
+
+def _fence_bound_zero_turn_absence_with_refused_settlement(s, monkeypatch):
+    """Persist the absence fence while its separate settlement rolls back."""
     from factory.execution.transport import EmberSessionGone
     from factory.orchestration import factory_supervision as supervisor
 
@@ -4547,14 +4571,13 @@ def _fence_bound_zero_turn_absence_with_refused_settlement(s, monkeypatch):
 
     monkeypatch.setattr(supervisor, "_http", absent)
     assert not _tick_bound_zero_turn(s)
-    s.now[0] += timedelta(seconds=s.run["pin"]["turn_timeout_seconds"] + 1)
     record_outcome = supervisor.graph.record_outcome
     monkeypatch.setattr(
         supervisor.graph,
         "record_outcome",
         lambda *_args, **_kwargs: SimpleNamespace(ok=False),
     )
-    assert not _tick_bound_zero_turn(s)
+    assert not _mature_bound_zero_turn_absence(s)
     monkeypatch.setattr(supervisor.graph, "record_outcome", record_outcome)
 
     fenced = _uncertain_snapshot(s)
@@ -4568,6 +4591,23 @@ def _fence_bound_zero_turn_absence_with_refused_settlement(s, monkeypatch):
         "kind": "authoritative_absence",
         "session_id": s.precondition["session_id"],
     }
+    observations = [
+        detail
+        for action, detail in records
+        if action == "bound_zero_turn_observation"
+        and detail["evidence"]["kind"] == "authoritative_absence"
+    ]
+    assert len(observations) >= supervisor.MIN_ABSENCE_OBSERVATIONS
+    observed_at = [supervisor._timestamp(row["observed_at"]) for row in observations]
+    assert all(
+        supervisor.ABSENCE_OBSERVATION_INTERVAL_SECONDS
+        <= (newer - older).total_seconds()
+        <= supervisor.ABSENCE_MAX_GAP_SECONDS
+        for older, newer in zip(observed_at, observed_at[1:])
+    )
+    assert (observed_at[-1] - observed_at[0]).total_seconds() > s.run["pin"][
+        "turn_timeout_seconds"
+    ]
     return supervisor
 
 
@@ -4773,8 +4813,47 @@ def test_bound_zero_turn_lookup_failure_breaks_the_absence_window(
     mode[0] = "absent"
     assert not _tick_bound_zero_turn(s)
     assert _uncertain_snapshot(s)["permits"][0]["state"] == "running"
-    s.now[0] += timedelta(seconds=timeout + 1)
-    assert _tick_bound_zero_turn(s)
+    assert _mature_bound_zero_turn_absence(s)
+    assert _uncertain_snapshot(s)["permits"][0]["outcome"] == "delivery_error"
+
+
+def test_bound_zero_turn_absence_gap_restarts_sampling(
+    bound_zero_turn_factory, monkeypatch
+):
+    from datetime import timedelta
+
+    from factory.execution.transport import EmberSessionGone
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = bound_zero_turn_factory
+
+    def absent(_guest, precondition=None):
+        assert precondition is None
+        raise EmberSessionGone("missing")
+
+    monkeypatch.setattr(supervisor, "_http", absent)
+    assert not _tick_bound_zero_turn(s)
+    s.now[0] += timedelta(seconds=s.run["pin"]["turn_timeout_seconds"] + 1)
+    assert not _tick_bound_zero_turn(s)
+
+    before = _uncertain_snapshot(s)
+    assert before["session"]["guest_cleanup_id"] is None
+    assert len(before["pending"]) == 1
+    assert before["permits"][0]["state"] == "running"
+    records = supervisor._records_for_pin(s.run["pin"])
+    observations = [
+        detail
+        for action, detail in records
+        if action == "bound_zero_turn_observation"
+    ]
+    assert [row["observation"] for row in observations] == [1, 1]
+    assert (
+        supervisor._timestamp(observations[1]["observed_at"])
+        - supervisor._timestamp(observations[0]["observed_at"])
+    ).total_seconds() > supervisor.ABSENCE_MAX_GAP_SECONDS
+    assert not any(action == "bound_zero_turn_fence" for action, _ in records)
+
+    assert _mature_bound_zero_turn_absence(s)
     assert _uncertain_snapshot(s)["permits"][0]["outcome"] == "delivery_error"
 
 

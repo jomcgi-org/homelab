@@ -1485,7 +1485,13 @@ def _active_bound_zero_turn_fence(records, identity):
 
 
 def _bound_zero_turn_observe(pin, session_id, identity, evidence):
-    """Persist two unchanged samples strictly beyond the node turn timeout."""
+    """Persist unchanged, bounded samples past the node turn timeout.
+
+    Completed-invoke evidence pins remote progress and may mature from two
+    samples. Timestamp-free authoritative absence additionally needs a sampled
+    run with bounded gaps, so two unrelated 404 or 410 responses cannot fence
+    a guest that was live during an observer outage.
+    """
     now = _now()
     with controls._locked_session() as (db, control):
         current, _run = _locked_attempt(
@@ -1514,13 +1520,50 @@ def _bound_zero_turn_observe(pin, session_id, identity, evidence):
                 "bound_zero_turn_observation",
                 identity_sha256=identity["identity_sha256"],
                 evidence=evidence,
+                first_observed_at=now.isoformat(),
                 observed_at=now.isoformat(),
                 observation=1,
                 intervention_required=False,
                 cessation_confirmed=False,
             )
             return "waiting", identity
-        first = _timestamp(previous["observed_at"])
+        first = _timestamp(
+            previous.get("first_observed_at", previous["observed_at"])
+        )
+        if evidence.get("kind") == "authoritative_absence":
+            latest = _timestamp(previous["observed_at"])
+            gap = (now - latest).total_seconds()
+            if gap > ABSENCE_MAX_GAP_SECONDS:
+                _audit(
+                    db,
+                    pin,
+                    "bound_zero_turn_observation",
+                    identity_sha256=identity["identity_sha256"],
+                    evidence=evidence,
+                    first_observed_at=now.isoformat(),
+                    observed_at=now.isoformat(),
+                    observation=1,
+                    intervention_required=False,
+                    cessation_confirmed=False,
+                )
+                return "waiting", identity
+            if gap < ABSENCE_OBSERVATION_INTERVAL_SECONDS:
+                return "waiting", identity
+            observation = int(previous.get("observation", 1)) + 1
+            _audit(
+                db,
+                pin,
+                "bound_zero_turn_observation",
+                identity_sha256=identity["identity_sha256"],
+                evidence=evidence,
+                first_observed_at=first.isoformat(),
+                observed_at=now.isoformat(),
+                observation=observation,
+                intervention_required=False,
+                cessation_confirmed=False,
+            )
+            if observation < MIN_ABSENCE_OBSERVATIONS:
+                return "waiting", identity
         if (now - first).total_seconds() <= pin["turn_timeout_seconds"]:
             return "waiting", identity
         fence_bound_zero_turn_factory_attempt(db, pin, identity)
