@@ -262,6 +262,19 @@ func TestQuotaPostThenGetRoundTrip(t *testing.T) {
 	}
 }
 
+func TestClaudeQuotaOverageStatusRoundTripsWithoutExhaustion(t *testing.T) {
+	s, _ := quotaTestServer("codex", "claude")
+	body := `{"observed_at":"2026-09-05T18:10:00Z","status":"allowed","reached_type":"","overage_status":"rejected","windows":[{"name":"5h","used_percent":24,"window_minutes":300}]}`
+	posted := requestQuota(t, s, http.MethodPost, "/quota/claude", body)
+	if posted.Code != http.StatusNoContent {
+		t.Fatalf("POST = %d %s", posted.Code, posted.Body.String())
+	}
+	decoded := decodeBody(t, requestQuota(t, s, http.MethodGet, "/quota/claude", ""))
+	if decoded["status"] != "allowed" || decoded["overage_status"] != "rejected" || decoded["reached_type"] != "" || decoded["exhausted"] != false {
+		t.Fatalf("view = %#v", decoded)
+	}
+}
+
 func TestQuotaHandlerRejectsUnknownProviderBadJSONAndEmptyObservation(t *testing.T) {
 	s, _ := quotaTestServer("codex", "claude")
 	tests := []struct {
