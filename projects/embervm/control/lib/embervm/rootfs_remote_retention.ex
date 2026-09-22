@@ -28,6 +28,7 @@ defmodule Embervm.RootfsRemoteRetention do
   @size ~r/^[1-9][0-9]*[KMGTP]?$/
   @format ~r/^[a-z][a-z0-9-]{0,31}$/
   @payload ~r/^[0-9a-f]{64}\.ext4$/
+  @image_ref_digest ~r/@sha256:([0-9a-fA-F]{64})$/
 
   def start_link(opts) do
     age_days = Keyword.get(opts, :age_days, 30)
@@ -73,14 +74,20 @@ defmodule Embervm.RootfsRemoteRetention do
         end
       end)
 
+    current_image_refs =
+      opts
+      |> Keyword.get(:current_image_refs, [])
+      |> Enum.filter(&(is_binary(&1) and &1 != ""))
+      |> MapSet.new()
+
     state = %{
       s3: s3,
       enabled: Keyword.get(opts, :enabled, false),
       age_ms: Keyword.get(opts, :age_days, 30) * @day_ms,
-      current_image_refs:
-        opts
-        |> Keyword.get(:current_image_refs, [])
-        |> Enum.filter(&(is_binary(&1) and &1 != ""))
+      current_image_refs: current_image_refs,
+      current_image_digests:
+        current_image_refs
+        |> Enum.flat_map(&image_ref_digest/1)
         |> MapSet.new(),
       wall_clock: Keyword.get(opts, :wall_clock, fn -> System.system_time(:millisecond) end),
       sweep_interval_ms: Keyword.get(opts, :sweep_interval_ms, @sweep_interval_ms)
@@ -226,6 +233,12 @@ defmodule Embervm.RootfsRemoteRetention do
         MapSet.member?(state.current_image_refs, image_ref) ->
           {:held, held(prefix, bytes, "current_image_ref")}
 
+        MapSet.member?(state.current_image_digests, identity.digest) ->
+          # The marker records the first writer's ref, but the remote object is
+          # shared by digest. A current ref in another repository can therefore
+          # use this prefix without matching image_ref byte-for-byte.
+          {:held, held(prefix, bytes, "current_image_digest")}
+
         state.wall_clock.() - uploaded_at_ms < state.age_ms ->
           {:held, held(prefix, bytes, "younger_than_age_horizon")}
 
@@ -287,6 +300,13 @@ defmodule Embervm.RootfsRemoteRetention do
 
   defp parse_time(_value), do: {:error, :invalid_time}
 
+  defp image_ref_digest(image_ref) do
+    case Regex.run(@image_ref_digest, image_ref) do
+      [_, digest] -> [String.downcase(digest)]
+      _ -> []
+    end
+  end
+
   defp valid_file?(@marker_name), do: true
   defp valid_file?(file), do: Regex.match?(@payload, file)
 
@@ -327,6 +347,7 @@ defmodule Embervm.RootfsRemoteRetention do
       "mode" => if(state.enabled, do: "armed", else: "dry_run"),
       "age_ms" => state.age_ms,
       "current_image_refs" => state.current_image_refs |> MapSet.to_list() |> Enum.sort(),
+      "current_image_digests" => state.current_image_digests |> MapSet.to_list() |> Enum.sort(),
       "plan" => Enum.map(plan, &manifest_candidate/1),
       "eligible_beyond_cap" => Enum.map(beyond_cap, &manifest_candidate/1),
       "held" =>
@@ -405,6 +426,9 @@ defmodule Embervm.RootfsRemoteRetention do
 
             MapSet.member?(state.current_image_refs, marker["imageRef"]) ->
               {:blocked, "image ref became current"}
+
+            MapSet.member?(state.current_image_digests, candidate.identity.digest) ->
+              {:blocked, "image digest is current"}
 
             true ->
               :ok
