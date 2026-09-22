@@ -47,9 +47,14 @@ filesystem_type() {
 	esac
 }
 
-managed_image_identity() {
+managed_path_identity() {
 	{ [ -f "$IMG" ] && [ ! -L "$IMG" ]; } ||
 		fail "managed image path is not a regular non-symlink file: $HOST_IMG"
+	stat -c '%d:%i' "$IMG" || fail "cannot inspect managed image identity for $HOST_IMG"
+}
+
+managed_image_identity() {
+	managed_path_identity >/dev/null
 	identity=$(stat -c '%d:%i:%h' "$IMG") ||
 		fail "cannot inspect managed image identity for $HOST_IMG"
 	links=${identity##*:}
@@ -223,6 +228,9 @@ if [ "$mounted" = true ]; then
 		write_marker
 		exit 0
 	}
+	# Bind every subsequent eligibility check to the inode that occupied the
+	# managed path before loop, filesystem, and consumer inspection began.
+	migration_identity=$(managed_path_identity)
 	mount_info=$(host findmnt -n -o SOURCE,FSTYPE --target "$SCRATCH") ||
 		fail "cannot inspect the mounted source for $SCRATCH"
 	# Intentionally split findmnt's exact SOURCE,FSTYPE pair into two fields.
@@ -261,7 +269,9 @@ if [ "$mounted" = true ]; then
 		exit 0
 	fi
 	[ "$image_type" = ext4 ] || fail "only a managed ext4 image is eligible for migration"
-	migration_identity=$(managed_image_identity)
+	verified_identity=$(managed_image_identity)
+	[ "$verified_identity" = "$migration_identity" ] ||
+		fail "managed image identity changed during migration verification"
 	if has_active_consumer "$CONTAINER_SCRATCH" mount; then
 		fail "managed ext4 scratch has an active consumer; drain and quiesce the node before retrying"
 	fi
@@ -289,6 +299,9 @@ if [ "$mounted" = false ]; then
 	else
 		{ [ -f "$IMG" ] && [ ! -L "$IMG" ]; } ||
 			fail "managed image path exists but is not a regular non-symlink file: $HOST_IMG"
+		# Capture identity before probing the filesystem or loop aliases so a
+		# replacement during eligibility checks can never become the format target.
+		migration_identity=$(managed_path_identity)
 		image_type=$(filesystem_type)
 		if [ "$image_type" = ext4 ] && [ "$FILESYSTEM" = xfs ]; then
 			if [ "$MIGRATE_EXT4" != true ]; then
@@ -296,7 +309,9 @@ if [ "$mounted" = false ]; then
 			else
 				aliases=$(host losetup -j "$HOST_IMG") || fail "cannot inspect loop aliases for $HOST_IMG"
 				[ -z "$aliases" ] || fail "unmounted managed image still has a loop alias"
-				migration_identity=$(managed_image_identity)
+				verified_identity=$(managed_image_identity)
+				[ "$verified_identity" = "$migration_identity" ] ||
+					fail "managed image identity changed during migration verification"
 				if has_active_consumer "$IMG"; then
 					fail "managed ext4 image has an active consumer; drain and quiesce the node before retrying"
 				fi
