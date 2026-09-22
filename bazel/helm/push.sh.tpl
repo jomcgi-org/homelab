@@ -205,15 +205,14 @@ if [[ "$CURRENT_BRANCH" == "main" ]]; then
           # published 0.3.3 for exactly this reason, while embervm escaped only
           # because an unrelated dependency bump happened to touch it.
           #
-          # The state that matters is not "did this run publish" but "does main
-          # reference what is published", so record whenever those disagree.
-          # This converges: once the write-back lands, CURRENT_VERSION equals
-          # CHART_VERSION and later runs take the quiet branch.
+          # Record every content-verified version, including an already aligned
+          # one. Publication receipts need the full set checked by this build;
+          # write-back itself decides whether a version file needs changing.
+          RECORD_DIR="${WORKSPACE}/.chart-version-records"
+          mkdir -p "$RECORD_DIR"
+          printf '%s %s\n' "$CHART_DIR" "$CHART_VERSION" > "${RECORD_DIR}/${CHART_NAME}"
           if [[ "$CHART_VERSION" != "$CURRENT_VERSION" ]]; then
             echo "Chart ${CHART_NAME} ${CHART_VERSION} is published and its digests match, but main still says ${CURRENT_VERSION}; recording it so the write-back can align main."
-            RECORD_DIR="${WORKSPACE}/.chart-version-records"
-            mkdir -p "$RECORD_DIR"
-            printf '%s %s\n' "$CHART_DIR" "$CHART_VERSION" > "${RECORD_DIR}/${CHART_NAME}"
           else
             echo "Chart ${CHART_NAME} ${CHART_VERSION} is already published and the digests match; nothing to publish."
           fi
