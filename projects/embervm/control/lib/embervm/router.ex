@@ -1750,6 +1750,7 @@ defmodule Embervm.Router do
       result =
         case request do
           :legacy -> session_manager().destroy(session_manager_server(), session_id)
+          {:parked, expected} -> session_manager().destroy_parked(session_manager_server(), session_id, expected)
           expected -> session_manager().destroy(session_manager_server(), session_id, expected)
         end
 
@@ -1773,6 +1774,8 @@ defmodule Embervm.Router do
       %{"stop_precondition" => expected} = request when map_size(request) == 1 ->
         expected = Embervm.SessionStopProof.from_json(expected)
         if Embervm.SessionStopProof.precondition?(expected), do: {:ok, expected}, else: :error
+      %{"parked_precondition" => expected} = request when map_size(request) == 1 ->
+        if Embervm.SessionStopProof.parked_precondition?(expected), do: {:ok, {:parked, expected}}, else: :error
       request when request == %{} -> {:ok, :legacy}
       _ -> :error
     end

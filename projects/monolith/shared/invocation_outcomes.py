@@ -51,3 +51,27 @@ def terminal_dispatch_cessation(observed, recovery, owner, failed_at) -> bool:
         )
     except (KeyError, AttributeError, TypeError, ValueError, OverflowError):
         return False
+
+
+def parked_invocation_candidate(observed) -> bool:
+    """Candidate for conditional retirement, never cessation proof by itself.
+
+    A parked session can have a queued wake-up. Only the control plane may
+    atomically retire this exact snapshot after checking its local waiters.
+    A recorded drain has its own continuation protocol and is excluded.
+    """
+    if not isinstance(observed, dict) or observed.get("state") != "parked":
+        return False
+    generation = observed.get("generation")
+    started = observed.get("invoke_started_at")
+    updated = observed.get("updated_at")
+    return (
+        "interrupted_turn" in observed
+        and observed["interrupted_turn"] is None
+        and type(generation) is int
+        and generation >= 0
+        and type(started) is int
+        and started > 0
+        and type(updated) is int
+        and updated >= started
+    )

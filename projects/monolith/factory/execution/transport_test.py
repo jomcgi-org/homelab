@@ -2315,6 +2315,38 @@ def test_exact_destroy_preserves_conditional_payload_and_never_retries(
     assert len(calls) == 1
 
 
+@pytest.mark.parametrize("status", [200, 409, 503])
+def test_parked_destroy_preserves_snapshot_and_never_retries(monkeypatch, status):
+    calls = []
+    expected = {
+        "session_id": "s-1",
+        "generation": 0,
+        "invoke_started_at": 123,
+        "updated_at": 456,
+    }
+
+    async def handler(request):
+        calls.append(request)
+        assert request.method == "DELETE"
+        assert request.headers["authorization"] == "management"
+        assert json.loads(request.content) == {"parked_precondition": expected}
+        return httpx.Response(
+            status, json={"session_id": "s-1", "state": "destroyed"}, request=request
+        )
+
+    _client(monkeypatch, handler)
+    operation = transport.EmberVmShimTransport().destroy_session(
+        "s-1", parked_precondition=expected
+    )
+    if status == 200:
+        assert asyncio.run(operation)["state"] == "destroyed"
+    else:
+        with pytest.raises(EmberVMTransportError) as caught:
+            asyncio.run(operation)
+        assert not isinstance(caught.value, EmberSessionGone)
+    assert len(calls) == 1
+
+
 def test_destroy_session_keeps_403_and_500_as_plain_failures(monkeypatch):
     """Only 404/410 mean gone on this route.
 

@@ -358,6 +358,11 @@ defmodule Embervm.SessionManager do
     GenServer.call(server, {:destroy_exact, session_id, precondition}, 30_000)
   end
 
+  @doc "Retires an exact cold parked snapshot only when no wake-up is queued."
+  def destroy_parked(server, session_id, expected) do
+    GenServer.call(server, {:destroy_parked, session_id, expected}, 30_000)
+  end
+
   @doc "Returns the current exact stop identity or the immutable pending stop identity."
   def stop_identity(server, session_id) do
     GenServer.call(server, {:stop_identity, session_id})
@@ -902,6 +907,34 @@ defmodule Embervm.SessionManager do
       end
 
     {:reply, identity, state}
+  end
+
+  def handle_call({:destroy_parked, session_id, expected}, _from, state) do
+    with true <- Embervm.SessionStopProof.parked_precondition?(expected),
+         {:ok, session} <- SessionStore.get(state.session_store, session_id) do
+      matches = session.state == :parked and is_nil(session.node_id) and
+        is_nil(session.vm_id) and is_nil(session.interrupted_turn) and
+        session.session_id == expected["session_id"] and
+        session.generation == expected["generation"] and
+        session.invoke_started_at == expected["invoke_started_at"] and
+        session.updated_at == expected["updated_at"] and
+        Map.get(state.relighting, session_id, []) == [] and
+        not Map.has_key?(state.pressure_waits, session_id) and
+        Registry.lookup(state.registry, session_id) == []
+
+      if matches do
+        case SessionStore.transition(state.session_store, session_id, :destroy,
+               :session_destroyed, %{reason: "parked_response_lost"}, %{}) do
+          {:ok, _} -> {:reply, {:ok, :destroyed}, clear_session_tracking(state, session_id)}
+          error -> {:reply, error, state}
+        end
+      else
+        {:reply, {:error, :stop_precondition_failed}, state}
+      end
+    else
+      false -> {:reply, {:error, :invalid_stop_precondition}, state}
+      :error -> {:reply, {:error, :not_found}, state}
+    end
   end
 
   def handle_call({:destroy_exact, session_id, expected}, _from, state) do
