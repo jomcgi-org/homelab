@@ -459,3 +459,30 @@ def test_distress_mirror_failure_replay_and_single_notification(agents_db) -> No
     }
     assert mirror.await_count == 2
     notify.assert_awaited_once()
+
+
+def test_distress_mirror_timeout_does_not_delay_notification(agents_db) -> None:
+    import knowledge.mcp as knowledge_mcp
+
+    async def stalled_mirror(**_kwargs):
+        await asyncio.sleep(1)
+
+    notify = AsyncMock(return_value={"ok": True})
+    with (
+        patch("knowledge.mcp.get_engine", return_value=agents_db.engine),
+        patch("knowledge.mcp.current_principal", return_value=_agents_principal()),
+        patch("knowledge.mcp.mirror_distress", stalled_mirror),
+        patch("knowledge.mcp._notify", notify),
+        patch("knowledge.mcp._DISTRESS_MIRROR_TIMEOUT_SECONDS", 0.001),
+    ):
+        result = asyncio.run(
+            knowledge_mcp.report_distress(
+                "Agent is blocked on a timeout",
+                "blocked",
+                "mirror does not return",
+                "inspect dependency",
+            )
+        )
+
+    assert result["status"] == "notified"
+    notify.assert_awaited_once()
