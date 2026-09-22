@@ -55,8 +55,9 @@ def _render_waves(tmp_path: Path, group_size: int) -> tuple[list[int], list[int]
     )
 
     helm_bin = os.environ.get("HELM_BIN", "helm")
+    # HELM_BIN is a Bazel-pinned runfile and argv is passed without a shell.
     result = subprocess.run(
-        [
+        [  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
             helm_bin,
             "template",
             "sync-wave-test",
@@ -68,6 +69,7 @@ def _render_waves(tmp_path: Path, group_size: int) -> tuple[list[int], list[int]
         ],
         capture_output=True,
         text=True,
+        timeout=30,
     )
     if result.returncode != 0:
         raise RuntimeError(f"helm template failed: {result.stderr}")
@@ -115,20 +117,19 @@ def test_brick_sync_waves_are_grouped_without_class_floor_overlap(
 
 
 def test_scratch_generation_marker_is_the_final_prep_step() -> None:
-    template = (_chart_dir() / "templates" / "scratch-prep-daemonset.yaml").read_text()
+    script = (_chart_dir() / "files" / "scratch-prep.sh").read_text()
 
-    fstab = template.index("FSTAB_LINE=")
-    marker = template.index(
-        'GENERATION="${NODE_NAME}-$(cat /proc/sys/kernel/random/uuid)"'
-    )
-    sleep = template.index("exec sleep infinity")
-    assert fstab < marker < sleep
+    mount = script.index('host mount -t "$image_type"')
+    fstab = script.index('reconcile_fstab "$image_type"')
+    marker = script.rindex("write_marker")
+    assert mount < fstab < marker
 
 
 def test_wildcard_daemonset_does_not_inherit_scratch_marker_gate() -> None:
     helm_bin = os.environ.get("HELM_BIN", "helm")
+    # HELM_BIN is a Bazel-pinned runfile and argv is passed without a shell.
     result = subprocess.run(
-        [
+        [  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
             helm_bin,
             "template",
             "scratch-wildcard-test",
@@ -140,6 +141,7 @@ def test_wildcard_daemonset_does_not_inherit_scratch_marker_gate() -> None:
         ],
         capture_output=True,
         text=True,
+        timeout=30,
     )
     assert result.returncode == 0, result.stderr
     assert "wait-for-scratch-generation" not in result.stdout
@@ -149,8 +151,9 @@ def test_wildcard_daemonset_does_not_inherit_scratch_marker_gate() -> None:
 def test_scratch_prep_marker_path_tracks_nvme_root() -> None:
     helm_bin = os.environ.get("HELM_BIN", "helm")
     marker = "/custom/embervm-scratch/.scratch-generation"
+    # HELM_BIN is a Bazel-pinned runfile and argv is passed without a shell.
     result = subprocess.run(
-        [
+        [  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
             helm_bin,
             "template",
             "scratch-path-test",
@@ -164,7 +167,8 @@ def test_scratch_prep_marker_path_tracks_nvme_root() -> None:
         ],
         capture_output=True,
         text=True,
+        timeout=30,
     )
     assert result.returncode == 0, result.stderr
-    assert f'MARKER="{marker}"' in result.stdout
+    assert f'value: "{marker}"' in result.stdout
     assert f'test -s "{marker}"' in result.stdout

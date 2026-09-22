@@ -1,0 +1,11 @@
+{{- if .Values.scratchPrep.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "embervm.scratchPrep.fullname" . }}-script
+  labels:
+    {{- include "embervm.scratchPrep.labels" . | nindent 4 }}
+data:
+  scratch-prep.sh: |
+{{ .Files.Get "files/scratch-prep.sh" | indent 4 }}
+{{- end }}

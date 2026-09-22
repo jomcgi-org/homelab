@@ -22,7 +22,7 @@ image:
   pullPolicy: IfNotPresent
 
 # Uniform size-capped scratch (warmth cache-cap retention decisions 2026-07-22).
-# The scratch-prep DaemonSet provisions an ext4 loop file of THIS size at
+# The scratch-prep DaemonSet provisions a loop file of THIS size at
 # /var/lib/embervm/scratch on every FC node that does NOT already have a mount
 # there (node-4's dedicated-NVMe bind is left untouched by the mountpoint guard).
 # ONE uniform knob, no per-node map: a hard cap makes a warmth leak physically
@@ -68,6 +68,15 @@ hypervisorEpoch: "fc-v1.16.1-r2"
 # actuator is enabled. Disabled environments trust their external boot actuator.
 scratchPrep:
   enabled: true
+  # Safe repository defaults preserve the deployed ext4 behavior. Selecting
+  # xfs opts in only newly created managed images. It never reformats an
+  # existing image by itself.
+  filesystem: ext4 # ext4 | xfs
+  # A separate one-shot destructive gate. An existing managed ext4 image is
+  # eligible only when filesystem is xfs, this is true, its exact loop/mount
+  # identity is proven, and no active consumer is found. Keep false until the
+  # live-validation checklist in #5699 is complete.
+  migrateExt4ToXfs: false
   image:
     # Pinned at build time by helm_chart(images={"scratchPrep.image":
     # ".../scratch-prep:image.info"}).
@@ -1382,10 +1391,9 @@ noded:
   memRejectFloorMib: 512
 
   # Use Firecracker dirty-page diffs for repeated memory banks. Disabled by
-  # default because the merge-at-bank protocol pays a full-size copy of the
-  # previous base on ext4 scratch, which has no reflink support, so the Bank RPC
-  # gets longer, not shorter. Enable only after the in-place merge design or
-  # reflink-capable scratch lands, tracked in #4970.
+  # default until the staged XFS path in #5699 is validated on a dev node and
+  # the #4970 demo-postgres rollout records latency and correctness. The merge
+  # helper uses FICLONE on capable storage and falls back to a byte copy on ext4.
   diffBanking: false
   # Comma-separated workload allowlist for dirty tracking at both Prime and
   # Relight. Keep task and park-only workloads outside the diff path.

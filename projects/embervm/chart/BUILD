@@ -120,6 +120,7 @@ py_test(
         "//projects/gke-apps/embervm-dev:application.yaml",
         "@multitool//tools/helm",
     ] + glob([
+        "files/**/*",
         "templates/**/*",
         "crds/**/*",
     ]),
@@ -287,6 +288,7 @@ py_test(
         "values.yaml",
         "@multitool//tools/helm",
     ] + glob([
+        "files/**/*",
         "templates/**/*",
         "crds/**/*",
     ]),
@@ -294,6 +296,27 @@ py_test(
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
     },
     deps = ["@pip//pytest"],
+)
+
+py_test(
+    name = "scratch_prep_test",
+    srcs = ["scratch_prep_test.py"],
+    data = [
+        "Chart.yaml",
+        "values.yaml",
+        "@multitool//tools/helm",
+    ] + glob([
+        "files/**/*",
+        "templates/**/*",
+        "crds/**/*",
+    ]),
+    env = {
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+    },
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
 )
 
 # Pins the noded CiliumNetworkPolicy's activator ports to the servingEnvoy
@@ -339,6 +362,12 @@ semgrep_test(
 semgrep_test(
     name = "chart_sync_wave_test_semgrep_test",
     srcs = ["chart_sync_wave_test.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+semgrep_test(
+    name = "scratch_prep_test_semgrep_test",
+    srcs = ["scratch_prep_test.py"],
     rules = ["//bazel/semgrep/rules:python_rules"],
 )
 

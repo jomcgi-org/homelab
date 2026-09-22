@@ -15,6 +15,8 @@ go_library(
         "mountns_linux.go",
         "mountns_other.go",
         "provisioner.go",
+        "reflink_linux.go",
+        "reflink_other.go",
         "serial.go",
     ],
     importpath = "github.com/jomcgi/homelab/projects/embervm/noded/fcvm/driver",
@@ -26,6 +28,7 @@ go_library(
         "//projects/embervm/noded/substrate",
         "//projects/embervm/noded/vsockproto",
         "@io_opentelemetry_go_otel//:otel",
+        "@org_golang_x_sys//unix",
     ],
 )
 
@@ -40,6 +43,7 @@ go_test(
         "launcher_test.go",
         "logtag_test.go",
         "provisioner_test.go",
+        "reflink_linux_test.go",
         "serial_test.go",
     ],
     embed = [":driver"],
@@ -51,5 +55,6 @@ go_test(
         "@io_opentelemetry_go_otel_sdk//trace",
         "@io_opentelemetry_go_otel_sdk//trace/tracetest",
         "@io_opentelemetry_go_otel_trace//:trace",
+        "@org_golang_x_sys//unix",
     ],
 )

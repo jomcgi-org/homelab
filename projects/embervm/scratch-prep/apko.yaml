@@ -1,17 +1,17 @@
 # Runtime image for the embervm scratch-prep DaemonSet. This is the node-
 # provisioning contract's homelab-side actuator (docs/decisions/embervm/012, the
-# storage-tiers amendment): it provisions a uniform, size-capped ext4 loop
+# storage-tiers amendment): it provisions a uniform, size-capped loop
 # scratch onto /var/lib/embervm/scratch on every FC node EXCEPT where scratch is
 # already a mountpoint (node-4's dedicated-NVMe bind is skipped untouched).
 #
 # PRIVILEGED by necessity, and it carries its OWN filesystem tooling. The RISKY
-# steps (fallocate the backing file, losetup, mkfs.ext4) run with THIS image's
-# util-linux (fallocate/losetup/blkid) + e2fsprogs (mkfs.ext4) against a hostPath
+# steps (fallocate the backing file and mkfs) run with THIS image's util-linux,
+# e2fsprogs and xfsprogs against a hostPath
 # bind of /var/lib/embervm, so we do NOT depend on the host carrying those tools;
 # loop devices are kernel-global under privileged so the attached device is
-# visible in the host mount namespace. Only the final `mount` (and mountpoint/
-# mkdir/grep/echo for fstab) run via nsenter into host PID1 using the HOST's own
-# `mount` (guaranteed present) so the mount survives the pod. Runs as root
+# visible in the host mount namespace. Host mount, unmount, fstab and identity
+# inspection run via nsenter into host PID1. mkfs always uses the image's tools,
+# so the host does not need e2fsprogs or xfsprogs. Runs as root
 # (uid 0): privileged + hostPID is required to nsenter into PID 1's namespaces,
 # so the repo's non-root convention does not apply here, same exception noded
 # itself takes for driving Firecracker.
@@ -26,6 +26,10 @@ contents:
     - util-linux
     # mkfs.ext4 for formatting the loop backing file.
     - e2fsprogs
+    # mkfs.xfs for explicitly opted-in XFS provisioning and migration.
+    - xfsprogs
+    # fuser checks for active consumers before an opted-in migration.
+    - psmisc
 
 archs:
   - x86_64
