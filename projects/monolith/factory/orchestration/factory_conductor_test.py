@@ -4833,7 +4833,7 @@ def test_bound_zero_turn_absence_gap_restarts_sampling(
 
     monkeypatch.setattr(supervisor, "_http", absent)
     assert not _tick_bound_zero_turn(s)
-    s.now[0] += timedelta(seconds=s.run["pin"]["turn_timeout_seconds"] + 1)
+    s.now[0] += timedelta(seconds=supervisor.ABSENCE_MAX_GAP_SECONDS + 1)
     assert not _tick_bound_zero_turn(s)
 
     before = _uncertain_snapshot(s)
