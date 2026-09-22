@@ -454,10 +454,16 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
             eligible = or_(eligible, FactoryReceipt.actor == INTAKE_ACTOR)
         # A new generation may coexist with an older task. A direct receipt
         # cannot start a second task on that same issue, even in another lane.
-        busy_issues = [r.issue_number for r in active if r.repo == policy["repo"]]
+        owned = [
+            *active,
+            *db.exec(
+                select(FactoryReceipt).where(FactoryReceipt.state == "landing")
+            ).all(),
+        ]
+        busy_issues = [r.issue_number for r in owned if r.repo == policy["repo"]]
         busy_work_items = [
             r.work_item_id
-            for r in active
+            for r in owned
             if r.work_item_id is not None and r.repo == policy["repo"]
         ]
         base_query = select(FactoryReceipt).where(

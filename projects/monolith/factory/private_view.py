@@ -20,7 +20,7 @@ from sqlmodel import Session, select
 
 RECENT_LIMIT = 12
 RESULT_HEAD = 240
-ACTIVE_STATES = ("admitted", "uncertain")
+ACTIVE_STATES = ("admitted", "uncertain", "landing")
 QUEUED_STATES = ("queued",)
 
 # Node run statuses come from factory.orchestration.graph; a node with no run yet is pending

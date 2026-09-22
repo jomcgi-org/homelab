@@ -1381,7 +1381,10 @@ merge landing still off. Merge landing is the first factory step that writes
 pull request and issue state, so the process needs a GitHub token with those
 permissions before the merge flag is worth turning on.
 
-With the flag on, a task that settled `succeeded` with pull request evidence
+With the flag on, exact-head delivery approval records `delivery_ready` and
+moves the receipt and task to `landing`, with no settlement timestamp. This
+releases the guest execution slot but retains issue and branch ownership across
+generation changes. The review publisher accepts this pending state. The PR
 has its merge armed through the GitHub auto-merge mutation with the rebase
 method, the equivalent of `gh pr merge --auto --rebase`, and the lane audits
 `merge_armed`. Landing first checks that the pull request is still at the exact
@@ -1397,8 +1400,9 @@ because not knowing
 is not a licence. Every waiting delivery audits `merge_deferred`, once per
 blocking pull request, and is armed on a later tick.
 
-Selection is on landing state, never on recency: every non-advisory `succeeded`
-receipt whose landing has not reached a terminal audit, oldest first. Terminal
+Selection is on landing state, never on recency: every non-advisory `landing`
+receipt and legacy `succeeded` delivery whose landing has not reached a terminal
+audit, oldest first. New pending deliveries never age out. Terminal
 is `merge_arm_refused`, which hands the pull request to a human, or
 `issue_closed`, which is the last step of a successful landing. Taking the
 newest receipts of any class instead let a burst of advisory settlements push an
@@ -1469,10 +1473,30 @@ retries. `merge_armed` and `merge_ejected` are counted rather than fenced,
 because a delivery can be armed, ejected and armed again; every other step
 writes one row per task and that row is its fence.
 
-Landing stops at the merge. Confirming that the chart version write-back landed
-and that the new image is live is the verify node #6002 phase 4 still owes; the
-`merged` audit carries a `rollout_verified` field that is null until that node
-exists.
+A merge is not task success. Landing verifies a completed chart publication
+receipt on main whose source includes the merged commit, plus successful
+`pr-checks` on that source. No-op publication receipts prove reused versions.
+It checks actual Argo sync revisions against the receipt and source ancestry,
+Healthy/Synced status, the compared source specification, workload generations,
+ready replica counts, and running pod images. Repository-built images must be
+digest pinned; external tagged images must match the workload specification.
+The verifier conservatively checks every live application managed by this
+repository, so an unrelated stale or unhealthy managed application keeps the
+delivery pending too. It does not claim functional acceptance or verify charts
+that have no live application.
+
+Unknown, missing, paginated or unavailable observations fail closed. Each task
+records at most one pending observation per minute; mutable reads are shared
+for at most 30 seconds, and immutable SHA reads have a bounded cache. Reads do
+not mutate Argo, restart guests, or grant credentials. A durable
+`rollout_verified` audit binds the approved PR head, merge, publication and
+source SHAs to observed application revisions and workload images. Only that
+trusted matching proof allows `landing` to settle `succeeded`. Disabling
+`auto_merge` cannot bypass the pending gate. Reconciliation safely resumes
+between verification, settlement and issue closure. Legacy already-settled
+deliveries also require this proof before the factory closes their issue.
+The merge-time audit retains a null rollout field because proof comes later
+in the separate `rollout_verified` event.
 
 ### A delivery pause is a decision request
 
@@ -1768,8 +1792,8 @@ For `live_validation`, the conductor records a default-off or staged repository
 `scope` and appends `live_checks` as unchecked lines on the issue. The PR body
 states `Conductor rescope:` and retains references without closing keywords.
 The delivery gate refuses a PR that closes pending operational acceptance, and
-landing records `repository_delivery_complete` after merge without closing the
-issue. Required Linux CI and independent exact-head approval still apply.
+landing records `repository_delivery_complete` after the managed rollout is
+verified without closing the issue. Required Linux CI and independent exact-head approval still apply.
 Refine decisions carry into delivery admission; the receipt preserves decisions
 across restarts and every planner and worker receives the current scope.
 
