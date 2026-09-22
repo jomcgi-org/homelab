@@ -854,8 +854,8 @@ func (d *Driver) sessionMemfile(ref string) string {
 // snapshot-editor to rebase the sequential diff onto that copy. The base is
 // never edited in place, so it remains restorable until the new full publishes.
 func mergeMemoryDiff(ctx context.Context, editorPath, basePath, diffPath, outputPath string) error {
-	if err := copyFile(basePath, outputPath); err != nil {
-		return fmt.Errorf("copy base memory: %w", err)
+	if err := cloneOrCopyFile(basePath, outputPath); err != nil {
+		return fmt.Errorf("clone or copy base memory: %w", err)
 	}
 	cmd := exec.CommandContext(ctx, editorPath, mergeMemoryDiffArgs(outputPath, diffPath)...)
 	output, err := cmd.CombinedOutput()

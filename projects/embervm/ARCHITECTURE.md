@@ -611,11 +611,13 @@ but off in every deployment and has never served a hydration: the shim's
 mirror attempt is denied at the egress proxy and falls through to the direct
 clone.
 
-A sequential Firecracker dirty-page diff bank path exists and is dormant:
-`noded.diffBanking` defaults false because the merge-at-bank step copies the
-previous full base on reflink-less ext4 scratch, so the Bank RPC gets longer,
-not shorter. Enable it only after an in-place merge or reflink-capable scratch
-lands (#4970, #5699). Only full bundles ever enter the archive.
+A sequential Firecracker dirty-page diff bank path exists and is dormant.
+The merge-at-bank step now attempts Linux `FICLONE` for the temporary copy of
+the previous full and falls back to a byte copy on ext4 or across filesystems.
+Repository support does not establish that the fleet scratch path supports
+reflink: `noded.diffBanking` remains false until #5699 validates the staged XFS
+loop path on a dev node and #4970 records the demo-postgres latency and
+correctness comparison. Only full bundles ever enter the archive.
 
 **`maxLifetimeSeconds` is a version-convergence bound, not a data lifetime**:
 it stops a session riding a stale base forever and is never raised to buy
@@ -1567,11 +1569,19 @@ S3-compatible object store.
   type Directory fails closed if unsatisfied). Karpenter `instanceStorePolicy`
   RAID0 satisfies it on EKS; local NVMe elsewhere. Where no out-of-band
   bootstrap exists, the chart's `scratchPrep` DaemonSet provisions a
-  size-capped ext4 loop file at that path (the GKE hub). Bases under it are
-  node-shared across co-located bricks. Scratch does not survive a Spot node
-  replacement: every guest rootfs rebakes in the brick init containers and
-  the control plane re-drives the dropped bases without a restart, about ten
-  minutes end to end.
+  size-capped loop file at that path (the GKE hub). ext4 remains the safe
+  default. XFS with reflink is staged behind `scratchPrep.filesystem: xfs` for
+  newly created managed images. Destructive replacement of an existing ext4
+  image requires the separate `scratchPrep.migrateExt4ToXfs: true` gate. The
+  migration path fails closed unless the exact managed non-symlink image, its
+  ext4 loop fstab entry, host loop device and sole mount target agree and no
+  active consumer is found. It never reformats XFS, never force-unmounts, and
+  leaves foreign mounts such as the node-4 bind untouched. Both gates remain
+  default-off pending the live checks in #5699. Bases under scratch are
+  node-shared across co-located bricks.
+  Scratch does not survive a Spot node replacement: every guest rootfs rebakes
+  in the brick init containers and the control plane re-drives the dropped
+  bases without a restart, about ten minutes end to end.
 
   **Why.** Scratch is deliberately ephemeral. A per-node persistent disk would
   have to be named, attached and fenced across Spot replacement in an
