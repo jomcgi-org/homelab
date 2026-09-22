@@ -113,6 +113,23 @@ defmodule Embervm.RootfsRemoteRetentionTest do
     assert manifest["held_legacy_or_malformed_keys"] == ["rootfs/#{@digest}/legacy.ext4"]
   end
 
+  test "armed sweep protects a shared digest published by a different image ref" do
+    current_ref = "repo/current@sha256:#{String.upcase(@digest)}"
+    first_writer_ref = "repo/retired@sha256:#{@digest}"
+    {prefix, objects} = rootfs_objects(first_writer_ref, 90)
+    {agent, s3} = new_s3(objects)
+    pid = start_retention(s3, enabled: true, current_image_refs: [current_ref])
+
+    assert {:ok, %{plan: [], deleted: []}} = RootfsRemoteRetention.sweep_now(pid)
+
+    [{_manifest_key, body}] = Agent.get(agent, & &1.puts)
+    manifest = :json.decode(body)
+
+    assert manifest["current_image_digests"] == [@digest]
+
+    assert [%{"prefix" => ^prefix, "reason" => "current_image_digest"}] = manifest["held"]
+  end
+
   test "armed sweep deletes marker first and only listed keys in an old prefix" do
     {prefix, objects} = rootfs_objects("repo/old@sha256:index", 31)
     {agent, s3} = new_s3(objects)
