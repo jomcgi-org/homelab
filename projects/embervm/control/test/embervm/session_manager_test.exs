@@ -1863,6 +1863,68 @@ defmodule Embervm.SessionManagerTest do
       refute_received {:evicted, _}
     end
 
+    test "a relight worker stalled after the registration deadline drains at the fallback bound" do
+      parent = self()
+      {:ok, mono} = Agent.start_link(fn -> 0 end)
+
+      relight_fun = fn _channel, _req ->
+        send(parent, {:stalled_relight, self()})
+
+        receive do
+          :never -> {:ok, %RelightResponse{vm_id: "unused"}}
+        end
+      end
+
+      ctx =
+        start_stack(
+          relight_fun: relight_fun,
+          monotonic_clock: fn -> Agent.get(mono, & &1) end,
+          pressure_retry_interval_ms: 60_000,
+          pressure_wait_bound_ms: 100
+        )
+
+      put_session_workload(ctx, "wl-stalled-registration")
+      {:ok, created} = SessionManager.create(ctx.mgr, "wl-stalled-registration", "p1")
+      assert :ok = SessionManager.bank(ctx.mgr, created.session_id)
+      wait_for_state(ctx, created.session_id, :banked)
+      put_other_node_fact(ctx, "wl-stalled-registration")
+      NodeCapacity.drop(ctx.cap_table, "node-4")
+
+      task =
+        Task.async(fn ->
+          SessionManager.invoke(ctx.mgr, created.session_id, %{body: "stalled-registration"})
+        end)
+
+      assert eventually(fn ->
+               get_in(:sys.get_state(ctx.mgr), [:pressure_waits, created.session_id, :last_reason]) ==
+                 {:node_unreported, "node-4"}
+             end)
+
+      :ok = Agent.update(mono, fn _ -> 100 end)
+      put_snapshot_fact(ctx, "wl-stalled-registration", created.session_id)
+      send(ctx.mgr, {:relight_pressure_retry, created.session_id})
+      assert_receive {:stalled_relight, relight_worker}, 1_000
+
+      on_exit(fn ->
+        if Process.alive?(relight_worker), do: Process.exit(relight_worker, :kill)
+      end)
+
+      :ok = Agent.update(mono, fn _ -> 60_100 end)
+      send(ctx.mgr, {:relight_pressure_retry, created.session_id})
+
+      reason =
+        {:relight_failed,
+         {:pressure_wait_expired, {:node_unreported, "node-4"}}}
+
+      assert {:error, ^reason} = Task.await(task)
+      assert Embervm.Router.classify_error_as_retryable(reason)
+      assert wait_for_state(ctx, created.session_id, :banked).terminal_reason == nil
+
+      manager_state = :sys.get_state(ctx.mgr)
+      refute Map.has_key?(manager_state.pressure_waits, created.session_id)
+      refute Map.has_key?(manager_state.relighting, created.session_id)
+    end
+
     test "empty registration terminalizes when another node reports at the bound but its owner stays absent" do
       parent = self()
       {:ok, mono} = Agent.start_link(fn -> 0 end)

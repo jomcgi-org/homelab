@@ -4164,6 +4164,7 @@ defmodule Embervm.SessionManager do
       {:ok, %{state: :banked} = session} ->
         case WakeInstance.node_for_relight(session, state.capacity_table) do
           {:ok, _dial_id} ->
+            state = arm_registration_handoff_fallback(state, session_id, wait)
             begin_wake(state, session)
 
           {:error, :no_bricks} ->
@@ -4181,7 +4182,21 @@ defmodule Embervm.SessionManager do
         drain_relight_waiters(state, session_id, {:error, {:gone, to_string(st)}})
 
       {:ok, %{state: :relighting}} ->
-        state
+        grace_ms = max(state.pressure_retry_interval_ms, 1)
+
+        case Map.get(wait, :registration_handoff_at) do
+          started_at
+          when is_integer(started_at) and
+                 state.monotonic_clock.() - started_at >= grace_ms ->
+            give_up_pressure_wait(state, session_id, wait)
+
+          started_at when is_integer(started_at) ->
+            schedule({:relight_pressure_retry, session_id}, grace_ms)
+            state
+
+          _ ->
+            arm_registration_handoff_fallback(state, session_id, wait)
+        end
 
       _ ->
         give_up_pressure_wait(state, session_id, wait)
@@ -4191,6 +4206,13 @@ defmodule Embervm.SessionManager do
   defp registration_wait_reason?(:no_bricks), do: true
   defp registration_wait_reason?({:node_unreported, node_id}) when is_binary(node_id), do: true
   defp registration_wait_reason?(_reason), do: false
+
+  defp arm_registration_handoff_fallback(state, session_id, wait) do
+    grace_ms = max(state.pressure_retry_interval_ms, 1)
+    wait = Map.put_new(wait, :registration_handoff_at, state.monotonic_clock.())
+    schedule({:relight_pressure_retry, session_id}, grace_ms)
+    %{state | pressure_waits: Map.put(state.pressure_waits, session_id, wait)}
+  end
 
   defp mark_and_finish_snapshot_lost(state, session_id) do
     case SessionStore.mark(state.session_store, session_id, :relight) do
