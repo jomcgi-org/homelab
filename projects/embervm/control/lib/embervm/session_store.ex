@@ -197,6 +197,12 @@ defmodule Embervm.SessionStore do
     GenServer.call(store, {:residency, session_id})
   end
 
+  @doc "Durable VM ids claimed by live session rows, excluding legacy NULL claims."
+  @spec claimed_vm_ids(GenServer.server()) :: MapSet.t(String.t())
+  def claimed_vm_ids(store \\ __MODULE__) do
+    GenServer.call(store, :claimed_vm_ids)
+  end
+
   @doc """
   Whether `token` authenticates the session `session_id`: a constant-time hash
   compare against the stored sha256, guarded by "the session exists and is not
@@ -328,14 +334,10 @@ defmodule Embervm.SessionStore do
     # %{principal, ts, stats}, so Embervm.Metering charges the quota cache off the
     # same write, exactly like TaskStore. No-op default (unit tests wire none).
     on_metered = Keyword.get(opts, :on_metered, fn _event -> :ok end)
-    # Off-hot-path boot/wake writes (ADR embervm/014 decision 2). When on, the
-    # session_created (create) and session_relit (wake) durable appends are deferred
-    # to Embervm.AsyncWriter AFTER the ETS row + token are minted synchronously (the
-    # caller needs the token, and reads/adoption must see the row immediately), so
-    # the boot/wake caller never blocks on the durable write. Off (default): exact
-    # write-through ordering (append THEN reply). Never applies to
-    # session_invoke_started, session_invoked, bank, or terminal ops (those stay
-    # synchronous).
+    # Off-hot-path wake writes (ADR embervm/014 decision 2). session_relit may be
+    # deferred after the ETS row advances. session_created remains write-through
+    # because it establishes durable VM ownership. Invoke, bank, and terminal ops
+    # also remain synchronous.
     async_writer = Keyword.get(opts, :async_writer, Embervm.AsyncWriter)
     async_lifecycle_writes = Keyword.get(opts, :async_lifecycle_writes, false)
 
@@ -413,7 +415,7 @@ defmodule Embervm.SessionStore do
       state: state_from_string(row.state),
       node_id: row.node_id,
       volume_node_id: row.volume_node_id,
-      vm_id: nil,
+      vm_id: Map.get(row, :vm_id),
       base_snapshot_ref: row.base_snapshot_ref,
       base_digest: row.base_digest,
       generation: row.generation || 0,
@@ -639,6 +641,23 @@ defmodule Embervm.SessionStore do
     end
   end
 
+  def handle_call(:claimed_vm_ids, _from, state) do
+    claims =
+      :ets.foldl(
+        fn {_id, session}, acc ->
+          if session.state in @live_states and is_binary(session.vm_id) and session.vm_id != "" do
+            MapSet.put(acc, session.vm_id)
+          else
+            acc
+          end
+        end,
+        MapSet.new(),
+        state.sessions
+      )
+
+    {:reply, claims, state}
+  end
+
   def handle_call({:list, workload, opts}, _from, state) do
     limit = Keyword.get(opts, :limit, 50)
     offset = Keyword.get(opts, :offset, 0)
@@ -744,37 +763,21 @@ defmodule Embervm.SessionStore do
       state: :running
     }
 
-    if state.async_lifecycle_writes do
-      # Gate on (ADR embervm/014 decision 2): mint the ETS row + token synchronously
-      # (the caller needs the token, and adoption/reads must see the session at
-      # once), then defer the durable session_created append to Embervm.AsyncWriter
-      # so the create caller does not block on it. A CP crash before the append
-      # lands loses the row; the node still reports the live VM, and the adoption
-      # backfill re-creates it (session_manager Direction-2), so the vm_id registers
-      # the pending write for that discriminator.
-      insert_created_session(state, session)
+    # session_created is always write-through, even when other lifecycle writes
+    # are asynchronous. It establishes the VM ownership claim, so acknowledging
+    # create before this append lands would reopen the restart window where a
+    # still-primed guest has no recoverable owner.
+    case state.op_log_mod.append(state.op_log, op) do
+      {:ok, _seq} ->
+        insert_created_session(state, session)
+        index_idempotency(state, session)
+        {:reply, {:ok, reply}, bump_counts(state, nil, :running, session.workload)}
 
-      Embervm.AsyncWriter.enqueue(state.async_writer, %{
-        op: op,
-        op_log_mod: state.op_log_mod,
-        op_log: state.op_log,
-        vm_id: Map.get(attrs, :vm_id)
-      })
-
-      {:reply, {:ok, reply}, bump_counts(state, nil, :running, session.workload)}
-    else
-      case state.op_log_mod.append(state.op_log, op) do
-        {:ok, _seq} ->
-          insert_created_session(state, session)
-          index_idempotency(state, session)
-          {:reply, {:ok, reply}, bump_counts(state, nil, :running, session.workload)}
-
-        {:error, _reason} = error ->
-          # The durable append failed (a duplicate idempotency key among other
-          # reasons): ETS is untouched, so no hot-set row or binding exists for a
-          # session the log rejected. The caller surfaces the store reason.
-          {:reply, error, state}
-      end
+      {:error, _reason} = error ->
+        # The durable append failed (a duplicate idempotency key among other
+        # reasons): ETS is untouched, so no hot-set row or binding exists for a
+        # session the log rejected. The caller surfaces the store reason.
+        {:reply, error, state}
     end
   end
 
@@ -784,9 +787,8 @@ defmodule Embervm.SessionStore do
   defp normalize_key(key) when is_binary(key) and key != "", do: key
   defp normalize_key(_other), do: nil
 
-  # The ETS side of a create: the hot-set row + its residency fact. Shared by the
-  # write-through and async paths so both land the identical in-memory state; only
-  # the durable append's timing differs between them.
+  # The ETS side of a create: the hot-set row + its residency fact, inserted only
+  # after the ownership-bearing session_created append is durable.
   defp insert_created_session(state, session) do
     :ets.insert(state.sessions, {session.session_id, session})
     put_residency(state, session)

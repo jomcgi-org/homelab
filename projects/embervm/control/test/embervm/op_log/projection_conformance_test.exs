@@ -235,6 +235,7 @@ defmodule Embervm.OpLog.ProjectionConformance do
         payload: %{
           state: "running",
           node_id: "node-4",
+          vm_id: "vm-created",
           volume_node_id: nil,
           base_snapshot_ref: "base:sha256:abc",
           base_digest: "sha256:abc",
@@ -245,6 +246,7 @@ defmodule Embervm.OpLog.ProjectionConformance do
 
     s = one(backend, server, :load_sessions)
     assert_eq(s.state, "running", "created -> running")
+    assert_eq(s.vm_id, "vm-created", "create records durable VM ownership")
     assert_eq(s.generation, 0, "birth generation 0")
     assert_eq(s.lineage_id, "s-1", "lineage_id defaults to session_id")
 
@@ -288,6 +290,7 @@ defmodule Embervm.OpLog.ProjectionConformance do
     assert_eq(s.snapshot_ref, "sessions/s-1@3", "snapshot ref stamped")
     assert_eq(s.snapshot_size_bytes, 42, "snapshot size stamped")
     assert_eq(s.generation, 3, "generation bumped")
+    assert_eq(s.vm_id, nil, "bank clears durable VM ownership")
 
     {:ok, _} =
       append(server, backend, :session_parking, 250,
@@ -308,13 +311,29 @@ defmodule Embervm.OpLog.ProjectionConformance do
     s = one(backend, server, :load_sessions)
     assert_eq(s.state, "parked", "parked")
     assert_eq(s.node_id, nil, "parked clears node_id (the VM is gone)")
+    assert_eq(s.vm_id, nil, "parked clears durable VM ownership")
 
-    {:ok, _} = append(server, backend, :session_relit, 350, session_id: "s-1")
+    {:ok, _} =
+      append(server, backend, :session_relit, 350,
+        session_id: "s-1",
+        payload: %{node_id: "node-5", vm_id: "vm-relit"}
+      )
+
     s = one(backend, server, :load_sessions)
     assert_eq(s.state, "running", "relit back to running")
+    assert_eq(s.node_id, "node-5", "relit records replacement node")
+    assert_eq(s.vm_id, "vm-relit", "relit records replacement VM ownership")
 
-    {:ok, _} = append(server, backend, :session_rejoined, 400, session_id: "s-1")
-    assert_eq(one(backend, server, :load_sessions).state, "running", "rejoined rides the relit path")
+    {:ok, _} =
+      append(server, backend, :session_rejoined, 400,
+        session_id: "s-1",
+        payload: %{node_id: "node-9", vm_id: "vm-rejoined"}
+      )
+
+    s = one(backend, server, :load_sessions)
+    assert_eq(s.state, "running", "rejoined rides the relit path")
+    assert_eq(s.node_id, "node-9", "rejoined records replacement node")
+    assert_eq(s.vm_id, "vm-rejoined", "rejoined records replacement VM ownership")
   end
 
   def session_destroying_and_terminals(backend, server) do

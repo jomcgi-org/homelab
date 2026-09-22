@@ -74,6 +74,12 @@ defmodule Embervm.SessionManagerTest do
     def append(server, op), do: Embervm.OpLog.SQLite.append(server, op)
   end
 
+  defmodule UnavailableCreateOpLog do
+    def load_sessions(server), do: SQLite.load_sessions(server)
+    def append(_server, %Embervm.OpLog.Op{kind: :session_created}), do: {:error, :unavailable}
+    def append(server, op), do: SQLite.append(server, op)
+  end
+
   defmodule UnavailableParkingOpLog do
     def load_sessions(server), do: SQLite.load_sessions(server)
     def append(_server, %Embervm.OpLog.Op{kind: :session_parking}), do: {:error, :unavailable}
@@ -275,6 +281,9 @@ defmodule Embervm.SessionManagerTest do
           :quota_config,
           :quota_table,
           :create_concurrency,
+          :reserve_session_vm_fun,
+          :commit_session_vm_fun,
+          :release_session_vm_fun,
           :node_confirmed_destroy,
           :destroying_alarm_ms,
           :orphan_grace_ms,
@@ -315,6 +324,7 @@ defmodule Embervm.SessionManagerTest do
       node_id: "node-4",
       pod_uid: "pod-node-4",
       configured_id: "node-4",
+      instance_id: Keyword.get(opts, :instance_id),
       workloads: %{
         wl => %{
           free_primed_slots: 1,
@@ -353,6 +363,125 @@ defmodule Embervm.SessionManagerTest do
   end
 
   defp fake_channel_fun, do: fn _node -> {:ok, :fake_channel} end
+
+  test "a durable primed claim survives control-plane rebuild and cannot reach session B" do
+    ctx = start_stack(claim_fun: fn _dispatcher, _node, _workload -> {:ok, "vm-session-a"} end)
+    put_session_workload(ctx, "wl-restart-claim",
+      primed_ids: ["vm-session-a", "vm-unowned"],
+      instance_id: "node-4"
+    )
+
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-restart-claim", "p1")
+    assert {:ok, %{vm_id: "vm-session-a"}} = SessionStore.get(ctx.store, created.session_id)
+
+    # Crash the control-plane-owned session process and rebuild SessionStore from
+    # the same durable SQLite projection. Node inventory outlives this boundary.
+    GenServer.stop(ctx.mgr)
+
+    for {_, pid, _, _} <- DynamicSupervisor.which_children(ctx.sup) do
+      :ok = DynamicSupervisor.terminate_child(ctx.sup, pid)
+    end
+
+    GenServer.stop(ctx.store)
+    {:ok, rebuilt} = SessionStore.start_link(name: nil, op_log: ctx.op_log)
+    assert :error = SessionStore.residency(rebuilt, created.session_id)
+    assert SessionStore.claimed_vm_ids(rebuilt) == MapSet.new(["vm-session-a"])
+
+    suffix = System.unique_integer([:positive])
+    dispatcher = String.to_atom("restart_claim_dispatcher_#{suffix}")
+    depth_table = String.to_atom("restart_claim_depth_#{suffix}")
+
+    {:ok, task_store} =
+      TaskStore.start_link(
+        name: nil,
+        op_log: ctx.op_log,
+        on_queued: fn task -> Dispatcher.enqueue(dispatcher, task) end
+      )
+
+    {:ok, _dispatcher_pid} =
+      Dispatcher.start_link(
+        name: dispatcher,
+        task_store: task_store,
+        capacity_table: ctx.cap_table,
+        catalog_table: ctx.cat_table,
+        depth_table: depth_table,
+        claimed_vm_ids_fun: fn -> SessionStore.claimed_vm_ids(rebuilt) end,
+        start_sweep: false
+      )
+
+    # Rebuild inventory before the manager restarts. Only the genuinely unowned
+    # warm VM is dispatchable even though stale node status still reports A's VM.
+    assert :ok = Dispatcher.sweep(dispatcher)
+    assert Dispatcher.stats(dispatcher).inventory[{"node-4", "wl-restart-claim"}] == 1
+
+    {:ok, mgr} =
+      SessionManager.start_link(
+        name: nil,
+        session_store: rebuilt,
+        dispatcher: dispatcher,
+        supervisor: ctx.sup,
+        registry: ctx.registry,
+        capacity_table: ctx.cap_table,
+        catalog_table: ctx.cat_table,
+        clock: fn -> 5_000_000 end,
+        monotonic_clock: fn -> -800_000 end,
+        node_inventory_fun: fn -> {:error, :not_configured} end,
+        expected_instances_fun: fn -> %{"node-4" => %{configured_id: "node-4"}} end,
+        session_opts: [
+          channel_fun: fake_channel_fun(),
+          assign_fun: &default_assign/2,
+          brick_status_fun: fn _node ->
+            %{health: :healthy, draining: false, registered: true, tombstoned: false}
+          end
+        ],
+        reconcile_interval_ms: 0,
+        sweep_interval_ms: 0
+      )
+
+    assert :ok = SessionManager.reconcile(mgr)
+    assert eventually(fn -> Registry.lookup(ctx.registry, created.session_id) != [] end)
+    assert {:ok, {"node-4", "vm-session-a"}} = SessionStore.residency(rebuilt, created.session_id)
+
+    {:ok, created_b} = SessionManager.create(mgr, "wl-restart-claim", "p2")
+    assert {:ok, %{vm_id: "vm-unowned"}} = SessionStore.get(rebuilt, created_b.session_id)
+    assert :miss = Dispatcher.claim(dispatcher, "node-4", "wl-restart-claim")
+
+    assert {:ok, %{body: "still-a"}} =
+             SessionManager.invoke(mgr, created.session_id, %{body: "still-a"})
+  end
+
+  test "a rejected durable ownership write releases the in-flight VM reservation" do
+    parent = self()
+
+    ctx =
+      start_stack(
+        store_op_log_mod: UnavailableCreateOpLog,
+        claim_fun: fn _dispatcher, _node, _workload -> {:ok, "vm-write-failed"} end,
+        reserve_session_vm_fun: fn _dispatcher, vm_id ->
+          send(parent, {:reserved, vm_id})
+          :ok
+        end,
+        commit_session_vm_fun: fn _dispatcher, vm_id ->
+          send(parent, {:committed, vm_id})
+          :ok
+        end,
+        release_session_vm_fun: fn _dispatcher, vm_id ->
+          send(parent, {:released, vm_id})
+          :ok
+        end
+      )
+
+    put_session_workload(ctx, "wl-create-write-failure")
+
+    assert {:error, {:denied, {:store, :unavailable}}} =
+             SessionManager.create(ctx.mgr, "wl-create-write-failure", "p1")
+
+    assert_received {:reserved, "vm-write-failed"}
+    assert_received {:released, "vm-write-failed"}
+    refute_received {:committed, "vm-write-failed"}
+    assert SessionStore.all(ctx.store) == []
+    assert SessionStore.claimed_vm_ids(ctx.store) == MapSet.new()
+  end
 
   defp start_spec_trace do
     System.put_env("EMBERVM_SPEC_TRACE", "on")
@@ -651,7 +780,7 @@ defmodule Embervm.SessionManagerTest do
     assert_receive {:bank_dialed, "node-4/bank-owner"}
   end
 
-  test "a successful bank drops stale dispatcher inventory before another placement" do
+  test "a durable claim prevents stale re-adoption through a successful bank" do
     dispatcher_name = :"bank_inventory_dispatcher_#{System.unique_integer([:positive])}"
 
     ctx =
@@ -669,9 +798,9 @@ defmodule Embervm.SessionManagerTest do
     {:ok, created} = SessionManager.create(ctx.mgr, "wl-bank-inventory", "p1")
 
     # The node status still advertises the claimed VM until Bank adopts it into
-    # the session registry. A sweep during that window re-adopts the stale copy.
+    # the session registry. The durable claim keeps a sweep from re-adopting it.
     Dispatcher.sweep(dispatcher.name)
-    assert Dispatcher.stats(dispatcher.name).inventory[{"node-4", "wl-bank-inventory"}] == 1
+    assert Dispatcher.stats(dispatcher.name).inventory[{"node-4", "wl-bank-inventory"}] == 0
 
     assert :ok = SessionManager.bank(ctx.mgr, created.session_id)
     assert wait_for_state(ctx, created.session_id, :banked).state == :banked
@@ -684,7 +813,7 @@ defmodule Embervm.SessionManagerTest do
     assert {:ok, "vm-new"} = Dispatcher.claim(dispatcher.name, "node-4", "wl-bank-inventory")
   end
 
-  test "a confirmed destroy drops stale dispatcher inventory" do
+  test "a durable claim prevents stale re-adoption through confirmed destroy" do
     dispatcher_name = :"destroy_inventory_dispatcher_#{System.unique_integer([:positive])}"
 
     ctx =
@@ -699,7 +828,7 @@ defmodule Embervm.SessionManagerTest do
     Dispatcher.sweep(dispatcher.name)
     {:ok, created} = SessionManager.create(ctx.mgr, "wl-destroy-inventory", "p1")
     Dispatcher.sweep(dispatcher.name)
-    assert Dispatcher.stats(dispatcher.name).inventory[{"node-4", "wl-destroy-inventory"}] == 1
+    assert Dispatcher.stats(dispatcher.name).inventory[{"node-4", "wl-destroy-inventory"}] == 0
 
     assert {:ok, _} = SessionManager.destroy(ctx.mgr, created.session_id)
     assert wait_for_state(ctx, created.session_id, :destroyed).state == :destroyed
@@ -5547,7 +5676,10 @@ defmodule Embervm.SessionManagerTest do
     :ok = DynamicSupervisor.terminate_child(ctx.sup, pid)
 
     rebuilt = start_supervised!({SessionStore, name: nil, op_log: ctx.op_log, op_log_mod: SQLite})
-    assert {:ok, %{state: :destroying, vm_id: nil}} = SessionStore.get(rebuilt, created.session_id)
+    assert {:ok, %{state: :destroying, vm_id: vm_id}} = SessionStore.get(rebuilt, created.session_id)
+    assert vm_id == prior.vm_id
+    assert SessionStore.claimed_vm_ids(rebuilt) == MapSet.new([prior.vm_id])
+    assert :error = SessionStore.residency(rebuilt, created.session_id)
     :sys.replace_state(ctx.mgr, fn state -> %{state | session_store: rebuilt, session_dials: %{}} end)
     ctx = %{ctx | store: rebuilt}
 

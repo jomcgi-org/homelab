@@ -245,6 +245,24 @@ defmodule Embervm.Dispatcher do
     GenServer.call(server, {:claim, node_id, workload})
   end
 
+  @doc "Protects a session VM while its durable ownership write is in flight."
+  @spec reserve_session_vm(GenServer.server(), String.t()) :: :ok
+  def reserve_session_vm(server \\ __MODULE__, vm_id) do
+    GenServer.call(server, {:reserve_session_vm, vm_id})
+  end
+
+  @doc "Converts an in-flight session reservation into a durable claim."
+  @spec commit_session_vm(GenServer.server(), String.t()) :: :ok
+  def commit_session_vm(server \\ __MODULE__, vm_id) do
+    GenServer.call(server, {:commit_session_vm, vm_id})
+  end
+
+  @doc "Releases a failed session-create reservation for later inventory adoption."
+  @spec release_session_vm(GenServer.server(), String.t()) :: :ok
+  def release_session_vm(server \\ __MODULE__, vm_id) do
+    GenServer.call(server, {:release_session_vm, vm_id})
+  end
+
   @doc """
   Runs one backlog reconcile synchronously (the same code the periodic sweep
   runs) and returns after it plus the drain it triggers complete. Tests drive
@@ -300,6 +318,8 @@ defmodule Embervm.Dispatcher do
       # budgets (the default) means no principal is ever skipped here.
       quota_table: Keyword.get(opts, :quota_table, Embervm.Metering.table()),
       quota_config: Keyword.get(opts, :quota_config, Embervm.Metering.quota_config()),
+      claimed_vm_ids_fun:
+        Keyword.get(opts, :claimed_vm_ids_fun, fn -> Embervm.SessionStore.claimed_vm_ids() end),
       # Dynamic state.
       queues: %{},
       queued_ids: MapSet.new(),
@@ -311,7 +331,9 @@ defmodule Embervm.Dispatcher do
       denials: %{cap: 0, principal_share: 0, stale_capacity: 0, no_capacity: 0, quota: 0},
       warm_hits: 0,
       misses: 0,
-      adoption_vm_ids: MapSet.new()
+      adoption_vm_ids: MapSet.new(),
+      claimed_vm_ids: MapSet.new(),
+      session_reservations: MapSet.new()
     }
 
     # Named + public so the router's admit?/3 reads it lock-free. Owned here so it
@@ -364,9 +386,32 @@ defmodule Embervm.Dispatcher do
 
   def handle_call({:claim, node_id, wl}, _from, state) do
     case reserve_vm(state, node_id, wl, :warm) do
-      {new_state, vm_id} when is_binary(vm_id) -> {:reply, {:ok, vm_id}, new_state}
+      {new_state, vm_id} when is_binary(vm_id) ->
+        state = %{new_state | session_reservations: MapSet.put(new_state.session_reservations, vm_id)}
+        {:reply, {:ok, vm_id}, state}
+
       {new_state, nil} -> {:reply, :miss, new_state}
     end
+  end
+
+  def handle_call({:reserve_session_vm, vm_id}, _from, state) when is_binary(vm_id) and vm_id != "" do
+    state = drop_vm_id(state, vm_id)
+    {:reply, :ok, %{state | session_reservations: MapSet.put(state.session_reservations, vm_id)}}
+  end
+
+  def handle_call({:commit_session_vm, vm_id}, _from, state) when is_binary(vm_id) and vm_id != "" do
+    state = drop_vm_id(state, vm_id)
+
+    {:reply, :ok,
+     %{
+       state
+       | claimed_vm_ids: MapSet.put(state.claimed_vm_ids, vm_id),
+         session_reservations: MapSet.delete(state.session_reservations, vm_id)
+     }}
+  end
+
+  def handle_call({:release_session_vm, vm_id}, _from, state) do
+    {:reply, :ok, %{state | session_reservations: MapSet.delete(state.session_reservations, vm_id)}}
   end
 
   @impl true
@@ -1365,6 +1410,8 @@ defmodule Embervm.Dispatcher do
   #     is skipped, so a genuinely-running task is never double-dispatched.
   # Then drain.
   defp run_sweep(state) do
+    state = refresh_claimed_vm_ids(state)
+
     case safe_call(fn -> Embervm.TaskStore.list_backlog(state.task_store) end) do
       {:ok, {:ok, backlog}} ->
         tracked = state.workers |> Map.values() |> MapSet.new(& &1.task_id)
@@ -1571,7 +1618,9 @@ defmodule Embervm.Dispatcher do
     %{
       state
       | inventory: inventory,
-        adoption_vm_ids: MapSet.delete(state.adoption_vm_ids, vm_id)
+        adoption_vm_ids: MapSet.delete(state.adoption_vm_ids, vm_id),
+        claimed_vm_ids: MapSet.delete(state.claimed_vm_ids, vm_id),
+        session_reservations: MapSet.delete(state.session_reservations, vm_id)
     }
   end
 
@@ -1583,7 +1632,36 @@ defmodule Embervm.Dispatcher do
     inv =
       for {_k, q} <- state.inventory, id <- :queue.to_list(q), into: MapSet.new(), do: id
 
-    for {_pid, meta} <- state.workers, is_binary(Map.get(meta, :vm_id)), into: inv, do: meta.vm_id
+    workers =
+      for {_pid, meta} <- state.workers, is_binary(Map.get(meta, :vm_id)), into: inv, do: meta.vm_id
+
+    workers
+    |> MapSet.union(state.session_reservations)
+    |> MapSet.union(state.claimed_vm_ids)
+  end
+
+  defp refresh_claimed_vm_ids(state) do
+    claims =
+      try do
+        case state.claimed_vm_ids_fun.() do
+          %MapSet{} = ids -> ids
+          ids when is_list(ids) -> MapSet.new(ids)
+          _ -> state.claimed_vm_ids
+        end
+      rescue
+        _ -> state.claimed_vm_ids
+      catch
+        :exit, _ -> state.claimed_vm_ids
+        _, _ -> state.claimed_vm_ids
+      end
+
+    inventory =
+      for {key, queue} <- state.inventory, into: %{} do
+        remaining = queue |> :queue.to_list() |> Enum.reject(&MapSet.member?(claims, &1))
+        {key, :queue.from_list(remaining)}
+      end
+
+    %{state | claimed_vm_ids: claims, inventory: inventory}
   end
 
   defp reduce_backlog(state, backlog, tracked) do

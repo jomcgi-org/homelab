@@ -454,6 +454,31 @@ defmodule Embervm.SessionManager do
         end
       )
 
+    # Tests commonly replace claim_fun with a self-contained fake and have no
+    # Dispatcher process. Keep that established seam self-contained unless the
+    # reservation callbacks are explicitly supplied. Production does not inject
+    # claim_fun and therefore always uses the real fail-closed reservation API.
+    reservation_default =
+      if Keyword.has_key?(opts, :claim_fun) do
+        fn _dispatcher, _vm_id -> :ok end
+      else
+        &Embervm.Dispatcher.reserve_session_vm/2
+      end
+
+    commit_default =
+      if Keyword.has_key?(opts, :claim_fun) do
+        fn _dispatcher, _vm_id -> :ok end
+      else
+        &Embervm.Dispatcher.commit_session_vm/2
+      end
+
+    release_default =
+      if Keyword.has_key?(opts, :claim_fun) do
+        fn _dispatcher, _vm_id -> :ok end
+      else
+        &Embervm.Dispatcher.release_session_vm/2
+      end
+
     state = %{
       session_store: Keyword.get(opts, :session_store, SessionStore),
       dispatcher: Keyword.get(opts, :dispatcher, Embervm.Dispatcher),
@@ -468,6 +493,12 @@ defmodule Embervm.SessionManager do
       metering: Keyword.get(opts, :metering, Embervm.Metering),
       # Injected for tests; production uses the real claim/prime/channel seams.
       claim_fun: Keyword.get(opts, :claim_fun, &default_claim/3),
+      reserve_session_vm_fun:
+        Keyword.get(opts, :reserve_session_vm_fun, reservation_default),
+      commit_session_vm_fun:
+        Keyword.get(opts, :commit_session_vm_fun, commit_default),
+      release_session_vm_fun:
+        Keyword.get(opts, :release_session_vm_fun, release_default),
       id_fun: Keyword.get(opts, :id_fun),
       channel_fun: Keyword.get(opts, :channel_fun, &Embervm.NodeChannel.get/1),
       prime_fun: Keyword.get(opts, :prime_fun, &default_prime/2),
@@ -1692,6 +1723,7 @@ defmodule Embervm.SessionManager do
           # A warm claim from the primed pool: pool_hit=true (parity with the
           # dispatcher's warm-dispatch marking).
           Tracer.set_attributes(%{"ember.pool_hit" => true})
+          :ok = reserve_session_vm(state, vm_id)
           shadow_claim(node_id, vm_id, workload, entry)
           {:ok, vm_id}
 
@@ -1738,6 +1770,7 @@ defmodule Embervm.SessionManager do
         case safe_prime(state, channel, snapshot_ref, entry, lineage_id) do
           {:ok, %PrimeResponse{vm_id: vm_id}} when is_binary(vm_id) and vm_id != "" ->
             _ = safe(fn -> append_primed(state, workload, vm_id, node_id) end)
+            :ok = reserve_session_vm(state, vm_id)
             shadow_claim(node_id, vm_id, workload, entry)
             {:ok, vm_id}
 
@@ -1841,6 +1874,7 @@ defmodule Embervm.SessionManager do
     # node_id is the K8s node where the VM primed/started; SessionStore carries it into session_created.
     case SessionStore.create(state.session_store, attrs) do
       {:ok, %{session_id: session_id} = created} ->
+        :ok = commit_session_vm(state, vm_id)
         state = remember_session_dial(state, session_id, node_id, dial_id)
 
         case start_session_process(state, session_id, workload, principal, entry, node_id, vm_id, dial_id) do
@@ -1858,9 +1892,11 @@ defmodule Embervm.SessionManager do
       # one op-log). Resolve the holder to exactly what the fast path would have
       # answered: replay the live winner, conflict on a terminal one.
       {:error, {:duplicate_session_idempotency_key, holder}} ->
+        :ok = release_session_vm(state, vm_id)
         resolve_lost_key_race(state, holder)
 
       {:error, reason} ->
+        :ok = release_session_vm(state, vm_id)
         {{:error, {:denied, {:store, reason}}}, state}
     end
   end
@@ -3295,7 +3331,8 @@ defmodule Embervm.SessionManager do
     case start_result do
       {:ok, pid} ->
         case SessionStore.transition(state.session_store, session_id, :rejoin_ready, :session_rejoined,
-               %{volume_node_id: session.volume_node_id}, %{node_id: node_id, vm_id: vm_id}) do
+               %{volume_node_id: session.volume_node_id, node_id: node_id, vm_id: vm_id},
+               %{node_id: node_id, vm_id: vm_id}) do
           {:ok, _} -> drain_relight_into_process(state, session_id, pid)
           {:error, reason} ->
             _ = destroy_vm(state, %{session_id: session_id, node_id: node_id, vm_id: vm_id})
@@ -4039,23 +4076,25 @@ defmodule Embervm.SessionManager do
     facts = NodeCapacity.all(state.capacity_table)
     live_vms = index_session_vms(facts)
     snapshots = index_session_snapshots(facts)
+    sessions = SessionStore.all(state.session_store)
+    claimed_primed = index_claimed_primed(facts, sessions)
     inventory_observed_at = complete_inventory_observed_at(state, facts)
     nodes_facts = index_node_facts(facts)
 
     state = state |> clear_changed_unapplicable() |> reconcile_deleted_nodes()
 
     state =
-      SessionStore.all(state.session_store)
+      sessions
       |> Enum.reject(&SessionState.terminal?(&1.state))
       |> Enum.reduce(state, fn session, acc ->
-        adopt_one(acc, session, live_vms, snapshots, inventory_observed_at)
+        adopt_one(acc, session, live_vms, claimed_primed, snapshots, inventory_observed_at)
       end)
 
     # Fail-closed reconciliation toward destruction (ADR embervm/014 decision 5),
     # Re-drive stuck destroying sessions (Direction 1 completion + alarm), and
     # destroy reported session VMs with no CP row (Direction 2 orphans). Orphan
     # cleanup remains gated because it requires the node-confirmed policy.
-    state = redrive_destroying(state, live_vms)
+    state = redrive_destroying(state, live_vms, claimed_primed)
 
     # Run orphan cleanup after destroying sessions have been redriven. A session
     # can enter reconcile as :destroying while its node teardown is already
@@ -4078,7 +4117,7 @@ defmodule Embervm.SessionManager do
   # the destroyed op was lost), the destruction is confirmed by absence: record
   # destroyed. An alarm fires at error level if a destroying session
   # persists past destroying_alarm_ms.
-  defp redrive_destroying(state, live_vms) do
+  defp redrive_destroying(state, live_vms, claimed_primed) do
     now = state.clock.()
 
     destroying =
@@ -4101,7 +4140,7 @@ defmodule Embervm.SessionManager do
 
     Enum.reduce(destroying, state, fn session, acc ->
       acc = maybe_alarm_destroying(acc, session, now)
-      redrive_one_destroying(acc, session, live_vms, statuses)
+      redrive_one_destroying(acc, session, live_vms, claimed_primed, statuses)
     end)
   end
 
@@ -4127,7 +4166,7 @@ defmodule Embervm.SessionManager do
     end
   end
 
-  defp redrive_one_destroying(state, session, live_vms, statuses) do
+  defp redrive_one_destroying(state, session, live_vms, claimed_primed, statuses) do
     sid = session.session_id
 
     # Emitted per ACTING arm below, not here. Reconcile runs every few seconds
@@ -4177,8 +4216,8 @@ defmodule Embervm.SessionManager do
       # Owner still reports the VM: retry the node-confirmed teardown. Terminate any
       # lingering process first (a same-CP retry after a failed RPC), then re-issue
       # the Destroy; a CP-crash re-drive has no process, so this is a no-op there.
-      Map.has_key?(live_vms, sid) ->
-        {node_id, vm_id, dial_key} = Map.fetch!(live_vms, sid)
+      reported = Map.get(live_vms, sid) || Map.get(claimed_primed, sid) ->
+        {node_id, vm_id, dial_key} = reported
 
         if node_reporting?(state, dial_key) do
           # Residency is deliberately not rebuilt from the durable projection.
@@ -4260,13 +4299,10 @@ defmodule Embervm.SessionManager do
   end
 
   # Direction 2: a node reports a live session VM whose session_id no CP row matches.
-  # It is an orphan to DESTROY (node-confirmed), UNLESS it is a young async-write
-  # race (ADR embervm/014 decision 2): under EMBERVM_ASYNC_LIFECYCLE_WRITES the
-  # durable session_created append is deferred, so between an interactive VM and its
-  # durable row there is a window where a fresh report shows the VM but its durable
-  # row is not yet written. Under Option A the create's ETS row IS advanced
-  # synchronously at commit, so the discriminator queries the LIVE store/writer
-  # state (present in the commit..append window), not only durable rows:
+  # It is an orphan to DESTROY (node-confirmed), unless the in-memory store still
+  # carries a row from a write acknowledged by a faulty backend or a historical
+  # async-create configuration. The discriminator queries live store/writer state,
+  # not only durable rows:
   #
   #   * a pending async write references this vm_id (Embervm.AsyncWriter.pending?/2)
   #     => ADOPT: the deferred append is in flight and IS the backfill; leave the VM.
@@ -4374,6 +4410,32 @@ defmodule Embervm.SessionManager do
     end
   end
 
+  # Durable claims identify ownership, while node inventory establishes current
+  # residency. A never-invoked session VM remains in primed_vm_ids and therefore
+  # has no node-reported session_id. Rebind only when the exact durable vm_id is
+  # reported under the same owner node and workload.
+  defp index_claimed_primed(facts, sessions) do
+    Enum.reduce(sessions, %{}, fn session, acc ->
+      if is_binary(session.vm_id) and session.vm_id != "" and not SessionState.terminal?(session.state) do
+        match =
+          Enum.find(facts, fn fact ->
+            wc = get_in(fact, [:workloads, session.workload])
+
+            fact.configured_id == session.node_id and is_map(wc) and
+              session.vm_id in (Map.get(wc, :primed_vm_ids, []) || [])
+          end)
+
+        if match do
+          Map.put(acc, session.session_id, {match.configured_id, session.vm_id, fact_dial_id(match)})
+        else
+          acc
+        end
+      else
+        acc
+      end
+    end)
+  end
+
   # The channel key for a capacity fact: its instance_id when present, else the node
   # name (legacy/single-instance facts resolve via the node-name alias, unchanged).
   defp fact_dial_id(fact) do
@@ -4435,7 +4497,7 @@ defmodule Embervm.SessionManager do
     end)
   end
 
-  defp adopt_one(state, session, live_vms, snapshots, inventory_observed_at) do
+  defp adopt_one(state, session, live_vms, claimed_primed, snapshots, inventory_observed_at) do
     sid = session.session_id
 
     cond do
@@ -4452,7 +4514,7 @@ defmodule Embervm.SessionManager do
         state
 
       session.state == :parking ->
-        case Map.get(live_vms, sid) do
+        case Map.get(live_vms, sid) || Map.get(claimed_primed, sid) do
           {node_id, vm_id, dial_id} ->
             if node_reporting?(state, dial_id) do
               :ok = SessionStore.adopt_residency(state.session_store, sid, node_id, vm_id)
@@ -4479,6 +4541,13 @@ defmodule Embervm.SessionManager do
       # regardless of whether ETS thinks it is running/banking/relighting.
       Map.has_key?(live_vms, sid) ->
         {node_id, vm_id, dial_id} = Map.fetch!(live_vms, sid)
+        adopt_live(state, session, node_id, vm_id, dial_id)
+
+      # Before the first operation the daemon still reports the claimed guest as
+      # primed. The durable vm_id supplies ownership and the matching node fact
+      # supplies current residency, so it is safe to recreate the session process.
+      Map.has_key?(claimed_primed, sid) ->
+        {node_id, vm_id, dial_id} = Map.fetch!(claimed_primed, sid)
         adopt_live(state, session, node_id, vm_id, dial_id)
 
       # No live VM, but the node reports its SNAPSHOT: it is banked (or a bank/relight
@@ -4762,6 +4831,9 @@ defmodule Embervm.SessionManager do
         is_list(Map.get(fact, :session_vms)) and
         not Enum.any?(fact.session_vms, fn vm ->
           vm.vm_id == vm_id or vm.session_id == session.session_id
+        end) and
+        not Enum.any?(Map.values(Map.get(fact, :workloads, %{})), fn workload ->
+          vm_id in (Map.get(workload, :primed_vm_ids, []) || [])
         end)
     end)
   end
@@ -5727,6 +5799,18 @@ defmodule Embervm.SessionManager do
 
   defp default_claim(dispatcher, node_id, workload) do
     Embervm.Dispatcher.claim(dispatcher, node_id, workload)
+  end
+
+  defp reserve_session_vm(state, vm_id) do
+    state.reserve_session_vm_fun.(state.dispatcher, vm_id)
+  end
+
+  defp commit_session_vm(state, vm_id) do
+    state.commit_session_vm_fun.(state.dispatcher, vm_id)
+  end
+
+  defp release_session_vm(state, vm_id) do
+    state.release_session_vm_fun.(state.dispatcher, vm_id)
   end
 
   # A persistence Prime COLD BOOTS with a freshly created workspace volume, so it
