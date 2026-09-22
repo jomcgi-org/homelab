@@ -1369,29 +1369,37 @@ defmodule Embervm.SessionManager do
   # placement while the recorded owner may still hold the workspace.
   defp validate_restore_volume_owner(_state, nil, _restore_lineage, _workload), do: :ok
 
-  defp validate_restore_volume_owner(
-         state,
-         %{volume_node_id: owner_node_id},
-         restore_lineage,
-         workload
-       )
-       when is_binary(owner_node_id) and owner_node_id != "" do
-    conflicting_nodes =
-      state
-      |> reported_restore_volume_facts(restore_lineage, workload)
-      |> Enum.map(&Map.get(&1, :configured_id))
-      |> Enum.reject(&(&1 == owner_node_id))
-      |> Enum.uniq()
-      |> Enum.sort()
+  defp validate_restore_volume_owner(state, holder, restore_lineage, workload) do
+    with {:ok, owner_node_id} <- restore_volume_owner_id(holder) do
+      conflicting_nodes =
+        state
+        |> reported_restore_volume_facts(restore_lineage, workload)
+        |> Enum.map(&Map.get(&1, :configured_id))
+        |> Enum.reject(&(&1 == owner_node_id))
+        |> Enum.uniq()
+        |> Enum.sort()
 
-    case conflicting_nodes do
-      [] -> :ok
-      nodes -> {:error, {:lineage_relinquishment_failed, {:volume_owner_mismatch, owner_node_id, nodes}}}
+      case conflicting_nodes do
+        [] -> :ok
+        nodes -> {:error, {:lineage_relinquishment_failed, {:volume_owner_mismatch, owner_node_id, nodes}}}
+      end
     end
   end
 
-  defp validate_restore_volume_owner(_state, _holder, _restore_lineage, _workload) do
+  defp restore_volume_owner_id(%{volume_node_id: owner_node_id}) when owner_node_id in [nil, ""] do
     {:error, {:lineage_relinquishment_failed, :volume_owner_missing}}
+  end
+
+  defp restore_volume_owner_id(%{volume_node_id: owner_node_id}) when is_binary(owner_node_id) do
+    if String.valid?(owner_node_id) and String.trim(owner_node_id) == owner_node_id do
+      {:ok, owner_node_id}
+    else
+      {:error, {:lineage_relinquishment_failed, :volume_owner_invalid}}
+    end
+  end
+
+  defp restore_volume_owner_id(_holder) do
+    {:error, {:lineage_relinquishment_failed, :volume_owner_invalid}}
   end
 
   # #4306/#4313 review fix 2 (TOCTOU): validate_restore_lineage/4 only
