@@ -1143,6 +1143,14 @@ the same before deciding the attempt has no result. The model runs once, and
 the node owner supplies the declared artifact path a hold reconstructed from
 durable rows cannot know, so a recovered attempt keeps its artifact.
 
+A queued executor that receives a result but fails to persist it also writes
+this bounded hold before releasing its claim. Receipt adoption can retry the
+database write without a second model invocation or a live-guest probe. The
+hold writer refuses changed ownership and already-committed terminal results;
+if recovery is disabled or the hold cannot be written, the existing conservative
+unknown-outcome path remains. Historical attempts whose claims were already
+removed still require separate positive reconciliation evidence.
+
 A factory guest cold-parked without a recorded drain continuation is a candidate
 for conditional retirement, not cessation proof by itself. Recovery asks EmberVM
 to retire the exact session ID, generation, invoke-start and update timestamps.

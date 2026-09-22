@@ -1172,6 +1172,21 @@ async def _execute_pending_message(session_id: int) -> None:
                 claimed_seq,
                 session_id,
             )
+            # The model already returned. Preserve its exact receipt and claim
+            # for bounded adoption instead of discarding the completed work as
+            # an unknown invocation. The hold writer refuses changed ownership
+            # or a turn whose database commit actually succeeded.
+            if _response_lost_eligible():
+                try:
+                    await asyncio.to_thread(
+                        _record_response_lost, "result_persistence_failed", {}
+                    )
+                except Exception:  # noqa: BLE001 - retain existing release fallback
+                    logger.exception(
+                        "Could not hold completed turn %s in session %s",
+                        claimed_seq,
+                        session_id,
+                    )
             return
         _clear_negative_oracle_verdict(session_id)
         if turn.terminal_reason == "interrupted_for_drain":
