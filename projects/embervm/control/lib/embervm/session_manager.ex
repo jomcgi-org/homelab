@@ -3625,8 +3625,9 @@ defmodule Embervm.SessionManager do
                 other -> classify_relight_error({:relight_failed, other})
               end
 
-            # :snapshot_lost fails the session; :no_bricks (#5777, CP blind) parks it
-            # via finish_relight's pressure arm, the same as a memory-pressure reject.
+            # :snapshot_lost fails the session. :no_bricks (#5777, CP blind) and
+            # :node_unreported (#5782, partial registration) park via
+            # finish_relight's pressure arm.
             {:error, _} = denied ->
               denied
           end
@@ -3957,11 +3958,7 @@ defmodule Embervm.SessionManager do
       {:error, :snapshot_lost} ->
         # Unrestorable snapshot (#5174 lane): the session fails and every parked
         # caller 410s. NEVER queued: a lost snapshot does not clear with time.
-        state = clear_pressure_wait(state, session_id)
-        session = get_session!(state, session_id)
-        state = fail_session(state, session_id, :snapshot_lost, "snapshot_lost")
-        _ = evict_snapshot(state, session)
-        drain_relight_waiters(state, session_id, {:error, {:gone, "snapshot_lost"}})
+        finish_snapshot_lost(state, session_id)
 
       {:error, reason} ->
         cond do
@@ -4003,13 +4000,14 @@ defmodule Embervm.SessionManager do
 
   # -- wake denied on pressure or placement (#4355, #5765) --------------------
 
-  # Matches the node's memory-pressure reject (gRPC status 8) AND the scheduler's
-  # two placement denials (:no_bricks, CP is blind because no brick has dialed
-  # home yet; :capacity, no brick on the target node has headroom). All three are
-  # transient. See #4355 and #5765.
+  # Matches the node's memory-pressure reject (gRPC status 8), the scheduler's
+  # placement denials (:no_bricks and :capacity), and a banked snapshot owner whose
+  # node has not registered yet. They share the retry machinery, but the last case
+  # terminalizes when the bound expires. See #4355, #5765, and #5782.
   defp pressure_denied?(%GRPC.RPCError{status: 8}), do: true
   defp pressure_denied?(:no_bricks), do: true
   defp pressure_denied?(:capacity), do: true
+  defp pressure_denied?({:node_unreported, node_id}) when is_binary(node_id), do: true
   defp pressure_denied?(reason) when is_tuple(reason) do
     reason |> Tuple.to_list() |> Enum.any?(&pressure_denied?/1)
   end
@@ -4059,7 +4057,7 @@ defmodule Embervm.SessionManager do
     end
 
     if elapsed_ms >= state.pressure_wait_bound_ms do
-      give_up_pressure_wait(state, session_id, wait)
+      expire_active_pressure_wait(state, session_id, wait)
     else
       _ = SessionStore.mark(state.session_store, session_id, wake_abort_event(state, session_id))
       # The retry tick is what enforces the bound, so a zero/negative cadence is
@@ -4083,7 +4081,7 @@ defmodule Embervm.SessionManager do
             clear_pressure_wait(state, session_id)
 
           state.monotonic_clock.() - wait.first_denied_at >= state.pressure_wait_bound_ms ->
-            give_up_pressure_wait(state, session_id, wait)
+            expire_resting_pressure_wait(state, session_id, wait)
 
           true ->
             case SessionStore.get(state.session_store, session_id) do
@@ -4107,6 +4105,74 @@ defmodule Embervm.SessionManager do
             end
         end
     end
+  end
+
+  # A denial result arrived at or beyond the bound while the row is still
+  # relighting. Only the partial-registration denial becomes terminal. Ordinary
+  # no-bricks/capacity/pressure expiry keeps the established non-terminal path.
+  defp expire_active_pressure_wait(state, session_id, %{last_reason: {:node_unreported, _node_id}}) do
+    finish_snapshot_lost(state, session_id)
+  end
+
+  defp expire_active_pressure_wait(state, session_id, wait) do
+    give_up_pressure_wait(state, session_id, wait)
+  end
+
+  # A retry tick reached the bound while the row is resting. Re-read both the row
+  # and the capacity table before deciding: a node that reports at the boundary
+  # may recover, a still-absent node terminalizes, and a newly empty table keeps
+  # #5777's non-terminal CP-blind behavior. A duplicate retry that arrives while
+  # another worker is active is stale and leaves that worker authoritative.
+  defp expire_resting_pressure_wait(state, session_id, %{last_reason: {:node_unreported, _node_id}} = wait) do
+    case SessionStore.get(state.session_store, session_id) do
+      {:ok, %{state: :banked} = session} ->
+        case WakeInstance.node_for_relight(session, state.capacity_table) do
+          {:ok, _dial_id} ->
+            begin_wake(state, session)
+
+          {:error, :no_bricks} ->
+            give_up_pressure_wait(state, session_id, %{wait | last_reason: :no_bricks})
+
+          {:error, :snapshot_lost} ->
+            mark_and_finish_snapshot_lost(state, session_id)
+
+          {:error, {:node_unreported, _node_id}} ->
+            mark_and_finish_snapshot_lost(state, session_id)
+        end
+
+      {:ok, %{state: st}} when st in [:destroying, :expired, :evicted, :destroyed, :failed] ->
+        state = clear_pressure_wait(state, session_id)
+        drain_relight_waiters(state, session_id, {:error, {:gone, to_string(st)}})
+
+      {:ok, %{state: :relighting}} ->
+        state
+
+      _ ->
+        give_up_pressure_wait(state, session_id, wait)
+    end
+  end
+
+  defp expire_resting_pressure_wait(state, session_id, wait) do
+    give_up_pressure_wait(state, session_id, wait)
+  end
+
+  defp mark_and_finish_snapshot_lost(state, session_id) do
+    case SessionStore.mark(state.session_store, session_id, :relight) do
+      {:ok, _} ->
+        finish_snapshot_lost(state, session_id)
+
+      {:error, _} ->
+        state = clear_pressure_wait(state, session_id)
+        drain_relight_waiters(state, session_id, {:error, {:not_ready, :banked}})
+    end
+  end
+
+  defp finish_snapshot_lost(state, session_id) do
+    state = clear_pressure_wait(state, session_id)
+    session = get_session!(state, session_id)
+    state = fail_session(state, session_id, :snapshot_lost, "snapshot_lost")
+    _ = evict_snapshot(state, session)
+    drain_relight_waiters(state, session_id, {:error, {:gone, "snapshot_lost"}})
   end
 
   # Bound expired: unwind the wake and fail every parked caller with the
