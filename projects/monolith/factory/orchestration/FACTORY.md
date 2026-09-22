@@ -1240,6 +1240,18 @@ spend remains unknown and consumes the reserved ceiling and attempt allowance;
 only the unresolved hold is released so normal planning can proceed within the
 existing task policy and deadline.
 
+A terminal workflow can also leave an unclaimed drain continuation behind.
+`interrupted_continuation_retired` requires the exact native continuation grant
+and authenticated, chronologically ordered drain responses for every physical
+dispatch, including the last one. The conductor rechecks this proof under its
+control lock with the execution locks, settles the permit, consumes only that
+grant, and records the failed graph/start and audit in one transaction. The
+session becomes failed while its guest binding, native turns, receipts, policy,
+and deadline remain intact. Unknown spend consumes the reserved ceiling and
+attempt allowance. A live workflow, changed ownership, missing native response,
+or pending observer prevents settlement. This proves the model turns ended;
+it does not claim the guest was destroyed and does not issue a remote stop.
+
 A planner decision is one graph edit or one `plan` whose edits apply together
 under a single expected revision, so a rejected edit rejects the whole plan and
 the graph never holds half of one. Each edit becomes its own plan version under

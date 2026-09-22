@@ -437,7 +437,9 @@ def _capacity_denied_turn(turn) -> bool:
     )
 
 
-def _interrupted_dispatch_receipts(db, agent, permit, count, dispatched):
+def _interrupted_dispatch_receipts(
+    db, agent, permit, count, dispatched, *, last_interrupted_at=None
+):
     """Prove every earlier dispatch ended for drain before the next began.
 
     Native receipts authenticate each physical response independently of the
@@ -464,7 +466,10 @@ def _interrupted_dispatch_receipts(db, agent, permit, count, dispatched):
         .limit(store.MAX_PENDING_DISPATCHES + 1)
     ).all()
     rows = [result_receipts._receipt_metadata(db, rid) for rid in ids]
-    if len(rows) not in (count - 1, count) or any(row is None for row in rows):
+    expected_counts = (
+        (count,) if last_interrupted_at is not None else (count - 1, count)
+    )
+    if len(rows) not in expected_counts or any(row is None for row in rows):
         return None
     ordered = sorted(rows, key=lambda row: row["dispatch_count"])
     if [r["dispatch_count"] for r in ordered] != list(range(1, len(rows) + 1)):
@@ -481,7 +486,7 @@ def _interrupted_dispatch_receipts(db, agent, permit, count, dispatched):
         ):
             return None
         guests.add(row["guest_id"])
-        if row["dispatch_count"] == count:
+        if row["dispatch_count"] == count and last_interrupted_at is None:
             # Optional preparation for the final dispatch is not a response.
             if (
                 row["claim_owner"] != permit.owner
@@ -504,6 +509,13 @@ def _interrupted_dispatch_receipts(db, agent, permit, count, dispatched):
             ):
                 return None
             continue
+        final_drain = row["dispatch_count"] == count and last_interrupted_at is not None
+        if final_drain and (
+            row["claim_owner"] != permit.owner
+            or row["guest_id"] != agent.ember_session_id
+            or aware(row["created_at"]) < aware(dispatched)
+        ):
+            return None
         try:
             native = json.loads(result_receipts._result(db, row)["result_body"])
         except (result_receipts.ReceiptRejected, ValueError, TypeError):
@@ -514,7 +526,7 @@ def _interrupted_dispatch_receipts(db, agent, permit, count, dispatched):
             or native.get("stop_reason") != "interrupted_for_drain"
             or not aware(row["created_at"])
             <= aware(row["received_at"])
-            <= aware(dispatched)
+            <= aware(last_interrupted_at if final_drain else dispatched)
         ):
             return None
         previous_end = aware(row["received_at"])
@@ -1015,6 +1027,80 @@ def read_drained_lost_factory_attempt(db: Session, pin: dict, session_id: int) -
         json.dumps(identity, sort_keys=True).encode()
     ).hexdigest()
     return identity
+
+
+def read_interrupted_factory_continuation(
+    db: Session, pin: dict, session_id: int | None, workflow_status: str | None
+) -> dict | None:
+    """Prove a terminal workflow left only an authenticated drain continuation.
+
+    Every physical dispatch must have a captured drain response. The existing
+    drain identity reader locks the exact unclaimed grant, turn, permit and
+    session. This proves the model turns ended, not that the guest was destroyed.
+    The caller holds the factory control lock through graph/start settlement.
+    """
+    from factory.execution import store
+
+    if (
+        workflow_status not in {"SUCCESS", "ERROR", "CANCELLED"}
+        or type(session_id) is not int
+    ):
+        return None
+    try:
+        identity = read_drained_lost_factory_attempt(db, pin, session_id)
+    except ValueError:
+        return None
+    if (
+        identity["cost_usd"] is not None
+        or identity["dispatch_count"] > store.MAX_PENDING_DISPATCHES
+    ):
+        return None
+    agent = _locked_session(db, session_id)
+    permit = db.get(AgentCapacityReservation, identity["permit_id"])
+    history = _interrupted_dispatch_receipts(
+        db,
+        agent,
+        permit,
+        identity["dispatch_count"],
+        datetime.fromisoformat(identity["dispatched_at"]),
+        last_interrupted_at=datetime.fromisoformat(identity["interrupted_at"]),
+    )
+    if history is None:
+        return None
+    return {
+        **identity,
+        "workflow_status": workflow_status,
+        "invocation_phase": "interrupted_continuation_retired",
+        "interrupted_dispatches": history,
+    }
+
+
+def settle_interrupted_factory_continuation(
+    db: Session, pin: dict, proof: dict
+) -> None:
+    """Retire only the proven unclaimed grant, preserving spend and native history."""
+    from factory.execution.models import PendingMessage
+
+    current = read_interrupted_factory_continuation(
+        db, pin, proof["session_id"], proof["workflow_status"]
+    )
+    if current != proof:
+        raise ValueError("factory_interrupted_continuation_changed")
+    agent = _locked_session(db, proof["session_id"])
+    pending = db.get(PendingMessage, proof["pending_id"])
+    admission.settle(
+        db,
+        agent,
+        proof["seq"],
+        outcome="drain_continuation_retired",
+        cessation_confirmed=True,
+    )
+    # A terminal workflow cannot consume this continuation later. Keep the guest
+    # binding and original turn/receipts for normal lifecycle cleanup and audit.
+    agent.status = "failed"
+    db.add(agent)
+    db.delete(pending)
+    db.flush()
 
 
 def settle_drained_lost_factory_attempt(db: Session, pin: dict, identity: dict) -> None:
