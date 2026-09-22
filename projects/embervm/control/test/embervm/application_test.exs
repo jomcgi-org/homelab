@@ -91,7 +91,7 @@ defmodule Embervm.ApplicationTest do
   test "brick class parsing carries zero-replica admission capacity" do
     System.put_env(
       "EMBERVM_BRICK_CLASSES",
-      ~s([{"name":"2gi","desired":0,"min":0,"max":4,"usable_mib":1792,"mem_reject_floor_mib":512,"slots":8}])
+      ~s([{"name":"2gi","desired":0,"min":0,"max":4,"ceiling_bound":6,"usable_mib":1792,"mem_reject_floor_mib":512,"slots":8}])
     )
 
     assert App.brick_classes_env() == [
@@ -100,6 +100,7 @@ defmodule Embervm.ApplicationTest do
                desired: 0,
                min: 0,
                max: 4,
+               ceiling_bound: 6,
                usable_mib: 1_792,
                mem_reject_floor_mib: 512,
                slots: 8

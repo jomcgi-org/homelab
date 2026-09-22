@@ -1123,7 +1123,11 @@ spec:
                         type: string
                         description: >-
                           Ready | BaseBuilt | BaseVendorCoverage |
-                          BaseRegistryConverged. Ready means a
+                          BaseRegistryConverged | Capacity.
+                          Capacity is False while attributed demand has no
+                          fitting authorized class or its class has exhausted
+                          ceilingBound, and returns True only after the quiet
+                          recovery window. Ready means a
                           restorable base exists SOMEWHERE, which on a
                           vendor-split fleet is not the same as everywhere:
                           BaseVendorCoverage is the per-CPU-vendor view and goes

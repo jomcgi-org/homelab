@@ -1759,6 +1759,19 @@ bricks:
       4gi: 3
       8gi: 2
       16gi: 2
+    # Runtime ceiling ownership is separately authorized per class. maxReplicas
+    # is the bootstrap ceiling; sustained workload-attributed denials may raise
+    # it one step at a time only up to ceilingBound. Missing or zero means the
+    # feature is disabled for that class and preserves the fixed maxReplicas
+    # behavior. This repository ships every class disabled. A later canary is a
+    # reviewed values-only change for one explicitly selected non-production
+    # class.
+    ceilingBound: {}
+    # Once replica-level drain has safely brought a dynamically raised class to
+    # zero live replicas, keep its raised ceiling for one quiet hour before
+    # retiring one ceiling step. Denials and any nonzero replica count reset the
+    # boundary. This does not bypass the existing victim safety rails.
+    ceilingIdleMs: 3600000
   # Memory each brick's noded reserves for itself, subtracted from the class
   # limit to get guest-schedulable capacity. One source renders BOTH consumers:
   # noded's EMBERVM_NODED_DAEMON_RESERVE_MIB (_noded-pod.tpl) and the control

@@ -383,7 +383,8 @@ spec:
             {{- if .Values.bricks.enabled }}
             # Brick capacity (PR-3): the per-size-class DESIRED replica counts the
             # Embervm.BrickController reconciles the brick Deployments to, as a JSON
-            # array of {name,desired,min,max,usable_mib,mem_reject_floor_mib,slots};
+            # array of {name,desired,min,max,ceiling_bound,usable_mib,
+            # mem_reject_floor_mib,slots};
             # capacities are declared here rather than observed because classes
             # must work before any brick exists.
             # desired from the bricks.desiredReplicas
@@ -398,6 +399,7 @@ spec:
             {{- $auto := .Values.bricks.autoscale | default dict }}
             {{- $mins := $auto.minReplicas | default dict }}
             {{- $maxs := $auto.maxReplicas | default dict }}
+            {{- $bounds := $auto.ceilingBound | default dict }}
             {{- $daemonReserve := .Values.bricks.daemonReserveMib | default 512 | int }}
             {{- $rejectFloor := .Values.noded.memRejectFloorMib | default 512 | int }}
             {{- $classes := list }}
@@ -405,7 +407,7 @@ spec:
             {{- $nameplateMib := trimSuffix "Gi" .resources.limits.memory | int | mul 1024 }}
             {{- $usableMib := max 0 (sub $nameplateMib $daemonReserve) }}
             {{- $slots := ternary .maxLiveVMs $.Values.noded.maxLiveVMs (not (kindIs "invalid" .maxLiveVMs)) }}
-            {{- $classes = append $classes (dict "name" .name "desired" (index $desired .name | default 0) "min" (index $mins .name | default 0) "max" (index $maxs .name | default (index $desired .name | default 0)) "usable_mib" $usableMib "mem_reject_floor_mib" $rejectFloor "slots" $slots) }}
+            {{- $classes = append $classes (dict "name" .name "desired" (index $desired .name | default 0) "min" (index $mins .name | default 0) "max" (index $maxs .name | default (index $desired .name | default 0)) "ceiling_bound" (index $bounds .name | default 0) "usable_mib" $usableMib "mem_reject_floor_mib" $rejectFloor "slots" $slots) }}
             {{- end }}
             - name: EMBERVM_BRICK_CLASSES
               value: {{ $classes | toJson | quote }}
@@ -413,6 +415,8 @@ spec:
               value: {{ printf "%s-brick-" (include "embervm.noded.fullname" .) | quote }}
             - name: EMBERVM_BRICK_AUTOSCALE_MODE
               value: {{ $auto.mode | default "off" | quote }}
+            - name: EMBERVM_BRICK_CEILING_IDLE_MS
+              value: {{ $auto.ceilingIdleMs | default 3600000 | quote }}
             {{- end }}
             {{- if .Values.xds.enabled }}
             {{- if .Values.servingEnvoy.enabled }}

@@ -190,6 +190,51 @@ defmodule Embervm.BaseBuilderTest do
     assert %{"status" => "True", "reason" => "BaseBuilt"} = condition(status_map, "BaseBuilt")
   end
 
+  test "capacity transitions share the owned Workload conditions array" do
+    agent = start_recorder()
+
+    builder =
+      start_builder(
+        status_writer: recording_status_writer(agent),
+        build_fun: fn :fake_channel, _req -> {:ok, resp("snap-capacity")} end
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{name: "bounded"}))
+    assert_eventually(fn -> match?(%{"snapshotRef" => "snap-capacity"}, latest(agent, "bounded")) end)
+
+    :ok =
+      BaseBuilder.capacity_condition(builder, "bounded", %{
+        status: "False",
+        reason: :ceiling_exhausted,
+        message: "8gi reached its authorized ceiling"
+      })
+
+    assert_eventually(fn ->
+      match?(
+        %{"status" => "False", "reason" => "CeilingExhausted"},
+        condition(latest(agent, "bounded"), "Capacity")
+      )
+    end)
+
+    status = latest(agent, "bounded")
+    assert condition(status, "Ready")["status"] == "True"
+    assert length(status["conditions"]) == 5
+
+    :ok =
+      BaseBuilder.capacity_condition(builder, "bounded", %{
+        status: "True",
+        reason: :capacity_available,
+        message: "capacity is available"
+      })
+
+    assert_eventually(fn ->
+      match?(
+        %{"status" => "True", "reason" => "CapacityAvailable"},
+        condition(latest(agent, "bounded"), "Capacity")
+      )
+    end)
+  end
+
   test "an already-built base is not rebuilt on a redundant reconcile (idempotent)" do
     agent = start_recorder()
     {:ok, count} = Agent.start_link(fn -> 0 end)

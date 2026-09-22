@@ -23,7 +23,7 @@ defmodule Embervm.CapacityReport do
   The observable gauges land in Honeycomb through the collector metrics pipeline.
   """
 
-  alias Embervm.{Cron, Dispatcher, NodeCapacity, WorkloadCatalog}
+  alias Embervm.{BrickController, Cron, Dispatcher, NodeCapacity, WorkloadCatalog}
 
   @default_horizon_seconds 3_600
   @max_horizon_seconds 86_400
@@ -51,6 +51,7 @@ defmodule Embervm.CapacityReport do
     facts = Keyword.get_lazy(opts, :capacity_facts, fn -> NodeCapacity.all(capacity_table(opts)) end)
     entries = Keyword.get_lazy(opts, :catalog_entries, fn -> catalog_entries(catalog_table(opts)) end)
     dispatcher_stats = Keyword.get_lazy(opts, :dispatcher_stats, &safe_dispatcher_stats/0)
+    capacity_health = Keyword.get_lazy(opts, :capacity_health, &safe_capacity_health/0)
 
     instances = facts |> Enum.map(&instance_row/1) |> Enum.sort_by(& &1.instance_id)
     catalog = catalog_map(entries)
@@ -77,7 +78,8 @@ defmodule Embervm.CapacityReport do
         floors: demand_tier(workloads, :floor),
         committed: demand_tier(workloads, :committed),
         observed: demand_tier(workloads, :observed)
-      }
+      },
+      health: capacity_health
     }
   end
 
@@ -162,6 +164,17 @@ defmodule Embervm.CapacityReport do
   catch
     _, _ -> %{}
   end
+
+  defp safe_capacity_health do
+    BrickController.capacity_health()
+  rescue
+    _ -> unavailable_capacity_health()
+  catch
+    _, _ -> unavailable_capacity_health()
+  end
+
+  defp unavailable_capacity_health,
+    do: %{ok: false, conditions: [%{reason: :controller_unavailable}], ceilings: []}
 
   defp instance_row(facts) do
     node_id = text(Map.get(facts, :node_id))

@@ -737,7 +737,7 @@ defmodule Embervm.Dispatcher do
                 # deliberately NOT noted: they wait on provisioning or fact
                 # freshness, which a scale-up cannot serve. Async cast; a missing
                 # controller (tests) makes it a silent no-op.
-                Embervm.BrickController.note_denial(need_mib)
+                Embervm.BrickController.note_denial(wl, need_mib)
                 {:error, :no_capacity}
 
               [f | _] ->

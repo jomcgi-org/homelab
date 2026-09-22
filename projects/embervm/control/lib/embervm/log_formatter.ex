@@ -63,6 +63,11 @@ defmodule Embervm.LogFormatter do
     # Brick portfolio floor transitions.
     :computed_floor,
     :max_replicas,
+    # ADR 042 attributed demand and runtime ceiling transitions.
+    :need_mib,
+    :operative_ceiling,
+    :ceiling_bound,
+    :bootstrap_max,
     # StatefulSweeper pressure-state transitions.
     :brick_id,
     :from,

@@ -62,6 +62,20 @@ defmodule Embervm.CapacityReportTest do
       capacity_table: capacity_table,
       catalog_table: catalog_table,
       dispatcher_stats: %{queue_depth: %{"wl-a" => 3, "orphan" => 2}},
+      capacity_health: %{
+        ok: false,
+        conditions: [
+          %{
+            workload: "wl-b",
+            reason: :ceiling_exhausted,
+            size_class: "8gi",
+            need_mib: 4_096
+          }
+        ],
+        ceilings: [
+          %{size_class: "8gi", bootstrap_max: 1, operative_ceiling: 2, ceiling_bound: 2}
+        ]
+      },
       now: fixed_now(),
       horizon_seconds: 3_600
     ]
@@ -74,6 +88,8 @@ defmodule Embervm.CapacityReportTest do
     assert report.horizon_seconds == 3_600
     assert report.semantics.memory =~ "reclaimable_file_cache_excluding_shmem"
     assert report.semantics.aggregation =~ "not a placement guarantee"
+    refute report.health.ok
+    assert hd(report.health.conditions).reason == :ceiling_exhausted
 
     assert Enum.map(report.instances, & &1.instance_id) == ["node-4/pod-new", "node-4/pod-old"]
     assert Enum.uniq(Enum.map(report.instances, & &1.node_id)) == ["node-4"]

@@ -56,6 +56,25 @@ defmodule Embervm.BrickController do
   Cooldowns are stamped in `observe` mode too, so the observed log stream is a
   faithful simulation of what `full` would have done.
 
+  ## runtime ceiling ownership
+
+  A positive per-class `ceiling_bound` opts into ADR embervm/042. The declared
+  `max` becomes a bootstrap ceiling, and sustained workload-attributed denials
+  may raise the operative ceiling by one up to the outer bound. Raising the
+  ceiling and growing replicas are deliberately separate reconciliation ticks.
+  Missing or zero bounds preserve the fixed-max behavior above. `observe` logs
+  ceiling moves, `up` and `full` may raise them, and only `full` retires a raised
+  ceiling after the Deployment has stayed at zero replicas for
+  `ceiling_idle_ms` (default 60m). Denials and nonzero counts reset that dwell.
+  The live `/scale` count reconstructs raised state conservatively after a
+  controller restart. Pinned node-floor Deployments remain outside this loop.
+
+  Attributed demand that fits no authorized class, or continues after a class
+  reaches its outer bound, latches `no_fitting_class` or `ceiling_exhausted` in
+  the capacity report and the Workload `Capacity` condition. The condition is
+  transition-only and clears after one denial window without recurrence. It
+  never changes kubelet readiness or restarts pods.
+
   Recorded policy (2026-07-20, values-declared, not hardcoded): per-class
   min-floor `{2gi: 0, 4gi: 0, 8gi: 0, 16gi: 1}` (one 16Gi stays warm for the
   composite group, which must fit a single brick) and per-class max
@@ -121,7 +140,7 @@ defmodule Embervm.BrickController do
   require Logger
   require OpenTelemetry.Tracer, as: Tracer
 
-  alias Embervm.{Brick, K8s, NodeCapacity, WorkloadCatalog}
+  alias Embervm.{BaseBuilder, Brick, K8s, NodeCapacity, WorkloadCatalog}
   alias Embervm.Brick.Portfolio
 
   @default_interval_ms 30_000
@@ -131,11 +150,13 @@ defmodule Embervm.BrickController do
   @default_up_cooldown_ms 60_000
   @default_down_idle_ms 900_000
   @default_down_cooldown_ms 600_000
+  @default_ceiling_idle_ms 3_600_000
 
   @typedoc """
   One size-class the controller reconciles: its label, static desired replica
-  count, and the autoscale clamp (`min`/`max`, optional: absent min reads 0,
-  absent max reads `max(desired, min)`, i.e. no autoscale headroom).
+  count, the autoscale clamp (`min`/`max`), and optional runtime ceiling outer
+  bound. An absent min reads 0, an absent max reads `max(desired, min)`, and an
+  absent or zero ceiling bound keeps max fixed.
   """
   @type class :: %{name: String.t(), desired: non_neg_integer()}
 
@@ -143,7 +164,7 @@ defmodule Embervm.BrickController do
   Start options (all optional; production reads from Application env / K8s):
 
     * `:name`                 - registered name (default `#{inspect(__MODULE__)}`).
-    * `:classes`              - `[%{name, desired, min, max}]`; default from
+    * `:classes`              - `[%{name, desired, min, max, ceiling_bound}]`; default from
       `Application.get_env(:embervm, :brick_classes, [])` (empty = inert).
     * `:mode`                 - autoscale mode `:off | :observe | :up | :full`;
       default `Application.get_env(:embervm, :brick_autoscale_mode, :off)`.
@@ -170,8 +191,8 @@ defmodule Embervm.BrickController do
     * `:catalog_fun`          - `() -> [catalog_entry]` declared workload floors,
       default `Embervm.WorkloadCatalog.all/0` (injected in tests).
     * `:up_threshold` / `:up_window_ms` / `:up_cooldown_ms` /
-      `:down_idle_ms` / `:down_cooldown_ms` - hysteresis knobs (defaults
-      3 / 60s / 60s / 15m / 10m).
+      `:down_idle_ms` / `:down_cooldown_ms` / `:ceiling_idle_ms` - hysteresis
+      knobs (defaults 3 / 60s / 60s / 15m / 10m / 60m).
     * `:clock`                - `() -> integer()` ms clock (injected in tests).
     * `:reconcile_on_start`   - reconcile once immediately (default true).
   """
@@ -198,6 +219,12 @@ defmodule Embervm.BrickController do
     GenServer.call(server, :flagged)
   end
 
+  @doc "The active capacity conditions and current per-class ceilings."
+  @spec capacity_health(GenServer.server()) :: map()
+  def capacity_health(server \\ __MODULE__) do
+    GenServer.call(server, :capacity_health)
+  end
+
   @doc """
   Record one placement CAPACITY denial for a workload needing `need_mib` MiB
   (the scale-up demand signal). Fire-and-forget cast so the placement hot path
@@ -206,9 +233,25 @@ defmodule Embervm.BrickController do
   attributed to the smallest configured class whose capacity fits `need_mib`;
   a need no class can hold is logged/traced and dropped (scaling any class would not help).
   """
+  @spec note_denial(non_neg_integer()) :: :ok
+  def note_denial(need_mib) when is_integer(need_mib) do
+    note_denial(__MODULE__, nil, need_mib)
+  end
+
+  @spec note_denial(String.t(), non_neg_integer()) :: :ok
+  def note_denial(workload, need_mib)
+      when (is_binary(workload) or is_nil(workload)) and is_integer(need_mib) do
+    note_denial(__MODULE__, workload, need_mib)
+  end
+
   @spec note_denial(GenServer.server(), non_neg_integer()) :: :ok
-  def note_denial(server \\ __MODULE__, need_mib) do
-    GenServer.cast(server, {:denial, need_mib})
+  def note_denial(server, need_mib) when is_integer(need_mib) do
+    note_denial(server, nil, need_mib)
+  end
+
+  @spec note_denial(GenServer.server(), String.t() | nil, non_neg_integer()) :: :ok
+  def note_denial(server, workload, need_mib) do
+    GenServer.cast(server, {:denial, workload, need_mib})
   end
 
   @impl true
@@ -234,6 +277,13 @@ defmodule Embervm.BrickController do
       up_cooldown_ms: Keyword.get(opts, :up_cooldown_ms, @default_up_cooldown_ms),
       down_idle_ms: Keyword.get(opts, :down_idle_ms, @default_down_idle_ms),
       down_cooldown_ms: Keyword.get(opts, :down_cooldown_ms, @default_down_cooldown_ms),
+      ceiling_idle_ms:
+        Keyword.get(
+          opts,
+          :ceiling_idle_ms,
+          Application.get_env(:embervm, :brick_ceiling_idle_ms, @default_ceiling_idle_ms)
+        ),
+      condition_fun: Keyword.get(opts, :condition_fun, &BaseBuilder.capacity_condition/2),
       clock: Keyword.get(opts, :clock, &now_ms/0),
       # class => the ms timestamp desired first exceeded registered (cleared when it recovers).
       over_since: %{},
@@ -252,6 +302,16 @@ defmodule Embervm.BrickController do
       last_down_at: %{},
       # last tick the class was flagged fleet-full (blocks down for the idle window).
       last_full_at: %{},
+      # Runtime-owned per-class ceilings. maxReplicas is only their bootstrap
+      # value when a positive ceilingBound explicitly authorizes this feature.
+      # A fresh controller reconstructs a raised ceiling from the live replica
+      # count, never from an unreadable scale subresource.
+      operative_ceiling: %{},
+      ceiling_idle_since: %{},
+      last_ceiling_up_at: %{},
+      # workload => %{reason, size_class, need_mib, last_seen_at}. These are the
+      # active, hysteretically held capacity conditions exposed in /v1/capacity.
+      capacity_conditions: %{},
       # Classes whose latest capacity-fact snapshot disagrees with declared usable_mib.
       drifted: MapSet.new()
     }
@@ -269,10 +329,21 @@ defmodule Embervm.BrickController do
   end
 
   @impl true
-  def handle_cast({:denial, need_mib}, state) do
+  def handle_cast({:denial, workload, need_mib}, state) do
     case class_for_need(state.classes, need_mib, state.facts_fun.()) do
       nil ->
-        Logger.warning("embervm brick denial cannot be served", need_mib: need_mib)
+        state =
+          if ceiling_feature_enabled?(state.classes) do
+            put_capacity_condition(state, workload, :no_fitting_class, nil, need_mib)
+          else
+            state
+          end
+
+        Logger.warning("embervm brick denial cannot be served",
+          workload: workload,
+          need_mib: need_mib,
+          reason: :no_fitting_class
+        )
 
         Tracer.with_span "embervm.brick.denial_unservable", %{
           attributes: %{"ember.need_mib" => need_mib}
@@ -284,7 +355,14 @@ defmodule Embervm.BrickController do
 
       class ->
         now = state.clock.()
-        {:noreply, %{state | denials: Map.update(state.denials, class, [now], &[now | &1])}}
+        denial = %{at: now, workload: workload, need_mib: need_mib}
+
+        {:noreply,
+         %{
+           state
+           | denials: Map.update(state.denials, class, [denial], &[denial | &1]),
+             ceiling_idle_since: Map.delete(state.ceiling_idle_since, class)
+         }}
     end
   end
 
@@ -299,6 +377,10 @@ defmodule Embervm.BrickController do
 
   def handle_call(:flagged, _from, state) do
     {:reply, state.flagged, state}
+  end
+
+  def handle_call(:capacity_health, _from, state) do
+    {:reply, capacity_health_snapshot(state), state}
   end
 
   @doc "Run one reconcile synchronously (tests drive the loop deterministically)."
@@ -364,12 +446,17 @@ defmodule Embervm.BrickController do
     facts = state.facts_fun.()
     now = state.clock.()
     state = check_capacity_drift(state, facts)
-    state = if state.mode == :off, do: state, else: state |> prune_denials(now) |> track_idle(now)
+    state =
+      if state.mode == :off,
+        do: state,
+        else: state |> prune_denials(now) |> track_idle(now, facts)
 
     portfolio = Portfolio.floors(state.catalog_fun.(), state.classes)
     state = track_floor_overflow(state, portfolio)
 
-    reconcile_classes(state, registered, now, portfolio)
+    state
+    |> reconcile_classes(registered, now, portfolio)
+    |> clear_recovered_conditions(now)
   end
 
   defp reconcile_classes(state, registered, now, portfolio) do
@@ -395,28 +482,34 @@ defmodule Embervm.BrickController do
           if MapSet.member?(st.floor_overflow, name) do
             {os, fl, st}
           else
-            {acting, st} = plan_class(st, class, now)
+            {plan, st} = plan_class(st, class, now)
 
-            scale(st, name, acting)
-
-            reg = Map.get(registered, name, 0)
-
-            if acting > reg do
-              since = Map.get(st.over_since, name, now)
-              os = Map.put(os, name, since)
-
-              if now - since >= st.fleet_full_after_ms do
-                maybe_flag(st, name, acting, reg)
-
-                {os, MapSet.put(fl, name),
-                 %{st | last_full_at: Map.put(st.last_full_at, name, now)}}
-              else
+            case apply_plan(st, name, plan, now) do
+              {nil, st} ->
+                # A failed live-scale read leaves both replicas and fleet-full
+                # bookkeeping untouched for this class.
                 {os, fl, st}
-              end
-            else
-              # Caught up (or over-provisioned): clear any prior over-window and flag.
-              maybe_unflag(st, name)
-              {os, fl, st}
+
+              {acting, st} ->
+                reg = Map.get(registered, name, 0)
+
+                if acting > reg do
+                  since = Map.get(st.over_since, name, now)
+                  os = Map.put(os, name, since)
+
+                  if now - since >= st.fleet_full_after_ms do
+                    maybe_flag(st, name, acting, reg)
+
+                    {os, MapSet.put(fl, name),
+                     %{st | last_full_at: Map.put(st.last_full_at, name, now)}}
+                  else
+                    {os, fl, st}
+                  end
+                else
+                  # Caught up (or over-provisioned): clear any prior over-window and flag.
+                  maybe_unflag(st, name)
+                  {os, fl, st}
+                end
             end
           end
         end
@@ -430,17 +523,34 @@ defmodule Embervm.BrickController do
   # Every other mode computes the autoscale target off the LIVE /scale read;
   # :observe still acts statically and only logs the target, the acting modes
   # assert the live current and move it in the enabled direction(s). A failed
-  # /scale read degrades that class to the static path for the tick (the
-  # decision needs a trustworthy current).
+  # /scale read skips every write for that class. An unreadable live count is
+  # never interpreted as zero or replaced with a potentially shrinking static
+  # target.
   defp plan_class(state, class, now) do
     name = class_name(class)
-    static = class_static_target(class)
 
-    with true <- state.mode != :off,
-         {:ok, current} <- read_current(state, name) do
-      execute(state, class, current, now)
+    if state.mode == :off do
+      {%{target: class_static_target(class), current: nil, decision: nil}, state}
     else
-      _ -> {static, state}
+      case read_current(state, name) do
+        {:ok, current} ->
+          state = reconstruct_ceiling(state, class, current)
+          class = clamp_effective_min(class, operative_ceiling(state, class))
+          {state, ceiling_changed?} = maybe_move_ceiling(state, class, current, now)
+
+          if ceiling_changed? do
+            # Raising a ceiling authorizes headroom, it does not consume it on
+            # the same reconciliation tick. The existing replica decision sees
+            # the new ceiling on the next tick.
+            {%{target: current, current: current, decision: nil}, state}
+          else
+            state = maybe_signal_ceiling_exhausted(state, class, current)
+            execute(state, class, current, now)
+          end
+
+        :error ->
+          {:skip, state}
+      end
     end
   end
 
@@ -459,26 +569,58 @@ defmodule Embervm.BrickController do
 
     cond do
       state.mode == :observe ->
-        {class_static_target(class), note_decision(state, name, current, target, reason, now, false)}
+        {%{
+           target: class_static_target(class),
+           current: current,
+           decision: decision(current, target, reason, false)
+         }, state}
 
       target > current ->
-        {target, note_decision(state, name, current, target, reason, now, true)}
+        {%{target: target, current: current, decision: decision(current, target, reason, true)}, state}
 
       target < current and state.mode == :full ->
         case prepare_scale_down(state, name) do
           :ok ->
-            {target, note_decision(state, name, current, target, reason, now, true)}
+            {%{target: target, current: current, decision: decision(current, target, reason, true)},
+             state}
 
           {:skip, why} ->
             Logger.info("brick autoscale: skipping scale-down of class #{name} (reason=#{why})")
-            {current, state}
+            {%{target: current, current: current, decision: nil}, state}
         end
 
       target < current ->
-        {current, note_decision(state, name, current, target, reason, now, false)}
+        {%{target: current, current: current, decision: decision(current, target, reason, false)},
+         state}
 
       true ->
-        {current, state}
+        {%{target: current, current: current, decision: nil}, state}
+    end
+  end
+
+  defp decision(current, target, reason, acted?) when current != target do
+    %{current: current, target: target, reason: reason, acted?: acted?}
+  end
+
+  defp decision(_current, _target, _reason, _acted?), do: nil
+
+  defp apply_plan(state, _name, :skip, _now), do: {nil, state}
+
+  defp apply_plan(state, name, plan, now) do
+    case scale(state, name, plan.target) do
+      :ok ->
+        state =
+          case plan.decision do
+            nil -> state
+            d -> note_decision(state, name, d.current, d.target, d.reason, now, d.acted?)
+          end
+
+        {plan.target, state}
+
+      :error ->
+        # Report the last trustworthy read for fleet-full accounting. Most
+        # importantly, do not stamp a successful-action cooldown.
+        {plan.current || 0, state}
     end
   end
 
@@ -507,7 +649,7 @@ defmodule Embervm.BrickController do
 
     %{
       min: class_min(class),
-      max: class_max(class),
+      max: operative_ceiling(state, class),
       denials: length(Map.get(state.denials, name, [])),
       up_threshold: state.up_threshold,
       fleet_full_now: MapSet.member?(state.flagged, name),
@@ -518,6 +660,163 @@ defmodule Embervm.BrickController do
         cooldown_ok?(state.last_down_at, name, now, state.down_cooldown_ms) and
           cooldown_ok?(state.last_up_at, name, now, state.down_cooldown_ms)
     }
+  end
+
+  # A positive ceilingBound explicitly opts a class into runtime ceiling
+  # ownership. Missing and zero keep maxReplicas as the ordinary fixed clamp.
+  defp reconstruct_ceiling(state, class, current) do
+    name = class_name(class)
+
+    if ceiling_enabled?(class) do
+      bootstrap = class_max(class)
+      bound = authorized_bound(class)
+      previous = Map.get(state.operative_ceiling, name, bootstrap)
+
+      # The live count is durable Kubernetes state and is therefore the safe
+      # restart reconstruction source. Never reconstruct below it, even if an
+      # operator accidentally lowered a bound under already-running replicas.
+      ceiling = max(max(previous, bootstrap), current) |> min(max(bound, current))
+
+      %{state | operative_ceiling: Map.put(state.operative_ceiling, name, ceiling)}
+    else
+      state
+    end
+  end
+
+  defp maybe_move_ceiling(state, class, current, now) do
+    name = class_name(class)
+
+    cond do
+      not ceiling_enabled?(class) ->
+        {state, false}
+
+      ceiling_up_ready?(state, class, current, now) ->
+        move_ceiling_up(state, class, current, now)
+
+      state.mode == :full and ceiling_down_ready?(state, class, current, now) ->
+        ceiling = operative_ceiling(state, class)
+        next = max(ceiling - 1, class_max(class))
+
+        Logger.info("embervm brick ceiling lowered",
+          size_class: name,
+          operative_ceiling: next,
+          ceiling_bound: authorized_bound(class),
+          bootstrap_max: class_max(class),
+          reason: :ceiling_idle
+        )
+
+        {%{
+           state
+           | operative_ceiling: Map.put(state.operative_ceiling, name, next),
+             ceiling_idle_since: Map.put(state.ceiling_idle_since, name, now)
+         }, true}
+
+      true ->
+        {track_ceiling_idle(state, class, current, now), false}
+    end
+  end
+
+  defp ceiling_up_ready?(state, class, current, now) do
+    name = class_name(class)
+    pressure? = length(Map.get(state.denials, name, [])) >= state.up_threshold
+    ceiling = operative_ceiling(state, class)
+
+    pressure? and current >= ceiling and ceiling < authorized_bound(class) and
+      cooldown_ok?(state.last_ceiling_up_at, name, now, state.up_cooldown_ms)
+  end
+
+  defp move_ceiling_up(state, class, _current, now) do
+    name = class_name(class)
+    ceiling = operative_ceiling(state, class)
+    next = min(ceiling + 1, authorized_bound(class))
+    acts? = state.mode in [:up, :full]
+    verb = if acts?, do: "raising", else: "would raise"
+
+    events = Map.get(state.denials, name, [])
+    latest = Enum.max_by(events, & &1.at, fn -> %{workload: nil, need_mib: nil} end)
+
+    Logger.info("embervm brick ceiling #{verb}",
+      workload: latest.workload,
+      need_mib: latest.need_mib,
+      size_class: name,
+      operative_ceiling: next,
+      ceiling_bound: authorized_bound(class),
+      bootstrap_max: class_max(class),
+      reason: :denial_pressure
+    )
+
+    state = %{state | last_ceiling_up_at: Map.put(state.last_ceiling_up_at, name, now)}
+
+    if acts? do
+      {%{
+         state
+         | operative_ceiling: Map.put(state.operative_ceiling, name, next),
+           ceiling_idle_since: Map.delete(state.ceiling_idle_since, name)
+       }, true}
+    else
+      {state, false}
+    end
+  end
+
+  # Ceiling retirement starts only after the Deployment itself is at zero.
+  # Replica scale-down therefore runs first through all existing drain, warmth,
+  # pod-resolution, and deletion-cost rails. A denial or any nonzero count
+  # clears this dwell.
+  defp track_ceiling_idle(state, class, current, now) do
+    name = class_name(class)
+    ceiling = operative_ceiling(state, class)
+    denials = Map.get(state.denials, name, [])
+
+    if current == 0 and denials == [] and ceiling > class_max(class) do
+      %{
+        state
+        | ceiling_idle_since:
+            Map.put(state.ceiling_idle_since, name, Map.get(state.ceiling_idle_since, name, now))
+      }
+    else
+      %{state | ceiling_idle_since: Map.delete(state.ceiling_idle_since, name)}
+    end
+  end
+
+  defp ceiling_down_ready?(state, class, current, now) do
+    name = class_name(class)
+
+    current == 0 and Map.get(state.denials, name, []) == [] and
+      operative_ceiling(state, class) > class_max(class) and
+      case Map.get(state.ceiling_idle_since, name) do
+        nil -> false
+        since -> now - since >= state.ceiling_idle_ms
+      end
+  end
+
+  defp maybe_signal_ceiling_exhausted(state, class, current) do
+    name = class_name(class)
+    events = Map.get(state.denials, name, [])
+    pressure? = length(events) >= state.up_threshold
+    ceiling = operative_ceiling(state, class)
+
+    if ceiling_enabled?(class) and pressure? and current >= ceiling and
+         ceiling >= authorized_bound(class) do
+      latest = Enum.max_by(events, & &1.at)
+
+      put_capacity_condition(
+        state,
+        latest.workload,
+        :ceiling_exhausted,
+        name,
+        latest.need_mib,
+        latest.at
+      )
+    else
+      state
+    end
+  end
+
+  defp clamp_effective_min(class, ceiling) do
+    case class_field(class, [:effective_min, "effective_min"]) do
+      value when is_integer(value) -> Map.put(class, :effective_min, min(value, ceiling))
+      _ -> class
+    end
   end
 
   # Log the decision and stamp the direction cooldown. Stamped on would-scale
@@ -552,8 +851,10 @@ defmodule Embervm.BrickController do
 
     denials =
       state.denials
-      |> Enum.map(fn {class, stamps} -> {class, Enum.filter(stamps, &(&1 > horizon))} end)
-      |> Enum.reject(fn {_class, stamps} -> stamps == [] end)
+      |> Enum.map(fn {class, events} ->
+        {class, Enum.filter(events, &(Map.fetch!(&1, :at) > horizon))}
+      end)
+      |> Enum.reject(fn {_class, events} -> events == [] end)
       |> Map.new()
 
     %{state | denials: denials}
@@ -562,9 +863,7 @@ defmodule Embervm.BrickController do
   # A class's idle dwell: idle_since[class] holds from the first tick the class
   # had >=1 idle brick (a registered, non-draining instance with zero live VMs)
   # and clears the tick it has none, so the dwell requires CONTINUOUS idleness.
-  defp track_idle(state, now) do
-    facts = state.facts_fun.()
-
+  defp track_idle(state, now, facts) do
     idle_since =
       Enum.reduce(state.classes, %{}, fn class, acc ->
         name = class_name(class)
@@ -603,6 +902,124 @@ defmodule Embervm.BrickController do
     case Map.get(stamps, name) do
       nil -> true
       at -> now - at >= cooldown_ms
+    end
+  end
+
+  # -- capacity health --------------------------------------------------------
+
+  defp put_capacity_condition(state, workload, reason, size_class, need_mib)
+       when is_binary(workload) and workload != "" do
+    put_capacity_condition(state, workload, reason, size_class, need_mib, state.clock.())
+  end
+
+  defp put_capacity_condition(state, _workload, _reason, _size_class, _need_mib), do: state
+
+  defp put_capacity_condition(state, workload, reason, size_class, need_mib, seen_at)
+       when is_binary(workload) and workload != "" do
+    condition = %{
+      workload: workload,
+      reason: reason,
+      size_class: size_class,
+      need_mib: need_mib,
+      last_seen_at: seen_at
+    }
+
+    prior = Map.get(state.capacity_conditions, workload)
+    transition? = is_nil(prior) or prior.reason != reason or prior.size_class != size_class
+
+    if transition? do
+      Logger.warning("embervm workload capacity unavailable",
+        workload: workload,
+        need_mib: need_mib,
+        size_class: size_class,
+        operative_ceiling: ceiling_for_name(state, size_class),
+        ceiling_bound: bound_for_name(state.classes, size_class),
+        reason: reason
+      )
+
+      state.condition_fun.(workload, %{
+        status: "False",
+        reason: reason,
+        message: capacity_message(reason, size_class, need_mib)
+      })
+    end
+
+    %{state | capacity_conditions: Map.put(state.capacity_conditions, workload, condition)}
+  end
+
+  defp put_capacity_condition(state, _workload, _reason, _size_class, _need_mib, _seen_at),
+    do: state
+
+  defp clear_recovered_conditions(state, now) do
+    {keep, clear} =
+      Enum.split_with(state.capacity_conditions, fn {_workload, condition} ->
+        now - condition.last_seen_at < state.up_window_ms
+      end)
+
+    Enum.each(clear, fn {workload, condition} ->
+      Logger.info("embervm workload capacity recovered",
+        workload: workload,
+        need_mib: condition.need_mib,
+        size_class: condition.size_class,
+        operative_ceiling: ceiling_for_name(state, condition.size_class),
+        ceiling_bound: bound_for_name(state.classes, condition.size_class),
+        reason: condition.reason
+      )
+
+      state.condition_fun.(workload, %{
+        status: "True",
+        reason: :capacity_available,
+        message: "capacity is available"
+      })
+    end)
+
+    %{state | capacity_conditions: Map.new(keep)}
+  end
+
+  defp capacity_health_snapshot(state) do
+    conditions =
+      state.capacity_conditions
+      |> Map.values()
+      |> Enum.map(&Map.drop(&1, [:last_seen_at]))
+      |> Enum.sort_by(&{&1.workload, &1.reason})
+
+    ceilings =
+      state.classes
+      |> Enum.filter(&ceiling_enabled?/1)
+      |> Enum.map(fn class ->
+        %{
+          size_class: class_name(class),
+          bootstrap_max: class_max(class),
+          operative_ceiling: operative_ceiling(state, class),
+          ceiling_bound: authorized_bound(class)
+        }
+      end)
+      |> Enum.sort_by(& &1.size_class)
+
+    %{ok: conditions == [], conditions: conditions, ceilings: ceilings}
+  end
+
+  defp capacity_message(:no_fitting_class, _class, need_mib),
+    do: "no authorized brick class fits #{need_mib} MiB"
+
+  defp capacity_message(:ceiling_exhausted, class, need_mib),
+    do: "#{class} reached its authorized ceiling while #{need_mib} MiB demand is denied"
+
+  defp ceiling_for_name(_state, nil), do: nil
+
+  defp ceiling_for_name(state, name) do
+    case Enum.find(state.classes, &(class_name(&1) == name)) do
+      nil -> nil
+      class -> operative_ceiling(state, class)
+    end
+  end
+
+  defp bound_for_name(_classes, nil), do: nil
+
+  defp bound_for_name(classes, name) do
+    case Enum.find(classes, &(class_name(&1) == name)) do
+      nil -> nil
+      class -> authorized_bound(class)
     end
   end
 
@@ -684,12 +1101,16 @@ defmodule Embervm.BrickController do
   # -- denial attribution ------------------------------------------------------
 
   defp class_for_need(classes, need_mib, facts) do
-    floors =
+    reported_floors =
       facts
       |> Enum.group_by(&Map.get(&1, :size_class, ""))
       |> Map.new(fn {name, class_facts} ->
-        floors = Enum.map(class_facts, &mem_reject_floor_mib/1)
-        {name, Enum.max(floors, fn -> 512 end)}
+        floors =
+          class_facts
+          |> Enum.map(&Map.get(&1, :mem_reject_floor_mib))
+          |> Enum.filter(&(is_integer(&1) and &1 > 0))
+
+        {name, Enum.max(floors, fn -> nil end)}
       end)
 
     classes
@@ -697,7 +1118,12 @@ defmodule Embervm.BrickController do
       name = class_name(class)
       usable = class_field(class, [:usable_mib, "usable_mib"])
       capacity = if is_integer(usable), do: usable, else: class_capacity_mib(name)
-      floor = Map.get(floors, name, 512)
+      configured_floor = class_field(class, [:mem_reject_floor_mib, "mem_reject_floor_mib"])
+
+      floor =
+        Map.get(reported_floors, name) ||
+          if(is_integer(configured_floor) and configured_floor > 0, do: configured_floor, else: 512)
+
       {name, capacity, floor}
     end)
     |> Enum.filter(fn {_name, capacity, floor} ->
@@ -706,15 +1132,6 @@ defmodule Embervm.BrickController do
     |> case do
       [] -> nil
       fits -> fits |> Enum.min_by(fn {_name, capacity, _floor} -> capacity end) |> elem(0)
-    end
-  end
-
-  # Mirrors noded/server/pressure.go's memRejectFloorMib rule: only a configured
-  # positive integer is used; zero, negative, and non-integer values mean unset.
-  defp mem_reject_floor_mib(fact) do
-    case Map.get(fact, :mem_reject_floor_mib) do
-      floor when is_integer(floor) and floor > 0 -> floor
-      _ -> 512
     end
   end
 
@@ -752,6 +1169,8 @@ defmodule Embervm.BrickController do
           desired: desired,
           reason: inspect(reason)
         )
+
+        :error
     end
   end
 
@@ -855,7 +1274,7 @@ defmodule Embervm.BrickController do
   defp class_max_by_name(classes, name) do
     case Enum.find(classes, &(class_name(&1) == name)) do
       nil -> 0
-      class -> class_max(class)
+      class -> authorized_bound(class)
     end
   end
 
@@ -882,6 +1301,24 @@ defmodule Embervm.BrickController do
   # the autoscale fields).
   defp class_max(class) do
     class_field(class, [:max, "max"]) || max(class_desired(class), class_min(class))
+  end
+
+  defp class_ceiling_bound(class), do: class_field(class, [:ceiling_bound, "ceiling_bound"]) || 0
+
+  defp ceiling_enabled?(class), do: class_ceiling_bound(class) > 0
+
+  defp ceiling_feature_enabled?(classes), do: Enum.any?(classes, &ceiling_enabled?/1)
+
+  # A bound below the bootstrap max cannot revoke already-authorized static
+  # capacity. It simply grants no runtime headroom.
+  defp authorized_bound(class), do: max(class_ceiling_bound(class), class_max(class))
+
+  defp operative_ceiling(state, class) do
+    if ceiling_enabled?(class) do
+      Map.get(state.operative_ceiling, class_name(class), class_max(class))
+    else
+      class_max(class)
+    end
   end
 
   defp class_field(class, keys), do: Enum.find_value(keys, &Map.get(class, &1))

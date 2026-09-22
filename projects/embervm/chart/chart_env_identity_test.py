@@ -483,6 +483,8 @@ def test_control_plane_runtime_envs_render(renders):
 
     assert "EMBERVM_BRICK_AUTOSCALE_MODE" in prod_env
     assert dev_env.get("EMBERVM_BRICK_AUTOSCALE_MODE") == "observe"
+    assert prod_env.get("EMBERVM_BRICK_CEILING_IDLE_MS") == "3600000"
+    assert dev_env.get("EMBERVM_BRICK_CEILING_IDLE_MS") == "3600000"
     assert "EMBERVM_WARMTH_S3_GC_EXPECTED_NODES" not in dev_env
     assert prod_env.get("EMBERVM_ENVELOPE_REWRAP_ENABLED") == "0"
     assert dev_env.get("EMBERVM_ENVELOPE_REWRAP_ENABLED") == "0"
@@ -728,7 +730,9 @@ def test_noded_max_live_vms_accepts_per_class_override(tmp_path: Path):
         for entry in controller_classes(default_render).values()
     )
     assert all(
-        entry["desired"] == 0 and entry["mem_reject_floor_mib"] == 512
+        entry["desired"] == 0
+        and entry["mem_reject_floor_mib"] == 512
+        and entry["ceiling_bound"] == 0
         for entry in controller_classes(default_render).values()
     )
 
@@ -793,6 +797,7 @@ def test_noded_max_live_vms_accepts_per_class_override(tmp_path: Path):
     assert all(
         entry["mem_reject_floor_mib"] == 256 for entry in declared_classes.values()
     )
+    assert all(entry["ceiling_bound"] == 0 for entry in declared_classes.values())
 
     for rendered in (default_render, override_render):
         wildcard = [
