@@ -21,10 +21,6 @@ import (
 	"syscall"
 	"time"
 
-	"google.golang.org/grpc"
-
-	nodev1 "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1"
-
 	"github.com/jomcgi/homelab/projects/embervm/noded/config"
 	"github.com/jomcgi/homelab/projects/embervm/noded/fcvm/driver"
 	"github.com/jomcgi/homelab/projects/embervm/noded/server"
@@ -191,8 +187,14 @@ func run(logger *slog.Logger) error {
 		logger.Info("object store configured", "endpoint", cfg.StoreEndpoint, "bucket", cfg.StoreBucket, "signed", cfg.StoreAccessKeyID != "")
 	}
 
+	serviceConfig := cfg
+	if !cfg.PlaintextGRPCEnabled {
+		// Registration advertises the only reachable gRPC port when a future
+		// rollout disables the compatibility listener.
+		serviceConfig.ListenAddr = cfg.TLSListenAddr
+	}
 	opts := server.Options{
-		Config: cfg,
+		Config: serviceConfig,
 		Driver: restoreDriver,
 		// The same restore driver serves the R2 session verbs: SnapshotSession /
 		// RestoreSession / RemoveSessionBundle reuse its base-bundle snapshot/restore
@@ -317,19 +319,18 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("group network setup: %w", err)
 	}
 
-	serverOpts := grpcServerOptions(cfg.BearerToken)
-	if cfg.BearerToken != "" {
-		logger.Info("bearer-token auth enabled")
-	} else {
-		logger.Warn("bearer-token auth DISABLED: EMBERVM_NODED_BEARER_TOKEN is unset, so the gRPC surface is open to any in-cluster client (rely on Cilium/Linkerd policy)")
+	if cfg.PlaintextGRPCEnabled {
+		if cfg.BearerToken != "" {
+			logger.Info("bearer-token auth enabled")
+		} else {
+			logger.Warn("bearer-token auth DISABLED: EMBERVM_NODED_BEARER_TOKEN is unset, so the gRPC surface is open to any in-cluster client (rely on Cilium/Linkerd policy)")
+		}
 	}
-	gs := grpc.NewServer(serverOpts...)
-	nodev1.RegisterNodeServiceServer(gs, srv)
-
-	lis, err := net.Listen("tcp", cfg.ListenAddr)
+	grpcServers, err := newNodedGRPCServers(ctx, cfg, srv, newWorkloadX509Source, defaultSPIFFEKeepalive)
 	if err != nil {
 		return err
 	}
+	defer grpcServers.Close()
 	// The HTTP activator is serving-class only. Bind before marking it advertised so
 	// NodeStatus never sends an Envoy request to a listener that is not present.
 	activatorLis, err := net.Listen("tcp", cfg.ActivatorAddr)
@@ -374,11 +375,7 @@ func run(logger *slog.Logger) error {
 		}
 	}()
 
-	errCh := make(chan error, 1)
-	go func() {
-		logger.Info("gRPC NodeService listening", "addr", cfg.ListenAddr)
-		errCh <- gs.Serve(lis)
-	}()
+	errCh := grpcServers.Serve(logger)
 	if cfg.PreemptionNoticeEnabled {
 		go srv.WatchPreemptionNotices(ctx, http.DefaultClient, server.GCEPreemptionMetadataURL, cancelRun)
 	}
@@ -432,15 +429,9 @@ func run(logger *slog.Logger) error {
 			logger.Warn("drain deadline reached with builds in flight; aborted and left re-queueable", "aborted", aborted)
 		}
 
-		// Now stop the server: in-flight task Assigns get a short grace, then hard stop.
-		done := make(chan struct{})
-		go func() { gs.GracefulStop(); close(done) }()
-		select {
-		case <-done:
-		case <-time.After(10 * time.Second):
-			logger.Warn("graceful stop budget exceeded; forcing stop")
-			gs.Stop()
-		}
+		// Now stop both transports together: in-flight task Assigns get the
+		// existing short grace, then both listeners are forced closed.
+		grpcServers.GracefulStop(10*time.Second, logger)
 		return nil
 	}
 }

@@ -239,6 +239,27 @@ py_test(
 )
 
 py_test(
+    name = "chart_noded_spiffe_test",
+    srcs = ["chart_noded_spiffe_test.py"],
+    data = [
+        "Chart.yaml",
+        "values.yaml",
+        "//projects/embervm/deploy:gke_values",
+        "@multitool//tools/helm",
+    ] + glob([
+        "templates/**/*",
+        "crds/**/*",
+    ]),
+    env = {
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+    },
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)
+
+py_test(
     name = "chart_github_broker_test",
     srcs = ["chart_github_broker_test.py"],
     data = [
@@ -442,6 +463,12 @@ semgrep_test(
 semgrep_test(
     name = "chart_tokenbroker_spiffe_test_semgrep_test",
     srcs = ["chart_tokenbroker_spiffe_test.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+semgrep_test(
+    name = "chart_noded_spiffe_test_semgrep_test",
+    srcs = ["chart_noded_spiffe_test.py"],
     rules = ["//bazel/semgrep/rules:python_rules"],
 )
 

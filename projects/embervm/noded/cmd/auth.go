@@ -51,6 +51,15 @@ func unaryAuthInterceptor(token string) grpc.UnaryServerInterceptor {
 		if berr := checkBearer(ctx, token); berr != nil {
 			return nil, berr
 		}
+		return unaryRecoveryInterceptor()(ctx, req, info, handler)
+	}
+}
+
+// unaryRecoveryInterceptor preserves the daemon's panic-to-Internal contract
+// on transports, such as SPIFFE mTLS, that authenticate during the handshake
+// instead of through the bearer interceptor.
+func unaryRecoveryInterceptor() grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp any, err error) {
 		defer func() {
 			if r := recover(); r != nil {
 				stack := string(debug.Stack())
