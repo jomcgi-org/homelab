@@ -1523,6 +1523,32 @@ def test_delivery_gate_without_open_pr_escalates(db, github, notices):
     assert len(notices) == 1
 
 
+@pytest.mark.parametrize(
+    "classification", ["reversible", "spending", "external_account", "prod_deletion"]
+)
+def test_delivery_adoption_uses_ownership_checks_not_proposal_keywords(
+    db, github, monkeypatch, classification
+):
+    from factory.orchestration import factory_gates as gates
+
+    task_id, _policy = admitted(ISSUE)
+    task = task_of(task_id)
+    pull = existing_pull(task)
+    monkeypatch.setattr(conductor, "github_list", lambda *_: [pull])
+    gate = {
+        "kind": "delivery_target",
+        "classification": classification,
+        "value": "Adopt the existing PR; do not create a duplicate.",
+        "reason": "Preserve unknown-cost accounting and the existing review requirements.",
+    }
+    assert gates.resolve(task, {"gate": gate}, "existing-delivery") is (
+        classification == "reversible"
+    )
+    assert bool(task_of(task_id)["delivery_adoption"]) is (
+        classification == "reversible"
+    )
+
+
 def test_rescope_mismatched_pr_logs_and_persists_gate(db, github, monkeypatch, caplog):
     from factory.orchestration import factory_gates as gates
 
