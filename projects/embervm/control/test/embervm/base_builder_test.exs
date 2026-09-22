@@ -5087,7 +5087,7 @@ defmodule Embervm.BaseBuilderTest do
     _ = :sys.get_state(builder)
 
     assert [{"embervm", "w", status}] = recorded(agent)
-    assert length(status["conditions"]) == 3
+    assert length(status["conditions"]) == 4
     assert %{"status" => "True", "reason" => "BaseReady"} = condition(status, "Ready")
     assert %{"status" => "True", "reason" => "BaseBuilt"} = condition(status, "BaseBuilt")
 
@@ -5891,6 +5891,8 @@ defmodule Embervm.BaseBuilderTest do
     # Coverage still attests one desired-signature build per vendor. It does
     # not hide or reinterpret the independently observed sibling disagreement.
     assert %{"status" => "True"} = condition(status, "BaseVendorCoverage")
+    assert %{"status" => "False", "reason" => "RegistryDisagreement"} =
+             condition(status, "BaseRegistryConverged")
     assert Agent.get(effects, & &1) == [:build]
 
     # Updating the first stale sibling cannot hide the remaining stale one.
@@ -5902,7 +5904,10 @@ defmodule Embervm.BaseBuilderTest do
     put_vendor_fact(table, "node-4", "mid", "w", "w__new", "intel")
     send(builder, :export_reconcile)
     state = :sys.get_state(builder)
-    assert latest(agent, "w") == %{"snapshotRefs" => %{"intel" => ["w__new"]}}
+    assert latest(agent, "w")["snapshotRefs"] == %{"intel" => ["w__new"]}
+    assert %{"status" => "True", "reason" => "ObservedRegistriesMatch"} =
+             condition(latest(agent, "w"), "BaseRegistryConverged")
+    refute Map.has_key?(latest(agent, "w"), "snapshotRef")
     assert state.workloads["w"].snapshot_ref == "w__new"
     assert MapSet.size(state.hydrating) == 0
     assert Enum.all?(state.nodes, fn {_id, node} -> node.queue == [] end)
@@ -5912,6 +5917,181 @@ defmodule Embervm.BaseBuilderTest do
     send(builder, :export_reconcile)
     _ = :sys.get_state(builder)
     assert recorded(agent) == settled
+  end
+
+  for refs <- [
+        ["w__z_fresh", "w__a_old", "w__m_old"],
+        ["w__z_fresh", "w__m_old", "w__a_old"],
+        ["w__a_old", "w__z_fresh", "w__m_old"],
+        ["w__m_old", "w__z_fresh", "w__a_old"],
+        ["w__a_old", "w__m_old", "w__z_fresh"],
+        ["w__m_old", "w__a_old", "w__z_fresh"]
+      ] do
+    @sibling_refs refs
+    test "registry status preserves all refs in sibling order #{inspect(refs)}" do
+      agent = start_recorder()
+      # Ordered ETS makes these actual traversal permutations, not merely
+      # insertion permutations into a hash table with the same traversal.
+      table = :ets.new(:"bb_order_#{System.unique_integer([:positive])}", [:named_table, :ordered_set, :public])
+
+      for {ref, index} <- Enum.with_index(@sibling_refs) do
+        put_vendor_fact(table, "node-4", "brick-#{index}", "w", ref, "intel")
+      end
+
+      assert Enum.map(NodeCapacity.all(table), &get_in(&1, [:workloads, "w", :snapshot_ref])) == @sibling_refs
+      fresh = Enum.find_index(@sibling_refs, &(&1 == "w__z_fresh"))
+
+      builder =
+        start_builder(
+          nodes: [%{id: "node-4/brick-#{fresh}", address: "fresh"}],
+          capacity_table: table,
+          status_writer: recording_status_writer(agent),
+          build_fun: fn :fake_channel, _req -> {:ok, resp("w__z_fresh")} end
+        )
+
+      build_current(builder, agent, "w__z_fresh")
+      status = latest(agent, "w")
+      assert status["snapshotRefs"] == %{"intel" => ["w__a_old", "w__m_old", "w__z_fresh"]}
+      assert %{"status" => "False"} = condition(status, "BaseRegistryConverged")
+      assert condition(status, "BaseRegistryConverged")["message"] =~ "matching: 1; disagreeing: 2"
+
+      for index <- 0..2, index != fresh do
+        put_vendor_fact(table, "node-4", "brick-#{index}", "w", "w__z_fresh", "intel")
+      end
+
+      send(builder, :export_reconcile)
+      _ = :sys.get_state(builder)
+      assert latest(agent, "w")["snapshotRefs"] == %{"intel" => ["w__z_fresh"]}
+      assert %{"status" => "True"} = condition(latest(agent, "w"), "BaseRegistryConverged")
+    end
+  end
+
+  test "registry convergence invalidates unchanged unions for unknown eligible sibling evidence" do
+    agent = start_recorder()
+    table = new_cap_table()
+    put_vendor_fact(table, "node-4", nil, "w", "w__fresh", "intel")
+    put_vendor_fact(table, "node-4", "sibling", "w", "w__fresh", "intel")
+
+    builder =
+      start_builder(
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: fn :fake_channel, _req -> {:ok, resp("w__fresh")} end
+      )
+
+    build_current(builder, agent, "w__fresh")
+    before = :sys.get_state(builder).workloads["w"]
+    assert %{"status" => "True"} = condition(latest(agent, "w"), "BaseRegistryConverged")
+    [{key, original}] = :ets.lookup(table, {"node-4", "sibling"})
+
+    for incomplete <- [
+          Map.put(original, :workloads, %{}),
+          put_in(original, [:workloads, "w", :snapshot_ref], ""),
+          Map.put(original, :cpu_vendor, ""),
+          Map.delete(original, :instance_id),
+          Map.delete(original, :node_id)
+        ] do
+      NodeCapacity.put(table, key, incomplete)
+      send(builder, :export_reconcile)
+      _ = :sys.get_state(builder)
+      status = latest(agent, "w")
+      assert status["snapshotRefs"] == %{"intel" => ["w__fresh"]}
+      assert %{"status" => "Unknown"} = condition(status, "BaseRegistryConverged")
+      assert %{"status" => "True"} = condition(status, "Ready")
+      refute Map.has_key?(status, "snapshotRef")
+
+      NodeCapacity.put(table, key, original)
+      send(builder, :export_reconcile)
+      _ = :sys.get_state(builder)
+      assert %{"status" => "True"} = condition(latest(agent, "w"), "BaseRegistryConverged")
+    end
+
+    # A matching ref without READY is still not a converged advertisement.
+    NodeCapacity.put(table, key, put_in(original, [:workloads, "w", :base_state], :BASE_BUILD_STATE_BUILDING))
+    send(builder, :export_reconcile)
+    _ = :sys.get_state(builder)
+    assert %{"status" => "False"} = condition(latest(agent, "w"), "BaseRegistryConverged")
+
+    NodeCapacity.put(table, key, put_in(original, [:workloads, "w", :base_state], 3))
+    send(builder, :export_reconcile)
+    _ = :sys.get_state(builder)
+    assert %{"status" => "True"} = condition(latest(agent, "w"), "BaseRegistryConverged")
+
+    # Registration survives a missing heartbeat fact. Do not silently shrink
+    # the evidence set and certify its remaining sibling instead.
+    :ok = BaseBuilder.add_node(builder, "node-4/sibling", "sibling")
+    NodeCapacity.drop(table, key)
+    send(builder, :export_reconcile)
+    after_gap = :sys.get_state(builder).workloads["w"]
+    assert %{"status" => "Unknown"} = condition(latest(agent, "w"), "BaseRegistryConverged")
+    assert condition(latest(agent, "w"), "BaseRegistryConverged")["message"] =~ "registered without facts: 1"
+    assert Map.take(after_gap, [:base_refs, :superseded_refs, :vendor_built, :snapshot_ref]) ==
+             Map.take(before, [:base_refs, :superseded_refs, :vendor_built, :snapshot_ref])
+  end
+
+  test "registry convergence includes busy capable siblings but excludes undersized envelopes" do
+    agent = start_recorder()
+    table = new_cap_table()
+    put_vendor_fact(table, "node-4", nil, "w", "w__fresh", "intel")
+    put_brick(table, "node-4", "small", cpu_vendor: "intel", size_class: "small", mem_budget: 128)
+
+    builder =
+      start_builder(
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: fn :fake_channel, _req -> {:ok, resp("w__fresh")} end
+      )
+
+    build_current(builder, agent, "w__fresh")
+    assert %{"status" => "True"} = condition(latest(agent, "w"), "BaseRegistryConverged")
+    put_vendor_fact(table, "node-4", "busy", "w", "w__old", "intel")
+    [{key, busy}] = :ets.lookup(table, {"node-4", "busy"})
+    NodeCapacity.put(table, key, Map.merge(busy, %{size_class: "4gi", mem_budget_mib: 4096, mem_headroom_mib: 0, live_vms: 8, max_live_vms: 8}))
+    send(builder, :export_reconcile)
+    _ = :sys.get_state(builder)
+    assert %{"status" => "False"} = condition(latest(agent, "w"), "BaseRegistryConverged")
+    assert latest(agent, "w")["snapshotRefs"] == %{"intel" => ["w__fresh", "w__old"]}
+  end
+
+  test "registry convergence requires current-signature evidence for each vendor and exact refs across nodes" do
+    agent = start_recorder()
+    table = new_cap_table()
+    put_vendor_fact(table, "node-4", nil, "w", "w__intel", "intel")
+    put_vendor_fact(table, "node-5", "same-vendor", "w", "w__intel", "intel")
+
+    builder =
+      start_builder(
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: fn :fake_channel, _req -> {:ok, resp("w__intel")} end
+      )
+
+    build_current(builder, agent, "w__intel")
+    assert %{"status" => "True"} = condition(latest(agent, "w"), "BaseRegistryConverged")
+    put_vendor_fact(table, "node-5", "same-vendor", "w", "w__other_rootfs", "intel")
+    send(builder, :export_reconcile)
+    _ = :sys.get_state(builder)
+    assert %{"status" => "False"} = condition(latest(agent, "w"), "BaseRegistryConverged")
+
+    put_vendor_fact(table, "node-5", "same-vendor", "w", "w__intel", "intel")
+    put_vendor_fact(table, "node-6", "amd", "w", "w__amd", "amd")
+    send(builder, :export_reconcile)
+    state = :sys.get_state(builder)
+    assert %{"status" => "Unknown"} = condition(latest(agent, "w"), "BaseRegistryConverged")
+    assert latest(agent, "w")["snapshotRefs"] == %{"amd" => ["w__amd"], "intel" => ["w__intel"]}
+
+    # Simulate the already-established vendor-build ledger, not an inference
+    # from the scalar (intel) or the advertised ref list (amd).
+    intel = state.workloads["w"].vendor_built["intel"]
+    :sys.replace_state(builder, &put_in(&1.workloads["w"].vendor_built["amd"], %{intel | ref: "w__amd"}))
+    send(builder, :export_reconcile)
+    _ = :sys.get_state(builder)
+    assert %{"status" => "True"} = condition(latest(agent, "w"), "BaseRegistryConverged")
+
+    :sys.replace_state(builder, &put_in(&1.workloads["w"].vendor_built["amd"].signature, :obsolete_signature))
+    send(builder, :export_reconcile)
+    _ = :sys.get_state(builder)
+    assert %{"status" => "Unknown"} = condition(latest(agent, "w"), "BaseRegistryConverged")
   end
 
   test "a failed sibling-ref status patch retries the same union without losing the last published map" do
@@ -5933,6 +6113,7 @@ defmodule Embervm.BaseBuilderTest do
       start_builder(
         capacity_table: table,
         status_writer: writer,
+        clock: fn -> 1_000 end,
         build_fun: fn :fake_channel, _req -> {:ok, resp("w__new")} end
       )
 
@@ -6269,21 +6450,19 @@ defmodule Embervm.BaseBuilderTest do
     send(builder, :export_reconcile)
     _ = :sys.get_state(builder)
 
-    assert recorded(agent) == [
-             {"embervm", "w", %{"snapshotRefs" => %{"amd" => ["w__amd"], "intel" => nil}}}
-           ]
+    assert [{"embervm", "w", status}] = recorded(agent)
+    assert status["snapshotRefs"] == %{"amd" => ["w__amd"], "intel" => nil}
+    assert %{"status" => "True"} = condition(status, "BaseRegistryConverged")
 
     # last_snapshot_refs tracks the effective desired map, not the patch body,
     # so the explicit clear is not emitted again on the next identical tick.
     send(builder, :export_reconcile)
     _ = :sys.get_state(builder)
 
-    assert recorded(agent) == [
-             {"embervm", "w", %{"snapshotRefs" => %{"amd" => ["w__amd"], "intel" => nil}}}
-           ]
+    assert recorded(agent) == [{"embervm", "w", status}]
   end
 
-  test "the periodic reconcile writes nothing during a total capacity-fact gap" do
+  test "a total capacity-fact gap invalidates registry convergence without clearing refs or coverage" do
     agent = start_recorder()
     table = new_cap_table()
     put_vendor_fact(table, "node-4", nil, "w", "w__amd", "amd")
@@ -6301,15 +6480,30 @@ defmodule Embervm.BaseBuilderTest do
 
     build_current(builder, agent, "w__amd")
     send(builder, :export_reconcile)
-    _ = :sys.get_state(builder)
+    before = :sys.get_state(builder).workloads["w"]
     Agent.update(agent, fn _calls -> [] end)
 
     NodeCapacity.drop(table, {"node-4", "ds"})
     NodeCapacity.drop(table, {"node-1", "ds"})
     send(builder, :export_reconcile)
-    _ = :sys.get_state(builder)
+    after_gap = :sys.get_state(builder).workloads["w"]
 
-    assert recorded(agent) == []
+    assert [{"embervm", "w", status}] = recorded(agent)
+    assert %{"status" => "Unknown"} = condition(status, "BaseRegistryConverged")
+    assert condition(status, "BaseRegistryConverged")["message"] =~ "eligible instances: 0"
+    refute Map.has_key?(status, "snapshotRefs")
+    refute Map.has_key?(status, "snapshotRef")
+    assert after_gap.last_snapshot_refs == before.last_snapshot_refs
+    assert condition(status, "BaseVendorCoverage") == before.last_vendor_coverage
+
+    send(builder, :export_reconcile)
+    _ = :sys.get_state(builder)
+    assert recorded(agent) == [{"embervm", "w", status}]
+
+    put_vendor_fact(table, "node-4", nil, "w", "w__amd", "amd")
+    send(builder, :export_reconcile)
+    _ = :sys.get_state(builder)
+    assert %{"status" => "True"} = condition(latest(agent, "w"), "BaseRegistryConverged")
   end
 
   test "the periodic reconcile writes nothing when the effective map is unchanged" do
