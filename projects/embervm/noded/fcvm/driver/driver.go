@@ -139,10 +139,11 @@ type Config struct {
 	// until that verify step runs on the Alder Lake-S masters, this field only
 	// drives the sku stamp/mismatch/grandfather gate, never the FC API call.
 	Template string
-	// WarmRestoreWithVolume, when true, allows restore from a warm base even when
-	// spec.VolumeDiskPath is set. The base must have been captured with a volume
-	// device attached. Keep this disabled until guest-init defers its volume
-	// mount, so the guest can handle the volume contents changing before resume.
+	// WarmRestoreWithVolume, when true, arms placeholder-volume capture and allows
+	// a volume-bearing claim to patch and resume a base whose captured metadata
+	// proves that the volume drive exists. Keep this disabled until guest-init
+	// defers its volume mount, so the guest can handle the volume contents changing
+	// before resume.
 	WarmRestoreWithVolume bool
 	// DiffBanking enables dirty-page diff snapshots for session lineages restored
 	// from a prior bank. Every published session bundle remains a full snapshot.
@@ -1124,11 +1125,12 @@ func (d *Driver) Claim(ctx context.Context, spec substrate.ClaimSpec) (substrate
 		if ref.DeviceSetKnown && !registeredDevices.Equal(capturedDevices) {
 			return substrate.Handle{}, fmt.Errorf("driver: base %q device metadata changed after registration: registered %s, disk %s", ref.ID, registeredDevices, capturedDevices)
 		}
-		// A volume request may use a warm base only when producer metadata proves
-		// that the captured Firecracker device table contains that drive. Known
-		// rootfs-only and legacy-unknown bases remain usable: they take the normal
-		// cold-boot path below, which attaches the requested volume from scratch.
-		if spec.VolumeDiskPath != "" && !capturedDevices.Has("volume") {
+		// A volume request may use a warm base only when the node's safety gate is
+		// armed and producer metadata proves that the captured Firecracker device
+		// table contains that drive. Known rootfs-only, legacy-unknown, and locally
+		// disarmed bases remain usable: they take the normal cold-boot path below,
+		// which attaches the requested volume from scratch.
+		if spec.VolumeDiskPath != "" && (!d.cfg.WarmRestoreWithVolume || !capturedDevices.Has("volume")) {
 			return d.coldBoot(ctx, threadID, coldBootSpec{
 				workload:        spec.Workload,
 				rootfsPath:      coldBootRootfsPath,
