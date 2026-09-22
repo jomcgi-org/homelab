@@ -38,7 +38,7 @@ defmodule Embervm.RestoreCapability do
   end
 
   defp do_stamp(%{artifact: artifact} = req, brick, ctx, opts) do
-    mac_key = Keyword.get(opts, :mac_key, Application.get_env(:embervm, :noded_bearer_token, ""))
+    mac_key = capability_mac_key(opts)
 
     key_service =
       Keyword.get(
@@ -197,6 +197,20 @@ defmodule Embervm.RestoreCapability do
   defp json_string(value), do: Jason.encode!(value)
   defp clock(opts), do: Keyword.get(opts, :clock, fn -> System.system_time(:millisecond) end)
   defp artifact_store_client, do: Application.get_env(:embervm, :artifact_store_client)
+
+  # An explicit option remains authoritative, including an invalid empty or nil
+  # value used to assert fail-closed behavior. Without an override, prefer the
+  # dedicated key and retain the bearer only for the phase 2a migration window.
+  defp capability_mac_key(opts) do
+    if Keyword.has_key?(opts, :mac_key) do
+      Keyword.fetch!(opts, :mac_key)
+    else
+      case Application.get_env(:embervm, :restore_capability_key) do
+        key when is_binary(key) and key != "" -> key
+        _ -> Application.get_env(:embervm, :noded_bearer_token, "")
+      end
+    end
+  end
 
   defp valid_brick?(brick) do
     is_binary(Map.get(brick, :node_id)) and Map.get(brick, :node_id) != "" and

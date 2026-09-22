@@ -184,6 +184,15 @@ spec:
                   name: {{ include "embervm.noded.bearerTokenSecretName" . }}
                   key: {{ .Values.noded.bearerTokenSecret.key }}
             {{- end }}
+            {{- if .Values.controlPlane.restoreCapabilityKeySecret.enabled }}
+            # Restore capabilities use one dedicated MAC key on both sides. The
+            # legacy bearer verifier remains only for the one-release migration.
+            - name: EMBERVM_RESTORE_CAPABILITY_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "embervm.restoreCapabilityKeySecretName" . }}
+                  key: {{ .Values.controlPlane.restoreCapabilityKeySecret.key }}
+            {{- end }}
             {{- if .Values.kekRoot.enabled }}
             # Platform KEK root (ADR embervm/036): base64, held only in the
             # KeyService process, never logged. Empty leaves the custodian inert.
