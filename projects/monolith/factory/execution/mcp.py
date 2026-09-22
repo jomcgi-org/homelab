@@ -16,7 +16,7 @@ from sqlmodel import Session
 import httpx
 
 import agent.api as agent_api
-from factory.execution import store, voice, voice_ui
+from factory.execution import broker_client, store, voice, voice_ui
 from factory.execution import model_family, normalize_model
 from factory.execution.constants import DRAINER_NODE_KEY
 from factory.execution.rationale import rationale_trailer_instruction
@@ -1937,10 +1937,9 @@ def _grant_or_raise(grant: str) -> str:
 
 
 async def _broker_request(method: str, path: str) -> dict:
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.request(method, _broker_url() + path)
-        resp.raise_for_status()
-        return resp.json()
+    resp = await broker_client.request(method, _broker_url() + path, timeout=30)
+    resp.raise_for_status()
+    return resp.json()
 
 
 @mcp.tool

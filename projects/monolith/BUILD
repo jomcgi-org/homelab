@@ -8628,6 +8628,18 @@ py_test(
 )
 
 py_test(
+    name = "agent_sessions_broker_client_test",
+    srcs = ["factory/execution/broker_client_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_agent_sessions",
+        "@pip//cryptography",
+        "@pip//httpx",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "agent_sessions_provider_quota_test",
     srcs = ["factory/execution/provider_quota_test.py"],
     imports = ["."],

@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 
 import httpx
 
+from factory.execution import broker_client
+
 logger = logging.getLogger(__name__)
 
 BROKER_URL_ENV = "EMBER_TOKENBROKER_URL"
@@ -102,8 +104,7 @@ async def fetch_provider_quota(*, force: bool = False) -> dict:
         return _store_result(now, _unavailable_result(str(exc), exc))
 
     try:
-        async with httpx.AsyncClient(timeout=5) as client:
-            response = await client.get(url)
+        response = await broker_client.request("GET", url, timeout=5)
         result = _classify(response)
     # nosemgrep: no-broad-except-swallow
     except Exception as exc:  # noqa: BLE001
@@ -124,8 +125,7 @@ def fetch_provider_quota_sync(*, force: bool = False) -> dict:
         return _store_result(now, _unavailable_result(str(exc), exc))
 
     try:
-        with httpx.Client(timeout=5) as client:
-            response = client.get(url)
+        response = broker_client.request_sync("GET", url, timeout=5)
         result = _classify(response)
     # nosemgrep: no-broad-except-swallow
     except Exception as exc:  # noqa: BLE001
