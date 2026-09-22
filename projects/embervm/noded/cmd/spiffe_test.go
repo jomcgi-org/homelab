@@ -14,6 +14,7 @@ import (
 	"math/big"
 	"net"
 	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -112,6 +113,34 @@ func TestNodedGRPCServersDefaultOffDoesNotOpenWorkloadAPI(t *testing.T) {
 	}
 }
 
+func TestNodedGRPCServersRejectEmptyAllowlistBeforeOpeningWorkloadAPI(t *testing.T) {
+	created := false
+	servers, err := newNodedGRPCServers(
+		context.Background(),
+		config.Config{
+			PlaintextGRPCEnabled: true,
+			ListenAddr:           "127.0.0.1:0",
+			SPIFFEEnabled:        true,
+			TLSListenAddr:        "127.0.0.1:0",
+		},
+		&transportProbeServer{},
+		func(context.Context) (spiffeX509Source, error) {
+			created = true
+			return nil, errors.New("must not be called")
+		},
+		defaultSPIFFEKeepalive,
+	)
+	if err == nil || !strings.Contains(err.Error(), "at least one SPIFFE client ID") {
+		t.Fatalf("newNodedGRPCServers error = %v, want empty allowlist rejection", err)
+	}
+	if servers != nil {
+		t.Fatal("empty allowlist returned usable servers")
+	}
+	if created {
+		t.Fatal("empty allowlist contacted the Workload API")
+	}
+}
+
 func TestNodedGRPCServersAuthorizeSPIFFEAndRetainBearerListener(t *testing.T) {
 	trustDomain := spiffeid.RequireTrustDomainFromString("test.example")
 	caCertificate, caKey := newNodedTestCA(t, 1)
@@ -180,7 +209,7 @@ func TestNodedGRPCServersAuthorizeSPIFFEAndRetainBearerListener(t *testing.T) {
 	}
 }
 
-func TestNodedGRPCServersConnectionAgeReloadsClientSVID(t *testing.T) {
+func TestNodedGRPCServersConnectionAgeReloadsServerAndClientSVIDs(t *testing.T) {
 	trustDomain := spiffeid.RequireTrustDomainFromString("rotation.test")
 	caCertificate, caKey := newNodedTestCA(t, 20)
 	bundle := x509bundle.FromX509Authorities(trustDomain, []*x509.Certificate{caCertificate})
@@ -208,8 +237,12 @@ func TestNodedGRPCServersConnectionAgeReloadsClientSVID(t *testing.T) {
 	defer conn.Close()
 	callPrime(t, conn, false)
 
-	const rotatedSerial = int64(23)
-	clientSource.setSVID(newNodedTestSVID(t, caCertificate, caKey, clientID, rotatedSerial))
+	const (
+		rotatedClientSerial = int64(23)
+		rotatedServerSerial = int64(24)
+	)
+	clientSource.setSVID(newNodedTestSVID(t, caCertificate, caKey, clientID, rotatedClientSerial))
+	serverSource.setSVID(newNodedTestSVID(t, caCertificate, caKey, serverID, rotatedServerSerial))
 	deadline := time.Now().Add(5 * time.Second)
 	client := nodev1.NewNodeServiceClient(conn)
 	for time.Now().Before(deadline) {
@@ -219,15 +252,20 @@ func TestNodedGRPCServersConnectionAgeReloadsClientSVID(t *testing.T) {
 		if callErr != nil && status.Code(callErr) != codes.Unavailable {
 			t.Fatalf("Prime while rotating: %v", callErr)
 		}
-		if clientSource.getCount.Load() >= 2 && clientSource.lastSerial.Load() == rotatedSerial {
+		if clientSource.getCount.Load() >= 2 &&
+			clientSource.lastSerial.Load() == rotatedClientSerial &&
+			serverSource.getCount.Load() >= 2 &&
+			serverSource.lastSerial.Load() == rotatedServerSerial {
 			return
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
 	t.Fatalf(
-		"client SVID source reads = %d, last serial = %d; MaxConnectionAge did not force a handshake",
+		"client SVID source reads = %d, last serial = %d; server reads = %d, last serial = %d; MaxConnectionAge did not force a handshake",
 		clientSource.getCount.Load(),
 		clientSource.lastSerial.Load(),
+		serverSource.getCount.Load(),
+		serverSource.lastSerial.Load(),
 	)
 }
 
@@ -310,6 +348,34 @@ func TestNodedGRPCServersFailClosedAndReleaseResources(t *testing.T) {
 		t.Fatalf("X509 source close count = %d, want 1", source.closeCount.Load())
 	}
 	assertAddressAvailable(t, tlsAddr)
+}
+
+func TestNodedGRPCServersPropagateListenerFailure(t *testing.T) {
+	servers, err := newNodedGRPCServers(
+		context.Background(),
+		config.Config{PlaintextGRPCEnabled: true, ListenAddr: "127.0.0.1:0"},
+		&transportProbeServer{},
+		func(context.Context) (spiffeX509Source, error) {
+			return nil, errors.New("must not be called")
+		},
+		defaultSPIFFEKeepalive,
+	)
+	if err != nil {
+		t.Fatalf("newNodedGRPCServers: %v", err)
+	}
+	defer servers.Close()
+	errCh := servers.Serve(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err := servers.listeners[0].listener.Close(); err != nil {
+		t.Fatalf("close listener: %v", err)
+	}
+	select {
+	case serveErr := <-errCh:
+		if serveErr == nil || !strings.Contains(serveErr.Error(), "plaintext gRPC listener stopped") {
+			t.Fatalf("Serve error = %v, want named plaintext listener failure", serveErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("listener failure was not propagated")
+	}
 }
 
 func grpcListenerAddress(t *testing.T, servers *nodedGRPCServers, name string) string {

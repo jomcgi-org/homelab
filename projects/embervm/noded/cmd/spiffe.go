@@ -112,6 +112,9 @@ func newNodedGRPCServers(
 	// Build and bind the explicitly requested TLS listener first. Plaintext is
 	// not started, or even bound, if credentials or the TLS address are invalid.
 	if cfg.SPIFFEEnabled {
+		if len(cfg.SPIFFEClientIDs) == 0 {
+			return nil, errors.New("at least one SPIFFE client ID is required when the SPIFFE listener is enabled")
+		}
 		servers.source, err = waitForX509Source(ctx, nodedX509SourceTimeout, createSource)
 		if err != nil {
 			return nil, err
