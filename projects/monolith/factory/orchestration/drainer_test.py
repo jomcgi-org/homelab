@@ -2667,9 +2667,9 @@ def test_provider_walled_is_only_positive_evidence(monkeypatch):
 
 
 def test_kg_provider_requires_confirmed_observation(monkeypatch):
-    import factory.orchestration.model_pool as model_pool
+    from factory.orchestration import model_pool
 
-    monkeypatch.setattr(model_pool, "quota_summary", lambda: {})
+    monkeypatch.setattr(model_pool, "quota_summary", dict)
     assert _KG_PROVIDER_WALLED() == (True, "unobserved")
 
     monkeypatch.setattr(
@@ -2678,6 +2678,7 @@ def test_kg_provider_requires_confirmed_observation(monkeypatch):
         lambda: {
             "codex": {
                 "observed": True,
+                "grant_inventory_complete": True,
                 "age_seconds": 30.0,
                 "windows": [
                     {
@@ -2718,16 +2719,42 @@ def test_a_walled_provider_defers_the_claim_without_spending_a_lease(
 def test_unconfirmed_kg_defers_before_lease_reservation_or_burst_consumption(
     admission_database, monkeypatch
 ):
-    from sqlmodel import select
-    from factory.execution.models import AgentCapacityReservation, AgentSession
-    import factory.orchestration.model_pool as model_pool
-    from knowledge import burst
     import knowledge.api as knowledge_api
+    from knowledge import burst
+    from sqlmodel import select
+
+    from factory.execution.models import AgentCapacityReservation, AgentSession
+    from factory.orchestration import model_pool
 
     _queued_job(admission_database, "kg-one")
     monkeypatch.setattr(drainer, "provider_walled", lambda: (False, "available"))
     monkeypatch.setattr(drainer, "kg_provider_walled", _KG_PROVIDER_WALLED)
-    monkeypatch.setattr(model_pool, "quota_summary", lambda: {})
+    monkeypatch.setattr(
+        model_pool,
+        "quota_summary",
+        lambda: {
+            "codex": {
+                "observed": True,
+                "grant_inventory_complete": True,
+                "grant_views": [
+                    {
+                        "grant": "account-a",
+                        "observed": True,
+                        "age_seconds": 30.0,
+                        "windows": [
+                            {
+                                "name": "primary",
+                                "used_percent": 10.0,
+                                "resets_at": None,
+                                "usable": True,
+                            }
+                        ],
+                    },
+                    {"grant": "account-b", "observed": False},
+                ],
+            }
+        },
+    )
     burst_reads = []
     monkeypatch.setattr(
         knowledge_api,
@@ -2753,14 +2780,22 @@ def test_unconfirmed_kg_defers_before_lease_reservation_or_burst_consumption(
         lambda: {
             "codex": {
                 "observed": True,
-                "age_seconds": 30.0,
-                "windows": [
+                "grant_inventory_complete": True,
+                "grant_views": [
                     {
-                        "name": "primary",
-                        "used_percent": 10.0,
-                        "resets_at": None,
-                        "usable": True,
+                        "grant": grant,
+                        "observed": True,
+                        "age_seconds": 30.0,
+                        "windows": [
+                            {
+                                "name": "primary",
+                                "used_percent": 10.0,
+                                "resets_at": None,
+                                "usable": True,
+                            }
+                        ],
                     }
+                    for grant in ("account-a", "account-b")
                 ],
             }
         },

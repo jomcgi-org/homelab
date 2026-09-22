@@ -177,7 +177,7 @@ def kg_provider_walled() -> tuple[bool, str]:
         ok, reason = confirmed_availability(DRAIN_MODEL, quota_summary())
         return (not ok), reason
     # nosemgrep: no-broad-except-swallow
-    except Exception:  # noqa: BLE001 - unknown capacity must not admit KG work
+    except Exception:  # unknown capacity must not admit KG work
         logger.debug("KG drain provider quota unreadable", exc_info=True)
         return True, "unreadable"
 

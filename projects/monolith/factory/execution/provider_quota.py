@@ -46,8 +46,11 @@ def _available_result(payload: object) -> dict:
     return {
         "available": True,
         "providers": payload["providers"],
-        # Per-grant views (one account each) when the broker reports them.
+        # Per-grant views (one account each). New brokers enumerate configured
+        # but unobserved quota grants too, and explicitly mark that inventory
+        # complete so admission never trusts an older partial response.
         "grants": grants if isinstance(grants, dict) else {},
+        "grants_complete": payload.get("grants_complete") is True,
         "fetched_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -199,21 +202,28 @@ def _preferred_window_name(provider: str) -> str:
 
 
 def summarise_grants(grants: object) -> dict:
-    """Summarise each reporting grant like a provider, keyed by grant name."""
+    """Summarise every configured quota grant, including unobserved grants."""
     if not isinstance(grants, dict):
         return {}
     summary = {}
     for name, value in grants.items():
-        if not isinstance(value, dict) or value.get("observed") is not True:
+        if not isinstance(value, dict):
             continue
         provider = value.get("provider")
         if provider not in ("codex", "claude"):
             continue
-        summary[name] = {
-            **_summarise_view(provider, value),
-            "grant": name,
-            "provider": provider,
-        }
+        if value.get("observed") is True:
+            summary[name] = {
+                **_summarise_view(provider, value),
+                "grant": name,
+                "provider": provider,
+            }
+        else:
+            summary[name] = {
+                "grant": name,
+                "provider": provider,
+                "observed": False,
+            }
     return summary
 
 

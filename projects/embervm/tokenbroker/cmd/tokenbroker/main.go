@@ -293,6 +293,40 @@ func parseQuotaProviders(raw string) ([]string, error) {
 	return providers, nil
 }
 
+// quotaProviderForGrant translates a credential adapter to the quota class
+// reported by the egress sidecar. Only grant-backed subscription providers
+// belong in the quota inventory; service-account grants have no such feed.
+func quotaProviderForGrant(providerName string) string {
+	switch providerName {
+	case "codex-chatgpt":
+		return "codex"
+	default:
+		return ""
+	}
+}
+
+// quotaGrantViews returns a complete inventory of configured quota-bearing
+// grants. An unobserved grant is explicit so admission clients cannot confuse
+// a successful broker read with evidence that every selectable account has
+// capacity. Store.Grants remains observation-only for metrics consumers.
+func (s *server) quotaGrantViews() map[string]quota.View {
+	views := s.quotaStore.Grants()
+	for name, config := range s.configs {
+		provider := quotaProviderForGrant(config.ProviderName)
+		if provider == "" {
+			continue
+		}
+		if _, allowed := s.quotaProviders[provider]; !allowed {
+			continue
+		}
+		view, observed := views[name]
+		if !observed || view.Provider != provider {
+			views[name] = quota.View{Provider: provider, Grant: name}
+		}
+	}
+	return views
+}
+
 // quota serves an in-memory view of subscription quota reported by egress
 // proxies. POST /quota/{provider} replaces that provider's latest observation,
 // GET /quota/{provider} reads one view, and GET /quota reads every allowlisted
@@ -309,9 +343,15 @@ func (s *server) quota(w http.ResponseWriter, r *http.Request) {
 		for _, provider := range s.quotaProviderOrder {
 			providers[provider] = s.quotaStore.Get(provider)
 		}
-		// grants carries only the grants that have reported, keyed by grant
-		// name; the provider map above is unchanged for existing readers.
-		writeJSON(w, http.StatusOK, map[string]any{"providers": providers, "grants": s.quotaStore.Grants()})
+		// grants is a complete configured inventory, keyed by grant name. The
+		// completeness marker lets admission clients reject older partial
+		// payloads during a rolling deployment. The provider map above remains
+		// unchanged for existing readers.
+		writeJSON(w, http.StatusOK, map[string]any{
+			"providers":       providers,
+			"grants":          s.quotaGrantViews(),
+			"grants_complete": true,
+		})
 		return
 	}
 
@@ -341,7 +381,7 @@ func (s *server) quota(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		if grant != "" {
 			view := s.quotaStore.GetGrant(grant)
-			if view.Observed && view.Provider != provider {
+			if !view.Observed || view.Provider != provider {
 				// The grant last reported under another class: for this
 				// path it is unobserved rather than a misfiled reading.
 				view = quota.View{Provider: provider, Grant: grant}

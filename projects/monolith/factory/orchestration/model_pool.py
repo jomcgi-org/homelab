@@ -217,6 +217,8 @@ def availability(model: str, quota: dict, role: str | None = None) -> tuple[bool
     summary = quota.get(provider)
     if not isinstance(summary, dict):
         return True, "unobserved"
+    if summary.get("observed") is False:
+        return True, "unobserved"
     used = summary.get("headline_used_percent")
     age = summary.get("age_seconds")
     floor = floor_for(provider, role)
@@ -306,8 +308,10 @@ def confirmed_availability(
 
     General model-pool routing deliberately keeps its positive-evidence policy
     in :func:`availability`. KG admission uses this narrower fail-closed seam.
-    When multiple account grants report, each account is evaluated as a whole;
-    windows from different accounts are never combined to manufacture room.
+    When multiple account grants are configured, every account must have a
+    fresh permitting observation because the egress ranker may select any of
+    them. Each account is evaluated as a whole, so windows from different
+    accounts are never combined to manufacture room.
     """
     family = family_for(model)
     if family is None:
@@ -318,51 +322,85 @@ def confirmed_availability(
     if not isinstance(quota, dict):
         return False, "unobserved"
     summary = quota.get(provider)
-    if not isinstance(summary, dict) or summary.get("observed") is not True:
+    if not isinstance(summary, dict):
         return False, "unobserved"
 
     grant_views = summary.get("grant_views")
+    if (
+        (not isinstance(grant_views, list) or not grant_views)
+        and summary.get("observed") is not True
+    ):
+        return False, "unobserved"
+    if summary.get("grant_inventory_complete") is not True:
+        return False, "grant_inventory_incomplete"
     if isinstance(grant_views, list) and grant_views:
         reasons = []
         for view in grant_views:
             if not isinstance(view, dict):
-                reasons.append("window_unusable")
+                reasons.append("grant_inventory_unusable")
+                continue
+            grant = view.get("grant")
+            if view.get("observed") is not True:
+                reasons.append(
+                    f"grant {grant} unobserved" if grant else "grant unobserved"
+                )
                 continue
             ok, reason = _confirmed_view_availability(
                 view, provider=provider, role=role, now=now
             )
-            if ok:
-                grant = view.get("grant")
-                return True, f"grant {grant} {reason}" if grant else reason
-            grant = view.get("grant")
-            reasons.append(f"{grant} {reason}" if grant else reason)
-        return False, "; ".join(reasons)
+            if not ok:
+                reasons.append(f"grant {grant} {reason}" if grant else reason)
+        if reasons:
+            return False, "; ".join(reasons)
+        return True, "all_grants_confirmed_available"
+    if summary.get("observed") is not True:
+        return False, "unobserved"
     return _confirmed_view_availability(summary, provider=provider, role=role, now=now)
 
 
-def rollup_grants(summary: dict, grants: dict) -> dict:
+def rollup_grants(
+    summary: dict, grants: dict, *, grants_complete: bool = False
+) -> dict:
     """Fold per-grant views into the class view a pool member is judged on.
 
     With more than one account on a class the provider-level view is only
     the latest report, whichever grant made it. The class has room while any
-    grant does, so the class view takes the least-used non-exhausted grant
-    (its used percent, reset time and age) and is exhausted only when every
-    reporting grant is. Classes with no reporting grant are left untouched.
+    grant does for ordinary routing, so the class view takes the least-used
+    non-exhausted grant (its used percent, reset time and age) and is exhausted
+    only when every reporting grant is. The attached complete grant inventory
+    lets confirmed KG admission apply its stricter all-accounts rule.
     """
-    merged = dict(summary)
+    merged = {
+        provider: {
+            **view,
+            "grant_inventory_complete": grants_complete,
+        }
+        for provider, view in summary.items()
+    }
     by_provider: dict[str, list[dict]] = {}
     for view in grants.values():
         provider = view.get("provider")
-        if isinstance(provider, str) and view.get("observed"):
+        if isinstance(provider, str):
             by_provider.setdefault(provider, []).append(view)
     for provider, views in by_provider.items():
-        open_views = [v for v in views if not v.get("exhausted")]
+        observed_views = [v for v in views if v.get("observed") is True]
+        if not observed_views:
+            if provider not in merged and not grants_complete:
+                continue
+            merged[provider] = {
+                **merged.get(provider, {"observed": False}),
+                "grant_views": [dict(view) for view in views],
+                "grant_inventory_complete": grants_complete,
+            }
+            continue
+        open_views = [v for v in observed_views if not v.get("exhausted")]
         if not open_views:
-            best = min(views, key=lambda v: v.get("age_seconds") or 0.0)
+            best = min(observed_views, key=lambda v: v.get("age_seconds") or 0.0)
             merged[provider] = {
                 **best,
                 "exhausted": True,
                 "grant_views": [dict(view) for view in views],
+                "grant_inventory_complete": grants_complete,
             }
             continue
         # A grant with no usable window says nothing about room: it sorts
@@ -380,6 +418,7 @@ def rollup_grants(summary: dict, grants: dict) -> dict:
             **best,
             "exhausted": False,
             "grant_views": [dict(view) for view in views],
+            "grant_inventory_complete": grants_complete,
         }
     return merged
 
@@ -397,7 +436,11 @@ def quota_summary() -> dict:
         providers = fetched.get("providers", {}) if isinstance(fetched, dict) else {}
         summary = summarise(providers if isinstance(providers, dict) else {})
         grants = fetched.get("grants") if isinstance(fetched, dict) else None
-        return rollup_grants(summary, summarise_grants(grants))
+        return rollup_grants(
+            summary,
+            summarise_grants(grants),
+            grants_complete=fetched.get("grants_complete") is True,
+        )
     # nosemgrep: no-broad-except-swallow
     except Exception as exc:  # noqa: BLE001
         logger.warning("provider quota unavailable for model selection: %s", exc)
