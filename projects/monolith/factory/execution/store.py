@@ -104,6 +104,15 @@ def _assert_guest_reusable(
         )
 
 
+def _bound_zero_turn_cleanup_pending(row: AgentSession | None) -> bool:
+    """Whether #6288's settlement proof, not ordinary cleanup, owns the row."""
+    from factory.execution.constants import BOUND_ZERO_TURN_CLEANUP_PREFIX
+
+    return row is not None and (row.guest_cleanup_id or "").startswith(
+        BOUND_ZERO_TURN_CLEANUP_PREFIX
+    )
+
+
 def guest_cleanup_hold(session: Session, session_id: int, guest_id: str) -> str | None:
     """Observe pending-to-receipt handoff in one database statement.
 
@@ -1043,6 +1052,7 @@ def finish_unknown_pending_in_session(
     existing = get_turn(session, session_id, turn_seq)
     if (
         row is None
+        or _bound_zero_turn_cleanup_pending(row)
         or row.ember_session_id != expected_guest_id
         or row.workflow_id != expected_workflow_id
         or pending is None
@@ -1071,6 +1081,7 @@ def finish_unknown_pending_sync(
         pending = get_pending_message(session, session_id, turn_seq)
         if (
             row is None
+            or _bound_zero_turn_cleanup_pending(row)
             or pending is None
             or pending.claimed_by_replica != claim_owner
             or pending.dispatch_count != dispatch_count
@@ -2003,7 +2014,11 @@ def write_progress_sync(
         if session_id is None:
             return "unknown_token"
         row = _lock_session(session, session_id)
-        if row is None or row.progress_token != progress_token:
+        if (
+            row is None
+            or row.progress_token != progress_token
+            or _bound_zero_turn_cleanup_pending(row)
+        ):
             return "unknown_token"
         try:
             _assert_sendable(session, session_id)
@@ -2112,7 +2127,7 @@ def release_pending_message_claim_sync(
     with Session(get_engine()) as session:
         row = _lock_session(session, session_id)
         pending = get_pending_message(session, session_id, turn_seq)
-        if row is None:
+        if row is None or _bound_zero_turn_cleanup_pending(row):
             return False
         if (
             pending is None
@@ -2155,6 +2170,8 @@ def persist_turn_from_pending_sync(
         if not sess_row:
             raise ValueError(f"Session {session_id} not found")
         _assert_sendable(session, session_id)
+        if _bound_zero_turn_cleanup_pending(sess_row):
+            raise PendingClaimLost("Bound zero-turn settlement owns this dispatch")
         pending = get_pending_message(session, session_id, turn_seq)
         if claim_owner is not None and (
             pending is None
@@ -2388,7 +2405,7 @@ def mark_turn_error_sync(
     with Session(get_engine()) as session:
         sess = _lock_session(session, session_id)
         row = get_pending_message(session, session_id, turn_seq)
-        if sess is None or row is None:
+        if sess is None or row is None or _bound_zero_turn_cleanup_pending(sess):
             return
         if claim_owner is not None and row.claimed_by_replica != claim_owner:
             return

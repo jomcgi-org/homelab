@@ -18,8 +18,12 @@ import os
 from sqlmodel import select
 
 from factory.execution.api import (
+    fence_bound_zero_turn_factory_attempt,
+    read_bound_zero_turn_factory_attempt,
     read_drained_lost_factory_attempt,
     read_uncertain_factory_attempt,
+    release_bound_zero_turn_factory_fence,
+    settle_bound_zero_turn_factory_attempt,
     settle_drained_lost_factory_attempt,
     settle_uncertain_factory_attempt,
 )
@@ -1864,6 +1868,11 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
         return False
     drained, settled = _reconcile_drained_lost_attempt(pin, session_id, original_result)
     if drained:
+        return settled
+    bound_zero_turn, settled = _reconcile_bound_zero_turn_attempt(
+        pin, session_id, original_result
+    )
+    if bound_zero_turn:
         return settled
     cessation_enabled = (
         os.environ.get("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "false").lower()
