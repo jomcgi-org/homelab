@@ -34,6 +34,20 @@ def _ca(serial: int) -> tuple[x509.Certificate, ec.EllipticCurvePrivateKey]:
             x509.SubjectKeyIdentifier.from_public_key(key.public_key()),
             critical=False,
         )
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=False,
+                content_commitment=False,
+                key_encipherment=False,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=True,
+                crl_sign=True,
+                encipher_only=None,
+                decipher_only=None,
+            ),
+            critical=True,
+        )
         .sign(key, hashes.SHA256())
     )
     return certificate, key
@@ -74,6 +88,20 @@ def _identity(
         .add_extension(
             x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()),
             critical=False,
+        )
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=True,
+                content_commitment=False,
+                key_encipherment=False,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=False,
+                crl_sign=False,
+                encipher_only=None,
+                decipher_only=None,
+            ),
+            critical=True,
         )
         .sign(ca_key, hashes.SHA256())
     )
