@@ -25,6 +25,7 @@ spec:
   selector:
     {{- include "embervm.noded.selectorLabels" . | nindent 4 }}
   ports:
+    {{- if .Values.noded.plaintextGrpc.enabled }}
     # gRPC NodeService the control plane dials per pod. With a headless Service the
     # control plane resolves individual pod IPs from EndpointSlices and dials
     # <pod-ip>:{{ .Values.noded.grpcPort }} directly (see
@@ -32,4 +33,12 @@ spec:
     - name: grpc
       port: {{ .Values.noded.grpcPort }}
       targetPort: grpc
+    {{- end }}
+    {{- if .Values.noded.spiffe.enabled }}
+    # The Service is headless, so this exposes no load-balanced front door. It
+    # publishes the TLS port beside each pod address for per-pod discovery.
+    - name: grpc-tls
+      port: {{ .Values.noded.spiffe.grpcTlsPort }}
+      targetPort: grpc-tls
+    {{- end }}
 {{- end }}

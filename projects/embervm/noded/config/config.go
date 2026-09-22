@@ -24,6 +24,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/spiffe/go-spiffe/v2/spiffeid"
 )
 
 // DefaultUnexportableTTL is the retry suppression period for artifacts whose
@@ -48,6 +50,16 @@ type Image struct {
 type Config struct {
 	// ListenAddr is the gRPC listen address. Default ":9090".
 	ListenAddr string
+	// PlaintextGRPCEnabled keeps the bearer-authenticated listener available
+	// during the additive SPIFFE rollout. It defaults true.
+	PlaintextGRPCEnabled bool
+	// SPIFFEEnabled opens the second, mutually authenticated gRPC listener.
+	// Disabled mode never contacts the SPIFFE Workload API.
+	SPIFFEEnabled bool
+	// TLSListenAddr is the SPIFFE mTLS gRPC listen address. Default ":9443".
+	TLSListenAddr string
+	// SPIFFEClientIDs is the fail-closed allowlist for the mTLS listener.
+	SPIFFEClientIDs []spiffeid.ID
 	// HealthAddr is the plain-HTTP /healthz listen address for kubelet probes
 	// (gRPC health-checking a privileged single-replica pod is more moving parts
 	// than a 20-line HTTP handler). Default ":8080".
@@ -464,8 +476,19 @@ type Config struct {
 // Load resolves configuration from the environment, applying defaults for all
 // optional fields. It errors only on values that are present but malformed.
 func Load() (Config, error) {
+	plaintextGRPCEnabled, err := strictBoolDefault("EMBERVM_NODED_PLAINTEXT_GRPC_ENABLED", true)
+	if err != nil {
+		return Config{}, err
+	}
+	spiffeEnabled, err := strictBoolDefault("EMBERVM_NODED_SPIFFE_ENABLED", false)
+	if err != nil {
+		return Config{}, err
+	}
 	c := Config{
 		ListenAddr:           getenvDefault("EMBERVM_NODED_LISTEN_ADDR", ":9090"),
+		PlaintextGRPCEnabled: plaintextGRPCEnabled,
+		SPIFFEEnabled:        spiffeEnabled,
+		TLSListenAddr:        getenvDefault("EMBERVM_NODED_TLS_LISTEN_ADDR", ":9443"),
 		HealthAddr:           getenvDefault("EMBERVM_NODED_HEALTH_ADDR", ":8080"),
 		ActivatorAddr:        getenvDefault("EMBERVM_NODED_ACTIVATOR_ADDR", ":8081"),
 		Node:                 os.Getenv("EMBERVM_NODED_NODE"),
@@ -540,6 +563,15 @@ func Load() (Config, error) {
 		StoreSecretAccessKey: os.Getenv("EMBERVM_NODED_STORE_SECRET_ACCESS_KEY"),
 
 		RequireRestoreCapability: boolDefault("EMBERVM_NODED_REQUIRE_RESTORE_CAPABILITY", false),
+	}
+	if c.SPIFFEEnabled {
+		c.SPIFFEClientIDs, err = parseSPIFFEClientIDs(os.Getenv("EMBERVM_NODED_SPIFFE_CLIENT_IDS"))
+		if err != nil {
+			return Config{}, err
+		}
+	}
+	if !c.PlaintextGRPCEnabled && !c.SPIFFEEnabled {
+		return Config{}, fmt.Errorf("at least one noded gRPC listener must be enabled")
 	}
 	if c.AdmissionModel != "observed" && c.AdmissionModel != "reserved" {
 		return Config{}, fmt.Errorf("EMBERVM_NODED_ADMISSION_MODEL must be observed or reserved, got %q", c.AdmissionModel)
@@ -980,6 +1012,40 @@ func boolDefault(key string, def bool) bool {
 		}
 	}
 	return def
+}
+
+// strictBoolDefault parses rollout gates without silently converting a typo
+// into a different security posture.
+func strictBoolDefault(key string, def bool) (bool, error) {
+	v, ok := os.LookupEnv(key)
+	if !ok || v == "" {
+		return def, nil
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return false, fmt.Errorf("invalid %s %q: %w", key, v, err)
+	}
+	return b, nil
+}
+
+func parseSPIFFEClientIDs(raw string) ([]spiffeid.ID, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, fmt.Errorf("EMBERVM_NODED_SPIFFE_CLIENT_IDS is required when EMBERVM_NODED_SPIFFE_ENABLED is true")
+	}
+	parts := strings.Split(raw, ",")
+	ids := make([]spiffeid.ID, 0, len(parts))
+	for _, part := range parts {
+		value := strings.TrimSpace(part)
+		if value == "" {
+			return nil, fmt.Errorf("EMBERVM_NODED_SPIFFE_CLIENT_IDS contains an empty entry")
+		}
+		id, err := spiffeid.FromString(value)
+		if err != nil {
+			return nil, fmt.Errorf("invalid EMBERVM_NODED_SPIFFE_CLIENT_IDS entry %q: %w", value, err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
 }
 
 func csvDefault(key string) []string {

@@ -13,6 +13,7 @@ spec:
       app.kubernetes.io/name: {{ include "embervm.noded.name" . }}
       app.kubernetes.io/instance: {{ .Release.Name }}
   ingress:
+    {{- if .Values.noded.plaintextGrpc.enabled }}
     # The control plane dials noded gRPC. Its immutable selector has no component
     # label, so match the two labels from embervm.selectorLabels plus namespace.
     - fromEndpoints:
@@ -22,6 +23,18 @@ spec:
       toPorts:
         - ports:
             - { port: {{ .Values.noded.grpcPort | quote }}, protocol: TCP }
+    {{- end }}
+    {{- if .Values.noded.spiffe.enabled }}
+    # The SPIFFE listener is reachable only from the control plane. TLS still
+    # authenticates the exact client ID, so this is defense in depth.
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Release.Namespace | quote }}
+            {{- include "embervm.selectorLabels" . | nindent 12 }}
+      toPorts:
+        - ports:
+            - { port: {{ .Values.noded.spiffe.grpcTlsPort | quote }}, protocol: TCP }
+    {{- end }}
     # Kubelet liveness/readiness probes originate from the node host. Once
     # ingress is default-deny they must be allowed or the pod never goes Ready.
     - fromEntities:

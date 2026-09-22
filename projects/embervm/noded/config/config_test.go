@@ -334,6 +334,8 @@ func TestLoadDefaults(t *testing.T) {
 		"EMBERVM_NODED_WARMTH_HEARTBEAT_INTERVAL", "EMBERVM_NODED_WARMTH_STALE_AFTER",
 		"EMBERVM_NODED_REAP_UNCLAIMED_WARMTH",
 		"EMBERVM_NODED_JAILER_ENABLED", "EMBERVM_NODED_JAILER_BIN",
+		"EMBERVM_NODED_PLAINTEXT_GRPC_ENABLED", "EMBERVM_NODED_SPIFFE_ENABLED",
+		"EMBERVM_NODED_TLS_LISTEN_ADDR", "EMBERVM_NODED_SPIFFE_CLIENT_IDS",
 	} {
 		t.Setenv(k, "")
 	}
@@ -344,6 +346,18 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if c.ListenAddr != ":9090" {
 		t.Errorf("ListenAddr = %q, want :9090", c.ListenAddr)
+	}
+	if !c.PlaintextGRPCEnabled {
+		t.Error("PlaintextGRPCEnabled should default true")
+	}
+	if c.SPIFFEEnabled {
+		t.Error("SPIFFEEnabled should default false")
+	}
+	if c.TLSListenAddr != ":9443" {
+		t.Errorf("TLSListenAddr = %q, want :9443", c.TLSListenAddr)
+	}
+	if len(c.SPIFFEClientIDs) != 0 {
+		t.Errorf("SPIFFEClientIDs = %v, want empty while SPIFFE is disabled", c.SPIFFEClientIDs)
 	}
 	if c.HealthAddr != ":8080" {
 		t.Errorf("HealthAddr = %q, want :8080", c.HealthAddr)
@@ -433,6 +447,71 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if c.RestoreCapabilityKey != "" {
 		t.Errorf("RestoreCapabilityKey = %q, want empty when env is unset", c.RestoreCapabilityKey)
+	}
+}
+
+func TestLoadSPIFFEListenerConfiguration(t *testing.T) {
+	t.Setenv("EMBERVM_NODED_SPIFFE_ENABLED", "true")
+	t.Setenv("EMBERVM_NODED_TLS_LISTEN_ADDR", "127.0.0.1:19443")
+	t.Setenv(
+		"EMBERVM_NODED_SPIFFE_CLIENT_IDS",
+		" spiffe://embervm.test/ns/embervm/sa/control ,spiffe://embervm.test/ns/dev/sa/control ",
+	)
+
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !c.SPIFFEEnabled || c.TLSListenAddr != "127.0.0.1:19443" {
+		t.Fatalf("SPIFFE configuration = enabled %v address %q", c.SPIFFEEnabled, c.TLSListenAddr)
+	}
+	if len(c.SPIFFEClientIDs) != 2 ||
+		c.SPIFFEClientIDs[0].String() != "spiffe://embervm.test/ns/embervm/sa/control" ||
+		c.SPIFFEClientIDs[1].String() != "spiffe://embervm.test/ns/dev/sa/control" {
+		t.Fatalf("SPIFFEClientIDs = %v, want two parsed IDs", c.SPIFFEClientIDs)
+	}
+}
+
+func TestLoadSPIFFEListenerRejectsInvalidConfiguration(t *testing.T) {
+	tests := []struct {
+		name      string
+		plaintext string
+		enabled   string
+		clientIDs string
+		want      string
+	}{
+		{
+			name: "empty allowlist", enabled: "true",
+			want: "EMBERVM_NODED_SPIFFE_CLIENT_IDS is required",
+		},
+		{
+			name: "empty allowlist entry", enabled: "true",
+			clientIDs: "spiffe://embervm.test/control,",
+			want:      "contains an empty entry",
+		},
+		{
+			name: "invalid ID", enabled: "true", clientIDs: "https://not-spiffe.example/client",
+			want: "invalid EMBERVM_NODED_SPIFFE_CLIENT_IDS entry",
+		},
+		{
+			name: "no listener", plaintext: "false", enabled: "false",
+			want: "at least one noded gRPC listener must be enabled",
+		},
+		{
+			name: "invalid security gate", enabled: "sometimes",
+			want: "invalid EMBERVM_NODED_SPIFFE_ENABLED",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("EMBERVM_NODED_PLAINTEXT_GRPC_ENABLED", test.plaintext)
+			t.Setenv("EMBERVM_NODED_SPIFFE_ENABLED", test.enabled)
+			t.Setenv("EMBERVM_NODED_SPIFFE_CLIENT_IDS", test.clientIDs)
+			_, err := Load()
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Load error = %v, want %q", err, test.want)
+			}
+		})
 	}
 }
 

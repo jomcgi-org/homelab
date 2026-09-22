@@ -1309,6 +1309,18 @@ noded:
 
   # gRPC port the control plane dials; health port for kubelet probes.
   grpcPort: 9090
+  # Compatibility listener for the bearer-authenticated transport. Phase 2b
+  # keeps this on; a later, independently staged rollout may turn it off.
+  plaintextGrpc:
+    enabled: true
+  # Optional second NodeService listener authenticated with SPIFFE X.509-SVIDs.
+  # Disabled mode renders no Workload API mount, TLS port, or SPIFFE env.
+  spiffe:
+    enabled: false
+    trustDomain: embervm.jomcgi.dev
+    grpcTlsPort: 9443
+    # Empty derives the control-plane ServiceAccount's exact SPIFFE ID.
+    clientSpiffeIds: []
   healthPort: 8080
   # OpenTelemetry OTLP/gRPC tracing for the node daemon. An empty endpoint
   # leaves the SDK disabled and renders no OTEL environment variables.

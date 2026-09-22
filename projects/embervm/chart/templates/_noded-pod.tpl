@@ -30,6 +30,14 @@ Call with `{{- include "embervm.noded.podSpec" (dict "ctx" . "sizeClass" "" "res
 {{- define "embervm.noded.podSpec" -}}
 {{- $ctx := .ctx -}}
 {{- $brokerMTLS := and $ctx.Values.egress.enabled $ctx.Values.egress.tokenBroker.spiffe.enabled -}}
+{{- $nodedMTLS := $ctx.Values.noded.spiffe.enabled -}}
+{{- if and (not $ctx.Values.noded.plaintextGrpc.enabled) (not $nodedMTLS) -}}
+{{- fail "at least one of noded.plaintextGrpc.enabled or noded.spiffe.enabled must be true" -}}
+{{- end -}}
+{{- $nodedSpiffeClientIDs := join "," $ctx.Values.noded.spiffe.clientSpiffeIds -}}
+{{- if and $nodedMTLS (eq (len $ctx.Values.noded.spiffe.clientSpiffeIds) 0) -}}
+{{- $nodedSpiffeClientIDs = printf "spiffe://%s/ns/%s/sa/%s" $ctx.Values.noded.spiffe.trustDomain $ctx.Release.Namespace (include "embervm.serviceAccountName" $ctx) -}}
+{{- end -}}
 {{- if and $brokerMTLS (not (and $ctx.Values.tokenBroker.enabled $ctx.Values.tokenBroker.spiffe.enabled)) -}}
 {{- fail "egress.tokenBroker.spiffe requires tokenBroker.enabled and tokenBroker.spiffe.enabled" -}}
 {{- end -}}
@@ -170,9 +178,16 @@ containers:
     securityContext:
       privileged: true
     ports:
+      {{- if $ctx.Values.noded.plaintextGrpc.enabled }}
       - name: grpc
         containerPort: {{ $ctx.Values.noded.grpcPort }}
         protocol: TCP
+      {{- end }}
+      {{- if $nodedMTLS }}
+      - name: grpc-tls
+        containerPort: {{ $ctx.Values.noded.spiffe.grpcTlsPort }}
+        protocol: TCP
+      {{- end }}
       - name: health
         containerPort: {{ $ctx.Values.noded.healthPort }}
         protocol: TCP
@@ -183,8 +198,23 @@ containers:
         containerPort: {{ $ctx.Values.noded.activatorPort }}
         protocol: TCP
     env:
+      {{- if $ctx.Values.noded.plaintextGrpc.enabled }}
       - name: EMBERVM_NODED_LISTEN_ADDR
         value: ":{{ $ctx.Values.noded.grpcPort }}"
+      {{- else }}
+      - name: EMBERVM_NODED_PLAINTEXT_GRPC_ENABLED
+        value: "false"
+      {{- end }}
+      {{- if $nodedMTLS }}
+      - name: EMBERVM_NODED_SPIFFE_ENABLED
+        value: "true"
+      - name: EMBERVM_NODED_TLS_LISTEN_ADDR
+        value: ":{{ $ctx.Values.noded.spiffe.grpcTlsPort }}"
+      - name: EMBERVM_NODED_SPIFFE_CLIENT_IDS
+        value: {{ $nodedSpiffeClientIDs | quote }}
+      - name: SPIFFE_ENDPOINT_SOCKET
+        value: "unix:///spiffe-workload-api/spire-agent.sock"
+      {{- end }}
       - name: EMBERVM_NODED_HEALTH_ADDR
         value: ":{{ $ctx.Values.noded.healthPort }}"
       {{- if $ctx.Values.noded.tracing.endpoint }}
@@ -492,6 +522,11 @@ containers:
     resources:
       {{- toYaml .resources | nindent 6 }}
     volumeMounts:
+      {{- if $nodedMTLS }}
+      - name: spiffe-workload-api
+        mountPath: /spiffe-workload-api
+        readOnly: true
+      {{- end }}
       - name: dev-kvm
         mountPath: /dev/kvm
       - name: nvme
@@ -622,7 +657,7 @@ containers:
       {{- toYaml $ctx.Values.egress.resources | nindent 6 }}
 {{- end }}
 volumes:
-{{- if $brokerMTLS }}
+{{- if or $brokerMTLS $nodedMTLS }}
   - name: spiffe-workload-api
     csi:
       driver: csi.spiffe.io
