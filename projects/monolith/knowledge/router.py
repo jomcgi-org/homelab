@@ -706,6 +706,13 @@ class CreateNoteRequest(BaseModel):
     tags: list[str] | None = None
     type: str | None = None
 
+    @field_validator("source")
+    @classmethod
+    def _source_is_valid(cls, value: str | None) -> str | None:
+        if value is not None and _RAW_SOURCE_RE.fullmatch(value) is None:
+            raise ValueError("source must match ^[a-z][a-z0-9-]{1,40}$")
+        return value
+
 
 @router.post("/notes", status_code=201)
 def create_note(
@@ -722,6 +729,11 @@ def create_note(
     indexed into ``knowledge.notes`` here. Only ``edit_note``, which mutates an
     existing ``_processed`` note, indexes synchronously (ADR 006 Phase 3).
     """
+    if data.source in _MCP_OWNED_RAW_SOURCES:
+        raise HTTPException(
+            status_code=403,
+            detail=f"source {data.source!r} is reserved for authenticated MCP tools",
+        )
     content = data.content.strip()
     if not content:
         raise HTTPException(status_code=400, detail="content must not be empty")
