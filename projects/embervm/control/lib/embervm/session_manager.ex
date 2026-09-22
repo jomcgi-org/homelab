@@ -4107,15 +4107,38 @@ defmodule Embervm.SessionManager do
     end
   end
 
-  # A denial result arrived at or beyond the bound while the row is still
-  # relighting. Only the partial-registration denial becomes terminal. Ordinary
-  # no-bricks/capacity/pressure expiry keeps the established non-terminal path.
-  defp expire_active_pressure_wait(state, session_id, %{last_reason: {:node_unreported, _node_id}}) do
-    finish_snapshot_lost(state, session_id)
+  # A registration-related denial arrived at or beyond the bound while the row is
+  # still relighting. Re-read current capacity before deciding because the worker's
+  # result may have crossed a node report in the manager mailbox. Ordinary
+  # capacity/pressure expiry keeps the established non-terminal path.
+  defp expire_active_pressure_wait(state, session_id, wait) do
+    if registration_wait_reason?(wait.last_reason) do
+      expire_active_registration_wait(state, session_id, wait)
+    else
+      give_up_pressure_wait(state, session_id, wait)
+    end
   end
 
-  defp expire_active_pressure_wait(state, session_id, wait) do
-    give_up_pressure_wait(state, session_id, wait)
+  defp expire_active_registration_wait(state, session_id, wait) do
+    case SessionStore.get(state.session_store, session_id) do
+      {:ok, %{state: :relighting} = session} ->
+        case WakeInstance.node_for_relight(session, state.capacity_table) do
+          {:ok, _dial_id} ->
+            restart_relight_after_registration(state, session_id)
+
+          {:error, :no_bricks} ->
+            give_up_pressure_wait(state, session_id, %{wait | last_reason: :no_bricks})
+
+          {:error, :snapshot_lost} ->
+            finish_snapshot_lost(state, session_id)
+
+          {:error, {:node_unreported, _node_id}} ->
+            finish_snapshot_lost(state, session_id)
+        end
+
+      _ ->
+        expire_resting_pressure_wait(state, session_id, wait)
+    end
   end
 
   # A retry tick reached the bound while the row is resting. Re-read both the row
@@ -4123,7 +4146,15 @@ defmodule Embervm.SessionManager do
   # may recover, a still-absent node terminalizes, and a newly empty table keeps
   # #5777's non-terminal CP-blind behavior. A duplicate retry that arrives while
   # another worker is active is stale and leaves that worker authoritative.
-  defp expire_resting_pressure_wait(state, session_id, %{last_reason: {:node_unreported, _node_id}} = wait) do
+  defp expire_resting_pressure_wait(state, session_id, wait) do
+    if registration_wait_reason?(wait.last_reason) do
+      expire_resting_registration_wait(state, session_id, wait)
+    else
+      give_up_pressure_wait(state, session_id, wait)
+    end
+  end
+
+  defp expire_resting_registration_wait(state, session_id, wait) do
     case SessionStore.get(state.session_store, session_id) do
       {:ok, %{state: :banked} = session} ->
         case WakeInstance.node_for_relight(session, state.capacity_table) do
@@ -4152,9 +4183,19 @@ defmodule Embervm.SessionManager do
     end
   end
 
-  defp expire_resting_pressure_wait(state, session_id, wait) do
-    give_up_pressure_wait(state, session_id, wait)
+  defp restart_relight_after_registration(state, session_id) do
+    case SessionStore.mark(state.session_store, session_id, :relight_abort) do
+      {:ok, %{state: :banked} = session} ->
+        begin_wake(state, session)
+
+      {:error, _} ->
+        state
+    end
   end
+
+  defp registration_wait_reason?(:no_bricks), do: true
+  defp registration_wait_reason?({:node_unreported, node_id}) when is_binary(node_id), do: true
+  defp registration_wait_reason?(_reason), do: false
 
   defp mark_and_finish_snapshot_lost(state, session_id) do
     case SessionStore.mark(state.session_store, session_id, :relight) do

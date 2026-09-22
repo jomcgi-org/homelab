@@ -1863,7 +1863,7 @@ defmodule Embervm.SessionManagerTest do
       refute_received {:evicted, _}
     end
 
-    test "partial registration terminalizes a banked snapshot when its node stays absent through the bound" do
+    test "empty registration terminalizes when another node reports at the bound but its owner stays absent" do
       parent = self()
       {:ok, mono} = Agent.start_link(fn -> 0 end)
       evict_fun = fn _channel, req -> send(parent, {:evicted, req.snapshot_ref}) && {:ok, %{}} end
@@ -1880,7 +1880,6 @@ defmodule Embervm.SessionManagerTest do
       {:ok, created} = SessionManager.create(ctx.mgr, "wl-partial-gone", "p1")
       assert :ok = SessionManager.bank(ctx.mgr, created.session_id)
       banked = wait_for_state(ctx, created.session_id, :banked)
-      put_other_node_fact(ctx, "wl-partial-gone")
       NodeCapacity.drop(ctx.cap_table, "node-4")
 
       task =
@@ -1890,16 +1889,17 @@ defmodule Embervm.SessionManagerTest do
 
       assert eventually(fn ->
                get_in(:sys.get_state(ctx.mgr), [:pressure_waits, created.session_id, :last_reason]) ==
-                 {:node_unreported, "node-4"}
+                 :no_bricks
              end)
 
       assert wait_for_state(ctx, created.session_id, :banked).terminal_reason == nil
       assert Task.yield(task, 0) == nil
       refute_received {:evicted, _}
 
-      # The comparison is inclusive: at exactly 100ms the still-absent owner is
-      # bounded into the established snapshot_lost failure and eviction path.
+      # The comparison is inclusive. Partial registration begins at exactly 100ms,
+      # so the current table, not the episode's stale no_bricks reason, decides.
       :ok = Agent.update(mono, fn _ -> 100 end)
+      put_other_node_fact(ctx, "wl-partial-gone")
       send(ctx.mgr, {:relight_pressure_retry, created.session_id})
 
       assert {:error, {:gone, "snapshot_lost"}} = Task.await(task)
@@ -1914,6 +1914,61 @@ defmodule Embervm.SessionManagerTest do
       # trigger a second eviction.
       send(ctx.mgr, {:relight_pressure_retry, created.session_id})
       _ = :sys.get_state(ctx.mgr)
+      refute_received {:evicted, _}
+    end
+
+    test "an active stale owner-absent result rechecks an owner that returned at the bound" do
+      parent = self()
+      {:ok, mono} = Agent.start_link(fn -> 0 end)
+
+      relight_fun = fn _channel, _req ->
+        send(parent, :relight_rechecked)
+        {:ok, %RelightResponse{vm_id: "vm-after-stale-result"}}
+      end
+
+      evict_fun = fn _channel, req -> send(parent, {:evicted, req.snapshot_ref}) && {:ok, %{}} end
+
+      ctx =
+        start_stack(
+          relight_fun: relight_fun,
+          evict_fun: evict_fun,
+          monotonic_clock: fn -> Agent.get(mono, & &1) end,
+          pressure_retry_interval_ms: 60_000,
+          pressure_wait_bound_ms: 100
+        )
+
+      put_session_workload(ctx, "wl-active-return")
+      {:ok, created} = SessionManager.create(ctx.mgr, "wl-active-return", "p1")
+      assert :ok = SessionManager.bank(ctx.mgr, created.session_id)
+      wait_for_state(ctx, created.session_id, :banked)
+      put_other_node_fact(ctx, "wl-active-return")
+      NodeCapacity.drop(ctx.cap_table, "node-4")
+
+      task =
+        Task.async(fn ->
+          SessionManager.invoke(ctx.mgr, created.session_id, %{body: "active-owner-returned"})
+        end)
+
+      assert eventually(fn ->
+               get_in(:sys.get_state(ctx.mgr), [:pressure_waits, created.session_id, :last_reason]) ==
+                 {:node_unreported, "node-4"}
+             end)
+
+      # Model the worker having read the absent-owner table while its result is in
+      # flight. The owner reports before the manager handles that stale result.
+      assert {:ok, _} = SessionStore.mark(ctx.store, created.session_id, :relight)
+      :ok = Agent.update(mono, fn _ -> 100 end)
+      put_snapshot_fact(ctx, "wl-active-return", created.session_id)
+
+      send(
+        ctx.mgr,
+        {:relight_done, created.session_id, {:error, {:node_unreported, "node-4"}}}
+      )
+
+      assert_receive :relight_rechecked, 1_000
+      assert {:ok, %{status_code: 200, body: "active-owner-returned"}} = Task.await(task)
+      assert wait_for_state(ctx, created.session_id, :running).vm_id == "vm-after-stale-result"
+      refute Map.has_key?(:sys.get_state(ctx.mgr).pressure_waits, created.session_id)
       refute_received {:evicted, _}
     end
 
