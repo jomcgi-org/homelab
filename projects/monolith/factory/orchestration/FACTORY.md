@@ -1090,6 +1090,16 @@ conductor records the turn as an unknown invocation first so the same stop
 supervision path can own the guest. Issue #6091 tracks the control-plane root
 cause.
 
+Receipt adoption is an optional observation of the original model request.
+If the receipt poll rejects ownership or its captured result cannot be parsed,
+adoption stops while the original request remains bounded by its existing
+transport deadline. The normal result writer still checks exact ownership before
+saving that response, so an expired heartbeat cannot cancel healthy work and a
+replaced owner cannot overwrite the current attempt. If the original request
+fails, an unavailable or rejected final receipt read preserves that original
+failure for transport recovery and accounting. Cancellation still releases the
+original observer; no fallback starts another model request.
+
 A terminal factory workflow may also recover a completed native result whose
 pending claim was already deleted by unknown-outcome settlement. Before remote
 stop supervision, the conductor validates the exact run, start, session, permit
