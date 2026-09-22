@@ -48,6 +48,7 @@ defmodule Embervm.OpLog.SessionProjectionTest do
         Map.merge(
           %{
             node_id: "node-4",
+            vm_id: "vm-#{session_id}",
             base_snapshot_ref: "base:sha256:abc",
             base_digest: "sha256:abc",
             token_sha256: "hash-#{session_id}",
@@ -116,13 +117,21 @@ defmodule Embervm.OpLog.SessionProjectionTest do
         workload: "sandbox-session",
         session_id: "s-1",
         ts: 300,
-        payload: %{snapshot_ref: "sessions/s-1", generation: 1, relight_ms: 420}
+        payload: %{
+          snapshot_ref: "sessions/s-1",
+          generation: 1,
+          relight_ms: 420,
+          node_id: "node-5",
+          vm_id: "vm-relit"
+        }
       })
 
     s = session_by_id(server)["s-1"]
 
     # Relit -> running; lineage recorded from create; generation set at bank.
     assert s.state == "running"
+    assert s.node_id == "node-5"
+    assert s.vm_id == "vm-relit"
     assert s.base_snapshot_ref == "base:sha256:abc"
     assert s.base_digest == "sha256:abc"
     assert s.generation == 1
@@ -150,11 +159,13 @@ defmodule Embervm.OpLog.SessionProjectionTest do
         workload: "sandbox-session",
         session_id: "s-rejoin",
         ts: 200,
-        payload: %{volume_node_id: "node-9"}
+        payload: %{volume_node_id: "node-9", node_id: "node-9", vm_id: "vm-rejoined"}
       })
 
     s = session_by_id(server)["s-rejoin"]
     assert s.state == "running"
+    assert s.node_id == "node-9"
+    assert s.vm_id == "vm-rejoined"
 
     :ok = GenServer.stop(server)
   end
@@ -449,7 +460,22 @@ defmodule Embervm.OpLog.SessionProjectionTest do
     {:ok, [row]} = SQLite.load_sessions(server)
     assert row.session_id == "s-carry"
     assert row.idempotency_key == "carry-me"
+    assert row.vm_id == "vm-s-carry"
 
+    :ok = GenServer.stop(server)
+  end
+
+  test "migration adds a nullable VM claim and leaves legacy rows unclaimed", %{path: path} do
+    server = start_server(path)
+    {:ok, _} = SQLite.append(server, created_op("s-legacy", "p1", 100))
+    :ok = GenServer.stop(server)
+
+    {:ok, conn} = Sqlite3.open(path)
+    :ok = Sqlite3.execute(conn, "ALTER TABLE sessions DROP COLUMN vm_id")
+    :ok = Sqlite3.close(conn)
+
+    server = start_server(path)
+    assert session_by_id(server)["s-legacy"].vm_id == nil
     :ok = GenServer.stop(server)
   end
 end

@@ -214,6 +214,7 @@ defmodule Embervm.OpLog.SQLite do
       workload TEXT,
       state TEXT NOT NULL,
       node_id TEXT,
+      vm_id TEXT,
       volume_node_id TEXT,
       base_snapshot_ref TEXT,
       base_digest TEXT,
@@ -1174,11 +1175,11 @@ defmodule Embervm.OpLog.SQLite do
     # the race) is authoritative and left untouched.
     sql = """
     INSERT OR IGNORE INTO sessions
-      (session_id, tenant, principal, workload, state, node_id, volume_node_id,
+      (session_id, tenant, principal, workload, state, node_id, vm_id, volume_node_id,
        base_snapshot_ref, base_digest, generation, snapshot_ref, snapshot_size_bytes,
        token_sha256, created_at, invoke_started_at, last_invoke_at, expires_at, updated_at, terminal_reason,
        lineage_id, idempotency_key)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, ?, ?, NULL, NULL, ?, ?, NULL, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, ?, ?, NULL, NULL, ?, ?, NULL, ?, ?)
     """
 
     with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
@@ -1193,6 +1194,7 @@ defmodule Embervm.OpLog.SQLite do
              # durable projected state defaults to "running" unless scripted.
              Map.get(payload, :state, "running"),
              Map.get(payload, :node_id),
+             Map.get(payload, :vm_id),
              Map.get(payload, :volume_node_id),
              Map.get(payload, :base_snapshot_ref),
              Map.get(payload, :base_digest),
@@ -1270,7 +1272,7 @@ defmodule Embervm.OpLog.SQLite do
 
     sql = """
     UPDATE sessions
-    SET state='banked', snapshot_ref=?, snapshot_size_bytes=?, generation=?, updated_at=?
+    SET state='banked', vm_id=NULL, snapshot_ref=?, snapshot_size_bytes=?, generation=?, updated_at=?
     WHERE session_id=?
     """
 
@@ -1290,7 +1292,7 @@ defmodule Embervm.OpLog.SQLite do
   end
 
   defp project(conn, %Op{kind: :session_parked} = op, _seq) do
-    sql = "UPDATE sessions SET state='parked', volume_node_id=?, node_id=NULL, updated_at=? WHERE session_id=?"
+    sql = "UPDATE sessions SET state='parked', volume_node_id=?, node_id=NULL, vm_id=NULL, updated_at=? WHERE session_id=?"
 
     with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
          :ok <- Sqlite3.bind(stmt, [Map.get(op.payload, :volume_node_id), op.ts, op.session_id]),
@@ -1316,10 +1318,16 @@ defmodule Embervm.OpLog.SQLite do
   # advances. Inert under the gate off (relit always lands from banked/relighting).
   defp project(conn, %Op{kind: :session_relit} = op, _seq) do
     sql =
-      "UPDATE sessions SET state='running', updated_at=? WHERE session_id=? AND state NOT IN ('destroyed','expired','evicted','failed')"
+      "UPDATE sessions SET state='running', node_id=?, vm_id=?, updated_at=? WHERE session_id=? AND state NOT IN ('destroyed','expired','evicted','failed')"
 
     with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
-         :ok <- Sqlite3.bind(stmt, [op.ts, op.session_id]),
+         :ok <-
+           Sqlite3.bind(stmt, [
+             Map.get(op.payload, :node_id),
+             Map.get(op.payload, :vm_id),
+             op.ts,
+             op.session_id
+           ]),
          :done <- Sqlite3.step(conn, stmt),
          :ok <- Sqlite3.release(conn, stmt) do
       :ok
@@ -2761,7 +2769,7 @@ defmodule Embervm.OpLog.SQLite do
 
   defp do_load_sessions(conn) do
     sql = """
-    SELECT session_id, tenant, principal, workload, state, node_id, volume_node_id,
+    SELECT session_id, tenant, principal, workload, state, node_id, vm_id, volume_node_id,
            base_snapshot_ref, base_digest, generation, snapshot_ref, snapshot_size_bytes,
            token_sha256, created_at, invoke_started_at, last_invoke_at, expires_at, updated_at, terminal_reason,
            COALESCE(lineage_id, session_id), idempotency_key, stop_intent_json, stop_completion_json,
@@ -2786,6 +2794,7 @@ defmodule Embervm.OpLog.SQLite do
          workload,
          state,
          node_id,
+         vm_id,
          volume_node_id,
          base_snapshot_ref,
          base_digest,
@@ -2813,6 +2822,7 @@ defmodule Embervm.OpLog.SQLite do
           workload: workload,
           state: state,
           node_id: node_id,
+          vm_id: vm_id,
           volume_node_id: volume_node_id,
           base_snapshot_ref: base_snapshot_ref,
           base_digest: base_digest,
@@ -3744,6 +3754,7 @@ defmodule Embervm.OpLog.SQLite do
   # end with the same shape; old result rows keep headers NULL, read back as %{}.
   defp apply_migrations(conn) do
     with :ok <- migrate_results_headers(conn),
+         :ok <- migrate_sessions_vm_id(conn),
          :ok <- migrate_sessions_volume_node_id(conn),
          :ok <- migrate_sessions_lineage_id(conn),
          :ok <- migrate_sessions_idempotency_key(conn),
@@ -3757,6 +3768,15 @@ defmodule Embervm.OpLog.SQLite do
          :ok <- migrate_volumes_exported_generation(conn),
          :ok <- migrate_ops_group_instance_id(conn) do
       :ok
+    end
+  end
+
+  # Durable ownership for primed session VMs. Existing rows predate recoverable
+  # claims and intentionally remain NULL rather than inferring ownership from
+  # node_id or operation history.
+  defp migrate_sessions_vm_id(conn) do
+    with {:ok, cols} <- table_columns(conn, "sessions") do
+      add_column_if_missing(conn, cols, "vm_id", "ALTER TABLE sessions ADD COLUMN vm_id TEXT")
     end
   end
 

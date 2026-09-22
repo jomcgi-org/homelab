@@ -4,7 +4,7 @@ defmodule Embervm.AsyncWriter do
   `EMBERVM_ASYNC_LIFECYCLE_WRITES`.
 
   Today the boot/wake paths write the `:assigned`/`:started` (task dispatch) and
-  `:session_created`/`:session_relit` (session boot/wake) ops write-through: the
+  `:session_relit` (session wake) ops write-through: the
   durable oplog append lands BEFORE the instance is handed to the caller, so a
   Postgres/SQLite round trip sits in front of every boot and wake. ADR 014
   decision 2 takes that append off the hot path: the instance becomes interactive
@@ -13,11 +13,13 @@ defmodule Embervm.AsyncWriter do
 
   ## What is and is NOT moved
 
-  Only the four lifecycle appends above move. Explicitly synchronous and never
+  Only the three lifecycle appends above move. Explicitly synchronous and never
   routed here:
 
     * `:submitted` (the quota audit trail: a task must be durable before it can be
       charged),
+    * `:session_created` (the durable VM ownership claim must exist before create
+      is acknowledged),
     * every metering/usage op (fail-closed: the quota charge fires inside the
       terminal op's own write-through transaction, so it can never precede that
       op's durable append),
@@ -92,7 +94,7 @@ defmodule Embervm.AsyncWriter do
   The append is `op_log_mod.append(op_log, op)`; `vm_id` (when set) registers this
   op as an in-flight write so `pending?/2` can answer the adopt-and-backfill
   discriminator until the append lands. Fire-and-forget: a cast, so the caller
-  (the dispatch/create hot path) never blocks on the durable write. The pending
+  (the dispatch/wake hot path) never blocks on the durable write. The pending
   count is bumped SYNCHRONOUSLY here (from the caller), before the cast, so a
   reader can never observe a gap between enqueue and the vm being pending.
   """

@@ -221,6 +221,7 @@ defmodule Embervm.OpLog.Postgres do
       workload TEXT,
       state TEXT NOT NULL,
       node_id TEXT,
+      vm_id TEXT,
       volume_node_id TEXT,
       base_snapshot_ref TEXT,
       base_digest TEXT,
@@ -239,6 +240,8 @@ defmodule Embervm.OpLog.Postgres do
     )
     """,
     "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS volume_node_id TEXT",
+    # Existing rows predate recoverable ownership and remain unclaimed.
+    "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS vm_id TEXT",
     # #4306 slice 1: additive nullable lineage_id, mirroring
     # Embervm.OpLog.SQLite.migrate_sessions_lineage_id/1. Existing rows get
     # lineage_id=NULL from the ALTER (no DEFAULT); do_load_sessions/1's COALESCE
@@ -1081,11 +1084,11 @@ defmodule Embervm.OpLog.Postgres do
     # (mirrors the SQLite backend's INSERT OR IGNORE), ADR embervm/014 decision 2.
     sql = """
     INSERT INTO sessions
-      (session_id, tenant, principal, workload, state, node_id, volume_node_id,
+      (session_id, tenant, principal, workload, state, node_id, vm_id, volume_node_id,
        base_snapshot_ref, base_digest, generation, snapshot_ref, snapshot_size_bytes,
        token_sha256, created_at, invoke_started_at, last_invoke_at, expires_at, updated_at, terminal_reason,
        lineage_id, idempotency_key)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, NULL, NULL, $10, $11, NULL, NULL, $12, $13, NULL, $14, $15)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0, NULL, NULL, $11, $12, NULL, NULL, $13, $14, NULL, $15, $16)
     ON CONFLICT (session_id) DO NOTHING
     """
 
@@ -1096,6 +1099,7 @@ defmodule Embervm.OpLog.Postgres do
       op.workload,
       Map.get(payload, :state, "running"),
       Map.get(payload, :node_id),
+      Map.get(payload, :vm_id),
       Map.get(payload, :volume_node_id),
       Map.get(payload, :base_snapshot_ref),
       Map.get(payload, :base_digest),
@@ -1153,7 +1157,7 @@ defmodule Embervm.OpLog.Postgres do
 
     sql = """
     UPDATE sessions
-    SET state='banked', snapshot_ref=$1, snapshot_size_bytes=$2, generation=$3, updated_at=$4
+    SET state='banked', vm_id=NULL, snapshot_ref=$1, snapshot_size_bytes=$2, generation=$3, updated_at=$4
     WHERE session_id=$5
     """
 
@@ -1167,7 +1171,7 @@ defmodule Embervm.OpLog.Postgres do
   end
 
   defp project(conn, %Op{kind: :session_parked} = op, _seq) do
-    exec(conn, "UPDATE sessions SET state='parked', volume_node_id=$1, node_id=NULL, updated_at=$2 WHERE session_id=$3", [
+    exec(conn, "UPDATE sessions SET state='parked', volume_node_id=$1, node_id=NULL, vm_id=NULL, updated_at=$2 WHERE session_id=$3", [
       Map.get(op.payload, :volume_node_id),
       op.ts,
       op.session_id
@@ -1186,8 +1190,8 @@ defmodule Embervm.OpLog.Postgres do
   defp project(conn, %Op{kind: :session_relit} = op, _seq) do
     exec(
       conn,
-      "UPDATE sessions SET state='running', updated_at=$1 WHERE session_id=$2 AND state NOT IN ('destroyed','expired','evicted','failed')",
-      [op.ts, op.session_id]
+      "UPDATE sessions SET state='running', node_id=$1, vm_id=$2, updated_at=$3 WHERE session_id=$4 AND state NOT IN ('destroyed','expired','evicted','failed')",
+      [Map.get(op.payload, :node_id), Map.get(op.payload, :vm_id), op.ts, op.session_id]
     )
   end
 
@@ -2154,7 +2158,7 @@ defmodule Embervm.OpLog.Postgres do
 
   defp do_load_sessions(conn, query_fun) do
     sql = """
-    SELECT session_id, tenant, principal, workload, state, node_id, volume_node_id,
+    SELECT session_id, tenant, principal, workload, state, node_id, vm_id, volume_node_id,
            base_snapshot_ref, base_digest, generation, snapshot_ref, snapshot_size_bytes,
            token_sha256, created_at, invoke_started_at, last_invoke_at, expires_at, updated_at, terminal_reason,
            COALESCE(lineage_id, session_id), idempotency_key, stop_intent_json, stop_completion_json,
@@ -2175,6 +2179,7 @@ defmodule Embervm.OpLog.Postgres do
           workload,
           state,
           node_id,
+          vm_id,
           volume_node_id,
           base_snapshot_ref,
           base_digest,
@@ -2202,6 +2207,7 @@ defmodule Embervm.OpLog.Postgres do
       workload: workload,
       state: state,
       node_id: node_id,
+      vm_id: vm_id,
       volume_node_id: volume_node_id,
       base_snapshot_ref: base_snapshot_ref,
       base_digest: base_digest,
