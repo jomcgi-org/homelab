@@ -4292,6 +4292,11 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
             "session_id": run.get("session_id"),
         }
     if result["status"] == "uncertain":
+        from factory.orchestration.factory_supervision import recover_completed_receipt
+
+        recover_completed_receipt(
+            pin, result.get("session_id") or run.get("session_id"), workflow_status
+        )
         confirmed = reconcile_completed_node(
             pin, result.get("session_id") or run.get("session_id")
         )

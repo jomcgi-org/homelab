@@ -1090,6 +1090,27 @@ conductor records the turn as an unknown invocation first so the same stop
 supervision path can own the guest. Issue #6091 tracks the control-plane root
 cause.
 
+A terminal factory workflow may also recover a completed native result whose
+pending claim was already deleted by unknown-outcome settlement. Before remote
+stop supervision, the conductor validates the exact run, start, session, permit
+and complete physical dispatch receipt chain under the existing ownership locks.
+Every earlier response must be an authenticated drain, ordered before the next
+dispatch. The final response must be unsuperseded, retained, hash-valid and
+completed, with matching guest, CLI, logical turn and physical dispatch identity.
+Missing receipts, aliases, newer work, cleanup claims and changed bindings retain
+the hold. This path performs no guest invocation, stop or restart.
+
+Recovery replaces the failed native turn atomically with the completed result,
+settles its capacity permit, and writes `completed_receipt_recovered`. The full
+original failed turn remains in `usage.factory_receipt_recovery.previous_turn`,
+alongside the exact identity and receipt provenance. An unobserved response keeps
+a guest-reuse fence until its observer releases it. A single dispatch retains its
+native cost; a drain prefix retains unknown aggregate cost rather than pricing
+only the final response. Normal conductor artifact validation and graph/start
+accounting still decide the outcome. A missing artifact fails the node and unknown
+cost consumes the full reservation. A crash after native adoption can replay this
+normal settlement without another model call.
+
 A drained factory turn has a separate settlement path. The normal pending-row
 rejection remains unchanged because the row is normally the valid continuation
 grant. With `FACTORY_DRAINED_LOSS_SETTLEMENT_ENABLED=true`, the factory consumer

@@ -875,6 +875,211 @@ def read_uncertain_factory_attempt(db: Session, pin: dict, session_id: int) -> d
     }
 
 
+def adopt_completed_factory_receipt(db: Session, pin: dict, identity: dict) -> dict:
+    """Recover a completed native response after its pending claim was lost.
+
+    The factory holds its control/run/start ownership lock. Validate the entire
+    physical dispatch chain under pool/session/receipt locks before replacing
+    anything. The original failed row is retained verbatim in recovery history;
+    unknown prefix spending is never priced from only the final response.
+    This function neither commits nor invokes, stops or rebinds a guest.
+    """
+    import base64
+    import math
+    from sqlalchemy import or_
+
+    from factory.execution import result_receipts, store
+    from factory.execution.constants import exact_dispatch_id
+    from factory.execution.models import AgentResultReceipt, AgentTurn
+    from factory.execution.transport import parse_native_turn
+
+    if read_uncertain_factory_attempt(db, pin, identity["session_id"]) != identity:
+        raise ValueError("factory_attempt_changed")
+    agent = _locked_session(db, identity["session_id"])
+    if (
+        _matching_cleanup_claim(agent) is not None
+        or not agent.cli_session_id
+        or agent.prior_ember_lineage_id is not None
+        or agent.prior_cli_session_id is not None
+    ):
+        raise ValueError("factory_receipt_cleanup_or_cli_conflict")
+    count = identity["dispatch_count"]
+    if count > store.MAX_PENDING_DISPATCHES:
+        raise ValueError("factory_receipt_dispatch_limit")
+    ids = db.exec(
+        select(AgentResultReceipt.id)
+        .where(
+            or_(
+                AgentResultReceipt.session_id == agent.id,
+                AgentResultReceipt.local_session_id == agent.local_session_id,
+            )
+        )
+        .with_for_update()
+        .limit(store.MAX_PENDING_DISPATCHES + 1)
+    ).all()
+    rows = [result_receipts._receipt_metadata(db, rid) for rid in ids]
+    if len(rows) != count or any(row is None for row in rows):
+        raise ValueError("factory_receipt_chain_missing")
+    rows.sort(key=lambda row: row["dispatch_count"])
+    if [row["dispatch_count"] for row in rows] != list(range(1, count + 1)):
+        raise ValueError("factory_receipt_chain_ambiguous")
+    aware = result_receipts._aware
+    now = _utcnow()
+    history = []
+    for index, row in enumerate(rows):
+        final = index == count - 1
+        if (
+            row["session_id"] != agent.id
+            or row["local_session_id"] != agent.local_session_id
+            or row["seq"] != identity["seq"]
+            or row["guest_id"] != agent.ember_session_id
+            or not row["claim_owner"]
+            or row["received_at"] is None
+            or not aware(row["created_at"])
+            <= aware(row["received_at"])
+            <= aware(row["accept_until"])
+            or aware(row["retain_until"]) <= now
+            or (
+                final
+                and (
+                    row["claim_owner"] != identity["claim_owner"]
+                    or row["superseded_at"] is not None
+                    or aware(row["created_at"])
+                    < datetime.fromisoformat(identity["dispatched_at"])
+                )
+            )
+            or (
+                not final
+                and (
+                    row["superseded_at"] is None
+                    or not aware(row["received_at"])
+                    <= aware(row["superseded_at"])
+                    <= aware(rows[index + 1]["created_at"])
+                )
+            )
+        ):
+            raise ValueError("factory_receipt_chain_identity_changed")
+        captured = result_receipts._result(db, row)
+        body = json.loads(captured["result_body"])
+        if (
+            not isinstance(body, dict)
+            or body.get("dispatch_id")
+            != exact_dispatch_id(
+                agent.id,
+                row["guest_id"],
+                row["seq"],
+                row["claim_owner"],
+                row["dispatch_count"],
+            )
+            or body.get("session_id") != agent.cli_session_id
+            or type(body.get("turn_seq")) is not int
+            or body["turn_seq"] != row["dispatch_count"]
+            or body.get("terminal_reason")
+            != ("completed" if final else "interrupted_for_drain")
+            or body.get("stop_reason") != (None if final else "interrupted_for_drain")
+        ):
+            raise ValueError("factory_receipt_native_identity_changed")
+        history.append(captured["provenance"])
+
+    turn = parse_native_turn(
+        body, agent.ember_session_id, agent.cli_session_id, pin["artifact_path"]
+    )
+    if (
+        not isinstance(turn.result, str)
+        or not isinstance(turn.usage, dict)
+        or not isinstance(turn.activities, list)
+        or not isinstance(turn.permission_denials, list)
+        or turn.is_error
+        or (
+            turn.total_cost_usd is not None
+            and (
+                type(turn.total_cost_usd) not in (int, float)
+                or not math.isfinite(turn.total_cost_usd)
+                or turn.total_cost_usd < 0
+            )
+        )
+    ):
+        raise ValueError("factory_receipt_invalid_result")
+    original = db.exec(select(AgentTurn).where(AgentTurn.session_id == agent.id)).one()
+
+    def encode(value):
+        if isinstance(value, bytes):
+            return {"base64": base64.b64encode(value).decode("ascii")}
+        if isinstance(value, datetime):
+            return value.isoformat()
+        raise TypeError(type(value).__name__)
+
+    previous = json.loads(json.dumps(original.model_dump(), default=encode))
+    usage = sanitize_payload({**turn.usage, "activities": turn.activities})
+    usage["native_result_receipt"] = captured["provenance"]
+    usage["factory_receipt_recovery"] = {
+        "identity": identity,
+        "previous_turn": previous,
+        "dispatch_receipts": history,
+    }
+    diff, artifact = turn.diff or {}, turn.artifact or {}
+    # Decode before deleting the original row, including on malformed payloads.
+    diff_blob = (
+        base64.b64decode(diff["zlib_b64"], validate=True)
+        if diff.get("zlib_b64") is not None
+        else None
+    )
+    artifact_blob = (
+        base64.b64decode(artifact["content_b64"], validate=True)
+        if artifact.get("content_b64") is not None
+        else None
+    )
+    db.delete(original)
+    db.flush()
+    recovered = store.create_turn(
+        db,
+        agent.id,
+        identity["seq"],
+        previous["prompt"],
+        body.get("voice") if isinstance(body.get("voice"), str) else None,
+        turn.result,
+        turn.terminal_reason,
+        turn.stop_reason,
+        turn.permission_denials,
+        None,
+        usage,
+        turn.total_cost_usd if count == 1 else None,
+        agent.cli_session_id,
+        agent.model,
+        diff_blob=diff_blob,
+        diff_truncated=diff.get("truncated", False),
+        diff_base_sha=diff.get("base_sha"),
+        artifact_path=artifact.get("path"),
+        artifact_blob=artifact_blob,
+        artifact_outcome=artifact.get("outcome"),
+        commit=False,
+    )
+    # Do not sanitize the already-stored history again: it is the original
+    # evidence, not guest authority, and must survive this replacement exactly.
+    recovered.usage_json = json.dumps(usage)
+    if count > 1:
+        recovered.list_cost_usd = None
+    db.add(recovered)
+    agent.status = store.turn_status(turn)
+    agent.voice_summary = recovered.voice_summary
+    agent.last_turn_at = now
+    if (
+        rows[-1]["response_observed_at"] is None
+        and rows[-1]["response_observer_released_at"] is None
+    ):
+        agent.result_receipt_fence_id = rows[-1]["id"]
+    db.add(agent)
+    admission.settle(
+        db, agent, identity["seq"], outcome="completed", cessation_confirmed=True
+    )
+    db.flush()
+    return {
+        "identity": identity,
+        "receipt": captured["provenance"],
+        "dispatch_receipts": history,
+    }
+
+
 def read_drained_lost_factory_attempt(db: Session, pin: dict, session_id: int) -> dict:
     """Lock one resumable drain without treating it as an unknown invocation.
 

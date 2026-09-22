@@ -2296,7 +2296,9 @@ def queued_factory(feedback_db, monkeypatch):
             )
         ],
     )
-    for module in (conductor, conductor.graph, core.db):
+    from factory.orchestration import factory_controls as controls
+
+    for module in (conductor, conductor.graph, core.db, controls):
         monkeypatch.setattr(module, "get_engine", lambda: engine)
     task, policy = feedback_task()
     key = "conductor_1"
@@ -14218,3 +14220,372 @@ def test_initial_evicted_guest_requires_creation_and_terminal_order(
         "failed_turn_at": s.failed_turn_at.isoformat(),
     }
     assert supervisor._control_plane_cessation(s.cp, identity, saved) is None
+
+
+@pytest.fixture
+def completed_receipt_factory(uncertain_factory):
+    """A lost pending row after a drain and a published completed response."""
+    import hashlib
+    from datetime import timedelta
+    from factory.execution.constants import exact_dispatch_id
+    from factory.execution.models import AgentResultReceipt, AgentSession, AgentTurn
+
+    s = uncertain_factory
+    with Session(s.engine) as db:
+        agent = db.get(AgentSession, s.sid)
+        turn = db.exec(select(AgentTurn).where(AgentTurn.session_id == s.sid)).one()
+        usage = json.loads(turn.usage_json)
+        usage["recovery"]["dispatch_count"] = 2
+        usage["recovery"]["cause"] = "result_persistence_failed"
+        turn.usage_json = json.dumps(usage)
+        owner = usage["recovery"]["claim_owner"]
+        for count in (1, 2):
+            created = s.dispatched_at + timedelta(seconds=2 if count == 2 else -30)
+            body = json.dumps(
+                {
+                    "dispatch_id": exact_dispatch_id(
+                        s.sid, agent.ember_session_id, 1, owner, count
+                    ),
+                    "turn_seq": count,
+                    "session_id": agent.cli_session_id,
+                    "terminal_reason": "completed"
+                    if count == 2
+                    else "interrupted_for_drain",
+                    "stop_reason": None if count == 2 else "interrupted_for_drain",
+                    "result": "completed native result"
+                    if count == 2
+                    else "drained prefix",
+                    "voice": "finished",
+                    "usage": {"input_tokens": 100, "output_tokens": 50},
+                    "total_cost_usd": 0.25,
+                }
+            ).encode()
+            db.add(
+                AgentResultReceipt(
+                    id=f"completed-receipt-{count}",
+                    token_sha256=str(count) * 64,
+                    session_id=s.sid,
+                    local_session_id=agent.local_session_id,
+                    seq=1,
+                    dispatch_count=count,
+                    claim_owner=owner,
+                    guest_id=agent.ember_session_id,
+                    request_sha256="a" * 64,
+                    created_at=created,
+                    received_at=created + timedelta(seconds=5),
+                    accept_until=created + timedelta(hours=13),
+                    retain_until=created + timedelta(days=7),
+                    superseded_at=s.dispatched_at + timedelta(seconds=2)
+                    if count == 1
+                    else None,
+                    result_body=body,
+                    result_sha256=hashlib.sha256(body).hexdigest(),
+                )
+            )
+        db.add(turn)
+        db.commit()
+        db.refresh(turn)
+        s.previous_turn = json.loads(
+            json.dumps(turn.model_dump(), default=lambda x: x.isoformat())
+        )
+    return s
+
+
+def test_completed_receipt_recovers_result_once_without_refunding_prefix(
+    completed_receipt_factory,
+):
+    from factory.execution.models import (
+        AgentCapacityReservation,
+        AgentSession,
+        AgentTurn,
+        PendingMessage,
+    )
+    from factory.orchestration.factory_models import FactoryAudit
+    from factory.orchestration.factory_supervision import recover_completed_receipt
+
+    s = completed_receipt_factory
+    assert recover_completed_receipt(s.run["pin"], s.sid, "SUCCESS")
+    assert not recover_completed_receipt(s.run["pin"], s.sid, "SUCCESS")
+    assert s.calls == []
+    with Session(s.engine) as db:
+        turn = db.exec(select(AgentTurn)).one()
+        assert turn.result_text == "completed native result"
+        assert turn.terminal_reason == "completed" and turn.stop_reason is None
+        assert turn.cost_usd is None and turn.list_cost_usd is None
+        usage = json.loads(turn.usage_json)
+        assert usage["factory_receipt_recovery"]["previous_turn"] == s.previous_turn
+        assert len(usage["factory_receipt_recovery"]["dispatch_receipts"]) == 2
+        assert usage["native_result_receipt"]["receipt_id"] == "completed-receipt-2"
+        assert (
+            db.get(AgentSession, s.sid).result_receipt_fence_id == "completed-receipt-2"
+        )
+        assert db.exec(select(AgentCapacityReservation)).one().state == "settled"
+        assert db.exec(select(PendingMessage)).all() == []
+        audits = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.action == "completed_receipt_recovered"
+            )
+        ).all()
+        assert len(audits) == 1
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "missing_prefix",
+        "prefix_not_drained",
+        "wrong_dispatch",
+        "wrong_cli",
+        "wrong_guest",
+        "wrong_owner",
+        "wrong_seq",
+        "wrong_physical_seq",
+        "bad_hash",
+        "expired",
+        "superseded",
+        "overlapping_dispatch",
+        "unaccepted",
+        "newer_pending",
+        "wrong_pin",
+        "live_workflow",
+        "missing_body",
+        "nonterminal",
+        "bad_usage",
+        "bad_cost",
+        "cleanup_claim",
+        "newer_receipt",
+        "prior_binding",
+        "guest_alias",
+        "newer_attempt",
+    ],
+)
+def test_completed_receipt_refuses_incomplete_or_changed_proof(
+    completed_receipt_factory, change
+):
+    import hashlib
+    from datetime import timedelta
+    from factory.execution.models import (
+        AgentResultReceipt,
+        AgentSession,
+        PendingMessage,
+    )
+    from factory.orchestration.factory_supervision import recover_completed_receipt
+
+    s = completed_receipt_factory
+    pin = dict(s.run["pin"])
+    workflow = "SUCCESS"
+    with Session(s.engine) as db:
+        row = db.get(AgentResultReceipt, "completed-receipt-2")
+        first = db.get(AgentResultReceipt, "completed-receipt-1")
+        body = json.loads(row.result_body)
+        if change == "missing_prefix":
+            db.delete(first)
+        elif change == "prefix_not_drained":
+            b = json.loads(first.result_body)
+            b["terminal_reason"] = "completed"
+            first.result_body = json.dumps(b).encode()
+            first.result_sha256 = hashlib.sha256(first.result_body).hexdigest()
+        elif change == "wrong_dispatch":
+            body["dispatch_id"] = "f" * 64
+        elif change == "wrong_cli":
+            body["session_id"] = "other-cli"
+        elif change == "wrong_guest":
+            row.guest_id = "other-guest"
+        elif change == "wrong_owner":
+            row.claim_owner = "other-owner"
+        elif change == "wrong_seq":
+            row.seq = 2
+        elif change == "wrong_physical_seq":
+            body["turn_seq"] = 3
+        elif change == "bad_hash":
+            row.result_sha256 = "0" * 64
+        elif change == "expired":
+            row.retain_until = s.dispatched_at
+        elif change == "superseded":
+            row.superseded_at = row.received_at
+        elif change == "overlapping_dispatch":
+            first.superseded_at = row.created_at + timedelta(seconds=1)
+        elif change == "unaccepted":
+            row.accept_until = row.created_at
+        elif change == "newer_pending":
+            db.add(PendingMessage(session_id=s.sid, seq=2, message_text="new work"))
+        elif change == "wrong_pin":
+            pin["artifact_path"] = ".factory/other.json"
+        elif change == "live_workflow":
+            workflow = "PENDING"
+        elif change == "nonterminal":
+            body["terminal_reason"] = "interrupted_for_drain"
+        elif change == "bad_usage":
+            body["usage"] = []
+        elif change == "bad_cost":
+            body["total_cost_usd"] = -1
+        elif change == "cleanup_claim":
+            agent = db.get(AgentSession, s.sid)
+            agent.guest_cleanup_id = "a" * 32
+            db.add(agent)
+        elif change == "prior_binding":
+            agent = db.get(AgentSession, s.sid)
+            agent.prior_cli_session_id = "prior-cli"
+            db.add(agent)
+        elif change == "guest_alias":
+            agent = db.get(AgentSession, s.sid)
+            db.add(
+                AgentSession(
+                    local_session_id="alias",
+                    workspace="guest",
+                    branch=agent.branch,
+                    repo=agent.repo,
+                    model=agent.model,
+                    ember_session_id=agent.ember_session_id,
+                )
+            )
+        elif change == "newer_attempt":
+            from factory.orchestration.models import SwarmNodeRun
+
+            run = db.exec(select(SwarmNodeRun)).one()
+            db.add(
+                SwarmNodeRun(
+                    **{
+                        **run.model_dump(),
+                        "id": None,
+                        "attempt": 2,
+                        "dispatch_key": "newer-workflow",
+                    }
+                )
+            )
+        elif change == "newer_receipt":
+            other = AgentResultReceipt(
+                **{
+                    **row.model_dump(),
+                    "id": "newer-receipt",
+                    "token_sha256": "3" * 64,
+                    "dispatch_count": 3,
+                }
+            )
+            db.add(other)
+        row.result_body = json.dumps(body).encode()
+        if change != "bad_hash":
+            row.result_sha256 = hashlib.sha256(row.result_body).hexdigest()
+        if change == "missing_body":
+            row.result_body = None
+        db.add(row)
+        db.commit()
+    before = _uncertain_snapshot(s)
+    assert not recover_completed_receipt(pin, s.sid, workflow)
+    assert _uncertain_snapshot(s) == before
+    assert s.calls == []
+
+
+def test_completed_receipt_missing_artifact_uses_normal_failure_and_cost_gate(
+    completed_receipt_factory, monkeypatch
+):
+    from factory.orchestration import node_workflows as nodes
+    from factory.orchestration import factory_controls as controls
+
+    s = completed_receipt_factory
+    from factory.orchestration.factory_supervision import recover_completed_receipt
+
+    # Simulate a process loss after the native transaction, before graph settlement.
+    assert recover_completed_receipt(s.run["pin"], s.sid, "SUCCESS")
+    monkeypatch.setattr(nodes, "_read_reconciliation_head", lambda *_: "a" * 40)
+    monkeypatch.setattr(nodes, "_recover_response_lost", lambda *_: None)
+    conductor._submit_or_reconcile(s.task, s.run, s.dbos)
+    run = conductor.graph.node_runs(s.task["id"])[0]
+    assert run["status"] == "failed"
+    assert run["accounting_basis"] == "reserved_unknown_cost"
+    assert run["accounted_cost_usd"] == run["pin"]["max_cost_usd"]
+    outcome = json.loads(run["outcome_json"])
+    assert "artifact_missing" in outcome["reason"]
+    assert controls.task_snapshot(s.task["id"])["unresolved_starts"] == 0
+    assert s.calls == []
+
+
+def test_completed_receipt_atomic_rollback_and_concurrent_recovery(
+    completed_receipt_factory, monkeypatch
+):
+    from concurrent.futures import ThreadPoolExecutor
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_supervision import recover_completed_receipt
+
+    s = completed_receipt_factory
+    before = _uncertain_snapshot(s)
+    audit = controls._audit
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("audit write failed")
+
+    monkeypatch.setattr(controls, "_audit", fail)
+    with pytest.raises(RuntimeError, match="audit write failed"):
+        recover_completed_receipt(s.run["pin"], s.sid, "SUCCESS")
+    assert _uncertain_snapshot(s) == before
+    monkeypatch.setattr(controls, "_audit", audit)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(
+                lambda _: recover_completed_receipt(s.run["pin"], s.sid, "SUCCESS"),
+                range(2),
+            )
+        )
+    assert sorted(results) == [False, True]
+
+
+@pytest.mark.parametrize("observed", [False, True])
+def test_completed_receipt_single_dispatch_preserves_native_cost_and_artifact(
+    completed_receipt_factory, monkeypatch, observed
+):
+    import base64
+    import hashlib
+    from factory.execution.constants import exact_dispatch_id
+    from factory.execution.models import AgentResultReceipt, AgentTurn, AgentSession
+    from factory.orchestration import node_workflows as nodes
+
+    s = completed_receipt_factory
+    with Session(s.engine) as db:
+        db.delete(db.get(AgentResultReceipt, "completed-receipt-1"))
+        receipt = db.get(AgentResultReceipt, "completed-receipt-2")
+        receipt.dispatch_count = 1
+        if observed:
+            receipt.response_observed_at = receipt.received_at
+        body = json.loads(receipt.result_body)
+        body["dispatch_id"] = exact_dispatch_id(
+            s.sid, receipt.guest_id, 1, receipt.claim_owner, 1
+        )
+        body["turn_seq"] = 1
+        body["artifact"] = {
+            "path": s.run["pin"]["artifact_path"],
+            "outcome": "ok",
+            "content_b64": base64.b64encode(
+                json.dumps(
+                    {
+                        "action": "discard_node",
+                        "reason": "completed plan",
+                        "node_key": "unused",
+                    }
+                ).encode()
+            ).decode(),
+        }
+        receipt.result_body = json.dumps(body).encode()
+        receipt.result_sha256 = hashlib.sha256(receipt.result_body).hexdigest()
+        turn = db.exec(select(AgentTurn)).one()
+        usage = json.loads(turn.usage_json)
+        usage["recovery"]["dispatch_count"] = 1
+        turn.usage_json = json.dumps(usage)
+        db.add_all([receipt, turn])
+        db.commit()
+    monkeypatch.setattr(nodes, "_read_reconciliation_head", lambda *_: "a" * 40)
+    monkeypatch.setattr(nodes, "_recover_response_lost", lambda *_: None)
+    conductor._submit_or_reconcile(s.task, s.run, s.dbos)
+    run = conductor.graph.node_runs(s.task["id"])[0]
+    assert run["status"] == "succeeded"
+    assert run["accounted_cost_usd"] == 0.25
+    with Session(s.engine) as db:
+        turn = db.exec(select(AgentTurn)).one()
+        assert turn.cost_usd == 0.25
+        assert json.loads(turn.artifact_blob) == {
+            "action": "discard_node",
+            "node_key": "unused",
+            "reason": "completed plan",
+        }
+        assert db.get(AgentSession, s.sid).result_receipt_fence_id == (
+            None if observed else "completed-receipt-2"
+        )
