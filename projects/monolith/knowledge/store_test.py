@@ -629,9 +629,7 @@ class TestSearchNotesWithContext:
             note_id="n1",
             path="a.md",
             title="Paper",
-            metadata=_meta(
-                title="Paper", type="paper", verification_state="verified"
-            ),
+            metadata=_meta(title="Paper", type="paper", verification_state="verified"),
             n_chunks=1,
         )
         _upsert(
@@ -689,7 +687,9 @@ class TestSearchNotesWithContext:
         assert [row["note_id"] for row in dedupe_results] == ["current"]
 
     def test_legacy_filter_runs_before_limit_and_can_be_opted_out(self):
-        content = "A long enough note body to avoid the short chunk ranking penalty. " * 2
+        content = (
+            "A long enough note body to avoid the short chunk ranking penalty. " * 2
+        )
         query = [1.0] + [0.0] * 1023
         candidates = (
             ("legacy-top", "legacy", [1.0] + [0.0] * 1023),
@@ -723,7 +723,9 @@ class TestSearchNotesWithContext:
         ]
 
     def test_legacy_opt_in_does_not_bypass_other_filters(self):
-        content = "A long enough note body to avoid the short chunk ranking penalty. " * 2
+        content = (
+            "A long enough note body to avoid the short chunk ranking penalty. " * 2
+        )
         for note_id, state in (
             ("current", "verified"),
             ("legacy-current", "legacy"),
