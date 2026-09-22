@@ -32,9 +32,10 @@ var (
 
 // parseAndVerifyCapabilityKeys accepts the dedicated restore key first, then
 // the legacy transport bearer during the phase 2a migration. Remove legacyKey
-// in the first chart release after #5759 has enabled and verified the dedicated
-// key fleet-wide. That bounds compatibility to one release without changing the
-// v1 framing or accepting an unauthenticated embedded data key.
+// in the first chart release after #5706's phase 2c checklist has enabled and
+// verified the dedicated key fleet-wide. That bounds compatibility to one
+// release without changing the v1 framing or accepting an unauthenticated
+// embedded data key.
 func parseAndVerifyCapabilityKeys(raw, dedicatedKey, legacyKey []byte, now time.Time, want capabilityScope) ([]byte, error) {
 	var firstErr error
 	if len(dedicatedKey) > 0 {

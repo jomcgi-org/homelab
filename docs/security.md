@@ -175,9 +175,10 @@ dedicated key before the legacy bearer, enable the dedicated key on the control
 plane and every noded pod in one staged values change, then verify restores
 before rotating or retiring the transport bearer. The legacy verifier is a
 one-release migration window only. Remove it in the first chart release after
-the phase 2c rollout tracked by #5759 has enabled and verified the dedicated key
-fleet-wide. The repository defaults and current production values do not enable
-the dedicated key, so this documents sequencing and does not claim a rollout.
+the phase 2c checklist in #5706 has enabled and verified the dedicated key
+fleet-wide. The repository defaults and current production values do not
+enable the dedicated key, so this documents sequencing and does not claim a
+rollout.
 
 **Discord features are allow-list only** (`projects/monolith/chat/acl.py`,
 the `discord_feature_grant` table). **Codex OAuth is refreshed by one
