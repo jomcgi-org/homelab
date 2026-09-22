@@ -190,11 +190,13 @@ def _rows(state):
 
 def _dbos(status="ERROR"):
     return SimpleNamespace(
-        get_workflow_status=lambda _workflow_id: SimpleNamespace(status=status)
+        get_workflow_status=lambda _workflow_id: (
+            None if status is None else SimpleNamespace(status=status)
+        )
     )
 
 
-@pytest.mark.parametrize("workflow_status", ["CANCELLED", "ERROR"])
+@pytest.mark.parametrize("workflow_status", [None, "CANCELLED", "ERROR"])
 def test_real_authorize_without_session_settles_both_ledgers_and_replays(
     database, workflow_status
 ):
@@ -218,6 +220,7 @@ def test_real_authorize_without_session_settles_both_ledgers_and_replays(
     assert outcome["reason"] == "never_dispatched"
     assert outcome["never_dispatched"]["invocation_phase"] == "never_dispatched"
     assert outcome["never_dispatched"]["workflow_status"] == workflow_status
+    assert outcome["never_dispatched"]["workflow_absent"] is (workflow_status is None)
     assert start.status == "failed" and start.cost_usd == 0.0
     assert start.accounting_basis == "no_model_post"
     accounting = controls.task_snapshot(state.task["id"])
@@ -240,10 +243,15 @@ def test_real_authorize_without_session_settles_both_ledgers_and_replays(
 
 
 @pytest.mark.parametrize("age_seconds,settled", [(59, 0), (60, 0), (61, 1)])
-def test_timeout_is_strictly_beyond_the_pinned_boundary(database, age_seconds, settled):
+@pytest.mark.parametrize("workflow_status", [None, "ERROR"])
+def test_timeout_is_strictly_beyond_the_pinned_boundary(
+    database, age_seconds, settled, workflow_status
+):
     state = _sessionless_attempt(database, age_seconds=age_seconds)
     assert (
-        conductor._sweep_sessionless_starts({"task_id": state.task["id"]}, _dbos())
+        conductor._sweep_sessionless_starts(
+            {"task_id": state.task["id"]}, _dbos(workflow_status)
+        )
         == settled
     )
     run, start = _rows(state)
@@ -256,7 +264,7 @@ def test_timeout_is_strictly_beyond_the_pinned_boundary(database, age_seconds, s
     "workflow_status",
     [None, "PENDING", "ENQUEUED", "SUCCESS", "MAX_RECOVERY_ATTEMPTS_EXCEEDED"],
 )
-def test_missing_or_nonterminal_owning_workflow_refuses_sweep(
+def test_nonterminal_or_malformed_owning_workflow_refuses_sweep(
     database, workflow_status
 ):
     state = _sessionless_attempt(database)
@@ -264,8 +272,6 @@ def test_missing_or_nonterminal_owning_workflow_refuses_sweep(
 
     def lookup(workflow_id):
         seen.append(workflow_id)
-        if workflow_status is None:
-            return None
         return SimpleNamespace(status=workflow_status)
 
     assert (
@@ -298,7 +304,10 @@ def test_workflow_lookup_error_leaves_attempt_untouched(database):
 @pytest.mark.parametrize(
     "with_turn", [False, True], ids=["session", "session-and-turn"]
 )
-def test_deterministic_session_or_turn_refuses_sweep(database, with_turn):
+@pytest.mark.parametrize("workflow_status", [None, "ERROR"])
+def test_deterministic_session_or_turn_refuses_sweep(
+    database, with_turn, workflow_status
+):
     from factory.execution.models import AgentSession, AgentTurn
 
     state = _sessionless_attempt(database)
@@ -328,7 +337,10 @@ def test_deterministic_session_or_turn_refuses_sweep(database, with_turn):
             )
         db.commit()
     assert (
-        conductor._sweep_sessionless_starts({"task_id": state.task["id"]}, _dbos()) == 0
+        conductor._sweep_sessionless_starts(
+            {"task_id": state.task["id"]}, _dbos(workflow_status)
+        )
+        == 0
     )
     run, start = _rows(state)
     assert (run.status, start.status) == ("admitted", "reserved")
@@ -337,7 +349,10 @@ def test_deterministic_session_or_turn_refuses_sweep(database, with_turn):
 @pytest.mark.parametrize(
     "conflict", ["ownership", "dispatch", "start_session", "permit", "receipt"]
 )
-def test_contradictory_attempt_evidence_refuses_sweep(database, conflict):
+@pytest.mark.parametrize("workflow_status", [None, "ERROR"])
+def test_contradictory_attempt_evidence_refuses_sweep(
+    database, conflict, workflow_status
+):
     from factory.execution.models import AgentCapacityReservation, AgentResultReceipt
     from factory.orchestration.factory_models import FactoryStart
     from factory.orchestration.models import SwarmNodeRun
@@ -387,14 +402,18 @@ def test_contradictory_attempt_evidence_refuses_sweep(database, conflict):
             )
         db.commit()
     assert (
-        conductor._sweep_sessionless_starts({"task_id": state.task["id"]}, _dbos()) == 0
+        conductor._sweep_sessionless_starts(
+            {"task_id": state.task["id"]}, _dbos(workflow_status)
+        )
+        == 0
     )
     run, start = _rows(state)
     assert (run.status, start.status) == ("admitted", "reserved")
 
 
+@pytest.mark.parametrize("workflow_status", [None, "ERROR"])
 def test_failed_deterministic_lookup_rolls_back_without_settlement(
-    database, monkeypatch
+    database, monkeypatch, workflow_status
 ):
     from factory.orchestration import node_workflows
 
@@ -405,12 +424,17 @@ def test_failed_deterministic_lookup_rolls_back_without_settlement(
 
     monkeypatch.setattr(node_workflows, "resolve_node_session_id", unavailable)
     with pytest.raises(RuntimeError, match="lookup unavailable"):
-        conductor._sweep_sessionless_starts({"task_id": state.task["id"]}, _dbos())
+        conductor._sweep_sessionless_starts(
+            {"task_id": state.task["id"]}, _dbos(workflow_status)
+        )
     run, start = _rows(state)
     assert (run.status, start.status) == ("admitted", "reserved")
 
 
-def test_atomic_rollback_when_graph_settlement_refuses(database, monkeypatch):
+@pytest.mark.parametrize("workflow_status", [None, "ERROR"])
+def test_atomic_rollback_when_graph_settlement_refuses(
+    database, monkeypatch, workflow_status
+):
     state = _sessionless_attempt(database)
     monkeypatch.setattr(
         conductor.graph,
@@ -420,7 +444,9 @@ def test_atomic_rollback_when_graph_settlement_refuses(database, monkeypatch):
         ),
     )
     with pytest.raises(ValueError, match="outcome_refused: changed_attempt"):
-        conductor._sweep_sessionless_starts({"task_id": state.task["id"]}, _dbos())
+        conductor._sweep_sessionless_starts(
+            {"task_id": state.task["id"]}, _dbos(workflow_status)
+        )
     run, start = _rows(state)
     assert (run.status, start.status, start.accounting_basis) == (
         "admitted",
@@ -429,8 +455,18 @@ def test_atomic_rollback_when_graph_settlement_refuses(database, monkeypatch):
     )
 
 
-def test_late_session_binding_cannot_cross_atomic_settlement(database, monkeypatch):
+@pytest.mark.parametrize("workflow_status", [None, "ERROR"])
+def test_late_session_binding_cannot_cross_atomic_settlement(
+    database, monkeypatch, workflow_status
+):
+    from factory.execution import api as execution_api
+    from factory.orchestration import node_workflows
     from factory.orchestration import factory_controls as controls
+
+    def unexpected_session(*_args, **_kwargs):
+        pytest.fail("a late workflow must not create a session after settlement")
+
+    monkeypatch.setattr(execution_api, "start_session_for_swarm", unexpected_session)
 
     state = _sessionless_attempt(database)
     reached_settlement = Event()
@@ -449,7 +485,7 @@ def test_late_session_binding_cannot_cross_atomic_settlement(database, monkeypat
 
     def sweep():
         results["sweep"] = conductor._sweep_sessionless_starts(
-            {"task_id": state.task["id"]}, _dbos()
+            {"task_id": state.task["id"]}, _dbos(workflow_status)
         )
 
     def create_late():
@@ -459,12 +495,16 @@ def test_late_session_binding_cannot_cross_atomic_settlement(database, monkeypat
                 state.task["id"], start_key=state.workflow
             ) as admission:
                 results["admission"] = admission
-                conductor.graph.lock_node_session_binding(
-                    state.task["id"],
-                    state.run["node_key"],
-                    1,
+                pin = state.run["pin"]
+                node_workflows._session_api(
+                    node_workflows._session_key(state.task["id"], pin["node_key"], 1),
+                    "late prompt",
+                    pin["model"],
+                    pin["repo"],
+                    pin["hydration_branch"],
                     workflow_id=state.workflow,
-                    session=controls.active_start_session(),
+                    node_key=pin["node_key"],
+                    node_attempt=1,
                 )
         except Exception as exc:  # the terminal graph fence is the assertion
             results["creator_error"] = exc
@@ -487,12 +527,18 @@ def test_late_session_binding_cannot_cross_atomic_settlement(database, monkeypat
     assert "binding conflict" in str(results["creator_error"])
 
 
-def test_sweep_releases_ceiling_then_normal_reconciliation_retries_once(database):
+@pytest.mark.parametrize("workflow_status", [None, "ERROR"])
+def test_sweep_releases_ceiling_then_normal_reconciliation_retries_once(
+    database, workflow_status
+):
     from factory.orchestration import factory_controls as controls
 
     state = _sessionless_attempt(database)
     assert (
-        conductor._sweep_sessionless_starts({"task_id": state.task["id"]}, _dbos()) == 1
+        conductor._sweep_sessionless_starts(
+            {"task_id": state.task["id"]}, _dbos(workflow_status)
+        )
+        == 1
     )
     before = controls.task_snapshot(state.task["id"])
     assert before["committed_cost_usd"] == 0.0
@@ -506,3 +552,202 @@ def test_sweep_releases_ceiling_then_normal_reconciliation_retries_once(database
     after = controls.task_snapshot(state.task["id"])
     assert after["committed_cost_usd"] == pytest.approx(2.0)
     assert after["unresolved_starts"] == 1
+
+
+@pytest.mark.parametrize(
+    "status,absent", [(None, False), ("PENDING", True), ("ERROR", True), (None, 1)]
+)
+def test_absence_must_be_an_explicit_consistent_lookup(database, status, absent):
+    from factory.orchestration import factory_controls as controls
+
+    state = _sessionless_attempt(database)
+    assert not controls.reconcile_sessionless_start(
+        state.task["id"],
+        state.run["node_key"],
+        1,
+        "sweeper",
+        workflow_status=status,
+        workflow_absent=absent,
+    )["ok"]
+    run, start = _rows(state)
+    assert (run.status, start.status) == ("admitted", "reserved")
+
+
+def test_expired_funding_admission_without_workflow_recovers_normal_review(
+    database, monkeypatch
+):
+    from factory.execution import reconciliation
+    from factory.execution.models import AgentSession
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import factory_funding as funding
+    from factory.orchestration.factory_models import FactoryStart
+
+    state = _sessionless_attempt(database)
+    assert (
+        conductor._sweep_sessionless_starts(
+            {"task_id": state.task["id"]}, _dbos("ERROR")
+        )
+        == 1
+    )
+    monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "true")
+    clock = [controls._now()]
+    monkeypatch.setattr(controls, "_now", lambda: clock[0])
+    monkeypatch.setattr(reconciliation, "_utcnow", lambda: clock[0])
+    monkeypatch.setattr(
+        funding,
+        "_issue",
+        lambda _task: {"number": 6285, "state": "open", "title": "Recover start"},
+    )
+    with controls._locked_session() as (db, _control):
+        receipt = controls._receipt(db, state.task["id"])
+        policy = json.loads(receipt.policy_json)
+        policy["allowed_models"].append("astra")
+        receipt.policy_json = json.dumps(policy)
+        db.add(receipt)
+    assert funding.request(state.task, "Review remaining work")
+    with controls._read_session() as db:
+        first = funding.pending(db, state.task["id"])
+    deadline = datetime.fromisoformat(first["deadline_at"])
+    clock[0] = deadline - timedelta(seconds=4)
+    assert funding.reconcile(
+        state.task,
+        policy,
+        conductor.graph.node_runs(state.task["id"]),
+        controls.can_start(state.task["id"]),
+    )
+    run = conductor.graph.node_runs(state.task["id"], first["node_key"])[0]
+    assert run["status"] == "admitted" and run["session_id"] is None
+    with Session(database) as db:
+        start = db.exec(
+            select(FactoryStart).where(FactoryStart.start_key == first["start_key"])
+        ).one()
+        start.created_at = clock[0]
+        db.add(start)
+        db.commit()
+
+    # The submit was lost after reservation, and its authorization has expired.
+    clock[0] += timedelta(seconds=run["pin"]["turn_timeout_seconds"] + 1)
+    assert (
+        controls.can_start(state.task["id"], start_key=first["start_key"])["reason"]
+        == "funding_review_expired"
+    )
+    assert (
+        conductor._sweep_sessionless_starts({"task_id": state.task["id"]}, _dbos(None))
+        == 1
+    )
+    conductor.reconcile_task(state.task["id"], policy, _dbos(None))
+    with controls._read_session() as db:
+        assert funding.pending(db, state.task["id"]) is None
+        settled = funding.latest(db, state.task["id"], "funding_review_settled")
+        assert settled["request_id"] == first["audit_id"]
+        assert settled["refusal"]
+        start = db.exec(
+            select(FactoryStart).where(FactoryStart.start_key == first["start_key"])
+        ).one()
+        assert (start.status, start.cost_usd, start.accounting_basis) == (
+            "failed",
+            0.0,
+            "no_model_post",
+        )
+        assert db.exec(select(AgentSession)).all() == []
+    # Retry uses normal cooling-off and fresh authority, never the expired key.
+    assert (
+        conductor._sweep_sessionless_starts({"task_id": state.task["id"]}, _dbos(None))
+        == 0
+    )
+    clock[0] = datetime.fromisoformat(settled["retry_after"]) + timedelta(seconds=1)
+    conductor.reconcile_task(state.task["id"], policy, _dbos(None))
+    with controls._read_session() as db:
+        second = funding.pending(db, state.task["id"])
+        assert second["start_key"] != first["start_key"]
+    assert (
+        controls.can_start(state.task["id"], start_key=first["start_key"])["reason"]
+        == "funding_review_expired"
+    )
+    assert controls.can_start(state.task["id"], start_key=second["start_key"])["ok"]
+    snapshot = controls.task_snapshot(state.task["id"])
+    assert snapshot["committed_cost_usd"] == 0.0
+    assert snapshot["policy"]["task_budget_usd"] == policy["task_budget_usd"]
+
+
+def test_creator_winning_after_absence_observation_keeps_reservation(
+    database, monkeypatch
+):
+    from factory.execution.models import AgentSession
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import node_workflows
+
+    state = _sessionless_attempt(database)
+    creator_locked = Event()
+    absence_observed = Event()
+    results = {}
+
+    def create_first():
+        try:
+            with controls.start_guard(
+                state.task["id"], start_key=state.workflow
+            ) as admission:
+                assert admission["ok"]
+                db = controls.active_start_session()
+                pin = state.run["pin"]
+                conductor.graph.lock_node_session_binding(
+                    state.task["id"],
+                    pin["node_key"],
+                    1,
+                    workflow_id=state.workflow,
+                    session=db,
+                )
+                creator_locked.set()
+                assert absence_observed.wait(5)
+                agent = AgentSession(
+                    local_session_id=node_workflows._session_key(
+                        state.task["id"], pin["node_key"], 1
+                    ),
+                    workspace="guest",
+                    branch=pin["hydration_branch"],
+                    repo=pin["repo"],
+                    model=pin["model"],
+                    workflow_id=state.workflow,
+                    node_key=pin["node_key"],
+                    node_attempt=1,
+                    admission_tier="project",
+                )
+                db.add(agent)
+                db.flush()
+                results["session_id"] = agent.id
+                assert conductor.graph.bind_node_session(
+                    state.task["id"],
+                    pin["node_key"],
+                    1,
+                    agent.id,
+                    workflow_id=state.workflow,
+                    session=db,
+                ).ok
+        except Exception as exc:
+            results["creator_error"] = exc
+
+    def absent(workflow_id):
+        assert workflow_id == state.workflow
+        absence_observed.set()
+        return None
+
+    creator = Thread(target=create_first)
+    creator.start()
+    try:
+        assert creator_locked.wait(5)
+        assert (
+            conductor._sweep_sessionless_starts(
+                {"task_id": state.task["id"]},
+                SimpleNamespace(get_workflow_status=absent),
+            )
+            == 0
+        )
+    finally:
+        absence_observed.set()
+        creator.join(5)
+    assert not creator.is_alive()
+    assert "creator_error" not in results
+    run, start = _rows(state)
+    assert run.session_id == results["session_id"]
+    assert start.status == "reserved" and start.cost_usd is None
+    assert run.outcome_json is None

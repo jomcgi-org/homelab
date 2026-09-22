@@ -5715,9 +5715,10 @@ def _sweep_sessionless_starts(task: dict, dbos) -> int:
     deadline backstop. It therefore reaches the reserved-start shape even when
     funding refuses unresolved starts or the deadline path deliberately skips
     every reserved row. The exact owning DBOS workflow must report a terminal
-    error or cancellation before the database proof may run. Settlement only
-    changes the two attempt ledgers; normal conductor reconciliation decides
-    whether a bounded retry or re-plan is allowed next.
+    error/cancellation or be absent after a successful lookup. The locked
+    database proof and terminal run fence prevent a delayed submitter from
+    creating a session after settlement. Only the two attempt ledgers change;
+    normal reconciliation decides whether a bounded retry or re-plan is allowed.
     """
     from factory.orchestration.factory_controls import reconcile_sessionless_start
 
@@ -5736,6 +5737,7 @@ def _sweep_sessionless_starts(task: dict, dbos) -> int:
             run["attempt"],
             ACTOR,
             workflow_status=workflow_status,
+            workflow_absent=workflow is None,
         )
         settled += bool(result["ok"])
     return settled
