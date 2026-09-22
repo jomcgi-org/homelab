@@ -1537,6 +1537,7 @@ py_library(
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//jsonschema",
+        "@pip//kubernetes_asyncio",
         "@pip//opentelemetry_exporter_otlp_proto_http",
         "@pip//opentelemetry_instrumentation_fastapi",
         "@pip//opentelemetry_instrumentation_httpx",
@@ -5032,6 +5033,17 @@ py_test(
         "@pip//pytest",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "swarm_factory_rollout_test",
+    srcs = ["factory/orchestration/factory_rollout_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_swarm",
+        "@pip//pytest",
+        "@pip//pyyaml",
     ],
 )
 

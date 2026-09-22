@@ -91,7 +91,7 @@ class FactoryReceipt(SQLModel, table=True):
         CheckConstraint("generation >= 0", name="factory_receipt_generation_check"),
         CheckConstraint(
             "state IN "
-            "('queued', 'admitted', 'uncertain', 'escalated', 'succeeded', "
+            "('queued', 'admitted', 'uncertain', 'landing', 'escalated', 'succeeded', "
             "'failed', 'cancelled')",
             name="factory_receipt_state_check",
         ),
