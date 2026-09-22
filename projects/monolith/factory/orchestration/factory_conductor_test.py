@@ -4842,9 +4842,7 @@ def test_bound_zero_turn_absence_gap_restarts_sampling(
     assert before["permits"][0]["state"] == "running"
     records = supervisor._records_for_pin(s.run["pin"])
     observations = [
-        detail
-        for action, detail in records
-        if action == "bound_zero_turn_observation"
+        detail for action, detail in records if action == "bound_zero_turn_observation"
     ]
     assert [row["observation"] for row in observations] == [1, 1]
     assert (

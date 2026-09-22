@@ -1527,9 +1527,7 @@ def _bound_zero_turn_observe(pin, session_id, identity, evidence):
                 cessation_confirmed=False,
             )
             return "waiting", identity
-        first = _timestamp(
-            previous.get("first_observed_at", previous["observed_at"])
-        )
+        first = _timestamp(previous.get("first_observed_at", previous["observed_at"]))
         if evidence.get("kind") == "authoritative_absence":
             latest = _timestamp(previous["observed_at"])
             gap = (now - latest).total_seconds()
