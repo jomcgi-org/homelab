@@ -129,6 +129,21 @@ def _of_kind(docs: list[dict], kind: str) -> dict:
     return matches[0]
 
 
+def _assert_pipelines_reference_defined_components(config: dict) -> None:
+    defined = {
+        "receivers": set(config.get("receivers") or {}),
+        "processors": set(config.get("processors") or {}),
+        "exporters": set(config.get("exporters") or {}),
+    }
+    for name, pipeline in config["service"]["pipelines"].items():
+        for section in ("receivers", "processors", "exporters"):
+            missing = set(pipeline.get(section) or []) - defined[section]
+            assert not missing, (
+                f"pipeline {name} references undefined {section}: {missing}"
+            )
+        assert pipeline.get("receivers"), f"pipeline {name} has no receivers"
+
+
 # ---------------------------------------------------------------------------
 # Empty allowlist: nothing can send.
 # ---------------------------------------------------------------------------
@@ -311,6 +326,109 @@ def test_metrics_pipeline_uses_otlp_http_exporter_with_dataset_header():
 
 
 # ---------------------------------------------------------------------------
+# HTTP probe staging: legacy targets remain stable while hub HTTPS stays off.
+# ---------------------------------------------------------------------------
+
+
+def test_prod_legacy_probe_targets_are_unchanged():
+    config = _collector_config(_render_overlay("values-prod"))
+
+    assert config["receivers"]["http_check"]["targets"] == [
+        {"endpoint": "https://jomcgi.dev/health", "method": "GET"},
+        {"endpoint": "https://jomcgi.dev/", "method": "GET"},
+    ]
+    assert config["service"]["pipelines"]["metrics"]["receivers"] == [
+        "http_check",
+        "otlp",
+    ]
+
+
+def test_mixed_legacy_and_structured_targets_render_together():
+    config = _collector_config(_render_overlay("values-test-mixed-targets"))
+
+    assert config["receivers"]["http_check"]["targets"] == [
+        {"endpoint": "https://legacy.example.test/healthz", "method": "GET"},
+        {
+            "endpoint": "https://structured.example.test/healthz",
+            "method": "GET",
+            "tls": {"ca_file": "/etc/otel/argocd-ca/ca.crt"},
+        },
+    ]
+
+
+def test_gke_probe_is_staged_off_with_valid_remaining_pipelines():
+    docs = _render_overlay("values-gke")
+    config = _collector_config(docs)
+
+    assert "http_check" not in config["receivers"]
+    assert config["service"]["pipelines"]["metrics"]["receivers"] == ["otlp"]
+    _assert_pipelines_reference_defined_components(config)
+
+    container = _deployment_container(docs)
+    assert "httpcheck-ca" not in {m["name"] for m in container["volumeMounts"]}
+    volumes = _of_kind(docs, "Deployment")["spec"]["template"]["spec"]["volumes"]
+    assert "httpcheck-ca" not in {v["name"] for v in volumes}
+
+
+def test_gke_stages_https_target_with_verified_ca_and_60s_cadence():
+    docs = _render_overlay("values-gke", ["--set", "httpcheck.enabled=true"])
+    config = _collector_config(docs)
+    receiver = config["receivers"]["http_check"]
+
+    assert receiver["collection_interval"] == "60s"
+    assert receiver["targets"] == [
+        {
+            "endpoint": "https://argocd-server.argocd.svc:443/healthz",
+            "method": "GET",
+            "tls": {"ca_file": "/etc/otel/argocd-ca/ca.crt"},
+        }
+    ]
+    assert "insecure" not in receiver["targets"][0]["tls"]
+    assert "insecure_skip_verify" not in receiver["targets"][0]["tls"]
+    _assert_pipelines_reference_defined_components(config)
+
+
+def test_gke_ca_mount_is_opt_in_read_only_and_key_scoped():
+    docs = _render_overlay(
+        "values-gke",
+        [
+            "--set",
+            "httpcheck.enabled=true",
+            "--set",
+            "httpcheck.caMount.enabled=true",
+        ],
+    )
+    deployment = _of_kind(docs, "Deployment")
+    pod_spec = deployment["spec"]["template"]["spec"]
+    container = pod_spec["containers"][0]
+    mount = next(m for m in container["volumeMounts"] if m["name"] == "httpcheck-ca")
+    volume = next(v for v in pod_spec["volumes"] if v["name"] == "httpcheck-ca")
+
+    assert mount == {
+        "name": "httpcheck-ca",
+        "mountPath": "/etc/otel/argocd-ca/ca.crt",
+        "subPath": "ca.crt",
+        "readOnly": True,
+    }
+    assert volume["configMap"] == {
+        "name": "argocd-server-ca",
+        "items": [{"key": "ca.crt", "path": "ca.crt"}],
+    }
+
+
+def test_ca_mount_stays_absent_when_only_mount_flag_is_set():
+    docs = _render_overlay(
+        "values-gke", ["--set", "httpcheck.caMount.enabled=true"]
+    )
+    pod_spec = _of_kind(docs, "Deployment")["spec"]["template"]["spec"]
+
+    assert "httpcheck-ca" not in {
+        m["name"] for m in pod_spec["containers"][0]["volumeMounts"]
+    }
+    assert "httpcheck-ca" not in {v["name"] for v in pod_spec["volumes"]}
+
+
+# ---------------------------------------------------------------------------
 # Config coherence: a pipeline referencing a missing component will not start.
 # ---------------------------------------------------------------------------
 
@@ -330,18 +448,7 @@ def test_every_pipeline_references_only_defined_components(extra):
     """The collector refuses to start on a dangling reference, which would be
     an ArgoCD-green CrashLoop rather than a render failure."""
     config = _collector_config(_render(extra))
-    defined = {
-        "receivers": set(config.get("receivers") or {}),
-        "processors": set(config.get("processors") or {}),
-        "exporters": set(config.get("exporters") or {}),
-    }
-    for name, pipeline in config["service"]["pipelines"].items():
-        for section in ("receivers", "processors", "exporters"):
-            missing = set(pipeline.get(section) or []) - defined[section]
-            assert not missing, (
-                f"pipeline {name} references undefined {section}: {missing}"
-            )
-        assert pipeline.get("receivers"), f"pipeline {name} has no receivers"
+    _assert_pipelines_reference_defined_components(config)
 
 
 def test_health_route_rewrites_to_the_extension_root():

@@ -90,6 +90,12 @@ spec:
               readOnly: true
             - name: tmp
               mountPath: /tmp
+            {{- if and .Values.httpcheck.enabled .Values.httpcheck.caMount.enabled }}
+            - name: httpcheck-ca
+              mountPath: {{ .Values.httpcheck.caMount.mountPath | quote }}
+              subPath: {{ .Values.httpcheck.caMount.key | quote }}
+              readOnly: true
+            {{- end }}
             {{- if and .Values.allowedServices .Values.sampling.tailStorage.enabled }}
             # readOnlyRootFilesystem is kept: the tail buffer gets its own
             # writable mount rather than the root being opened up.
@@ -102,6 +108,14 @@ spec:
             name: {{ include "otel-collector.fullname" . }}
         - name: tmp
           emptyDir: {}
+        {{- if and .Values.httpcheck.enabled .Values.httpcheck.caMount.enabled }}
+        - name: httpcheck-ca
+          configMap:
+            name: {{ .Values.httpcheck.caMount.configMapName }}
+            items:
+              - key: {{ .Values.httpcheck.caMount.key | quote }}
+                path: {{ .Values.httpcheck.caMount.key | quote }}
+        {{- end }}
         {{- if and .Values.allowedServices .Values.sampling.tailStorage.enabled }}
         # emptyDir, not a PVC. The buffer holds only traces awaiting a decision,
         # so losing it on restart costs one decision window and nothing durable.

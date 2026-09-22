@@ -168,7 +168,8 @@ sampling:
     slowPercent: 25
     baselinePercent: 25
 
-# URLs the http_check receiver probes. Empty by default.
+# Endpoints the http_check receiver probes. Empty by default. Targets may be
+# legacy URL strings or objects with endpoint, method, and tls settings.
 #
 # These probes are the only signal that leaves the cluster while
 # allowedServices is empty, and they are what replaces the SigNoz synthetic
@@ -177,6 +178,13 @@ httpcheck:
   enabled: false
   intervalSeconds: 60
   targets: []
+  caMount:
+    # Opt in only after the named ConfigMap contains a verified serving CA.
+    # Keeping this off means the chart has no dependency on that ConfigMap.
+    enabled: false
+    configMapName: argocd-server-ca
+    key: ca.crt
+    mountPath: /etc/otel/argocd-ca/ca.crt
 
 resources:
   requests:
