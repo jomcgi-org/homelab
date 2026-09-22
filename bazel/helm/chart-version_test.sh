@@ -104,6 +104,7 @@ write_query_output() {
 //projects/embervm/chart:templates/notes/README.md
 //projects/embervm/image:BUILD
 //projects/embervm/image:app.py
+//projects/embervm/image:embedded_test.py
 //projects/embervm/proto/embervm/node/v1:node.proto
 //projects/embervm/deploy:BUILD
 //projects/embervm/deploy:values.yaml
@@ -136,6 +137,7 @@ new_input_repo() {
 	printf 'kind: Deployment\n' >"$repo/projects/embervm/chart/templates/tokenbroker-deployment.yaml"
 	printf 'packaged operator notes\n' >"$repo/projects/embervm/chart/templates/notes/README.md"
 	printf 'print("image")\n' >"$repo/projects/embervm/image/app.py"
+	printf 'print("packaged test fixture")\n' >"$repo/projects/embervm/image/embedded_test.py"
 	printf 'removed input\n' >"$repo/projects/embervm/image/removed.py"
 	printf 'renamed input\n' >"$repo/projects/embervm/image/renamed.py"
 	printf 'syntax = "proto3";\n' >"$repo/projects/embervm/proto/embervm/node/v1/node.proto"
@@ -406,6 +408,12 @@ commit_path "$repo" projects/embervm/chart/templates/notes/README.md \
 	"docs(chart): update packaged notes"
 expect "packaged documentation edit" "0.1.1" "$(run_input_version "$repo")" \
 	"doc-looking chart input remains selected"
+
+repo=$(new_input_repo packagedtest)
+commit_path "$repo" projects/embervm/image/embedded_test.py \
+	"test(image): update embedded fixture"
+expect "packaged test-looking input edit" "0.1.1" "$(run_input_version "$repo")" \
+	"graph selection wins over a test-looking basename"
 
 # 16. Files removed from the current closure cannot be named by the query. The
 # package-directory D/R guard conservatively preserves those history entries.
