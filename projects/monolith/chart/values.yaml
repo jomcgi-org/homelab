@@ -1307,6 +1307,8 @@ cdHealth:
   # deployed revision counts as production, `kargo_namespace` is the Kargo
   # project namespace whose Warehouse discovers its chart Freight, and
   # `chart_repo_suffix` selects that chart out of a Freight's repoURL. The
+  # optional `chart_path` lets deployment observations resolve the exact bot
+  # write-back commit without changing this advisory check.
   # clock stays "oldest unpromoted Freight" per app, and the whole component
   # stays advisory: it pages nobody. Empty (the default) keeps the chart inert,
   # and the check then reports a fault rather than a vacuous healthy, because
@@ -1317,6 +1319,12 @@ cdHealth:
   # public reader uses an independent 750s constant, currently 2.5x this value.
   # Keep the two consistent when changing either one.
   probeIntervalSeconds: 300
+
+# Immutable environment-scoped deployment facts from genuine cd health cache
+# misses. Default off until the issue's staged live-validation checklist is
+# separately authorized. This switch does not alter cdHealth or podRestartWatch.
+deploymentObservations:
+  enabled: false
 
 # Private-tier pod restart watcher. Armed 2026-09-16 after chart 0.505.0 rolled
 # out with the loop dark and the backend came up clean: leader election active,

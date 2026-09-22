@@ -322,6 +322,73 @@ async def test_deployed_revision_returns_none_on_404(k8s_client):
         assert await k8s_client.get_argocd_app_deployed_revision("missing") is None
 
 
+@pytest.mark.asyncio
+async def test_observation_revisions_never_treat_request_as_deployed(k8s_client):
+    result = {
+        "status": {
+            "sync": {
+                "revisions": [
+                    "0.505.1",
+                    "7a0c8c25c48fbb65d18b62f4e93fc4231629f8a0",
+                ]
+            }
+        },
+        "spec": {"sources": [{"targetRevision": "0.506.0"}]},
+    }
+    mock_api = MagicMock()
+    mock_custom = MagicMock()
+    mock_custom.get_namespaced_custom_object = AsyncMock(return_value=result)
+    with (
+        patch("cluster.kubernetes.config.load_incluster_config"),
+        patch("cluster.kubernetes.ApiClient", return_value=mock_api),
+        patch("cluster.kubernetes.client.CustomObjectsApi", return_value=mock_custom),
+    ):
+        revisions = await k8s_client.get_argocd_app_revisions("monolith")
+
+    assert revisions == {
+        "requested_revision": "0.506.0",
+        "deployed_revision": "0.505.1",
+    }
+
+
+@pytest.mark.asyncio
+async def test_observation_revision_does_not_fallback_when_status_is_missing(
+    k8s_client,
+):
+    mock_api = MagicMock()
+    mock_custom = MagicMock()
+    mock_custom.get_namespaced_custom_object = AsyncMock(
+        return_value={"spec": {"source": {"targetRevision": "0.506.0"}}}
+    )
+    with (
+        patch("cluster.kubernetes.config.load_incluster_config"),
+        patch("cluster.kubernetes.ApiClient", return_value=mock_api),
+        patch("cluster.kubernetes.client.CustomObjectsApi", return_value=mock_custom),
+    ):
+        revisions = await k8s_client.get_argocd_app_revisions("monolith")
+
+    assert revisions == {
+        "requested_revision": "0.506.0",
+        "deployed_revision": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_observation_revision_propagates_non_404_api_failures(k8s_client):
+    mock_api = MagicMock()
+    mock_custom = MagicMock()
+    mock_custom.get_namespaced_custom_object = AsyncMock(
+        side_effect=ApiException(status=403)
+    )
+    with (
+        patch("cluster.kubernetes.config.load_incluster_config"),
+        patch("cluster.kubernetes.ApiClient", return_value=mock_api),
+        patch("cluster.kubernetes.client.CustomObjectsApi", return_value=mock_custom),
+    ):
+        with pytest.raises(ApiException):
+            await k8s_client.get_argocd_app_revisions("monolith")
+
+
 def _node(name: str, allocatable: dict) -> MagicMock:
     node = MagicMock()
     node.metadata.name = name

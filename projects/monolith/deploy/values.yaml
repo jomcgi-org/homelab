@@ -462,12 +462,20 @@ ciliumPolicy:
 # is the pipeline's prod Stage application, kargo_namespace its project,
 # chart_repo_suffix picks its chart out of Freight repoURLs. The clock stays
 # "oldest unpromoted Freight" per app and the component stays advisory: it
-# pages nobody. Adding a Kargo pipeline means adding an entry here.
+# pages nobody. chart_path is used only to resolve write-back provenance.
+# Adding a Kargo pipeline means adding an entry here.
 cdHealth:
   apps:
     - app: monolith
       kargo_namespace: kargo-monolith
       chart_repo_suffix: /charts/monolith
+      chart_path: projects/monolith/chart
     - app: embervm
       kargo_namespace: kargo-embervm
       chart_repo_suffix: /charts/embervm
+      chart_path: projects/embervm/chart
+
+# Staged separately after repository acceptance. Keep cdHealth and
+# podRestartWatch on their existing settings while this writer stays off.
+deploymentObservations:
+  enabled: false

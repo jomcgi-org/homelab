@@ -232,6 +232,46 @@ class KubernetesClient:
             return sources[0].get("targetRevision")
         return (spec.get("source") or {}).get("targetRevision")
 
+    async def get_argocd_app_revisions(
+        self, name: str, namespace: str = "argocd"
+    ) -> dict[str, str | None] | None:
+        """Return requested and actually deployed revisions without conflation.
+
+        The requested value comes only from ``spec.*.targetRevision``. The
+        deployed value comes only from ``status.sync``. Unlike the advisory
+        helper above, this observation producer never substitutes the request
+        for missing deployment status.
+        """
+        api = await self._ensure_client()
+        custom = client.CustomObjectsApi(api)
+        try:
+            result = await custom.get_namespaced_custom_object(
+                group="argoproj.io",
+                version="v1alpha1",
+                namespace=namespace,
+                plural="applications",
+                name=name,
+            )
+        except client.exceptions.ApiException as exc:
+            if exc.status == 404:
+                return None
+            raise
+
+        spec = result.get("spec") or {}
+        sources = spec.get("sources") or []
+        requested = (
+            sources[0].get("targetRevision")
+            if sources
+            else (spec.get("source") or {}).get("targetRevision")
+        )
+        sync = (result.get("status") or {}).get("sync") or {}
+        revisions = sync.get("revisions") or []
+        deployed = revisions[0] if revisions and revisions[0] else sync.get("revision")
+        return {
+            "requested_revision": requested,
+            "deployed_revision": deployed,
+        }
+
     async def _node_rss_bytes(self, v1: "client.CoreV1Api", node: str) -> float | None:
         """Anonymous resident memory for one node, from the kubelet Summary API.
 

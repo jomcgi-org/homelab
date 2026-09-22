@@ -433,7 +433,7 @@ spec:
             # Which Kargo-managed production apps the chart-lag check covers
             # (#4890), rendered as the JSON list cd_health._parse_apps reads.
             # One entry per promotion pipeline; see cdHealth.apps in values.yaml
-            # for the three fields each entry carries. Rendered even when empty:
+            # for the fields each entry carries. Rendered even when empty:
             # an empty list faults loudly rather than watching nothing silently.
             - name: CD_HEALTH_KARGO_APPS
               value: {{ .Values.cdHealth.apps | toJson | quote }}
@@ -441,6 +441,8 @@ spec:
               value: {{ .Values.cdHealth.probeIntervalSeconds | quote }}
             - name: CD_PROBE_ENABLED
               value: {{ .Values.cdHealth.probeEnabled | quote }}
+            - name: DEPLOYMENT_OBSERVATIONS_ENABLED
+              value: {{ .Values.deploymentObservations.enabled | quote }}
             # Last-seen restart counts for live pods. This loop is dark by
             # default and must be enabled separately after live verification.
             - name: POD_RESTART_WATCH_ENABLED

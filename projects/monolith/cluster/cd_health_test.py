@@ -37,11 +37,13 @@ def _apps_config() -> str:
                 "app": "monolith",
                 "kargo_namespace": "kargo-monolith",
                 "chart_repo_suffix": "/charts/monolith",
+                "chart_path": "projects/monolith/chart",
             },
             {
                 "app": "embervm",
                 "kargo_namespace": "kargo-embervm",
                 "chart_repo_suffix": "/charts/embervm",
+                "chart_path": "projects/embervm/chart",
             },
         ]
     )
@@ -136,11 +138,13 @@ def test_parse_apps_accepts_the_deploy_shape():
             "app": "monolith",
             "namespace": "kargo-monolith",
             "suffix": "/charts/monolith",
+            "chart_path": "projects/monolith/chart",
         },
         {
             "app": "embervm",
             "namespace": "kargo-embervm",
             "suffix": "/charts/embervm",
+            "chart_path": "projects/embervm/chart",
         },
     ]
 
@@ -347,3 +351,227 @@ async def test_result_is_cached(monkeypatch):
     await mod.cd_health()
     await mod.cd_health()
     assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_deployment_observations_are_default_off(monkeypatch):
+    monkeypatch.delenv("GITHUB_API_TOKEN", raising=False)
+    monkeypatch.delenv("DEPLOYMENT_OBSERVATIONS_ENABLED", raising=False)
+    calls = []
+
+    async def _healthy(lag_s):
+        return True, []
+
+    async def _record(poll_time):
+        calls.append(poll_time)
+
+    monkeypatch.setattr(mod, "_chart_lag_fault", _healthy)
+    monkeypatch.setattr(mod, "_record_deployment_observations", _record)
+
+    await mod.cd_health()
+
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_only_cache_misses_record_deployment_observations(monkeypatch):
+    monkeypatch.delenv("GITHUB_API_TOKEN", raising=False)
+    monkeypatch.setenv("DEPLOYMENT_OBSERVATIONS_ENABLED", "true")
+    polls = []
+
+    async def _healthy(lag_s):
+        return True, []
+
+    async def _record(poll_time):
+        polls.append(poll_time)
+
+    monkeypatch.setattr(mod, "_chart_lag_fault", _healthy)
+    monkeypatch.setattr(mod, "_record_deployment_observations", _record)
+
+    await mod.cd_health()
+    await mod.cd_health()
+
+    assert len(polls) == 1
+
+
+class _ObservationKubernetes:
+    def __init__(self, app_results, freight_results):
+        self.app_results = app_results
+        self.freight_results = freight_results
+
+    async def get_argocd_app_revisions(self, app):
+        result = self.app_results[app]
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    async def list_kargo_freight(self, namespace, repo_suffix):
+        result = self.freight_results[namespace]
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+
+@pytest.mark.asyncio
+async def test_collection_keeps_requested_deployed_and_freight_distinct(monkeypatch):
+    poll_time = datetime(2026, 9, 20, 12, 0, tzinfo=timezone.utc)
+    client = _ObservationKubernetes(
+        {
+            "monolith": {
+                "requested_revision": "0.506.0",
+                "deployed_revision": "0.505.1",
+            }
+        },
+        {
+            "kargo-monolith": [
+                _freight("0.505.2", poll_time),
+                _freight("0.507.0", poll_time),
+            ]
+        },
+    )
+
+    async def _resolve(chart_path, version):
+        assert chart_path == "projects/monolith/chart"
+        assert version == "0.507.0"
+        return "a" * 40
+
+    monkeypatch.setattr(mod, "_resolve_writeback_commit", _resolve)
+    observation = await mod._collect_deployment_observation(
+        client,
+        mod._parse_apps(_apps_config())[0],
+        poll_time,
+        300,
+    )
+
+    assert observation["requested_revision"] == "0.506.0"
+    assert observation["deployed_revision"] == "0.505.1"
+    assert observation["newest_freight_version"] == "0.507.0"
+    assert observation["writeback_commit"] == "a" * 40
+    assert observation["status"] == "complete"
+    assert observation["valid_until"] == "2026-09-20T12:12:30+00:00"
+
+
+@pytest.mark.asyncio
+async def test_writeback_resolution_requires_bot_author_path_and_version(monkeypatch):
+    monkeypatch.setenv("GITHUB_API_TOKEN", "test-token")
+    expected = "a" * 40
+
+    class _Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return [
+                {
+                    "sha": "b" * 40,
+                    "commit": {
+                        "author": {"name": "someone-else"},
+                        "message": "projects/monolith/chart: 0.506.0 -> 0.507.0",
+                    },
+                },
+                {
+                    "sha": "c" * 40,
+                    "commit": {
+                        "author": {"name": "chart-version-bot"},
+                        "message": "projects/embervm/chart: 0.14.0 -> 0.507.0",
+                    },
+                },
+                {
+                    "sha": expected,
+                    "commit": {
+                        "author": {"name": "chart-version-bot"},
+                        "message": (
+                            "chore(charts): publish 1 chart version(s)\n\n"
+                            "projects/monolith/chart: 0.506.0 -> 0.507.0"
+                        ),
+                    },
+                },
+            ]
+
+    class _Http:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def get(self, url, params, headers):
+            assert params["path"] == "projects/monolith/chart/Chart.yaml"
+            assert params["sha"] == "main"
+            return _Response()
+
+    monkeypatch.setattr(mod.httpx, "AsyncClient", lambda **kwargs: _Http())
+
+    assert (
+        await mod._resolve_writeback_commit("projects/monolith/chart", "0.507.0")
+        == expected
+    )
+
+
+@pytest.mark.asyncio
+async def test_missing_provenance_is_not_an_upstream_error(monkeypatch):
+    poll_time = datetime(2026, 9, 20, 12, 0, tzinfo=timezone.utc)
+    entry = mod._parse_apps(_apps_config())[0]
+    healthy = _ObservationKubernetes(
+        {
+            "monolith": {
+                "requested_revision": "0.506.0",
+                "deployed_revision": "0.505.1",
+            }
+        },
+        {"kargo-monolith": [_freight("0.507.0", poll_time)]},
+    )
+
+    async def _missing(chart_path, version):
+        return None
+
+    monkeypatch.setattr(mod, "_resolve_writeback_commit", _missing)
+    missing = await mod._collect_deployment_observation(healthy, entry, poll_time, 300)
+
+    failing = _ObservationKubernetes(
+        healthy.app_results,
+        {"kargo-monolith": RuntimeError("Kargo unavailable")},
+    )
+    upstream = await mod._collect_deployment_observation(failing, entry, poll_time, 300)
+
+    assert missing["status"] == "missing_provenance"
+    assert missing["error_stage"] == "writeback_commit"
+    assert "writeback_commit" not in missing
+    assert upstream["status"] == "upstream_error"
+    assert upstream["error_stage"] == "freight_read"
+    assert "newest_freight_version" not in upstream
+
+
+@pytest.mark.asyncio
+async def test_per_app_write_failure_does_not_suppress_later_app(monkeypatch):
+    monkeypatch.setenv("CD_HEALTH_KARGO_APPS", _apps_config())
+    poll_time = datetime(2026, 9, 20, 12, 0, tzinfo=timezone.utc)
+    fake = _ObservationKubernetes(
+        {
+            "monolith": RuntimeError("Application unavailable"),
+            "embervm": {
+                "requested_revision": "0.14.1",
+                "deployed_revision": "0.14.0",
+            },
+        },
+        {"kargo-embervm": [_freight("0.14.2", poll_time)]},
+    )
+
+    async def _missing(chart_path, version):
+        return None
+
+    writes = []
+
+    async def _write(observation):
+        if observation["app"] == "monolith":
+            raise RuntimeError("database unavailable for first app")
+        writes.append(observation)
+
+    monkeypatch.setattr("cluster.kubernetes.KubernetesClient", lambda: fake)
+    monkeypatch.setattr(mod, "_resolve_writeback_commit", _missing)
+    monkeypatch.setattr(mod, "_write_deployment_observation", _write)
+
+    await mod._record_deployment_observations(poll_time)
+
+    assert [item["app"] for item in writes] == ["embervm"]
+    assert writes[0]["observed_at"] == poll_time.isoformat()

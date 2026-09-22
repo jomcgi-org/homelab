@@ -53,6 +53,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -76,6 +77,10 @@ def _env_seconds(name: str, default: float) -> float:
     except ValueError:
         logger.warning("cd health: %s=%r is not a number, using %s", name, raw, default)
         return default
+
+
+def _env_enabled(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _parse_ts(value: str | None) -> datetime | None:
@@ -121,10 +126,14 @@ def _parse_apps(raw: str | None) -> list[dict]:
         app = entry.get("app")
         namespace = entry.get("kargo_namespace")
         suffix = entry.get("chart_repo_suffix")
+        chart_path = entry.get("chart_path")
         if not app or not namespace or not suffix:
             logger.warning("cd health: dropping incomplete app entry %r", entry)
             continue
-        apps.append({"app": app, "namespace": namespace, "suffix": suffix})
+        parsed = {"app": app, "namespace": namespace, "suffix": suffix}
+        if chart_path:
+            parsed["chart_path"] = chart_path
+        apps.append(parsed)
     return apps
 
 
@@ -140,6 +149,214 @@ def _chart_version(value: str | None) -> tuple[int, int, int] | None:
         return tuple(int(part) for part in parts)  # type: ignore[return-value]
     except (AttributeError, ValueError):
         return None
+
+
+def _newest_freight_version(freight: list[dict]) -> str | None:
+    versions = [
+        (parsed, item.get("version"))
+        for item in freight
+        if (parsed := _chart_version(item.get("version"))) is not None
+    ]
+    if not versions:
+        return None
+    return max(versions, key=lambda item: item[0])[1]
+
+
+async def _resolve_writeback_commit(chart_path: str, version: str) -> str | None:
+    """Resolve a chart version to its evidence-backed bot write-back commit."""
+    token = os.environ.get("GITHUB_API_TOKEN", "")
+    if not token:
+        raise RuntimeError("GITHUB_API_TOKEN is not configured")
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+    }
+    chart_dir = chart_path.rstrip("/")
+    async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as http:
+        response = await http.get(
+            f"{GITHUB_API}/repos/{GITHUB_REPO}/commits",
+            params={
+                "sha": "main",
+                "path": f"{chart_dir}/Chart.yaml",
+                "per_page": 100,
+            },
+            headers=headers,
+        )
+        response.raise_for_status()
+        commits = response.json()
+    if not isinstance(commits, list):
+        raise RuntimeError("GitHub commits response is not a list")
+    for item in commits:
+        commit = item.get("commit") or {}
+        if (commit.get("author") or {}).get("name") != "chart-version-bot":
+            continue
+        message_lines = (commit.get("message") or "").splitlines()
+        expected_suffix = f" -> {version}"
+        if not any(
+            line.startswith(f"{chart_dir}: ") and line.endswith(expected_suffix)
+            for line in message_lines
+        ):
+            continue
+        sha = item.get("sha")
+        if isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}", sha):
+            return sha
+    return None
+
+
+def _upstream_error_observation(
+    entry: dict,
+    poll_time: datetime,
+    probe_interval_s: float,
+    error_stage: str,
+    revisions: dict[str, str | None] | None = None,
+) -> dict:
+    from knowledge.deployment_observations import (  # noqa: PLC0415
+        build_deployment_observation,
+    )
+
+    revisions = revisions or {}
+    return build_deployment_observation(
+        app=entry["app"],
+        status="upstream_error",
+        poll_time=poll_time,
+        probe_interval_s=probe_interval_s,
+        requested_revision=revisions.get("requested_revision"),
+        deployed_revision=revisions.get("deployed_revision"),
+        error_stage=error_stage,
+    )
+
+
+async def _collect_deployment_observation(
+    kubernetes,
+    entry: dict,
+    poll_time: datetime,
+    probe_interval_s: float,
+) -> dict:
+    """Collect one app without inventing data for a failed source read."""
+    from knowledge.deployment_observations import (  # noqa: PLC0415
+        build_deployment_observation,
+    )
+
+    try:
+        revisions = await kubernetes.get_argocd_app_revisions(entry["app"])
+    except Exception:  # noqa: BLE001 - represented as an observation state
+        logger.warning(
+            "deployment observation: Application read failed for %s",
+            entry["app"],
+            exc_info=True,
+        )
+        return _upstream_error_observation(
+            entry, poll_time, probe_interval_s, "application_read"
+        )
+    if (
+        not revisions
+        or not revisions.get("requested_revision")
+        or not revisions.get("deployed_revision")
+    ):
+        return _upstream_error_observation(
+            entry,
+            poll_time,
+            probe_interval_s,
+            "application_revision",
+            revisions,
+        )
+
+    try:
+        freight = await kubernetes.list_kargo_freight(
+            entry["namespace"], repo_suffix=entry["suffix"]
+        )
+    except Exception:  # noqa: BLE001 - represented as an observation state
+        logger.warning(
+            "deployment observation: Freight read failed for %s",
+            entry["app"],
+            exc_info=True,
+        )
+        return _upstream_error_observation(
+            entry, poll_time, probe_interval_s, "freight_read", revisions
+        )
+    newest = _newest_freight_version(freight)
+    if newest is None:
+        return _upstream_error_observation(
+            entry, poll_time, probe_interval_s, "freight_version", revisions
+        )
+    chart_path = entry.get("chart_path")
+    if not chart_path:
+        return _upstream_error_observation(
+            entry, poll_time, probe_interval_s, "chart_path", revisions
+        )
+
+    try:
+        writeback_commit = await _resolve_writeback_commit(chart_path, newest)
+    except Exception:  # noqa: BLE001 - represented as an observation state
+        logger.warning(
+            "deployment observation: provenance resolution failed for %s",
+            entry["app"],
+            exc_info=True,
+        )
+        return build_deployment_observation(
+            app=entry["app"],
+            status="upstream_error",
+            poll_time=poll_time,
+            probe_interval_s=probe_interval_s,
+            requested_revision=revisions["requested_revision"],
+            deployed_revision=revisions["deployed_revision"],
+            newest_freight_version=newest,
+            error_stage="provenance_resolution",
+        )
+
+    return build_deployment_observation(
+        app=entry["app"],
+        status="complete" if writeback_commit else "missing_provenance",
+        poll_time=poll_time,
+        probe_interval_s=probe_interval_s,
+        requested_revision=revisions["requested_revision"],
+        deployed_revision=revisions["deployed_revision"],
+        newest_freight_version=newest,
+        writeback_commit=writeback_commit,
+        error_stage=None if writeback_commit else "writeback_commit",
+    )
+
+
+async def _write_deployment_observation(observation: dict) -> None:
+    from sqlmodel import Session  # noqa: PLC0415
+
+    from core.db import get_engine  # noqa: PLC0415
+    from knowledge.deployment_observations import (  # noqa: PLC0415
+        persist_deployment_observation,
+    )
+
+    with Session(get_engine()) as session:
+        await persist_deployment_observation(session, observation)
+
+
+async def _record_deployment_observations(poll_time: datetime) -> None:
+    """Write one isolated observation per configured app for this poll."""
+    from cluster.kubernetes import KubernetesClient  # noqa: PLC0415
+
+    apps = _configured_apps()
+    if not apps:
+        logger.warning("deployment observation: no configured apps")
+        return
+    probe_interval_s = _env_seconds("CD_PROBE_INTERVAL_S", 300.0)
+    if probe_interval_s <= 0:
+        logger.warning(
+            "deployment observation: non-positive CD_PROBE_INTERVAL_S=%s, using 300",
+            probe_interval_s,
+        )
+        probe_interval_s = 300.0
+    kubernetes = KubernetesClient()
+    for entry in apps:
+        try:
+            observation = await _collect_deployment_observation(
+                kubernetes, entry, poll_time, probe_interval_s
+            )
+            await _write_deployment_observation(observation)
+        except Exception:  # noqa: BLE001 - one app must not suppress later apps
+            logger.warning(
+                "deployment observation: write failed for %s",
+                entry["app"],
+                exc_info=True,
+            )
 
 
 def _evaluate_chart_lag(
@@ -322,6 +539,7 @@ async def cd_health() -> dict:
     if _cache is not None and (time.monotonic() - _cache[0]) < _CACHE_TTL_S:
         return _cache[1]
 
+    poll_time = datetime.now(timezone.utc)
     lag_s = _env_seconds("CD_HEALTH_CHART_LAG_S", 7200.0)
     red_window_s = _env_seconds("CD_HEALTH_CI_RED_WINDOW_S", 3600.0)
 
@@ -339,6 +557,15 @@ async def cd_health() -> dict:
         if not lag_ok:
             ok = False
         details.extend(lag_details)
+
+    # This writer is a separate, default-off lane. Its failures never change
+    # the advisory health result, and the cache guard above ensures cache hits
+    # cannot create observations.
+    if _env_enabled("DEPLOYMENT_OBSERVATIONS_ENABLED"):
+        try:  # nosemgrep: no-broad-except-swallow - isolated observation lane
+            await _record_deployment_observations(poll_time)
+        except Exception:  # noqa: BLE001
+            logger.warning("deployment observation cycle failed", exc_info=True)
 
     if not os.environ.get("GITHUB_API_TOKEN", ""):
         details.append("ci check disabled: no GITHUB_API_TOKEN")

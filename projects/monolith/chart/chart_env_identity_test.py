@@ -1590,6 +1590,7 @@ def _startup_control_env(rendered):
     entries = _deployment_backend_env(rendered)
     for name in (
         "CD_PROBE_ENABLED",
+        "DEPLOYMENT_OBSERVATIONS_ENABLED",
         "HOME_OBSERVABILITY_PRIME_ENABLED",
         "MONOLITH_LEADER_SINGLETONS",
         "POD_RESTART_WATCH_ENABLED",
@@ -1627,6 +1628,7 @@ def test_default_startup_controls_remain_enabled():
     assert env["CD_PROBE_ENABLED"]["value"] == "true"
     assert env["HOME_OBSERVABILITY_PRIME_ENABLED"]["value"] == "true"
     assert env["MONOLITH_LEADER_SINGLETONS"]["value"] == "true"
+    assert env["DEPLOYMENT_OBSERVATIONS_ENABLED"]["value"] == "false"
     assert env["POD_RESTART_WATCH_ENABLED"]["value"] == "true"
     assert env["POD_RESTART_WATCH_INTERVAL_S"]["value"] == "300"
     assert env["POD_RESTART_WATCH_NAMESPACES"]["value"] == "monolith-public"
@@ -1656,10 +1658,26 @@ def test_pod_restart_watch_values_render_into_backend_env(tmp_path, enabled):
     )
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_deployment_observation_gate_renders_independently(tmp_path, enabled):
+    override = _write_values(
+        tmp_path,
+        "deployment-observations.yaml",
+        {"deploymentObservations": {"enabled": enabled}},
+    )
+
+    env = _startup_control_env(_render("deployment-observations", [override]))
+
+    assert env["DEPLOYMENT_OBSERVATIONS_ENABLED"]["value"] == str(enabled).lower()
+    assert env["CD_PROBE_ENABLED"]["value"] == "true"
+    assert env["POD_RESTART_WATCH_ENABLED"]["value"] == "true"
+
+
 @pytest.mark.parametrize("tier", ["prod", "gke"])
 def test_deployed_startup_controls_remain_enabled(renders, tier):
     env = _startup_control_env(renders[tier])
     assert env["CD_PROBE_ENABLED"]["value"] == "true"
+    assert env["DEPLOYMENT_OBSERVATIONS_ENABLED"]["value"] == "false"
     assert env["HOME_OBSERVABILITY_PRIME_ENABLED"]["value"] == "true"
     assert env["MONOLITH_LEADER_SINGLETONS"]["value"] == "true"
 
