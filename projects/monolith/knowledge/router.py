@@ -369,10 +369,13 @@ async def search_knowledge(
         logger.exception("knowledge.search: embedding call failed")
         raise HTTPException(status_code=503, detail="embedding unavailable")
 
+    # The private notes UI is the deliberate archive-browsing surface. Routine
+    # agent and extraction callers keep the store's default legacy exclusion.
     results = KnowledgeStore(session).search_notes_with_context(
         query_embedding=vector,
         limit=limit,
         type_filter=type,
+        include_legacy=True,
     )
     return {"results": results}
 

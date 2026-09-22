@@ -87,7 +87,7 @@ def _upsert(
     n_chunks=1,
     links=None,
 ):
-    metadata = metadata or _meta(title=title)
+    metadata = metadata or _meta(title=title, verification_state="verified")
     store.upsert_note(
         note_id=note_id,
         path=path,
@@ -398,7 +398,11 @@ class TestSearchNotesWithContextEdges:
             path="a.md",
             title="Alpha",
             n_chunks=1,
-            metadata=_meta(title="Alpha", edges={"refines": ["parent-id"]}),
+            metadata=_meta(
+                title="Alpha",
+                edges={"refines": ["parent-id"]},
+                verification_state="verified",
+            ),
         )
         results = self.store.search_notes_with_context(query_embedding=[0.0] * 1024)
         assert len(results) == 1
@@ -430,7 +434,11 @@ class TestSearchNotesWithContextEdges:
             path="a.md",
             title="Alpha",
             n_chunks=1,
-            metadata=_meta(title="Alpha", edges={"related": ["some-target"]}),
+            metadata=_meta(
+                title="Alpha",
+                edges={"related": ["some-target"]},
+                verification_state="verified",
+            ),
         )
         results = self.store.search_notes_with_context(query_embedding=[0.0] * 1024)
         edge = results[0]["edges"][0]
@@ -451,7 +459,11 @@ class TestSearchNotesWithContextEdges:
             path="a.md",
             title="Alpha",
             n_chunks=1,
-            metadata=_meta(title="Alpha", edges={"refines": ["n2"]}),
+            metadata=_meta(
+                title="Alpha",
+                edges={"refines": ["n2"]},
+                verification_state="verified",
+            ),
         )
         _upsert(self.store, note_id="n2", path="b.md", title="Beta", n_chunks=1)
 
@@ -470,7 +482,11 @@ class TestSearchNotesWithContextEdges:
             path="a.md",
             title="Alpha",
             n_chunks=1,
-            metadata=_meta(title="Alpha", edges={"related": ["ghost-note"]}),
+            metadata=_meta(
+                title="Alpha",
+                edges={"related": ["ghost-note"]},
+                verification_state="verified",
+            ),
         )
 
         results = self.store.search_notes_with_context(query_embedding=[0.0] * 1024)
