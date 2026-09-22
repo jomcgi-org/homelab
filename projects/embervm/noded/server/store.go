@@ -1580,6 +1580,11 @@ func (s *Server) runExportJob(ctx context.Context, job exportJob) {
 			"localGeneration", generation, "err", err)
 		return
 	}
+	if errors.Is(err, store.ErrIncompatibleDeviceShape) {
+		s.logger.Warn("noded: async base export REFUSED, store holds an incompatible or unknown device shape",
+			"artifact", job.key, "kind", job.ref.GetKind().String(), "err", err)
+		return
+	}
 	var wrapRejected *WrapRejectedError
 	if errors.As(err, &wrapRejected) {
 		reason := wrapRejected.Reason
@@ -1743,8 +1748,9 @@ func (s *Server) enqueueIfMissing(ctx context.Context, ref *nodev1.ArtifactRef) 
 // they use the exact baked rootfs file or a byte-identical copy distributed by
 // #5772. Their Firecracker memory snapshots can still differ, so content equality
 // does not reliably hold and each node would re-upload ~1 GiB over the sibling's
-// object. Presence is sufficient because the shared ref also binds CPU vendor,
-// template, and rootfs identity.
+// object. For BASE, presence is sufficient only when producer metadata also
+// proves the device shapes match. The shared ref binds CPU vendor, template, and
+// rootfs identity, but it does not include that device shape.
 //
 // A VOLUME is data rather than a snapshot, so it keeps the stricter generation
 // test: presence at a STALE generation must still re-export.
@@ -1765,8 +1771,10 @@ func (s *Server) alreadyDurable(ctx context.Context, ref *nodev1.ArtifactRef, pr
 	// skip exporting its own artifact).
 	if legacy := legacyArtifactPrefix(ref); legacy != "" && s.cfg.CpuVendor == legacyVendorAlias {
 		if legacyPresent, legacyGen, _, _, lerr := s.store.Present(ctx, legacy); lerr == nil && legacyPresent {
-			s.exported.mark(prefix, legacyGen)
-			return true
+			if ref.GetKind() != nodev1.ArtifactKind_ARTIFACT_KIND_BASE || s.baseDeviceShapeAlreadyDurable(ctx, ref, legacy) {
+				s.exported.mark(prefix, legacyGen)
+				return true
+			}
 		}
 	}
 	present, gen, _, _, err := s.store.Present(ctx, prefix)
@@ -1778,8 +1786,29 @@ func (s *Server) alreadyDurable(ctx context.Context, ref *nodev1.ArtifactRef, pr
 			return false
 		}
 	}
+	if ref.GetKind() == nodev1.ArtifactKind_ARTIFACT_KIND_BASE && !s.baseDeviceShapeAlreadyDurable(ctx, ref, prefix) {
+		return false
+	}
 	s.exported.mark(prefix, gen) // already durable
 	return true
+}
+
+// baseDeviceShapeAlreadyDurable prevents the ref-presence shortcut from
+// bypassing the base export collision fence. Independent snapshots under one
+// ref may have different bytes, so presence remains sufficient only after the
+// producer metadata proves that local and stored device tables match. Unknown
+// or invalid metadata falls through to Store.Export, where exact file equality
+// may safely backfill a legacy marker and every real substitution is refused.
+func (s *Server) baseDeviceShapeAlreadyDurable(ctx context.Context, ref *nodev1.ArtifactRef, prefix string) bool {
+	local, err := snapshotmeta.ReadDeviceSet(s.artifactLocalDir(ref))
+	if err != nil || !local.Known {
+		return false
+	}
+	present, known, ids, err := s.store.ArtifactDeviceShape(ctx, prefix)
+	if err != nil || !present || !known {
+		return false
+	}
+	return local.Equal(snapshotmeta.DeviceSet{Known: true, IDs: ids})
 }
 
 // ---- async BASE-restore queue ----------------------------------------------
