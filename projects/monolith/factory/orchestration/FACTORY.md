@@ -1256,6 +1256,19 @@ it, so supervision can start. A repeated observation of unknown execution
 records nothing: the first uncertain outcome stands until reconciliation makes
 it terminal.
 
+An aged reserved start can also be stranded before its DBOS workflow is created.
+A successful lookup of that exact workflow returning absent is recorded separately
+from a missing or malformed status and from a lookup error. The sessionless-start
+sweeper applies the same locked proof as for a terminal failed workflow: the pinned
+turn timeout has elapsed, and the exact admitted run and reserved start have no
+session, deterministic session identity, permit, receipt, cost, outcome or newer
+attempt. It atomically fails both ledgers at zero cost with `no_model_post` and
+records `workflow_absent` in the audit proof. A delayed workflow must acquire the
+same start guard and graph binding lock before creating its session; the terminal
+run then refuses creation. Normal retry and funding reconciliation retain their
+existing policy, deadlines and refusal bounds. An unavailable lookup, existing
+execution evidence or a live workflow keeps the reservation.
+
 Missing provider usage consumes the entire reserved ceiling. This is
 conservative admission accounting, not an interruptible dollar cap on a running
 provider turn. Observed overruns prevent further admission. The exception is an
