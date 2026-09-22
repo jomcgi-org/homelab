@@ -239,6 +239,8 @@ defmodule Embervm.RouterTest do
     def invoke(_srv, _id, _req), do: {:error, :not_found}
 
 
+    def destroy_parked(_srv, "s-parked", %{"session_id" => "s-parked"}), do: {:ok, :destroyed}
+    def destroy_parked(_srv, _id, _expected), do: {:error, :stop_precondition_failed}
     def stop_identity(_srv, _id), do: nil
     def destroy(_srv, "s-live", %{"session_id" => "s-live", "invoke_started_at" => nil}), do: {:ok, :destroying}
     def destroy(_srv, _id, _expected), do: {:error, :stop_precondition_failed}
@@ -2061,6 +2063,19 @@ defmodule Embervm.RouterTest do
     assert req(:delete, "/v1/sessions/s-error", auth("good")).status == 500
     # Management auth required.
     assert req(:delete, "/v1/sessions/s-live").status == 401
+  end
+
+  test "parked DELETE requires management auth and a complete exact snapshot" do
+    with_session_fakes()
+    expected = %{"session_id" => "s-parked", "generation" => 0, "invoke_started_at" => 10, "updated_at" => 20}
+    body = :json.encode(%{"parked_precondition" => expected}) |> IO.iodata_to_binary()
+    assert req(:delete, "/v1/sessions/s-parked", auth("good"), body).status == 200
+    assert req(:delete, "/v1/sessions/s-live", auth("good"), body).status == 409
+    assert req(:delete, "/v1/sessions/s-parked", [], body).status == 401
+    for bad <- [:null, %{}, Map.put(expected, "generation", true), Map.put(expected, "updated_at", 1)] do
+      invalid = :json.encode(%{"parked_precondition" => bad}) |> IO.iodata_to_binary()
+      assert req(:delete, "/v1/sessions/s-parked", auth("good"), invalid).status == 400
+    end
   end
 
   test "exact DELETE parses null invocation identity and rejects malformed or stale preconditions" do

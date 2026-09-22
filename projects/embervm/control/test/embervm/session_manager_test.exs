@@ -5737,6 +5737,49 @@ defmodule Embervm.SessionManagerTest do
     end
   end
 
+  test "parked retirement is durable and refuses stale snapshots or queued wakes" do
+    ctx = start_stack(destroy_fun: fn _ch, _vm -> {:ok, %{teardown_confirmed: true}} end)
+    put_session_workload(ctx, "wl-retire-parked")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-retire-parked", "p1")
+    {:ok, _} = SessionStore.record_invoke_started(ctx.store, created.session_id)
+    send(ctx.mgr, {:rejoin_assign_failed, created.session_id, :delivery_failed})
+    _ = :sys.get_state(ctx.mgr)
+    {:ok, parked} = SessionStore.get(ctx.store, created.session_id)
+    assert parked.state == :parked
+    expected = %{"session_id" => parked.session_id, "generation" => parked.generation,
+      "invoke_started_at" => parked.invoke_started_at, "updated_at" => parked.updated_at}
+
+    for patch <- [%{"generation" => parked.generation + 1}, %{"updated_at" => parked.updated_at + 1},
+                  %{"invoke_started_at" => parked.invoke_started_at - 1}, %{"session_id" => "foreign"}] do
+      assert {:error, :stop_precondition_failed} =
+        SessionManager.destroy_parked(ctx.mgr, parked.session_id, Map.merge(expected, patch))
+    end
+    :sys.replace_state(ctx.mgr, fn state -> put_in(state.relighting[parked.session_id], [:waiting]) end)
+    assert {:error, :stop_precondition_failed} = SessionManager.destroy_parked(ctx.mgr, parked.session_id, expected)
+    :sys.replace_state(ctx.mgr, fn state -> %{state | relighting: %{}} end)
+    :sys.replace_state(ctx.mgr, fn state -> put_in(state.pressure_waits[parked.session_id], %{first_denied_at: 1}) end)
+    assert {:error, :stop_precondition_failed} = SessionManager.destroy_parked(ctx.mgr, parked.session_id, expected)
+    :sys.replace_state(ctx.mgr, fn state -> %{state | pressure_waits: %{}} end)
+    assert {:ok, :destroyed} = SessionManager.destroy_parked(ctx.mgr, parked.session_id, expected)
+    assert {:error, :stop_precondition_failed} = SessionManager.destroy_parked(ctx.mgr, parked.session_id, expected)
+    assert Enum.count(op_kinds_for(ctx, parked.session_id), &(&1 == :session_destroyed)) == 1
+    rebuilt = start_supervised!({SessionStore, name: nil, op_log: ctx.op_log, op_log_mod: SQLite})
+    assert {:ok, %{state: :destroyed}} = SessionStore.get(rebuilt, parked.session_id)
+    assert {:error, {:gone, _}} = SessionManager.invoke(ctx.mgr, parked.session_id, %{body: "{}", headers: %{}})
+  end
+
+  test "parked retirement never interrupts a running session" do
+    ctx = start_stack()
+    {ctx, session, _} = prepare_exact_stop(ctx, "wl-retire-refusal")
+    {:ok, running} = SessionStore.record_invoke_started(ctx.store, session.session_id)
+    expected = %{"session_id" => running.session_id, "generation" => running.generation,
+      "invoke_started_at" => running.invoke_started_at, "updated_at" => running.updated_at}
+    assert {:error, :stop_precondition_failed} = SessionManager.destroy_parked(ctx.mgr, running.session_id, expected)
+    assert {:ok, %{state: :running}} = SessionStore.get(ctx.store, running.session_id)
+    assert {:error, :invalid_stop_precondition} = SessionManager.destroy_parked(ctx.mgr, running.session_id, %{})
+    refute :session_destroyed in op_kinds_for(ctx, running.session_id)
+  end
+
   defp prepare_exact_stop(ctx, workload) do
     put_session_workload(ctx, workload)
     {:ok, created} = SessionManager.create(ctx.mgr, workload, "p1")

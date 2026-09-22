@@ -1143,6 +1143,17 @@ the same before deciding the attempt has no result. The model runs once, and
 the node owner supplies the declared artifact path a hold reconstructed from
 durable rows cannot know, so a recovered attempt keeps its artifact.
 
+A factory guest cold-parked without a recorded drain continuation is a candidate
+for conditional retirement, not cessation proof by itself. Recovery asks EmberVM
+to retire the exact session ID, generation, invoke-start and update timestamps.
+The manager refuses a changed snapshot, live residency, registered process,
+queued wake or pressure retry; accepted retirement is durable before replying.
+The factory retains its hold until a later GET confirms the terminal session.
+A concurrent native result wins under the receipt lock. Existing supervision
+then matches the terminal invocation to the failed dispatch and settles its
+permit, node, and start together, preserving unknown or recorded cost. Old
+servers, malformed observations and transient errors leave the hold intact.
+
 Neither owner ends a hold on its own judgement. A guest that has ceased, that
 completed its invoke without ever publishing, or that has moved on to another
 invoke or another generation, can no longer produce the evidence, so the hold

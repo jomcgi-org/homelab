@@ -71,11 +71,15 @@ def adopt_response_lost_result(session_id: int, artifact_path: str | None = None
     return store.adopt_response_lost_result(session_id, artifact_path)
 
 
-def settle_response_lost_hold(session_id: int, reason: str) -> bool:
+def settle_response_lost_hold(
+    session_id: int, reason: str, *, expected_hold: dict | None = None
+) -> bool:
     """End an unrecoverable hold as the ordinary unknown outcome it is."""
     from factory.execution import store
 
-    return store.settle_response_lost_hold(session_id, reason)
+    return store.settle_response_lost_hold(
+        session_id, reason, expected_hold=expected_hold
+    )
 
 
 def __getattr__(name: str):
