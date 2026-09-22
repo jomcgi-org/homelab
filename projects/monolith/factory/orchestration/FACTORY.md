@@ -1252,6 +1252,16 @@ attempt allowance. A live workflow, changed ownership, missing native response,
 or pending observer prevents settlement. This proves the model turns ended;
 it does not claim the guest was destroyed and does not issue a remote stop.
 
+An initial guest allocation can outlive a cancelled client request without an
+invoke timestamp. Its later `evicted/idle_ttl` record proves cessation only when
+the exact guest was created during the failed dispatch, the terminal update is
+after the recorded failure, generation and turn sequence are explicitly zero,
+and invocation, interruption, and stop fields are explicitly empty. Missing or
+conflicting fields, an older allocation, or a saved stop identity refuse this
+proof. The ordinary supervisor still revalidates local ownership and records
+`terminal_initial_guest` with the terminal evidence. It retains unknown spend
+at the reserved ceiling; guest cessation is not evidence of zero provider cost.
+
 A planner decision is one graph edit or one `plan` whose edits apply together
 under a single expected revision, so a rejected edit rejects the whole plan and
 the graph never holds half of one. Each edit becomes its own plan version under

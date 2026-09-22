@@ -14082,3 +14082,139 @@ def test_interrupted_continuation_rolls_back_with_start_settlement(
     assert s.native_snapshot() == native
     assert controls.task_snapshot(s.task["id"])["starts"] == before["starts"]
     assert conductor.graph.node_runs(s.task["id"]) == runs
+
+
+@pytest.fixture
+def initial_evicted_guest(uncertain_factory, monkeypatch):
+    from datetime import timedelta
+
+    s = uncertain_factory
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    s.cp.update(
+        state="evicted",
+        terminal_reason="idle_ttl",
+        generation=0,
+        turn_seq=0,
+        created_at=int((s.dispatched_at + timedelta(seconds=1)).timestamp() * 1000),
+        updated_at=int((s.failed_turn_at + timedelta(seconds=1)).timestamp() * 1000),
+        invoke_started_at=None,
+        last_invoke_at=None,
+        interrupted_turn=None,
+        stop_precondition=None,
+        stop_intent=None,
+        stop_completion=None,
+    )
+    return s
+
+
+def test_initial_evicted_guest_releases_hold_without_refunding_spend(
+    initial_evicted_guest,
+):
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = initial_evicted_guest
+    before = _uncertain_snapshot(s)
+    assert supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    after = _uncertain_snapshot(s)
+    assert after["turns"] == before["turns"]
+    assert after["pending"] == before["pending"] == []
+    assert after["session"]["ember_session_id"] is None
+    assert (
+        after["session"]["prior_ember_lineage_id"]
+        == before["session"]["ember_lineage_id"]
+    )
+    assert after["permits"][0]["state"] == "settled"
+    assert after["permits"][0]["outcome"] == "guest_cessation_confirmed"
+    assert (
+        after["runs"][0]["status"]
+        == after["factory"]["starts"][0]["status"]
+        == "failed"
+    )
+    assert after["runs"][0]["cost_usd"] is None
+    assert after["runs"][0]["accounting_basis"] == "reserved_unknown_cost"
+    assert (
+        after["factory"]["committed_cost_usd"]
+        == before["factory"]["committed_cost_usd"]
+    )
+    assert after["factory"]["turns_used"] == before["factory"]["turns_used"]
+    assert after["factory"]["policy"] == before["factory"]["policy"]
+    assert after["factory"]["deadline_at"] == before["factory"]["deadline_at"]
+    assert after["factory"]["state"] == "admitted"
+    assert after["factory"]["unresolved_starts"] == 0
+    outcome = json.loads(after["runs"][0]["outcome_json"])
+    assert outcome["cessation"]["cessation_evidence"] == "terminal_initial_guest"
+    assert all(precondition is None for _, precondition in s.calls)
+    # Settlement is durable and cannot clear another attempt on repeat.
+    assert supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    assert _uncertain_snapshot(s) == after
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("session_id", "another-guest"),
+        ("state", "running"),
+        ("state", "parked"),
+        ("terminal_reason", "node_gone"),
+        ("generation", 1),
+        ("generation", False),
+        ("turn_seq", 1),
+        ("turn_seq", False),
+        ("invoke_started_at", 1),
+        ("last_invoke_at", 1),
+        ("interrupted_turn", {}),
+        ("stop_precondition", {}),
+        ("stop_intent", {}),
+        ("stop_completion", {}),
+        ("created_at", None),
+        ("updated_at", None),
+        ("created_at", True),
+        ("updated_at", "123"),
+    ],
+)
+def test_initial_evicted_guest_refuses_conflicting_fields(
+    initial_evicted_guest, field, value
+):
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = initial_evicted_guest
+    s.cp[field] = value
+    identity = {
+        "guest_id": "s-exact-factory",
+        "dispatched_at": s.dispatched_at.isoformat(),
+        "failed_turn_at": s.failed_turn_at.isoformat(),
+    }
+    assert supervisor._initial_guest_cessation(s.cp, identity) is None
+
+
+@pytest.mark.parametrize(
+    "conflict",
+    ["older_guest", "late_creation", "early_eviction", "missing_field", "saved_stop"],
+)
+def test_initial_evicted_guest_requires_creation_and_terminal_order(
+    initial_evicted_guest, conflict
+):
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = initial_evicted_guest
+    saved = None
+    if conflict == "older_guest":
+        s.cp["created_at"] = int(s.dispatched_at.timestamp() * 1000)
+    elif conflict == "late_creation":
+        s.cp["created_at"] = int(s.failed_turn_at.timestamp() * 1000) + 1
+    elif conflict == "early_eviction":
+        s.cp["updated_at"] = int(s.failed_turn_at.timestamp() * 1000)
+    elif conflict == "missing_field":
+        s.cp.pop("turn_seq")
+    else:
+        saved = {"precondition": s.precondition}
+    identity = {
+        "guest_id": "s-exact-factory",
+        "dispatched_at": s.dispatched_at.isoformat(),
+        "failed_turn_at": s.failed_turn_at.isoformat(),
+    }
+    assert supervisor._control_plane_cessation(s.cp, identity, saved) is None
