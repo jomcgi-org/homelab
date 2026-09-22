@@ -22,7 +22,8 @@ class ControlRequest(BaseModel):
     node_key: str | None = None
     attempt: int | None = Field(default=None, ge=1, strict=True)
     session_id: int | None = Field(default=None, gt=0, strict=True)
-    request_key: str | None = None
+    request_key: str | None = Field(default=None, min_length=1, max_length=256)
+    expected_version: int | None = Field(default=None, ge=0, le=2**63 - 1, strict=True)
     expected_identity_sha256: str | None = None
     reason: str | None = None
 
@@ -39,11 +40,19 @@ class DecisionRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     option_key: str | None = Field(default=None, max_length=32)
-    expected_decision_id: str | None = Field(
-        default=None, pattern=r"^decision:[0-9a-f]{64}$"
-    )
-    action: str | None = None
+    decision_id: str = Field(pattern=r"^decision:[0-9a-f]{64}$")
+    request_key: str = Field(min_length=1, max_length=256)
+    action: str | None = Field(default=None, max_length=32)
     note: str | None = Field(default=None, max_length=4000)
+
+
+def _raise_refused(result: dict) -> None:
+    """Preserve HTTP refusal status without discarding the durable outcome."""
+    if not result.get("ok") and result.get("state") == "refused":
+        raise HTTPException(
+            int(result.get("status") or 409),
+            result.get("reason") or "factory request refused",
+        )
 
 
 @router.get("")
@@ -112,13 +121,12 @@ def attempt_stop_preview(
 def factory_control(
     body: ControlRequest, principal: Principal = Depends(operator)
 ) -> dict:
-    from factory.orchestration.factory_controls import set_control
+    from factory.orchestration.factory_controls import request_control, set_control
 
     attempt_fields = (
         body.node_key,
         body.attempt,
         body.session_id,
-        body.request_key,
         body.expected_identity_sha256,
         body.reason,
     )
@@ -128,6 +136,8 @@ def factory_control(
         if (
             body.task_id is None
             or body.policy is not None
+            or body.request_key is None
+            or body.expected_version is not None
             or any(value is None for value in attempt_fields)
         ):
             raise HTTPException(422, "exact attempt stop fields are required")
@@ -149,9 +159,31 @@ def factory_control(
     if body.policy is not None and body.policy.get("repo") not in REPO_CATALOG:
         raise HTTPException(422, "repository is not available to the executor")
     try:
-        result = set_control(
-            body.action, principal.subject, policy=body.policy, task_id=body.task_id
-        )
+        if body.action == "configure":
+            if body.request_key is not None or body.expected_version is not None:
+                raise HTTPException(
+                    422, "configure does not accept a control request identity"
+                )
+            result = set_control(
+                body.action,
+                principal.subject,
+                policy=body.policy,
+                task_id=body.task_id,
+            )
+        else:
+            if body.policy is not None:
+                raise HTTPException(422, "policy requires configure action")
+            if body.request_key is None or body.expected_version is None:
+                raise HTTPException(
+                    422, "request_key and expected_version are required"
+                )
+            result = request_control(
+                body.action,
+                principal.subject,
+                request_key=body.request_key,
+                expected_version=body.expected_version,
+                task_id=body.task_id,
+            )
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     if not result["ok"]:
@@ -184,11 +216,7 @@ def factory_decision(
     comments, child issues and closes to the repository under the monolith's
     own credential. A decision is a write, not a view.
     """
-    from factory.orchestration.factory_decisions import (
-        DecisionError,
-        apply_decision,
-        request_chat,
-    )
+    from factory.orchestration.factory_decisions import request_decision
 
     chat = body.action == "chat"
     if body.action is not None and not chat:
@@ -196,23 +224,19 @@ def factory_decision(
     if chat == bool(body.option_key):
         raise HTTPException(422, "supply exactly one of option_key or action=chat")
     try:
-        if chat:
-            if body.expected_decision_id is not None:
-                raise HTTPException(
-                    422, "exact decision identity is only supported for options"
-                )
-            if not (body.note or "").strip():
-                raise HTTPException(422, "a chat request needs a note")
-            return request_chat(receipt_id, body.note or "", principal.subject)
-        return apply_decision(
+        result = request_decision(
             receipt_id,
-            body.option_key or "",
+            body.decision_id,
+            "chat" if chat else body.option_key or "",
             principal.subject,
-            body.note,
-            expected_decision_id=body.expected_decision_id,
+            request_key=body.request_key,
+            note=body.note,
+            action="chat" if chat else "decide",
         )
-    except DecisionError as exc:
-        raise HTTPException(exc.status, exc.reason) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    _raise_refused(result)
+    return result
 
 
 @router.post("/issues")

@@ -2628,18 +2628,32 @@ def test_resume_audit_after_reconciler_pause_prevents_expiry(
     assert snapshot["task_paused"] is True
 
 
-def test_pause_expiry_resolves_uncertain_starts_before_retrying_finish(
+def test_pause_expiry_retains_uncertain_starts_and_accounting(
     queued_factory, monkeypatch
 ):
+    import json
+    from sqlmodel import Session, select
     from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryAudit
 
     s = _aged_pause(queued_factory, monkeypatch, conductor.ACTOR, unresolved=True)
+    before = controls.task_snapshot(s.task["id"])
 
-    assert conductor._expire_reconciler_pause(s.task["id"])
+    assert not conductor._expire_reconciler_pause(s.task["id"])
+    assert not conductor._expire_reconciler_pause(s.task["id"])
     snapshot = controls.task_snapshot(s.task["id"])
-    assert snapshot["state"] == "cancelled"
-    assert snapshot["starts"][0]["status"] == "failed"
-    assert snapshot["starts"][0]["cost_usd"] == 0.0
+    assert snapshot["state"] == "admitted"
+    assert snapshot["task_paused"] is True
+    assert snapshot["starts"] == before["starts"]
+    assert snapshot["committed_cost_usd"] == before["committed_cost_usd"]
+    with Session(s.engine) as db:
+        held = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.action == "reconciler_pause_expiry_held"
+            )
+        ).all()
+        assert len(held) == 1
+        assert json.loads(held[0].detail_json)["refusal"] == "unresolved_starts"
 
 
 def test_departed_node_destroy_request_settles_on_following_destroyed_view(
@@ -12681,41 +12695,42 @@ def _wedged_backstop_task(queued_factory, monkeypatch):
     return s, task, start_key
 
 
-def test_the_deadline_backstop_persists_its_settlement(queued_factory, monkeypatch):
-    """The settlement must survive the session, not just flush inside it.
-
-    _locked_session only flushes a supplied session, deliberately, so a
-    backstop that never commits rolls its own release back on close while
-    still posting the card: the slot stays held and every tick re-posts.
-    Asserted from a FRESH session so a flush-only write cannot pass.
-    """
+def test_the_deadline_backstop_stays_staged_off_and_retains_unknown_work(
+    queued_factory, monkeypatch
+):
+    """Even an environment opt-in cannot turn elapsed time into cessation."""
     from sqlmodel import Session, select
     from factory.orchestration.factory_models import FactoryReceipt, FactoryStart
 
     s, task, start_key = _wedged_backstop_task(queued_factory, monkeypatch)
 
-    assert conductor._expire_task_deadline(task) is True
+    assert conductor._expire_task_deadline(task) is False
 
     with Session(s.engine) as db:
         start = db.exec(
             select(FactoryStart).where(FactoryStart.start_key == start_key)
         ).one()
-        assert start.status == "failed"
-        # Unknown rather than zero, so _committed_cost keeps the ceiling this
-        # start had already committed instead of under-reporting the receipt.
+        assert start.status == "uncertain"
         assert start.cost_usd is None
         receipt = db.exec(
             select(FactoryReceipt).where(FactoryReceipt.task_id == s.task["id"])
         ).one()
-        assert receipt.state == "escalated"
+        assert receipt.state == "admitted"
 
 
-def test_the_deadline_backstop_is_idempotent_across_ticks(queued_factory, monkeypatch):
-    """A second tick finds nothing stranded and must not settle again."""
-    s, task, _key = _wedged_backstop_task(queued_factory, monkeypatch)
+def test_the_staged_deadline_backstop_never_changes_repeated_unknown_observations(
+    queued_factory, monkeypatch
+):
+    from factory.orchestration import factory_controls as controls
 
-    assert conductor._expire_task_deadline(task) is True
+    _s, task, _key = _wedged_backstop_task(queued_factory, monkeypatch)
+    before = controls.task_snapshot(task["task_id"])
+
     assert conductor._expire_task_deadline(task) is False
+    assert conductor._expire_task_deadline(task) is False
+    after = controls.task_snapshot(task["task_id"])
+    assert after["starts"] == before["starts"]
+    assert after["committed_cost_usd"] == before["committed_cost_usd"]
 
 
 def test_the_deadline_backstop_leaves_a_reserved_start_alone(

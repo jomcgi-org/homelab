@@ -16,6 +16,8 @@ from factory.orchestration.factory_models import (
 from factory.orchestration.factory_router import router
 from factory.orchestration.models import SwarmTask
 
+DECISION_ID = "decision:" + "a" * 64
+
 
 @pytest.fixture
 def receipt_db(tmp_path, monkeypatch):
@@ -157,6 +159,93 @@ def operator_client(subject="operator:test"):
     return TestClient(app)
 
 
+def test_http_controls_use_the_versioned_request_owner(monkeypatch):
+    seen = {}
+
+    def request_control(action, actor, **kwargs):
+        seen.update(action=action, actor=actor, **kwargs)
+        return {
+            "ok": True,
+            "state": "paused",
+            "version": 8,
+            "request_key": kwargs["request_key"],
+        }
+
+    monkeypatch.setattr(factory_controls, "request_control", request_control)
+    response = operator_client("operator:joe").post(
+        "/api/swarm/factory/control",
+        json={
+            "action": "pause_task",
+            "task_id": "task-7",
+            "request_key": "pause-task-7",
+            "expected_version": 7,
+        },
+    )
+
+    assert response.status_code == 200
+    assert seen == {
+        "action": "pause_task",
+        "actor": "operator:joe",
+        "request_key": "pause-task-7",
+        "expected_version": 7,
+        "task_id": "task-7",
+    }
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"action": "stop"},
+        {"action": "stop", "request_key": "stop"},
+        {"action": "stop", "expected_version": 1},
+        {"action": "stop", "request_key": "stop", "expected_version": "1"},
+        {
+            "action": "configure",
+            "policy": {},
+            "request_key": "policy",
+            "expected_version": 1,
+        },
+    ],
+)
+def test_http_controls_refuse_missing_or_ambiguous_request_identity(body):
+    assert (
+        operator_client().post("/api/swarm/factory/control", json=body).status_code
+        == 422
+    )
+
+
+def test_http_stale_control_refusal_is_durable_after_version_advances(receipt_db):
+    body = {
+        "action": "stop",
+        "request_key": "stale-stop",
+        "expected_version": 1,
+    }
+    first = operator_client("operator:joe").post(
+        "/api/swarm/factory/control", json=body
+    )
+    assert first.status_code == 409
+    assert first.json()["detail"]["reason"] == "control_version_changed"
+
+    with Session(receipt_db) as db, db.begin():
+        control = db.get(FactoryControl, "factory")
+        control.version = 1
+        db.add(control)
+
+    replay = operator_client("operator:joe").post(
+        "/api/swarm/factory/control", json=body
+    )
+    assert replay.status_code == 409
+    assert replay.json() == first.json()
+    with Session(receipt_db) as db:
+        records = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.action == "control_request",
+                FactoryAudit.actor == "operator:joe",
+            )
+        ).all()
+        assert len(records) == 1
+
+
 def test_issue_endpoint_links_receipt_to_fetched_work_item(receipt_db, monkeypatch):
     from factory.orchestration import factory_conductor
 
@@ -208,7 +297,11 @@ def test_decisions_require_verified_standing_operator(authority, kind, groups):
     assert (
         client.post(
             "/api/swarm/factory/decisions/1",
-            json={"option_key": "close"},
+            json={
+                "option_key": "close",
+                "decision_id": DECISION_ID,
+                "request_key": "close-1",
+            },
             headers={"Cf-Access-Authenticated-User-Email": "spoof@example.test"},
         ).status_code
         == 403
@@ -220,17 +313,29 @@ def test_decisions_require_verified_standing_operator(authority, kind, groups):
     "body",
     [
         {},
-        {"option_key": "close", "action": "chat", "note": "hm"},
-        {"action": "resolve"},
-        {"action": "chat"},
-        {"action": "chat", "note": "   "},
-        {"option_key": "close", "unexpected": 1},
-        {"option_key": "close", "expected_decision_id": "not-an-identity"},
+        {
+            "option_key": "close",
+            "action": "chat",
+            "note": "hm",
+            "decision_id": DECISION_ID,
+            "request_key": "both",
+        },
+        {"action": "resolve", "decision_id": DECISION_ID, "request_key": "bad"},
+        {"action": "chat", "decision_id": DECISION_ID, "request_key": "empty"},
         {
             "action": "chat",
-            "note": "more",
-            "expected_decision_id": "decision:" + "a" * 64,
+            "note": "   ",
+            "decision_id": DECISION_ID,
+            "request_key": "blank",
         },
+        {
+            "option_key": "close",
+            "decision_id": DECISION_ID,
+            "request_key": "extra",
+            "unexpected": 1,
+        },
+        {"option_key": "close", "decision_id": "not-an-identity", "request_key": "bad"},
+        {"option_key": "close", "decision_id": DECISION_ID},
     ],
 )
 def test_a_decision_names_exactly_one_of_an_option_or_a_chat(body):
@@ -245,46 +350,68 @@ def test_a_decision_carries_the_operator_subject_as_the_actor(monkeypatch):
 
     seen = {}
 
-    def apply_decision(
-        receipt_id, option_key, actor, note=None, *, expected_decision_id=None
+    def request_decision(
+        receipt_id,
+        decision_id,
+        option_key,
+        actor,
+        *,
+        request_key,
+        note=None,
+        action="decide",
     ):
         seen.update(
             receipt_id=receipt_id,
+            decision_id=decision_id,
             option_key=option_key,
             actor=actor,
+            request_key=request_key,
             note=note,
-            expected_decision_id=expected_decision_id,
+            action=action,
         )
-        return {"ok": True, "applied": True, "resolution": {}}
+        return {"ok": True, "state": "completed", "resolution": {}}
 
-    monkeypatch.setattr(factory_decisions, "apply_decision", apply_decision)
+    monkeypatch.setattr(factory_decisions, "request_decision", request_decision)
     response = operator_client("operator:joe").post(
         "/api/swarm/factory/decisions/12",
         json={
             "option_key": "close",
             "note": "agreed",
-            "expected_decision_id": "decision:" + "a" * 64,
+            "decision_id": DECISION_ID,
+            "request_key": "decision-12",
         },
     )
     assert response.status_code == 200
     assert seen == {
         "receipt_id": 12,
+        "decision_id": DECISION_ID,
         "option_key": "close",
         "actor": "operator:joe",
+        "request_key": "decision-12",
         "note": "agreed",
-        "expected_decision_id": "decision:" + "a" * 64,
+        "action": "decide",
     }
 
 
 def test_a_decision_error_becomes_its_own_status(monkeypatch):
     from factory.orchestration import factory_decisions
 
-    def apply_decision(*_args, **_kwargs):
-        raise factory_decisions.DecisionError(409, "already decided as close")
+    def request_decision(*_args, **_kwargs):
+        return {
+            "ok": False,
+            "state": "refused",
+            "status": 409,
+            "reason": "already decided as close",
+        }
 
-    monkeypatch.setattr(factory_decisions, "apply_decision", apply_decision)
+    monkeypatch.setattr(factory_decisions, "request_decision", request_decision)
     response = operator_client().post(
-        "/api/swarm/factory/decisions/12", json={"option_key": "hold"}
+        "/api/swarm/factory/decisions/12",
+        json={
+            "option_key": "hold",
+            "decision_id": DECISION_ID,
+            "request_key": "hold-12",
+        },
     )
     assert response.status_code == 409
     assert response.json()["detail"] == "already decided as close"

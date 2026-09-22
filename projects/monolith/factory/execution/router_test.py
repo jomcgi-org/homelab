@@ -2468,6 +2468,18 @@ def test_unknown_outcome_detail_retains_evidence_and_rejects_all_send_boundaries
     assert session.get(AgentSession, session_id).status == "failed"
 
 
+FACTORY_DECISION_ID = "decision:" + "a" * 64
+
+
+def factory_decision_body(**overrides):
+    return {
+        "option_key": "close",
+        "decision_id": FACTORY_DECISION_ID,
+        "request_key": "browser-request",
+        **overrides,
+    }
+
+
 def test_factory_decisions_accept_a_verified_identity_without_an_allowlist(
     client, monkeypatch
 ):
@@ -2477,18 +2489,43 @@ def test_factory_decisions_accept_a_verified_identity_without_an_allowlist(
     monkeypatch.delenv("FACTORY_OPERATOR_EMAILS", raising=False)
     seen = {}
 
-    def apply_decision(receipt_id, option_key, actor, note=None):
-        seen.update(receipt_id=receipt_id, option_key=option_key, actor=actor)
-        return {"ok": True, "applied": True, "resolution": {}}
+    def request_decision(
+        receipt_id,
+        decision_id,
+        option_key,
+        actor,
+        *,
+        request_key,
+        note=None,
+        action="decide",
+    ):
+        seen.update(
+            receipt_id=receipt_id,
+            decision_id=decision_id,
+            option_key=option_key,
+            actor=actor,
+            request_key=request_key,
+            note=note,
+            action=action,
+        )
+        return {"ok": True, "state": "completed", "resolution": {}}
 
-    monkeypatch.setattr(factory_decisions, "apply_decision", apply_decision)
+    monkeypatch.setattr(factory_decisions, "request_decision", request_decision)
     response = client.post(
         "/api/agents/factory/decisions/4",
-        json={"option_key": "close"},
+        json=factory_decision_body(),
         headers={"X-Auth-Email": "joe@example.test"},
     )
     assert response.status_code == 200
-    assert seen == {"receipt_id": 4, "option_key": "close", "actor": "joe@example.test"}
+    assert seen == {
+        "receipt_id": 4,
+        "decision_id": FACTORY_DECISION_ID,
+        "option_key": "close",
+        "actor": "joe@example.test",
+        "request_key": "browser-request",
+        "note": None,
+        "action": "decide",
+    }
 
 
 @pytest.mark.parametrize(
@@ -2518,7 +2555,7 @@ def test_factory_decisions_need_a_verified_identity_without_an_allowlist(
     monkeypatch.delenv("FACTORY_OPERATOR_EMAILS", raising=False)
     response = client.post(
         "/api/agents/factory/decisions/1",
-        json={"option_key": "close"},
+        json=factory_decision_body(),
         headers=headers,
     )
     assert response.status_code == 403
@@ -2547,7 +2584,7 @@ def test_factory_decisions_refuse_anyone_not_on_the_allowlist(
     monkeypatch.setenv("FACTORY_OPERATOR_EMAILS", "joe@example.test")
     response = client.post(
         "/api/agents/factory/decisions/1",
-        json={"option_key": "close"},
+        json=factory_decision_body(),
         headers=headers,
     )
     assert response.status_code == 403
@@ -2559,7 +2596,7 @@ def test_factory_decisions_refuse_a_second_smuggled_identity(client, monkeypatch
     monkeypatch.setenv("FACTORY_OPERATOR_EMAILS", "joe@example.test")
     response = client.post(
         "/api/agents/factory/decisions/1",
-        json={"option_key": "close"},
+        json=factory_decision_body(),
         headers=[
             ("X-Auth-Email", "forged@example.test"),
             ("X-Auth-Email", "joe@example.test"),
@@ -2577,24 +2614,50 @@ def test_factory_decisions_apply_for_a_listed_operator(client, monkeypatch):
     )
     seen = {}
 
-    def apply_decision(receipt_id, option_key, actor, note=None):
-        seen.update(receipt_id=receipt_id, option_key=option_key, actor=actor)
-        return {"ok": True, "applied": True, "resolution": {}}
+    def request_decision(
+        receipt_id, decision_id, option_key, actor, *, request_key, **kwargs
+    ):
+        seen.update(
+            receipt_id=receipt_id,
+            decision_id=decision_id,
+            option_key=option_key,
+            actor=actor,
+            request_key=request_key,
+            **kwargs,
+        )
+        return {"ok": True, "state": "completed", "resolution": {}}
 
-    monkeypatch.setattr(factory_decisions, "apply_decision", apply_decision)
+    monkeypatch.setattr(factory_decisions, "request_decision", request_decision)
     response = client.post(
         "/api/agents/factory/decisions/9",
-        json={"option_key": "close"},
+        json=factory_decision_body(request_key="listed-request"),
         headers={"X-Auth-Email": "joe@example.test"},
     )
     assert response.status_code == 200
-    assert seen == {"receipt_id": 9, "option_key": "close", "actor": "joe@example.test"}
+    assert seen == {
+        "receipt_id": 9,
+        "decision_id": FACTORY_DECISION_ID,
+        "option_key": "close",
+        "actor": "joe@example.test",
+        "request_key": "listed-request",
+        "note": None,
+        "action": "decide",
+    }
 
 
 def test_factory_decisions_need_exactly_one_of_an_option_or_a_chat(client, monkeypatch):
     monkeypatch.setenv("FACTORY_OPERATOR_EMAILS", "joe@example.test")
     headers = {"X-Auth-Email": "joe@example.test"}
-    for body in ({}, {"option_key": "close", "action": "chat", "note": "x"}):
+    for body in (
+        {},
+        factory_decision_body(action="chat", note="x"),
+        {
+            "action": "chat",
+            "note": " ",
+            "decision_id": FACTORY_DECISION_ID,
+            "request_key": "blank-chat",
+        },
+    ):
         assert (
             client.post(
                 "/api/agents/factory/decisions/1", json=body, headers=headers
