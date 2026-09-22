@@ -12,7 +12,7 @@ defmodule Embervm.NodeRegistryTest do
   # test), proving connect -> emit -> ETS publish -> reconnect-on-drop.
   use ExUnit.Case, async: true
 
-  alias Embervm.{NodeRegistry, ServingStore, StatefulStore, WorkloadCatalog}
+  alias Embervm.{NodeCapacity, NodeRegistry, ServingStore, StatefulStore, WorkloadCatalog}
   alias Embervm.OpLog.SQLite
   alias Embervm.Node.V1.{GroupMemberVm, NodeStatus, ServingVm, SessionVm, StatefulVm, WorkloadCapacity}
 
@@ -113,6 +113,32 @@ defmodule Embervm.NodeRegistryTest do
     snapshot = NodeRegistry.status(reg)
     assert snapshot["node-4"].health == :healthy
     assert snapshot["node-4"].dispatchable
+  end
+
+  test "capacity normalizes reported node names to the registration identity" do
+    reports = [divergent: "reported-elsewhere", equal: "node-equal", empty: ""]
+
+    for {suffix, reported_node_id} <- reports do
+      configured_id = "node-#{suffix}"
+      {clock, _advance} = new_clock()
+
+      {reg, table} =
+        start_registry(
+          clock: clock,
+          nodes: [%{id: configured_id, address: "#{configured_id}.test:9090"}]
+        )
+
+      :ok = NodeRegistry.inject_status(reg, configured_id, node_status(node_id: reported_node_id))
+
+      assert [facts] = NodeRegistry.capacity(table)
+      assert facts.node_id == configured_id
+      assert facts.configured_id == configured_id
+      assert facts.reported_node_id == reported_node_id
+      assert facts.instance_id == configured_id
+      assert facts.pod_uid == ""
+      assert {:ok, ^facts} = NodeCapacity.fetch(table, configured_id)
+      assert {:ok, ^facts} = NodeCapacity.fetch(table, {configured_id, ""})
+    end
   end
 
   test "every accepted status drives idempotent shadow reconciliation" do
