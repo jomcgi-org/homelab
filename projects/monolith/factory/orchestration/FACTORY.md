@@ -1745,8 +1745,11 @@ raise a decision card. A parameter classification of `reversible` includes its
 proposed `value` and `reason`. The builder chooses it and comments
 `Decided by the conductor: <value>, because <reason>; reversible` once.
 `spending`, `prod_deletion` and `external_account` keep the human decision path.
-A case-insensitive heuristic backstop also escalates restricted terms in the
-gate's value or reason, even when the model labels the gate reversible.
+A case-insensitive heuristic backstop also escalates restricted terms in a
+parameter's proposed value, even when the model labels the gate reversible.
+Explanatory reasons are not authority requests: saying a default does not spend
+money or touch an account must not block it. Recording a staged live-validation
+scope and its outstanding checklist does not authorize performing those checks.
 A documented default does not authorize bucket creation, deletion or credentials.
 Unclassified legacy questions retain their existing escalation path.
 

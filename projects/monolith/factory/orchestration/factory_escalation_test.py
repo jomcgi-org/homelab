@@ -131,6 +131,8 @@ class Github:
                 }
             )
             return self.comments[-1]
+        if method == "PATCH" and suffix.startswith("issues/") and "body" in payload:
+            self.issue_bodies[int(suffix.rsplit("/", 1)[1])] = payload["body"]
         if suffix == "issues":
             self.next_issue += 1
             return {"number": self.next_issue}
@@ -1348,7 +1350,7 @@ def test_today_cards_continue_or_escalate_under_backstop(
     # A retry after settlement cannot emit another comment or card.
     conductor._escalate_task(task, decision, "replay-card", [])
     row = receipt_of(db, task_id)
-    if card["issue"] in {6193, 5444}:
+    if card["issue"] == 6193:
         assert row.state == "escalated"
         assert row.escalation_json is not None
         assert "Decided by the conductor:" not in github.bodies()
@@ -1398,17 +1400,24 @@ def test_parameter_with_irreversible_effect_still_escalates(
     assert len(notices) == 1
 
 
-@pytest.mark.parametrize("field", ["value", "reason"])
-def test_model_labelled_reversible_budget_gate_still_escalates(
-    db, github, notices, field
+@pytest.mark.parametrize(
+    "value",
+    [
+        "budget alert 50 USD per month",
+        "create bucket",
+        "delete prod data",
+        "rotate account credential",
+    ],
+)
+def test_model_labelled_reversible_restricted_value_still_escalates(
+    db, github, notices, value
 ):
     task_id, _policy = admitted(ISSUE)
     gate = {
         "kind": "parameter",
         "classification": "reversible",
-        "value": "N=3",
+        "value": value,
         "reason": "A reversible default",
-        field: "budget alert 50 USD per month",
     }
     conductor._escalate_task(
         task_of(task_id), pause(pause_options(), gate=gate), "budget", []
@@ -1417,6 +1426,54 @@ def test_model_labelled_reversible_budget_gate_still_escalates(
     assert "## Decision needed" in github.bodies()
     assert "Decided by the conductor:" not in github.bodies()
     assert len(notices) == 1
+
+
+@pytest.mark.parametrize("kind", ["parameter", "live_validation"])
+def test_reversible_gate_rationale_does_not_request_operational_authority(
+    db, github, notices, kind
+):
+    """Replay the explanatory wording that stranded #5505 and #5460."""
+    from factory.orchestration import factory_gates as gates
+
+    task_id, _policy = admitted(ISSUE)
+    gate = {
+        "kind": kind,
+        "classification": "reversible",
+        "reason": (
+            "The proposed configuration is repository-only and default-off; "
+            "it neither provisions an external account nor deletes production "
+            "data or spends money."
+        ),
+    }
+    if kind == "parameter":
+        gate["value"] = "bricks.autoscale.ceilingIdleMs=3600000 (60 minutes)"
+    else:
+        gate["scope"] = "Stage collector HTTPS and CA support, default-off."
+        gate["live_checks"] = [
+            "An authorized operator supplies verified CA material and validates HTTPS."
+        ]
+    decision = pause(pause_options(), gate=gate)
+    conductor._escalate_task(task_of(task_id), decision, "safe-rationale", [])
+    conductor._escalate_task(task_of(task_id), decision, "safe-rationale", [])
+
+    assert receipt_of(db, task_id).state == "admitted"
+    assert task_of(task_id)["conductor_gates"] == [gate]
+    assert len(audits(db, "conductor_gate_decided")) == 1
+    assert not notices
+    assert "## Decision needed" not in github.bodies()
+    if kind == "parameter":
+        assert github.bodies().count("Decided by the conductor:") == 1
+        assert gate["value"] in gates.guidance(task_of(task_id))
+    else:
+        assert gates.live_checks(task_of(task_id)) == gate["live_checks"]
+        body_writes = [
+            payload["body"]
+            for method, path, payload in github.writes
+            if method == "PATCH" and path == f"issues/{ISSUE}"
+        ]
+        assert len(body_writes) == 1
+        assert f"- [ ] {gate['live_checks'][0]}" in body_writes[0]
+        assert "do not close it" in gates.guidance(task_of(task_id))
 
 
 def test_plain_retention_count_resolves(db, github, notices):
