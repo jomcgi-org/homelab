@@ -50,6 +50,12 @@ if [[ "${#RECORDS[@]}" -eq 0 ]]; then
 	exit 0
 fi
 
+# Capture the publishing checkout before the retry loop moves it to newer main.
+# The write-back parent can contain unrelated merges and is not build provenance.
+# Rollout verification must pair this source commit with the chart versions in
+# the commit body, then independently check publication and live deployment.
+PUBLISHED_SOURCE_COMMIT=$(git rev-parse --verify HEAD^{commit})
+
 # A targetRevision line pinning an OCI chart version, as opposed to a git ref.
 # Anchored end to end so `targetRevision: HEAD` and `targetRevision: main` can
 # never match.
@@ -174,7 +180,9 @@ while [[ "$attempt" -le "$TRIES" ]]; do
 
 $(printf '%s\n' "${SUMMARY[@]}")
 
-Written back by write-back-versions.sh (ADR platform/009 decision 1)."
+Written back by write-back-versions.sh (ADR platform/009 decision 1).
+
+Chart-Source-Commit: ${PUBLISHED_SOURCE_COMMIT}"
 
 	# `|| PUSH_RC=$?` keeps errexit from aborting on the very failure this loop
 	# exists to handle, and captures the message so the two causes below can be
