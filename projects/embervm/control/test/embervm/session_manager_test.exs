@@ -2441,6 +2441,47 @@ defmodule Embervm.SessionManagerTest do
     assert Embervm.Router.classify_error_as_retryable(reason)
   end
 
+  test "an active parked rejoin no-bricks result stays non-terminal at the bound" do
+    {:ok, mono} = Agent.start_link(fn -> 0 end)
+
+    ctx =
+      start_stack(
+        prime_fun: fake_prime_fun("vm-active-rejoin-expired"),
+        channel_fun: fake_channel_fun(),
+        monotonic_clock: fn -> Agent.get(mono, & &1) end,
+        pressure_retry_interval_ms: 60_000,
+        pressure_wait_bound_ms: 100
+      )
+
+    created = create_persistence_session(ctx)
+    park_session(ctx, created)
+    NodeCapacity.drop(ctx.cap_table, "node-4")
+
+    task =
+      Task.async(fn ->
+        SessionManager.invoke(ctx.mgr, created.session_id, %{body: "active-expire-rejoin"})
+      end)
+
+    assert eventually(fn ->
+             get_in(:sys.get_state(ctx.mgr), [:pressure_waits, created.session_id, :last_reason]) ==
+               :no_bricks
+           end)
+
+    # Model a rejoin worker whose no-bricks result crosses the deadline while in
+    # flight. The transient relighting state must not be mistaken for a banked
+    # snapshot relight.
+    assert {:ok, _} = SessionStore.mark(ctx.store, created.session_id, :relight)
+    :ok = Agent.update(mono, fn _ -> 100 end)
+    send(ctx.mgr, {:rejoin_done, created.session_id, {:error, :no_bricks}})
+
+    reason = {:relight_failed, {:pressure_wait_expired, :no_bricks}}
+    assert {:error, ^reason} = Task.await(task)
+
+    parked = wait_for_state(ctx, created.session_id, :parked)
+    assert parked.terminal_reason == nil
+    assert Embervm.Router.classify_error_as_retryable(reason)
+  end
+
   test "fatal workspace restore aborts the rejoin and keeps the session parked" do
     # A store failure that is NOT a clean miss must stop the rejoin: priming a
     # blank workspace over data that exists remotely is the data-loss path.
