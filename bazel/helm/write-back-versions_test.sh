@@ -102,6 +102,7 @@ expect "missing record dir is a no-op" "0" "$?" "exit status"
 
 # 2. A higher published version is written to BOTH files in one commit.
 clone=$(new_env happy 0.1.0)
+published_source=$(git -C "$clone" rev-parse HEAD)
 record "$TMP/rec-happy" demo projects/demo/chart 0.1.3
 (cd "$clone" && bash "$SCRIPT" "$TMP/rec-happy" >/dev/null 2>&1)
 git -C "$clone" fetch --quiet origin main
@@ -109,6 +110,26 @@ expect "Chart.yaml written" "0.1.3" \
 	"$(version_on_main "$clone" projects/demo/chart/Chart.yaml)" "published version"
 expect "targetRevision written" "0.1.3" \
 	"$(version_on_main "$clone" projects/demo/deploy/application.yaml)" "kept in step"
+expect "publication source recorded" "$published_source" \
+	"$(git -C "$clone" log -1 --format='%(trailers:key=Chart-Source-Commit,valueonly)' origin/main)" \
+	"source commit can be correlated with the published versions"
+
+# Main may advance while a publish is in flight. The new parent is not the
+# source of the already-built charts, even though write-back must preserve it.
+race_clone=$(new_env provenance-race 0.1.0)
+race_source=$(git -C "$race_clone" rev-parse HEAD)
+race_seed="$TMP/provenance-race-seed"
+git -C "$race_seed" commit --quiet --allow-empty -m "fix: unrelated newer merge"
+git -C "$race_seed" push --quiet "$TMP/provenance-race.git" main
+race_parent=$(git -C "$race_seed" rev-parse HEAD)
+record "$TMP/rec-provenance-race" demo projects/demo/chart 0.1.1
+(cd "$race_clone" && bash "$SCRIPT" "$TMP/rec-provenance-race" >/dev/null 2>&1)
+git -C "$race_clone" fetch --quiet origin main
+expect "newer main preserved" "$race_parent" \
+	"$(git -C "$race_clone" rev-parse origin/main^)" "write-back is based on current main"
+expect "publication source survives newer main" "$race_source" \
+	"$(git -C "$race_clone" log -1 --format='%(trailers:key=Chart-Source-Commit,valueonly)' origin/main)" \
+	"provenance names the build checkout, not the write-back parent"
 
 # The $values source's git ref must be untouched. A loose targetRevision match
 # would rewrite it to a chart version and break the values source, taking the
