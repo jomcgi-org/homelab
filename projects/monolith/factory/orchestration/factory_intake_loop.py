@@ -446,6 +446,14 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
         intake = intake_policy(policy)
         if not intake["enabled"]:
             return []
+        # This is the between-job boundary: no receipt has been selected or
+        # claimed yet. The staged poll ignores soft claims, defers only active
+        # lane blockers, and leaves the exclusive queue available on outage.
+        from factory.orchestration.agent_board_poll import eligible_lanes
+
+        lanes = eligible_lanes(lanes)
+        if not lanes:
+            return []
         # The ceiling is chart configuration and the lane maxima are posted
         # policy, so neither says the other is the binding constraint. Name it
         # here, throttled, rather than leaving an operator to infer it from a

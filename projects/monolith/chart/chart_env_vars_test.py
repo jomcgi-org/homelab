@@ -221,6 +221,10 @@ def test_factory_webhook_and_pointer_ship_staged_off(chart_context):
         r'- name: FACTORY_WORK_ITEM_POINTER_ENABLED\n\s+value: "false"',
         rendered,
     )
+    assert re.search(
+        r'- name: FACTORY_AGENT_BOARD_POLL_ENABLED\n\s+value: "false"',
+        rendered,
+    )
     assert "value: /webhooks/github/factory" in rendered
     assert re.search(
         r"key: FACTORY_GITHUB_WEBHOOK_SECRET\n\s+optional: true",
