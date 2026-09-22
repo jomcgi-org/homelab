@@ -1577,9 +1577,9 @@ S3-compatible object store.
   hard-link aliases, its ext4 loop fstab entry, host loop device and sole mount
   target agree, and no active consumer is found. The verified inode stays open
   across mkfs so a concurrent path replacement cannot redirect the reformat.
-  It never reformats XFS, never force-unmounts, and leaves foreign mounts such as
-  the node-4 bind untouched. Both gates remain default-off pending the live
-  checks in #5699. Bases under scratch are node-shared across co-located bricks.
+  It never reformats XFS, never force-unmounts, and leaves foreign bind mounts
+  untouched. Both gates remain default-off pending the live checks in #5699.
+  Bases under scratch are node-shared across co-located bricks.
   Scratch does not survive a Spot node replacement: every guest rootfs rebakes
   in the brick init containers and the control plane re-drives the dropped
   bases without a restart, about ten minutes end to end.
