@@ -9853,7 +9853,9 @@ def test_a_stale_allowance_is_re_derived_before_a_top_up_dispatch(
     assert controls.task_snapshot(task["id"])["allowance"] == derived
 
 
-def test_ingest_eligible_classifies_the_operators_named_issues(monkeypatch):
+def test_ingest_eligible_classifies_the_operators_named_issues(
+    feedback_db, monkeypatch
+):
     """The floor must not depend on which path found the work."""
     import factory.orchestration.factory_intake as intake
 
