@@ -28,11 +28,19 @@ def _cached(key: tuple, read):
     now = time.monotonic()
     prior = _recent.get(key)
     if prior is not None and now - prior[0] < 30:
-        return prior[1]
-    value = read()  # Never cache a failed read as an empty inventory.
-    if len(_recent) >= 64:
-        _recent.pop(next(iter(_recent)))
-    _recent[key] = (time.monotonic(), value)
+        value = prior[1]
+    else:
+        try:
+            value = read()
+        except Exception as exc:  # Failure stays a failure, never an empty inventory.
+            value = exc.with_traceback(None)
+        if len(_recent) >= 64:
+            _recent.pop(next(iter(_recent)))
+        _recent[key] = (time.monotonic(), value)
+    if isinstance(value, Exception):
+        # A timed-out cluster must not cost another 30s for every pending task.
+        # Drop old traceback frames when sharing the same bounded failure.
+        raise value.with_traceback(None)
     return value
 
 
