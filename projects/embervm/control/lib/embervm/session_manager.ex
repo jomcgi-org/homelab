@@ -1266,18 +1266,16 @@ defmodule Embervm.SessionManager do
              validate_restore_lineage(state, restore_lineage, workload, principal),
            :ok <- check_restore_not_inflight(state, restore_lineage),
            :ok <- validate_restore_volume_owner(state, restore_holder, restore_lineage, workload),
-           pin_node_id =
-             restore_lineage_volume_node(state, restore_holder, restore_lineage, workload),
-           {:ok, node_id, dial_id, snapshot_ref} <- place_create(state, workload, entry, pin_node_id),
-           retirement_dial_id =
+           {:ok, retirement_dial_id} <-
              restore_lineage_retirement_dial(
                state,
                restore_holder,
                restore_lineage,
-               workload,
-               node_id,
-               dial_id
-             ) do
+               workload
+             ),
+           pin_node_id =
+             restore_lineage_volume_node(state, restore_holder, restore_lineage, workload),
+           {:ok, node_id, dial_id, snapshot_ref} <- place_create(state, workload, entry, pin_node_id) do
         {:ok,
          %{
            entry: entry,
@@ -1439,43 +1437,52 @@ defmodule Embervm.SessionManager do
          _state,
          nil,
          _restore_lineage,
-         _workload,
-         _placed_node_id,
-         _placed_dial_id
+         _workload
        ),
-       do: nil
+       do: {:ok, nil}
 
   defp restore_lineage_retirement_dial(
          state,
          %{volume_node_id: owner_node_id},
          restore_lineage,
-         workload,
-         placed_node_id,
-         placed_dial_id
+         workload
        ) do
-    exact_owner_dial =
+    exact_owner_dials =
       state
       |> reported_restore_volume_facts(restore_lineage, workload)
       |> Enum.filter(&(Map.get(&1, :configured_id) == owner_node_id))
       |> Enum.map(&fact_dial_id/1)
       |> Enum.filter(&(is_binary(&1) and &1 != ""))
+      |> Enum.uniq()
       |> Enum.sort()
-      |> List.first()
 
-    owner_fallback_dial =
+    owner_dials =
       state.capacity_table
       |> NodeCapacity.all()
       |> Enum.filter(&(Map.get(&1, :configured_id) == owner_node_id))
       |> Enum.map(&fact_dial_id/1)
       |> Enum.filter(&(is_binary(&1) and &1 != ""))
+      |> Enum.uniq()
       |> Enum.sort()
-      |> List.first()
 
-    cond do
-      is_binary(exact_owner_dial) -> exact_owner_dial
-      placed_node_id == owner_node_id -> placed_dial_id
-      is_binary(owner_fallback_dial) -> owner_fallback_dial
-      true -> owner_node_id
+    # NotFound is proof only when the addressed daemon is the sole possible
+    # owner or its fleet fact reports the exact lineage. Choosing one of several
+    # co-located siblings would turn that sibling's NotFound into a false
+    # relinquishment acknowledgement.
+    case {exact_owner_dials, owner_dials} do
+      {[dial_id], _owner_dials} ->
+        {:ok, dial_id}
+
+      {[], [dial_id]} ->
+        {:ok, dial_id}
+
+      {[], []} ->
+        {:ok, owner_node_id}
+
+      {reported, candidates} ->
+        {:error,
+         {:lineage_relinquishment_failed,
+          {:volume_owner_ambiguous, owner_node_id, reported, candidates}}}
     end
   end
 
