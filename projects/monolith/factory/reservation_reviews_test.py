@@ -799,3 +799,152 @@ def test_reviewed_interactive_stop_settles_only_with_safe_preserved_queue(
             session.exec(select(PendingMessage)).one().message_text
             == "Keep this user input"
         )
+
+
+def ceased_reviewer(db):
+    pid = seed(
+        db,
+        key=leases.PREFIX + "ceased",
+        state="settled",
+        age=3600,
+        guest="old-review-guest",
+    )
+    with Session(db) as session:
+        permit = session.get(AgentCapacityReservation, pid)
+        permit.outcome = "guest_cessation_confirmed"
+        permit.settled_at = NOW - timedelta(seconds=120)
+        agent = session.get(AgentSession, permit.session_id)
+        agent.status = "failed"
+        agent.created_at = NOW - timedelta(seconds=3600)
+        agent.last_turn_at = NOW - timedelta(seconds=300)
+        pending = session.exec(
+            select(PendingMessage).where(PendingMessage.session_id == agent.id)
+        ).one()
+        session.delete(pending)
+        session.add(
+            AgentTurn(
+                session_id=agent.id,
+                seq=1,
+                prompt="review",
+                result_text="observer lost",
+                terminal_reason="error",
+                stop_reason="invocation_outcome_unknown",
+                cost_usd=None,
+                created_at=agent.last_turn_at,
+            )
+        )
+        session.add(
+            ProbeObservation(
+                permit_id=pid,
+                identity_sha256="a" * 64,
+                guest_id=agent.ember_session_id,
+                reason="guest_cessation_confirmed",
+                checked_at=NOW - timedelta(seconds=120),
+                settled_at=NOW - timedelta(seconds=119),
+            )
+        )
+        session.add_all([permit, agent])
+        session.commit()
+        return pid, agent.id
+
+
+def test_cessation_proof_releases_global_review_hold_and_preserves_history(db):
+    from factory.execution import store
+
+    pid, sid = ceased_reviewer(db)
+    work = seed(db)
+    assert reviews.health_snapshot()["retained_reviewers"] == []
+    candidate = reviews.claim_review()
+    assert candidate["snapshot"]["permit_id"] == work
+    assert reviews.claim_review() is None  # The new review still owns the lane.
+    with Session(db) as session:
+        permit = session.get(AgentCapacityReservation, pid)
+        agent = session.get(AgentSession, sid)
+        turn = session.exec(select(AgentTurn).where(AgentTurn.session_id == sid)).one()
+        assert permit.state == "settled"
+        assert permit.outcome == "guest_cessation_confirmed"
+        assert agent.status == "failed"
+        assert agent.ember_session_id == "old-review-guest"
+        assert turn.stop_reason == "invocation_outcome_unknown"
+        assert turn.cost_usd is None
+        assert store.has_unknown_outcome(session, sid)
+
+
+@pytest.mark.parametrize(
+    "conflict",
+    [
+        "no_proof",
+        "wrong_guest",
+        "unsettled_proof",
+        "wrong_reason",
+        "no_identity",
+        "permit_active",
+        "permit_outcome",
+        "permit_settled_later",
+        "new_turn",
+        "changed_last_turn",
+        "pending",
+        "observer",
+        "cleanup",
+        "live_status",
+        "alias",
+    ],
+)
+def test_unresolved_or_changed_reviewer_still_holds_lane(db, conflict):
+    pid, sid = ceased_reviewer(db)
+    seed(db)
+    with Session(db) as session:
+        permit = session.get(AgentCapacityReservation, pid)
+        agent = session.get(AgentSession, sid)
+        proof = session.get(ProbeObservation, pid)
+        if conflict == "no_proof":
+            session.delete(proof)
+        elif conflict == "wrong_guest":
+            proof.guest_id = "another-guest"
+        elif conflict == "unsettled_proof":
+            proof.settled_at = None
+        elif conflict == "wrong_reason":
+            proof.reason = "awaiting_cessation"
+        elif conflict == "no_identity":
+            proof.identity_sha256 = None
+        elif conflict == "permit_active":
+            permit.state = "uncertain"
+        elif conflict == "permit_outcome":
+            permit.outcome = "not_invoked"
+        elif conflict == "permit_settled_later":
+            permit.settled_at = NOW
+        elif conflict == "new_turn":
+            session.add(
+                AgentTurn(
+                    session_id=sid,
+                    seq=2,
+                    prompt="new",
+                    result_text="new",
+                    created_at=NOW,
+                )
+            )
+        elif conflict == "changed_last_turn":
+            agent.last_turn_at = NOW
+        elif conflict == "pending":
+            session.add(PendingMessage(session_id=sid, seq=2, message_text="new"))
+        elif conflict == "observer":
+            agent.result_receipt_fence_id = "native-observer"
+        elif conflict == "cleanup":
+            agent.guest_cleanup_id = "cleanup-owner"
+        elif conflict == "live_status":
+            agent.status = "recovering"
+        elif conflict == "alias":
+            session.add(
+                AgentSession(
+                    local_session_id="other-owner",
+                    workspace="guest",
+                    branch="main",
+                    ember_session_id=agent.ember_session_id,
+                )
+            )
+        session.add_all([permit, agent])
+        if conflict != "no_proof":
+            session.add(proof)
+        session.commit()
+    assert reviews.claim_review() is None
+    assert sid in reviews.health_snapshot()["retained_reviewers"]

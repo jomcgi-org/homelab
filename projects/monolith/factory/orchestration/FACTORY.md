@@ -1679,6 +1679,12 @@ ownership mechanism; it never renews the work-review lease. The factory begins
 an Astra review five minutes before expiry and bounds the review to four minutes.
 One durable review runs at a time, using reserved interactive headroom so a full
 background pool cannot starve supervision.
+A failed reviewer may retain its historical guest binding after permit
+supervision proves that exact guest ceased. A matching settled cessation audit
+releases the global reviewer concurrency hold and its retained-reviewer health
+warning. New turns, queued work, active permits, aliases, cleanup ownership,
+observer fences, or missing/mismatched proof retain the hold. This does not
+retry the failed reviewer, delete its binding, or change its costs or history.
 
 The review sees the task objective, exact attempt, bounded progress, previous
 review, and a fresh control-plane guest observation. Approval renews the exact
