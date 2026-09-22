@@ -2290,19 +2290,46 @@ def _consume_intervention_notifications(task_id: str) -> None:
                 select(FactoryAudit)
                 .where(
                     FactoryAudit.task_id == task_id,
-                    FactoryAudit.action == "stop_observation",
+                    FactoryAudit.action.in_(
+                        (
+                            "stop_observation",
+                            "stop_settled",
+                            "interrupted_continuation_settled",
+                            "record_start_outcome",
+                        )
+                    ),
                 )
                 .order_by(FactoryAudit.id)
             ).all()
         required = {}
         for row in rows:
             detail = json.loads(row.detail_json)
-            workflow_id = detail.get("workflow_id")
-            if isinstance(workflow_id, str):
+            workflow_id = detail.get(
+                "start_key" if row.action == "record_start_outcome" else "workflow_id"
+            )
+            if not isinstance(workflow_id, str) or not workflow_id:
+                continue
+            if row.action == "stop_observation":
                 if detail.get("intervention_required") is True:
                     required[workflow_id] = detail
                 else:
                     required.pop(workflow_id, None)
+            elif (
+                (
+                    row.action == "stop_settled"
+                    and detail.get("cessation_confirmed") is True
+                )
+                or row.action == "interrupted_continuation_settled"
+                or (
+                    row.action == "record_start_outcome"
+                    and detail.get("reconciled") is True
+                    and detail.get("status") in ("succeeded", "failed")
+                )
+            ):
+                # Settlement writers validate the exact attempt under the control
+                # lock. Retain their history without asking a person to settle it
+                # again or consuming the task's notification fence on a stale hold.
+                required.pop(workflow_id, None)
         summary = []
         for workflow_id, detail in required.items():
             refusal = str(

@@ -1851,7 +1851,12 @@ are excluded from discovery candidates.
 
 Discord uses one durable human-needed fence per task and notification kind:
 refine, escalation, intervention, deadline and landing. Supervision combines the attempts
-known at the time into one summary. Later observations remain in the audit
+known at the time into one summary. Before notifying, it folds observations and
+subsequent confirmed stop settlements, authenticated drain settlements, and
+reconciled terminal start outcomes in audit order for each exact workflow.
+Settled attempts retain their history but do not consume the notification fence.
+Uncertain outcomes and other attempts do not clear an outstanding warning.
+Later observations remain in the audit
 instead of sending another message. Automatic stall recovery is audit-only.
 A failed notification attempt is audited without consuming the fence, so it
 can be retried, and does not block task settlement.
