@@ -2556,9 +2556,15 @@ defmodule Embervm.SessionManagerTest do
       start_stack(
         channel_fun: channel_fun,
         prime_fun: prime_fun,
-        retire_volume_fun: fn _channel, request ->
-          send(parent, {:owner_retire, Agent.get(mode, & &1), request.lineage_id})
-          {:ok, %{}}
+        retire_volume_fun: fn {:channel, dial_id}, request ->
+          current = Agent.get(mode, & &1)
+          send(parent, {:owner_retire, current, dial_id, request.lineage_id})
+
+          if current == :rebuilt and String.starts_with?(dial_id, "node-5") do
+            {:error, %GRPC.RPCError{status: 5, message: "workspace absent"}}
+          else
+            {:ok, %{}}
+          end
         end,
         restore_artifact_fun: fn _channel, request ->
           send(parent, {:owner_restore, Agent.get(mode, & &1), request.artifact.ref})
@@ -2571,7 +2577,7 @@ defmodule Embervm.SessionManagerTest do
     assert_receive {:owner_prime, :initial, ^lineage_id}
     assert {:ok, :destroying} = SessionManager.destroy(ctx.mgr, original.session_id)
     assert wait_for_state(ctx, original.session_id, :destroyed).state == :destroyed
-    assert_receive {:owner_retire, :initial, ^lineage_id}
+    assert_receive {:owner_retire, :initial, "node-4", ^lineage_id}
 
     rebuilt =
       start_supervised!(
