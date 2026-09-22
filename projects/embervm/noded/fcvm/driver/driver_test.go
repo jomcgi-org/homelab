@@ -519,6 +519,47 @@ func TestDriverClaimWithVolumeLoadPatchResume(t *testing.T) {
 	}
 }
 
+func TestDriverClaimWithVolumeColdBootsWhenWarmRestoreDisabled(t *testing.T) {
+	launcher := &fakeLauncher{}
+	root := shortTempDir(t)
+	d := New(Config{
+		KernelImagePath: "/opt/kata/vmlinux",
+		RootfsPath:      "/dev/mapper/thread",
+		SnapshotRoot:    root,
+		Node:            "node-4",
+		Arch:            "amd64",
+	}, launcher, nil)
+	dir := d.baseDir("volume-base")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "snapfile"), []byte("snap"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resources := `[{"role":"rootfs","host_path":"/rootfs","jail_path":"/rootfs"},{"role":"volume","host_path":"/placeholder","jail_path":"/placeholder","writable":true}]`
+	if err := os.WriteFile(filepath.Join(dir, jailResourcesName), []byte(resources), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h, err := d.Claim(context.Background(), substrate.ClaimSpec{
+		ThreadID:        "disarmed-volume",
+		BaseSnapshotRef: substrate.SnapshotRef{ID: "volume-base", Arch: "amd64", DeviceSetKnown: true, DeviceIDs: []string{"volume"}},
+		VolumeDiskPath:  "/sessions/s1/workspace.img",
+	})
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Release(context.Background(), h) })
+	paths := launcher.requestPaths()
+	for _, path := range paths {
+		if path == "PUT /snapshot/load" || path == "PATCH /drives/volume" {
+			t.Fatalf("disarmed volume restore unexpectedly used warm base: %v", paths)
+		}
+	}
+	if !slices.Contains(paths, "PUT /drives/volume") {
+		t.Fatalf("cold boot did not attach requested volume: %v", paths)
+	}
+}
+
 func TestDriverClaimWithVolumeColdBootsWhenCapturedBaseHasNoVolume(t *testing.T) {
 	launcher := &fakeLauncher{}
 	root := shortTempDir(t)

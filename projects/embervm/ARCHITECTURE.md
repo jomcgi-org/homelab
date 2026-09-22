@@ -483,8 +483,12 @@ export, restored into staging, checked against store metadata, and read again
 when noded rebuilds its base registry after restart.
 
 A volume request patches and resumes a base only when this captured metadata
-proves that `volume` exists. A current rootfs-only base is cold-booted with the
-requested volume, so Firecracker is never asked to patch a nonexistent device.
+proves that `volume` exists and the receiving node's
+`WarmRestoreWithVolume` safety gate is armed. The gate therefore controls both
+placeholder-volume capture and restore: a disarmed node cold-boots even if it
+hydrates or adopts a placeholder-bearing base captured by an armed sibling. A
+current rootfs-only base is cold-booted with the requested volume, so
+Firecracker is never asked to patch a nonexistent device.
 A bundle without `jail-resources.json` predates this contract and is **unknown**,
 not rootfs-only: historical bundles can have either device shape. Such a legacy
 bundle remains warm-restorable for volume-less work. A volume request takes the
