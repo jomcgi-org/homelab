@@ -1954,12 +1954,20 @@ defmodule Embervm.RouterTest do
     successful_invoke =
       spans
       |> TestSpanExporter.named("embervm.session.invoke")
-      |> Enum.find(&(TestSpanExporter.attributes(&1)["ember.session_id"] == "s-live"))
+      |> Enum.find(fn span ->
+        attributes = TestSpanExporter.attributes(span)
+        attributes["ember.session_id"] == "s-live" and
+          not Map.has_key?(attributes, "ember.reason")
+      end)
 
     successful_wait =
       spans
       |> TestSpanExporter.named("embervm.session.output_wait")
-      |> Enum.find(&(TestSpanExporter.attributes(&1)["ember.session_id"] == "s-live"))
+      |> Enum.find(fn span ->
+        attributes = TestSpanExporter.attributes(span)
+        attributes["ember.session_id"] == "s-live" and
+          not Map.has_key?(attributes, "ember.reason")
+      end)
 
     assert TestSpanExporter.status_code(successful_invoke) == :unset
     assert TestSpanExporter.status_code(successful_wait) == :unset

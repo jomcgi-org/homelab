@@ -1447,7 +1447,10 @@ defmodule Embervm.SessionManager do
   # or exactly one instance remains on that node. The latter closes the scan
   # failure window: RetireVolume can write its durable intent on that instance,
   # so RestoreArtifact must run there and observe the pending export. When the
-  # owner node has left the fleet entirely, return nil for a store-only restore.
+  # Missing owner facts are not proof that the owner departed. The capacity
+  # table is volatile and also drops rows while a daemon is temporarily
+  # unavailable, so admission must fail closed until an authoritative owner
+  # instance can acknowledge relinquishment.
   defp restore_lineage_volume_node(_state, nil, _restore_lineage, _workload), do: nil
 
   defp restore_lineage_volume_node(
@@ -1530,7 +1533,9 @@ defmodule Embervm.SessionManager do
         {:ok, dial_id}
 
       {[], []} ->
-        {:ok, nil}
+        {:error,
+         {:lineage_relinquishment_failed,
+          {:volume_owner_unavailable, owner_node_id}}}
 
       {reported, candidates} ->
         {:error,
@@ -6131,11 +6136,11 @@ defmodule Embervm.SessionManager do
   # A restoring create must observe RetireVolume's acknowledgement before it
   # can inherit the lineage. Noded writes the crash-safe retirement intent
   # before replying, then exports and deletes asynchronously. A missing local
-  # volume means an earlier retirement already completed or the lineage is
-  # store-only, so RestoreArtifact remains the authority for the subsequent
-  # hit or miss. When the recorded owner has left the fleet, there is no daemon
-  # to acknowledge and the restore proceeds through that store-only path.
-  # Every error from an available owner fails the restore closed.
+  # volume means an earlier retirement already completed, so RestoreArtifact
+  # remains the authority for the subsequent hit or miss. Missing capacity facts
+  # never reach this function: they do not prove departure or completed
+  # relinquishment, and restore admission fails closed before placement.
+  # Every error from an available owner also fails the restore closed.
   defp confirm_restore_relinquishment(_state, nil, _workload, _lineage_id), do: :ok
 
   defp confirm_restore_relinquishment(state, dial_id, workload, lineage_id) do

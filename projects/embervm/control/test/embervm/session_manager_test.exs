@@ -2661,18 +2661,14 @@ defmodule Embervm.SessionManagerTest do
     assert restored.lineage_id == lineage_id
   end
 
-  test "InheritanceOnlyFromTerminal: reconstructed state uses store-only restore after owner departure" do
+  test "InheritanceOnlyFromTerminal: reconstructed state waits through missing owner facts and retries after acknowledgement" do
     parent = self()
     {:ok, mode} = Agent.start_link(fn -> :initial end)
 
     channel_fun = fn dial_id ->
       current = Agent.get(mode, & &1)
       send(parent, {:owner_dial, current, dial_id})
-
-      case {current, dial_id} do
-        {:rebuilt, "node-4"} -> {:error, :recorded_owner_unavailable}
-        _ -> {:ok, {:channel, dial_id}}
-      end
+      {:ok, {:channel, dial_id}}
     end
 
     prime_fun = fn _channel, request ->
@@ -2687,12 +2683,17 @@ defmodule Embervm.SessionManagerTest do
         prime_fun: prime_fun,
         retire_volume_fun: fn {:channel, dial_id}, request ->
           current = Agent.get(mode, & &1)
-          send(parent, {:owner_retire, current, dial_id, request.lineage_id})
+          case current do
+            :available ->
+              send(parent, {:owner_retire_waiting, self(), dial_id, request.lineage_id})
 
-          if current == :rebuilt and String.starts_with?(dial_id, "node-5") do
-            {:error, %GRPC.RPCError{status: 5, message: "workspace absent"}}
-          else
-            {:ok, %{}}
+              receive do
+                :ack_retirement -> {:ok, %{}}
+              end
+
+            _ ->
+              send(parent, {:owner_retire, current, dial_id, request.lineage_id})
+              {:ok, %{}}
           end
         end,
         restore_artifact_fun: fn _channel, request ->
@@ -2727,15 +2728,38 @@ defmodule Embervm.SessionManagerTest do
 
     NodeCapacity.drop(ctx.cap_table, "node-4")
     put_brick(ctx, "wl-persist", "replacement", node_id: "node-5")
-    Agent.update(mode, fn _ -> :rebuilt end)
+    Agent.update(mode, fn _ -> :missing end)
 
-    assert {:ok, restored} =
+    assert {:error,
+            {:denied,
+             {:lineage_relinquishment_failed,
+              {:volume_owner_unavailable, "node-4"}}}} =
              SessionManager.create(ctx.mgr, "wl-persist", "p1", original.lineage_id)
 
-    assert_receive {:owner_restore, :rebuilt, ^lineage_id}
-    assert_receive {:owner_prime, :rebuilt, ^lineage_id}
-    refute_receive {:owner_retire, :rebuilt, _dial_id, _lineage_id}
-    refute_receive {:owner_dial, :rebuilt, "node-4"}
+    refute_receive {:owner_retire, :missing, _dial_id, _lineage_id}
+    refute_receive {:owner_restore, :missing, _lineage_id}
+    refute_receive {:owner_prime, :missing, _lineage_id}
+
+    # A capacity row can disappear temporarily while the owner daemon is still
+    # alive. Once that exact node is dispatchable again, retry and wait for its
+    # durable retirement acknowledgement before either restore operation runs.
+    put_brick(ctx, "wl-persist", "owner", node_id: "node-4")
+    Agent.update(mode, fn _ -> :available end)
+
+    retry =
+      Task.async(fn ->
+        SessionManager.create(ctx.mgr, "wl-persist", "p1", original.lineage_id)
+      end)
+
+    assert_receive {:owner_retire_waiting, retire_worker, "node-4/owner", ^lineage_id}
+    refute_receive {:owner_restore, :available, _lineage_id}
+    refute_receive {:owner_prime, :available, _lineage_id}
+
+    send(retire_worker, :ack_retirement)
+    assert {:ok, restored} = Task.await(retry)
+    assert_receive {:owner_restore, :available, ^lineage_id}
+    assert_receive {:owner_prime, :available, ^lineage_id}
+
     assert {:ok, %{session_id: session_id, state: :running}} =
              SessionStore.get_latest_by_lineage(rebuilt, original.lineage_id)
 

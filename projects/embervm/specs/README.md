@@ -586,14 +586,19 @@ inherited. The restoring create worker also reissues `RetireVolume` on the exact
 volume-owner instance and waits for its acknowledgement before `RestoreArtifact`
 or `Prime`. That acknowledgement follows noded's durable
 `.retirement-intent` write, while export and deletion remain asynchronous. A
-missing local volume is treated as already relinquished and `RestoreArtifact`
-still decides whether the store copy exists. If the recorded owner has left the
-fleet entirely, the restore uses this store-only path. If one owner instance
-remains but its volume scan omits the lineage, placement stays pinned there so
-its retirement intent gates `RestoreArtifact`. Every dial or RPC error from an
-available owner fails the restore closed and remains retryable. This closes
-issue #6250 without blocking the SessionManager mailbox or relying on its
-volatile in-flight map.
+missing local volume reported by that authoritative owner is treated as already
+relinquished and `RestoreArtifact` still decides whether the store copy exists.
+An absent capacity row is not proof that the recorded owner departed, because
+the registry is volatile and also removes temporarily unavailable daemons.
+Restore therefore fails closed and remains retryable until an owner instance can
+acknowledge retirement. If one owner instance remains but its volume scan omits
+the lineage, placement stays pinned there so its retirement intent gates
+`RestoreArtifact`. If multiple co-located instances remain and none reports the
+lineage, restore also fails closed: this preserves safety but can delay recovery
+until ownership becomes unambiguous. Every dial or RPC error from an available
+owner fails the restore closed and remains retryable. This closes issue #6250
+without blocking the SessionManager mailbox or relying on its volatile in-flight
+map.
 
 The remaining two gaps (exclusive heir and reconnect divergence) are why
 `ExclusiveHeirGuard` and `ReconnectComparison` are declared assumptions in the
