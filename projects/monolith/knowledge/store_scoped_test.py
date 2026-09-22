@@ -221,7 +221,15 @@ def test_search_and_get_note_project_scoped_fields_with_real_session(session):
     ) as rank:
         results = KnowledgeStore(session).search_notes_with_context(embedding)
 
-    rank.assert_called_once_with(session, embedding, 20, None)
+    rank.assert_called_once_with(
+        session,
+        embedding,
+        20,
+        None,
+        scope_filter=None,
+        exclude_invalidated=False,
+        include_legacy=False,
+    )
     detail = KnowledgeStore(session).get_note_by_id("scoped")
     assert detail is not None
     for result in (results[0], detail):

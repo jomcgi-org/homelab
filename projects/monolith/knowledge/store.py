@@ -172,6 +172,7 @@ def _rank_search_chunks(
     type_filter: str | None,
     scope_filter: str | None = None,
     exclude_invalidated: bool = False,
+    include_legacy: bool = False,
 ) -> list[tuple[int, int, float]]:
     """Return ranked ``(note_fk, chunk_fk, score)`` tuples using pgvector."""
     distance = Chunk.embedding.cosine_distance(query_embedding)
@@ -195,6 +196,13 @@ def _rank_search_chunks(
         notes_stmt = notes_stmt.where(Note.type == type_filter)
     if scope_filter is not None:
         notes_stmt = notes_stmt.where(Note.scope == scope_filter)
+    if not include_legacy:
+        notes_stmt = notes_stmt.where(
+            or_(
+                Note.verification_state.is_(None),
+                Note.verification_state != "legacy",
+            )
+        )
     if exclude_invalidated:
         notes_stmt = notes_stmt.where(
             Note.valid_until.is_(None),
@@ -527,6 +535,7 @@ class KnowledgeStore:
         scope_filter: str | None = None,
         exclude_invalidated: bool = False,
         include_embeddings: bool = False,
+        include_legacy: bool = False,
     ) -> list[dict]:
         """Semantic search returning type, tags, best chunk section + snippet.
 
@@ -534,47 +543,24 @@ class KnowledgeStore:
         SQL queries:
 
         1. Top-N notes ranked by ``best_score = 1 - min(cosine_distance)``
-           across their chunks, with optional ``Note.type`` filter.
+           across their chunks, with optional note filters applied before the
+           ranking limit. Legacy notes are excluded unless ``include_legacy``
+           is explicitly enabled.
         2. A single batched ``SELECT DISTINCT ON (note_fk)`` to pick the
            best-matching chunk per top-N note, with no N+1.
 
         Results are stitched in Python into dicts with keys:
         ``note_id, title, path, type, tags, score, section, snippet, entities``.
         """
-        if scope_filter is None:
-            if exclude_invalidated:
-                ranked = _rank_search_chunks(
-                    self.session,
-                    query_embedding,
-                    limit,
-                    type_filter,
-                    exclude_invalidated=True,
-                )
-            else:
-                ranked = _rank_search_chunks(
-                    self.session,
-                    query_embedding,
-                    limit,
-                    type_filter,
-                )
-        else:
-            if exclude_invalidated:
-                ranked = _rank_search_chunks(
-                    self.session,
-                    query_embedding,
-                    limit,
-                    type_filter,
-                    scope_filter,
-                    True,
-                )
-            else:
-                ranked = _rank_search_chunks(
-                    self.session,
-                    query_embedding,
-                    limit,
-                    type_filter,
-                    scope_filter,
-                )
+        ranked = _rank_search_chunks(
+            self.session,
+            query_embedding,
+            limit,
+            type_filter,
+            scope_filter=scope_filter,
+            exclude_invalidated=exclude_invalidated,
+            include_legacy=include_legacy,
+        )
         if not ranked:
             return []
 

@@ -129,6 +129,7 @@ class TestSearchEndpoint:
                 query_embedding=FAKE_EMBEDDING,
                 limit=20,
                 type_filter="paper",
+                include_legacy=True,
             )
 
     def test_limit_forwarded_to_store(self, client):
@@ -141,6 +142,7 @@ class TestSearchEndpoint:
                 query_embedding=FAKE_EMBEDDING,
                 limit=5,
                 type_filter=None,
+                include_legacy=True,
             )
 
     def test_embedding_failure_returns_503(self, fake_session):
@@ -168,6 +170,7 @@ class TestSearchEndpoint:
                 query_embedding=FAKE_EMBEDDING,
                 limit=20,
                 type_filter=None,
+                include_legacy=True,
             )
 
     def test_search_results_include_edges(self, client, fake_embed_client):
