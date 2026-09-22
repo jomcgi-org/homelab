@@ -118,7 +118,7 @@ class _SpiffeHTTPSConnection(http.client.HTTPSConnection):
             for kind, value in certificate.get("subjectAltName", ())
             if kind == "URI"
         }
-        if self._expected_id not in uri_sans:
+        if uri_sans != {self._expected_id}:
             self.close()
             raise ssl.SSLCertVerificationError(
                 f"token broker presented URI SANs {sorted(uri_sans)!r}, "
