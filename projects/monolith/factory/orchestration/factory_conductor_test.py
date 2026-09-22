@@ -11979,6 +11979,47 @@ def test_funding_review_outlives_only_its_exact_soft_deadline(feedback_db, monke
     assert not controls.can_start(task["id"], start_key=request["start_key"])["ok"]
 
 
+@pytest.mark.parametrize("changed_issue", [False, True])
+def test_completed_funding_review_settles_after_admission_deadline(
+    feedback_db, monkeypatch, changed_issue
+):
+    from datetime import datetime, timedelta
+    from factory.orchestration import (
+        factory_funding as funding,
+        factory_controls as controls,
+    )
+
+    task, policy = funding_task(monkeypatch)
+    assert funding.request(task, "Review queued behind busy workers")
+    with controls._read_session() as db:
+        request = funding.pending(db, task["id"])
+    deadline = datetime.fromisoformat(request["deadline_at"])
+    monkeypatch.setattr(controls, "_now", lambda: deadline - timedelta(seconds=1))
+    run = run_feedback_node(task, request["node_key"], funding_decision())
+    # A rollout can delay reconciliation after the bounded review completes.
+    monkeypatch.setattr(controls, "_now", lambda: deadline + timedelta(minutes=10))
+    if changed_issue:
+        monkeypatch.setattr(
+            funding, "_issue", lambda _task: {"number": 21, "state": "closed"}
+        )
+    funding.settle(task, run, request)
+    # Replaying settlement must not grant a second tranche.
+    funding.settle(task, run, request)
+    with controls._read_session() as db:
+        grant = funding.amendment(db, task["id"])
+        settled = funding.latest(db, task["id"], "funding_review_settled")
+        assert funding.pending(db, task["id"]) is None
+        if changed_issue:
+            assert grant is None
+            assert settled["refusal"] == "funding evidence changed"
+        else:
+            assert grant["source_run_id"] == run["id"]
+            assert grant["policy_overlay"]["task_budget_usd"] == 20
+            assert settled["refusal"] is None
+    if changed_issue:
+        assert controls.task_snapshot(task["id"])["policy"] == policy
+
+
 def test_funding_changed_issue_cannot_apply_stale_authority(feedback_db, monkeypatch):
     from factory.orchestration import (
         factory_funding as funding,
