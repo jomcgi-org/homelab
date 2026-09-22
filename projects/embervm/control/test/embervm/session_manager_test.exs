@@ -2532,6 +2532,83 @@ defmodule Embervm.SessionManagerTest do
     assert restored.lineage_id == lineage_id
   end
 
+  test "InheritanceOnlyFromTerminal: reconstructed state retires only the canonical holder owner" do
+    parent = self()
+    {:ok, mode} = Agent.start_link(fn -> :initial end)
+
+    channel_fun = fn dial_id ->
+      current = Agent.get(mode, & &1)
+      send(parent, {:owner_dial, current, dial_id})
+
+      case {current, dial_id} do
+        {:rebuilt, "node-4"} -> {:error, :recorded_owner_unavailable}
+        _ -> {:ok, {:channel, dial_id}}
+      end
+    end
+
+    prime_fun = fn _channel, request ->
+      current = Agent.get(mode, & &1)
+      send(parent, {:owner_prime, current, request.lineage_id})
+      {:ok, %PrimeResponse{vm_id: "vm-owner-#{current}"}}
+    end
+
+    ctx =
+      start_stack(
+        channel_fun: channel_fun,
+        prime_fun: prime_fun,
+        retire_volume_fun: fn _channel, request ->
+          send(parent, {:owner_retire, Agent.get(mode, & &1), request.lineage_id})
+          {:ok, %{}}
+        end,
+        restore_artifact_fun: fn _channel, request ->
+          send(parent, {:owner_restore, Agent.get(mode, & &1), request.artifact.ref})
+          {:error, %GRPC.RPCError{status: 5, message: "workspace absent"}}
+        end
+      )
+
+    original = create_persistence_session(ctx)
+    lineage_id = original.lineage_id
+    assert_receive {:owner_prime, :initial, ^lineage_id}
+    assert {:ok, :destroying} = SessionManager.destroy(ctx.mgr, original.session_id)
+    assert wait_for_state(ctx, original.session_id, :destroyed).state == :destroyed
+    assert_receive {:owner_retire, :initial, ^lineage_id}
+
+    rebuilt =
+      start_supervised!(
+        {SessionStore, name: nil, op_log: ctx.op_log, op_log_mod: SQLite}
+      )
+
+    assert {:ok, %{state: :destroyed, volume_node_id: "node-4"}} =
+             SessionStore.get_latest_by_lineage(rebuilt, original.lineage_id)
+
+    :sys.replace_state(ctx.mgr, fn state ->
+      %{
+        state
+        | session_store: rebuilt,
+          inflight_restore_lineages: MapSet.new(),
+          session_dials: %{}
+      }
+    end)
+
+    NodeCapacity.drop(ctx.cap_table, "node-4")
+    put_brick(ctx, "wl-persist", "replacement", node_id: "node-5")
+    Agent.update(mode, fn _ -> :rebuilt end)
+
+    assert {:error,
+            {:denied,
+             {:lineage_relinquishment_failed,
+              {:error, :recorded_owner_unavailable}}}} =
+             SessionManager.create(ctx.mgr, "wl-persist", "p1", original.lineage_id)
+
+    assert_receive {:owner_dial, :rebuilt, "node-4"}
+    refute_receive {:owner_restore, :rebuilt, _lineage_id}
+    refute_receive {:owner_prime, :rebuilt, _lineage_id}
+    assert {:ok, %{session_id: session_id, state: :destroyed}} =
+             SessionStore.get_latest_by_lineage(rebuilt, original.lineage_id)
+
+    assert session_id == original.session_id
+  end
+
   test "a restoring create whose prime fails re-drives reclamation for the lineage (#4306/#4313)" do
     parent = self()
     {:ok, counter} = Agent.start_link(fn -> 0 end)
