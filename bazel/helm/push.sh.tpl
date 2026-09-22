@@ -129,12 +129,15 @@ if [[ "$CURRENT_BRANCH" == "main" ]]; then
       # publishes cannot land on the same number. See chart-version.sh.
       CHART_VERSION="$CURRENT_VERSION"
       if [[ "$CAN_VERSION" == "true" ]]; then
-        COMPUTED_VERSION=$(cd "$WORKSPACE" && "$CHART_VERSION_SH" "$CHART_DIR" "//${CHART_DIR}:chart.package") || COMPUTED_VERSION=""
-        if [[ -n "$COMPUTED_VERSION" ]]; then
-          CHART_VERSION="$COMPUTED_VERSION"
-        else
-          echo "WARNING: could not compute a version for ${CHART_NAME}; keeping Chart.yaml's ${CURRENT_VERSION}." >&2
+        if ! COMPUTED_VERSION=$(cd "$WORKSPACE" && "$CHART_VERSION_SH" "$CHART_DIR" "//${CHART_DIR}:chart.package"); then
+          echo "ERROR: could not compute a version for ${CHART_NAME}; refusing to reuse Chart.yaml's ${CURRENT_VERSION}." >&2
+          exit 1
         fi
+        if [[ -z "$COMPUTED_VERSION" ]]; then
+          echo "ERROR: version computation returned no version for ${CHART_NAME}; refusing to reuse Chart.yaml's ${CURRENT_VERSION}." >&2
+          exit 1
+        fi
+        CHART_VERSION="$COMPUTED_VERSION"
       fi
 
       set +e
@@ -224,7 +227,10 @@ if [[ "$CURRENT_BRANCH" == "main" ]]; then
         echo "Chart ${CHART_NAME} ${CHART_VERSION} is published but the image digests DIFFER; escalating the version." >&2
         ESCALATED_VERSION=""
         if [[ "$CAN_VERSION" == "true" ]]; then
-          ESCALATED_VERSION=$(cd "$WORKSPACE" && env CHART_VERSION_ALL_PATHS=1 "$CHART_VERSION_SH" "$CHART_DIR" "//${CHART_DIR}:chart.package") || ESCALATED_VERSION=""
+          if ! ESCALATED_VERSION=$(cd "$WORKSPACE" && env CHART_VERSION_ALL_PATHS=1 "$CHART_VERSION_SH" "$CHART_DIR" "//${CHART_DIR}:chart.package"); then
+            echo "ERROR: repo-wide version escalation failed for ${CHART_NAME}." >&2
+            exit 1
+          fi
         fi
         if [[ -z "$ESCALATED_VERSION" ]] || [[ "$ESCALATED_VERSION" == "$CHART_VERSION" ]]; then
           {

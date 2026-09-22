@@ -50,6 +50,7 @@ expect() {
 # whether the missed-bump guard passes, which together select the branch.
 setup() {
 	local name="$1" current="$2" computed="$3" published="$4" digests_match="$5"
+	local version_status="${6:-0}"
 	local ws="$TMP/$name" stubs="$TMP/$name-stubs"
 	mkdir -p "$ws/projects/demo/chart" "$stubs/bazel_tools/tools/bash/runfiles"
 
@@ -67,7 +68,8 @@ setup() {
 	git -C "$ws" add -A
 	git -C "$ws" commit --quiet -m "chore: seed"
 
-	printf '#!/usr/bin/env bash\necho "%s"\n' "$computed" >"$stubs/chart-version.sh"
+	printf '#!/usr/bin/env bash\necho "%s"\nexit %s\n' "$computed" "$version_status" \
+		>"$stubs/chart-version.sh"
 	# `helm show chart` exiting 0 is how the template reads "already published".
 	printf '#!/usr/bin/env bash\nexit %s\n' "$([[ "$published" == "yes" ]] && echo 0 || echo 1)" \
 		>"$stubs/helm"
@@ -97,7 +99,7 @@ run_push() {
 			RUNFILES_DIR="$TMP/$name-stubs" \
 				BUILD_WORKSPACE_DIRECTORY="$ws" \
 				bash "$TMP/$name-stubs/push.sh" 2>&1
-	) || true
+	)
 }
 
 record_version() {
@@ -139,6 +141,25 @@ if grep -q "nothing to publish" <<<"$out"; then
 	echo "ok: reports nothing to publish"
 else
 	echo "FAIL: expected the quiet 'nothing to publish' branch" >&2
+	FAILURES=$((FAILURES + 1))
+fi
+
+# 3. A failed version computation must stop publication. Falling back to the
+# Chart.yaml version can either mutate an existing artifact or silently skip a
+# real content change, so the caller propagates the failure instead.
+ws=$(setup versionfail 0.3.3 ignored no yes 9)
+set +e
+out=$(run_push "$ws" versionfail)
+push_rc=$?
+set -e
+expect "version failure propagates" "1" "$([[ $push_rc -ne 0 ]] && echo 1 || echo 0)" \
+	"chart-version.sh exited non-zero"
+expect "version failure records nothing" "(no record)" "$(record_version "$ws")" \
+	"publication stopped before write-back"
+if grep -q "refusing to reuse Chart.yaml's 0.3.3" <<<"$out"; then
+	echo "ok: reports the fail-safe refusal"
+else
+	echo "FAIL: missing fail-safe version error: ${out}" >&2
 	FAILURES=$((FAILURES + 1))
 fi
 
