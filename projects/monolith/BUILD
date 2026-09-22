@@ -5942,6 +5942,18 @@ py_test(
 )
 
 py_test(
+    name = "knowledge_deployment_observations_test",
+    srcs = ["knowledge/deployment_observations_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_knowledge",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "knowledge_indexing_test",
     srcs = ["knowledge/indexing_test.py"],
     imports = ["."],
@@ -8198,6 +8210,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_cluster",
+        ":pkg_knowledge",
         "@pip//pytest",
         "@pip//pytest_asyncio",
     ],
