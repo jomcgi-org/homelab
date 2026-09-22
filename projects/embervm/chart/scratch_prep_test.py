@@ -33,6 +33,7 @@ def prep_env(tmp_path: Path) -> tuple[dict[str, str], dict[str, Path]]:
     fstab.write_text("# retained\n/dev/keep /keep ext4 defaults 0 0\n")
     paths = {
         "active": state / "active",
+        "fail_mount": state / "fail-mount",
         "fail_mkfs": state / "fail-mkfs",
         "fs": state / "filesystem",
         "log": state / "commands.log",
@@ -75,8 +76,14 @@ echo fallocate >> "$FAKE_LOG"''',
         _write_command(
             commands,
             command,
-            f'''echo {command} >> "$FAKE_LOG"
+            f'''eval "target=\\${{$#}}"
+echo {command} >> "$FAKE_LOG"
 [ ! -f "$FAKE_FAIL_MKFS" ] || exit 9
+if [ -f "$FAKE_REPLACE_ON_MKFS" ]; then
+  printf '%s\n' foreign-data > "${{FAKE_MANAGED_IMAGE}}.replacement"
+  mv "${{FAKE_MANAGED_IMAGE}}.replacement" "$FAKE_MANAGED_IMAGE"
+fi
+printf '%s\n' formatted-{filesystem} > "$target"
 printf '%s\n' {filesystem} > "$FAKE_FS"
 rm -f "$SCRATCH_MARKER_PATH"''',
         )
@@ -88,7 +95,9 @@ rm -f "$SCRATCH_MARKER_PATH"''',
     _write_command(
         commands,
         "mount",
-        'touch "$FAKE_MOUNTED"; echo mount >> "$FAKE_LOG"',
+        '''echo mount >> "$FAKE_LOG"
+[ ! -f "$FAKE_FAIL_MOUNT" ] || exit 9
+touch "$FAKE_MOUNTED"''',
     )
     _write_command(
         commands,
@@ -137,12 +146,14 @@ esac""",
             "HOST_FSTAB_PATH": str(fstab),
             "SCRATCH_MARKER_PATH": str(paths["marker"]),
             "FAKE_ACTIVE": str(paths["active"]),
+            "FAKE_FAIL_MOUNT": str(paths["fail_mount"]),
             "FAKE_FAIL_MKFS": str(paths["fail_mkfs"]),
             "FAKE_FS": str(paths["fs"]),
             "FAKE_LOG": str(paths["log"]),
             "FAKE_MANAGED_IMAGE": str(image),
             "FAKE_MOUNTED": str(paths["mounted"]),
             "FAKE_REPLACE_ON_FALLOCATE": str(state / "replace-on-fallocate"),
+            "FAKE_REPLACE_ON_MKFS": str(state / "replace-on-mkfs"),
             "FAKE_MOUNT_SOURCE": "/dev/loop7",
             "FAKE_MOUNT_TARGETS": str(scratch),
             "FAKE_LOOP_DEVICE": "/dev/loop7",
@@ -331,6 +342,53 @@ def test_unmounted_migration_requires_managed_fstab_identity(
     assert not paths["log"].exists()
 
 
+def test_migration_refuses_hard_link_alias(
+    prep_env: tuple[dict[str, str], dict[str, Path]],
+) -> None:
+    env, paths = prep_env
+    _seed(paths, "ext4")
+    _add_managed_fstab(paths)
+    paths["image"].with_name("scratch-alias.img").hardlink_to(paths["image"])
+    env.update(
+        {
+            "SCRATCH_FILESYSTEM": "xfs",
+            "SCRATCH_MIGRATE_EXT4_TO_XFS": "true",
+            "FAKE_LOOP_DEVICE": "",
+        }
+    )
+
+    result = _run(env, check=False)
+
+    assert result.returncode != 0
+    assert "hard-link aliases" in result.stderr
+    assert paths["fs"].read_text().strip() == "ext4"
+    assert not paths["log"].exists()
+
+
+def test_migration_never_formats_concurrent_path_replacement(
+    prep_env: tuple[dict[str, str], dict[str, Path]],
+) -> None:
+    env, paths = prep_env
+    _seed(paths, "ext4")
+    _add_managed_fstab(paths)
+    Path(env["FAKE_REPLACE_ON_MKFS"]).touch()
+    env.update(
+        {
+            "SCRATCH_FILESYSTEM": "xfs",
+            "SCRATCH_MIGRATE_EXT4_TO_XFS": "true",
+            "FAKE_LOOP_DEVICE": "",
+        }
+    )
+
+    result = _run(env, check=False)
+
+    assert result.returncode != 0
+    assert "identity changed during migration" in result.stderr
+    assert paths["image"].read_text() == "foreign-data\n"
+    assert not paths["mounted"].exists()
+    assert not paths["marker"].exists()
+
+
 def test_symlink_image_is_rejected_without_touching_target(
     prep_env: tuple[dict[str, str], dict[str, Path]],
 ) -> None:
@@ -358,6 +416,33 @@ def test_format_failure_does_not_publish_readiness_marker(
     assert not paths["image"].exists()
     assert not paths["marker"].exists()
     assert not paths["mounted"].exists()
+
+
+def test_migration_mount_failure_leaves_xfs_fstab_for_reboot(
+    prep_env: tuple[dict[str, str], dict[str, Path]],
+) -> None:
+    env, paths = prep_env
+    _seed(paths, "ext4")
+    _add_managed_fstab(paths)
+    paths["fail_mount"].touch()
+    env.update(
+        {
+            "SCRATCH_FILESYSTEM": "xfs",
+            "SCRATCH_MIGRATE_EXT4_TO_XFS": "true",
+            "FAKE_LOOP_DEVICE": "",
+        }
+    )
+
+    result = _run(env, check=False)
+
+    assert result.returncode != 0
+    assert paths["fs"].read_text().strip() == "xfs"
+    assert (
+        f"{paths['image']} {paths['scratch']} xfs loop,defaults 0 0"
+        in paths["fstab"].read_text()
+    )
+    assert not paths["mounted"].exists()
+    assert not paths["marker"].exists()
 
 
 def test_creation_failure_never_removes_foreign_replacement(

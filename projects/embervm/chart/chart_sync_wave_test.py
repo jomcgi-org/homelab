@@ -122,7 +122,7 @@ def test_scratch_generation_marker_is_the_final_prep_step() -> None:
     mount = script.index('host mount -t "$image_type"')
     fstab = script.index('reconcile_fstab "$image_type"')
     marker = script.rindex("write_marker")
-    assert mount < fstab < marker
+    assert fstab < mount < marker
 
 
 def test_wildcard_daemonset_does_not_inherit_scratch_marker_gate() -> None:
