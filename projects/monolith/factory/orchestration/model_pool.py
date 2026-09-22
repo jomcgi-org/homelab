@@ -326,10 +326,9 @@ def confirmed_availability(
         return False, "unobserved"
 
     grant_views = summary.get("grant_views")
-    if (
-        (not isinstance(grant_views, list) or not grant_views)
-        and summary.get("observed") is not True
-    ):
+    if (not isinstance(grant_views, list) or not grant_views) and summary.get(
+        "observed"
+    ) is not True:
         return False, "unobserved"
     if summary.get("grant_inventory_complete") is not True:
         return False, "grant_inventory_incomplete"
