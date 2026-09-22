@@ -341,13 +341,6 @@ spec:
               value: "postgresql://postgres:$(SCRATCH_PG_PASSWORD)@{{ .Values.scratchPostgres.servingService }}.{{ .Values.scratchPostgres.embervmNamespace }}.svc:{{ .Values.scratchPostgres.demoListenPort }}/scratch"
             {{- end }}
             {{- end }}
-            {{- if .Values.semgrep.shadowProject }}
-            # Route B shadow project: the relay reports App scans under this name
-            # instead of the real repo, keeping self-hosted scans in a separate
-            # Semgrep project from SMS. Unset at cutover.
-            - name: SEMGREP_SHADOW_PROJECT
-              value: {{ .Values.semgrep.shadowProject | quote }}
-            {{- end }}
             {{- if .Values.chat.enabled }}
             - name: DISCORD_BOT_TOKEN
               valueFrom:
@@ -389,34 +382,10 @@ spec:
               value: {{ .Values.chat.changelogs | toJson | quote }}
             {{- end }}
             {{- end }}
-            {{- if .Values.semgrep.onepassword.itemPath }}
-            # Semgrep AppSec Platform token for the Route B CI-reporting relay
-            # (semgrep_scan/report.py). The 1Password item's SEMGREP_API_TOKEN
-            # field is exposed under the env name pysemgrep reads,
-            # SEMGREP_APP_TOKEN.
-            - name: SEMGREP_APP_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "monolith.fullname" . }}-semgrep-app
-                  key: SEMGREP_API_TOKEN
-            # HMAC secret for the GitHub PR webhook (semgrep_scan/router.py, Phase
-            # 2). GitHub signs the request body with it; the handler fails closed
-            # if it is unset. Lives in the SAME semgrep vault item as the App token
-            # (field GITHUB_SEMGREP_WEBHOOK_SECRET), mirrored into this Secret; Joe
-            # sets the identical value in the GitHub hook config. Optional so an
-            # older vault item without the field does not block the pod (the
-            # webhook then 401s every request, which is the fail-closed default).
-            - name: GITHUB_SEMGREP_WEBHOOK_SECRET
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "monolith.fullname" . }}-semgrep-app
-                  key: GITHUB_SEMGREP_WEBHOOK_SECRET
-                  optional: true
-            {{- end }}
             {{- if .Values.chat.onepassword.itemPath }}
             # Real GitHub API token for every direct API consumer, including
-            # factory, CD health, knowledge docfix, and Semgrep changed-file
-            # fetches. The monolith's GITHUB_TOKEN env is a kloak: placeholder
+            # factory, CD health, and knowledge docfix. The monolith's GITHUB_TOKEN
+            # env is a kloak: placeholder
             # for guest egress swap, so direct callers use this distinct name.
             # Availability follows the existing chat secret's item path, not an
             # unrelated chat or Semgrep feature switch.
