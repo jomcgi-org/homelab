@@ -154,16 +154,9 @@ func run(logger *slog.Logger) error {
 		tokenRequests: tokenRequests,
 	}
 	s.broker = broker.New(st, adapters, minters, brokerConfigs, logger, m)
-	plaintextMux := http.NewServeMux()
-	plaintextMux.HandleFunc("/healthz", s.health)
-	plaintextMux.Handle("/metrics", promhttp.Handler())
-	plaintextMux.Handle("/grants/", s.grantsHandler(false, listeners.tlsListenAddr != ""))
-	plaintextMux.Handle("/github/grants/", s.githubHandler(false))
-	plaintextMux.HandleFunc("/quota", s.quota)
-	plaintextMux.HandleFunc("/quota/", s.quota)
 	plaintextServer := &http.Server{
 		Addr:              listeners.listenAddr,
-		Handler:           plaintextMux,
+		Handler:           plaintextHandler(s, listeners.tlsListenAddr != ""),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	if listeners.tlsListenAddr == "" {
@@ -204,6 +197,17 @@ func run(logger *slog.Logger) error {
 		serverErrors <- fmt.Errorf("SPIFFE mTLS listener stopped: %w", mtlsServer.ListenAndServeTLS("", ""))
 	}()
 	return <-serverErrors
+}
+
+func plaintextHandler(s *server, mtlsEnabled bool) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", s.health)
+	mux.Handle("/metrics", promhttp.Handler())
+	mux.Handle("/grants/", s.grantsHandler(false, mtlsEnabled))
+	mux.Handle("/github/grants/", s.githubHandler(false))
+	mux.HandleFunc("/quota", s.quota)
+	mux.HandleFunc("/quota/", s.quota)
+	return mux
 }
 
 type x509SourceFactory func(context.Context) (*workloadapi.X509Source, error)

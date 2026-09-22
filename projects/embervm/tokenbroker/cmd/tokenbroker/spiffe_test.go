@@ -48,34 +48,63 @@ func TestConfiguredListenersRequiresClientIDsForTLS(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "BROKER_SPIFFE_CLIENT_IDS is required when BROKER_TLS_LISTEN_ADDR is set") {
 		t.Fatalf("configuredListeners() error = %v, want missing client IDs error", err)
 	}
+
+	t.Setenv("BROKER_SPIFFE_CLIENT_IDS", "not-a-spiffe-id")
+	_, err = configuredListeners()
+	if err == nil || !strings.Contains(err.Error(), "invalid BROKER_SPIFFE_CLIENT_IDS entry") {
+		t.Fatalf("configuredListeners() error = %v, want invalid client ID error", err)
+	}
 }
 
-func TestPlaintextHandlerRequiresMTLSForTokenWhenEnabled(t *testing.T) {
-	s := newServerWithStoredGrant(t)
-	handler := s.grantsHandler(false, true)
+func TestPlaintextHandlerCompatibilityWhenMTLSEnabled(t *testing.T) {
+	pollWait := make(chan struct{})
+	defer close(pollWait)
+	s := newServerWithStoredGrantAndAdapter(t, &fakeAdapter{
+		deviceCode: provider.DeviceCodeResponse{
+			VerificationURL: "https://auth.example/device",
+			UserCode:        "ABCD-EFGH",
+			ExpiresIn:       900,
+		},
+		pollWait: pollWait,
+	})
+	handler := plaintextHandler(s, true)
 
 	token := performRequest(handler, http.MethodGet, "/grants/codex-cluster/token")
 	if token.Code != http.StatusForbidden || token.Body.String() != "token endpoint requires mTLS on the SPIFFE port" {
 		t.Fatalf("token response = %d %q", token.Code, token.Body.String())
 	}
-	refresh := performRequest(handler, http.MethodPost, "/grants/codex-cluster/refresh")
-	if refresh.Code != http.StatusOK {
-		t.Fatalf("refresh response = %d %s", refresh.Code, refresh.Body.String())
-	}
-	status := performRequest(handler, http.MethodGet, "/grants/codex-cluster/login/status")
-	if status.Code != http.StatusOK {
-		t.Fatalf("login status response = %d %s", status.Code, status.Body.String())
+
+	for _, test := range []struct {
+		name, method, path string
+	}{
+		{"refresh", http.MethodPost, "/grants/codex-cluster/refresh"},
+		{"login start", http.MethodPost, "/grants/codex-cluster/login/start"},
+		{"login status", http.MethodGet, "/grants/codex-cluster/login/status"},
+		{"quota", http.MethodGet, "/quota"},
+		{"health", http.MethodGet, "/healthz"},
+		{"metrics", http.MethodGet, "/metrics"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := performRequest(handler, test.method, test.path)
+			if response.Code != http.StatusOK {
+				t.Fatalf("%s response = %d %s", test.path, response.Code, response.Body.String())
+			}
+		})
 	}
 }
 
 func TestPlaintextHandlerServesTokenWhenMTLSDisabled(t *testing.T) {
+	s := newServerWithStoredGrant(t)
 	response := performRequest(
-		newServerWithStoredGrant(t).grantsHandler(false, false),
+		plaintextHandler(s, false),
 		http.MethodGet,
 		"/grants/codex-cluster/token",
 	)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"access_token":"stored-access-token"`) {
 		t.Fatalf("token response = %d %s", response.Code, response.Body.String())
+	}
+	if count := testutil.CollectAndCount(s.tokenRequests); count != 0 {
+		t.Fatalf("legacy plaintext request emitted %d token request metrics, want 0", count)
 	}
 }
 
@@ -112,6 +141,15 @@ func TestMTLSHandlerAuthorizesConfiguredClient(t *testing.T) {
 	defer allowedResponse.Body.Close()
 	if allowedResponse.StatusCode != http.StatusOK {
 		t.Fatalf("allowed client status = %d, want %d", allowedResponse.StatusCode, http.StatusOK)
+	}
+
+	unauthenticatedClient := &http.Client{Transport: &http.Transport{TLSClientConfig: tlsconfig.TLSClientConfig(
+		allowedSource,
+		tlsconfig.AuthorizeOneOf(serverID),
+	)}}
+	_, err = unauthenticatedClient.Get(testServer.URL + "/grants/codex-cluster/token")
+	if err == nil {
+		t.Fatal("client without an X.509-SVID succeeded, want TLS handshake error")
 	}
 
 	disallowedClient := &http.Client{Transport: &http.Transport{TLSClientConfig: tlsconfig.MTLSClientConfig(
@@ -169,6 +207,10 @@ func TestWaitForX509SourceFailsClosedOnTimeout(t *testing.T) {
 }
 
 func newServerWithStoredGrant(t *testing.T) *server {
+	return newServerWithStoredGrantAndAdapter(t, &fakeAdapter{deviceCode: provider.DeviceCodeResponse{}})
+}
+
+func newServerWithStoredGrantAndAdapter(t *testing.T, adapter *fakeAdapter) *server {
 	t.Helper()
 	grant := store.Grant{
 		Name:         "codex-cluster",
@@ -182,7 +224,7 @@ func newServerWithStoredGrant(t *testing.T) *server {
 	}
 	return newTestServer(
 		&fakeStore{grants: map[string]store.Grant{"codex-cluster": grant}},
-		&fakeAdapter{deviceCode: provider.DeviceCodeResponse{}},
+		adapter,
 	)
 }
 
