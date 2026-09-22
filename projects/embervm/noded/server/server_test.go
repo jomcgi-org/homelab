@@ -1448,11 +1448,12 @@ func TestBuildBaseAdoptsSiblingBundleFromDisk(t *testing.T) {
 	memBytes := strings.Repeat("m", 100)
 	snapBytes := strings.Repeat("s", 50)
 	for name, content := range map[string]string{
-		"imageref":   "img:1",
-		"memfile":    memBytes,
-		"rootfsid":   testRootfsUUIDA,
-		"rootfspath": rootfs,
-		"snapfile":   snapBytes,
+		"imageref":            "img:1",
+		"jail-resources.json": `[{"role":"rootfs"},{"role":"volume"}]`,
+		"memfile":             memBytes,
+		"rootfsid":            testRootfsUUIDA,
+		"rootfspath":          rootfs,
+		"snapfile":            snapBytes,
 	} {
 		if err := os.MkdirAll(dir, 0o750); err != nil {
 			t.Fatalf("mkdir bundle dir: %v", err)
@@ -1490,12 +1491,16 @@ func TestBuildBaseAdoptsSiblingBundleFromDisk(t *testing.T) {
 	if !ok || entry.state != nodev1.BaseBuildState_BASE_BUILD_STATE_READY {
 		t.Errorf("registry entry = %+v ok=%v, want READY", entry, ok)
 	} else {
-		if entry.imageDigest != "img:1" || entry.rootfsPath != rootfs || entry.workload != "echo" {
+		if entry.imageDigest != "img:1" || entry.rootfsPath != rootfs || entry.workload != "echo" ||
+			!entry.devices.Known || !slices.Equal(entry.devices.IDs, []string{"volume"}) {
 			t.Errorf("registry entry identity = %+v, want request-derived values", entry)
 		}
 	}
 	// The sibling's bytes were adopted, not disturbed.
-	for name, content := range map[string]string{"imageref": "img:1", "memfile": memBytes, "snapfile": snapBytes} {
+	for name, content := range map[string]string{
+		"imageref": "img:1", "jail-resources.json": `[{"role":"rootfs"},{"role":"volume"}]`,
+		"memfile": memBytes, "snapfile": snapBytes,
+	} {
 		got, rerr := os.ReadFile(filepath.Join(dir, name))
 		if rerr != nil || string(got) != content {
 			t.Errorf("bundle %s = %q (%v), want untouched %q", name, got, rerr, content)
@@ -4080,6 +4085,9 @@ func TestSiblingBaseDiscoveryConvergesWithoutBuildOrLiveVMChanges(t *testing.T) 
 	follower.vms.add(&vmEntry{id: "task-live", workload: "echo", snapshotRef: oldRef, state: vmPrimed})
 	follower.sessionVMs.add(&sessionEntry{vmID: "session-live", sessionID: "s-live", workload: "echo", snapshotRef: oldRef})
 	writeReconcileBase(t, bases, newRef, "img:1")
+	if err := os.WriteFile(filepath.Join(bases, newRef, "jail-resources.json"), []byte(`[{"role":"rootfs"}]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	newTime := time.Unix(200, 0)
 	if err := os.Chtimes(filepath.Join(bases, newRef), newTime, newTime); err != nil {
 		t.Fatal(err)
@@ -4091,7 +4099,11 @@ func TestSiblingBaseDiscoveryConvergesWithoutBuildOrLiveVMChanges(t *testing.T) 
 	}
 	before := map[string]baseDiscoveryFile{}
 	for _, ref := range []string{oldRef, newRef} {
-		for _, name := range []string{"snapfile", "memfile", "imageref", "rootfsid", "rootfspath"} {
+		names := []string{"snapfile", "memfile", "imageref", "rootfsid", "rootfspath"}
+		if ref == newRef {
+			names = append(names, "jail-resources.json")
+		}
+		for _, name := range names {
 			path := filepath.Join(bases, ref, name)
 			info, err := os.Stat(path)
 			if err != nil {
@@ -4111,7 +4123,8 @@ func TestSiblingBaseDiscoveryConvergesWithoutBuildOrLiveVMChanges(t *testing.T) 
 		t.Fatal("adoption did not wake WatchNode")
 	}
 	entry, ok := follower.bases.get(newRef)
-	if !ok || entry.createdAtUnixMs != newTime.UnixMilli() || entry.state != nodev1.BaseBuildState_BASE_BUILD_STATE_READY {
+	if !ok || entry.createdAtUnixMs != newTime.UnixMilli() || entry.state != nodev1.BaseBuildState_BASE_BUILD_STATE_READY ||
+		!entry.devices.Known || len(entry.devices.IDs) != 0 {
 		t.Fatalf("adopted entry=%+v, want original disk creation time and READY", entry)
 	}
 	status := follower.nodeStatus()

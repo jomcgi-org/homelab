@@ -38,3 +38,22 @@ func TestReadDeviceSetProducerShapesAndLegacyAbsence(t *testing.T) {
 		t.Fatalf("legacy absence = %+v, want unknown", got)
 	}
 }
+
+func TestDeviceSetFromJailResourcesRejectsMalformedShapes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		data string
+	}{
+		{name: "invalid json", data: `{"not":"an array"}`},
+		{name: "empty resources", data: `[]`},
+		{name: "missing role", data: `[{"role":"rootfs"},{}]`},
+		{name: "missing rootfs", data: `[{"role":"volume"}]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := DeviceSetFromJailResources([]byte(tc.data))
+			if err == nil || !got.Known {
+				t.Fatalf("DeviceSetFromJailResources() = (%+v, %v), want known malformed error", got, err)
+			}
+		})
+	}
+}
