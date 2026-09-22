@@ -62,6 +62,7 @@ def _identity(
     serial: int,
     *,
     server: bool,
+    additional_spiffe_ids: tuple[str, ...] = (),
 ) -> tuple[Path, Path]:
     key = ec.generate_private_key(ec.SECP256R1())
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -77,7 +78,12 @@ def _identity(
         .not_valid_before(now - datetime.timedelta(minutes=1))
         .not_valid_after(now + datetime.timedelta(hours=1))
         .add_extension(
-            x509.SubjectAlternativeName([x509.UniformResourceIdentifier(spiffe_id)]),
+            x509.SubjectAlternativeName(
+                [
+                    x509.UniformResourceIdentifier(identity)
+                    for identity in (spiffe_id, *additional_spiffe_ids)
+                ]
+            ),
             critical=True,
         )
         .add_extension(x509.ExtendedKeyUsage([usage]), critical=True)
@@ -128,9 +134,17 @@ def _serve(
     ca: x509.Certificate,
     ca_key: ec.EllipticCurvePrivateKey,
     serial: int,
+    additional_spiffe_ids: tuple[str, ...] = (),
 ) -> tuple[ThreadingHTTPServer, threading.Thread]:
     server_cert, server_key = _identity(
-        directory, f"server-{serial}", ca, ca_key, server_id, serial, server=True
+        directory,
+        f"server-{serial}",
+        ca,
+        ca_key,
+        server_id,
+        serial,
+        server=True,
+        additional_spiffe_ids=additional_spiffe_ids,
     )
     bundle = directory / f"server-bundle-{serial}.pem"
     _write_bundle(bundle, ca)
@@ -194,6 +208,8 @@ def mtls_server(tmp_path):
         "server": server,
         "thread": thread,
         "directory": tmp_path,
+        "ca": ca,
+        "ca_key": ca_key,
     }
     yield fixture
 
@@ -237,6 +253,29 @@ def test_wrong_server_spiffe_id_fails_before_http(monkeypatch, mtls_server):
     monkeypatch.setenv(
         broker_client.BROKER_SPIFFE_ID_ENV, "spiffe://test.example/wrong-broker"
     )
+
+    with pytest.raises(httpx.ConnectError, match="URI SAN"):
+        broker_client.request_sync("GET", mtls_server["url"] + "/quota", timeout=5)
+
+    assert _Handler.calls == []
+
+
+def test_additional_server_spiffe_id_fails_before_http(monkeypatch, mtls_server):
+    _enable(monkeypatch, mtls_server)
+    mtls_server["server"].shutdown()
+    mtls_server["server"].server_close()
+    mtls_server["thread"].join(timeout=1)
+    server, thread = _serve(
+        mtls_server["directory"],
+        mtls_server["server_id"],
+        mtls_server["ca"],
+        mtls_server["ca_key"],
+        4,
+        ("spiffe://test.example/other",),
+    )
+    mtls_server["url"] = f"https://127.0.0.1:{server.server_port}"
+    mtls_server["server"] = server
+    mtls_server["thread"] = thread
 
     with pytest.raises(httpx.ConnectError, match="URI SAN"):
         broker_client.request_sync("GET", mtls_server["url"] + "/quota", timeout=5)
