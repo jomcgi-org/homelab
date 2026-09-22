@@ -23,8 +23,7 @@ from typing import Iterator
 from sqlalchemy import update
 from sqlmodel import Session, select
 
-from auth.api import current_principal
-from auth.principal import Authority, Principal
+from auth.api import Authority, Principal, current_principal
 from core.db import get_engine
 from knowledge.models import AgentBoardMessage
 
