@@ -293,6 +293,9 @@ promotion:
       warehouse: monolith-agents-chart
       project: kargo-monolith-agents
       chartRepo: oci://ghcr.io/jomcgi/homelab/charts/monolith-agents
+      # Reuse the managed GHCR login. The item's additional repoURL field is
+      # exactly this chart URL, limiting Kargo credential selection to it.
+      credentialItemPath: vaults/k8s-homelab/items/argocd-ghcr-repo-creds
       # This published version includes the agents-safe report write path.
       # The live tier was still on 0.7.36 because nothing owned promotion.
       semverConstraint: ">=0.103.24"
