@@ -331,6 +331,86 @@ def test_lost_response_recovers_the_exact_result_without_re_executing(
     assert after["session"]["result_receipt_fence_id"] is None
 
 
+@pytest.mark.parametrize("recovery_enabled", [True, False])
+def test_persistence_failure_recovers_receipt_without_reinvoking(
+    database, monkeypatch, recovery_enabled
+):
+    monkeypatch.setenv(
+        "AGENT_RESPONSE_LOST_RECOVERY_ENABLED", str(recovery_enabled).lower()
+    )
+    sid = queue(database)
+    record = native_record(artifact=False)
+
+    async def handler(request):
+        publish(record, request)
+        return httpx.Response(200, json=record, request=request)
+
+    requests = fake_http(monkeypatch, handler)
+    original = mcp._persist_turn_from_pending_sync
+
+    def unavailable(*_args, **_kwargs):
+        raise RuntimeError("temporary result commit failure")
+
+    monkeypatch.setattr(mcp, "_persist_turn_from_pending_sync", unavailable)
+    asyncio.run(asyncio.wait_for(mcp._execute_pending_message(sid), 10))
+    assert len(requests) == 1
+    if not recovery_enabled:
+        assert_unknown(database, sid)
+        return
+    assert_held(database, sid, "result_persistence_failed")
+    monkeypatch.setattr(mcp, "_persist_turn_from_pending_sync", original)
+    outcome = store.adopt_response_lost_result(sid)
+    assert outcome["status"] == "adopted"
+    assert store.adopt_response_lost_result(sid) is None
+    after = snapshot(database, sid)
+    assert after["pending"] == []
+    assert after["session"]["status"] == "completed"
+    assert after["turns"][0]["result_text"] == record["result"]
+    assert after["turns"][0]["cost_usd"] == record["total_cost_usd"]
+    assert after["permits"][0]["state"] == "settled"
+    assert len(requests) == 1
+
+
+@pytest.mark.parametrize("committed", [True, False])
+def test_persistence_hold_failure_preserves_committed_or_unknown_outcome(
+    database, monkeypatch, committed
+):
+    sid = queue(database)
+    record = native_record(artifact=False)
+
+    async def handler(request):
+        publish(record, request)
+        return httpx.Response(200, json=record, request=request)
+
+    requests = fake_http(monkeypatch, handler)
+    original = mcp._persist_turn_from_pending_sync
+
+    def fail(*args, **kwargs):
+        if committed:
+            original(*args, **kwargs)
+        raise RuntimeError("result persistence response lost")
+
+    monkeypatch.setattr(mcp, "_persist_turn_from_pending_sync", fail)
+    if not committed:
+
+        def unavailable(*_args, **_kwargs):
+            raise RuntimeError("hold database unavailable")
+
+        monkeypatch.setattr(store, "mark_turn_response_lost_sync", unavailable)
+    asyncio.run(asyncio.wait_for(mcp._execute_pending_message(sid), 10))
+    assert len(requests) == 1
+    assert hold_of(sid) is None
+    if committed:
+        after = snapshot(database, sid)
+        assert after["session"]["status"] == "completed"
+        assert after["pending"] == []
+        assert len(after["turns"]) == 1
+        assert after["turns"][0]["result_text"] == record["result"]
+        assert after["permits"][0]["state"] == "settled"
+    else:
+        assert_unknown(database, sid)
+
+
 def test_a_held_attempt_is_not_released_reclaimed_or_supervised(database, monkeypatch):
     sid, _requests = lose_the_response(database, monkeypatch)
     held = assert_held(database, sid, "invoke_response_lost")
