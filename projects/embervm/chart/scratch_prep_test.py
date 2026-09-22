@@ -113,7 +113,7 @@ touch "$FAKE_MOUNTED"''',
         commands,
         "findmnt",
         """case " $* " in
-  *" --target "*) printf '%s %s\n' "${FAKE_MOUNT_SOURCE:-/dev/loop7}" "$(cat "$FAKE_FS")" ;;
+  *" --target "*) printf '%s %s\n' "${FAKE_MOUNT_SOURCE:-/dev/loop7}" "${FAKE_MOUNT_TYPE:-$(cat "$FAKE_FS")}" ;;
   *" -S "*) printf '%s\n' "${FAKE_MOUNT_TARGETS:-$SCRATCH_PATH}" ;;
   *) exit 2 ;;
 esac""",
@@ -127,8 +127,14 @@ esac""",
       printf '%s\n' foreign-data > "${FAKE_MANAGED_IMAGE}.replacement"
       mv "${FAKE_MANAGED_IMAGE}.replacement" "$FAKE_MANAGED_IMAGE"
     fi
-    [ -n "${FAKE_LOOP_DEVICE:-}" ] || exit 0
-    printf '%s: []: (%s)\n' "$FAKE_LOOP_DEVICE" "$HOST_SCRATCH_IMAGE_PATH"
+    if [ -f "$FAKE_MOUNTED" ] && [ -n "${FAKE_LOOP_DEVICE:-}" ]; then
+      printf '%s: []: (%s)\n' "$FAKE_LOOP_DEVICE" "$HOST_SCRATCH_IMAGE_PATH"
+      if [ -n "${FAKE_EXTRA_LOOP_DEVICE:-}" ]; then
+        printf '%s: []: (%s)\n' "$FAKE_EXTRA_LOOP_DEVICE" "$HOST_SCRATCH_IMAGE_PATH"
+      fi
+    elif [ -n "${FAKE_REMAINING_LOOP_DEVICE:-}" ]; then
+      printf '%s: []: (%s)\n' "$FAKE_REMAINING_LOOP_DEVICE" "$HOST_SCRATCH_IMAGE_PATH"
+    fi
     ;;
   *" -O BACK-FILE "*) printf '%s\n' "${FAKE_BACKING:-$HOST_SCRATCH_IMAGE_PATH}" ;;
   *) exit 2 ;;
@@ -324,6 +330,104 @@ def test_active_consumer_fails_closed_before_unmount(
     result = _run(env, check=False)
     assert result.returncode != 0
     assert "active consumer" in result.stderr
+    assert paths["mounted"].exists()
+    assert not paths["log"].exists()
+
+
+def test_mounted_migration_refuses_loop_alias_remaining_after_unmount(
+    prep_env: tuple[dict[str, str], dict[str, Path]],
+) -> None:
+    env, paths = prep_env
+    _seed(paths, "ext4", mounted=True)
+    _add_managed_fstab(paths)
+    env.update(
+        {
+            "SCRATCH_FILESYSTEM": "xfs",
+            "SCRATCH_MIGRATE_EXT4_TO_XFS": "true",
+            "FAKE_REMAINING_LOOP_DEVICE": "/dev/loop7",
+        }
+    )
+
+    result = _run(env, check=False)
+
+    assert result.returncode != 0
+    assert "still has a loop alias" in result.stderr
+    assert paths["fs"].read_text().strip() == "ext4"
+    assert "mkfs.xfs" not in paths["log"].read_text()
+    assert not paths["marker"].exists()
+
+
+@pytest.mark.parametrize(
+    "fstab_entry",
+    [
+        "/dev/nvme-test {scratch} xfs defaults 0 0\n",
+        "{image} /foreign-target ext4 loop,defaults 0 0\n",
+    ],
+)
+def test_new_image_rejects_foreign_fstab_identity_before_allocation(
+    prep_env: tuple[dict[str, str], dict[str, Path]], fstab_entry: str
+) -> None:
+    env, paths = prep_env
+    paths["fstab"].write_text(
+        fstab_entry.format(image=paths["image"], scratch=paths["scratch"])
+    )
+
+    result = _run(env, check=False)
+
+    assert result.returncode != 0
+    assert "fstab contains a foreign or aliased entry" in result.stderr
+    assert not paths["image"].exists()
+    assert not paths["log"].exists()
+
+
+def test_fstab_inspection_error_is_not_reported_as_unsafe_identity(
+    prep_env: tuple[dict[str, str], dict[str, Path]],
+) -> None:
+    env, paths = prep_env
+    paths["fstab"].unlink()
+
+    result = _run(env, check=False)
+
+    assert result.returncode != 0
+    assert "cannot inspect fstab identity" in result.stderr
+    assert "fstab contains a foreign or aliased entry" not in result.stderr
+    assert not paths["image"].exists()
+    assert not paths["log"].exists()
+
+
+@pytest.mark.parametrize(
+    ("override", "message"),
+    [
+        ({"FAKE_EXTRA_LOOP_DEVICE": "/dev/loop8"}, "multiple loop aliases"),
+        ({"FAKE_BACKING": "/foreign.img"}, "loop backing identity"),
+        (
+            {"FAKE_MOUNT_TARGETS": "/var/lib/embervm/other"},
+            "foreign or additional mount",
+        ),
+        ({"FAKE_MOUNT_TYPE": "xfs"}, "filesystem types disagree"),
+    ],
+)
+def test_mounted_migration_rejects_identity_disagreement(
+    prep_env: tuple[dict[str, str], dict[str, Path]],
+    override: dict[str, str],
+    message: str,
+) -> None:
+    env, paths = prep_env
+    _seed(paths, "ext4", mounted=True)
+    _add_managed_fstab(paths)
+    env.update(
+        {
+            "SCRATCH_FILESYSTEM": "xfs",
+            "SCRATCH_MIGRATE_EXT4_TO_XFS": "true",
+            **override,
+        }
+    )
+
+    result = _run(env, check=False)
+
+    assert result.returncode != 0
+    assert message in result.stderr
+    assert paths["fs"].read_text().strip() == "ext4"
     assert paths["mounted"].exists()
     assert not paths["log"].exists()
 
@@ -544,6 +648,10 @@ def test_rendered_gate_combinations(
     rendered_env = {item["name"]: item.get("value") for item in container["env"]}
     assert rendered_env["SCRATCH_FILESYSTEM"] == filesystem
     assert rendered_env["SCRATCH_MIGRATE_EXT4_TO_XFS"] == migration
+    host_mount = next(
+        item for item in container["volumeMounts"] if item["name"] == "host-embervm"
+    )
+    assert host_mount["mountPropagation"] == "HostToContainer"
     script_path = "/opt/embervm/scratch-prep.sh"
     assert configmap["data"]["scratch-prep.sh"] == SCRIPT.read_text().rstrip("\n")
     assert container["command"] == [

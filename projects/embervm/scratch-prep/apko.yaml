@@ -22,8 +22,11 @@ contents:
     - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
   packages:
     - busybox
-    # nsenter, mountpoint, fallocate, losetup, blkid.
+    # Common util-linux data and the fallocate binary. Wolfi splits several
+    # commands into dedicated subpackages, so the blkid probe is explicit below.
     - util-linux
+    # blkid probes existing managed images before any mount or migration.
+    - blkid
     # mkfs.ext4 for formatting the loop backing file.
     - e2fsprogs
     # mkfs.xfs for explicitly opted-in XFS provisioning and migration.

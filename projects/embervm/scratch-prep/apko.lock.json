@@ -2,7 +2,7 @@
   "version": "v1",
   "config": {
     "name": "projects/embervm/scratch-prep/apko.yaml",
-    "checksum": "sha256-Ie6hWy4pyfj7WxkbP+lwerFd3TsOCAyZwAW5MnaYByg="
+    "checksum": "sha256-FkiDM6aIsMJ3AXk3MZCSfoVSZ4PHjjF4RHDc96j2ch4="
   },
   "contents": {
     "keyring": [
@@ -59,6 +59,25 @@
           "checksum": "sha256-G841ux7hMb9iIDqnEV9nSKOWynTJHRpKkoIays5LvgQ="
         },
         "checksum": "Q10grzSe1PpvUewxP3xRwrmY0x/6Q="
+      },
+      {
+        "name": "ld-linux-2.44",
+        "url": "https://packages.wolfi.dev/os/x86_64/ld-linux-2.44-2.44-r6.apk",
+        "version": "2.44-r6",
+        "architecture": "x86_64",
+        "signature": {
+          "range": "",
+          "checksum": ""
+        },
+        "control": {
+          "range": "bytes=0-16789",
+          "checksum": "sha1-1tt9VRHN7Qx2mCatRkJQTvScW9o="
+        },
+        "data": {
+          "range": "bytes=16790-157519",
+          "checksum": "sha256-zACD+N0HMqrP5SDKTXaSwczNhHMiKB8Bk9bVASSEi+U="
+        },
+        "checksum": "Q11tt9VRHN7Qx2mCatRkJQTvScW9o="
       },
       {
         "name": "glibc-2.44-locale-posix",
@@ -118,23 +137,42 @@
         "checksum": "Q1qqZd/YKWGCTn1dNn9h9NYOArbI0="
       },
       {
-        "name": "ld-linux-2.44",
-        "url": "https://packages.wolfi.dev/os/x86_64/ld-linux-2.44-2.44-r6.apk",
-        "version": "2.44-r6",
+        "name": "libblkid",
+        "url": "https://packages.wolfi.dev/os/x86_64/libblkid-2.42.3-r4.apk",
+        "version": "2.42.3-r4",
         "architecture": "x86_64",
         "signature": {
           "range": "",
           "checksum": ""
         },
         "control": {
-          "range": "bytes=0-16789",
-          "checksum": "sha1-1tt9VRHN7Qx2mCatRkJQTvScW9o="
+          "range": "bytes=0-12239",
+          "checksum": "sha1-Y0U7sH1cn963r9YDe1YCMp9Bo9I="
         },
         "data": {
-          "range": "bytes=16790-157519",
-          "checksum": "sha256-zACD+N0HMqrP5SDKTXaSwczNhHMiKB8Bk9bVASSEi+U="
+          "range": "bytes=12240-235396",
+          "checksum": "sha256-5r4jLSlkL3W50TOEfnTDs3xUm7S5qUnyMWAXTVjBGjM="
         },
-        "checksum": "Q11tt9VRHN7Qx2mCatRkJQTvScW9o="
+        "checksum": "Q1Y0U7sH1cn963r9YDe1YCMp9Bo9I="
+      },
+      {
+        "name": "blkid",
+        "url": "https://packages.wolfi.dev/os/x86_64/blkid-2.42.3-r4.apk",
+        "version": "2.42.3-r4",
+        "architecture": "x86_64",
+        "signature": {
+          "range": "",
+          "checksum": ""
+        },
+        "control": {
+          "range": "bytes=0-12252",
+          "checksum": "sha1-3jfM/Wiz/i27g44V8iMUeqro7is="
+        },
+        "data": {
+          "range": "bytes=12253-95602",
+          "checksum": "sha256-yNmMkSf5wmDlDGODVE0s2+L05XCG5BezDLydCEd/dqw="
+        },
+        "checksum": "Q13jfM/Wiz/i27g44V8iMUeqro7is="
       },
       {
         "name": "libxcrypt",
@@ -230,25 +268,6 @@
           "checksum": "sha256-SU00pxgICY08ttpJrVrD/ec2qRAaM1ZvMTSi099EeWk="
         },
         "checksum": "Q1+pv/ESAdasOedkf8gPLCHsLS2tI="
-      },
-      {
-        "name": "libblkid",
-        "url": "https://packages.wolfi.dev/os/x86_64/libblkid-2.42.3-r4.apk",
-        "version": "2.42.3-r4",
-        "architecture": "x86_64",
-        "signature": {
-          "range": "",
-          "checksum": ""
-        },
-        "control": {
-          "range": "bytes=0-12239",
-          "checksum": "sha1-Y0U7sH1cn963r9YDe1YCMp9Bo9I="
-        },
-        "data": {
-          "range": "bytes=12240-235396",
-          "checksum": "sha256-5r4jLSlkL3W50TOEfnTDs3xUm7S5qUnyMWAXTVjBGjM="
-        },
-        "checksum": "Q1Y0U7sH1cn963r9YDe1YCMp9Bo9I="
       },
       {
         "name": "libuuid",
