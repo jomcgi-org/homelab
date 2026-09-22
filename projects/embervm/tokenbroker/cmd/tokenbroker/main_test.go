@@ -216,6 +216,27 @@ func TestQuotaGrantKeyedObservationRollsUpToProvider(t *testing.T) {
 	}
 }
 
+func TestQuotaGetEnumeratesConfiguredUnobservedQuotaGrants(t *testing.T) {
+	s, _ := quotaTestServer("codex", "claude")
+	s.configs["codex-b"] = grantConfig{Name: "codex-b", ProviderName: "codex-chatgpt"}
+	s.configs["agent-mcp"] = grantConfig{Name: "agent-mcp", ProviderName: "authentik"}
+
+	all := decodeBody(t, requestQuota(t, s, http.MethodGet, "/quota", ""))
+	if all["grants_complete"] != true {
+		t.Fatalf("grant inventory is not marked complete: %v", all)
+	}
+	grants := all["grants"].(map[string]any)
+	if len(grants) != 2 {
+		t.Fatalf("expected both Codex grants and no service-account grant, got %v", grants)
+	}
+	for _, name := range []string{"codex-cluster", "codex-b"} {
+		view := grants[name].(map[string]any)
+		if view["grant"] != name || view["provider"] != "codex" || view["observed"] != false {
+			t.Fatalf("unexpected unobserved view for %s: %v", name, view)
+		}
+	}
+}
+
 func requestQuota(t *testing.T, s *server, method, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(method, path, strings.NewReader(body))

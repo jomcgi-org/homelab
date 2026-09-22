@@ -54,6 +54,7 @@ def _confirmed_quota(windows, *, age=30.0, exhausted=False):
     return {
         "codex": {
             "observed": True,
+            "grant_inventory_complete": True,
             "age_seconds": age,
             "exhausted": exhausted,
             "windows": windows,
@@ -406,6 +407,7 @@ def test_quota_summary_rolls_broker_grants_into_the_class(monkeypatch):
                 ],
             }
         },
+        "grants_complete": True,
     }
     monkeypatch.setattr(quota, "fetch_provider_quota_sync", lambda **_k: payload)
     summary = model_pool.quota_summary()
@@ -439,17 +441,21 @@ def test_broker_success_without_a_fresh_observation_cannot_confirm_room(
 def test_expired_windows_do_not_bind_a_fresh_confirmed_observation():
     import factory.execution.provider_quota as quota
 
-    summary = quota.summarise(
-        {
-            "codex": {
-                "observed": True,
-                "age_seconds": 10.0,
-                "windows": [
-                    {"name": "primary", "used_percent": 100.0, "expired": True},
-                    {"name": "secondary", "used_percent": 20.0, "expired": False},
-                ],
+    summary = model_pool.rollup_grants(
+        quota.summarise(
+            {
+                "codex": {
+                    "observed": True,
+                    "age_seconds": 10.0,
+                    "windows": [
+                        {"name": "primary", "used_percent": 100.0, "expired": True},
+                        {"name": "secondary", "used_percent": 20.0, "expired": False},
+                    ],
+                }
             }
-        }
+        ),
+        {},
+        grants_complete=True,
     )
 
     assert model_pool.confirmed_availability("luna", summary) == (
@@ -457,20 +463,60 @@ def test_expired_windows_do_not_bind_a_fresh_confirmed_observation():
         "confirmed_available",
     )
 
-    expired_only = quota.summarise(
-        {
-            "codex": {
-                "observed": True,
-                "age_seconds": 10.0,
-                "windows": [
-                    {"name": "primary", "used_percent": 100.0, "expired": True}
-                ],
+    expired_only = model_pool.rollup_grants(
+        quota.summarise(
+            {
+                "codex": {
+                    "observed": True,
+                    "age_seconds": 10.0,
+                    "windows": [
+                        {"name": "primary", "used_percent": 100.0, "expired": True}
+                    ],
+                }
             }
-        }
+        ),
+        {},
+        grants_complete=True,
     )
     assert model_pool.confirmed_availability("luna", expired_only) == (
         True,
         "all_windows_expired",
+    )
+
+
+def test_incomplete_grant_inventory_cannot_confirm_room():
+    quota = _confirmed_quota([_window("primary", 10.0)])
+    quota["codex"]["grant_inventory_complete"] = False
+
+    assert model_pool.confirmed_availability("luna", quota) == (
+        False,
+        "grant_inventory_incomplete",
+    )
+
+
+def test_unobserved_configured_grant_prevents_cross_account_admission():
+    grants = {
+        "account-a": {
+            "grant": "account-a",
+            "provider": "codex",
+            "observed": True,
+            "exhausted": False,
+            "age_seconds": 10.0,
+            "headline_used_percent": 10.0,
+            "windows": [_window("primary", 10.0)],
+        },
+        "account-b": {
+            "grant": "account-b",
+            "provider": "codex",
+            "observed": False,
+        },
+    }
+    rolled = model_pool.rollup_grants({}, grants, grants_complete=True)
+
+    assert model_pool.availability("luna", rolled) == (True, "available")
+    assert model_pool.confirmed_availability("luna", rolled) == (
+        False,
+        "grant account-b unobserved",
     )
 
 
@@ -518,21 +564,25 @@ def test_confirmed_grant_rollup_never_mixes_windows_between_accounts():
             "windows": [_window("primary", 99.0), _window("secondary", 10.0)],
         },
     }
-    rolled = model_pool.rollup_grants({}, grants)
+    rolled = model_pool.rollup_grants({}, grants, grants_complete=True)
 
     ok, reason = model_pool.confirmed_availability("luna", rolled)
     assert ok is False
     assert "account-a window secondary used_percent 99" in reason
     assert "account-b window primary used_percent 99" in reason
 
+    grants["account-a"]["windows"] = [
+        _window("primary", 10.0),
+        _window("secondary", 20.0),
+    ]
     grants["account-b"]["windows"] = [
         _window("primary", 10.0),
         _window("secondary", 20.0),
     ]
-    rolled = model_pool.rollup_grants({}, grants)
+    rolled = model_pool.rollup_grants({}, grants, grants_complete=True)
     assert model_pool.confirmed_availability("luna", rolled) == (
         True,
-        "grant account-b confirmed_available",
+        "all_grants_confirmed_available",
     )
 
 

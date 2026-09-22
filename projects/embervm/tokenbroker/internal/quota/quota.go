@@ -55,8 +55,9 @@ func (v View) MarshalJSON() ([]byte, error) {
 	if !v.Observed {
 		return json.Marshal(struct {
 			Provider string `json:"provider"`
+			Grant    string `json:"grant,omitempty"`
 			Observed bool   `json:"observed"`
-		}{Provider: v.Provider, Observed: false})
+		}{Provider: v.Provider, Grant: v.Grant, Observed: false})
 	}
 	return json.Marshal(struct {
 		Provider    string       `json:"provider"`

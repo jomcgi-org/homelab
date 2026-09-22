@@ -448,6 +448,7 @@ def test_available_result_keeps_grants_and_summarises_them():
 
     payload = {
         "providers": {},
+        "grants_complete": True,
         "grants": {
             "codex-b": {
                 "provider": "codex",
@@ -469,10 +470,17 @@ def test_available_result_keeps_grants_and_summarises_them():
     }
     result = _available_result(payload)
     assert result["grants"] == payload["grants"]
+    assert result["grants_complete"] is True
     assert _available_result({"providers": {}})["grants"] == {}
+    assert _available_result({"providers": {}})["grants_complete"] is False
     summary = summarise_grants(result["grants"])
-    assert list(summary) == ["codex-b"]
+    assert list(summary) == ["codex-b", "codex-cluster"]
     assert summary["codex-b"]["grant"] == "codex-b"
     assert summary["codex-b"]["provider"] == "codex"
     assert summary["codex-b"]["headline_used_percent"] == 33.0
     assert summary["codex-b"]["resets_at"] == "2026-09-15T01:25:04Z"
+    assert summary["codex-cluster"] == {
+        "grant": "codex-cluster",
+        "provider": "codex",
+        "observed": False,
+    }
