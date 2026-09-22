@@ -221,6 +221,7 @@ py_test(
     data = [
         "Chart.yaml",
         "values.yaml",
+        "//projects/embervm/deploy:gke_values",
         "@multitool//tools/helm",
     ] + glob([
         "templates/**/*",
@@ -229,6 +230,7 @@ py_test(
     env = {
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
     },
+    deps = ["@pip//pyyaml"],
 )
 
 py_test(

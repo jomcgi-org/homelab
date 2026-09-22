@@ -22,7 +22,8 @@ class FakeAsyncClient:
     async def __aexit__(self, *_args):
         return None
 
-    async def get(self, url: str) -> httpx.Response:
+    async def request(self, method: str, url: str) -> httpx.Response:
+        assert method == "GET"
         self.calls.append(url)
         result = self.handler(url)
         if isinstance(result, Exception):
@@ -41,7 +42,8 @@ class FakeSyncClient:
     def __exit__(self, *_args):
         return None
 
-    def get(self, url: str) -> httpx.Response:
+    def request(self, method: str, url: str) -> httpx.Response:
+        assert method == "GET"
         self.calls.append(url)
         result = self.handler(url)
         if isinstance(result, Exception):
@@ -75,7 +77,7 @@ def _patch_client(monkeypatch, handler, fetch_kind: str):
         return FakeSyncClient(handler, calls)
 
     client_name = "AsyncClient" if fetch_kind == "async" else "Client"
-    monkeypatch.setattr(quota.httpx, client_name, client)
+    monkeypatch.setattr(quota.broker_client.httpx, client_name, client)
     return calls, timeouts
 
 

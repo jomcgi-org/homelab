@@ -8,6 +8,10 @@ backend:
   autoscaling:
     enabled: false
 
+tokenBroker:
+  spiffe:
+    enabled: false
+
 swarm:
   # Make the bounded reconciler available on the existing GKE stack. Durable
   # operator policy separately controls issue admission and starts disabled.

@@ -1,0 +1,28 @@
+{{- if .Values.tokenBroker.spiffe.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "monolith.fullname" . }}-tokenbroker-spiffe-helper
+  labels:
+    {{- include "monolith.labels" . | nindent 4 }}
+data:
+  helper.conf: |
+    agent_address = "/spiffe-workload-api/spire-agent.sock"
+    cert_dir = "/run/tokenbroker-svid"
+    daemon_mode = true
+    hint = {{ .Values.tokenBroker.spiffe.helper.hint | quote }}
+    cmd = ""
+    cmd_args = ""
+    renew_signal = ""
+    svid_file_name = "svid.pem"
+    svid_key_file_name = "svid_key.pem"
+    svid_bundle_file_name = "svid_bundle.pem"
+    cert_file_mode = 0444
+    key_file_mode = 0440
+    health_checks {
+      listener_enabled = true
+      bind_port = 8081
+      liveness_path = "/live"
+      readiness_path = "/ready"
+    }
+{{- end }}

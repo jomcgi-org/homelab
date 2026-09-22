@@ -361,6 +361,11 @@ service:
 
 tokenBroker:
   enabled: true
+  plaintext:
+    # Final retirement gate for credential and quota routes on port 8080.
+    # Health and metrics stay operational. Keep false through staged mTLS
+    # validation and arm only in a separately authorized values change.
+    retireProtectedRoutes: false
   # Bosun installation tokens. Inert until the App, SPIFFE callers and repository
   # IDs are configured. These grants are not added to the legacy OAuth catalog.
   githubApp:

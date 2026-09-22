@@ -164,6 +164,10 @@ semgrep:
 
 tokenBroker:
   url: "http://embervm-dev-embervm-tokenbroker.embervm-dev.svc.cluster.local:8080"
+  spiffe:
+    enabled: false
+    url: "https://embervm-dev-embervm-tokenbroker.embervm-dev.svc:8443"
+    serverId: "spiffe://embervm.jomcgi.dev/ns/embervm-dev/sa/embervm-dev-embervm-tokenbroker"
 
 # Keep destination identities aligned with the dev EmberVM overlay. The egress
 # gate remains inherited false; these selectors matter only during an explicit
