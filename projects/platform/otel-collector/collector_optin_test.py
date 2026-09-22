@@ -417,9 +417,7 @@ def test_gke_ca_mount_is_opt_in_read_only_and_key_scoped():
 
 
 def test_ca_mount_stays_absent_when_only_mount_flag_is_set():
-    docs = _render_overlay(
-        "values-gke", ["--set", "httpcheck.caMount.enabled=true"]
-    )
+    docs = _render_overlay("values-gke", ["--set", "httpcheck.caMount.enabled=true"])
     pod_spec = _of_kind(docs, "Deployment")["spec"]["template"]["spec"]
 
     assert "httpcheck-ca" not in {
