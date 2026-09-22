@@ -12,5 +12,4 @@ go_test(
     name = "config_test",
     srcs = ["config_test.go"],
     embed = [":config"],
-    deps = ["@com_github_spiffe_go_spiffe_v2//spiffeid"],
 )
