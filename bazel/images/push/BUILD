@@ -11,6 +11,7 @@ exports_files(["push-changed.sh"])
 sh_binary(
     name = "push_changed",
     srcs = ["push-changed.sh"],
+    data = ["//bazel/helm:verify-published-images.sh"],
     visibility = ["//visibility:public"],
 )
 
