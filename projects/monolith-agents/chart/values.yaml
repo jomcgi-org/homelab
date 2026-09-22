@@ -1,5 +1,5 @@
-# Authenticated agents service. Isolation is enforced by
-# templates/cilium-policy.yaml under ADR platform/012.
+# Authenticated agents service. Network isolation on the GKE hub remains
+# successor work (#5656); source pruning and database grants still apply.
 #
 # The service account token authenticates the explicit read-only Kubernetes
 # observations below. No private-monolith role is reused.
@@ -103,12 +103,6 @@ objectStorage:
 
 discord:
   defaultChannelId: ""
-
-# ADR platform/012 isolation. Once selected, the agents pod has closed ingress
-# except node health probes and destination-scoped egress for its dependencies.
-ciliumPolicy:
-  enabled: true
-  objectStorageFqdn: "7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com"
 
 # The tier's own database credential, synced into this namespace by the
 # 1Password operator under database.secretName. Unset by default: the scoped

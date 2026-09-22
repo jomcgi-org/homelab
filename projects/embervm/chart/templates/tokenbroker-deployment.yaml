@@ -12,9 +12,6 @@
 {{- if not .Values.tokenBroker.githubApp.grants }}
 {{- fail "tokenBroker.githubApp requires explicit grants" }}
 {{- end }}
-{{- if and .Values.tokenBroker.networkPolicy.enabled (not .Values.tokenBroker.githubApp.clientPodSelectors) }}
-{{- fail "tokenBroker.githubApp requires clientPodSelectors when networkPolicy is enabled" }}
-{{- end }}
 {{- end }}
 {{- $spiffeClientIDs := join "," .Values.tokenBroker.spiffe.clientSpiffeIds }}
 {{- if and .Values.tokenBroker.spiffe.enabled (eq (len .Values.tokenBroker.spiffe.clientSpiffeIds) 0) }}

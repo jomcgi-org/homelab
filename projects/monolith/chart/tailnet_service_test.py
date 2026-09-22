@@ -46,17 +46,6 @@ def _tailnet_services(documents: list[dict]) -> list[dict]:
     ]
 
 
-def _api_ingress_policy(documents: list[dict]) -> dict:
-    policies = [
-        document
-        for document in documents
-        if document.get("kind") == "CiliumNetworkPolicy"
-        and document.get("metadata", {}).get("name") == "kg-api-ingress"
-    ]
-    assert len(policies) == 1
-    return policies[0]
-
-
 def _tailnet_network_policies(documents: list[dict]) -> list[dict]:
     return [
         document
@@ -86,26 +75,6 @@ def test_tailnet_service_exposes_only_api_port():
     ]
     assert service["spec"]["selector"]["app.kubernetes.io/component"] == "app"
 
-    rules = _api_ingress_policy(documents)["spec"]["ingress"]
-    proxy_rules = [
-        rule
-        for rule in rules
-        if rule.get("fromEndpoints", [{}])[0]
-        .get("matchLabels", {})
-        .get("tailscale.com/parent-resource")
-        == "kg-tailnet"
-    ]
-    assert len(proxy_rules) == 1
-    assert proxy_rules[0]["fromEndpoints"][0]["matchLabels"] == {
-        "k8s:io.kubernetes.pod.namespace": "tailscale",
-        "tailscale.com/managed": "true",
-        "tailscale.com/parent-resource-type": "svc",
-        "tailscale.com/parent-resource": "kg-tailnet",
-        "tailscale.com/parent-resource-ns": "default",
-    }
-    assert proxy_rules[0]["toPorts"] == [
-        {"ports": [{"port": "8000", "protocol": "TCP"}]}
-    ]
     assert _tailnet_network_policies(documents) == []
 
 
