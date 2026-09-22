@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 from datetime import datetime, timezone
 
@@ -179,7 +180,12 @@ def reset_passed(resets_at: object, now: datetime | None = None) -> bool | None:
     if isinstance(resets_at, bool) or resets_at in (None, ""):
         return None
     if isinstance(resets_at, (int, float)):
-        reset = datetime.fromtimestamp(float(resets_at), tz=timezone.utc)
+        if not math.isfinite(float(resets_at)):
+            return None
+        try:
+            reset = datetime.fromtimestamp(float(resets_at), tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
     elif isinstance(resets_at, str):
         try:
             reset = datetime.fromisoformat(resets_at.replace("Z", "+00:00"))
@@ -239,6 +245,101 @@ def availability(model: str, quota: dict, role: str | None = None) -> tuple[bool
     return False, reason
 
 
+def _confirmed_view_availability(
+    summary: dict, *, provider: str, role: str | None, now: datetime | None
+) -> tuple[bool, str]:
+    """Require one fresh observation whose every active window permits work."""
+    age = summary.get("age_seconds")
+    if (
+        not isinstance(age, (int, float))
+        or isinstance(age, bool)
+        or not math.isfinite(float(age))
+        or float(age) < 0.0
+    ):
+        return False, "observation_age_unknown"
+    if float(age) > max_quota_age_seconds():
+        return False, f"stale_observation age {age:g}"
+    windows = summary.get("windows")
+    if not isinstance(windows, list):
+        return False, "windows_unobserved"
+    if not windows:
+        if summary.get("windows_observed") is True:
+            return True, "all_windows_expired"
+        return False, "windows_unobserved"
+
+    floor = floor_for(provider, role)
+    applicable = 0
+    for window in windows:
+        if not isinstance(window, dict) or window.get("usable") is not True:
+            return False, "window_unusable"
+        name = window["name"]
+        used = window["used_percent"]
+        resets_at = window.get("resets_at")
+        passed = reset_passed(resets_at, now)
+        if resets_at not in (None, "") and passed is None:
+            return False, f"window {name} reset_unusable"
+        if passed is True:
+            continue
+        applicable += 1
+        if used >= exhausted_percent():
+            return False, f"window {name} used_percent {used:g}"
+        if floor > 0 and (100.0 - used) < floor:
+            return (
+                False,
+                f"window {name} below_floor {floor:g} remaining {100.0 - used:g}",
+            )
+    if applicable == 0:
+        return True, "all_windows_reset"
+    if summary.get("exhausted") is True:
+        return False, "exhausted"
+    return True, "confirmed_available"
+
+
+def confirmed_availability(
+    model: str,
+    quota: dict,
+    role: str | None = None,
+    *,
+    now: datetime | None = None,
+) -> tuple[bool, str]:
+    """Require fresh, usable evidence before admitting quota-sensitive work.
+
+    General model-pool routing deliberately keeps its positive-evidence policy
+    in :func:`availability`. KG admission uses this narrower fail-closed seam.
+    When multiple account grants report, each account is evaluated as a whole;
+    windows from different accounts are never combined to manufacture room.
+    """
+    family = family_for(model)
+    if family is None:
+        return False, "unsupported_model"
+    provider = QUOTA_PROVIDERS.get(family)
+    if provider is None:
+        return True, "no_quota_feed"
+    if not isinstance(quota, dict):
+        return False, "unobserved"
+    summary = quota.get(provider)
+    if not isinstance(summary, dict) or summary.get("observed") is not True:
+        return False, "unobserved"
+
+    grant_views = summary.get("grant_views")
+    if isinstance(grant_views, list) and grant_views:
+        reasons = []
+        for view in grant_views:
+            if not isinstance(view, dict):
+                reasons.append("window_unusable")
+                continue
+            ok, reason = _confirmed_view_availability(
+                view, provider=provider, role=role, now=now
+            )
+            if ok:
+                grant = view.get("grant")
+                return True, f"grant {grant} {reason}" if grant else reason
+            grant = view.get("grant")
+            reasons.append(f"{grant} {reason}" if grant else reason)
+        return False, "; ".join(reasons)
+    return _confirmed_view_availability(summary, provider=provider, role=role, now=now)
+
+
 def rollup_grants(summary: dict, grants: dict) -> dict:
     """Fold per-grant views into the class view a pool member is judged on.
 
@@ -258,7 +359,11 @@ def rollup_grants(summary: dict, grants: dict) -> dict:
         open_views = [v for v in views if not v.get("exhausted")]
         if not open_views:
             best = min(views, key=lambda v: v.get("age_seconds") or 0.0)
-            merged[provider] = {**best, "exhausted": True}
+            merged[provider] = {
+                **best,
+                "exhausted": True,
+                "grant_views": [dict(view) for view in views],
+            }
             continue
         # A grant with no usable window says nothing about room: it sorts
         # last, so it can only win when it is the only open grant.
@@ -271,7 +376,11 @@ def rollup_grants(summary: dict, grants: dict) -> dict:
                 else float("inf")
             ),
         )
-        merged[provider] = {**best, "exhausted": False}
+        merged[provider] = {
+            **best,
+            "exhausted": False,
+            "grant_views": [dict(view) for view in views],
+        }
     return merged
 
 

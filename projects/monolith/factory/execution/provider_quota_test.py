@@ -184,6 +184,20 @@ def test_summarise_picks_named_headline_windows():
     assert result["codex"]["headline_window"] == "primary"
     assert result["codex"]["age_seconds"] == 42.0
     assert result["codex"]["resets_at"] == "c1"
+    assert result["codex"]["windows"] == [
+        {
+            "name": "secondary",
+            "used_percent": 3.5,
+            "resets_at": "c2",
+            "usable": True,
+        },
+        {
+            "name": "primary",
+            "used_percent": 24.0,
+            "resets_at": "c1",
+            "usable": True,
+        },
+    ]
     assert result["claude"]["headline_used_percent"] == 75.0
     assert result["claude"]["headline_window"] == "5h"
     assert result["claude"]["age_seconds"] == 3.5
@@ -220,6 +234,39 @@ def test_summarise_returns_none_without_active_windows(windows):
     assert result["codex"]["headline_window"] is None
     assert result["codex"]["age_seconds"] is None
     assert result["codex"]["resets_at"] is None
+    assert result["codex"]["windows_observed"] is bool(windows)
+
+
+def test_summarise_marks_malformed_active_windows_and_discards_expired_ones():
+    result = quota.summarise(
+        {
+            "codex": {
+                "observed": True,
+                "age_seconds": float("nan"),
+                "windows": [
+                    {"name": "primary", "used_percent": 100, "expired": True},
+                    {"name": "secondary", "used_percent": "unknown"},
+                    "not-a-window",
+                ],
+            }
+        }
+    )["codex"]
+
+    assert result["age_seconds"] is None
+    assert result["windows"] == [
+        {
+            "name": "secondary",
+            "used_percent": None,
+            "resets_at": None,
+            "usable": False,
+        },
+        {
+            "name": None,
+            "used_percent": None,
+            "resets_at": None,
+            "usable": False,
+        },
+    ]
 
 
 def _patch_fetch(monkeypatch, result):
