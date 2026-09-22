@@ -836,7 +836,13 @@ func (s *Server) restoreDataKey(raw []byte, ref *nodev1.ArtifactRef, generation 
 		Kind:       artifactKindStr(ref.GetKind()),
 		Generation: generation,
 	}
-	key, err := parseAndVerifyCapability(raw, []byte(s.cfg.BearerToken), time.Now(), want)
+	key, err := parseAndVerifyCapabilityKeys(
+		raw,
+		[]byte(s.cfg.RestoreCapabilityKey),
+		[]byte(s.cfg.BearerToken),
+		time.Now(),
+		want,
+	)
 	if err == nil {
 		return key, nil
 	}

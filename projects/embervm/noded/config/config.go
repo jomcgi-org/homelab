@@ -97,6 +97,10 @@ type Config struct {
 	// open and logs a startup warning (mirrors fc-invoke's fail-loud-not-silent
 	// posture); a Cilium/Linkerd policy is the defence-in-depth layer on top.
 	BearerToken string
+	// RestoreCapabilityKey authenticates restore capabilities independently of
+	// transport auth. Empty retains the legacy BearerToken verifier for the
+	// one-release migration window. Env EMBERVM_NODED_RESTORE_CAPABILITY_KEY.
+	RestoreCapabilityKey string
 
 	// MaxLiveVMs is the node-level backstop cap on concurrently live microVMs
 	// (primed + assigning). The control plane owns real concurrency; this only
@@ -461,16 +465,17 @@ type Config struct {
 // optional fields. It errors only on values that are present but malformed.
 func Load() (Config, error) {
 	c := Config{
-		ListenAddr:       getenvDefault("EMBERVM_NODED_LISTEN_ADDR", ":9090"),
-		HealthAddr:       getenvDefault("EMBERVM_NODED_HEALTH_ADDR", ":8080"),
-		ActivatorAddr:    getenvDefault("EMBERVM_NODED_ACTIVATOR_ADDR", ":8081"),
-		Node:             os.Getenv("EMBERVM_NODED_NODE"),
-		Arch:             os.Getenv("EMBERVM_NODED_ARCH"),
-		CpuVendor:        os.Getenv("EMBERVM_NODED_CPU_VENDOR"),
-		CpuTemplate:      os.Getenv("EMBERVM_NODED_CPU_TEMPLATE"),
-		BearerToken:      os.Getenv("EMBERVM_NODED_BEARER_TOKEN"),
-		MaxLiveVMs:       atoiDefault("EMBERVM_NODED_MAX_LIVE_VMS", 8),
-		DaemonReserveMib: atoiDefault("EMBERVM_NODED_DAEMON_RESERVE_MIB", 512),
+		ListenAddr:           getenvDefault("EMBERVM_NODED_LISTEN_ADDR", ":9090"),
+		HealthAddr:           getenvDefault("EMBERVM_NODED_HEALTH_ADDR", ":8080"),
+		ActivatorAddr:        getenvDefault("EMBERVM_NODED_ACTIVATOR_ADDR", ":8081"),
+		Node:                 os.Getenv("EMBERVM_NODED_NODE"),
+		Arch:                 os.Getenv("EMBERVM_NODED_ARCH"),
+		CpuVendor:            os.Getenv("EMBERVM_NODED_CPU_VENDOR"),
+		CpuTemplate:          os.Getenv("EMBERVM_NODED_CPU_TEMPLATE"),
+		BearerToken:          os.Getenv("EMBERVM_NODED_BEARER_TOKEN"),
+		RestoreCapabilityKey: os.Getenv("EMBERVM_NODED_RESTORE_CAPABILITY_KEY"),
+		MaxLiveVMs:           atoiDefault("EMBERVM_NODED_MAX_LIVE_VMS", 8),
+		DaemonReserveMib:     atoiDefault("EMBERVM_NODED_DAEMON_RESERVE_MIB", 512),
 		// Default 512 MiB memory reject floor; zero means use this fallback.
 		MemRejectFloorMib:       atoiDefault("EMBERVM_NODED_MEM_REJECT_FLOOR_MIB", 512),
 		AdmissionModel:          getenvDefault("EMBERVM_NODED_ADMISSION_MODEL", "observed"),

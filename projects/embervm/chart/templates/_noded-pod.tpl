@@ -445,6 +445,15 @@ containers:
       {{- end }}
       - name: EMBERVM_NODED_REQUIRE_RESTORE_CAPABILITY
         value: {{ $ctx.Values.noded.requireRestoreCapability | quote }}
+      {{- if $ctx.Values.controlPlane.restoreCapabilityKeySecret.enabled }}
+      # Same Secret and key as the control-plane minting path. This env name is
+      # noded-specific, while the underlying key identity is exactly shared.
+      - name: EMBERVM_NODED_RESTORE_CAPABILITY_KEY
+        valueFrom:
+          secretKeyRef:
+            name: {{ include "embervm.restoreCapabilityKeySecretName" $ctx }}
+            key: {{ $ctx.Values.controlPlane.restoreCapabilityKeySecret.key }}
+      {{- end }}
       # Artifact-decoupling Phase 2: the node-side image identity table that
       # USED to be rendered here as EMBERVM_NODED_IMAGES is retired. The daemon
       # boots with an EMPTY workload registry and the control plane PUSHES it

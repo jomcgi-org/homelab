@@ -102,6 +102,18 @@ controlPlane:
     # One real S3Client meta fetch at boot and after each completed interval.
     # The result is observational only and never changes readiness.
     intervalSeconds: 300
+  # Dedicated HMAC key shared by restore-capability minting and verification.
+  # One value flips both sides together. With onepassword.itemPath set, the
+  # chart creates a OnePasswordItem and name defaults to
+  # <embervm.fullname>-restore-capability-key. Otherwise enabled requires the
+  # name of a pre-created Secret. Disabled by default, so existing environments
+  # continue using the one-release legacy bearer fallback until staged rollout.
+  restoreCapabilityKeySecret:
+    enabled: false
+    name: ""
+    key: restore-capability-key
+    onepassword:
+      itemPath: ""
 
 controlPlaneLivenessProbe:
   # Issue #5235: at the 10-second period, allow up to 60 seconds for an internal

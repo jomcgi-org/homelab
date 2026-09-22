@@ -326,6 +326,7 @@ func TestLoadDefaults(t *testing.T) {
 	for _, k := range []string{
 		"EMBERVM_NODED_LISTEN_ADDR", "EMBERVM_NODED_HEALTH_ADDR", "EMBERVM_NODED_NODE",
 		"NODE_NAME", "EMBERVM_NODED_ARCH", "EMBERVM_NODED_CPU_VENDOR", "EMBERVM_NODED_BEARER_TOKEN",
+		"EMBERVM_NODED_RESTORE_CAPABILITY_KEY",
 		"EMBERVM_NODED_MAX_LIVE_VMS", "EMBERVM_NODED_IMAGES", "EMBERVM_NODED_IMAGES_FILE",
 		"EMBERVM_NODED_BOOT_READY_TIMEOUT", "EMBERVM_NODED_RESTORE_READY_TIMEOUT",
 		"EMBERVM_NODED_DRAIN_TIMEOUT", "EMBERVM_NODED_PREEMPTION_NOTICE_ENABLED",
@@ -430,6 +431,9 @@ func TestLoadDefaults(t *testing.T) {
 	if c.RequireRestoreCapability {
 		t.Error("RequireRestoreCapability should default false for the two-phase rollout")
 	}
+	if c.RestoreCapabilityKey != "" {
+		t.Errorf("RestoreCapabilityKey = %q, want empty when env is unset", c.RestoreCapabilityKey)
+	}
 }
 
 func TestLoadJailerEscapeHatch(t *testing.T) {
@@ -476,6 +480,7 @@ func TestLoadPreemptionOverrides(t *testing.T) {
 func TestLoadArtifactEncryptionOverrides(t *testing.T) {
 	t.Setenv("EMBERVM_NODED_STORE_ENCRYPT", "true")
 	t.Setenv("EMBERVM_NODED_REQUIRE_RESTORE_CAPABILITY", "true")
+	t.Setenv("EMBERVM_NODED_RESTORE_CAPABILITY_KEY", "dedicated-capability-key")
 	t.Setenv("EMBERVM_NODED_UNEXPORTABLE_TTL", "90m")
 	c, err := Load()
 	if err != nil {
@@ -486,6 +491,9 @@ func TestLoadArtifactEncryptionOverrides(t *testing.T) {
 	}
 	if !c.RequireRestoreCapability {
 		t.Error("RequireRestoreCapability should parse EMBERVM_NODED_REQUIRE_RESTORE_CAPABILITY=true")
+	}
+	if c.RestoreCapabilityKey != "dedicated-capability-key" {
+		t.Errorf("RestoreCapabilityKey = %q, want dedicated-capability-key", c.RestoreCapabilityKey)
 	}
 	if c.UnexportableTTL != 90*time.Minute {
 		t.Errorf("UnexportableTTL = %v, want 90m", c.UnexportableTTL)

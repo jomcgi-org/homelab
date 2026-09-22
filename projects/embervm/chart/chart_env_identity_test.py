@@ -532,6 +532,107 @@ def test_noded_bearer_secret_flips_control_plane_and_bricks_together():
     assert "EMBERVM_NODED_BEARER_TOKEN" not in disabled
 
 
+def test_restore_capability_key_secret_flips_control_plane_and_all_noded_pods_together():
+    chart = _chart_dir()
+    enabled = _render(
+        "restore-key",
+        [chart / "values.yaml"],
+        [
+            "noded.enabled=true",
+            "bricks.enabled=true",
+            "bricks.nodeFloors[0].node=node-x",
+            "bricks.nodeFloors[0].class=1gi",
+            "controlPlane.restoreCapabilityKeySecret.enabled=true",
+            "controlPlane.restoreCapabilityKeySecret.name=custom-restore-secret",
+            "controlPlane.restoreCapabilityKeySecret.key=custom-restore-key",
+        ],
+    )
+
+    workloads = {
+        (kind, name): doc
+        for kind, name, doc in _docs(enabled)
+        if kind in {"Deployment", "DaemonSet"}
+    }
+    control_plane = workloads[("Deployment", "restore-key-embervm")]
+    noded_pods = [
+        doc
+        for (kind, name), doc in workloads.items()
+        if (kind == "DaemonSet" and name.endswith("-noded")) or "-noded-brick-" in name
+    ]
+    assert any(
+        kind == "DaemonSet" and name.endswith("-noded") for kind, name in workloads
+    ), "restore key render produced no noded DaemonSet; this test is inert"
+    assert any("-noded-brick-" in name for _, name in workloads), (
+        "restore key render produced no brick Deployment; this test is inert"
+    )
+    assert any(name.endswith("-noded-brick-1gi-node-x") for _, name in workloads), (
+        "restore key render produced no floor Deployment; this test is inert"
+    )
+
+    control_plane_ref = re.compile(
+        r"name:\s*EMBERVM_RESTORE_CAPABILITY_KEY\s+valueFrom:\s+"
+        r"secretKeyRef:\s+name:\s*custom-restore-secret\s+"
+        r"key:\s*custom-restore-key",
+        re.S,
+    )
+    noded_ref = re.compile(
+        r"name:\s*EMBERVM_NODED_RESTORE_CAPABILITY_KEY\s+valueFrom:\s+"
+        r"secretKeyRef:\s+name:\s*custom-restore-secret\s+"
+        r"key:\s*custom-restore-key",
+        re.S,
+    )
+    assert control_plane_ref.search(control_plane)
+    assert noded_pods and all(noded_ref.search(doc) for doc in noded_pods)
+
+    disabled = _render(
+        "restore-key",
+        [chart / "values.yaml"],
+        [
+            "noded.enabled=true",
+            "bricks.enabled=true",
+            "controlPlane.restoreCapabilityKeySecret.enabled=false",
+            "controlPlane.restoreCapabilityKeySecret.onepassword.itemPath=vaults/x/items/disabled",
+        ],
+    )
+    assert "EMBERVM_RESTORE_CAPABILITY_KEY" not in disabled
+    assert "EMBERVM_NODED_RESTORE_CAPABILITY_KEY" not in disabled
+    assert "restore-key-embervm-restore-capability-key" not in disabled
+
+
+def test_restore_capability_key_onepassword_item_uses_custom_item_path_and_default_name():
+    chart = _chart_dir()
+    rendered = _render(
+        "restore-key",
+        [chart / "values.yaml"],
+        [
+            "bricks.enabled=true",
+            "controlPlane.restoreCapabilityKeySecret.enabled=true",
+            "controlPlane.restoreCapabilityKeySecret.key=capability-key",
+            "controlPlane.restoreCapabilityKeySecret.onepassword.itemPath=vaults/x/items/restore-key",
+        ],
+    )
+
+    item_docs = [
+        doc
+        for kind, name, doc in _docs(rendered)
+        if kind == "OnePasswordItem"
+        and name == "restore-key-embervm-restore-capability-key"
+    ]
+    assert len(item_docs) == 1
+    assert 'itemPath: "vaults/x/items/restore-key"' in item_docs[0]
+
+    secret_refs = re.findall(
+        r"name:\s*EMBERVM_(?:NODED_)?RESTORE_CAPABILITY_KEY\s+valueFrom:\s+"
+        r"secretKeyRef:\s+name:\s*(\S+)\s+key:\s*(\S+)",
+        rendered,
+        re.S,
+    )
+    assert secret_refs
+    assert set(secret_refs) == {
+        ("restore-key-embervm-restore-capability-key", "capability-key")
+    }
+
+
 def test_noded_admission_model_defaults_observed_and_accepts_reserved():
     chart = _chart_dir()
 

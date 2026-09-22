@@ -57,6 +57,10 @@ defmodule Embervm.Application do
     # Like configured_nodes/0, this is pure environment wiring and stays Finch-free.
     Application.put_env(:embervm, :noded_bearer_token, trimmed_env("EMBERVM_NODED_BEARER_TOKEN"))
 
+    # Restore-capability authentication is independent of transport auth. Empty
+    # means unset so the minting path uses the one-release bearer fallback.
+    configure_restore_capability_key()
+
     # Principal-artifact envelope encryption is one control-plane gate shared by
     # wrap and restore capability minting. It defaults off and performs no store
     # I/O while off. The store client reuses the warmth GC's S3 configuration.
@@ -754,6 +758,17 @@ defmodule Embervm.Application do
       # No pinned override: seed EMPTY. Instances arrive via dial-home
       # registration (NodeRegistry.register/2), never via a boot-time K8s call.
       true -> []
+    end
+  end
+
+  # Public for the boot-wiring regression test. The application calls this
+  # before starting any supervised child, and an empty or whitespace-only value
+  # is deliberately absent from app env rather than becoming a usable MAC key.
+  @doc false
+  def configure_restore_capability_key do
+    case trimmed_env("EMBERVM_RESTORE_CAPABILITY_KEY") do
+      "" -> Application.delete_env(:embervm, :restore_capability_key)
+      key -> Application.put_env(:embervm, :restore_capability_key, key)
     end
   end
 
