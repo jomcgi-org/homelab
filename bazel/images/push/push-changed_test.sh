@@ -189,7 +189,7 @@ teardown
 
 # 4. FAIL CLOSED: a blank digest is not a match, even against a stub crane that
 #    would happily say yes to "repo@".
-setup "$(printf '%s\t%s\t%s\n' "//projects/alpha:image.push" "ghcr.io/jomcgi/homelab/alpha" "")" \
+setup "$(printf '%s\t%s\t%s\t%s\n' "//projects/alpha:image.push" "ghcr.io/jomcgi/homelab/alpha" "" "tag-alpha")" \
 	"ghcr.io/jomcgi/homelab/alpha@"
 OUT=$(run_script)
 if grep -q "alpha:image.push" "$STUB_RUN_LOG"; then

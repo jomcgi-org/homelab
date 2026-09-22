@@ -68,6 +68,25 @@ _multirun_labels() {
 	' bazel/images/BUILD | LC_ALL=C sort -u
 }
 
+# Split exactly four tab-separated fields without Bash collapsing adjacent tab
+# characters. Tabs are IFS whitespace, so `read -r label repo digest tag` moves
+# a tag into `digest` when the digest field is blank, defeating the fail-closed
+# path this script promises. The manifest fields cannot themselves contain a
+# tab. Results are returned in the named globals used by both loops below.
+_parse_image_row() {
+	local row="$1" rest
+	label="${row%%$'\t'*}"
+	rest="${row#*$'\t'}"
+	repository="${rest%%$'\t'*}"
+	rest="${rest#*$'\t'}"
+	digest="${rest%%$'\t'*}"
+	if [[ "$rest" == *$'\t'* ]]; then
+		tag="${rest#*$'\t'}"
+	else
+		tag=""
+	fi
+}
+
 echo "==> Building every image (layers stay in CAS, nothing is staged here)"
 "$BAZEL" build //bazel/images:push_all "${BAZEL_ARGS[@]}"
 
@@ -140,7 +159,8 @@ SKIPPED=0
 # and the final image drops out of the comparison silently. The coverage check
 # below would still push it, so this was never a correctness hole, but it made
 # the last image in the manifest permanently un-skippable.
-while IFS=$'\t' read -r label repository digest tag || [ -n "${label:-}" ]; do
+while IFS= read -r image_row || [ -n "${image_row:-}" ]; do
+	_parse_image_row "$image_row"
 	[ -n "${label:-}" ] || continue
 	echo "$label" >>"$COVERED"
 
@@ -226,7 +246,8 @@ echo "==> $PUSH_COUNT image(s) to push, $SKIPPED already published"
 # The branch had never executed until 2026-08-11 (#4685). Every deploy for weeks
 # found all 24 images content-identical and took the skip path, so the first
 # commit that really needed a push turned main's deploy red.
-while IFS=$'\t' read -r label repository _desired_digest tag || [ -n "$label" ]; do
+while IFS= read -r image_row || [ -n "${image_row:-}" ]; do
+	_parse_image_row "$image_row"
 	[ -n "$label" ] || continue
 	echo ""
 	echo "==> push $label"
