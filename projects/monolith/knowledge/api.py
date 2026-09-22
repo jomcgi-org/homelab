@@ -54,6 +54,7 @@ __all__ = [
     "count_gaps_review_queue",
     "list_tasks_daily",
     "list_tasks_weekly",
+    "active_blocker_topics_for_poll",
 ]
 
 # Over-fetch factor for the public-chunk search: pull this many times the
@@ -61,6 +62,13 @@ __all__ = [
 # chunks do not crowd out the rest before we have K distinct notes. The public
 # set is small and slow-changing, so a generous over-fetch is cheap.
 _PUBLIC_CHUNK_OVERFETCH = 8
+
+
+def active_blocker_topics_for_poll(lanes: tuple[str, ...]) -> frozenset[str]:
+    """Read active lane blockers through the knowledge domain boundary."""
+    from knowledge.board import active_blocker_topics_for_poll as _read_blockers
+
+    return _read_blockers(lanes)
 
 
 def ingest_raw(

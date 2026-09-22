@@ -351,9 +351,7 @@ class AgentBoardMessage(SQLModel, table=True):
     )
     # Distress mirroring uses ``distress:<raw_id>`` here. Ordinary board posts
     # leave it null, and PostgreSQL permits multiple nulls under UNIQUE.
-    source_id: str | None = Field(
-        default=None, sa_column=Column(String, nullable=True)
-    )
+    source_id: str | None = Field(default=None, sa_column=Column(String, nullable=True))
 
 
 class AtomRawProvenance(SQLModel, table=True):

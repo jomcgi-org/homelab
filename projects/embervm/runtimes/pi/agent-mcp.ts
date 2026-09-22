@@ -386,9 +386,7 @@ const TOOLS: ToolSpec[] = [
       namespace: Type.String(),
       pod: Type.String(),
       container: Type.Optional(Type.String()),
-      tail_lines: Type.Optional(
-        Type.Integer({ minimum: 1, maximum: 500 }),
-      ),
+      tail_lines: Type.Optional(Type.Integer({ minimum: 1, maximum: 500 })),
       since_seconds: Type.Optional(
         Type.Integer({ minimum: 1, maximum: 86400 }),
       ),

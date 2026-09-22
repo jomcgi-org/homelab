@@ -19,7 +19,7 @@ def _read_active(lanes: tuple[str, ...]) -> frozenset[str]:
     # Lazy to keep the factory import graph independent while the consumer is
     # disabled. This internal reader still requires the server-trusted binding
     # used by board tools. Shared bearer identity alone cannot authorize it.
-    from knowledge.board import active_blocker_topics_for_poll
+    from knowledge.api import active_blocker_topics_for_poll
 
     return active_blocker_topics_for_poll(lanes)
 
