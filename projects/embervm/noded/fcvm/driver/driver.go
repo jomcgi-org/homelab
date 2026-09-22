@@ -1094,6 +1094,10 @@ func (d *Driver) Claim(ctx context.Context, spec substrate.ClaimSpec) (substrate
 		threadID = newID("thread")
 	}
 	trackDirtyPages := d.diffBanking && spec.TrackDirtyPages
+	coldBootRootfsPath := spec.ColdBootRootfsPath
+	if coldBootRootfsPath == "" {
+		coldBootRootfsPath = d.cfg.RootfsPath
+	}
 
 	// Warm-base start: restore the new thread from a base bundle for an instant
 	// ready start, skipping boot + harness init.
@@ -1127,7 +1131,7 @@ func (d *Driver) Claim(ctx context.Context, spec substrate.ClaimSpec) (substrate
 		if spec.VolumeDiskPath != "" && !capturedDevices.Has("volume") {
 			return d.coldBoot(ctx, threadID, coldBootSpec{
 				workload:        spec.Workload,
-				rootfsPath:      spec.ColdBootRootfsPath,
+				rootfsPath:      coldBootRootfsPath,
 				vcpus:           d.cfg.VCPUs,
 				memMib:          d.cfg.MemMib,
 				trackDirtyPages: trackDirtyPages,
@@ -1147,13 +1151,8 @@ func (d *Driver) Claim(ctx context.Context, spec substrate.ClaimSpec) (substrate
 	}
 
 	return d.coldBoot(ctx, threadID, coldBootSpec{
-		workload: spec.Workload,
-		rootfsPath: func() string {
-			if spec.ColdBootRootfsPath != "" {
-				return spec.ColdBootRootfsPath
-			}
-			return d.cfg.RootfsPath
-		}(),
+		workload:        spec.Workload,
+		rootfsPath:      coldBootRootfsPath,
 		vcpus:           d.cfg.VCPUs,
 		memMib:          d.cfg.MemMib,
 		trackDirtyPages: trackDirtyPages,

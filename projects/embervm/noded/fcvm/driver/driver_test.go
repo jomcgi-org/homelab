@@ -557,6 +557,19 @@ func TestDriverClaimWithVolumeColdBootsWhenCapturedBaseHasNoVolume(t *testing.T)
 	if !slices.Contains(paths, "PUT /drives/volume") {
 		t.Fatalf("cold boot did not attach requested volume: %v", paths)
 	}
+	specs := launcher.specs()
+	if len(specs) != 1 {
+		t.Fatalf("launch specs = %d, want 1", len(specs))
+	}
+	foundRootfs := false
+	for _, resource := range specs[0].Resources {
+		if resource.Role == "rootfs" && resource.HostPath == d.cfg.RootfsPath {
+			foundRootfs = true
+		}
+	}
+	if !foundRootfs {
+		t.Fatalf("cold boot omitted configured rootfs %q: %+v", d.cfg.RootfsPath, specs[0].Resources)
+	}
 }
 
 func TestDriverClaimRejectsRegistryDeviceShapeConflictBeforeLaunch(t *testing.T) {

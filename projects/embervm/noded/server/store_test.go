@@ -1507,7 +1507,7 @@ func TestBaseHydrationConflictingMarkerAndPartialFailureLeaveDestinationUntouche
 		if err != nil || string(got) != "keep" {
 			t.Fatalf("partial failure changed destination: sentinel=%q err=%v", got, err)
 		}
-		entries, err := os.ReadDir(filepath.Dir(localDir))
+		entries, err := os.ReadDir(s.cfg.SnapshotRoot)
 		if err != nil {
 			t.Fatal(err)
 		}

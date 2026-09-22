@@ -1895,12 +1895,16 @@ func (s *Server) runRestoreJob(ctx context.Context, job restoreJob) {
 		s.logger.Warn("noded: async base restore failed reading device shape", "artifact", job.prefix, "err", shapeErr)
 		return
 	}
-	parent := filepath.Dir(job.localDir)
-	if err := os.MkdirAll(parent, 0o750); err != nil {
-		s.logger.Warn("noded: async base restore failed creating parent", "artifact", job.prefix, "err", err)
+	baseRoot := filepath.Dir(job.localDir)
+	if err := os.MkdirAll(baseRoot, 0o750); err != nil {
+		s.logger.Warn("noded: async base restore failed creating base root", "artifact", job.prefix, "err", err)
 		return
 	}
-	stagingDir, err := os.MkdirTemp(parent, ".base-restore-")
+	// Keep partial artifacts outside bases/. Startup reconcile and local inventory
+	// scan every directory there, so an in-progress download must not look like a
+	// base before the artifact-level rename publishes it.
+	stagingParent := filepath.Dir(baseRoot)
+	stagingDir, err := os.MkdirTemp(stagingParent, ".base-restore-")
 	if err != nil {
 		s.logger.Warn("noded: async base restore failed creating staging dir", "artifact", job.prefix, "err", err)
 		return

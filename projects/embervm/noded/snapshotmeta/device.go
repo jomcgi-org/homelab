@@ -38,13 +38,19 @@ func DeviceSetFromJailResources(data []byte) (DeviceSet, error) {
 		return DeviceSet{Known: true}, fmt.Errorf("%s contains no resources", JailResourcesFile)
 	}
 	seen := make(map[string]struct{}, len(resources))
+	hasRootfs := false
 	for _, resource := range resources {
 		if resource.Role == "" {
 			return DeviceSet{Known: true}, fmt.Errorf("%s contains a resource without a role", JailResourcesFile)
 		}
-		if resource.Role != "rootfs" {
-			seen[resource.Role] = struct{}{}
+		if resource.Role == "rootfs" {
+			hasRootfs = true
+			continue
 		}
+		seen[resource.Role] = struct{}{}
+	}
+	if !hasRootfs {
+		return DeviceSet{Known: true}, fmt.Errorf("%s contains no rootfs drive", JailResourcesFile)
 	}
 	ids := make([]string, 0, len(seen))
 	for id := range seen {
