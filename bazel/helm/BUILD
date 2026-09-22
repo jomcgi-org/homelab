@@ -19,6 +19,7 @@ exports_files([
     "push.sh.tpl",
     "render.sh",
     "render-manifests.sh",
+    "verify-published-images.sh",
     "write-back-versions.sh",
 ])
 
@@ -183,6 +184,12 @@ sh_test(
     name = "push_test",
     srcs = ["push_test.sh"],
     data = [":push.sh.tpl"],
+)
+
+sh_test(
+    name = "verify_published_images_test",
+    srcs = ["verify-published-images_test.sh"],
+    data = [":verify-published-images.sh"],
 )
 
 sh_binary(

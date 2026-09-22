@@ -46,6 +46,13 @@ cd "$WORKSPACE"
 
 BAZEL="${BAZEL:-bazel}"
 BAZEL_ARGS=(--config=ci --stamp)
+RUN_ID="${PUBLISH_RUN_ID:-${BUILDBUDDY_INVOCATION_ID:-$(git rev-parse --verify HEAD^{commit})}}"
+VERIFY_PUBLISHED_IMAGES="${VERIFY_PUBLISHED_IMAGES:-$WORKSPACE/bazel/helm/verify-published-images.sh}"
+
+# Records are same-run evidence. A runner snapshot can retain them after a
+# failed publish, so begin from an empty, exact workspace-local path. Every
+# successful new or reused chart recreates its record below.
+rm -rf "$WORKSPACE/.chart-version-records"
 
 # Extract the `.push` labels listed in one multirun target of the generated
 # bazel/images/BUILD. Used only to cross-check the manifest's coverage, so it
@@ -100,12 +107,32 @@ if [ -z "$CRANE" ]; then
 	exit 1
 fi
 
+# The chart multirun carries Helm in each target's runfiles, but the final
+# artifact assertion executes after that multirun and therefore resolves the
+# tool explicitly. This also makes missing runtime tooling fail before any
+# publication begins.
+echo "==> Building helm"
+"$BAZEL" build @multitool//tools/helm "${BAZEL_ARGS[@]}"
+HELM="${HELM:-$(find -L "$BAZEL_BIN/external" -name "helm" -type f -perm /111 2>/dev/null | head -1 || true)}"
+if [ -z "$HELM" ]; then
+	echo "ERROR: helm not found under $BAZEL_BIN/external" >&2
+	exit 1
+fi
+if [ ! -f "$VERIFY_PUBLISHED_IMAGES" ]; then
+	echo "ERROR: published image verifier not found at $VERIFY_PUBLISHED_IMAGES" >&2
+	exit 1
+fi
+
 echo ""
 echo "==> Deciding which images need a push"
 
 COVERED=$(mktemp)
 TO_PUSH=$(mktemp)
-trap 'rm -f "$COVERED" "$TO_PUSH"' EXIT
+IMAGE_RESULTS=$(mktemp)
+CHART_TARGETS=$(mktemp)
+trap 'rm -f "$COVERED" "$TO_PUSH" "$IMAGE_RESULTS" "$CHART_TARGETS"' EXIT
+
+_multirun_labels push_charts >"$CHART_TARGETS"
 
 SKIPPED=0
 # `|| [ -n "$label" ]` so a manifest whose last line has no trailing newline
@@ -113,19 +140,28 @@ SKIPPED=0
 # and the final image drops out of the comparison silently. The coverage check
 # below would still push it, so this was never a correctness hole, but it made
 # the last image in the manifest permanently un-skippable.
-while IFS=$'\t' read -r label repository digest || [ -n "${label:-}" ]; do
+while IFS=$'\t' read -r label repository digest tag || [ -n "${label:-}" ]; do
 	[ -n "${label:-}" ] || continue
 	echo "$label" >>"$COVERED"
 
-	if [ -n "${repository:-}" ] && [ -n "${digest:-}" ] &&
-		"$CRANE" manifest "${repository}@${digest}" >/dev/null 2>&1; then
+	# `crane digest` returns the registry's top-level manifest identity. For a
+	# multi-platform image this is the index digest, matching both OciImageInfo
+	# and the chart pin. Keep the observed value as provenance for skipped
+	# images instead of copying the desired manifest row into the result.
+	observed=""
+	if [ -n "${repository:-}" ] && [ -n "${digest:-}" ]; then
+		observed=$("$CRANE" digest "${repository}@${digest}" 2>/dev/null || true)
+	fi
+	if [ "$observed" = "$digest" ]; then
 		echo "  skip  $label  ($digest already published)"
+		printf '%s\t%s\t%s\t%s\t%s\n' \
+			"$RUN_ID" "skipped" "$label" "$repository" "$observed" >>"$IMAGE_RESULTS"
 		SKIPPED=$((SKIPPED + 1))
 		continue
 	fi
 
 	echo "  push  $label"
-	echo "$label" >>"$TO_PUSH"
+	printf '%s\t%s\t%s\t%s\n' "$label" "${repository:-}" "${digest:-}" "${tag:-}" >>"$TO_PUSH"
 done <"$MANIFEST"
 
 # Coverage cross-check. The manifest and push_all are generated from the same
@@ -148,7 +184,7 @@ if [ -n "$UNCOVERED" ]; then
 	while IFS= read -r label; do
 		[ -n "$label" ] || continue
 		echo "  push  $label  (not in manifest)"
-		echo "$label" >>"$TO_PUSH"
+		printf '%s\t\t\t\n' "$label" >>"$TO_PUSH"
 	done <<<"$UNCOVERED"
 fi
 
@@ -190,11 +226,23 @@ echo "==> $PUSH_COUNT image(s) to push, $SKIPPED already published"
 # The branch had never executed until 2026-08-11 (#4685). Every deploy for weeks
 # found all 24 images content-identical and took the skip path, so the first
 # commit that really needed a push turned main's deploy red.
-while IFS= read -r label || [ -n "$label" ]; do
+while IFS=$'\t' read -r label repository _desired_digest tag || [ -n "$label" ]; do
 	[ -n "$label" ] || continue
 	echo ""
 	echo "==> push $label"
 	"$BAZEL" run "$label" "${BAZEL_ARGS[@]}" --build_runfile_links
+
+	# Resolve the stamped tag written by this successful push. Unlike the
+	# manifest row, this is an independent registry result attributable to this
+	# source commit. Missing tag or registry evidence is left absent so the
+	# chart-scoped verifier can fail precisely when the image is expected.
+	if [ -n "${repository:-}" ] && [ -n "${tag:-}" ]; then
+		observed=$("$CRANE" digest "${repository}:${tag}" 2>/dev/null || true)
+		if [ -n "$observed" ]; then
+			printf '%s\t%s\t%s\t%s\t%s\n' \
+				"$RUN_ID" "pushed" "$label" "$repository" "$observed" >>"$IMAGE_RESULTS"
+		fi
+	fi
 done <"$TO_PUSH"
 
 # Charts LAST, and in their own multirun. Ordering is load-bearing now in a way
@@ -205,3 +253,13 @@ done <"$TO_PUSH"
 echo ""
 echo "==> Publishing charts"
 "$BAZEL" run //bazel/images:push_charts "${BAZEL_ARGS[@]}"
+
+# Pull every final chart artifact named by this run, including an
+# already-published version reused by push.sh.tpl, and join its pins to the
+# independent image results above. This is artifact consistency only; rollout
+# and live cluster state remain outside this workflow.
+echo ""
+echo "==> Verifying published chart image manifests"
+HELM="$HELM" bash "$VERIFY_PUBLISHED_IMAGES" \
+	"$RUN_ID" "$IMAGE_RESULTS" "$WORKSPACE/.chart-version-records" \
+	"$CHART_TARGETS" "$BAZEL_BIN"

@@ -173,8 +173,8 @@ cat >"$DIGESTS_BUILD" <<'HEADER'
 
 load("//bazel/tools/oci:digest_manifest.bzl", "oci_digest_manifest")
 
-# One "push label, repository, digest" line per image, read by main's deploy to
-# skip pushing content the registry already has. See
+# One "push label, repository, digest, stamped tag" line per image, read by
+# main's deploy to skip published content and verify actual push results. See
 # bazel/images/push/push-changed.sh for why that matters.
 oci_digest_manifest(
     name = "manifest",

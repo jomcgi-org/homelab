@@ -80,30 +80,52 @@ STUB
 	else
 		cat >"$WORK/bin/crane" <<STUB
 #!/usr/bin/env bash
-# \$1 is "manifest", \$2 is the repo@digest ref.
-printf '%s\n' "$published" | grep -qxF "\$2"
+# \$1 is "digest", \$2 is the repo@digest or repo:tag ref. Only digest-addressed
+# refs are pre-seeded by these tests. Stamped tag refs model the registry result
+# after the corresponding successful push.
+if printf '%s\n' "$published" | grep -qxF "\$2"; then
+	printf '%s\n' "\${2##*@}"
+	exit 0
+fi
+case "\$2" in
+	ghcr.io/jomcgi/homelab/alpha:tag-alpha) echo sha256:aaa ;;
+	ghcr.io/jomcgi/homelab/beta:tag-beta) echo sha256:bbb ;;
+	ghcr.io/jomcgi/homelab/gamma:tag-gamma) echo sha256:ccc ;;
+	*) exit 1 ;;
+esac
 STUB
 	fi
+	cat >"$WORK/bin/verifier" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >"$STUB_VERIFY_ARGV"
+cp "$2" "$STUB_VERIFY_RESULTS"
+STUB
 
-	chmod +x "$WORK/bin/bazel" "$WORK/bin/crane"
+	chmod +x "$WORK/bin/bazel" "$WORK/bin/crane" "$WORK/bin/verifier"
 	export STUB_RUN_LOG="$WORK/run.log"
 	export STUB_ARGV_LOG="$WORK/argv.log"
+	export STUB_VERIFY_ARGV="$WORK/verifier-argv.log"
+	export STUB_VERIFY_RESULTS="$WORK/verifier-results.log"
 	: >"$STUB_RUN_LOG"
 	: >"$STUB_ARGV_LOG"
+	: >"$STUB_VERIFY_ARGV"
+	: >"$STUB_VERIFY_RESULTS"
 }
 
 teardown() { rm -rf "$WORK"; }
 
 run_script() {
 	BUILD_WORKSPACE_DIRECTORY="$WORK" BAZEL="$WORK/bin/bazel" CRANE="$WORK/bin/crane" \
+		HELM="$WORK/bin/crane" PUBLISH_RUN_ID=test-run \
+		VERIFY_PUBLISHED_IMAGES="$WORK/bin/verifier" \
 		bash "$SCRIPT" 2>&1
 }
 
 MANIFEST_3=$(
-	printf '%s\t%s\t%s\n' \
-		"//projects/alpha:image.push" "ghcr.io/jomcgi/homelab/alpha" "sha256:aaa" \
-		"//projects/beta:image.push" "ghcr.io/jomcgi/homelab/beta" "sha256:bbb" \
-		"//projects/gamma:image.push" "ghcr.io/jomcgi/homelab/gamma" "sha256:ccc"
+	printf '%s\t%s\t%s\t%s\n' \
+		"//projects/alpha:image.push" "ghcr.io/jomcgi/homelab/alpha" "sha256:aaa" "tag-alpha" \
+		"//projects/beta:image.push" "ghcr.io/jomcgi/homelab/beta" "sha256:bbb" "tag-beta" \
+		"//projects/gamma:image.push" "ghcr.io/jomcgi/homelab/gamma" "sha256:ccc" "tag-gamma"
 )
 
 ALL_PUBLISHED=$(printf '%s\n%s\n%s' \
@@ -124,6 +146,13 @@ elif grep -q "beta:image.push" <<<"$LOG" && grep -q "gamma:image.push" <<<"$LOG"
 	pass "skips an image already in the registry, pushes the other two"
 else
 	fail "skips an image already in the registry" "$LOG"
+fi
+if grep -q $'\tskipped\t//projects/alpha:image.push\tghcr.io/jomcgi/homelab/alpha\tsha256:aaa' "$STUB_VERIFY_RESULTS" &&
+	grep -q $'\tpushed\t//projects/beta:image.push\tghcr.io/jomcgi/homelab/beta\tsha256:bbb' "$STUB_VERIFY_RESULTS" &&
+	grep -q $'\tpushed\t//projects/gamma:image.push\tghcr.io/jomcgi/homelab/gamma\tsha256:ccc' "$STUB_VERIFY_RESULTS"; then
+	pass "passes registry-observed push and skip results to the final verifier"
+else
+	fail "passes actual image results to the final verifier" "$(cat "$STUB_VERIFY_RESULTS")"
 fi
 teardown
 
