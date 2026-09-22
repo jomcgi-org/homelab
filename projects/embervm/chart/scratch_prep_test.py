@@ -63,7 +63,13 @@ exec "$@"''',
     _write_command(
         commands,
         "fallocate",
-        'eval "target=\\${$#}"; : > "$target"; echo fallocate >> "$FAKE_LOG"',
+        '''eval "target=\\${$#}"
+if [ -f "$FAKE_REPLACE_ON_FALLOCATE" ]; then
+  printf '%s\n' foreign-data > "$FAKE_MANAGED_IMAGE"
+  exit 9
+fi
+: > "$target"
+echo fallocate >> "$FAKE_LOG"''',
     )
     for command, filesystem in (("mkfs.ext4", "ext4"), ("mkfs.xfs", "xfs")):
         _write_command(
@@ -134,7 +140,9 @@ esac""",
             "FAKE_FAIL_MKFS": str(paths["fail_mkfs"]),
             "FAKE_FS": str(paths["fs"]),
             "FAKE_LOG": str(paths["log"]),
+            "FAKE_MANAGED_IMAGE": str(image),
             "FAKE_MOUNTED": str(paths["mounted"]),
+            "FAKE_REPLACE_ON_FALLOCATE": str(state / "replace-on-fallocate"),
             "FAKE_MOUNT_SOURCE": "/dev/loop7",
             "FAKE_MOUNT_TARGETS": str(scratch),
             "FAKE_LOOP_DEVICE": "/dev/loop7",
@@ -350,6 +358,19 @@ def test_format_failure_does_not_publish_readiness_marker(
     assert not paths["image"].exists()
     assert not paths["marker"].exists()
     assert not paths["mounted"].exists()
+
+
+def test_creation_failure_never_removes_foreign_replacement(
+    prep_env: tuple[dict[str, str], dict[str, Path]],
+) -> None:
+    env, paths = prep_env
+    Path(env["FAKE_REPLACE_ON_FALLOCATE"]).touch()
+
+    result = _run(env, check=False)
+
+    assert result.returncode != 0
+    assert paths["image"].read_text() == "foreign-data\n"
+    assert not paths["marker"].exists()
 
 
 @pytest.mark.parametrize(

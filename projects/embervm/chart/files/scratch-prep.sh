@@ -70,19 +70,34 @@ has_active_consumer() {
 
 format_new_image() {
 	selected=$1
-	# Noclobber makes creation fail if the pathname appeared after the caller's
-	# absence check. In particular, never follow a concurrently added symlink.
-	(
-		umask 077
-		set -C
-		: >"$IMG"
-	) 2>/dev/null || return
-	fallocate -l "${SIZE_GI}G" "$IMG" || return
+	# Format a unique inode before publishing it at the managed path. The hard
+	# link is an atomic no-clobber operation: if any file or symlink appeared
+	# after the caller's absence check, it is preserved and this attempt fails.
+	tmp_image=$(mktemp "${IMG}.scratch-prep.XXXXXX") || return
+	chmod 0600 "$tmp_image" || {
+		rm -f "$tmp_image"
+		return 1
+	}
+	fallocate -l "${SIZE_GI}G" "$tmp_image" || {
+		rm -f "$tmp_image"
+		return 1
+	}
 	if [ "$selected" = xfs ]; then
-		mkfs.xfs -m reflink=1 -f "$IMG" || return
+		mkfs.xfs -m reflink=1 -f "$tmp_image" || {
+			rm -f "$tmp_image"
+			return 1
+		}
 	else
-		mkfs.ext4 -q -F "$IMG" || return
+		mkfs.ext4 -q -F "$tmp_image" || {
+			rm -f "$tmp_image"
+			return 1
+		}
 	fi
+	if ! ln "$tmp_image" "$IMG"; then
+		rm -f "$tmp_image"
+		return 1
+	fi
+	rm -f "$tmp_image"
 }
 
 format_xfs() {
@@ -232,7 +247,6 @@ if [ "$mounted" = false ]; then
 	if [ ! -e "$IMG" ] && [ ! -L "$IMG" ]; then
 		echo "scratch-prep: creating ${SIZE_GI}Gi $FILESYSTEM backing file at $HOST_IMG on $NODE"
 		if ! format_new_image "$FILESYSTEM"; then
-			rm -f "$IMG"
 			fail "failed to create and format managed image $HOST_IMG"
 		fi
 		image_type=$FILESYSTEM
