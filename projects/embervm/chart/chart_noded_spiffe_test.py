@@ -51,7 +51,9 @@ def _noded_pods(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _noded_container(pod: dict[str, Any]) -> dict[str, Any]:
-    return next(container for container in pod["containers"] if container["name"] == "noded")
+    return next(
+        container for container in pod["containers"] if container["name"] == "noded"
+    )
 
 
 def _named(items: list[dict[str, Any]] | None) -> dict[str, dict[str, Any]]:
