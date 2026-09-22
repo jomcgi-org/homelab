@@ -231,6 +231,9 @@ py_test(
         "//projects/embervm/deploy:deploy_values",
     ],
     imports = ["."],
+    # The builder regression harness pins Linux flock and process-group
+    # behavior, matching the shipped rootfs-builder container.
+    target_compatible_with = ["@platforms//os:linux"],
     deps = [
         "@pip//pytest",
         "@pip//pyyaml",

@@ -269,6 +269,31 @@ def test_rootfs_builders_receive_store_env_only_when_store_enabled() -> None:
         env = {entry["name"]: entry for entry in container.get("env", [])}
         for name, expected in expected_env.items():
             assert env.get(name) == expected
+        assert env["ROOTFS_SIZE"]["value"] == "4G"
+        assert env["ROOTFS_BAKE_FORMAT"]["value"] == "b2"
+        assert env["BASE_ROOTFS_PATH"]["value"].endswith("-size-4G-format-b2.ext4")
+
+    pushed_identity = None
+    for document in yaml.safe_load_all(enabled):
+        if not isinstance(document, dict) or document.get("kind") != "Deployment":
+            continue
+        for container in (
+            document.get("spec", {})
+            .get("template", {})
+            .get("spec", {})
+            .get("containers", [])
+        ):
+            for entry in container.get("env", []):
+                if entry.get("name") == "EMBERVM_NODE_IMAGE_IDENTITY":
+                    pushed_identity = entry.get("value")
+    assert pushed_identity, "control plane did not receive image identity table"
+    pushed = {
+        item.split("=", 1)[0]: item.split("=", 1)[1].split("|", 1)[0]
+        for item in pushed_identity.split(",")
+    }
+    for container in enabled_containers:
+        env = {entry["name"]: entry for entry in container.get("env", [])}
+        assert pushed[env["GUEST_IMAGE"]["value"]] == env["BASE_ROOTFS_PATH"]["value"]
 
     disabled = _render_with_set(
         "rootfs-store-disabled",

@@ -20,9 +20,17 @@ import (
 )
 
 const (
-	testDigest   = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	testImageRef = "registry.example.test/embervm/guest:test"
+	testDigest     = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	testImageRef   = "registry.example.test/embervm/guest:test"
+	testRootfsSize = "4G"
+	testBakeFormat = "b2"
 )
+
+var testCacheIdentity = cacheIdentity{
+	Digest:     testDigest,
+	RootfsSize: testRootfsSize,
+	BakeFormat: testBakeFormat,
+}
 
 // fakeObjectStore follows the HTTP helper used by the noded store package
 // tests, keeping these tests on the real Store client and its S3 request path.
@@ -34,6 +42,7 @@ type fakeObjectStore struct {
 	heads        []string
 	headCount    int
 	appearOnHead int
+	appearBody   []byte
 }
 
 func newFakeObjectStore(t *testing.T) (*httptest.Server, *fakeObjectStore) {
@@ -47,7 +56,7 @@ func newFakeObjectStore(t *testing.T) (*httptest.Server, *fakeObjectStore) {
 			fake.headCount++
 			fake.heads = append(fake.heads, r.URL.Path)
 			if fake.appearOnHead == fake.headCount {
-				fake.objects[r.URL.Path] = []byte("winner")
+				fake.objects[r.URL.Path] = append([]byte(nil), fake.appearBody...)
 			}
 			if _, ok := fake.objects[r.URL.Path]; !ok {
 				w.WriteHeader(http.StatusNotFound)
@@ -91,16 +100,27 @@ func storeEnv(endpoint string) getenvFunc {
 	return func(key string) string { return values[key] }
 }
 
-func testCompletenessMarker(t *testing.T, digest string, contents []byte) (string, []byte) {
+func testGetArgs(out string) []string {
+	return []string{"get", "--digest", testDigest, "--rootfs-size", testRootfsSize, "--bake-format", testBakeFormat, "--out", out}
+}
+
+func testPutArgs(path string) []string {
+	return []string{"put", "--digest", testDigest, "--rootfs-size", testRootfsSize, "--bake-format", testBakeFormat, "--file", path, "--image-ref", testImageRef}
+}
+
+func testCompletenessMarker(t *testing.T, identity cacheIdentity, contents []byte) (string, []byte) {
 	t.Helper()
 	sum := sha256.Sum256(contents)
 	checksum := hex.EncodeToString(sum[:])
-	payloadKey := payloadObjectKey(digest, checksum)
+	payloadKey := payloadObjectKey(identity, checksum)
 	marker, err := json.Marshal(completenessMarker{
-		PayloadKey: payloadKey,
-		SHA256:     checksum,
-		ImageRef:   testImageRef,
-		UploadedAt: "2026-09-05T00:00:00Z",
+		PayloadKey:  payloadKey,
+		SHA256:      checksum,
+		ImageRef:    testImageRef,
+		ImageDigest: identity.Digest,
+		RootfsSize:  identity.RootfsSize,
+		BakeFormat:  identity.BakeFormat,
+		UploadedAt:  "2026-09-05T00:00:00Z",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -130,14 +150,14 @@ func TestPutSparseFileStoresNominalSizeAndChecksum(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"put", "--digest", testDigest, "--file", path, "--image-ref", testImageRef}, storeEnv(server.URL), &stdout, &stderr)
+	code := run(context.Background(), testPutArgs(path), storeEnv(server.URL), &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("put exit = %d, stderr = %q", code, stderr.String())
 	}
 	if stdout.String() != "uploaded\n" {
 		t.Fatalf("put stdout = %q", stdout.String())
 	}
-	checksumKey := checksumObjectKey(testDigest)
+	checksumKey := checksumObjectKey(testCacheIdentity)
 	var marker completenessMarker
 	if err := json.Unmarshal(fake.objects["/embervm/"+checksumKey], &marker); err != nil {
 		t.Fatalf("decode sidecar: %v", err)
@@ -147,7 +167,7 @@ func TestPutSparseFileStoresNominalSizeAndChecksum(t *testing.T) {
 		t.Fatalf("stored sparse object size = %d, want %d", len(stored), nominalSize)
 	}
 	sum := sha256.Sum256(stored)
-	wantPayloadKey := payloadObjectKey(testDigest, hex.EncodeToString(sum[:]))
+	wantPayloadKey := payloadObjectKey(testCacheIdentity, hex.EncodeToString(sum[:]))
 	if marker.PayloadKey != wantPayloadKey {
 		t.Fatalf("sidecar payload key = %q, want %q", marker.PayloadKey, wantPayloadKey)
 	}
@@ -156,6 +176,9 @@ func TestPutSparseFileStoresNominalSizeAndChecksum(t *testing.T) {
 	}
 	if marker.ImageRef != testImageRef {
 		t.Fatalf("sidecar image ref = %q, want %q", marker.ImageRef, testImageRef)
+	}
+	if marker.ImageDigest != testDigest || marker.RootfsSize != testRootfsSize || marker.BakeFormat != testBakeFormat {
+		t.Fatalf("sidecar identity = digest %q size %q format %q", marker.ImageDigest, marker.RootfsSize, marker.BakeFormat)
 	}
 	if _, err := time.Parse(time.RFC3339Nano, marker.UploadedAt); err != nil {
 		t.Fatalf("sidecar upload time = %q: %v", marker.UploadedAt, err)
@@ -172,15 +195,16 @@ func TestPutSparseFileStoresNominalSizeAndChecksum(t *testing.T) {
 
 func TestPutSkipsExistingCompletenessMarker(t *testing.T) {
 	server, fake := newFakeObjectStore(t)
-	checksumKey := checksumObjectKey(testDigest)
-	fake.objects["/embervm/"+checksumKey] = []byte("winner")
+	checksumKey := checksumObjectKey(testCacheIdentity)
+	_, marker := testCompletenessMarker(t, testCacheIdentity, []byte("winner"))
+	fake.objects["/embervm/"+checksumKey] = marker
 	path := filepath.Join(t.TempDir(), "rootfs.ext4")
 	if err := os.WriteFile(path, []byte("loser"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"put", "--digest", testDigest, "--file", path, "--image-ref", testImageRef}, storeEnv(server.URL), &stdout, &stderr)
+	code := run(context.Background(), testPutArgs(path), storeEnv(server.URL), &stdout, &stderr)
 	if code != 0 || stdout.String() != "already present\n" {
 		t.Fatalf("put exit = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
 	}
@@ -192,13 +216,14 @@ func TestPutSkipsExistingCompletenessMarker(t *testing.T) {
 func TestPutRechecksHeadAfterHashing(t *testing.T) {
 	server, fake := newFakeObjectStore(t)
 	fake.appearOnHead = 2
+	_, fake.appearBody = testCompletenessMarker(t, testCacheIdentity, []byte("winner"))
 	path := filepath.Join(t.TempDir(), "rootfs.ext4")
 	if err := os.WriteFile(path, []byte("later writer"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"put", "--digest", testDigest, "--file", path, "--image-ref", testImageRef}, storeEnv(server.URL), &stdout, &stderr)
+	code := run(context.Background(), testPutArgs(path), storeEnv(server.URL), &stdout, &stderr)
 	if code != 0 || stdout.String() != "already present\n" {
 		t.Fatalf("put exit = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
 	}
@@ -209,15 +234,15 @@ func TestPutRechecksHeadAfterHashing(t *testing.T) {
 
 func TestInterruptedPayloadWithoutSidecarIsMissAndCanBeRepaired(t *testing.T) {
 	server, fake := newFakeObjectStore(t)
-	checksumKey := checksumObjectKey(testDigest)
+	checksumKey := checksumObjectKey(testCacheIdentity)
 	checksumPath := "/embervm/" + checksumKey
 	orphan := []byte("orphaned partial payload")
-	orphanKey, _ := testCompletenessMarker(t, testDigest, orphan)
+	orphanKey, _ := testCompletenessMarker(t, testCacheIdentity, orphan)
 	fake.objects["/embervm/"+orphanKey] = orphan
 
 	var stdout, stderr bytes.Buffer
 	out := filepath.Join(t.TempDir(), "rootfs.ext4")
-	code := run(context.Background(), []string{"get", "--digest", testDigest, "--out", out}, storeEnv(server.URL), &stdout, &stderr)
+	code := run(context.Background(), testGetArgs(out), storeEnv(server.URL), &stdout, &stderr)
 	if code != exitMiss {
 		t.Fatalf("get interrupted upload exit = %d, want %d, stderr = %q", code, exitMiss, stderr.String())
 	}
@@ -232,7 +257,7 @@ func TestInterruptedPayloadWithoutSidecarIsMissAndCanBeRepaired(t *testing.T) {
 	}
 	stdout.Reset()
 	stderr.Reset()
-	code = run(context.Background(), []string{"put", "--digest", testDigest, "--file", path, "--image-ref", testImageRef}, storeEnv(server.URL), &stdout, &stderr)
+	code = run(context.Background(), testPutArgs(path), storeEnv(server.URL), &stdout, &stderr)
 	if code != 0 || stdout.String() != "uploaded\n" {
 		t.Fatalf("repair put exit = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
 	}
@@ -249,7 +274,7 @@ func TestInterruptedPayloadWithoutSidecarIsMissAndCanBeRepaired(t *testing.T) {
 }
 
 func TestConcurrentPutWritersLeaveMatchingPayloadAndSidecar(t *testing.T) {
-	checksumKey := checksumObjectKey(testDigest)
+	checksumKey := checksumObjectKey(testCacheIdentity)
 	checksumPath := "/embervm/" + checksumKey
 	payloads := [][]byte{
 		[]byte("rootfs with ext4 UUID aaaaaaaa"),
@@ -264,7 +289,7 @@ func TestConcurrentPutWritersLeaveMatchingPayloadAndSidecar(t *testing.T) {
 		}
 		paths[i] = path
 		sum := sha256.Sum256(payload)
-		payloadPaths[i] = "/embervm/" + payloadObjectKey(testDigest, hex.EncodeToString(sum[:]))
+		payloadPaths[i] = "/embervm/" + payloadObjectKey(testCacheIdentity, hex.EncodeToString(sum[:]))
 	}
 	loserPayloadPath := payloadPaths[1]
 	objects := make(map[string][]byte)
@@ -347,7 +372,7 @@ func TestConcurrentPutWritersLeaveMatchingPayloadAndSidecar(t *testing.T) {
 		go func(path string) {
 			<-start
 			var stdout, stderr bytes.Buffer
-			code := run(context.Background(), []string{"put", "--digest", testDigest, "--file", path, "--image-ref", testImageRef}, storeEnv(server.URL), &stdout, &stderr)
+			code := run(context.Background(), testPutArgs(path), storeEnv(server.URL), &stdout, &stderr)
 			results <- result{code: code, stdout: stdout.String(), stderr: stderr.String()}
 		}(path)
 	}
@@ -420,7 +445,7 @@ func TestConcurrentPutWritersLeaveMatchingPayloadAndSidecar(t *testing.T) {
 	mu.Unlock()
 	out := filepath.Join(t.TempDir(), "download.ext4")
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"get", "--digest", testDigest, "--out", out}, storeEnv(server.URL), &stdout, &stderr)
+	code := run(context.Background(), testGetArgs(out), storeEnv(server.URL), &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("get after concurrent puts exit = %d, stderr = %q", code, stderr.String())
 	}
@@ -442,14 +467,16 @@ func TestConcurrentPutWritersLeaveMatchingPayloadAndSidecar(t *testing.T) {
 func TestGetVerifiesChecksumAndPublishesOutput(t *testing.T) {
 	server, fake := newFakeObjectStore(t)
 	contents := []byte("byte-identical-rootfs")
-	payloadKey, marker := testCompletenessMarker(t, testDigest, contents)
-	checksumKey := checksumObjectKey(testDigest)
+	payloadKey, marker := testCompletenessMarker(t, testCacheIdentity, contents)
+	checksumKey := checksumObjectKey(testCacheIdentity)
 	fake.objects["/embervm/"+payloadKey] = contents
 	fake.objects["/embervm/"+checksumKey] = marker
 	out := filepath.Join(t.TempDir(), "nested", "rootfs.ext4")
 
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"get", "--digest", "sha256:" + testDigest, "--out", out}, storeEnv(server.URL), &stdout, &stderr)
+	args := testGetArgs(out)
+	args[2] = "sha256:" + testDigest
+	code := run(context.Background(), args, storeEnv(server.URL), &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("get exit = %d, stderr = %q", code, stderr.String())
 	}
@@ -462,10 +489,108 @@ func TestGetVerifiesChecksumAndPublishesOutput(t *testing.T) {
 	}
 }
 
+func TestCacheIdentitySeparatesSizeFormatAndLegacyNamespace(t *testing.T) {
+	contents := []byte("identity-specific-rootfs")
+	payloadKey, marker := testCompletenessMarker(t, testCacheIdentity, contents)
+
+	tests := []struct {
+		name       string
+		size       string
+		format     string
+		wantStatus int
+	}{
+		{name: "same key hits", size: testRootfsSize, format: testBakeFormat, wantStatus: 0},
+		{name: "size change misses", size: "8G", format: testBakeFormat, wantStatus: exitMiss},
+		{name: "format change misses", size: testRootfsSize, format: "b3", wantStatus: exitMiss},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server, fake := newFakeObjectStore(t)
+			fake.objects["/embervm/"+payloadKey] = contents
+			fake.objects["/embervm/"+checksumObjectKey(testCacheIdentity)] = marker
+			// A legacy digest-only marker must never satisfy any identity-aware get.
+			fake.objects["/embervm/rootfs/"+testDigest+"/"+checksumObjectName] = marker
+			out := filepath.Join(t.TempDir(), "rootfs.ext4")
+			args := []string{
+				"get", "--digest", testDigest,
+				"--rootfs-size", tc.size,
+				"--bake-format", tc.format,
+				"--out", out,
+			}
+			var stdout, stderr bytes.Buffer
+			code := run(context.Background(), args, storeEnv(server.URL), &stdout, &stderr)
+			if code != tc.wantStatus {
+				t.Fatalf("get exit = %d, want %d, stderr = %q", code, tc.wantStatus, stderr.String())
+			}
+			identity, err := validateCacheIdentity(testDigest, tc.size, tc.format)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantMarkerPath := "/embervm/" + checksumObjectKey(identity)
+			if len(fake.gets) == 0 || fake.gets[0] != wantMarkerPath {
+				t.Fatalf("first GET = %v, want identity marker %q", fake.gets, wantMarkerPath)
+			}
+			if tc.wantStatus == exitMiss {
+				if _, err := os.Stat(out); !os.IsNotExist(err) {
+					t.Fatalf("miss published output, stat error = %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestGetRejectsMismatchedOrMissingIdentityMetadata(t *testing.T) {
+	contents := []byte("metadata-verified-rootfs")
+	payloadKey, validMarker := testCompletenessMarker(t, testCacheIdentity, contents)
+	var baseline completenessMarker
+	if err := json.Unmarshal(validMarker, &baseline); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*completenessMarker)
+	}{
+		{name: "digest", mutate: func(marker *completenessMarker) { marker.ImageDigest = strings.Repeat("f", 64) }},
+		{name: "size", mutate: func(marker *completenessMarker) { marker.RootfsSize = "8G" }},
+		{name: "format", mutate: func(marker *completenessMarker) { marker.BakeFormat = "b3" }},
+		{name: "legacy missing metadata", mutate: func(marker *completenessMarker) {
+			marker.ImageDigest = ""
+			marker.RootfsSize = ""
+			marker.BakeFormat = ""
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server, fake := newFakeObjectStore(t)
+			marker := baseline
+			tc.mutate(&marker)
+			encoded, err := json.Marshal(marker)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fake.objects["/embervm/"+payloadKey] = contents
+			fake.objects["/embervm/"+checksumObjectKey(testCacheIdentity)] = encoded
+			out := filepath.Join(t.TempDir(), "rootfs.ext4")
+			var stdout, stderr bytes.Buffer
+			code := run(context.Background(), testGetArgs(out), storeEnv(server.URL), &stdout, &stderr)
+			if code != exitFailure {
+				t.Fatalf("get exit = %d, want %d, stderr = %q", code, exitFailure, stderr.String())
+			}
+			if len(fake.gets) != 1 || fake.gets[0] != "/embervm/"+checksumObjectKey(testCacheIdentity) {
+				t.Fatalf("mismatched metadata fetched payload: GETs = %v", fake.gets)
+			}
+			if _, err := os.Stat(out); !os.IsNotExist(err) {
+				t.Fatalf("metadata mismatch published output, stat error = %v", err)
+			}
+		})
+	}
+}
+
 func TestGetMissExitsThree(t *testing.T) {
 	server, _ := newFakeObjectStore(t)
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"get", "--digest", testDigest, "--out", filepath.Join(t.TempDir(), "rootfs.ext4")}, storeEnv(server.URL), &stdout, &stderr)
+	code := run(context.Background(), testGetArgs(filepath.Join(t.TempDir(), "rootfs.ext4")), storeEnv(server.URL), &stdout, &stderr)
 	if code != exitMiss {
 		t.Fatalf("get miss exit = %d, want %d, stderr = %q", code, exitMiss, stderr.String())
 	}
@@ -482,12 +607,12 @@ func TestGetMalformedOrOversizedSidecarFails(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server, fake := newFakeObjectStore(t)
-			checksumKey := checksumObjectKey(testDigest)
+			checksumKey := checksumObjectKey(testCacheIdentity)
 			fake.objects["/embervm/"+checksumKey] = tc.sidecar
 			out := filepath.Join(t.TempDir(), "rootfs.ext4")
 
 			var stdout, stderr bytes.Buffer
-			code := run(context.Background(), []string{"get", "--digest", testDigest, "--out", out}, storeEnv(server.URL), &stdout, &stderr)
+			code := run(context.Background(), testGetArgs(out), storeEnv(server.URL), &stdout, &stderr)
 			if code != exitFailure {
 				t.Fatalf("get exit = %d, want %d, stderr = %q", code, exitFailure, stderr.String())
 			}
@@ -507,14 +632,17 @@ func TestGetMalformedOrOversizedSidecarFails(t *testing.T) {
 func TestGetChecksumMismatchDoesNotPublishOutput(t *testing.T) {
 	server, fake := newFakeObjectStore(t)
 	checksum := strings.Repeat("0", 64)
-	payloadKey := payloadObjectKey(testDigest, checksum)
-	checksumKey := checksumObjectKey(testDigest)
+	payloadKey := payloadObjectKey(testCacheIdentity, checksum)
+	checksumKey := checksumObjectKey(testCacheIdentity)
 	fake.objects["/embervm/"+payloadKey] = []byte("corrupt")
 	marker, err := json.Marshal(completenessMarker{
-		PayloadKey: payloadKey,
-		SHA256:     checksum,
-		ImageRef:   testImageRef,
-		UploadedAt: "2026-09-05T00:00:00Z",
+		PayloadKey:  payloadKey,
+		SHA256:      checksum,
+		ImageRef:    testImageRef,
+		ImageDigest: testDigest,
+		RootfsSize:  testRootfsSize,
+		BakeFormat:  testBakeFormat,
+		UploadedAt:  "2026-09-05T00:00:00Z",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -523,7 +651,7 @@ func TestGetChecksumMismatchDoesNotPublishOutput(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "rootfs.ext4")
 
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"get", "--digest", testDigest, "--out", out}, storeEnv(server.URL), &stdout, &stderr)
+	code := run(context.Background(), testGetArgs(out), storeEnv(server.URL), &stdout, &stderr)
 	if code == 0 || code == exitMiss {
 		t.Fatalf("checksum mismatch exit = %d, stderr = %q", code, stderr.String())
 	}
@@ -537,7 +665,7 @@ func TestPutNonexistentFileFailsClearly(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing-rootfs.ext4")
 
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"put", "--digest", testDigest, "--file", path, "--image-ref", testImageRef}, storeEnv(server.URL), &stdout, &stderr)
+	code := run(context.Background(), testPutArgs(path), storeEnv(server.URL), &stdout, &stderr)
 	if code != exitFailure {
 		t.Fatalf("put exit = %d, want %d, stderr = %q", code, exitFailure, stderr.String())
 	}
@@ -546,6 +674,36 @@ func TestPutNonexistentFileFailsClearly(t *testing.T) {
 	}
 	if len(fake.puts) != 0 {
 		t.Fatalf("missing file caused PUTs: %v", fake.puts)
+	}
+}
+
+func TestCommandsRequireValidCompleteCacheIdentity(t *testing.T) {
+	server, _ := newFakeObjectStore(t)
+	path := filepath.Join(t.TempDir(), "rootfs.ext4")
+	if err := os.WriteFile(path, []byte("rootfs"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "get missing size", args: []string{"get", "--digest", testDigest, "--bake-format", testBakeFormat, "--out", path}},
+		{name: "get missing format", args: []string{"get", "--digest", testDigest, "--rootfs-size", testRootfsSize, "--out", path}},
+		{name: "put missing size", args: []string{"put", "--digest", testDigest, "--bake-format", testBakeFormat, "--file", path, "--image-ref", testImageRef}},
+		{name: "put missing format", args: []string{"put", "--digest", testDigest, "--rootfs-size", testRootfsSize, "--file", path, "--image-ref", testImageRef}},
+		{name: "zero size", args: []string{"get", "--digest", testDigest, "--rootfs-size", "0G", "--bake-format", testBakeFormat, "--out", path}},
+		{name: "lowercase size suffix", args: []string{"get", "--digest", testDigest, "--rootfs-size", "4g", "--bake-format", testBakeFormat, "--out", path}},
+		{name: "unsafe format", args: []string{"get", "--digest", testDigest, "--rootfs-size", testRootfsSize, "--bake-format", "../b2", "--out", path}},
+		{name: "uppercase format", args: []string{"put", "--digest", testDigest, "--rootfs-size", testRootfsSize, "--bake-format", "B2", "--file", path, "--image-ref", testImageRef}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code := run(context.Background(), tc.args, storeEnv(server.URL), &stdout, &stderr)
+			if code != exitFailure {
+				t.Fatalf("exit = %d, want %d, stderr = %q", code, exitFailure, stderr.String())
+			}
+		})
 	}
 }
 
@@ -575,8 +733,8 @@ func TestStoreOperationTimeoutsExitAsFailures(t *testing.T) {
 		name string
 		args []string
 	}{
-		{name: "get", args: []string{"get", "--timeout", "25ms", "--digest", testDigest, "--out", filepath.Join(t.TempDir(), "download.ext4")}},
-		{name: "put", args: []string{"put", "--timeout", "25ms", "--digest", testDigest, "--file", path, "--image-ref", testImageRef}},
+		{name: "get", args: append([]string{"get", "--timeout", "25ms"}, testGetArgs(filepath.Join(t.TempDir(), "download.ext4"))[1:]...)},
+		{name: "put", args: append([]string{"put", "--timeout", "25ms"}, testPutArgs(path)[1:]...)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer

@@ -1251,6 +1251,12 @@ rootfsBuilder:
   # base is smaller but a uniform size keeps the builder simple (matches
   # fc-invoke's 4G). The ext4 is sparse, so an oversized fs costs little.
   rootfsSize: 4G
+  # Cache identity version for every byte-affecting bake behavior not already
+  # represented by rootfsSize or the architecture-specific guest digest. Bump
+  # this when the bake format changes. b2 is the first identity-aware namespace;
+  # digest-only local files and remote objects are the implicit legacy b1 and
+  # remain untouched for banked sessions.
+  bakeFormatVersion: b2
 
 # ENOSPC orphan reclaim in the rootfs builder (#4458). Last-resort deadlock
 # breaker, not a GC. When a brick's scratch is full the bake fails with ENOSPC,
@@ -1525,9 +1531,10 @@ noded:
   # restore-on-miss is impossible, so state stays local-only (a safe degrade).
   store:
     endpoint: http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333
-    # Baked rootfs payloads use rootfs/<guest-image-digest>/<payload-sha256>.ext4;
-    # rootfs.ext4.sha256 in that prefix names the complete payload. Adding a
-    # retention lifecycle for orphan payloads is follow-up work on #5772.
+    # Baked rootfs payloads use
+    # rootfs/<architecture-digest>/size-<size>/format-<format>/<payload-sha256>.ext4;
+    # rootfs.ext4.sha256 in that identity prefix names the complete payload.
+    # Remote retention remains default-off staged follow-up work on #5772.
     bucket: embervm
     # Reader support shipped while writer compression remained inert, the first
     # phase of the two-phase rollout. Every brick in the fleet now runs a daemon

@@ -28,4 +28,7 @@ go_test(
         "main_test.go",
     ],
     embed = [":rootfs-store_lib"],
+    # Sparse-download allocation is a Linux contract and must not disappear
+    # behind build-tag exclusion on a non-Linux test platform.
+    target_compatible_with = ["@platforms//os:linux"],
 )

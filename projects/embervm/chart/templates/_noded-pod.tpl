@@ -102,9 +102,11 @@ initContainers:
       - name: GUEST_IMAGE
         value: "{{ $top.guestImage.repository }}@{{ $top.guestImage.digest }}"
       - name: BASE_ROOTFS_PATH
-        value: {{ include "embervm.noded.rootfsPath" (dict "wl" $wl "top" $top) | quote }}
+        value: {{ include "embervm.noded.rootfsPath" (dict "wl" $wl "top" $top "rootfsBuilder" $ctx.Values.rootfsBuilder) | quote }}
       - name: ROOTFS_SIZE
         value: {{ $ctx.Values.rootfsBuilder.rootfsSize | quote }}
+      - name: ROOTFS_BAKE_FORMAT
+        value: {{ $ctx.Values.rootfsBuilder.bakeFormatVersion | quote }}
       - name: EMBERVM_ROOTFS_RECLAIM_ENABLED
         value: {{ $ctx.Values.rootfsReclaim.enabled | quote }}
       - name: EMBERVM_ROOTFS_RECLAIM_SNAPSHOTS_ROOT

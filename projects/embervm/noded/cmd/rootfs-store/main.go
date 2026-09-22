@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -35,11 +36,25 @@ const (
 )
 
 type completenessMarker struct {
-	PayloadKey string `json:"payloadKey"`
-	SHA256     string `json:"sha256"`
-	ImageRef   string `json:"imageRef"`
-	UploadedAt string `json:"uploadedAt"`
+	PayloadKey  string `json:"payloadKey"`
+	SHA256      string `json:"sha256"`
+	ImageRef    string `json:"imageRef"`
+	ImageDigest string `json:"imageDigest"`
+	RootfsSize  string `json:"rootfsSize"`
+	BakeFormat  string `json:"bakeFormat"`
+	UploadedAt  string `json:"uploadedAt"`
 }
+
+type cacheIdentity struct {
+	Digest     string
+	RootfsSize string
+	BakeFormat string
+}
+
+var (
+	rootfsSizePattern = regexp.MustCompile(`^[1-9][0-9]*[KMGTP]?$`)
+	bakeFormatPattern = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
+)
 
 type putResult int
 
@@ -115,49 +130,53 @@ func runGet(ctx context.Context, s *store.Store, args []string, stderr io.Writer
 	flags := flag.NewFlagSet("get", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	digest := flags.String("digest", "", "full SHA-256 guest image digest")
+	rootfsSize := flags.String("rootfs-size", "", "mkfs rootfs size (for example 4G)")
+	bakeFormat := flags.String("bake-format", "", "rootfs bake-format version")
 	out := flags.String("out", "", "destination rootfs path")
 	timeout := flags.Duration("timeout", defaultGetTimeout, "maximum time for the store download")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if flags.NArg() != 0 || *out == "" {
-		return errors.New("get requires --digest and --out")
+	if flags.NArg() != 0 || *digest == "" || *rootfsSize == "" || *bakeFormat == "" || *out == "" {
+		return errors.New("get requires --digest, --rootfs-size, --bake-format, and --out")
 	}
 	if *timeout <= 0 {
 		return errors.New("get --timeout must be greater than zero")
 	}
-	cleanDigest, err := validateDigest(*digest)
+	identity, err := validateCacheIdentity(*digest, *rootfsSize, *bakeFormat)
 	if err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(ctx, *timeout)
 	defer cancel()
-	return getRootfs(ctx, s, cleanDigest, *out)
+	return getRootfs(ctx, s, identity, *out)
 }
 
 func runPut(ctx context.Context, s *store.Store, args []string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("put", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	digest := flags.String("digest", "", "full SHA-256 guest image digest")
+	rootfsSize := flags.String("rootfs-size", "", "mkfs rootfs size (for example 4G)")
+	bakeFormat := flags.String("bake-format", "", "rootfs bake-format version")
 	file := flags.String("file", "", "rootfs file to upload")
 	imageRef := flags.String("image-ref", "", "guest image reference used to bake the rootfs")
 	timeout := flags.Duration("timeout", defaultPutTimeout, "maximum time for the store upload")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if flags.NArg() != 0 || *file == "" || strings.TrimSpace(*imageRef) == "" {
-		return errors.New("put requires --digest, --file, and --image-ref")
+	if flags.NArg() != 0 || *digest == "" || *rootfsSize == "" || *bakeFormat == "" || *file == "" || strings.TrimSpace(*imageRef) == "" {
+		return errors.New("put requires --digest, --rootfs-size, --bake-format, --file, and --image-ref")
 	}
 	if *timeout <= 0 {
 		return errors.New("put --timeout must be greater than zero")
 	}
-	cleanDigest, err := validateDigest(*digest)
+	identity, err := validateCacheIdentity(*digest, *rootfsSize, *bakeFormat)
 	if err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(ctx, *timeout)
 	defer cancel()
-	result, payloadKey, err := putRootfs(ctx, s, cleanDigest, *file, strings.TrimSpace(*imageRef))
+	result, payloadKey, err := putRootfs(ctx, s, identity, *file, strings.TrimSpace(*imageRef))
 	if err != nil {
 		return err
 	}
@@ -183,16 +202,34 @@ func validateDigest(value string) (string, error) {
 	return strings.ToLower(value), nil
 }
 
-func checksumObjectKey(digest string) string {
-	return "rootfs/" + digest + "/" + checksumObjectName
+func validateCacheIdentity(digest, rootfsSize, bakeFormat string) (cacheIdentity, error) {
+	cleanDigest, err := validateDigest(digest)
+	if err != nil {
+		return cacheIdentity{}, err
+	}
+	if len(rootfsSize) > 16 || !rootfsSizePattern.MatchString(rootfsSize) {
+		return cacheIdentity{}, errors.New("rootfs size must match ^[1-9][0-9]*[KMGTP]?$")
+	}
+	if len(bakeFormat) > 32 || !bakeFormatPattern.MatchString(bakeFormat) {
+		return cacheIdentity{}, errors.New("bake format must start with a lowercase letter and contain only lowercase letters, digits, and hyphens")
+	}
+	return cacheIdentity{Digest: cleanDigest, RootfsSize: rootfsSize, BakeFormat: bakeFormat}, nil
 }
 
-func payloadObjectKey(digest, checksum string) string {
-	return "rootfs/" + digest + "/" + checksum + ".ext4"
+func cacheObjectPrefix(identity cacheIdentity) string {
+	return "rootfs/" + identity.Digest + "/size-" + identity.RootfsSize + "/format-" + identity.BakeFormat
 }
 
-func getRootfs(ctx context.Context, s *store.Store, digest, out string) error {
-	marker, err := getCompletenessMarker(ctx, s, digest)
+func checksumObjectKey(identity cacheIdentity) string {
+	return cacheObjectPrefix(identity) + "/" + checksumObjectName
+}
+
+func payloadObjectKey(identity cacheIdentity, checksum string) string {
+	return cacheObjectPrefix(identity) + "/" + checksum + ".ext4"
+}
+
+func getRootfs(ctx context.Context, s *store.Store, identity cacheIdentity, out string) error {
+	marker, err := getCompletenessMarker(ctx, s, identity)
 	if err != nil {
 		return err
 	}
@@ -235,8 +272,8 @@ func getRootfs(ctx context.Context, s *store.Store, digest, out string) error {
 	return nil
 }
 
-func getCompletenessMarker(ctx context.Context, s *store.Store, digest string) (completenessMarker, error) {
-	key := checksumObjectKey(digest)
+func getCompletenessMarker(ctx context.Context, s *store.Store, identity cacheIdentity) (completenessMarker, error) {
+	key := checksumObjectKey(identity)
 	body, _, err := s.Get(ctx, key)
 	if err != nil {
 		return completenessMarker{}, err
@@ -258,15 +295,26 @@ func getCompletenessMarker(ctx context.Context, s *store.Store, digest string) (
 		return completenessMarker{}, fmt.Errorf("completeness marker %q: %w", key, err)
 	}
 	marker.SHA256 = want
-	wantPayloadKey := payloadObjectKey(digest, want)
+	markerDigest, err := validateDigest(marker.ImageDigest)
+	if err != nil {
+		return completenessMarker{}, fmt.Errorf("completeness marker %q has invalid image digest: %w", key, err)
+	}
+	if markerDigest != identity.Digest || marker.RootfsSize != identity.RootfsSize || marker.BakeFormat != identity.BakeFormat {
+		return completenessMarker{}, fmt.Errorf(
+			"completeness marker %q identity is digest=%s rootfs-size=%s bake-format=%s, want digest=%s rootfs-size=%s bake-format=%s",
+			key, markerDigest, marker.RootfsSize, marker.BakeFormat,
+			identity.Digest, identity.RootfsSize, identity.BakeFormat,
+		)
+	}
+	wantPayloadKey := payloadObjectKey(identity, want)
 	if marker.PayloadKey != wantPayloadKey {
 		return completenessMarker{}, fmt.Errorf("completeness marker %q names payload %q, want %q", key, marker.PayloadKey, wantPayloadKey)
 	}
 	return marker, nil
 }
 
-func putRootfs(ctx context.Context, s *store.Store, digest, path, imageRef string) (putResult, string, error) {
-	checksumKey := checksumObjectKey(digest)
+func putRootfs(ctx context.Context, s *store.Store, identity cacheIdentity, path, imageRef string) (putResult, string, error) {
+	checksumKey := checksumObjectKey(identity)
 	// The sidecar is the completeness marker. A payload without it can only be
 	// an interrupted upload and must not suppress a repair upload.
 	exists, err := s.Head(ctx, checksumKey)
@@ -274,6 +322,9 @@ func putRootfs(ctx context.Context, s *store.Store, digest, path, imageRef strin
 		return putAlreadyPresent, "", err
 	}
 	if exists {
+		if _, err := getCompletenessMarker(ctx, s, identity); err != nil {
+			return putAlreadyPresent, "", fmt.Errorf("verify existing completeness marker: %w", err)
+		}
 		return putAlreadyPresent, "", nil
 	}
 
@@ -297,7 +348,7 @@ func putRootfs(ctx context.Context, s *store.Store, digest, path, imageRef strin
 		return putAlreadyPresent, "", fmt.Errorf("hash rootfs: %w", err)
 	}
 	checksum := hex.EncodeToString(hash.Sum(nil))
-	payloadKey := payloadObjectKey(digest, checksum)
+	payloadKey := payloadObjectKey(identity, checksum)
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return putAlreadyPresent, "", fmt.Errorf("rewind rootfs: %w", err)
 	}
@@ -309,6 +360,9 @@ func putRootfs(ctx context.Context, s *store.Store, digest, path, imageRef strin
 		return putAlreadyPresent, "", err
 	}
 	if exists {
+		if _, err := getCompletenessMarker(ctx, s, identity); err != nil {
+			return putAlreadyPresent, "", fmt.Errorf("verify existing completeness marker: %w", err)
+		}
 		return putAlreadyPresent, "", nil
 	}
 
@@ -326,7 +380,7 @@ func putRootfs(ctx context.Context, s *store.Store, digest, path, imageRef strin
 		return putAlreadyPresent, "", err
 	}
 	if exists {
-		winner, err := getCompletenessMarker(ctx, s, digest)
+		winner, err := getCompletenessMarker(ctx, s, identity)
 		if err != nil {
 			return putAlreadyPresent, "", err
 		}
@@ -337,10 +391,13 @@ func putRootfs(ctx context.Context, s *store.Store, digest, path, imageRef strin
 	}
 
 	sidecar, err := json.Marshal(completenessMarker{
-		PayloadKey: payloadKey,
-		SHA256:     checksum,
-		ImageRef:   imageRef,
-		UploadedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		PayloadKey:  payloadKey,
+		SHA256:      checksum,
+		ImageRef:    imageRef,
+		ImageDigest: identity.Digest,
+		RootfsSize:  identity.RootfsSize,
+		BakeFormat:  identity.BakeFormat,
+		UploadedAt:  time.Now().UTC().Format(time.RFC3339Nano),
 	})
 	if err != nil {
 		return putAlreadyPresent, "", fmt.Errorf("encode completeness marker: %w", err)

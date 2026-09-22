@@ -244,8 +244,10 @@ service name here (survives a release rename).
 {{- end -}}
 
 {{/*
-Per-guest-digest rootfs path: <dir>/rootfs-<digest>.ext4, so each pinned guest-image
-version bakes its OWN read-only rootfs file instead of overwriting one fixed path.
+Per-bake-identity rootfs path:
+<dir>/rootfs-<digest>-size-<size>-format-<format>.ext4, so each pinned guest-image
+version and byte-affecting bake configuration gets its OWN read-only rootfs file
+instead of overwriting one fixed path.
 The Firecracker memfile embeds this host path (restore re-attaches it, never
 re-issuing PutDrive), so a chart roll that rebuilt the fixed file in place used to
 swap the bytes under every banked session snapshot -> EXT4 corruption on restore.
@@ -261,14 +263,23 @@ produced identical bytes (issue #4147: 11 brick rolls in a day against 1 real im
 change). The digest moves only when the guest image actually moves, which is the
 property this path always meant to express.
 
-Input: (dict "wl" $wl "top" $top). MUST be used by BOTH the rootfs-builder
-BASE_ROOTFS_PATH and the pushed image-identity rootfsPath (EMBERVM_NODE_IMAGE_IDENTITY)
-so the built file and the path noded attaches are byte-identical.
+Input: (dict "wl" $wl "top" $top "rootfsBuilder" .Values.rootfsBuilder). MUST
+be used by BOTH the rootfs-builder BASE_ROOTFS_PATH and the pushed
+image-identity rootfsPath (EMBERVM_NODE_IMAGE_IDENTITY), so the built file and
+the path noded attaches are byte-identical.
 */}}
 {{- define "embervm.noded.rootfsPath" -}}
 {{- $digest := required "guestImage.digest is required to name a base rootfs (Bazel pins it via helm_chart images=). An empty suffix would collide across guest versions and swap bytes under banked snapshots." .top.guestImage.digest -}}
+{{- $size := required "rootfsBuilder.rootfsSize is required to name a base rootfs." .rootfsBuilder.rootfsSize | toString -}}
+{{- $format := required "rootfsBuilder.bakeFormatVersion is required to name a base rootfs." .rootfsBuilder.bakeFormatVersion | toString -}}
+{{- if or (gt (len $size) 16) (not (regexMatch "^[1-9][0-9]*[KMGTP]?$" $size)) -}}
+{{- fail "rootfsBuilder.rootfsSize must match ^[1-9][0-9]*[KMGTP]?$" -}}
+{{- end -}}
+{{- if not (regexMatch "^[a-z][a-z0-9-]{0,31}$" $format) -}}
+{{- fail "rootfsBuilder.bakeFormatVersion must start with a lowercase letter and contain at most 32 lowercase letters, digits, or hyphens" -}}
+{{- end -}}
 {{- $suffix := $digest | toString | replace ":" "-" | replace "@" "-" | replace "/" "-" -}}
-{{- printf "%s-%s.ext4" (trimSuffix ".ext4" .wl.rootfsPath) $suffix -}}
+{{- printf "%s-%s-size-%s-format-%s.ext4" (trimSuffix ".ext4" .wl.rootfsPath) $suffix $size $format -}}
 {{- end -}}
 
 {{/*

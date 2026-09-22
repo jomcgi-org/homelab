@@ -1073,11 +1073,16 @@ implemented: `ArtifactRef` is `{kind, workload, ref}` with keys
 `<kind>/<vendor>/<workload>/<ref>/<file>`.
 
 **Baked rootfs cache (Built, #5772)**: Baked guest rootfs files use
-`rootfs/<digest>/<payload-sha256>.ext4`, with
-`rootfs/<digest>/rootfs.ext4.sha256` written last as the completeness marker.
-The marker names the payload key and checksum. A local miss reads the marker first,
-downloads that payload, and verifies its bytes, so bases hydrate across nodes under
-the identity contract, with a local hardlink cache in front.
+`rootfs/<architecture-digest>/size-<rootfs-size>/format-<bake-format>/`
+as their remote namespace. The payload is `<payload-sha256>.ext4`, with
+`rootfs.ext4.sha256` written last as the completeness marker. The marker records
+and verifies the image digest, rootfs size, bake format, payload key, and payload
+checksum. The local cache and the rootfs path pushed to noded carry the same size
+and format identity. Changing either input therefore misses once without reading
+or deleting legacy digest-only files or objects. A local miss reads the marker
+first, downloads that payload, verifies its metadata and bytes, and punches zero
+runs back into holes, so bases hydrate across nodes under the identity contract
+with a sparse local hardlink cache in front.
 
 **GKE validation store (Staged, #6193)**: the production Application continues
 to use `h0melab-ember-bases`. This stage defines no production lifecycle

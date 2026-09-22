@@ -107,6 +107,12 @@ def test_target_free_bytes_exceeds_the_bake_size():
     )
 
 
+def test_bake_format_version_is_a_safe_explicit_cache_input():
+    builder = _chart_values()["rootfsBuilder"]
+    assert builder["bakeFormatVersion"] == "b2"
+    assert re.fullmatch(r"[a-z][a-z0-9-]{0,31}", builder["bakeFormatVersion"])
+
+
 def test_gate_value_is_a_recognised_setting():
     """Only "" and "1" mean anything; anything else silently reads as disarmed.
 
@@ -193,9 +199,21 @@ def test_bake_uses_random_ext4_uuid_and_logs_identity():
         )
 
     assert "skip=1128" in script, "the busybox ext4 superblock UUID read is missing"
-    assert "rootfs identity digest=sha256:$digest uuid=" in script, (
-        "the post-bake identity log is missing"
+    assert (
+        "rootfs identity digest=sha256:$digest rootfs_size=$size "
+        "bake_format=$bake_format uuid="
+    ) in script, "the post-bake identity log is missing"
+
+
+def test_store_get_and_put_receive_the_same_complete_cache_identity():
+    script = _repo_path(
+        "projects/embervm/chart/templates/noded-rootfs-builder-configmap.yaml"
+    ).read_text()
+    identity_flags = (
+        '--digest "$digest" --rootfs-size "$size" --bake-format "$bake_format"'
     )
+    assert f"rootfs-store get {identity_flags} --out" in script
+    assert f"rootfs-store put {identity_flags} --file" in script
 
 
 def _rootfs_download_harness(tmp_path):
@@ -221,6 +239,8 @@ def _rootfs_download_harness(tmp_path):
             print("sha256:" + "a" * 64)
         else:
             assert sys.argv[1] == "get", sys.argv
+            assert sys.argv[sys.argv.index("--rootfs-size") + 1] == os.environ["ROOTFS_SIZE"]
+            assert sys.argv[sys.argv.index("--bake-format") + 1] == os.environ["ROOTFS_BAKE_FORMAT"]
             with (root / "downloads").open("a") as log:
                 log.write(os.environ["BUILDER_ID"] + "\\n")
             deadline = time.monotonic() + 15
@@ -261,6 +281,8 @@ def _rootfs_download_harness(tmp_path):
         **os.environ,
         "PATH": str(binaries) + os.pathsep + os.environ["PATH"],
         "GUEST_IMAGE": "test-guest",
+        "ROOTFS_SIZE": "4G",
+        "ROOTFS_BAKE_FORMAT": "b2",
         "TEST_ROOTFS_DIR": str(tmp_path),
     }
 
@@ -330,6 +352,49 @@ def test_concurrent_rootfs_builders_download_once_and_share_inode(tmp_path, same
         assert all(path.read_bytes() == b"x" * 2048 for path in paths)
     finally:
         _stop_builders(processes)
+
+
+def test_size_and_format_changes_miss_without_reusing_legacy_cache(tmp_path):
+    script, env = _rootfs_download_harness(tmp_path)
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    legacy = cache_dir / ("rootfs-" + "a" * 12 + ".ext4")
+    legacy.write_bytes(b"legacy-digest-only-rootfs")
+    (tmp_path / "release").touch()
+
+    def run(identifier, overrides=None):
+        process = _start_builder(
+            script, {**env, **(overrides or {})}, tmp_path, identifier
+        )
+        output, _ = process.communicate(timeout=15)
+        assert process.returncode == 0, output
+        return cache_dir / f"base-{identifier}.ext4"
+
+    first = run("first")
+    same = run("same")
+    different_size = run("size", {"ROOTFS_SIZE": "8G"})
+    different_format = run("format", {"ROOTFS_BAKE_FORMAT": "b3"})
+
+    assert (tmp_path / "downloads").read_text().splitlines() == [
+        "first",
+        "size",
+        "format",
+    ]
+    assert first.stat().st_ino == same.stat().st_ino
+    assert (
+        len(
+            {
+                first.stat().st_ino,
+                different_size.stat().st_ino,
+                different_format.stat().st_ino,
+            }
+        )
+        == 3
+    )
+    assert first.read_bytes() == b"x" * 2048
+    assert different_size.read_bytes() == b"x" * 2048
+    assert different_format.read_bytes() == b"x" * 2048
+    assert legacy.read_bytes() == b"legacy-digest-only-rootfs"
 
 
 def test_rootfs_waiter_recovers_after_builder_process_group_dies(tmp_path):

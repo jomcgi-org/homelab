@@ -261,7 +261,7 @@ spec:
               {{- $top := index $.Values $name }}
               {{- if and $top $top.guestImage $top.guestImage.repository }}
               {{- $ref := printf "%s@%s" $top.guestImage.repository $top.guestImage.digest }}
-              {{- $rootfs := include "embervm.noded.rootfsPath" (dict "wl" $wl "top" $top) }}
+              {{- $rootfs := include "embervm.noded.rootfsPath" (dict "wl" $wl "top" $top "rootfsBuilder" $.Values.rootfsBuilder) }}
               {{- $ids = append $ids (printf "%s=%s|%s" $ref $rootfs ($wl.harnessInit | default "")) }}
               {{- end }}
               {{- end }}
