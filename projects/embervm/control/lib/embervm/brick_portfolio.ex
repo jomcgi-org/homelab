@@ -22,7 +22,8 @@ defmodule Embervm.Brick.Portfolio do
 
   `effective_min` preserves a chart-declared manual minimum by taking the
   maximum of it and `computed_floor`. `flag` is `:floor_overflow` when the
-  computed floor exceeds the class's declared maximum, or when an item cannot
+  computed floor exceeds the class's authorized outer bound (or its fixed
+  maximum when runtime ceiling ownership is disabled), or when an item cannot
   fit even the largest declared class.
 
   Catalog entries and class declarations are already validated at their input
@@ -77,6 +78,8 @@ defmodule Embervm.Brick.Portfolio do
         min = non_negative(field(class, [:min, "min"]), 0)
         desired = non_negative(field(class, [:desired, "desired"]), 0)
         max_replicas = non_negative(field(class, [:max, "max"]), max(desired, min))
+        ceiling_bound = non_negative(field(class, [:ceiling_bound, "ceiling_bound"]), 0)
+        authorized_max = if ceiling_bound > 0, do: max(max_replicas, ceiling_bound), else: max_replicas
 
         [
           %{
@@ -85,7 +88,7 @@ defmodule Embervm.Brick.Portfolio do
             capacity_mib: max(usable_mib - reject_floor_mib, 0),
             slots: slots,
             min: min,
-            max: max_replicas
+            max: authorized_max
           }
         ]
       else

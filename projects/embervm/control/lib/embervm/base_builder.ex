@@ -125,7 +125,8 @@ defmodule Embervm.BaseBuilder do
   Status is patched with a JSON merge-patch, which REPLACES arrays wholesale, so
   two writers touching `conditions` would clobber each other. Ownership is split
   by key: this module owns `conditions` (`Ready` + `BaseBuilt` +
-  `BaseVendorCoverage` + `BaseRegistryConverged`), `snapshotRef`, and `snapshotDigest` for valid task
+  `BaseVendorCoverage` + `BaseRegistryConverged` + the BrickController-fed
+  `Capacity` condition), `snapshotRef`, and `snapshotDigest` for valid task
   Workloads; the watcher owns
   `observedGeneration` and `primedFloorSatisfied` (disjoint keys, no lost
   update) and keeps `conditions` only for the invalid-CR validation lane, which
@@ -232,6 +233,17 @@ defmodule Embervm.BaseBuilder do
   @spec forget(GenServer.server(), String.t()) :: :ok
   def forget(server \\ __MODULE__, name) do
     cast_if_alive(server, {:forget, name})
+  end
+
+  @doc "Publish a transition-only workload Capacity condition through the conditions owner."
+  @spec capacity_condition(String.t(), map()) :: :ok
+  def capacity_condition(workload, condition) do
+    capacity_condition(__MODULE__, workload, condition)
+  end
+
+  @spec capacity_condition(GenServer.server(), String.t(), map()) :: :ok
+  def capacity_condition(server, workload, condition) do
+    cast_if_alive(server, {:capacity_condition, workload, condition})
   end
 
   @doc """
@@ -513,6 +525,10 @@ defmodule Embervm.BaseBuilder do
       node_addr: node_addr,
       nodes: node_runtime,
       workloads: %{},
+      # Workload conditions are one merge-patched array owned here. The brick
+      # controller sends only Capacity transitions; retaining the latest value
+      # here lets every later base-status write preserve it.
+      capacity_conditions: %{},
       workload_sync_done: false,
       # Instance ids awaiting a fresh NodeStatus after registration reported a
       # new scratch generation. NodeRegistry's capacity projection notification
@@ -586,6 +602,29 @@ defmodule Embervm.BaseBuilder do
   @impl true
   def handle_cast({:reconcile, desc}, state) do
     {:noreply, reconcile_desc(state, desc)}
+  end
+
+  def handle_cast({:capacity_condition, workload, condition}, state) do
+    condition = %{
+      "type" => "Capacity",
+      "status" => to_string(Map.fetch!(condition, :status)),
+      "reason" => condition |> Map.fetch!(:reason) |> capacity_reason(),
+      "message" => Map.fetch!(condition, :message),
+      "lastTransitionTime" => iso8601(state.clock.())
+    }
+
+    state = put_in(state, [:capacity_conditions, workload], condition)
+
+    state =
+      case Map.get(state.workloads, workload) do
+        %{last_status_phase: phase} = w when not is_nil(phase) ->
+          write_base_status(state, w, phase, true, false, status_observation(state, w))
+
+        _ ->
+          state
+      end
+
+    {:noreply, state}
   end
 
   def handle_cast({:reconcile_force_rebuild, workload_name, signature_at_start}, state) do
@@ -2490,6 +2529,8 @@ defmodule Embervm.BaseBuilder do
   # -- forget ------------------------------------------------------------------
 
   defp forget_workload(state, name) do
+    state = update_in(state.capacity_conditions, &Map.delete(&1, name))
+
     case Map.get(state.workloads, name) do
       nil ->
         state
@@ -4281,7 +4322,7 @@ defmodule Embervm.BaseBuilder do
 
   # -- status writing ----------------------------------------------------------
 
-  # Build and patch the four conditions this module owns. Ready is derived purely
+  # Build and patch the conditions this module owns. Ready is derived purely
   # from whether a restorable base exists (snapshot_ref present); BaseBuilt tracks
   # the DESIRED scalar base. BaseVendorCoverage exposes the per-vendor gap behind
   # pi-runtime's observed amd-only Ready=True state, but does not change Ready or
@@ -4300,11 +4341,15 @@ defmodule Embervm.BaseBuilder do
     base_built = base_built_condition(state, phase)
     %{refs: refs, coverage: vendor_coverage, convergence: convergence} = observation
 
+    conditions =
+      [ready, base_built, vendor_coverage, convergence] ++
+        case Map.get(state.capacity_conditions, w.name) do
+          nil -> []
+          capacity -> [capacity]
+        end
+
     status_map =
-      if(include_conditions?,
-        do: %{"conditions" => [ready, base_built, vendor_coverage, convergence]},
-        else: %{}
-      )
+      if(include_conditions?, do: %{"conditions" => conditions}, else: %{})
       |> maybe_put_snapshot(w, phase, include_snapshot?)
       |> put_snapshot_refs(refs, w.last_snapshot_refs)
 
@@ -4627,6 +4672,11 @@ defmodule Embervm.BaseBuilder do
 
   defp condition_identity(nil), do: nil
   defp condition_identity(condition), do: Map.delete(condition, "lastTransitionTime")
+
+  defp capacity_reason(:no_fitting_class), do: "NoFittingClass"
+  defp capacity_reason(:ceiling_exhausted), do: "CeilingExhausted"
+  defp capacity_reason(:capacity_available), do: "CapacityAvailable"
+  defp capacity_reason(reason), do: to_string(reason)
 
   defp condition(state, type, status, reason, message) do
     %{

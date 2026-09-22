@@ -597,6 +597,13 @@ defmodule Embervm.Application do
     end
   end
 
+  defp positive_int_env(name) do
+    case Integer.parse(trimmed_env(name)) do
+      {value, ""} when value > 0 -> value
+      _ -> nil
+    end
+  end
+
   defp spec_trace_path do
     case trimmed_env("EMBERVM_SPEC_TRACE_PATH") do
       "" -> ":memory:"
@@ -1699,6 +1706,11 @@ defmodule Embervm.Application do
       nil -> :ok
       mode -> Application.put_env(:embervm, :brick_autoscale_mode, mode)
     end
+
+    case positive_int_env("EMBERVM_BRICK_CEILING_IDLE_MS") do
+      nil -> :ok
+      ms -> Application.put_env(:embervm, :brick_ceiling_idle_ms, ms)
+    end
   end
 
   # Parse EMBERVM_BRICK_AUTOSCALE_MODE (Axis C). Only the four known modes are
@@ -1722,8 +1734,9 @@ defmodule Embervm.Application do
 
   # Parse EMBERVM_BRICK_CLASSES (a JSON array of {"name","desired","usable_mib",
   # "mem_reject_floor_mib","slots"} objects, plus optional autoscale clamp fields
-  # "min"/"max") into a list of %{name, desired, min, max, usable_mib,
-  # mem_reject_floor_mib, slots}. nil when unset, malformed, or empty, so the
+  # "min"/"max" and the opt-in "ceiling_bound") into a list of %{name,
+  # desired, min, max, ceiling_bound, usable_mib, mem_reject_floor_mib, slots}.
+  # nil when unset, malformed, or empty, so the
   # controller's empty-list default fires (it reconciles nothing). A class
   # missing a binary name, a non-negative integer desired, positive usable
   # memory, a non-negative rejection cushion, or a non-negative slot limit is
@@ -1749,6 +1762,7 @@ defmodule Embervm.Application do
                   desired: desired,
                   min: non_neg_int_or(Map.get(class, "min"), 0),
                   max: non_neg_int_or(Map.get(class, "max"), nil),
+                  ceiling_bound: non_neg_int_or(Map.get(class, "ceiling_bound"), 0),
                   usable_mib: Map.get(class, "usable_mib"),
                   mem_reject_floor_mib:
                     non_neg_int_or(Map.get(class, "mem_reject_floor_mib"), nil),

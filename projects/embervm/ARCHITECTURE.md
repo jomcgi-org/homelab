@@ -1046,7 +1046,7 @@ the spare capacity of the demand-driven pool. This is deliberately
 conservative when both exist, but keeps the `nodeFloors` contract orthogonal
 and untouched.
 
-**Decided direction** (ADR embervm/042, Accepted 2026-09-05, not yet built): the
+**Built, default-off** (ADR embervm/042, Accepted 2026-09-05): the
 `maxReplicas` ceiling itself becomes denial-driven, not only the replica count
 clamped inside it. A class stuck at a ceiling of 0 today needs a human to raise
 it by hand (the `values-gke.yaml` edits behind #5503 and #5504); instead, a new
@@ -1063,6 +1063,25 @@ capacity signal (ADR embervm/039) with two new reason codes rather than a
 second alerting path. This does not reopen in-place pod resize, which ADR
 embervm/013 section 7 and ADR embervm/039's own alternatives already declined
 to reopen. Implementation is tracked on #5505.
+
+The ownership boundary is explicit. `maxReplicas` is the bootstrap ceiling and
+the catalog-derived and manual floors still apply inside it. A positive
+per-class `ceilingBound` transfers the ongoing ceiling to the controller; a
+missing or zero bound keeps the old fixed-clamp behavior. Every shipped values
+file leaves that transfer disabled. On restart the controller reconstructs a
+raised operative ceiling from the live Deployment replica count, never from an
+unreadable scale response. Pinned `nodeFloors` remain separate Deployments and
+are neither counted as scalable replicas nor consumed as ceiling headroom.
+
+Sustained workload-attributed denials raise an authorized operative ceiling by
+one. Replica growth is a separate decision on a later reconciliation tick. A
+raised ceiling retires by one only after the scalable Deployment has remained
+at zero replicas for `bricks.autoscale.ceilingIdleMs` (default 3,600,000 ms);
+any denial or nonzero replica count resets that boundary. Replica scale-down
+therefore completes first through the existing draining, live-VM,
+exported-warmth, pod-resolution, and deletion-cost rails. Capacity conditions
+are exposed in `/v1/capacity` and the Workload `Capacity` condition, while
+`/healthz` remains process readiness and never changes because of capacity.
 
 The availability contract is spot semantics with two budgets. The chart
 default gives a routine roll, upgrade, or scale-down 110 seconds of drain
@@ -1687,7 +1706,7 @@ this table when the work ships or the issue closes without it.
 | The Firecracker jailer arms on every brick, closing the direct-root-exec gap between co-resident guests | section 10 | #5255 | not started |
 | EmberVM ships a standalone quickstart and packaging boundary independent of the homelab's deployment configuration | Decision history (embervm/009) | #3858 | not started |
 | OCI images convert to deterministic EROFS manifests and immutable content-addressed chunks, hydrated through a local-only read-only ublk device | section 8 | #4182 | deferred until EKS metal and per-Account KMS (2026-09-12) |
-| The brick `maxReplicas` ceiling itself moves on sustained denial pressure, not only the replica count clamped inside it | section 7 | #5505 | not started |
+| The brick `maxReplicas` ceiling itself moves on sustained denial pressure, not only the replica count clamped inside it | section 7 | #5505 | built, default-off pending staged live acceptance |
 | SPIFFE-issued identity moves beyond issuance: mTLS on the CP-to-noded hop, per-principal guest JWT-SVIDs, and GCP federation | section 9 | #5706 | not started |
 | A second Codex account joins the chatgpt.com grant pool once logged in, and quota floors per class and role protect planning capacity | section 9 | #5974 | grant pool built, pool not yet activated |
 | A guest-declared transient failure is retried inside EmberVM on a bounded session-invoke loop, so callers outside the monolith transport get it too | section 4 | #6185 | not started |
@@ -1747,7 +1766,7 @@ has the full text.
 | embervm/039 | Fair-share brick resources, blast-radius ladder, capacity as a signal | Accepted; requests Built, shedding Built and disarmed, jailer suspended, signal Decided direction | deleted |
 | embervm/040 | Anchor-loss recovery, preemption budget split | Accepted; restore-onto-peer Built, preemption watcher Built and disarmed | deleted |
 | embervm/041 | SPIFFE workload identity on self-hosted SPIRE | Accepted; phases 0 and 1 done, phase 2 in flight (#5706) | deleted |
-| embervm/042 | Brick class ceilings move on denial pressure | Accepted, not built (#5505) | deleted |
+| embervm/042 | Brick class ceilings move on denial pressure | Accepted, built default-off (#5505) | deleted |
 | embervm/README | Reading order for 019 to 027 and the sparse-facts through-line | folded into section 6 | deleted |
 | embervm/brick-program-decisions | 2026-07-19 run log: bricks everywhere, pod UID identity, scratch contract, staged cutover | carried by sections 7 and 11 | deleted |
 

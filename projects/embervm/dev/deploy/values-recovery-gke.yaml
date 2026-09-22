@@ -55,6 +55,7 @@ bricks:
     16gi: 0
   autoscale:
     mode: observe
+    ceilingBound: {}
     minReplicas:
       1gi: 0
       2gi: 0

@@ -309,6 +309,34 @@ defmodule Embervm.LogFormatterTest do
     assert decoded["reason"] == "floor_overflow"
   end
 
+  test "preserves attributed workload ceiling fields" do
+    line =
+      Embervm.LogFormatter.format(
+        %{
+          level: :warning,
+          msg: {:string, "embervm workload capacity unavailable"},
+          meta: %{
+            workload: "claude-runtime",
+            need_mib: 4_096,
+            size_class: "8gi",
+            operative_ceiling: 2,
+            ceiling_bound: 2,
+            bootstrap_max: 1,
+            reason: :ceiling_exhausted
+          }
+        },
+        %{}
+      )
+      |> IO.iodata_to_binary()
+
+    decoded = :json.decode(line)
+    assert decoded["workload"] == "claude-runtime"
+    assert decoded["need_mib"] == 4_096
+    assert decoded["operative_ceiling"] == 2
+    assert decoded["ceiling_bound"] == 2
+    assert decoded["bootstrap_max"] == 1
+  end
+
   test "preserves volume restore refusal fields in structured JSON" do
     metadata = %{
       workload: "wl-a",

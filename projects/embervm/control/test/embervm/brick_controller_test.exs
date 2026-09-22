@@ -751,4 +751,363 @@ defmodule Embervm.BrickControllerTest do
     assert first =~ "embervm brick capacity drift"
     refute second =~ "embervm brick capacity drift"
   end
+
+  test "a bound raises one ceiling step at threshold and replicas grow on the next tick" do
+    {clock, advance} = new_clock()
+    {:ok, current} = Agent.start_link(fn -> 0 end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(current) end)
+    {record, calls} = new_recorder()
+
+    scale = fn ns, name, replicas ->
+      :ok = record.(ns, name, replicas)
+      Agent.update(current, fn _ -> replicas end)
+      :ok
+    end
+
+    pid =
+      start(
+        mode: :up,
+        classes: [
+          %{
+            name: "4gi",
+            desired: 0,
+            min: 0,
+            max: 0,
+            ceiling_bound: 2,
+            usable_mib: 3_840,
+            mem_reject_floor_mib: 512,
+            slots: 8
+          }
+        ],
+        scale_fun: scale,
+        scale_get_fun: fn _ns, _name -> {:ok, Agent.get(current, & &1)} end,
+        facts_fun: fn -> [] end,
+        up_threshold: 2,
+        clock: clock
+      )
+
+    BrickController.note_denial(pid, "semgrep", 1_536)
+    BrickController.reconcile_now(pid)
+    assert Enum.map(calls.(), &elem(&1, 2)) == [0]
+
+    BrickController.note_denial(pid, "semgrep", 1_536)
+    advance.(1)
+    BrickController.reconcile_now(pid)
+
+    assert BrickController.capacity_health(pid).ceilings == [
+             %{size_class: "4gi", bootstrap_max: 0, operative_ceiling: 1, ceiling_bound: 2}
+           ]
+
+    # The threshold tick only raises authorization and reasserts zero.
+    assert Enum.map(calls.(), &elem(&1, 2)) == [0, 0]
+
+    BrickController.reconcile_now(pid)
+    assert Enum.map(calls.(), &elem(&1, 2)) == [0, 0, 1]
+  end
+
+  test "missing and zero bounds preserve fixed ceilings in every mode" do
+    for {mode, bound} <- [{:observe, nil}, {:up, 0}, {:full, 0}] do
+      {record, calls} = new_recorder()
+
+      class =
+        %{name: "2gi", desired: 0, min: 0, max: 0, usable_mib: 1_792}
+        |> then(fn class -> if is_nil(bound), do: class, else: Map.put(class, :ceiling_bound, bound) end)
+
+      pid =
+        start(
+          mode: mode,
+          classes: [class],
+          scale_fun: record,
+          scale_get_fun: fn _ns, _name -> {:ok, 0} end,
+          facts_fun: fn -> [] end,
+          up_threshold: 1
+        )
+
+      BrickController.note_denial(pid, "small", 512)
+      BrickController.reconcile_now(pid)
+
+      assert Enum.map(calls.(), &elem(&1, 2)) == [0]
+      assert BrickController.capacity_health(pid).ceilings == []
+    end
+  end
+
+  test "observe reports a bound move without changing the operative ceiling" do
+    pid =
+      start(
+        mode: :observe,
+        classes: [
+          %{name: "4gi", desired: 0, max: 0, ceiling_bound: 2, usable_mib: 3_840}
+        ],
+        scale_fun: fn _ns, _name, _replicas -> :ok end,
+        scale_get_fun: fn _ns, _name -> {:ok, 0} end,
+        facts_fun: fn -> [] end,
+        up_threshold: 1
+      )
+
+    BrickController.note_denial(pid, "semgrep", 1_536)
+    log = ExUnit.CaptureLog.capture_log(fn -> BrickController.reconcile_now(pid) end)
+
+    assert log =~ "ceiling would raise"
+    assert hd(BrickController.capacity_health(pid).ceilings).operative_ceiling == 0
+
+    {record, calls} = new_recorder()
+
+    off =
+      start(
+        mode: :off,
+        classes: [
+          %{name: "4gi", desired: 0, max: 0, ceiling_bound: 2, usable_mib: 3_840}
+        ],
+        scale_fun: record,
+        scale_get_fun: fn _ns, _name -> flunk("off mode must not read live scale") end,
+        facts_fun: fn -> [] end,
+        up_threshold: 1
+      )
+
+    BrickController.note_denial(off, "semgrep", 1_536)
+    BrickController.reconcile_now(off)
+    assert Enum.map(calls.(), &elem(&1, 2)) == [0]
+    assert hd(BrickController.capacity_health(off).ceilings).operative_ceiling == 0
+  end
+
+  test "live reject floors select 4gi and 8gi while oversized demand only latches health" do
+    classes = [
+      %{
+        name: "4gi",
+        desired: 0,
+        max: 0,
+        ceiling_bound: 1,
+        usable_mib: 3_584,
+        mem_reject_floor_mib: 256
+      },
+      %{
+        name: "8gi",
+        desired: 0,
+        max: 0,
+        ceiling_bound: 1,
+        usable_mib: 7_936,
+        mem_reject_floor_mib: 256
+      }
+    ]
+
+    {record, calls} = new_recorder()
+
+    pid =
+      start(
+        mode: :observe,
+        classes: classes,
+        scale_fun: record,
+        scale_get_fun: fn _ns, _name -> {:ok, 0} end,
+        facts_fun: fn ->
+          [
+            %{size_class: "4gi", mem_reject_floor_mib: 2_048},
+            %{size_class: "8gi", mem_reject_floor_mib: 512}
+          ]
+        end,
+        up_threshold: 1
+      )
+
+    BrickController.note_denial(pid, "semgrep", 1_536)
+    log_4gi = ExUnit.CaptureLog.capture_log(fn -> BrickController.reconcile_now(pid) end)
+    assert log_4gi =~ "class 4gi"
+
+    BrickController.note_denial(pid, "claude-runtime", 4_096)
+    log_8gi = ExUnit.CaptureLog.capture_log(fn -> BrickController.reconcile_now(pid) end)
+    assert log_8gi =~ "class 8gi"
+
+    before_oversized = calls.()
+    BrickController.note_denial(pid, "oversized", 8_000)
+    BrickController.reconcile_now(pid)
+
+    condition = hd(BrickController.capacity_health(pid).conditions)
+    assert condition.workload == "oversized"
+    assert condition.reason == :no_fitting_class
+    assert Enum.map(calls.() -- before_oversized, &elem(&1, 2)) == [0, 0]
+  end
+
+  test "ceiling exhaustion is transition-only and clears after the quiet window" do
+    {clock, advance} = new_clock()
+    {:ok, transitions} = Agent.start_link(fn -> [] end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(transitions) end)
+
+    condition_fun = fn workload, condition ->
+      Agent.update(transitions, &(&1 ++ [{workload, condition}]))
+    end
+
+    pid =
+      start(
+        mode: :up,
+        classes: [
+          %{name: "8gi", desired: 1, max: 1, ceiling_bound: 1, usable_mib: 7_936}
+        ],
+        scale_fun: fn _ns, _name, _replicas -> :ok end,
+        scale_get_fun: fn _ns, _name -> {:ok, 1} end,
+        facts_fun: fn -> [] end,
+        registered_fun: fn -> %{"8gi" => 1} end,
+        condition_fun: condition_fun,
+        up_threshold: 1,
+        up_window_ms: 60_000,
+        clock: clock
+      )
+
+    BrickController.note_denial(pid, "claude-runtime", 4_096)
+    first = ExUnit.CaptureLog.capture_log(fn -> BrickController.reconcile_now(pid) end)
+    second = ExUnit.CaptureLog.capture_log(fn -> BrickController.reconcile_now(pid) end)
+
+    assert first =~ "workload capacity unavailable"
+    refute second =~ "workload capacity unavailable"
+    refute BrickController.capacity_health(pid).ok
+    assert length(Agent.get(transitions, & &1)) == 1
+
+    advance.(60_000)
+    recovered = ExUnit.CaptureLog.capture_log(fn -> BrickController.reconcile_now(pid) end)
+
+    assert recovered =~ "workload capacity recovered"
+    assert BrickController.capacity_health(pid).ok
+    assert [{"claude-runtime", %{status: "False"}}, {"claude-runtime", %{status: "True"}}] =
+             Agent.get(transitions, &Enum.map(&1, fn {w, c} -> {w, Map.take(c, [:status])} end))
+  end
+
+  test "an unreadable scale is never patched and a failed patch retries without cooldown" do
+    {record, calls} = new_recorder()
+
+    unreadable =
+      start(
+        mode: :full,
+        classes: [%{name: "2gi", desired: 0, min: 0, max: 2}],
+        scale_fun: record,
+        scale_get_fun: fn _ns, _name -> {:error, :timeout} end,
+        facts_fun: fn -> [] end
+      )
+
+    BrickController.reconcile_now(unreadable)
+    assert calls.() == []
+
+    {:ok, attempts} = Agent.start_link(fn -> 0 end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(attempts) end)
+
+    patch = fn _ns, _name, replicas ->
+      attempt = Agent.get_and_update(attempts, &{&1, &1 + 1})
+      if attempt == 0, do: {:error, :timeout}, else: :ok
+    end
+
+    retrying =
+      start(
+        mode: :up,
+        classes: [%{name: "2gi", desired: 1, min: 0, max: 2}],
+        scale_fun: patch,
+        scale_get_fun: fn _ns, _name -> {:ok, 1} end,
+        facts_fun: fn -> [] end,
+        up_threshold: 1
+      )
+
+    BrickController.note_denial(retrying, "small", 512)
+    BrickController.reconcile_now(retrying)
+    BrickController.reconcile_now(retrying)
+    assert Agent.get(attempts, & &1) == 2
+  end
+
+  test "raised ceilings retire at the exact one-hour zero boundary and reconstruct safely" do
+    {clock, advance} = new_clock()
+    {:ok, current} = Agent.start_link(fn -> 2 end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(current) end)
+
+    opts = [
+      mode: :full,
+      classes: [%{name: "4gi", desired: 0, min: 0, max: 1, ceiling_bound: 3}],
+      scale_fun: fn _ns, _name, replicas ->
+        Agent.update(current, fn _ -> replicas end)
+        :ok
+      end,
+      scale_get_fun: fn _ns, _name -> {:ok, Agent.get(current, & &1)} end,
+      facts_fun: fn -> [] end,
+      registered_fun: fn -> %{} end,
+      ceiling_idle_ms: 3_600_000,
+      clock: clock
+    ]
+
+    pid = start(opts)
+    BrickController.reconcile_now(pid)
+    assert hd(BrickController.capacity_health(pid).ceilings).operative_ceiling == 2
+
+    Agent.update(current, fn _ -> 0 end)
+    BrickController.reconcile_now(pid)
+    advance.(3_599_999)
+    BrickController.reconcile_now(pid)
+    assert hd(BrickController.capacity_health(pid).ceilings).operative_ceiling == 2
+
+    advance.(1)
+    BrickController.reconcile_now(pid)
+    assert hd(BrickController.capacity_health(pid).ceilings).operative_ceiling == 1
+
+    # A fresh controller with two live replicas reconstructs two, never the
+    # lower bootstrap value and never an assumed zero.
+    Agent.update(current, fn _ -> 2 end)
+    restarted = start(opts)
+    BrickController.reconcile_now(restarted)
+    assert hd(BrickController.capacity_health(restarted).ceilings).operative_ceiling == 2
+  end
+
+
+  test "nonzero replica counts and denials reset the ceiling idle boundary" do
+    for reset <- [:nonzero, :denial] do
+      {clock, advance} = new_clock()
+      {:ok, current} = Agent.start_link(fn -> 2 end)
+      on_exit(fn -> Embervm.TestProcess.stop_safely(current) end)
+
+      pid =
+        start(
+          mode: :full,
+          classes: [
+            %{
+              name: "4gi",
+              desired: 0,
+              min: 0,
+              max: 1,
+              ceiling_bound: 3,
+              usable_mib: 3_840
+            }
+          ],
+          scale_fun: fn _ns, _name, replicas ->
+            Agent.update(current, fn _ -> replicas end)
+            :ok
+          end,
+          scale_get_fun: fn _ns, _name -> {:ok, Agent.get(current, & &1)} end,
+          facts_fun: fn -> [] end,
+          registered_fun: fn -> %{} end,
+          up_threshold: 10,
+          up_window_ms: 60_000,
+          ceiling_idle_ms: 3_600_000,
+          clock: clock
+        )
+
+      BrickController.reconcile_now(pid)
+      Agent.update(current, fn _ -> 0 end)
+      BrickController.reconcile_now(pid)
+      advance.(1_800_000)
+
+      case reset do
+        :nonzero ->
+          Agent.update(current, fn _ -> 1 end)
+          BrickController.reconcile_now(pid)
+          Agent.update(current, fn _ -> 0 end)
+          BrickController.reconcile_now(pid)
+
+        :denial ->
+          BrickController.note_denial(pid, "semgrep", 1_536)
+          BrickController.reconcile_now(pid)
+          advance.(60_000)
+          BrickController.reconcile_now(pid)
+      end
+
+      # The original boundary has passed, but the reset began a fresh hour.
+      advance.(1_800_000)
+      BrickController.reconcile_now(pid)
+      assert hd(BrickController.capacity_health(pid).ceilings).operative_ceiling == 2
+
+      advance.(1_800_000)
+      BrickController.reconcile_now(pid)
+      assert hd(BrickController.capacity_health(pid).ceilings).operative_ceiling == 1
+    end
+  end
 end
