@@ -2505,6 +2505,162 @@ defmodule Embervm.SessionManagerTest do
              SessionManager.create(ctx.mgr, "wl-persist", "p1", live.session_id)
   end
 
+  test "restore_lineage validation: a destroying holder is not terminal" do
+    parent = self()
+
+    ctx =
+      start_stack(
+        prime_fun: fake_prime_fun("vm-restore-destroying"),
+        channel_fun: fake_channel_fun(),
+        retire_volume_fun: fn _channel, request ->
+          send(parent, {:unexpected_retire, request.lineage_id})
+          {:ok, %{}}
+        end
+      )
+
+    holder = create_persistence_session(ctx)
+
+    assert {:ok, %{state: :destroying}} =
+             SessionStore.transition(
+               ctx.store,
+               holder.session_id,
+               :begin_destroy,
+               :session_destroying,
+               %{reason: :destroyed},
+               %{}
+             )
+
+    assert {:error, {:denied, :lineage_live_heir}} =
+             SessionManager.create(ctx.mgr, "wl-persist", "p1", holder.lineage_id)
+
+    refute_receive {:unexpected_retire, _lineage_id}
+  end
+
+  test "InheritanceOnlyFromTerminal: an heir waits for durable RetireVolume acknowledgement while the manager stays responsive" do
+    parent = self()
+
+    ctx =
+      start_stack(
+        prime_fun: fake_prime_fun("vm-relinquishment-order"),
+        channel_fun: fake_channel_fun(),
+        retire_volume_fun: fn _channel, request ->
+          send(parent, {:retire_waiting, self(), request.lineage_id})
+
+          receive do
+            :ack_retirement -> {:ok, %{}}
+          end
+        end
+      )
+
+    original = create_persistence_session(ctx)
+    assert {:ok, :destroying} = SessionManager.destroy(ctx.mgr, original.session_id)
+    assert wait_for_state(ctx, original.session_id, :destroyed).state == :destroyed
+    assert_receive {:retire_waiting, terminal_retire, lineage_id}
+    assert lineage_id == original.lineage_id
+
+    put_brick(ctx, "wl-persist", "volume",
+      session_volumes: [
+        %{workload: "wl-persist", lineage_id: original.lineage_id, size_bytes: 1}
+      ]
+    )
+
+    heir =
+      Task.async(fn ->
+        SessionManager.create(ctx.mgr, "wl-persist", "p1", original.lineage_id)
+      end)
+
+    assert_receive {:retire_waiting, restore_retire, ^lineage_id}
+    assert Task.yield(heir, 0) == nil
+    assert :pong = SessionManager.ping(ctx.mgr, 100)
+
+    send(restore_retire, :ack_retirement)
+
+    assert {:ok, restored} = Task.await(heir)
+    assert restored.lineage_id == lineage_id
+    assert restored.session_id != original.session_id
+
+    # The older terminal caller can complete after the heir is live. Its result
+    # is logging-only and cannot mutate the SessionStore or replace the holder.
+    send(terminal_retire, :ack_retirement)
+    assert {:ok, latest} = SessionStore.get_latest_by_lineage(ctx.store, lineage_id)
+    assert latest.session_id == restored.session_id
+    assert latest.state == :running
+  end
+
+  test "restore relinquishment fails closed on dial and RPC errors and retries safely" do
+    parent = self()
+    {:ok, mode} = Agent.start_link(fn -> :ok end)
+
+    channel_fun = fn _dial_id ->
+      case Agent.get(mode, & &1) do
+        :dial_error -> {:error, :dial_down}
+        _ -> {:ok, :fake_channel}
+      end
+    end
+
+    retire_volume_fun = fn _channel, request ->
+      current = Agent.get(mode, & &1)
+      send(parent, {:retire_attempt, current, request.lineage_id})
+
+      case current do
+        :rpc_error -> {:error, :store_down}
+        _ -> {:ok, %{}}
+      end
+    end
+
+    ctx =
+      start_stack(
+        prime_fun: fake_prime_fun("vm-relinquishment-retry"),
+        channel_fun: channel_fun,
+        retire_volume_fun: retire_volume_fun
+      )
+
+    original = create_persistence_session(ctx)
+    assert {:ok, :destroying} = SessionManager.destroy(ctx.mgr, original.session_id)
+    assert wait_for_state(ctx, original.session_id, :destroyed).state == :destroyed
+    assert_receive {:retire_attempt, :ok, lineage_id}
+    assert lineage_id == original.lineage_id
+
+    Agent.update(mode, fn _ -> :dial_error end)
+
+    assert {:error, {:denied, {:lineage_relinquishment_failed, {:error, :dial_down}}}} =
+             SessionManager.create(ctx.mgr, "wl-persist", "p1", lineage_id)
+
+    Agent.update(mode, fn _ -> :rpc_error end)
+
+    assert {:error, {:denied, {:lineage_relinquishment_failed, {:error, :store_down}}}} =
+             SessionManager.create(ctx.mgr, "wl-persist", "p1", lineage_id)
+
+    assert_receive {:retire_attempt, :rpc_error, ^lineage_id}
+    Agent.update(mode, fn _ -> :ok end)
+
+    assert {:ok, restored} = SessionManager.create(ctx.mgr, "wl-persist", "p1", lineage_id)
+    assert restored.lineage_id == lineage_id
+  end
+
+  test "a store-only lineage treats RetireVolume not found as already relinquished" do
+    parent = self()
+
+    ctx =
+      start_stack(
+        prime_fun: fake_prime_fun("vm-already-relinquished"),
+        channel_fun: fake_channel_fun(),
+        retire_volume_fun: fn _channel, request ->
+          send(parent, {:retire_not_found, request.lineage_id})
+          {:error, %GRPC.RPCError{status: 5, message: "workspace absent"}}
+        end
+      )
+
+    original = create_persistence_session(ctx)
+    assert {:ok, :destroying} = SessionManager.destroy(ctx.mgr, original.session_id)
+    assert wait_for_state(ctx, original.session_id, :destroyed).state == :destroyed
+    assert_receive {:retire_not_found, lineage_id}
+
+    assert {:ok, restored} = SessionManager.create(ctx.mgr, "wl-persist", "p1", lineage_id)
+    assert_receive {:retire_not_found, ^lineage_id}
+    assert restored.lineage_id == lineage_id
+  end
+
   test "a restoring create whose prime fails re-drives reclamation for the lineage (#4306/#4313)" do
     parent = self()
     {:ok, counter} = Agent.start_link(fn -> 0 end)

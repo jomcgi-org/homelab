@@ -159,6 +159,9 @@ defmodule Embervm.RouterTest do
     def create(_srv, "wl-lineage-restore-in-flight", _principal, _restore_lineage, _opts),
       do: {:error, {:denied, :lineage_restore_in_flight}}
 
+    def create(_srv, "wl-lineage-relinquishment-failed", _principal, _restore_lineage, _opts),
+      do: {:error, {:denied, {:lineage_relinquishment_failed, {:error, :dial_down}}}}
+
     # #4919: the replay/conflict/invalid-key response shapes, plus wl-idem-echo,
     # which answers successfully ONLY when the router threaded the exact
     # Idempotency-Key header value through, proving the hop.
@@ -1756,6 +1759,24 @@ defmodule Embervm.RouterTest do
     # Unlike lineage_live_heir (a committed heir, not worth retrying), an
     # in-flight restore is transient: the client may simply retry.
     assert body["retryable"] == true
+  end
+
+  test "restore lineage relinquishment failure is 503, retryable, and hides transport detail" do
+    with_session_fakes()
+
+    resp =
+      req(
+        :post,
+        "/v1/workloads/wl-lineage-relinquishment-failed/sessions",
+        auth("good"),
+        ~s({"restore_lineage": "lineage-x"})
+      )
+
+    assert resp.status == 503
+    body = json(resp.body)
+    assert body["reason"] == "lineage_relinquishment_failed"
+    assert body["retryable"] == true
+    refute resp.body =~ "dial_down"
   end
 
   test "invoke is gated on the SESSION token: a management token alone is rejected 403" do
