@@ -229,8 +229,12 @@ py_test(
     data = [
         "//projects/embervm/chart:rootfs_reclaim_sources",
         "//projects/embervm/deploy:deploy_values",
+        "//projects/firecracker/substrate/rootfs-builder:package_manifest_sources",
     ],
     imports = ["."],
+    # The builder regression harness pins Linux flock and process-group
+    # behavior, matching the shipped rootfs-builder container.
+    target_compatible_with = ["@platforms//os:linux"],
     deps = [
         "@pip//pytest",
         "@pip//pyyaml",

@@ -261,7 +261,7 @@ spec:
               {{- $top := index $.Values $name }}
               {{- if and $top $top.guestImage $top.guestImage.repository }}
               {{- $ref := printf "%s@%s" $top.guestImage.repository $top.guestImage.digest }}
-              {{- $rootfs := include "embervm.noded.rootfsPath" (dict "wl" $wl "top" $top) }}
+              {{- $rootfs := include "embervm.noded.rootfsPath" (dict "wl" $wl "top" $top "rootfsBuilder" $.Values.rootfsBuilder) }}
               {{- $ids = append $ids (printf "%s=%s|%s" $ref $rootfs ($wl.harnessInit | default "")) }}
               {{- end }}
               {{- end }}
@@ -559,6 +559,26 @@ spec:
                   name: {{ include "embervm.store.credentialsSecretName" . }}
                   key: {{ .Values.noded.store.credentials.secretAccessKeyKey }}
             {{- end }}
+            {{- $rootfsRetentionAgeDays := .Values.rootfsRemoteRetention.ageDays | toString }}
+            {{- if not (regexMatch "^[1-9][0-9]*$" $rootfsRetentionAgeDays) }}
+            {{- fail "rootfsRemoteRetention.ageDays must be a positive integer" }}
+            {{- end }}
+            # Baked-rootfs retention is independently default-off. The worker
+            # still emits a dry-run candidate manifest, protecting every image
+            # ref rendered from the same workload inventory the builders use.
+            - name: EMBERVM_ROOTFS_REMOTE_RETENTION_ENABLED
+              value: {{ ternary "true" "false" .Values.rootfsRemoteRetention.enabled | quote }}
+            - name: EMBERVM_ROOTFS_REMOTE_RETENTION_AGE_DAYS
+              value: {{ $rootfsRetentionAgeDays | quote }}
+            - name: EMBERVM_ROOTFS_CURRENT_IMAGE_REFS
+              {{- $rootfsCurrentRefs := list }}
+              {{- range $name, $_wl := .Values.workloads }}
+              {{- $top := index $.Values $name }}
+              {{- if and $top $top.guestImage $top.guestImage.repository }}
+              {{- $rootfsCurrentRefs = append $rootfsCurrentRefs (printf "%s@%s" $top.guestImage.repository $top.guestImage.digest) }}
+              {{- end }}
+              {{- end }}
+              value: {{ $rootfsCurrentRefs | toJson | quote }}
             {{- if .Values.warmthS3Gc.enabled }}
             # The DESTRUCTIVE gate: "1" arms irreversible S3 deletion of proven
             # orphan prefixes (supervised, capped). Unset keeps every sweep a

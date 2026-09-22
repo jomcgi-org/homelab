@@ -316,6 +316,40 @@ func (s *Store) Put(ctx context.Context, key string, r io.Reader, size int64) er
 	return nil
 }
 
+// PutIfAbsent uploads an object only when key does not already exist. S3's
+// If-None-Match: * condition makes completeness-marker publication atomic
+// across nodes: exactly one concurrent writer creates the key, and every loser
+// leaves that winner untouched. The returned bool is true only for the creator.
+func (s *Store) PutIfAbsent(ctx context.Context, key string, r io.Reader, size int64) (bool, error) {
+	if s == nil {
+		return false, ErrNotPresent
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, s.url(key), r)
+	if err != nil {
+		return false, fmt.Errorf("store: build create-only PUT %q: %w", key, err)
+	}
+	if size >= 0 {
+		req.ContentLength = size
+	}
+	req.Header.Set("Content-Type", "application/octet-stream")
+	req.Header.Set("If-None-Match", "*")
+	if err := s.sign(req); err != nil {
+		return false, fmt.Errorf("store: sign create-only PUT %q: %w", key, err)
+	}
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("store: create-only PUT %q: %w", key, err)
+	}
+	defer drainClose(resp.Body)
+	if resp.StatusCode == http.StatusConflict || resp.StatusCode == http.StatusPreconditionFailed {
+		return false, nil
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return false, fmt.Errorf("store: create-only PUT %q: unexpected status %d", key, resp.StatusCode)
+	}
+	return true, nil
+}
+
 // Get fetches the object key (HTTP GET) and returns its body plus the reported
 // size (Content-Length, -1 when unknown). The caller MUST close the returned
 // reader. A 404 is reported as ErrNotPresent so callers can distinguish a

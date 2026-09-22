@@ -36,6 +36,24 @@ Call with `{{- include "embervm.noded.podSpec" (dict "ctx" . "sizeClass" "" "res
 {{- $sizeClass := .sizeClass -}}
 {{- $scratchGate := and $sizeClass $ctx.Values.scratchPrep.enabled -}}
 {{- $nodeSelector := .nodeSelector | default $ctx.Values.noded.nodeSelector -}}
+{{- $parallelEnabled := $ctx.Values.rootfsBuilder.parallelEnabled -}}
+{{- $maxConcurrencyText := $ctx.Values.rootfsBuilder.maxConcurrency | toString -}}
+{{- if not (regexMatch "^[1-9][0-9]*$" $maxConcurrencyText) -}}
+{{- fail "rootfsBuilder.maxConcurrency must be an integer from 1 through 16" -}}
+{{- end -}}
+{{- $maxConcurrency := $maxConcurrencyText | int -}}
+{{- if gt $maxConcurrency 16 -}}
+{{- fail "rootfsBuilder.maxConcurrency must be an integer from 1 through 16" -}}
+{{- end -}}
+{{- $classMemoryCeilingMib := "" -}}
+{{- if and $parallelEnabled $sizeClass -}}
+{{- $classMemoryLimit := .resources.limits.memory | toString -}}
+{{- if not (regexMatch "^[1-9][0-9]*Gi$" $classMemoryLimit) -}}
+{{- fail (printf "rootfs class filtering requires a whole-Gi memory limit, got %q for class %s" $classMemoryLimit $sizeClass) -}}
+{{- end -}}
+{{- $nameplateMib := mul ($classMemoryLimit | trimSuffix "Gi" | int) 1024 -}}
+{{- $classMemoryCeilingMib = max 0 (sub (sub $nameplateMib ($ctx.Values.bricks.daemonReserveMib | int)) ($ctx.Values.noded.memRejectFloorMib | int)) | toString -}}
+{{- end -}}
 # Safe-rollout drain: give the daemon time to finish in-flight Assigns on
 # SIGTERM before Kubernetes SIGKILLs it. Set above the daemon's own drain
 # budget (EMBERVM_NODED_DRAIN_TIMEOUT below) so grace always outlasts drain,
@@ -62,11 +80,10 @@ securityContext:
 {{- if or $scratchGate $ctx.Values.workloads }}
 # Build each workload's base rootfs in-cluster from its pinned guest image
 # (crane export + mkfs.ext4 onto the nvme scratch), so node-4 never needs a
-# manual sudo rootfs placement. One builder per workload that declares a
-# top-level `<name>.guestImage` block (Bazel pins its repository@digest from the
-# guest image's .info provider); the builder bakes that guest's filesystem
-# into the workload's rootfsPath. Idempotent (a marker skips the multi-GB
-# rebuild when the guest ref is unchanged). Mirrors the fc-invoke pattern.
+# manual sudo rootfs placement. The default keeps one sequential builder per
+# workload. The opt-in gate renders one bounded driver with the same image,
+# environment, mounts, and resources, and gives each child its own work tree.
+# Idempotent cache publication is shared by both paths.
 initContainers:
   {{- if $scratchGate }}
   # The first brick init is the host scratch boot-order gate. The nvme hostPath
@@ -89,22 +106,31 @@ initContainers:
         mountPropagation: HostToContainer
   {{- end }}
   {{- if $ctx.Values.workloads }}
-  {{- range $name, $wl := $ctx.Values.workloads }}
-  {{- $top := index $ctx.Values $name }}
-  {{- if and $top $top.guestImage $top.guestImage.repository }}
-  # kebabcase the workload key: it doubles as this initContainer's name, an
-  # RFC 1123 label that must be lowercase (the camelCase key runtimePython
-  # would render build-runtimePython-rootfs, which the apiserver rejects).
-  - name: build-{{ $name | kebabcase }}-rootfs
+  {{- if $parallelEnabled }}
+  # One opt-in bounded driver. Its argv is a sequence of
+  # name/image/base-path/declared-memory tuples. Empty memory is intentional:
+  # the driver logs it and bakes fail-closed instead of silently omitting an
+  # image whose scheduling declaration is unavailable.
+  - name: build-all-rootfs
     image: "{{ $ctx.Values.rootfsBuilder.image.repository }}@{{ $ctx.Values.rootfsBuilder.image.digest }}"
-    command: ["/bin/bash", "/scripts/build-base-rootfs.sh"]
+    command: ["/bin/bash", "/scripts/build-rootfs-set.sh"]
+    args:
+      - {{ $maxConcurrency | quote }}
+      - {{ $classMemoryCeilingMib | quote }}
+      {{- range $name, $wl := $ctx.Values.workloads }}
+      {{- $top := index $ctx.Values $name }}
+      {{- if and $top $top.guestImage $top.guestImage.repository }}
+      - {{ $name | quote }}
+      - {{ printf "%s@%s" $top.guestImage.repository $top.guestImage.digest | quote }}
+      - {{ include "embervm.noded.rootfsPath" (dict "wl" $wl "top" $top "rootfsBuilder" $ctx.Values.rootfsBuilder) | quote }}
+      - {{ include "embervm.rootfs.workloadMemoryMib" (dict "ctx" $ctx "name" $name) | quote }}
+      {{- end }}
+      {{- end }}
     env:
-      - name: GUEST_IMAGE
-        value: "{{ $top.guestImage.repository }}@{{ $top.guestImage.digest }}"
-      - name: BASE_ROOTFS_PATH
-        value: {{ include "embervm.noded.rootfsPath" (dict "wl" $wl "top" $top) | quote }}
       - name: ROOTFS_SIZE
         value: {{ $ctx.Values.rootfsBuilder.rootfsSize | quote }}
+      - name: ROOTFS_BAKE_FORMAT
+        value: {{ $ctx.Values.rootfsBuilder.bakeFormatVersion | quote }}
       - name: EMBERVM_ROOTFS_RECLAIM_ENABLED
         value: {{ $ctx.Values.rootfsReclaim.enabled | quote }}
       - name: EMBERVM_ROOTFS_RECLAIM_SNAPSHOTS_ROOT
@@ -153,6 +179,74 @@ initContainers:
         memory: 512Mi
       limits:
         memory: 512Mi
+  {{- else }}
+  {{- range $name, $wl := $ctx.Values.workloads }}
+  {{- $top := index $ctx.Values $name }}
+  {{- if and $top $top.guestImage $top.guestImage.repository }}
+  # kebabcase the workload key: it doubles as this initContainer's name, an
+  # RFC 1123 label that must be lowercase (the camelCase key runtimePython
+  # would render build-runtimePython-rootfs, which the apiserver rejects).
+  - name: build-{{ $name | kebabcase }}-rootfs
+    image: "{{ $ctx.Values.rootfsBuilder.image.repository }}@{{ $ctx.Values.rootfsBuilder.image.digest }}"
+    command: ["/bin/bash", "/scripts/build-base-rootfs.sh"]
+    env:
+      - name: GUEST_IMAGE
+        value: "{{ $top.guestImage.repository }}@{{ $top.guestImage.digest }}"
+      - name: BASE_ROOTFS_PATH
+        value: {{ include "embervm.noded.rootfsPath" (dict "wl" $wl "top" $top "rootfsBuilder" $ctx.Values.rootfsBuilder) | quote }}
+      - name: ROOTFS_SIZE
+        value: {{ $ctx.Values.rootfsBuilder.rootfsSize | quote }}
+      - name: ROOTFS_BAKE_FORMAT
+        value: {{ $ctx.Values.rootfsBuilder.bakeFormatVersion | quote }}
+      - name: EMBERVM_ROOTFS_RECLAIM_ENABLED
+        value: {{ $ctx.Values.rootfsReclaim.enabled | quote }}
+      - name: EMBERVM_ROOTFS_RECLAIM_SNAPSHOTS_ROOT
+        value: {{ printf "%s/embervm-noded/snapshots" $ctx.Values.noded.firecracker.nvmeRoot | quote }}
+      - name: EMBERVM_ROOTFS_RECLAIM_TARGET_FREE_BYTES
+        value: {{ $ctx.Values.rootfsReclaim.targetFreeBytes | quote }}
+      {{- if $ctx.Values.noded.store.endpoint }}
+      - name: EMBERVM_NODED_STORE_ENDPOINT
+        value: {{ $ctx.Values.noded.store.endpoint | quote }}
+      - name: EMBERVM_NODED_STORE_BUCKET
+        value: {{ $ctx.Values.noded.store.bucket | quote }}
+      {{- if $ctx.Values.noded.store.credentials.enabled }}
+      - name: EMBERVM_NODED_STORE_ACCESS_KEY_ID
+        valueFrom:
+          secretKeyRef:
+            name: {{ include "embervm.store.credentialsSecretName" $ctx }}
+            key: {{ $ctx.Values.noded.store.credentials.accessKeyIdKey }}
+      - name: EMBERVM_NODED_STORE_SECRET_ACCESS_KEY
+        valueFrom:
+          secretKeyRef:
+            name: {{ include "embervm.store.credentialsSecretName" $ctx }}
+            key: {{ $ctx.Values.noded.store.credentials.secretAccessKeyKey }}
+      {{- end }}
+      {{- end }}
+      {{- if $ctx.Values.imagePullSecret.enabled }}
+      - name: DOCKER_CONFIG
+        value: /ghcr
+      {{- end }}
+    volumeMounts:
+      - name: nvme
+        mountPath: {{ $ctx.Values.noded.firecracker.nvmeRoot }}
+        mountPropagation: HostToContainer
+      - name: rootfs-builder-script
+        mountPath: /scripts
+        readOnly: true
+      - name: rootfs-builder-work
+        mountPath: /work
+      {{- if $ctx.Values.imagePullSecret.enabled }}
+      - name: ghcr-creds
+        mountPath: /ghcr
+        readOnly: true
+      {{- end }}
+    resources:
+      requests:
+        cpu: 500m
+        memory: 512Mi
+      limits:
+        memory: 512Mi
+  {{- end }}
   {{- end }}
   {{- end }}
   {{- end }}

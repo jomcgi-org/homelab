@@ -1008,6 +1008,8 @@ runtimePi:
 # POSTGRES_PASSWORD exists.
 scratchPostgres:
   enabled: false
+  # One source for both the Workload CR and opt-in rootfs class filtering.
+  memMib: 512
   # The node Envoy TCP listener port (must fall in the stateful 5400-5409 range;
   # see the CRD's listenPort validation). Shared with the monolith DSN wiring.
   listenPort: 5400
@@ -1078,6 +1080,10 @@ shotter:
 # OnePasswordItem syncs.
 demoPostgres:
   enabled: false
+  # One source for the Workload CR and rootfs eligibility. The postgres guest
+  # image is shared with scratchPostgres, so the rootfs filter uses the smaller
+  # of their declarations and never omits an image an eligible consumer needs.
+  memMib: 150
   # Node Envoy TCP listener port (stateful 5400-5409 range, unique across
   # stateful workloads; scratch-postgres holds 5400).
   listenPort: 5401
@@ -1251,6 +1257,32 @@ rootfsBuilder:
   # base is smaller but a uniform size keeps the builder simple (matches
   # fc-invoke's 4G). The ext4 is sparse, so an oversized fs costs little.
   rootfsSize: 4G
+  # Cache identity version for every byte-affecting bake behavior not already
+  # represented by rootfsSize or the architecture-specific guest digest. Bump
+  # this when the bake format changes. b2 is the first identity-aware namespace;
+  # digest-only local files and remote objects are the implicit legacy b1 and
+  # remain untouched for banked sessions.
+  bakeFormatVersion: b2
+  # Opt-in only until Linux and live validation complete. False preserves the
+  # legacy one-init-container-per-workload sequence, including baking every
+  # image on every brick. True renders one driver that runs independent bakes
+  # with the bounded worker count below and skips only workloads that cannot fit
+  # the brick's scheduler-equivalent memory ceiling.
+  parallelEnabled: false
+  # Conservative useful bound for the shared loop-file and scratch bottleneck.
+  # The template and driver both reject values outside 1..16.
+  maxConcurrency: 2
+
+# Remote baked-rootfs retention uses the control plane's existing S3 client and
+# an hourly, fail-closed candidate sweep. Every sweep is dry-run while disabled:
+# it protects current image refs indefinitely, holds legacy or malformed object
+# layouts, and considers only non-current identity-qualified prefixes older than
+# ageDays. Review the candidate log and rollback assumptions before a separately
+# authorized activation. Turning this back off is the rollback lever; it cannot
+# restore objects deleted while enabled.
+rootfsRemoteRetention:
+  enabled: false
+  ageDays: 30
 
 # ENOSPC orphan reclaim in the rootfs builder (#4458). Last-resort deadlock
 # breaker, not a GC. When a brick's scratch is full the bake fails with ENOSPC,
@@ -1525,9 +1557,10 @@ noded:
   # restore-on-miss is impossible, so state stays local-only (a safe degrade).
   store:
     endpoint: http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333
-    # Baked rootfs payloads use rootfs/<guest-image-digest>/<payload-sha256>.ext4;
-    # rootfs.ext4.sha256 in that prefix names the complete payload. Adding a
-    # retention lifecycle for orphan payloads is follow-up work on #5772.
+    # Baked rootfs payloads use
+    # rootfs/<architecture-digest>/size-<size>/format-<format>/<payload-sha256>.ext4;
+    # rootfs.ext4.sha256 in that identity prefix names the complete payload.
+    # Remote retention remains default-off staged follow-up work on #5772.
     bucket: embervm
     # Reader support shipped while writer compression remained inert, the first
     # phase of the two-phase rollout. Every brick in the fleet now runs a daemon

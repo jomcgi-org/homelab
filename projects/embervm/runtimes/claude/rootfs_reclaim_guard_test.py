@@ -13,6 +13,9 @@ values.
 
 import os
 import re
+import subprocess
+import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -107,6 +110,12 @@ def test_target_free_bytes_exceeds_the_bake_size():
     )
 
 
+def test_bake_format_version_is_a_safe_explicit_cache_input():
+    builder = _chart_values()["rootfsBuilder"]
+    assert builder["bakeFormatVersion"] == "b2"
+    assert re.fullmatch(r"[a-z][a-z0-9-]{0,31}", builder["bakeFormatVersion"])
+
+
 def test_gate_value_is_a_recognised_setting():
     """Only "" and "1" mean anything; anything else silently reads as disarmed.
 
@@ -193,16 +202,25 @@ def test_bake_uses_random_ext4_uuid_and_logs_identity():
         )
 
     assert "skip=1128" in script, "the busybox ext4 superblock UUID read is missing"
-    assert "rootfs identity digest=sha256:$digest uuid=" in script, (
-        "the post-bake identity log is missing"
+    assert (
+        "rootfs identity digest=sha256:$digest rootfs_size=$size "
+        "bake_format=$bake_format uuid="
+    ) in script, "the post-bake identity log is missing"
+
+
+def test_store_get_and_put_receive_the_same_complete_cache_identity():
+    script = _repo_path(
+        "projects/embervm/chart/templates/noded-rootfs-builder-configmap.yaml"
+    ).read_text()
+    identity_flags = (
+        '--digest "$digest" --rootfs-size "$size" --bake-format "$bake_format"'
     )
+    assert f"rootfs-store get {identity_flags} --out" in script
+    assert f"rootfs-store put {identity_flags} --file" in script
 
 
 def _rootfs_download_harness(tmp_path):
     """Run the actual builder with local fake registry/store executables."""
-    import sys
-    import textwrap
-
     source = _repo_path(
         "projects/embervm/chart/templates/noded-rootfs-builder-configmap.yaml"
     ).read_text()
@@ -221,6 +239,8 @@ def _rootfs_download_harness(tmp_path):
             print("sha256:" + "a" * 64)
         else:
             assert sys.argv[1] == "get", sys.argv
+            assert sys.argv[sys.argv.index("--rootfs-size") + 1] == os.environ["ROOTFS_SIZE"]
+            assert sys.argv[sys.argv.index("--bake-format") + 1] == os.environ["ROOTFS_BAKE_FORMAT"]
             with (root / "downloads").open("a") as log:
                 log.write(os.environ["BUILDER_ID"] + "\\n")
             deadline = time.monotonic() + 15
@@ -261,6 +281,8 @@ def _rootfs_download_harness(tmp_path):
         **os.environ,
         "PATH": str(binaries) + os.pathsep + os.environ["PATH"],
         "GUEST_IMAGE": "test-guest",
+        "ROOTFS_SIZE": "4G",
+        "ROOTFS_BAKE_FORMAT": "b2",
         "TEST_ROOTFS_DIR": str(tmp_path),
     }
 
@@ -332,6 +354,49 @@ def test_concurrent_rootfs_builders_download_once_and_share_inode(tmp_path, same
         _stop_builders(processes)
 
 
+def test_size_and_format_changes_miss_without_reusing_legacy_cache(tmp_path):
+    script, env = _rootfs_download_harness(tmp_path)
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    legacy = cache_dir / ("rootfs-" + "a" * 12 + ".ext4")
+    legacy.write_bytes(b"legacy-digest-only-rootfs")
+    (tmp_path / "release").touch()
+
+    def run(identifier, overrides=None):
+        process = _start_builder(
+            script, {**env, **(overrides or {})}, tmp_path, identifier
+        )
+        output, _ = process.communicate(timeout=15)
+        assert process.returncode == 0, output
+        return cache_dir / f"base-{identifier}.ext4"
+
+    first = run("first")
+    same = run("same")
+    different_size = run("size", {"ROOTFS_SIZE": "8G"})
+    different_format = run("format", {"ROOTFS_BAKE_FORMAT": "b3"})
+
+    assert (tmp_path / "downloads").read_text().splitlines() == [
+        "first",
+        "size",
+        "format",
+    ]
+    assert first.stat().st_ino == same.stat().st_ino
+    assert (
+        len(
+            {
+                first.stat().st_ino,
+                different_size.stat().st_ino,
+                different_format.stat().st_ino,
+            }
+        )
+        == 3
+    )
+    assert first.read_bytes() == b"x" * 2048
+    assert different_size.read_bytes() == b"x" * 2048
+    assert different_format.read_bytes() == b"x" * 2048
+    assert legacy.read_bytes() == b"legacy-digest-only-rootfs"
+
+
 def test_rootfs_waiter_recovers_after_builder_process_group_dies(tmp_path):
     import signal
 
@@ -389,3 +454,213 @@ def test_rootfs_lock_timeout_fails_without_downloading(tmp_path):
         assert not (tmp_path / "cache" / "base-timeout.ext4").exists()
     finally:
         _stop_builders([process])
+
+
+def _rootfs_driver(tmp_path: Path) -> tuple[Path, Path]:
+    source = _repo_path(
+        "projects/embervm/chart/templates/noded-rootfs-builder-configmap.yaml"
+    ).read_text()
+    body = source.split("  build-rootfs-set.sh: |\n", 1)[1].split(
+        "  build-base-rootfs.sh: |\n", 1
+    )[0]
+    driver = tmp_path / "driver.sh"
+    driver.write_text(textwrap.dedent(body))
+    builder = tmp_path / "fake-builder.sh"
+    builder.write_text(
+        f'#!/bin/bash\nexec "{sys.executable}" "{tmp_path / "fake_builder.py"}"\n'
+    )
+    builder.chmod(0o755)
+    return driver, builder
+
+
+def _run_driver(
+    driver: Path,
+    builder: Path,
+    tmp_path: Path,
+    concurrency: str,
+    ceiling: str,
+    workloads: list[tuple[str, str, str, str]],
+) -> subprocess.CompletedProcess[str]:
+    busybox = tmp_path / "fake-busybox.py"
+    busybox.write_text(
+        f"#!{sys.executable}\n"
+        "import os, sys\n"
+        'assert sys.argv[1] == "setsid", sys.argv\n'
+        "os.setsid()\n"
+        "os.execvpe(sys.argv[2], sys.argv[2:], os.environ)\n"
+    )
+    busybox.chmod(0o755)
+    args = ["bash", str(driver), concurrency, ceiling]
+    for workload in workloads:
+        args.extend(workload)
+    return subprocess.run(
+        args,
+        env={
+            **os.environ,
+            "ROOTFS_BUILDER_SCRIPT": str(builder),
+            "ROOTFS_BUSYBOX": str(busybox),
+            "TEST_DRIVER_DIR": str(tmp_path),
+        },
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+
+def test_rootfs_driver_bounds_workers_and_reaps_every_child(tmp_path: Path) -> None:
+    driver, builder = _rootfs_driver(tmp_path)
+    (tmp_path / "fake_builder.py").write_text(
+        textwrap.dedent(
+            """\
+            import fcntl, json, os, time
+            from pathlib import Path
+
+            root = Path(os.environ["TEST_DRIVER_DIR"])
+            lock = root / "state.lock"
+            lock.touch()
+            with lock.open("r+") as handle:
+                fcntl.flock(handle, fcntl.LOCK_EX)
+                state_path = root / "state.json"
+                state = json.loads(state_path.read_text()) if state_path.exists() else {"current": 0, "maximum": 0, "done": []}
+                state["current"] += 1
+                state["maximum"] = max(state["maximum"], state["current"])
+                state_path.write_text(json.dumps(state))
+            time.sleep(0.2)
+            with lock.open("r+") as handle:
+                fcntl.flock(handle, fcntl.LOCK_EX)
+                state = json.loads(state_path.read_text())
+                state["current"] -= 1
+                state["done"].append(os.environ["GUEST_IMAGE"])
+                state_path.write_text(json.dumps(state))
+            """
+        )
+    )
+    workloads = [
+        (f"workload-{index}", f"image-{index}", f"/cache/{index}.ext4", "128")
+        for index in range(5)
+    ]
+    result = _run_driver(driver, builder, tmp_path, "2", "256", workloads)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    import json
+
+    state = json.loads((tmp_path / "state.json").read_text())
+    assert state["maximum"] == 2
+    assert state["current"] == 0
+    assert sorted(state["done"]) == [f"image-{index}" for index in range(5)]
+    assert (
+        "rootfs driver complete launched=5 skipped=0 max_concurrency=2" in result.stdout
+    )
+
+
+def test_rootfs_driver_logs_class_skips_and_bakes_missing_memory_fail_closed(
+    tmp_path: Path,
+) -> None:
+    driver, builder = _rootfs_driver(tmp_path)
+    (tmp_path / "fake_builder.py").write_text(
+        "import os\n"
+        "from pathlib import Path\n"
+        'with (Path(os.environ["TEST_DRIVER_DIR"]) / "built").open("a") as f:\n'
+        '    f.write(os.environ["GUEST_IMAGE"] + "\\n")\n'
+    )
+    result = _run_driver(
+        driver,
+        builder,
+        tmp_path,
+        "2",
+        "128",
+        [
+            ("too-large", "image-large", "/cache/large.ext4", "256"),
+            ("missing", "image-missing", "/cache/missing.ext4", ""),
+            ("malformed", "image-malformed", "/cache/malformed.ext4", "invalid"),
+            ("eligible", "image-eligible", "/cache/eligible.ext4", "128"),
+        ],
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert set((tmp_path / "built").read_text().splitlines()) == {
+        "image-missing",
+        "image-malformed",
+        "image-eligible",
+    }
+    assert (
+        "rootfs class filter skip workload=too-large memory_mib=256 class_ceiling_mib=128"
+        in result.stdout
+    )
+    assert (
+        "rootfs class filter fail-closed workload=missing memory_mib=missing; baking"
+        in result.stdout
+    )
+    assert (
+        "rootfs class filter fail-closed workload=malformed memory_mib=invalid; baking"
+        in result.stdout
+    )
+
+
+def test_rootfs_driver_propagates_failure_and_terminates_remaining_children(
+    tmp_path: Path,
+) -> None:
+    driver, builder = _rootfs_driver(tmp_path)
+    (tmp_path / "fake_builder.py").write_text(
+        textwrap.dedent(
+            """\
+            import os, signal, sys, time
+            from pathlib import Path
+
+            root = Path(os.environ["TEST_DRIVER_DIR"])
+            image = os.environ["GUEST_IMAGE"]
+            (root / ("started-" + image)).touch()
+            if image == "fail":
+                time.sleep(0.2)
+                sys.exit(7)
+            if image == "slow":
+                def stop(_signum, _frame):
+                    (root / "slow-terminated").touch()
+                    sys.exit(143)
+                signal.signal(signal.SIGTERM, stop)
+                while True:
+                    time.sleep(0.05)
+            (root / ("completed-" + image)).touch()
+            """
+        )
+    )
+    result = _run_driver(
+        driver,
+        builder,
+        tmp_path,
+        "2",
+        "512",
+        [
+            ("failure", "fail", "/cache/fail.ext4", "128"),
+            ("slow", "slow", "/cache/slow.ext4", "128"),
+            ("never", "never", "/cache/never.ext4", "128"),
+        ],
+    )
+    assert result.returncode == 7, result.stdout + result.stderr
+    assert (tmp_path / "slow-terminated").exists()
+    assert not (tmp_path / "started-never").exists()
+    assert "status=7; terminating remaining children" in result.stderr
+
+
+def test_rootfs_driver_executables_and_flags_match_apko_lock() -> None:
+    apko = yaml.safe_load(
+        _repo_path(
+            "projects/firecracker/substrate/rootfs-builder/apko.yaml"
+        ).read_text()
+    )
+    assert {"bash", "busybox", "coreutils", "crane", "e2fsprogs"}.issubset(
+        set(apko["contents"]["packages"])
+    )
+    assert "util-linux" not in apko["contents"]["packages"]
+    lock = _repo_path(
+        "projects/firecracker/substrate/rootfs-builder/apko.lock.json"
+    ).read_text()
+    assert '"name": "bash"' in lock and '"version": "5.3-r12"' in lock
+    assert '"name": "busybox"' in lock and '"version": "1.38.0-r1"' in lock
+    script = _repo_path(
+        "projects/embervm/chart/templates/noded-rootfs-builder-configmap.yaml"
+    ).read_text()
+    assert 'rootfs_busybox="${ROOTFS_BUSYBOX:-/bin/busybox}"' in script
+    assert '"$rootfs_busybox" setsid env' in script
+    assert "setsid --" not in script
+    assert 'wait -n -p completed_pid "${child_pids[@]}"' in script

@@ -16,14 +16,14 @@ func TestGetPunchesLargeZeroRunsSparse(t *testing.T) {
 	contents := make([]byte, 8<<20)
 	copy(contents, []byte("ext4"))
 	copy(contents[len(contents)-4:], []byte("tail"))
-	payloadKey, marker := testCompletenessMarker(t, testDigest, contents)
-	checksumKey := checksumObjectKey(testDigest)
+	payloadKey, marker := testCompletenessMarker(t, testCacheIdentity, contents)
+	checksumKey := checksumObjectKey(testCacheIdentity)
 	fake.objects["/embervm/"+payloadKey] = contents
 	fake.objects["/embervm/"+checksumKey] = marker
 	out := filepath.Join(t.TempDir(), "rootfs.ext4")
 
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"get", "--digest", testDigest, "--out", out}, storeEnv(server.URL), &stdout, &stderr)
+	code := run(context.Background(), testGetArgs(out), storeEnv(server.URL), &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("get exit = %d, stderr = %q", code, stderr.String())
 	}
