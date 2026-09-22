@@ -112,8 +112,8 @@ tag commit `e363b08c9175ac1cbe5893615dd2cb9ddf95043b`.
 - **Turn accounting:** the pinned protocol puts `threadId` and `turnId` on
   `thread/tokenUsage/updated`, and puts `threadId` plus `turn.id` on both
   start and completion notifications. It also sends the `thread/resume`
-  response before
-  replaying the persisted usage of the last completed turn. The shim now binds
+  response before replaying the persisted usage of the last completed turn.
+  The shim now binds
   a turn from its `turn/start` response or matching `turn/started` notification,
   then accepts usage and completion only for that thread and turn. The focused
   fake-server coverage accepts matching usage received after `turn/started` but

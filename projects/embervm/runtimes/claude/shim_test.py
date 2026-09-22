@@ -420,8 +420,11 @@ for line in sys.stdin:
         turn_number += 1
         turn_id = "turn-%s" % turn_number
         def notification(method, payload, thread=thread_id, turn=turn_id):
+            params = {"threadId": thread, **payload}
+            if method not in ("turn/started", "turn/completed"):
+                params["turnId"] = turn
             emit({"jsonrpc": "2.0", "method": method,
-                  "params": {"threadId": thread, "turnId": turn, **payload}})
+                  "params": params})
         if scenario == "child-before-start":
             notification("turn/started", {"turn": {"id": "child-turn"}}, thread="review-child")
         started = {"turn": {"id": turn_id, "status": "inProgress", "items": []}}
