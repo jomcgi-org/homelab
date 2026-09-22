@@ -267,11 +267,6 @@ spec:
     - matches:
         - path:
             type: PathPrefix
-            value: /webhooks/github/semgrep
-        # Factory issue lifecycle ingress uses the same authenticated GitHub
-        # edge path and verifies its own distinct HMAC secret over raw bytes.
-        - path:
-            type: PathPrefix
             value: /webhooks/github/factory
       backendRefs:
         - name: {{ include "monolith.fullname" . }}
