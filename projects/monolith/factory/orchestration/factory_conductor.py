@@ -4288,7 +4288,19 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
                 if session_id is not None:
                     result = {**result, "session_id": session_id}
             _abandon_recovering_factory_session(pin, session_id, workflow_status)
-            if reconcile_uncertain_attempt(
+            from factory.execution.api import read_interrupted_factory_continuation
+
+            # Native terminal responses can settle a drain without a remote stop.
+            # Re-read the proof in the final transaction before changing anything.
+            with Session(get_engine()) as db:
+                with _locked_session(db):
+                    interrupted_ready = (
+                        read_interrupted_factory_continuation(
+                            db, pin, session_id, workflow_status
+                        )
+                        is not None
+                    )
+            if not interrupted_ready and reconcile_uncertain_attempt(
                 pin,
                 session_id,
                 result,
@@ -4297,6 +4309,67 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
                 return None
     with Session(get_engine()) as db:
         with _locked_session(db):
+            if (
+                result["status"] == "uncertain"
+                and result.get("cost_usd") is None
+                and run.get("cost_usd") is None
+            ):
+                from factory.execution.api import (
+                    read_interrupted_factory_continuation,
+                    settle_interrupted_factory_continuation,
+                )
+
+                interrupted = read_interrupted_factory_continuation(
+                    db,
+                    pin,
+                    result.get("session_id") or run.get("session_id"),
+                    workflow_status,
+                )
+                if interrupted is not None:
+                    current = next(
+                        (
+                            value
+                            for value in graph.node_runs(
+                                task["id"], run["node_key"], session=db
+                            )
+                            if value["attempt"] == run["attempt"]
+                        ),
+                        None,
+                    )
+                    if (
+                        current is None
+                        or current["pin"] != pin
+                        or current["dispatch_key"] != key
+                        or current["session_id"]
+                        not in (None, interrupted["session_id"])
+                        or current["status"]
+                        not in ("admitted", "dispatched", "uncertain")
+                        or current["cost_usd"] is not None
+                    ):
+                        raise ValueError("interrupted factory continuation changed")
+                    settle_interrupted_factory_continuation(db, pin, interrupted)
+                    result = {
+                        **result,
+                        "status": "failed",
+                        "session_id": interrupted["session_id"],
+                        "cost_usd": None,
+                        "cost_basis": "unknown",
+                        "head_sha": current.get("head_sha") or result.get("head_sha"),
+                        "invocation_phase": "interrupted_continuation_retired",
+                        "capacity_denied": False,
+                        "reason": "interrupted_continuation_retired: every dispatch ended for drain and the owning workflow is terminal",
+                        "previous_outcome": _outcome(current) or result,
+                        "interrupted_continuation_retired": interrupted,
+                    }
+                    _controls_audit(
+                        db,
+                        ACTOR,
+                        "interrupted_continuation_settled",
+                        task_id=task["id"],
+                        workflow_id=key,
+                        session_id=interrupted["session_id"],
+                        identity=interrupted,
+                    )
             if (
                 result["status"] == "uncertain"
                 and result.get("cost_usd") is None
