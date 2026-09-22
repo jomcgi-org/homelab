@@ -2033,6 +2033,10 @@ defmodule Embervm.RouterTest do
              {:relight_failed, {:pressure_wait_expired, :capacity}}
            ) == true
 
+    assert Embervm.Router.classify_error_as_retryable(
+             {:relight_failed, {:pressure_wait_expired, {:node_unreported, "node-4"}}}
+           ) == true
+
     refute Embervm.Router.classify_error_as_retryable(%GRPC.RPCError{status: 14})
     refute Embervm.Router.classify_error_as_retryable(%GRPC.RPCError{status: 4})
     assert Embervm.Router.classify_error_as_retryable({:relight_failed, {:prime_failed, %GRPC.RPCError{status: 8}}})
