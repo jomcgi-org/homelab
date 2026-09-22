@@ -4961,7 +4961,7 @@ py_test(
     srcs = ["factory/orchestration/agent_board_poll_test.py"],
     imports = ["."],
     deps = [
-        ":pkg_factory",
+        ":pkg_swarm",
         "@pip//pytest",
     ],
 )
