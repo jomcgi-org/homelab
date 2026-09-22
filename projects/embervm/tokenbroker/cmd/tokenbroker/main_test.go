@@ -262,6 +262,44 @@ func TestQuotaPostThenGetRoundTrip(t *testing.T) {
 	}
 }
 
+type failingQuotaPersistence struct{}
+
+func (failingQuotaPersistence) Load() ([]byte, string, error) {
+	return nil, "1", nil
+}
+
+func (failingQuotaPersistence) CompareAndSwap(string, []byte) (string, error) {
+	return "", errors.New("quota storage unavailable")
+}
+
+func TestQuotaPostWriteFailureRemainsUnobserved(t *testing.T) {
+	s, _ := quotaTestServer("codex")
+	persistent, err := quota.NewPersistentStore(failingQuotaPersistence{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.quotaStore = persistent
+	observedAt := time.Now().UTC().Add(-time.Second).Format(time.RFC3339Nano)
+	body := fmt.Sprintf(`{"observed_at":%q,"status":"allowed","windows":[{"name":"5h","used_percent":1}]}`, observedAt)
+	response := requestQuota(t, s, http.MethodPost, "/quota/codex", body)
+	if response.Code != http.StatusServiceUnavailable || decodeBody(t, response)["reason"] != "quota_persistence_failed" {
+		t.Fatalf("POST = %d %s", response.Code, response.Body.String())
+	}
+	view := decodeBody(t, requestQuota(t, s, http.MethodGet, "/quota/codex", ""))
+	if view["observed"] != false {
+		t.Fatalf("failed write became observable: %#v", view)
+	}
+}
+
+func TestQuotaPostRejectsFutureObservedAt(t *testing.T) {
+	s, _ := quotaTestServer("codex")
+	body := `{"observed_at":"9999-01-01T00:00:00Z","status":"allowed","windows":[]}`
+	response := requestQuota(t, s, http.MethodPost, "/quota/codex", body)
+	if response.Code != http.StatusBadRequest || decodeBody(t, response)["reason"] != "invalid_observation" {
+		t.Fatalf("POST = %d %s", response.Code, response.Body.String())
+	}
+}
+
 func TestClaudeQuotaOverageStatusRoundTripsWithoutExhaustion(t *testing.T) {
 	s, _ := quotaTestServer("codex", "claude")
 	body := `{"observed_at":"2026-09-05T18:10:00Z","status":"allowed","reached_type":"","overage_status":"rejected","windows":[{"name":"5h","used_percent":24,"window_minutes":300}]}`

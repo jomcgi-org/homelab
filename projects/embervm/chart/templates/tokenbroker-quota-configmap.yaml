@@ -1,0 +1,13 @@
+{{- if .Values.tokenBroker.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "embervm.tokenBroker.fullname" . }}-quota
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    # The broker owns /data/state.json. Keep the object across chart removal,
+    # and pair this with each deployment Application's /data ignore rule so
+    # Argo self-heal cannot erase an observation after the broker writes it.
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+data: {}
+{{- end }}
