@@ -444,14 +444,18 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
     """
     try:
         intake = intake_policy(policy)
+        lanes = tuple(lane for lane in LANES if lane in lanes)
+        deferred_lanes = tuple(lane for lane in LANES if lane not in lanes)
+        if deferred_lanes:
+            _throttled(
+                "agent_board_lanes_deferred",
+                {
+                    "deferred_lanes": list(deferred_lanes),
+                    "eligible_lanes": list(lanes),
+                },
+            )
         if not intake["enabled"]:
             return []
-        # This is the between-job boundary: no receipt has been selected or
-        # claimed yet. The staged poll ignores soft claims, defers only active
-        # lane blockers, and leaves the exclusive queue available on outage.
-        from factory.orchestration.agent_board_poll import eligible_lanes
-
-        lanes = eligible_lanes(lanes)
         if not lanes:
             return []
         # The ceiling is chart configuration and the lane maxima are posted

@@ -177,14 +177,14 @@ def _read_filter(
 ) -> tuple[str, str] | None:
     if _allowed_exact_topic(binding, topic):
         return "exact", topic
-    if topic == "distress":
-        return "exact", binding.distress_topic
     if (
         principal.has_group("factory-conductor")
         and binding.conductor_cross_lane
         and topic in {"claim", "blocker", "distress"}
     ):
         return "prefix", f"{topic}:"
+    if topic == "distress":
+        return "exact", binding.distress_topic
     return None
 
 
@@ -342,11 +342,13 @@ def _read_sync(
             statement = statement.where(AgentBoardMessage.topic.startswith(value))
         if since is not None:
             statement = statement.where(AgentBoardMessage.created_at >= since)
-        rows = session.exec(
+        newest_rows = session.exec(
             statement.order_by(
-                AgentBoardMessage.created_at, AgentBoardMessage.id
+                AgentBoardMessage.created_at.desc(),
+                AgentBoardMessage.id.desc(),
             ).limit(MAX_READ_MESSAGES)
-        ).all()
+        )
+        rows = reversed(newest_rows.all())
         messages = [_message_dict(row, binding) for row in rows]
     return {
         "classification": "untrusted",
@@ -483,6 +485,14 @@ async def mirror_distress(
     if error is not None:
         return {"status": error["error"]}
     assert binding is not None
+    # Use the same established redactor as raw persistence and notification.
+    # Redact before truncating so a credential crossing a mirror field's
+    # boundary cannot leave a partial secret in the board row.
+    from knowledge.api import redact_text
+
+    summary, _ = redact_text(summary)
+    details, _ = redact_text(details)
+    requested_intervention, _ = redact_text(requested_intervention)
     body = json.dumps(
         {
             # The retained raw remains complete. This coordination mirror is

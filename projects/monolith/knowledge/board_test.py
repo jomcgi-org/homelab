@@ -169,6 +169,26 @@ def test_explicit_conductor_cross_lane_read_and_mutation_ledger_gate(
         60,
     )
     call(
+        board.mirror_distress,
+        shared,
+        binding("agent-a"),
+        raw_id="raw-delivery",
+        summary="delivery distress",
+        severity="blocked",
+        details="delivery detail",
+        requested_intervention="inspect delivery",
+    )
+    call(
+        board.mirror_distress,
+        shared,
+        binding("agent-c", lane="advisory", issue=6000),
+        raw_id="raw-advisory",
+        summary="advisory distress",
+        severity="blocked",
+        details="advisory detail",
+        requested_intervention="inspect advisory",
+    )
+    call(
         board.post_message,
         shared,
         binding("agent-c", lane="advisory", issue=6000),
@@ -183,6 +203,11 @@ def test_explicit_conductor_cross_lane_read_and_mutation_ledger_gate(
     assert {message["topic"] for message in read["messages"]} == {
         "blocker:lane:delivery",
         "blocker:lane:advisory",
+    }
+    distress = call(board.read_board, conductor, scoped, "distress", None)
+    assert {message["topic"] for message in distress["messages"]} == {
+        "distress:lane:delivery",
+        "distress:lane:advisory",
     }
     assert call(
         board.post_message,
@@ -297,18 +322,46 @@ def test_exact_expiry_and_bounds(board_db, monkeypatch):
     ) == {"error": "invalid_body"}
 
 
+def test_read_cap_keeps_newest_messages_in_chronological_order(
+    board_db, monkeypatch
+):
+    monkeypatch.setenv(board.BOARD_ENABLED_ENV, "true")
+    topic = "blocker:lane:delivery"
+    with Session(board_db) as session:
+        session.add_all(
+            [
+                AgentBoardMessage(
+                    principal="agent-a",
+                    authenticated_subject="kg-agent-sa",
+                    topic=topic,
+                    body=f"message-{index}",
+                    created_at=NOW + timedelta(microseconds=index),
+                    expires_at=NOW + timedelta(seconds=60),
+                )
+                for index in range(board.MAX_READ_MESSAGES + 1)
+            ]
+        )
+        session.commit()
+
+    read = call(board.read_board, principal(), binding("agent-a"), topic, None)
+    assert len(read["messages"]) == board.MAX_READ_MESSAGES
+    assert read["messages"][0]["body"] == "message-1"
+    assert read["messages"][-1]["body"] == f"message-{board.MAX_READ_MESSAGES}"
+
+
 def test_distress_mirror_is_attributable_idempotent_and_lane_scoped(
     board_db, monkeypatch
 ):
     monkeypatch.setenv(board.BOARD_ENABLED_ENV, "true")
     shared = principal()
     trusted = binding("agent-a")
+    secret = "ghp_abcdefghijklmnopqrstuvwxyz123456"
     kwargs = {
         "raw_id": "raw-distress-1",
-        "summary": "blocked",
+        "summary": f"blocked with {secret}",
         "severity": "blocked",
-        "details": "dependency unavailable",
-        "requested_intervention": "inspect",
+        "details": f"dependency leaked {secret}",
+        "requested_intervention": f"rotate {secret}",
     }
     first = call(board.mirror_distress, shared, trusted, **kwargs)
     second = call(board.mirror_distress, shared, trusted, **kwargs)
@@ -317,6 +370,8 @@ def test_distress_mirror_is_attributable_idempotent_and_lane_scoped(
     read = call(board.read_board, shared, binding("agent-b"), "distress", None)
     assert len(read["messages"]) == 1
     assert read["messages"][0]["principal"] == "agent-a"
+    assert secret not in read["messages"][0]["body"]
+    assert read["messages"][0]["body"].count("[REDACTED:github_token]") == 3
     assert read["messages"][0]["provenance"] == {
         "source": "distress_mirror",
         "source_id": "distress:raw-distress-1",
