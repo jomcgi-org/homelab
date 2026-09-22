@@ -91,7 +91,7 @@ echo "==> Building every image (layers stay in CAS, nothing is staged here)"
 "$BAZEL" build //bazel/images:push_all "${BAZEL_ARGS[@]}"
 
 # --remote_download_outputs=toplevel overrides the --remote_download_minimal
-# that --config=ci sets, for this one build only. The manifest is three short
+# that --config=ci sets, for this one build only. The manifest is four short
 # strings per image, so materialising it costs nothing and is the whole point:
 # it is the cheap half of the data the expensive runfiles would have carried.
 echo "==> Materialising the image digest manifest"
@@ -172,7 +172,7 @@ while IFS= read -r image_row || [ -n "${image_row:-}" ]; do
 	if [ -n "${repository:-}" ] && [ -n "${digest:-}" ]; then
 		observed=$("$CRANE" digest "${repository}@${digest}" 2>/dev/null || true)
 	fi
-	if [ "$observed" = "$digest" ]; then
+	if [ -n "$digest" ] && [ "$observed" = "$digest" ]; then
 		echo "  skip  $label  ($digest already published)"
 		printf '%s\t%s\t%s\t%s\t%s\n' \
 			"$RUN_ID" "skipped" "$label" "$repository" "$observed" >>"$IMAGE_RESULTS"
