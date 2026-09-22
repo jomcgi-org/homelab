@@ -810,6 +810,7 @@ defmodule Embervm.SessionManager do
              entry: entry,
              node_id: node_id,
              dial_id: dial_id,
+             retirement_dial_id: retirement_dial_id,
              snapshot_ref: snapshot_ref,
              lineage_id: lineage_id,
              traceparent: traceparent
@@ -860,6 +861,7 @@ defmodule Embervm.SessionManager do
                 entry,
                 lineage_id,
                 restore_lineage,
+                retirement_dial_id,
                 principal,
                 traceparent
               )
@@ -1291,15 +1293,28 @@ defmodule Embervm.SessionManager do
            :ok <- check_session_cap(state, workload, entry),
            :ok <- check_workload_cap(state, workload, entry),
            :ok <- check_quota(state, principal),
-           :ok <- validate_restore_lineage(state, restore_lineage, workload, principal),
+           {:ok, restore_holder} <-
+             validate_restore_lineage(state, restore_lineage, workload, principal),
            :ok <- check_restore_not_inflight(state, restore_lineage),
-           pin_node_id = restore_lineage_volume_node(state, restore_lineage, workload),
-           {:ok, node_id, dial_id, snapshot_ref} <- place_create(state, workload, entry, pin_node_id) do
+           :ok <- validate_restore_volume_owner(state, restore_holder, restore_lineage, workload),
+           pin_node_id =
+             restore_lineage_volume_node(state, restore_holder, restore_lineage, workload),
+           {:ok, node_id, dial_id, snapshot_ref} <- place_create(state, workload, entry, pin_node_id),
+           retirement_dial_id =
+             restore_lineage_retirement_dial(
+               state,
+               restore_holder,
+               restore_lineage,
+               workload,
+               node_id,
+               dial_id
+             ) do
         {:ok,
          %{
            entry: entry,
            node_id: node_id,
            dial_id: dial_id,
+           retirement_dial_id: retirement_dial_id,
            snapshot_ref: snapshot_ref,
            # #4306 slice 3: a restoring create's lineage_id is the INHERITED
            # restore_lineage, not a freshly minted one (this is the divergence
@@ -1326,7 +1341,7 @@ defmodule Embervm.SessionManager do
   # prohibition), or its newest holder is not terminal yet (exclusivity: at
   # most one live heir per lineage). nil/empty restore_lineage is always a
   # normal create and always validates.
-  defp validate_restore_lineage(_state, nil, _workload, _principal), do: :ok
+  defp validate_restore_lineage(_state, nil, _workload, _principal), do: {:ok, nil}
 
   defp validate_restore_lineage(state, restore_lineage, workload, principal) do
     case SessionStore.get_latest_by_lineage(state.session_store, restore_lineage) do
@@ -1339,9 +1354,43 @@ defmodule Embervm.SessionManager do
       {:ok, %{principal: lineage_principal}} when lineage_principal != principal ->
         {:error, :lineage_principal_mismatch}
 
-      {:ok, %{state: session_state}} ->
-        if SessionState.terminal?(session_state), do: :ok, else: {:error, :lineage_live_heir}
+      {:ok, %{state: session_state} = holder} ->
+        if SessionState.terminal?(session_state),
+          do: {:ok, holder},
+          else: {:error, :lineage_live_heir}
     end
+  end
+
+  # The durable lineage holder is the authority for workspace ownership. Fleet
+  # facts may locate that exact owner's instance, but they may not redirect the
+  # relinquishment RPC to a different node after a restart or a stale report.
+  # Refuse a contradictory reporter instead of accepting NotFound from the new
+  # placement while the recorded owner may still hold the workspace.
+  defp validate_restore_volume_owner(_state, nil, _restore_lineage, _workload), do: :ok
+
+  defp validate_restore_volume_owner(
+         state,
+         %{volume_node_id: owner_node_id},
+         restore_lineage,
+         workload
+       )
+       when is_binary(owner_node_id) and owner_node_id != "" do
+    conflicting_nodes =
+      state
+      |> reported_restore_volume_facts(restore_lineage, workload)
+      |> Enum.map(&Map.get(&1, :configured_id))
+      |> Enum.reject(&(&1 == owner_node_id))
+      |> Enum.uniq()
+      |> Enum.sort()
+
+    case conflicting_nodes do
+      [] -> :ok
+      nodes -> {:error, {:lineage_relinquishment_failed, {:volume_owner_mismatch, owner_node_id, nodes}}}
+    end
+  end
+
+  defp validate_restore_volume_owner(_state, _holder, _restore_lineage, _workload) do
+    {:error, {:lineage_relinquishment_failed, :volume_owner_missing}}
   end
 
   # #4306/#4313 review fix 2 (TOCTOU): validate_restore_lineage/4 only
@@ -1390,16 +1439,75 @@ defmodule Embervm.SessionManager do
   # reads), or nil when no node reports it. A cold-restore create (no node
   # found) places anywhere, same as a normal create; restore_session_workspace
   # then tries the object store instead of a local attach.
-  defp restore_lineage_volume_node(_state, nil, _workload), do: nil
+  defp restore_lineage_volume_node(_state, nil, _restore_lineage, _workload), do: nil
 
-  defp restore_lineage_volume_node(state, restore_lineage, workload) do
+  defp restore_lineage_volume_node(
+         state,
+         %{volume_node_id: owner_node_id},
+         restore_lineage,
+         workload
+       ) do
+    if Enum.any?(
+         reported_restore_volume_facts(state, restore_lineage, workload),
+         &(Map.get(&1, :configured_id) == owner_node_id)
+       ) do
+      owner_node_id
+    end
+  end
+
+  defp reported_restore_volume_facts(state, restore_lineage, workload) do
     state.capacity_table
     |> NodeCapacity.all()
-    |> Enum.find_value(fn f ->
-      Enum.find_value(Map.get(f, :session_volumes, []) || [], fn volume ->
-        if volume.lineage_id == restore_lineage and volume.workload == workload, do: f.configured_id
+    |> Enum.filter(fn fact ->
+      Enum.any?(Map.get(fact, :session_volumes, []) || [], fn volume ->
+        Map.get(volume, :lineage_id) == restore_lineage and
+          Map.get(volume, :workload) == workload
       end)
     end)
+  end
+
+  defp restore_lineage_retirement_dial(
+         _state,
+         nil,
+         _restore_lineage,
+         _workload,
+         _placed_node_id,
+         _placed_dial_id
+       ),
+       do: nil
+
+  defp restore_lineage_retirement_dial(
+         state,
+         %{volume_node_id: owner_node_id},
+         restore_lineage,
+         workload,
+         placed_node_id,
+         placed_dial_id
+       ) do
+    exact_owner_dial =
+      state
+      |> reported_restore_volume_facts(restore_lineage, workload)
+      |> Enum.filter(&(Map.get(&1, :configured_id) == owner_node_id))
+      |> Enum.map(&fact_dial_id/1)
+      |> Enum.filter(&(is_binary(&1) and &1 != ""))
+      |> Enum.sort()
+      |> List.first()
+
+    owner_fallback_dial =
+      state.capacity_table
+      |> NodeCapacity.all()
+      |> Enum.filter(&(Map.get(&1, :configured_id) == owner_node_id))
+      |> Enum.map(&fact_dial_id/1)
+      |> Enum.filter(&(is_binary(&1) and &1 != ""))
+      |> Enum.sort()
+      |> List.first()
+
+    cond do
+      is_binary(exact_owner_dial) -> exact_owner_dial
+      placed_node_id == owner_node_id -> placed_dial_id
+      is_binary(owner_fallback_dial) -> owner_fallback_dial
+      true -> owner_node_id
+    end
   end
 
   defp spawn_create_worker(
@@ -1412,6 +1520,7 @@ defmodule Embervm.SessionManager do
          entry,
          lineage_id,
          restore_lineage,
+         retirement_dial_id,
          principal,
          traceparent
        ) do
@@ -1439,6 +1548,7 @@ defmodule Embervm.SessionManager do
                 entry,
                 restore_lineage,
                 dial_id,
+                retirement_dial_id,
                 principal
               )
           end
@@ -1492,6 +1602,7 @@ defmodule Embervm.SessionManager do
          entry,
          restore_lineage,
          placed_dial_id,
+         retirement_dial_id,
          principal
        ) do
     dial_id =
@@ -1500,7 +1611,13 @@ defmodule Embervm.SessionManager do
         resolved -> resolved
       end
 
-    with :ok <- confirm_restore_relinquishment(state, dial_id, workload, restore_lineage),
+    with :ok <-
+           confirm_restore_relinquishment(
+             state,
+             retirement_dial_id,
+             workload,
+             restore_lineage
+           ),
          {:ok, restored} <-
            restore_session_workspace(state, dial_id, workload, restore_lineage, principal, 0),
          {:ok, vm_id} <- prime(state, dial_id, workload, snapshot_ref, entry, restore_lineage) do
