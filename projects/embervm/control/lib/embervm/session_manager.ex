@@ -4183,11 +4183,12 @@ defmodule Embervm.SessionManager do
 
       {:ok, %{state: :relighting}} ->
         grace_ms = max(state.pressure_retry_interval_ms, 1)
+        now = state.monotonic_clock.()
 
         case Map.get(wait, :registration_handoff_at) do
           started_at
           when is_integer(started_at) and
-                 state.monotonic_clock.() - started_at >= grace_ms ->
+                 now - started_at >= grace_ms ->
             give_up_pressure_wait(state, session_id, wait)
 
           started_at when is_integer(started_at) ->
