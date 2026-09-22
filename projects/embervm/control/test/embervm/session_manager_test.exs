@@ -2744,6 +2744,58 @@ defmodule Embervm.SessionManagerTest do
     assert session_id == original.session_id
   end
 
+  test "InheritanceOnlyFromTerminal: an unproven co-located owner fails closed" do
+    parent = self()
+    {:ok, mode} = Agent.start_link(fn -> :initial end)
+
+    ctx =
+      start_stack(
+        channel_fun: fn dial_id -> {:ok, {:channel, dial_id}} end,
+        prime_fun: fn _channel, request ->
+          current = Agent.get(mode, & &1)
+          send(parent, {:ambiguous_prime, current, request.lineage_id})
+          {:ok, %PrimeResponse{vm_id: "vm-ambiguous-#{current}"}}
+        end,
+        retire_volume_fun: fn {:channel, dial_id}, request ->
+          current = Agent.get(mode, & &1)
+          send(parent, {:ambiguous_retire, current, dial_id, request.lineage_id})
+
+          if current == :ambiguous do
+            {:error, %GRPC.RPCError{status: 5, message: "workspace absent"}}
+          else
+            {:ok, %{}}
+          end
+        end,
+        restore_artifact_fun: fn _channel, request ->
+          send(parent, {:ambiguous_restore, Agent.get(mode, & &1), request.artifact.ref})
+          {:error, %GRPC.RPCError{status: 5, message: "workspace absent"}}
+        end
+      )
+
+    original = create_persistence_session(ctx)
+    lineage_id = original.lineage_id
+    assert_receive {:ambiguous_prime, :initial, ^lineage_id}
+    assert {:ok, :destroying} = SessionManager.destroy(ctx.mgr, original.session_id)
+    assert wait_for_state(ctx, original.session_id, :destroyed).state == :destroyed
+    assert_receive {:ambiguous_retire, :initial, "node-4", ^lineage_id}
+
+    NodeCapacity.drop(ctx.cap_table, "node-4")
+    put_brick(ctx, "wl-persist", "sibling-a", node_id: "node-4")
+    put_brick(ctx, "wl-persist", "sibling-b", node_id: "node-4")
+    Agent.update(mode, fn _ -> :ambiguous end)
+
+    assert {:error,
+            {:denied,
+             {:lineage_relinquishment_failed,
+              {:volume_owner_ambiguous, "node-4", [],
+               ["node-4/sibling-a", "node-4/sibling-b"]}}}} =
+             SessionManager.create(ctx.mgr, "wl-persist", "p1", lineage_id)
+
+    refute_receive {:ambiguous_retire, :ambiguous, _dial_id, _lineage_id}
+    refute_receive {:ambiguous_restore, :ambiguous, _lineage_id}
+    refute_receive {:ambiguous_prime, :ambiguous, _lineage_id}
+  end
+
   test "a restoring create whose prime fails re-drives reclamation for the lineage (#4306/#4313)" do
     parent = self()
     {:ok, counter} = Agent.start_link(fn -> 0 end)
