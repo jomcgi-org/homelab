@@ -3520,16 +3520,8 @@ url = %s
                         if "error" in event:
                             raise RuntimeError(self._rpc_error(event))
                         response = event.get("result", {})
-                        response_turn = (
-                            response.get("turn", {})
-                            if isinstance(response, dict)
-                            else {}
-                        )
-                        response_turn_id = (
-                            response_turn.get("id")
-                            if isinstance(response_turn, dict)
-                            else None
-                        )
+                        response_turn = response.get("turn", {})
+                        response_turn_id = response_turn.get("id")
                         if isinstance(response_turn_id, str) and response_turn_id:
                             # TurnStartResponse names the turn created by this
                             # request. Capture it even if its turn/started
@@ -3594,20 +3586,13 @@ url = %s
                             if item.get("type") in ("agentMessage", "agent_message"):
                                 result_text = item.get("text", "")
                     elif event_type == "thread/tokenUsage/updated":
-                        if (
-                            self._turn_id
-                            and params.get("threadId") == self.session_id
-                            and params.get("turnId") == self._turn_id
-                        ):
-                            last = params.get("tokenUsage", {}).get("last", {})
-                            usage = {
-                                "input_tokens": last.get("inputTokens", 0),
-                                "output_tokens": last.get("outputTokens", 0),
-                                "cache_read_tokens": last.get("cachedInputTokens", 0),
-                                "cache_write_tokens": last.get(
-                                    "cacheWriteInputTokens", 0
-                                ),
-                            }
+                        last = params.get("tokenUsage", {}).get("last", {})
+                        usage = {
+                            "input_tokens": last.get("inputTokens", 0),
+                            "output_tokens": last.get("outputTokens", 0),
+                            "cache_read_tokens": last.get("cachedInputTokens", 0),
+                            "cache_write_tokens": last.get("cacheWriteInputTokens", 0),
+                        }
                     if activities_are_stale:
                         cached_activities = activity_from_events(events)[-300:]
                         activities_are_stale = False
@@ -3620,13 +3605,6 @@ url = %s
                             except Exception:
                                 pass
                     if event_type == "turn/completed":
-                        turn = params.get("turn", {})
-                        if (
-                            not self._turn_id
-                            or params.get("threadId") != self.session_id
-                            or turn.get("id") != self._turn_id
-                        ):
-                            continue
                         if pusher:
                             try:
                                 pusher.push(
@@ -3635,6 +3613,7 @@ url = %s
                                 )
                             except Exception:
                                 pass
+                        turn = params.get("turn", {})
                         status = turn.get("status", "completed")
                         if status == "failed":
                             error = turn.get("error", "Codex turn failed")
