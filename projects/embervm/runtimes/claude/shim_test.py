@@ -338,6 +338,7 @@ scenario = os.environ.get("FAKE_CODEX_SCENARIO", "")
 config_fail_path = os.environ.get("FAKE_CODEX_CONFIG_FAIL_ONCE")
 config_fail_always = os.environ.get("FAKE_CODEX_CONFIG_FAIL_ALWAYS")
 turn_failure = os.environ.get("FAKE_CODEX_TURN_FAILURE", "")
+turn_number = 0
 
 def config_error_now():
     # Cross-process latch: the FIRST app-server to bind a thread fails with the
@@ -411,22 +412,45 @@ for line in sys.stdin:
             emit({"jsonrpc": "2.0", "method": "thread/resumed", "params": {"thread": {"id": thread_id}}})
     elif method == "turn/start":
         params = request.get("params", {})
-        emit({"jsonrpc": "2.0", "method": "turn/started", "params": {"turn": {"id": "turn-1"}}})
+        thread_id = params["threadId"]
+        turn_number += 1
+        turn_id = "turn-%s" % turn_number
+        def notification(method, payload, thread=thread_id, turn=turn_id):
+            emit({"jsonrpc": "2.0", "method": method,
+                  "params": {"threadId": thread, "turnId": turn, **payload}})
+        if scenario == "child-before-start":
+            notification("turn/started", {"turn": {"id": "child-turn"}}, thread="review-child")
+        started = {"turn": {"id": turn_id}}
+        if scenario == "started-before-response":
+            notification("turn/started", started)
+        response(request, {"turn": {"id": turn_id}})
+        notification("turn/started", started)
         if turn_failure:
-            emit({"jsonrpc": "2.0", "method": "turn/completed", "params": {"turn": {"id": "turn-1", "status": "failed", "error": {"message": turn_failure}}}})
+            notification("turn/completed", {"turn": {"id": turn_id, "status": "failed", "error": {"message": turn_failure}}})
             continue
         if scenario == "death-mid-turn":
             print("fake codex died mid-turn", file=sys.stderr, flush=True)
             sys.exit(17)
         if scenario != "no-tools":
-            emit({"jsonrpc": "2.0", "method": "item/started", "params": {"item": {"type": "commandExecution", "command": "echo test"}}})
+            notification("item/started", {"item": {"type": "commandExecution", "command": "echo test"}})
         if os.environ.get("FAKE_CODEX_SLEEP"):
             time.sleep(float(os.environ["FAKE_CODEX_SLEEP"]))
-        emit({"jsonrpc": "2.0", "method": "item/completed", "params": {"item": {"type": "agentMessage", "text": "Done <voice>Codex completed the work.</voice>"}}})
-        emit({"jsonrpc": "2.0", "method": "thread/tokenUsage/updated", "params": {"tokenUsage": {"last": {"inputTokens": 3, "outputTokens": 4, "cachedInputTokens": 0, "cacheWriteInputTokens": 0, "reasoningOutputTokens": 0, "totalTokens": 7}}}})
-        emit({"jsonrpc": "2.0", "method": "turn/completed", "params": {"turn": {"id": "turn-1"}}})
+        notification("item/completed", {"item": {"type": "agentMessage", "text": "Done <voice>Codex completed the work.</voice>"}})
+        if scenario in ("child-completed", "child-failed", "stale-completed", "child-before-start"):
+            foreign_thread = thread_id if scenario == "stale-completed" else "review-child"
+            notification("turn/started", {"turn": {"id": "foreign-turn"}}, thread=foreign_thread, turn="foreign-turn")
+            notification("item/completed", {"item": {"type": "agentMessage", "text": "Independent child review: changes requested"}}, thread=foreign_thread, turn="foreign-turn")
+            notification("item/started", {"item": {"type": "commandExecution", "command": "child-only-command"}}, thread=foreign_thread, turn="foreign-turn")
+            notification("turn/completed", {"turn": {"id": "foreign-turn", "status": "failed" if scenario == "child-failed" else "completed", "error": {"message": "child-only-failure"}}}, thread=foreign_thread, turn="foreign-turn")
+            # This parent action represents work still needed before completion.
+            with open(os.path.join(os.getcwd(), "parent-finished"), "w") as stream:
+                stream.write("parent artifact captured only after this point")
+        notification("thread/tokenUsage/updated", {"tokenUsage": {"last": {"inputTokens": 3, "outputTokens": 4, "cachedInputTokens": 0, "cacheWriteInputTokens": 0, "reasoningOutputTokens": 0, "totalTokens": 7}}})
+        notification("turn/completed", {"turn": {"id": turn_id}})
     elif method == "turn/interrupt":
-        emit({"jsonrpc": "2.0", "method": "turn/completed", "params": {"turn": {"id": "turn-1"}}})
+        params = request.get("params", {})
+        response(request)
+        emit({"jsonrpc": "2.0", "method": "turn/completed", "params": {"threadId": params["threadId"], "turn": {"id": params["turnId"], "status": "interrupted"}}})
     else:
         response(request, error={"code": -32601, "message": "unknown method"})
 """
@@ -2095,6 +2119,31 @@ def test_codex_first_turn_returns_thread_voice_and_usage(tmp_path, monkeypatch):
         "activities": [{"type": "bash", "command": "echo test"}],
     }
     manager._close_process()
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "child-completed",
+        "child-failed",
+        "stale-completed",
+        "child-before-start",
+        "started-before-response",
+    ],
+)
+def test_codex_parent_waits_for_its_own_completion(tmp_path, monkeypatch, scenario):
+    monkeypatch.setenv("FAKE_CODEX_SCENARIO", scenario)
+    manager = _codex_manager(tmp_path, monkeypatch)
+    try:
+        record = manager.turn("finish the parent artifact", model="sol")
+        assert record["result"] == "Done <voice>Codex completed the work.</voice>"
+        assert record["terminal_reason"] == "completed"
+        assert record["usage"]["input_tokens"] == 3
+        assert record["activities"] == [{"type": "bash", "command": "echo test"}]
+        if scenario != "started-before-response":
+            assert (tmp_path / "workspace" / "parent-finished").exists()
+    finally:
+        manager._close_process(kill=True)
 
 
 def test_codex_pushes_progress_during_turn(tmp_path, monkeypatch):

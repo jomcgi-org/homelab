@@ -3519,15 +3519,50 @@ url = %s
                     if event.get("id") == request_id:
                         if "error" in event:
                             raise RuntimeError(self._rpc_error(event))
+                        response = event.get("result", {})
+                        response_turn = response.get("turn", {})
+                        response_turn_id = response_turn.get("id")
+                        if isinstance(response_turn_id, str) and response_turn_id:
+                            self._turn_id = response_turn_id
                         continue
                     self._handle_server_request(event)
                     event_type = event.get("method")
                     params = event.get("params", {})
+                    if event_type == "turn/started":
+                        started_id = params.get("turn", {}).get("id")
+                        if (
+                            params.get("threadId") != self.session_id
+                            or not isinstance(started_id, str)
+                            or not started_id
+                            or self._turn_id not in (None, started_id)
+                        ):
+                            continue
+                        # The server can emit turn/started before its response.
+                        self._turn_id = started_id
+                    elif event_type in (
+                        "turn/completed",
+                        "item/started",
+                        "item/completed",
+                        "item/agentMessage/delta",
+                        "thread/tokenUsage/updated",
+                    ):
+                        event_turn_id = (
+                            params.get("turn", {}).get("id")
+                            if event_type == "turn/completed"
+                            else params.get("turnId")
+                        )
+                        # One app-server carries parent and child threads.
+                        # A child's result must not finish or overwrite the
+                        # parent before it writes its factory artifact.
+                        if (
+                            not self._turn_id
+                            or params.get("threadId") != self.session_id
+                            or event_turn_id != self._turn_id
+                        ):
+                            continue
                     legacy_event = self._translate_activity_event(event)
                     events.append(legacy_event)
-                    if event_type == "turn/started":
-                        self._turn_id = params.get("turn", {}).get("id")
-                    elif event_type == "item/agentMessage/delta":
+                    if event_type == "item/agentMessage/delta":
                         delta = params.get("delta", {})
                         text = delta.get("text") if isinstance(delta, dict) else None
                         if isinstance(text, str):
