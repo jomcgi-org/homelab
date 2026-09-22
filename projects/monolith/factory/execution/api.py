@@ -8,6 +8,7 @@ from factory.execution import admission as _admission
 from factory.execution.constants import DRAINER_NODE_KEY as DRAINER_NODE_KEY
 from factory.execution.constants import KG_NODE_KEY as KG_NODE_KEY
 from factory.execution.reconciliation import (
+    adopt_completed_factory_receipt as adopt_completed_factory_receipt,
     cancel_queued_factory_attempt as cancel_queued_factory_attempt,
     confirm_reconciled_guest_cessation as confirm_reconciled_guest_cessation,
     confirm_reconciled_unbound_attempt as confirm_reconciled_unbound_attempt,
