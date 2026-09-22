@@ -14,9 +14,16 @@ allowedServices:
   - monolith-public
 
 httpcheck:
-  enabled: true
+  # Staged off while the Argo CD serving chain, SAN, trusted CA, and collector
+  # network path are validated from the hub. This temporarily removes the hub
+  # Argo CD probe signal. Enable the receiver and CA mount only in a separately
+  # authorized rollout after argocd-server-ca contains the verified CA.
+  enabled: false
   targets:
-    - "http://argocd-server.argocd.svc:80/healthz"
+    - endpoint: "https://argocd-server.argocd.svc:443/healthz"
+      method: GET
+      tls:
+        ca_file: /etc/otel/argocd-ca/ca.crt
 
 # OTLP over HTTP, not gRPC: the hub's otelcol gRPC dials to api.honeycomb.io
 # were canceled before completing while HTTPS from the same pod network
