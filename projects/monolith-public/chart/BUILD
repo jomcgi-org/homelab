@@ -10,16 +10,7 @@ filegroup(
     visibility = ["//projects/monolith:__pkg__"],
 )
 
-# Guard (#5142): the destination-scoped egress policies must stay scoped. The
-# test lives in //projects/monolith for the same reason as the HTTPRoute guard.
-filegroup(
-    name = "cilium_scoped_egress_template",
-    srcs = ["templates/cilium-policy-scoped-egress.yaml"],
-    visibility = ["//projects/monolith:__pkg__"],
-)
-
-# Guard (#5142): render inputs so the guard test can run `helm template` against
-# the REAL values (chart + deploy) and pin the enforced policy shape. Chart.lock
+# Shared public HTTPRoute and GKE render-guard inputs. Chart.lock
 # plus the charts/ glob are load-bearing: helm aborts when a locked dependency
 # has no packaged tarball on disk. This chart has no migrations/ directory, so
 # there is no migrations glob to carry (unlike projects/monolith/chart).

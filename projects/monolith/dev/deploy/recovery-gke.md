@@ -91,12 +91,9 @@ Prepare these facts before creating either deployment:
 - Prepare GKE-native network policies and verify effective permissions with
   the actual service accounts. The inactive
   [native policy and connection matrix](recovery-network.md) supplies these
-  rules, with explicit live checks before admission. Cilium policies are
-  disabled because the hub
-  has no Cilium CRDs. Both `noded.networkPolicy` and
-  `tokenBroker.networkPolicy` gate `cilium.io/v2` resources. A disabled Cilium
-  template is not network isolation. `egress.internal` governs the guest
-  proxy, not the control-plane pod's PostgreSQL connection; the native policy
+  rules, with explicit live checks before admission. The inert Cilium templates
+  were removed in #5816; their absence is not network isolation.
+  `egress.internal` governs the guest proxy, not the control-plane pod's PostgreSQL connection; the native policy
   must separately allow the dev op-log connection to port 5432.
   Allow only the required dev control/progress/MCP/database paths, DNS and
   selected provider/authentication egress.

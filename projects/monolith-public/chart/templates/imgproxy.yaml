@@ -7,11 +7,8 @@
 # helpers (same as the web/frontend components), so it lives in the
 # monolith-public namespace.
 #
-# Networking notes: no Server in cilium-policy.yaml selects this component's
-# port, so the cluster's default inbound policy governs inbound and the envoy
-# gateway can reach it. imgproxy's only egress is the in-cluster seaweedfs-s3
-# endpoint, which is cluster-network traffic and so is not blocked by the
-# namespace EgressNetwork deny.
+# Network isolation on the GKE hub remains successor work (#5276). The
+# configured storage endpoint is not itself an enforced egress restriction.
 #
 # Security boundary: URLs are HMAC-signed (IMGPROXY_KEY/SALT synced from
 # 1Password), so imgproxy only serves paths the frontend SSR signer produced;

@@ -52,14 +52,6 @@ def configuration():
                 "allowedSpiffeIds": [caller],
             }
         ],
-        "clientPodSelectors": [
-            {
-                "matchLabels": {
-                    "k8s:io.kubernetes.pod.namespace": "monolith",
-                    "app.kubernetes.io/component": "review-publisher",
-                }
-            }
-        ],
     }, {"enabled": True, "clientSpiffeIds": [caller]}
 
 
@@ -70,7 +62,7 @@ def test_disabled_does_not_mount_app_credentials(tmp_path):
     assert "onepassworditem-github-app.yaml" not in result.stdout
 
 
-def test_enabled_scopes_secret_and_network_to_broker(tmp_path):
+def test_enabled_scopes_secret_to_broker(tmp_path):
     github, spiffe = configuration()
     result = render(tmp_path, github, spiffe)
     assert result.returncode == 0, result.stderr
@@ -92,7 +84,6 @@ def test_enabled_scopes_secret_and_network_to_broker(tmp_path):
                 assert ref["key"] == "private-key"
                 assert json.loads(env["GITHUB_APP_GRANTS"]["value"]) == github["grants"]
     assert owners == ["tokenbroker"]
-    assert "matchName: api.github.com" in result.stdout
     assert "vaults/test/items/bosun" in result.stdout
     assert "embervm-oauth-grant-bosun-publisher" not in result.stdout
 
@@ -106,7 +97,6 @@ def test_enabled_scopes_secret_and_network_to_broker(tmp_path):
         ("appID", "appID is required"),
         ("installationID", "installationID is required"),
         ("onepassword", "onepassword.itemPath is required"),
-        ("clientPodSelectors", "requires clientPodSelectors"),
     ],
 )
 def test_incomplete_configuration_fails_render(tmp_path, missing, expected):
@@ -118,7 +108,7 @@ def test_incomplete_configuration_fails_render(tmp_path, missing, expected):
     elif missing == "onepassword":
         github["onepassword"]["itemPath"] = ""
     else:
-        github[missing] = [] if missing in ("grants", "clientPodSelectors") else ""
+        github[missing] = [] if missing == "grants" else ""
     result = render(tmp_path, github, spiffe)
     assert result.returncode != 0
     assert expected in result.stderr
@@ -157,6 +147,17 @@ def test_canary_has_own_identity_and_no_key_or_kubernetes_token(tmp_path):
     }
     pod = job["spec"]["template"]["spec"]
     assert pod["serviceAccountName"] == "bosun-embervm-github-canary"
+    service_account = next(
+        doc
+        for doc in docs
+        if doc["kind"] == "ServiceAccount"
+        and doc["metadata"]["name"] == pod["serviceAccountName"]
+    )
+    assert (
+        service_account["metadata"]["labels"]["app.kubernetes.io/component"]
+        == "github-canary"
+    )
+    assert not any(doc["kind"] == "CiliumNetworkPolicy" for doc in docs)
     assert pod["automountServiceAccountToken"] is False
     assert pod["restartPolicy"] == "Never"
     assert job["spec"]["backoffLimit"] == 0
@@ -176,14 +177,6 @@ def test_canary_has_own_identity_and_no_key_or_kubernetes_token(tmp_path):
             "csi": {"driver": "csi.spiffe.io", "readOnly": True},
         }
     ]
-    policy = next(
-        d
-        for d in docs
-        if d["kind"] == "CiliumNetworkPolicy"
-        and d["metadata"]["name"].endswith("-github-canary")
-    )
-    assert policy["spec"]["ingress"] == []
-    assert policy["spec"]["egress"][-1]["toFQDNs"] == [{"matchName": "api.github.com"}]
 
 
 @pytest.mark.parametrize(

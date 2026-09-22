@@ -228,9 +228,9 @@ async def create_chat_session(
     The real client IP arrives in the Cloudflare ``CF-Connecting-IP`` header,
     forwarded by SSR, and is stored only as a salted hash for reactive abuse
     forensics (there is no per-IP mint cap; see limits.py). The backend trusts
-    the header because it is reachable ONLY from the frontend: the ``-web``
-    CiliumNetworkPolicy (see the monolith-public cilium-policy) admits only the
-    frontend pod, so any request reaching this handler came from SSR.
+    the forwarded header, but the hub has no policy proving the caller is SSR.
+    The inert Cilium template was removed in #5816; native ingress isolation
+    remains #5276. Turnstile verification below still fails closed.
     """
     result = await turnstile.siteverify(payload.turnstile_token, cf_connecting_ip)
     if not result.success:

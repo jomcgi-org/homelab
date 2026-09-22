@@ -296,9 +296,9 @@ monolith checks membership in that list alongside a strict `iss`. This is weaker
 than RFC 8693 token exchange, which would mint a separate token per audience so
 a backend could not replay it elsewhere. Context Forge implements exchange but
 authentik does not advertise the grant. The replay path is **not** closed on
-the network on the hub: the monolith chart's `tokenReplayDeny`
-CiliumNetworkPolicy is off in `projects/monolith/deploy/values-gke.yaml`
-because GKE Dataplane V2 ships no Cilium CRDs. The monolith has no code path
+the network on the hub: the inert token-replay Cilium template was removed
+in #5816 because the hub exposes no corresponding CRDs. Native-policy
+successor work remains #5277 / #3897. The monolith has no code path
 that calls the gateway, which is the only thing keeping that theoretical.
 
 **The token now reaches the monolith.** On 2026-09-05 the hub monolith logged

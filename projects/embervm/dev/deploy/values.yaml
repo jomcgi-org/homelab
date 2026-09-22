@@ -95,9 +95,6 @@ noded:
   # including the three etcd masters.
   enabled: false
 
-  networkPolicy:
-    enabled: true
-
   store:
     bucket: embervm-dev
     # SigV4 credentials (#4708): same identity as production, the policy grants
