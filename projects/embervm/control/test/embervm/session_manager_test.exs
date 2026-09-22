@@ -2530,7 +2530,7 @@ defmodule Embervm.SessionManagerTest do
                %{}
              )
 
-    assert {:error, {:denied, :lineage_live_heir}} =
+    assert {:error, {:denied, :lineage_restore_in_flight}} =
              SessionManager.create(ctx.mgr, "wl-persist", "p1", holder.lineage_id)
 
     refute_receive {:unexpected_retire, _lineage_id}
@@ -2661,7 +2661,7 @@ defmodule Embervm.SessionManagerTest do
     assert restored.lineage_id == lineage_id
   end
 
-  test "InheritanceOnlyFromTerminal: reconstructed state retires only the canonical holder owner" do
+  test "InheritanceOnlyFromTerminal: reconstructed state uses store-only restore after owner departure" do
     parent = self()
     {:ok, mode} = Agent.start_link(fn -> :initial end)
 
@@ -2729,19 +2729,61 @@ defmodule Embervm.SessionManagerTest do
     put_brick(ctx, "wl-persist", "replacement", node_id: "node-5")
     Agent.update(mode, fn _ -> :rebuilt end)
 
-    assert {:error,
-            {:denied,
-             {:lineage_relinquishment_failed,
-              {:error, :recorded_owner_unavailable}}}} =
+    assert {:ok, restored} =
              SessionManager.create(ctx.mgr, "wl-persist", "p1", original.lineage_id)
 
-    assert_receive {:owner_dial, :rebuilt, "node-4"}
-    refute_receive {:owner_restore, :rebuilt, _lineage_id}
-    refute_receive {:owner_prime, :rebuilt, _lineage_id}
-    assert {:ok, %{session_id: session_id, state: :destroyed}} =
+    assert_receive {:owner_restore, :rebuilt, ^lineage_id}
+    assert_receive {:owner_prime, :rebuilt, ^lineage_id}
+    refute_receive {:owner_retire, :rebuilt, _dial_id, _lineage_id}
+    refute_receive {:owner_dial, :rebuilt, "node-4"}
+    assert {:ok, %{session_id: session_id, state: :running}} =
              SessionStore.get_latest_by_lineage(rebuilt, original.lineage_id)
 
-    assert session_id == original.session_id
+    assert session_id == restored.session_id
+    assert session_id != original.session_id
+  end
+
+  test "InheritanceOnlyFromTerminal: a sole owner pins restore when its volume scan omits the lineage" do
+    parent = self()
+    {:ok, mode} = Agent.start_link(fn -> :initial end)
+
+    ctx =
+      start_stack(
+        channel_fun: fn dial_id -> {:ok, {:channel, dial_id}} end,
+        prime_fun: fn {:channel, dial_id}, request ->
+          send(parent, {:scan_prime, Agent.get(mode, & &1), dial_id, request.lineage_id})
+          {:ok, %PrimeResponse{vm_id: "vm-scan-#{Agent.get(mode, & &1)}"}}
+        end,
+        retire_volume_fun: fn {:channel, dial_id}, request ->
+          send(parent, {:scan_retire, Agent.get(mode, & &1), dial_id, request.lineage_id})
+          {:ok, %{}}
+        end,
+        restore_artifact_fun: fn {:channel, dial_id}, request ->
+          send(parent, {:scan_restore, Agent.get(mode, & &1), dial_id, request.artifact.ref})
+          {:error, %GRPC.RPCError{status: 5, message: "workspace absent"}}
+        end
+      )
+
+    original = create_persistence_session(ctx)
+    lineage_id = original.lineage_id
+    assert_receive {:scan_prime, :initial, "node-4", ^lineage_id}
+    assert {:ok, :destroying} = SessionManager.destroy(ctx.mgr, original.session_id)
+    assert wait_for_state(ctx, original.session_id, :destroyed).state == :destroyed
+    assert_receive {:scan_retire, :initial, "node-4", ^lineage_id}
+
+    NodeCapacity.drop(ctx.cap_table, "node-4")
+    put_brick(ctx, "wl-persist", "owner", node_id: "node-4")
+    put_brick(ctx, "wl-persist", "replacement", node_id: "node-5")
+    Agent.update(mode, fn _ -> :scan_missing end)
+
+    assert {:ok, restored} =
+             SessionManager.create(ctx.mgr, "wl-persist", "p1", lineage_id)
+
+    assert_receive {:scan_retire, :scan_missing, "node-4/owner", ^lineage_id}
+    assert_receive {:scan_restore, :scan_missing, "node-4/owner", ^lineage_id}
+    assert_receive {:scan_prime, :scan_missing, "node-4/owner", ^lineage_id}
+    refute_receive {:scan_restore, :scan_missing, "node-5/replacement", ^lineage_id}
+    assert restored.lineage_id == lineage_id
   end
 
   test "InheritanceOnlyFromTerminal: an unproven co-located owner fails closed" do

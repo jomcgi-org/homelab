@@ -1352,6 +1352,9 @@ defmodule Embervm.SessionManager do
       {:ok, %{principal: lineage_principal}} when lineage_principal != principal ->
         {:error, :lineage_principal_mismatch}
 
+      {:ok, %{state: :destroying}} ->
+        {:error, :lineage_restore_in_flight}
+
       {:ok, %{state: session_state} = holder} ->
         if SessionState.terminal?(session_state),
           do: {:ok, holder},
@@ -1432,11 +1435,11 @@ defmodule Embervm.SessionManager do
     end
   end
 
-  # The node currently reporting restore_lineage's workspace volume in its
-  # fleet facts (the same session_volumes list retire_orphan_session_volumes
-  # reads), or nil when no node reports it. A cold-restore create (no node
-  # found) places anywhere, same as a normal create; restore_session_workspace
-  # then tries the object store instead of a local attach.
+  # Pin to the recorded owner when either its fleet fact reports the workspace
+  # or exactly one instance remains on that node. The latter closes the scan
+  # failure window: RetireVolume can write its durable intent on that instance,
+  # so RestoreArtifact must run there and observe the pending export. When the
+  # owner node has left the fleet entirely, return nil for a store-only restore.
   defp restore_lineage_volume_node(_state, nil, _restore_lineage, _workload), do: nil
 
   defp restore_lineage_volume_node(
@@ -1445,10 +1448,21 @@ defmodule Embervm.SessionManager do
          restore_lineage,
          workload
        ) do
-    if Enum.any?(
-         reported_restore_volume_facts(state, restore_lineage, workload),
-         &(Map.get(&1, :configured_id) == owner_node_id)
-       ) do
+    exact_owner? =
+      Enum.any?(
+        reported_restore_volume_facts(state, restore_lineage, workload),
+        &(Map.get(&1, :configured_id) == owner_node_id)
+      )
+
+    owner_dials =
+      state.capacity_table
+      |> NodeCapacity.all()
+      |> Enum.filter(&(Map.get(&1, :configured_id) == owner_node_id))
+      |> Enum.map(&fact_dial_id/1)
+      |> Enum.filter(&(is_binary(&1) and &1 != ""))
+      |> Enum.uniq()
+
+    if exact_owner? or length(owner_dials) == 1 do
       owner_node_id
     end
   end
@@ -1508,7 +1522,7 @@ defmodule Embervm.SessionManager do
         {:ok, dial_id}
 
       {[], []} ->
-        {:ok, owner_node_id}
+        {:ok, nil}
 
       {reported, candidates} ->
         {:error,
@@ -6111,7 +6125,11 @@ defmodule Embervm.SessionManager do
   # before replying, then exports and deletes asynchronously. A missing local
   # volume means an earlier retirement already completed or the lineage is
   # store-only, so RestoreArtifact remains the authority for the subsequent
-  # hit or miss. Every other error fails the restore closed.
+  # hit or miss. When the recorded owner has left the fleet, there is no daemon
+  # to acknowledge and the restore proceeds through that store-only path.
+  # Every error from an available owner fails the restore closed.
+  defp confirm_restore_relinquishment(_state, nil, _workload, _lineage_id), do: :ok
+
   defp confirm_restore_relinquishment(state, dial_id, workload, lineage_id) do
     case retire_session_volume_rpc(state, dial_id, workload, lineage_id) do
       {:ok, _} ->
