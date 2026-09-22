@@ -171,8 +171,8 @@ tokenBroker:
 
 # Keep destination identities aligned with the dev EmberVM overlay. The egress
 # gate remains inherited false; these selectors matter only during an explicit
-# audit or enforce render for dev.
-ciliumPolicy:
+# explicitly enabled native-policy render for dev.
+networkPolicy:
   egress:
     targets:
       embervm:

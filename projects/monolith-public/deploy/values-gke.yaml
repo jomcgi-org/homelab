@@ -126,11 +126,3 @@ frontend:
 
 imgproxy:
   replicas: "2"
-
-# Cilium CRDs are not installed on GKE. Native policy replacements can be
-# introduced separately when the dormant application is activated.
-ciliumPolicy:
-  ingress:
-    enabled: false
-  egress:
-    enabled: false

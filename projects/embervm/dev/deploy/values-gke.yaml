@@ -72,9 +72,6 @@ bricks:
       16gi: 0
 
 noded:
-  # No Cilium CRDs on the hub (same trade as deploy/values-gke.yaml).
-  networkPolicy:
-    enabled: false
   # Node-local state only. The empty endpoint is the chart's store-disabled
   # mode: banks stay node-resident and relight on the same brick, which is what
   # S2 and S3 exercise with one brick. The home SeaweedFS bucket does not exist
@@ -118,11 +115,6 @@ noded:
   # cluster autoscaler (see deploy/values-gke.yaml), and a dev brick that never
   # schedules would hold every promotion for the full verdict timeout.
   priorityClassName: homelab-preemptible
-
-# The broker renders by chart default; its CiliumNetworkPolicy cannot apply here.
-tokenBroker:
-  networkPolicy:
-    enabled: false
 
 # Only the conformance suite's workloads. The other four sandbox languages are
 # off with their base builders, since each builder bakes into production's

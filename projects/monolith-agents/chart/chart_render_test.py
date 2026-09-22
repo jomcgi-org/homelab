@@ -241,24 +241,6 @@ def test_agents_tier_has_exact_restricted_read_rbac(documents: list[dict]) -> No
     assert clusterroles[0]["metadata"]["name"].startswith("monolith-agents-")
 
 
-def test_cilium_egress_admits_only_the_api_server_for_kubernetes(
-    documents: list[dict],
-) -> None:
-    egress = next(
-        doc
-        for doc in documents
-        if doc.get("kind") == "CiliumNetworkPolicy"
-        and doc["metadata"]["name"].endswith("-egress")
-    )
-    api_rules = [rule for rule in egress["spec"]["egress"] if "toEntities" in rule]
-    assert api_rules == [
-        {
-            "toEntities": ["kube-apiserver"],
-            "toPorts": [{"ports": [{"port": "443", "protocol": "TCP"}]}],
-        }
-    ]
-
-
 def test_agents_container_exposes_port_8092(documents: list[dict]) -> None:
     container = _deployment(documents)["spec"]["template"]["spec"]["containers"][0]
     assert {port["containerPort"] for port in container["ports"]} == {8092}
@@ -321,3 +303,11 @@ def test_hub_render_holds_its_invariants_armed_or_not(
     for deployment in deployments:
         container = deployment["spec"]["template"]["spec"]["containers"][0]
         assert _secret_refs(container) <= synced
+
+
+def test_no_inert_cilium_resources(documents: list[dict]) -> None:
+    assert documents
+    assert not any(
+        doc.get("kind") in {"CiliumNetworkPolicy", "CiliumClusterwideNetworkPolicy"}
+        for doc in documents
+    )

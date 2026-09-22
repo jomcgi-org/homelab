@@ -81,27 +81,3 @@ cfIngress:
   public:
     enabled: true
     hostname: jomcgi.dev
-
-# Cilium network policy (ADR platform/012). Both gates are on:
-#   ingress: gateway -> frontend, frontend -> web (flipped during the window).
-#   egress:  off-cluster default-deny with the single sanctioned Turnstile allow
-#            (challenges.cloudflare.com siteverify, IP-pinned to Cloudflare's
-#            published ranges via toCIDRSet), now DESTINATION-SCOPED in-cluster
-#            too: one toEndpoints rule per real dependency (#5142), DNS on 53.
-# See the chart's templates/cilium-policy-scoped-egress.yaml for the ladder and
-# templates/cilium-policy.yaml for the rationale.
-ciliumPolicy:
-  ingress:
-    enabled: true
-  egress:
-    enabled: true
-    # #5142 step 1: destination-scoped egress policies in AUDIT shape (additive
-    # allows, enforcement unchanged). Landed in fc1c213fb (2026-08-22).
-    #
-    # #5142 step 2: ENFORCE. The broad `toEntities: cluster` grants stop
-    # rendering, the scoped policies carry the deny, and the Turnstile allow
-    # moves into the web scoped policy. Anything missing from scopedTargets now
-    # fails as a SILENT DIAL TIMEOUT: if a public path starts timing out, diff
-    # its destination against chart/values.yaml scopedTargets before loosening
-    # anything.
-    scoped: enforce

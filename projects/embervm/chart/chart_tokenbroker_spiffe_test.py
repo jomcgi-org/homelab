@@ -81,27 +81,6 @@ def test_spiffe_flag_on_renders_default_noded_identity_and_tls_port() -> None:
     assert "- { name: https, port: 8443, targetPort: https }" in service
 
 
-def test_spiffe_network_policy_tls_port_is_scoped_to_noded_components() -> None:
-    rendered = _render(
-        "spiffe-policy",
-        [
-            "tokenBroker.networkPolicy.enabled=true",
-            "tokenBroker.spiffe.enabled=true",
-        ],
-    )
-    policy = _source_document(rendered, "tokenbroker-networkpolicy.yaml")
-
-    before_tls_port, separator, _ = policy.partition(
-        'toPorts: [{ ports: [{ port: "8443", protocol: TCP }] }]'
-    )
-    assert separator
-    tls_ingress = before_tls_port.rsplit("    - fromEndpoints:", maxsplit=1)[1]
-    assert "app.kubernetes.io/component: noded\n" in tls_ingress
-    assert "app.kubernetes.io/component: noded-brick\n" in tls_ingress
-    assert "k8s:io.kubernetes.pod.namespace: monolith\n" in tls_ingress
-    assert "app.kubernetes.io/component: app\n" in tls_ingress
-
-
 def test_spiffe_client_ids_render_as_comma_separated_env_value() -> None:
     rendered = _render(
         "spiffe-clients",
