@@ -53,8 +53,9 @@ listed in `projects/monolith/ARCHITECTURE.md`.
 **The monolith-agents tier is the second entry point, intended for Ember guests.**
 It is a pruned monolith binary (`projects/monolith/app/agents_main.py`)
 serving four knowledge tools (`search_knowledge`, `report_knowledge`,
-`dispute_fact`, `report_distress`) and two bounded Kubernetes observation
-tools (`kubernetes_read`, `kubernetes_pod_logs`) on its own Service and port,
+`dispute_fact`, `report_distress`), three default-off board tools
+(`post_message`, `read_board`, `ack_message`), and two bounded Kubernetes
+observation tools (`kubernetes_read`, `kubernetes_pod_logs`) on its own Service and port,
 with a database role scoped to the knowledge tables. It is
 fail-closed: an anonymous principal is answered 401 before the MCP app runs.
 Identity comes from the authentik `mcp-agents` provider by

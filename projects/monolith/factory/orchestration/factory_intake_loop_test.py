@@ -185,6 +185,28 @@ def test_disabled_intake_has_no_github_or_audit(db, monkeypatch):
     assert audits(db, "intake_idle") == []
 
 
+def test_staged_blocker_defers_before_listing_or_claim(db, monkeypatch):
+    from factory.orchestration import agent_board_poll
+
+    monkeypatch.setenv(agent_board_poll.POLL_ENABLED_ENV, "true")
+    monkeypatch.setattr(
+        agent_board_poll,
+        "_read_active",
+        lambda _lanes: frozenset({"blocker:lane:delivery", "blocker:lane:advisory"}),
+    )
+    monkeypatch.setattr(
+        intake_loop,
+        "github_list",
+        lambda *_args: pytest.fail("blocked intake listed or claimed work"),
+    )
+    assert (
+        intake_loop.intake_tick(
+            policy(labels=["agent-ready"], refine_enabled=True), generation=0
+        )
+        == []
+    )
+
+
 @pytest.mark.parametrize("state", ["queued", "admitted", "uncertain"])
 def test_current_generation_work_blocks_intake(db, monkeypatch, state):
     fake_pages(monkeypatch, [issue(1, ["agent-ready"])])

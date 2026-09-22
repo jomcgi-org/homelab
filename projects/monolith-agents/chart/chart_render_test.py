@@ -14,6 +14,7 @@ REQUIRED_ENV = {
     "DATABASE_URL",
     "EMBEDDING_URL",
     "KNOWLEDGE_DEFAULT_REPO_SCOPE",
+    "AGENT_BOARD_ENABLED",
     "AUTH_AUTHENTIK_JWKS_URL",
     "AUTH_AUTHENTIK_ISSUER",
     "AUTH_AUTHENTIK_AUDIENCE",
@@ -275,6 +276,12 @@ def test_all_required_environment_variables_are_present(documents: list[dict]) -
     container = _deployment(documents)["spec"]["template"]["spec"]["containers"][0]
     env_names = {entry["name"] for entry in container["env"]}
     assert REQUIRED_ENV <= env_names
+
+
+def test_agent_board_is_staged_off(documents: list[dict]) -> None:
+    container = _deployment(documents)["spec"]["template"]["spec"]["containers"][0]
+    env = {entry["name"]: entry.get("value") for entry in container["env"]}
+    assert env["AGENT_BOARD_ENABLED"] == "false"
 
 
 def _secret_refs(container: dict) -> set[str]:

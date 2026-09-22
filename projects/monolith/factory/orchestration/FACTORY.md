@@ -439,6 +439,15 @@ create, which fails the turn rather than making it wait.
 
 ### Autonomous intake and refine
 
+`FACTORY_AGENT_BOARD_POLL_ENABLED` stages one board consumer at the
+between-job boundary, before autonomous intake lists or claims another receipt.
+It is false by default and independent of `AGENT_BOARD_ENABLED`. When enabled,
+only an active, authorized `blocker:lane:<lane>` removes that lane from the
+current intake pass. Expiry uses the server clock and becomes inactive exactly
+at `expires_at`. A board read outage leaves the exclusive queue available, and
+`claim:*` remains soft intent: it is ignored by this seam and cannot replace
+receipt admission or `acquire_lock`.
+
 The optional `intake` block is fully defaulted when an older policy does not
 carry it:
 

@@ -2714,6 +2714,39 @@ py_test(
 )
 
 py_test(
+    name = "agent_board_test",
+    srcs = ["knowledge/board_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_agents_backend",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "agent_board_migration_test",
+    srcs = ["knowledge/board_migration_test.py"],
+    data = ["//projects/monolith/chart:migrations"],
+    imports = ["."],
+    deps = ["@pip//pytest"],
+)
+
+py_test(
+    name = "agent_board_catalogue_test",
+    srcs = ["app/agent_board_catalogue_test.py"],
+    data = [
+        "//projects/embervm/runtimes/claude:shim_source",
+        "//projects/embervm/runtimes/pi:agent_mcp_source",
+    ],
+    imports = ["."],
+    deps = [
+        ":monolith_agents_backend",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "agent_kubernetes_client_test",
     srcs = ["//projects/monolith/agent_kubernetes:client_test.py"],
     imports = ["."],
@@ -4920,6 +4953,16 @@ py_test(
         "@pip//pytest",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "swarm_agent_board_poll_test",
+    srcs = ["factory/orchestration/agent_board_poll_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_factory",
+        "@pip//pytest",
     ],
 )
 

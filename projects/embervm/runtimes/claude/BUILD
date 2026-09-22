@@ -6,6 +6,12 @@ load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("//bazel/tools/oci:apko_image.bzl", "apko_image")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
+filegroup(
+    name = "shim_source",
+    srcs = ["shim.py"],
+    visibility = ["//projects/monolith:__pkg__"],
+)
+
 # EmberVM claude runtime base image (issue #4055). A session-class guest whose
 # PID 1 is a stdlib-python shim that owns a long-lived Claude Code CLI process
 # and answers the frozen HTTP-over-vsock guest contract on port 1027

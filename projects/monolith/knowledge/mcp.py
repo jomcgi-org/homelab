@@ -25,6 +25,7 @@ from sqlmodel import Session, select
 from auth.api import current_principal
 from core.db import get_engine
 from knowledge.atoms import index_atom
+from knowledge.board import mirror_distress
 from knowledge.burst import create_kg_burst_grant, validate_kg_burst_grant
 from knowledge.indexing import index_note_from_raw
 from knowledge.interventions import create_intervention
@@ -570,6 +571,19 @@ async def report_distress(
     if message is None or level is None:
         return result
     raw_id = result["intervention_id"]
+    # Peer visibility is best effort and has no notification side effect. Run
+    # it for both the creator and an exact replay so a transient mirror failure
+    # can repair later without ever creating a second human notification.
+    try:
+        await mirror_distress(
+            raw_id=raw_id,
+            summary=summary,
+            severity=severity,
+            details=details,
+            requested_intervention=requested_intervention,
+        )
+    except Exception:
+        logger.exception("knowledge mcp: distress board mirror failed for %s", raw_id)
     if not won:
         return {"intervention_id": raw_id, "status": "recorded"}
     # A crash after this commit and before notification can leave a durable,
