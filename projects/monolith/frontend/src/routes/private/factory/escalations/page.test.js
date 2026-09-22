@@ -301,6 +301,68 @@ describe("escalations page", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  test("a retry after a refusal uses a fresh durable request key", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 409,
+        json: async () => ({
+          detail: "a brief is running on this issue; decide when it settles",
+        }),
+      })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) })
+      .mockResolvedValue({ ok: true, json: async () => ({ escalations: [] }) });
+    stubFetch(fetchMock);
+    const target = renderPage({ escalations: [escalation()], error: false });
+
+    target.querySelector(".option").click();
+    await settle();
+    const first = JSON.parse(fetchMock.mock.calls[0][1].body);
+
+    target.querySelector(".option").click();
+    await settle();
+    const retry = JSON.parse(fetchMock.mock.calls[1][1].body);
+
+    expect(retry.option_key).toBe(first.option_key);
+    expect(retry.decision_id).toBe(first.decision_id);
+    expect(retry.request_key).not.toBe(first.request_key);
+    expect(fetchMock.mock.calls[2][0]).toBe("/factory/escalations");
+  });
+
+  test("an uncertain outcome refreshes the escalation list", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          ok: false,
+          state: "outcome_unknown",
+          reason: "GitHub effects may have occurred; inspect the issue",
+        }),
+      })
+      .mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          escalations: [escalation({ summary: "Fresh server state." })],
+        }),
+      });
+    stubFetch(fetchMock);
+    const target = renderPage({ escalations: [escalation()], error: false });
+
+    target.querySelector(".option").click();
+    await settle();
+
+    expect(fetchMock.mock.calls[1][0]).toBe("/factory/escalations");
+    expect(target.querySelector(".outcome").textContent).toContain(
+      "Fresh server state.",
+    );
+    expect(target.querySelector("[role=alert]").textContent).toContain(
+      "GitHub effects may have occurred",
+    );
+  });
+
   test("a card without an exact identity cannot reach the mutation proxy", async () => {
     const fetchMock = vi.fn();
     stubFetch(fetchMock);

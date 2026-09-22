@@ -52,6 +52,10 @@
   // The receipt whose close is armed, or null. Closing is the one escape
   // another button cannot undo, so it is asked about once before it is sent.
   let confirming = $state(null);
+  // A definitive refusal completed one durable request. The next click is a
+  // new attempt and therefore needs a fresh key, while a transport failure or
+  // uncertain outcome keeps the old key so replay can inspect that request.
+  let requestAttempts = $state({});
   const pendingContexts = new Set();
 
   const pending = $derived(openOnes(escalations));
@@ -133,7 +137,11 @@
     try {
       const requestBody = {
         ...body,
-        request_key: await decisionRequestKey(item.receipt_id, body),
+        request_key: await decisionRequestKey(
+          item.receipt_id,
+          body,
+          requestAttempts[item.receipt_id] ?? 0,
+        ),
       };
       const response = await fetch(
         `/factory/escalations/decisions/${item.receipt_id}`,
@@ -144,11 +152,24 @@
         },
       );
       const result = await response.json().catch(() => ({}));
-      if (!response.ok || result.ok === false) {
+      if (!response.ok) {
         failure =
           result.detail ??
           result.reason ??
           `the decision failed (${response.status})`;
+        if (response.status >= 400 && response.status < 500) {
+          requestAttempts = {
+            ...requestAttempts,
+            [item.receipt_id]: (requestAttempts[item.receipt_id] ?? 0) + 1,
+          };
+        }
+        return;
+      }
+      if (result.ok === false) {
+        failure = result.reason ?? "the decision outcome is unknown";
+        // The durable result says external effects may have occurred. Re-read
+        // the server-owned list before leaving that warning on screen.
+        await refresh();
         return;
       }
       // A chat the lane could not take still posted the question, so the
