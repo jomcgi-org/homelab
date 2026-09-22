@@ -32,20 +32,19 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: spire
-  # Two ServerSideApply phantom diffs on the upstream StatefulSet
+  # ServerSideApply phantom defaults on the upstream StatefulSet
   # (docs/runbooks/argocd-outofsync.md, "Phantom OutOfSync from
   # ServerSideApply"): the chart renders readOnly: false on four volume mounts
-  # and the API server drops the default, and the chart leaves protocol unset on
-  # two container ports while the API server defaults protocol: TCP into the
-  # list key, so ArgoCD's apply manager owns a key the manifest never declares.
-  # Ignore exactly those two fields.
+  # and the API server drops the default. Keep container port protocol in the
+  # comparison: it is part of the associative list key. Removing it makes
+  # server-side diff reject the normalized StatefulSet. The API server supplies
+  # TCP during the dry run when the upstream chart omits it.
   ignoreDifferences:
     - group: apps
       kind: StatefulSet
       name: spire-server
       jqPathExpressions:
         - .spec.template.spec.containers[].volumeMounts[].readOnly
-        - .spec.template.spec.containers[].ports[].protocol
         # The API server stamps apiVersion, kind, and creationTimestamp into
         # volumeClaimTemplates on the live object. The server-side diff's
         # predicted state drops them, so the StatefulSet read OutOfSync
