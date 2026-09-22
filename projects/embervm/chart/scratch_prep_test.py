@@ -123,6 +123,10 @@ esac""",
         "losetup",
         """case " $* " in
   *" -j "*)
+    if [ -f "$FAKE_REPLACE_ON_LOSETUP" ]; then
+      printf '%s\n' foreign-data > "${FAKE_MANAGED_IMAGE}.replacement"
+      mv "${FAKE_MANAGED_IMAGE}.replacement" "$FAKE_MANAGED_IMAGE"
+    fi
     [ -n "${FAKE_LOOP_DEVICE:-}" ] || exit 0
     printf '%s: []: (%s)\n' "$FAKE_LOOP_DEVICE" "$HOST_SCRATCH_IMAGE_PATH"
     ;;
@@ -153,6 +157,7 @@ esac""",
             "FAKE_MANAGED_IMAGE": str(image),
             "FAKE_MOUNTED": str(paths["mounted"]),
             "FAKE_REPLACE_ON_FALLOCATE": str(state / "replace-on-fallocate"),
+            "FAKE_REPLACE_ON_LOSETUP": str(state / "replace-on-losetup"),
             "FAKE_REPLACE_ON_MKFS": str(state / "replace-on-mkfs"),
             "FAKE_MOUNT_SOURCE": "/dev/loop7",
             "FAKE_MOUNT_TARGETS": str(scratch),
@@ -386,6 +391,33 @@ def test_migration_never_formats_concurrent_path_replacement(
     assert "identity changed during migration" in result.stderr
     assert paths["image"].read_text() == "foreign-data\n"
     assert not paths["mounted"].exists()
+    assert not paths["marker"].exists()
+
+
+@pytest.mark.parametrize("mounted", [False, True])
+def test_migration_never_formats_replacement_during_verification(
+    prep_env: tuple[dict[str, str], dict[str, Path]], mounted: bool
+) -> None:
+    env, paths = prep_env
+    _seed(paths, "ext4", mounted=mounted)
+    _add_managed_fstab(paths)
+    Path(env["FAKE_REPLACE_ON_LOSETUP"]).touch()
+    env.update(
+        {
+            "SCRATCH_FILESYSTEM": "xfs",
+            "SCRATCH_MIGRATE_EXT4_TO_XFS": "true",
+        }
+    )
+    if not mounted:
+        env["FAKE_LOOP_DEVICE"] = ""
+
+    result = _run(env, check=False)
+
+    assert result.returncode != 0
+    assert "identity changed during migration verification" in result.stderr
+    assert paths["image"].read_text() == "foreign-data\n"
+    assert paths["fs"].read_text().strip() == "ext4"
+    assert not paths["log"].exists()
     assert not paths["marker"].exists()
 
 
