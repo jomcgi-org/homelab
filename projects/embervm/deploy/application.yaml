@@ -62,6 +62,12 @@ spec:
       name: embervm-oauth-grant-codex-cluster
       jsonPointers:
         - /data
+    # Quota state is runtime-owned for the same reconciliation reason, but it
+    # is isolated from credential data in a non-secret ConfigMap.
+    - kind: ConfigMap
+      name: embervm-tokenbroker-quota
+      jsonPointers:
+        - /data
   syncPolicy:
     automated:
       prune: true

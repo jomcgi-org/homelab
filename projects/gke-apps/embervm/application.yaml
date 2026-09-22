@@ -64,6 +64,10 @@ spec:
       name: embervm-oauth-grant-agent-mcp
       jsonPointers:
         - /data
+    - kind: ConfigMap
+      name: embervm-tokenbroker-quota
+      jsonPointers:
+        - /data
   syncPolicy:
     automated:
       prune: true

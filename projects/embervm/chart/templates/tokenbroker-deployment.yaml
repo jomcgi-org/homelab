@@ -68,6 +68,7 @@ spec:
           env:
             - { name: KUBERNETES_NAMESPACE, value: {{ .Release.Namespace | quote }} }
             - { name: TOKENBROKER_GRANTS, value: {{ toJson .Values.tokenBroker.grants | quote }} }
+            - { name: TOKENBROKER_QUOTA_CONFIGMAP, value: {{ printf "%s-quota" (include "embervm.tokenBroker.fullname" .) | quote }} }
             # BROKER_LISTEN_ADDR is the plaintext health, metrics, and login listener.
             - { name: BROKER_LISTEN_ADDR, value: ":8080" }
             - { name: BROKER_RETIRE_PLAINTEXT_PROTECTED_ROUTES, value: {{ .Values.tokenBroker.plaintext.retireProtectedRoutes | quote }} }
