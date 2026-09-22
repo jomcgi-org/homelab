@@ -1821,7 +1821,7 @@ cfIngress:
     # AGENTS: Access consumes the Authorization header at the edge, so a bearer
     # token cannot survive it, and no amount of configuration changes that.
     auth: cloudflare
-    # The GitHub Semgrep webhook route carries NO SecurityPolicy by design:
+    # The GitHub factory webhook route carries NO SecurityPolicy by design:
     # GitHub bypasses Cloudflare Access at the edge via an IP-allowlist Bypass
     # policy and sends no Access JWT, so any policy on it would reject every
     # real delivery. Its gate is the handler's HMAC verification.
