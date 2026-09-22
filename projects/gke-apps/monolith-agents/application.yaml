@@ -6,19 +6,17 @@ metadata:
   finalizers:
     - resources-finalizer.argocd.argoproj.io
   annotations:
-    # Wave 2 like every other gke-apps Application (monolith included), so this
-    # buys no ordering against the monolith Postgres or its migrations; the
-    # workload is off until both exist and the 1Password operator is installed
-    # out of band. Not Kargo-managed: this pin is the deploy lever and follows
-    # the gke-apps rule that write-back does NOT maintain these pins.
+    # Kargo owns the chart revision, as for monolith and monolith-public.
+    # The root Application preserves that field across its own syncs.
+    kargo.akuity.io/authorized-stage: kargo-monolith-agents:prod
     argocd.argoproj.io/sync-wave: "2"
 spec:
   project: default
   sources:
     - repoURL: ghcr.io/jomcgi/homelab/charts
       chart: monolith-agents
-      # Bootstrap floor: the newest chart published from main when the tier was
-      # registered on the hub. Advance by hand, as with the other gke-apps pins.
+      # Bootstrap floor only. Kargo discovers and promotes published versions;
+      # write-back does not maintain gke-apps pins.
       targetRevision: 0.7.36
       helm:
         releaseName: monolith-agents

@@ -289,6 +289,25 @@ promotion:
           application: embervm
           upstream: []
           autoPromotion: true
+    - name: monolith-agents
+      warehouse: monolith-agents-chart
+      project: kargo-monolith-agents
+      chartRepo: oci://ghcr.io/jomcgi/homelab/charts/monolith-agents
+      # This published version includes the agents-safe report write path.
+      # The live tier was still on 0.7.36 because nothing owned promotion.
+      semverConstraint: ">=0.103.24"
+      discoveryLimit: 20
+      appSourceRepo: ghcr.io/jomcgi/homelab/charts
+      appSourceChart: monolith-agents
+      desiredRevisionExpr: "${{ chartFrom('oci://ghcr.io/jomcgi/homelab/charts/monolith-agents').Version }}"
+      # Initial bound for this single Deployment, pending rollout measurements.
+      # The existing argocd-wait gate requires healthy, synced, completed rollout.
+      waitTimeout: 10m0s
+      stages:
+        - name: prod
+          application: monolith-agents
+          upstream: []
+          autoPromotion: true
     - name: monolith-public
       warehouse: monolith-public-chart
       project: kargo-monolith-public
