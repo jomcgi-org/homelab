@@ -6029,6 +6029,72 @@ defmodule Embervm.BaseBuilderTest do
              Map.take(before, [:base_refs, :superseded_refs, :vendor_built, :snapshot_ref])
   end
 
+  test "one captured observation drives registry conditions, ref union, and refresh change detection" do
+    agent = start_recorder()
+    {:ok, on_clock} = Agent.start_link(fn -> nil end)
+    table = new_cap_table()
+    put_vendor_fact(table, "node-4", nil, "w", "w__fresh", "intel")
+    put_vendor_fact(table, "node-4", "sibling", "w", "w__fresh", "intel")
+
+    # condition/5 calls the clock while assembling status. Mutate ETS there to
+    # deterministically model a heartbeat arriving between observation and
+    # publication, without a new production hook or timing-dependent sleeps.
+    clock = fn ->
+      case Agent.get_and_update(on_clock, &{&1, nil}) do
+        nil -> :ok
+        change -> change.()
+      end
+
+      1_000
+    end
+
+    builder =
+      start_builder(
+        capacity_table: table,
+        clock: clock,
+        status_writer: recording_status_writer(agent),
+        build_fun: fn :fake_channel, _req -> {:ok, resp("w__fresh")} end
+      )
+
+    build_current(builder, agent, "w__fresh")
+    assert %{"status" => "True"} = condition(latest(agent, "w"), "BaseRegistryConverged")
+
+    # The captured read disagrees, then the sibling converges during condition
+    # assembly. Publish the captured disagreement, not a mixed-view certificate.
+    put_vendor_fact(table, "node-4", "sibling", "w", "w__old", "intel")
+    Agent.update(on_clock, fn _ ->
+      fn -> put_vendor_fact(table, "node-4", "sibling", "w", "w__fresh", "intel") end
+    end)
+
+    send(builder, :export_reconcile)
+    state = :sys.get_state(builder)
+    status = latest(agent, "w")
+    assert status["snapshotRefs"] == %{"intel" => ["w__fresh", "w__old"]}
+    assert %{"status" => "False"} = condition(status, "BaseRegistryConverged")
+    assert state.workloads["w"].last_snapshot_refs == status["snapshotRefs"]
+
+    # The next observation, and only that observation, publishes convergence.
+    send(builder, :export_reconcile)
+    _ = :sys.get_state(builder)
+    assert latest(agent, "w")["snapshotRefs"] == %{"intel" => ["w__fresh"]}
+    assert %{"status" => "True"} = condition(latest(agent, "w"), "BaseRegistryConverged")
+
+    # Conversely, a new stale advertisement arriving during assembly must not
+    # be folded into a patch whose change decision saw an unchanged fresh view.
+    settled = recorded(agent)
+    Agent.update(on_clock, fn _ ->
+      fn -> put_vendor_fact(table, "node-4", "sibling", "w", "w__old", "intel") end
+    end)
+
+    send(builder, :export_reconcile)
+    _ = :sys.get_state(builder)
+    assert recorded(agent) == settled
+    send(builder, :export_reconcile)
+    _ = :sys.get_state(builder)
+    assert latest(agent, "w")["snapshotRefs"] == %{"intel" => ["w__fresh", "w__old"]}
+    assert %{"status" => "False"} = condition(latest(agent, "w"), "BaseRegistryConverged")
+  end
+
   test "registry convergence includes busy capable siblings but excludes undersized envelopes" do
     agent = start_recorder()
     table = new_cap_table()

@@ -2037,17 +2037,21 @@ defmodule Embervm.BaseBuilder do
   defp instance_build_facts(state, instance_id) do
     case find_capacity_fact(state.capacity_table, instance_id) do
       {:ok, f} ->
-        %{
-          instance_id: instance_id,
-          node_id: Map.get(f, :node_id) || instance_id,
-          cpu_vendor: cpu_vendor(f),
-          size_class: Map.get(f, :size_class, ""),
-          mem_budget_mib: Map.get(f, :mem_budget_mib, 0)
-        }
+        compact_build_facts(f, instance_id)
 
       :error ->
         nil
     end
+  end
+
+  defp compact_build_facts(fact, instance_id) do
+    %{
+      instance_id: instance_id,
+      node_id: Map.get(fact, :node_id) || instance_id,
+      cpu_vendor: cpu_vendor(fact),
+      size_class: Map.get(fact, :size_class, ""),
+      mem_budget_mib: Map.get(fact, :mem_budget_mib, 0)
+    }
   end
 
   defp cpu_vendor(fact) do
@@ -2077,7 +2081,7 @@ defmodule Embervm.BaseBuilder do
 
   # Every fleet vendor this workload still needs a build for, sorted for a
   # deterministic enqueue order. Deliberately covers BOTH classes
-  # `base_vendor_coverage_condition/2` reports separately:
+  # `base_vendor_coverage_condition/4` reports separately:
   #
   #   * missing: no vendor_built record and no observed ref at all;
   #   * unverified: an observed ref exists, but vendor_built carries nothing to
@@ -4287,20 +4291,14 @@ defmodule Embervm.BaseBuilder do
   # republishes the full condition array using the last written phase. A pure
   # snapshotRefs change remains an additive map patch and does not replace the
   # unchanged condition array.
-  defp write_base_status(state, w, {:fleet_refresh, phase, conditions_changed?}) do
-    write_base_status(state, w, phase, conditions_changed?, false)
-  end
-
   defp write_base_status(state, w, phase) do
-    write_base_status(state, w, phase, true, true)
+    write_base_status(state, w, phase, true, true, status_observation(state, w))
   end
 
-  defp write_base_status(state, w, phase, include_conditions?, include_snapshot?) do
+  defp write_base_status(state, w, phase, include_conditions?, include_snapshot?, observation) do
     ready = ready_condition(state, w)
     base_built = base_built_condition(state, phase)
-    refs = observed_snapshot_refs_by_vendor(state, w)
-    vendor_coverage = observed_vendor_coverage(state, w, refs)
-    convergence = base_registry_convergence_condition(state, w)
+    %{refs: refs, coverage: vendor_coverage, convergence: convergence} = observation
 
     status_map =
       if(include_conditions?,
@@ -4383,9 +4381,8 @@ defmodule Embervm.BaseBuilder do
   # capacity-fact gap or brick roll is not evidence that every live base vanished.
   defp refresh_snapshot_refs(state) do
     Enum.reduce(state.workloads, state, fn {_name, w}, acc ->
-      refs = observed_snapshot_refs_by_vendor(acc, w)
-      coverage = observed_vendor_coverage(acc, w, refs)
-      convergence = base_registry_convergence_condition(acc, w)
+      observation = status_observation(acc, w)
+      %{refs: refs, coverage: coverage, convergence: convergence} = observation
 
       refs_changed? = map_size(refs) > 0 and refs != w.last_snapshot_refs
 
@@ -4406,7 +4403,10 @@ defmodule Embervm.BaseBuilder do
           write_base_status(
             acc,
             w,
-            {:fleet_refresh, w.last_status_phase, conditions_changed?}
+            w.last_status_phase,
+            conditions_changed?,
+            false,
+            observation
           )
 
         true ->
@@ -4415,12 +4415,39 @@ defmodule Embervm.BaseBuilder do
     end)
   end
 
-  defp observed_vendor_coverage(state, w, refs) do
-    if map_size(refs) == 0 and MapSet.size(fleet_vendors(state, w)) == 0 do
-      w.last_vendor_coverage || base_vendor_coverage_condition(state, w)
-    else
-      base_vendor_coverage_condition(state, w)
-    end
+  # One captured observation drives both change detection and publication. ETS
+  # may change while conditions are assembled, but a patch must not combine the
+  # ref union from one read with a convergence claim from another. This is not
+  # an atomic fleet snapshot or evidence about a later live publication.
+  defp status_observation(state, w) do
+    facts = Embervm.NodeCapacity.all(state.capacity_table)
+    refs = group_snapshot_refs_by_vendor(facts, w)
+
+    # Retain vendor coverage's existing registered/build-eligible, node-deduped
+    # semantics, evaluated from the SAME facts as the all-instance observation.
+    vendors =
+      facts
+      |> Enum.filter(&(Map.get(&1, :instance_id) in state.node_ids))
+      |> Enum.map(&compact_build_facts(&1, &1.instance_id))
+      |> Enum.filter(&build_eligible?(&1, w.mem_mib || 0))
+      |> dedupe_per_node()
+      |> Enum.map(& &1.cpu_vendor)
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.uniq()
+      |> Enum.sort()
+
+    coverage =
+      if map_size(refs) == 0 and vendors == [] do
+        w.last_vendor_coverage || base_vendor_coverage_condition(state, w, refs, vendors)
+      else
+        base_vendor_coverage_condition(state, w, refs, vendors)
+      end
+
+    %{
+      refs: refs,
+      coverage: coverage,
+      convergence: base_registry_convergence_condition(state, w, facts)
+    }
   end
 
   # Observation only. Use the existing build-envelope eligibility (including
@@ -4435,8 +4462,7 @@ defmodule Embervm.BaseBuilder do
   # shared host nor ref sort order proves freshness. Distinct refs can reflect
   # different rootfs identities, so disagreement is NOT a claim of supersession.
   # No ownership, hydration, retention, or placement caller consumes this status.
-  defp base_registry_convergence_condition(state, w) do
-    facts = Embervm.NodeCapacity.all(state.capacity_table)
+  defp base_registry_convergence_condition(state, w, facts) do
     observed_ids = MapSet.new(facts, &Map.get(&1, :instance_id))
     missing_facts = Enum.count(state.node_ids, &(not MapSet.member?(observed_ids, &1)))
     eligible = Enum.filter(facts, &build_eligible?(&1, w.mem_mib || 0))
@@ -4491,15 +4517,6 @@ defmodule Embervm.BaseBuilder do
 
   defp nonempty_string?(value), do: is_binary(value) and value != ""
 
-  # Status observes EVERY instance, including disagreeing siblings on one host.
-  # Physical-node deduplication remains in the operational helper below: its
-  # hydration fallback and retention callers have a separate selection contract.
-  defp observed_snapshot_refs_by_vendor(state, w) do
-    state.capacity_table
-    |> Embervm.NodeCapacity.all()
-    |> group_snapshot_refs_by_vendor(w)
-  end
-
   # The representative base refs, grouped by CPU vendor:
   #
   #     %{"amd" => ["bazel-query__426e..."], "intel" => ["bazel-query__00ad..."]}
@@ -4513,7 +4530,7 @@ defmodule Embervm.BaseBuilder do
   # the window a reader consults status to decide whether a rollout has landed.
   #
   # This operational view is used by hydration fallback and remote retention.
-  # Status uses observed_snapshot_refs_by_vendor/2 instead. Session placement
+  # Status uses status_observation/2 over EVERY instance instead. Session placement
   # continues to resolve the selected instance's own reported ref.
   defp snapshot_refs_by_vendor(state, w) do
     state
@@ -4566,12 +4583,9 @@ defmodule Embervm.BaseBuilder do
     )
   end
 
-  defp base_vendor_coverage_condition(state, w) do
-    vendors = fleet_vendors(state, w) |> Enum.sort()
+  defp base_vendor_coverage_condition(state, w, observed_refs, vendors) do
     # Coverage attests a build per vendor, not adoption by every sibling. The
     # status ref list keeps any mixed old/new observations visible separately.
-    observed_refs = observed_snapshot_refs_by_vendor(state, w)
-
     missing =
       Enum.filter(vendors, fn vendor ->
         not Map.has_key?(w.vendor_built, vendor) and not Map.has_key?(observed_refs, vendor)
