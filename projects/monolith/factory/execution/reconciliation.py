@@ -437,10 +437,126 @@ def _capacity_denied_turn(turn) -> bool:
     )
 
 
-def read_not_invoked_factory_attempt(
-    db: Session, pin: dict, session_id: int | None
+def _interrupted_dispatch_receipts(db, agent, permit, count, dispatched):
+    """Prove every earlier dispatch ended for drain before the next began.
+
+    Native receipts authenticate each physical response independently of the
+    mutable turn row. Missing, conflicting or non-drain responses are unknown.
+    This proof says nothing about earlier spend and must never refund it.
+    """
+    from datetime import timezone
+    from sqlalchemy import or_
+    from factory.execution import result_receipts, store
+    from factory.execution.models import AgentResultReceipt
+
+    def aware(value):
+        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+
+    ids = db.exec(
+        select(AgentResultReceipt.id)
+        .where(
+            or_(
+                AgentResultReceipt.session_id == agent.id,
+                AgentResultReceipt.local_session_id == agent.local_session_id,
+            )
+        )
+        .with_for_update()
+        .limit(store.MAX_PENDING_DISPATCHES + 1)
+    ).all()
+    rows = [result_receipts._receipt_metadata(db, rid) for rid in ids]
+    if len(rows) not in (count - 1, count) or any(row is None for row in rows):
+        return None
+    ordered = sorted(rows, key=lambda row: row["dispatch_count"])
+    if [r["dispatch_count"] for r in ordered] != list(range(1, len(rows) + 1)):
+        return None
+    history, guests, previous_end = [], set(), None
+    for row in ordered:
+        if (
+            row["session_id"] != agent.id
+            or row["local_session_id"] != agent.local_session_id
+            or row["seq"] != 1
+            or not row["claim_owner"]
+            or not row["guest_id"]
+            or (previous_end is not None and aware(row["created_at"]) < previous_end)
+        ):
+            return None
+        guests.add(row["guest_id"])
+        if row["dispatch_count"] == count:
+            # Optional preparation for the final dispatch is not a response.
+            if (
+                row["claim_owner"] != permit.owner
+                or row["guest_id"] != agent.ember_session_id
+                or aware(row["created_at"]) < aware(dispatched)
+                or any(
+                    row[k] is not None
+                    for k in (
+                        "received_at",
+                        "response_observed_at",
+                        "response_observer_released_at",
+                        "result_sha256",
+                    )
+                )
+                or db.exec(
+                    select(AgentResultReceipt.result_body.is_not(None)).where(
+                        AgentResultReceipt.id == row["id"]
+                    )
+                ).one()
+            ):
+                return None
+            continue
+        try:
+            native = json.loads(result_receipts._result(db, row)["result_body"])
+        except (result_receipts.ReceiptRejected, ValueError, TypeError):
+            return None
+        if (
+            not isinstance(native, dict)
+            or native.get("terminal_reason") != "interrupted_for_drain"
+            or native.get("stop_reason") != "interrupted_for_drain"
+            or not aware(row["created_at"])
+            <= aware(row["received_at"])
+            <= aware(dispatched)
+        ):
+            return None
+        previous_end = aware(row["received_at"])
+        history.append(
+            {
+                "receipt_id": row["id"],
+                "dispatch_count": row["dispatch_count"],
+                "guest_id": row["guest_id"],
+                "claim_owner": row["claim_owner"],
+                "result_sha256": row["result_sha256"],
+            }
+        )
+    if agent.ember_session_id:
+        guests.add(agent.ember_session_id)
+    if (
+        db.exec(
+            select(AgentSession.id)
+            .where(
+                AgentSession.id != agent.id, AgentSession.ember_session_id.in_(guests)
+            )
+            .limit(1)
+        ).first()
+        is not None
+    ):
+        return None
+    return history
+
+
+def read_interrupted_retry_not_invoked_factory_attempt(db, pin, session_id):
+    """A completed drain chain followed by a proven uninvoked retry, cost unknown."""
+    return _read_not_invoked_factory_attempt(db, pin, session_id, after_drain=True)
+
+
+def read_not_invoked_factory_attempt(db, pin, session_id):
+    """The existing first-dispatch proof, with no earlier model invocation."""
+    return _read_not_invoked_factory_attempt(db, pin, session_id)
+
+
+def _read_not_invoked_factory_attempt(
+    db: Session, pin: dict, session_id: int | None, *, after_drain: bool = False
 ) -> dict | None:
-    """Validate the session owner's completed first-dispatch failure.
+    """Validate the session owner's completed pre-POST failure.
 
     The factory caller holds its control lock and keeps this transaction open
     through graph/start settlement. This reads positive, paired turn/permit
@@ -450,7 +566,7 @@ def read_not_invoked_factory_attempt(
     from datetime import datetime, timezone
     from sqlalchemy import or_
 
-    from factory.execution import normalize_model
+    from factory.execution import normalize_model, store
     from factory.execution.models import AgentResultReceipt, AgentTurn, PendingMessage
 
     if session_id is not None and (type(session_id) is not int or session_id < 1):
@@ -493,7 +609,11 @@ def read_not_invoked_factory_attempt(
             not isinstance(recovery, dict)
             or recovery.get("invocation_phase") != "not_invoked"
             or type(recovery.get("dispatch_count")) is not int
-            or recovery["dispatch_count"] != 1
+            or (not after_drain and recovery["dispatch_count"] != 1)
+            or (
+                after_drain
+                and not 2 <= recovery["dispatch_count"] <= store.MAX_PENDING_DISPATCHES
+            )
             or not isinstance(recovery.get("claim_owner"), str)
             or not recovery["claim_owner"]
             or not isinstance(recovery.get("last_dispatch_at"), str)
@@ -536,61 +656,72 @@ def read_not_invoked_factory_attempt(
         or not aware(dispatched) <= aware(turn.created_at) <= aware(permit.settled_at)
     ):
         return None
-    # A prepared empty receipt can precede a failed POST setup. Any captured
-    # response, response marker, different owner or newer attempt conflicts
-    # with this proof. Read metadata only, never a native result body.
-    receipts = db.exec(
-        select(
-            AgentResultReceipt.local_session_id,
-            AgentResultReceipt.session_id,
-            AgentResultReceipt.seq,
-            AgentResultReceipt.dispatch_count,
-            AgentResultReceipt.claim_owner,
-            AgentResultReceipt.guest_id,
-            AgentResultReceipt.received_at,
-            AgentResultReceipt.response_observed_at,
-            AgentResultReceipt.result_sha256,
-            AgentResultReceipt.result_body.isnot(None),
+    interrupted = None
+    if after_drain:
+        interrupted = _interrupted_dispatch_receipts(
+            db, agent, permit, recovery["dispatch_count"], dispatched
         )
-        .where(
-            or_(
-                AgentResultReceipt.session_id == agent.id,
-                AgentResultReceipt.local_session_id == agent.local_session_id,
+        if interrupted is None:
+            return None
+    else:
+        # A prepared empty receipt can precede a failed POST setup. Any captured
+        # response, response marker, different owner or newer attempt conflicts
+        # with this proof. Read metadata only, never a native result body.
+        receipts = db.exec(
+            select(
+                AgentResultReceipt.local_session_id,
+                AgentResultReceipt.session_id,
+                AgentResultReceipt.seq,
+                AgentResultReceipt.dispatch_count,
+                AgentResultReceipt.claim_owner,
+                AgentResultReceipt.guest_id,
+                AgentResultReceipt.received_at,
+                AgentResultReceipt.response_observed_at,
+                AgentResultReceipt.result_sha256,
+                AgentResultReceipt.result_body.isnot(None),
             )
-        )
-        .with_for_update()
-        .limit(2)
-    ).all()
-    if len(receipts) > 1 or any(
-        tuple(receipt[:6])
-        != (
-            agent.local_session_id,
-            agent.id,
-            1,
-            1,
-            permit.owner,
-            agent.ember_session_id,
-        )
-        or any(value is not None for value in receipt[6:9])
-        or receipt[9]
-        for receipt in receipts
-    ):
-        return None
+            .where(
+                or_(
+                    AgentResultReceipt.session_id == agent.id,
+                    AgentResultReceipt.local_session_id == agent.local_session_id,
+                )
+            )
+            .with_for_update()
+            .limit(2)
+        ).all()
+        if len(receipts) > 1 or any(
+            tuple(receipt[:6])
+            != (
+                agent.local_session_id,
+                agent.id,
+                1,
+                1,
+                permit.owner,
+                agent.ember_session_id,
+            )
+            or any(value is not None for value in receipt[6:9])
+            or receipt[9]
+            for receipt in receipts
+        ):
+            return None
     return {
         "session_id": agent.id,
         "local_session_id": agent.local_session_id,
         "workflow_id": agent.workflow_id,
         "turn_id": turn.id,
         "seq": 1,
-        "dispatch_count": 1,
+        "dispatch_count": recovery["dispatch_count"],
         "claim_owner": permit.owner,
         "last_dispatch_at": recovery["last_dispatch_at"],
         "permit_id": permit.id,
         "permit_outcome": permit.outcome,
-        "invocation_phase": "not_invoked",
+        "invocation_phase": (
+            "interrupted_then_not_invoked" if after_drain else "not_invoked"
+        ),
         # Whether the control plane refused the slot, which the factory reads
         # to decide if this failure spends one of the node's attempts (#6045).
-        "capacity_denied": _capacity_denied_turn(turn),
+        "capacity_denied": not after_drain and _capacity_denied_turn(turn),
+        **({"interrupted_dispatches": interrupted} if after_drain else {}),
         "cost_usd": None,
     }
 

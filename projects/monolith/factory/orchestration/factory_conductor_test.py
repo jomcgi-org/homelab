@@ -13463,3 +13463,289 @@ def test_investigation_default_is_decided_before_next_planner(feedback_db, monke
     assert conductor._decision_processed(
         task["id"], "investigate-gate:investigate_threshold:1"
     )
+
+
+@pytest.fixture
+def drained_retry_not_invoked(not_invoked_factory):
+    import hashlib
+    import json
+    from datetime import datetime, timedelta
+    from sqlmodel import Session, select
+    from factory.execution.models import AgentSession, AgentTurn, AgentResultReceipt
+
+    s = not_invoked_factory
+    with Session(s.engine) as db:
+        agent = db.get(AgentSession, s.sid)
+        agent.ember_session_id = "drained-guest"
+        turn = db.exec(select(AgentTurn).where(AgentTurn.session_id == s.sid)).one()
+        usage = json.loads(turn.usage_json)
+        usage["recovery"]["dispatch_count"] = 2
+        turn.usage_json = json.dumps(usage)
+        dispatched = datetime.fromisoformat(usage["recovery"]["last_dispatch_at"])
+        body = json.dumps(
+            {
+                "terminal_reason": "interrupted_for_drain",
+                "stop_reason": "interrupted_for_drain",
+                "cost_usd": None,
+            }
+        ).encode()
+        db.add(
+            AgentResultReceipt(
+                id="drain-1",
+                token_sha256="b" * 64,
+                session_id=s.sid,
+                local_session_id=agent.local_session_id,
+                seq=1,
+                dispatch_count=1,
+                claim_owner="prior-executor",
+                guest_id=agent.ember_session_id,
+                request_sha256="c" * 64,
+                created_at=dispatched - timedelta(seconds=20),
+                received_at=dispatched - timedelta(seconds=10),
+                accept_until=dispatched + timedelta(hours=1),
+                retain_until=dispatched + timedelta(days=1),
+                result_body=body,
+                result_sha256=hashlib.sha256(body).hexdigest(),
+            )
+        )
+        db.add_all([agent, turn])
+        db.commit()
+    return s
+
+
+def test_drained_retry_settles_without_refunding_earlier_unknown_spend(
+    drained_retry_not_invoked,
+):
+    import json
+    from sqlmodel import Session
+    from factory.execution.api import read_not_invoked_factory_attempt
+    from factory.orchestration import factory_controls as controls
+
+    s = drained_retry_not_invoked
+    with Session(s.engine) as db:
+        assert read_not_invoked_factory_attempt(db, s.run["pin"], s.sid) is None
+    # An old cached outcome cannot smuggle in no-model-post accounting.
+    s.result["invocation_phase"] = "not_invoked"
+    _persist_uncertain_not_invoked(s)
+    native = s.native_snapshot()
+    before = controls.task_snapshot(s.task["id"])
+    conductor.reconcile_task(s.task["id"], s.policy, s.dbos)
+    run = conductor.graph.node_runs(s.task["id"])[0]
+    result = json.loads(run["outcome_json"])
+    assert result["status"] == "failed"
+    assert result["invocation_phase"] == "interrupted_then_not_invoked"
+    assert (
+        result["interrupted_then_not_invoked"]["interrupted_dispatches"][0][
+            "receipt_id"
+        ]
+        == "drain-1"
+    )
+    run = conductor.graph.node_runs(s.task["id"])[0]
+    current = controls.task_snapshot(s.task["id"])
+    assert run["status"] == current["starts"][0]["status"] == "failed"
+    assert run["cost_usd"] is current["starts"][0]["cost_usd"] is None
+    assert run["accounting_basis"] == "reserved_unknown_cost"
+    assert run["accounted_cost_usd"] == s.run["pin"]["max_cost_usd"]
+    assert current["committed_cost_usd"] == before["committed_cost_usd"]
+    assert current["turns_used"] == before["turns_used"]
+    assert current["unresolved_starts"] == 0
+    assert current["deadline_at"] == before["deadline_at"]
+    assert current["policy"] == before["policy"]
+    assert current["state"] == "admitted"
+    assert not result["capacity_denied"]
+    assert s.native_snapshot() == native
+
+
+@pytest.mark.parametrize(
+    "conflict",
+    [
+        "missing",
+        "wrong_session",
+        "wrong_local",
+        "wrong_seq",
+        "empty_owner",
+        "bad_hash",
+        "completed",
+        "wrong_stop",
+        "invalid_json",
+        "late_response",
+        "missing_response",
+        "duplicate",
+        "alias",
+        "pending",
+        "observer",
+        "active_permit",
+    ],
+)
+def test_drained_retry_refuses_incomplete_or_conflicting_receipt_chain(
+    drained_retry_not_invoked, conflict
+):
+    import hashlib
+    import json
+    from datetime import datetime, timedelta
+    from sqlmodel import Session, select
+    from factory.execution.models import (
+        AgentResultReceipt,
+        AgentSession,
+        AgentTurn,
+        AgentCapacityReservation,
+        PendingMessage,
+    )
+    from factory.execution.api import read_interrupted_retry_not_invoked_factory_attempt
+
+    s = drained_retry_not_invoked
+    with Session(s.engine) as db:
+        receipt = db.get(AgentResultReceipt, "drain-1")
+        agent = db.get(AgentSession, s.sid)
+        turn = db.exec(select(AgentTurn).where(AgentTurn.session_id == s.sid)).one()
+        dispatched = datetime.fromisoformat(
+            json.loads(turn.usage_json)["recovery"]["last_dispatch_at"]
+        )
+        if conflict == "missing":
+            db.delete(receipt)
+        elif conflict == "wrong_session":
+            receipt.session_id = s.sid + 99
+        elif conflict == "wrong_local":
+            receipt.local_session_id = "another-owner"
+        elif conflict == "wrong_seq":
+            receipt.seq = 2
+        elif conflict == "empty_owner":
+            receipt.claim_owner = ""
+        elif conflict == "bad_hash":
+            receipt.result_sha256 = "0" * 64
+        elif conflict in ("completed", "wrong_stop", "invalid_json"):
+            body = (
+                {"terminal_reason": "completed", "stop_reason": "completed"}
+                if conflict == "completed"
+                else {
+                    "terminal_reason": "interrupted_for_drain",
+                    "stop_reason": "unknown",
+                }
+            )
+            receipt.result_body = (
+                b"not JSON" if conflict == "invalid_json" else json.dumps(body).encode()
+            )
+            receipt.result_sha256 = hashlib.sha256(receipt.result_body).hexdigest()
+        elif conflict == "late_response":
+            receipt.received_at = dispatched + timedelta(seconds=1)
+        elif conflict == "missing_response":
+            receipt.received_at = None
+        elif conflict == "duplicate":
+            duplicate = AgentResultReceipt(
+                **{
+                    **receipt.model_dump(),
+                    "id": "drain-duplicate",
+                    "token_sha256": "e" * 64,
+                }
+            )
+            db.add(duplicate)
+        elif conflict == "alias":
+            db.add(
+                AgentSession(
+                    local_session_id="alias",
+                    workspace="guest",
+                    branch="main",
+                    ember_session_id=agent.ember_session_id,
+                )
+            )
+        elif conflict == "pending":
+            db.add(PendingMessage(session_id=s.sid, seq=1, message_text="new work"))
+        elif conflict == "observer":
+            agent.result_receipt_fence_id = "observer"
+        elif conflict == "active_permit":
+            permit = db.exec(
+                select(AgentCapacityReservation).where(
+                    AgentCapacityReservation.session_id == s.sid
+                )
+            ).one()
+            permit.state = "running"
+            db.add(permit)
+        if conflict != "missing":
+            db.add(receipt)
+        db.add(agent)
+        db.commit()
+    native = s.native_snapshot()
+    with Session(s.engine) as db:
+        assert (
+            read_interrupted_retry_not_invoked_factory_attempt(db, s.run["pin"], s.sid)
+            is None
+        )
+    assert s.native_snapshot() == native
+
+
+@pytest.mark.parametrize(
+    "shape,accepted",
+    [
+        ("complete", True),
+        ("prepared", True),
+        ("missing_middle", False),
+        ("overlap", False),
+        ("final_response", False),
+        ("wrong_owner", False),
+        ("wrong_guest", False),
+    ],
+)
+def test_drained_retry_three_dispatch_chain(drained_retry_not_invoked, shape, accepted):
+    import json
+    from datetime import datetime, timedelta
+    from sqlmodel import Session, select
+    from factory.execution.models import AgentResultReceipt, AgentTurn
+    from factory.execution.api import read_interrupted_retry_not_invoked_factory_attempt
+
+    s = drained_retry_not_invoked
+    with Session(s.engine) as db:
+        first = db.get(AgentResultReceipt, "drain-1")
+        turn = db.exec(select(AgentTurn).where(AgentTurn.session_id == s.sid)).one()
+        usage = json.loads(turn.usage_json)
+        usage["recovery"]["dispatch_count"] = 3
+        turn.usage_json = json.dumps(usage)
+        dispatched = datetime.fromisoformat(usage["recovery"]["last_dispatch_at"])
+        if shape != "missing_middle":
+            second = AgentResultReceipt(
+                **{
+                    **first.model_dump(),
+                    "id": "drain-2",
+                    "token_sha256": "d" * 64,
+                    "dispatch_count": 2,
+                    "claim_owner": "second-executor",
+                    "created_at": dispatched
+                    - timedelta(seconds=15 if shape == "overlap" else 8),
+                    "received_at": dispatched - timedelta(seconds=2),
+                }
+            )
+            db.add(second)
+        if shape in ("prepared", "final_response", "wrong_owner", "wrong_guest"):
+            last = AgentResultReceipt(
+                **{
+                    **first.model_dump(),
+                    "id": "final",
+                    "token_sha256": "e" * 64,
+                    "dispatch_count": 3,
+                    "claim_owner": "other"
+                    if shape == "wrong_owner"
+                    else usage["recovery"]["claim_owner"],
+                    "guest_id": "other" if shape == "wrong_guest" else first.guest_id,
+                    "created_at": dispatched,
+                    "received_at": dispatched if shape == "final_response" else None,
+                    "result_body": first.result_body
+                    if shape == "final_response"
+                    else None,
+                    "result_sha256": first.result_sha256
+                    if shape == "final_response"
+                    else None,
+                }
+            )
+            db.add(last)
+        db.add(turn)
+        db.commit()
+    with Session(s.engine) as db:
+        proof = read_interrupted_retry_not_invoked_factory_attempt(
+            db, s.run["pin"], s.sid
+        )
+        assert (proof is not None) is accepted
+        if accepted:
+            assert proof["invocation_phase"] == "interrupted_then_not_invoked"
+            assert [r["receipt_id"] for r in proof["interrupted_dispatches"]] == [
+                "drain-1",
+                "drain-2",
+            ]

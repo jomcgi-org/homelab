@@ -16,6 +16,7 @@ from factory.execution.reconciliation import (
     lock_cessation_session as lock_cessation_session,
     read_drained_lost_factory_attempt as read_drained_lost_factory_attempt,
     read_factory_dispatch as read_factory_dispatch,
+    read_interrupted_retry_not_invoked_factory_attempt as read_interrupted_retry_not_invoked_factory_attempt,
     read_lost_before_guest_factory_attempt as read_lost_before_guest_factory_attempt,
     read_never_dispatched_factory_attempt as read_never_dispatched_factory_attempt,
     read_not_invoked_factory_attempt as read_not_invoked_factory_attempt,
