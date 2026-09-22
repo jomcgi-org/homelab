@@ -229,6 +229,9 @@ defmodule Embervm.SessionManager do
       seconds later for a cold restore, so a client retry must be denied
       rather than raced). Retryable once the in-flight restore settles,
       unlike `:lineage_live_heir`, which is a committed heir.
+    * `{:lineage_relinquishment_failed, reason}` -- the owning node did not
+      confirm its durable retirement intent before the restore worker tried to
+      inherit the workspace. Retryable after the node is reachable again.
 
   `restored` in the returned map is `true` when the inherited workspace was
   actually recovered (attached locally or an S3 restore hit), `false` for a
@@ -1305,11 +1308,8 @@ defmodule Embervm.SessionManager do
       {:ok, %{principal: lineage_principal}} when lineage_principal != principal ->
         {:error, :lineage_principal_mismatch}
 
-      {:ok, %{state: session_state}} when session_state not in [:expired, :evicted, :destroyed, :failed, :destroying] ->
-        {:error, :lineage_live_heir}
-
-      {:ok, _terminal_holder} ->
-        :ok
+      {:ok, %{state: session_state}} ->
+        if SessionState.terminal?(session_state), do: :ok, else: {:error, :lineage_live_heir}
     end
   end
 
@@ -1429,9 +1429,9 @@ defmodule Embervm.SessionManager do
   # it may still hand back a dial_id for the wrong co-located instance on that
   # node (multiple instances can share one node_id), so this re-resolves the
   # dial itself via the same session_volumes fact perform_rejoin_prime uses,
-  # restores the workspace onto it BEFORE prime so the guest boots with data
-  # already in place, then primes with lineage_id = restore_lineage so the
-  # volume attaches under the inherited identity rather than a fresh one.
+  # asks that exact instance to durably record retirement BEFORE restoring the
+  # workspace, then primes with lineage_id = restore_lineage so the volume
+  # attaches under the inherited identity rather than a fresh one.
   # restore-on-miss is tolerated (see restore_session_workspace/4): a genuine
   # store miss proceeds with a blank workspace and reports restored: false.
   #
@@ -1469,7 +1469,8 @@ defmodule Embervm.SessionManager do
         resolved -> resolved
       end
 
-    with {:ok, restored} <-
+    with :ok <- confirm_restore_relinquishment(state, dial_id, workload, restore_lineage),
+         {:ok, restored} <-
            restore_session_workspace(state, dial_id, workload, restore_lineage, principal, 0),
          {:ok, vm_id} <- prime(state, dial_id, workload, snapshot_ref, entry, restore_lineage) do
       {:ok, vm_id, restored}
@@ -5897,8 +5898,29 @@ defmodule Embervm.SessionManager do
 
   defp archive_session_volume(_state, _session), do: :ok
 
-  # Retirement is node-owned: the marker and retry sweep make export failure
-  # durable, while the control plane advances the session lifecycle immediately.
+  # A restoring create must observe RetireVolume's acknowledgement before it
+  # can inherit the lineage. Noded writes the crash-safe retirement intent
+  # before replying, then exports and deletes asynchronously. A missing local
+  # volume means an earlier retirement already completed or the lineage is
+  # store-only, so RestoreArtifact remains the authority for the subsequent
+  # hit or miss. Every other error fails the restore closed.
+  defp confirm_restore_relinquishment(state, dial_id, workload, lineage_id) do
+    case retire_session_volume_rpc(state, dial_id, workload, lineage_id) do
+      {:ok, _} ->
+        :ok
+
+      {:error, %GRPC.RPCError{status: 5}} ->
+        :ok
+
+      other ->
+        {:error, {:lineage_relinquishment_failed, other}}
+    end
+  end
+
+  # Retirement outside the restore worker remains asynchronous so a slow or
+  # unreachable node cannot block the SessionManager mailbox. The restore path
+  # above reissues the idempotent RPC and waits in its existing create worker,
+  # which makes the node's durable marker the restart-safe admission boundary.
   defp retire_session_volume(state, %{volume_node_id: node_id, workload: workload, lineage_id: lineage_id})
        when is_binary(node_id) and is_binary(workload) and is_binary(lineage_id) do
     # NOT gated on the workload's CURRENT persistence setting: a lineage volume
@@ -5906,24 +5928,12 @@ defmodule Embervm.SessionManager do
     # must not strand it. Disarming after a failed rollout did exactly that,
     # leaving 10 GiB images that filled a node (#4286). Reclamation follows the
     # artifact, not the flag.
-    req = %RetireVolumeRequest{trace: %Trace{workload: workload}, workload: workload, lineage_id: lineage_id}
-    retire_fun = state.retire_volume_fun
-    channel_fun = state.channel_fun
     # Dial the INSTANCE owning this lineage on disk, not the bare node name:
     # the node-name alias is an anchor, not a dial key, and dialing it fails
     # :unknown_node forever (observed live when the flip armed retirement).
     dial_id = Embervm.WakeInstance.dial_for_session_volume(state.capacity_table, node_id, lineage_id)
     spawn(fn ->
-      result =
-        with {:ok, channel} <- safe_channel(channel_fun, dial_id) do
-          try do
-            retire_fun.(channel, req)
-          rescue
-            error -> {:error, error}
-          catch
-            kind, reason -> {:error, {kind, reason}}
-          end
-        end
+      result = retire_session_volume_rpc(state, dial_id, workload, lineage_id)
 
       case result do
         {:ok, _} -> :ok
@@ -5934,6 +5944,24 @@ defmodule Embervm.SessionManager do
   end
 
   defp retire_session_volume(_state, _session), do: :ok
+
+  defp retire_session_volume_rpc(state, dial_id, workload, lineage_id) do
+    req = %RetireVolumeRequest{
+      trace: %Trace{workload: workload},
+      workload: workload,
+      lineage_id: lineage_id
+    }
+
+    with {:ok, channel} <- safe_channel(state.channel_fun, dial_id) do
+      try do
+        state.retire_volume_fun.(channel, req)
+      rescue
+        error -> {:error, error}
+      catch
+        kind, reason -> {:error, {kind, reason}}
+      end
+    end
+  end
 
   defp shadow_claim(instance_id, vm_id, workload, entry) do
     mem_mib = if is_map(entry), do: Map.get(entry, :mem_mib) || 512, else: 512

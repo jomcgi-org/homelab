@@ -1431,6 +1431,14 @@ defmodule Embervm.Router do
           retryable: true
         })
 
+      {:lineage_relinquishment_failed, _reason} ->
+        send_json(conn, 503, %{
+          error: "lineage relinquishment could not be confirmed",
+          reason: "lineage_relinquishment_failed",
+          workload: workload,
+          retryable: true
+        })
+
       # Brick capacity (PR-3): no brick of the workload's size class has room and
       # the class is flagged fleet-full (desired outran registered past the dwell),
       # so placement is TERMINALLY denied rather than parked. 503 (not the 429 the
