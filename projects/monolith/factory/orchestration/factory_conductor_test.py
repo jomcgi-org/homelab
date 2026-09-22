@@ -402,6 +402,57 @@ def test_tick_admits_up_to_the_concurrency_limit(
     assert reconciled == []
 
 
+def test_tick_polls_once_and_keeps_blocked_queued_lane_out_of_admission(monkeypatch):
+    from factory.orchestration import (
+        agent_board_poll,
+        factory_controls as controls,
+        factory_intake as intake,
+        factory_intake_loop,
+    )
+
+    policy = {"max_tasks": {"delivery": 1, "advisory": 1}}
+    monkeypatch.setattr(
+        controls,
+        "status",
+        lambda: {"state": "enabled", "policy": policy, "active_tasks": []},
+    )
+    monkeypatch.setattr(conductor.runtime, "is_launched", lambda: True)
+    monkeypatch.setattr(conductor.runtime, "init_dbos", lambda: object())
+    monkeypatch.setattr(conductor, "ingest_eligible", lambda _policy: None)
+    polls = []
+
+    def eligible(lanes):
+        polls.append(tuple(lanes))
+        return ("advisory",)
+
+    monkeypatch.setattr(agent_board_poll, "eligible_lanes", eligible)
+    intake_lanes = []
+    monkeypatch.setattr(
+        factory_intake_loop,
+        "intake_tick",
+        lambda _policy, *, generation, lanes: intake_lanes.append(
+            (generation, tuple(lanes))
+        ),
+    )
+    admission_lanes = []
+
+    def admit(_actor, *, lanes):
+        admission_lanes.append(tuple(lanes))
+        return (
+            {"ok": True, "task_id": "t-advisory", "policy": policy}
+            if len(admission_lanes) == 1
+            else {"ok": False, "reason": "wip_limit"}
+        )
+
+    monkeypatch.setattr(intake, "admit_next", admit)
+
+    conductor.tick()
+
+    assert polls == [("delivery", "advisory")]
+    assert intake_lanes == [(0, ("advisory",))]
+    assert admission_lanes == [("advisory",), ("advisory",)]
+
+
 def test_tick_at_the_limit_reconciles_without_ingesting_or_admitting(monkeypatch):
     import factory.orchestration.factory_controls as controls
     import factory.orchestration.factory_intake as intake
