@@ -2167,7 +2167,8 @@ def test_codex_parent_waits_for_its_own_completion(tmp_path, monkeypatch, scenar
         record = manager.turn("finish the parent artifact", model="sol")
         assert record["result"] == "Done <voice>Codex completed the work.</voice>"
         assert record["terminal_reason"] == "completed"
-        assert record["usage"]["input_tokens"] == 3
+        expected_input_tokens = 13 if scenario == "started-before-response" else 3
+        assert record["usage"]["input_tokens"] == expected_input_tokens
         assert record["activities"] == [{"type": "bash", "command": "echo test"}]
         if scenario != "started-before-response":
             assert (tmp_path / "workspace" / "parent-finished").exists()
