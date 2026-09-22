@@ -233,6 +233,50 @@ else
 	FAILURES=$((FAILURES + 1))
 fi
 
+# Explicit publication completion is recorded even when no charts changed.
+clone=$(new_env receipt-empty 0.1.0)
+source=$(git -C "$clone" rev-parse HEAD)
+(cd "$clone" && bash "$SCRIPT" "$TMP/rec-empty" --record-publication >/dev/null 2>&1)
+git -C "$clone" fetch --quiet origin main
+receipt=$(git -C "$clone" rev-parse origin/main)
+expect "empty publication recorded" "true" \
+	"$(git -C "$clone" log -1 --format='%(trailers:key=Chart-Publication-Complete,valueonly)' origin/main)" \
+	"successful no-op is distinct from missing evidence"
+expect "empty receipt preserves tree" "$(git -C "$clone" rev-parse "$source^{tree}")" \
+	"$(git -C "$clone" rev-parse 'origin/main^{tree}')" "no artificial version bump"
+expect "empty receipt names build" "$source" \
+	"$(git -C "$clone" log -1 --format='%(trailers:key=Chart-Source-Commit,valueonly)' origin/main)" \
+	"source identity survives the no-op path"
+git -C "$clone" checkout --quiet --detach "$source"
+(cd "$clone" && bash "$SCRIPT" "$TMP/rec-empty" --record-publication >/dev/null 2>&1)
+git -C "$clone" fetch --quiet origin main
+expect "publication replay is idempotent" "$receipt" \
+	"$(git -C "$clone" rev-parse origin/main)" "a lost push response cannot create a second receipt"
+
+# A newer publish may already have advanced main. The receipt still names the
+# version THIS source published, and must never claim the concurrent version.
+clone=$(new_env receipt-reused 0.2.0)
+record "$TMP/rec-reused" demo projects/demo/chart 0.1.5
+(cd "$clone" && bash "$SCRIPT" "$TMP/rec-reused" --record-publication >/dev/null 2>&1)
+git -C "$clone" fetch --quiet origin main
+expect "receipt keeps published version" "projects/demo/chart 0.1.5" \
+	"$(git -C "$clone" log -1 --format='%(trailers:key=Chart-Published,valueonly)' origin/main)" \
+	"unchanged files do not erase publication evidence"
+expect "receipt cannot roll back main" "0.2.0" \
+	"$(version_on_main "$clone" projects/demo/chart/Chart.yaml)" "monotonic write-back remains intact"
+
+clone=$(new_env receipt-invalid 0.1.0)
+source=$(git -C "$clone" rev-parse HEAD)
+record "$TMP/rec-invalid" demo projects/demo/chart not-a-version
+set +e
+(cd "$clone" && bash "$SCRIPT" "$TMP/rec-invalid" --record-publication >/dev/null 2>&1)
+invalid_rc=$?
+set -e
+expect "invalid receipt fails closed" "1" "$invalid_rc" "cannot attest malformed records"
+git -C "$clone" fetch --quiet origin main
+expect "invalid receipt leaves main untouched" "$source" \
+	"$(git -C "$clone" rev-parse origin/main)" "no completion claim on failure"
+
 if [[ "$FAILURES" -gt 0 ]]; then
 	echo "${FAILURES} test(s) failed"
 	exit 1
