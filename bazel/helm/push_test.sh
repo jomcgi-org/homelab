@@ -127,14 +127,12 @@ else
 	FAILURES=$((FAILURES + 1))
 fi
 
-# 2. CONVERGENCE. Once the write-back has landed, main names the published
-# version and this must go quiet. Without this the previous case would rewrite
-# the same record on every run forever, and the write-back would commit to main
-# on every merge with nothing to change.
+# 2. An aligned version still belongs in the complete publication receipt.
+# Recording it does not republish the chart or artificially bump its version.
 ws=$(setup aligned 0.3.3 0.3.3 yes yes)
 out=$(run_push "$ws" aligned)
-expect "aligned records nothing" "(no record)" "$(record_version "$ws")" \
-	"main already names it"
+expect "aligned version recorded" "0.3.3" "$(record_version "$ws")" \
+	"receipt includes content-verified reused charts"
 if grep -q "nothing to publish" <<<"$out"; then
 	echo "ok: reports nothing to publish"
 else
