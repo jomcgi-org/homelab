@@ -226,9 +226,12 @@ func TestSweepRootfsRemovesUnreferencedKeepsCurrent(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "semgrep")
 
-	current := writeRootfs(t, dir, "rootfs-2026.07.28.00.15.51-53e998e.ext4", 2*time.Hour)
-	old1 := writeRootfs(t, dir, "rootfs-2026.07.26.16.59.35-b7e6104.ext4", 48*time.Hour)
-	old2 := writeRootfs(t, dir, "rootfs-2026.07.27.02.18.05-db42ab6.ext4", 24*time.Hour)
+	current := writeRootfs(t, dir, "rootfs-60cd82d81a2060cd82d81a2060cd82d81a2060cd82d81a2060cd82d81a2060cd-size-4G-format-b2.ext4", 2*time.Hour)
+	// Both the legacy digest-only name and a different identity-aware cache
+	// remain ordinary rootfs candidates. References, not filename versions,
+	// decide what survives.
+	old1 := writeRootfs(t, dir, "rootfs-60cd82d81a20.ext4", 48*time.Hour)
+	old2 := writeRootfs(t, dir, "rootfs-60cd82d81a2060cd82d81a2060cd82d81a2060cd82d81a2060cd82d81a2060cd-size-2G-format-b2.ext4", 24*time.Hour)
 	// A non-rootfs file in the same dir must be left alone.
 	other := filepath.Join(dir, "notes.txt")
 	if err := os.WriteFile(other, []byte("keep me"), 0o600); err != nil {
