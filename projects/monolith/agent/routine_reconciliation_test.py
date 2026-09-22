@@ -1337,7 +1337,12 @@ def test_predispatch_review_stop_prevents_routine_failure_retry_and_next_claim(
     from factory import reservation_reviews as reviews
     from factory.execution import review_leases as leases
 
-    SQLModel.metadata.create_all(database, tables=[leases.ReservationReview.__table__])
+    from factory.execution.models import ProbeObservation
+
+    SQLModel.metadata.create_all(
+        database,
+        tables=[leases.ReservationReview.__table__, ProbeObservation.__table__],
+    )
     monkeypatch.setattr(reviews, "get_engine", lambda: database)
     monkeypatch.setenv("FACTORY_RESERVATION_REVIEW_ENABLED", "true")
     with Session(database) as db:
