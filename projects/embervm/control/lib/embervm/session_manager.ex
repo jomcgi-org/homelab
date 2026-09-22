@@ -4121,19 +4121,24 @@ defmodule Embervm.SessionManager do
 
   defp expire_active_registration_wait(state, session_id, wait) do
     case SessionStore.get(state.session_store, session_id) do
-      {:ok, %{state: :relighting} = session} ->
-        case WakeInstance.node_for_relight(session, state.capacity_table) do
-          {:ok, _dial_id} ->
-            restart_relight_after_registration(state, session_id)
+      # Parked workspace rejoins also use the transient :relighting state, but
+      # they have no banked snapshot to prove or evict. Preserve their established
+      # non-terminal no-bricks expiry behavior.
+      {:ok, %{state: :relighting, volume_node_id: volume_node_id}}
+      when is_binary(volume_node_id) ->
+        give_up_pressure_wait(state, session_id, wait)
 
-          {:error, :no_bricks} ->
-            give_up_pressure_wait(state, session_id, %{wait | last_reason: :no_bricks})
+      {:ok, %{state: :relighting}} ->
+        # Return to the durable resting state before the final capacity recheck.
+        # This makes the same resting helper own every deadline decision. A
+        # concurrent transition that wins the mark cannot strand parked callers.
+        case SessionStore.mark(state.session_store, session_id, :relight_abort) do
+          {:ok, _session} ->
+            expire_resting_registration_wait(state, session_id, wait)
 
-          {:error, :snapshot_lost} ->
-            finish_snapshot_lost(state, session_id)
-
-          {:error, {:node_unreported, _node_id}} ->
-            finish_snapshot_lost(state, session_id)
+          {:error, _} ->
+            state = clear_pressure_wait(state, session_id)
+            drain_relight_waiters(state, session_id, {:error, {:not_ready, :banked}})
         end
 
       _ ->
@@ -4180,16 +4185,6 @@ defmodule Embervm.SessionManager do
 
       _ ->
         give_up_pressure_wait(state, session_id, wait)
-    end
-  end
-
-  defp restart_relight_after_registration(state, session_id) do
-    case SessionStore.mark(state.session_store, session_id, :relight_abort) do
-      {:ok, %{state: :banked} = session} ->
-        begin_wake(state, session)
-
-      {:error, _} ->
-        state
     end
   end
 
