@@ -874,18 +874,26 @@ defmodule Embervm.BrickControllerTest do
     classes = [
       %{
         name: "4gi",
-        desired: 0,
-        max: 0,
+        desired: 1,
+        max: 1,
         ceiling_bound: 1,
         usable_mib: 3_584,
         mem_reject_floor_mib: 256
       },
       %{
         name: "8gi",
-        desired: 0,
-        max: 0,
+        desired: 1,
+        max: 1,
         ceiling_bound: 1,
         usable_mib: 7_936,
+        mem_reject_floor_mib: 256
+      },
+      %{
+        name: "16gi",
+        desired: 0,
+        max: 0,
+        ceiling_bound: 0,
+        usable_mib: 16_128,
         mem_reject_floor_mib: 256
       }
     ]
@@ -897,7 +905,7 @@ defmodule Embervm.BrickControllerTest do
         mode: :observe,
         classes: classes,
         scale_fun: record,
-        scale_get_fun: fn _ns, _name -> {:ok, 0} end,
+        scale_get_fun: fn _ns, _name -> {:ok, 1} end,
         facts_fun: fn ->
           [
             %{size_class: "4gi", mem_reject_floor_mib: 2_048},
@@ -908,27 +916,72 @@ defmodule Embervm.BrickControllerTest do
       )
 
     BrickController.note_denial(pid, "semgrep", 1_536)
-    log_4gi = ExUnit.CaptureLog.capture_log(fn -> BrickController.reconcile_now(pid) end)
-    assert log_4gi =~ "class 4gi"
+    BrickController.reconcile_now(pid)
+
+    semgrep =
+      Enum.find(BrickController.capacity_health(pid).conditions, &(&1.workload == "semgrep"))
+
+    assert semgrep.size_class == "4gi"
 
     BrickController.note_denial(pid, "claude-runtime", 4_096)
-    log_8gi = ExUnit.CaptureLog.capture_log(fn -> BrickController.reconcile_now(pid) end)
-    assert log_8gi =~ "class 8gi"
+    BrickController.reconcile_now(pid)
+
+    claude =
+      Enum.find(
+        BrickController.capacity_health(pid).conditions,
+        &(&1.workload == "claude-runtime")
+      )
+
+    assert claude.size_class == "8gi"
 
     before_oversized = calls.()
     BrickController.note_denial(pid, "oversized", 8_000)
     BrickController.reconcile_now(pid)
 
-    condition = hd(BrickController.capacity_health(pid).conditions)
+    condition =
+      Enum.find(BrickController.capacity_health(pid).conditions, &(&1.workload == "oversized"))
+
     assert condition.workload == "oversized"
     assert condition.reason == :no_fitting_class
-    assert Enum.map(calls.() -- before_oversized, &elem(&1, 2)) == [0, 0]
+
+    assert calls.()
+           |> Enum.drop(length(before_oversized))
+           |> Enum.map(&elem(&1, 2)) == [1, 1, 0]
+  end
+
+  test "ceiling exhaustion latches every workload contributing denial pressure" do
+    pid =
+      start(
+        mode: :up,
+        classes: [
+          %{name: "8gi", desired: 1, max: 1, ceiling_bound: 1, usable_mib: 7_936}
+        ],
+        scale_fun: fn _ns, _name, _replicas -> :ok end,
+        scale_get_fun: fn _ns, _name -> {:ok, 1} end,
+        facts_fun: fn -> [] end,
+        registered_fun: fn -> %{"8gi" => 1} end,
+        up_threshold: 2
+      )
+
+    BrickController.note_denial(pid, "runtime-a", 4_096)
+    BrickController.note_denial(pid, "runtime-b", 4_096)
+    BrickController.reconcile_now(pid)
+
+    assert BrickController.capacity_health(pid).conditions
+           |> Enum.map(&{&1.workload, &1.reason, &1.size_class})
+           |> Enum.sort() ==
+             [
+               {"runtime-a", :ceiling_exhausted, "8gi"},
+               {"runtime-b", :ceiling_exhausted, "8gi"}
+             ]
   end
 
   test "ceiling exhaustion is transition-only and clears after the quiet window" do
     {clock, advance} = new_clock()
     {:ok, transitions} = Agent.start_link(fn -> [] end)
     on_exit(fn -> Embervm.TestProcess.stop_safely(transitions) end)
+    {:ok, read_result} = Agent.start_link(fn -> {:ok, 1} end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(read_result) end)
 
     condition_fun = fn workload, condition ->
       Agent.update(transitions, &(&1 ++ [{workload, condition}]))
@@ -941,7 +994,7 @@ defmodule Embervm.BrickControllerTest do
           %{name: "8gi", desired: 1, max: 1, ceiling_bound: 1, usable_mib: 7_936}
         ],
         scale_fun: fn _ns, _name, _replicas -> :ok end,
-        scale_get_fun: fn _ns, _name -> {:ok, 1} end,
+        scale_get_fun: fn _ns, _name -> Agent.get(read_result, & &1) end,
         facts_fun: fn -> [] end,
         registered_fun: fn -> %{"8gi" => 1} end,
         condition_fun: condition_fun,
@@ -957,6 +1010,20 @@ defmodule Embervm.BrickControllerTest do
     assert first =~ "workload capacity unavailable"
     refute second =~ "workload capacity unavailable"
     refute BrickController.capacity_health(pid).ok
+    assert length(Agent.get(transitions, & &1)) == 1
+
+    # A continuing denial refreshes the latch even when Kubernetes cannot
+    # provide a scale read. Recovery retries successfully without a duplicate
+    # Workload transition.
+    advance.(60_000)
+    Agent.update(read_result, fn _ -> {:error, :timeout} end)
+    BrickController.note_denial(pid, "claude-runtime", 4_096)
+    BrickController.reconcile_now(pid)
+    refute BrickController.capacity_health(pid).ok
+    assert length(Agent.get(transitions, & &1)) == 1
+
+    Agent.update(read_result, fn _ -> {:ok, 1} end)
+    BrickController.reconcile_now(pid)
     assert length(Agent.get(transitions, & &1)) == 1
 
     advance.(60_000)
@@ -1007,6 +1074,77 @@ defmodule Embervm.BrickControllerTest do
     assert Agent.get(attempts, & &1) == 2
   end
 
+  test "an unreadable scale preserves an existing fleet-full latch" do
+    {:ok, read_result} = Agent.start_link(fn -> {:ok, 1} end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(read_result) end)
+    {record, calls} = new_recorder()
+
+    pid =
+      start(
+        mode: :up,
+        classes: [%{name: "2gi", desired: 1, min: 0, max: 2}],
+        scale_fun: record,
+        scale_get_fun: fn _ns, _name -> Agent.get(read_result, & &1) end,
+        registered_fun: fn -> %{} end,
+        facts_fun: fn -> [] end,
+        fleet_full_after_ms: 0
+      )
+
+    BrickController.reconcile_now(pid)
+    assert BrickController.fleet_full?(pid, "2gi")
+
+    Agent.update(read_result, fn _ -> {:error, :timeout} end)
+    BrickController.reconcile_now(pid)
+
+    assert BrickController.fleet_full?(pid, "2gi")
+    assert Enum.map(calls.(), &elem(&1, 2)) == [1]
+  end
+
+  test "a failed scale-down patch retries without committing cooldown" do
+    {clock, advance} = new_clock()
+    {:ok, attempts} = Agent.start_link(fn -> %{down: 0, total: 0} end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(attempts) end)
+
+    patch = fn _ns, _name, replicas ->
+      down_attempt =
+        Agent.get_and_update(attempts, fn state ->
+          next = %{
+            state
+            | total: state.total + 1,
+              down: state.down + if(replicas == 0, do: 1, else: 0)
+          }
+
+          {state.down, next}
+        end)
+
+      if replicas == 0 and down_attempt == 0, do: {:error, :timeout}, else: :ok
+    end
+
+    pid =
+      start(
+        mode: :full,
+        classes: [%{name: "2gi", desired: 0, min: 0, max: 2}],
+        scale_fun: patch,
+        scale_get_fun: fn _ns, _name -> {:ok, 1} end,
+        facts_fun: fn ->
+          [%{size_class: "2gi", pod_uid: "uid-a", live_vms: 0, draining: false}]
+        end,
+        pods_fun: fn _ns, _selector -> {:ok, [%{name: "brick-a", uid: "uid-a"}]} end,
+        annotate_fun: fn _ns, _pod, _annotations -> :ok end,
+        registered_fun: fn -> %{"2gi" => 1} end,
+        down_idle_ms: 1,
+        down_cooldown_ms: 60_000,
+        clock: clock
+      )
+
+    BrickController.reconcile_now(pid)
+    advance.(1)
+    BrickController.reconcile_now(pid)
+    BrickController.reconcile_now(pid)
+
+    assert Agent.get(attempts, & &1) == %{down: 2, total: 3}
+  end
+
   test "raised ceilings retire at the exact one-hour zero boundary and reconstruct safely" do
     {clock, advance} = new_clock()
     {:ok, current} = Agent.start_link(fn -> 2 end)
@@ -1047,7 +1185,6 @@ defmodule Embervm.BrickControllerTest do
     BrickController.reconcile_now(restarted)
     assert hd(BrickController.capacity_health(restarted).ceilings).operative_ceiling == 2
   end
-
 
   test "nonzero replica counts and denials reset the ceiling idle boundary" do
     for reset <- [:nonzero, :denial] do
