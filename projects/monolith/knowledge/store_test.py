@@ -429,13 +429,17 @@ def test_context_search_forwards_all_ranking_filters(
 
 
 def test_default_legacy_predicate_preserves_null_state_semantics():
+    class EmptyResult:
+        def all(self):
+            return []
+
     class RecordingSession:
         def __init__(self):
             self.statement = None
 
         def execute(self, statement):
             self.statement = statement
-            return []
+            return EmptyResult()
 
     session = RecordingSession()
     assert _rank_search_chunks(session, [0.0] * 1024, 20, None) == []

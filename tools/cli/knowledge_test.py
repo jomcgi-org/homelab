@@ -271,6 +271,7 @@ class TestSearch:
                     query_embedding=_FAKE_EMBEDDING,
                     limit=10,
                     type_filter="paper",
+                    include_legacy=True,
                 )
         finally:
             del fastapi_app.dependency_overrides[get_embedding_client]
@@ -288,6 +289,7 @@ class TestSearch:
                     query_embedding=_FAKE_EMBEDDING,
                     limit=5,
                     type_filter=None,
+                    include_legacy=True,
                 )
         finally:
             del fastapi_app.dependency_overrides[get_embedding_client]
