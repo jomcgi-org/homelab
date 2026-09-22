@@ -107,6 +107,9 @@ spec:
             # ephemeral rootfs). scratch.img lands beside the scratch mountpoint.
             - name: host-embervm
               mountPath: /host
+              # Observe a scratch mount created after this pod starts, so fuser -m
+              # checks the mounted filesystem rather than the host root bind.
+              mountPropagation: HostToContainer
             - name: prep-script
               mountPath: /opt/embervm
               readOnly: true

@@ -145,11 +145,20 @@ format_xfs() {
 }
 
 fstab_identity_is_safe() {
-	host awk -v image="$HOST_IMG" -v scratch="$SCRATCH" '
+	if host awk -v image="$HOST_IMG" -v scratch="$SCRATCH" '
     /^[[:space:]]*#/ || NF == 0 { next }
     $1 == image && $2 != scratch { exit 42 }
     $2 == scratch && $1 != image { exit 43 }
-  ' "$FSTAB"
+  ' "$FSTAB"; then
+		status=0
+	else
+		status=$?
+	fi
+	case "$status" in
+	0) return 0 ;;
+	42 | 43) return 1 ;;
+	*) fail "cannot inspect fstab identity for $HOST_IMG and $SCRATCH (status $status)" ;;
+	esac
 }
 
 fstab_has_managed_entry() {
@@ -282,6 +291,8 @@ if [ "$mounted" = true ]; then
 	if host mountpoint -q "$SCRATCH"; then
 		fail "scratch remains mounted after ordinary unmount"
 	fi
+	remaining_aliases=$(host losetup -j "$HOST_IMG") || fail "cannot inspect loop aliases for $HOST_IMG after unmount"
+	[ -z "$remaining_aliases" ] || fail "unmounted managed image still has a loop alias"
 	format_xfs "$migration_identity"
 	image_type=xfs
 	mounted=false
@@ -289,6 +300,7 @@ if [ "$mounted" = true ]; then
 fi
 
 if [ "$mounted" = false ]; then
+	fstab_identity_is_safe || fail "fstab contains a foreign or aliased entry for $HOST_IMG or $SCRATCH"
 	host mkdir -p "$SCRATCH"
 	if [ ! -e "$IMG" ] && [ ! -L "$IMG" ]; then
 		echo "scratch-prep: creating ${SIZE_GI}Gi $FILESYSTEM backing file at $HOST_IMG on $NODE"

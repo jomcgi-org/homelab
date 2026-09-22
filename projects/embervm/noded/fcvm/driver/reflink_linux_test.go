@@ -18,6 +18,61 @@ func installReflinkStub(t *testing.T, stub func(dst, src *os.File) error) {
 	t.Cleanup(func() { reflinkFile = previous })
 }
 
+func TestReflinkFileRealCloneIsIndependent(t *testing.T) {
+	root := t.TempDir()
+	srcPath := filepath.Join(root, "source")
+	dstPath := filepath.Join(root, "destination")
+	if err := os.WriteFile(srcPath, []byte("source-before-clone"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	src, err := os.Open(srcPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst, err := os.OpenFile(dstPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		_ = src.Close()
+		t.Fatal(err)
+	}
+	cloneErr := reflinkFile(dst, src)
+	closeDstErr := dst.Close()
+	closeSrcErr := src.Close()
+	if errors.Is(cloneErr, unix.EOPNOTSUPP) || errors.Is(cloneErr, unix.EXDEV) {
+		t.Skipf("test filesystem does not support FICLONE: %v", cloneErr)
+	}
+	if cloneErr != nil {
+		t.Fatalf("real FICLONE: %v", cloneErr)
+	}
+	if closeDstErr != nil {
+		t.Fatal(closeDstErr)
+	}
+	if closeSrcErr != nil {
+		t.Fatal(closeSrcErr)
+	}
+
+	if err := os.WriteFile(dstPath, []byte("destination-after-clone"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gotSource, err := os.ReadFile(srcPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(gotSource) != "source-before-clone" {
+		t.Fatalf("source changed with destination: %q", gotSource)
+	}
+
+	if err := os.WriteFile(srcPath, []byte("source-after-clone"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gotDestination, err := os.ReadFile(dstPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(gotDestination) != "destination-after-clone" {
+		t.Fatalf("destination changed with source: %q", gotDestination)
+	}
+}
+
 func TestCloneOrCopyFileCloneSuccessIsIndependent(t *testing.T) {
 	root := t.TempDir()
 	src := filepath.Join(root, "source")
