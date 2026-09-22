@@ -312,6 +312,193 @@ def test_rootfs_builders_receive_store_env_only_when_store_enabled() -> None:
         assert store_env_names.isdisjoint(env_names)
 
 
+def _noded_pod_specs(rendered: str) -> list[tuple[str, dict]]:
+    specs = []
+    for document in yaml.safe_load_all(rendered):
+        if not isinstance(document, dict) or document.get("kind") not in {
+            "DaemonSet",
+            "Deployment",
+        }:
+            continue
+        labels = (
+            document.get("spec", {})
+            .get("template", {})
+            .get("metadata", {})
+            .get("labels", {})
+        )
+        if labels.get("app.kubernetes.io/component") not in {"noded", "noded-brick"}:
+            continue
+        specs.append(
+            (
+                document["metadata"]["name"],
+                document["spec"]["template"]["spec"],
+            )
+        )
+    return specs
+
+
+def _driver_tuples(container: dict) -> list[tuple[str, str, str, str]]:
+    args = container["args"]
+    assert len(args) >= 2 and (len(args) - 2) % 4 == 0
+    return [tuple(args[index : index + 4]) for index in range(2, len(args), 4)]
+
+
+def test_rootfs_parallel_driver_is_default_off_and_preserves_builder_contract() -> None:
+    values = yaml.safe_load((_chart_dir() / "values.yaml").read_text())
+    assert values["rootfsBuilder"]["parallelEnabled"] is False
+    assert values["rootfsBuilder"]["maxConcurrency"] == 2
+
+    legacy_render = _render_with_set("rootfs-legacy", [])
+    legacy_specs = _noded_pod_specs(legacy_render)
+    assert len(legacy_specs) == 1
+    legacy_builders = _rootfs_builder_init_containers(legacy_render)
+    assert len(legacy_builders) > 1
+    assert all(container["name"] != "build-all-rootfs" for container in legacy_builders)
+    expected_pairs = {
+        (
+            next(
+                entry["value"]
+                for entry in container["env"]
+                if entry["name"] == "GUEST_IMAGE"
+            ),
+            next(
+                entry["value"]
+                for entry in container["env"]
+                if entry["name"] == "BASE_ROOTFS_PATH"
+            ),
+        )
+        for container in legacy_builders
+    }
+
+    parallel_render = _render_with_set(
+        "rootfs-parallel",
+        ["rootfsBuilder.parallelEnabled=true", "bricks.enabled=true"],
+    )
+    parallel_specs = _noded_pod_specs(parallel_render)
+    assert parallel_specs
+    expected_ceilings = {
+        "noded-brick-1gi": "256",
+        "noded-brick-2gi": "1280",
+        "noded-brick-4gi": "3328",
+        "noded-brick-8gi": "7424",
+        "noded-brick-16gi": "15616",
+    }
+    common_env = {
+        entry["name"]: entry
+        for entry in legacy_builders[0]["env"]
+        if entry["name"] not in {"GUEST_IMAGE", "BASE_ROOTFS_PATH"}
+    }
+
+    for name, pod_spec in parallel_specs:
+        builders = [
+            container
+            for container in pod_spec.get("initContainers", [])
+            if container["name"].startswith("build-")
+            and container["name"].endswith("-rootfs")
+        ]
+        assert [container["name"] for container in builders] == ["build-all-rootfs"]
+        driver = builders[0]
+        assert driver["args"][0] == "2"
+        matching = [
+            value for suffix, value in expected_ceilings.items() if suffix in name
+        ]
+        assert driver["args"][1] == (matching[0] if matching else "")
+        tuples = _driver_tuples(driver)
+        assert {
+            (image, path) for _workload, image, path, _memory in tuples
+        } == expected_pairs
+        declared = {workload: memory for workload, _image, _path, memory in tuples}
+        assert declared["runtimePython"] == ""
+        assert declared["runtimeClaude"] == "4096"
+        assert declared["semgrep"] == "1536"
+        assert {entry["name"]: entry for entry in driver["env"]} == common_env
+        assert driver["image"] == legacy_builders[0]["image"]
+        assert driver["volumeMounts"] == legacy_builders[0]["volumeMounts"]
+        assert driver["resources"] == legacy_builders[0]["resources"]
+
+
+@pytest.mark.parametrize("value", ["0", "17", "not-a-number"])
+def test_rootfs_parallel_driver_rejects_invalid_concurrency(value: str) -> None:
+    helm_bin = os.environ.get("HELM_BIN", "helm")
+    result = subprocess.run(
+        [
+            helm_bin,
+            "template",
+            "rootfs-invalid",
+            str(_chart_dir()),
+            "--set-string",
+            f"rootfsBuilder.maxConcurrency={value}",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert (
+        "rootfsBuilder.maxConcurrency must be an integer from 1 through 16"
+        in result.stderr
+    )
+
+
+def test_rootfs_remote_retention_is_default_off_with_current_inventory() -> None:
+    values = yaml.safe_load((_chart_dir() / "values.yaml").read_text())
+    assert values["rootfsRemoteRetention"] == {"enabled": False, "ageDays": 30}
+
+    rendered = _render_with_set("rootfs-retention", [])
+    control = next(
+        container
+        for document in yaml.safe_load_all(rendered)
+        if isinstance(document, dict)
+        and document.get("kind") == "Deployment"
+        and document["metadata"]["name"] == "rootfs-retention-embervm"
+        for container in document["spec"]["template"]["spec"]["containers"]
+        if container["name"] == "control-plane"
+    )
+    env = {entry["name"]: entry.get("value") for entry in control["env"]}
+    assert env["EMBERVM_ROOTFS_REMOTE_RETENTION_ENABLED"] == "false"
+    assert env["EMBERVM_ROOTFS_REMOTE_RETENTION_AGE_DAYS"] == "30"
+    current_refs = json.loads(env["EMBERVM_ROOTFS_CURRENT_IMAGE_REFS"])
+    assert len(current_refs) == len(set(current_refs))
+    assert len(current_refs) == len(_rootfs_builder_init_containers(rendered))
+
+
+@pytest.mark.parametrize(
+    "values_names",
+    [("PROD_VALUES",), ("PROD_VALUES", "GKE_VALUES")],
+)
+def test_rootfs_parallel_memory_declarations_match_rendered_workloads(
+    values_names: tuple[str, ...],
+) -> None:
+    rendered = _render(
+        "rootfs-memory",
+        [Path(os.environ[name]) for name in values_names],
+        ["rootfsBuilder.parallelEnabled=true", "bricks.enabled=true"],
+    )
+    declared_by_image = {}
+    for document in yaml.safe_load_all(rendered):
+        if not isinstance(document, dict) or document.get("kind") != "Workload":
+            continue
+        spec = document["spec"]
+        source = spec.get("source", {}).get("image", {})
+        image_ref = source.get("ref")
+        memory = spec.get("resources", {}).get("memMib")
+        if image_ref and memory:
+            declared_by_image[image_ref] = min(
+                int(memory), declared_by_image.get(image_ref, int(memory))
+            )
+
+    first_driver = next(
+        container
+        for _name, pod_spec in _noded_pod_specs(rendered)
+        for container in pod_spec.get("initContainers", [])
+        if container["name"] == "build-all-rootfs"
+    )
+    tuples = _driver_tuples(first_driver)
+    planned_by_image = {image: memory for _name, image, _path, memory in tuples}
+    for image_ref, memory in declared_by_image.items():
+        assert planned_by_image[image_ref] == str(memory)
+
+
 def test_noded_egress_catalog_renders_plaintext_upstream_opt_in(
     tmp_path: Path,
 ) -> None:

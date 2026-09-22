@@ -13,6 +13,9 @@ values.
 
 import os
 import re
+import subprocess
+import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -218,9 +221,6 @@ def test_store_get_and_put_receive_the_same_complete_cache_identity():
 
 def _rootfs_download_harness(tmp_path):
     """Run the actual builder with local fake registry/store executables."""
-    import sys
-    import textwrap
-
     source = _repo_path(
         "projects/embervm/chart/templates/noded-rootfs-builder-configmap.yaml"
     ).read_text()
@@ -454,3 +454,202 @@ def test_rootfs_lock_timeout_fails_without_downloading(tmp_path):
         assert not (tmp_path / "cache" / "base-timeout.ext4").exists()
     finally:
         _stop_builders([process])
+
+
+def _rootfs_driver(tmp_path: Path) -> tuple[Path, Path]:
+    source = _repo_path(
+        "projects/embervm/chart/templates/noded-rootfs-builder-configmap.yaml"
+    ).read_text()
+    body = source.split("  build-rootfs-set.sh: |\n", 1)[1].split(
+        "  build-base-rootfs.sh: |\n", 1
+    )[0]
+    driver = tmp_path / "driver.sh"
+    driver.write_text(textwrap.dedent(body))
+    builder = tmp_path / "fake-builder.sh"
+    builder.write_text(
+        f'#!/bin/bash\nexec "{sys.executable}" "{tmp_path / "fake_builder.py"}"\n'
+    )
+    builder.chmod(0o755)
+    return driver, builder
+
+
+def _run_driver(
+    driver: Path,
+    builder: Path,
+    tmp_path: Path,
+    concurrency: str,
+    ceiling: str,
+    workloads: list[tuple[str, str, str, str]],
+) -> subprocess.CompletedProcess[str]:
+    args = ["bash", str(driver), concurrency, ceiling]
+    for workload in workloads:
+        args.extend(workload)
+    return subprocess.run(
+        args,
+        env={
+            **os.environ,
+            "ROOTFS_BUILDER_SCRIPT": str(builder),
+            "TEST_DRIVER_DIR": str(tmp_path),
+        },
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+
+def test_rootfs_driver_bounds_workers_and_reaps_every_child(tmp_path: Path) -> None:
+    driver, builder = _rootfs_driver(tmp_path)
+    (tmp_path / "fake_builder.py").write_text(
+        textwrap.dedent(
+            """\
+            import fcntl, json, os, time
+            from pathlib import Path
+
+            root = Path(os.environ["TEST_DRIVER_DIR"])
+            lock = root / "state.lock"
+            lock.touch()
+            with lock.open("r+") as handle:
+                fcntl.flock(handle, fcntl.LOCK_EX)
+                state_path = root / "state.json"
+                state = json.loads(state_path.read_text()) if state_path.exists() else {"current": 0, "maximum": 0, "done": []}
+                state["current"] += 1
+                state["maximum"] = max(state["maximum"], state["current"])
+                state_path.write_text(json.dumps(state))
+            time.sleep(0.2)
+            with lock.open("r+") as handle:
+                fcntl.flock(handle, fcntl.LOCK_EX)
+                state = json.loads(state_path.read_text())
+                state["current"] -= 1
+                state["done"].append(os.environ["GUEST_IMAGE"])
+                state_path.write_text(json.dumps(state))
+            """
+        )
+    )
+    workloads = [
+        (f"workload-{index}", f"image-{index}", f"/cache/{index}.ext4", "128")
+        for index in range(5)
+    ]
+    result = _run_driver(driver, builder, tmp_path, "2", "256", workloads)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    import json
+
+    state = json.loads((tmp_path / "state.json").read_text())
+    assert state["maximum"] == 2
+    assert state["current"] == 0
+    assert sorted(state["done"]) == [f"image-{index}" for index in range(5)]
+    assert (
+        "rootfs driver complete launched=5 skipped=0 max_concurrency=2" in result.stdout
+    )
+
+
+def test_rootfs_driver_logs_class_skips_and_bakes_missing_memory_fail_closed(
+    tmp_path: Path,
+) -> None:
+    driver, builder = _rootfs_driver(tmp_path)
+    (tmp_path / "fake_builder.py").write_text(
+        "import os\n"
+        "from pathlib import Path\n"
+        'with (Path(os.environ["TEST_DRIVER_DIR"]) / "built").open("a") as f:\n'
+        '    f.write(os.environ["GUEST_IMAGE"] + "\\n")\n'
+    )
+    result = _run_driver(
+        driver,
+        builder,
+        tmp_path,
+        "2",
+        "128",
+        [
+            ("too-large", "image-large", "/cache/large.ext4", "256"),
+            ("missing", "image-missing", "/cache/missing.ext4", ""),
+            ("malformed", "image-malformed", "/cache/malformed.ext4", "invalid"),
+            ("eligible", "image-eligible", "/cache/eligible.ext4", "128"),
+        ],
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert set((tmp_path / "built").read_text().splitlines()) == {
+        "image-missing",
+        "image-malformed",
+        "image-eligible",
+    }
+    assert (
+        "rootfs class filter skip workload=too-large memory_mib=256 class_ceiling_mib=128"
+        in result.stdout
+    )
+    assert (
+        "rootfs class filter fail-closed workload=missing memory_mib=missing; baking"
+        in result.stdout
+    )
+    assert (
+        "rootfs class filter fail-closed workload=malformed memory_mib=invalid; baking"
+        in result.stdout
+    )
+
+
+def test_rootfs_driver_propagates_failure_and_terminates_remaining_children(
+    tmp_path: Path,
+) -> None:
+    driver, builder = _rootfs_driver(tmp_path)
+    (tmp_path / "fake_builder.py").write_text(
+        textwrap.dedent(
+            """\
+            import os, signal, sys, time
+            from pathlib import Path
+
+            root = Path(os.environ["TEST_DRIVER_DIR"])
+            image = os.environ["GUEST_IMAGE"]
+            (root / ("started-" + image)).touch()
+            if image == "fail":
+                time.sleep(0.2)
+                sys.exit(7)
+            if image == "slow":
+                def stop(_signum, _frame):
+                    (root / "slow-terminated").touch()
+                    sys.exit(143)
+                signal.signal(signal.SIGTERM, stop)
+                while True:
+                    time.sleep(0.05)
+            (root / ("completed-" + image)).touch()
+            """
+        )
+    )
+    result = _run_driver(
+        driver,
+        builder,
+        tmp_path,
+        "2",
+        "512",
+        [
+            ("failure", "fail", "/cache/fail.ext4", "128"),
+            ("slow", "slow", "/cache/slow.ext4", "128"),
+            ("never", "never", "/cache/never.ext4", "128"),
+        ],
+    )
+    assert result.returncode == 7, result.stdout + result.stderr
+    assert (tmp_path / "slow-terminated").exists()
+    assert not (tmp_path / "started-never").exists()
+    assert "status=7; terminating remaining children" in result.stderr
+
+
+def test_rootfs_driver_executables_and_flags_match_apko_lock() -> None:
+    apko = yaml.safe_load(
+        _repo_path(
+            "projects/firecracker/substrate/rootfs-builder/apko.yaml"
+        ).read_text()
+    )
+    assert {"bash", "busybox", "coreutils", "crane", "e2fsprogs"}.issubset(
+        set(apko["contents"]["packages"])
+    )
+    assert "util-linux" not in apko["contents"]["packages"]
+    lock = _repo_path(
+        "projects/firecracker/substrate/rootfs-builder/apko.lock.json"
+    ).read_text()
+    assert '"name": "bash"' in lock and '"version": "5.3-r12"' in lock
+    assert '"name": "busybox"' in lock and '"version": "1.38.0-r1"' in lock
+    script = _repo_path(
+        "projects/embervm/chart/templates/noded-rootfs-builder-configmap.yaml"
+    ).read_text()
+    assert "/bin/busybox setsid env" in script
+    assert "setsid --" not in script
+    assert 'wait -n -p completed_pid "${child_pids[@]}"' in script

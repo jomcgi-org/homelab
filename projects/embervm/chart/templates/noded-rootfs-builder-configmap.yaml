@@ -1,10 +1,9 @@
 {{- if .Values.workloads }}
 # Build script for the noded base-rootfs initContainers (Task 14). Kept in a
-# ConfigMap so it can be tuned without rebuilding the tools image. Each
-# per-workload rootfs-builder initContainer (see the range in
-# noded-deployment.yaml) runs this same script with its own GUEST_IMAGE and
-# BASE_ROOTFS_PATH, baking the guest filesystem into a read-only ext4 image the
-# workload's microVMs boot from. Ported from the fc-invoke rootfs-builder.
+# ConfigMap so it can be tuned without rebuilding the tools image. The default
+# per-workload initContainers run build-base-rootfs.sh directly. The opt-in
+# single initContainer runs build-rootfs-set.sh, which starts bounded child
+# builders with the same environment contract and isolated work directories.
 #
 # Bake-identity cache (artifact-decoupling Phase 0): the ext4 is baked ONCE per
 # architecture-specific guest CONTENT DIGEST, rootfs size, and bake-format
@@ -35,6 +34,149 @@ metadata:
   labels:
     {{- include "embervm.noded.labels" . | nindent 4 }}
 data:
+  build-rootfs-set.sh: |
+    #!/bin/bash
+    # argv: max-concurrency, class-memory-ceiling-mib (empty for wildcard), then
+    # repeated workload-name, guest-image, base-rootfs-path, memory-mib tuples.
+    set -euo pipefail
+
+    if [ "$#" -lt 2 ] || [ "$((($# - 2) % 4))" -ne 0 ]; then
+      echo "rootfs driver requires concurrency, class ceiling, and complete four-field workload tuples" >&2
+      exit 2
+    fi
+    max_concurrency="$1"
+    class_ceiling_mib="$2"
+    shift 2
+    if ! [[ "$max_concurrency" =~ ^[1-9][0-9]*$ ]] ||
+      [ "$max_concurrency" -gt 16 ]; then
+      echo "invalid rootfs max concurrency '$max_concurrency': expected an integer from 1 through 16" >&2
+      exit 2
+    fi
+    if [ -n "$class_ceiling_mib" ] &&
+      { ! [[ "$class_ceiling_mib" =~ ^[1-9][0-9]*$ ]] || [ "$class_ceiling_mib" -gt 1048576 ]; }; then
+      echo "invalid rootfs class memory ceiling '$class_ceiling_mib': expected positive MiB" >&2
+      exit 2
+    fi
+
+    builder_script="${ROOTFS_BUILDER_SCRIPT:-/scripts/build-base-rootfs.sh}"
+    declare -a child_pids=()
+    declare -a child_names=()
+    launched=0
+    skipped=0
+
+    terminate_children() {
+      local pid deadline alive state
+      trap - INT TERM
+      for pid in "${child_pids[@]}"; do
+        # Each worker is its own session/process group, so crane, tar, mkfs, and
+        # the shell are terminated together. A bare child-PID kill can strand
+        # one of those descendants holding a cache lock or writing a temporary.
+        kill -TERM -- "-$pid" 2>/dev/null || true
+      done
+      deadline=$((SECONDS + 10))
+      while [ "$SECONDS" -lt "$deadline" ]; do
+        alive=0
+        for pid in "${child_pids[@]}"; do
+          state=""
+          if [ -r "/proc/$pid/stat" ]; then
+            state="$(awk '{print $3}' "/proc/$pid/stat" 2>/dev/null || true)"
+          fi
+          if [ "$state" != "Z" ] && kill -0 "$pid" 2>/dev/null; then
+            alive=1
+          fi
+        done
+        [ "$alive" -eq 0 ] && break
+        sleep 1
+      done
+      for pid in "${child_pids[@]}"; do
+        kill -KILL -- "-$pid" 2>/dev/null || true
+      done
+      for pid in "${child_pids[@]}"; do
+        wait "$pid" 2>/dev/null || true
+      done
+    }
+
+    cleanup() {
+      local status=$?
+      if [ "$status" -ne 0 ] && [ "${#child_pids[@]}" -gt 0 ]; then
+        terminate_children
+      fi
+      exit "$status"
+    }
+    trap cleanup EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+
+    reap_one() {
+      local completed_pid=""
+      local name="unknown"
+      local index=0
+      local status=0
+      # Bash 5.3 in the locked image supports both flags. Reap whichever worker
+      # finishes first so a slow bake does not leave a free slot idle.
+      if wait -n -p completed_pid "${child_pids[@]}"; then
+        status=0
+      else
+        status=$?
+      fi
+      for index in "${!child_pids[@]}"; do
+        if [ "${child_pids[$index]}" = "$completed_pid" ]; then
+          name="${child_names[$index]}"
+          unset 'child_pids[index]' 'child_names[index]'
+          child_pids=("${child_pids[@]}")
+          child_names=("${child_names[@]}")
+          break
+        fi
+      done
+      if [ "$status" -ne 0 ]; then
+        echo "rootfs driver child failed workload=$name status=$status; terminating remaining children" >&2
+        return "$status"
+      fi
+      echo "rootfs driver child complete workload=$name"
+    }
+
+    while [ "$#" -gt 0 ]; do
+      name="$1"
+      guest_image="$2"
+      base_rootfs_path="$3"
+      memory_mib="$4"
+      shift 4
+      if [ -z "$name" ] || [ -z "$guest_image" ] || [ -z "$base_rootfs_path" ]; then
+        echo "rootfs driver received an incomplete workload tuple" >&2
+        exit 2
+      fi
+
+      if ! [[ "$memory_mib" =~ ^[1-9][0-9]*$ ]]; then
+        echo "rootfs class filter fail-closed workload=$name memory_mib=${memory_mib:-missing}; baking"
+      elif [ -z "$class_ceiling_mib" ]; then
+        echo "rootfs class filter unavailable workload=$name memory_mib=$memory_mib; baking"
+      elif [ "$memory_mib" -gt "$class_ceiling_mib" ]; then
+        echo "rootfs class filter skip workload=$name memory_mib=$memory_mib class_ceiling_mib=$class_ceiling_mib"
+        skipped=$((skipped + 1))
+        continue
+      fi
+
+      while [ "${#child_pids[@]}" -ge "$max_concurrency" ]; do
+        reap_one
+      done
+      work_dir="/work/rootfs-$launched"
+      echo "rootfs driver launch workload=$name guest_image=$guest_image base_rootfs_path=$base_rootfs_path work_dir=$work_dir"
+      /bin/busybox setsid env \
+        GUEST_IMAGE="$guest_image" \
+        BASE_ROOTFS_PATH="$base_rootfs_path" \
+        ROOTFS_WORK_DIR="$work_dir" \
+        /bin/bash "$builder_script" &
+      child_pids+=("$!")
+      child_names+=("$name")
+      launched=$((launched + 1))
+    done
+
+    while [ "${#child_pids[@]}" -gt 0 ]; do
+      reap_one
+    done
+    trap - EXIT INT TERM
+    echo "rootfs driver complete launched=$launched skipped=$skipped max_concurrency=$max_concurrency"
+
   build-base-rootfs.sh: |
     #!/bin/bash
     # crane resolves the guest image to its arch-specific content digest, bakes the
@@ -44,6 +186,7 @@ data:
     set -euo pipefail
     : "${GUEST_IMAGE:?GUEST_IMAGE required}"
     : "${BASE_ROOTFS_PATH:?BASE_ROOTFS_PATH required}"
+    : "${ROOTFS_WORK_DIR:=/work/root}"
     # Defaulted, never required. The ConfigMap lands at sync wave 0 while bricks
     # roll later and one at a time, so a pod restarting in that window still has
     # the OLD pod spec and none of these set. Requiring them would turn that
@@ -333,17 +476,17 @@ data:
       if [ "$store_hit" -ne 1 ]; then
         baked=1
         echo "rootfs cache miss $short; building from $GUEST_IMAGE -> $cache"
-      # A failed crane export leaves /work/root partially extracted, so the
+      # A failed crane export leaves its isolated work tree partially extracted, so the
       # retried attempt must start from a clean tree; reset it inside the unit.
       export_rootfs() {
-        rm -rf /work/root
-        mkdir -p /work/root
-        crane export --platform "$platform" "$GUEST_IMAGE" - | tar -x -C /work/root
+        rm -rf "$ROOTFS_WORK_DIR"
+        mkdir -p "$ROOTFS_WORK_DIR"
+        crane export --platform "$platform" "$GUEST_IMAGE" - | tar -x -C "$ROOTFS_WORK_DIR"
       }
       retry export_rootfs
       mkfs_output="$(mktemp)"
       set +e
-      mkfs.ext4 -q -F -L embervmbase -d /work/root "$cache_tmp" "$size" >"$mkfs_output" 2>&1
+      mkfs.ext4 -q -F -L embervmbase -d "$ROOTFS_WORK_DIR" "$cache_tmp" "$size" >"$mkfs_output" 2>&1
       mkfs_status=$?
       set -e
       if [ "$mkfs_status" -ne 0 ]; then
@@ -385,7 +528,7 @@ data:
           fi
           rm -f "$cache_tmp"
           echo "rootfs ENOSPC orphan reclaim retry: mkfs.ext4 once" >&2
-          mkfs.ext4 -q -F -L embervmbase -d /work/root "$cache_tmp" "$size"
+          mkfs.ext4 -q -F -L embervmbase -d "$ROOTFS_WORK_DIR" "$cache_tmp" "$size"
         else
           echo "mkfs.ext4 failed and free space looks fine; reclaim not attempted" >&2
           rm -f "$mkfs_output"

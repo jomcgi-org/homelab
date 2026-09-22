@@ -1084,6 +1084,30 @@ first, downloads that payload, verifies its metadata and bytes, and punches zero
 runs back into holes, so bases hydrate across nodes under the identity contract
 with a sparse local hardlink cache in front.
 
+Rootfs construction has an opt-in bounded driver. The default
+`rootfsBuilder.parallelEnabled: false` preserves the legacy sequential
+per-workload init containers and performs no class filtering. When enabled, one
+init container launches at most `rootfsBuilder.maxConcurrency` independent
+builders (default 2), gives each builder its own extraction directory, and keeps
+the existing per-identity scratch lock plus the post-lock cache recheck. A child
+failure terminates and reaps every remaining process group before the init
+container fails. Classed bricks compare each workload's declared `memMib` with
+the same effective ceiling used by scheduling: nameplate memory minus the daemon
+reserve and rejection floor. Oversized images are logged and skipped. A missing
+or malformed declaration is logged and baked fail-closed. The wildcard legacy
+DaemonSet also bakes every image.
+
+Remote baked-rootfs retention is staged separately under
+`rootfsRemoteRetention`. The repository defaults are `enabled: false` and
+`ageDays: 30`. The control plane uses its existing S3 client to produce an
+hourly dry-run plan and audit manifest. Current rendered image refs are protected
+without an age limit. Only non-current, identity-qualified prefixes older than
+30 days are candidates; legacy layouts, malformed keys, incomplete markers, and
+unreadable listings are held. The 30-day horizon exceeds the existing seven-day
+warmth windows and provides migration grace for retained bases, but activation
+still requires reviewing real candidates and rollback assumptions. Disabling
+the gate stops future deletion; it cannot restore deleted objects.
+
 **GKE validation store (Staged, #6193)**: the production Application continues
 to use `h0melab-ember-bases`. This stage defines no production lifecycle
 deletion rule, and verifying the live production bucket has none remains an

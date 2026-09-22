@@ -58,7 +58,7 @@ spec:
     # that base any more: scratchPostgres.enabled is false in both the chart
     # defaults and deploy/values.yaml (decommission tracked in #4198), so the
     # old "keyed to the shared base image" coupling no longer binds.
-    memMib: 150
+    memMib: {{ .Values.demoPostgres.memMib }}
   stateful:
     # The port Postgres listens on inside the VM. Health is a TCP connect here.
     port: 5432

@@ -3,6 +3,15 @@ load("@aspect_bazel_lib//lib:tar.bzl", "tar")
 load("@aspect_bazel_lib//lib:transitions.bzl", "platform_transition_filegroup")
 load("//bazel/tools/oci:apko_image.bzl", "apko_image")
 
+filegroup(
+    name = "package_manifest_sources",
+    srcs = [
+        "apko.lock.json",
+        "apko.yaml",
+    ],
+    visibility = ["//projects/embervm/runtimes/claude:__pkg__"],
+)
+
 platform_transition_filegroup(
     name = "rootfs_store_amd64_bin",
     srcs = ["//projects/embervm/noded/cmd/rootfs-store"],

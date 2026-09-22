@@ -451,6 +451,11 @@ defmodule Embervm.Application do
       # destructive arm is gated OFF by default (EMBERVM_WARMTH_S3_GC), so
       # merging is inert. It holds no durable state.
       {Embervm.S3WarmthGc, s3_warmth_gc_opts()},
+      # Identity-qualified baked-rootfs retention reuses the same S3 client but
+      # has an independent destructive gate and age horizon. It protects every
+      # currently rendered guest image ref, preserves legacy layouts, and emits
+      # an auditable dry-run plan before any separately authorized activation.
+      {Embervm.RootfsRemoteRetention, rootfs_remote_retention_opts()},
       # The data-key envelope reconciler enumerates complete principal-artifact
       # markers and rewrites ONLY stale envelopes under an S3 ETag compare-and-
       # swap. It depends on Finch, KeyService, and the shared store credentials,
@@ -897,6 +902,25 @@ defmodule Embervm.Application do
       min_uptime_ms: int_env_or_nil("EMBERVM_WARMTH_S3_GC_MIN_UPTIME_MS")
     ]
     |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+  end
+
+  defp rootfs_remote_retention_opts do
+    [
+      enabled: boolean_env("EMBERVM_ROOTFS_REMOTE_RETENTION_ENABLED"),
+      age_days: int_env_or_nil("EMBERVM_ROOTFS_REMOTE_RETENTION_AGE_DAYS") || 30,
+      current_image_refs: rootfs_current_image_refs(),
+      endpoint: trimmed_env("EMBERVM_STORE_ENDPOINT"),
+      bucket: store_bucket(),
+      access_key_id: trimmed_env("EMBERVM_STORE_ACCESS_KEY_ID"),
+      secret_access_key: trimmed_env("EMBERVM_STORE_SECRET_ACCESS_KEY")
+    ]
+  end
+
+  defp rootfs_current_image_refs do
+    case safe_json_decode(trimmed_env("EMBERVM_ROOTFS_CURRENT_IMAGE_REFS")) do
+      refs when is_list(refs) -> Enum.filter(refs, &(is_binary(&1) and &1 != ""))
+      _ -> []
+    end
   end
 
   # Background artifact-envelope rotation. The endpoint, bucket, and static S3
