@@ -1454,6 +1454,59 @@ def planner_context(prompt):
 
 
 @pytest.mark.parametrize(
+    "text", ["funded next step ", 'Review \U0001f525\\" evidence ']
+)
+def test_funded_planner_bounds_complete_context_before_trimming(
+    feedback_db, monkeypatch, text
+):
+    from factory.orchestration import factory_funding as funding
+
+    task, runs = delivery(monkeypatch)
+    task["task_text"] = "Implement the requested repair. " * 400
+    monkeypatch.setattr(conductor, "_decision_evidence", lambda _task: [])
+    monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "true")
+    monkeypatch.setattr(funding, "amendment", lambda *_: None)
+    baseline = planner_context(conductor.planner_prompt(task, [], runs))
+    limit = len(conductor._planner_json(baseline)) + 64
+    monkeypatch.setattr(conductor, "PLANNER_CONTEXT_CHARS", limit)
+    grant = {
+        "reason": text * 40,
+        "next_plan": text * 100,
+        "deadline_at": "2026-09-22T04:00:00+00:00",
+    }
+    monkeypatch.setattr(funding, "amendment", lambda *_: grant)
+
+    prompt = conductor.planner_prompt(task, [], runs, decision_revision=123456)
+    context = planner_context(prompt)
+
+    assert len(prompt.split("\n", 1)[1].encode("utf-8")) <= limit
+    assert context["conductor_funding"] == grant
+    assert context["graph_revision"] == 123456
+    assert context["delivery_evidence"] == baseline["delivery_evidence"]
+    assert context["omitted"]["task_characters"] > 0
+
+
+def test_funded_planner_refuses_when_required_funding_cannot_fit(
+    feedback_db, monkeypatch
+):
+    from factory.orchestration import factory_funding as funding
+
+    task, runs = delivery(monkeypatch)
+    task["task_text"] = "Fix the reported defect."
+    monkeypatch.setattr(conductor, "_decision_evidence", lambda _task: [])
+    monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "true")
+    grant = {
+        "reason": "Preserve all funding conditions.",
+        "next_plan": "x" * conductor.PLANNER_CONTEXT_CHARS,
+        "deadline_at": "2026-09-22T04:00:00+00:00",
+    }
+    monkeypatch.setattr(funding, "amendment", lambda *_: grant)
+
+    with pytest.raises(conductor.PlannerContextOverflow):
+        conductor.planner_prompt(task, [], runs)
+
+
+@pytest.mark.parametrize(
     "selected_profile",
     [pytest.param("absent", id="absent"), None, "explicit"],
 )

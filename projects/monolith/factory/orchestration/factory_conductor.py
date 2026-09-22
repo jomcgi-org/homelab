@@ -1341,6 +1341,7 @@ def _planner_context(
     deviation: dict | None = None,
     operator_direction: dict | None = None,
     task_class: str = DEFAULT_TASK_CLASS,
+    decision_revision: int | None = None,
 ) -> str:
     ordered_runs = sorted(runs, key=lambda run: run["id"])
     projected_runs = [_planner_run(run) for run in ordered_runs]
@@ -1466,8 +1467,21 @@ def _planner_context(
             "decision_feedback_records": 0,
         },
     }
+    if decision_revision is not None:
+        context["graph_revision"] = decision_revision
+    from factory.orchestration import factory_funding
+
+    if factory_funding.enabled():
+        with Session(get_engine()) as db:
+            grant = factory_funding.amendment(db, task["id"])
+        if grant:
+            context["conductor_funding"] = {
+                k: grant[k] for k in ("reason", "next_plan", "deadline_at")
+            }
     # Bound complete JSON objects, not the serialized text. Always retain the
     # latest completed work/review, newest attempt and newest rejection evidence.
+    # Funding direction and the final graph revision must be included before
+    # trimming, or a grant can overflow an otherwise valid planner context.
     while True:
         encoded = _planner_json(context)
         if len(encoded) <= PLANNER_CONTEXT_CHARS:
@@ -1537,19 +1551,11 @@ def planner_prompt(
             deviation,
             operator_direction,
             task_class,
+            decision_revision,
         )
     )
-    if decision_revision is not None:
-        context["graph_revision"] = decision_revision
     from factory.orchestration import factory_funding
 
-    if factory_funding.enabled():
-        with Session(get_engine()) as db:
-            grant = factory_funding.amendment(db, task["id"])
-        if grant:
-            context["conductor_funding"] = {
-                k: grant[k] for k in ("reason", "next_plan", "deadline_at")
-            }
     encoded = _planner_json(context)
     if len(encoded) > PLANNER_CONTEXT_CHARS:
         raise PlannerContextOverflow("factory planner evidence exceeds context limit")
