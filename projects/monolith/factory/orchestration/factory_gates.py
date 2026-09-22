@@ -18,7 +18,7 @@ HUMAN_GATE_BACKSTOP = re.compile(
     r"(\$|\busd\b|budget|spend|cost|delete|purge|\bprod\b|bucket|create|credential|token|secret|account)",
     re.IGNORECASE,
 )
-"""Heuristic backstop for human authority, not the classification."""
+"""Heuristic backstop for the proposed parameter value, not its rationale."""
 
 GATE_SCHEMA = {
     "type": "object",
@@ -151,9 +151,12 @@ def resolve(task: dict, artifact: dict, cause: str) -> bool:
                 {"cause": cause, "gate": gate},
             )
         return adopted
-    if any(
-        HUMAN_GATE_BACKSTOP.search(gate.get(field, "")) for field in ("value", "reason")
-    ):
+    # A rationale often explains that the decision does not spend money or
+    # touch an account. It is explanatory text, not the selected operation.
+    # Retain the conservative check on the actual parameter value. A live
+    # validation gate only records staged scope and outstanding checks; it
+    # does not authorize executing those checks or external operations.
+    if gate["kind"] == "parameter" and HUMAN_GATE_BACKSTOP.search(gate["value"]):
         return False
     number, repo = task["issue_number"], task["repo"]
     identity = hashlib.sha256(json.dumps(gate, sort_keys=True).encode()).hexdigest()[
