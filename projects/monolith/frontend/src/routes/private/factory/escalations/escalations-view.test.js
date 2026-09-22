@@ -324,6 +324,7 @@ describe("escalations view helpers", () => {
     const first = await decisionRequestKey(3, body);
     expect(await decisionRequestKey(3, body)).toBe(first);
     expect(first).toMatch(/^browser-v1:[0-9a-f]{64}$/);
+    expect(await decisionRequestKey(3, body, 1)).not.toBe(first);
     expect(
       await decisionRequestKey(
         3,

@@ -326,12 +326,12 @@ export function chatBody(note, decisionId) {
   return decisionId ? { ...body, decision_id: decisionId } : body;
 }
 
-/** Stable identity for one exact browser intent, including its bounded note. */
-export async function decisionRequestKey(receiptId, body) {
+/** Stable identity for one exact browser attempt, including its bounded note. */
+export async function decisionRequestKey(receiptId, body, attempt = 0) {
   if (!body?.decision_id)
     throw new Error("an exact decision identity is required");
   const encoded = new TextEncoder().encode(
-    JSON.stringify({ receipt_id: receiptId, ...body }),
+    JSON.stringify({ receipt_id: receiptId, attempt, ...body }),
   );
   const digest = await globalThis.crypto.subtle.digest("SHA-256", encoded);
   const hex = [...new Uint8Array(digest)]

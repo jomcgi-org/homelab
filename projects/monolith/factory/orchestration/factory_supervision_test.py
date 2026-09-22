@@ -811,7 +811,7 @@ def _backstop_harness(
     starts,
     task=None,
     enabled=True,
-    staged=True,
+    release_gate_open=True,
     finish_ok=True,
     permit_seq=1,
     permit_seqs=None,
@@ -890,7 +890,11 @@ def _backstop_harness(
     monkeypatch.setenv(
         "FACTORY_DEADLINE_BACKSTOP_ENABLED", "true" if enabled else "false"
     )
-    monkeypatch.setattr(conductor, "FACTORY_DEADLINE_BACKSTOP_RELEASE_STAGED", staged)
+    monkeypatch.setattr(
+        conductor,
+        "FACTORY_DEADLINE_BACKSTOP_RELEASE_STAGED",
+        release_gate_open,
+    )
     monkeypatch.setattr(conductor, "Session", lambda _engine: _Db())
     monkeypatch.setattr(conductor, "get_engine", lambda: None)
     monkeypatch.setattr(controls, "_locked_session", locked)
@@ -1014,7 +1018,7 @@ def test_the_backstop_cannot_release_while_repository_delivery_is_staged(
         monkeypatch,
         starts=[_Start("uncertain")],
         enabled=True,
-        staged=False,
+        release_gate_open=False,
     )
 
     assert released is False
