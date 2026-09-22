@@ -698,6 +698,41 @@ func TestPrimeAssignAutoDestroy(t *testing.T) {
 	}
 }
 
+func TestPrimeVolumeRequestCarriesColdBootInputs(t *testing.T) {
+	drv := &fakeDriver{}
+	client, srv := newTestServer(t, drv, &fakeTransport{}, 8)
+	srv.cfg.HarnessInit = "/shim/init"
+	const ref = "echo__abcdef000001"
+	seedBase(srv, ref, "echo")
+	base, ok := srv.bases.get(ref)
+	if !ok {
+		t.Fatal("seeded base missing from registry")
+	}
+	base.devices.Known = true
+	srv.bases.register(base)
+	if err := os.WriteFile(filepath.Join(srv.cfg.SnapshotRoot, "bases", ref, "jail-resources.json"), []byte(`[{"role":"rootfs"}]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := client.Prime(context.Background(), &nodev1.PrimeRequest{
+		SnapshotRef:    ref,
+		VolumeDiskPath: "/sessions/lineage/workspace.img",
+	}); err != nil {
+		t.Fatalf("Prime: %v", err)
+	}
+
+	spec := drv.claimSpec()
+	if spec.ColdBootRootfsPath != base.rootfsPath {
+		t.Errorf("cold-boot rootfs = %q, want captured base rootfs %q", spec.ColdBootRootfsPath, base.rootfsPath)
+	}
+	if spec.ColdBootHarnessInit != srv.cfg.HarnessInit {
+		t.Errorf("cold-boot init = %q, want %q", spec.ColdBootHarnessInit, srv.cfg.HarnessInit)
+	}
+	if spec.VolumeDiskPath != "/sessions/lineage/workspace.img" {
+		t.Errorf("cold-boot volume = %q, want requested volume", spec.VolumeDiskPath)
+	}
+}
+
 func TestPrimeTracksDirtyPagesOnlyForConfiguredBankingWorkload(t *testing.T) {
 	drv := &fakeDriver{}
 	client, srv := newTestServer(t, drv, &fakeTransport{}, 8)

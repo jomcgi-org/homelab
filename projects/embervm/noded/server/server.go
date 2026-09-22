@@ -1434,17 +1434,17 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 		VolumeDiskPath: volumeDiskPath,
 		VolumeMount:    req.GetVolumeMount(),
 		ColdBootRootfsPath: func() string {
-			if req.GetLineageId() != "" {
-				return s.readBaseRootfsPath(ref)
+			if volumeDiskPath != "" {
+				return rootfsPath
 			}
 			return ""
 		}(),
-		// A lineage prime cold boots, so it must carry the guest entrypoint the
-		// way the serving cold boot does. Resolve it from the workload's image
-		// with the node default as fallback; without init= the kernel drops to
-		// /bin/sh and the guest never serves readiness.
+		// A volume-bearing prime may cold boot, so it must carry the guest
+		// entrypoint the way the serving cold boot does. Resolve it from the
+		// workload's image with the node default as fallback. Without init= the
+		// kernel drops to /bin/sh and the guest never serves readiness.
 		ColdBootHarnessInit: func() string {
-			if req.GetLineageId() == "" {
+			if volumeDiskPath == "" {
 				return ""
 			}
 			if img, ok := s.resolveImage(base.workload, ""); ok && img.HarnessInit != "" {
