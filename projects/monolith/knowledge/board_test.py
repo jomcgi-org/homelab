@@ -322,9 +322,7 @@ def test_exact_expiry_and_bounds(board_db, monkeypatch):
     ) == {"error": "invalid_body"}
 
 
-def test_read_cap_keeps_newest_messages_in_chronological_order(
-    board_db, monkeypatch
-):
+def test_read_cap_keeps_newest_messages_in_chronological_order(board_db, monkeypatch):
     monkeypatch.setenv(board.BOARD_ENABLED_ENV, "true")
     topic = "blocker:lane:delivery"
     with Session(board_db) as session:
