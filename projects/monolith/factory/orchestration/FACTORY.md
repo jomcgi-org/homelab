@@ -852,7 +852,8 @@ with the label gone, which is exactly the state that puts it back in front of
 intake.
 
 **Deciding.** `POST /api/swarm/factory/decisions/{receipt_id}` behind the same
-operator gate as `/control`, with `{"option_key": "...", "note": "..."}` or
+operator gate as `/control`, with an exact `decision_id`, a stable
+`request_key`, and either `{"option_key": "...", "note": "..."}` or
 `{"action": "chat", "note": "..."}`. The private factory page at
 `/factory/escalations` reaches the same code through
 `POST /api/agents/factory/decisions/{receipt_id}`, which the browser can use
@@ -862,6 +863,13 @@ smuggled. Not `Cf-Access-Authenticated-User-Email`: nothing in the cluster
 validates or strips that one, so a caller reaching the backend can set it to
 any address. A request carrying no projected address, two of them, or only the
 Cloudflare header is refused.
+
+Both HTTP routes and MCP call `factory_decisions.request_decision`. The owner
+persists the accepted or refused outcome under the verified actor before any
+external effect. The browser hashes the exact receipt, decision, option or chat
+action, and note into a stable request key, so retry after response loss returns
+the original acknowledgement. No HTTP route may bypass this contract through
+the legacy direct apply or chat helpers.
 
 Cloudflare Access is the gate. `private.jomcgi.dev` is zero trust locked to one
 identity, so an address arriving on the projected header was already authorised
@@ -1688,16 +1696,38 @@ including the shared pending-message sweep and transport creation/invoke retries
 The coordinator makes at most two recorded cancellation attempts per active node.
 Other operator-owned sessions are outside this control scope.
 
-A task pause written by the reconciler expires after two hours. The conductor
-settles any uncertain starts, cancels the task with
-`reconciler_pause_expired`, clears its paused flag, and releases its delivery
-slot. Only a successful reconciler pause audit is eligible. A pause written by
-an operator never expires automatically.
+MCP and `POST /api/swarm/factory/control` use
+`factory_controls.request_control` for these supported actions. The caller must
+supply a stable `request_key` and the exact control `expected_version` read from
+status. The owner records refused stale requests too, so the same request cannot
+become effective after state changes. `configure` remains a separate bearer-only
+policy operation and is not exposed through MCP. Priority edits, free-form
+direction, budget mutation and exact-attempt MCP stop have no supported owner in
+this surface and remain unavailable.
+
+A task pause written by the reconciler is eligible for cancellation after two
+hours only when all starts already have terminal evidence. An unresolved start
+keeps the pause, original cost and capacity hold and records
+`reconciler_pause_expiry_held`; elapsed time cannot settle it at zero. Only a
+successful reconciler pause audit is eligible. A pause written by an operator
+never expires automatically.
 
 A network operation already in flight can remain uncertain after stop. Status
 continues to show those reservations and cancellation requests; the stop flag
 does not assert that every guest has ceased. Stop is terminal for this first
 bounded lane. It cannot be reset by replaying an earlier enable request.
+
+The MCP task row reports stop state conservatively. A running graph node is
+`work_still_running`; a reserved or uncertain start without a running node is
+`unknown_or_unreachable`; a request with neither condition remains
+`cancellation_requested`. Only exact positive stop evidence for every owned
+workflow produces `cessation_confirmed`. Cancellation acceptance, lease expiry,
+deadline backstops and terminal database state do not count as that proof.
+
+The historical deadline-release implementation is hard-staged off in addition
+to `FACTORY_DEADLINE_BACKSTOP_ENABLED=false`. An environment change cannot
+activate it in this delivery. Its warning remains useful, but deadline expiry
+does not release a start, a task slot or an admission permit.
 
 Agent workloads have a twelve-hour runtime backstop. The caller's result wait
 and routine drainer observation wait exceed that ceiling. The CLI silence

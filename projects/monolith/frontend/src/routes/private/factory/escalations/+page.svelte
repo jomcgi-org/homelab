@@ -10,6 +10,7 @@
     contextKey,
     contextRows,
     decisionBody,
+    decisionRequestKey,
     effectLine,
     escapeForKey,
     escapeHotkey,
@@ -121,21 +122,33 @@
 
   async function send(item, body, label) {
     if (!item || busy) return;
+    if (!body.decision_id) {
+      failure =
+        "the decision card has no exact identity; refresh before acting";
+      return;
+    }
     busy = label;
     failure = null;
     notice = null;
     try {
+      const requestBody = {
+        ...body,
+        request_key: await decisionRequestKey(item.receipt_id, body),
+      };
       const response = await fetch(
         `/factory/escalations/decisions/${item.receipt_id}`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
+          body: JSON.stringify(requestBody),
         },
       );
       const result = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        failure = result.detail ?? `the decision failed (${response.status})`;
+      if (!response.ok || result.ok === false) {
+        failure =
+          result.detail ??
+          result.reason ??
+          `the decision failed (${response.status})`;
         return;
       }
       // A chat the lane could not take still posted the question, so the
@@ -221,7 +234,7 @@
       noteBox?.focus();
       return;
     }
-    return send(item, chatBody(noteFor(item)), "chat");
+    return send(item, chatBody(noteFor(item), item.decision_id), "chat");
   }
 
   function typing(event) {

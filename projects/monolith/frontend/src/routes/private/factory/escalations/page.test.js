@@ -4,10 +4,20 @@ import { mount, tick, unmount } from "svelte";
 import Page from "./+page.svelte";
 
 const mounted = [];
+const DECISION_ID = `decision:${"a".repeat(64)}`;
+
+function durableBody(body, decisionId = DECISION_ID) {
+  return {
+    ...body,
+    decision_id: decisionId,
+    request_key: expect.stringMatching(/^browser-v1:[0-9a-f]{64}$/),
+  };
+}
 
 function escalation(overrides = {}) {
   return {
     receipt_id: 3,
+    decision_id: DECISION_ID,
     issue_number: 6002,
     title: "escalations are decisions, not messages",
     url: "https://github.com/jomcgi-org/homelab/issues/6002",
@@ -263,10 +273,9 @@ describe("escalations page", () => {
     await settle();
 
     expect(fetchMock.mock.calls[0][0]).toBe("/factory/escalations/decisions/3");
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
-      option_key: "split",
-      expected_decision_id: "decision:reviewed",
-    });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual(
+      durableBody({ option_key: "split" }, "decision:reviewed"),
+    );
     expect(fetchMock.mock.calls[1][0]).toBe("/factory/escalations");
     expect(target.querySelector(".none")).not.toBeNull();
     expect(target.querySelector(".ledger").textContent).toContain(
@@ -292,6 +301,23 @@ describe("escalations page", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  test("a card without an exact identity cannot reach the mutation proxy", async () => {
+    const fetchMock = vi.fn();
+    stubFetch(fetchMock);
+    const target = renderPage({
+      escalations: [escalation({ decision_id: null })],
+      error: false,
+    });
+
+    target.querySelector(".option").click();
+    await settle();
+
+    expect(target.querySelector("[role=alert]").textContent).toContain(
+      "no exact identity",
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   test("a number key picks the option in that position", async () => {
     const fetchMock = vi
       .fn()
@@ -303,9 +329,9 @@ describe("escalations page", () => {
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "2" }));
     await settle();
 
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
-      option_key: "hold",
-    });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual(
+      durableBody({ option_key: "hold" }),
+    );
   });
 
   test("j and k move the cursor without wrapping", async () => {
@@ -359,10 +385,12 @@ describe("escalations page", () => {
     target.querySelector(".chat-button").click();
     await settle();
 
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
-      action: "chat",
-      note: "Does this cover the friends tier?",
-    });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual(
+      durableBody({
+        action: "chat",
+        note: "Does this cover the friends tier?",
+      }),
+    );
   });
 
   test("typing in the note box never triggers a hotkey", async () => {
@@ -413,9 +441,9 @@ describe("escalations page", () => {
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "x" }));
     await settle();
     expect(fetchMock.mock.calls[0][0]).toBe("/factory/escalations/decisions/3");
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
-      option_key: "escape:close",
-    });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual(
+      durableBody({ option_key: "escape:close" }),
+    );
   });
 
   test("Escape cancels an armed close before it dismisses anything", async () => {
@@ -432,9 +460,9 @@ describe("escalations page", () => {
 
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
     await settle();
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
-      option_key: "escape:dismiss",
-    });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual(
+      durableBody({ option_key: "escape:dismiss" }),
+    );
   });
 
   test("defer sends at once and carries the card's own note", async () => {
@@ -449,10 +477,12 @@ describe("escalations page", () => {
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "d" }));
     await settle();
 
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
-      option_key: "escape:defer",
-      note: "after the hub migration",
-    });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual(
+      durableBody({
+        option_key: "escape:defer",
+        note: "after the hub migration",
+      }),
+    );
   });
 
   test("arming with the mouse moves the cursor, so a key cannot close another card", async () => {
@@ -480,9 +510,9 @@ describe("escalations page", () => {
     await settle();
 
     expect(fetchMock.mock.calls[0][0]).toBe("/factory/escalations/decisions/4");
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
-      option_key: "escape:close",
-    });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual(
+      durableBody({ option_key: "escape:close" }),
+    );
   });
 
   test("clicking a brief option on another card moves the cursor to it", async () => {
@@ -572,9 +602,9 @@ describe("escalations page, per card state", () => {
     await settle();
 
     expect(fetchMock.mock.calls[0][0]).toBe("/factory/escalations/decisions/4");
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
-      option_key: "split",
-    });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual(
+      durableBody({ option_key: "split" }),
+    );
   });
 
   test("the focused card's own note is sent with its decision", async () => {
@@ -592,10 +622,12 @@ describe("escalations page, per card state", () => {
     target.querySelector(".option").click();
     await settle();
 
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
-      option_key: "split",
-      note: "ship the console half",
-    });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual(
+      durableBody({
+        option_key: "split",
+        note: "ship the console half",
+      }),
+    );
   });
 
   test("a chat the lane could not queue says so instead of reading as done", async () => {
