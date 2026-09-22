@@ -2,7 +2,7 @@ from pathlib import Path
 
 MIGRATION = (
     Path(__file__).resolve().parents[1]
-    / "chart/migrations/20260922090000_agent_board.sql"
+    / "chart/migrations/20260922120000_agent_board.sql"
 )
 
 
