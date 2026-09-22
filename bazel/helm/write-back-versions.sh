@@ -27,7 +27,10 @@
 #      to finish winning. Without this a slow publish for an older commit could
 #      walk targetRevision BACKWARDS and silently roll production back.
 #
-# Usage: write-back-versions.sh <record_dir>
+# Usage: write-back-versions.sh <record_dir> [--record-publication]
+# With --record-publication, the caller asserts that all chart pushes succeeded.
+# Record that completion even when no version file changes. Generated commits
+# keep the existing subject prefix so CI does not recursively publish receipts.
 # Env:
 #   WRITE_BACK_TRIES  push attempts before giving up (default 5)
 #   WRITE_BACK_DRY_RUN  if non-empty, print what would change and do not push
@@ -36,8 +39,17 @@ set -o errexit -o nounset -o pipefail
 RECORD_DIR="${1:?Usage: write-back-versions.sh <record_dir>}"
 TRIES="${WRITE_BACK_TRIES:-5}"
 DRY_RUN="${WRITE_BACK_DRY_RUN:-}"
+RECORD_PUBLICATION=false
+case "${2:-}" in
+"") ;;
+--record-publication) RECORD_PUBLICATION=true ;;
+*)
+	echo "Unknown publication option: ${2}" >&2
+	exit 2
+	;;
+esac
 
-if [[ ! -d "$RECORD_DIR" ]]; then
+if [[ ! -d "$RECORD_DIR" && "$RECORD_PUBLICATION" == false ]]; then
 	echo "No record directory at ${RECORD_DIR}; nothing was published, nothing to write back."
 	exit 0
 fi
@@ -45,7 +57,7 @@ fi
 shopt -s nullglob
 RECORDS=("$RECORD_DIR"/*)
 shopt -u nullglob
-if [[ "${#RECORDS[@]}" -eq 0 ]]; then
+if [[ "${#RECORDS[@]}" -eq 0 && "$RECORD_PUBLICATION" == false ]]; then
 	echo "No published charts recorded; nothing to write back."
 	exit 0
 fi
@@ -67,6 +79,23 @@ SEMVER_TR_RE='^[[:space:]]*targetRevision:[[:space:]]*"?[0-9]+\.[0-9]+\.[0-9]+"?
 _is_semver() {
 	[[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
 }
+
+# Include all successfully published or content-verified reused versions, not
+# just the subset that will advance main. Preserve this snapshot across retries.
+PUBLICATION_TRAILERS=""
+if [[ "$RECORD_PUBLICATION" == true ]]; then
+	PUBLICATION_TRAILERS="Chart-Publication-Complete: true"
+	for record in ${RECORDS[@]+"${RECORDS[@]}"}; do
+		if ! read -r receipt_chart receipt_version receipt_extra <"$record" ||
+			[[ ! "$receipt_chart" =~ ^projects/[A-Za-z0-9_./-]+$ ||
+				"/$receipt_chart/" == *"/../"* || -n "$receipt_extra" ||
+				! -f "$receipt_chart/Chart.yaml" ]] || ! _is_semver "$receipt_version"; then
+			echo "Invalid publication record: ${record}" >&2
+			exit 1
+		fi
+		PUBLICATION_TRAILERS+=$'\n'"Chart-Published: ${receipt_chart} ${receipt_version}"
+	done
+fi
 
 # Print the greater of two semvers.
 _max_version() {
@@ -100,10 +129,18 @@ while [[ "$attempt" -le "$TRIES" ]]; do
 	# process read before losing the race.
 	git fetch --quiet origin main
 	git checkout --quiet -B write-back-main origin/main
+	if [[ "$RECORD_PUBLICATION" == true ]] &&
+		[[ -n "$(git log -1 --format=%H --all-match --fixed-strings \
+			--grep="Chart-Source-Commit: ${PUBLISHED_SOURCE_COMMIT}" \
+			--grep="Chart-Publication-Complete: true" origin/main)" ]]; then
+		echo "Publication already recorded for ${PUBLISHED_SOURCE_COMMIT}."
+		rm -rf "$RECORD_DIR"
+		exit 0
+	fi
 
 	CHANGED=0
 	SUMMARY=()
-	for record in "${RECORDS[@]}"; do
+	for record in ${RECORDS[@]+"${RECORDS[@]}"}; do
 		read -r CHART_DIR VERSION <"$record"
 		[[ -z "${CHART_DIR:-}" || -z "${VERSION:-}" ]] && continue
 
@@ -158,14 +195,14 @@ while [[ "$attempt" -le "$TRIES" ]]; do
 		CHANGED=$((CHANGED + 1))
 	done
 
-	if [[ "$CHANGED" -eq 0 ]]; then
+	if [[ "$CHANGED" -eq 0 && "$RECORD_PUBLICATION" == false ]]; then
 		echo "Nothing to write back; main already carries every published version."
 		rm -rf "$RECORD_DIR"
 		exit 0
 	fi
 
 	printf 'Writing back %d chart version(s):\n' "$CHANGED"
-	printf '  %s\n' "${SUMMARY[@]}"
+	printf '  %s\n' ${SUMMARY[@]+"${SUMMARY[@]}"}
 
 	if [[ -n "$DRY_RUN" ]]; then
 		echo "WRITE_BACK_DRY_RUN set; not committing or pushing."
@@ -176,13 +213,14 @@ while [[ "$attempt" -le "$TRIES" ]]; do
 	# so the next publish rebuilds identical image digests and does nothing.
 	# That, plus the chart-version-bot author check in push.sh.tpl, is the loop
 	# guard.
-	git commit --quiet -m "chore(charts): publish ${CHANGED} chart version(s)
+	git commit --quiet --allow-empty -m "chore(charts): publish ${CHANGED} chart version(s)
 
-$(printf '%s\n' "${SUMMARY[@]}")
+$(printf '%s\n' ${SUMMARY[@]+"${SUMMARY[@]}"})
 
 Written back by write-back-versions.sh (ADR platform/009 decision 1).
 
-Chart-Source-Commit: ${PUBLISHED_SOURCE_COMMIT}"
+Chart-Source-Commit: ${PUBLISHED_SOURCE_COMMIT}
+${PUBLICATION_TRAILERS}"
 
 	# `|| PUSH_RC=$?` keeps errexit from aborting on the very failure this loop
 	# exists to handle, and captures the message so the two causes below can be

@@ -178,7 +178,7 @@ main_publish_branch="$(awk '
 	in_branch && $0 == "          fi" { exit }
 ' "$BUILD_BUDDY")"
 if grep -Fq './bazel/images/push/push-changed.sh' <<<"$main_publish_branch" &&
-	grep -Fq './bazel/helm/write-back-versions.sh .chart-version-records' <<<"$main_publish_branch"; then
+	grep -Fq './bazel/helm/write-back-versions.sh .chart-version-records --record-publication' <<<"$main_publish_branch"; then
 	pass "buildbuddy_main_publish_branch"
 else
 	fail "buildbuddy_main_publish_branch" "main-only branch must publish changed images and write chart versions back"
