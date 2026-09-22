@@ -77,6 +77,13 @@ embeddingUrl: "http://inference-embeddings.inference.svc.cluster.local:8080"
 knowledge:
   defaultRepoScope: "repo:jomcgi-org/homelab"
 
+# Staged coordination board (#5704). The server catalogue is present while
+# storage access stays inert. Enabling this alone is insufficient: scoped
+# calls still fail closed until a server-trusted session or guest binding
+# resolver is installed.
+agentBoard:
+  enabled: false
+
 auth:
   authentik:
     jwksUrl: "http://authentik-server.authentik.svc.cluster.local/application/o/mcp-friends/jwks/"
