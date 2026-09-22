@@ -782,7 +782,10 @@ func TestExportArtifactBaseSkipsWhenSiblingVendorCopyExists(t *testing.T) {
 
 	// A sibling node of the same vendor already exported this ref, with ITS OWN
 	// snapshot bytes.
-	sibling := map[string]string{"imageref": "img", "memfile": "SIBLING-mem", "rootfsid": testRootfsUUIDA, "snapfile": "SIBLING-snap"}
+	sibling := map[string]string{
+		"imageref": "img", "jail-resources.json": `[{"role":"rootfs"}]`,
+		"memfile": "SIBLING-mem", "rootfsid": testRootfsUUIDA, "snapfile": "SIBLING-snap",
+	}
 	fs.seedArtifact(prefix, sibling, 0, "amd", "")
 
 	s.registry.sync([]workloadEntry{{Workload: workload, ImageRef: digest, RootfsRef: "/rootfs/bazel-query"}})
@@ -791,7 +794,10 @@ func TestExportArtifactBaseSkipsWhenSiblingVendorCopyExists(t *testing.T) {
 	dir := filepath.Join(s.cfg.SnapshotRoot, "bases", ref)
 	// Deliberately DIFFERENT bytes from the seeded sibling copy, which is the
 	// real cross-node situation.
-	writeBundleFiles(t, dir, map[string]string{"imageref": "img", "memfile": "LOCAL-mem", "rootfsid": testRootfsUUIDA, "snapfile": "LOCAL-snap"})
+	writeBundleFiles(t, dir, map[string]string{
+		"imageref": "img", "jail-resources.json": `[{"role":"rootfs"}]`,
+		"memfile": "LOCAL-mem", "rootfsid": testRootfsUUIDA, "snapfile": "LOCAL-snap",
+	})
 
 	if _, err := s.ExportArtifact(ctx, &nodev1.ExportArtifactRequest{
 		Artifact: &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_BASE, Workload: workload, Ref: ref},
@@ -819,6 +825,62 @@ func TestExportArtifactBaseSkipsWhenSiblingVendorCopyExists(t *testing.T) {
 	fs.mu.Unlock()
 	if !sameStringMap(stored, sibling) {
 		t.Fatalf("sibling copy was overwritten: got %v, want %v", stored, sibling)
+	}
+}
+
+func TestExportArtifactBasePresenceDoesNotBypassDeviceShapeFence(t *testing.T) {
+	rootOnly := `[{"role":"rootfs"}]`
+	withVolume := `[{"role":"rootfs"},{"role":"volume"}]`
+	for _, tc := range []struct {
+		name           string
+		localMetadata  string
+		remoteMetadata string
+	}{
+		{name: "different known shapes", localMetadata: rootOnly, remoteMetadata: withVolume},
+		{name: "known cannot adopt unknown", localMetadata: rootOnly},
+		{name: "unknown cannot adopt known", remoteMetadata: withVolume},
+		{name: "different unknown copies"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fs := newFakeStore()
+			s := newStoreTestServer(t, fs)
+			ref := &nodev1.ArtifactRef{
+				Kind: nodev1.ArtifactKind_ARTIFACT_KIND_BASE, Workload: "echo", Ref: "echo__same",
+			}
+			prefix := artifactPrefix(ref, s.cfg.CpuVendor)
+			remote := map[string]string{
+				"imageref": "img", "memfile": "REMOTE-mem",
+				"rootfsid": testRootfsUUIDA, "snapfile": "REMOTE-snap",
+			}
+			if tc.remoteMetadata != "" {
+				remote[snapshotmeta.JailResourcesFile] = tc.remoteMetadata
+			}
+			fs.seedArtifact(prefix, remote, 0, "amd", "")
+
+			local := map[string]string{
+				"imageref": "img", "memfile": "LOCAL-mem",
+				"rootfsid": testRootfsUUIDA, "snapfile": "LOCAL-snap",
+			}
+			if tc.localMetadata != "" {
+				local[snapshotmeta.JailResourcesFile] = tc.localMetadata
+			}
+			writeBundleFiles(t, s.artifactLocalDir(ref), local)
+
+			s.runExportJob(context.Background(), exportJob{ref: ref, key: prefix})
+
+			if _, ok := s.exported.generation(prefix); ok {
+				t.Fatal("incompatible store copy was marked durable for the local base")
+			}
+			if got := fs.calls(prefix); got != 1 {
+				t.Fatalf("store.Export calls = %d, want 1 compatibility check", got)
+			}
+			fs.mu.Lock()
+			stored := fs.arts[prefix].files
+			fs.mu.Unlock()
+			if !sameStringMap(stored, remote) {
+				t.Fatalf("incompatible store winner changed: got %v, want %v", stored, remote)
+			}
+		})
 	}
 }
 
