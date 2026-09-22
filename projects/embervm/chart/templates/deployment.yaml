@@ -416,7 +416,7 @@ spec:
             - name: EMBERVM_BRICK_AUTOSCALE_MODE
               value: {{ $auto.mode | default "off" | quote }}
             - name: EMBERVM_BRICK_CEILING_IDLE_MS
-              value: {{ $auto.ceilingIdleMs | default 3600000 | quote }}
+              value: {{ $auto.ceilingIdleMs | default 3600000 | int64 | quote }}
             {{- end }}
             {{- if .Values.xds.enabled }}
             {{- if .Values.servingEnvoy.enabled }}

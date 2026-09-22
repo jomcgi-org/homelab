@@ -39,7 +39,7 @@ defmodule Embervm.BrickController do
   blocking placement) when demand hits a capacity wall: the cold wake pick
   (`Embervm.WakeInstance`) when NO brick on the node is slot/mem-eligible, and
   the dispatcher miss tier when ready candidates exist but none has budget/mem
-  headroom. A denial is attributed to the SMALLEST configured class whose
+  headroom. A denial is attributed to the SMALLEST authorized class whose
   usable capacity plus the admission floor fits the workload's `need_mib`; the
   chart-declared capacity works even before a brick exists. `up_threshold` denials
   (default 3) inside
@@ -230,8 +230,9 @@ defmodule Embervm.BrickController do
   (the scale-up demand signal). Fire-and-forget cast so the placement hot path
   never blocks on (or crashes with) the controller; when the controller is not
   running (tests, DS-only fleets) the cast is a silent no-op. The denial is
-  attributed to the smallest configured class whose capacity fits `need_mib`;
-  a need no class can hold is logged/traced and dropped (scaling any class would not help).
+  attributed to the smallest authorized class whose capacity fits `need_mib`;
+  a need no authorized class can hold is logged/traced and latched in capacity
+  health when runtime ceiling ownership is enabled.
   """
   @spec note_denial(non_neg_integer()) :: :ok
   def note_denial(need_mib) when is_integer(need_mib) do
@@ -356,6 +357,7 @@ defmodule Embervm.BrickController do
       class ->
         now = state.clock.()
         denial = %{at: now, workload: workload, need_mib: need_mib}
+        state = refresh_capacity_condition(state, workload, class, now)
 
         {:noreply,
          %{
@@ -488,6 +490,13 @@ defmodule Embervm.BrickController do
               {nil, st} ->
                 # A failed live-scale read leaves both replicas and fleet-full
                 # bookkeeping untouched for this class.
+                os =
+                  case Map.fetch(st.over_since, name) do
+                    {:ok, since} -> Map.put(os, name, since)
+                    :error -> os
+                  end
+
+                fl = if MapSet.member?(st.flagged, name), do: MapSet.put(fl, name), else: fl
                 {os, fl, st}
 
               {acting, st} ->
@@ -619,8 +628,9 @@ defmodule Embervm.BrickController do
 
       :error ->
         # Report the last trustworthy read for fleet-full accounting. Most
-        # importantly, do not stamp a successful-action cooldown.
-        {plan.current || 0, state}
+        # importantly, do not stamp a successful-action cooldown. Static mode
+        # has no live read, so a failed write cannot update fleet-full state.
+        {plan.current, state}
     end
   end
 
@@ -797,19 +807,31 @@ defmodule Embervm.BrickController do
 
     if ceiling_enabled?(class) and pressure? and current >= ceiling and
          ceiling >= authorized_bound(class) do
-      latest = Enum.max_by(events, & &1.at)
-
-      put_capacity_condition(
-        state,
-        latest.workload,
-        :ceiling_exhausted,
-        name,
-        latest.need_mib,
-        latest.at
-      )
+      events
+      |> latest_denial_per_workload()
+      |> Enum.reduce(state, fn event, acc ->
+        put_capacity_condition(
+          acc,
+          event.workload,
+          :ceiling_exhausted,
+          name,
+          event.need_mib,
+          event.at
+        )
+      end)
     else
       state
     end
+  end
+
+  defp latest_denial_per_workload(events) do
+    events
+    |> Enum.reduce(%{}, fn event, latest ->
+      Map.update(latest, event.workload, event, fn prior ->
+        if event.at > prior.at, do: event, else: prior
+      end)
+    end)
+    |> Map.values()
   end
 
   defp clamp_effective_min(class, ceiling) do
@@ -949,6 +971,26 @@ defmodule Embervm.BrickController do
 
   defp put_capacity_condition(state, _workload, _reason, _size_class, _need_mib, _seen_at),
     do: state
+
+  # A continuing attributed denial keeps an already-latched exhaustion active
+  # even when Kubernetes cannot provide a fresh scale read. An unknown read is
+  # not proof of recovery and must not let the quiet-window timer clear health.
+  defp refresh_capacity_condition(state, workload, size_class, seen_at)
+       when is_binary(workload) and workload != "" do
+    case Map.get(state.capacity_conditions, workload) do
+      %{reason: :ceiling_exhausted, size_class: ^size_class} = condition ->
+        %{
+          state
+          | capacity_conditions:
+              Map.put(state.capacity_conditions, workload, %{condition | last_seen_at: seen_at})
+        }
+
+      _ ->
+        state
+    end
+  end
+
+  defp refresh_capacity_condition(state, _workload, _size_class, _seen_at), do: state
 
   defp clear_recovered_conditions(state, now) do
     {keep, clear} =
@@ -1114,6 +1156,7 @@ defmodule Embervm.BrickController do
       end)
 
     classes
+    |> Enum.filter(&(authorized_bound(&1) > 0))
     |> Enum.map(fn class ->
       name = class_name(class)
       usable = class_field(class, [:usable_mib, "usable_mib"])
