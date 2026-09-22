@@ -30,6 +30,10 @@ def _ca(serial: int) -> tuple[x509.Certificate, ec.EllipticCurvePrivateKey]:
         .not_valid_before(now - datetime.timedelta(minutes=1))
         .not_valid_after(now + datetime.timedelta(hours=1))
         .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .add_extension(
+            x509.SubjectKeyIdentifier.from_public_key(key.public_key()),
+            critical=False,
+        )
         .sign(key, hashes.SHA256())
     )
     return certificate, key
@@ -63,6 +67,14 @@ def _identity(
             critical=True,
         )
         .add_extension(x509.ExtendedKeyUsage([usage]), critical=True)
+        .add_extension(
+            x509.SubjectKeyIdentifier.from_public_key(key.public_key()),
+            critical=False,
+        )
+        .add_extension(
+            x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()),
+            critical=False,
+        )
         .sign(ca_key, hashes.SHA256())
     )
     cert_path = directory / f"{prefix}.pem"
