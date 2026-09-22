@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import time
 from datetime import datetime, timezone
@@ -149,6 +150,50 @@ def _headline_window(provider: str, windows: object) -> dict | None:
     )
 
 
+def _active_windows(windows: object) -> list[dict]:
+    """Retain every non-expired window and mark unusable evidence explicitly."""
+    if not isinstance(windows, list):
+        return []
+    active = []
+    for window in windows:
+        if not isinstance(window, dict):
+            active.append(
+                {
+                    "name": None,
+                    "used_percent": None,
+                    "resets_at": None,
+                    "usable": False,
+                }
+            )
+            continue
+        if window.get("expired") is True:
+            continue
+        name = window.get("name")
+        used = window.get("used_percent")
+        usable = (
+            isinstance(name, str)
+            and bool(name)
+            and isinstance(used, (int, float))
+            and not isinstance(used, bool)
+            and math.isfinite(float(used))
+            and 0.0 <= float(used) <= 100.0
+            and window.get("expired") in (None, False)
+        )
+        active.append(
+            {
+                "name": name if isinstance(name, str) and name else None,
+                "used_percent": float(used)
+                if isinstance(used, (int, float))
+                and not isinstance(used, bool)
+                and math.isfinite(float(used))
+                else None,
+                "resets_at": window.get("resets_at"),
+                "usable": usable,
+            }
+        )
+    return active
+
+
 def _preferred_window_name(provider: str) -> str:
     return "primary" if provider == "codex" else "5h"
 
@@ -159,7 +204,7 @@ def summarise_grants(grants: object) -> dict:
         return {}
     summary = {}
     for name, value in grants.items():
-        if not isinstance(value, dict) or not value.get("observed", False):
+        if not isinstance(value, dict) or value.get("observed") is not True:
             continue
         provider = value.get("provider")
         if provider not in ("codex", "claude"):
@@ -173,31 +218,35 @@ def summarise_grants(grants: object) -> dict:
 
 
 def summarise(providers: dict) -> dict:
-    """Select the actionable quota window for each observed provider."""
+    """Summarise each observed provider without discarding active windows."""
     summary = {}
     for provider in ("codex", "claude"):
         value = providers.get(provider)
-        if not isinstance(value, dict) or not value.get("observed", False):
+        if not isinstance(value, dict) or value.get("observed") is not True:
             continue
         summary[provider] = _summarise_view(provider, value)
     return summary
 
 
 def _summarise_view(provider: str, value: dict) -> dict:
-    headline = _headline_window(provider, value.get("windows"))
+    raw_windows = value.get("windows")
+    headline = _headline_window(provider, raw_windows)
     used_percent = headline.get("used_percent") if headline is not None else None
     window_name = headline.get("name") if headline is not None else None
     age_seconds = value.get("age_seconds")
+    age_usable = (
+        isinstance(age_seconds, (int, float))
+        and not isinstance(age_seconds, bool)
+        and math.isfinite(float(age_seconds))
+        and float(age_seconds) >= 0.0
+    )
     return {
         "observed": True,
         "exhausted": bool(value.get("exhausted", False)),
         "status": str(value.get("status", "unknown")),
-        "age_seconds": (
-            float(age_seconds)
-            if isinstance(age_seconds, (int, float))
-            and not isinstance(age_seconds, bool)
-            else None
-        ),
+        "age_seconds": (float(age_seconds) if age_usable else None),
+        "windows_observed": isinstance(raw_windows, list) and bool(raw_windows),
+        "windows": _active_windows(raw_windows),
         "headline_window": window_name if isinstance(window_name, str) else None,
         "headline_used_percent": (
             float(used_percent) if isinstance(used_percent, (int, float)) else None
