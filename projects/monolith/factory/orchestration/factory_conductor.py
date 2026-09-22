@@ -4305,6 +4305,7 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
                 from factory.execution.api import (
                     read_never_dispatched_factory_attempt,
                     read_not_invoked_factory_attempt,
+                    read_interrupted_retry_not_invoked_factory_attempt,
                     settle_never_dispatched_factory_attempt,
                 )
 
@@ -4355,6 +4356,10 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
                         pin,
                         result.get("session_id") or run.get("session_id"),
                     )
+                    if proof is None:
+                        proof = read_interrupted_retry_not_invoked_factory_attempt(
+                            db, pin, result.get("session_id") or run.get("session_id")
+                        )
                 if never_dispatched is None and proof is not None:
                     current = next(
                         (
@@ -4376,6 +4381,10 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
                         or current["cost_usd"] is not None
                     ):
                         raise ValueError("not-invoked factory attempt changed")
+                    interrupted = "interrupted_dispatches" in proof
+                    proof_key = (
+                        "interrupted_then_not_invoked" if interrupted else "not_invoked"
+                    )
                     result = {
                         **result,
                         "status": "failed",
@@ -4383,9 +4392,20 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
                         "cost_usd": None,
                         "cost_basis": "unknown",
                         "head_sha": current.get("head_sha") or result.get("head_sha"),
-                        "reason": "not_invoked: exact session-owner failure before model POST",
+                        "reason": (
+                            "interrupted_then_not_invoked: drain receipts prove prior dispatches ended; latest retry failed before model POST"
+                            if interrupted
+                            else "not_invoked: exact session-owner failure before model POST"
+                        ),
                         "previous_outcome": _outcome(current) or result,
-                        "not_invoked": proof,
+                        # Keep earlier unknown spend charged. Only the original
+                        # first-dispatch key grants no_model_post accounting.
+                        proof_key: proof,
+                        **(
+                            {"invocation_phase": "interrupted_then_not_invoked"}
+                            if interrupted
+                            else {}
+                        ),
                         # A refused slot is the control plane's state, not this
                         # attempt's, so the marker rides on the outcome and the
                         # attempt count reads it back off the ledger.

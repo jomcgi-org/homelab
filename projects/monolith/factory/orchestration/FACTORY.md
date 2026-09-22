@@ -1229,6 +1229,17 @@ failure (#6045). An attempt that may have reached
 the model with an unknown cost, `guest_cessation_confirmed` after dispatch
 among them, stays conservative and keeps its reservation.
 
+A retry interrupted by a drain is not a first-dispatch failure. The separate
+`interrupted_then_not_invoked` proof requires an authenticated native drain
+response for every preceding dispatch, in order, followed by an exact settled
+`not_invoked` permit and matching failed turn. Missing receipts, overlapping
+execution, captured final responses, pending work, aliases, and observation or
+cleanup ownership keep the attempt uncertain. A complete proof fails the graph
+attempt without changing native execution history or guest bindings. Earlier
+spend remains unknown and consumes the reserved ceiling and attempt allowance;
+only the unresolved hold is released so normal planning can proceed within the
+existing task policy and deadline.
+
 A planner decision is one graph edit or one `plan` whose edits apply together
 under a single expected revision, so a rejected edit rejects the whole plan and
 the graph never holds half of one. Each edit becomes its own plan version under
