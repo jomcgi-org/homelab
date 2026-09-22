@@ -11,7 +11,7 @@ for manifest in "$@"; do
 		echo "missing or empty manifest: $manifest" >&2
 		exit 2
 	fi
-	grep -nE '^[[:space:]]*(apiVersion: cilium.io/v2|kind: Cilium(NetworkPolicy|ClusterwideNetworkPolicy))' "$manifest"
+	grep -nF 'cilium.io/v2' "$manifest"
 	status=$?
 	if [[ $status -eq 0 ]]; then
 		echo "inert Cilium policy in $manifest" >&2

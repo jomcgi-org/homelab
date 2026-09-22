@@ -100,7 +100,7 @@ rather than as a rule on the private one.
 
 The inert Cilium policy templates were removed in #5816. The hub has no
 Cilium policy CRDs, and removing those templates adds no enforcement. Public
-and private ingress replacements remain #5276 and #5277. The chart retains a
+and private network-policy successors remain #5276 and #5277. The chart retains a
 native Kubernetes
 `NetworkPolicy` for the same app endpoint. Its overlay leaves that template
 disabled because Kubernetes NetworkPolicy has no additive audit mode. The API
