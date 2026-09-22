@@ -333,6 +333,8 @@ def confirmed_availability(
         return False, "unobserved"
     if summary.get("grant_inventory_complete") is not True:
         return False, "grant_inventory_incomplete"
+    if summary.get("grant_inventory_valid") is not True:
+        return False, "grant_inventory_unusable"
     if isinstance(grant_views, list) and grant_views:
         reasons = []
         for view in grant_views:
@@ -359,7 +361,11 @@ def confirmed_availability(
 
 
 def rollup_grants(
-    summary: dict, grants: dict, *, grants_complete: bool = False
+    summary: dict,
+    grants: dict,
+    *,
+    grants_complete: bool = False,
+    grant_inventory_validity: dict[str, bool] | None = None,
 ) -> dict:
     """Fold per-grant views into the class view a pool member is judged on.
 
@@ -367,13 +373,16 @@ def rollup_grants(
     the latest report, whichever grant made it. The class has room while any
     grant does for ordinary routing, so the class view takes the least-used
     non-exhausted grant (its used percent, reset time and age) and is exhausted
-    only when every reporting grant is. The attached complete grant inventory
-    lets confirmed KG admission apply its stricter all-accounts rule.
+    only when every reporting grant is. The attached complete, provider-scoped
+    inventory validity lets confirmed KG admission apply its stricter
+    all-accounts rule without changing ordinary routing.
     """
+    validity = grant_inventory_validity or {}
     merged = {
         provider: {
             **view,
             "grant_inventory_complete": grants_complete,
+            "grant_inventory_valid": validity.get(provider, True),
         }
         for provider, view in summary.items()
     }
@@ -391,6 +400,7 @@ def rollup_grants(
                 **merged.get(provider, {"observed": False}),
                 "grant_views": [dict(view) for view in views],
                 "grant_inventory_complete": grants_complete,
+                "grant_inventory_valid": validity.get(provider, True),
             }
             continue
         open_views = [v for v in observed_views if not v.get("exhausted")]
@@ -401,6 +411,7 @@ def rollup_grants(
                 "exhausted": True,
                 "grant_views": [dict(view) for view in views],
                 "grant_inventory_complete": grants_complete,
+                "grant_inventory_valid": validity.get(provider, True),
             }
             continue
         # A grant with no usable window says nothing about room: it sorts
@@ -419,6 +430,7 @@ def rollup_grants(
             "exhausted": False,
             "grant_views": [dict(view) for view in views],
             "grant_inventory_complete": grants_complete,
+            "grant_inventory_valid": validity.get(provider, True),
         }
     return merged
 
@@ -436,10 +448,14 @@ def quota_summary() -> dict:
         providers = fetched.get("providers", {}) if isinstance(fetched, dict) else {}
         summary = summarise(providers if isinstance(providers, dict) else {})
         grants = fetched.get("grants") if isinstance(fetched, dict) else None
+        grant_views, grant_validity = summarise_grants(grants)
+        if fetched.get("grants_valid", isinstance(grants, dict)) is not True:
+            grant_validity = {provider: False for provider in QUOTA_PROVIDERS.values()}
         return rollup_grants(
             summary,
-            summarise_grants(grants),
+            grant_views,
             grants_complete=fetched.get("grants_complete") is True,
+            grant_inventory_validity=grant_validity,
         )
     # nosemgrep: no-broad-except-swallow
     except Exception as exc:  # noqa: BLE001
