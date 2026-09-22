@@ -204,6 +204,27 @@ def test_summarise_picks_named_headline_windows():
     assert result["claude"]["resets_at"] == "a1"
 
 
+def test_summarise_ignores_rejected_overage_billing_for_allowed_claude():
+    result = quota.summarise(
+        {
+            "claude": {
+                "observed": True,
+                "status": "allowed",
+                "reached_type": "",
+                "overage_status": "rejected",
+                "exhausted": False,
+                "windows": [{"name": "5h", "used_percent": 24}],
+            }
+        }
+    )["claude"]
+
+    assert result["status"] == "allowed"
+    assert result["exhausted"] is False
+    assert result["headline_used_percent"] == 24.0
+    assert "overage_status" not in result
+    assert "reached_type" not in result
+
+
 def test_summarise_falls_back_to_first_active_window():
     providers = {
         "codex": {
@@ -295,6 +316,8 @@ async def test_health_is_ok_when_observed_providers_have_quota(monkeypatch):
                     "observed": True,
                     "age_seconds": 3,
                     "status": "allowed",
+                    "reached_type": "",
+                    "overage_status": "rejected",
                     "exhausted": False,
                     "windows": [{"name": "5h", "used_percent": 75}],
                 },

@@ -19,11 +19,12 @@ type Window struct {
 
 // Observation is the JSON contract accepted from an egress proxy.
 type Observation struct {
-	Provider    string   `json:"provider"`
-	ObservedAt  string   `json:"observed_at"`
-	Status      string   `json:"status"`
-	ReachedType string   `json:"reached_type"`
-	Windows     []Window `json:"windows"`
+	Provider      string   `json:"provider"`
+	ObservedAt    string   `json:"observed_at"`
+	Status        string   `json:"status"`
+	ReachedType   string   `json:"reached_type"`
+	OverageStatus string   `json:"overage_status"`
+	Windows       []Window `json:"windows"`
 }
 
 // ViewWindow adds read-time expiry state to an observed window.
@@ -37,16 +38,17 @@ type ViewWindow struct {
 
 // View is the latest observation plus state derived when it is read.
 type View struct {
-	Provider    string
-	Grant       string
-	Observed    bool
-	ObservedAt  string
-	Status      string
-	ReachedType string
-	Windows     []ViewWindow
-	ReceivedAt  time.Time
-	AgeSeconds  float64
-	Exhausted   bool
+	Provider      string
+	Grant         string
+	Observed      bool
+	ObservedAt    string
+	Status        string
+	ReachedType   string
+	OverageStatus string
+	Windows       []ViewWindow
+	ReceivedAt    time.Time
+	AgeSeconds    float64
+	Exhausted     bool
 }
 
 // MarshalJSON keeps the unobserved shape deliberately small while preserving
@@ -60,19 +62,20 @@ func (v View) MarshalJSON() ([]byte, error) {
 		}{Provider: v.Provider, Grant: v.Grant, Observed: false})
 	}
 	return json.Marshal(struct {
-		Provider    string       `json:"provider"`
-		Grant       string       `json:"grant,omitempty"`
-		ObservedAt  string       `json:"observed_at"`
-		Status      string       `json:"status"`
-		ReachedType string       `json:"reached_type"`
-		Windows     []ViewWindow `json:"windows"`
-		Observed    bool         `json:"observed"`
-		ReceivedAt  time.Time    `json:"received_at"`
-		AgeSeconds  float64      `json:"age_seconds"`
-		Exhausted   bool         `json:"exhausted"`
+		Provider      string       `json:"provider"`
+		Grant         string       `json:"grant,omitempty"`
+		ObservedAt    string       `json:"observed_at"`
+		Status        string       `json:"status"`
+		ReachedType   string       `json:"reached_type"`
+		OverageStatus string       `json:"overage_status"`
+		Windows       []ViewWindow `json:"windows"`
+		Observed      bool         `json:"observed"`
+		ReceivedAt    time.Time    `json:"received_at"`
+		AgeSeconds    float64      `json:"age_seconds"`
+		Exhausted     bool         `json:"exhausted"`
 	}{
 		Provider: v.Provider, Grant: v.Grant, ObservedAt: v.ObservedAt, Status: v.Status,
-		ReachedType: v.ReachedType, Windows: v.Windows, Observed: true,
+		ReachedType: v.ReachedType, OverageStatus: v.OverageStatus, Windows: v.Windows, Observed: true,
 		ReceivedAt: v.ReceivedAt, AgeSeconds: v.AgeSeconds, Exhausted: v.Exhausted,
 	})
 }
@@ -170,7 +173,7 @@ func makeView(stored storedObservation, now time.Time) View {
 	obs := stored.observation
 	view := View{
 		Provider: obs.Provider, Observed: true, ObservedAt: obs.ObservedAt,
-		Status: obs.Status, ReachedType: obs.ReachedType,
+		Status: obs.Status, ReachedType: obs.ReachedType, OverageStatus: obs.OverageStatus,
 		ReceivedAt: stored.receivedAt, Exhausted: obs.Status == "rejected",
 		Windows: make([]ViewWindow, 0, len(obs.Windows)),
 	}
