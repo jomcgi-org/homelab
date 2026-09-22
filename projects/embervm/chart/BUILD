@@ -212,6 +212,7 @@ py_test(
     data = [
         "Chart.yaml",
         "values.yaml",
+        "//projects/embervm/deploy:deploy_values",
         "//projects/embervm/deploy:gke_values",
         "@multitool//tools/helm",
     ] + glob([
@@ -219,7 +220,9 @@ py_test(
         "crds/**/*",
     ]),
     env = {
+        "GKE_VALUES": "$(rootpath //projects/embervm/deploy:gke_values)",
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+        "PROD_VALUES": "$(rootpath //projects/embervm/deploy:deploy_values)",
     },
     deps = ["@pip//pyyaml"],
 )

@@ -19,7 +19,7 @@ def _chart_dir() -> Path:
 def _render(
     release: str,
     settings: list[str] | None = None,
-    values: Path | None = None,
+    value_files: list[Path] | None = None,
 ) -> str:
     helm_bin = os.environ.get("HELM_BIN", "helm")
     argv = [
@@ -30,8 +30,8 @@ def _render(
         "--namespace",
         release,
     ]
-    if values is not None:
-        argv += ["--values", str(values)]
+    for value_file in value_files or []:
+        argv += ["--values", str(value_file)]
     for setting in settings or []:
         argv += ["--set", setting]
     result = subprocess.run(argv, capture_output=True, text=True)
@@ -156,7 +156,7 @@ def test_production_overlay_stages_allowlist_but_keeps_both_gates_off() -> None:
     rendered = _render(
         "embervm",
         ["tokenBroker.spiffe.enabled=true"],
-        _chart_dir().parent / "deploy/values-gke.yaml",
+        value_files=[_chart_dir().parent / "deploy/values-gke.yaml"],
     )
     deployment = _source_document(rendered, "tokenbroker-deployment.yaml")
     assert (
@@ -187,6 +187,27 @@ def test_egress_defaults_preserve_plaintext_without_csi_mount() -> None:
     )
     assert "EGRESS_TOKEN_BROKER_SPIFFE_ID" not in noded
     assert "spiffe-workload-api" not in noded
+
+
+def test_production_values_preserve_default_off_broker_and_client() -> None:
+    prod_values = Path(os.environ["PROD_VALUES"])
+    gke_values = Path(os.environ["GKE_VALUES"])
+
+    for name, value_files in (
+        ("home", [prod_values]),
+        ("hub", [prod_values, gke_values]),
+    ):
+        rendered = _render(f"production-{name}", value_files=value_files)
+        deployment = _source_document(rendered, "tokenbroker-deployment.yaml")
+        service = _source_document(rendered, "tokenbroker-service.yaml")
+
+        assert "BROKER_TLS_LISTEN_ADDR" not in deployment
+        assert "BROKER_SPIFFE_CLIENT_IDS" not in deployment
+        assert "name: https" not in deployment
+        assert "spiffe-workload-api" not in deployment
+        assert "name: https" not in service
+        assert "EGRESS_TOKEN_BROKER_SPIFFE_ID" not in rendered
+        assert ".svc.cluster.local:8080" in rendered
 
 
 def test_egress_mtls_wires_daemonset_and_bricks_with_exact_broker_identity() -> None:
