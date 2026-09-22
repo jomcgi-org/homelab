@@ -1573,12 +1573,13 @@ S3-compatible object store.
   default. XFS with reflink is staged behind `scratchPrep.filesystem: xfs` for
   newly created managed images. Destructive replacement of an existing ext4
   image requires the separate `scratchPrep.migrateExt4ToXfs: true` gate. The
-  migration path fails closed unless the exact managed non-symlink image, its
-  ext4 loop fstab entry, host loop device and sole mount target agree and no
-  active consumer is found. It never reformats XFS, never force-unmounts, and
-  leaves foreign mounts such as the node-4 bind untouched. Both gates remain
-  default-off pending the live checks in #5699. Bases under scratch are
-  node-shared across co-located bricks.
+  migration path fails closed unless the exact managed non-symlink image has no
+  hard-link aliases, its ext4 loop fstab entry, host loop device and sole mount
+  target agree, and no active consumer is found. The verified inode stays open
+  across mkfs so a concurrent path replacement cannot redirect the reformat.
+  It never reformats XFS, never force-unmounts, and leaves foreign mounts such as
+  the node-4 bind untouched. Both gates remain default-off pending the live
+  checks in #5699. Bases under scratch are node-shared across co-located bricks.
   Scratch does not survive a Spot node replacement: every guest rootfs rebakes
   in the brick init containers and the control plane re-drives the dropped
   bases without a restart, about ten minutes end to end.

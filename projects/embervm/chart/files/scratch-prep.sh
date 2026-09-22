@@ -47,6 +47,16 @@ filesystem_type() {
 	esac
 }
 
+managed_image_identity() {
+	{ [ -f "$IMG" ] && [ ! -L "$IMG" ]; } ||
+		fail "managed image path is not a regular non-symlink file: $HOST_IMG"
+	identity=$(stat -c '%d:%i:%h' "$IMG") ||
+		fail "cannot inspect managed image identity for $HOST_IMG"
+	links=${identity##*:}
+	[ "$links" -eq 1 ] || fail "managed image has hard-link aliases"
+	printf '%s\n' "${identity%:*}"
+}
+
 has_active_consumer() {
 	target=$1
 	mode=${2:-path}
@@ -101,7 +111,32 @@ format_new_image() {
 }
 
 format_xfs() {
-	mkfs.xfs -m reflink=1 -f "$IMG" || fail "failed to replace ext4 on $HOST_IMG with XFS"
+	expected_identity=$1
+	# Keep the verified inode open across mkfs so a concurrent path replacement
+	# can never redirect the destructive operation to the replacement. The path
+	# must still name that inode before and after formatting; otherwise fail
+	# without mounting or publishing readiness.
+	exec 9<>"$IMG" || fail "cannot open managed image for migration: $HOST_IMG"
+	fd_path="/proc/$$/fd/9"
+	fd_identity=$(stat -Lc '%d:%i' "$fd_path") || {
+		exec 9>&-
+		fail "cannot pin managed image identity for $HOST_IMG"
+	}
+	path_identity=$(managed_image_identity)
+	if [ "$fd_identity" != "$expected_identity" ] || [ "$path_identity" != "$expected_identity" ]; then
+		exec 9>&-
+		fail "managed image identity changed before migration"
+	fi
+	if ! mkfs.xfs -m reflink=1 -f "$fd_path"; then
+		exec 9>&-
+		fail "failed to replace ext4 on $HOST_IMG with XFS"
+	fi
+	path_identity=$(managed_image_identity)
+	if [ "$path_identity" != "$expected_identity" ]; then
+		exec 9>&-
+		fail "managed image identity changed during migration"
+	fi
+	exec 9>&-
 }
 
 fstab_identity_is_safe() {
@@ -226,6 +261,7 @@ if [ "$mounted" = true ]; then
 		exit 0
 	fi
 	[ "$image_type" = ext4 ] || fail "only a managed ext4 image is eligible for migration"
+	migration_identity=$(managed_image_identity)
 	if has_active_consumer "$CONTAINER_SCRATCH" mount; then
 		fail "managed ext4 scratch has an active consumer; drain and quiesce the node before retrying"
 	fi
@@ -236,7 +272,7 @@ if [ "$mounted" = true ]; then
 	if host mountpoint -q "$SCRATCH"; then
 		fail "scratch remains mounted after ordinary unmount"
 	fi
-	format_xfs
+	format_xfs "$migration_identity"
 	image_type=xfs
 	mounted=false
 	echo "scratch-prep: migrated the explicitly enabled managed ext4 image to XFS"
@@ -260,13 +296,14 @@ if [ "$mounted" = false ]; then
 			else
 				aliases=$(host losetup -j "$HOST_IMG") || fail "cannot inspect loop aliases for $HOST_IMG"
 				[ -z "$aliases" ] || fail "unmounted managed image still has a loop alias"
+				migration_identity=$(managed_image_identity)
 				if has_active_consumer "$IMG"; then
 					fail "managed ext4 image has an active consumer; drain and quiesce the node before retrying"
 				fi
 				fstab_identity_is_safe || fail "fstab identity is unsafe for managed ext4 migration"
 				fstab_has_managed_entry ext4 ||
 					fail "fstab does not identify the managed ext4 loop image for migration"
-				format_xfs
+				format_xfs "$migration_identity"
 				image_type=xfs
 				echo "scratch-prep: migrated the explicitly enabled managed ext4 image to XFS"
 			fi
@@ -275,9 +312,9 @@ if [ "$mounted" = false ]; then
 		fi
 	fi
 
+	reconcile_fstab "$image_type"
 	host mount -t "$image_type" -o loop "$HOST_IMG" "$SCRATCH" ||
 		fail "failed to mount managed $image_type scratch"
-	reconcile_fstab "$image_type"
 	echo "scratch-prep: ${SIZE_GI}Gi capped $image_type loop scratch mounted at $SCRATCH on $NODE"
 fi
 
