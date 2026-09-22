@@ -79,6 +79,12 @@ func newFakeObjectStore(t *testing.T) (*httptest.Server, *fakeObjectStore) {
 				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
+			if r.Header.Get("If-None-Match") == "*" {
+				if _, exists := fake.objects[r.URL.Path]; exists {
+					w.WriteHeader(http.StatusPreconditionFailed)
+					return
+				}
+			}
 			fake.objects[r.URL.Path] = body
 			fake.puts = append(fake.puts, r.URL.Path)
 			w.WriteHeader(http.StatusOK)
@@ -184,8 +190,8 @@ func TestPutSparseFileStoresNominalSizeAndChecksum(t *testing.T) {
 		t.Fatalf("sidecar upload time = %q: %v", marker.UploadedAt, err)
 	}
 	wantChecksumPath := "/embervm/" + checksumKey
-	if len(fake.heads) != 3 || fake.heads[0] != wantChecksumPath || fake.heads[1] != wantChecksumPath || fake.heads[2] != wantChecksumPath {
-		t.Fatalf("presence checks = %v, want three sidecar HEADs", fake.heads)
+	if len(fake.heads) != 2 || fake.heads[0] != wantChecksumPath || fake.heads[1] != wantChecksumPath {
+		t.Fatalf("presence checks = %v, want two sidecar HEADs", fake.heads)
 	}
 	if len(fake.puts) != 2 || fake.puts[0] != "/embervm/"+wantPayloadKey || fake.puts[1] != wantChecksumPath {
 		t.Fatalf("PUT order = %v, want payload then sidecar", fake.puts)
@@ -291,16 +297,15 @@ func TestConcurrentPutWritersLeaveMatchingPayloadAndSidecar(t *testing.T) {
 		sum := sha256.Sum256(payload)
 		payloadPaths[i] = "/embervm/" + payloadObjectKey(testCacheIdentity, hex.EncodeToString(sum[:]))
 	}
-	loserPayloadPath := payloadPaths[1]
 	objects := make(map[string][]byte)
 	var mu sync.Mutex
 	var puts []string
 	var gets []string
 	var headCalls atomic.Int32
+	var markerAttempts atomic.Int32
 	firstHeadsDone := make(chan struct{})
 	secondHeadsDone := make(chan struct{})
-	winnerSidecarWritten := make(chan struct{})
-	var closeWinnerSidecar sync.Once
+	markerAttemptsReady := make(chan struct{})
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
@@ -344,16 +349,28 @@ func TestConcurrentPutWritersLeaveMatchingPayloadAndSidecar(t *testing.T) {
 				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
+			if r.URL.Path == checksumPath {
+				if r.Header.Get("If-None-Match") != "*" {
+					t.Errorf("marker PUT If-None-Match = %q, want *", r.Header.Get("If-None-Match"))
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				if markerAttempts.Add(1) == 2 {
+					close(markerAttemptsReady)
+				}
+				<-markerAttemptsReady
+			}
 			mu.Lock()
+			if r.Header.Get("If-None-Match") == "*" {
+				if _, exists := objects[r.URL.Path]; exists {
+					mu.Unlock()
+					w.WriteHeader(http.StatusPreconditionFailed)
+					return
+				}
+			}
 			objects[r.URL.Path] = body
 			puts = append(puts, r.URL.Path)
 			mu.Unlock()
-			if r.URL.Path == checksumPath {
-				closeWinnerSidecar.Do(func() { close(winnerSidecarWritten) })
-			}
-			if r.URL.Path == loserPayloadPath {
-				<-winnerSidecarWritten
-			}
 			w.WriteHeader(http.StatusOK)
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -378,7 +395,6 @@ func TestConcurrentPutWritersLeaveMatchingPayloadAndSidecar(t *testing.T) {
 	}
 	close(start)
 	var uploaded, orphaned int
-	wantOrphanOutput := "already present; orphan payload " + strings.TrimPrefix(loserPayloadPath, "/embervm/") + " is eligible for retention sweep\n"
 	for i := 0; i < 2; i++ {
 		got := <-results
 		if got.code != 0 {
@@ -387,7 +403,8 @@ func TestConcurrentPutWritersLeaveMatchingPayloadAndSidecar(t *testing.T) {
 		switch {
 		case got.stdout == "uploaded\n":
 			uploaded++
-		case got.stdout == wantOrphanOutput:
+		case strings.HasPrefix(got.stdout, "already present; orphan payload rootfs/") &&
+			strings.HasSuffix(got.stdout, " is eligible for retention sweep\n"):
 			orphaned++
 		default:
 			t.Fatalf("unexpected concurrent put output %q", got.stdout)
@@ -395,6 +412,9 @@ func TestConcurrentPutWritersLeaveMatchingPayloadAndSidecar(t *testing.T) {
 	}
 	if uploaded != 1 || orphaned != 1 {
 		t.Fatalf("concurrent results: uploaded=%d orphaned=%d, want one each", uploaded, orphaned)
+	}
+	if markerAttempts.Load() != 2 {
+		t.Fatalf("marker PUT attempts = %d, want two simultaneous create-only attempts", markerAttempts.Load())
 	}
 
 	mu.Lock()

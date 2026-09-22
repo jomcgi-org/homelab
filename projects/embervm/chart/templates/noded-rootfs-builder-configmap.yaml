@@ -59,6 +59,7 @@ data:
     fi
 
     builder_script="${ROOTFS_BUILDER_SCRIPT:-/scripts/build-base-rootfs.sh}"
+    rootfs_busybox="${ROOTFS_BUSYBOX:-/bin/busybox}"
     declare -a child_pids=()
     declare -a child_names=()
     launched=0
@@ -161,7 +162,7 @@ data:
       done
       work_dir="/work/rootfs-$launched"
       echo "rootfs driver launch workload=$name guest_image=$guest_image base_rootfs_path=$base_rootfs_path work_dir=$work_dir"
-      /bin/busybox setsid env \
+      "$rootfs_busybox" setsid env \
         GUEST_IMAGE="$guest_image" \
         BASE_ROOTFS_PATH="$base_rootfs_path" \
         ROOTFS_WORK_DIR="$work_dir" \

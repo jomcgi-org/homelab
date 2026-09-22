@@ -372,24 +372,6 @@ func putRootfs(ctx context.Context, s *store.Store, identity cacheIdentity, path
 		return putAlreadyPresent, "", err
 	}
 
-	// A winner may have published its sidecar while this payload was uploading.
-	// If it names different content, leave this payload as harmless retention-sweep
-	// work rather than replacing the winner's completeness marker.
-	exists, err = s.Head(ctx, checksumKey)
-	if err != nil {
-		return putAlreadyPresent, "", err
-	}
-	if exists {
-		winner, err := getCompletenessMarker(ctx, s, identity)
-		if err != nil {
-			return putAlreadyPresent, "", err
-		}
-		if winner.PayloadKey == payloadKey {
-			return putAlreadyPresent, "", nil
-		}
-		return putOrphaned, payloadKey, nil
-	}
-
 	sidecar, err := json.Marshal(completenessMarker{
 		PayloadKey:  payloadKey,
 		SHA256:      checksum,
@@ -406,8 +388,23 @@ func putRootfs(ctx context.Context, s *store.Store, identity cacheIdentity, path
 	if len(sidecar) > maxMarkerBytes {
 		return putAlreadyPresent, "", fmt.Errorf("completeness marker exceeds %d bytes", maxMarkerBytes)
 	}
-	if err := s.Put(ctx, checksumKey, strings.NewReader(string(sidecar)), int64(len(sidecar))); err != nil {
+	created, err := s.PutIfAbsent(ctx, checksumKey, strings.NewReader(string(sidecar)), int64(len(sidecar)))
+	if err != nil {
 		return putAlreadyPresent, "", err
 	}
-	return putUploaded, payloadKey, nil
+	if created {
+		return putUploaded, payloadKey, nil
+	}
+
+	// Another node won the atomic marker create while this payload uploaded. If
+	// both bakes produced the same bytes the payload is shared; otherwise leave
+	// this content-addressed loser for the bounded retention sweep.
+	winner, err := getCompletenessMarker(ctx, s, identity)
+	if err != nil {
+		return putAlreadyPresent, "", fmt.Errorf("verify winning completeness marker: %w", err)
+	}
+	if winner.PayloadKey == payloadKey {
+		return putAlreadyPresent, "", nil
+	}
+	return putOrphaned, payloadKey, nil
 }
