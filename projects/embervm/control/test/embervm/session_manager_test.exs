@@ -2614,6 +2614,60 @@ defmodule Embervm.SessionManagerTest do
     assert session_id != original.session_id
   end
 
+  test "InheritanceOnlyFromTerminal: a malformed owner cannot become a store-only restore" do
+    parent = self()
+
+    ctx =
+      start_stack(
+        prime_fun: fn _channel, request ->
+          send(parent, {:malformed_owner_prime, request.lineage_id})
+          {:ok, %PrimeResponse{vm_id: "vm-malformed-owner"}}
+        end,
+        retire_volume_fun: fn _channel, request ->
+          send(parent, {:malformed_owner_retire, request.lineage_id})
+          {:ok, %{}}
+        end,
+        restore_artifact_fun: fn _channel, request ->
+          send(parent, {:malformed_owner_restore, request.artifact.ref})
+          {:ok, %{}}
+        end
+      )
+
+    put_session_workload(ctx, "wl-persist", persistence_workload_opts())
+
+    {:ok, holder} =
+      SessionStore.create(ctx.store, %{
+        tenant: "homelab",
+        principal: "p1",
+        workload: "wl-persist",
+        node_id: "node-4",
+        vm_id: "vm-malformed-holder",
+        volume_node_id: "   ",
+        base_snapshot_ref: "base@sha256:abc",
+        base_digest: "sha256:abc",
+        expires_at: 9_999_999
+      })
+
+    assert {:ok, %{state: :failed}} =
+             SessionStore.transition(
+               ctx.store,
+               holder.session_id,
+               :fail,
+               :session_failed,
+               %{},
+               %{}
+             )
+
+    assert {:error,
+            {:denied,
+             {:lineage_relinquishment_failed, :volume_owner_invalid}}} =
+             SessionManager.create(ctx.mgr, "wl-persist", "p1", holder.lineage_id)
+
+    refute_receive {:malformed_owner_retire, _lineage_id}
+    refute_receive {:malformed_owner_restore, _lineage_id}
+    refute_receive {:malformed_owner_prime, _lineage_id}
+  end
+
   test "InheritanceOnlyFromTerminal: a sole owner pins restore when its volume scan omits the lineage" do
     parent = self()
     {:ok, mode} = Agent.start_link(fn -> :initial end)
