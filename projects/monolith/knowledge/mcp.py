@@ -70,6 +70,7 @@ _DISPUTED_NOTE_BODY_CAP = 8 * 1024
 _NOTIFY_SUMMARY_CAP = 300
 _NOTIFY_INTERVENTION_CAP = 400
 _NOTIFY_MESSAGE_CAP = 1_800
+_DISTRESS_MIRROR_TIMEOUT_SECONDS = 1.0
 
 
 def _reporter_extra(principal: Any) -> dict[str, str]:
@@ -575,12 +576,15 @@ async def report_distress(
     # it for both the creator and an exact replay so a transient mirror failure
     # can repair later without ever creating a second human notification.
     try:
-        await mirror_distress(
-            raw_id=raw_id,
-            summary=summary,
-            severity=severity,
-            details=details,
-            requested_intervention=requested_intervention,
+        await asyncio.wait_for(
+            mirror_distress(
+                raw_id=raw_id,
+                summary=summary,
+                severity=severity,
+                details=details,
+                requested_intervention=requested_intervention,
+            ),
+            timeout=_DISTRESS_MIRROR_TIMEOUT_SECONDS,
         )
     except Exception:
         logger.exception("knowledge mcp: distress board mirror failed for %s", raw_id)
