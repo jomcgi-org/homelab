@@ -184,6 +184,51 @@ def test_enabled_listener_wires_every_pod_service_and_policy_consistently() -> N
     ]
 
 
+@pytest.mark.parametrize(
+    ("noded_mtls", "broker_mtls", "noded_mount", "proxy_mount"),
+    [
+        (False, False, False, False),
+        (True, False, True, False),
+        (False, True, False, True),
+        (True, True, True, True),
+    ],
+)
+def test_noded_and_broker_mtls_share_exactly_one_csi_volume(
+    noded_mtls: bool,
+    broker_mtls: bool,
+    noded_mount: bool,
+    proxy_mount: bool,
+) -> None:
+    settings = [f"noded.spiffe.enabled={str(noded_mtls).lower()}"]
+    if broker_mtls:
+        settings += [
+            "egress.enabled=true",
+            "egress.tokenBroker.spiffe.enabled=true",
+            "tokenBroker.spiffe.enabled=true",
+        ]
+    documents = _render("shared-csi", settings)
+    for pod in _noded_pods(documents):
+        volumes = [
+            volume
+            for volume in pod.get("volumes", [])
+            if volume["name"] == "spiffe-workload-api"
+        ]
+        assert len(volumes) == int(noded_mtls or broker_mtls)
+
+        noded_mounts = _named(_noded_container(pod).get("volumeMounts"))
+        assert ("spiffe-workload-api" in noded_mounts) is noded_mount
+
+        proxies = [
+            container
+            for container in pod["containers"]
+            if container["name"] == "egress-proxy"
+        ]
+        assert (len(proxies) == 1) is broker_mtls
+        if proxies:
+            proxy_mounts = _named(proxies[0].get("volumeMounts"))
+            assert ("spiffe-workload-api" in proxy_mounts) is proxy_mount
+
+
 def test_explicit_allowlist_and_tls_only_mode_remove_plaintext_exposure() -> None:
     documents = _render(
         "tls-only",
