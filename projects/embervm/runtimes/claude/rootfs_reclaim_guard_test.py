@@ -481,6 +481,15 @@ def _run_driver(
     ceiling: str,
     workloads: list[tuple[str, str, str, str]],
 ) -> subprocess.CompletedProcess[str]:
+    busybox = tmp_path / "fake-busybox.py"
+    busybox.write_text(
+        f"#!{sys.executable}\n"
+        "import os, sys\n"
+        'assert sys.argv[1] == "setsid", sys.argv\n'
+        "os.setsid()\n"
+        "os.execvpe(sys.argv[2], sys.argv[2:], os.environ)\n"
+    )
+    busybox.chmod(0o755)
     args = ["bash", str(driver), concurrency, ceiling]
     for workload in workloads:
         args.extend(workload)
@@ -489,6 +498,7 @@ def _run_driver(
         env={
             **os.environ,
             "ROOTFS_BUILDER_SCRIPT": str(builder),
+            "ROOTFS_BUSYBOX": str(busybox),
             "TEST_DRIVER_DIR": str(tmp_path),
         },
         capture_output=True,
@@ -650,6 +660,7 @@ def test_rootfs_driver_executables_and_flags_match_apko_lock() -> None:
     script = _repo_path(
         "projects/embervm/chart/templates/noded-rootfs-builder-configmap.yaml"
     ).read_text()
-    assert "/bin/busybox setsid env" in script
+    assert 'rootfs_busybox="${ROOTFS_BUSYBOX:-/bin/busybox}"' in script
+    assert '"$rootfs_busybox" setsid env' in script
     assert "setsid --" not in script
     assert 'wait -n -p completed_pid "${child_pids[@]}"' in script

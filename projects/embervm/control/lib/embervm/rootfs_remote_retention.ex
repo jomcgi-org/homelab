@@ -258,17 +258,25 @@ defmodule Embervm.RootfsRemoteRetention do
   defp validate_marker(marker, identity, entries) do
     listed = MapSet.new(entries, & &1.key)
     payload_key = marker["payloadKey"]
+    checksum = normalize_checksum(marker["sha256"])
 
     if marker["imageDigest"] == identity.digest and marker["rootfsSize"] == identity.size and
          marker["bakeFormat"] == identity.format and is_binary(marker["imageRef"]) and
-         marker["imageRef"] != "" and is_binary(payload_key) and
-         String.starts_with?(payload_key, identity.prefix <> "/") and
+         marker["imageRef"] != "" and is_binary(checksum) and is_binary(payload_key) and
+         payload_key == identity.prefix <> "/" <> checksum <> ".ext4" and
          MapSet.member?(listed, payload_key) do
       :ok
     else
       {:error, :identity_mismatch}
     end
   end
+
+  defp normalize_checksum(value) when is_binary(value) do
+    checksum = value |> String.replace_prefix("sha256:", "") |> String.downcase()
+    if Regex.match?(@digest, checksum), do: checksum
+  end
+
+  defp normalize_checksum(_value), do: nil
 
   defp parse_time(value) when is_binary(value) do
     case DateTime.from_iso8601(value) do

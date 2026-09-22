@@ -155,6 +155,40 @@ defmodule Embervm.RootfsRemoteRetentionTest do
            ]
   end
 
+  test "armed sweep holds markers with missing or contradictory checksums" do
+    {missing_prefix, missing_objects} = rootfs_objects("repo/missing@sha256:index", 90, "b2")
+    {wrong_prefix, wrong_objects} = rootfs_objects("repo/wrong@sha256:index", 90, "b3")
+
+    rewrite_marker = fn objects, prefix, update ->
+      marker_key = prefix <> "/rootfs.ext4.sha256"
+      {modified, body} = Map.fetch!(objects, marker_key)
+      marker = body |> :json.decode() |> update.()
+      Map.put(objects, marker_key, {modified, marker |> :json.encode() |> IO.iodata_to_binary()})
+    end
+
+    missing_objects = rewrite_marker.(missing_objects, missing_prefix, &Map.delete(&1, "sha256"))
+
+    wrong_objects =
+      rewrite_marker.(wrong_objects, wrong_prefix, fn marker ->
+        Map.put(marker, "sha256", String.duplicate("c", 64))
+      end)
+
+    {agent, s3} = new_s3(Map.merge(missing_objects, wrong_objects))
+    pid = start_retention(s3, enabled: true)
+
+    assert {:ok, %{plan: [], deleted: []}} = RootfsRemoteRetention.sweep_now(pid)
+    assert Agent.get(agent, & &1.deleted) == []
+
+    [{_manifest_key, body}] = Agent.get(agent, & &1.puts)
+    held = body |> :json.decode() |> Map.fetch!("held")
+
+    assert MapSet.new(held, &{&1["prefix"], &1["reason"]}) ==
+             MapSet.new([
+               {missing_prefix, "invalid_marker"},
+               {wrong_prefix, "invalid_marker"}
+             ])
+  end
+
   test "invalid age horizon refuses to start" do
     assert {:error, {:invalid_age_days, 0}} =
              RootfsRemoteRetention.start_link(name: nil, age_days: 0)
