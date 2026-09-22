@@ -470,9 +470,9 @@ defmodule Embervm.OpLog.SessionProjectionTest do
     {:ok, _} = SQLite.append(server, created_op("s-legacy", "p1", 100))
     :ok = GenServer.stop(server)
 
-    {:ok, conn} = Sqlite3.open(path)
-    :ok = Sqlite3.execute(conn, "ALTER TABLE sessions DROP COLUMN vm_id")
-    :ok = Sqlite3.close(conn)
+    {:ok, conn} = Exqlite.Sqlite3.open(path)
+    :ok = Exqlite.Sqlite3.execute(conn, "ALTER TABLE sessions DROP COLUMN vm_id")
+    :ok = Exqlite.Sqlite3.close(conn)
 
     server = start_server(path)
     assert session_by_id(server)["s-legacy"].vm_id == nil
