@@ -21,10 +21,12 @@ spec:
       chart: embervm
       # Bootstrap floor only: Kargo's dev stage owns this field on the live
       # object (projects/platform/kargo/values.yaml), and the hub root carries
-      # the matching ignoreDifferences entry. 0.93.13 verified by pulling the
-      # chart (digest b612eec1) and rendering both dev value files against it;
-      # the first dev Promotion moves it to the newest Freight.
-      targetRevision: 0.93.13
+      # the matching ignoreDifferences entry. 0.94.1 is the first chart with
+      # noded.firecracker.sharedScratch, which dev-gke relies on: on 0.93.13 the
+      # brick fails its mount by design and the first auto-sync waits on it
+      # indefinitely. Verified by pulling the chart (digest 5d7db488) and
+      # rendering both dev value files against it.
+      targetRevision: 0.94.1
       helm:
         releaseName: embervm-dev
         # dev values first, then the hub overlay for dev. NOT production's
