@@ -891,7 +891,7 @@ def adopt_completed_factory_receipt(db: Session, pin: dict, identity: dict) -> d
     from factory.execution import result_receipts, store
     from factory.execution.constants import exact_dispatch_id
     from factory.execution.models import AgentResultReceipt, AgentTurn
-    from factory.execution.transport import parse_native_turn
+    from factory.execution.transport import _reported_cost_usd, parse_native_turn
 
     if read_uncertain_factory_attempt(db, pin, identity["session_id"]) != identity:
         raise ValueError("factory_attempt_changed")
@@ -980,6 +980,10 @@ def adopt_completed_factory_receipt(db: Session, pin: dict, identity: dict) -> d
         ):
             raise ValueError("factory_receipt_native_identity_changed")
         history.append(captured["provenance"])
+
+    raw_cost = body.get("total_cost_usd")
+    if raw_cost is not None and _reported_cost_usd(body) is None:
+        raise ValueError("factory_receipt_invalid_result")
 
     turn = parse_native_turn(
         body, agent.ember_session_id, agent.cli_session_id, pin["artifact_path"]
