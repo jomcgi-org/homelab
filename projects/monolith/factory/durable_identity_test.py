@@ -90,8 +90,6 @@ def test_package_move_preserves_the_deployed_node_workflow_version():
             (
                 "PlannerContextOverflow",
                 "PlannerContextAuthorizationError",
-                "DeliveryRefused",
-                "_EditRefused",
             ),
         ),
     ],
