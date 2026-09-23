@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import io
+import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -9,10 +11,13 @@ from factory import baseline
 
 START = datetime(2026, 9, 16, tzinfo=timezone.utc)
 END = datetime(2026, 9, 23, tzinfo=timezone.utc)
-GENERATED = datetime(2026, 9, 23, 1, 50, tzinfo=timezone.utc)
+GENERATED = datetime(2026, 9, 23, 1, 50, 44, tzinfo=timezone.utc)
+ARTIFACT_DIR = Path(__file__).parent
 
 
 def event(event_id: str, event_type: str, occurred_at: str, **values) -> dict:
+    if event_type in baseline.COST_EVENT_TYPES:
+        values.setdefault("rework_classified", True)
     return {
         "event_id": event_id,
         "event_type": event_type,
@@ -228,6 +233,48 @@ def test_missing_partial_cost_and_zero_accepted_denominator_stay_unavailable():
     assert metric["reserved_ceiling_subtotal_usd"] == 4.0
 
 
+def test_incomplete_factory_cohort_never_emits_complete_cohort_cost():
+    result = report(
+        [
+            event("i", "task_intake", "2026-09-16T01:00:00Z", task_id="t1"),
+            event(
+                "a",
+                "agent_attempt_finished",
+                "2026-09-16T02:00:00Z",
+                task_id="t1",
+                cost_usd=1.25,
+            ),
+        ],
+        sources=[source("cost")],
+    )
+    metric = result["metrics"]["factory"]["cohort_cost_per_accepted_change"]
+    assert result["counts"]["cohort_tasks"] is None
+    assert metric["complete_cohort_cost_usd"] is None
+    assert metric["known_cost_subtotal_usd"] == 1.25
+
+
+def test_factory_rework_is_unavailable_without_classification_coverage():
+    result = report(
+        [
+            event("i", "task_intake", "2026-09-16T01:00:00Z", task_id="t1"),
+            event(
+                "a",
+                "agent_attempt_finished",
+                "2026-09-16T02:00:00Z",
+                task_id="t1",
+                cost_usd=1.0,
+                rework_classified=None,
+            ),
+            event("v", "verified_outcome", "2026-09-16T03:00:00Z", task_id="t1"),
+        ],
+        sources=[source("factory")],
+    )
+    metric = result["metrics"]["factory"]["rework_rate"]
+    assert metric["status"] == "unavailable"
+    assert metric["value"] is None
+    assert metric["reason"] == "review/correction classification coverage is incomplete"
+
+
 def test_corrected_reopened_evidence_removes_prior_acceptance():
     verified = event(
         "verified", "verified_outcome", "2026-09-16T03:00:00Z", task_id="t1"
@@ -237,7 +284,6 @@ def test_corrected_reopened_evidence_removes_prior_acceptance():
         "outcome_reopened",
         "2026-09-16T04:00:00Z",
         task_id="t1",
-        supersedes_event_id="verified",
     )
     result = report(
         [
@@ -249,7 +295,28 @@ def test_corrected_reopened_evidence_removes_prior_acceptance():
     )
     assert result["counts"]["accepted_changes"] == 0
     assert result["counts"]["incomplete"] == 1
-    assert result["data_quality"]["superseded_events"] == 1
+    assert result["data_quality"]["superseded_events"] == 0
+
+
+def test_later_verified_outcome_accepts_a_reopened_task_again():
+    result = report(
+        [
+            event("intake", "task_intake", "2026-09-16T01:00:00Z", task_id="t1"),
+            event("verified", "verified_outcome", "2026-09-16T03:00:00Z", task_id="t1"),
+            event("reopened", "outcome_reopened", "2026-09-16T04:00:00Z", task_id="t1"),
+            event(
+                "reverified",
+                "verified_outcome",
+                "2026-09-16T06:00:00Z",
+                task_id="t1",
+            ),
+        ],
+        sources=[source("factory")],
+    )
+    assert result["counts"]["accepted_changes"] == 1
+    assert (
+        result["metrics"]["factory"]["intake_to_verified_outcome"]["median"] == 5 * 3600
+    )
 
 
 def test_overlapping_attempts_are_not_summed_as_elapsed_time():
@@ -283,7 +350,7 @@ def test_overlapping_attempts_are_not_summed_as_elapsed_time():
     assert result["counts"]["failed_agent_attempts"] == 1
 
 
-def test_merge_deploy_and_verify_remain_separate_with_production_recovery():
+def test_production_metrics_require_success_and_causal_corrective_deployment():
     app = {"name": "api", "environment": "production", "service_boundary": "api"}
     result = report(
         [
@@ -335,6 +402,22 @@ def test_merge_deploy_and_verify_remain_separate_with_production_recovery():
                 application="api",
                 environment="production",
             ),
+            event(
+                "m2",
+                "pr_merged",
+                "2026-09-16T03:30:00Z",
+                change_id="pr:2",
+            ),
+            event(
+                "correction",
+                "deployment_succeeded",
+                "2026-09-16T04:00:00Z",
+                change_id="pr:2",
+                deployment_id="deploy:2",
+                corrects_deployment_id="deploy:1",
+                application="api",
+                environment="production",
+            ),
         ],
         sources=[
             source("factory"),
@@ -345,13 +428,46 @@ def test_merge_deploy_and_verify_remain_separate_with_production_recovery():
         apps=[app],
     )
     assert result["counts"]["accepted_changes"] == 0
-    assert result["metrics"]["repository_delivery"]["merge_count"]["value"] == 1
+    assert result["metrics"]["repository_delivery"]["merge_count"]["value"] == 2
     production = result["metrics"]["managed_production_applications"][0]
-    assert production["production_lead_time"]["median"] == 3600
-    assert production["deployment_frequency"]["numerator"] == 1
-    assert production["change_failure_rate"]["value"] == 1
+    assert production["production_lead_time"]["median"] == 1800
+    assert production["production_lead_time"]["known"] == 1
+    assert production["deployment_frequency"]["numerator"] == 2
+    assert production["change_failure_rate"]["value"] == 0.5
     assert production["failed_deployment_recovery_time"]["median"] == 3600
-    assert production["production_rework_rate"]["value"] == 1
+    assert production["production_rework_rate"]["value"] == 0.5
+    assert production["production_rework_rate"]["evidence"] == [
+        "https://evidence.example/correction",
+        "https://evidence.example/d",
+    ]
+
+
+def test_failed_deployment_is_not_successful_lead_time_or_rework():
+    app = {"name": "api", "environment": "production", "service_boundary": "api"}
+    result = report(
+        [
+            event("m", "pr_merged", "2026-09-16T01:00:00Z", change_id="pr:1"),
+            event(
+                "d",
+                "deployment_failed",
+                "2026-09-16T02:00:00Z",
+                change_id="pr:1",
+                deployment_id="deploy:1",
+                application="api",
+                environment="production",
+            ),
+        ],
+        sources=[
+            source("deployment", application="api", environment="production"),
+            source("incident", application="api", environment="production"),
+        ],
+        apps=[app],
+    )
+    production = result["metrics"]["managed_production_applications"][0]
+    assert production["production_lead_time"]["status"] == "unavailable"
+    assert production["production_lead_time"]["median"] is None
+    assert production["production_lead_time"]["known"] == 0
+    assert production["production_rework_rate"]["value"] == 0
 
 
 def test_missing_deployment_and_incident_coverage_never_becomes_zero_success():
@@ -402,3 +518,26 @@ def test_default_window_is_seven_completed_utc_days():
     )
     assert start == START
     assert end == END
+
+
+def test_checked_in_observation_round_trips_through_reporter():
+    observed_input = json.loads(
+        (ARTIFACT_DIR / "baseline_observed_20260923_input.json").read_text()
+    )
+    generated = baseline.build_report(
+        observed_input,
+        generated_at=GENERATED,
+        start=START,
+        end=END,
+    )
+    checked_json = json.loads(
+        (ARTIFACT_DIR / "baseline_observed_20260923.json").read_text()
+    )
+    assert generated == checked_json
+
+    output = io.StringIO()
+    baseline.write_csv(generated, output)
+    assert (
+        output.getvalue()
+        == (ARTIFACT_DIR / "baseline_observed_20260923.csv").read_text()
+    )

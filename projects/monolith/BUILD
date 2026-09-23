@@ -9273,6 +9273,11 @@ py_library(
 py_test(
     name = "factory_baseline_test",
     srcs = ["factory/baseline_test.py"],
+    data = [
+        "factory/baseline_observed_20260923.csv",
+        "factory/baseline_observed_20260923.json",
+        "factory/baseline_observed_20260923_input.json",
+    ],
     imports = ["."],
     deps = [
         ":pkg_factory",

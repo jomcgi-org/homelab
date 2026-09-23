@@ -1,518 +1,1873 @@
 {
   "contract_version": 1,
-  "report_kind": "observed_repository_baseline",
-  "synthetic": false,
+  "counts": {
+    "abandoned": null,
+    "accepted_changes": null,
+    "cancelled": null,
+    "cohort_tasks": null,
+    "explicit_operator_interventions": null,
+    "failed_agent_attempts": null,
+    "incomplete": null,
+    "intervention_required_signals": null,
+    "repository_closed_unmerged_attempts": 0
+  },
+  "data_quality": {
+    "active_events": 190,
+    "exact_replays_dropped": 0,
+    "input_events": 190,
+    "missing_superseded_event_ids": [],
+    "note": "Corrections replace their superseded event. Reopen evidence removes the superseded verified outcome from later regenerations.",
+    "older_revisions_dropped": 0,
+    "revised_events": 0,
+    "right_censored_tasks": null,
+    "superseded_events": 0,
+    "unique_event_ids": 190
+  },
+  "definitions": {
+    "change_failure_rate": {
+      "denominator": "distinct production deployments",
+      "end_event": null,
+      "exclusion": "failed agent attempts and CI failures without production impact",
+      "inclusion": "production failures attributed to a deployment",
+      "missing_data": "unavailable unless deployment and incident failure coverage both span the window",
+      "numerator": "distinct failed production deployments",
+      "source_query": "live rollout and authoritative incident validation",
+      "start_event": "deployment_failed",
+      "unit": "ratio"
+    },
+    "cohort_cost_per_accepted_change": {
+      "denominator": "accepted changes",
+      "end_event": "verified_outcome or other terminal task event",
+      "exclusion": "reserved ceilings from known spend and events outside the intake cohort",
+      "inclusion": "successful and failed attempts, review/correction work, cancelled and abandoned tasks",
+      "missing_data": "known subtotal is separate; complete value is unavailable if any expected cost is unknown",
+      "numerator": "cost of all expected cost events for every task in the intake cohort",
+      "source_query": "factory/baseline_export.sql",
+      "start_event": "task_intake",
+      "unit": "USD per accepted change"
+    },
+    "deployment_frequency": {
+      "denominator": "window duration in UTC days",
+      "end_event": "deployment_succeeded or deployment_failed",
+      "exclusion": "PR merges, retries of the same deployment identity, and issue closure",
+      "inclusion": "each managed application and production environment separately",
+      "missing_data": "unavailable unless deployment coverage spans the full window",
+      "numerator": "distinct production deployments in the half-open window",
+      "source_query": "live Argo, workload, digest, and chart receipt validation",
+      "start_event": null,
+      "unit": "deployments per UTC day"
+    },
+    "factory_intake_to_verified_outcome": {
+      "denominator": "accepted changes in the intake cohort",
+      "end_event": "verified_outcome",
+      "exclusion": "PR merge, deployment alone, retries as changes, and summed attempt duration",
+      "inclusion": "tasks first received >= start and < end with active verified outcome evidence before end",
+      "missing_data": "right-censored tasks remain incomplete; zero accepted changes yields unavailable",
+      "numerator": null,
+      "source_query": "factory/baseline_export.sql",
+      "start_event": "task_intake",
+      "unit": "seconds"
+    },
+    "factory_rework_rate": {
+      "denominator": "accepted changes",
+      "end_event": "verified_outcome",
+      "exclusion": "replayed events and intervention-required signals",
+      "inclusion": "failed review and correction work linked to the task",
+      "missing_data": "unavailable with zero accepted changes or incomplete factory history",
+      "numerator": "accepted cohort tasks with at least one review_correction",
+      "source_query": "factory/baseline_export.sql",
+      "start_event": "review_correction",
+      "unit": "ratio"
+    },
+    "failed_deployment_recovery_time": {
+      "denominator": "failed deployments with linked recovery evidence",
+      "end_event": "deployment_recovered",
+      "exclusion": "issue closure and agent retry duration",
+      "inclusion": "one elapsed interval per failed deployment",
+      "missing_data": "open failures are right-censored; incomplete incident coverage is unavailable",
+      "numerator": null,
+      "source_query": "live rollout and authoritative incident validation",
+      "start_event": "deployment_failed",
+      "unit": "seconds"
+    },
+    "interventions_per_accepted_change": {
+      "denominator": "accepted changes",
+      "end_event": "verified_outcome",
+      "exclusion": "intervention_required signals without a completed human action",
+      "inclusion": "completed operator-authored actions linked to cohort tasks",
+      "missing_data": "unavailable with zero accepted changes or incomplete audit coverage",
+      "numerator": "explicit operator_intervention events with an actor",
+      "source_query": "factory/baseline_export.sql",
+      "start_event": "operator_intervention",
+      "unit": "interventions per accepted change"
+    },
+    "production_lead_time": {
+      "denominator": "production deployments with a linked merged change",
+      "end_event": "deployment_succeeded",
+      "exclusion": "issue closure, PR merge without rollout, and verified outcome without deployment identity",
+      "inclusion": "each managed application and production environment separately",
+      "missing_data": "unavailable unless deployment coverage spans the full window",
+      "numerator": null,
+      "source_query": "live Argo, workload, digest, and chart receipt validation",
+      "start_event": "pr_merged",
+      "unit": "seconds"
+    },
+    "production_rework_rate": {
+      "denominator": "distinct deployed changes",
+      "end_event": "deployment_succeeded",
+      "exclusion": "factory review corrections with no production failure",
+      "inclusion": "successful corrective deployments whose corrects_deployment_id identifies the failed production deployment",
+      "missing_data": "unavailable unless deployment and incident coverage both span the window",
+      "numerator": "deployed changes requiring a later corrective deployment",
+      "source_query": "live rollout and authoritative incident validation",
+      "start_event": "deployment_failed",
+      "unit": "ratio"
+    },
+    "repository_merge_count": {
+      "denominator": null,
+      "end_event": "pr_merged",
+      "exclusion": "closed-unmerged pull requests, replayed records, and merges outside the window",
+      "inclusion": "pull requests whose merged_at is >= start and < end",
+      "missing_data": "unavailable unless GitHub pagination covers the full window",
+      "numerator": "distinct active pr_merged changes in the half-open window",
+      "source_query": "GitHub GraphQL command in factory/baseline.md",
+      "start_event": null,
+      "unit": "merged pull requests"
+    },
+    "repository_open_to_merge": {
+      "denominator": "merged pull requests with both timestamps",
+      "end_event": "pr_merged",
+      "exclusion": "parallel attempt durations and changes missing either event",
+      "inclusion": "one elapsed interval per distinct merged pull request",
+      "missing_data": "reports known/total coverage and is unavailable with zero known intervals",
+      "numerator": null,
+      "source_query": "GitHub GraphQL command in factory/baseline.md",
+      "start_event": "pr_opened",
+      "unit": "seconds"
+    }
+  },
   "generated_at": "2026-09-23T01:50:44Z",
-  "source_as_of": "2026-09-23T01:50:44Z",
-  "window": {
-    "start": "2026-09-16T00:00:00Z",
-    "end": "2026-09-23T00:00:00Z",
-    "semantics": "half-open UTC [start, end)"
+  "metrics": {
+    "factory": {
+      "cohort_cost_per_accepted_change": {
+        "accepted_denominator": 0,
+        "complete_cohort_cost_usd": null,
+        "coverage": null,
+        "evidence": [],
+        "known_cost_items": 0,
+        "known_cost_subtotal_usd": null,
+        "reason": "factory history does not span the window",
+        "reserved_ceiling_subtotal_usd": null,
+        "status": "unavailable",
+        "total_expected_cost_items": 0,
+        "unit": "USD per accepted change",
+        "value": null
+      },
+      "intake_to_verified_outcome": {
+        "coverage": null,
+        "evidence": [],
+        "known": 0,
+        "maximum": null,
+        "median": null,
+        "minimum": null,
+        "reason": "factory history does not span the window",
+        "status": "unavailable",
+        "total": 0,
+        "unit": "seconds"
+      },
+      "interventions_per_accepted_change": {
+        "denominator": 0,
+        "evidence": [],
+        "numerator": 0,
+        "reason": "factory history does not span the window",
+        "status": "unavailable",
+        "unit": "ratio",
+        "value": null
+      },
+      "rework_rate": {
+        "denominator": 0,
+        "evidence": [
+          "https://github.com/jomcgi-org/homelab/pull/6030",
+          "https://github.com/jomcgi-org/homelab/pull/6070",
+          "https://github.com/jomcgi-org/homelab/pull/6077",
+          "https://github.com/jomcgi-org/homelab/pull/6079",
+          "https://github.com/jomcgi-org/homelab/pull/6086",
+          "https://github.com/jomcgi-org/homelab/pull/6122",
+          "https://github.com/jomcgi-org/homelab/pull/6125",
+          "https://github.com/jomcgi-org/homelab/pull/6144",
+          "https://github.com/jomcgi-org/homelab/pull/6145",
+          "https://github.com/jomcgi-org/homelab/pull/6147",
+          "https://github.com/jomcgi-org/homelab/pull/6162",
+          "https://github.com/jomcgi-org/homelab/pull/6171",
+          "https://github.com/jomcgi-org/homelab/pull/6176",
+          "https://github.com/jomcgi-org/homelab/pull/6177",
+          "https://github.com/jomcgi-org/homelab/pull/6202",
+          "https://github.com/jomcgi-org/homelab/pull/6203",
+          "https://github.com/jomcgi-org/homelab/pull/6209",
+          "https://github.com/jomcgi-org/homelab/pull/6210",
+          "https://github.com/jomcgi-org/homelab/pull/6211",
+          "https://github.com/jomcgi-org/homelab/pull/6213",
+          "https://github.com/jomcgi-org/homelab/pull/6214",
+          "https://github.com/jomcgi-org/homelab/pull/6215",
+          "https://github.com/jomcgi-org/homelab/pull/6216",
+          "https://github.com/jomcgi-org/homelab/pull/6218",
+          "https://github.com/jomcgi-org/homelab/pull/6219",
+          "https://github.com/jomcgi-org/homelab/pull/6221",
+          "https://github.com/jomcgi-org/homelab/pull/6223",
+          "https://github.com/jomcgi-org/homelab/pull/6228",
+          "https://github.com/jomcgi-org/homelab/pull/6229",
+          "https://github.com/jomcgi-org/homelab/pull/6230",
+          "https://github.com/jomcgi-org/homelab/pull/6231",
+          "https://github.com/jomcgi-org/homelab/pull/6232",
+          "https://github.com/jomcgi-org/homelab/pull/6233",
+          "https://github.com/jomcgi-org/homelab/pull/6234",
+          "https://github.com/jomcgi-org/homelab/pull/6235",
+          "https://github.com/jomcgi-org/homelab/pull/6236",
+          "https://github.com/jomcgi-org/homelab/pull/6237",
+          "https://github.com/jomcgi-org/homelab/pull/6238",
+          "https://github.com/jomcgi-org/homelab/pull/6239",
+          "https://github.com/jomcgi-org/homelab/pull/6240",
+          "https://github.com/jomcgi-org/homelab/pull/6242",
+          "https://github.com/jomcgi-org/homelab/pull/6243",
+          "https://github.com/jomcgi-org/homelab/pull/6244",
+          "https://github.com/jomcgi-org/homelab/pull/6272",
+          "https://github.com/jomcgi-org/homelab/pull/6275",
+          "https://github.com/jomcgi-org/homelab/pull/6276",
+          "https://github.com/jomcgi-org/homelab/pull/6289",
+          "https://github.com/jomcgi-org/homelab/pull/6291",
+          "https://github.com/jomcgi-org/homelab/pull/6292",
+          "https://github.com/jomcgi-org/homelab/pull/6293",
+          "https://github.com/jomcgi-org/homelab/pull/6294",
+          "https://github.com/jomcgi-org/homelab/pull/6297",
+          "https://github.com/jomcgi-org/homelab/pull/6298",
+          "https://github.com/jomcgi-org/homelab/pull/6299",
+          "https://github.com/jomcgi-org/homelab/pull/6300",
+          "https://github.com/jomcgi-org/homelab/pull/6303",
+          "https://github.com/jomcgi-org/homelab/pull/6305",
+          "https://github.com/jomcgi-org/homelab/pull/6308",
+          "https://github.com/jomcgi-org/homelab/pull/6310",
+          "https://github.com/jomcgi-org/homelab/pull/6311",
+          "https://github.com/jomcgi-org/homelab/pull/6312",
+          "https://github.com/jomcgi-org/homelab/pull/6313",
+          "https://github.com/jomcgi-org/homelab/pull/6314",
+          "https://github.com/jomcgi-org/homelab/pull/6315",
+          "https://github.com/jomcgi-org/homelab/pull/6316",
+          "https://github.com/jomcgi-org/homelab/pull/6317",
+          "https://github.com/jomcgi-org/homelab/pull/6318",
+          "https://github.com/jomcgi-org/homelab/pull/6319",
+          "https://github.com/jomcgi-org/homelab/pull/6322",
+          "https://github.com/jomcgi-org/homelab/pull/6323",
+          "https://github.com/jomcgi-org/homelab/pull/6326",
+          "https://github.com/jomcgi-org/homelab/pull/6328",
+          "https://github.com/jomcgi-org/homelab/pull/6330",
+          "https://github.com/jomcgi-org/homelab/pull/6331",
+          "https://github.com/jomcgi-org/homelab/pull/6332",
+          "https://github.com/jomcgi-org/homelab/pull/6335",
+          "https://github.com/jomcgi-org/homelab/pull/6336",
+          "https://github.com/jomcgi-org/homelab/pull/6337",
+          "https://github.com/jomcgi-org/homelab/pull/6338",
+          "https://github.com/jomcgi-org/homelab/pull/6339",
+          "https://github.com/jomcgi-org/homelab/pull/6341",
+          "https://github.com/jomcgi-org/homelab/pull/6350",
+          "https://github.com/jomcgi-org/homelab/pull/6352",
+          "https://github.com/jomcgi-org/homelab/pull/6355",
+          "https://github.com/jomcgi-org/homelab/pull/6356",
+          "https://github.com/jomcgi-org/homelab/pull/6357",
+          "https://github.com/jomcgi-org/homelab/pull/6362",
+          "https://github.com/jomcgi-org/homelab/pull/6369",
+          "https://github.com/jomcgi-org/homelab/pull/6374",
+          "https://github.com/jomcgi-org/homelab/pull/6384",
+          "https://github.com/jomcgi-org/homelab/pull/6387",
+          "https://github.com/jomcgi-org/homelab/pull/6389",
+          "https://github.com/jomcgi-org/homelab/pull/6390",
+          "https://github.com/jomcgi-org/homelab/pull/6391",
+          "https://github.com/jomcgi-org/homelab/pull/6392"
+        ],
+        "numerator": 0,
+        "reason": "factory history does not span the window",
+        "status": "unavailable",
+        "unit": "ratio",
+        "value": null
+      }
+    },
+    "managed_production_applications": [
+      {
+        "change_failure_rate": {
+          "denominator": 0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "unit": "ratio",
+          "value": null
+        },
+        "deployment_frequency": {
+          "denominator": 7.0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment coverage does not span the window",
+          "status": "unavailable",
+          "unit": "deployments per UTC day",
+          "value": null
+        },
+        "environment": "gke-production",
+        "failed_deployment_recovery_time": {
+          "coverage": null,
+          "evidence": [],
+          "known": 0,
+          "maximum": null,
+          "median": null,
+          "minimum": null,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "total": 0,
+          "unit": "seconds"
+        },
+        "inventory_source": "projects/gke-apps/context-forge-gateway/application.yaml",
+        "inventory_status": "repository_declared_not_live_validated",
+        "name": "context-forge-gateway",
+        "production_lead_time": {
+          "coverage": null,
+          "evidence": [],
+          "known": 0,
+          "maximum": null,
+          "median": null,
+          "minimum": null,
+          "reason": "deployment coverage does not span the window",
+          "status": "unavailable",
+          "total": 0,
+          "unit": "seconds"
+        },
+        "production_rework_rate": {
+          "denominator": 0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "unit": "ratio",
+          "value": null
+        },
+        "service_boundary": "Argo Application/context-forge-gateway"
+      },
+      {
+        "change_failure_rate": {
+          "denominator": 0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "unit": "ratio",
+          "value": null
+        },
+        "deployment_frequency": {
+          "denominator": 7.0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment coverage does not span the window",
+          "status": "unavailable",
+          "unit": "deployments per UTC day",
+          "value": null
+        },
+        "environment": "gke-production",
+        "failed_deployment_recovery_time": {
+          "coverage": null,
+          "evidence": [],
+          "known": 0,
+          "maximum": null,
+          "median": null,
+          "minimum": null,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "total": 0,
+          "unit": "seconds"
+        },
+        "inventory_source": "projects/gke-apps/embervm/application.yaml",
+        "inventory_status": "repository_declared_not_live_validated",
+        "name": "embervm",
+        "production_lead_time": {
+          "coverage": null,
+          "evidence": [],
+          "known": 0,
+          "maximum": null,
+          "median": null,
+          "minimum": null,
+          "reason": "deployment coverage does not span the window",
+          "status": "unavailable",
+          "total": 0,
+          "unit": "seconds"
+        },
+        "production_rework_rate": {
+          "denominator": 0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "unit": "ratio",
+          "value": null
+        },
+        "service_boundary": "Argo Application/embervm"
+      },
+      {
+        "change_failure_rate": {
+          "denominator": 0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "unit": "ratio",
+          "value": null
+        },
+        "deployment_frequency": {
+          "denominator": 7.0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment coverage does not span the window",
+          "status": "unavailable",
+          "unit": "deployments per UTC day",
+          "value": null
+        },
+        "environment": "gke-production",
+        "failed_deployment_recovery_time": {
+          "coverage": null,
+          "evidence": [],
+          "known": 0,
+          "maximum": null,
+          "median": null,
+          "minimum": null,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "total": 0,
+          "unit": "seconds"
+        },
+        "inventory_source": "projects/gke-apps/inference/application.yaml",
+        "inventory_status": "repository_declared_not_live_validated",
+        "name": "inference",
+        "production_lead_time": {
+          "coverage": null,
+          "evidence": [],
+          "known": 0,
+          "maximum": null,
+          "median": null,
+          "minimum": null,
+          "reason": "deployment coverage does not span the window",
+          "status": "unavailable",
+          "total": 0,
+          "unit": "seconds"
+        },
+        "production_rework_rate": {
+          "denominator": 0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "unit": "ratio",
+          "value": null
+        },
+        "service_boundary": "Argo Application/inference"
+      },
+      {
+        "change_failure_rate": {
+          "denominator": 0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "unit": "ratio",
+          "value": null
+        },
+        "deployment_frequency": {
+          "denominator": 7.0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment coverage does not span the window",
+          "status": "unavailable",
+          "unit": "deployments per UTC day",
+          "value": null
+        },
+        "environment": "gke-production",
+        "failed_deployment_recovery_time": {
+          "coverage": null,
+          "evidence": [],
+          "known": 0,
+          "maximum": null,
+          "median": null,
+          "minimum": null,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "total": 0,
+          "unit": "seconds"
+        },
+        "inventory_source": "projects/gke-apps/monolith-agents/application.yaml",
+        "inventory_status": "repository_declared_not_live_validated",
+        "name": "monolith-agents",
+        "production_lead_time": {
+          "coverage": null,
+          "evidence": [],
+          "known": 0,
+          "maximum": null,
+          "median": null,
+          "minimum": null,
+          "reason": "deployment coverage does not span the window",
+          "status": "unavailable",
+          "total": 0,
+          "unit": "seconds"
+        },
+        "production_rework_rate": {
+          "denominator": 0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "unit": "ratio",
+          "value": null
+        },
+        "service_boundary": "Argo Application/monolith-agents"
+      },
+      {
+        "change_failure_rate": {
+          "denominator": 0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "unit": "ratio",
+          "value": null
+        },
+        "deployment_frequency": {
+          "denominator": 7.0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment coverage does not span the window",
+          "status": "unavailable",
+          "unit": "deployments per UTC day",
+          "value": null
+        },
+        "environment": "gke-production",
+        "failed_deployment_recovery_time": {
+          "coverage": null,
+          "evidence": [],
+          "known": 0,
+          "maximum": null,
+          "median": null,
+          "minimum": null,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "total": 0,
+          "unit": "seconds"
+        },
+        "inventory_source": "projects/gke-apps/monolith-public/application.yaml",
+        "inventory_status": "repository_declared_not_live_validated",
+        "name": "monolith-public",
+        "production_lead_time": {
+          "coverage": null,
+          "evidence": [],
+          "known": 0,
+          "maximum": null,
+          "median": null,
+          "minimum": null,
+          "reason": "deployment coverage does not span the window",
+          "status": "unavailable",
+          "total": 0,
+          "unit": "seconds"
+        },
+        "production_rework_rate": {
+          "denominator": 0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "unit": "ratio",
+          "value": null
+        },
+        "service_boundary": "Argo Application/monolith-public"
+      },
+      {
+        "change_failure_rate": {
+          "denominator": 0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "unit": "ratio",
+          "value": null
+        },
+        "deployment_frequency": {
+          "denominator": 7.0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment coverage does not span the window",
+          "status": "unavailable",
+          "unit": "deployments per UTC day",
+          "value": null
+        },
+        "environment": "gke-production",
+        "failed_deployment_recovery_time": {
+          "coverage": null,
+          "evidence": [],
+          "known": 0,
+          "maximum": null,
+          "median": null,
+          "minimum": null,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "total": 0,
+          "unit": "seconds"
+        },
+        "inventory_source": "projects/gke-apps/monolith/application.yaml",
+        "inventory_status": "repository_declared_not_live_validated",
+        "name": "monolith",
+        "production_lead_time": {
+          "coverage": null,
+          "evidence": [],
+          "known": 0,
+          "maximum": null,
+          "median": null,
+          "minimum": null,
+          "reason": "deployment coverage does not span the window",
+          "status": "unavailable",
+          "total": 0,
+          "unit": "seconds"
+        },
+        "production_rework_rate": {
+          "denominator": 0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "unit": "ratio",
+          "value": null
+        },
+        "service_boundary": "Argo Application/monolith"
+      },
+      {
+        "change_failure_rate": {
+          "denominator": 0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "unit": "ratio",
+          "value": null
+        },
+        "deployment_frequency": {
+          "denominator": 7.0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment coverage does not span the window",
+          "status": "unavailable",
+          "unit": "deployments per UTC day",
+          "value": null
+        },
+        "environment": "gke-production",
+        "failed_deployment_recovery_time": {
+          "coverage": null,
+          "evidence": [],
+          "known": 0,
+          "maximum": null,
+          "median": null,
+          "minimum": null,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "total": 0,
+          "unit": "seconds"
+        },
+        "inventory_source": "projects/platform-gke/argo-workflows/application.yaml",
+        "inventory_status": "repository_declared_not_live_validated",
+        "name": "argo-workflows",
+        "production_lead_time": {
+          "coverage": null,
+          "evidence": [],
+          "known": 0,
+          "maximum": null,
+          "median": null,
+          "minimum": null,
+          "reason": "deployment coverage does not span the window",
+          "status": "unavailable",
+          "total": 0,
+          "unit": "seconds"
+        },
+        "production_rework_rate": {
+          "denominator": 0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "unit": "ratio",
+          "value": null
+        },
+        "service_boundary": "Argo Application/argo-workflows"
+      },
+      {
+        "change_failure_rate": {
+          "denominator": 0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "unit": "ratio",
+          "value": null
+        },
+        "deployment_frequency": {
+          "denominator": 7.0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment coverage does not span the window",
+          "status": "unavailable",
+          "unit": "deployments per UTC day",
+          "value": null
+        },
+        "environment": "gke-production",
+        "failed_deployment_recovery_time": {
+          "coverage": null,
+          "evidence": [],
+          "known": 0,
+          "maximum": null,
+          "median": null,
+          "minimum": null,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "total": 0,
+          "unit": "seconds"
+        },
+        "inventory_source": "projects/platform-gke/argocd/application.yaml",
+        "inventory_status": "repository_declared_not_live_validated",
+        "name": "argocd",
+        "production_lead_time": {
+          "coverage": null,
+          "evidence": [],
+          "known": 0,
+          "maximum": null,
+          "median": null,
+          "minimum": null,
+          "reason": "deployment coverage does not span the window",
+          "status": "unavailable",
+          "total": 0,
+          "unit": "seconds"
+        },
+        "production_rework_rate": {
+          "denominator": 0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "unit": "ratio",
+          "value": null
+        },
+        "service_boundary": "Argo Application/argocd"
+      },
+      {
+        "change_failure_rate": {
+          "denominator": 0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "unit": "ratio",
+          "value": null
+        },
+        "deployment_frequency": {
+          "denominator": 7.0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment coverage does not span the window",
+          "status": "unavailable",
+          "unit": "deployments per UTC day",
+          "value": null
+        },
+        "environment": "gke-production",
+        "failed_deployment_recovery_time": {
+          "coverage": null,
+          "evidence": [],
+          "known": 0,
+          "maximum": null,
+          "median": null,
+          "minimum": null,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "total": 0,
+          "unit": "seconds"
+        },
+        "inventory_source": "projects/platform-gke/atlas-operator/application.yaml",
+        "inventory_status": "repository_declared_not_live_validated",
+        "name": "atlas-operator",
+        "production_lead_time": {
+          "coverage": null,
+          "evidence": [],
+          "known": 0,
+          "maximum": null,
+          "median": null,
+          "minimum": null,
+          "reason": "deployment coverage does not span the window",
+          "status": "unavailable",
+          "total": 0,
+          "unit": "seconds"
+        },
+        "production_rework_rate": {
+          "denominator": 0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "unit": "ratio",
+          "value": null
+        },
+        "service_boundary": "Argo Application/atlas-operator"
+      },
+      {
+        "change_failure_rate": {
+          "denominator": 0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "unit": "ratio",
+          "value": null
+        },
+        "deployment_frequency": {
+          "denominator": 7.0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment coverage does not span the window",
+          "status": "unavailable",
+          "unit": "deployments per UTC day",
+          "value": null
+        },
+        "environment": "gke-production",
+        "failed_deployment_recovery_time": {
+          "coverage": null,
+          "evidence": [],
+          "known": 0,
+          "maximum": null,
+          "median": null,
+          "minimum": null,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "total": 0,
+          "unit": "seconds"
+        },
+        "inventory_source": "projects/platform-gke/authentik/application.yaml",
+        "inventory_status": "repository_declared_not_live_validated",
+        "name": "authentik",
+        "production_lead_time": {
+          "coverage": null,
+          "evidence": [],
+          "known": 0,
+          "maximum": null,
+          "median": null,
+          "minimum": null,
+          "reason": "deployment coverage does not span the window",
+          "status": "unavailable",
+          "total": 0,
+          "unit": "seconds"
+        },
+        "production_rework_rate": {
+          "denominator": 0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "unit": "ratio",
+          "value": null
+        },
+        "service_boundary": "Argo Application/authentik"
+      },
+      {
+        "change_failure_rate": {
+          "denominator": 0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "unit": "ratio",
+          "value": null
+        },
+        "deployment_frequency": {
+          "denominator": 7.0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment coverage does not span the window",
+          "status": "unavailable",
+          "unit": "deployments per UTC day",
+          "value": null
+        },
+        "environment": "gke-production",
+        "failed_deployment_recovery_time": {
+          "coverage": null,
+          "evidence": [],
+          "known": 0,
+          "maximum": null,
+          "median": null,
+          "minimum": null,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "total": 0,
+          "unit": "seconds"
+        },
+        "inventory_source": "projects/platform-gke/cert-manager/application.yaml",
+        "inventory_status": "repository_declared_not_live_validated",
+        "name": "cert-manager",
+        "production_lead_time": {
+          "coverage": null,
+          "evidence": [],
+          "known": 0,
+          "maximum": null,
+          "median": null,
+          "minimum": null,
+          "reason": "deployment coverage does not span the window",
+          "status": "unavailable",
+          "total": 0,
+          "unit": "seconds"
+        },
+        "production_rework_rate": {
+          "denominator": 0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "unit": "ratio",
+          "value": null
+        },
+        "service_boundary": "Argo Application/cert-manager"
+      },
+      {
+        "change_failure_rate": {
+          "denominator": 0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "unit": "ratio",
+          "value": null
+        },
+        "deployment_frequency": {
+          "denominator": 7.0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment coverage does not span the window",
+          "status": "unavailable",
+          "unit": "deployments per UTC day",
+          "value": null
+        },
+        "environment": "gke-production",
+        "failed_deployment_recovery_time": {
+          "coverage": null,
+          "evidence": [],
+          "known": 0,
+          "maximum": null,
+          "median": null,
+          "minimum": null,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "total": 0,
+          "unit": "seconds"
+        },
+        "inventory_source": "projects/platform-gke/cloudflare-gateway/application.yaml",
+        "inventory_status": "repository_declared_not_live_validated",
+        "name": "cloudflare-gateway",
+        "production_lead_time": {
+          "coverage": null,
+          "evidence": [],
+          "known": 0,
+          "maximum": null,
+          "median": null,
+          "minimum": null,
+          "reason": "deployment coverage does not span the window",
+          "status": "unavailable",
+          "total": 0,
+          "unit": "seconds"
+        },
+        "production_rework_rate": {
+          "denominator": 0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "unit": "ratio",
+          "value": null
+        },
+        "service_boundary": "Argo Application/cloudflare-gateway"
+      },
+      {
+        "change_failure_rate": {
+          "denominator": 0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "unit": "ratio",
+          "value": null
+        },
+        "deployment_frequency": {
+          "denominator": 7.0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment coverage does not span the window",
+          "status": "unavailable",
+          "unit": "deployments per UTC day",
+          "value": null
+        },
+        "environment": "gke-production",
+        "failed_deployment_recovery_time": {
+          "coverage": null,
+          "evidence": [],
+          "known": 0,
+          "maximum": null,
+          "median": null,
+          "minimum": null,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "total": 0,
+          "unit": "seconds"
+        },
+        "inventory_source": "projects/platform-gke/cloudnative-pg/application.yaml",
+        "inventory_status": "repository_declared_not_live_validated",
+        "name": "cloudnative-pg",
+        "production_lead_time": {
+          "coverage": null,
+          "evidence": [],
+          "known": 0,
+          "maximum": null,
+          "median": null,
+          "minimum": null,
+          "reason": "deployment coverage does not span the window",
+          "status": "unavailable",
+          "total": 0,
+          "unit": "seconds"
+        },
+        "production_rework_rate": {
+          "denominator": 0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "unit": "ratio",
+          "value": null
+        },
+        "service_boundary": "Argo Application/cloudnative-pg"
+      },
+      {
+        "change_failure_rate": {
+          "denominator": 0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "unit": "ratio",
+          "value": null
+        },
+        "deployment_frequency": {
+          "denominator": 7.0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment coverage does not span the window",
+          "status": "unavailable",
+          "unit": "deployments per UTC day",
+          "value": null
+        },
+        "environment": "gke-production",
+        "failed_deployment_recovery_time": {
+          "coverage": null,
+          "evidence": [],
+          "known": 0,
+          "maximum": null,
+          "median": null,
+          "minimum": null,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "total": 0,
+          "unit": "seconds"
+        },
+        "inventory_source": "projects/platform-gke/kargo/application.yaml",
+        "inventory_status": "repository_declared_not_live_validated",
+        "name": "kargo",
+        "production_lead_time": {
+          "coverage": null,
+          "evidence": [],
+          "known": 0,
+          "maximum": null,
+          "median": null,
+          "minimum": null,
+          "reason": "deployment coverage does not span the window",
+          "status": "unavailable",
+          "total": 0,
+          "unit": "seconds"
+        },
+        "production_rework_rate": {
+          "denominator": 0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "unit": "ratio",
+          "value": null
+        },
+        "service_boundary": "Argo Application/kargo"
+      },
+      {
+        "change_failure_rate": {
+          "denominator": 0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "unit": "ratio",
+          "value": null
+        },
+        "deployment_frequency": {
+          "denominator": 7.0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment coverage does not span the window",
+          "status": "unavailable",
+          "unit": "deployments per UTC day",
+          "value": null
+        },
+        "environment": "gke-production",
+        "failed_deployment_recovery_time": {
+          "coverage": null,
+          "evidence": [],
+          "known": 0,
+          "maximum": null,
+          "median": null,
+          "minimum": null,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "total": 0,
+          "unit": "seconds"
+        },
+        "inventory_source": "projects/platform-gke/kyverno/application.yaml",
+        "inventory_status": "repository_declared_not_live_validated",
+        "name": "kyverno",
+        "production_lead_time": {
+          "coverage": null,
+          "evidence": [],
+          "known": 0,
+          "maximum": null,
+          "median": null,
+          "minimum": null,
+          "reason": "deployment coverage does not span the window",
+          "status": "unavailable",
+          "total": 0,
+          "unit": "seconds"
+        },
+        "production_rework_rate": {
+          "denominator": 0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "unit": "ratio",
+          "value": null
+        },
+        "service_boundary": "Argo Application/kyverno"
+      },
+      {
+        "change_failure_rate": {
+          "denominator": 0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "unit": "ratio",
+          "value": null
+        },
+        "deployment_frequency": {
+          "denominator": 7.0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment coverage does not span the window",
+          "status": "unavailable",
+          "unit": "deployments per UTC day",
+          "value": null
+        },
+        "environment": "gke-production",
+        "failed_deployment_recovery_time": {
+          "coverage": null,
+          "evidence": [],
+          "known": 0,
+          "maximum": null,
+          "median": null,
+          "minimum": null,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "total": 0,
+          "unit": "seconds"
+        },
+        "inventory_source": "projects/platform-gke/onepassword/application.yaml",
+        "inventory_status": "repository_declared_not_live_validated",
+        "name": "onepassword",
+        "production_lead_time": {
+          "coverage": null,
+          "evidence": [],
+          "known": 0,
+          "maximum": null,
+          "median": null,
+          "minimum": null,
+          "reason": "deployment coverage does not span the window",
+          "status": "unavailable",
+          "total": 0,
+          "unit": "seconds"
+        },
+        "production_rework_rate": {
+          "denominator": 0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "unit": "ratio",
+          "value": null
+        },
+        "service_boundary": "Argo Application/onepassword"
+      },
+      {
+        "change_failure_rate": {
+          "denominator": 0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "unit": "ratio",
+          "value": null
+        },
+        "deployment_frequency": {
+          "denominator": 7.0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment coverage does not span the window",
+          "status": "unavailable",
+          "unit": "deployments per UTC day",
+          "value": null
+        },
+        "environment": "gke-production",
+        "failed_deployment_recovery_time": {
+          "coverage": null,
+          "evidence": [],
+          "known": 0,
+          "maximum": null,
+          "median": null,
+          "minimum": null,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "total": 0,
+          "unit": "seconds"
+        },
+        "inventory_source": "projects/platform-gke/otel-collector/application.yaml",
+        "inventory_status": "repository_declared_not_live_validated",
+        "name": "otel-collector",
+        "production_lead_time": {
+          "coverage": null,
+          "evidence": [],
+          "known": 0,
+          "maximum": null,
+          "median": null,
+          "minimum": null,
+          "reason": "deployment coverage does not span the window",
+          "status": "unavailable",
+          "total": 0,
+          "unit": "seconds"
+        },
+        "production_rework_rate": {
+          "denominator": 0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "unit": "ratio",
+          "value": null
+        },
+        "service_boundary": "Argo Application/otel-collector"
+      },
+      {
+        "change_failure_rate": {
+          "denominator": 0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "unit": "ratio",
+          "value": null
+        },
+        "deployment_frequency": {
+          "denominator": 7.0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment coverage does not span the window",
+          "status": "unavailable",
+          "unit": "deployments per UTC day",
+          "value": null
+        },
+        "environment": "gke-production",
+        "failed_deployment_recovery_time": {
+          "coverage": null,
+          "evidence": [],
+          "known": 0,
+          "maximum": null,
+          "median": null,
+          "minimum": null,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "total": 0,
+          "unit": "seconds"
+        },
+        "inventory_source": "projects/platform-gke/polylane/application.yaml",
+        "inventory_status": "repository_declared_not_live_validated",
+        "name": "polylane",
+        "production_lead_time": {
+          "coverage": null,
+          "evidence": [],
+          "known": 0,
+          "maximum": null,
+          "median": null,
+          "minimum": null,
+          "reason": "deployment coverage does not span the window",
+          "status": "unavailable",
+          "total": 0,
+          "unit": "seconds"
+        },
+        "production_rework_rate": {
+          "denominator": 0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "unit": "ratio",
+          "value": null
+        },
+        "service_boundary": "Argo Application/polylane"
+      },
+      {
+        "change_failure_rate": {
+          "denominator": 0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "unit": "ratio",
+          "value": null
+        },
+        "deployment_frequency": {
+          "denominator": 7.0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment coverage does not span the window",
+          "status": "unavailable",
+          "unit": "deployments per UTC day",
+          "value": null
+        },
+        "environment": "gke-production",
+        "failed_deployment_recovery_time": {
+          "coverage": null,
+          "evidence": [],
+          "known": 0,
+          "maximum": null,
+          "median": null,
+          "minimum": null,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "total": 0,
+          "unit": "seconds"
+        },
+        "inventory_source": "projects/platform-gke/priority-classes/application.yaml",
+        "inventory_status": "repository_declared_not_live_validated",
+        "name": "priority-classes",
+        "production_lead_time": {
+          "coverage": null,
+          "evidence": [],
+          "known": 0,
+          "maximum": null,
+          "median": null,
+          "minimum": null,
+          "reason": "deployment coverage does not span the window",
+          "status": "unavailable",
+          "total": 0,
+          "unit": "seconds"
+        },
+        "production_rework_rate": {
+          "denominator": 0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "unit": "ratio",
+          "value": null
+        },
+        "service_boundary": "Argo Application/priority-classes"
+      },
+      {
+        "change_failure_rate": {
+          "denominator": 0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "unit": "ratio",
+          "value": null
+        },
+        "deployment_frequency": {
+          "denominator": 7.0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment coverage does not span the window",
+          "status": "unavailable",
+          "unit": "deployments per UTC day",
+          "value": null
+        },
+        "environment": "gke-production",
+        "failed_deployment_recovery_time": {
+          "coverage": null,
+          "evidence": [],
+          "known": 0,
+          "maximum": null,
+          "median": null,
+          "minimum": null,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "total": 0,
+          "unit": "seconds"
+        },
+        "inventory_source": "projects/platform-gke/renovate/application.yaml",
+        "inventory_status": "repository_declared_not_live_validated",
+        "name": "renovate",
+        "production_lead_time": {
+          "coverage": null,
+          "evidence": [],
+          "known": 0,
+          "maximum": null,
+          "median": null,
+          "minimum": null,
+          "reason": "deployment coverage does not span the window",
+          "status": "unavailable",
+          "total": 0,
+          "unit": "seconds"
+        },
+        "production_rework_rate": {
+          "denominator": 0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "unit": "ratio",
+          "value": null
+        },
+        "service_boundary": "Argo Application/renovate"
+      },
+      {
+        "change_failure_rate": {
+          "denominator": 0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "unit": "ratio",
+          "value": null
+        },
+        "deployment_frequency": {
+          "denominator": 7.0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment coverage does not span the window",
+          "status": "unavailable",
+          "unit": "deployments per UTC day",
+          "value": null
+        },
+        "environment": "gke-production",
+        "failed_deployment_recovery_time": {
+          "coverage": null,
+          "evidence": [],
+          "known": 0,
+          "maximum": null,
+          "median": null,
+          "minimum": null,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "total": 0,
+          "unit": "seconds"
+        },
+        "inventory_source": "projects/platform-gke/spire/application.yaml",
+        "inventory_status": "repository_declared_not_live_validated",
+        "name": "spire",
+        "production_lead_time": {
+          "coverage": null,
+          "evidence": [],
+          "known": 0,
+          "maximum": null,
+          "median": null,
+          "minimum": null,
+          "reason": "deployment coverage does not span the window",
+          "status": "unavailable",
+          "total": 0,
+          "unit": "seconds"
+        },
+        "production_rework_rate": {
+          "denominator": 0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "unit": "ratio",
+          "value": null
+        },
+        "service_boundary": "Argo Application/spire"
+      },
+      {
+        "change_failure_rate": {
+          "denominator": 0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "unit": "ratio",
+          "value": null
+        },
+        "deployment_frequency": {
+          "denominator": 7.0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment coverage does not span the window",
+          "status": "unavailable",
+          "unit": "deployments per UTC day",
+          "value": null
+        },
+        "environment": "gke-production",
+        "failed_deployment_recovery_time": {
+          "coverage": null,
+          "evidence": [],
+          "known": 0,
+          "maximum": null,
+          "median": null,
+          "minimum": null,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "total": 0,
+          "unit": "seconds"
+        },
+        "inventory_source": "projects/platform-gke/tailscale/application.yaml",
+        "inventory_status": "repository_declared_not_live_validated",
+        "name": "tailscale",
+        "production_lead_time": {
+          "coverage": null,
+          "evidence": [],
+          "known": 0,
+          "maximum": null,
+          "median": null,
+          "minimum": null,
+          "reason": "deployment coverage does not span the window",
+          "status": "unavailable",
+          "total": 0,
+          "unit": "seconds"
+        },
+        "production_rework_rate": {
+          "denominator": 0,
+          "evidence": [],
+          "numerator": 0,
+          "reason": "deployment and incident coverage do not span the window",
+          "status": "unavailable",
+          "unit": "ratio",
+          "value": null
+        },
+        "service_boundary": "Argo Application/tailscale"
+      }
+    ],
+    "repository_delivery": {
+      "merge_count": {
+        "evidence": [
+          "https://github.com/jomcgi-org/homelab/pull/6030",
+          "https://github.com/jomcgi-org/homelab/pull/6070",
+          "https://github.com/jomcgi-org/homelab/pull/6077",
+          "https://github.com/jomcgi-org/homelab/pull/6079",
+          "https://github.com/jomcgi-org/homelab/pull/6086",
+          "https://github.com/jomcgi-org/homelab/pull/6122",
+          "https://github.com/jomcgi-org/homelab/pull/6125",
+          "https://github.com/jomcgi-org/homelab/pull/6144",
+          "https://github.com/jomcgi-org/homelab/pull/6145",
+          "https://github.com/jomcgi-org/homelab/pull/6147",
+          "https://github.com/jomcgi-org/homelab/pull/6162",
+          "https://github.com/jomcgi-org/homelab/pull/6171",
+          "https://github.com/jomcgi-org/homelab/pull/6176",
+          "https://github.com/jomcgi-org/homelab/pull/6177",
+          "https://github.com/jomcgi-org/homelab/pull/6202",
+          "https://github.com/jomcgi-org/homelab/pull/6203",
+          "https://github.com/jomcgi-org/homelab/pull/6209",
+          "https://github.com/jomcgi-org/homelab/pull/6210",
+          "https://github.com/jomcgi-org/homelab/pull/6211",
+          "https://github.com/jomcgi-org/homelab/pull/6213",
+          "https://github.com/jomcgi-org/homelab/pull/6214",
+          "https://github.com/jomcgi-org/homelab/pull/6215",
+          "https://github.com/jomcgi-org/homelab/pull/6216",
+          "https://github.com/jomcgi-org/homelab/pull/6218",
+          "https://github.com/jomcgi-org/homelab/pull/6219",
+          "https://github.com/jomcgi-org/homelab/pull/6221",
+          "https://github.com/jomcgi-org/homelab/pull/6223",
+          "https://github.com/jomcgi-org/homelab/pull/6228",
+          "https://github.com/jomcgi-org/homelab/pull/6229",
+          "https://github.com/jomcgi-org/homelab/pull/6230",
+          "https://github.com/jomcgi-org/homelab/pull/6231",
+          "https://github.com/jomcgi-org/homelab/pull/6232",
+          "https://github.com/jomcgi-org/homelab/pull/6233",
+          "https://github.com/jomcgi-org/homelab/pull/6234",
+          "https://github.com/jomcgi-org/homelab/pull/6235",
+          "https://github.com/jomcgi-org/homelab/pull/6236",
+          "https://github.com/jomcgi-org/homelab/pull/6237",
+          "https://github.com/jomcgi-org/homelab/pull/6238",
+          "https://github.com/jomcgi-org/homelab/pull/6239",
+          "https://github.com/jomcgi-org/homelab/pull/6240",
+          "https://github.com/jomcgi-org/homelab/pull/6242",
+          "https://github.com/jomcgi-org/homelab/pull/6243",
+          "https://github.com/jomcgi-org/homelab/pull/6244",
+          "https://github.com/jomcgi-org/homelab/pull/6272",
+          "https://github.com/jomcgi-org/homelab/pull/6275",
+          "https://github.com/jomcgi-org/homelab/pull/6276",
+          "https://github.com/jomcgi-org/homelab/pull/6289",
+          "https://github.com/jomcgi-org/homelab/pull/6291",
+          "https://github.com/jomcgi-org/homelab/pull/6292",
+          "https://github.com/jomcgi-org/homelab/pull/6293",
+          "https://github.com/jomcgi-org/homelab/pull/6294",
+          "https://github.com/jomcgi-org/homelab/pull/6297",
+          "https://github.com/jomcgi-org/homelab/pull/6298",
+          "https://github.com/jomcgi-org/homelab/pull/6299",
+          "https://github.com/jomcgi-org/homelab/pull/6300",
+          "https://github.com/jomcgi-org/homelab/pull/6303",
+          "https://github.com/jomcgi-org/homelab/pull/6305",
+          "https://github.com/jomcgi-org/homelab/pull/6308",
+          "https://github.com/jomcgi-org/homelab/pull/6310",
+          "https://github.com/jomcgi-org/homelab/pull/6311",
+          "https://github.com/jomcgi-org/homelab/pull/6312",
+          "https://github.com/jomcgi-org/homelab/pull/6313",
+          "https://github.com/jomcgi-org/homelab/pull/6314",
+          "https://github.com/jomcgi-org/homelab/pull/6315",
+          "https://github.com/jomcgi-org/homelab/pull/6316",
+          "https://github.com/jomcgi-org/homelab/pull/6317",
+          "https://github.com/jomcgi-org/homelab/pull/6318",
+          "https://github.com/jomcgi-org/homelab/pull/6319",
+          "https://github.com/jomcgi-org/homelab/pull/6322",
+          "https://github.com/jomcgi-org/homelab/pull/6323",
+          "https://github.com/jomcgi-org/homelab/pull/6326",
+          "https://github.com/jomcgi-org/homelab/pull/6328",
+          "https://github.com/jomcgi-org/homelab/pull/6330",
+          "https://github.com/jomcgi-org/homelab/pull/6331",
+          "https://github.com/jomcgi-org/homelab/pull/6332",
+          "https://github.com/jomcgi-org/homelab/pull/6335",
+          "https://github.com/jomcgi-org/homelab/pull/6336",
+          "https://github.com/jomcgi-org/homelab/pull/6337",
+          "https://github.com/jomcgi-org/homelab/pull/6338",
+          "https://github.com/jomcgi-org/homelab/pull/6339",
+          "https://github.com/jomcgi-org/homelab/pull/6341",
+          "https://github.com/jomcgi-org/homelab/pull/6350",
+          "https://github.com/jomcgi-org/homelab/pull/6352",
+          "https://github.com/jomcgi-org/homelab/pull/6355",
+          "https://github.com/jomcgi-org/homelab/pull/6356",
+          "https://github.com/jomcgi-org/homelab/pull/6357",
+          "https://github.com/jomcgi-org/homelab/pull/6362",
+          "https://github.com/jomcgi-org/homelab/pull/6369",
+          "https://github.com/jomcgi-org/homelab/pull/6374",
+          "https://github.com/jomcgi-org/homelab/pull/6384",
+          "https://github.com/jomcgi-org/homelab/pull/6387",
+          "https://github.com/jomcgi-org/homelab/pull/6389",
+          "https://github.com/jomcgi-org/homelab/pull/6390",
+          "https://github.com/jomcgi-org/homelab/pull/6391",
+          "https://github.com/jomcgi-org/homelab/pull/6392"
+        ],
+        "known": 95,
+        "reason": null,
+        "status": "observed",
+        "unit": "merged pull requests",
+        "value": 95
+      },
+      "pr_open_to_merge": {
+        "coverage": 1.0,
+        "evidence": [
+          "https://github.com/jomcgi-org/homelab/pull/6030",
+          "https://github.com/jomcgi-org/homelab/pull/6070",
+          "https://github.com/jomcgi-org/homelab/pull/6077",
+          "https://github.com/jomcgi-org/homelab/pull/6079",
+          "https://github.com/jomcgi-org/homelab/pull/6086",
+          "https://github.com/jomcgi-org/homelab/pull/6122",
+          "https://github.com/jomcgi-org/homelab/pull/6125",
+          "https://github.com/jomcgi-org/homelab/pull/6144",
+          "https://github.com/jomcgi-org/homelab/pull/6145",
+          "https://github.com/jomcgi-org/homelab/pull/6147",
+          "https://github.com/jomcgi-org/homelab/pull/6162",
+          "https://github.com/jomcgi-org/homelab/pull/6171",
+          "https://github.com/jomcgi-org/homelab/pull/6176",
+          "https://github.com/jomcgi-org/homelab/pull/6177",
+          "https://github.com/jomcgi-org/homelab/pull/6202",
+          "https://github.com/jomcgi-org/homelab/pull/6203",
+          "https://github.com/jomcgi-org/homelab/pull/6209",
+          "https://github.com/jomcgi-org/homelab/pull/6210",
+          "https://github.com/jomcgi-org/homelab/pull/6211",
+          "https://github.com/jomcgi-org/homelab/pull/6213",
+          "https://github.com/jomcgi-org/homelab/pull/6214",
+          "https://github.com/jomcgi-org/homelab/pull/6215",
+          "https://github.com/jomcgi-org/homelab/pull/6216",
+          "https://github.com/jomcgi-org/homelab/pull/6218",
+          "https://github.com/jomcgi-org/homelab/pull/6219",
+          "https://github.com/jomcgi-org/homelab/pull/6221",
+          "https://github.com/jomcgi-org/homelab/pull/6223",
+          "https://github.com/jomcgi-org/homelab/pull/6228",
+          "https://github.com/jomcgi-org/homelab/pull/6229",
+          "https://github.com/jomcgi-org/homelab/pull/6230",
+          "https://github.com/jomcgi-org/homelab/pull/6231",
+          "https://github.com/jomcgi-org/homelab/pull/6232",
+          "https://github.com/jomcgi-org/homelab/pull/6233",
+          "https://github.com/jomcgi-org/homelab/pull/6234",
+          "https://github.com/jomcgi-org/homelab/pull/6235",
+          "https://github.com/jomcgi-org/homelab/pull/6236",
+          "https://github.com/jomcgi-org/homelab/pull/6237",
+          "https://github.com/jomcgi-org/homelab/pull/6238",
+          "https://github.com/jomcgi-org/homelab/pull/6239",
+          "https://github.com/jomcgi-org/homelab/pull/6240",
+          "https://github.com/jomcgi-org/homelab/pull/6242",
+          "https://github.com/jomcgi-org/homelab/pull/6243",
+          "https://github.com/jomcgi-org/homelab/pull/6244",
+          "https://github.com/jomcgi-org/homelab/pull/6272",
+          "https://github.com/jomcgi-org/homelab/pull/6275",
+          "https://github.com/jomcgi-org/homelab/pull/6276",
+          "https://github.com/jomcgi-org/homelab/pull/6289",
+          "https://github.com/jomcgi-org/homelab/pull/6291",
+          "https://github.com/jomcgi-org/homelab/pull/6292",
+          "https://github.com/jomcgi-org/homelab/pull/6293",
+          "https://github.com/jomcgi-org/homelab/pull/6294",
+          "https://github.com/jomcgi-org/homelab/pull/6297",
+          "https://github.com/jomcgi-org/homelab/pull/6298",
+          "https://github.com/jomcgi-org/homelab/pull/6299",
+          "https://github.com/jomcgi-org/homelab/pull/6300",
+          "https://github.com/jomcgi-org/homelab/pull/6303",
+          "https://github.com/jomcgi-org/homelab/pull/6305",
+          "https://github.com/jomcgi-org/homelab/pull/6308",
+          "https://github.com/jomcgi-org/homelab/pull/6310",
+          "https://github.com/jomcgi-org/homelab/pull/6311",
+          "https://github.com/jomcgi-org/homelab/pull/6312",
+          "https://github.com/jomcgi-org/homelab/pull/6313",
+          "https://github.com/jomcgi-org/homelab/pull/6314",
+          "https://github.com/jomcgi-org/homelab/pull/6315",
+          "https://github.com/jomcgi-org/homelab/pull/6316",
+          "https://github.com/jomcgi-org/homelab/pull/6317",
+          "https://github.com/jomcgi-org/homelab/pull/6318",
+          "https://github.com/jomcgi-org/homelab/pull/6319",
+          "https://github.com/jomcgi-org/homelab/pull/6322",
+          "https://github.com/jomcgi-org/homelab/pull/6323",
+          "https://github.com/jomcgi-org/homelab/pull/6326",
+          "https://github.com/jomcgi-org/homelab/pull/6328",
+          "https://github.com/jomcgi-org/homelab/pull/6330",
+          "https://github.com/jomcgi-org/homelab/pull/6331",
+          "https://github.com/jomcgi-org/homelab/pull/6332",
+          "https://github.com/jomcgi-org/homelab/pull/6335",
+          "https://github.com/jomcgi-org/homelab/pull/6336",
+          "https://github.com/jomcgi-org/homelab/pull/6337",
+          "https://github.com/jomcgi-org/homelab/pull/6338",
+          "https://github.com/jomcgi-org/homelab/pull/6339",
+          "https://github.com/jomcgi-org/homelab/pull/6341",
+          "https://github.com/jomcgi-org/homelab/pull/6350",
+          "https://github.com/jomcgi-org/homelab/pull/6352",
+          "https://github.com/jomcgi-org/homelab/pull/6355",
+          "https://github.com/jomcgi-org/homelab/pull/6356",
+          "https://github.com/jomcgi-org/homelab/pull/6357",
+          "https://github.com/jomcgi-org/homelab/pull/6362",
+          "https://github.com/jomcgi-org/homelab/pull/6369",
+          "https://github.com/jomcgi-org/homelab/pull/6374",
+          "https://github.com/jomcgi-org/homelab/pull/6384",
+          "https://github.com/jomcgi-org/homelab/pull/6387",
+          "https://github.com/jomcgi-org/homelab/pull/6389",
+          "https://github.com/jomcgi-org/homelab/pull/6390",
+          "https://github.com/jomcgi-org/homelab/pull/6391",
+          "https://github.com/jomcgi-org/homelab/pull/6392"
+        ],
+        "known": 95,
+        "maximum": 636316.0,
+        "median": 14084.0,
+        "minimum": 877.0,
+        "reason": null,
+        "status": "observed",
+        "total": 95,
+        "unit": "seconds"
+      },
+      "warning": "Repository merge is not production deployment or verified outcome."
+    }
   },
-  "repository": "jomcgi-org/homelab",
   "scope": {
-    "accepted_change": "A factory cohort task with active verified_outcome evidence. Private cohort evidence is unavailable in this observation.",
-    "repository_delivery": "A distinct merged pull request. This is not deployment or verified outcome.",
-    "production": "Each repository-declared GKE Argo Application is a separate production service boundary."
+    "accepted_change": "a cohort task with active verified_outcome evidence before window end",
+    "factory_cohort": "tasks whose first task_intake is in the window",
+    "production": "each listed managed application and environment is evaluated separately",
+    "repository": "jomcgi-org/homelab"
   },
-  "sources": [
+  "slo_proposal": {
+    "autonomy": {
+      "prerequisite": "validated operator-authored actions and actors",
+      "target": null
+    },
+    "binding": false,
+    "breach_response": "manually inspect evidence links and coverage, identify the measured bottleneck, and propose a reviewed corrective change; no automatic enforcement",
+    "cost": {
+      "prerequisite": "complete cohort cost including failed, correction, and abandoned work",
+      "target": null
+    },
+    "decision_owner": "Joe",
+    "evaluation_window": "rolling 28 completed UTC days, after one fully covered window exists",
+    "measurement_owner": "factory maintainers",
+    "minimum_evidence": "non-zero denominators and complete factory, cost, deployment, incident, and operator-audit coverage for the evaluation window",
+    "policy_change": false,
+    "reason_targets_unset": "The repository-only baseline does not support numerical production, autonomy, or complete-cost targets.",
+    "reliability": {
+      "prerequisite": "complete deployment failure and recovery evidence",
+      "target": null
+    },
+    "speed": {
+      "prerequisite": "complete merge-to-production and intake-to-verified intervals",
+      "target": null
+    }
+  },
+  "source_as_of": "2026-09-23T01:50:44Z",
+  "source_coverage": [
     {
-      "kind": "github_merged_prs",
       "complete": true,
-      "coverage_start": "2026-09-16T00:00:00Z",
       "coverage_end": "2026-09-23T00:00:00Z",
-      "returned": 184,
-      "query": "GraphQL merged query in projects/monolith/factory/baseline.md"
+      "coverage_start": "2026-09-16T00:00:00Z",
+      "kind": "github",
+      "query": "paginated merged and closed-unmerged GraphQL commands in factory/baseline.md, filtered to factory/ heads",
+      "returned_closed_unmerged": 2,
+      "returned_merged": 184,
+      "selected_factory_closed_unmerged": 0,
+      "selected_factory_merged": 95
     },
     {
-      "kind": "github_closed_unmerged_prs",
-      "complete": true,
-      "coverage_start": "2026-09-16T00:00:00Z",
-      "coverage_end": "2026-09-23T00:00:00Z",
-      "returned": 2,
-      "query": "GraphQL closed-unmerged query in projects/monolith/factory/baseline.md"
-    },
-    {
-      "kind": "factory",
       "complete": false,
-      "coverage_start": null,
       "coverage_end": null,
+      "coverage_start": null,
+      "kind": "factory",
       "query": "projects/monolith/factory/baseline_export.sql"
     },
     {
-      "kind": "cost",
       "complete": false,
-      "coverage_start": null,
       "coverage_end": null,
+      "coverage_start": null,
+      "kind": "cost",
       "query": "private factory_start accounting ledger"
     },
     {
-      "kind": "deployment",
       "complete": false,
-      "coverage_start": null,
       "coverage_end": null,
+      "coverage_start": null,
+      "kind": "audit",
+      "query": "private audit, decision, and control records"
+    },
+    {
+      "complete": false,
+      "coverage_end": null,
+      "coverage_start": null,
+      "kind": "deployment",
       "query": "live Argo, workload, image digest, and chart receipt validation"
     },
     {
+      "complete": false,
+      "coverage_end": null,
+      "coverage_start": null,
       "kind": "incident",
-      "complete": false,
-      "coverage_start": null,
-      "coverage_end": null,
       "query": "Polylane or another authoritative incident source"
-    },
-    {
-      "kind": "operator_audit",
-      "complete": false,
-      "coverage_start": null,
-      "coverage_end": null,
-      "query": "private audit, decision, and control records"
     }
   ],
-  "observed": {
-    "repository_all_merged_prs": {
-      "status": "observed",
-      "value": 184,
-      "unit": "merged pull requests",
-      "coverage": {
-        "known": 184,
-        "total": 184
-      },
-      "warning": "Not production deployment frequency."
-    },
-    "repository_factory_branch_merged_prs": {
-      "status": "observed",
-      "value": 95,
-      "unit": "merged pull requests",
-      "coverage": {
-        "known": 95,
-        "total": 95
-      },
-      "warning": "Not an accepted-change, deployment, or verified-outcome count.",
-      "evidence": [
-        "https://github.com/jomcgi-org/homelab/pull/6176",
-        "https://github.com/jomcgi-org/homelab/pull/6177",
-        "https://github.com/jomcgi-org/homelab/pull/6392",
-        "https://github.com/jomcgi-org/homelab/pull/6391"
-      ]
-    },
-    "factory_branch_pr_open_to_merge": {
-      "status": "observed",
-      "minimum": 877,
-      "median": 14084,
-      "maximum": 636316,
-      "unit": "seconds",
-      "coverage": {
-        "known": 95,
-        "total": 95
-      },
-      "warning": "Repository review/delivery interval only, not DORA lead time."
-    },
-    "repository_factory_branch_closed_unmerged_prs": {
-      "status": "observed",
-      "value": 0,
-      "unit": "closed-unmerged pull requests",
-      "coverage": {
-        "known": 2,
-        "total": 2
-      },
-      "note": "Two closed-unmerged repository PRs were observed and neither used a factory/ head. Private abandoned factory work remains unavailable."
-    }
-  },
-  "unavailable": {
-    "factory_cohort_counts": null,
-    "factory_intake_to_verified_outcome_seconds": null,
-    "factory_rework_rate": null,
-    "interventions_per_accepted_change": null,
-    "known_cost_subtotal_usd": null,
-    "complete_cohort_cost_usd": null,
-    "cohort_cost_per_accepted_change_usd": null,
-    "reason": "Private full-history factory, cost, and operator audit sources were not available. Unknown values are not zero."
-  },
-  "managed_production_applications": [
-    {
-      "name": "context-forge-gateway",
-      "environment": "gke-production",
-      "service_boundary": "Argo Application/context-forge-gateway",
-      "inventory_source": "projects/gke-apps/context-forge-gateway/application.yaml",
-      "inventory_status": "repository_declared_not_live_validated",
-      "metrics": {
-        "production_lead_time_seconds": null,
-        "deployment_frequency_per_utc_day": null,
-        "change_failure_rate": null,
-        "failed_deployment_recovery_seconds": null,
-        "production_rework_rate": null,
-        "status": "unavailable",
-        "reason": "live deployment and incident coverage were not available to the repository-only runner"
-      }
-    },
-    {
-      "name": "embervm",
-      "environment": "gke-production",
-      "service_boundary": "Argo Application/embervm",
-      "inventory_source": "projects/gke-apps/embervm/application.yaml",
-      "inventory_status": "repository_declared_not_live_validated",
-      "metrics": {
-        "production_lead_time_seconds": null,
-        "deployment_frequency_per_utc_day": null,
-        "change_failure_rate": null,
-        "failed_deployment_recovery_seconds": null,
-        "production_rework_rate": null,
-        "status": "unavailable",
-        "reason": "live deployment and incident coverage were not available to the repository-only runner"
-      }
-    },
-    {
-      "name": "inference",
-      "environment": "gke-production",
-      "service_boundary": "Argo Application/inference",
-      "inventory_source": "projects/gke-apps/inference/application.yaml",
-      "inventory_status": "repository_declared_not_live_validated",
-      "metrics": {
-        "production_lead_time_seconds": null,
-        "deployment_frequency_per_utc_day": null,
-        "change_failure_rate": null,
-        "failed_deployment_recovery_seconds": null,
-        "production_rework_rate": null,
-        "status": "unavailable",
-        "reason": "live deployment and incident coverage were not available to the repository-only runner"
-      }
-    },
-    {
-      "name": "monolith-agents",
-      "environment": "gke-production",
-      "service_boundary": "Argo Application/monolith-agents",
-      "inventory_source": "projects/gke-apps/monolith-agents/application.yaml",
-      "inventory_status": "repository_declared_not_live_validated",
-      "metrics": {
-        "production_lead_time_seconds": null,
-        "deployment_frequency_per_utc_day": null,
-        "change_failure_rate": null,
-        "failed_deployment_recovery_seconds": null,
-        "production_rework_rate": null,
-        "status": "unavailable",
-        "reason": "live deployment and incident coverage were not available to the repository-only runner"
-      }
-    },
-    {
-      "name": "monolith-public",
-      "environment": "gke-production",
-      "service_boundary": "Argo Application/monolith-public",
-      "inventory_source": "projects/gke-apps/monolith-public/application.yaml",
-      "inventory_status": "repository_declared_not_live_validated",
-      "metrics": {
-        "production_lead_time_seconds": null,
-        "deployment_frequency_per_utc_day": null,
-        "change_failure_rate": null,
-        "failed_deployment_recovery_seconds": null,
-        "production_rework_rate": null,
-        "status": "unavailable",
-        "reason": "live deployment and incident coverage were not available to the repository-only runner"
-      }
-    },
-    {
-      "name": "monolith",
-      "environment": "gke-production",
-      "service_boundary": "Argo Application/monolith",
-      "inventory_source": "projects/gke-apps/monolith/application.yaml",
-      "inventory_status": "repository_declared_not_live_validated",
-      "metrics": {
-        "production_lead_time_seconds": null,
-        "deployment_frequency_per_utc_day": null,
-        "change_failure_rate": null,
-        "failed_deployment_recovery_seconds": null,
-        "production_rework_rate": null,
-        "status": "unavailable",
-        "reason": "live deployment and incident coverage were not available to the repository-only runner"
-      }
-    },
-    {
-      "name": "argo-workflows",
-      "environment": "gke-production",
-      "service_boundary": "Argo Application/argo-workflows",
-      "inventory_source": "projects/platform-gke/argo-workflows/application.yaml",
-      "inventory_status": "repository_declared_not_live_validated",
-      "metrics": {
-        "production_lead_time_seconds": null,
-        "deployment_frequency_per_utc_day": null,
-        "change_failure_rate": null,
-        "failed_deployment_recovery_seconds": null,
-        "production_rework_rate": null,
-        "status": "unavailable",
-        "reason": "live deployment and incident coverage were not available to the repository-only runner"
-      }
-    },
-    {
-      "name": "argocd",
-      "environment": "gke-production",
-      "service_boundary": "Argo Application/argocd",
-      "inventory_source": "projects/platform-gke/argocd/application.yaml",
-      "inventory_status": "repository_declared_not_live_validated",
-      "metrics": {
-        "production_lead_time_seconds": null,
-        "deployment_frequency_per_utc_day": null,
-        "change_failure_rate": null,
-        "failed_deployment_recovery_seconds": null,
-        "production_rework_rate": null,
-        "status": "unavailable",
-        "reason": "live deployment and incident coverage were not available to the repository-only runner"
-      }
-    },
-    {
-      "name": "atlas-operator",
-      "environment": "gke-production",
-      "service_boundary": "Argo Application/atlas-operator",
-      "inventory_source": "projects/platform-gke/atlas-operator/application.yaml",
-      "inventory_status": "repository_declared_not_live_validated",
-      "metrics": {
-        "production_lead_time_seconds": null,
-        "deployment_frequency_per_utc_day": null,
-        "change_failure_rate": null,
-        "failed_deployment_recovery_seconds": null,
-        "production_rework_rate": null,
-        "status": "unavailable",
-        "reason": "live deployment and incident coverage were not available to the repository-only runner"
-      }
-    },
-    {
-      "name": "authentik",
-      "environment": "gke-production",
-      "service_boundary": "Argo Application/authentik",
-      "inventory_source": "projects/platform-gke/authentik/application.yaml",
-      "inventory_status": "repository_declared_not_live_validated",
-      "metrics": {
-        "production_lead_time_seconds": null,
-        "deployment_frequency_per_utc_day": null,
-        "change_failure_rate": null,
-        "failed_deployment_recovery_seconds": null,
-        "production_rework_rate": null,
-        "status": "unavailable",
-        "reason": "live deployment and incident coverage were not available to the repository-only runner"
-      }
-    },
-    {
-      "name": "cert-manager",
-      "environment": "gke-production",
-      "service_boundary": "Argo Application/cert-manager",
-      "inventory_source": "projects/platform-gke/cert-manager/application.yaml",
-      "inventory_status": "repository_declared_not_live_validated",
-      "metrics": {
-        "production_lead_time_seconds": null,
-        "deployment_frequency_per_utc_day": null,
-        "change_failure_rate": null,
-        "failed_deployment_recovery_seconds": null,
-        "production_rework_rate": null,
-        "status": "unavailable",
-        "reason": "live deployment and incident coverage were not available to the repository-only runner"
-      }
-    },
-    {
-      "name": "cloudflare-gateway",
-      "environment": "gke-production",
-      "service_boundary": "Argo Application/cloudflare-gateway",
-      "inventory_source": "projects/platform-gke/cloudflare-gateway/application.yaml",
-      "inventory_status": "repository_declared_not_live_validated",
-      "metrics": {
-        "production_lead_time_seconds": null,
-        "deployment_frequency_per_utc_day": null,
-        "change_failure_rate": null,
-        "failed_deployment_recovery_seconds": null,
-        "production_rework_rate": null,
-        "status": "unavailable",
-        "reason": "live deployment and incident coverage were not available to the repository-only runner"
-      }
-    },
-    {
-      "name": "cloudnative-pg",
-      "environment": "gke-production",
-      "service_boundary": "Argo Application/cloudnative-pg",
-      "inventory_source": "projects/platform-gke/cloudnative-pg/application.yaml",
-      "inventory_status": "repository_declared_not_live_validated",
-      "metrics": {
-        "production_lead_time_seconds": null,
-        "deployment_frequency_per_utc_day": null,
-        "change_failure_rate": null,
-        "failed_deployment_recovery_seconds": null,
-        "production_rework_rate": null,
-        "status": "unavailable",
-        "reason": "live deployment and incident coverage were not available to the repository-only runner"
-      }
-    },
-    {
-      "name": "kargo",
-      "environment": "gke-production",
-      "service_boundary": "Argo Application/kargo",
-      "inventory_source": "projects/platform-gke/kargo/application.yaml",
-      "inventory_status": "repository_declared_not_live_validated",
-      "metrics": {
-        "production_lead_time_seconds": null,
-        "deployment_frequency_per_utc_day": null,
-        "change_failure_rate": null,
-        "failed_deployment_recovery_seconds": null,
-        "production_rework_rate": null,
-        "status": "unavailable",
-        "reason": "live deployment and incident coverage were not available to the repository-only runner"
-      }
-    },
-    {
-      "name": "kyverno",
-      "environment": "gke-production",
-      "service_boundary": "Argo Application/kyverno",
-      "inventory_source": "projects/platform-gke/kyverno/application.yaml",
-      "inventory_status": "repository_declared_not_live_validated",
-      "metrics": {
-        "production_lead_time_seconds": null,
-        "deployment_frequency_per_utc_day": null,
-        "change_failure_rate": null,
-        "failed_deployment_recovery_seconds": null,
-        "production_rework_rate": null,
-        "status": "unavailable",
-        "reason": "live deployment and incident coverage were not available to the repository-only runner"
-      }
-    },
-    {
-      "name": "onepassword",
-      "environment": "gke-production",
-      "service_boundary": "Argo Application/onepassword",
-      "inventory_source": "projects/platform-gke/onepassword/application.yaml",
-      "inventory_status": "repository_declared_not_live_validated",
-      "metrics": {
-        "production_lead_time_seconds": null,
-        "deployment_frequency_per_utc_day": null,
-        "change_failure_rate": null,
-        "failed_deployment_recovery_seconds": null,
-        "production_rework_rate": null,
-        "status": "unavailable",
-        "reason": "live deployment and incident coverage were not available to the repository-only runner"
-      }
-    },
-    {
-      "name": "otel-collector",
-      "environment": "gke-production",
-      "service_boundary": "Argo Application/otel-collector",
-      "inventory_source": "projects/platform-gke/otel-collector/application.yaml",
-      "inventory_status": "repository_declared_not_live_validated",
-      "metrics": {
-        "production_lead_time_seconds": null,
-        "deployment_frequency_per_utc_day": null,
-        "change_failure_rate": null,
-        "failed_deployment_recovery_seconds": null,
-        "production_rework_rate": null,
-        "status": "unavailable",
-        "reason": "live deployment and incident coverage were not available to the repository-only runner"
-      }
-    },
-    {
-      "name": "polylane",
-      "environment": "gke-production",
-      "service_boundary": "Argo Application/polylane",
-      "inventory_source": "projects/platform-gke/polylane/application.yaml",
-      "inventory_status": "repository_declared_not_live_validated",
-      "metrics": {
-        "production_lead_time_seconds": null,
-        "deployment_frequency_per_utc_day": null,
-        "change_failure_rate": null,
-        "failed_deployment_recovery_seconds": null,
-        "production_rework_rate": null,
-        "status": "unavailable",
-        "reason": "live deployment and incident coverage were not available to the repository-only runner"
-      }
-    },
-    {
-      "name": "priority-classes",
-      "environment": "gke-production",
-      "service_boundary": "Argo Application/priority-classes",
-      "inventory_source": "projects/platform-gke/priority-classes/application.yaml",
-      "inventory_status": "repository_declared_not_live_validated",
-      "metrics": {
-        "production_lead_time_seconds": null,
-        "deployment_frequency_per_utc_day": null,
-        "change_failure_rate": null,
-        "failed_deployment_recovery_seconds": null,
-        "production_rework_rate": null,
-        "status": "unavailable",
-        "reason": "live deployment and incident coverage were not available to the repository-only runner"
-      }
-    },
-    {
-      "name": "renovate",
-      "environment": "gke-production",
-      "service_boundary": "Argo Application/renovate",
-      "inventory_source": "projects/platform-gke/renovate/application.yaml",
-      "inventory_status": "repository_declared_not_live_validated",
-      "metrics": {
-        "production_lead_time_seconds": null,
-        "deployment_frequency_per_utc_day": null,
-        "change_failure_rate": null,
-        "failed_deployment_recovery_seconds": null,
-        "production_rework_rate": null,
-        "status": "unavailable",
-        "reason": "live deployment and incident coverage were not available to the repository-only runner"
-      }
-    },
-    {
-      "name": "spire",
-      "environment": "gke-production",
-      "service_boundary": "Argo Application/spire",
-      "inventory_source": "projects/platform-gke/spire/application.yaml",
-      "inventory_status": "repository_declared_not_live_validated",
-      "metrics": {
-        "production_lead_time_seconds": null,
-        "deployment_frequency_per_utc_day": null,
-        "change_failure_rate": null,
-        "failed_deployment_recovery_seconds": null,
-        "production_rework_rate": null,
-        "status": "unavailable",
-        "reason": "live deployment and incident coverage were not available to the repository-only runner"
-      }
-    },
-    {
-      "name": "tailscale",
-      "environment": "gke-production",
-      "service_boundary": "Argo Application/tailscale",
-      "inventory_source": "projects/platform-gke/tailscale/application.yaml",
-      "inventory_status": "repository_declared_not_live_validated",
-      "metrics": {
-        "production_lead_time_seconds": null,
-        "deployment_frequency_per_utc_day": null,
-        "change_failure_rate": null,
-        "failed_deployment_recovery_seconds": null,
-        "production_rework_rate": null,
-        "status": "unavailable",
-        "reason": "live deployment and incident coverage were not available to the repository-only runner"
-      }
-    }
-  ],
-  "slo_proposal": {
-    "binding": false,
-    "enforcement": false,
-    "decision_owner": "Joe",
-    "measurement_owner": "factory maintainers",
-    "evaluation_window": "rolling 28 completed UTC days after one fully covered window exists",
-    "minimum_evidence": "non-zero denominators and complete factory, cost, deployment, incident, and operator-audit coverage",
-    "speed": {
-      "target": null,
-      "prerequisite": "complete merge-to-production and intake-to-verified intervals"
-    },
-    "reliability": {
-      "target": null,
-      "prerequisite": "complete deployment failure and recovery evidence"
-    },
-    "autonomy": {
-      "target": null,
-      "prerequisite": "validated operator-authored actions and actors"
-    },
-    "cost": {
-      "target": null,
-      "prerequisite": "complete cohort cost including failed, correction, and abandoned work"
-    },
-    "breach_response": "Manual evidence review and a reviewed corrective proposal, with no automatic action or policy change.",
-    "reason_targets_unset": "Repository-only evidence cannot support numerical production, autonomy, or complete-cost targets."
-  },
-  "material_gaps": [
-    "Private full-history factory coverage, pagination, predecessor identity, corrections, failed/cancelled/incomplete/abandoned tasks, reserved ceilings, and unknown costs.",
-    "Live Argo Application, workload, image digest, and chart-publication receipt validation for every service boundary.",
-    "Authoritative production incident, failed deployment, recovery, and incident-caused rework evidence.",
-    "Validated operator-authored intervention actions and actors, separate from intervention-required signals.",
-    "Joe's SLO decision."
-  ]
+  "window": {
+    "end": "2026-09-23T00:00:00Z",
+    "semantics": "half-open UTC [start, end)",
+    "start": "2026-09-16T00:00:00Z"
+  }
 }

@@ -155,12 +155,12 @@ DEFINITIONS = {
     },
     "production_rework_rate": {
         "start_event": "deployment_failed",
-        "end_event": "deployment_recovered",
+        "end_event": "deployment_succeeded",
         "unit": "ratio",
         "numerator": "deployed changes requiring a later corrective deployment",
         "denominator": "distinct deployed changes",
         "source_query": "live rollout and authoritative incident validation",
-        "inclusion": "corrections causally linked to production deployment failure",
+        "inclusion": "successful corrective deployments whose corrects_deployment_id identifies the failed production deployment",
         "exclusion": "factory review corrections with no production failure",
         "missing_data": "unavailable unless deployment and incident coverage both span the window",
     },
@@ -272,6 +272,15 @@ def normalize_events(events: list[dict]) -> tuple[list[dict], dict]:
             value = event.get(field)
             if value is not None and (not isinstance(value, (int, float)) or value < 0):
                 raise ValueError(f"{field} for {event_id} must be non-negative")
+        corrects_deployment_id = event.get("corrects_deployment_id")
+        if corrects_deployment_id is not None and (
+            event_type != "deployment_succeeded"
+            or not isinstance(corrects_deployment_id, str)
+            or not corrects_deployment_id
+        ):
+            raise ValueError(
+                f"corrects_deployment_id for {event_id} requires a deployment_succeeded event and a stable identity"
+            )
         previous = selected.get(event_id)
         if previous is None:
             selected[event_id] = event
@@ -404,6 +413,10 @@ def _production_application(
     failures = [
         event for event in deployments if event["event_type"] == "deployment_failed"
     ]
+    successes = [
+        event for event in deployments if event["event_type"] == "deployment_succeeded"
+    ]
+    failures_by_id = {event["deployment_id"]: event for event in failures}
     recoveries = {
         event.get("deployment_id"): event
         for event in relevant
@@ -431,7 +444,7 @@ def _production_application(
         environment=environment,
     )
     lead_values = []
-    for deployment in deployments:
+    for deployment in successes:
         prior = merged.get(deployment.get("change_id"))
         if prior is not None:
             seconds = (
@@ -453,9 +466,19 @@ def _production_application(
     deployed_changes = {
         event.get("change_id") for event in deployments if event.get("change_id")
     }
-    reworked_changes = {
-        event.get("change_id") for event in failures if event.get("change_id")
-    }
+    reworked_changes = set()
+    corrective_evidence = []
+    for correction in successes:
+        failure = failures_by_id.get(correction.get("corrects_deployment_id"))
+        if failure is None:
+            continue
+        if _timestamp(correction["occurred_at"], "occurred_at") <= _timestamp(
+            failure["occurred_at"], "occurred_at"
+        ):
+            continue
+        if failure.get("change_id"):
+            reworked_changes.add(failure["change_id"])
+            corrective_evidence.extend((failure, correction))
     full_reliability = deploy_complete and incident_complete
     days = (end - start).total_seconds() / 86400
     unavailable = "deployment coverage does not span the window"
@@ -464,6 +487,8 @@ def _production_application(
         "name": name,
         "environment": environment,
         "service_boundary": application.get("service_boundary"),
+        "inventory_source": application.get("inventory_source"),
+        "inventory_status": application.get("inventory_status"),
         "deployment_frequency": {
             "status": "observed" if deploy_complete else "unavailable",
             "value": len(deployments) / days if deploy_complete else None,
@@ -474,10 +499,10 @@ def _production_application(
             "evidence": _evidence(deployments),
         },
         "production_lead_time": (
-            _distribution(lead_values, len(deployments), _evidence(deployments))
+            _distribution(lead_values, len(successes), _evidence(successes))
             if deploy_complete
             else {
-                **_distribution([], len(deployments), _evidence(deployments)),
+                **_distribution([], len(successes), _evidence(successes)),
                 "reason": unavailable,
             }
         ),
@@ -519,7 +544,7 @@ def _production_application(
             else reliability_unavailable
             if not full_reliability
             else "zero deployed-change denominator",
-            "evidence": _evidence(failures),
+            "evidence": _evidence(corrective_evidence),
         },
     }
 
@@ -556,11 +581,16 @@ def build_report(
         ):
             cohort[task_id] = linked
 
-    accepted = {
-        task_id
-        for task_id, linked in cohort.items()
-        if any(event["event_type"] == "verified_outcome" for event in linked)
-    }
+    accepted_outcomes = {}
+    for task_id, linked in cohort.items():
+        transitions = [
+            event
+            for event in linked
+            if event["event_type"] in {"verified_outcome", "outcome_reopened"}
+        ]
+        if transitions and transitions[-1]["event_type"] == "verified_outcome":
+            accepted_outcomes[task_id] = transitions[-1]
+    accepted = set(accepted_outcomes)
     cancelled = {
         task_id
         for task_id, linked in cohort.items()
@@ -605,10 +635,7 @@ def build_report(
             (event for event in linked if event["event_type"] == "task_intake"),
             key=lambda event: _timestamp(event["occurred_at"], "occurred_at"),
         )
-        verified = min(
-            (event for event in linked if event["event_type"] == "verified_outcome"),
-            key=lambda event: _timestamp(event["occurred_at"], "occurred_at"),
-        )
+        verified = accepted_outcomes[task_id]
         duration = (
             _timestamp(verified["occurred_at"], "occurred_at")
             - _timestamp(intake["occurred_at"], "occurred_at")
@@ -684,6 +711,21 @@ def build_report(
     factory_rework = _ratio(len(reworked), accepted_count, _evidence(before_end))
     if not factory_complete:
         factory_rework.update(status="unavailable", value=None, reason=factory_reason)
+    rework_inputs = [
+        event
+        for task_id in accepted
+        for event in cohort[task_id]
+        if event["event_type"] in COST_EVENT_TYPES
+    ]
+    if factory_complete and (
+        not rework_inputs
+        or any(event.get("rework_classified") is not True for event in rework_inputs)
+    ):
+        factory_rework.update(
+            status="unavailable",
+            value=None,
+            reason="review/correction classification coverage is incomplete",
+        )
     intervention_metric = _ratio(
         len(interventions), accepted_count, _evidence(interventions)
     )
@@ -707,7 +749,10 @@ def build_report(
         "known_cost_subtotal_usd": known_subtotal if known_costs else None,
         "complete_cohort_cost_usd": (
             known_subtotal
-            if cost_source_complete and cost_complete and cost_events
+            if factory_complete
+            and cost_source_complete
+            and cost_complete
+            and cost_events
             else None
         ),
         "known_cost_items": len(known_costs),

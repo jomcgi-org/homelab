@@ -20,7 +20,9 @@ events AS (
         NULL::double precision AS cost_usd,
         NULL::double precision AS reserved_cost_usd,
         FALSE AS cost_expected,
-        NULL::text AS actor
+        NULL::text AS actor,
+        NULL::text AS supersedes_event_id,
+        NULL::boolean AS rework_classified
     FROM swarm.factory_receipt AS r
     JOIN cohort AS c USING (task_id)
 
@@ -30,7 +32,7 @@ events AS (
     SELECT
         'factory_start:' || s.id AS event_id,
         CASE
-            WHEN s.start_key ~* '(review|correct)' THEN 'review_correction'
+            WHEN n.node_key ~* '^(review|correct)(_|$)' THEN 'review_correction'
             ELSE 'agent_attempt_finished'
         END AS event_type,
         s.updated_at AS occurred_at,
@@ -41,10 +43,15 @@ events AS (
         s.cost_usd,
         s.max_cost_usd AS reserved_cost_usd,
         TRUE AS cost_expected,
-        NULL::text AS actor
+        NULL::text AS actor,
+        NULL::text AS supersedes_event_id,
+        (n.node_key IS NOT NULL) AS rework_classified
     FROM swarm.factory_start AS s
     JOIN cohort AS c USING (task_id)
     JOIN swarm.factory_receipt AS r USING (task_id)
+    LEFT JOIN swarm.swarm_node_run AS n
+      ON n.task_id = s.task_id
+     AND n.dispatch_key = s.start_key
 
     UNION ALL
 
@@ -53,6 +60,7 @@ events AS (
         CASE a.action
             WHEN 'merged' THEN 'pr_merged'
             WHEN 'rollout_verified' THEN 'verified_outcome'
+            WHEN 'landing_recovery_requested' THEN 'outcome_reopened'
         END AS event_type,
         a.created_at AS occurred_at,
         a.task_id,
@@ -65,11 +73,24 @@ events AS (
         NULL::double precision AS cost_usd,
         NULL::double precision AS reserved_cost_usd,
         FALSE AS cost_expected,
-        NULL::text AS actor
+        NULL::text AS actor,
+        CASE
+            WHEN a.action = 'landing_recovery_requested'
+            THEN (
+                SELECT 'factory_audit:' || prior.id
+                FROM swarm.factory_audit AS prior
+                WHERE prior.task_id = a.task_id
+                  AND prior.action = 'rollout_verified'
+                  AND (prior.created_at, prior.id) < (a.created_at, a.id)
+                ORDER BY prior.created_at DESC, prior.id DESC
+                LIMIT 1
+            )
+        END AS supersedes_event_id,
+        NULL::boolean AS rework_classified
     FROM swarm.factory_audit AS a
     JOIN cohort AS c USING (task_id)
     JOIN swarm.factory_receipt AS r USING (task_id)
-    WHERE a.action IN ('merged', 'rollout_verified')
+    WHERE a.action IN ('merged', 'rollout_verified', 'landing_recovery_requested')
 
     UNION ALL
 
@@ -87,7 +108,9 @@ events AS (
         NULL::double precision AS cost_usd,
         NULL::double precision AS reserved_cost_usd,
         FALSE AS cost_expected,
-        NULL::text AS actor
+        NULL::text AS actor,
+        NULL::text AS supersedes_event_id,
+        NULL::boolean AS rework_classified
     FROM swarm.factory_receipt AS r
     JOIN cohort AS c USING (task_id)
     WHERE r.state IN ('cancelled', 'failed')
@@ -108,7 +131,9 @@ events AS (
         NULL::double precision AS cost_usd,
         NULL::double precision AS reserved_cost_usd,
         FALSE AS cost_expected,
-        d.actor_subject AS actor
+        d.actor_subject AS actor,
+        NULL::text AS supersedes_event_id,
+        NULL::boolean AS rework_classified
     FROM swarm.swarm_decision AS d
     JOIN swarm.swarm_task AS t ON t.workflow_id = d.workflow_id
     JOIN cohort AS c ON c.task_id = t.id
@@ -127,7 +152,9 @@ SELECT jsonb_strip_nulls(jsonb_build_object(
     'cost_usd', cost_usd,
     'reserved_cost_usd', reserved_cost_usd,
     'cost_expected', cost_expected,
-    'actor', actor
+    'actor', actor,
+    'supersedes_event_id', supersedes_event_id,
+    'rework_classified', rework_classified
 ))::text
 FROM events
 WHERE event_type IS NOT NULL
