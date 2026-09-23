@@ -56,9 +56,9 @@ usage() {
 [[ $# -eq 3 ]] || usage
 
 case "$1" in
-luna) MODEL="gpt-5.6-luna" EFFORT="medium" ;;
+luna) MODEL="gpt-6-luna" EFFORT="medium" ;;
 terra) MODEL="gpt-5.6-terra" EFFORT="high" ;;
-frontier) MODEL="gpt-5.6-sol" EFFORT="high" ;;
+frontier) MODEL="gpt-6-sol" EFFORT="high" ;;
 astra) MODEL="gpt-6-astra" EFFORT="high" ;;
 *) usage ;;
 esac

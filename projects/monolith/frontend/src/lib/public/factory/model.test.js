@@ -29,6 +29,8 @@ describe("modelLane", () => {
     ["gpt-5.6-luna", "luna"],
     ["gpt-5.6-terra", "codex"],
     ["gpt-5.6-sol", "codex"],
+    ["gpt-6-luna", "luna"],
+    ["gpt-6-sol", "codex"],
     ["codex-auto-review", "codex"],
     ["<synthetic>", "other"],
     ["muse-spark-1.3-contributor", "spark"],

@@ -45,10 +45,11 @@ export function modelLane(modelName) {
   if (typeof modelName !== "string") return "other";
   const model = modelName.toLowerCase();
   if (model.startsWith("claude-")) return "claude";
-  if (model === "gpt-5.6-luna") return "luna";
+  if (model === "gpt-5.6-luna" || model === "gpt-6-luna") return "luna";
   if (
     model === "gpt-5.6-terra" ||
     model === "gpt-5.6-sol" ||
+    model === "gpt-6-sol" ||
     model === "codex-auto-review"
   )
     return "codex";

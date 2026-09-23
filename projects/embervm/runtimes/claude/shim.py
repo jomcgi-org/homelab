@@ -517,14 +517,18 @@ SUPPORTED_PREWARM_CLIS = ("claude", "codex", "pi")
 # three families, runtimes/pi only pi). EMBER_PREWARM_CLIS stays as an explicit
 # override for tests and one-off boots.
 PREWARM_CLIS_FILE = "/usr/share/ember-shim/prewarm-clis"
+# GPT-6 has no Terra, so terra stays on GPT-5.6.
 CODEX_MODELS = {
-    "luna": ("gpt-5.6-luna", "medium"),
+    "luna": ("gpt-6-luna", "medium"),
     "terra": ("gpt-5.6-terra", "high"),
-    "sol": ("gpt-5.6-sol", "high"),
+    "sol": ("gpt-6-sol", "high"),
     "astra": ("gpt-6-astra", "high"),
 }
+# opus is pinned rather than left as the CLI alias, which resolves to whatever
+# the pinned claude_code_cli release shipped with, and so that the priced model
+# (shared/pricing.py) matches the one that ran.
 CLAUDE_MODELS = {
-    "opus": "opus",
+    "opus": "claude-opus-5-5",
     "sonnet": "sonnet",
     "fable": "claude-fable-5",
 }
