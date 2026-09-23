@@ -192,10 +192,12 @@ The practical MVP decision in #5956 retains four rules for all of these roles:
 A planner node's guest prompt is built static-first. It opens with the output
 contract and decision schema from `node_workflows._node_prompt`, then
 `_PLANNER_CHARTER` in `factory_conductor.py`: the planner boundary, the gate
-policy and the charter, identical for every task, round and attempt. A labelled
-task section follows with the task id, repository, branch, base, closing
-keyword rule, conductor gate guidance, and the flag-dependent funding, budget
-and judgment-class rules. Then comes the JSON context, serialized by
+policy and the charter, identical for every task, round and attempt. A labelled,
+server-authored task section follows with the task id, repository, branch, base,
+closing keyword rule, conductor gate guidance, and the flag-dependent funding,
+budget and judgment-class rules. The charter scopes untrusted data to the JSON
+context (task text included) and tool results, so these server rules keep their
+authority although they sit after it. Then comes the JSON context, serialized by
 `_planner_json` in a fixed stable-first key order (`PLANNER_CONTEXT_ORDER`,
 nested keys sorted), and last the attempt's working branch, prior-attempt
 evidence and artifact path. The size cap and its shrink loop only change the

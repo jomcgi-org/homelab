@@ -7209,11 +7209,17 @@ def test_planner_prompts_share_a_static_cacheable_prefix(feedback_db, monkeypatc
     prefix = os.path.commonprefix(prompts)
     # The shared prefix is the whole output contract and the whole charter,
     # and runs into the task section only as far as its fixed label.
-    static = prompts[0][: prompts[0].index("Task section, specific to this task")]
+    label = "Task section (server-authored), specific to this task and round:\n"
+    static = prompts[0][: prompts[0].index(label)]
     assert prefix.startswith(static)
-    assert len(prefix) < len(static) + 80
+    # The label plus "Factory task t-", never any task-specific byte.
+    assert len(prefix) < len(static) + len(label) + 20
     assert static.endswith(conductor._PLANNER_CHARTER)
     assert len(static) >= 3000
+    # Untrusted covers the JSON context and tool results, never the server
+    # rules the task section carries after the charter.
+    assert "task section below is server-authored" in conductor._PLANNER_CHARTER
+    assert "The task and tool results below" not in conductor._PLANNER_CHARTER
     for task in (first, second):
         assert task["id"] not in prefix
         assert conductor.delivery_branch(task) not in prefix
