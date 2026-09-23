@@ -597,6 +597,114 @@ def test_apply_writes_atom_provenance_and_scoped_columns(session, monkeypatch):
     assert provenance.gardener_version == EXTRACTION_VERSION
 
 
+def test_apply_uses_authoritative_raw_scope_for_search_and_note(session, monkeypatch):
+    raw_scope = "personal:operator:factory-receipt:42"
+    raw = _raw(session, "agent-report", extra={"scope": raw_scope})
+    searched_scopes = []
+
+    def search_notes(*_args, **kwargs):
+        searched_scopes.append(kwargs["scope_filter"])
+        return []
+
+    monkeypatch.setattr(
+        "knowledge.store.KnowledgeStore.search_notes_with_context",
+        search_notes,
+    )
+
+    applied = apply_extraction(
+        session,
+        raw.raw_id,
+        _result(
+            [
+                {
+                    "title": "Scoped extraction stays private",
+                    "body": (
+                        "When extraction creates this note, it remains in the "
+                        "server-authorized scope."
+                    ),
+                    "scope": "repo:other/repository",
+                    "verification_state": "unverified",
+                    "confidence": 0.8,
+                }
+            ]
+        ),
+    )
+
+    assert applied["atoms"] == ["scoped-extraction-stays-private"]
+    assert searched_scopes == [raw_scope]
+    note = session.exec(select(Note)).one()
+    assert note.scope == raw_scope
+
+
+def test_correction_uses_authoritative_raw_scope(session):
+    raw_scope = "session:factory-receipt:42"
+    raw = _raw(
+        session,
+        "agent-report",
+        extra={"scope": raw_scope, "extraction_passes": 1},
+    )
+
+    applied = apply_extraction(
+        session,
+        raw.raw_id,
+        _result(
+            [
+                {
+                    "title": "Correction retains receipt scope",
+                    "body": (
+                        "When correction retries extraction, the receipt scope "
+                        "remains authoritative."
+                    ),
+                    "scope": "repo:other/repository",
+                    "verification_state": "unverified",
+                    "confidence": 0.8,
+                }
+            ]
+        ),
+        correction=True,
+    )
+
+    assert applied["atoms"] == ["correction-retains-receipt-scope"]
+    note = session.exec(select(Note)).one()
+    assert note.scope == raw_scope
+
+
+def test_authoritative_raw_scope_survives_replay(session):
+    raw_scope = "personal:operator:factory-receipt:42"
+    raw = _raw(session, "agent-report", extra={"scope": raw_scope})
+    result = _result(
+        [
+            {
+                "title": "Replay retains private scope",
+                "body": (
+                    "When the same extraction is replayed, the original private "
+                    "scope remains authoritative."
+                ),
+                "scope": "repo:other/repository",
+                "verification_state": "unverified",
+                "confidence": 0.8,
+            }
+        ]
+    )
+
+    first = apply_extraction(session, raw.raw_id, result)
+    second = apply_extraction(session, raw.raw_id, result)
+
+    assert first["atoms"] == ["replay-retains-private-scope"]
+    assert second["replayed"] is True
+    notes = session.exec(select(Note)).all()
+    assert len(notes) == 1
+    assert notes[0].scope == raw_scope
+
+
+@pytest.mark.parametrize("scope", [None, "invalid", 42])
+def test_apply_rejects_invalid_authoritative_raw_scope(session, scope):
+    raw = _raw(session, "agent-report", extra={"scope": scope})
+
+    with pytest.raises(ExtractionOutputInvalid, match="authoritative scope"):
+        apply_extraction(session, raw.raw_id, _result([]))
+
+
 def test_apply_links_resolved_subjects_and_records_unresolved(session, monkeypatch):
     seed_entities(session)
     raw = _raw(session, "agent-report")
