@@ -119,6 +119,27 @@ def _seed(session) -> None:
         ),
         {"entity_id": entity_id},
     )
+    # Private-only entity: linked solely from the private note. It must stay
+    # out of the public catalog even though the base table holds the row.
+    private_entity_id = session.execute(
+        text(
+            """
+            INSERT INTO knowledge.entities (kind, slug, title, source)
+            VALUES ('issue', '9998', '#9998', 'test')
+            RETURNING id
+            """
+        )
+    ).scalar_one()
+    session.execute(
+        text(
+            """
+            INSERT INTO knowledge.note_entities
+                (note_id, entity_id, role, source)
+            VALUES ('note-c', :entity_id, 'mentions', 'test')
+            """
+        ),
+        {"entity_id": private_entity_id},
+    )
     session.commit()
 
 
@@ -152,7 +173,12 @@ def test_views_derive_public_only_and_endpoints_filter(session, client):
     entity_rows = session.execute(
         text("SELECT slug FROM public_api.knowledge_entities")
     ).all()
+    # The private-only issue entity exists in the base table but is filtered.
     assert [row[0] for row in entity_rows] == ["view-test-project"]
+    assert (
+        session.execute(text("SELECT count(*) FROM knowledge.entities")).scalar_one()
+        == 2
+    )
     note_entity_rows = session.execute(
         text(
             "SELECT note_id, verification_state FROM public_api.knowledge_note_entities"
