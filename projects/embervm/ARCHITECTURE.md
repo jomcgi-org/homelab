@@ -879,8 +879,11 @@ never stores or witnesses anything that scales with the fleet.
   `/verdict` gates the Kargo dev-to-prod promotion on the hub. The checker
   re-implements the invariants by hand; it does not ask TLC whether a trace
   is a behaviour of the model.
-  **Planned**: the TLC tier, trace validation of `adoption.tla` against dev
-  SpecTrace windows (#6415). The broader ADR embervm/034 harness beyond that
+  **Staged**: the TLC tier, trace validation of `adoption.tla` against dev
+  SpecTrace windows (#6415), ships default-off behind `conformance.s6.enabled`
+  (adoption_trace.tla plus the S6 runner feeding `/verdict`, provable in CI on
+  fixture windows with no live cluster). Live embervm-dev validation remains
+  open on the issue. The broader ADR embervm/034 harness beyond that
   is not planned (#4761, #4763 closed).
 - **Cells are not an active programme**: no `cell_id`, workload-to-cell
   assignment or per-cell dial-home address exists. The implementation proposal

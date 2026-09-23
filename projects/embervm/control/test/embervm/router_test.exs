@@ -2481,6 +2481,65 @@ defmodule Embervm.RouterTest do
     end
   end
 
+  describe "GET /v1/conformance/trace-window" do
+    setup do
+      Application.put_env(:embervm, :authenticator, FakeAuth)
+
+      System.put_env("EMBERVM_SPEC_TRACE", "off")
+      Embervm.SpecTrace.configure()
+
+      on_exit(fn -> Application.delete_env(:embervm, :authenticator) end)
+      :ok
+    end
+
+    test "with the trace gate OFF, reports disabled with no records" do
+      body = req(:get, "/v1/conformance/trace-window", auth("good")) |> then(&json(&1.body))
+
+      assert body["enabled"] == false
+      assert body["run_ids"] == []
+      assert body["record_count"] == 0
+      assert body["records"] == []
+    end
+
+    test "with the gate ON, exports the raw window unprojected" do
+      System.put_env("EMBERVM_SPEC_TRACE", "on")
+      Embervm.SpecTrace.configure()
+
+      on_exit(fn ->
+        System.put_env("EMBERVM_SPEC_TRACE", "off")
+        Embervm.SpecTrace.configure()
+      end)
+
+      start_supervised!({Embervm.SpecTrace.Store.SQLite, path: ":memory:"})
+
+      now = System.system_time(:millisecond)
+
+      records = [
+        conformance_record("trace-run", 1, now - 60_000),
+        conformance_record("trace-run", 2, now - 30_000)
+      ]
+
+      :ok = Embervm.SpecTrace.Store.SQLite.write(records)
+
+      body = req(:get, "/v1/conformance/trace-window", auth("good")) |> then(&json(&1.body))
+
+      assert body["enabled"] == true
+      assert body["run_ids"] == ["trace-run"]
+      assert body["record_count"] == 2
+      assert length(body["records"]) == 2
+      assert Enum.all?(body["records"], &(&1["action"] == "prime"))
+      assert Enum.map(body["records"], & &1["run_id"]) |> Enum.uniq() == ["trace-run"]
+    end
+
+    test "requires auth like every other /v1 route" do
+      {:ok, resp} =
+        Finch.build(:get, "http://127.0.0.1:8080/v1/conformance/trace-window")
+        |> Finch.request(Embervm.Finch)
+
+      assert resp.status == 401
+    end
+  end
+
   defp conformance_record(run_id, seq, ts) do
     %{
       "run_id" => run_id,

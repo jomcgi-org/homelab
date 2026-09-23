@@ -64,7 +64,7 @@ are documented with the individual specs below.
   `warmth_gc_unexpired.cfg`, `warmth_gc_age_floor.cfg`,
   `warmth_gc_newest_ref.cfg` : the positive model and seven focused negative
   mutations for issue #4705 (below).
-- `BUILD` : thirty-five genrules run TLC over the eight specs, one per cfg, via the
+- `BUILD` : thirty-eight genrules run TLC over the nine specs, one per cfg, via the
   `//bazel/tla` prebuilt toolchain (tla2tools.jar + a pinned Temurin JRE).
 - `vocabulary.exs` : the layer-1 manifest declaring, per implementation surface
   (proto RPC verbs, health states, op-log kinds), what the specs model vs
@@ -743,7 +743,7 @@ each is a separately bounded correction.
 
 ## Running TLC
 
-CI runs all thirty-five genrules through the repository's affected-target
+CI runs all thirty-eight genrules through the repository's affected-target
 Linux path. There is
 no local Bazel test loop in this repo. To iterate on a spec locally you need a JRE
 (>= 11) and `tla2tools.jar` (v1.7.4, the version `//bazel/tla` pins); then, from a

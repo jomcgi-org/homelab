@@ -60,6 +60,9 @@ spec:
             - { name: S3_BUDGET, value: {{ .Values.conformance.budgets.s3 | quote }} }
             - { name: S4_BUDGET, value: {{ .Values.conformance.budgets.s4 | quote }} }
             - { name: S5_BUDGET, value: {{ .Values.conformance.budgets.s5 | quote }} }
+            - { name: S6_ENABLED, value: {{ .Values.conformance.s6.enabled | quote }} }
+            - { name: S6_BUDGET, value: {{ .Values.conformance.budgets.s6 | quote }} }
+            - { name: S6_MIN_TRACE_EVENTS, value: {{ .Values.conformance.s6.minTraceEvents | quote }} }
           resources:
             {{- toYaml .Values.conformance.resources | nindent 12 }}
           readinessProbe: { httpGet: { path: /healthz, port: http }, initialDelaySeconds: 5, periodSeconds: 5 }

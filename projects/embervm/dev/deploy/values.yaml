@@ -289,6 +289,11 @@ auth:
 # above so the runner can exercise the management API with its projected token.
 conformance:
   enabled: true
+  # S6 TLC trace validation (#6415), staged default-off even in dev. Narrower
+  # than and independent of conformance.enabled above: an operator flips this
+  # only after the embervm-dev lane is confirmed stable.
+  s6:
+    enabled: false
   # RAISED from the chart's 15m for the 0.41.7 to 0.47.x jump (#5224).
   #
   # The runner rolls with the chart, so on a roll that rebuilds guest bases it

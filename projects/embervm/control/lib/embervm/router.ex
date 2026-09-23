@@ -121,6 +121,18 @@ defmodule Embervm.Router do
     handle_conformance(conn)
   end
 
+  # GET /v1/conformance/trace-window (#6415, Tier B): the raw SpecTrace window
+  # the S6 runner feeds to TLC via adoption_trace.tla. Same :authenticate plug
+  # as every other /v1 route (TokenReview + allow-list), so this adds no new
+  # ClusterRole or authz surface: the live RBAC confirmation before wider
+  # rollout is operational work tracked on the issue, not a code gate here.
+  # Default-off by the trace gate itself: with EMBERVM_SPEC_TRACE off it
+  # reports enabled=false and no records, and the S6 chart key that would poll
+  # it defaults false in every environment.
+  get "/v1/conformance/trace-window" do
+    handle_conformance_trace_window(conn)
+  end
+
   # GET /v1/health/durability (#4338, ADR embervm/031): both durability tiers
   # as one machine-readable surface. 200 when both tiers read ok, 503 with the
   # SAME report body otherwise (unknown/missing data is never green), and 404
@@ -671,6 +683,46 @@ defmodule Embervm.Router do
       {:ok, view} -> send_json(conn, 200, view)
       {:error, reason} -> send_json(conn, 500, %{error: "store error: #{inspect(reason)}"})
     end
+  end
+
+  defp handle_conformance_trace_window(conn) do
+    case trace_window_view(conn.query_params) do
+      {:ok, view} -> send_json(conn, 200, view)
+      {:error, reason} -> send_json(conn, 500, %{error: "store error: #{inspect(reason)}"})
+    end
+  end
+
+  # Raw window export for Tier B. Same store resolution and query bounds as
+  # conformance_view (the supervision-tree store module, default one-hour
+  # lookback unless the caller bounds it), but the records cross the wire
+  # unprojected so S6 can map vm_ids and node ids onto the model's finite
+  # constant sets. record_count rides alongside so a consumer can tell an
+  # empty window from a truncated one without counting.
+  defp trace_window_view(query_params) do
+    if Embervm.SpecTrace.enabled_now?() do
+      store_mod = Embervm.Application.spec_trace_mod()
+      store = store_mod
+      opts = conformance_query_opts(query_params)
+
+      case store_mod.read_window(store, opts) do
+        {:ok, records} ->
+          {:ok,
+           %{
+             enabled: true,
+             run_ids: records |> Enum.map(& &1["run_id"]) |> Enum.uniq(),
+             record_count: length(records),
+             records: records
+           }}
+
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      {:ok, %{enabled: false, run_ids: [], record_count: 0, records: []}}
+    end
+  rescue
+    error -> {:error, error}
+  catch
+    kind, reason -> {:error, {kind, reason}}
   end
 
   # The durability module resolves from app env (the :durability key) so a
