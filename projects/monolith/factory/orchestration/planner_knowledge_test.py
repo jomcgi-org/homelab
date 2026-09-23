@@ -221,8 +221,9 @@ def _context(prompt):
 
 
 def test_flag_off_keeps_legacy_planner_input(planner_db, monkeypatch):
+    _engine, task_id, _policy = planner_db
     monkeypatch.delenv("FACTORY_PLANNER_KNOWLEDGE_ENABLED", raising=False)
-    task = _task("t-off")
+    task = _task(task_id)
     assert conductor._load_planner_factory_context(task["id"]) is None
     context = _context(conductor.planner_prompt(task, [], []))
     assert context["task"] == "STALE ADMISSION ACCEPTANCE"
@@ -233,7 +234,8 @@ def test_flag_off_keeps_legacy_planner_input(planner_db, monkeypatch):
 def test_enabled_prompt_uses_current_receipt_and_preserves_citation_metadata(
     planner_db,
 ):
-    task = _task("t-enabled")
+    _engine, task_id, _policy = planner_db
+    task = _task(task_id)
     context = _context(
         conductor.planner_prompt(
             task,
@@ -387,7 +389,8 @@ def test_receipt_authorization_excludes_same_repo_and_session_history(monkeypatc
 
 
 def test_kg_outage_is_visible_with_authoritative_factory_evidence(planner_db):
-    task = _task("t-outage")
+    _engine, task_id, _policy = planner_db
+    task = _task(task_id)
     unavailable = {
         "status": "unavailable",
         "scope": "repo:owner/repo",
@@ -413,7 +416,8 @@ def test_kg_outage_is_visible_with_authoritative_factory_evidence(planner_db):
 def test_prompt_pressure_drops_knowledge_before_required_evidence(
     planner_db, monkeypatch
 ):
-    task = _task("t-pressure")
+    _engine, task_id, _policy = planner_db
+    task = _task(task_id)
     required = _factory_context(task["id"], knowledge={**_knowledge(), "notes": []})
     deviation = {
         "code": "node_failed",
