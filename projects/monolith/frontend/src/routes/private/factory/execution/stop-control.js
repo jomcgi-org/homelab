@@ -16,6 +16,8 @@ export function reconcileStop(status, detail) {
     (candidate) => Number(candidate.seq) === Number(status.turn_seq),
   );
   if (turn) {
+    const active = detail?.stop_control?.active;
+    if (active && active.dispatch_id !== status.dispatch_id) return null;
     return {
       ...status,
       outcome:
