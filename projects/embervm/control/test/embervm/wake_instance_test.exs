@@ -72,6 +72,13 @@ defmodule Embervm.WakeInstanceTest do
     assert {:error, :snapshot_lost} = WakeInstance.node_for_relight(%{node_id: "node-4", snapshot_ref: "gone"}, table)
   end
 
+  test "session relight reports an unreported owner while another node reports", %{table: table} do
+    put_instance(table, "node-5", "pod-a", [])
+
+    assert {:error, {:node_unreported, "node-4"}} =
+             WakeInstance.node_for_relight(%{node_id: "node-4", snapshot_ref: "sess-1"}, table)
+  end
+
   test "session relight reports no_bricks when capacity is empty", %{table: table} do
     assert {:error, :no_bricks} =
              WakeInstance.node_for_relight(%{node_id: "node-4", snapshot_ref: "sess-1"}, table)

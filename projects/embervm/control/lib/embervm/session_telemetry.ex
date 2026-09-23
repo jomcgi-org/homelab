@@ -310,6 +310,7 @@ defmodule Embervm.SessionTelemetry do
   def reason({:rpc, _status}), do: "rpc_error"
   def reason({:prime_failed, _reason}), do: "prime_failed"
   def reason({:prime_dial_failed, _reason}), do: "prime_dial_failed"
+  def reason({:lineage_relinquishment_failed, _reason}), do: "lineage_relinquishment_failed"
   def reason({:store, _reason}), do: "store_error"
   def reason(%GRPC.RPCError{status: 4}), do: "deadline_exceeded"
   def reason(%GRPC.RPCError{}), do: "rpc_error"

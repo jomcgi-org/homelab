@@ -1137,9 +1137,9 @@ defmodule Embervm.BaseBuilder do
     end
   end
 
-  # The best build-eligible INSTANCE whose reported node_id is `node_id`. Reuses the
-  # same eligibility and ranking as placement/3 so a hydrate never targets an
-  # instance placement itself would reject.
+  # The best build-eligible INSTANCE whose registration-authoritative node_id is
+  # `node_id`. Reuses the same eligibility and ranking as placement/3 so a
+  # hydrate never targets an instance placement itself would reject.
   defp build_instance_on_node(state, w, node_id) do
     state
     |> eligible_build_instances(Map.get(w, :mem_mib) || 0)

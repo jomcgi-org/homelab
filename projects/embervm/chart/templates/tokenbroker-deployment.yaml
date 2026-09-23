@@ -1,4 +1,7 @@
 {{- if .Values.tokenBroker.enabled }}
+{{- if and .Values.tokenBroker.plaintext.retireProtectedRoutes (not .Values.tokenBroker.spiffe.enabled) }}
+{{- fail "tokenBroker.plaintext.retireProtectedRoutes requires tokenBroker.spiffe.enabled" }}
+{{- end }}
 {{- if .Values.tokenBroker.githubApp.enabled }}
 {{- if not .Values.tokenBroker.spiffe.enabled }}
 {{- fail "tokenBroker.githubApp requires tokenBroker.spiffe.enabled" }}
@@ -67,6 +70,7 @@ spec:
             - { name: TOKENBROKER_GRANTS, value: {{ toJson .Values.tokenBroker.grants | quote }} }
             # BROKER_LISTEN_ADDR is the plaintext health, metrics, and login listener.
             - { name: BROKER_LISTEN_ADDR, value: ":8080" }
+            - { name: BROKER_RETIRE_PLAINTEXT_PROTECTED_ROUTES, value: {{ .Values.tokenBroker.plaintext.retireProtectedRoutes | quote }} }
             {{- if .Values.tokenBroker.githubApp.enabled }}
             - name: GITHUB_APP_ID
               value: {{ required "tokenBroker.githubApp.appID is required" .Values.tokenBroker.githubApp.appID | quote }}

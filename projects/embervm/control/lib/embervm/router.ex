@@ -1431,6 +1431,14 @@ defmodule Embervm.Router do
           retryable: true
         })
 
+      {:lineage_relinquishment_failed, _reason} ->
+        send_json(conn, 503, %{
+          error: "lineage relinquishment could not be confirmed",
+          reason: "lineage_relinquishment_failed",
+          workload: workload,
+          retryable: true
+        })
+
       # Brick capacity (PR-3): no brick of the workload's size class has room and
       # the class is flagged fleet-full (desired outran registered past the dwell),
       # so placement is TERMINALLY denied rather than parked. 503 (not the 429 the
@@ -1652,11 +1660,14 @@ defmodule Embervm.Router do
   end
 
   # Memory pressure is inherent to the claude fleet (4096 MiB VMs, single 16gi brick host); idle sessions park/evict on TTL, so RESOURCE_EXHAUSTED is transient and retryable.
-  # A placement denial (:no_bricks, :capacity) is the same class; the session manager parks the wake behind it and the expiry reason wraps the atom, so callers may back off and retry.
+  # A placement or registration denial (:no_bricks, :capacity, :node_unreported)
+  # is the same class; the session manager parks the wake behind it and the expiry
+  # reason wraps the atom, so callers may back off and retry.
   def classify_error_as_retryable(:unavailable), do: true
   def classify_error_as_retryable(:brick_gone), do: true
   def classify_error_as_retryable(:no_bricks), do: true
   def classify_error_as_retryable(:capacity), do: true
+  def classify_error_as_retryable(:node_unreported), do: true
   def classify_error_as_retryable(%GRPC.RPCError{status: 8}), do: true
   def classify_error_as_retryable(%GRPC.RPCError{}), do: false
   def classify_error_as_retryable(reason) when is_tuple(reason) do

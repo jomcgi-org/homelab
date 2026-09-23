@@ -863,7 +863,8 @@ with the label gone, which is exactly the state that puts it back in front of
 intake.
 
 **Deciding.** `POST /api/swarm/factory/decisions/{receipt_id}` behind the same
-operator gate as `/control`, with `{"option_key": "...", "note": "..."}` or
+operator gate as `/control`, with an exact `decision_id`, a stable
+`request_key`, and either `{"option_key": "...", "note": "..."}` or
 `{"action": "chat", "note": "..."}`. The private factory page at
 `/factory/escalations` reaches the same code through
 `POST /api/agents/factory/decisions/{receipt_id}`, which the browser can use
@@ -873,6 +874,13 @@ smuggled. Not `Cf-Access-Authenticated-User-Email`: nothing in the cluster
 validates or strips that one, so a caller reaching the backend can set it to
 any address. A request carrying no projected address, two of them, or only the
 Cloudflare header is refused.
+
+Both HTTP routes and MCP call `factory_decisions.request_decision`. The owner
+persists the accepted or refused outcome under the verified actor before any
+external effect. The browser hashes the exact receipt, decision, option or chat
+action, and note into a stable request key, so retry after response loss returns
+the original acknowledgement. No HTTP route may bypass this contract through
+the legacy direct apply or chat helpers.
 
 Cloudflare Access is the gate. `private.jomcgi.dev` is zero trust locked to one
 identity, so an address arriving on the projected header was already authorised
@@ -1101,6 +1109,37 @@ conductor records the turn as an unknown invocation first so the same stop
 supervision path can own the guest. Issue #6091 tracks the control-plane root
 cause.
 
+Receipt adoption is an optional observation of the original model request.
+If the receipt poll rejects ownership or its captured result cannot be parsed,
+adoption stops while the original request remains bounded by its existing
+transport deadline. The normal result writer still checks exact ownership before
+saving that response, so an expired heartbeat cannot cancel healthy work and a
+replaced owner cannot overwrite the current attempt. If the original request
+fails, an unavailable or rejected final receipt read preserves that original
+failure for transport recovery and accounting. Cancellation still releases the
+original observer; no fallback starts another model request.
+
+A terminal factory workflow may also recover a completed native result whose
+pending claim was already deleted by unknown-outcome settlement. Before remote
+stop supervision, the conductor validates the exact run, start, session, permit
+and complete physical dispatch receipt chain under the existing ownership locks.
+Every earlier response must be an authenticated drain, ordered before the next
+dispatch. The final response must be unsuperseded, retained, hash-valid and
+completed, with matching guest, CLI, logical turn and physical dispatch identity.
+Missing receipts, aliases, newer work, cleanup claims and changed bindings retain
+the hold. This path performs no guest invocation, stop or restart.
+
+Recovery replaces the failed native turn atomically with the completed result,
+settles its capacity permit, and writes `completed_receipt_recovered`. The full
+original failed turn remains in `usage.factory_receipt_recovery.previous_turn`,
+alongside the exact identity and receipt provenance. An unobserved response keeps
+a guest-reuse fence until its observer releases it. A single dispatch retains its
+native cost; a drain prefix retains unknown aggregate cost rather than pricing
+only the final response. Normal conductor artifact validation and graph/start
+accounting still decide the outcome. A missing artifact fails the node and unknown
+cost consumes the full reservation. A crash after native adoption can replay this
+normal settlement without another model call.
+
 A drained factory turn has a separate settlement path. The normal pending-row
 rejection remains unchanged because the row is normally the valid continuation
 grant. With `FACTORY_DRAINED_LOSS_SETTLEMENT_ENABLED=true`, the factory consumer
@@ -1153,6 +1192,14 @@ ordinary turn writer, and the conductor's late-completion reconciliation does
 the same before deciding the attempt has no result. The model runs once, and
 the node owner supplies the declared artifact path a hold reconstructed from
 durable rows cannot know, so a recovered attempt keeps its artifact.
+
+A queued executor that receives a result but fails to persist it also writes
+this bounded hold before releasing its claim. Receipt adoption can retry the
+database write without a second model invocation or a live-guest probe. The
+hold writer refuses changed ownership and already-committed terminal results;
+if recovery is disabled or the hold cannot be written, the existing conservative
+unknown-outcome path remains. Historical attempts whose claims were already
+removed still require separate positive reconciliation evidence.
 
 A factory guest cold-parked without a recorded drain continuation is a candidate
 for conditional retirement, not cessation proof by itself. Recovery asks EmberVM
@@ -1227,6 +1274,19 @@ under the same ownership checks `reconcile_completed_node` applies, and binds
 it, so supervision can start. A repeated observation of unknown execution
 records nothing: the first uncertain outcome stands until reconciliation makes
 it terminal.
+
+An aged reserved start can also be stranded before its DBOS workflow is created.
+A successful lookup of that exact workflow returning absent is recorded separately
+from a missing or malformed status and from a lookup error. The sessionless-start
+sweeper applies the same locked proof as for a terminal failed workflow: the pinned
+turn timeout has elapsed, and the exact admitted run and reserved start have no
+session, deterministic session identity, permit, receipt, cost, outcome or newer
+attempt. It atomically fails both ledgers at zero cost with `no_model_post` and
+records `workflow_absent` in the audit proof. A delayed workflow must acquire the
+same start guard and graph binding lock before creating its session; the terminal
+run then refuses creation. Normal retry and funding reconciliation retain their
+existing policy, deadlines and refusal bounds. An unavailable lookup, existing
+execution evidence or a live workflow keeps the reservation.
 
 Missing provider usage consumes the entire reserved ceiling. This is
 conservative admission accounting, not an interruptible dollar cap on a running
@@ -1647,16 +1707,38 @@ including the shared pending-message sweep and transport creation/invoke retries
 The coordinator makes at most two recorded cancellation attempts per active node.
 Other operator-owned sessions are outside this control scope.
 
-A task pause written by the reconciler expires after two hours. The conductor
-settles any uncertain starts, cancels the task with
-`reconciler_pause_expired`, clears its paused flag, and releases its delivery
-slot. Only a successful reconciler pause audit is eligible. A pause written by
-an operator never expires automatically.
+MCP and `POST /api/swarm/factory/control` use
+`factory_controls.request_control` for these supported actions. The caller must
+supply a stable `request_key` and the exact control `expected_version` read from
+status. The owner records refused stale requests too, so the same request cannot
+become effective after state changes. `configure` remains a separate bearer-only
+policy operation and is not exposed through MCP. Priority edits, free-form
+direction, budget mutation and exact-attempt MCP stop have no supported owner in
+this surface and remain unavailable.
+
+A task pause written by the reconciler is eligible for cancellation after two
+hours only when all starts already have terminal evidence. An unresolved start
+keeps the pause, original cost and capacity hold and records
+`reconciler_pause_expiry_held`; elapsed time cannot settle it at zero. Only a
+successful reconciler pause audit is eligible. A pause written by an operator
+never expires automatically.
 
 A network operation already in flight can remain uncertain after stop. Status
 continues to show those reservations and cancellation requests; the stop flag
 does not assert that every guest has ceased. Stop is terminal for this first
 bounded lane. It cannot be reset by replaying an earlier enable request.
+
+The MCP task row reports stop state conservatively. A running graph node is
+`work_still_running`; a reserved or uncertain start without a running node is
+`unknown_or_unreachable`; a request with neither condition remains
+`cancellation_requested`. Only exact positive stop evidence for every owned
+workflow produces `cessation_confirmed`. Cancellation acceptance, lease expiry,
+deadline backstops and terminal database state do not count as that proof.
+
+The historical deadline-release implementation is hard-staged off in addition
+to `FACTORY_DEADLINE_BACKSTOP_ENABLED=false`. An environment change cannot
+activate it in this delivery. Its warning remains useful, but deadline expiry
+does not release a start, a task slot or an admission permit.
 
 Agent workloads have a twelve-hour runtime backstop. The caller's result wait
 and routine drainer observation wait exceed that ceiling. The CLI silence

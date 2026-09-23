@@ -68,6 +68,7 @@ defmodule Embervm.DispatcherTest do
           :wall_clock,
           :assign_watchdog_margin_ms,
           :assign_watchdog_ms,
+          :claimed_vm_ids_fun,
           :tenant
         ])
 
@@ -333,6 +334,43 @@ defmodule Embervm.DispatcherTest do
     assert Dispatcher.stats(ctx.name).warm_hits >= 1
   end
 
+  test "restart adoption excludes durable session claims but recovers unowned primed VMs" do
+    ctx = start_stack(claimed_vm_ids_fun: fn -> MapSet.new(["vm-session-a"]) end)
+    put_catalog(ctx, "wl-a", cap: 10)
+
+    put_facts(ctx, "wl-a",
+      free: 2,
+      primed_ids: ["vm-session-a", "vm-unowned"],
+      live: 2,
+      max: 8
+    )
+
+    Dispatcher.sweep(ctx.name)
+
+    assert {:ok, "vm-unowned"} = Dispatcher.claim(ctx.name, "node-4", "wl-a")
+    assert :miss = Dispatcher.claim(ctx.name, "node-4", "wl-a")
+  end
+
+  test "stale status cannot expose a session VM while its ownership write is reserved" do
+    ctx = start_stack(claimed_vm_ids_fun: fn -> MapSet.new() end)
+    put_catalog(ctx, "wl-a", cap: 10)
+    put_facts(ctx, "wl-a", free: 1, primed_ids: ["vm-session-reserved"], live: 1, max: 8)
+
+    Dispatcher.sweep(ctx.name)
+    assert {:ok, "vm-session-reserved"} = Dispatcher.claim(ctx.name, "node-4", "wl-a")
+
+    # SessionStore.create has not committed yet and the node still reports the VM
+    # primed. The claim-time reservation must survive this status sweep.
+    Dispatcher.sweep(ctx.name)
+    assert :miss = Dispatcher.claim(ctx.name, "node-4", "wl-a")
+
+    # A rejected ownership write releases the reservation. A later sweep may then
+    # recover the genuinely unowned VM from the same status report.
+    assert :ok = Dispatcher.release_session_vm(ctx.name, "vm-session-reserved")
+    Dispatcher.sweep(ctx.name)
+    assert {:ok, "vm-session-reserved"} = Dispatcher.claim(ctx.name, "node-4", "wl-a")
+  end
+
   test "adoption does not double-enqueue a vm already in inventory (dedup)" do
     ctx = start_stack()
     put_catalog(ctx, "wl-a", cap: 10)
@@ -421,6 +459,36 @@ defmodule Embervm.DispatcherTest do
     # must SKIP vm-miss-1 rather than re-adopt the in-flight miss VM into inventory.
     Dispatcher.sweep(ctx.name)
     refute Map.has_key?(Dispatcher.stats(ctx.name).inventory, {"node-4", "wl-a"})
+
+    open_gate(gate)
+  end
+
+  test "status adoption cannot expose a warm VM reserved by an in-flight assignment" do
+    gate = new_gate()
+    parent = self()
+
+    ctx =
+      start_stack(
+        claimed_vm_ids_fun: fn -> MapSet.new() end,
+        assign_fun: fn _ch, req ->
+          send(parent, {:warm_assign, req.vm_id})
+          wait_open(gate)
+          {:ok, success_resp()}
+        end
+      )
+
+    put_catalog(ctx, "wl-a", cap: 10)
+    put_facts(ctx, "wl-a", free: 1, primed_ids: ["vm-reserved"], live: 1, max: 8)
+    Dispatcher.sweep(ctx.name)
+
+    _tid = submit(ctx, "wl-a", "p1")
+    assert_receive {:warm_assign, "vm-reserved"}, 2_000
+
+    # The node's status is stale until Assign lands and still lists the VM as
+    # primed. A rebuild-style sweep must retain the worker reservation and leave
+    # no second dispatchable copy.
+    Dispatcher.sweep(ctx.name)
+    assert :miss = Dispatcher.claim(ctx.name, "node-4", "wl-a")
 
     open_gate(gate)
   end

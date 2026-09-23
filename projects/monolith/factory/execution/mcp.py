@@ -16,7 +16,7 @@ from sqlmodel import Session
 import httpx
 
 import agent.api as agent_api
-from factory.execution import store, voice, voice_ui
+from factory.execution import broker_client, store, voice, voice_ui
 from factory.execution import model_family, normalize_model
 from factory.execution.constants import DRAINER_NODE_KEY
 from factory.execution.rationale import rationale_trailer_instruction
@@ -1172,6 +1172,21 @@ async def _execute_pending_message(session_id: int) -> None:
                 claimed_seq,
                 session_id,
             )
+            # The model already returned. Preserve its exact receipt and claim
+            # for bounded adoption instead of discarding the completed work as
+            # an unknown invocation. The hold writer refuses changed ownership
+            # or a turn whose database commit actually succeeded.
+            if _response_lost_eligible():
+                try:
+                    await asyncio.to_thread(
+                        _record_response_lost, "result_persistence_failed", {}
+                    )
+                except Exception:  # noqa: BLE001 - retain existing release fallback
+                    logger.exception(
+                        "Could not hold completed turn %s in session %s",
+                        claimed_seq,
+                        session_id,
+                    )
             return
         _clear_negative_oracle_verdict(session_id)
         if turn.terminal_reason == "interrupted_for_drain":
@@ -1922,10 +1937,9 @@ def _grant_or_raise(grant: str) -> str:
 
 
 async def _broker_request(method: str, path: str) -> dict:
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.request(method, _broker_url() + path)
-        resp.raise_for_status()
-        return resp.json()
+    resp = await broker_client.request(method, _broker_url() + path, timeout=30)
+    resp.raise_for_status()
+    return resp.json()
 
 
 @mcp.tool

@@ -2806,9 +2806,11 @@ defmodule Embervm.BaseBuilderTest do
     assert op.payload.node_id == "node-4/uid"
     assert op.payload.ref == "snap-1"
 
-    hydrating_status = latest(status_agent, "w")
-    assert condition(hydrating_status, "BaseBuilt")["status"] == "False"
-    assert condition(hydrating_status, "BaseBuilt")["reason"] == "BaseBuilding"
+    assert_eventually(fn ->
+      hydrating_status = latest(status_agent, "w")
+      condition(hydrating_status, "BaseBuilt")["status"] == "False" and
+        condition(hydrating_status, "BaseBuilt")["reason"] == "BaseBuilding"
+    end)
     assert Agent.get(builds, & &1) == 1
     assert BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap-1"
 

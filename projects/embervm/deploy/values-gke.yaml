@@ -80,6 +80,15 @@ tokenBroker:
   enabled: true
   networkPolicy:
     enabled: false
+  plaintext:
+    retireProtectedRoutes: false
+  spiffe:
+    enabled: false
+    # Inert while disabled. Once the listener is staged, both existing noded
+    # callers and the production monolith ServiceAccount are authorized.
+    clientSpiffeIds:
+      - spiffe://embervm.jomcgi.dev/ns/embervm/sa/embervm-embervm-noded
+      - spiffe://embervm.jomcgi.dev/ns/monolith/sa/monolith
   # authentik client_credentials minter (#5633 1f). The agent tier and authentik
   # both run on the hub; the broker still reaches authentik over its public
   # hostname, the same route every other client uses.

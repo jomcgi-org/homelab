@@ -11,7 +11,7 @@ from uuid import uuid4
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 from sqlmodel import Session, func, select
 
 from factory.execution import (
@@ -494,9 +494,12 @@ def factory_escalation_context(
 
 
 class FactoryDecisionBody(BaseModel):
-    option_key: str | None = None
-    action: str | None = None
-    note: str | None = None
+    model_config = ConfigDict(extra="forbid")
+    option_key: str | None = Field(default=None, max_length=32)
+    decision_id: str = Field(pattern=r"^decision:[0-9a-f]{64}$")
+    request_key: str = Field(min_length=1, max_length=256)
+    action: str | None = Field(default=None, max_length=32)
+    note: str | None = Field(default=None, max_length=4000)
 
 
 @router.post("/factory/decisions/{receipt_id}")
@@ -504,11 +507,7 @@ def factory_decision(
     receipt_id: int, body: FactoryDecisionBody, request: Request
 ) -> dict:
     """Answer one factory escalation from the private agents page."""
-    from factory.orchestration.factory_decisions import (
-        DecisionError,
-        apply_decision,
-        request_chat,
-    )
+    from factory.orchestration.factory_decisions import request_decision
 
     actor = factory_decider(request)
     chat = body.action == "chat"
@@ -520,15 +519,23 @@ def factory_decision(
             detail="supply exactly one of option_key or action=chat",
         )
     try:
-        if chat:
-            if not (body.note or "").strip():
-                raise HTTPException(
-                    status_code=422, detail="a chat request needs a note"
-                )
-            return request_chat(receipt_id, body.note or "", actor)
-        return apply_decision(receipt_id, body.option_key or "", actor, body.note)
-    except DecisionError as exc:
-        raise HTTPException(status_code=exc.status, detail=exc.reason) from exc
+        result = request_decision(
+            receipt_id,
+            body.decision_id,
+            "chat" if chat else body.option_key or "",
+            actor,
+            request_key=body.request_key,
+            note=body.note,
+            action="chat" if chat else "decide",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not result.get("ok") and result.get("state") == "refused":
+        raise HTTPException(
+            status_code=int(result.get("status") or 409),
+            detail=result.get("reason") or "factory decision refused",
+        )
+    return result
 
 
 @router.get("/drain-lane")

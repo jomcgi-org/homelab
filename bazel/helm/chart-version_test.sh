@@ -445,6 +445,47 @@ printf 'not-a-bazel-label\n' >"$repo/.bazel-query-output"
 expect "unsupported query output" "0.1.1" "$(run_input_version "$repo")" \
 	"unsupported closure counts repo-wide"
 
+# 18. A fallback release can cross a semantic boundary outside the closure.
+# A subsequent scoped release must use the same allocation history, even if
+# the earlier publisher has not written its version back to Chart.yaml yet.
+for boundary in feature breaking; do
+	base=0.536.39
+	expected_first=0.537.0
+	expected_second=0.537.1
+	subject="feat(other): new capability"
+	if [[ "$boundary" == breaking ]]; then
+		base=1.8.4
+		expected_first=2.0.0
+		expected_second=2.0.1
+		subject="feat(other)!: incompatible capability"
+	fi
+	repo=$(new_repo "fallback-${boundary}" "$base")
+	commit_path "$repo" other/source.py "$subject"
+	expect "unrelated ${boundary} stays quiet" "$base" "$(run_version "$repo")" \
+		"global allocation does not force an unrelated release"
+	first=$(cd "$repo" && CHART_VERSION_ALL_PATHS=1 bash "$SCRIPT" chart 2>/dev/null)
+	expect "fallback ${boundary} boundary" "$expected_first" "$first" \
+		"digest authority sees the repository-wide boundary"
+	commit_in "$repo" "fix: subsequent chart change"
+	second=$(run_version "$repo")
+	expect "scoped fix retains ${boundary} boundary" "$expected_second" "$second" \
+		"later source publishes above the earlier fallback"
+	expect "normal and fallback agree for ${boundary}" "$second" \
+		"$(cd "$repo" && CHART_VERSION_ALL_PATHS=1 bash "$SCRIPT" chart 2>/dev/null)" \
+		"one allocation function regardless of release trigger"
+done
+
+# Repository-wide patch serials must not collide after fallback either.
+repo=$(new_repo fallback-patches 0.1.0)
+commit_path "$repo" other/source.py "fix(other): one"
+commit_path "$repo" other/source.py "fix(other): two"
+expect "fallback patch allocation" "0.1.2" \
+	"$(cd "$repo" && CHART_VERSION_ALL_PATHS=1 bash "$SCRIPT" chart 2>/dev/null)" \
+	"two changes outside the closure"
+commit_in "$repo" "fix: chart follows"
+expect "scoped patch follows fallback" "0.1.3" "$(run_version "$repo")" \
+	"all commits reserve their position"
+
 if [[ "$FAILURES" -gt 0 ]]; then
 	echo "${FAILURES} test(s) failed"
 	exit 1

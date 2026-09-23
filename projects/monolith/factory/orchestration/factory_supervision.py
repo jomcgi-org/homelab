@@ -233,6 +233,39 @@ def _locked_attempt(
     return identity, run
 
 
+def recover_completed_receipt(pin, session_id, workflow_status):
+    """Adopt authenticated completion before attempting remote cessation.
+
+    The native result and recovery audit commit together. Graph/start settlement
+    remains the conductor's normal artifact-validation path, which can replay
+    the newly durable turn after a crash without invoking another model.
+    """
+    from factory.execution.api import adopt_completed_factory_receipt
+
+    if session_id is None or workflow_status not in ("SUCCESS", "ERROR", "CANCELLED"):
+        return False
+    with controls._locked_session() as (db, control):
+        try:
+            identity, _ = _locked_attempt(
+                db, control, pin, session_id, require_stop_due=False
+            )
+            # Invalid evidence leaves no partial changes in the outer control
+            # transaction, including parser failures after a receipt was read.
+            with db.begin_nested():
+                evidence = adopt_completed_factory_receipt(db, pin, identity)
+                controls._audit(
+                    db,
+                    "factory:receipt-recovery",
+                    "completed_receipt_recovered",
+                    task_id=pin["task_id"],
+                    workflow_id=pin["workflow_id"],
+                    **evidence,
+                )
+        except (ValueError, TypeError, KeyError):
+            return False
+    return True
+
+
 def _settlement_accounting(chosen: float | None, original: dict) -> dict:
     """Name the evidence behind the cost this cessation settles at.
 

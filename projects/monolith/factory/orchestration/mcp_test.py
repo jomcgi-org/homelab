@@ -135,6 +135,93 @@ def test_progress_counts_node_states_and_names_the_running_node():
     assert progress["running"] == ["implement"]
 
 
+@pytest.mark.parametrize(
+    "receipt,state",
+    [
+        ({}, "not_requested"),
+        ({"cancellation_requested": True}, "no_owned_work"),
+        (
+            {
+                "cancellation_requested": True,
+                "nodes": [{"node_key": "work", "state": "running"}],
+            },
+            "work_still_running",
+        ),
+        (
+            {
+                "cancellation_requested": True,
+                "starts": [
+                    {"start_key": "factory-node:t:work:1", "status": "reserved"}
+                ],
+                "nodes": [{"node_key": "work", "state": "running"}],
+            },
+            "work_still_running",
+        ),
+        (
+            {
+                "cancellation_requested": True,
+                "starts": [
+                    {"start_key": "factory-node:t:work:1", "status": "uncertain"}
+                ],
+            },
+            "unknown_or_unreachable",
+        ),
+        (
+            {
+                "cancellation_requested": True,
+                "starts": [
+                    {"start_key": "factory-node:t:work:1", "status": "cancelled"}
+                ],
+            },
+            "cancellation_requested",
+        ),
+        (
+            {
+                "cancellation_requested": True,
+                "starts": [
+                    {"start_key": "factory-node:t:work:1", "status": "cancelled"}
+                ],
+                "stop_events": [
+                    {
+                        "workflow_id": "factory-node:t:work:1",
+                        "cessation_confirmed": True,
+                    }
+                ],
+            },
+            "cessation_confirmed",
+        ),
+    ],
+)
+def test_stop_summary_never_promotes_cancellation_or_expiry_to_cessation(
+    receipt, state
+):
+    assert mcp._stop_summary(receipt)["state"] == state
+
+
+def test_stop_summary_requires_exact_proof_for_every_owned_workflow():
+    summary = mcp._stop_summary(
+        {
+            "cancellation_requested": True,
+            "starts": [
+                {"start_key": "factory-node:t:one:1", "status": "cancelled"},
+                {"start_key": "factory-node:t:two:1", "status": "cancelled"},
+            ],
+            "stop_events": [
+                {
+                    "workflow_id": "factory-node:t:one:1",
+                    "cessation_confirmed": True,
+                },
+                {
+                    "workflow_id": "factory-node:t:two:1",
+                    "cessation_confirmed": False,
+                },
+            ],
+        }
+    )
+    assert summary["state"] == "cancellation_requested"
+    assert summary["cessation_confirmed_workflows"] == ["factory-node:t:one:1"]
+
+
 def test_status_payload_trims_the_board_and_stamps_coverage(monkeypatch):
     board = {
         "ok": True,

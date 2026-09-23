@@ -45,9 +45,10 @@ type forceRefreshState struct {
 	lastForced time.Time
 }
 type listenerConfig struct {
-	listenAddr      string
-	tlsListenAddr   string
-	spiffeClientIDs []spiffeid.ID
+	listenAddr               string
+	tlsListenAddr            string
+	spiffeClientIDs          []spiffeid.ID
+	retirePlaintextProtected bool
 }
 type server struct {
 	githubGrants       map[string]githubGrant
@@ -154,16 +155,9 @@ func run(logger *slog.Logger) error {
 		tokenRequests: tokenRequests,
 	}
 	s.broker = broker.New(st, adapters, minters, brokerConfigs, logger, m)
-	plaintextMux := http.NewServeMux()
-	plaintextMux.HandleFunc("/healthz", s.health)
-	plaintextMux.Handle("/metrics", promhttp.Handler())
-	plaintextMux.Handle("/grants/", s.grantsHandler(false, listeners.tlsListenAddr != ""))
-	plaintextMux.Handle("/github/grants/", s.githubHandler(false))
-	plaintextMux.HandleFunc("/quota", s.quota)
-	plaintextMux.HandleFunc("/quota/", s.quota)
 	plaintextServer := &http.Server{
 		Addr:              listeners.listenAddr,
-		Handler:           plaintextMux,
+		Handler:           s.plaintextMux(listeners),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	if listeners.tlsListenAddr == "" {
@@ -206,6 +200,30 @@ func run(logger *slog.Logger) error {
 	return <-serverErrors
 }
 
+func (s *server) plaintextMux(listeners listenerConfig) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", s.health)
+	mux.Handle("/metrics", promhttp.Handler())
+	if listeners.retirePlaintextProtected {
+		denied := http.HandlerFunc(s.rejectRetiredPlaintext)
+		mux.Handle("/grants/", denied)
+		mux.Handle("/github/grants/", denied)
+		mux.Handle("/quota", denied)
+		mux.Handle("/quota/", denied)
+		return mux
+	}
+	mux.Handle("/grants/", s.grantsHandler(false, listeners.tlsListenAddr != ""))
+	mux.Handle("/github/grants/", s.githubHandler(false))
+	mux.HandleFunc("/quota", s.quota)
+	mux.HandleFunc("/quota/", s.quota)
+	return mux
+}
+
+func (s *server) rejectRetiredPlaintext(w http.ResponseWriter, r *http.Request) {
+	s.logger.Info("tokenbroker retired plaintext route rejected", "path", r.URL.Path, "remote_addr", r.RemoteAddr)
+	writeJSON(w, http.StatusForbidden, map[string]any{"reason": "plaintext_retired"})
+}
+
 type x509SourceFactory func(context.Context) (*workloadapi.X509Source, error)
 
 func newWorkloadX509Source(ctx context.Context) (*workloadapi.X509Source, error) {
@@ -230,6 +248,16 @@ func configuredListeners() (listenerConfig, error) {
 	config := listenerConfig{
 		listenAddr:    env("BROKER_LISTEN_ADDR", ":8080"),
 		tlsListenAddr: os.Getenv("BROKER_TLS_LISTEN_ADDR"),
+	}
+	switch raw := strings.TrimSpace(os.Getenv("BROKER_RETIRE_PLAINTEXT_PROTECTED_ROUTES")); raw {
+	case "", "false":
+	case "true":
+		config.retirePlaintextProtected = true
+	default:
+		return listenerConfig{}, fmt.Errorf("BROKER_RETIRE_PLAINTEXT_PROTECTED_ROUTES must be true or false, got %q", raw)
+	}
+	if config.retirePlaintextProtected && config.tlsListenAddr == "" {
+		return listenerConfig{}, errors.New("BROKER_RETIRE_PLAINTEXT_PROTECTED_ROUTES requires BROKER_TLS_LISTEN_ADDR")
 	}
 	if config.tlsListenAddr == "" {
 		return config, nil

@@ -7,6 +7,24 @@ The external gateway is configured at `https://mcp.jomcgi.dev/mcp`, with
 Authentik OAuth. Calls require a standing human principal in `operators`;
 a visible tool, workload identity or delegated credential is not enough.
 
+## Operation ownership
+
+Every mutation reaches an existing owner. MCP and the bearer HTTP surface do
+not carry separate implementations.
+
+| Exposed operation | Owner and identity | Enforced controls |
+| --- | --- | --- |
+| Status, escalations, task detail and context | Existing factory read models keyed by the server-selected receipt or task | Standing human `operators` principal; reads do not need the conductor model. |
+| Existing-issue submission | `factory_intake.receive_issue`, reached through the repository-validating receipt route | Exact repository, issue and generation; available repository; live open issue; duplicate identity returns the existing receipt. |
+| Admission pause, active-task pause/resume and terminal factory stop | `factory_controls.request_control` for both MCP and bearer HTTP | Authenticated actor, actor-scoped request key, exact expected control version and exact task ID where required, all serialized by the singleton control lock. |
+| Decision reply and clarification | `factory_decisions.request_decision` for MCP, bearer HTTP and the private browser | Authenticated actor, actor-scoped request key, exact receipt and content-derived decision identity, checked before effects and again before resolution. |
+
+The private browser derives a stable SHA-256 request key from the exact receipt,
+decision, option or chat action, and note. A response loss therefore retries the
+same owner request instead of creating a second GitHub effect. The backend still
+resolves the actor from its verified `X-Auth-Email` claim and never trusts an
+actor in the body.
+
 ## Review and submit work
 
 1. Call `factory_status` to read the current control version, policy, work and
@@ -42,7 +60,11 @@ Call `factory_control` with an explicit action, a new `request_key`, and
 
 A stop acknowledgement does not prove worker cessation or undo external
 effects. `enable` cannot undo `stop`. Inspect factory status for outstanding
-work and unresolved starts.
+work and unresolved starts. Each task row has a `stop` summary. It distinguishes
+`work_still_running`, `unknown_or_unreachable`, `cancellation_requested`, and
+`cessation_confirmed`. The last state is emitted only when every owned workflow
+has an exact durable stop event with positive cessation evidence. Cancellation,
+a terminal row, and elapsed lease time cannot create that evidence.
 
 After a lost response, retry with the same key and identical arguments. The
 existing factory audit ledger stores the original outcome under the verified
@@ -105,6 +127,10 @@ This is a delivery slice of #5788, not the complete conductor interface.
 - Free-form conductor requests, priority/direction edits, policy changes and
   exact-attempt stopping outside the existing receipt decision flow are not
   exposed by these tools.
+- Exact-attempt stop remains on its existing HTTP owner and remains default-off
+  behind `FACTORY_STOP_SUPERVISION_ENABLED=false`. It is not an MCP operation.
+- The factory reconciler remains default-off under `swarm.factoryEnabled=false`.
+  This repository slice does not enable it or any new mutation adapter.
 - Standalone conductor conversations and private external-chat transcripts
   remain outside the receipt-level contract. Broader conversation continuity
   remains #5787; planner context handoff remains #5849.
@@ -116,3 +142,10 @@ verify OAuth discovery, tool listing and read calls through an authenticated
 external client. Then use an explicitly approved issue/control action to
 check its durable acknowledgement and retry. An in-process test does not
 establish gateway publication, account permissions or voice-client support.
+
+Conductor rescope: this is repository-only staged delivery. Operational
+acceptance remains on #5789, including a legitimate external operator bearer,
+deployed replay and stale-version checks while the model is unavailable, an
+unreachable-worker global stop trial, and live reconciliation proof that cost,
+start records and capacity holds survive cancellation, replacement and retry.
+The issue remains open until those checks are complete.

@@ -88,7 +88,11 @@ describe("the decision write proxy", () => {
     const res = await POST({
       params: { id: "3" },
       request: request(
-        { option_key: "close" },
+        {
+          option_key: "close",
+          decision_id: `decision:${"a".repeat(64)}`,
+          request_key: `browser-v1:${"b".repeat(64)}`,
+        },
         { "x-auth-email": "joe@example.test" },
       ),
     });
@@ -97,7 +101,11 @@ describe("the decision write proxy", () => {
     const [url, init] = globalThis.fetch.mock.calls[0];
     expect(url).toBe("http://backend/api/agents/factory/decisions/3");
     expect(init.headers["X-Auth-Email"]).toBe("joe@example.test");
-    expect(JSON.parse(init.body)).toEqual({ option_key: "close" });
+    expect(JSON.parse(init.body)).toEqual({
+      option_key: "close",
+      decision_id: `decision:${"a".repeat(64)}`,
+      request_key: `browser-v1:${"b".repeat(64)}`,
+    });
   });
 
   it("never forwards the unvalidated Cloudflare identity header", async () => {

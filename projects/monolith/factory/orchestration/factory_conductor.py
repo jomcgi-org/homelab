@@ -84,12 +84,11 @@ FACTORY_RECOVERY_ABANDON_SECONDS = 900
 FACTORY_RECONCILER_PAUSE_TTL_SECONDS = 7200
 ESCALATION_REVALIDATION_BATCH_SIZE = 50
 ESCALATION_REVALIDATION_ACTOR = "factory:escalation-revalidation"
-# How long past its deadline a task may sit holding an unresolved start before
-# the backstop releases the slot. Matched to the reconciler pause TTL above,
-# which is the other force-settle on this lane, and long enough that every
-# proof-based release has had hundreds of ticks to settle the attempt on
-# evidence first.
+# Historical deadline release timing. Repository-only staging keeps the release
+# capability hard-disabled: elapsed time is not cessation evidence and cannot
+# settle an unknown start or its capacity hold.
 FACTORY_DEADLINE_BACKSTOP_GRACE_SECONDS = 7200
+FACTORY_DEADLINE_BACKSTOP_RELEASE_STAGED = False
 # Process start, for the settling window stall detection waits out. Monotonic
 # because it is only ever compared against itself.
 _STARTED_AT = time.monotonic()
@@ -4293,6 +4292,11 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
             "session_id": run.get("session_id"),
         }
     if result["status"] == "uncertain":
+        from factory.orchestration.factory_supervision import recover_completed_receipt
+
+        recover_completed_receipt(
+            pin, result.get("session_id") or run.get("session_id"), workflow_status
+        )
         confirmed = reconcile_completed_node(
             pin, result.get("session_id") or run.get("session_id")
         )
@@ -5579,7 +5583,7 @@ def observe_reviewer_routing(policy: dict) -> None:
 
 
 def _expire_reconciler_pause(task_id: str) -> bool:
-    """Cancel one stale reconciler-owned pause and release uncertain starts."""
+    """Cancel a stale reconciler pause only after all starts are settled."""
     if os.environ.get("FACTORY_STOP_SUPERVISION_ENABLED", "false").lower() != "true":
         return False
 
@@ -5587,13 +5591,8 @@ def _expire_reconciler_pause(task_id: str) -> bool:
         _audit,
         _locked_session,
         finish_task,
-        record_start_outcome,
     )
-    from factory.orchestration.factory_models import (
-        FactoryAudit,
-        FactoryReceipt,
-        FactoryStart,
-    )
+    from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt
 
     expired = False
     with Session(get_engine()) as db:
@@ -5646,47 +5645,45 @@ def _expire_reconciler_pause(task_id: str) -> bool:
                 task_id, "cancelled", ACTOR, evidence=evidence, session=db
             )
             if not result["ok"] and result.get("reason") == "unresolved_starts":
-                starts = db.exec(
-                    select(FactoryStart).where(
-                        FactoryStart.task_id == task_id,
-                        FactoryStart.status == "uncertain",
+                # Elapsed pause time is not an execution outcome. Keep the
+                # receipt paused and retain every start, cost and capacity
+                # hold until its owner records exact terminal evidence.
+                already_recorded = db.exec(
+                    select(FactoryAudit.id).where(
+                        FactoryAudit.task_id == task_id,
+                        FactoryAudit.action == "reconciler_pause_expiry_held",
+                        FactoryAudit.id > pause.id,
                     )
-                ).all()
-                for start in starts:
-                    settled = record_start_outcome(
-                        task_id,
-                        start.start_key,
-                        "failed",
+                ).first()
+                if already_recorded is None:
+                    _audit(
+                        db,
                         ACTOR,
-                        cost_usd=0.0,
-                        session_id=start.session_id,
-                        reconciled=True,
-                        session=db,
+                        "reconciler_pause_expiry_held",
+                        task_id=task_id,
+                        reason=reason,
+                        refusal="unresolved_starts",
                     )
-                    if not settled["ok"]:
-                        return False
-                result = finish_task(
-                    task_id, "cancelled", ACTOR, evidence=evidence, session=db
-                )
             if not result["ok"]:
-                return False
-            receipt.task_paused = False
-            receipt.updated_at = datetime.now(timezone.utc)
-            db.add(receipt)
-            _audit(
-                db,
-                ACTOR,
-                "reconciler_pause_expired",
-                task_id=task_id,
-                reason=reason,
-            )
-            expired = True
+                expired = False
+            else:
+                receipt.task_paused = False
+                receipt.updated_at = datetime.now(timezone.utc)
+                db.add(receipt)
+                _audit(
+                    db,
+                    ACTOR,
+                    "reconciler_pause_expired",
+                    task_id=task_id,
+                    reason=reason,
+                )
+                expired = True
         db.commit()
     return expired
 
 
 def _deadline_backstop_enabled() -> bool:
-    return (
+    return FACTORY_DEADLINE_BACKSTOP_RELEASE_STAGED and (
         os.environ.get("FACTORY_DEADLINE_BACKSTOP_ENABLED", "false").lower() == "true"
     )
 
@@ -5711,9 +5708,10 @@ def _sweep_sessionless_starts(task: dict, dbos) -> int:
     deadline backstop. It therefore reaches the reserved-start shape even when
     funding refuses unresolved starts or the deadline path deliberately skips
     every reserved row. The exact owning DBOS workflow must report a terminal
-    error or cancellation before the database proof may run. Settlement only
-    changes the two attempt ledgers; normal conductor reconciliation decides
-    whether a bounded retry or re-plan is allowed next.
+    error/cancellation or be absent after a successful lookup. The locked
+    database proof and terminal run fence prevent a delayed submitter from
+    creating a session after settlement. Only the two attempt ledgers change;
+    normal reconciliation decides whether a bounded retry or re-plan is allowed.
     """
     from factory.orchestration.factory_controls import reconcile_sessionless_start
 
@@ -5732,6 +5730,7 @@ def _sweep_sessionless_starts(task: dict, dbos) -> int:
             run["attempt"],
             ACTOR,
             workflow_status=workflow_status,
+            workflow_absent=workflow is None,
         )
         settled += bool(result["ok"])
     return settled

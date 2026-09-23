@@ -3091,6 +3091,7 @@ def reconcile_sessionless_start(
     actor: str,
     *,
     workflow_status: str | None,
+    workflow_absent: bool = False,
     session: Session | None = None,
 ) -> dict:
     """Atomically fail one aged start proven never to have made a session.
@@ -3103,9 +3104,11 @@ def reconcile_sessionless_start(
 
     Refusals are ordinary observations for the periodic sweeper. Unexpected
     lookup failures raise and roll the whole transaction back, so unavailable
-    evidence can never become a no-session proof. The caller must also supply
-    the exact owning DBOS workflow's terminal error or cancellation status as
-    external cessation evidence.
+    evidence can never become a no-session proof. The caller must supply the
+    exact owning DBOS workflow's terminal error/cancellation status, or an
+    explicit successful lookup that found no workflow. Absence alone cannot
+    settle anything: the locked no-session proof and terminal graph transition
+    also fence a submitter that creates the workflow after that lookup.
     """
     from factory.execution.api import inspect_lost_before_session_factory_attempt
     from factory.orchestration import graph
@@ -3113,7 +3116,12 @@ def reconcile_sessionless_start(
     actor = _text(actor, "actor")
     node_key = _text(node_key, "node_key")
     _integer(attempt, "attempt", 1, 2**31 - 1)
-    if workflow_status not in _SESSIONLESS_START_TERMINAL_WORKFLOW_STATUSES:
+    terminal = (
+        workflow_absent is False
+        and workflow_status in _SESSIONLESS_START_TERMINAL_WORKFLOW_STATUSES
+    )
+    absent = workflow_absent is True and workflow_status is None
+    if not (terminal or absent):
         return {"ok": False, "reason": "workflow_not_terminal"}
     with _locked_session(session) as (db, _control):
         run = db.exec(
@@ -3139,7 +3147,11 @@ def reconcile_sessionless_start(
         proof, refusal = inspect_lost_before_session_factory_attempt(db, pin)
         if proof is None:
             return {"ok": False, "reason": refusal}
-        proof = {**proof, "workflow_status": workflow_status}
+        proof = {
+            **proof,
+            "workflow_status": workflow_status,
+            "workflow_absent": absent,
+        }
 
         # The start ledger is ordered first, matching task settlement's
         # unresolved-start constraint. Both writes still share this transaction,
