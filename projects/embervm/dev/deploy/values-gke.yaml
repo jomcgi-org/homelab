@@ -1,0 +1,117 @@
+# GKE hub overrides for embervm-dev, applied after dev/deploy/values.yaml.
+#
+# WHY THIS EXISTS. embervm-dev ran on the home cluster as the Kargo dev stage,
+# where the conformance runner (projects/embervm/conformance) gated every
+# embervm chart on a functional verdict before production saw it (#5224). The
+# 2026-08-31 GKE cutover brought only production across, so a chart has reached
+# production since then having proved only that its pods came up. This file
+# puts dev back on the hub, and with it the gate and the SpecTrace lane that
+# #6415 (TLC trace validation of adoption.tla) reads.
+#
+# NOT layered with deploy/values-gke.yaml. That is production's hub overlay and
+# carries production identities (its GCS base bucket, its authentik broker
+# grant, guest callbacks into the production monolith). Layering it would make
+# dev claim identities production owns, which chart_env_identity_test exists to
+# forbid. Every hub fact dev needs is restated here instead.
+#
+# SIZE. One unpinned 2gi brick on the shared ember-bricks Spot pool, three
+# workloads (the ones the conformance suite drives: sandbox-python for S1,
+# pi-runtime for S2 and S3, sandbox-elixir for S5), SQLite op-log, no object
+# store. The recovery (values-recovery-gke.yaml) and store-validation
+# (values-store-validation-gke.yaml) presets target the same embervm-dev
+# release; activating either one means replacing this Application's value
+# files, not stacking a second release.
+
+# The hub has no longhorn. standard-rwo is GKE's default balanced PD class and
+# what the recovery preset already chose for the same PVC.
+opLog:
+  storageClass: standard-rwo
+
+bricks:
+  # ONE unpinned 2gi brick. The home values pin via nodeFloors to node-4 and
+  # keep desiredReplicas at zero because an unpinned brick there could land on
+  # an etcd master (#4290). The hub has no masters to protect: bricks select
+  # homelab.io/firecracker and tolerate embervm.jomcgi.dev/node, which only the
+  # ember-bricks pool carries. node-4 does not exist here, so the floor would
+  # render a brick that can never schedule.
+  desiredReplicas:
+    1gi: 0
+    2gi: 1
+    4gi: 0
+    8gi: 0
+    16gi: 0
+  nodeFloors: []
+
+noded:
+  # No Cilium CRDs on the hub (same trade as deploy/values-gke.yaml).
+  networkPolicy:
+    enabled: false
+  # Node-local state only. The empty endpoint is the chart's store-disabled
+  # mode: banks stay node-resident and relight on the same brick, which is what
+  # S2 and S3 exercise with one brick. The home SeaweedFS bucket does not exist
+  # here, and a dev GCS bucket is #6193's to provision, not this change's. The
+  # S3 export and restore path is therefore NOT exercised by dev on the hub.
+  store:
+    endpoint: ""
+    bucket: ""
+    credentials:
+      enabled: false
+  # Scratch nests under production's capped loop at /var/lib/embervm/scratch
+  # (35 GiB, provisioned by production's scratch-prep on every ember-bricks
+  # node), the same shape the recovery preset uses. Dev keeps its own subtree so
+  # its base retention sweep never sees production's bases. The dev path is
+  # already scratch/dev in values.yaml; restated so the dependency is explicit.
+  firecracker:
+    nvmeRoot: /var/lib/embervm/scratch/dev
+    nvmeRootHostPathType: DirectoryOrCreate
+  drain:
+    # GCE preemption notices exist on the hub only.
+    preemptionNoticeEnabled: true
+  # At the chart default homelab-disposable a Pending brick never triggers the
+  # cluster autoscaler (see deploy/values-gke.yaml), and a dev brick that never
+  # schedules would hold every promotion for the full verdict timeout.
+  priorityClassName: homelab-preemptible
+
+# The broker renders by chart default; its CiliumNetworkPolicy cannot apply here.
+tokenBroker:
+  networkPolicy:
+    enabled: false
+
+# Only the conformance suite's workloads. The other four sandbox languages are
+# off with their base builders, since each builder bakes into production's
+# shared 35 GiB scratch loop.
+sandboxWorkloads:
+  sandboxGo:
+    enabled: false
+  sandboxRust:
+    enabled: false
+  sandboxOcaml:
+    enabled: false
+  sandboxJavascript:
+    enabled: false
+
+sandboxGo:
+  guestImage:
+    repository: ""
+sandboxRust:
+  guestImage:
+    repository: ""
+sandboxOcaml:
+  guestImage:
+    repository: ""
+sandboxJavascript:
+  guestImage:
+    repository: ""
+
+# The serving prover needs the serving lane, which dev keeps off.
+pingWorkload:
+  enabled: false
+  guestImage:
+    repository: ""
+
+# No object store, so nothing remote to sweep. Local base and warmth retention
+# stay armed on dev's own scratch subtree, matching values.yaml.
+baseRetention:
+  remoteSweepEnabled: ""
+warmthS3Gc:
+  enabled: ""

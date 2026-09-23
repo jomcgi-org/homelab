@@ -269,25 +269,43 @@ promotion:
       # OutOfSync, re-syncing on every reconcile.
       waitTimeout: 1h30m0s
       stages:
-        # PROD ONLY, and this pipeline loses more than monolith's does by having
-        # no dev stage. The home cluster's dev stage ran a FUNCTIONAL gate
-        # (#5224): after argocd-wait it polled the conformance runner the
-        # embervm chart ships into dev until that runner reported a verdict for
-        # THAT chart version, covering task cold boot, session create / bank /
-        # relight / destroy, create-after-destroy, and control-plane invariants,
-        # and requiring two consecutive red cycles before failing so a settling
-        # transient did not fail a healthy roll.
+        # DEV THEN PROD, restored on the hub after the 2026-08-31 cutover had
+        # left this pipeline prod only, where a chart reached production having
+        # proved only that its pods came up. embervm-dev now runs on the hub
+        # (projects/gke-apps/embervm-dev, dev/deploy/values-gke.yaml).
         #
-        # None of that runs here. On GKE a chart reaches production having
-        # proved only that its pods came up. For a component whose failure modes
-        # are relight, banking and guest lifecycle, none of which a readiness
-        # probe touches, that is a large gap and is the strongest argument for
-        # standing dev up on this cluster: see the note on the monolith pipeline
-        # above. The conformance runner still ships in the chart, so restoring
-        # the gate is a stage definition rather than new machinery.
+        # The dev stage runs a FUNCTIONAL gate (#5224): after argocd-wait it
+        # polls the conformance runner the embervm chart ships into dev until
+        # that runner reports a verdict for THAT chart version, covering task
+        # cold boot, session create / bank / relight / destroy,
+        # create-after-destroy, and the control-plane invariants from
+        # GET /v1/conformance, and requiring two consecutive red cycles before
+        # failing so a settling transient does not fail a healthy roll.
+        - name: dev
+          application: embervm-dev
+          upstream: []
+          autoPromotion: true
+          verdictURL: http://embervm-dev-embervm-conformance.embervm-dev.svc.cluster.local:8080/verdict
+          # Sized for the worst case the gate is designed to wait out: the
+          # runner's readyWait (30m, dev/deploy/values.yaml) on a roll that
+          # rebakes bases, one suite (6m10s), a red first cycle, then the next
+          # cycle one runInterval (30m) later plus another suite. That is about
+          # 72m, and this is the home cluster's 75m. Written 1h15m0s, not
+          # 75m0s: the API server stores durations of an hour or more in hours,
+          # and the unnormalized spelling is a diff ArgoCD can never close (see
+          # waitTimeout above).
+          verdictTimeout: 1h15m0s
+        # Receives only Freight dev has already taken, verified, and held for
+        # the soak. The Freight-approval lever in the Kargo UI bypasses both,
+        # which is the hotfix path and the escape hatch for a wedged dev stage
+        # (#5250: an ArgoCD operation stuck phase=Running on embervm-dev held a
+        # Promotion for its full timeout; the runbook's stuck-sync section
+        # clears it).
         - name: prod
           application: embervm
-          upstream: []
+          upstream:
+            - dev
+          requiredSoakTime: 5m0s
           autoPromotion: true
     - name: monolith-agents
       warehouse: monolith-agents-chart

@@ -301,10 +301,10 @@ conformance:
   # healthy cycle.
   #
   # Must stay strictly BELOW the dev stage's verdictTimeout in
-  # projects/platform/kargo/values.yaml (40m0s), which also has to cover the
+  # projects/platform/kargo/values.yaml (1h15m0s), which also has to cover the
   # 6m10s suite after this wait ends (s1 60s + s2 180s + s3 60s + s4 10s +
-  # s5 60s, summed as totalBudget in conformance/main.go). 30m plus 6m10s
-  # leaves about 4m of real margin at 40m0s. It is a bound on waiting for bricks,
+  # s5 60s, summed as totalBudget in conformance/main.go) and, when the first
+  # cycle is red, one more runInterval plus suite. It is a bound on waiting for bricks,
   # not a budget for the suite, so a fast roll is unaffected: readiness is
   # polled, not slept.
   readyWait: 30m0s

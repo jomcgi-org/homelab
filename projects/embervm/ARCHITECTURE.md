@@ -14,8 +14,10 @@ the section 2 vocabulary. Claims carry four flags:
   promise. Its linked issue records the current decision.
 
 **model-checked** means the named TLA+ spec in `projects/embervm/specs/`
-satisfies the stated property under TLC in the build; implementation
-conformance (trace-to-action validation) is **Planned** (#4699).
+satisfies the stated property under TLC in the build. It is not an
+implementation claim: `adoption.tla`'s invariants are checked against dev's
+live trace by a hand-written checker, and TLC trace validation is **Planned**
+(#6415).
 
 ---
 
@@ -867,12 +869,19 @@ never stores or witnesses anything that scales with the fleet.
   a red build, and `vocabulary.exs` keeps them honest against the code's
   enums, though not against whether a modeled op kind is ever appended
   (#4756) or the gate it needs is armed (#4758).
-  **Planned**: trace validation, op-log events checked against TLA+
-  actions. The debug-gated SpecTrace implementation (#4770) ships and runs
-  in dev with `specTrace.enabled`; production keeps it off. The full harness
-  (hermetic and deployed lanes, direct-checker and TLC tiers, anti-vacuity
-  manifests, DRILL and VACUOUS as distinct verdicts) is **Decided direction**
-  (ADR embervm/034), tracked in #4761 and #4763.
+  **Built**, direct-checker tier: the debug-gated SpecTrace (#4770) records
+  `adoption.tla`-shaped events in `embervm-dev` (`specTrace.enabled`;
+  production keeps it off), `Embervm.SpecTrace.Checker` evaluates nine of
+  that spec's invariants over them with pass, fail or vacuous plus coverage,
+  and `GET /v1/conformance` serves the result. The dev conformance runner
+  (`projects/embervm/conformance`) drives task, session and destroy
+  scenarios against dev, reads that endpoint as scenario S4, and its
+  `/verdict` gates the Kargo dev-to-prod promotion on the hub. The checker
+  re-implements the invariants by hand; it does not ask TLC whether a trace
+  is a behaviour of the model.
+  **Planned**: the TLC tier, trace validation of `adoption.tla` against dev
+  SpecTrace windows (#6415). The broader ADR embervm/034 harness beyond that
+  is not planned (#4761, #4763 closed).
 - **Cells are not an active programme**: no `cell_id`, workload-to-cell
   assignment or per-cell dial-home address exists. The implementation proposal
   in [PR #6069](https://github.com/jomcgi-org/homelab/pull/6069) closed unmerged

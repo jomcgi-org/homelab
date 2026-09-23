@@ -4,6 +4,7 @@ kind: Kustomization
 resources:
   - namespace-embervm.yaml
   - ./embervm
+  - ./embervm-dev
   - ./monolith
   - ./monolith-public
   - ./monolith-agents

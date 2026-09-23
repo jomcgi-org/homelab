@@ -115,7 +115,9 @@ py_test(
         "//projects/embervm/deploy:gke_values",
         "//projects/embervm/dev/deploy:application",
         "//projects/embervm/dev/deploy:deploy_values",
+        "//projects/embervm/dev/deploy:gke_values",
         "//projects/embervm/dev/deploy:recovery_values",
+        "//projects/gke-apps/embervm-dev:application.yaml",
         "@multitool//tools/helm",
     ] + glob([
         "templates/**/*",
@@ -133,6 +135,9 @@ py_test(
         # The Applications, so releaseName is read from where it is DECLARED.
         "PROD_APPLICATION": "$(rootpath //projects/embervm/deploy:application)",
         "DEV_APPLICATION": "$(rootpath //projects/embervm/dev/deploy:application)",
+        # embervm-dev on the GKE hub: its overlay and its Application.
+        "DEV_GKE_VALUES": "$(rootpath //projects/embervm/dev/deploy:gke_values)",
+        "DEV_GKE_APPLICATION": "$(rootpath //projects/gke-apps/embervm-dev:application.yaml)",
     },
     deps = [
         "@pip//pytest",
