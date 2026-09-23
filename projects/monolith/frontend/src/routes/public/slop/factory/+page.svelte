@@ -394,11 +394,13 @@
                       >{String(index + 1).padStart(2, "0")}</span
                     >
                     <span class="goal-name"
-                      ><strong>{goal.statement}</strong
-                      ><span>declared by {goal.declared_by}</span></span
+                      ><strong>{goal.statement}</strong><span
+                        >declared by {goal.declared_by}</span
+                      ></span
                     >
                     <span class="merge-count num"
-                      >{goal.merged_refs} refs{#if goal.stale} · stale{/if}</span
+                      >{goal.merged_refs} refs{#if goal.stale}
+                        · stale{/if}</span
                     >
                   </div>
                   <p class="goal-meta">{declaredMeta(goal)}</p>
