@@ -372,7 +372,7 @@ func (d *Driver) stampBundleMetadata(inst *instance, dir, class, ref string) (su
 func (d *Driver) verifyBundleMetadata(dir, class, ref string, resources []JailResource) error {
 	meta, present, err := substrate.ReadBundleMetadata(dir)
 	if !present {
-		d.logger.Info("driver: grandfathering legacy v0 bundle without rootfs identity",
+		d.logger.Debug("driver: grandfathering legacy v0 bundle without rootfs identity",
 			"class", class, "snapshot_ref", ref)
 		return nil
 	}
