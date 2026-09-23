@@ -509,7 +509,16 @@ def test_start_session_for_swarm_passes_first_prompt_to_persistence(
         )
 
     monkeypatch.setattr(api, "_persist_session", persist)
-    monkeypatch.setattr(api, "_persist_pending_message", lambda *_args: 1)
+    monkeypatch.setattr(
+        api,
+        "_persist_pending_message",
+        lambda _id, message, _model: captured.update(message=message) or 1,
+    )
+    monkeypatch.setattr(
+        api,
+        "_factory_first_message",
+        lambda prompt, task_id, _node_key: f"{prompt}\n\nrecall for {task_id}",
+    )
     monkeypatch.setattr(api, "_schedule_next_message", lambda _session_id: None)
     monkeypatch.setattr(api, "get_engine", lambda: engine)
     monkeypatch.setattr(api.store, "get_session_by_local_id", lambda *_args: None)
@@ -526,6 +535,134 @@ def test_start_session_for_swarm_passes_first_prompt_to_persistence(
     assert session_id == 52
     assert captured["kwargs"]["task_id"] == expected_task
     assert captured["kwargs"]["prompt"] == "the first swarm task prompt"
+    expected_message = "the first swarm task prompt"
+    if expected_task is not None:
+        expected_message += f"\n\nrecall for {expected_task}"
+    assert captured["message"] == expected_message
+
+
+def _factory_recall_engine(tmp_path, tasks):
+    import factory.orchestration.models as task_models
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'factory_node_recall.db'}",
+        execution_options={"schema_translate_map": {"swarm": None}},
+    )
+    SQLModel.metadata.create_all(engine, tables=[task_models.SwarmTask.__table__])
+    with Session(engine) as session:
+        for task_id, text in tasks.items():
+            session.add(
+                task_models.SwarmTask(
+                    id=task_id, task_text=text, conductor_model="luna"
+                )
+            )
+        session.commit()
+    return engine
+
+
+def test_factory_node_sessions_keep_recall_out_of_the_system_prompt(
+    monkeypatch, tmp_path
+):
+    engine = _factory_recall_engine(
+        tmp_path,
+        {
+            "t-1": "Fix the cloning regression in the guest shim.",
+            "t-2": "Add a quota floor for the implement escalation role.",
+        },
+    )
+    sessions = []
+    messages = []
+
+    def create_session(_session, *args, **kwargs):
+        sessions.append(kwargs)
+        return AgentSession(
+            id=len(sessions),
+            local_session_id=args[0],
+            workspace=args[1],
+            branch=args[2],
+        )
+
+    monkeypatch.setattr(mcp, "get_engine", lambda: engine)
+    monkeypatch.setattr(api, "get_engine", lambda: engine)
+    monkeypatch.setattr(mcp.store, "create_session", create_session)
+    monkeypatch.setattr(api.store, "get_session_by_local_id", lambda *_args: None)
+    monkeypatch.setattr(
+        recall,
+        "recall_block",
+        lambda text: f"{recall.RECALL_HEADER}leads for: {text}",
+    )
+    monkeypatch.setattr(
+        api,
+        "_persist_pending_message",
+        lambda _id, message, _model: messages.append(message) or 1,
+    )
+    monkeypatch.setattr(api, "_schedule_next_message", lambda _session_id: None)
+
+    for task_id in ("t-1", "t-2"):
+        api.start_session_for_swarm(
+            f"factory:{task_id}:plan:1",
+            f"Static planner charter.\n\nTask section for {task_id}.",
+            "luna",
+            "jomcgi-org/homelab",
+            "main",
+            node_key="plan",
+            node_attempt=1,
+        )
+
+    assert sessions[0]["system_prompt"] == sessions[1]["system_prompt"]
+    assert sessions[0]["system_prompt"] is None
+    assert all(session["recall_pending"] is False for session in sessions)
+    header = recall.RECALL_HEADER
+    assert messages == [
+        (
+            f"Static planner charter.\n\nTask section for t-1.\n\n{header}leads for: "
+            "Fix the cloning regression in the guest shim."
+        ),
+        (
+            f"Static planner charter.\n\nTask section for t-2.\n\n{header}leads for: "
+            "Add a quota floor for the implement escalation role."
+        ),
+    ]
+    assert recall.matches_message_recall(
+        messages[0], "Static planner charter.\n\nTask section for t-1."
+    )
+    assert not recall.matches_message_recall(
+        messages[0], "Static planner charter.\n\nTask section for t-2."
+    )
+
+
+def test_kg_drain_node_gets_no_recall_anywhere(monkeypatch, tmp_path):
+    engine = _factory_recall_engine(
+        tmp_path, {"t-kg": "Extract facts from the merged pull request."}
+    )
+    sessions = []
+
+    def create_session(_session, *args, **kwargs):
+        sessions.append(kwargs)
+        return AgentSession(
+            id=1, local_session_id=args[0], workspace=args[1], branch=args[2]
+        )
+
+    def unexpected_recall(_text):
+        raise AssertionError("the KG lane must not run recall")
+
+    monkeypatch.setattr(mcp, "get_engine", lambda: engine)
+    monkeypatch.setattr(mcp.store, "create_session", create_session)
+    monkeypatch.setattr(recall, "recall_block", unexpected_recall)
+
+    mcp._persist_session(
+        "kg",
+        "<guest>",
+        "main",
+        "luna",
+        system_prompt="base prompt",
+        prompt="the first user task is long enough",
+        node_key=recall.KG_NODE_KEY,
+    )
+    message = mcp._factory_first_message("the node prompt", "t-kg", recall.KG_NODE_KEY)
+
+    assert sessions[0]["system_prompt"] == "base prompt"
+    assert message == "the node prompt"
 
 
 @pytest.mark.asyncio
@@ -1045,16 +1182,11 @@ def test_factory_recall_uses_task_text_instead_of_shim_prompt(monkeypatch, tmp_p
     monkeypatch.setattr(mcp, "get_engine", lambda: engine)
     monkeypatch.setattr(
         mcp,
-        "attach_recall",
-        lambda system, prompt, **kwargs: captured.append(prompt) or system,
+        "append_message_recall",
+        lambda message, text, **kwargs: captured.append(text) or message,
     )
-    monkeypatch.setattr(mcp.store, "create_session", lambda *_args, **_kwargs: None)
-    mcp._persist_session(
-        "local",
-        "guest",
-        "main",
-        "luna",
-        prompt="Factory task t-7, obey the launch instructions.",
-        task_id="t-7",
+    message = mcp._factory_first_message(
+        "Factory task t-7, obey the launch instructions.", "t-7", "implement"
     )
     assert captured == [objective]
+    assert message == "Factory task t-7, obey the launch instructions."

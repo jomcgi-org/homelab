@@ -493,6 +493,7 @@ def _validate_or_recover_started_session(
     from sqlmodel import Session, select
 
     from factory.execution import normalize_model
+    from knowledge.api import matches_message_recall
     from factory.execution.models import (
         AgentCapacityReservation,
         AgentResultReceipt,
@@ -549,9 +550,12 @@ def _validate_or_recover_started_session(
             value is not None for value in (extra_pending, extra_turn, extra_receipt)
         ):
             raise ValueError("node session ownership conflict: prompt")
+        # The stored first message may carry the task's recall block after the
+        # node prompt (start_session_for_swarm); the node prompt must match.
         for row, field in ((pending, "message_text"), (turn, "prompt")):
             if row is not None and (
-                getattr(row, field) != prompt or row.model != normalized["model"]
+                not matches_message_recall(getattr(row, field), prompt)
+                or row.model != normalized["model"]
             ):
                 raise ValueError("node session ownership conflict: prompt")
         if pending is not None or turn is not None:
@@ -582,7 +586,8 @@ def _validate_or_recover_started_session(
         # start_session_for_swarm persists these in separate transactions. If
         # its process died between them, this locked recovery is the only safe
         # place to recreate seq 1. Any execution evidence above refuses rather
-        # than risking a duplicate turn.
+        # than risking a duplicate turn. The recreated turn goes without recall,
+        # which is best effort and would need a vector search under this lock.
         session.add(
             PendingMessage(
                 session_id=session_id,

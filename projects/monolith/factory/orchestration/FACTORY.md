@@ -199,16 +199,29 @@ and judgment-class rules. Then comes the JSON context, serialized by
 `_planner_json` in a fixed stable-first key order (`PLANNER_CONTEXT_ORDER`,
 nested keys sorted), and last the attempt's working branch, prior-attempt
 evidence and artifact path. The size cap and its shrink loop only change the
-JSON, which sits after the static block.
+JSON, which sits after the static block. Knowledge graph recall for the task
+goes at the very end of that first user message, after a blank line
+(`mcp._factory_first_message`), and never into the session's system prompt:
+every factory node session gets the same system prompt, the shim's sandbox
+prompt with nothing per task appended. Interactive and launcher sessions still
+carry recall in their system prompt.
 
 **Why.** Every planner round is a fresh guest session with no resume, so the
 only prompt the provider can reuse is the byte-identical start of the text.
 Claude Code caches a prefix automatically (five-minute TTL, 512-token minimum)
 and Codex caches prefixes the same way, but the old layout opened with
 "Factory task {id}, repository ..." and put the schema last, so almost nothing
-matched between rounds. Putting the static charter and schema first and the
-volatile context last lets every round of every task read about 4,300 tokens
-from cache at the cache-read rate.
+matched between rounds. The system prompt renders before the user message
+(`--append-system-prompt` on Claude, `developerInstructions` on Codex), so a
+per-task recall block there would end the shared prefix before the charter;
+recall moved to the tail of the user message for that reason. Putting the
+static charter and schema first and the volatile context and recall last makes
+that prefix cacheable across rounds and tasks. Whether it is actually read from
+cache is measured, not assumed: `cache_read_tokens` in `AgentTurn.usage_json`
+on planner turns gives the hit rate. The Claude Code CLI also puts its own
+environment section (date, git status) in its system prompt, ahead of the
+charter, so cross-round hits on Claude depend on that section staying the same
+too.
 
 ## Availability and operator policy
 

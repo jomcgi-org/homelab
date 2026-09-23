@@ -42,7 +42,12 @@ from core.mcp_app import mcp
 from faas.embervm_client import EmberVMTransportError
 from framework import log_task_exception
 from goosecracker.api import REPO_CATALOG
-from knowledge.api import attach_recall, defer_recall, recall_prompt_ready
+from knowledge.api import (
+    append_message_recall,
+    attach_recall,
+    defer_recall,
+    recall_prompt_ready,
+)
 from factory.execution.rationale import parse_rationale
 from auth.api import Authority, current_principal
 
@@ -383,6 +388,21 @@ def _append_rationale_trailer(
     return f"{system_prompt.rstrip()}\n\n{trailer}"
 
 
+def _factory_first_message(prompt: str, task_id: str, node_key: str | None) -> str:
+    """Return a factory node's first user message with its task recall appended.
+
+    The system prompt renders before the user message, so a per-task block there
+    would stop the provider prompt cache from sharing anything past it across
+    tasks. The node's own prompt leads with its static charter, so the recall
+    goes last, matched against the task objective rather than the node prompt.
+    """
+    from factory.orchestration.models import recall_task_text
+
+    with Session(get_engine()) as db_session:
+        recall_text = recall_task_text(task_id, session=db_session)
+    return append_message_recall(prompt, recall_text, node_key=node_key)
+
+
 def _persist_session(
     local_session_id: str,
     workspace: str,
@@ -401,13 +421,10 @@ def _persist_session(
     admission_tier: str = "interactive",
     task_id: str | None = None,
 ) -> AgentSession:
-    recall_text = prompt
-    if task_id is not None:
-        from factory.orchestration.models import recall_task_text
-
-        with Session(get_engine()) as db_session:
-            recall_text = recall_task_text(task_id, session=db_session)
-    system_prompt = attach_recall(system_prompt, recall_text, node_key=node_key)
+    # A factory node session (task_id set) keeps recall out of its system
+    # prompt: see _factory_first_message.
+    if task_id is None:
+        system_prompt = attach_recall(system_prompt, prompt, node_key=node_key)
     with Session(get_engine()) as db_session:
         return store.create_session(
             db_session,
