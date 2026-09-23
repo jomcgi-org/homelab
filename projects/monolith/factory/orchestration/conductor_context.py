@@ -142,8 +142,7 @@ def _receipt_raw_ids(
         if type(recorded_receipt) is not int or recorded_receipt != receipt_id:
             continue
         if recorded_generation is not None and (
-            type(recorded_generation) is not int
-            or recorded_generation != generation
+            type(recorded_generation) is not int or recorded_generation != generation
         ):
             continue
         authorized.add(raw_id)
@@ -405,9 +404,12 @@ async def planner_context(
         return current
     authorization = current["authorization"]
     acceptance = current["acceptance"]
-    search_query = query or "\n".join(
-        (str(acceptance.get("title") or ""), str(acceptance.get("body") or ""))
-    )[:2000]
+    search_query = (
+        query
+        or "\n".join(
+            (str(acceptance.get("title") or ""), str(acceptance.get("body") or ""))
+        )[:2000]
+    )
     current["knowledge"] = await retrieve_knowledge(
         search_query,
         "repo:" + authorization["repo"],
