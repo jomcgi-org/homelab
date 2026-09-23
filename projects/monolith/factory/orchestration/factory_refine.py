@@ -19,6 +19,7 @@ from factory.orchestration.factory_controls import (
     MIN_OPTIONS,
     OPTION_SCHEMA,
     intake_policy,
+    decision_identity,
     issue_body_hash,
     terminal_resolution,
     _audit,
@@ -545,6 +546,7 @@ def _record_escalation(
     """
     document = _escalation_document(artifact, comment_url, downgraded)
     document["task_id"] = task_id
+    receipt_id = None
     with _locked_session() as (db, _control):
         row = db.exec(
             select(FactoryReceipt)
@@ -567,8 +569,56 @@ def _record_escalation(
                     stored.get("issue_body_sha256") or document["issue_body_sha256"]
                 )
             document["chat"] = stored.get("chat") or []
+        conversation = list((stored or {}).get("conversation") or [])
+        message_id = f"factory-brief:{task_id}"
+        if not any(item.get("message_id") == message_id for item in conversation):
+            latest_chat = ((stored or {}).get("chat") or [None])[-1]
+            parts = [
+                str(artifact.get("summary") or "").strip(),
+                str(artifact.get("question") or "").strip(),
+                str(artifact.get("recommendation") or "").strip(),
+                str(artifact.get("reason") or "").strip(),
+            ]
+            conversation.append(
+                {
+                    "message_id": message_id,
+                    "role": "conductor",
+                    "actor": ACTOR,
+                    "audience_actor": (
+                        latest_chat.get("actor") if latest_chat is not None else None
+                    ),
+                    "source": "factory_brief",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "task_id": task_id,
+                    "decision_id": None,
+                    "request_key": None,
+                    "epistemic_status": "suggestion_or_hypothesis",
+                    "text": "\n\n".join(part for part in parts if part)[:4000],
+                    "summary": str(artifact.get("summary") or "")[:1200],
+                    "evidence": [comment_url],
+                }
+            )
+        document["conversation"] = conversation[-20:]
+        brief_identity = decision_identity(
+            {
+                "id": row.id,
+                "repo": row.repo,
+                "generation": row.generation,
+                "escalation": document,
+            }
+        )
+        for item in document["conversation"]:
+            if item.get("message_id") == message_id:
+                item["decision_id"] = brief_identity
         row.escalation_json = json.dumps(document)
         db.add(row)
+        receipt_id = row.id
+    if receipt_id is not None:
+        from factory.orchestration.conductor_context import (
+            report_receipt_with_deadline,
+        )
+
+        report_receipt_with_deadline(receipt_id)
     return document
 
 
