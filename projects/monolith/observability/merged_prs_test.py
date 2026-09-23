@@ -32,6 +32,8 @@ _NOW = datetime(2026, 9, 7, 12, tzinfo=timezone.utc)
         ("revert: restore behavior", ("revert", None)),
         ("wip(factory): checkpoint", ("wip", "factory")),
         ("[qwen] feat(factory): drain queue", ("feat", "factory")),
+        ("[codex]feat(api): publish snapshot", ("feat", "api")),
+        ("[qwen][codex] feat: stacked prefixes", ("other", None)),
         ("[qwen] update documentation", ("other", None)),
         ("Fix: wrong case", ("other", None)),
         ("release version 1", ("other", None)),
