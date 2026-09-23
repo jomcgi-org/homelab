@@ -489,12 +489,9 @@ def _decide(
         )
     except ValueError as exc:
         return {"ok": False, "state": "refused", "reason": str(exc)}
-    if result.get("state") == "completed":
-        from factory.orchestration.conductor_context import report_with_deadline
+    from factory.orchestration.conductor_context import with_request_knowledge
 
-        knowledge = report_with_deadline(actor, request_key)
-        return {**result, "knowledge": knowledge}
-    return result
+    return with_request_knowledge(result, actor, request_key)
 
 
 @mcp.tool

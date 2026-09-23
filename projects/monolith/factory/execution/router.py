@@ -535,7 +535,9 @@ def factory_decision(
             status_code=int(result.get("status") or 409),
             detail=result.get("reason") or "factory decision refused",
         )
-    return result
+    from factory.orchestration.conductor_context import with_request_knowledge
+
+    return with_request_knowledge(result, actor, body.request_key)
 
 
 @router.get("/drain-lane")
