@@ -180,6 +180,36 @@ def test_public_factory_goals_scores_declared_goals(client, session):
     assert response.headers["ETag"]
 
 
+def test_public_factory_goals_counts_refs_older_than_seven_days(client, session):
+    # Regression for a goal declared beyond the 7-day merge window this
+    # endpoint used to load: merges referencing it at 8, 11, and 20 days old
+    # must still count even though the goal itself (declared 12 days ago) is
+    # not yet stale (STALE_AFTER_DAYS is 14).
+    session.add(
+        FactoryGoal(
+            statement="Land declared goals",
+            issue_numbers=[5927],
+            declared_by="opus",
+            declared_at=_NOW - timedelta(days=12),
+            active=True,
+        )
+    )
+    session.add(_row(123, timedelta(days=8), title="feat(factory): goals for #5927"))
+    session.add(_row(122, timedelta(days=11), title="fix(factory): tuneup #5927"))
+    session.add(_row(121, timedelta(days=20), title="docs(factory): notes #5927"))
+    session.commit()
+
+    response = client.get("/api/agents/public/factory/goals")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["stale"] is False
+    goal = body["goals"][0]
+    assert goal["stale"] is False
+    assert goal["merged_refs"] == 3
+    assert goal["last_activity"] == "2026-08-30T12:00:00Z"
+
+
 def test_public_factory_goals_is_stale_with_no_declarations(client):
     response = client.get("/api/agents/public/factory/goals")
 
