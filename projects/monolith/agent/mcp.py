@@ -29,6 +29,7 @@ from uuid import UUID
 from sqlalchemy.exc import IntegrityError
 
 from agent import checks, locks
+from agent import factory_goals as goals_mod
 from agent import notify as notify_mod
 from agent import routine_jobs
 from core.mcp_app import mcp
@@ -255,6 +256,21 @@ async def monolith_agent_deregister_routine_job(name: str) -> dict:
 async def monolith_agent_trigger_routine_job(name: str) -> dict:
     """Kick a routine_jobs row to immediately due by setting ``next_run_at = now()``."""
     return {"ok": routine_jobs.trigger_job(name)}
+
+
+@mcp.tool
+async def monolith_agent_set_factory_goals(
+    goals: list[dict], declared_by: str = "opus"
+) -> dict:
+    """Replace the active factory goal set shown on the factory page.
+
+    Each goal carries a one line statement plus linked issue numbers. The
+    previous set is retired and the new set goes live at once. At most five
+    goals stay active. Progress is scored from merged pull requests at read
+    time. Use this when the orchestrator changes what the factory is working
+    towards.
+    """
+    return await asyncio.to_thread(goals_mod.replace_goals, goals, declared_by)
 
 
 # --- Chat directive introspection + tuning (the directive-autopilot surface) --

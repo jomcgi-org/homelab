@@ -67,6 +67,16 @@ def test_snapshot_upsert_idempotent_and_public_reader_can_read(pg):
                     """
                 )
             )
+            session.execute(
+                text(
+                    """
+                    INSERT INTO observability.factory_goals
+                        (statement, issue_numbers, declared_by)
+                    VALUES
+                        ('Land declared goals', ARRAY[5927], 'opus')
+                    """
+                )
+            )
             session.commit()
 
             count = session.execute(
@@ -88,5 +98,9 @@ def test_snapshot_upsert_idempotent_and_public_reader_can_read(pg):
                 text("SELECT title FROM observability.merged_prs WHERE number = 5898")
             ).first()
             assert merged_pr[0] == "feat(observability): snapshot merged prs"
+            goal = session.execute(
+                text("SELECT statement FROM observability.factory_goals")
+            ).first()
+            assert goal[0] == "Land declared goals"
     finally:
         engine.dispose()

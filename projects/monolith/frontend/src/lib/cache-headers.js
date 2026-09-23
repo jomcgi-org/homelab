@@ -74,6 +74,11 @@ export const SEARCH_INDEX_CACHE_CONTROL = `public, max-age=300, s-maxage=300, st
 // of stale data during background refreshes.
 export const MERGES_CACHE_CONTROL = `public, max-age=0, s-maxage=1800, stale-while-revalidate=${ONE_DAY}, stale-if-error=${ONE_YEAR}`;
 
+// /slop/factory/goals: orchestrator-declared goals move on declaration, not on
+// a snapshot cadence, so the proxy keeps the same 30-minute shared freshness
+// as the merges snapshot. Same shape as MERGES_CACHE_CONTROL above.
+export const FACTORY_GOALS_CACHE_CONTROL = `public, max-age=0, s-maxage=1800, stale-while-revalidate=${ONE_DAY}, stale-if-error=${ONE_YEAR}`;
+
 // /docs pages: the manifest is baked into the build, so doc content changes only
 // on deploy. The build-versioned page ETag busts revalidation on every deploy,
 // so a long edge cache is safe: 1h fresh, 1d background refresh, 1y serve-stale
