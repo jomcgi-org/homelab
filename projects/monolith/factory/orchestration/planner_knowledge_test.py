@@ -40,9 +40,7 @@ def planner_db(tmp_path, monkeypatch):
     engine = create_engine(
         f"sqlite:///{tmp_path / 'planner-knowledge.db'}",
         connect_args={"check_same_thread": False, "timeout": 5},
-        execution_options={
-            "schema_translate_map": {"swarm": None, "knowledge": None}
-        },
+        execution_options={"schema_translate_map": {"swarm": None, "knowledge": None}},
     )
 
     @event.listens_for(engine, "connect")
