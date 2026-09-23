@@ -1078,8 +1078,7 @@ jobs:
 # This is the PUBLIC origin on purpose, not an in-cluster Service: the page and
 # demo-postgres probes go out through Cloudflare so they cover the CDN, the
 # HTTPRoute, and SSR exactly as a visitor does. Pointing it in-cluster would
-# both narrow the coverage and be dropped by the monolith-public frontend's
-# Cilium ingress policy.
+# bypass the public edge and narrow that coverage.
 emberSynthetic:
   baseUrl: "https://jomcgi.dev"
 

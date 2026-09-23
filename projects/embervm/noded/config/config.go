@@ -95,7 +95,8 @@ type Config struct {
 	// BearerToken, when set, gates every gRPC call: the caller must present
 	// "authorization: Bearer <token>" in call metadata. Empty runs the daemon
 	// open and logs a startup warning (mirrors fc-invoke's fail-loud-not-silent
-	// posture); a Cilium/Linkerd policy is the defence-in-depth layer on top.
+	// posture). Bearer auth does not provide network-level caller isolation;
+	// the removed Cilium policy supplies no defence-in-depth guarantee.
 	BearerToken string
 	// RestoreCapabilityKey authenticates restore capabilities independently of
 	// transport auth. Empty retains the legacy BearerToken verifier for the

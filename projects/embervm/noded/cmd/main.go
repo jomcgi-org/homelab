@@ -321,7 +321,7 @@ func run(logger *slog.Logger) error {
 	if cfg.BearerToken != "" {
 		logger.Info("bearer-token auth enabled")
 	} else {
-		logger.Warn("bearer-token auth DISABLED: EMBERVM_NODED_BEARER_TOKEN is unset, so the gRPC surface is open to any in-cluster client (rely on Cilium/Linkerd policy)")
+		logger.Warn("bearer-token auth DISABLED: EMBERVM_NODED_BEARER_TOKEN is unset, so any client that can reach the gRPC listener can call it; network-level caller isolation is not guaranteed")
 	}
 	gs := grpc.NewServer(serverOpts...)
 	nodev1.RegisterNodeServiceServer(gs, srv)
