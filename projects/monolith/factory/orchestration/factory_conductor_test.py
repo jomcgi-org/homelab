@@ -1450,7 +1450,7 @@ def test_new_graph_refusal_is_not_hidden_by_older_audit_feedback(feedback_db):
 def planner_context(prompt):
     import json
 
-    return json.loads(prompt.split("\n", 1)[1])
+    return json.loads(prompt.rsplit("\n", 1)[1])
 
 
 @pytest.mark.parametrize(
@@ -1479,7 +1479,7 @@ def test_funded_planner_bounds_complete_context_before_trimming(
     prompt = conductor.planner_prompt(task, [], runs, decision_revision=123456)
     context = planner_context(prompt)
 
-    assert len(prompt.split("\n", 1)[1].encode("utf-8")) <= limit
+    assert len(prompt.rsplit("\n", 1)[1].encode("utf-8")) <= limit
     assert context["conductor_funding"] == grant
     assert context["graph_revision"] == 123456
     assert context["delivery_evidence"] == baseline["delivery_evidence"]
@@ -1615,7 +1615,7 @@ def test_planner_keeps_completed_review_after_recursive_historical_prompts(monke
         '"raw_detail"',
     ):
         assert excluded not in prompt
-    assert len(prompt.split("\n", 1)[1]) <= conductor.PLANNER_CONTEXT_CHARS
+    assert len(prompt.rsplit("\n", 1)[1]) <= conductor.PLANNER_CONTEXT_CHARS
     # The shrink loop bounds the JSON context; the instruction preamble rides
     # on top of it and nothing bounds that, so this is the guard on preamble
     # growth. The preamble is about 9,300 characters and this case's context
@@ -1627,7 +1627,10 @@ def test_planner_keeps_completed_review_after_recursive_historical_prompts(monke
     # from human authority. Class feedback adds one bounded quality snapshot
     # plus the instruction that turns attributed rejections into recipe input.
     # #6208 adds the reversible-gate contract alongside class feedback.
-    assert len(prompt) < 19_200
+    # The node boundary moved in from _add, after the static charter, so the
+    # cached prefix never starts with task text. No rule was added: the
+    # duplicate gate contract went with it, so the guest prompt shrank.
+    assert len(prompt) < 20_400
     assert (task, nodes, runs) == before
 
 
@@ -1680,7 +1683,7 @@ def test_planner_limits_complete_json_without_losing_older_delivery_evidence(
     monkeypatch.setattr(conductor, "_decision_evidence", lambda _task: feedback)
     prompt = conductor.planner_prompt(task, nodes, runs)
     context = planner_context(prompt)
-    assert len(prompt.split("\n", 1)[1].encode()) <= conductor.PLANNER_CONTEXT_CHARS
+    assert len(prompt.rsplit("\n", 1)[1].encode()) <= conductor.PLANNER_CONTEXT_CHARS
     assert (
         context["delivery_evidence"]["latest_review"]["artifact"]["verdict"]
         == "approve"
@@ -1781,7 +1784,7 @@ def test_planner_bounds_encoded_protected_text_without_losing_review(monkeypatch
     prompt = conductor.planner_prompt(task, [], runs)
     context = planner_context(prompt)
     review = context["delivery_evidence"]["latest_review"]
-    assert len(prompt.split("\n", 1)[1].encode()) <= conductor.PLANNER_CONTEXT_CHARS
+    assert len(prompt.rsplit("\n", 1)[1].encode()) <= conductor.PLANNER_CONTEXT_CHARS
     assert review["session_id"] == 11 and review["model"] == "opus"
     assert review["head_sha"] == review["artifact"]["head_sha"] == "a" * 40
     assert review["artifact"]["verdict"] == "approve"
@@ -1853,7 +1856,8 @@ def test_planner_keeps_complete_unicode_review_as_valid_bounded_json(
     context = planner_context(prompt)
 
     assert (
-        len(prompt.split("\n", 1)[1].encode("utf-8")) <= conductor.PLANNER_CONTEXT_CHARS
+        len(prompt.rsplit("\n", 1)[1].encode("utf-8"))
+        <= conductor.PLANNER_CONTEXT_CHARS
     )
     assert (
         context["delivery_evidence"]["latest_review"]["artifact"]["summary"] == summary
@@ -1951,7 +1955,7 @@ def test_planner_reports_actual_invalid_evaluator_output(monkeypatch, status, va
         "latest_implement": None,
         "latest_review": None,
     }
-    assert len(prompt.split("\n", 1)[1].encode()) <= conductor.PLANNER_CONTEXT_CHARS
+    assert len(prompt.rsplit("\n", 1)[1].encode()) <= conductor.PLANNER_CONTEXT_CHARS
     assert run == before
 
 
@@ -7146,9 +7150,115 @@ def test_planner_prompt_maps_legacy_conductor_names_without_granting_authority(
 ):
     task, _policy = feedback_task()
     prompt = conductor.planner_prompt(task, [], [], task_class="docs")
-    assert prompt.startswith("You are the per-task Planner")
+    # The Planner identity opens the static charter, ahead of anything that
+    # names this particular task.
+    assert prompt.startswith(conductor._PLANNER_CHARTER)
+    assert "\nYou are the per-task Planner" in conductor._PLANNER_CHARTER
+    assert prompt.index("You are the per-task Planner") < prompt.index(task["id"])
     assert "not the operator-facing Conductor" in prompt
     assert "Names grant no authority" in prompt
+
+
+def test_planner_prompts_share_a_static_cacheable_prefix(feedback_db, monkeypatch):
+    """Every planner round is a fresh session, so only the prompt's leading
+    bytes can be read from the provider cache. They must not vary by task."""
+    import os
+    import re
+
+    from factory.orchestration import node_workflows
+
+    first, _policy = feedback_task(task_class="bug-fix")
+    second, runs = delivery(monkeypatch)
+    second = {
+        **second,
+        "id": "t-other-9173",
+        "task_text": "A different request with its own words.",
+        "base_branch": "release",
+        "budget_usd": 87.25,
+        "issue_number": 4242,
+        "delivery_branch": "factory/t-other-9173-work",
+        "conductor_gates": [
+            {"kind": "parameter", "value": "keep 31 backups", "reason": "cheap"}
+        ],
+    }
+    assert conductor.factory_gates.guidance(second)
+    assert not conductor.factory_gates.guidance(first)
+    monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "false")
+    prompts = [
+        node_workflows._node_prompt(
+            conductor.planner_prompt(first, [], [], task_class="bug-fix"),
+            f".factory/{first['id']}/conductor_1-1.json",
+            conductor._schema("conductor_1"),
+            "[]",
+            conductor.delivery_branch(first),
+        ),
+        node_workflows._node_prompt(
+            conductor.planner_prompt(
+                {**second, "funding_enrolled": True},
+                [],
+                runs,
+                task_class="judgment-analysis",
+                decision_revision=908172,
+            ),
+            f".factory/{second['id']}/conductor_3-2.json",
+            conductor._schema("conductor_3"),
+            '[{"status": "failed", "applied_at": "2026-09-22T04:00:00+00:00"}]',
+            conductor.delivery_branch(second),
+        ),
+    ]
+    prefix = os.path.commonprefix(prompts)
+    # The shared prefix is the whole output contract and the whole charter,
+    # and runs into the task section only as far as its fixed label.
+    static = prompts[0][: prompts[0].index("Task section, specific to this task")]
+    assert prefix.startswith(static)
+    assert len(prefix) < len(static) + 80
+    assert static.endswith(conductor._PLANNER_CHARTER)
+    assert len(static) >= 3000
+    for task in (first, second):
+        assert task["id"] not in prefix
+        assert conductor.delivery_branch(task) not in prefix
+    assert "release" not in prefix and "4242" not in prefix
+    assert "87.25" not in prefix and "908172" not in prefix
+    assert not re.search(r"\d{4}-\d{2}-\d{2}", prefix)
+    assert "/workspace/src/.factory/" not in prefix
+    # What varies follows the static block: the task section, the JSON
+    # context, then the attempt's branch, evidence and artifact path.
+    for prompt, task, name in zip(
+        prompts, (first, second), ("conductor_1-1.json", "conductor_3-2.json")
+    ):
+        assert prompt.index(task["id"]) > len(static)
+        assert prompt.endswith(
+            f"Artifact path for this attempt: /workspace/src/.factory/{task['id']}/{name}"
+        )
+
+
+def test_planner_json_is_deterministic_across_insertion_orders():
+    forward = {
+        "task_identity": {"id": "t-1", "repo": "owner/repo", "budget_usd": 3.0},
+        "task": "text",
+        "runs": [{"id": 4, "node_key": "implement_fix", "applied_at": "x"}],
+        "omitted": {"run_records": 0, "graph_records": 1},
+        "operator_direction": None,
+        "graph_revision": 12,
+        "unlisted": {"b": 1, "a": 2},
+    }
+    backward = {
+        "unlisted": {"a": 2, "b": 1},
+        "graph_revision": 12,
+        "operator_direction": None,
+        "omitted": {"graph_records": 1, "run_records": 0},
+        "runs": [{"applied_at": "x", "node_key": "implement_fix", "id": 4}],
+        "task": "text",
+        "task_identity": {"budget_usd": 3.0, "repo": "owner/repo", "id": "t-1"},
+    }
+    encoded = conductor._planner_json(forward)
+    assert encoded == conductor._planner_json(backward)
+    text = encoded.decode("utf-8")
+    # Stable evidence leads and per-round counters trail.
+    assert text.startswith('{"task_identity":')
+    assert text.index('"runs"') < text.index('"graph_revision"')
+    assert text.index('"graph_revision"') < text.index('"omitted"')
+    assert text.endswith('"unlisted":{"a":2,"b":1}}')
 
 
 @pytest.mark.parametrize("task_class", ["bug-fix", "mechanical-refactor", "docs"])
