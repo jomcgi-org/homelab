@@ -40,6 +40,14 @@
 (* invariant for the S6 fail verdict. Full composition with adoption.tla's   *)
 (* Next remains future work once the dev lane produces live windows.         *)
 (*                                                                           *)
+(* WINDOW PLACEMENT. The fixture windows live HERE, in the module, selected  *)
+(* by the scalar Fixture constant, because TLC configuration files accept    *)
+(* only scalars, sets of scalars, and model values, never tuples or records: *)
+(* assigning Trace = <<...>> in a .cfg fails with "expecting = or <-". Live *)
+(* windows plug into the LiveTrace constant instead: the S6 runner generates *)
+(* a window module that INSTANCEs this spec WITH Fixture <- "live",          *)
+(* LiveTrace <- <exported window>, keeping its own .cfg scalar-only.         *)
+(*                                                                           *)
 (* VACUITY. VacuousWindow is an operator, not an invariant: a thin window    *)
 (* satisfies every ordering predicate, so TLC alone would PASS it. The S6    *)
 (* runner checks VacuousWindow FIRST and returns vacuous without running     *)
@@ -50,8 +58,54 @@
 EXTENDS Naturals, Sequences, FiniteSets
 
 CONSTANTS
-    Trace,          \* the exported SpecTrace window under check
+    Fixture,        \* which window to check: "pass",
+                    \* "destroy_before_confirm", "double_dispatch", or "live".
+                    \* A scalar on purpose (see WINDOW PLACEMENT above).
+    LiveTrace,      \* the S6 live-window plug: meaningful only when
+                    \* Fixture = "live", which only the generated live module
+                    \* selects. Committed fixture cfgs bind it to {} (TLC
+                    \* requires every constant to have a value); the S6 runner
+                    \* substitutes the exported window for it by INSTANCE.
     MinTraceEvents  \* vacuity threshold: windows shorter than this are vacuous
+
+\* The committed fixture windows (issue #6415 acceptance): the happy path a
+\* deliberate CP restart plus destroy produces, and the two deviations
+\* (destroyed before node confirmation; the same vm_id dispatched twice with
+\* no intervening consumption). Every record carries the uniform eight fields
+\* so field access stays total.
+PassWindow ==
+    <<[action |-> "prime", vm |-> "v1", node |-> "n1", session |-> "", had_vm |-> FALSE, gate |-> FALSE, node_confirmed |-> FALSE, confirmed_by |-> ""],
+      [action |-> "adopt_inventory", vm |-> "v1", node |-> "n1", session |-> "", had_vm |-> FALSE, gate |-> FALSE, node_confirmed |-> FALSE, confirmed_by |-> ""],
+      [action |-> "dispatch_warm", vm |-> "v1", node |-> "n1", session |-> "s1", had_vm |-> FALSE, gate |-> FALSE, node_confirmed |-> FALSE, confirmed_by |-> ""],
+      [action |-> "restart_cp", vm |-> "", node |-> "", session |-> "", had_vm |-> FALSE, gate |-> FALSE, node_confirmed |-> FALSE, confirmed_by |-> ""],
+      [action |-> "adopt_inventory", vm |-> "v1", node |-> "n1", session |-> "", had_vm |-> FALSE, gate |-> FALSE, node_confirmed |-> FALSE, confirmed_by |-> ""],
+      [action |-> "checkpoint", vm |-> "", node |-> "n1", session |-> "", had_vm |-> FALSE, gate |-> FALSE, node_confirmed |-> FALSE, confirmed_by |-> ""],
+      [action |-> "succeed", vm |-> "v1", node |-> "n1", session |-> "s1", had_vm |-> FALSE, gate |-> FALSE, node_confirmed |-> FALSE, confirmed_by |-> ""],
+      [action |-> "begin_destroy", vm |-> "v1", node |-> "n1", session |-> "s1", had_vm |-> FALSE, gate |-> TRUE, node_confirmed |-> FALSE, confirmed_by |-> ""],
+      [action |-> "confirm_destroy", vm |-> "v1", node |-> "n1", session |-> "s1", had_vm |-> TRUE, gate |-> TRUE, node_confirmed |-> TRUE, confirmed_by |-> "teardown"],
+      [action |-> "checkpoint", vm |-> "", node |-> "n1", session |-> "", had_vm |-> FALSE, gate |-> FALSE, node_confirmed |-> FALSE, confirmed_by |-> ""]>>
+
+DestroyBeforeConfirmWindow ==
+    <<[action |-> "prime", vm |-> "v1", node |-> "n1", session |-> "", had_vm |-> FALSE, gate |-> FALSE, node_confirmed |-> FALSE, confirmed_by |-> ""],
+      [action |-> "dispatch_warm", vm |-> "v1", node |-> "n1", session |-> "s1", had_vm |-> FALSE, gate |-> FALSE, node_confirmed |-> FALSE, confirmed_by |-> ""],
+      [action |-> "confirm_destroy", vm |-> "v1", node |-> "n1", session |-> "s1", had_vm |-> TRUE, gate |-> TRUE, node_confirmed |-> FALSE, confirmed_by |-> ""],
+      [action |-> "succeed", vm |-> "v1", node |-> "n1", session |-> "s1", had_vm |-> FALSE, gate |-> FALSE, node_confirmed |-> FALSE, confirmed_by |-> ""],
+      [action |-> "begin_destroy", vm |-> "v1", node |-> "n1", session |-> "s1", had_vm |-> FALSE, gate |-> TRUE, node_confirmed |-> FALSE, confirmed_by |-> ""]>>
+
+DoubleDispatchWindow ==
+    <<[action |-> "prime", vm |-> "v1", node |-> "n1", session |-> "", had_vm |-> FALSE, gate |-> FALSE, node_confirmed |-> FALSE, confirmed_by |-> ""],
+      [action |-> "dispatch_warm", vm |-> "v1", node |-> "n1", session |-> "s1", had_vm |-> FALSE, gate |-> FALSE, node_confirmed |-> FALSE, confirmed_by |-> ""],
+      [action |-> "checkpoint", vm |-> "", node |-> "n1", session |-> "", had_vm |-> FALSE, gate |-> FALSE, node_confirmed |-> FALSE, confirmed_by |-> ""],
+      [action |-> "dispatch_miss", vm |-> "v1", node |-> "n1", session |-> "s2", had_vm |-> FALSE, gate |-> FALSE, node_confirmed |-> FALSE, confirmed_by |-> ""],
+      [action |-> "checkpoint", vm |-> "", node |-> "n1", session |-> "", had_vm |-> FALSE, gate |-> FALSE, node_confirmed |-> FALSE, confirmed_by |-> ""]>>
+
+\* The window under check is the fixture the .cfg names, or the live window
+\* the S6 runner substitutes by INSTANCE (see WINDOW PLACEMENT above).
+Trace ==
+    IF Fixture = "live" THEN LiveTrace
+    ELSE CASE Fixture = "pass" -> PassWindow
+           [] Fixture = "destroy_before_confirm" -> DestroyBeforeConfirmWindow
+           [] OTHER -> DoubleDispatchWindow
 
 VARIABLES cursor
 
@@ -70,8 +124,19 @@ KnownActions ==
      "reconnect", "restart_cp", "crash_cp", "crash_node",
      "begin_destroy", "confirm_destroy"}
 
+\* The replay consumes one record per step (cursor 1..Len(Trace)+1), so the
+\* predicates below range over the CONSUMED prefix, not the whole constant
+\* window. This is load-bearing, not stylistic: an invariant over the constant
+\* Trace alone is state-independent, and TLC short-circuits it as "the
+\* invariant of <Name> is equal to FALSE", which neither the tlc.sh negative
+\* gate nor the S6 classifier (both require "Invariant <Name> is violated.")
+\* accepts as a detection. Prefix-scoped, a deviated window violates the
+\* invariant in the exact state that consumes the deviating record, with a
+\* counterexample trace naming it; the pass fixture checks every prefix.
+Consumed == SubSeq(Trace, 1, cursor - 1)
+
 TraceWellFormed ==
-    \A i \in 1..Len(Trace) : Trace[i].action \in KnownActions
+    \A i \in 1..Len(Consumed) : Consumed[i].action \in KnownActions
 
 IsDispatch(r) == r.action = "dispatch_warm" \/ r.action = "dispatch_miss"
 
@@ -95,23 +160,23 @@ ConfirmedOK(r) == r.node_confirmed \/ r.confirmed_by = "node_gone"
 \* session. A deliberately deviated window (destroyed before node
 \* confirmation, or confirm ordered before any intent) violates this.
 NoDestroyBeforeConfirm ==
-    \A i \in 1..Len(Trace) :
-        IsEvaluableConfirm(Trace[i]) =>
-            /\ ConfirmedOK(Trace[i])
+    \A i \in 1..Len(Consumed) :
+        IsEvaluableConfirm(Consumed[i]) =>
+            /\ ConfirmedOK(Consumed[i])
             /\ \E j \in 1..(i - 1) :
-                IsIntent(Trace[j]) /\ Trace[j].session = Trace[i].session
+                IsIntent(Consumed[j]) /\ Consumed[j].session = Consumed[i].session
 
 \* Single-use vm_ids: a VM dispatched twice with no intervening consumption
 \* (succeed or confirm_destroy, after which RecycleId may legitimately reuse
 \* the slot) is a violation. Mirrors the Tier A no_double_assign predicate.
 NoDoubleAssign ==
-    \A i \in 1..Len(Trace) :
-        IsDispatch(Trace[i]) =>
+    \A i \in 1..Len(Consumed) :
+        IsDispatch(Consumed[i]) =>
             \A j \in 1..(i - 1) :
-                (IsDispatch(Trace[j]) /\ Trace[j].vm = Trace[i].vm) =>
+                (IsDispatch(Consumed[j]) /\ Consumed[j].vm = Consumed[i].vm) =>
                     \E k \in (j + 1)..(i - 1) :
-                        (Trace[k].action = "succeed" \/ Trace[k].action = "confirm_destroy")
-                        /\ Trace[k].vm = Trace[i].vm
+                        (Consumed[k].action = "succeed" \/ Consumed[k].action = "confirm_destroy")
+                        /\ Consumed[k].vm = Consumed[i].vm
 
 \* Coverage is the window length. The runner reports it alongside the verdict
 \* so "pass" always carries what it checked; a pass with zero coverage is
