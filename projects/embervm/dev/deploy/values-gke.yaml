@@ -22,6 +22,15 @@
 # release; activating either one means replacing this Application's value
 # files, not stacking a second release.
 
+# Namespace-scoped RBAC, as the recovery preset chose for this release. At the
+# chart default (cluster scope) the dev control plane, which by design runs
+# chart versions before they are verified, would hold cluster-wide Secret reads
+# and Deployment scale rights on the hub that holds every production secret.
+# Dev's workloads carry no stateful secretRef, so no Secret names are needed.
+rbac:
+  scope: namespace
+  secretNames: []
+
 # The hub has no longhorn. standard-rwo is GKE's default balanced PD class and
 # what the recovery preset already chose for the same PVC.
 opLog:
@@ -58,12 +67,30 @@ noded:
       enabled: false
   # Scratch nests under production's capped loop at /var/lib/embervm/scratch
   # (35 GiB, provisioned by production's scratch-prep on every ember-bricks
-  # node), the same shape the recovery preset uses. Dev keeps its own subtree so
-  # its base retention sweep never sees production's bases. The dev path is
-  # already scratch/dev in values.yaml; restated so the dependency is explicit.
+  # node). Dev keeps its own subtree so its base retention sweep never sees
+  # production's bases.
+  #
+  # sharedScratch, NOT the home shape (a DirectoryOrCreate leaf). Nothing orders
+  # this brick after production's scratch-prep, and kubelet creates a
+  # DirectoryOrCreate hostPath at volume setup, before any init container. On a
+  # fresh Spot node (the scale-up this brick's own Pending state can trigger)
+  # the leaf would land on the boot disk under production's bricks and the
+  # later loop mount would hide it without moving this pod's bind. Shared
+  # scratch mounts the prepared ROOT (type Directory), waits for production's
+  # generation marker, and reaches scratch/dev by subPath, which kubelet only
+  # resolves after that wait.
   firecracker:
     nvmeRoot: /var/lib/embervm/scratch/dev
-    nvmeRootHostPathType: DirectoryOrCreate
+    # Ignored under sharedScratch. It matters only for a chart that predates
+    # sharedScratch (the gke-apps floor), which falls back to a plain hostPath
+    # at nvmeRoot: Directory makes that brick fail its mount, since nothing
+    # creates scratch/dev on the host, instead of creating it on the boot disk.
+    # The first dev Promotion then moves it to a chart that has the mode.
+    nvmeRootHostPathType: Directory
+    sharedScratch:
+      enabled: true
+      hostRoot: /var/lib/embervm/scratch
+      subPath: dev
   drain:
     # GCE preemption notices exist on the hub only.
     preemptionNoticeEnabled: true

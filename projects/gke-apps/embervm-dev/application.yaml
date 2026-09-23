@@ -3,8 +3,10 @@ kind: Application
 metadata:
   name: embervm-dev
   namespace: argocd
-  finalizers:
-    - resources-finalizer.argocd.argoproj.io
+  # NO resources-finalizer, unlike production's Application. Both releases
+  # render the cluster-scoped workloads.embervm.dev CRD and ArgoCD tracks it to
+  # whichever synced last, so a cascading delete of this Application could
+  # delete the CRD and with it every production Workload CR.
   annotations:
     # Kargo will not update an Application that has not named the Stage allowed
     # to touch it; without this the dev Promotion errors "is not authorized".

@@ -36,7 +36,9 @@
 #
 # Add an `ignoreDifferences` entry for that Application's
 # `/spec/sources/0/targetRevision` AND ensure `RespectIgnoreDifferences=true` is
-# in syncOptions, in the same change that arms the pipeline, never before it.
+# in syncOptions, in the same change that arms the pipeline. Apply the root
+# BEFORE that change merges: an entry naming an Application that does not exist
+# yet is inert, while a Stage that arms first has every promotion reverted.
 # `ignoreDifferences` alone suppresses DIFFING, not APPLYING, so without the
 # sync option the field survives idle reconciliation and is stamped back by the
 # next real sync.
@@ -81,12 +83,13 @@ spec:
   #
   # jsonPointers into spec.sources, with the cost described at the top of this
   # file: combined with RespectIgnoreDifferences this stops ArgoCD patching ANY
-  # field in that array for these four Applications, not only targetRevision.
+  # field in that array for these Applications, not only targetRevision.
   # So a change to a valueFiles path, a chart name or a repoURL on any of them
   # will NOT apply, and ArgoCD will keep reporting success. That is the trade
   # for having promotions survive, and it is why
   # bazel/tools/ci/check-application-drift.sh exists: run it after changing any
-  # source field on monolith, monolith-agents, monolith-public or embervm.
+  # source field on monolith, monolith-agents, monolith-public, embervm or
+  # embervm-dev.
   ignoreDifferences:
     - group: argoproj.io
       kind: Application

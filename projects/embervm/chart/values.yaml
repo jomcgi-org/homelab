@@ -1451,6 +1451,15 @@ noded:
   # /dev/kvm and the nvme scratch dir (see projects/platform/firecracker-node).
   firecracker:
     nvmeRoot: /var/lib/embervm/scratch
+    # Shared scratch (off by default): place this release's bricks in a
+    # subdirectory of ANOTHER release's prepared scratch mount, gated on that
+    # release's generation marker. Used by embervm-dev on the GKE hub, which
+    # nests under production's capped loop. When enabled, scratchPrep must be
+    # off, and nvmeRoot must equal hostRoot/subPath. See _noded-pod.tpl.
+    sharedScratch:
+      enabled: false
+      hostRoot: ""
+      subPath: ""
     guestOomScoreAdj: 1000
     bootReadyTimeout: 60s
     # Shared base rootfs is booted READ-ONLY (root=/dev/vda ro): every mutable

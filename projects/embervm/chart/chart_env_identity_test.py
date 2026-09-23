@@ -2269,6 +2269,9 @@ def test_hub_dev_renders_only_what_the_hub_can_run() -> None:
         application["metadata"]["annotations"]["kargo.akuity.io/authorized-stage"]
         == "kargo-embervm:dev"
     )
+    # Both releases render the cluster-scoped Workload CRD; a cascading delete
+    # of dev must never be able to take production's CRD with it.
+    assert "finalizers" not in application["metadata"]
 
     rendered = _render(
         release,
@@ -2298,6 +2301,30 @@ def test_hub_dev_renders_only_what_the_hub_can_run() -> None:
         "embervm-dev-embervm-noded-brick-2gi": 1
     }
 
+    # Shared scratch: the brick mounts production's prepared ROOT (type
+    # Directory, so kubelet never creates it on the boot disk), waits for its
+    # generation marker first, and reaches scratch/dev only by subPath.
+    brick = next(
+        d
+        for d in docs
+        if d["kind"] == "Deployment"
+        and d["metadata"]["name"] == "embervm-dev-embervm-noded-brick-2gi"
+    )
+    pod = brick["spec"]["template"]["spec"]
+    (nvme,) = [v for v in pod["volumes"] if v["name"] == "nvme"]
+    assert nvme["hostPath"] == {"path": "/var/lib/embervm/scratch", "type": "Directory"}
+    gate, *rest = pod["initContainers"] + pod["containers"]
+    assert gate["name"] == "wait-for-shared-scratch"
+    for container in rest:
+        for mount in container.get("volumeMounts", []):
+            if mount["name"] == "nvme":
+                assert mount.get("subPath") == "dev", container["name"]
+
+    # Namespace-scoped RBAC: no cluster-wide Secret reads or scale rights.
+    (cluster_role,) = [d for d in docs if d["kind"] == "ClusterRole"]
+    cluster_resources = {r for rule in cluster_role["rules"] for r in rule["resources"]}
+    assert cluster_resources == {"nodes", "tokenreviews"}
+
     workloads = sorted(d["metadata"]["name"] for d in docs if d["kind"] == "Workload")
     # The conformance suite's three workloads: S1, S2/S3 and S5.
     assert workloads == ["pi-runtime", "sandbox-elixir", "sandbox-python"]
@@ -2309,3 +2336,37 @@ def test_hub_dev_renders_only_what_the_hub_can_run() -> None:
         and d["metadata"]["name"] == "embervm-dev-embervm-conformance"
     ]
     assert runner, "the Kargo dev stage polls this Service for its verdict"
+
+
+def test_shared_scratch_refuses_unsafe_shapes() -> None:
+    """sharedScratch must fail the render rather than half-apply.
+
+    Each case renders a pod whose scratch writes could land somewhere other
+    than the owning release's prepared mount: a second scratch-prep, a subPath
+    escaping the root, or container paths that disagree with the host path.
+    """
+    base = [
+        "noded.firecracker.sharedScratch.enabled=true",
+        "noded.firecracker.sharedScratch.hostRoot=/var/lib/embervm/scratch",
+        "noded.firecracker.sharedScratch.subPath=dev",
+        "noded.firecracker.nvmeRoot=/var/lib/embervm/scratch/dev",
+    ]
+    ok = _render_with_set("shared", base + ["scratchPrep.enabled=false"])
+    assert "wait-for-shared-scratch" in ok
+
+    for extra, message in [
+        (["scratchPrep.enabled=true"], "set scratchPrep.enabled=false"),
+        (
+            [
+                "scratchPrep.enabled=false",
+                "noded.firecracker.sharedScratch.subPath=../x",
+            ],
+            "non-empty relative path",
+        ),
+        (
+            ["scratchPrep.enabled=false", "noded.firecracker.nvmeRoot=/elsewhere"],
+            "must equal sharedScratch.hostRoot/sharedScratch.subPath",
+        ),
+    ]:
+        with pytest.raises(RuntimeError, match=message):
+            _render_with_set("shared", base + extra)
