@@ -38,7 +38,10 @@ def _pr(head=HEAD, ref="external/fix-77", **overrides):
 
 def test_happy_path_returns_provenance_evidence(monkeypatch):
     pr = _pr()
-    checks = {"state": "success", "statuses": [{"context": "pr-checks", "state": "success"}]}
+    checks = {
+        "state": "success",
+        "statuses": [{"context": "pr-checks", "state": "success"}],
+    }
     reviews = [{"state": "APPROVED", "commit_id": HEAD}]
     monkeypatch.setattr(
         "factory.orchestration.factory_conductor.github_get",
@@ -60,13 +63,18 @@ def test_happy_path_returns_provenance_evidence(monkeypatch):
     }
 
 
-def _run(monkeypatch, task=None, number=5921, head=HEAD, pr=None, reviews=None,
-         check_state="success"):
+def _run(
+    monkeypatch,
+    task=None,
+    number=5921,
+    head=HEAD,
+    pr=None,
+    reviews=None,
+    check_state="success",
+):
     task = TASK if task is None else task
     pr = _pr() if pr is None else pr
-    reviews = (
-        [{"state": "APPROVED", "commit_id": HEAD}] if reviews is None else reviews
-    )
+    reviews = [{"state": "APPROVED", "commit_id": HEAD}] if reviews is None else reviews
     checks = {
         "state": check_state,
         "statuses": [{"context": "pr-checks", "state": check_state}],
@@ -135,9 +143,7 @@ def test_malformed_head_is_rejected_before_any_read(monkeypatch):
     def explode(_repo, _path):  # pragma: no cover
         raise AssertionError("no GitHub read should happen")
 
-    monkeypatch.setattr(
-        "factory.orchestration.factory_conductor.github_get", explode
-    )
+    monkeypatch.setattr("factory.orchestration.factory_conductor.github_get", explode)
     with pytest.raises(ValueError, match="exact head"):
         external.verify_external_disposition(TASK, 5921, "short")
 
