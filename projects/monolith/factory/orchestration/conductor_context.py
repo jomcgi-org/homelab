@@ -20,6 +20,8 @@ from factory.orchestration.factory_models import FactoryReceipt
 
 _REPORT_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="factory-knowledge")
 _REPORT_SLOTS = BoundedSemaphore(2)
+_PLANNER_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="planner-context")
+_PLANNER_SLOTS = BoundedSemaphore(2)
 PLANNER_KNOWLEDGE_LIMIT = 5
 PLANNER_KNOWLEDGE_CANDIDATE_LIMIT = 50
 PLANNER_CONTEXT_FOLLOWUP_LIMIT = 1
@@ -122,7 +124,7 @@ def _receipt_raw_ids(
     Older receipt reports predate the redundant generation field, so the
     durable receipt id is authoritative and a present generation must agree.
     """
-    from knowledge.models import RawInput
+    from knowledge.api import raw_extras_by_id
 
     raw_ids = {
         item.get("raw_id")
@@ -132,10 +134,9 @@ def _receipt_raw_ids(
     }
     if not raw_ids:
         return set()
-    raws = db.exec(select(RawInput).where(RawInput.raw_id.in_(list(raw_ids)))).all()
+    raw_extras = raw_extras_by_id(db, list(raw_ids))
     authorized = set()
-    for raw in raws:
-        extra = raw.extra or {}
+    for raw_id, extra in raw_extras.items():
         recorded_receipt = extra.get("factory_receipt_id")
         recorded_generation = extra.get("factory_receipt_generation")
         if type(recorded_receipt) is not int or recorded_receipt != receipt_id:
@@ -145,7 +146,7 @@ def _receipt_raw_ids(
             or recorded_generation != generation
         ):
             continue
-        authorized.add(raw.raw_id)
+        authorized.add(raw_id)
     return authorized
 
 
@@ -415,6 +416,26 @@ async def planner_context(
         generation=authorization["generation"],
     )
     return current
+
+
+def planner_context_with_deadline(task_id: str, query: str, timeout: int) -> dict:
+    """Bound the complete context read, including its synchronous DB work."""
+    if not _PLANNER_SLOTS.acquire(blocking=False):
+        return {"ok": False, "reason": "context_retrieval_busy"}
+
+    def load():
+        try:
+            return asyncio.run(planner_context(task_id, query=query))
+        finally:
+            _PLANNER_SLOTS.release()
+
+    future = _PLANNER_POOL.submit(load)
+    try:
+        return future.result(timeout=timeout)
+    except FutureTimeout:
+        return {"ok": False, "reason": "context_timeout"}
+    except Exception:
+        return {"ok": False, "reason": "context_retrieval_failed"}
 
 
 def maintain_request_knowledge(actor: str, request_key: str) -> dict:
