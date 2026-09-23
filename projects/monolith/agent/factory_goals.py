@@ -25,19 +25,21 @@ def replace_goals(goals: list[dict], declared_by: str) -> dict:
                 select(FactoryGoal).where(FactoryGoal.active == True)  # noqa: E712
             ).all()
         )
+        # Already-persistent rows only need attribute flips; the single commit
+        # below flushes them. New rows are built outside the session and added
+        # in one call so a partial insert cannot strand half a goal set.
         for row in current:
             row.active = False
-            session.add(row)
-        inserted = []
-        for goal in cleaned:
-            row = FactoryGoal(
+        inserted = [
+            FactoryGoal(
                 statement=goal["statement"],
                 issue_numbers=goal["issue_numbers"],
                 declared_by=goal["declared_by"],
                 active=True,
             )
-            session.add(row)
-            inserted.append(row)
+            for goal in cleaned
+        ]
+        session.add_all(inserted)
         session.commit()
         for row in inserted:
             session.refresh(row)
