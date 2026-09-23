@@ -134,8 +134,22 @@ def _normalized_usage(
         cache_write_tokens = _token_count(usage, "cache_creation_input_tokens")
         claude_shape = True
     elif _CODEX_KEYS & usage.keys():
-        cache_read_tokens = _token_count(usage, "cached_input_tokens")
-        cache_write_tokens = _token_count(usage, "cache_write_input_tokens")
+        # reasoning_output_tokens alone selects this branch, so shim-shaped
+        # usage can land here with its cache under the shim keys. Fall back to
+        # them when the Codex-native key is absent rather than dropping the
+        # cache discount.
+        cache_read_tokens = _token_count(
+            usage,
+            "cached_input_tokens"
+            if "cached_input_tokens" in usage
+            else "cache_read_tokens",
+        )
+        cache_write_tokens = _token_count(
+            usage,
+            "cache_write_input_tokens"
+            if "cache_write_input_tokens" in usage
+            else "cache_write_tokens",
+        )
         claude_shape = False
     else:
         cache_read_tokens = _token_count(usage, "cache_read_tokens")
