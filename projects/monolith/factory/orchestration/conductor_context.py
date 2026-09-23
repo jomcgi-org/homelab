@@ -162,6 +162,9 @@ async def retrieve_knowledge(
     from knowledge.api import KnowledgeStore
     from shared.embedding import EmbeddingClient
 
+    if (receipt_id is None) != (generation is None):
+        raise ValueError("receipt_id and generation must be provided together")
+
     try:
         vector = await asyncio.wait_for(
             EmbeddingClient().embed(query[:2000]), timeout=4

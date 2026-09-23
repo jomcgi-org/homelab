@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import nullcontext
 import json
 from types import SimpleNamespace
 
@@ -33,6 +32,7 @@ from factory.orchestration.models import (
     SwarmTask,
 )
 from factory.orchestration.turn_artifact import schema_errors
+from knowledge.models import RawInput
 
 
 @pytest.fixture
@@ -62,6 +62,7 @@ def planner_db(tmp_path, monkeypatch):
         FactoryReviewVerdict,
         FactoryStart,
         FactoryAudit,
+        RawInput,
     )
     SQLModel.metadata.create_all(engine, tables=[model.__table__ for model in tables])
     policy = {
@@ -325,7 +326,77 @@ def test_initial_and_amendment_manifests_are_append_only(planner_db):
         )
 
 
-def test_receipt_authorization_excludes_same_repo_and_session_history(monkeypatch):
+@pytest.mark.parametrize(
+    ("raw_id", "extra", "authorized"),
+    [
+        (
+            "raw-authorized",
+            {"factory_receipt_id": 1, "factory_receipt_generation": 3},
+            True,
+        ),
+        (
+            "raw-other-receipt",
+            {"factory_receipt_id": 2, "factory_receipt_generation": 3},
+            False,
+        ),
+        ("raw-unscoped", {}, False),
+        (
+            "raw-other-generation",
+            {"factory_receipt_id": 1, "factory_receipt_generation": 4},
+            False,
+        ),
+        ("raw-legacy-generation", {"factory_receipt_id": 1}, True),
+        (
+            "raw-bool-receipt",
+            {"factory_receipt_id": True, "factory_receipt_generation": 3},
+            False,
+        ),
+        (
+            "raw-string-receipt",
+            {"factory_receipt_id": "1", "factory_receipt_generation": 3},
+            False,
+        ),
+        (
+            "raw-bool-generation",
+            {"factory_receipt_id": 1, "factory_receipt_generation": True},
+            False,
+        ),
+        (
+            "raw-string-generation",
+            {"factory_receipt_id": 1, "factory_receipt_generation": "3"},
+            False,
+        ),
+    ],
+)
+def test_receipt_raw_authorization_uses_durable_extras(
+    planner_db, raw_id, extra, authorized
+):
+    engine, _task_id, _policy = planner_db
+    with Session(engine) as db:
+        db.add(
+            RawInput(
+                raw_id=raw_id,
+                path=f"raws/{raw_id}.md",
+                source="test",
+                content_hash=raw_id,
+                extra=extra,
+            )
+        )
+        db.commit()
+        result = conductor_context._receipt_raw_ids(
+            db,
+            [{"provenance": [{"raw_id": raw_id}]}],
+            receipt_id=1,
+            generation=3,
+        )
+    assert (raw_id in result) is authorized
+
+
+def test_receipt_authorization_excludes_same_repo_and_session_history(
+    planner_db, monkeypatch
+):
+    engine, _task_id, _policy = planner_db
+
     async def embed(text):
         assert text == "current query"
         return [0.1]
@@ -351,6 +422,33 @@ def test_receipt_authorization_excludes_same_repo_and_session_history(monkeypatc
         },
     ]
 
+    with Session(engine) as db:
+        for raw_id, extra in (
+            (
+                "raw-authorized",
+                {"factory_receipt_id": 1, "factory_receipt_generation": 3},
+            ),
+            (
+                "raw-other",
+                {"factory_receipt_id": 2, "factory_receipt_generation": 3},
+            ),
+            (
+                "raw-invalidated",
+                {"factory_receipt_id": 1, "factory_receipt_generation": 3},
+            ),
+            ("raw-session", {}),
+        ):
+            db.add(
+                RawInput(
+                    raw_id=raw_id,
+                    path=f"raws/{raw_id}.md",
+                    source="test",
+                    content_hash=raw_id,
+                    extra=extra,
+                )
+            )
+        db.commit()
+
     def search(vector, **kwargs):
         assert vector == [0.1]
         assert kwargs == {
@@ -363,16 +461,10 @@ def test_receipt_authorization_excludes_same_repo_and_session_history(monkeypatc
     monkeypatch.setattr(
         "shared.embedding.EmbeddingClient", lambda: SimpleNamespace(embed=embed)
     )
-    monkeypatch.setattr("core.db.get_engine", lambda: object())
-    monkeypatch.setattr(conductor_context, "Session", lambda _: nullcontext(object()))
+    monkeypatch.setattr("core.db.get_engine", lambda: engine)
     monkeypatch.setattr(
         "knowledge.api.KnowledgeStore",
         lambda _: SimpleNamespace(search_notes_with_context=search),
-    )
-    monkeypatch.setattr(
-        conductor_context,
-        "_receipt_raw_ids",
-        lambda *_args: {"raw-authorized", "raw-invalidated"},
     )
     result = asyncio.run(
         conductor_context.retrieve_knowledge(
@@ -393,6 +485,67 @@ def test_receipt_authorization_excludes_same_repo_and_session_history(monkeypatc
     assert "private-session" not in serialized
     assert "raw-other" not in serialized
     assert result["omitted"]["unauthorized_candidates"] == 2
+
+
+@pytest.mark.parametrize(
+    ("receipt_id", "generation"),
+    [(1, None), (None, 3)],
+)
+def test_receipt_authorization_requires_id_and_generation_together(
+    receipt_id, generation
+):
+    with pytest.raises(
+        ValueError, match="receipt_id and generation must be provided together"
+    ):
+        asyncio.run(
+            conductor_context.retrieve_knowledge(
+                "current query",
+                "repo:owner/repo",
+                3,
+                receipt_id=receipt_id,
+                generation=generation,
+            )
+        )
+
+
+def test_operator_exchange_writer_is_admitted_by_receipt_reader(
+    planner_db, monkeypatch
+):
+    engine, _task_id, _policy = planner_db
+    item = {
+        "request": {
+            "receipt_id": 1,
+            "decision_id": "decision-1",
+            "request_key": "request-1",
+        },
+        "result": {"state": "completed"},
+    }
+    monkeypatch.setattr(
+        conductor_context,
+        "_request_records",
+        lambda _db: {("operator", "request-1"): item},
+    )
+
+    def persist_without_external_storage(session, **kwargs):
+        from knowledge.raw_write import write_raw
+
+        return write_raw(session, **kwargs)
+
+    monkeypatch.setattr(
+        "knowledge.api.ingest_raw_with_status", persist_without_external_storage
+    )
+    result = conductor_context.maintain_request_knowledge("operator", "request-1")
+    assert result["status"] == "queued"
+    with Session(engine) as db:
+        raw = db.exec(select(RawInput).where(RawInput.raw_id == result["raw_id"])).one()
+        assert raw.extra["factory_receipt_id"] == 1
+        assert raw.extra["factory_receipt_generation"] == 3
+        assert conductor_context._receipt_raw_ids(
+            db,
+            [{"provenance": [{"raw_id": raw.raw_id}]}],
+            receipt_id=1,
+            generation=3,
+        ) == {raw.raw_id}
 
 
 def test_kg_outage_is_visible_with_authoritative_factory_evidence(planner_db):
