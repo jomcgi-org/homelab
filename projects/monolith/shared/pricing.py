@@ -79,9 +79,10 @@ def _token_count(usage: Mapping[str, Any], key: str) -> int | float:
         or not isinstance(value, (int, float))
         or not math.isfinite(value)
         or value < 0
+        or (isinstance(value, float) and not value.is_integer())
     ):
         raise ValueError(f"invalid token count for {key}")
-    return value
+    return int(value)
 
 
 def _model_ref(model: str) -> tuple[str, str | None]:

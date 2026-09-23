@@ -360,13 +360,13 @@ class Turn(NamedTuple):
 def _reported_cost_usd(guest_data: dict) -> float | None:
     """Accept only an explicit, finite USD charge from the native adapter."""
     value = guest_data.get("total_cost_usd")
-    if (
-        type(value) not in (int, float)
-        or not math.isfinite(value)
-        or value < 0
-    ):
+    if type(value) not in (int, float) or value < 0:
         return None
-    return float(value)
+    try:
+        projected = float(value)
+    except OverflowError:
+        return None
+    return projected if math.isfinite(projected) else None
 
 
 def parse_native_turn(

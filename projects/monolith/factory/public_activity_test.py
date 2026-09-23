@@ -173,7 +173,7 @@ def test_activity_shape_windows_headers_and_stable_etag():
                 "cache_read_tokens": 42,
                 "cost_usd": 1.75,
                 "list_cost_usd": 3.25,
-                "spend_usd": 4.25,
+                "spend_usd": 1.75,
             },
         }
         assert payload["spend_daily"] == [
@@ -183,13 +183,13 @@ def test_activity_shape_windows_headers_and_stable_etag():
             },
             {
                 "day": (today - timedelta(days=7)).isoformat(),
-                "spend_usd": 103.0,
+                "spend_usd": 4.0,
             },
             {
                 "day": (today - timedelta(days=6)).isoformat(),
                 "spend_usd": 1.25,
             },
-            {"day": today.isoformat(), "spend_usd": 3.0},
+            {"day": today.isoformat(), "spend_usd": 0.5},
         ]
         assert payload["local_daily"][0]["source"] == "codex-session"
         assert first.headers["cache-control"] == ("public, max-age=300, s-maxage=300")

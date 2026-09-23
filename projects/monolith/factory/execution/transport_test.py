@@ -128,6 +128,7 @@ def _client(monkeypatch, handler):
         ({"total_cost_usd": -0.01}, None),
         ({"total_cost_usd": float("nan")}, None),
         ({"total_cost_usd": float("inf")}, None),
+        ({"total_cost_usd": 10**1000}, None),
         ({"total_cost_usd": "0.125"}, None),
         ({"total_cost_cents": 12.5}, None),
     ],
