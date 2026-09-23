@@ -45,9 +45,10 @@ def add_session(db, workflow_id="wf-1", local_id="local", **kwargs):
         return row.id
 
 
-def test_costs_are_grouped_and_zero_without_turns(db):
+def test_costs_are_grouped_and_missing_cost_stays_unavailable(db):
     first = add_session(db, local_id="first")
     second = add_session(db, local_id="second")
+    third = add_session(db, local_id="third")
     with Session(db) as session:
         for seq, cost in enumerate((0.1, 0.2, 0.3), 1):
             session.add(
@@ -59,11 +60,24 @@ def test_costs_are_grouped_and_zero_without_turns(db):
                     cost_usd=cost,
                 )
             )
+        session.add(
+            AgentTurn(
+                session_id=third,
+                seq=1,
+                prompt="unknown",
+                result_text="result",
+                cost_usd=None,
+            )
+        )
         session.commit()
         rows = swarm_session_views(session)["wf-1"]
     by_id = {row["id"]: row for row in rows}
     assert by_id[first]["total_cost_usd"] == pytest.approx(0.6)
-    assert by_id[second]["total_cost_usd"] == 0.0
+    assert by_id[first]["reported_cost_missing_turns"] == 0
+    assert by_id[second]["total_cost_usd"] is None
+    assert by_id[second]["reported_cost_missing_turns"] == 0
+    assert by_id[third]["total_cost_usd"] is None
+    assert by_id[third]["reported_cost_missing_turns"] == 1
     assert isinstance(by_id[first]["created_at"], datetime)
     assert by_id[first]["final_result_text"] == "result"
     assert by_id[second]["final_result_text"] is None

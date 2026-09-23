@@ -4026,6 +4026,12 @@ def _muse_usage_projection(events, session_id, command_id, expected_completions)
     meta = {
         "source": "msp_retained_session_view",
         "scope": "turn",
+        "counter_scope": "turn_delta",
+        "observation_scope": "model_completion_delta",
+        "cumulative_scope": "session",
+        "counter_unit": "token",
+        "duration_unit": "millisecond",
+        "input_includes_cache": True,
         "coverage": "reported_model_completions",
         "status": "unavailable",
         "reason": "missing_turn_boundary",
@@ -4038,7 +4044,11 @@ def _muse_usage_projection(events, session_id, command_id, expected_completions)
             else None
         ),
     }
-    result = {"muse": meta}
+    # Name the collector shape even when measurement is unavailable. Pricing
+    # can then apply Muse's cache-inclusive input semantics without inferring
+    # Claude semantics from a cache field name. Zero counters are exported only
+    # after the complete retained turn validates below.
+    result = {"shape": "muse", "muse": meta}
 
     def integer(value):
         if type(value) is not int or value < 0:
@@ -4212,6 +4222,16 @@ def _muse_usage_projection(events, session_id, command_id, expected_completions)
         result["total_tokens"] = sum(row["totalTokens"] for row in observations)
         if all("durationMs" in row for row in observations):
             result["model_ms"] = sum(row["durationMs"] for row in observations)
+        reported_models = [
+            row["modelId"] for row in observations if "modelId" in row
+        ]
+        if len(reported_models) == len(observations):
+            meta["model_identity_status"] = "reported"
+        elif reported_models:
+            meta["model_identity_status"] = "partially_reported"
+        else:
+            meta["model_identity_status"] = "not_reported"
+        meta["reported_model_ids"] = list(dict.fromkeys(reported_models))
         meta.update(status="complete", reason="reported_usage")
     except (ValueError, TypeError, KeyError, AttributeError):
         meta.update(status="unavailable", reason="invalid_evidence")
