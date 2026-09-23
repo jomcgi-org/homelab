@@ -37,6 +37,7 @@ __all__ = [
     "prepare_recall",
     "get_store",
     "search_notes",
+    "raw_extras_by_id",
     "search_public_chunks",
     "get_embedding_client",
     "ingest_raw",
@@ -195,6 +196,18 @@ def search_notes(session: "Session", query_embedding: list[float], **kwargs):
     return KnowledgeStore(session).search_notes_with_context(
         query_embedding=query_embedding, **kwargs
     )
+
+
+def raw_extras_by_id(session: "Session", raw_ids: list[str]) -> dict[str, dict]:
+    """Return durable authorization metadata for the selected raw inputs."""
+    from sqlmodel import select
+
+    from knowledge.models import RawInput
+
+    if not raw_ids:
+        return {}
+    rows = session.exec(select(RawInput).where(RawInput.raw_id.in_(raw_ids))).all()
+    return {row.raw_id: row.extra or {} for row in rows}
 
 
 def search_public_chunks(

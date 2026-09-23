@@ -220,7 +220,7 @@ def _context(prompt):
     return json.loads(prompt.rsplit("\n", 1)[1])
 
 
-def test_flag_off_keeps_legacy_planner_input(monkeypatch):
+def test_flag_off_keeps_legacy_planner_input(planner_db, monkeypatch):
     monkeypatch.delenv("FACTORY_PLANNER_KNOWLEDGE_ENABLED", raising=False)
     task = _task("t-off")
     assert conductor._load_planner_factory_context(task["id"]) is None
@@ -230,7 +230,9 @@ def test_flag_off_keeps_legacy_planner_input(monkeypatch):
     assert "knowledge" not in context
 
 
-def test_enabled_prompt_uses_current_receipt_and_preserves_citation_metadata():
+def test_enabled_prompt_uses_current_receipt_and_preserves_citation_metadata(
+    planner_db,
+):
     task = _task("t-enabled")
     context = _context(
         conductor.planner_prompt(
@@ -384,7 +386,7 @@ def test_receipt_authorization_excludes_same_repo_and_session_history(monkeypatc
     assert result["omitted"]["unauthorized_candidates"] == 2
 
 
-def test_kg_outage_is_visible_with_authoritative_factory_evidence():
+def test_kg_outage_is_visible_with_authoritative_factory_evidence(planner_db):
     task = _task("t-outage")
     unavailable = {
         "status": "unavailable",
@@ -408,7 +410,9 @@ def test_kg_outage_is_visible_with_authoritative_factory_evidence():
     assert manifest["knowledge"]["status"] == "unavailable"
 
 
-def test_prompt_pressure_drops_knowledge_before_required_evidence(monkeypatch):
+def test_prompt_pressure_drops_knowledge_before_required_evidence(
+    planner_db, monkeypatch
+):
     task = _task("t-pressure")
     required = _factory_context(task["id"], knowledge={**_knowledge(), "notes": []})
     deviation = {
@@ -526,6 +530,58 @@ def test_request_context_records_authorization_failure(planner_db, monkeypatch):
         assert json.loads(result.detail_json)["error"] == (
             "invalid_receipt_authorization"
         )
+
+
+def test_request_context_records_bounded_retrieval_failure(planner_db, monkeypatch):
+    engine, task_id, _policy = planner_db
+    monkeypatch.setenv("FACTORY_PLANNER_KNOWLEDGE_ENABLED", "true")
+
+    async def failed(_task_id, query=None, limit=5):
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(conductor_context, "planner_context", failed)
+    code, _reason = conductor._request_planner_context(
+        _task(task_id),
+        {
+            "action": "request_context",
+            "reason": "Need evidence",
+            "query": "current evidence",
+        },
+        "factory-decision:conductor_1:1",
+    )
+    assert code == "context_unavailable"
+    with Session(engine) as db:
+        result = db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == "planner_context_result")
+        ).one()
+        assert json.loads(result.detail_json)["error"] == "context_retrieval_failed"
+
+
+def test_request_context_enforces_and_records_timeout(planner_db, monkeypatch):
+    engine, task_id, _policy = planner_db
+    monkeypatch.setenv("FACTORY_PLANNER_KNOWLEDGE_ENABLED", "true")
+    monkeypatch.setattr(conductor, "PLANNER_CONTEXT_REQUEST_TIMEOUT_SECONDS", 0.001)
+
+    async def slow(_task_id, query=None, limit=5):
+        await asyncio.sleep(0.05)
+        return _factory_context(task_id)
+
+    monkeypatch.setattr(conductor_context, "planner_context", slow)
+    code, _reason = conductor._request_planner_context(
+        _task(task_id),
+        {
+            "action": "request_context",
+            "reason": "Need evidence",
+            "query": "current evidence",
+        },
+        "factory-decision:conductor_1:1",
+    )
+    assert code == "context_unavailable"
+    with Session(engine) as db:
+        result = db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == "planner_context_result")
+        ).one()
+        assert json.loads(result.detail_json)["error"] == "context_timeout"
 
 
 def test_server_derives_receipt_identity_and_fails_closed(planner_db):
