@@ -50,7 +50,8 @@ _DAILY_QUERY = text(
         output_tokens,
         cache_read_tokens,
         cost_usd,
-        list_cost_usd
+        list_cost_usd,
+        cost_source
     FROM public_api.agent_activity_daily
     WHERE day >= CURRENT_DATE - interval '29 days'
     ORDER BY day DESC, model ASC
@@ -151,6 +152,7 @@ def _shape_activity(
                 "cache_read_tokens": int(_value(row, "cache_read_tokens") or 0),
                 "cost_usd": _number(_value(row, "cost_usd")),
                 "list_cost_usd": _number(_value(row, "list_cost_usd")),
+                "cost_source": _value(row, "cost_source"),
             }
         )
     # Stable two-pass ordering keeps days newest-first and models alphabetical.
