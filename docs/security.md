@@ -456,9 +456,10 @@ closure is pruned in `projects/monolith/BUILD` and asserted by
   secret-shaped assignments. It is a fixed marker list: an identifier
   matching no marker publishes verbatim.
 
-The chart's destination-scoped egress policy and its guard test
-(`public_cilium_scoped_egress_guard_test.py`) describe a control the hub
-cannot apply (Network above). Kargo promotes `monolith-public` on the hub,
+The inert destination-scoped Cilium policy and its policy-only guard were
+removed in #5816. Public native-policy enforcement remains #5276 (Network
+above); the unrelated OTEL endpoint assertion survives in the public render
+test. Kargo promotes `monolith-public` on the hub,
 so the live `targetRevision` on the Application, not the git pin, says what
 is deployed.
 
