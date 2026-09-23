@@ -6,10 +6,9 @@
 # These tests drive it against real throwaway git repositories: the behaviour
 # under test IS the git history walk, so stubbing git would test nothing.
 #
-# The bazel dependency query is skipped by passing no package label, which puts
-# the script in its documented chart-dir-only fallback. That keeps the test
-# hermetic (no bazel inside the test sandbox) and is orthogonal to the version
-# arithmetic being asserted here.
+# Arithmetic cases pass no package label and use the documented chart-only
+# mode. Input-selection cases mock only the Bazel query boundary and still use
+# real files, commits, deletions, renames and Git history walks.
 set -o errexit -o nounset -o pipefail
 
 SCRIPT_REL="bazel/helm/chart-version.sh"
@@ -69,12 +68,121 @@ commit_in() {
 	local repo="$1" subject="$2" author="${3:-test}"
 	echo "$RANDOM" >>"$repo/chart/values.yaml"
 	git -C "$repo" add chart/values.yaml
-	git -C "$repo" -c "user.name=${author}" commit --quiet -m "$subject"
+	GIT_AUTHOR_NAME="$author" GIT_COMMITTER_NAME="$author" \
+		git -C "$repo" commit --quiet -m "$subject"
 }
 
 run_version() {
 	local repo="$1"
 	(cd "$repo" && bash "$SCRIPT" chart 2>/dev/null)
+}
+
+# Query-boundary fixture. The mock reads its response from the throwaway Git
+# repository, records the expression for assertions, and can emit partial
+# stdout before failing. Everything after the query is the production Git walk.
+MOCK_BIN="$TMP/mock-bin"
+mkdir -p "$MOCK_BIN"
+cat >"$MOCK_BIN/bazel" <<'MOCK_BAZEL'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >.bazel-query-args
+[[ -f .bazel-query-output ]] && cat .bazel-query-output
+if [[ -f .bazel-query-status ]]; then
+	exit "$(cat .bazel-query-status)"
+fi
+exit 0
+MOCK_BAZEL
+chmod +x "$MOCK_BIN/bazel"
+
+write_query_output() {
+	local repo="$1"
+	cat >"$repo/.bazel-query-output" <<'QUERY_OUTPUT'
+//projects/embervm/chart:BUILD
+//projects/embervm/chart:Chart.yaml
+//projects/embervm/chart:values.yaml
+//projects/embervm/chart:templates/deployment.yaml
+//projects/embervm/chart:templates/tokenbroker-deployment.yaml
+//projects/embervm/chart:templates/notes/README.md
+//projects/embervm/image:BUILD
+//projects/embervm/image:app.py
+//projects/embervm/image:embedded_test.py
+//projects/embervm/proto/embervm/node/v1:node.proto
+//projects/embervm/deploy:BUILD
+//projects/embervm/deploy:values.yaml
+//shared/runtime:BUILD
+//shared/runtime:config.txt
+//bazel/rules:image.bzl
+@external_repo//:immutable_input
+QUERY_OUTPUT
+}
+
+new_input_repo() {
+	local name="$1"
+	local repo="$TMP/$name"
+	mkdir -p \
+		"$repo/projects/embervm/chart/templates/notes" \
+		"$repo/projects/embervm/image" \
+		"$repo/projects/embervm/proto/embervm/node/v1" \
+		"$repo/projects/embervm/deploy" \
+		"$repo/projects/embervm/docs" \
+		"$repo/projects/embervm/specs" \
+		"$repo/shared/runtime" \
+		"$repo/bazel/rules"
+	git -C "$repo" init --quiet
+	git -C "$repo" config user.email "test@example.com"
+	git -C "$repo" config user.name "test"
+	git -C "$repo" config commit.gpgsign false
+	printf 'name: embervm\nversion: 0.1.0\n' >"$repo/projects/embervm/chart/Chart.yaml"
+	printf 'replicas: 1\n' >"$repo/projects/embervm/chart/values.yaml"
+	printf 'kind: Deployment\n' >"$repo/projects/embervm/chart/templates/deployment.yaml"
+	printf 'kind: Deployment\n' >"$repo/projects/embervm/chart/templates/tokenbroker-deployment.yaml"
+	printf 'packaged operator notes\n' >"$repo/projects/embervm/chart/templates/notes/README.md"
+	printf 'print("image")\n' >"$repo/projects/embervm/image/app.py"
+	printf 'print("packaged test fixture")\n' >"$repo/projects/embervm/image/embedded_test.py"
+	printf 'removed input\n' >"$repo/projects/embervm/image/removed.py"
+	printf 'renamed input\n' >"$repo/projects/embervm/image/renamed.py"
+	printf 'syntax = "proto3";\n' >"$repo/projects/embervm/proto/embervm/node/v1/node.proto"
+	printf 'shared = true\n' >"$repo/shared/runtime/config.txt"
+	printf 'def image_rule():\n    pass\n' >"$repo/bazel/rules/image.bzl"
+	printf 'load("//bazel/rules:image.bzl", "image_rule")\n' >"$repo/projects/embervm/image/BUILD"
+	printf 'exports_files(["config.txt"])\n' >"$repo/shared/runtime/BUILD"
+	printf 'exports_files(["Chart.yaml"])\n' >"$repo/projects/embervm/chart/BUILD"
+	cat >"$repo/projects/embervm/deploy/BUILD" <<'DEPLOY_BUILD'
+genrule(
+    name = "render_manifests",
+    srcs = ["values.yaml"],
+    outs = ["manifests/all.yaml"],
+    cmd = "cp $< $@",
+)
+DEPLOY_BUILD
+	printf 'replicas: 2\n' >"$repo/projects/embervm/deploy/values.yaml"
+	printf 'kind: Application\n' >"$repo/projects/embervm/deploy/application.yaml"
+	printf 'resources: []\n' >"$repo/projects/embervm/deploy/kustomization.yaml"
+	printf 'architecture notes\n' >"$repo/projects/embervm/ARCHITECTURE.md"
+	printf 'user documentation\n' >"$repo/projects/embervm/docs/README.md"
+	printf 'test only\n' >"$repo/projects/embervm/image/app_test.py"
+	printf 'STPA fragment\n' >"$repo/projects/embervm/specs/control-loop.md"
+	printf 'build --stamp=no\n' >"$repo/.bazelrc"
+	git -C "$repo" add -A
+	git -C "$repo" commit --quiet -m "chore: set version 0.1.0"
+	write_query_output "$repo"
+	echo "$repo"
+}
+
+commit_path() {
+	local repo="$1" path="$2" subject="$3"
+	mkdir -p "$(dirname "$repo/$path")"
+	printf 'change %s\n' "$RANDOM" >>"$repo/$path"
+	git -C "$repo" add "$path"
+	git -C "$repo" commit --quiet -m "$subject"
+}
+
+run_input_version() {
+	local repo="$1"
+	(
+		cd "$repo" &&
+			PATH="$MOCK_BIN:$PATH" bash "$SCRIPT" \
+				projects/embervm/chart //projects/embervm/chart:chart.package 2>/dev/null
+	)
 }
 
 # 1. No commits since the version was set: unchanged.
@@ -209,6 +317,174 @@ if [[ "$shallow_out" == "0.1.0" ]]; then
 else
 	echo "ok: shallow clone emitted no version (got '${shallow_out}')"
 fi
+
+# 12. The query requests concrete sources and build definitions, including the
+# explicit deploy render target. This protects the contract independently of
+# the individual path-behaviour cases below.
+repo=$(new_input_repo querycontract)
+expect "query-backed baseline" "0.1.0" "$(run_input_version "$repo")" \
+	"no release input changed"
+query_args=$(cat "$repo/.bazel-query-args")
+for query_term in 'kind("source file"' 'buildfiles(' \
+	'deps(//projects/embervm/chart:chart.package)' \
+	'deps(//projects/embervm/deploy:render_manifests)'; do
+	if grep -Fq "$query_term" <<<"$query_args"; then
+		echo "ok: query contains ${query_term}"
+	else
+		echo "FAIL: query omitted ${query_term}: ${query_args}" >&2
+		FAILURES=$((FAILURES + 1))
+	fi
+done
+
+# 13. Historical replay fixture for 091d574fcd5346b3959a5033cd2b5be0320067e5.
+# That commit changed only projects/embervm/ARCHITECTURE.md. The fixture keeps
+# the real subject and path but does not need repository history or network.
+repo=$(new_input_repo replay091)
+commit_path "$repo" projects/embervm/ARCHITECTURE.md \
+	"docs(embervm): correct CPU pivot status"
+expect "091d574f-like architecture edit" "0.1.0" "$(run_input_version "$repo")" \
+	"non-input documentation is outside the source closure"
+
+# Unrelated tests, STPA and docs in a dependency package remain non-inputs.
+commit_path "$repo" projects/embervm/image/app_test.py "test(embervm): add image case"
+commit_path "$repo" projects/embervm/specs/control-loop.md "docs(embervm): clarify STPA"
+commit_path "$repo" projects/embervm/docs/README.md "docs(embervm): clarify usage"
+expect "unrelated project support files" "0.1.0" "$(run_input_version "$repo")" \
+	"test, STPA and docs paths are not selected"
+
+# 14. Historical replay fixture for ff558852efcf72f410310ec4d135dc33c6e697e6.
+# The real commit changed both tokenbroker-deployment.yaml and node.proto, so it
+# is a release input despite its docs subject. This is intentionally a bump.
+repo=$(new_input_repo replayff)
+printf '# chart change\n' >>"$repo/projects/embervm/chart/templates/tokenbroker-deployment.yaml"
+printf '// proto change\n' >>"$repo/projects/embervm/proto/embervm/node/v1/node.proto"
+git -C "$repo" add \
+	projects/embervm/chart/templates/tokenbroker-deployment.yaml \
+	projects/embervm/proto/embervm/node/v1/node.proto
+git -C "$repo" commit --quiet -m "docs(embervm): mark unused node RPCs reserved"
+expect "ff558852-like chart and proto edits" "0.1.1" "$(run_input_version "$repo")" \
+	"one docs-subject commit changes two release inputs"
+
+# 15. Subjects do not override actual chart, deploy or pinned-image inputs.
+repo=$(new_input_repo templateinput)
+commit_path "$repo" projects/embervm/chart/templates/deployment.yaml \
+	"docs(embervm): explain deployment"
+expect "independent template edit" "0.1.1" "$(run_input_version "$repo")" \
+	"chart template is packaged"
+
+repo=$(new_input_repo deployinput)
+commit_path "$repo" projects/embervm/deploy/values.yaml \
+	"docs(embervm): explain deploy value"
+expect "deploy values edit" "0.1.1" "$(run_input_version "$repo")" \
+	"render target selects active deploy values"
+
+repo=$(new_input_repo imageinput)
+commit_path "$repo" projects/embervm/image/app.py \
+	"docs(embervm): annotate image source"
+expect "pinned image source edit" "0.1.1" "$(run_input_version "$repo")" \
+	"image source is in chart.package closure"
+
+repo=$(new_input_repo sharedinput)
+commit_path "$repo" shared/runtime/config.txt \
+	"docs(shared): clarify runtime config"
+expect "shared source dependency edit" "0.1.1" "$(run_input_version "$repo")" \
+	"closure is not restricted to the chart project"
+
+repo=$(new_input_repo buildinput)
+commit_path "$repo" bazel/rules/image.bzl \
+	"docs(build): clarify image rule"
+expect "build definition edit" "0.1.1" "$(run_input_version "$repo")" \
+	"buildfiles closure is a release input"
+
+repo=$(new_input_repo buildconfig)
+commit_path "$repo" .bazelrc "docs(build): clarify shared build setting"
+expect "build configuration edit" "0.1.1" "$(run_input_version "$repo")" \
+	"repository build configuration affects selected targets"
+
+# A documentation-looking file can still be real packaged content. Selection
+# comes from the build graph, never from its extension or basename.
+repo=$(new_input_repo packageddoc)
+commit_path "$repo" projects/embervm/chart/templates/notes/README.md \
+	"docs(chart): update packaged notes"
+expect "packaged documentation edit" "0.1.1" "$(run_input_version "$repo")" \
+	"doc-looking chart input remains selected"
+
+repo=$(new_input_repo packagedtest)
+commit_path "$repo" projects/embervm/image/embedded_test.py \
+	"test(image): update embedded fixture"
+expect "packaged test-looking input edit" "0.1.1" "$(run_input_version "$repo")" \
+	"graph selection wins over a test-looking basename"
+
+# 16. Files removed from the current closure cannot be named by the query. The
+# package-directory D/R guard conservatively preserves those history entries.
+repo=$(new_input_repo deletedinput)
+git -C "$repo" rm --quiet projects/embervm/image/removed.py
+git -C "$repo" commit --quiet -m "fix(embervm): remove image input"
+expect "deleted former input" "0.1.1" "$(run_input_version "$repo")" \
+	"deletion is retained even though the current query cannot name it"
+
+repo=$(new_input_repo renamedinput)
+mkdir -p "$repo/projects/embervm/archive"
+git -C "$repo" mv projects/embervm/image/renamed.py projects/embervm/archive/renamed.py
+git -C "$repo" commit --quiet -m "fix(embervm): rename image input out of target"
+expect "renamed former input" "0.1.1" "$(run_input_version "$repo")" \
+	"rename is retained after leaving the current closure"
+
+# 17. Partial stdout is not a usable closure. A query failure switches to the
+# conservative repo-wide walk, so even a path missing from partial output bumps.
+repo=$(new_input_repo queryfailure)
+commit_path "$repo" projects/embervm/docs/README.md "fix(embervm): query failure fixture"
+printf '//projects/embervm/chart:Chart.yaml\n' >"$repo/.bazel-query-output"
+printf '7\n' >"$repo/.bazel-query-status"
+expect "partial query failure" "0.1.1" "$(run_input_version "$repo")" \
+	"failed query counts repo-wide instead of trusting partial stdout"
+
+repo=$(new_input_repo unsupportedquery)
+commit_path "$repo" projects/embervm/docs/README.md "fix(embervm): unsupported query fixture"
+printf 'not-a-bazel-label\n' >"$repo/.bazel-query-output"
+expect "unsupported query output" "0.1.1" "$(run_input_version "$repo")" \
+	"unsupported closure counts repo-wide"
+
+# 18. A fallback release can cross a semantic boundary outside the closure.
+# A subsequent scoped release must use the same allocation history, even if
+# the earlier publisher has not written its version back to Chart.yaml yet.
+for boundary in feature breaking; do
+	base=0.536.39
+	expected_first=0.537.0
+	expected_second=0.537.1
+	subject="feat(other): new capability"
+	if [[ "$boundary" == breaking ]]; then
+		base=1.8.4
+		expected_first=2.0.0
+		expected_second=2.0.1
+		subject="feat(other)!: incompatible capability"
+	fi
+	repo=$(new_repo "fallback-${boundary}" "$base")
+	commit_path "$repo" other/source.py "$subject"
+	expect "unrelated ${boundary} stays quiet" "$base" "$(run_version "$repo")" \
+		"global allocation does not force an unrelated release"
+	first=$(cd "$repo" && CHART_VERSION_ALL_PATHS=1 bash "$SCRIPT" chart 2>/dev/null)
+	expect "fallback ${boundary} boundary" "$expected_first" "$first" \
+		"digest authority sees the repository-wide boundary"
+	commit_in "$repo" "fix: subsequent chart change"
+	second=$(run_version "$repo")
+	expect "scoped fix retains ${boundary} boundary" "$expected_second" "$second" \
+		"later source publishes above the earlier fallback"
+	expect "normal and fallback agree for ${boundary}" "$second" \
+		"$(cd "$repo" && CHART_VERSION_ALL_PATHS=1 bash "$SCRIPT" chart 2>/dev/null)" \
+		"one allocation function regardless of release trigger"
+done
+
+# Repository-wide patch serials must not collide after fallback either.
+repo=$(new_repo fallback-patches 0.1.0)
+commit_path "$repo" other/source.py "fix(other): one"
+commit_path "$repo" other/source.py "fix(other): two"
+expect "fallback patch allocation" "0.1.2" \
+	"$(cd "$repo" && CHART_VERSION_ALL_PATHS=1 bash "$SCRIPT" chart 2>/dev/null)" \
+	"two changes outside the closure"
+commit_in "$repo" "fix: chart follows"
+expect "scoped patch follows fallback" "0.1.3" "$(run_version "$repo")" \
+	"all commits reserve their position"
 
 if [[ "$FAILURES" -gt 0 ]]; then
 	echo "${FAILURES} test(s) failed"

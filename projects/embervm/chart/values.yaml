@@ -102,6 +102,18 @@ controlPlane:
     # One real S3Client meta fetch at boot and after each completed interval.
     # The result is observational only and never changes readiness.
     intervalSeconds: 300
+  # Dedicated HMAC key shared by restore-capability minting and verification.
+  # One value flips both sides together. With onepassword.itemPath set, the
+  # chart creates a OnePasswordItem and name defaults to
+  # <embervm.fullname>-restore-capability-key. Otherwise enabled requires the
+  # name of a pre-created Secret. Disabled by default, so existing environments
+  # continue using the one-release legacy bearer fallback until staged rollout.
+  restoreCapabilityKeySecret:
+    enabled: false
+    name: ""
+    key: restore-capability-key
+    onepassword:
+      itemPath: ""
 
 controlPlaneLivenessProbe:
   # Issue #5235: at the 10-second period, allow up to 60 seconds for an internal
@@ -349,6 +361,11 @@ service:
 
 tokenBroker:
   enabled: true
+  plaintext:
+    # Final retirement gate for credential and quota routes on port 8080.
+    # Health and metrics stay operational. Keep false through staged mTLS
+    # validation and arm only in a separately authorized values change.
+    retireProtectedRoutes: false
   # Bosun installation tokens. Inert until the App, SPIFFE callers and repository
   # IDs are configured. These grants are not added to the legacy OAuth catalog.
   githubApp:
@@ -1130,8 +1147,10 @@ grpcConnectionSweeper:
 # workload's desired set (current ref plus still-refcounted refs) are evicted,
 # first as the supervised one-shot backlog reclaim, then as the ongoing
 # retention backstop. Durability is checked before any eviction: a workload is
-# skipped whole unless its current base shows exported=true in S3. Flipping
-# this value back to "" is the entire rollback lever.
+# skipped whole unless its current base is present. Immediately before each
+# local removal, the control plane must also HEAD the exact vendored meta.json
+# completion marker successfully; any identity or store failure retains the
+# local copy. Flipping this value back to "" is the entire rollback lever.
 baseRetention:
   sweepEnabled: ""
   diskDrivenEnabled: ""

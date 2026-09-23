@@ -81,12 +81,12 @@ spec:
   #
   # jsonPointers into spec.sources, with the cost described at the top of this
   # file: combined with RespectIgnoreDifferences this stops ArgoCD patching ANY
-  # field in that array for these three Applications, not only targetRevision.
+  # field in that array for these four Applications, not only targetRevision.
   # So a change to a valueFiles path, a chart name or a repoURL on any of them
   # will NOT apply, and ArgoCD will keep reporting success. That is the trade
   # for having promotions survive, and it is why
   # bazel/tools/ci/check-application-drift.sh exists: run it after changing any
-  # source field on monolith, monolith-public or embervm.
+  # source field on monolith, monolith-agents, monolith-public or embervm.
   ignoreDifferences:
     - group: argoproj.io
       kind: Application
@@ -96,6 +96,11 @@ spec:
     - group: argoproj.io
       kind: Application
       name: monolith-public
+      jsonPointers:
+        - /spec/sources/0/targetRevision
+    - group: argoproj.io
+      kind: Application
+      name: monolith-agents
       jsonPointers:
         - /spec/sources/0/targetRevision
     - group: argoproj.io

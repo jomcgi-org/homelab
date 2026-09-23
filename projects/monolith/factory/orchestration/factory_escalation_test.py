@@ -131,6 +131,8 @@ class Github:
                 }
             )
             return self.comments[-1]
+        if method == "PATCH" and suffix.startswith("issues/") and "body" in payload:
+            self.issue_bodies[int(suffix.rsplit("/", 1)[1])] = payload["body"]
         if suffix == "issues":
             self.next_issue += 1
             return {"number": self.next_issue}
@@ -765,6 +767,87 @@ def test_intervention_required_notifies_once_per_task(db, github, notices):
     }
 
 
+@pytest.mark.parametrize(
+    "action,detail,cleared",
+    [
+        ("stop_settled", {"cessation_confirmed": True}, True),
+        ("stop_settled", {"cessation_confirmed": False}, False),
+        ("stop_settled", {}, False),
+        ("interrupted_continuation_settled", {}, True),
+        ("record_start_outcome", {"reconciled": True, "status": "failed"}, True),
+        ("record_start_outcome", {"reconciled": True, "status": "succeeded"}, True),
+        ("record_start_outcome", {"reconciled": True, "status": "uncertain"}, False),
+        ("record_start_outcome", {"reconciled": False, "status": "failed"}, False),
+        ("record_start_outcome", {"status": "failed"}, False),
+    ],
+)
+def test_settled_intervention_does_not_consume_notification_fence(
+    db, github, notices, action, detail, cleared
+):
+    task_id, _policy = admitted(ISSUE)
+    workflow = "factory-node:worker:1"
+    add_intervention(db, task_id, workflow, required=True, reason="guest missing")
+    key = "start_key" if action == "record_start_outcome" else "workflow_id"
+    with Session(db) as session:
+        session.add(
+            FactoryAudit(
+                actor="factory:reconcile",
+                action=action,
+                task_id=task_id,
+                detail_json=json.dumps({key: workflow, **detail}),
+            )
+        )
+        session.commit()
+    conductor._consume_intervention_notifications(task_id)
+    conductor._consume_intervention_notifications(task_id)
+    assert len(notices) == (0 if cleared else 1)
+    assert len(audits(db, "intervention_required_notified")) == (0 if cleared else 1)
+    assert len(audits(db, "stop_observation")) == 1
+
+    # A different attempt still requires help, including after a quiet scan.
+    add_intervention(
+        db, task_id, "factory-node:worker:2", required=True, reason="stop failed"
+    )
+    conductor._consume_intervention_notifications(task_id)
+    conductor._consume_intervention_notifications(task_id)
+    assert len(notices) == 1
+    if cleared:
+        assert "workflow=factory-node:worker:2" in notices[0][0]
+        assert "workflow=factory-node:worker:1" not in notices[0][0]
+
+
+@pytest.mark.parametrize("settled_first", [False, True])
+def test_intervention_settlement_is_ordered_and_exact_attempt_only(
+    db, github, notices, settled_first
+):
+    task_id, _policy = admitted(ISSUE)
+
+    def settled():
+        with Session(db) as session:
+            session.add(
+                FactoryAudit(
+                    actor="factory:reconcile",
+                    action="stop_settled",
+                    task_id=task_id,
+                    detail_json=json.dumps(
+                        {"workflow_id": "worker:1", "cessation_confirmed": True}
+                    ),
+                )
+            )
+            session.commit()
+
+    if settled_first:
+        settled()
+    add_intervention(db, task_id, "worker:1", required=True, reason="missing proof")
+    add_intervention(db, task_id, "worker:2", required=True, reason="stop failed")
+    if not settled_first:
+        settled()
+    conductor._consume_intervention_notifications(task_id)
+    assert len(notices) == 1
+    assert "workflow=worker:2" in notices[0][0]
+    assert ("workflow=worker:1" in notices[0][0]) is settled_first
+
+
 def test_exhausted_stop_notification_carries_safe_reconciliation_context(
     db, github, notices
 ):
@@ -1348,7 +1431,7 @@ def test_today_cards_continue_or_escalate_under_backstop(
     # A retry after settlement cannot emit another comment or card.
     conductor._escalate_task(task, decision, "replay-card", [])
     row = receipt_of(db, task_id)
-    if card["issue"] in {6193, 5444}:
+    if card["issue"] == 6193:
         assert row.state == "escalated"
         assert row.escalation_json is not None
         assert "Decided by the conductor:" not in github.bodies()
@@ -1398,17 +1481,24 @@ def test_parameter_with_irreversible_effect_still_escalates(
     assert len(notices) == 1
 
 
-@pytest.mark.parametrize("field", ["value", "reason"])
-def test_model_labelled_reversible_budget_gate_still_escalates(
-    db, github, notices, field
+@pytest.mark.parametrize(
+    "value",
+    [
+        "budget alert 50 USD per month",
+        "create bucket",
+        "delete prod data",
+        "rotate account credential",
+    ],
+)
+def test_model_labelled_reversible_restricted_value_still_escalates(
+    db, github, notices, value
 ):
     task_id, _policy = admitted(ISSUE)
     gate = {
         "kind": "parameter",
         "classification": "reversible",
-        "value": "N=3",
+        "value": value,
         "reason": "A reversible default",
-        field: "budget alert 50 USD per month",
     }
     conductor._escalate_task(
         task_of(task_id), pause(pause_options(), gate=gate), "budget", []
@@ -1417,6 +1507,54 @@ def test_model_labelled_reversible_budget_gate_still_escalates(
     assert "## Decision needed" in github.bodies()
     assert "Decided by the conductor:" not in github.bodies()
     assert len(notices) == 1
+
+
+@pytest.mark.parametrize("kind", ["parameter", "live_validation"])
+def test_reversible_gate_rationale_does_not_request_operational_authority(
+    db, github, notices, kind
+):
+    """Replay the explanatory wording that stranded #5505 and #5460."""
+    from factory.orchestration import factory_gates as gates
+
+    task_id, _policy = admitted(ISSUE)
+    gate = {
+        "kind": kind,
+        "classification": "reversible",
+        "reason": (
+            "The proposed configuration is repository-only and default-off; "
+            "it neither provisions an external account nor deletes production "
+            "data or spends money."
+        ),
+    }
+    if kind == "parameter":
+        gate["value"] = "bricks.autoscale.ceilingIdleMs=3600000 (60 minutes)"
+    else:
+        gate["scope"] = "Stage collector HTTPS and CA support, default-off."
+        gate["live_checks"] = [
+            "An authorized operator supplies verified CA material and validates HTTPS."
+        ]
+    decision = pause(pause_options(), gate=gate)
+    conductor._escalate_task(task_of(task_id), decision, "safe-rationale", [])
+    conductor._escalate_task(task_of(task_id), decision, "safe-rationale", [])
+
+    assert receipt_of(db, task_id).state == "admitted"
+    assert task_of(task_id)["conductor_gates"] == [gate]
+    assert len(audits(db, "conductor_gate_decided")) == 1
+    assert not notices
+    assert "## Decision needed" not in github.bodies()
+    if kind == "parameter":
+        assert github.bodies().count("Decided by the conductor:") == 1
+        assert gate["value"] in gates.guidance(task_of(task_id))
+    else:
+        assert gates.live_checks(task_of(task_id)) == gate["live_checks"]
+        body_writes = [
+            payload["body"]
+            for method, path, payload in github.writes
+            if method == "PATCH" and path == f"issues/{ISSUE}"
+        ]
+        assert len(body_writes) == 1
+        assert f"- [ ] {gate['live_checks'][0]}" in body_writes[0]
+        assert "do not close it" in gates.guidance(task_of(task_id))
 
 
 def test_plain_retention_count_resolves(db, github, notices):
@@ -1521,6 +1659,32 @@ def test_delivery_gate_without_open_pr_escalates(db, github, notices):
     assert receipt_of(db, task_id).state == "escalated"
     assert "## Decision needed" in github.bodies()
     assert len(notices) == 1
+
+
+@pytest.mark.parametrize(
+    "classification", ["reversible", "spending", "external_account", "prod_deletion"]
+)
+def test_delivery_adoption_uses_ownership_checks_not_proposal_keywords(
+    db, github, monkeypatch, classification
+):
+    from factory.orchestration import factory_gates as gates
+
+    task_id, _policy = admitted(ISSUE)
+    task = task_of(task_id)
+    pull = existing_pull(task)
+    monkeypatch.setattr(conductor, "github_list", lambda *_: [pull])
+    gate = {
+        "kind": "delivery_target",
+        "classification": classification,
+        "value": "Adopt the existing PR; do not create a duplicate.",
+        "reason": "Preserve unknown-cost accounting and the existing review requirements.",
+    }
+    assert gates.resolve(task, {"gate": gate}, "existing-delivery") is (
+        classification == "reversible"
+    )
+    assert bool(task_of(task_id)["delivery_adoption"]) is (
+        classification == "reversible"
+    )
 
 
 def test_rescope_mismatched_pr_logs_and_persists_gate(db, github, monkeypatch, caplog):

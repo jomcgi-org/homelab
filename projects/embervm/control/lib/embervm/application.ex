@@ -46,12 +46,20 @@ defmodule Embervm.Application do
     # BEFORE the supervisor starts so the Router (reads it per request) sees it.
     # Empty ("") accepts any valid ServiceAccount token (a permissive fallback for
     # a cluster that has not pinned the SA); it never accepts an invalid token.
-    Application.put_env(:embervm, :noded_service_account, trimmed_env("EMBERVM_NODED_SERVICE_ACCOUNT"))
+    Application.put_env(
+      :embervm,
+      :noded_service_account,
+      trimmed_env("EMBERVM_NODED_SERVICE_ACCOUNT")
+    )
 
     # Shared chart secret for noded gRPC authentication. Read and trim it before
     # any child opens a channel; an empty value deliberately attaches no header.
     # Like configured_nodes/0, this is pure environment wiring and stays Finch-free.
     Application.put_env(:embervm, :noded_bearer_token, trimmed_env("EMBERVM_NODED_BEARER_TOKEN"))
+
+    # Restore-capability authentication is independent of transport auth. Empty
+    # means unset so the minting path uses the one-release bearer fallback.
+    configure_restore_capability_key()
 
     # Principal-artifact envelope encryption is one control-plane gate shared by
     # wrap and restore capability minting. It defaults off and performs no store
@@ -108,7 +116,7 @@ defmodule Embervm.Application do
       # The async lifecycle-write queue (ADR embervm/014 decision 2), gated by
       # EMBERVM_ASYNC_LIFECYCLE_WRITES. Placed AFTER the op-log (it appends through
       # it) and BEFORE TaskStore/SessionStore/SessionManager (they enqueue their
-      # off-hot-path :assigned/:started and session_created/session_relit appends
+      # off-hot-path :assigned/:started and session_relit appends
       # here). Owns no ETS and effectively never crashes, so leading the stores in
       # the rest_for_one chain costs nothing; it drains on graceful shutdown so a CP
       # roll loses no pending append. Started unconditionally: with the gate OFF it
@@ -166,6 +174,7 @@ defmodule Embervm.Application do
        retention_sweep_enabled: base_retention_sweep_enabled(),
        retention_disk_driven_enabled: base_retention_disk_driven_enabled(),
        remote_retention_sweep_enabled: base_remote_retention_sweep_enabled(),
+       store_client: artifact_store_client(),
        op_log: op_log_mod(),
        op_log_mod: op_log_mod()},
       # The Workload informer (Task 5): LISTs then WATCHes Workload CRs over the
@@ -221,6 +230,16 @@ defmodule Embervm.Application do
       # ordering. The TaskStore charge hook targets the module (the public table),
       # not the process, so TaskStore may start earlier.
       {Embervm.Metering, [op_log_mod: op_log_mod()]},
+      # Durable live-session VM claims must exist before Dispatcher's first boot
+      # sweep adopts node-reported primed inventory. Rebuilding SessionStore here
+      # makes that ordering explicit and fail-closed.
+      {Embervm.SessionStore,
+       [
+         op_log_mod: op_log_mod(),
+         on_metered: &Embervm.Metering.on_metered/1,
+         async_writer: Embervm.AsyncWriter,
+         async_lifecycle_writes: async_lifecycle_writes_enabled()
+       ]},
       # The dispatcher (Task 11): the heart of R0. Owns the per-workload fair
       # queues, the primed-VM inventory, the enforcement caps, and drives queued
       # tasks to terminal via Assign. Placed AFTER TaskStore (drives its FSM +
@@ -249,25 +268,18 @@ defmodule Embervm.Application do
       # reads registered bricks from the capacity ledger). Inert while
       # bricks.enabled=false renders no classes into its config.
       {Embervm.BrickController, brick_controller_opts()},
-      # Session lifecycle (R2). The SessionStore (ETS hot set over the durable
-      # `sessions` projection, rebuilt on boot) comes first; the SessionRegistry
-      # (session_id -> live Embervm.Session pid) and the SessionSupervisor
+      # Session lifecycle (R2). SessionStore was started before Dispatcher so its
+      # rebuilt durable claims gate the first inventory adoption. SessionRegistry
+      # (session_id -> live Embervm.Session pid) and SessionSupervisor
       # (DynamicSupervisor for the per-live-session processes) next; the
       # SessionManager (create/destroy/route brain) last, since it starts children
       # into the supervisor and reads the store/registry. Placed AFTER Metering
       # (create reads the quota table + budgets), the Dispatcher (create CLAIMs a
       # primed VM from its inventory), and NodeChannel (the SessionAssign channel),
       # and BEFORE the Router (its session handlers call the manager + store). Under
-      # :rest_for_one a SessionStore restart bounces the manager and Router, which
-      # rebuild from the durable projection. With no node wired, create denies
+      # :rest_for_one a SessionStore restart bounces Dispatcher and the manager,
+      # which rebuild from the durable projection. With no node wired, create denies
       # :no_capacity and nothing runs, exactly like the dispatcher in R0.
-      {Embervm.SessionStore,
-       [
-         op_log_mod: op_log_mod(),
-         on_metered: &Embervm.Metering.on_metered/1,
-         async_writer: Embervm.AsyncWriter,
-         async_lifecycle_writes: async_lifecycle_writes_enabled()
-       ]},
       {Registry, keys: :unique, name: Embervm.SessionRegistry},
       {DynamicSupervisor, strategy: :one_for_one, name: Embervm.SessionSupervisor},
       {Embervm.SessionManager, session_manager_opts()},
@@ -601,7 +613,8 @@ defmodule Embervm.Application do
         {Embervm.OpLog.SQLite, path: oplog_path(), journal_horizon_ms: journal_horizon_ms()}
 
       Embervm.OpLog.Postgres ->
-        {Embervm.OpLog.Postgres, dsn: trimmed_env("EMBERVM_OPLOG_DSN"), journal_horizon_ms: journal_horizon_ms()}
+        {Embervm.OpLog.Postgres,
+         dsn: trimmed_env("EMBERVM_OPLOG_DSN"), journal_horizon_ms: journal_horizon_ms()}
     end
   end
 
@@ -626,10 +639,17 @@ defmodule Embervm.Application do
 
     previous_generation =
       case {previous, trimmed_env("EMBERVM_KEK_ROOT_PREVIOUS_GENERATION")} do
-        {nil, ""} -> nil
-        {nil, _generation} -> raise "EMBERVM_KEK_ROOT_PREVIOUS_GENERATION requires a previous root"
-        {_root, ""} -> raise "EMBERVM_KEK_ROOT_PREVIOUS requires its generation"
-        {_root, _generation} -> root_generation("EMBERVM_KEK_ROOT_PREVIOUS_GENERATION", nil)
+        {nil, ""} ->
+          nil
+
+        {nil, _generation} ->
+          raise "EMBERVM_KEK_ROOT_PREVIOUS_GENERATION requires a previous root"
+
+        {_root, ""} ->
+          raise "EMBERVM_KEK_ROOT_PREVIOUS requires its generation"
+
+        {_root, _generation} ->
+          root_generation("EMBERVM_KEK_ROOT_PREVIOUS_GENERATION", nil)
       end
 
     cond do
@@ -667,13 +687,17 @@ defmodule Embervm.Application do
 
   defp root_generation(name, default) do
     case trimmed_env(name) do
-      "" when is_integer(default) -> default
+      "" when is_integer(default) ->
+        default
+
       raw ->
         case Integer.parse(raw) do
           {generation, ""}
           when generation > 0 and generation <= 18_446_744_073_709_551_615 ->
             generation
-          _ -> raise "invalid #{name}: expected a positive integer"
+
+          _ ->
+            raise "invalid #{name}: expected a positive integer"
         end
     end
   end
@@ -737,6 +761,17 @@ defmodule Embervm.Application do
       # No pinned override: seed EMPTY. Instances arrive via dial-home
       # registration (NodeRegistry.register/2), never via a boot-time K8s call.
       true -> []
+    end
+  end
+
+  # Public for the boot-wiring regression test. The application calls this
+  # before starting any supervised child, and an empty or whitespace-only value
+  # is deliberately absent from app env rather than becoming a usable MAC key.
+  @doc false
+  def configure_restore_capability_key do
+    case trimmed_env("EMBERVM_RESTORE_CAPABILITY_KEY") do
+      "" -> Application.delete_env(:embervm, :restore_capability_key)
+      key -> Application.put_env(:embervm, :restore_capability_key, key)
     end
   end
 
@@ -971,7 +1006,8 @@ defmodule Embervm.Application do
   @doc false
   def store_probe_interval_ms do
     case trimmed_env("EMBERVM_STORE_PROBE_INTERVAL_SECONDS") do
-      "" -> 300_000
+      "" ->
+        300_000
 
       raw ->
         case Integer.parse(raw) do
@@ -1006,7 +1042,12 @@ defmodule Embervm.Application do
   # at render time, so a GitOps typo is caught before it ever deploys.
   @doc false
   def parse_allow_empty_kinds(value) do
-    allowed = %{"stateful" => :stateful, "group" => :group, "session" => :session, "serving" => :serving}
+    allowed = %{
+      "stateful" => :stateful,
+      "group" => :group,
+      "session" => :session,
+      "serving" => :serving
+    }
 
     value
     |> String.split(",", trim: true)
@@ -1032,7 +1073,8 @@ defmodule Embervm.Application do
   # set, caps each principal at that fraction of a workload's cap; unset (the
   # default) means the dynamic cap/active-principals split.
   defp dispatcher_opts do
-    [queue_depth_cap: queue_depth_cap(), op_log: op_log_mod(), op_log_mod: op_log_mod()] ++ share_fraction_opt()
+    [queue_depth_cap: queue_depth_cap(), op_log: op_log_mod(), op_log_mod: op_log_mod()] ++
+      share_fraction_opt()
   end
 
   defp pool_opts, do: [op_log: op_log_mod(), op_log_mod: op_log_mod()]
@@ -1043,9 +1085,11 @@ defmodule Embervm.Application do
   # wall-clock watchdog margin (#4434), added on top of the transport deadline so
   # a wedged SessionAssign on an orphaned channel cannot pin the session forever.
   defp session_opts do
-    [invoke_watchdog_margin_ms: env_ms("EMBERVM_SESSION_INVOKE_WATCHDOG_MARGIN_MS", 15_000),
-     drain_flush_ms: env_ms("EMBERVM_SESSION_DRAIN_FLUSH_MS", 60_000),
-     drain_bank_budget_ms: env_ms("EMBERVM_SESSION_DRAIN_BANK_BUDGET_MS", 15_000)]
+    [
+      invoke_watchdog_margin_ms: env_ms("EMBERVM_SESSION_INVOKE_WATCHDOG_MARGIN_MS", 15_000),
+      drain_flush_ms: env_ms("EMBERVM_SESSION_DRAIN_FLUSH_MS", 60_000),
+      drain_bank_budget_ms: env_ms("EMBERVM_SESSION_DRAIN_BANK_BUDGET_MS", 15_000)
+    ]
   end
 
   # SessionManager config: the session-process seams plus the R2 policy knobs the
@@ -1115,14 +1159,14 @@ defmodule Embervm.Application do
 
   # EMBERVM_ASYNC_LIFECYCLE_WRITES (ADR embervm/014 decision 2). UNSET or
   # "0"/"false"/"" (the chart and reference-deployment setting) => the
-  # boot/wake lifecycle appends (:assigned/:started on dispatch,
-  # session_created/session_relit on session boot/wake) stay write-through: the
+  # boot/wake lifecycle appends (:assigned/:started on dispatch and
+  # session_relit on session wake) stay write-through: the
   # durable oplog append blocks the hot-path caller
-  # before the instance is handed back. "1"/"true" => those four
+  # before the instance is handed back. "1"/"true" => those three
   # appends are deferred to Embervm.AsyncWriter AFTER the in-memory state is advanced
   # (RPC already succeeded), taking the durable write off the hot path; a lost write
   # (CP crash before the async append) is repaired by the adoption backfill. Metering,
-  # :submitted, destruction, and bank ops are NEVER deferred. Wired here so it flips
+  # :submitted, session_created, destruction, and bank ops are NEVER deferred. Wired here so it flips
   # via a deploy values env change, no code change: the chart's `asyncLifecycleWrites`
   # key (chart/values.yaml) renders this variable in deployment.yaml.
   defp async_lifecycle_writes_enabled do
@@ -1248,7 +1292,6 @@ defmodule Embervm.Application do
       _ -> false
     end
   end
-
 
   # The activator endpoint the node Envoy routes to when a serving workload has no
   # healthy published instance, from EMBERVM_SERVING_ACTIVATOR_IP + _PORT (Task 8
@@ -1536,8 +1579,13 @@ defmodule Embervm.Application do
   defp composite_activator_port_range do
     if stateful_activator_ip() do
       case composite_listen_range_env() do
-        nil -> Enum.to_list(@default_composite_activator_port_start..@default_composite_activator_port_end)
-        range -> Enum.to_list(range)
+        nil ->
+          Enum.to_list(
+            @default_composite_activator_port_start..@default_composite_activator_port_end
+          )
+
+        range ->
+          Enum.to_list(range)
       end
     else
       []
@@ -1558,8 +1606,14 @@ defmodule Embervm.Application do
     if stateful_activator_ip() do
       case trimmed_env("EMBERVM_STATEFUL_ACTIVATOR_PORT_RANGE") do
         "" ->
-          start_port = int_env_or_nil("EMBERVM_STATEFUL_ACTIVATOR_PORT_START") || @default_stateful_activator_port_start
-          end_port = int_env_or_nil("EMBERVM_STATEFUL_ACTIVATOR_PORT_END") || @default_stateful_activator_port_end
+          start_port =
+            int_env_or_nil("EMBERVM_STATEFUL_ACTIVATOR_PORT_START") ||
+              @default_stateful_activator_port_start
+
+          end_port =
+            int_env_or_nil("EMBERVM_STATEFUL_ACTIVATOR_PORT_END") ||
+              @default_stateful_activator_port_end
+
           Enum.to_list(start_port..end_port)
 
         raw ->
@@ -1980,7 +2034,8 @@ defmodule Embervm.Application do
   # never through the Kubernetes API-audience compatibility review.
   defp audience_bound_service_accounts do
     case System.get_env("EMBERVM_AUDIENCE_BOUND_SERVICE_ACCOUNTS") do
-      nil -> []
+      nil ->
+        []
 
       raw ->
         raw

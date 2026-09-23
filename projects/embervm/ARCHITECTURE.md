@@ -10,6 +10,8 @@ the section 2 vocabulary. Claims carry four flags:
   carries its tracking issue.
 - **Decided direction**: agreed design, not an implementation claim.
 - **Accepted risk**: an eyes-open trade, stated where it applies.
+- **Not planned**: a historical proposal that is not an active delivery
+  promise. Its linked issue records the current decision.
 
 **model-checked** means the named TLA+ spec in `projects/embervm/specs/`
 satisfies the stated property under TLC in the build; implementation
@@ -28,9 +30,9 @@ object per invocation, and without etcd in the execution path.
 
 EmberVM deploys on any Kubernetes with KVM-capable nodes, a local scratch
 disk per FC-labelled Kubernetes node, and an S3-compatible object store;
-section 11
-states the platform contract. The reference deployment in this monorepo is
-a small on-prem cluster whose concrete shape lives in
+section 11 states the platform contract. The reference deployment documentation
+in this monorepo covers the always-on GKE hub and a checked-in home overlay whose
+concrete shape and deployment caveats live in
 [deploy/README.md](deploy/README.md).
 
 **Goals**: private Lambda ergonomics (HTTP invoke, zip or image source,
@@ -53,7 +55,7 @@ signals, and admission control are the product surface instead).
 | ---------- | ------ | ---------------------- |
 | Task execution | **Built** | Fresh VM per invocation |
 | Zip lane | **Built** | Runtime base and handler shim |
-| Sessions (bank/relight + workspace) | **Built** | Retention TTLs apply; a workspace size budget is **Decided direction** (#5074) |
+| Sessions (bank/relight + workspace) | **Built** | Retention TTLs apply; no workspace size budget is planned unless the evidence gate in [#5074](https://github.com/jomcgi-org/homelab/issues/5074) is met |
 | Serving | **Built** | Control-plane lifecycle on misses |
 | Stateful | **Built** | Node-local authoritative volume |
 | Composite | **Built** | No current consumer |
@@ -63,7 +65,7 @@ signals, and admission control are the product surface instead).
 | Transport auth CP-to-noded | **Built** (bearer + ingress policy) | SPIFFE mTLS is **Planned**: SPIRE is live with no EmberVM consumer yet, phase 2 of #5706 in flight |
 | Guest identity (JWT-SVID) | **Decided direction** | Per-principal SVID delivered over vsock, phase 3 of #5706 |
 | Encryption at rest | **Built** | Per-principal mutable artifacts (#4691), enabled per environment by values; Account-scoped immutable rootfs chunks remain planned (ADR 028, #4182) |
-| Cells / multi-cell | **Planned** | No cell seams exist in code yet (#4753); one control plane today |
+| Cells / multi-cell | **Not planned** | No cell seams exist; [#3855](https://github.com/jomcgi-org/homelab/issues/3855) and [#4753](https://github.com/jomcgi-org/homelab/issues/4753) closed without the unmerged [PR #6069](https://github.com/jomcgi-org/homelab/pull/6069) |
 | Standalone packaging | **Decided direction** | Open-sourceable artifact |
 | Website snapshotter (task guest) | **Built** | Headless Chromium screenshot over MCP (ADR embervm/035), #4994 |
 
@@ -279,39 +281,63 @@ entry with no handler path, and a fresh boot runs the image's own entrypoint as
 the HTTP server; only zip-lane boots attach a handler drive (**Built**, ADR
 embervm/038, `noded/server/activator.go`).
 
-**Planned**:
+**Open direction**:
 
-- **Isolated high-throughput lane**: Envoy routes straight to
-  per-brick listeners, and each brick pops a fresh VM per request.
-- **Persistence as a declared property**: workloads declare
+- **Gated isolated high-throughput lane**: each request gets a fresh VM, with
+  admission dependent on reusable implementation and evidence from
+  [#6132](https://github.com/jomcgi-org/homelab/issues/6132), as specified by
+  [#3864](https://github.com/jomcgi-org/homelab/issues/3864).
+- **Decided direction, persistence as a declared property**: workloads declare
   persistence flags; memory and filesystem persistence decouple from class.
-- **Composition**: multi-component apps
-  become independent Workloads wired by bindings rather than composite
-  groups.
 
 **Why.** Per-request tenant isolation (one fresh VM per request, destroyed after
 the response, re-primed locally with no control-plane hop) is the fast execution
 path the session and task classes do not offer, and it is retained, not dropped.
-It is not built as a second stack: the Semgrep scan pod (#6132) is extracting
-the task substrate (prime, assign, destroy, registry, budget, jailer) into a
-native library with a local pool loop, and the lane is that library behind an
-Ember-facing request entry. Fresh execution state per request is the invariant;
-restoring many guests from one clean base satisfies it, reusing a prior tenant's
-mutated state never does. Routing reuses Kubernetes Service plus pod readiness
-first; LEAST_REQUEST, retry-on-503 and outlier ejection are added only for a
-demonstrated gap, and a retry never replays tenant work after an uncertain
-result. The per-brick fail-closed quota lease was withdrawn by ADR 020 and stays
-withdrawn. The lane becomes agent-ready when the library exists and a workload
-needs it (#3864).
+It is not built as a second stack. The next bounded integration must first use
+[#6132](https://github.com/jomcgi-org/homelab/issues/6132)'s delivered
+implementation and evidence to identify reusable task-library, pool, HTTP,
+admission and cleanup behavior. Fresh execution state per request is the
+invariant; restoring many guests from one clean base satisfies it, reusing a
+prior tenant's mutated state never does. The closed
+[#3865](https://github.com/jomcgi-org/homelab/issues/3865) and
+[#3866](https://github.com/jomcgi-org/homelab/issues/3866) decisions record the
+integration and routing boundaries, not requirements for an independent
+library, pool, router or xDS path. Existing Kubernetes Service and readiness
+routing is assessed first, and a retry never replays tenant work after an
+uncertain result. The per-brick fail-closed quota lease remains withdrawn and
+[#3867](https://github.com/jomcgi-org/homelab/issues/3867) stays closed.
 
 **Why.** Classes originally bundled persistence policy, leaving no class for a
 filesystem-backed workload without a memory snapshot (ADR embervm/027). A new
 class for each persistence shape was rejected because persistence is orthogonal
 to class scheduling and network semantics; composite groups were rejected as the
 default application graph because joint lifecycle and private networking couple
-otherwise independent components (ADR embervm/022, ADR embervm/027). Declared
-persistence properties and mediated bindings carry the added schema and migration
-cost while composite remains available for multi-kernel groups.
+otherwise independent components (ADR embervm/022, ADR embervm/027). The
+historical mediated-bindings alternative is not an active programme:
+[#5813](https://github.com/jomcgi-org/homelab/issues/5813) closed as not planned,
+while the shipped composite class remains available for multi-kernel groups.
+
+The native EmberVM API, `Workload` CRD and Helm chart remain the supported
+interfaces. The Kubernetes Agent Sandbox adapter
+([#5806](https://github.com/jomcgi-org/homelab/issues/5806)) and generic
+Kubernetes/Helm adapter
+([#5807](https://github.com/jomcgi-org/homelab/issues/5807)) are not planned.
+Their separately dropped migration and binding proposals
+([#5808](https://github.com/jomcgi-org/homelab/issues/5808),
+[#5809](https://github.com/jomcgi-org/homelab/issues/5809),
+[#5810](https://github.com/jomcgi-org/homelab/issues/5810),
+[#5811](https://github.com/jomcgi-org/homelab/issues/5811),
+[#5812](https://github.com/jomcgi-org/homelab/issues/5812), and
+[#5813](https://github.com/jomcgi-org/homelab/issues/5813)) do not remove any
+shipped interface or workload.
+
+Composite member spans expose `ember.was_relight` and carry
+`ember.clock_delta_ms = -1` because no numeric delta is reported. The sentinel
+means unknown, never a successful clock measurement, and a relight-success
+boolean does not establish measured clock correctness. The numeric measurement
+and new alert-data bridge are not planned
+([#3953](https://github.com/jomcgi-org/homelab/issues/3953)); historical alert
+placeholders are not live coverage.
 
 ---
 
@@ -330,6 +356,13 @@ stateDiagram-v2
     banked --> serving: wake -> relight<br/>(only if bundle_generation == volume_generation)
     banked --> serving: pairing mismatch -> cold boot from volume<br/>(slower, never incorrect)
 ```
+
+This internal stateful-bank checkpoint is not a user-facing session checkpoint,
+fork or rollback API. That programme is not planned
+([#5700](https://github.com/jomcgi-org/homelab/issues/5700)). The separately
+approved exact-turn interrupt relay and stop control remains bounded work under
+[#4321](https://github.com/jomcgi-org/homelab/issues/4321); it does not create a
+snapshot or rollback capability.
 
 Facts that make this safe:
 
@@ -432,8 +465,45 @@ and no workload has yet needed idle bank or relight through a sustained
 control-plane gap, nor has control-plane sweep load been measured as a problem.
 Fork B therefore waits for one of those two facts and starts with one bounded
 transition (ownership, authority, persistence, recovery stated), not the
-seven-phase plan in the ADR history. Wake-path retirement (#4013) is gated
-separately on the #4702 model and runtime evidence and does not imply Fork B.
+seven-phase plan in the ADR history. The one-way evidence sequence is the
+completed handoff model
+([#4701](https://github.com/jomcgi-org/homelab/issues/4701)), then the current
+two-waker model ([#4702](https://github.com/jomcgi-org/homelab/issues/4702)),
+then runtime evidence before the separately gated retirement decision in
+[#4013](https://github.com/jomcgi-org/homelab/issues/4013). No earlier step
+authorizes deletion, and the sequence does not imply Fork B.
+
+### Base snapshot device compatibility
+
+Base capture writes `jail-resources.json` before publishing the bundle. That
+producer-owned file records the backing resources embedded in the Firecracker
+snapshot and therefore establishes whether the captured device table contains
+the non-root `volume` drive. The same file is included by recursive artifact
+export, restored into staging, checked against store metadata, and read again
+when noded rebuilds its base registry after restart.
+
+A volume request patches and resumes a base only when this captured metadata
+proves that `volume` exists and the receiving node's
+`WarmRestoreWithVolume` safety gate is armed. The gate therefore controls both
+placeholder-volume capture and restore: a disarmed node cold-boots even if it
+hydrates or adopts a placeholder-bearing base captured by an armed sibling. A
+current rootfs-only base is cold-booted with the requested volume, so
+Firecracker is never asked to patch a nonexistent device.
+A bundle without `jail-resources.json` predates this contract and is **unknown**,
+not rootfs-only: historical bundles can have either device shape. Such a legacy
+bundle remains warm-restorable for volume-less work. A volume request takes the
+same safe cold-boot path, while the node-stable placeholder backing file remains
+available so a legacy placeholder-bearing bundle can still load for volume-less
+work. Malformed or internally conflicting metadata is refused without deleting
+the bundle.
+
+The base identity does not include the device set. Publication, store export,
+and hydration therefore fence same-ref replacements unless both known device
+sets match. Hydration downloads to an isolated directory and publishes the
+complete bundle atomically, so a failed or incompatible download cannot partly
+rewrite an existing base. For legacy store markers, the downloaded bundle file
+is the available compatibility evidence; absent metadata remains explicitly
+unknown and is never guessed from the brick's current configuration.
 
 ### Sessions: the durability ladder
 
@@ -442,6 +512,11 @@ separately on the #4702 model and runtime evidence and does not imply Fork B.
 | Live | up to `maxLifetimeSeconds` (21600s in the agent lanes by values; CRD default 86400s, no platform clamp) | running VM | node-resident |
 | Warm bank | 7 days from last bank | memory snapshot in S3 | CPU-vendor + base-generation |
 | Durable workspace | 7 days from last use | zstd content-addressed file set | none |
+
+**Why.** The historical durable-workspace proposal set a 30-day window, but PR
+#4319 implemented a narrower seven-day default through `sessionWorkspaceTtlMs`.
+Parked sessions expire earlier at the control-plane layer, so seven days bounds
+the S3 storage tier.
 
 Resume is one interface with four verbs: cold boot; base-snapshot restore;
 warm (memory) restore; base + workspace hydration. The CP picks the cheapest
@@ -452,12 +527,15 @@ the CP's Workload admission both reject a `bankedTtlSeconds` greater than or
 equal to `warmthS3Gc.sessionTtlMs`, because a banked snapshot has no expiry
 hold in that GC), after which resume takes the session-expiry 410 path; the durable
 workspace lineage is adoptable for 7 days, so a new session generation
-inherits the prior workspace rather than starting blank. **Decided
-direction**: capture decouples from bank
-(close-triggered for no-memory-snapshot workloads), and the workspace size cap
-becomes a declared soft budget. `persistence.filesystem.retention` is inert
-today, and artifact GC keeps only the newest artifact. `latest + N` remains the
-planned retention direction.
+inherits the prior workspace rather than starting blank. **Decided direction**:
+capture decouples from bank (close-triggered for no-memory-snapshot workloads).
+`persistence.filesystem.retention` is inert today, and artifact GC keeps only
+the newest artifact. `latest + N` remains the planned retention direction. A
+workspace size budget is not planned until
+[#5074](https://github.com/jomcgi-org/homelab/issues/5074)'s gate identifies a
+supported workload whose storage growth, snapshot cost or banking delay is not
+adequately controlled by existing limits. That gate does not authorize a cap,
+warning, bank refusal, retention change or data deletion.
 
 Repo-backed sessions hydrate their workspace with a direct HTTPS clone through
 the egress lane. The node-local git mirror sidecar (`gitMirror`) is **Built**
@@ -558,6 +636,11 @@ and rejoin. The memory-enabled lane uses the existing memory bank/export path.
 | Direction | Status | Tracking |
 | --------- | ------ | -------- |
 | Snapshot anywhere through exact interrupt, bounded flush, bank/export and next-turn continuation | Built; one path for SIGTERM and Spot, sharing the shim handler with user stop | #6256 |
+
+A direct Registry or ETS shortcut for already-running session invokes is also
+not planned without evidence. Reconsider it only if the measured queue-wait or
+stall gate in [#4015](https://github.com/jomcgi-org/homelab/issues/4015) is met;
+the closed broad cleanup programme is not a prerequisite.
 
 ---
 
@@ -724,14 +807,14 @@ never stores or witnesses anything that scales with the fleet.
   (hermetic and deployed lanes, direct-checker and TLC tiers, anti-vacuity
   manifests, DRILL and VACUOUS as distinct verdicts) is **Decided direction**
   (ADR embervm/034), tracked in #4761 and #4763.
-- **Cells**: the unit of horizontal scale is a cell, a complete
-  single-writer control plane owning a bounded set of bricks and workloads,
-  with one op-log appender (ordering is within-cell only). **Planned**
-  (#4753): no `cell_id`, workload-to-cell assignment, or per-cell
-  dial-home address exists in code yet; there is exactly one control
-  plane today. A
-  thin stateless fleet layer (route + capacity roll-up) arrives only with a
-  second cell.
+- **Cells are not an active programme**: no `cell_id`, workload-to-cell
+  assignment or per-cell dial-home address exists. The implementation proposal
+  in [PR #6069](https://github.com/jomcgi-org/homelab/pull/6069) closed unmerged
+  with [#3855](https://github.com/jomcgi-org/homelab/issues/3855) and
+  [#4753](https://github.com/jomcgi-org/homelab/issues/4753). Multiple nodes or
+  clusters alone do not require independently operated cells. This specific
+  disposition does not close [#3853](https://github.com/jomcgi-org/homelab/issues/3853)
+  or any other scale-out item; each keeps its own evidence and decision.
 - **Registry survives restarts**: noded persists its last-synced registry to
   NVMe marked stale; a restarting noded with an absent CP serves warm
   workloads from cache. No dependency's brief absence may turn a warm node
@@ -1122,12 +1205,11 @@ forces cold boot (ADR embervm/033, ADR embervm/036).
 
 Only `principal` ships now: it is the TokenReview-authenticated caller
 identity, and the op-log's existing `tenant` field is a deployment constant
-occupying the Account slot. **Planned** (#5072): `domain` (env or grouping
-within exactly one principal, so a same-domain-by-default binding can never
-cross the isolation boundary), and shared platform definitions (such as the
-sandbox-session and scan-fleet templates) owned by a reserved `platform`
-principal with an explicit broad instantiation grant, the widest and
-most-reviewed grant in the system. Neither exists in code today.
+occupying the Account slot. Domain grouping and a reserved `platform` principal
+do not exist and are not planned
+([#5072](https://github.com/jomcgi-org/homelab/issues/5072)). This decision does
+not remove or weaken existing principal authentication, authorization or
+artifact isolation.
 
 `Embervm.KeyService` is the platform key custodian (ADR embervm/036): it
 derives per-principal, per-epoch KEKs on demand from one current root and
@@ -1149,8 +1231,7 @@ reference deployment, so that mode is available but inert. Mechanics in
 Account      billing / grouping, NO isolation semantics
  └ Product   grouping, NO isolation semantics
     └ Principal   THE isolation boundary
-       └ Domain   env or grouping within exactly one principal
-          └ Workload
+       └ Workload
 ```
 
 **Definitions at scale**: one product template plus N enrollment
@@ -1459,7 +1540,9 @@ S3-compatible object store.
   leader-elected actor tier on a Postgres advisory lock with observers on every
   replica. Brick-sharded ownership over libcluster and Horde is a fan-in scaling
   tool for a fleet of thousands of bricks, not an availability tool, and cells
-  (#3855) were withdrawn. The ADR 007 loop walls (global prime budget, O(V^2)
+  ([#3855](https://github.com/jomcgi-org/homelab/issues/3855)) were withdrawn,
+  with the implementation PR closed unmerged. Multiple clusters alone do not
+  reopen them. The ADR 007 loop walls (global prime budget, O(V^2)
   adoption sweep, timer reconciles) each buy more than replicas and are fixed
   first.
 - **Small fleets may co-locate guests with control-plane nodes** as an
@@ -1520,7 +1603,6 @@ this table when the work ships or the issue closes without it.
 | OCI images convert to deterministic EROFS manifests and immutable content-addressed chunks, hydrated through a local-only read-only ublk device | section 8 | #4182 | deferred until EKS metal and per-Account KMS (2026-09-12) |
 | The brick `maxReplicas` ceiling itself moves on sustained denial pressure, not only the replica count clamped inside it | section 7 | #5505 | not started |
 | SPIFFE-issued identity moves beyond issuance: mTLS on the CP-to-noded hop, per-principal guest JWT-SVIDs, and GCP federation | section 9 | #5706 | not started |
-| A session workspace gets a size budget instead of unbounded growth | Decision history (embervm/027) | #5074 | not started |
 | A second Codex account joins the chatgpt.com grant pool once logged in, and quota floors per class and role protect planning capacity | section 9 | #5974 | grant pool built, pool not yet activated |
 | A guest-declared transient failure is retried inside EmberVM on a bounded session-invoke loop, so callers outside the monolith transport get it too | section 4 | #6185 | not started |
 | A guest reports memory pressure and OOM evidence, and VMM exits are classified | section 7 | #5805 | gated on a diagnostic gap |
@@ -1541,10 +1623,10 @@ has the full text.
 | embervm/001 | EmberVM itself: BEAM control plane over a Go node daemon, hit/miss invariant, five classes, isolation model | Accepted; copy-never-rebuild for stateful withdrawn by 025 | deleted |
 | embervm/002 | Op-log retention: read-time TTLs, 7 day terminal prune, 30 day journal horizon behind a durable marker | Accepted, Built; shape restructured by 019 | deleted |
 | embervm/003 | Control-plane-managed snapshot distribution, Build / Restore / Export / Evict verbs | Accepted, Built; verbs generalized by 009 | deleted |
-| embervm/004 | Back kubernetes-sigs/agent-sandbox through a deferred edge adapter, no native session API | Accepted; adapter not built, gated on upstream traction | deleted |
+| embervm/004 | Back kubernetes-sigs/agent-sandbox through a deferred edge adapter, no native session API | Accepted historically; adapter not built and now not planned ([#5806](https://github.com/jomcgi-org/homelab/issues/5806)) | deleted |
 | embervm/005 | EKS scale-out: metal pool, multi-daemon bricks, EmberPool CRD, dial-home | Accepted; EmberPool never built, brick counts are a values knob behind `BrickController`; decision 3 superseded by 028 (#3849, #3851) | deleted |
 | embervm/006 | TLA+ pilot with three conformance layers | Accepted; six specs run under TLC in the build, trace validation deferred to 034 | deleted |
-| embervm/007 | Batched Postgres op-log tier, cells, hot-loop corrections | Accepted; Postgres Built, no cell seams exist (#4753, #3853, #3855) | deleted |
+| embervm/007 | Batched Postgres op-log tier, cells, hot-loop corrections | Accepted historically; Postgres Built, cell work closed unmerged and is not planned ([#4753](https://github.com/jomcgi-org/homelab/issues/4753), [#3855](https://github.com/jomcgi-org/homelab/issues/3855), [PR #6069](https://github.com/jomcgi-org/homelab/pull/6069)); [#3853](https://github.com/jomcgi-org/homelab/issues/3853) remains a separate tracker | deleted |
 | embervm/008 | Opt-in two-phase interruptible bank | Accepted, Built | deleted |
 | embervm/009 | Continuity before tenancy: R6 to R9, spot availability contract, S3 seam | Accepted; quickstart open (#3856, #3858) | deleted |
 | embervm/010 | Bazel warm-Skyframe public demo as a stateless query consumer | Accepted, Built | deleted |
@@ -1552,19 +1634,19 @@ has the full text.
 | embervm/012 | Co-located fleet, etcd blast radius accepted, grandfather rule, registry survives restart | Accepted; dynamic sizing retired by 013; HA open (#3862) | deleted |
 | embervm/013 | Classes are reuse semantics, substrates are lanes; brick sizing; bricks everywhere | Accepted, Built | deleted |
 | embervm/014 | Worker-authoritative state, async writes, node-confirmed destruction | Draft, Built (`adoption.tla`); metering clause amended by 020 | deleted |
-| embervm/015 | Isolated high-throughput lane with data-plane placement | Draft, not built (#3864); fail-closed lease withdrawn by 020 | deleted |
+| embervm/015 | Isolated high-throughput lane with data-plane placement | Draft, retained behind [#3864](https://github.com/jomcgi-org/homelab/issues/3864)'s #6132 reuse and evidence gate; fail-closed lease withdrawn by 020 | deleted |
 | embervm/016 | Kubernetes scheduling contract: the pod is the ABI, priority projection, session ladder | Accepted; kwok drills never built; placement loop superseded by 020, ladder amended by 025, 027, 029 | deleted |
 | embervm/017 | Bounded auto-heal of the checkpoint-abort quarantine | Accepted, Built (`generation_issuance.tla`) | deleted |
 | embervm/018 | Node-local activator (Fork A), brick-authoritative lifecycle (Fork B) | Accepted; Fork A shipped, Fork B not started (gated, see section 4) | deleted |
 | embervm/019 | Op-log payload separation, time partitioning, principal-scoped erasure | Draft, Decided direction | deleted |
 | embervm/020 | Admission-only control plane, token routing, peer redistribution, fail-open metering | Draft, Decided direction; decision 3 withdrawn to 023 | deleted |
 | embervm/021 | `memMib` as the only dial, derived CPU, GB-seconds | Draft, Decided direction | deleted |
-| embervm/022 | Composition over bindings, domain seam, three-leg access fabric | Draft, Decided direction; superseded in part by 024 and 026; SPIFFE deferral resolved by 041 (#5072) | deleted |
+| embervm/022 | Composition over bindings, domain seam, three-leg access fabric | Draft historical rationale; domain and service-binding programmes are not planned ([#5072](https://github.com/jomcgi-org/homelab/issues/5072), [#5813](https://github.com/jomcgi-org/homelab/issues/5813)) | deleted |
 | embervm/023 | Class-scoped ownership arbitration, silence timeout as the divergence bound | Draft, Decided direction; the timeout is Built (037) | deleted |
-| embervm/024 | Identity hierarchy, platform principal, guest identity assertion | Draft, Decided direction; decision 3 mechanism superseded by 041 (#5072) | deleted |
+| embervm/024 | Identity hierarchy, platform principal, guest identity assertion | Draft historical rationale; domain/platform-principal work is not planned ([#5072](https://github.com/jomcgi-org/homelab/issues/5072)), guest identity mechanism superseded by 041 | deleted |
 | embervm/025 | Local disk authoritative, S3 an archive, `archiveInterval` | Draft, Decided direction; export at bank commit Built | deleted |
 | embervm/026 | Templates not stamps, GitOps without per-workload CRs, desired-set registration | Draft, Decided direction | deleted |
-| embervm/027 | Snapshot modes as a declared workload property | Draft, Decided direction; retention and the size budget open (#5074, #5075) | deleted |
+| embervm/027 | Snapshot modes as a declared workload property | Draft, Decided direction for persistence modes and retention; size budget superseded by the evidence gate in [#5074](https://github.com/jomcgi-org/homelab/issues/5074) | deleted |
 | embervm/028 | Eager-local rootfs: OCI ref, Account chunk store, ublk | Accepted, Planned (#4182); Phase 0 measured in `rootfs/PHASE0-RESULTS.md` | deleted |
 | embervm/029 | Parked sessions count as disk, not against `concurrency.cap` | Accepted, Built | deleted |
 | embervm/030 | Lineage decoupled from session generation; the 6 h cap is a convergence bound | Accepted, Built | deleted |

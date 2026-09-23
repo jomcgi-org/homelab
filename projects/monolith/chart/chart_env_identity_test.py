@@ -1428,6 +1428,12 @@ def test_github_api_token_follows_secret_availability_only(
         if item["name"] == "GITHUB_API_TOKEN"
     ]
     producers = _chat_secret_producers(rendered)
+    # Even legacy values must not restore the retired Route B credentials.
+    assert not {
+        "SEMGREP_APP_TOKEN",
+        "GITHUB_SEMGREP_WEBHOOK_SECRET",
+        "SEMGREP_SHADOW_PROJECT",
+    }.intersection(item["name"] for item in _deployment_backend_env(rendered))
 
     if not token_item_path:
         assert entries == []

@@ -8,6 +8,7 @@ from factory.execution import admission as _admission
 from factory.execution.constants import DRAINER_NODE_KEY as DRAINER_NODE_KEY
 from factory.execution.constants import KG_NODE_KEY as KG_NODE_KEY
 from factory.execution.reconciliation import (
+    adopt_completed_factory_receipt as adopt_completed_factory_receipt,
     cancel_queued_factory_attempt as cancel_queued_factory_attempt,
     confirm_reconciled_guest_cessation as confirm_reconciled_guest_cessation,
     confirm_reconciled_unbound_attempt as confirm_reconciled_unbound_attempt,
@@ -15,12 +16,15 @@ from factory.execution.reconciliation import (
     inspect_lost_before_session_factory_attempt as inspect_lost_before_session_factory_attempt,
     lock_cessation_session as lock_cessation_session,
     read_drained_lost_factory_attempt as read_drained_lost_factory_attempt,
+    read_interrupted_factory_continuation as read_interrupted_factory_continuation,
     read_factory_dispatch as read_factory_dispatch,
+    read_interrupted_retry_not_invoked_factory_attempt as read_interrupted_retry_not_invoked_factory_attempt,
     read_lost_before_guest_factory_attempt as read_lost_before_guest_factory_attempt,
     read_never_dispatched_factory_attempt as read_never_dispatched_factory_attempt,
     read_not_invoked_factory_attempt as read_not_invoked_factory_attempt,
     read_uncertain_factory_attempt as read_uncertain_factory_attempt,
     settle_drained_lost_factory_attempt as settle_drained_lost_factory_attempt,
+    settle_interrupted_factory_continuation as settle_interrupted_factory_continuation,
     settle_lost_before_guest_factory_attempt as settle_lost_before_guest_factory_attempt,
     settle_lost_before_session_factory_attempt as settle_lost_before_session_factory_attempt,
     settle_never_dispatched_factory_attempt as settle_never_dispatched_factory_attempt,
@@ -71,11 +75,15 @@ def adopt_response_lost_result(session_id: int, artifact_path: str | None = None
     return store.adopt_response_lost_result(session_id, artifact_path)
 
 
-def settle_response_lost_hold(session_id: int, reason: str) -> bool:
+def settle_response_lost_hold(
+    session_id: int, reason: str, *, expected_hold: dict | None = None
+) -> bool:
     """End an unrecoverable hold as the ordinary unknown outcome it is."""
     from factory.execution import store
 
-    return store.settle_response_lost_hold(session_id, reason)
+    return store.settle_response_lost_hold(
+        session_id, reason, expected_hold=expected_hold
+    )
 
 
 def __getattr__(name: str):

@@ -91,6 +91,16 @@ def test_create_raw_rejects_bad_source(client):
     assert response.status_code == 422
 
 
+def test_create_note_rejects_bad_source(client, session):
+    response = client.post(
+        "/api/knowledge/notes",
+        json={"content": "evidence", "source": "Bad source!"},
+    )
+
+    assert response.status_code == 422
+    assert session.exec(select(RawInput)).all() == []
+
+
 @pytest.mark.parametrize("source", ["agent-report", "dispute", "distress"])
 def test_create_raw_rejects_mcp_owned_sources(client, session, source):
     response = client.post(
@@ -100,6 +110,20 @@ def test_create_raw_rejects_mcp_owned_sources(client, session, source):
             "source": source,
             "extra": {"note_id": "forged", "reporter_subject": "forged"},
         },
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {
+        "detail": f"source {source!r} is reserved for authenticated MCP tools"
+    }
+    assert session.exec(select(RawInput)).all() == []
+
+
+@pytest.mark.parametrize("source", ["agent-report", "dispute", "distress"])
+def test_create_note_rejects_mcp_owned_sources(client, session, source):
+    response = client.post(
+        "/api/knowledge/notes",
+        json={"content": "caller-controlled lane evidence", "source": source},
     )
 
     assert response.status_code == 403

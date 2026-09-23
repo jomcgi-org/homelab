@@ -849,15 +849,6 @@ py_library(
         "@pip//pydantic",
         "@pip//python_multipart",
         "@pip//pyyaml",
-        # NOTE: semgrep_scan/report.py uploads to the Semgrep App via plain
-        # authenticated HTTP (explicit Authorization: Bearer) using httpx (already
-        # a dep above), not ScanHandler.
-        # pysemgrep INTERNAL APIs for the fc-invoke -> Semgrep-App relay
-        # (semgrep_scan/report.py): only the out.* atd types (light) + __VERSION__.
-        # We do NOT use ScanHandler / get_state / app_session (auth never attaches
-        # outside a click command, and start_scan polls the OOM /config ruleset).
-        # Pinned 1.168.0 in bazel/requirements/tools.in.
-        "@pip//semgrep",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
         "@pip//tzdata",
@@ -1546,6 +1537,7 @@ py_library(
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//jsonschema",
+        "@pip//kubernetes_asyncio",
         "@pip//opentelemetry_exporter_otlp_proto_http",
         "@pip//opentelemetry_instrumentation_fastapi",
         "@pip//opentelemetry_instrumentation_httpx",
@@ -1701,15 +1693,6 @@ py_library(
         "@pip//regex",
         # PyJWT is currently locked transitively through mcp and semgrep.
         "@pip//pyjwt",
-        # NOTE: semgrep_scan/report.py uploads to the Semgrep App via plain
-        # authenticated HTTP (explicit Authorization: Bearer) using httpx (already
-        # a dep above), not ScanHandler.
-        # pysemgrep INTERNAL APIs for the fc-invoke -> Semgrep-App relay
-        # (semgrep_scan/report.py): only the out.* atd types (light) + __VERSION__.
-        # We do NOT use ScanHandler / get_state / app_session (auth never attaches
-        # outside a click command, and start_scan polls the OOM /config ruleset).
-        # Pinned 1.168.0 in bazel/requirements/tools.in.
-        "@pip//semgrep",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
         "@pip//starlette",
@@ -1846,8 +1829,6 @@ _PUBLIC_PRUNE_EXCLUDE = [
     # and perf surfaces are private-only.
     "semgrep_scan/mcp.py",
     "semgrep_scan/module.py",
-    "semgrep_scan/report.py",
-    "semgrep_scan/router.py",
     "**/test_*.py",
     "*/tests/**/*.py",
     "shared/testing/**/*.py",
@@ -2831,48 +2812,6 @@ py_test(
         "@pip//httpx",
         "@pip//pytest",
         "@pip//pytest_asyncio",
-    ],
-)
-
-py_test(
-    name = "semgrep_report_test",
-    srcs = ["semgrep_scan/report_test.py"],
-    data = [
-        # report_test loads this captured cli_output fixture at runtime via
-        # Path(__file__).parent/"testdata"; the "semgrep_scan/**/*.py" backend
-        # glob does not capture the .json, so ship it into runfiles. 8 results
-        # (7 findings + 1 ignored), derived from a real 1.168.0 Pro finding.
-        "semgrep_scan/testdata/real_cli_output.json",
-    ],
-    imports = ["."],
-    # Drives the async relay via asyncio.run (sync test fns), so no
-    # pytest-asyncio plugin is needed.
-    deps = [
-        ":pkg_semgrep_scan",
-        "@pip//pytest",
-        # httpx: the test mocks semgrep_scan.report.httpx.post to capture the three
-        # App uploads (CREATE + /results + /complete) and their Bearer auth.
-        "@pip//httpx",
-        # pysemgrep out.* atd types (light). Pinned to 1.168.0 in
-        # bazel/requirements/tools.in to match the fc-invoke Pro engine that
-        # produced the fixture. NOT ScanHandler / app_session.
-        "@pip//semgrep",
-    ],
-)
-
-py_test(
-    name = "semgrep_router_test",
-    srcs = ["semgrep_scan/router_test.py"],
-    imports = ["."],
-    # gazelle:exclude semgrep_scan means this py_test is hand-added, not generated.
-    # Drives the async webhook via FastAPI TestClient (BackgroundTasks run inline
-    # after the response), mocking scan_files / report_pr_scan / httpx so no live
-    # GitHub, fc-invoke, or Semgrep App is touched.
-    deps = [
-        ":pkg_semgrep_scan",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//pytest",
     ],
 )
 
@@ -5095,6 +5034,17 @@ py_test(
         "@pip//pytest",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "swarm_factory_rollout_test",
+    srcs = ["factory/orchestration/factory_rollout_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_swarm",
+        "@pip//pytest",
+        "@pip//pyyaml",
     ],
 )
 
@@ -8675,6 +8625,18 @@ py_test(
         "@pip//httpx",
         "@pip//pytest",
         "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "agent_sessions_broker_client_test",
+    srcs = ["factory/execution/broker_client_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_agent_sessions",
+        "@pip//cryptography",
+        "@pip//httpx",
+        "@pip//pytest",
     ],
 )
 

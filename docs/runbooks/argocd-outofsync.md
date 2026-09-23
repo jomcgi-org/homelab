@@ -88,6 +88,14 @@ An earlier note here said `spec.ignoreDifferences` on the Application is inert, 
 
 Note that suppressing the diff is not the same as not applying the value; that still needs `RespectIgnoreDifferences=true`.
 
+Do not remove an associative list key with an ignore expression. Container ports
+are keyed by `containerPort` and `protocol`. Ignoring `ports[].protocol` on the
+SPIRE StatefulSet left ArgoCD's normalized object without that key, so server-side
+diff failed with `associative list with keys has an element that omits key field
+"protocol"`. The live ports already had `protocol: TCP`; the ignore expression
+created the invalid comparison input. Preserve the key and let the API server
+default TCP during the server-side dry run when the upstream chart omits it.
+
 **Historic note (v3.1.6).** The global normalizer is still the right home for anything that should apply fleet-wide, and is the only option for a resource no single Application owns: `projects/platform/argocd/values.yaml`, under `resource.customizations.ignoreDifferences`. This was proven by checking `/api/v1/applications/<app>/managed-resources` and confirming `normalizedLiveState` was unaffected by an app-level ignore but respected a global one. See [ArgoCD API access without the UI](#argocd-api-access-without-the-ui) below for how to query that endpoint.
 
 ## Stuck sync operation

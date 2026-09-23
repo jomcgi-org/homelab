@@ -18,7 +18,7 @@ HUMAN_GATE_BACKSTOP = re.compile(
     r"(\$|\busd\b|budget|spend|cost|delete|purge|\bprod\b|bucket|create|credential|token|secret|account)",
     re.IGNORECASE,
 )
-"""Heuristic backstop for human authority, not the classification."""
+"""Heuristic backstop for the proposed parameter value, not its rationale."""
 
 GATE_SCHEMA = {
     "type": "object",
@@ -66,7 +66,7 @@ GATE_PROMPT = (
     "to the issue. Never ask whether to weaken acceptance. State the rescope "
     "in the PR body; remove closing keywords while operational work remains. "
     "Required Linux CI and independent exact-head review still apply. For an "
-    "existing open PR closing this issue, use kind `delivery_target`: the "
+    "existing open PR delivering this issue, use kind `delivery_target`: the "
     "conductor adopts its branch, rebases onto main, repairs and re-reviews the "
     "same PR. A head outside `factory/` or a branch owned by another running "
     "task needs a person. "
@@ -134,13 +134,12 @@ def resolve(task: dict, artifact: dict, cause: str) -> bool:
         # Legacy artifacts and unrelated human questions retain their path.
         return False
     gate = validate_gate(raw)
-    if any(
-        HUMAN_GATE_BACKSTOP.search(gate.get(field, "")) for field in ("value", "reason")
-    ):
-        return False
     if gate["classification"] != "reversible":
         return False
     if gate["kind"] == "delivery_target":
+        # This operation chooses only a server-discovered delivery branch.
+        # Free-text proposals cannot authorize spending or external operations;
+        # adoption checks repository identity and active ownership below.
         task["delivery_target_checked"] = False
         adopted = adopt_delivery(task, cause=cause, refresh=True)
         adopted = adopted and bool(task.get("delivery_adoption"))
@@ -152,6 +151,13 @@ def resolve(task: dict, artifact: dict, cause: str) -> bool:
                 {"cause": cause, "gate": gate},
             )
         return adopted
+    # A rationale often explains that the decision does not spend money or
+    # touch an account. It is explanatory text, not the selected operation.
+    # Retain the conservative check on the actual parameter value. A live
+    # validation gate only records staged scope and outstanding checks; it
+    # does not authorize executing those checks or external operations.
+    if gate["kind"] == "parameter" and HUMAN_GATE_BACKSTOP.search(gate["value"]):
+        return False
     number, repo = task["issue_number"], task["repo"]
     identity = hashlib.sha256(json.dumps(gate, sort_keys=True).encode()).hexdigest()[
         :20
@@ -257,7 +263,7 @@ def adopt_delivery(
     if task.get("delivery_target_checked") and not refresh:
         return True
     candidates = matching_delivery_pulls(task["repo"], task["issue_number"])
-    # Prefer an already granted target when it still closes the issue.
+    # Prefer an already granted target while it remains an open delivery.
     candidates.sort(
         key=lambda pr: (pr["number"] != task.get("delivery_pr_number"), pr["number"])
     )
@@ -311,8 +317,31 @@ def adopt_delivery(
 
 
 def matching_delivery_pulls(repo: str, issue_number: int) -> list[dict]:
-    """Oldest-first open same-repository PRs that close one issue."""
+    """Find closing PRs and recorded deliveries whose staged scope stays open."""
     from factory.orchestration import factory_conductor as conductor
+    from factory.orchestration.factory_controls import (
+        _read_session,
+        granted_delivery_surface,
+    )
+
+    # Rescoping intentionally removes closing keywords. Preserve the issue's
+    # delivery association from the receipt, never from a free-text reference
+    # in an unrelated PR or the planner's proposed branch.
+    recorded_targets = set()
+    with _read_session() as db:
+        rows = db.exec(
+            select(FactoryReceipt).where(
+                FactoryReceipt.repo == repo,
+                FactoryReceipt.issue_number == issue_number,
+            )
+        ).all()
+        for row in rows:
+            direction = json.loads(row.direction_json) if row.direction_json else {}
+            branch, number = granted_delivery_surface(direction)
+            if branch:
+                recorded_targets.add((branch, number))
+            elif row.task_id:
+                recorded_targets.add((f"factory/{row.task_id}", None))
 
     candidates = []
     for page in range(1, 6):
@@ -324,7 +353,11 @@ def matching_delivery_pulls(repo: str, issue_number: int) -> list[dict]:
             pr
             for pr in pulls
             if (pr.get("head", {}).get("repo") or {}).get("full_name") == repo
-            and conductor.closes_issue(pr.get("body"), repo, issue_number)
+            and (
+                conductor.closes_issue(pr.get("body"), repo, issue_number)
+                or (pr.get("head", {}).get("ref"), pr.get("number")) in recorded_targets
+                or (pr.get("head", {}).get("ref"), None) in recorded_targets
+            )
         )
         if len(pulls) < 100:
             return sorted(candidates, key=lambda pr: pr["number"])

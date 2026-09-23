@@ -45,9 +45,10 @@ type forceRefreshState struct {
 	lastForced time.Time
 }
 type listenerConfig struct {
-	listenAddr      string
-	tlsListenAddr   string
-	spiffeClientIDs []spiffeid.ID
+	listenAddr               string
+	tlsListenAddr            string
+	spiffeClientIDs          []spiffeid.ID
+	retirePlaintextProtected bool
 }
 type server struct {
 	githubGrants       map[string]githubGrant
@@ -154,16 +155,9 @@ func run(logger *slog.Logger) error {
 		tokenRequests: tokenRequests,
 	}
 	s.broker = broker.New(st, adapters, minters, brokerConfigs, logger, m)
-	plaintextMux := http.NewServeMux()
-	plaintextMux.HandleFunc("/healthz", s.health)
-	plaintextMux.Handle("/metrics", promhttp.Handler())
-	plaintextMux.Handle("/grants/", s.grantsHandler(false, listeners.tlsListenAddr != ""))
-	plaintextMux.Handle("/github/grants/", s.githubHandler(false))
-	plaintextMux.HandleFunc("/quota", s.quota)
-	plaintextMux.HandleFunc("/quota/", s.quota)
 	plaintextServer := &http.Server{
 		Addr:              listeners.listenAddr,
-		Handler:           plaintextMux,
+		Handler:           s.plaintextMux(listeners),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	if listeners.tlsListenAddr == "" {
@@ -206,6 +200,30 @@ func run(logger *slog.Logger) error {
 	return <-serverErrors
 }
 
+func (s *server) plaintextMux(listeners listenerConfig) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", s.health)
+	mux.Handle("/metrics", promhttp.Handler())
+	if listeners.retirePlaintextProtected {
+		denied := http.HandlerFunc(s.rejectRetiredPlaintext)
+		mux.Handle("/grants/", denied)
+		mux.Handle("/github/grants/", denied)
+		mux.Handle("/quota", denied)
+		mux.Handle("/quota/", denied)
+		return mux
+	}
+	mux.Handle("/grants/", s.grantsHandler(false, listeners.tlsListenAddr != ""))
+	mux.Handle("/github/grants/", s.githubHandler(false))
+	mux.HandleFunc("/quota", s.quota)
+	mux.HandleFunc("/quota/", s.quota)
+	return mux
+}
+
+func (s *server) rejectRetiredPlaintext(w http.ResponseWriter, r *http.Request) {
+	s.logger.Info("tokenbroker retired plaintext route rejected", "path", r.URL.Path, "remote_addr", r.RemoteAddr)
+	writeJSON(w, http.StatusForbidden, map[string]any{"reason": "plaintext_retired"})
+}
+
 type x509SourceFactory func(context.Context) (*workloadapi.X509Source, error)
 
 func newWorkloadX509Source(ctx context.Context) (*workloadapi.X509Source, error) {
@@ -230,6 +248,16 @@ func configuredListeners() (listenerConfig, error) {
 	config := listenerConfig{
 		listenAddr:    env("BROKER_LISTEN_ADDR", ":8080"),
 		tlsListenAddr: os.Getenv("BROKER_TLS_LISTEN_ADDR"),
+	}
+	switch raw := strings.TrimSpace(os.Getenv("BROKER_RETIRE_PLAINTEXT_PROTECTED_ROUTES")); raw {
+	case "", "false":
+	case "true":
+		config.retirePlaintextProtected = true
+	default:
+		return listenerConfig{}, fmt.Errorf("BROKER_RETIRE_PLAINTEXT_PROTECTED_ROUTES must be true or false, got %q", raw)
+	}
+	if config.retirePlaintextProtected && config.tlsListenAddr == "" {
+		return listenerConfig{}, errors.New("BROKER_RETIRE_PLAINTEXT_PROTECTED_ROUTES requires BROKER_TLS_LISTEN_ADDR")
 	}
 	if config.tlsListenAddr == "" {
 		return config, nil
@@ -293,6 +321,40 @@ func parseQuotaProviders(raw string) ([]string, error) {
 	return providers, nil
 }
 
+// quotaProviderForGrant translates a credential adapter to the quota class
+// reported by the egress sidecar. Only grant-backed subscription providers
+// belong in the quota inventory; service-account grants have no such feed.
+func quotaProviderForGrant(providerName string) string {
+	switch providerName {
+	case "codex-chatgpt":
+		return "codex"
+	default:
+		return ""
+	}
+}
+
+// quotaGrantViews returns a complete inventory of configured quota-bearing
+// grants. An unobserved grant is explicit so admission clients cannot confuse
+// a successful broker read with evidence that every selectable account has
+// capacity. Store.Grants remains observation-only for metrics consumers.
+func (s *server) quotaGrantViews() map[string]quota.View {
+	views := s.quotaStore.Grants()
+	for name, config := range s.configs {
+		provider := quotaProviderForGrant(config.ProviderName)
+		if provider == "" {
+			continue
+		}
+		if _, allowed := s.quotaProviders[provider]; !allowed {
+			continue
+		}
+		view, observed := views[name]
+		if !observed || view.Provider != provider {
+			views[name] = quota.View{Provider: provider, Grant: name}
+		}
+	}
+	return views
+}
+
 // quota serves an in-memory view of subscription quota reported by egress
 // proxies. POST /quota/{provider} replaces that provider's latest observation,
 // GET /quota/{provider} reads one view, and GET /quota reads every allowlisted
@@ -309,9 +371,15 @@ func (s *server) quota(w http.ResponseWriter, r *http.Request) {
 		for _, provider := range s.quotaProviderOrder {
 			providers[provider] = s.quotaStore.Get(provider)
 		}
-		// grants carries only the grants that have reported, keyed by grant
-		// name; the provider map above is unchanged for existing readers.
-		writeJSON(w, http.StatusOK, map[string]any{"providers": providers, "grants": s.quotaStore.Grants()})
+		// grants is a complete configured inventory, keyed by grant name. The
+		// completeness marker lets admission clients reject older partial
+		// payloads during a rolling deployment. The provider map above remains
+		// unchanged for existing readers.
+		writeJSON(w, http.StatusOK, map[string]any{
+			"providers":       providers,
+			"grants":          s.quotaGrantViews(),
+			"grants_complete": true,
+		})
 		return
 	}
 
@@ -341,7 +409,7 @@ func (s *server) quota(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		if grant != "" {
 			view := s.quotaStore.GetGrant(grant)
-			if view.Observed && view.Provider != provider {
+			if !view.Observed || view.Provider != provider {
 				// The grant last reported under another class: for this
 				// path it is unobserved rather than a misfiled reading.
 				view = quota.View{Provider: provider, Grant: grant}

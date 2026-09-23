@@ -89,6 +89,21 @@ point both sides at a Secret the operator never created.
 {{- end -}}
 {{- end -}}
 
+{{/*
+The restore-capability Secret name is shared by the control plane, every noded
+pod shape, and the optional OnePasswordItem. It deliberately mirrors the bearer
+Secret naming contract while remaining an independent trust domain.
+*/}}
+{{- define "embervm.restoreCapabilityKeySecretName" -}}
+{{- if .Values.controlPlane.restoreCapabilityKeySecret.name -}}
+{{- .Values.controlPlane.restoreCapabilityKeySecret.name -}}
+{{- else if .Values.controlPlane.restoreCapabilityKeySecret.onepassword.itemPath -}}
+{{- printf "%s-restore-capability-key" (include "embervm.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- else -}}
+{{- fail "controlPlane.restoreCapabilityKeySecret.name is required when the restore capability key is enabled without controlPlane.restoreCapabilityKeySecret.onepassword.itemPath" -}}
+{{- end -}}
+{{- end -}}
+
 {{/* Previous KEK root Secret name, present only during a root rotation. */}}
 {{- define "embervm.kekRootPreviousSecretName" -}}
 {{- if .Values.kekRoot.previous.name -}}

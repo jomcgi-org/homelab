@@ -82,7 +82,12 @@ defmodule Embervm.BaseBuilderTest do
   end
 
   defp resp(snapshot_ref, digest \\ "sha256:deadbeef") do
-    %BuildBaseResponse{snapshot_ref: snapshot_ref, image_digest: digest, base_size_bytes: 1, arch: "amd64"}
+    %BuildBaseResponse{
+      snapshot_ref: snapshot_ref,
+      image_digest: digest,
+      base_size_bytes: 1,
+      arch: "amd64"
+    }
   end
 
   defp start_builder(opts) do
@@ -104,6 +109,11 @@ defmodule Embervm.BaseBuilderTest do
           nodes: nodes,
           connect_fun: Keyword.get(opts, :connect_fun, fn _addr -> {:ok, :fake_channel} end),
           disconnect_fun: fn :fake_channel -> :ok end,
+          # Every local eviction is guarded by an exact remote marker HEAD.
+          # Tests not about that guard get a successful inert store seam; guard
+          # tests override head_fun and assert the exact key and failure policy.
+          store_client: Keyword.get(opts, :store_client, :fake_store),
+          head_fun: Keyword.get(opts, :head_fun, fn :fake_store, _key -> :ok end),
           # Base-durability PR-1 defaults for tests that do not exercise export:
           # a no-op export seam (so a build's immediate export never dials the real
           # stub against the fake channel) and a disabled reconcile timer (so no
@@ -123,6 +133,8 @@ defmodule Embervm.BaseBuilderTest do
           Keyword.drop(opts, [
             :export_fun,
             :connect_fun,
+            :store_client,
+            :head_fun,
             :export_reconcile_interval_ms,
             :retention_sweep_interval_ms,
             :op_log,
@@ -308,7 +320,10 @@ defmodule Embervm.BaseBuilderTest do
       end)
 
     refute is_nil(failed), "the failed build status was not recorded"
-    assert %{"status" => "False", "message" => "no image source for imgA"} = condition(failed, "BaseBuilt")
+
+    assert %{"status" => "False", "message" => "no image source for imgA"} =
+             condition(failed, "BaseBuilt")
+
     assert %{"status" => "False", "reason" => "BaseNotBuilt"} = condition(failed, "Ready")
 
     # Backoff retried until the (scripted) success, proving the retry loop runs.
@@ -399,7 +414,16 @@ defmodule Embervm.BaseBuilderTest do
   # A zip-lane descriptor: image_ref nil, a zip block, EMBER_HANDLER init_env
   # (exactly what the watcher's build_desc hands us for a zip CR).
   defp zip_desc(overrides \\ %{}) do
-    zip = Map.merge(%{runtime: "python312", code_uri: "http://filer/z.zip", sha256: "sha-1", handler: "app.handle"}, Map.get(overrides, :zip, %{}))
+    zip =
+      Map.merge(
+        %{
+          runtime: "python312",
+          code_uri: "http://filer/z.zip",
+          sha256: "sha-1",
+          handler: "app.handle"
+        },
+        Map.get(overrides, :zip, %{})
+      )
 
     desc(
       Map.merge(
@@ -559,7 +583,12 @@ defmodule Embervm.BaseBuilderTest do
       {:ok, resp("snap1")}
     end
 
-    builder = start_builder(nodes: [], status_writer: recording_status_writer(agent), build_fun: build_fun)
+    builder =
+      start_builder(
+        nodes: [],
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun
+      )
 
     :ok = BaseBuilder.reconcile(builder, desc())
 
@@ -815,6 +844,8 @@ defmodule Embervm.BaseBuilderTest do
   test "a superseded base is not evicted while sessions reference it, and evicts on drain" do
     agent = start_recorder()
     test_pid = self()
+    table = new_cap_table()
+    put_node_capacity_fact(table, "w", "snap1", true)
 
     # Each build returns a snapshot ref derived from the image so gen1/gen2 differ.
     build_fun = fn :fake_channel, req ->
@@ -831,7 +862,8 @@ defmodule Embervm.BaseBuilderTest do
       start_builder(
         status_writer: recording_status_writer(agent),
         build_fun: build_fun,
-        evict_fun: evict_fun
+        evict_fun: evict_fun,
+        capacity_table: table
       )
 
     turnover_to_snap2(builder, agent)
@@ -858,9 +890,110 @@ defmodule Embervm.BaseBuilderTest do
     refute "snap1" in st2.workloads["w"].superseded_refs
   end
 
+  test "a failed event-driven marker proof restores the ref for retry" do
+    agent = start_recorder()
+    test_pid = self()
+    table = new_cap_table()
+    put_node_capacity_fact(table, "w", "snap1", true)
+
+    build_fun = fn :fake_channel, req ->
+      ref = if req.image_ref == "imgA", do: "snap1", else: "snap2"
+      {:ok, resp(ref)}
+    end
+
+    builder =
+      start_builder(
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun,
+        capacity_table: table,
+        head_fun: fn :fake_store, key ->
+          send(test_pid, {:failed_event_head, key})
+          {:error, :not_found}
+        end,
+        evict_fun: fn :fake_channel, workload, ref ->
+          send(test_pid, {:unexpected_event_evict, workload, ref})
+          {:ok, %Embervm.Node.V1.EvictArtifactResponse{}}
+        end
+      )
+
+    turnover_to_snap2(builder, agent)
+
+    :ok = BaseBuilder.report_base_refs(builder, "snap1", primed: 0, sessions: 0)
+    assert_receive {:failed_event_head, "base/amd/w/snap1/meta.json"}, 1_000
+    refute_receive {:unexpected_event_evict, "w", "snap1"}, 100
+
+    assert_eventually(fn ->
+      status = BaseBuilder.status(builder).workloads["w"]
+      status.base_refs["snap1"].evicted == false and "snap1" in status.superseded_refs
+    end)
+
+    :ok = BaseBuilder.report_base_refs(builder, "snap1", primed: 0, sessions: 0)
+    assert_receive {:failed_event_head, "base/amd/w/snap1/meta.json"}, 1_000
+    refute_receive {:unexpected_event_evict, "w", "snap1"}, 100
+  end
+
+  test "a disk-driven failure preserves event-driven eviction state and retries" do
+    agent = start_recorder()
+    test_pid = self()
+    table = new_cap_table()
+    put_node_capacity_fact(table, "w", "snap1", true)
+
+    {:ok, outcomes} = Agent.start_link(fn -> [:ok, {:error, :not_found}, :ok] end)
+
+    builder =
+      start_builder(
+        status_writer: recording_status_writer(agent),
+        build_fun: fn :fake_channel, req ->
+          ref = if req.image_ref == "imgA", do: "snap1", else: "snap2"
+          {:ok, resp(ref)}
+        end,
+        capacity_table: table,
+        retention_disk_driven_enabled: true,
+        head_fun: fn :fake_store, key ->
+          outcome = Agent.get_and_update(outcomes, fn [next | rest] -> {next, rest} end)
+          send(test_pid, {:event_then_disk_head, key, outcome})
+          outcome
+        end,
+        evict_fun: fn :fake_channel, workload, ref ->
+          send(test_pid, {:event_then_disk_evict, workload, ref})
+          {:ok, %Embervm.Node.V1.EvictArtifactResponse{}}
+        end
+      )
+
+    turnover_to_snap2(builder, agent)
+
+    :ok = BaseBuilder.report_base_refs(builder, "snap1", primed: 0, sessions: 0)
+    assert_receive {:event_then_disk_head, "base/amd/w/snap1/meta.json", :ok}, 1_000
+    assert_receive {:event_then_disk_evict, "w", "snap1"}, 1_000
+    assert BaseBuilder.status(builder).workloads["w"].base_refs["snap1"].evicted
+
+    put_local_bases_fact(table, "w", "snap2", true, [
+      ready_base("snap2", "w", 512),
+      ready_base("snap1", "w", 1_024)
+    ])
+
+    BaseBuilder.retention_sweep_now(builder)
+
+    assert_receive {:event_then_disk_head, "base/amd/w/snap1/meta.json",
+                    {:error, :not_found}},
+                   1_000
+
+    refute_receive {:event_then_disk_evict, "w", "snap1"}, 100
+
+    status = BaseBuilder.status(builder).workloads["w"]
+    assert status.base_refs["snap1"].evicted
+    refute "snap1" in status.superseded_refs
+
+    BaseBuilder.retention_sweep_now(builder)
+    assert_receive {:event_then_disk_head, "base/amd/w/snap1/meta.json", :ok}, 1_000
+    assert_receive {:event_then_disk_evict, "w", "snap1"}, 1_000
+  end
+
   test "eviction fires only once even under repeated zero reports" do
     agent = start_recorder()
     test_pid = self()
+    table = new_cap_table()
+    put_node_capacity_fact(table, "w", "snap1", true)
 
     build_fun = fn :fake_channel, req ->
       ref = if req.image_ref == "imgA", do: "snap1", else: "snap2"
@@ -876,7 +1009,8 @@ defmodule Embervm.BaseBuilderTest do
       start_builder(
         status_writer: recording_status_writer(agent),
         build_fun: build_fun,
-        evict_fun: evict_fun
+        evict_fun: evict_fun,
+        capacity_table: table
       )
 
     turnover_to_snap2(builder, agent)
@@ -905,6 +1039,8 @@ defmodule Embervm.BaseBuilderTest do
   test "a legacy :serving refcount does not alter task and session eviction" do
     agent = start_recorder()
     test_pid = self()
+    table = new_cap_table()
+    put_node_capacity_fact(table, "w", "snap1", true)
 
     build_fun = fn :fake_channel, req ->
       ref = if req.image_ref == "imgA", do: "snap1", else: "snap2"
@@ -920,7 +1056,8 @@ defmodule Embervm.BaseBuilderTest do
       start_builder(
         status_writer: recording_status_writer(agent),
         build_fun: build_fun,
-        evict_fun: evict_fun
+        evict_fun: evict_fun,
+        capacity_table: table
       )
 
     turnover_to_snap2(builder, agent)
@@ -950,6 +1087,7 @@ defmodule Embervm.BaseBuilderTest do
       node_id: "node-4",
       configured_id: "node-4",
       instance_id: "node-4",
+      cpu_vendor: "amd",
       workloads: %{
         workload => %{
           snapshot_ref: current_ref,
@@ -962,11 +1100,27 @@ defmodule Embervm.BaseBuilderTest do
     })
   end
 
-  defp put_node_local_bases_fact(table, node_id, pod_uid, workload, current_ref, exported?, local_bases) do
+  defp put_node_local_bases_fact(
+         table,
+         node_id,
+         pod_uid,
+         workload,
+         current_ref,
+         exported?,
+         local_bases
+       ) do
     existing =
       case :ets.lookup(table, {node_id, pod_uid}) do
-        [{_key, facts}] -> facts
-        [] -> %{node_id: node_id, configured_id: node_id, instance_id: "#{node_id}/#{pod_uid}"}
+        [{_key, facts}] ->
+          facts
+
+        [] ->
+          %{
+            node_id: node_id,
+            configured_id: node_id,
+            instance_id: "#{node_id}/#{pod_uid}",
+            cpu_vendor: "amd"
+          }
       end
 
     workloads =
@@ -988,6 +1142,7 @@ defmodule Embervm.BaseBuilderTest do
       node_id: node_id,
       configured_id: node_id,
       instance_id: "#{node_id}/#{pod_uid}",
+      cpu_vendor: "amd",
       workloads: %{},
       local_bases: local_bases,
       updated_at: 0
@@ -995,9 +1150,14 @@ defmodule Embervm.BaseBuilderTest do
   end
 
   defp ready_base(ref, workload, bytes) do
-    %{ref: ref, workload: workload, size_bytes: bytes, base_state: :BASE_BUILD_STATE_READY,
+    %{
+      ref: ref,
+      workload: workload,
+      size_bytes: bytes,
+      base_state: :BASE_BUILD_STATE_READY,
       created_at_unix_ms: System.system_time(:millisecond) - 3_601_000,
-      snapshot_path: "/var/lib/embervm/scratch/embervm-noded/snapshots/bases/#{ref}"}
+      snapshot_path: "/var/lib/embervm/scratch/embervm-noded/snapshots/bases/#{ref}"
+    }
   end
 
   # Serving retention uses the BaseBuilder-published base as CURRENT and the
@@ -1056,9 +1216,11 @@ defmodule Embervm.BaseBuilderTest do
       )
 
     :ok = BaseBuilder.reconcile(builder, desc(%{class: "serving"}))
+
     assert_eventually(fn ->
       match?(%{"snapshotRef" => "w__current"}, latest(status_agent, "w"))
     end)
+
     {builder, table, instances_agent}
   end
 
@@ -1154,7 +1316,13 @@ defmodule Embervm.BaseBuilderTest do
     table = new_cap_table()
     base = Map.merge(ready_base("deleted__unknown-age", "deleted", 512), %{created_at_unix_ms: 0})
     put_unknown_local_bases_fact(table, "node-4", "ds", [base])
-    builder = start_builder(capacity_table: table, retention_sweep_enabled: true, retention_disk_driven_enabled: true)
+
+    builder =
+      start_builder(
+        capacity_table: table,
+        retention_sweep_enabled: true,
+        retention_disk_driven_enabled: true
+      )
 
     :sys.replace_state(builder, fn state -> %{state | workload_sync_done: true} end)
     assert BaseBuilder.retention_sweep_now(builder) == []
@@ -1164,9 +1332,14 @@ defmodule Embervm.BaseBuilderTest do
   # base_state UNSPECIFIED. The sweep must treat it as a candidate (it is neither
   # current nor BUILDING), so the reclaim drains orphans too.
   defp orphan_base(ref, workload, bytes) do
-    %{ref: ref, workload: workload, size_bytes: bytes, base_state: :BASE_BUILD_STATE_UNSPECIFIED,
+    %{
+      ref: ref,
+      workload: workload,
+      size_bytes: bytes,
+      base_state: :BASE_BUILD_STATE_UNSPECIFIED,
       created_at_unix_ms: System.system_time(:millisecond) - 3_601_000,
-      snapshot_path: "/var/lib/embervm/scratch/embervm-noded/snapshots/bases/#{ref}"}
+      snapshot_path: "/var/lib/embervm/scratch/embervm-noded/snapshots/bases/#{ref}"
+    }
   end
 
   # Drive one build so the CP has a placed, current snapshot_ref for "w" on node-4.
@@ -1332,18 +1505,28 @@ defmodule Embervm.BaseBuilderTest do
     table = new_cap_table()
     orphan = ready_base("deleted__old", "deleted", 2_048)
 
-    put_node_local_bases_fact(table, "node-4", "large", "deleted", "deleted__current", true, [orphan])
-    put_node_local_bases_fact(table, "node-4", "small", "deleted", "deleted__current", true, [orphan])
+    put_node_local_bases_fact(table, "node-4", "large", "deleted", "deleted__current", true, [
+      orphan
+    ])
 
-    builder = start_builder(
-      capacity_table: table,
-      evict_fun: fn :fake_channel, workload, ref ->
-        send(test_pid, {:evicted, workload, ref})
-        {:ok, %Embervm.Node.V1.EvictArtifactResponse{}}
-      end,
-      retention_sweep_enabled: true,
-      retention_disk_driven_enabled: true
-    )
+    put_node_local_bases_fact(table, "node-4", "small", "deleted", "deleted__current", true, [
+      orphan
+    ])
+
+    builder =
+      start_builder(
+        capacity_table: table,
+        nodes: [
+          %{id: "node-4/large", address: "node-4-large:9090"},
+          %{id: "node-4/small", address: "node-4-small:9090"}
+        ],
+        evict_fun: fn :fake_channel, workload, ref ->
+          send(test_pid, {:evicted, workload, ref})
+          {:ok, %Embervm.Node.V1.EvictArtifactResponse{}}
+        end,
+        retention_sweep_enabled: true,
+        retention_disk_driven_enabled: true
+      )
 
     :sys.replace_state(builder, fn state -> %{state | workload_sync_done: true} end)
     [entry] = BaseBuilder.retention_sweep_now(builder)
@@ -1356,8 +1539,17 @@ defmodule Embervm.BaseBuilderTest do
 
   test "retention sweep does not evict unknown workloads before the watcher sync" do
     table = new_cap_table()
-    put_node_local_bases_fact(table, "node-4", "ds", "deleted", "deleted__current", true, [ready_base("deleted__old", "deleted", 2_048)])
-    builder = start_builder(capacity_table: table, retention_sweep_enabled: true, retention_disk_driven_enabled: true)
+
+    put_node_local_bases_fact(table, "node-4", "ds", "deleted", "deleted__current", true, [
+      ready_base("deleted__old", "deleted", 2_048)
+    ])
+
+    builder =
+      start_builder(
+        capacity_table: table,
+        retention_sweep_enabled: true,
+        retention_disk_driven_enabled: true
+      )
 
     plan = BaseBuilder.retention_sweep_now(builder)
     assert plan == []
@@ -1366,17 +1558,22 @@ defmodule Embervm.BaseBuilderTest do
   test "retention sweep evicts a deleted workload without requiring an exported current base" do
     test_pid = self()
     table = new_cap_table()
-    put_node_local_bases_fact(table, "node-4", "ds", "deleted", "deleted__current", false, [ready_base("deleted__old", "deleted", 512)])
 
-    builder = start_builder(
-      capacity_table: table,
-      evict_fun: fn :fake_channel, workload, ref ->
-        send(test_pid, {:evicted, workload, ref})
-        {:ok, %Embervm.Node.V1.EvictArtifactResponse{}}
-      end,
-      retention_sweep_enabled: true,
-      retention_disk_driven_enabled: true
-    )
+    put_node_local_bases_fact(table, "node-4", "ds", "deleted", "deleted__current", false, [
+      ready_base("deleted__old", "deleted", 512)
+    ])
+
+    builder =
+      start_builder(
+        capacity_table: table,
+        nodes: [%{id: "node-4/ds", address: "node-4-ds:9090"}],
+        evict_fun: fn :fake_channel, workload, ref ->
+          send(test_pid, {:evicted, workload, ref})
+          {:ok, %Embervm.Node.V1.EvictArtifactResponse{}}
+        end,
+        retention_sweep_enabled: true,
+        retention_disk_driven_enabled: true
+      )
 
     :sys.replace_state(builder, fn state -> %{state | workload_sync_done: true} end)
     plan = BaseBuilder.retention_sweep_now(builder)
@@ -1386,9 +1583,22 @@ defmodule Embervm.BaseBuilderTest do
 
   test "retention sweep does not evict a BUILDING base for an unknown workload" do
     table = new_cap_table()
-    base = Map.put(ready_base("deleted__building", "deleted", 512), :base_state, :BASE_BUILD_STATE_BUILDING)
+
+    base =
+      Map.put(
+        ready_base("deleted__building", "deleted", 512),
+        :base_state,
+        :BASE_BUILD_STATE_BUILDING
+      )
+
     put_unknown_local_bases_fact(table, "node-4", "ds", [base])
-    builder = start_builder(capacity_table: table, retention_sweep_enabled: true, retention_disk_driven_enabled: true)
+
+    builder =
+      start_builder(
+        capacity_table: table,
+        retention_sweep_enabled: true,
+        retention_disk_driven_enabled: true
+      )
 
     :sys.replace_state(builder, fn state -> %{state | workload_sync_done: true} end)
     assert BaseBuilder.retention_sweep_now(builder) == []
@@ -1397,10 +1607,15 @@ defmodule Embervm.BaseBuilderTest do
   test "retention sweep protects an unknown base still present in base_refs" do
     agent = start_recorder()
     table = new_cap_table()
-    put_unknown_local_bases_fact(table, "node-4", "ds", [ready_base("deleted__held", "deleted", 512)])
+
+    put_unknown_local_bases_fact(table, "node-4", "ds", [
+      ready_base("deleted__held", "deleted", 512)
+    ])
+
     builder = start_builder(capacity_table: table, status_writer: recording_status_writer(agent))
 
     :ok = BaseBuilder.reconcile(builder, desc())
+
     :sys.replace_state(builder, fn state ->
       w = state.workloads["w"]
       w = %{w | base_refs: %{"deleted__held" => %{primed: 1, sessions: 0, evicted: false}}}
@@ -1468,7 +1683,11 @@ defmodule Embervm.BaseBuilderTest do
 
     put_node_capacity_fact(table, "w", "placeholder", true)
     build_current(builder, agent, "w__current")
-    put_local_bases_fact(table, "w", "w__current", true, [ready_base("w__current", "w", 1), ready_base("w__disk-old", "w", 2_048)])
+
+    put_local_bases_fact(table, "w", "w__current", true, [
+      ready_base("w__current", "w", 1),
+      ready_base("w__disk-old", "w", 2_048)
+    ])
 
     log =
       capture_log(fn ->
@@ -1486,7 +1705,11 @@ defmodule Embervm.BaseBuilderTest do
     test_pid = self()
     table = new_cap_table()
     agent = start_recorder()
-    bases = [ready_base("w__current", "w", 1) | (for n <- 1..21, do: ready_base("w__disk-old#{n}", "w", n))]
+
+    bases = [
+      ready_base("w__current", "w", 1)
+      | for(n <- 1..21, do: ready_base("w__disk-old#{n}", "w", n))
+    ]
 
     builder =
       start_builder(
@@ -1510,11 +1733,191 @@ defmodule Embervm.BaseBuilderTest do
     refute_receive {:evicted, "w", _}, 200
   end
 
+  test "local eviction HEADs the exact authoritative marker before deleting only local bytes" do
+    test_pid = self()
+    table = new_cap_table()
+    agent = start_recorder()
+
+    builder =
+      start_builder(
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: fn :fake_channel, _req -> {:ok, resp("w__current")} end,
+        retention_disk_driven_enabled: true,
+        head_fun: fn :fake_store, key ->
+          send(test_pid, {:headed, key})
+          :ok
+        end,
+        evict_fun: fn :fake_channel, workload, ref ->
+          send(test_pid, {:local_evict, workload, ref})
+          {:ok, %Embervm.Node.V1.EvictArtifactResponse{}}
+        end,
+        remote_evict_fun: fn _channel, _workload, _vendor, _ref ->
+          send(test_pid, :remote_evict)
+          {:ok, %Embervm.Node.V1.EvictArtifactResponse{}}
+        end
+      )
+
+    put_node_capacity_fact(table, "w", "placeholder", true)
+    build_current(builder, agent, "w__current")
+
+    put_local_bases_fact(table, "w", "w__current", true, [
+      ready_base("w__current", "w", 512),
+      ready_base("w__old", "w", 1_024)
+    ])
+
+    [{key, fact}] = :ets.lookup(table, {"node-4", "ds"})
+    NodeCapacity.put(table, key, %{fact | cpu_vendor: " amd "})
+
+    BaseBuilder.retention_sweep_now(builder)
+
+    assert_receive {:headed, "base/amd/w/w__old/meta.json"}, 1_000
+    assert_receive {:local_evict, "w", "w__old"}, 1_000
+    refute_receive :remote_evict, 100
+  end
+
+  test "every failed or malformed remote marker proof holds local bytes and retries" do
+    test_pid = self()
+    table = new_cap_table()
+    agent = start_recorder()
+
+    {:ok, outcomes} =
+      Agent.start_link(fn ->
+        [
+          {:error, :not_found},
+          {:error, {:unexpected_status, 403}},
+          {:error, {:unexpected_status, 500}},
+          {:error, :timeout},
+          {:ok, :unrelated_object},
+          :ok
+        ]
+      end)
+
+    head_fun = fn :fake_store, key ->
+      outcome = Agent.get_and_update(outcomes, fn [next | rest] -> {next, rest} end)
+      send(test_pid, {:head_outcome, key, outcome})
+      outcome
+    end
+
+    builder =
+      start_builder(
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: fn :fake_channel, _req -> {:ok, resp("w__current")} end,
+        retention_disk_driven_enabled: true,
+        head_fun: head_fun,
+        evict_fun: fn :fake_channel, workload, ref ->
+          send(test_pid, {:evicted_after_proof, workload, ref})
+          {:ok, %Embervm.Node.V1.EvictArtifactResponse{}}
+        end
+      )
+
+    put_node_capacity_fact(table, "w", "placeholder", true)
+    build_current(builder, agent, "w__current")
+
+    put_local_bases_fact(table, "w", "w__current", true, [
+      ready_base("w__current", "w", 512),
+      ready_base("w__old", "w", 1_024)
+    ])
+
+    for expected <- [
+          {:error, :not_found},
+          {:error, {:unexpected_status, 403}},
+          {:error, {:unexpected_status, 500}},
+          {:error, :timeout},
+          {:ok, :unrelated_object}
+        ] do
+      BaseBuilder.retention_sweep_now(builder)
+      assert_receive {:head_outcome, "base/amd/w/w__old/meta.json", ^expected}, 1_000
+      refute_receive {:evicted_after_proof, "w", "w__old"}, 100
+    end
+
+    BaseBuilder.retention_sweep_now(builder)
+    assert_receive {:head_outcome, "base/amd/w/w__old/meta.json", :ok}, 1_000
+    assert_receive {:evicted_after_proof, "w", "w__old"}, 1_000
+  end
+
+  test "fresh vendor identity and noded in-use refusal both fail closed and remain retryable" do
+    test_pid = self()
+    table = new_cap_table()
+    agent = start_recorder()
+    {:ok, evict_attempts} = Agent.start_link(fn -> 0 end)
+
+    evict_fun = fn :fake_channel, workload, ref ->
+      attempt = Agent.get_and_update(evict_attempts, fn n -> {n, n + 1} end)
+      send(test_pid, {:evict_attempt, workload, ref, attempt})
+
+      if attempt == 0,
+        do: {:error, :base_in_use},
+        else: {:ok, %Embervm.Node.V1.EvictArtifactResponse{}}
+    end
+
+    builder =
+      start_builder(
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: fn :fake_channel, _req -> {:ok, resp("w__current")} end,
+        retention_disk_driven_enabled: true,
+        head_fun: fn :fake_store, key ->
+          send(test_pid, {:headed_for_race, key})
+          :ok
+        end,
+        evict_fun: evict_fun
+      )
+
+    put_node_capacity_fact(table, "w", "placeholder", true)
+    build_current(builder, agent, "w__current")
+
+    bases = [ready_base("w__current", "w", 512), ready_base("w__old", "w", 1_024)]
+    put_local_bases_fact(table, "w", "w__current", true, bases)
+
+    BaseBuilder.retention_sweep_now(builder)
+    assert_receive {:headed_for_race, "base/amd/w/w__old/meta.json"}, 1_000
+    assert_receive {:evict_attempt, "w", "w__old", 0}, 1_000
+
+    # noded's refusal leaves the local base reported, so the next sweep retries.
+    BaseBuilder.retention_sweep_now(builder)
+    assert_receive {:headed_for_race, "base/amd/w/w__old/meta.json"}, 1_000
+    assert_receive {:evict_attempt, "w", "w__old", 1}, 1_000
+
+    # A vendor change after planning is not allowed to reuse the old amd proof.
+    :sys.replace_state(builder, fn state ->
+      %{
+        state
+        | connect_fun: fn _address ->
+            if self() == builder do
+              {:error, :skip_remote_inventory}
+            else
+              send(test_pid, {:connected_for_identity_check, self()})
+
+              receive do
+                :continue_identity_check -> {:ok, :fake_channel}
+              end
+            end
+          end
+      }
+    end)
+
+    put_local_bases_fact(table, "w", "w__current", true, bases)
+    BaseBuilder.retention_sweep_now(builder)
+    assert_receive {:connected_for_identity_check, worker}, 1_000
+
+    [{key, fact}] = :ets.lookup(table, {"node-4", "ds"})
+    NodeCapacity.put(table, key, %{fact | cpu_vendor: "intel"})
+    send(worker, :continue_identity_check)
+
+    refute_receive {:headed_for_race, _key}, 200
+    refute_receive {:evict_attempt, "w", "w__old", _attempt}, 200
+  end
+
   test "disk-driven retention log wording is DRY RUN when its gate is off" do
     table = new_cap_table()
     builder = start_builder(capacity_table: table, retention_disk_driven_enabled: false)
     :sys.replace_state(builder, fn state -> %{state | workload_sync_done: true} end)
-    put_node_local_bases_fact(table, "node-4", "ds", "deleted", "deleted__current", true, [ready_base("deleted__old", "deleted", 512)])
+
+    put_node_local_bases_fact(table, "node-4", "ds", "deleted", "deleted__current", true, [
+      ready_base("deleted__old", "deleted", 512)
+    ])
 
     log = capture_log(fn -> BaseBuilder.retention_sweep_now(builder) end)
     assert log =~ "DRY RUN"
@@ -1584,7 +1987,13 @@ defmodule Embervm.BaseBuilderTest do
       %{state | workloads: %{"w" => w}}
     end)
 
-    young = Map.put(ready_base("w__young", "w", 4), :created_at_unix_ms, System.system_time(:millisecond) - 100_000)
+    young =
+      Map.put(
+        ready_base("w__young", "w", 4),
+        :created_at_unix_ms,
+        System.system_time(:millisecond) - 100_000
+      )
+
     building = Map.put(ready_base("w__building", "w", 8), :base_state, :BASE_BUILD_STATE_BUILDING)
 
     put_local_bases_fact(table, "w", "w__current", false, [
@@ -1604,8 +2013,17 @@ defmodule Embervm.BaseBuilderTest do
     test_pid = self()
     table = new_cap_table()
 
-    put_brick(table, "node-1", "intel", size_class: "16gi", mem_budget: 16_384, mem_headroom: 16_000)
-    put_brick(table, "node-4", "amd", size_class: "16gi", mem_budget: 16_384, mem_headroom: 16_000)
+    put_brick(table, "node-1", "intel",
+      size_class: "16gi",
+      mem_budget: 16_384,
+      mem_headroom: 16_000
+    )
+
+    put_brick(table, "node-4", "amd",
+      size_class: "16gi",
+      mem_budget: 16_384,
+      mem_headroom: 16_000
+    )
 
     put_node_local_bases_fact(table, "node-1", "intel", "w", "w__intel", true, [
       ready_base("w__intel", "w", 512),
@@ -1643,7 +2061,10 @@ defmodule Embervm.BaseBuilderTest do
       )
 
     :ok = BaseBuilder.reconcile(builder, desc())
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "w__intel" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "w__intel"
+    end)
 
     assert_receive {:connected, "node-4/amd"}, 1_000
     assert_receive {:exported, "w__amd"}, 1_000
@@ -1669,7 +2090,12 @@ defmodule Embervm.BaseBuilderTest do
     test_pid = self()
     table = new_cap_table()
 
-    put_brick(table, "node-4", "large", size_class: "16gi", mem_budget: 16_384, mem_headroom: 16_000)
+    put_brick(table, "node-4", "large",
+      size_class: "16gi",
+      mem_budget: 16_384,
+      mem_headroom: 16_000
+    )
+
     put_brick(table, "node-4", "small", size_class: "2gi", mem_budget: 2_048, mem_headroom: 2_000)
 
     local_bases = [
@@ -1706,7 +2132,10 @@ defmodule Embervm.BaseBuilderTest do
       )
 
     :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "w__current" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "w__current"
+    end)
 
     assert_receive {:exported, "w__current"}, 1_000
     refute_receive {:exported, "w__current"}, 100
@@ -1762,14 +2191,16 @@ defmodule Embervm.BaseBuilderTest do
       )
 
     :ok = BaseBuilder.reconcile(builder, desc())
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "w__intel" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "w__intel"
+    end)
 
     # Export should target node-99/unknown, but the nil-address guard skips it
     # (it logs a warning instead of trying to dial nil)
     refute_receive {:connected, "node-99/unknown"}, 500
     refute_receive {:exported, "w__unknown"}, 500
   end
-
 
   test "retention sweep never evicts a still-refcounted superseded ref" do
     agent = start_recorder()
@@ -1828,22 +2259,43 @@ defmodule Embervm.BaseBuilderTest do
     agent = start_recorder()
     test_pid = self()
     table = new_cap_table()
-    builder = start_builder(
-      capacity_table: table,
-      status_writer: recording_status_writer(agent),
-      build_fun: fn :fake_channel, _req -> {:ok, resp("w__current")} end,
-      evict_fun: fn :fake_channel, workload, ref ->
-        send(test_pid, {:evicted, workload, ref})
-        {:ok, %Embervm.Node.V1.EvictArtifactResponse{}}
-      end
-    )
+
+    builder =
+      start_builder(
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: fn :fake_channel, _req -> {:ok, resp("w__current")} end,
+        evict_fun: fn :fake_channel, workload, ref ->
+          send(test_pid, {:evicted, workload, ref})
+          {:ok, %Embervm.Node.V1.EvictArtifactResponse{}}
+        end
+      )
+
     put_node_capacity_fact(table, "w", "placeholder", true)
     build_current(builder, agent, "w__current")
 
-    young = Map.put(ready_base("w__young", "w", 10), :created_at_unix_ms, System.system_time(:millisecond) - 100_000)
-    old = Map.put(ready_base("w__old", "w", 20), :created_at_unix_ms, System.system_time(:millisecond) - 4_000_000)
+    young =
+      Map.put(
+        ready_base("w__young", "w", 10),
+        :created_at_unix_ms,
+        System.system_time(:millisecond) - 100_000
+      )
+
+    old =
+      Map.put(
+        ready_base("w__old", "w", 20),
+        :created_at_unix_ms,
+        System.system_time(:millisecond) - 4_000_000
+      )
+
     unknown = Map.put(ready_base("w__unknown", "w", 30), :created_at_unix_ms, 0)
-    put_local_bases_fact(table, "w", "w__current", true, [ready_base("w__current", "w", 1), young, old, unknown])
+
+    put_local_bases_fact(table, "w", "w__current", true, [
+      ready_base("w__current", "w", 1),
+      young,
+      old,
+      unknown
+    ])
 
     [entry] = BaseBuilder.retention_sweep_now(builder)
     assert entry.evict_refs == ["w__old"]
@@ -1852,6 +2304,7 @@ defmodule Embervm.BaseBuilderTest do
     assert candidate.path == "/var/lib/embervm/scratch/embervm-noded/snapshots/bases/w__old"
     assert candidate.size_bytes == 20
     assert candidate.age_seconds >= 3_600
+
     # Verify young base is filtered by age and unknown-age base is treated as new (not a candidate)
     assert candidate.workload == "w"
     assert Enum.all?(entry.candidates, &(&1.age_seconds > 0))
@@ -1863,20 +2316,26 @@ defmodule Embervm.BaseBuilderTest do
     agent = start_recorder()
     test_pid = self()
     table = new_cap_table()
-    bases = [ready_base("w__current", "w", 1) | (for n <- 1..21, do: ready_base("w__old#{n}", "w", n))]
+
+    bases = [
+      ready_base("w__current", "w", 1) | for(n <- 1..21, do: ready_base("w__old#{n}", "w", n))
+    ]
 
     put_local_bases_fact(table, "w", "w__current", true, bases)
-    builder = start_builder(
-      capacity_table: table,
-      status_writer: recording_status_writer(agent),
-      build_fun: fn :fake_channel, _req -> {:ok, resp("w__current")} end,
-      retention_sweep_enabled: true,
-      retention_disk_driven_enabled: true,
-      evict_fun: fn :fake_channel, workload, ref ->
-        send(test_pid, {:evicted, workload, ref})
-        {:ok, %Embervm.Node.V1.EvictArtifactResponse{}}
-      end
-    )
+
+    builder =
+      start_builder(
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: fn :fake_channel, _req -> {:ok, resp("w__current")} end,
+        retention_sweep_enabled: true,
+        retention_disk_driven_enabled: true,
+        evict_fun: fn :fake_channel, workload, ref ->
+          send(test_pid, {:evicted, workload, ref})
+          {:ok, %Embervm.Node.V1.EvictArtifactResponse{}}
+        end
+      )
+
     # No put_node_capacity_fact here: it writes the SAME {"node-4", "ds"} key as
     # the put_local_bases_fact above and would wipe the 21-base inventory this
     # test sweeps. The bases fact itself is wildcard-shaped (no size_class), so
@@ -2085,7 +2544,9 @@ defmodule Embervm.BaseBuilderTest do
     :ok = BaseBuilder.reconcile(builder, desc(%{name: "parked", mem_mib: 4_000}))
     send(busy_worker, :finish_unavailable_build)
 
-    assert_eventually(fn -> :sys.get_state(builder).workloads["busy"].snapshot_ref == "snap-busy" end)
+    assert_eventually(fn ->
+      :sys.get_state(builder).workloads["busy"].snapshot_ref == "snap-busy"
+    end)
 
     :ok = BaseBuilder.capacity_fact_updated(builder, "node-4/uid")
     state = :sys.get_state(builder)
@@ -2104,7 +2565,11 @@ defmodule Embervm.BaseBuilderTest do
     build_fun = fn :fake_channel, _req -> {:ok, resp("snap1")} end
 
     builder =
-      start_builder(nodes: [@node], status_writer: recording_status_writer(agent), build_fun: build_fun)
+      start_builder(
+        nodes: [@node],
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun
+      )
 
     :ok = BaseBuilder.reconcile(builder, desc())
 
@@ -2321,7 +2786,10 @@ defmodule Embervm.BaseBuilderTest do
       )
 
     :ok = BaseBuilder.reconcile(builder, desc())
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap-1" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap-1"
+    end)
 
     :sys.replace_state(builder, fn state ->
       put_in(state.workloads["w"].store_confirmed["amd"], %{ref: "snap-1", confirmed_at: 1})
@@ -2338,9 +2806,11 @@ defmodule Embervm.BaseBuilderTest do
     assert op.payload.node_id == "node-4/uid"
     assert op.payload.ref == "snap-1"
 
-    hydrating_status = latest(status_agent, "w")
-    assert condition(hydrating_status, "BaseBuilt")["status"] == "False"
-    assert condition(hydrating_status, "BaseBuilt")["reason"] == "BaseBuilding"
+    assert_eventually(fn ->
+      hydrating_status = latest(status_agent, "w")
+      condition(hydrating_status, "BaseBuilt")["status"] == "False" and
+        condition(hydrating_status, "BaseBuilt")["reason"] == "BaseBuilding"
+    end)
     assert Agent.get(builds, & &1) == 1
     assert BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap-1"
 
@@ -2394,7 +2864,10 @@ defmodule Embervm.BaseBuilderTest do
 
     :ok = BaseBuilder.reconcile(builder, desc())
     assert_receive {:build_started, 1}, 1_000
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap-1" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap-1"
+    end)
 
     put_node_local_bases_fact(table, "node-5", "uid", "w", "snap-1", false, [
       ready_base("snap-1", "w", 1)
@@ -2445,7 +2918,10 @@ defmodule Embervm.BaseBuilderTest do
 
     :ok = BaseBuilder.reconcile(builder, zip_desc())
     assert_receive {:build_started, 1}, 1_000
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap-1" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap-1"
+    end)
 
     # Node 5 inventories snap-1, but its current READY ref has advanced. The
     # export reconciler will ship only snap-newer, so snap-1 cannot justify waiting.
@@ -2453,6 +2929,7 @@ defmodule Embervm.BaseBuilderTest do
       ready_base("snap-1", "w", 1),
       ready_base("snap-newer", "w", 1)
     ])
+
     put_node_local_bases_fact(table, "node-4", "uid", "w", "", false, [])
     put_base_fact(table, "node-4", "uid", "w", "", :BASE_BUILD_STATE_NONE, false)
 
@@ -2499,7 +2976,10 @@ defmodule Embervm.BaseBuilderTest do
       )
 
     :ok = BaseBuilder.reconcile(builder, desc())
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap-1" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap-1"
+    end)
 
     # Model a control-plane restart that lost vendor_built while another
     # vendor's node still proves the ref is exported and store-fetchable.
@@ -2577,7 +3057,10 @@ defmodule Embervm.BaseBuilderTest do
       )
 
     :ok = BaseBuilder.reconcile(builder, desc())
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap-1" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap-1"
+    end)
 
     :sys.replace_state(builder, fn state ->
       put_in(state.workloads["w"].store_confirmed["amd"], %{ref: "snap-1", confirmed_at: 1})
@@ -2721,7 +3204,12 @@ defmodule Embervm.BaseBuilderTest do
   test "fact-less instances are excluded from build placement" do
     test_pid = self()
     table = new_cap_table()
-    put_brick(table, "node-4", "big", size_class: "16gi", mem_budget: 16_384, mem_headroom: 16_000)
+
+    put_brick(table, "node-4", "big",
+      size_class: "16gi",
+      mem_budget: 16_384,
+      mem_headroom: 16_000
+    )
 
     build_fun = fn :fake_channel, req ->
       send(test_pid, {:build_started, req.trace.workload})
@@ -2766,8 +3254,19 @@ defmodule Embervm.BaseBuilderTest do
 
   defp start_departure_builder(test_pid) do
     table = new_cap_table()
-    put_brick(table, "node-4", "departing", size_class: "16gi", mem_budget: 16_384, mem_headroom: 16_000)
-    put_brick(table, "node-5", "survivor", size_class: "8gi", mem_budget: 8_192, mem_headroom: 8_000)
+
+    put_brick(table, "node-4", "departing",
+      size_class: "16gi",
+      mem_budget: 16_384,
+      mem_headroom: 16_000
+    )
+
+    put_brick(table, "node-5", "survivor",
+      size_class: "8gi",
+      mem_budget: 8_192,
+      mem_headroom: 8_000
+    )
+
     {:ok, attempts} = Agent.start_link(fn -> 0 end)
 
     build_fun = fn :fake_channel, _req ->
@@ -2958,7 +3457,12 @@ defmodule Embervm.BaseBuilderTest do
     table = new_cap_table()
     put_brick(table, "node-4", "small", size_class: "2gi", mem_budget: 2_048, mem_headroom: 100)
     put_brick(table, "node-4", "mid", size_class: "8gi", mem_budget: 8_192, mem_headroom: 8_000)
-    put_brick(table, "node-4", "big", size_class: "16gi", mem_budget: 16_384, mem_headroom: 16_000)
+
+    put_brick(table, "node-4", "big",
+      size_class: "16gi",
+      mem_budget: 16_384,
+      mem_headroom: 16_000
+    )
 
     agent = start_recorder()
     build_fun = fn :fake_channel, _req -> {:ok, resp("snap-big")} end
@@ -3027,19 +3531,35 @@ defmodule Embervm.BaseBuilderTest do
       )
 
     :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].node_id == "node-4/mid" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].node_id == "node-4/mid"
+    end)
 
     # A larger brick appears on the node and registers.
-    put_brick(table, "node-4", "big", size_class: "16gi", mem_budget: 16_384, mem_headroom: 16_000)
+    put_brick(table, "node-4", "big",
+      size_class: "16gi",
+      mem_budget: 16_384,
+      mem_headroom: 16_000
+    )
+
     :ok = BaseBuilder.add_node(builder, "node-4/big", "a")
     :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
 
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].node_id == "node-4/big" end)
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].node_id == "node-4/big"
+    end)
   end
 
   test "placement re-places when its chosen instance deregisters" do
     table = new_cap_table()
-    put_brick(table, "node-4", "big", size_class: "16gi", mem_budget: 16_384, mem_headroom: 16_000)
+
+    put_brick(table, "node-4", "big",
+      size_class: "16gi",
+      mem_budget: 16_384,
+      mem_headroom: 16_000
+    )
+
     put_brick(table, "node-4", "mid", size_class: "8gi", mem_budget: 8_192, mem_headroom: 8_000)
 
     agent = start_recorder()
@@ -3054,7 +3574,10 @@ defmodule Embervm.BaseBuilderTest do
       )
 
     :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].node_id == "node-4/big" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].node_id == "node-4/big"
+    end)
 
     # The chosen instance vanishes: remove_node unpins it (node_id -> nil), and a
     # re-add/reconcile re-places onto the remaining eligible 8Gi brick.
@@ -3062,7 +3585,9 @@ defmodule Embervm.BaseBuilderTest do
     NodeCapacity.drop(table, {"node-4", "big"})
     :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
 
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].node_id == "node-4/mid" end)
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].node_id == "node-4/mid"
+    end)
   end
 
   # -- base export durability (base-durability PR-1) --------------------------
@@ -3085,7 +3610,9 @@ defmodule Embervm.BaseBuilderTest do
 
     export_fun = fn :fake_channel, %Embervm.Node.V1.ExportArtifactRequest{artifact: ref} = req ->
       send(test_pid, {:exported, ref.kind, ref.workload, ref.ref, req.trace.workload})
-      {:ok, %Embervm.Node.V1.ExportArtifactResponse{bytes_moved: 123, skipped: false, generation: 0}}
+
+      {:ok,
+       %Embervm.Node.V1.ExportArtifactResponse{bytes_moved: 123, skipped: false, generation: 0}}
     end
 
     builder =
@@ -3109,7 +3636,8 @@ defmodule Embervm.BaseBuilderTest do
     build_fun = fn :fake_channel, _req -> {:ok, resp("snap1")} end
 
     export_fun = fn :fake_channel, _req ->
-      {:ok, %Embervm.Node.V1.ExportArtifactResponse{bytes_moved: 42, skipped: false, generation: 0}}
+      {:ok,
+       %Embervm.Node.V1.ExportArtifactResponse{bytes_moved: 42, skipped: false, generation: 0}}
     end
 
     builder =
@@ -3155,10 +3683,17 @@ defmodule Embervm.BaseBuilderTest do
         export_reconcile_interval_ms: 20
       )
 
-    put_brick(table, "node-4", "big", size_class: "16gi", mem_budget: 16_384, mem_headroom: 16_000)
+    put_brick(table, "node-4", "big",
+      size_class: "16gi",
+      mem_budget: 16_384,
+      mem_headroom: 16_000
+    )
 
     :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap1" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap1"
+    end)
 
     # Drain the immediate post-build export so the reconcile-driven one is the
     # signal under test.
@@ -3192,10 +3727,17 @@ defmodule Embervm.BaseBuilderTest do
         export_reconcile_interval_ms: 20
       )
 
-    put_brick(table, "node-4", "big", size_class: "16gi", mem_budget: 16_384, mem_headroom: 16_000)
+    put_brick(table, "node-4", "big",
+      size_class: "16gi",
+      mem_budget: 16_384,
+      mem_headroom: 16_000
+    )
 
     :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap1" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap1"
+    end)
 
     # Drain the immediate post-build export.
     assert_receive {:exported, "snap1"}, 1_000
@@ -3230,10 +3772,18 @@ defmodule Embervm.BaseBuilderTest do
         export_reconcile_interval_ms: 20
       )
 
-    put_brick(table, "node-4", "big", size_class: "16gi", mem_budget: 16_384, mem_headroom: 16_000)
+    put_brick(table, "node-4", "big",
+      size_class: "16gi",
+      mem_budget: 16_384,
+      mem_headroom: 16_000
+    )
 
     :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap1" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap1"
+    end)
+
     assert_receive {:exported, "snap1"}, 1_000
 
     # The placed pod (big) restarts as a new pod (big2) on the SAME node. Only big2
@@ -3285,10 +3835,17 @@ defmodule Embervm.BaseBuilderTest do
         export_reconcile_interval_ms: 0
       )
 
-    put_brick(table, "node-4", "big", size_class: "16gi", mem_budget: 16_384, mem_headroom: 16_000)
+    put_brick(table, "node-4", "big",
+      size_class: "16gi",
+      mem_budget: 16_384,
+      mem_headroom: 16_000
+    )
 
     :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap1" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap1"
+    end)
 
     # The immediate post-build export starts and is now blocked (in flight).
     assert_receive {:export_started, "snap1", worker1}, 1_000
@@ -3351,7 +3908,8 @@ defmodule Embervm.BaseBuilderTest do
           export_fun: fn :fake_channel, %Embervm.Node.V1.ExportArtifactRequest{artifact: ref} ->
             send(test_pid, {:exported, ref.ref})
 
-            {:ok, %Embervm.Node.V1.ExportArtifactResponse{bytes_moved: 0, skipped: true, generation: 0}}
+            {:ok,
+             %Embervm.Node.V1.ExportArtifactResponse{bytes_moved: 0, skipped: true, generation: 0}}
           end
         ] ++
           Keyword.take(opts, [
@@ -3364,16 +3922,25 @@ defmodule Embervm.BaseBuilderTest do
           ])
       )
 
-    put_brick(table, "node-4", "big", size_class: "16gi", mem_budget: 16_384, mem_headroom: 16_000)
+    put_brick(table, "node-4", "big",
+      size_class: "16gi",
+      mem_budget: 16_384,
+      mem_headroom: 16_000
+    )
 
     :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap1" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap1"
+    end)
+
     assert_receive {:exported, "snap1"}, 1_000
 
     # The upload LANDS on the node: the fact flips to exported=true, and one
     # reconcile tick records that as store-fetchability evidence for snap1.
     put_base_fact(table, "node-4", "big", "w", "snap1", :BASE_BUILD_STATE_READY, true)
     send(builder, :export_reconcile)
+
     assert_eventually(fn ->
       :sys.get_state(builder).workloads["w"].store_confirmed["amd"].ref == "snap1"
     end)
@@ -3453,14 +4020,18 @@ defmodule Embervm.BaseBuilderTest do
     # rebuild AT ONCE (no poll wait).
     :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
     assert_receive {:rebuilt, rebuild_worker}, 1_000
+
     assert_eventually(fn ->
       case latest(agent, "w") do
-        nil -> false
+        nil ->
+          false
+
         status ->
           base_built = condition(status, "BaseBuilt")
           base_built["status"] == "False" and base_built["reason"] == "BaseBuilding"
       end
     end)
+
     refute Map.has_key?(latest(agent, "w"), "snapshotRef")
     send(rebuild_worker, :release_rebuild)
     assert_eventually(fn -> match?(%{"snapshotRef" => "snap1"}, latest(agent, "w")) end)
@@ -3484,7 +4055,9 @@ defmodule Embervm.BaseBuilderTest do
       call = Agent.get_and_update(calls, fn n -> {n + 1, n + 1} end)
 
       case call do
-        1 -> {:ok, resp("snap1")}
+        1 ->
+          {:ok, resp("snap1")}
+
         2 ->
           send(test_pid, {:rebuild_started, req.image_ref, self()})
 
@@ -3526,7 +4099,9 @@ defmodule Embervm.BaseBuilderTest do
       call = Agent.get_and_update(calls, fn n -> {n + 1, n + 1} end)
 
       case call do
-        1 -> {:ok, resp("snap1")}
+        1 ->
+          {:ok, resp("snap1")}
+
         2 ->
           send(test_pid, {:other_started, self()})
 
@@ -3553,7 +4128,10 @@ defmodule Embervm.BaseBuilderTest do
     # signature/1's field order, so a future field addition fails loudly here
     # rather than silently flipping this test into the mismatch branch.
     d = desc(%{mem_mib: 4_000})
-    signature_at_start = {d.image_ref, nil, d.vcpus, d.mem_mib, d.guest_port, d.ready_path, d.init_env}
+
+    signature_at_start =
+      {d.image_ref, nil, d.vcpus, d.mem_mib, d.guest_port, d.ready_path, d.init_env}
+
     GenServer.cast(builder, {:reconcile_force_rebuild, "w", signature_at_start})
 
     # A second force message while the first build is queued must honor the
@@ -3565,7 +4143,11 @@ defmodule Embervm.BaseBuilderTest do
     send(other_worker, {:release_other, {:ok, resp("snap-other")}})
     assert_receive {:rebuild_started, rebuild_worker}, 1_000
     send(rebuild_worker, {:release_rebuild, {:ok, resp("snap2")}})
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap2" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap2"
+    end)
+
     assert Agent.get(calls, & &1) == 3
   end
 
@@ -3602,14 +4184,20 @@ defmodule Embervm.BaseBuilderTest do
       )
 
     :ok = BaseBuilder.reconcile(builder, desc(%{image_ref: "imgA"}))
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-a" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-a"
+    end)
 
     :ok = BaseBuilder.remove_node(builder, "node-4/amd")
     NodeCapacity.drop(table, {"node-4", "amd"})
     put_brick(table, "node-1", "intel", cpu_vendor: "intel")
     :ok = BaseBuilder.add_node(builder, "node-1/intel", "intel")
     :ok = BaseBuilder.reconcile(builder, desc(%{generation: 2, image_ref: "imgI"}))
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "intel-i" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "intel-i"
+    end)
 
     :sys.replace_state(builder, fn state ->
       state
@@ -3635,12 +4223,16 @@ defmodule Embervm.BaseBuilderTest do
     assert during_force.snapshot_ref == nil
 
     send(worker, :finish_forced_rebuild)
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "intel-i2" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "intel-i2"
+    end)
   end
 
   test "hydrate fallback clears ledger fields before the building status write" do
     test_pid = self()
     {:ok, calls} = Agent.start_link(fn -> 0 end)
+
     restore_fun = fn :fake_channel, _req ->
       {:error, %GRPC.RPCError{status: 9, message: "not present in store"}}
     end
@@ -3672,7 +4264,9 @@ defmodule Embervm.BaseBuilderTest do
 
     assert_eventually(fn ->
       case latest(agent, "w") do
-        nil -> false
+        nil ->
+          false
+
         status ->
           base_built = condition(status, "BaseBuilt")
 
@@ -3683,7 +4277,10 @@ defmodule Embervm.BaseBuilderTest do
 
     assert BaseBuilder.status(builder).workloads["w"].snapshot_ref == nil
     send(rebuild_worker, {:release_rebuild, {:ok, resp("snap2")}})
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap2" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap2"
+    end)
   end
 
   test "restore-first falls back to BuildBase when the hydrate never lands (poll timeout)" do
@@ -3736,10 +4333,17 @@ defmodule Embervm.BaseBuilderTest do
         hydrate_poll_max: 50
       )
 
-    put_brick(table, "node-4", "big", size_class: "16gi", mem_budget: 16_384, mem_headroom: 16_000)
+    put_brick(table, "node-4", "big",
+      size_class: "16gi",
+      mem_budget: 16_384,
+      mem_headroom: 16_000
+    )
 
     :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap1" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap1"
+    end)
 
     # No base fact is ever written for "w" (the node has not re-reported). A
     # reconcile here must NOT hydrate.
@@ -3782,10 +4386,17 @@ defmodule Embervm.BaseBuilderTest do
         hydrate_poll_max: 50
       )
 
-    put_brick(table, "node-4", "big", size_class: "16gi", mem_budget: 16_384, mem_headroom: 16_000)
+    put_brick(table, "node-4", "big",
+      size_class: "16gi",
+      mem_budget: 16_384,
+      mem_headroom: 16_000
+    )
 
     :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap1" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap1"
+    end)
 
     # The export never landed: the node still reports exported == false, so the
     # store_confirmed ledger holds NO evidence for snap1. Scratch loss makes the
@@ -3803,7 +4414,10 @@ defmodule Embervm.BaseBuilderTest do
 
     # And the workload CONVERGES: BuildBase runs immediately, without a hydrate
     # round trip through FAILED_PRECONDITION first.
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap2" end)
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap2"
+    end)
+
     assert Agent.get(calls, & &1) == 2
   end
 
@@ -3834,18 +4448,28 @@ defmodule Embervm.BaseBuilderTest do
         build_fun: fn :fake_channel, _req -> {:ok, resp("snap1")} end,
         export_fun: fn :fake_channel, %Embervm.Node.V1.ExportArtifactRequest{artifact: ref} ->
           send(test_pid, {:exported, ref.ref})
-          {:ok, %Embervm.Node.V1.ExportArtifactResponse{bytes_moved: 0, skipped: true, generation: 0}}
+
+          {:ok,
+           %Embervm.Node.V1.ExportArtifactResponse{bytes_moved: 0, skipped: true, generation: 0}}
         end,
         restore_fun: restore_fun,
         hydrate_poll_interval_ms: 5,
         hydrate_poll_max: 50
       )
 
-    put_brick(table, "node-4", "big", size_class: "16gi", mem_budget: 16_384, mem_headroom: 16_000)
+    put_brick(table, "node-4", "big",
+      size_class: "16gi",
+      mem_budget: 16_384,
+      mem_headroom: 16_000
+    )
+
     put_brick(table, "node-5", "hold", size_class: "8gi", mem_budget: 8_192, mem_headroom: 8_000)
 
     :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap1" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap1"
+    end)
 
     # Drain the dial-home-window export (no node advertises the workload yet).
     assert_receive {:dialed, "a4"}, 1_000
@@ -3870,6 +4494,7 @@ defmodule Embervm.BaseBuilderTest do
     # The upload lands: the confirmation arms restore-first for this exact ref.
     put_base_fact(table, "node-5", "hold", "w", "snap1", :BASE_BUILD_STATE_READY, true)
     send(builder, :export_reconcile)
+
     assert_eventually(fn ->
       :sys.get_state(builder).workloads["w"].store_confirmed["amd"].ref == "snap1"
     end)
@@ -3899,12 +4524,19 @@ defmodule Embervm.BaseBuilderTest do
         build_fun: build_fun,
         export_fun: fn :fake_channel, %Embervm.Node.V1.ExportArtifactRequest{artifact: ref} ->
           send(test_pid, {:exported, ref.ref})
-          {:ok, %Embervm.Node.V1.ExportArtifactResponse{bytes_moved: 0, skipped: true, generation: 0}}
+
+          {:ok,
+           %Embervm.Node.V1.ExportArtifactResponse{bytes_moved: 0, skipped: true, generation: 0}}
         end,
         export_reconcile_interval_ms: 0
       )
 
-    put_brick(table, "node-4", "big", size_class: "16gi", mem_budget: 16_384, mem_headroom: 16_000)
+    put_brick(table, "node-4", "big",
+      size_class: "16gi",
+      mem_budget: 16_384,
+      mem_headroom: 16_000
+    )
+
     put_brick(table, "node-5", "lag", size_class: "8gi", mem_budget: 8_192, mem_headroom: 8_000)
 
     :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
@@ -3938,13 +4570,21 @@ defmodule Embervm.BaseBuilderTest do
         build_fun: fn :fake_channel, _req -> {:ok, resp("snap1")} end
       )
 
-    put_brick(table, "node-4", "big", size_class: "16gi", mem_budget: 16_384, mem_headroom: 16_000)
+    put_brick(table, "node-4", "big",
+      size_class: "16gi",
+      mem_budget: 16_384,
+      mem_headroom: 16_000
+    )
 
     :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap1" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap1"
+    end)
 
     put_base_fact(table, "node-4", "big", "w", "snap1", :BASE_BUILD_STATE_READY, true)
     send(builder, :export_reconcile)
+
     assert_eventually(fn ->
       :sys.get_state(builder).workloads["w"].store_confirmed["amd"].ref == "snap1"
     end)
@@ -4018,7 +4658,10 @@ defmodule Embervm.BaseBuilderTest do
       )
 
     :ok = BaseBuilder.reconcile(builder, desc())
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap-amd" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap-amd"
+    end)
 
     workload = :sys.get_state(builder).workloads["w"]
 
@@ -4060,6 +4703,7 @@ defmodule Embervm.BaseBuilderTest do
     assert workload.vendor_built == %{}
     assert workload.snapshot_ref == nil
     assert workload.retry_timer == nil
+
     assert %{"status" => "Unknown", "reason" => "NoNodeAvailable"} =
              condition(latest(agent, "w"), "BaseBuilt")
   end
@@ -4078,7 +4722,10 @@ defmodule Embervm.BaseBuilderTest do
       )
 
     :ok = BaseBuilder.reconcile(builder, desc())
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap1" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap1"
+    end)
 
     workload = :sys.get_state(builder).workloads["w"]
     assert workload.vendor_built == %{}
@@ -4108,12 +4755,19 @@ defmodule Embervm.BaseBuilderTest do
       )
 
     :ok = BaseBuilder.reconcile(builder, desc(%{image_ref: "imgA"}))
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "blank-a" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "blank-a"
+    end)
+
     assert :sys.get_state(builder).workloads["w"].scalar_vendor == ""
 
     put_brick(table, "node-4", "brick", cpu_vendor: "amd")
     :ok = BaseBuilder.reconcile(builder, desc(%{generation: 2, image_ref: "imgB"}))
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-b" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-b"
+    end)
 
     workload = :sys.get_state(builder).workloads["w"]
     assert workload.scalar_vendor == "amd"
@@ -4142,11 +4796,17 @@ defmodule Embervm.BaseBuilderTest do
       )
 
     :ok = BaseBuilder.reconcile(builder, desc(%{image_ref: "imgA"}))
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-a" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-a"
+    end)
 
     put_brick(table, "node-4", "brick", cpu_vendor: "intel")
     :ok = BaseBuilder.reconcile(builder, desc(%{generation: 2, image_ref: "imgI"}))
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "intel-i" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "intel-i"
+    end)
 
     workload = :sys.get_state(builder).workloads["w"]
     assert workload.scalar_vendor == "intel"
@@ -4176,14 +4836,20 @@ defmodule Embervm.BaseBuilderTest do
       )
 
     :ok = BaseBuilder.reconcile(builder, desc(%{image_ref: "imgA"}))
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-a" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-a"
+    end)
 
     :ok = BaseBuilder.remove_node(builder, "node-4/amd")
     NodeCapacity.drop(table, {"node-4", "amd"})
     put_brick(table, "node-1", "intel", cpu_vendor: "intel")
     :ok = BaseBuilder.add_node(builder, "node-1/intel", "intel")
     :ok = BaseBuilder.reconcile(builder, desc(%{generation: 2, image_ref: "imgI"}))
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "intel-i" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "intel-i"
+    end)
 
     after_intel = :sys.get_state(builder).workloads["w"]
     assert after_intel.superseded_refs == []
@@ -4196,7 +4862,10 @@ defmodule Embervm.BaseBuilderTest do
     put_brick(table, "node-4", "amd", cpu_vendor: "amd")
     :ok = BaseBuilder.add_node(builder, "node-4/amd", "amd")
     :ok = BaseBuilder.reconcile(builder, desc(%{generation: 3, image_ref: "imgA2"}))
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-a2" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-a2"
+    end)
 
     after_amd = :sys.get_state(builder).workloads["w"]
     assert after_amd.superseded_refs == ["amd-a"]
@@ -4238,7 +4907,10 @@ defmodule Embervm.BaseBuilderTest do
       )
 
     :ok = BaseBuilder.reconcile(builder, desc())
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-base" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-base"
+    end)
 
     status = latest(agent, "w")
     coverage = condition(status, "BaseVendorCoverage")
@@ -4249,7 +4921,9 @@ defmodule Embervm.BaseBuilderTest do
 
     built_and_later =
       recorded(agent)
-      |> Enum.drop_while(fn {_namespace, _name, status_map} -> status_map["snapshotRef"] != "amd-base" end)
+      |> Enum.drop_while(fn {_namespace, _name, status_map} ->
+        status_map["snapshotRef"] != "amd-base"
+      end)
 
     assert built_and_later != []
 
@@ -4288,7 +4962,10 @@ defmodule Embervm.BaseBuilderTest do
       )
 
     :ok = BaseBuilder.reconcile(builder, desc())
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-base" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-base"
+    end)
 
     assert %{"status" => "True"} = condition(latest(agent, "w"), "BaseVendorCoverage")
 
@@ -4326,7 +5003,10 @@ defmodule Embervm.BaseBuilderTest do
       )
 
     :ok = BaseBuilder.reconcile(builder, desc(%{image_ref: "imgA"}))
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-v1" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-v1"
+    end)
 
     :ok = BaseBuilder.reconcile(builder, desc(%{generation: 2, image_ref: "imgB"}))
     assert_receive {:building_new_signature, worker}, 1_000
@@ -4338,7 +5018,10 @@ defmodule Embervm.BaseBuilderTest do
     assert %{"status" => "True"} = condition(latest(agent, "w"), "Ready")
 
     send(worker, :finish)
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-v2" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-v2"
+    end)
   end
 
   test "coverage calls an observed base without vendor history unverified, not missing" do
@@ -4355,7 +5038,10 @@ defmodule Embervm.BaseBuilderTest do
       )
 
     :ok = BaseBuilder.reconcile(builder, desc())
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-base" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-base"
+    end)
 
     :sys.replace_state(builder, fn state ->
       put_in(state.workloads["w"].vendor_built, %{})
@@ -4387,7 +5073,11 @@ defmodule Embervm.BaseBuilderTest do
       )
 
     :ok = BaseBuilder.reconcile(builder, desc())
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-base" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-base"
+    end)
+
     assert %{"status" => "True"} = condition(latest(agent, "w"), "BaseVendorCoverage")
     Agent.update(agent, fn _calls -> [] end)
 
@@ -4430,7 +5120,11 @@ defmodule Embervm.BaseBuilderTest do
       )
 
     :ok = BaseBuilder.reconcile(builder, desc())
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-base" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-base"
+    end)
+
     assert %{"status" => "True"} = condition(latest(agent, "w"), "BaseVendorCoverage")
 
     :ok = BaseBuilder.reconcile(builder, desc())
@@ -4481,7 +5175,10 @@ defmodule Embervm.BaseBuilderTest do
       )
 
     :ok = BaseBuilder.reconcile(builder, desc())
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-base" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-base"
+    end)
 
     before_repair = latest(agent, "w")
     assert %{"status" => "True", "reason" => "BaseBuilt"} = condition(before_repair, "BaseBuilt")
@@ -4526,7 +5223,9 @@ defmodule Embervm.BaseBuilderTest do
     mid_repair_write = latest(agent, "w")
     assert mid_repair_write != before_repair
     assert %{"status" => "True"} = condition(mid_repair_write, "Ready")
-    assert %{"status" => "True", "reason" => "BaseBuilt"} = condition(mid_repair_write, "BaseBuilt")
+
+    assert %{"status" => "True", "reason" => "BaseBuilt"} =
+             condition(mid_repair_write, "BaseBuilt")
 
     send(worker, :finish)
 
@@ -4557,7 +5256,10 @@ defmodule Embervm.BaseBuilderTest do
       )
 
     :ok = BaseBuilder.reconcile(builder, desc())
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-base" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-base"
+    end)
 
     :ok = BaseBuilder.add_node(builder, "node-1/intel", "intel")
     :ok = BaseBuilder.reconcile(builder, desc(%{generation: 2}))
@@ -4597,7 +5299,10 @@ defmodule Embervm.BaseBuilderTest do
       )
 
     :ok = BaseBuilder.reconcile(builder, desc())
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-base" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-base"
+    end)
 
     # intel already has a base ON DISK (the node observed and reported it), but
     # the CP holds no vendor_built record for it: unverified, not missing.
@@ -4661,7 +5366,10 @@ defmodule Embervm.BaseBuilderTest do
       )
 
     :ok = BaseBuilder.reconcile(builder, desc())
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-base" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-base"
+    end)
 
     put_brick(table, "node-1", "intel", cpu_vendor: "intel")
     :ok = BaseBuilder.add_node(builder, "node-1/intel", "intel")
@@ -4709,7 +5417,11 @@ defmodule Embervm.BaseBuilderTest do
       )
 
     :ok = BaseBuilder.reconcile(builder, desc())
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-snap" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-snap"
+    end)
+
     assert :sys.get_state(builder).workloads["w"].scalar_vendor == "amd"
 
     # The amd instance vanishes; an intel instance takes over the pin, and it
@@ -4775,12 +5487,16 @@ defmodule Embervm.BaseBuilderTest do
       )
 
     :ok = BaseBuilder.reconcile(builder, desc())
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-base" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-base"
+    end)
 
     # The upload lands on node-4: confirm amd's base as fetchable from the
     # store before the intel repair build joins the fleet.
     put_base_fact(table, "node-4", "amd", "w", "amd-base", :BASE_BUILD_STATE_READY, true)
     send(builder, :export_reconcile)
+
     assert_eventually(fn ->
       :sys.get_state(builder).workloads["w"].store_confirmed["amd"].ref == "amd-base"
     end)
@@ -4835,7 +5551,15 @@ defmodule Embervm.BaseBuilderTest do
 
     # node-2/intel-b already reports a READY base for "w"; node-1/intel-a
     # (registered FIRST, below) reports nothing at all.
-    put_base_fact(table, "node-2", "intel-b", "w", "intel-existing", :BASE_BUILD_STATE_READY, true)
+    put_base_fact(
+      table,
+      "node-2",
+      "intel-b",
+      "w",
+      "intel-existing",
+      :BASE_BUILD_STATE_READY,
+      true
+    )
 
     {:ok, calls} = Agent.start_link(fn -> 0 end)
 
@@ -4862,7 +5586,10 @@ defmodule Embervm.BaseBuilderTest do
       )
 
     :ok = BaseBuilder.reconcile(builder, desc())
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-base" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-base"
+    end)
 
     :ok = BaseBuilder.add_node(builder, "node-1/intel-a", "intel-a")
     :ok = BaseBuilder.add_node(builder, "node-2/intel-b", "intel-b")
@@ -4894,8 +5621,20 @@ defmodule Embervm.BaseBuilderTest do
     # never crash the builder or leave a phantom enqueue.
     agent = start_recorder()
     table = new_cap_table()
-    put_brick(table, "node-4", "amd", size_class: "8gi", mem_budget: 8_192, mem_headroom: 8_000, cpu_vendor: "amd")
-    put_brick(table, "node-1", "intel", size_class: "2gi", mem_budget: 2_048, mem_headroom: 2_000, cpu_vendor: "intel")
+
+    put_brick(table, "node-4", "amd",
+      size_class: "8gi",
+      mem_budget: 8_192,
+      mem_headroom: 8_000,
+      cpu_vendor: "amd"
+    )
+
+    put_brick(table, "node-1", "intel",
+      size_class: "2gi",
+      mem_budget: 2_048,
+      mem_headroom: 2_000,
+      cpu_vendor: "intel"
+    )
 
     {:ok, calls} = Agent.start_link(fn -> 0 end)
 
@@ -4913,7 +5652,10 @@ defmodule Embervm.BaseBuilderTest do
       )
 
     :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 8_000}))
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-base" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-base"
+    end)
 
     :ok = BaseBuilder.add_node(builder, "node-1/intel", "intel")
     :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 8_000, generation: 2}))
@@ -4947,7 +5689,8 @@ defmodule Embervm.BaseBuilderTest do
           {:error,
            %GRPC.RPCError{
              status: 4,
-             message: "guest readiness: vsockhttp: timed out waiting for guest ready at /shim/ready"
+             message:
+               "guest readiness: vsockhttp: timed out waiting for guest ready at /shim/ready"
            }}
       end
     end
@@ -4961,7 +5704,11 @@ defmodule Embervm.BaseBuilderTest do
       )
 
     :ok = BaseBuilder.reconcile(builder, desc())
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-base" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-base"
+    end)
+
     before_repair = latest(agent, "w")
 
     put_brick(table, "node-1", "intel", cpu_vendor: "intel")
@@ -5016,13 +5763,17 @@ defmodule Embervm.BaseBuilderTest do
       )
 
     :ok = BaseBuilder.reconcile(builder, desc())
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-base" end)
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-base"
+    end)
 
     # The upload lands (exported == true), one reconcile tick confirms the
     # store copy in the ledger: since #4893, restore-first needs that positive
     # fetchability evidence before it will fire.
     put_base_fact(table, "node-4", "amd", "w", "amd-base", :BASE_BUILD_STATE_READY, true)
     send(builder, :export_reconcile)
+
     assert_eventually(fn ->
       :sys.get_state(builder).workloads["w"].store_confirmed["amd"].ref == "amd-base"
     end)
@@ -5315,8 +6066,11 @@ defmodule Embervm.BaseBuilderTest do
     list_fun = fn _channel, _workload, vendor ->
       entries =
         case vendor do
-          "amd" -> [%{ref: "w__amd_cur", size_bytes: 10}, %{ref: "w__amd_old", size_bytes: 20}]
-          "intel" -> [%{ref: "w__intel_cur", size_bytes: 30}, %{ref: "w__intel_old", size_bytes: 40}]
+          "amd" ->
+            [%{ref: "w__amd_cur", size_bytes: 10}, %{ref: "w__amd_old", size_bytes: 20}]
+
+          "intel" ->
+            [%{ref: "w__intel_cur", size_bytes: 30}, %{ref: "w__intel_old", size_bytes: 40}]
         end
 
       {:ok, entries, false}
@@ -5516,8 +6270,7 @@ defmodule Embervm.BaseBuilderTest do
     _ = :sys.get_state(builder)
 
     assert recorded(agent) == [
-             {"embervm", "w",
-              %{"snapshotRefs" => %{"amd" => ["w__amd"], "intel" => nil}}}
+             {"embervm", "w", %{"snapshotRefs" => %{"amd" => ["w__amd"], "intel" => nil}}}
            ]
 
     # last_snapshot_refs tracks the effective desired map, not the patch body,
@@ -5526,8 +6279,7 @@ defmodule Embervm.BaseBuilderTest do
     _ = :sys.get_state(builder)
 
     assert recorded(agent) == [
-             {"embervm", "w",
-              %{"snapshotRefs" => %{"amd" => ["w__amd"], "intel" => nil}}}
+             {"embervm", "w", %{"snapshotRefs" => %{"amd" => ["w__amd"], "intel" => nil}}}
            ]
   end
 
@@ -5756,7 +6508,12 @@ defmodule Embervm.BaseBuilderTest do
         hydrate_poll_max: 50
       )
 
-    put_brick(table, "node-1", "intel", cpu_vendor: "intel", mem_budget: 16_384, mem_headroom: 16_000)
+    put_brick(table, "node-1", "intel",
+      cpu_vendor: "intel",
+      mem_budget: 16_384,
+      mem_headroom: 16_000
+    )
+
     put_vendor_fact(table, "node-1", "intel", "w", "snap-intel", "intel")
     :ok = BaseBuilder.add_node(builder, "node-1/intel", "a1")
 

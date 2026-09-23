@@ -31,6 +31,8 @@ type fakeStatefulDriver struct {
 	claims   int
 	restores int
 	resumes  int
+	releases int
+	removes  int
 	// banked maps snapshotRef -> the generation it was stamped with.
 	banked       map[string]uint64
 	statefulDir  string
@@ -54,6 +56,10 @@ type fakeStatefulDriver struct {
 	lastWorkload        string
 	lastRestoreWorkload string
 	guestReady          int
+	failRelease         error
+	failRemoveBundle    error
+	releaseStarted      chan struct{}
+	blockRelease        <-chan struct{}
 }
 
 type fakeCheckpoint struct {
@@ -237,13 +243,35 @@ func (a statefulVMDriverAdapter) Claim(_ context.Context, _ substrate.ClaimSpec)
 
 func (a statefulVMDriverAdapter) Release(_ context.Context, _ substrate.Handle) error {
 	a.fakeStatefulDriver.mu.Lock()
+	a.fakeStatefulDriver.releases++
+	started, blocked := a.fakeStatefulDriver.releaseStarted, a.fakeStatefulDriver.blockRelease
+	a.fakeStatefulDriver.mu.Unlock()
+	if started != nil {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+	}
+	if blocked != nil {
+		<-blocked
+	}
+	a.fakeStatefulDriver.mu.Lock()
+	defer a.fakeStatefulDriver.mu.Unlock()
+	if a.fakeStatefulDriver.failRelease != nil {
+		return a.fakeStatefulDriver.failRelease
+	}
 	if a.fakeStatefulDriver.live > 0 {
 		a.fakeStatefulDriver.live--
 	}
-	a.fakeStatefulDriver.mu.Unlock()
 	return nil
 }
-func (a statefulVMDriverAdapter) RemoveBundle(_ string) error         { return nil }
+
+func (a statefulVMDriverAdapter) RemoveBundle(_ string) error {
+	a.fakeStatefulDriver.mu.Lock()
+	defer a.fakeStatefulDriver.mu.Unlock()
+	a.fakeStatefulDriver.removes++
+	return a.fakeStatefulDriver.failRemoveBundle
+}
 func (a statefulVMDriverAdapter) VsockUDSPath(threadID string) string { return "/tmp/" + threadID }
 func (a statefulVMDriverAdapter) Stats(_ substrate.Handle) (substrate.GuestStats, error) {
 	return substrate.GuestStats{}, nil
@@ -487,7 +515,7 @@ func TestStartStatefulAttachLockRefusesSecondAttach(t *testing.T) {
 // TestReleaseOrphanedAttachDropsDeadRegistryVM proves a registry entry is not
 // accepted as attach-health testimony after its Firecracker API socket dies.
 // The live socket preserves the attach; removing it drops the registry entry
-// and lets ReleaseOrphaned reclaim the stale writable lock.
+// only after tracked process cleanup releases the stale writable lock.
 func TestReleaseOrphanedAttachDropsDeadRegistryVM(t *testing.T) {
 	port := tcpHealthServer(t)
 	s, _, fsd := newStatefulTestServer(t)
@@ -565,6 +593,52 @@ func TestStartStatefulGenerationBumpedBeforeBootAndNotRolledBackOnFailure(t *tes
 	// The failed attach must have released the lock so a retry is possible.
 	if s.volumes.IsAttached("wl-state") {
 		t.Error("a failed ClaimStateful must release the attach lock")
+	}
+}
+
+// TestStartStatefulReadyFailureRetainsAttachWhenReleaseFails proves a guest
+// that misses its readiness deadline cannot surrender its writable attach when
+// process cessation is uncertain.
+func TestStartStatefulReadyFailureRetainsAttachWhenReleaseFails(t *testing.T) {
+	s, fsn, fsd := newStatefulTestServer(t)
+	s.cfg.BootReadyTimeout = 0
+	fsd.mu.Lock()
+	fsd.failRelease = errors.New("process still running")
+	fsd.mu.Unlock()
+
+	_, err := s.StartStateful(context.Background(), &nodev1.StartStatefulRequest{
+		Trace:             &nodev1.Trace{Workload: "wl-state"},
+		Mode:              nodev1.StartStatefulMode_START_STATEFUL_MODE_FRESH,
+		BootImageRef:      "img-a",
+		Port:              1,
+		VolumeSizeBytes:   1 << 20,
+		VolumeMount:       "/data",
+		CreateIfMissing:   true,
+		BlessedGeneration: 1,
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("readiness failure: got %v want FailedPrecondition", err)
+	}
+	if !s.volumes.IsAttached("wl-state") {
+		t.Fatal("failed process release detached the writable volume")
+	}
+	if got := fsd.liveCount(); got != 1 {
+		t.Fatalf("live processes = %d want 1 after failed release", got)
+	}
+	if got := fsn.releaseCount(); got != 0 {
+		t.Fatalf("released taps = %d want 0 while process cessation is uncertain", got)
+	}
+	if _, retryErr := s.StartStateful(context.Background(), &nodev1.StartStatefulRequest{
+		Trace:        &nodev1.Trace{Workload: "wl-state"},
+		Mode:         nodev1.StartStatefulMode_START_STATEFUL_MODE_COLD,
+		BootImageRef: "img-a",
+		Port:         1,
+		VolumeMount:  "/data",
+	}); status.Code(retryErr) != codes.FailedPrecondition {
+		t.Fatalf("retry with uncertain owner: got %v want FailedPrecondition", retryErr)
+	}
+	if fsd.claimCount != 1 {
+		t.Fatalf("ClaimStateful calls = %d want 1", fsd.claimCount)
 	}
 }
 
@@ -894,6 +968,272 @@ func TestDeleteVolumeRefusedWhileAttached(t *testing.T) {
 	// Idempotent.
 	if _, err := s.DeleteVolume(context.Background(), &nodev1.DeleteVolumeRequest{Workload: "wl-state"}); err != nil {
 		t.Errorf("DeleteVolume of an already-absent volume should be idempotent OK: %v", err)
+	}
+}
+
+// TestStatefulDestroyKeepsOwnershipUntilReleaseCompletes proves the public
+// destroy and wake entrypoints cannot overlap writable owners. The release
+// barrier models Firecracker taking time to terminate without relying on a
+// scheduler delay.
+func TestStatefulDestroyKeepsOwnershipUntilReleaseCompletes(t *testing.T) {
+	port := tcpHealthServer(t)
+	s, _, fsd := newStatefulTestServer(t)
+	started := startFreshStateful(t, s, port, "wl-state")
+
+	releaseStarted := make(chan struct{}, 1)
+	allowRelease := make(chan struct{})
+	fsd.mu.Lock()
+	fsd.releaseStarted = releaseStarted
+	fsd.blockRelease = allowRelease
+	fsd.mu.Unlock()
+
+	destroyDone := make(chan error, 1)
+	go func() {
+		_, err := s.StopStateful(context.Background(), &nodev1.StopStatefulRequest{
+			VmId: started.GetVmId(), Mode: nodev1.StopStatefulMode_STOP_STATEFUL_MODE_DESTROY,
+		})
+		destroyDone <- err
+	}()
+	select {
+	case <-releaseStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("destroy did not reach process release")
+	}
+
+	_, err := s.StartStateful(context.Background(), &nodev1.StartStatefulRequest{
+		Trace: &nodev1.Trace{Workload: "wl-state"}, Mode: nodev1.StartStatefulMode_START_STATEFUL_MODE_COLD,
+		BootImageRef: "img-a", Port: port, VolumeMount: "/data", BlessedGeneration: 2,
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("wake during blocked destroy = %v, want FailedPrecondition", err)
+	}
+	if response, err := s.StopStateful(context.Background(), &nodev1.StopStatefulRequest{
+		VmId: started.GetVmId(), Mode: nodev1.StopStatefulMode_STOP_STATEFUL_MODE_DESTROY,
+	}); err == nil || response.GetTeardownConfirmed() {
+		t.Fatalf("duplicate destroy during release = %v, %v, want unconfirmed error", response, err)
+	}
+	if !s.volumes.IsAttached("wl-state") {
+		t.Fatal("blocked destroy released volume ownership before process cessation")
+	}
+
+	close(allowRelease)
+	select {
+	case err := <-destroyDone:
+		if err != nil {
+			t.Fatalf("destroy after release: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("destroy did not finish after release")
+	}
+	if _, err := s.StartStateful(context.Background(), &nodev1.StartStatefulRequest{
+		Trace: &nodev1.Trace{Workload: "wl-state"}, Mode: nodev1.StartStatefulMode_START_STATEFUL_MODE_COLD,
+		BootImageRef: "img-a", Port: port, VolumeMount: "/data", BlessedGeneration: 2,
+	}); err != nil {
+		t.Fatalf("wake after confirmed destroy: %v", err)
+	}
+}
+
+// TestStatefulBankKeepsExclusiveCleanupUntilReleaseCompletes proves BANK does
+// not become a retryable DESTROY while its process release is still in flight.
+func TestStatefulBankKeepsExclusiveCleanupUntilReleaseCompletes(t *testing.T) {
+	port := tcpHealthServer(t)
+	s, _, fsd := newStatefulTestServer(t)
+	started := startFreshStateful(t, s, port, "wl-state")
+
+	releaseStarted := make(chan struct{}, 1)
+	allowRelease := make(chan struct{})
+	fsd.mu.Lock()
+	fsd.releaseStarted = releaseStarted
+	fsd.blockRelease = allowRelease
+	fsd.mu.Unlock()
+
+	bankDone := make(chan error, 1)
+	go func() {
+		_, err := s.StopStateful(context.Background(), &nodev1.StopStatefulRequest{
+			VmId: started.GetVmId(), Mode: nodev1.StopStatefulMode_STOP_STATEFUL_MODE_BANK,
+		})
+		bankDone <- err
+	}()
+	select {
+	case <-releaseStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("bank did not reach process release")
+	}
+
+	if response, err := s.StopStateful(context.Background(), &nodev1.StopStatefulRequest{
+		VmId: started.GetVmId(), Mode: nodev1.StopStatefulMode_STOP_STATEFUL_MODE_DESTROY,
+	}); status.Code(err) != codes.FailedPrecondition || response.GetTeardownConfirmed() {
+		t.Fatalf("destroy during bank cleanup = %v, %v, want unconfirmed FailedPrecondition", response, err)
+	}
+	if !s.volumes.IsAttached("wl-state") {
+		t.Fatal("blocked bank released volume ownership before process cessation")
+	}
+
+	close(allowRelease)
+	select {
+	case err := <-bankDone:
+		if err != nil {
+			t.Fatalf("bank after release: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("bank did not finish after release")
+	}
+}
+
+// TestStatefulBankCleanupFailureBecomesRetryable proves a failed ancillary
+// cleanup does not permanently pin the bank owner after process termination.
+func TestStatefulBankCleanupFailureBecomesRetryable(t *testing.T) {
+	port := tcpHealthServer(t)
+	s, _, fsd := newStatefulTestServer(t)
+	started := startFreshStateful(t, s, port, "wl-state")
+	fsd.mu.Lock()
+	fsd.failRemoveBundle = errors.New("bundle cleanup failed")
+	fsd.mu.Unlock()
+
+	if response, err := s.StopStateful(context.Background(), &nodev1.StopStatefulRequest{
+		VmId: started.GetVmId(), Mode: nodev1.StopStatefulMode_STOP_STATEFUL_MODE_BANK,
+	}); err == nil || response.GetTeardownConfirmed() {
+		t.Fatalf("failed bank cleanup = %v, %v, want unconfirmed error", response, err)
+	}
+	if !s.volumes.IsAttached("wl-state") {
+		t.Fatal("failed bank cleanup released volume ownership")
+	}
+
+	fsd.mu.Lock()
+	fsd.failRemoveBundle = nil
+	fsd.mu.Unlock()
+	if response, err := s.StopStateful(context.Background(), &nodev1.StopStatefulRequest{
+		VmId: started.GetVmId(), Mode: nodev1.StopStatefulMode_STOP_STATEFUL_MODE_DESTROY,
+	}); err != nil || !response.GetTeardownConfirmed() {
+		t.Fatalf("destroy retry after failed bank cleanup = %v, %v", response, err)
+	}
+	fsd.mu.Lock()
+	releases := fsd.releases
+	fsd.mu.Unlock()
+	if releases != 1 {
+		t.Fatalf("process releases = %d, want 1 across bank cleanup retry", releases)
+	}
+}
+
+// TestStatefulDestroyReleaseFailureRetainsRetryableOwner proves an uncertain
+// process remains the writable owner and a later destroy can retry the same
+// retained entry before a legitimate wake proceeds.
+func TestStatefulDestroyReleaseFailureRetainsRetryableOwner(t *testing.T) {
+	port := tcpHealthServer(t)
+	s, _, fsd := newStatefulTestServer(t)
+	started := startFreshStateful(t, s, port, "wl-state")
+	fsd.mu.Lock()
+	fsd.failRelease = errors.New("process still running")
+	fsd.mu.Unlock()
+
+	if response, err := s.StopStateful(context.Background(), &nodev1.StopStatefulRequest{
+		VmId: started.GetVmId(), Mode: nodev1.StopStatefulMode_STOP_STATEFUL_MODE_DESTROY,
+	}); err == nil || response.GetTeardownConfirmed() {
+		t.Fatalf("failed release = %v, %v, want unconfirmed error", response, err)
+	}
+	if entry, ok := s.statefulVMs.byWorkload("wl-state"); !ok || entry.vmID != started.GetVmId() {
+		t.Fatalf("failed release lost retry owner: entry = %+v, ok = %v", entry, ok)
+	}
+	if !s.volumes.IsAttached("wl-state") {
+		t.Fatal("failed release detached a volume whose process may still be running")
+	}
+	if _, err := s.StartStateful(context.Background(), &nodev1.StartStatefulRequest{
+		Trace: &nodev1.Trace{Workload: "wl-state"}, Mode: nodev1.StartStatefulMode_START_STATEFUL_MODE_COLD,
+		BootImageRef: "img-a", Port: port, VolumeMount: "/data", BlessedGeneration: 2,
+	}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("wake after failed release = %v, want FailedPrecondition", err)
+	}
+
+	fsd.mu.Lock()
+	fsd.failRelease = nil
+	fsd.mu.Unlock()
+	if response, err := s.StopStateful(context.Background(), &nodev1.StopStatefulRequest{
+		VmId: started.GetVmId(), Mode: nodev1.StopStatefulMode_STOP_STATEFUL_MODE_DESTROY,
+	}); err != nil || !response.GetTeardownConfirmed() {
+		t.Fatalf("retry destroy = %v, %v", response, err)
+	}
+	if _, err := s.StartStateful(context.Background(), &nodev1.StartStatefulRequest{
+		Trace: &nodev1.Trace{Workload: "wl-state"}, Mode: nodev1.StartStatefulMode_START_STATEFUL_MODE_COLD,
+		BootImageRef: "img-a", Port: port, VolumeMount: "/data", BlessedGeneration: 2,
+	}); err != nil {
+		t.Fatalf("wake after retry completed: %v", err)
+	}
+}
+
+// TestStatefulWakeRetriesDeadOwnerCleanup proves the existing wake-time
+// recovery owner obeys the same fail-closed contract. A definitive dead socket
+// triggers tracked cleanup, but a release error retains the registry identity
+// and attach for a later wake to retry.
+func TestStatefulWakeRetriesDeadOwnerCleanup(t *testing.T) {
+	port := tcpHealthServer(t)
+	s, _, fsd := newStatefulTestServer(t)
+	started := startFreshStateful(t, s, port, "wl-state")
+	fsd.mu.Lock()
+	fsd.apiSocketPath = t.TempDir() + "/missing-api.sock"
+	fsd.failRelease = errors.New("process state uncertain")
+	fsd.mu.Unlock()
+
+	wake := func(generation uint64) (*nodev1.StartStatefulResponse, error) {
+		return s.StartStateful(context.Background(), &nodev1.StartStatefulRequest{
+			Trace: &nodev1.Trace{Workload: "wl-state"}, Mode: nodev1.StartStatefulMode_START_STATEFUL_MODE_COLD,
+			BootImageRef: "img-a", Port: port, VolumeMount: "/data", BlessedGeneration: generation,
+		})
+	}
+	if _, err := wake(2); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("wake after failed dead-owner reap = %v, want FailedPrecondition", err)
+	}
+	if entry, ok := s.statefulVMs.byWorkload("wl-state"); !ok || entry.vmID != started.GetVmId() {
+		t.Fatalf("wake recovery lost uncertain owner: entry = %+v, ok = %v", entry, ok)
+	}
+	if !s.volumes.IsAttached("wl-state") {
+		t.Fatal("wake recovery detached an uncertain owner")
+	}
+
+	fsd.mu.Lock()
+	fsd.failRelease = nil
+	fsd.mu.Unlock()
+	if response, err := wake(2); err != nil || response.GetVmId() == "" {
+		t.Fatalf("wake after dead-owner cleanup recovery = %v, %v", response, err)
+	}
+}
+
+// TestStatefulDestroyAncillaryCleanupRetriesWithoutReleasingTwice proves a
+// bundle cleanup error is distinct from process termination: the retained owner
+// blocks wake until cleanup is retried, while the already-terminated process is
+// not released a second time.
+func TestStatefulDestroyAncillaryCleanupRetriesWithoutReleasingTwice(t *testing.T) {
+	port := tcpHealthServer(t)
+	s, _, fsd := newStatefulTestServer(t)
+	started := startFreshStateful(t, s, port, "wl-state")
+	fsd.mu.Lock()
+	fsd.failRemoveBundle = errors.New("bundle cleanup failed")
+	fsd.mu.Unlock()
+
+	if response, err := s.StopStateful(context.Background(), &nodev1.StopStatefulRequest{
+		VmId: started.GetVmId(), Mode: nodev1.StopStatefulMode_STOP_STATEFUL_MODE_DESTROY,
+	}); err == nil || response.GetTeardownConfirmed() {
+		t.Fatalf("failed bundle cleanup = %v, %v, want unconfirmed error", response, err)
+	}
+	if _, err := s.StartStateful(context.Background(), &nodev1.StartStatefulRequest{
+		Trace: &nodev1.Trace{Workload: "wl-state"}, Mode: nodev1.StartStatefulMode_START_STATEFUL_MODE_COLD,
+		BootImageRef: "img-a", Port: port, VolumeMount: "/data", BlessedGeneration: 2,
+	}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("wake during incomplete cleanup = %v, want FailedPrecondition", err)
+	}
+
+	fsd.mu.Lock()
+	fsd.failRemoveBundle = nil
+	fsd.mu.Unlock()
+	if response, err := s.StopStateful(context.Background(), &nodev1.StopStatefulRequest{
+		VmId: started.GetVmId(), Mode: nodev1.StopStatefulMode_STOP_STATEFUL_MODE_DESTROY,
+	}); err != nil || !response.GetTeardownConfirmed() {
+		t.Fatalf("cleanup retry = %v, %v", response, err)
+	}
+	fsd.mu.Lock()
+	releases := fsd.releases
+	fsd.mu.Unlock()
+	if releases != 1 {
+		t.Fatalf("process releases = %d, want 1 across ancillary cleanup retry", releases)
 	}
 }
 

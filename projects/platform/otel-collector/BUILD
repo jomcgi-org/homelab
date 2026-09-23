@@ -77,6 +77,7 @@ py_test(
         "values.yaml",
         "values-gke.yaml",
         "values-prod.yaml",
+        "values-test-mixed-targets.yaml",
         "@multitool//tools/helm",
         # Chart.lock plus the vendored charts/ tree are load-bearing for
         # `helm template`: without them the render aborts on the cf-ingress

@@ -1088,6 +1088,25 @@ emberSynthetic:
 # code surfaced in the tool response. Empty disables the tools.
 tokenBroker:
   url: "http://embervm-embervm-tokenbroker.embervm.svc.cluster.local:8080"
+  spiffe:
+    # Staged plaintext-retirement client. Keep false until the broker listener
+    # and its exact monolith allowlist are live and verified separately.
+    enabled: false
+    url: "https://embervm-embervm-tokenbroker.embervm.svc:8443"
+    serverId: "spiffe://embervm.jomcgi.dev/ns/embervm/sa/embervm-embervm-tokenbroker"
+    tlsPort: 8443
+    helper:
+      hint: monolith-platform
+      image:
+        repository: ghcr.io/spiffe/spiffe-helper
+        tag: "0.11.0"
+        pullPolicy: IfNotPresent
+      resources:
+        requests:
+          cpu: 5m
+          memory: 16Mi
+        limits:
+          memory: 32Mi
 
 frontend:
   otelCollectorUrl: ""
@@ -1445,20 +1464,6 @@ faas:
 semgrep:
   # EmberVM control-plane base URL for the semgrep workload.
   embervmUrl: ""
-  # Shadow project override for reporting isolation: when set, the relay
-  # reports its App scans under THIS project name instead of the real repo, so
-  # Route B (self-hosted) scans land in a SEPARATE Semgrep project from SMS's
-  # jomcgi/homelab project. Injected as SEMGREP_SHADOW_PROJECT; empty (the
-  # cutover state) makes Route B report to the real project. Plain value, not a
-  # secret.
-  shadowProject: ""
-  # Semgrep AppSec Platform reporting (Route B, self-hosted CI reporting): the
-  # relay (semgrep_scan/report.py) uploads fc-invoke findings using pysemgrep's
-  # own client, authenticated by SEMGREP_APP_TOKEN. Set onepassword.itemPath in
-  # deploy/values.yaml to sync the token from 1Password into a Secret and inject
-  # it as env; empty disables the injection (the relay then has no token).
-  onepassword:
-    itemPath: ""
 
 # Shared provider secret. The values key and Kubernetes Secret retain their
 # historical name to avoid a coordinated rename across consumers.
@@ -1835,7 +1840,7 @@ cfIngress:
     # AGENTS: Access consumes the Authorization header at the edge, so a bearer
     # token cannot survive it, and no amount of configuration changes that.
     auth: cloudflare
-    # The GitHub Semgrep webhook route carries NO SecurityPolicy by design:
+    # The GitHub factory webhook route carries NO SecurityPolicy by design:
     # GitHub bypasses Cloudflare Access at the edge via an IP-allowlist Bypass
     # policy and sends no Access JWT, so any policy on it would reject every
     # real delivery. Its gate is the handler's HMAC verification.

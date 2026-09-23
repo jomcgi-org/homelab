@@ -6,7 +6,7 @@ The cluster infrastructure: the pieces every service depends on, plus the repo-l
 
 ## 1. Clusters
 
-Two clusters, one repository. **The GKE hub** (`homelab-hub`, a zonal Standard cluster in `europe-west2`) has served every public and private workload since the 2026-08-31 cutover: the monolith with its public and agents tiers, EmberVM, Context Forge, authentik, the ingress, and the inference embeddings pod. **The home k3s cluster** is residual. It still runs LLM inference on its GPU node, the model-cache operator, and the platform components listed in `projects/platform/kustomization.yaml`, with its ingress connectors drained to zero. It is being torn down (#5485); the program around it (#4964) keeps the hub as the permanent management plane.
+Two clusters, one repository. **The GKE hub** (`homelab-hub`, a zonal Standard cluster in `europe-west2`) has served every public and private workload since the 2026-08-31 cutover: the monolith with its public and agents tiers, EmberVM, Context Forge, authentik, the ingress, and the inference embeddings pod. It remains the always-on, more reliable hub. The repository also carries the home k3s configuration and its last recorded residual inference/platform placement. The current operator direction is to bring at least three already-owned nodes shipped to the UK back as primary home capacity alongside GKE, with bare metal useful for EmberVM ([#4964](https://github.com/jomcgi-org/homelab/issues/4964)). Shipping is not proof of UK installation, readiness or workload/data placement. The former teardown and GKE GPU proposals ([#5485](https://github.com/jomcgi-org/homelab/issues/5485), [#5461](https://github.com/jomcgi-org/homelab/issues/5461)) closed as not planned and authorize no hardware disposal.
 
 Each cluster has its own in-cluster ArgoCD and its own root Application. Home's root (`canada`) exists only as a live object and syncs the generated `projects/home-cluster/kustomization.yaml`. The hub's root (`hub`) is committed at `projects/gke-cluster/root-application.yaml`, deliberately absent from the kustomization it syncs, and applied by hand after review: a self-managing root would reconcile away its own repair. It syncs two hand-maintained trees. `projects/platform-gke/` holds one Application per shared component, each pointing at the chart under `projects/platform/` with a `values-gke.yaml` overlay. `projects/gke-apps/` holds one Application per workload, consuming the service's `deploy/values.yaml` plus `values-gke.yaml` through a `$values` git ref. `bazel/images/generate-home-cluster.sh` excludes the three GKE trees and the migrated workloads from the home root, so nothing enrolls in both clusters by accident.
 
@@ -84,7 +84,7 @@ Google supports optional [Cilium cluster-wide network policies](https://docs.clo
 The charts' Cilium policies remain switched off in their `values-gke.yaml` overlays (monolith, monolith-public, monolith-agents, and EmberVM's noded and token broker), because the current hub lacks the policy CRDs those templates require. Standard Kubernetes `NetworkPolicy` is available for L3/L4 pod-network enforcement; application or proxy authorization is a separate enforcement surface. The cutover did not carry over home's WireGuard configuration, and nothing here claims hub wire encryption. #3873 remains the record for the networking work; the current absence of optional CRDs or observability is not grounds by itself to close that work as impossible.
 
 
-**Home** still runs the chart under `projects/platform/cilium/`, which replaced Linkerd's sidecar mesh (ADR platform/012), until #5485 tears the cluster down: eBPF L3/L4 `CiliumNetworkPolicy` enforcement in allow-until-selected mode, pod-to-pod WireGuard on `cilium_wg0` (node-to-node encryption was set and never in force, #5146 closed as obsolete), Hubble flow logs with cert-manager-rotated mTLS, and kube-proxy replacement. Two home-only behaviours worth keeping in mind while it lives: Cilium enforces egress policy after DNAT, so a probe from an unlisted namespace is dropped as a silent timeout rather than refused, and its `tcx` attachment is what makes the CAKE shaper in section 6 inert.
+**Home's checked-in configuration** runs the chart under `projects/platform/cilium/`, which replaced Linkerd's sidecar mesh (ADR platform/012): eBPF L3/L4 `CiliumNetworkPolicy` enforcement in allow-until-selected mode, pod-to-pod WireGuard on `cilium_wg0` (node-to-node encryption was set and never in force, #5146 closed as obsolete), Hubble flow logs with cert-manager-rotated mTLS, and kube-proxy replacement. The closed #5485 decision no longer supplies a teardown schedule. Revalidate the live UK topology before relying on these home-only behaviours: Cilium enforces egress policy after DNAT, so a probe from an unlisted namespace is dropped as a silent timeout rather than refused, and its `tcx` attachment is what makes the CAKE shaper in section 6 inert.
 
 (see: `projects/monolith/deploy/values-gke.yaml`, `projects/monolith-public/deploy/values-gke.yaml`, `projects/embervm/deploy/values-gke.yaml`, `projects/platform/cilium/values.yaml`, ADR platform/012, ADR networking/003)
 
@@ -173,7 +173,7 @@ pay GCP egress on every export.
 
 **KEDA** (home only) is installed with its CRDs and control plane. No `ScaledObject` or `ScaledJob` exists in this repo, so nothing autoscales on it (see: `projects/platform/keda/values.yaml` l.1-5).
 
-**GPU operator** (home only) manages the Nvidia driver and device plugin for the single RTX 4090 node. The hub has no GPU pool; #5461 tracks GPU serving there.
+**GPU operator** (home configuration) manages the Nvidia driver and device plugin for the single RTX 4090 node. The hub has no GPU pool. The former GKE GPU-serving proposal #5461 closed as not planned, so inference placement and hardware disposition require a separate current decision.
 
 (see: `projects/platform/priority-classes/templates/priorityclasses.yaml`, ADR platform/010, `projects/platform/node-traffic-shaper/`, `projects/platform/keda/`, `projects/platform/nvidia-gpu-operator/`)
 
@@ -302,9 +302,7 @@ this table when the work ships or the issue closes without it.
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
-| Plain `NetworkPolicy` replaces the inert Cilium templates on the hub | section 3 | #5816, #3897, #5277 | blocked on #5485 |
-| The home cluster is fully decommissioned; the hub is the sole management plane | section 1 | #5485 | not started |
-| The hub gets a GPU pool for model serving | section 6 | #5461 | not started |
+| Plain `NetworkPolicy` replaces the inert Cilium templates on the hub | section 3 | #5816, #3897, #5277 | revalidate against the selected home-plus-GKE topology; #5485 closed without teardown |
 | Kargo promotion on the hub gains a functional verification gate, not just stage ordering | section 4 | #4745 | not started |
 | Per-PR preview environments exist for the monolith, with copy-on-write CNPG clones | section 4 | #3882 | not started |
 | Values-only PRs flip on mTLS for SPIFFE-issued workloads and retire the static bearer token | section 8 | #5759 | not started |

@@ -233,6 +233,39 @@ def _locked_attempt(
     return identity, run
 
 
+def recover_completed_receipt(pin, session_id, workflow_status):
+    """Adopt authenticated completion before attempting remote cessation.
+
+    The native result and recovery audit commit together. Graph/start settlement
+    remains the conductor's normal artifact-validation path, which can replay
+    the newly durable turn after a crash without invoking another model.
+    """
+    from factory.execution.api import adopt_completed_factory_receipt
+
+    if session_id is None or workflow_status not in ("SUCCESS", "ERROR", "CANCELLED"):
+        return False
+    with controls._locked_session() as (db, control):
+        try:
+            identity, _ = _locked_attempt(
+                db, control, pin, session_id, require_stop_due=False
+            )
+            # Invalid evidence leaves no partial changes in the outer control
+            # transaction, including parser failures after a receipt was read.
+            with db.begin_nested():
+                evidence = adopt_completed_factory_receipt(db, pin, identity)
+                controls._audit(
+                    db,
+                    "factory:receipt-recovery",
+                    "completed_receipt_recovered",
+                    task_id=pin["task_id"],
+                    workflow_id=pin["workflow_id"],
+                    **evidence,
+                )
+        except (ValueError, TypeError, KeyError):
+            return False
+    return True
+
+
 def _settlement_accounting(chosen: float | None, original: dict) -> dict:
     """Name the evidence behind the cost this cessation settles at.
 
@@ -320,6 +353,75 @@ def _completion(view, expected):
     return {key: proof[key] for key in keys | {"completed_at_unix_ms"}}
 
 
+def _initial_guest_cessation(view, identity, saved=None):
+    """Match an idle-evicted initial allocation to this exact failed dispatch.
+
+    A guest allocated during the dispatch can be cancelled before its first
+    invoke stamp, then parked and evicted by idle TTL. Its durable creation
+    timestamp identifies that allocation when an invoke timestamp cannot. The
+    later terminal transition proves cessation, never a zero-cost model turn.
+    The caller still revalidates local ownership and retains unknown spend.
+    """
+    required = {
+        "session_id",
+        "state",
+        "terminal_reason",
+        "generation",
+        "turn_seq",
+        "created_at",
+        "updated_at",
+        "invoke_started_at",
+        "last_invoke_at",
+        "interrupted_turn",
+        "stop_precondition",
+        "stop_intent",
+        "stop_completion",
+    }
+    if (
+        not required.issubset(view)
+        or view["session_id"] != identity["guest_id"]
+        or view["state"] != "evicted"
+        or view["terminal_reason"] != "idle_ttl"
+        or type(view["generation"]) is not int
+        or view["generation"] != 0
+        or type(view["turn_seq"]) is not int
+        or view["turn_seq"] != 0
+        or any(
+            view[key] is not None
+            for key in (
+                "invoke_started_at",
+                "last_invoke_at",
+                "interrupted_turn",
+                "stop_precondition",
+                "stop_intent",
+                "stop_completion",
+            )
+        )
+        or saved is not None
+        or any(
+            type(view[key]) is not int or view[key] < 1
+            for key in ("created_at", "updated_at")
+        )
+    ):
+        return None
+    dispatched = int(_timestamp(identity["dispatched_at"]).timestamp() * 1000)
+    failed = int(_timestamp(identity["failed_turn_at"]).timestamp() * 1000)
+    if not dispatched < view["created_at"] <= failed < view["updated_at"]:
+        return None
+    return {
+        "session_id": identity["guest_id"],
+        "state": "evicted",
+        "terminal_reason": "idle_ttl",
+        "generation": 0,
+        "turn_seq": 0,
+        "created_at": view["created_at"],
+        "updated_at": view["updated_at"],
+        "invoke_started_at": None,
+        "last_invoke_at": None,
+        "cessation_evidence": "terminal_initial_guest",
+    }
+
+
 def _control_plane_cessation(view, identity, saved=None):
     """Return terminal CP evidence ordered after this factory dispatch.
 
@@ -333,6 +435,9 @@ def _control_plane_cessation(view, identity, saved=None):
     the view's own invocation fields, ordered against the recorded attempt the
     way the permit loop orders its own observation.
     """
+    initial = _initial_guest_cessation(view, identity, saved)
+    if initial is not None:
+        return initial
     if view.get("state") not in {"evicted", "destroyed"}:
         return None
     generation = view.get("generation")

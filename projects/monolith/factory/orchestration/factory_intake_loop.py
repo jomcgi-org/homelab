@@ -157,7 +157,7 @@ def _receipt_exclusion(
         for row in rows
     ):
         return "delivered"
-    if any(row.state in ("admitted", "uncertain") for row in rows):
+    if any(row.state in ("admitted", "uncertain", "landing") for row in rows):
         return "active_issue"
     if any(row.state == "escalated" for row in rows):
         return "escalated"
@@ -459,7 +459,9 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
             held = db.exec(
                 select(FactoryReceipt).where(
                     FactoryReceipt.generation == generation,
-                    FactoryReceipt.state.in_(("queued", "admitted", "uncertain")),
+                    FactoryReceipt.state.in_(
+                        ("queued", "admitted", "uncertain", "landing")
+                    ),
                 )
             ).all()
             room = open_lanes(policy, held, lanes)
@@ -812,7 +814,9 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                 held = db.exec(
                     select(FactoryReceipt).where(
                         FactoryReceipt.generation == generation,
-                        FactoryReceipt.state.in_(("queued", "admitted", "uncertain")),
+                        FactoryReceipt.state.in_(
+                            ("queued", "admitted", "uncertain", "landing")
+                        ),
                     )
                 ).all()
                 room = open_lanes(policy, held, lanes)

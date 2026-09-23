@@ -136,6 +136,7 @@ def test_retired_private_demo_and_perf_routes_are_absent():
         "/api/semgrep/perf",
         "/internal/semgrep",
         "/webhooks/semgrep",
+        "/webhooks/github/semgrep",
     )
     assert not {
         path
@@ -144,10 +145,10 @@ def test_retired_private_demo_and_perf_routes_are_absent():
     }
 
 
-def test_retained_semgrep_and_public_ember_routes_are_registered():
-    """Dashboard removal must not prune scanning or public Ember consumers."""
+def test_retained_factory_and_public_ember_routes_are_registered():
+    """Route B removal must preserve factory ingress and standalone scanning."""
     paths = set(_iter_route_paths(app.routes))
-    assert "/webhooks/github/semgrep" in paths
+    assert "/webhooks/github/factory" in paths
     assert "/api/ember/semgrep/scan" in paths
     assert "/api/ember/postgres/status" in paths
 

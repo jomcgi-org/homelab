@@ -82,6 +82,7 @@ defmodule Embervm.SessionStoreTest do
     {:ok, [row]} = SQLite.load_sessions(op_log)
     assert row.session_id == "s-test-1"
     assert row.state == "running"
+    assert row.vm_id == "vm-1"
     assert row.token_sha256 == session.token_sha256
     # The plaintext token is nowhere in the durable row.
     refute row.token_sha256 == created.token
@@ -94,6 +95,43 @@ defmodule Embervm.SessionStoreTest do
 
     assert SessionStore.residency(store, created.session_id) == {:ok, {"node-4", "vm-9"}}
     assert SessionStore.counts(store, "wl-x") == %{live: 1, banked: 0}
+  end
+
+  test "durable VM ownership survives rebuild without assuming residency", %{path: path} do
+    {op_log, store} = start_pair(path)
+    {:ok, created} = create(store, vm_id: "vm-durable")
+
+    assert SessionStore.claimed_vm_ids(store) == MapSet.new(["vm-durable"])
+    GenServer.stop(store)
+
+    {:ok, rebuilt} = SessionStore.start_link(name: nil, op_log: op_log)
+    assert {:ok, %{vm_id: "vm-durable"}} = SessionStore.get(rebuilt, created.session_id)
+    assert SessionStore.claimed_vm_ids(rebuilt) == MapSet.new(["vm-durable"])
+    assert :error = SessionStore.residency(rebuilt, created.session_id)
+  end
+
+  defmodule RejectCreateOpLog do
+    def append(_op_log, %{kind: :session_created}), do: {:error, :injected_write_failure}
+    def append(op_log, op), do: SQLite.append(op_log, op)
+    def load_sessions(op_log), do: SQLite.load_sessions(op_log)
+  end
+
+  test "a failed ownership append creates neither a hot row nor a durable claim", %{path: path} do
+    {:ok, op_log} = SQLite.start_link(path: path, name: nil)
+
+    {:ok, store} =
+      SessionStore.start_link(
+        op_log: op_log,
+        op_log_mod: RejectCreateOpLog,
+        name: nil,
+        clock: sequential_clock(),
+        id_fun: sequential_id_fun()
+      )
+
+    assert {:error, :injected_write_failure} = create(store, vm_id: "vm-rejected")
+    assert SessionStore.all(store) == []
+    assert SessionStore.claimed_vm_ids(store) == MapSet.new()
+    assert {:ok, []} = SQLite.load_sessions(op_log)
   end
 
   # -- lineage_id (#4306 slice 1) ---------------------------------------------
@@ -489,7 +527,7 @@ defmodule Embervm.SessionStoreTest do
     ops |> Enum.filter(&(&1.session_id == session_id and &1.kind == :session_created)) |> length()
   end
 
-  test "gate ON: create mints ETS row + token synchronously but defers the durable append", %{
+  test "gate ON: session create remains write-through because it establishes ownership", %{
     path: path
   } do
     {:ok, op_log} = SQLite.start_link(path: path, name: nil)
@@ -507,13 +545,11 @@ defmodule Embervm.SessionStoreTest do
 
     {:ok, created} = create(store, vm_id: "vm-async")
 
-    # The caller got its token and the ETS row is live immediately (routable)...
+    # The caller gets its token only after both the claim and ETS row exist.
     assert is_binary(created.token)
     assert {:ok, %{state: :running}} = SessionStore.get(store, created.session_id)
-
-    # ...but the durable session_created append is deferred: drain, THEN it appears.
-    :ok = Embervm.AsyncWriter.drain(writer)
     assert durable_session_created_count(op_log, created.session_id) == 1
+    refute Embervm.AsyncWriter.pending?(writer, "vm-async")
   end
 
   test "gate OFF: create is write-through (durable append synchronous, writer untouched)", %{path: path} do

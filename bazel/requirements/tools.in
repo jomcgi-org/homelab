@@ -20,10 +20,5 @@
 # Floor raised to 9.14.1 for CVE-2026-34726 / CVE-2026-34730 (template root
 # escape and _external_data path traversal).
 copier>=9.14.1
-# Pinned EXACTLY: the monolith imports pysemgrep's INTERNAL ScanHandler /
-# core_output / rule_match APIs (projects/monolith/semgrep_scan/report.py) to relay
-# fc-invoke findings to the Semgrep AppSec Platform, and this pin must match the
-# fc-invoke Pro engine version so fingerprints line up. Bumping this version
-# REQUIRES re-verifying the pysemgrep import surface in report.py (see the
-# version-coupling comment there) before merging.
+# Semgrep CLI tooling remains pinned independently of the retired PR relay.
 semgrep==1.168.0

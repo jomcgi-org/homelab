@@ -529,6 +529,58 @@ def test_operator_receipt_is_created_with_safe_delivery_target(db, monkeypatch):
         assert "delivery_target_checked" not in direction
 
 
+@pytest.mark.parametrize("adopted", [False, True])
+def test_staged_delivery_is_found_from_receipt_without_closing_issue(
+    db, monkeypatch, adopted
+):
+    branch = "factory/earlier-adoption" if adopted else "factory/earlier"
+    task_receipt(
+        db,
+        "earlier",
+        15,
+        "cancelled",
+        branch=branch if adopted else None,
+        pr_number=100 if adopted else None,
+    )
+    existing = pull(100, 15, branch)
+    existing["body"] = "Repository-only staged delivery. Issue #15 remains open."
+    unrelated = pull(101, 15, "factory/unrelated")
+    unrelated["body"] = existing["body"]
+    fork = {
+        **existing,
+        "number": 102,
+        "head": {
+            "ref": branch,
+            "repo": {"full_name": "someone/fork"},
+        },
+    }
+    monkeypatch.setattr(
+        conductor, "github_list", lambda *_: [unrelated, fork, existing]
+    )
+
+    assert gates.receive_delivery_target(REPO, 15) == {
+        "delivery_branch": branch,
+        "delivery_pr_number": 100,
+        "delivery_adoption": True,
+    }
+    assert gates.receive_delivery_target(REPO, 16) is None
+    if adopted:
+        monkeypatch.setattr(
+            conductor, "github_list", lambda *_: [{**existing, "number": 103}]
+        )
+        assert gates.receive_delivery_target(REPO, 15) is None
+
+
+def test_staged_delivery_cannot_take_an_active_recorded_branch(db, monkeypatch):
+    task_receipt(db, "earlier", 15, "cancelled")
+    task_receipt(db, "owner", 99, "admitted", branch="factory/earlier", pr_number=100)
+    existing = pull(100, 15, "factory/earlier")
+    existing["body"] = "Staged delivery; operational acceptance remains."
+    monkeypatch.setattr(conductor, "github_list", lambda *_: [existing])
+
+    assert gates.receive_delivery_target(REPO, 15) is None
+
+
 def test_receipt_target_is_reverified_before_adoption(db, monkeypatch):
     initial = pull(102, 18, "factory/initial")
     monkeypatch.setattr(conductor, "github_list", lambda *_args: [initial])

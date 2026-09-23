@@ -15,6 +15,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -191,8 +193,13 @@ func (f *fakeDriver) SnapshotBase(_ context.Context, _ substrate.Handle, baseKey
 		if err := os.WriteFile(filepath.Join(dir, "memfile"), []byte("mem"), 0o600); err != nil {
 			return substrate.SnapshotRef{}, err
 		}
+		// Mirror the real producer contract: base capture writes its drive-resource
+		// metadata before publishing the bundle. This fake captures rootfs-only.
+		if err := os.WriteFile(filepath.Join(dir, "jail-resources.json"), []byte(`[{"role":"rootfs","host_path":"/rootfs","jail_path":"/rootfs"}]`), 0o600); err != nil {
+			return substrate.SnapshotRef{}, err
+		}
 	}
-	return substrate.SnapshotRef{ID: baseKey, Base: true, SizeBytes: 4096}, nil
+	return substrate.SnapshotRef{ID: baseKey, Base: true, SizeBytes: 4096, DeviceSetKnown: true}, nil
 }
 
 // SnapshotSession banks the fake VM: it persists the pre-bank marker (nextBankMarker)
@@ -688,6 +695,41 @@ func TestPrimeAssignAutoDestroy(t *testing.T) {
 	if claims2 != 1 || releases2 != 1 || removeBundles2 != 1 {
 		t.Errorf("rejected Assign had side effects: claims=%d releases=%d removeBundles=%d, want 1/1/1",
 			claims2, releases2, removeBundles2)
+	}
+}
+
+func TestPrimeVolumeRequestCarriesColdBootInputs(t *testing.T) {
+	drv := &fakeDriver{}
+	client, srv := newTestServer(t, drv, &fakeTransport{}, 8)
+	srv.cfg.HarnessInit = "/shim/init"
+	const ref = "echo__abcdef000001"
+	seedBase(srv, ref, "echo")
+	base, ok := srv.bases.get(ref)
+	if !ok {
+		t.Fatal("seeded base missing from registry")
+	}
+	base.devices.Known = true
+	srv.bases.register(base)
+	if err := os.WriteFile(filepath.Join(srv.cfg.SnapshotRoot, "bases", ref, "jail-resources.json"), []byte(`[{"role":"rootfs"}]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := client.Prime(context.Background(), &nodev1.PrimeRequest{
+		SnapshotRef:    ref,
+		VolumeDiskPath: "/sessions/lineage/workspace.img",
+	}); err != nil {
+		t.Fatalf("Prime: %v", err)
+	}
+
+	spec := drv.claimSpec()
+	if spec.ColdBootRootfsPath != base.rootfsPath {
+		t.Errorf("cold-boot rootfs = %q, want captured base rootfs %q", spec.ColdBootRootfsPath, base.rootfsPath)
+	}
+	if spec.ColdBootHarnessInit != srv.cfg.HarnessInit {
+		t.Errorf("cold-boot init = %q, want %q", spec.ColdBootHarnessInit, srv.cfg.HarnessInit)
+	}
+	if spec.VolumeDiskPath != "/sessions/lineage/workspace.img" {
+		t.Errorf("cold-boot volume = %q, want requested volume", spec.VolumeDiskPath)
 	}
 }
 
@@ -1441,11 +1483,12 @@ func TestBuildBaseAdoptsSiblingBundleFromDisk(t *testing.T) {
 	memBytes := strings.Repeat("m", 100)
 	snapBytes := strings.Repeat("s", 50)
 	for name, content := range map[string]string{
-		"imageref":   "img:1",
-		"memfile":    memBytes,
-		"rootfsid":   testRootfsUUIDA,
-		"rootfspath": rootfs,
-		"snapfile":   snapBytes,
+		"imageref":            "img:1",
+		"jail-resources.json": `[{"role":"rootfs"},{"role":"volume"}]`,
+		"memfile":             memBytes,
+		"rootfsid":            testRootfsUUIDA,
+		"rootfspath":          rootfs,
+		"snapfile":            snapBytes,
 	} {
 		if err := os.MkdirAll(dir, 0o750); err != nil {
 			t.Fatalf("mkdir bundle dir: %v", err)
@@ -1483,12 +1526,16 @@ func TestBuildBaseAdoptsSiblingBundleFromDisk(t *testing.T) {
 	if !ok || entry.state != nodev1.BaseBuildState_BASE_BUILD_STATE_READY {
 		t.Errorf("registry entry = %+v ok=%v, want READY", entry, ok)
 	} else {
-		if entry.imageDigest != "img:1" || entry.rootfsPath != rootfs || entry.workload != "echo" {
+		if entry.imageDigest != "img:1" || entry.rootfsPath != rootfs || entry.workload != "echo" ||
+			!entry.devices.Known || !slices.Equal(entry.devices.IDs, []string{"volume"}) {
 			t.Errorf("registry entry identity = %+v, want request-derived values", entry)
 		}
 	}
 	// The sibling's bytes were adopted, not disturbed.
-	for name, content := range map[string]string{"imageref": "img:1", "memfile": memBytes, "snapfile": snapBytes} {
+	for name, content := range map[string]string{
+		"imageref": "img:1", "jail-resources.json": `[{"role":"rootfs"},{"role":"volume"}]`,
+		"memfile": memBytes, "snapfile": snapBytes,
+	} {
 		got, rerr := os.ReadFile(filepath.Join(dir, name))
 		if rerr != nil || string(got) != content {
 			t.Errorf("bundle %s = %q (%v), want untouched %q", name, got, rerr, content)
@@ -1501,14 +1548,15 @@ func TestBuildBaseAdoptsSiblingBundleFromDisk(t *testing.T) {
 // completeness rule, so the build proceeds normally. The stale debris itself is
 // cleared by the driver at publish time (covered driver-side).
 func TestBuildBaseIncompleteBundleFallsThroughToBuild(t *testing.T) {
-	build := &fakeDriver{}
+	snapshotRoot := t.TempDir()
+	build := &fakeDriver{snapshotRoot: snapshotRoot}
 	// The backing rootfs must EXIST: adoption declines a bundle whose recorded
 	// rootfs is missing (it could not restore), so a nonexistent path here would
 	// silently exercise the decline path instead of the adoption path.
 	rootfs := writeExt4Rootfs(t, t.TempDir(), "rootfs.ext4", testRootfsUUIDA)
 	s := New(Options{
 		Config: config.Config{
-			Arch: "amd64", Node: "node-4", SnapshotRoot: t.TempDir(),
+			Arch: "amd64", Node: "node-4", SnapshotRoot: snapshotRoot,
 			BootReadyTimeout: time.Second,
 			Images:           map[string]config.Image{"img:1": {RootfsPath: rootfs}},
 		},
@@ -3590,6 +3638,48 @@ func TestReconcileBasesFromDiskRestoresRefAndGCsRefless(t *testing.T) {
 	}
 }
 
+func TestReconcileBasesFromDiskCarriesCapturedDeviceShape(t *testing.T) {
+	root := t.TempDir()
+	basesDir := filepath.Join(root, "bases")
+	writeReconcileBase(t, basesDir, "echo__root-only", "img-root")
+	writeReconcileBase(t, basesDir, "echo__volume", "img-volume")
+	writeReconcileBase(t, basesDir, "echo__legacy", "img-legacy")
+	writeReconcileBase(t, basesDir, "echo__invalid", "img-invalid")
+	if err := os.WriteFile(filepath.Join(basesDir, "echo__root-only", "jail-resources.json"), []byte(`[{"role":"rootfs"}]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(basesDir, "echo__volume", "jail-resources.json"), []byte(`[{"role":"rootfs"},{"role":"volume"}]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(basesDir, "echo__invalid", "jail-resources.json"), []byte(`{"not":"an array"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	s := New(Options{Config: config.Config{SnapshotRoot: root}})
+	if err := s.ReconcileBasesFromDisk(); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		key       string
+		known     bool
+		ids       []string
+		wantState nodev1.BaseBuildState
+	}{
+		{key: "echo__root-only", known: true, wantState: nodev1.BaseBuildState_BASE_BUILD_STATE_READY},
+		{key: "echo__volume", known: true, ids: []string{"volume"}, wantState: nodev1.BaseBuildState_BASE_BUILD_STATE_READY},
+		{key: "echo__legacy", known: false, wantState: nodev1.BaseBuildState_BASE_BUILD_STATE_READY},
+		{key: "echo__invalid", known: true, wantState: nodev1.BaseBuildState_BASE_BUILD_STATE_NONE},
+	} {
+		got, ok := s.bases.get(tc.key)
+		if !ok {
+			t.Fatalf("base %q was not registered", tc.key)
+		}
+		if got.state != tc.wantState || got.devices.Known != tc.known || !slices.Equal(got.devices.IDs, tc.ids) {
+			t.Errorf("base %q = state %s devices %+v, want state %s known=%v ids=%v", tc.key, got.state, got.devices, tc.wantState, tc.known, tc.ids)
+		}
+	}
+}
+
 func TestReconcileBasesFromDiskReflessRemovesServingImage(t *testing.T) {
 	dir := t.TempDir()
 	s := New(Options{Config: config.Config{SnapshotRoot: dir}})
@@ -4030,6 +4120,9 @@ func TestSiblingBaseDiscoveryConvergesWithoutBuildOrLiveVMChanges(t *testing.T) 
 	follower.vms.add(&vmEntry{id: "task-live", workload: "echo", snapshotRef: oldRef, state: vmPrimed})
 	follower.sessionVMs.add(&sessionEntry{vmID: "session-live", sessionID: "s-live", workload: "echo", snapshotRef: oldRef})
 	writeReconcileBase(t, bases, newRef, "img:1")
+	if err := os.WriteFile(filepath.Join(bases, newRef, "jail-resources.json"), []byte(`[{"role":"rootfs"}]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	newTime := time.Unix(200, 0)
 	if err := os.Chtimes(filepath.Join(bases, newRef), newTime, newTime); err != nil {
 		t.Fatal(err)
@@ -4041,7 +4134,11 @@ func TestSiblingBaseDiscoveryConvergesWithoutBuildOrLiveVMChanges(t *testing.T) 
 	}
 	before := map[string]baseDiscoveryFile{}
 	for _, ref := range []string{oldRef, newRef} {
-		for _, name := range []string{"snapfile", "memfile", "imageref", "rootfsid", "rootfspath"} {
+		names := []string{"snapfile", "memfile", "imageref", "rootfsid", "rootfspath"}
+		if ref == newRef {
+			names = append(names, "jail-resources.json")
+		}
+		for _, name := range names {
 			path := filepath.Join(bases, ref, name)
 			info, err := os.Stat(path)
 			if err != nil {
@@ -4061,7 +4158,8 @@ func TestSiblingBaseDiscoveryConvergesWithoutBuildOrLiveVMChanges(t *testing.T) 
 		t.Fatal("adoption did not wake WatchNode")
 	}
 	entry, ok := follower.bases.get(newRef)
-	if !ok || entry.createdAtUnixMs != newTime.UnixMilli() || entry.state != nodev1.BaseBuildState_BASE_BUILD_STATE_READY {
+	if !ok || entry.createdAtUnixMs != newTime.UnixMilli() || entry.state != nodev1.BaseBuildState_BASE_BUILD_STATE_READY ||
+		!entry.devices.Known || len(entry.devices.IDs) != 0 {
 		t.Fatalf("adopted entry=%+v, want original disk creation time and READY", entry)
 	}
 	status := follower.nodeStatus()
@@ -4071,7 +4169,7 @@ func TestSiblingBaseDiscoveryConvergesWithoutBuildOrLiveVMChanges(t *testing.T) 
 	if ids := primedIDs(status, "echo"); len(ids) != 1 || ids[0] != "task-live" {
 		t.Fatalf("primed residency changed: %v", ids)
 	}
-	if old, _ := follower.bases.get(oldRef); old != oldEntry {
+	if old, _ := follower.bases.get(oldRef); !reflect.DeepEqual(old, oldEntry) {
 		t.Fatal("discovery modified the old READY entry")
 	}
 	if got := follower.discoverSiblingBases(context.Background()); got != 0 {

@@ -1,5 +1,14 @@
 # GKE Cutover Window Runbook
 
+> Historical runbook only. The 2026-09-13 operator direction in
+> [#4964](https://github.com/jomcgi-org/homelab/issues/4964) supersedes permanent
+> home teardown: owned nodes shipped to the UK are intended for primary home
+> workloads alongside the always-on GKE hub. The closed
+> [#5485](https://github.com/jomcgi-org/homelab/issues/5485) and
+> [#5461](https://github.com/jomcgi-org/homelab/issues/5461) programmes authorize
+> no wipe, migration or disposal. Do not execute the destructive steps below as
+> current instructions.
+
 The downtime window that moves the app workloads from the home cluster to the
 GKE hub (issue #5458, part of #4964). Everything here was staged and rehearsed
 on 2026-08-30: the GKE destinations are deployed dormant (#5464), CNPG backups

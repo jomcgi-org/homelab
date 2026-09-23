@@ -3,6 +3,7 @@
 import asyncio
 import base64
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from threading import BoundedSemaphore
@@ -848,49 +849,81 @@ def test_executor_cancellation_before_capture_retains_unknown_and_late_history(
     asyncio.run(asyncio.wait_for(run(), 10))
 
 
-def test_stolen_dispatch_cannot_adopt_or_change_new_owner_state(database, monkeypatch):
+@pytest.mark.parametrize("change", ["expired_lease", "owner"])
+def test_rejected_receipt_observes_response_but_preserves_writer_ownership(
+    database, monkeypatch, change
+):
     sid = queue(database)
     expected = {}
     credentials = {}
+    rejected = asyncio.Event()
+    release_response = asyncio.Event()
+    denials = []
+    read_active = result_receipts.read_active_result
+    record = native_record()
 
     async def handler(request):
-        # Do not yield between the callback and the ownership change. The
-        # observer may then see either snapshot, but persistence must see the
-        # new owner and must leave its state alone.
         credentials.update(json.loads(request.content)["result_receipt"])
         result_receipts.capture_result(
-            credentials["id"],
-            credentials["token"],
-            json.dumps(native_record()).encode(),
+            credentials["id"], credentials["token"], json.dumps(record).encode()
         )
         with Session(database) as db, db.begin():
             store._lock_session(db, sid)
             pending = store.get_pending_message(db, sid, 1)
-            pending.claimed_by_replica = "new-executor"
-            pending.dispatch_count += 1
-            permit = db.exec(select(AgentCapacityReservation)).one()
-            permit.owner = "new-executor"
-            db.add_all([pending, permit])
+            pending.claimed_at = datetime.now(timezone.utc) - timedelta(seconds=31)
+            if change == "owner":
+                pending.claimed_by_replica = "new-executor"
+                pending.dispatch_count += 1
+                permit = db.exec(select(AgentCapacityReservation)).one()
+                permit.owner = "new-executor"
+                db.add(permit)
+            db.add(pending)
         expected.update(snapshot(database, sid))
-        await asyncio.Event().wait()
-        pytest.fail("stolen POST should be cancelled locally")
+        await release_response.wait()
+        return httpx.Response(200, json=record, request=request)
 
     requests = fake_http(monkeypatch, handler)
 
     async def run():
+        loop = asyncio.get_running_loop()
+
+        def observe(**identity):
+            try:
+                return read_active(**identity)
+            except result_receipts.ReceiptRejected as exc:
+                denials.append(str(exc))
+                loop.call_soon_threadsafe(rejected.set)
+                raise
+
+        monkeypatch.setattr(result_receipts, "read_active_result", observe)
+        execution = asyncio.create_task(mcp._execute_pending_message(sid))
         try:
-            await asyncio.wait_for(mcp._execute_pending_message(sid), 5)
-            await asyncio.wait_for(drain_observers(), 3)
+            await asyncio.wait_for(rejected.wait(), 3)
+            # Give the observer's rejected result back to the real executor.
+            # Its original request must remain available to receive a response.
+            await asyncio.sleep(0.02)
+            assert not execution.done()
+            assert transport._receipt_observers
             assert snapshot(database, sid) == expected
-            with Session(database) as db:
-                assert (
-                    db.get(AgentResultReceipt, credentials["id"]).result_body
-                    is not None
-                )
+            release_response.set()
+            await asyncio.wait_for(execution, 3)
+            await asyncio.wait_for(drain_observers(), 3)
+            after = snapshot(database, sid)
+            if change == "owner":
+                assert after == expected
+            else:
+                assert after["pending"] == []
+                assert len(after["turns"]) == 1
+                assert after["turns"][0]["terminal_reason"] == "end_turn"
+                assert after["turns"][0]["cost_usd"] == record["total_cost_usd"]
+                assert after["permits"][0]["state"] == "settled"
+                assert after["permits"][0]["outcome"] == "end_turn"
+                assert after["session"]["result_receipt_fence_id"] is None
+            assert denials == ["executor_ownership_changed"]
             assert len(requests) == 1
         finally:
-            for observer in list(transport._receipt_observers):
-                observer.cancel()
+            release_response.set()
+            await asyncio.gather(execution, return_exceptions=True)
             await asyncio.wait_for(drain_observers(), 3)
 
     asyncio.run(asyncio.wait_for(run(), 10))

@@ -6,24 +6,19 @@ import os
 import pytest
 from sqlalchemy import event
 from sqlmodel import Session, SQLModel, create_engine, select
-from sqlmodel.pool import StaticPool
 
 from knowledge.frontmatter import ParsedFrontmatter
 from knowledge.entities import Entity, NoteEntity
 from knowledge.links import Link
 from knowledge.models import Chunk, Note, NoteLink
-from knowledge.store import KnowledgeStore
+from knowledge.store import KnowledgeStore, _rank_search_chunks
 
 _PG_URL = os.environ.get("TEST_POSTGRES_URL")
 
 
 @pytest.fixture(name="session")
-def session_fixture():
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
+def session_fixture(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'knowledge.db'}")
     original_schemas = {}
     for table in SQLModel.metadata.tables.values():
         if table.schema is not None:
@@ -91,7 +86,7 @@ def _upsert(
     links=None,
     content=None,
 ):
-    metadata = metadata or _meta(title=title)
+    metadata = metadata or _meta(title=title, verification_state="verified")
     store.upsert_note(
         note_id=note_id,
         path=path,
@@ -393,6 +388,67 @@ class TestSearchNotes:
         assert results[0]["score"] == pytest.approx(1.0, abs=1e-6)
 
 
+@pytest.mark.parametrize("scope_filter", [None, "repo:jomcgi-org/homelab"])
+@pytest.mark.parametrize("exclude_invalidated", [False, True])
+@pytest.mark.parametrize("include_legacy", [False, True])
+def test_context_search_forwards_all_ranking_filters(
+    store,
+    session,
+    monkeypatch,
+    scope_filter,
+    exclude_invalidated,
+    include_legacy,
+):
+    calls = []
+
+    def rank(*args, **kwargs):
+        calls.append((args, kwargs))
+        return []
+
+    monkeypatch.setattr("knowledge.store._rank_search_chunks", rank)
+
+    assert (
+        store.search_notes_with_context(
+            [0.0] * 1024,
+            scope_filter=scope_filter,
+            exclude_invalidated=exclude_invalidated,
+            include_legacy=include_legacy,
+        )
+        == []
+    )
+    assert calls == [
+        (
+            (session, [0.0] * 1024, 20, None),
+            {
+                "scope_filter": scope_filter,
+                "exclude_invalidated": exclude_invalidated,
+                "include_legacy": include_legacy,
+            },
+        )
+    ]
+
+
+def test_default_legacy_predicate_preserves_null_state_semantics():
+    class EmptyResult:
+        def all(self):
+            return []
+
+    class RecordingSession:
+        def __init__(self):
+            self.statement = None
+
+        def execute(self, statement):
+            self.statement = statement
+            return EmptyResult()
+
+    session = RecordingSession()
+    assert _rank_search_chunks(session, [0.0] * 1024, 20, None) == []
+
+    sql = str(session.statement)
+    assert "verification_state IS NULL" in sql
+    assert "verification_state !=" in sql
+
+
 class TestSearchNotesWithContext:
     """search_notes_with_context requires pgvector cosine_distance (Postgres only)."""
 
@@ -413,6 +469,7 @@ class TestSearchNotesWithContext:
                 title="Attention",
                 type="paper",
                 tags=["ml", "transformers"],
+                verification_state="verified",
             ),
             chunks=[
                 {
@@ -467,7 +524,12 @@ class TestSearchNotesWithContext:
             path="multi.md",
             content_hash="h1",
             title="Multi",
-            metadata=_meta(title="Multi", type="paper", tags=["ml"]),
+            metadata=_meta(
+                title="Multi",
+                type="paper",
+                tags=["ml"],
+                verification_state="verified",
+            ),
             chunks=[
                 {
                     "index": 0,
@@ -498,7 +560,12 @@ class TestSearchNotesWithContext:
             path="projected.md",
             content_hash="projected-hash",
             title="Projected",
-            metadata=_meta(title="Projected", type="fact", tags=["query"]),
+            metadata=_meta(
+                title="Projected",
+                type="fact",
+                tags=["query"],
+                verification_state="verified",
+            ),
             chunks=[
                 {
                     "index": 0,
@@ -562,7 +629,7 @@ class TestSearchNotesWithContext:
             note_id="n1",
             path="a.md",
             title="Paper",
-            metadata=_meta(title="Paper", type="paper"),
+            metadata=_meta(title="Paper", type="paper", verification_state="verified"),
             n_chunks=1,
         )
         _upsert(
@@ -570,7 +637,9 @@ class TestSearchNotesWithContext:
             note_id="n2",
             path="b.md",
             title="Journal",
-            metadata=_meta(title="Journal", type="journal"),
+            metadata=_meta(
+                title="Journal", type="journal", verification_state="verified"
+            ),
             n_chunks=1,
         )
         results = self.store.search_notes_with_context(
@@ -588,7 +657,9 @@ class TestSearchNotesWithContext:
                 path=f"{note_id}.md",
                 content_hash=note_id,
                 title=note_id,
-                metadata=_meta(title=note_id, type="fact"),
+                metadata=_meta(
+                    title=note_id, type="fact", verification_state="verified"
+                ),
                 chunks=[{"index": 0, "section_header": "", "text": content}],
                 vectors=[[0.0] * 1024],
                 links=[],
@@ -615,6 +686,108 @@ class TestSearchNotesWithContext:
         }
         assert [row["note_id"] for row in dedupe_results] == ["current"]
 
+    def test_legacy_filter_runs_before_limit_and_can_be_opted_out(self):
+        content = (
+            "A long enough note body to avoid the short chunk ranking penalty. " * 2
+        )
+        query = [1.0] + [0.0] * 1023
+        candidates = (
+            ("legacy-top", "legacy", [1.0] + [0.0] * 1023),
+            ("verified-lower", "verified", [0.8, 0.6] + [0.0] * 1022),
+        )
+        for note_id, state, vector in candidates:
+            self.store.upsert_note(
+                note_id=note_id,
+                path=f"{note_id}.md",
+                content_hash=note_id,
+                title=note_id,
+                metadata=_meta(
+                    title=note_id,
+                    type="fact",
+                    verification_state=state,
+                ),
+                chunks=[{"index": 0, "section_header": "", "text": content}],
+                vectors=[vector],
+                links=[],
+            )
+
+        default_results = self.store.search_notes_with_context(query, limit=1)
+        archive_results = self.store.search_notes_with_context(
+            query, limit=2, include_legacy=True
+        )
+
+        assert [row["note_id"] for row in default_results] == ["verified-lower"]
+        assert [row["note_id"] for row in archive_results] == [
+            "legacy-top",
+            "verified-lower",
+        ]
+
+    def test_legacy_opt_in_does_not_bypass_other_filters(self):
+        content = (
+            "A long enough note body to avoid the short chunk ranking penalty. " * 2
+        )
+        for note_id, state in (
+            ("current", "verified"),
+            ("legacy-current", "legacy"),
+            ("legacy-invalidated", "invalidated"),
+            ("legacy-expired", "legacy"),
+            ("legacy-deleted", "legacy"),
+            ("legacy-other-scope", "legacy"),
+        ):
+            self.store.upsert_note(
+                note_id=note_id,
+                path=f"{note_id}.md",
+                content_hash=note_id,
+                title=note_id,
+                metadata=_meta(
+                    title=note_id,
+                    type="fact",
+                    scope=(
+                        "repo:other/project"
+                        if note_id == "legacy-other-scope"
+                        else "repo:jomcgi-org/homelab"
+                    ),
+                    verification_state=state,
+                ),
+                chunks=[{"index": 0, "section_header": "", "text": content}],
+                vectors=[[1.0] + [0.0] * 1023],
+                links=[],
+            )
+        expired = self.session.exec(
+            select(Note).where(Note.note_id == "legacy-expired")
+        ).one()
+        deleted = self.session.exec(
+            select(Note).where(Note.note_id == "legacy-deleted")
+        ).one()
+        expired.valid_until = datetime(2026, 9, 1, tzinfo=timezone.utc)
+        deleted.deleted_at = datetime(2026, 9, 1, tzinfo=timezone.utc)
+        self.session.add(expired)
+        self.session.add(deleted)
+        self.session.commit()
+
+        filtered = self.store.search_notes_with_context(
+            [1.0] + [0.0] * 1023,
+            scope_filter="repo:jomcgi-org/homelab",
+            exclude_invalidated=True,
+            include_legacy=True,
+        )
+        validity_unfiltered = self.store.search_notes_with_context(
+            [1.0] + [0.0] * 1023,
+            scope_filter="repo:jomcgi-org/homelab",
+            include_legacy=True,
+        )
+
+        assert {row["note_id"] for row in filtered} == {
+            "current",
+            "legacy-current",
+        }
+        assert {row["note_id"] for row in validity_unfiltered} == {
+            "current",
+            "legacy-current",
+            "legacy-invalidated",
+            "legacy-expired",
+        }
+
     def test_empty_db_returns_empty_list(self):
         results = self.store.search_notes_with_context(query_embedding=[0.0] * 1024)
         assert results == []
@@ -627,7 +800,12 @@ class TestGetNoteById:
             note_id="n1",
             path="folder/note.md",
             title="My Note",
-            metadata=_meta(title="My Note", type="paper", tags=["x"]),
+            metadata=_meta(
+                title="My Note",
+                type="paper",
+                tags=["x"],
+                verification_state="legacy",
+            ),
         )
         got = store.get_note_by_id("n1")
         assert got == {

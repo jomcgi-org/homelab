@@ -21,6 +21,7 @@ go_library(
     visibility = ["//projects/embervm/noded:__subpackages__"],
     deps = [
         "//projects/embervm/noded/fcvm/fcclient",
+        "//projects/embervm/noded/snapshotmeta",
         "//projects/embervm/noded/sparse",
         "//projects/embervm/noded/substrate",
         "//projects/embervm/noded/vsockproto",

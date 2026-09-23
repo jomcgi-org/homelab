@@ -352,7 +352,7 @@ actions:
             # generated chart-version commit. BuildBuddy's runner identity
             # cannot bypass the required `pr-checks` status on its own.
             git remote set-url origin "https://x-access-token:${GHCR_TOKEN}@github.com/jomcgi-org/homelab.git"
-            ./bazel/helm/write-back-versions.sh .chart-version-records
+            ./bazel/helm/write-back-versions.sh .chart-version-records --record-publication
           elif [ "$ON_MAIN" = false ]; then
             # PR and merge-queue branches publish nothing. This build proves
             # the images while --remote_download_minimal leaves layers in CAS.

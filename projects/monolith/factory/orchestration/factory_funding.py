@@ -479,10 +479,10 @@ def settle(task, run, request):
                 or _digest(issue) != request["issue_sha256"]
             ):
                 raise ValueError("funding evidence changed")
-            if controls._now() > datetime.fromisoformat(
-                request["deadline_at"]
-            ) + timedelta(seconds=60):
-                raise ValueError("funding decision expired")
+            # deadline_at bounds admission, not settlement. Queueing and durable
+            # result recovery can outlive it without changing the evidence.
+            # The executor bounds the review turn; the locked checks above and
+            # current accounting below fence this completed decision's authority.
             if decision["action"] != "stop":
                 if (
                     decision["additional_work_turns"] < 1

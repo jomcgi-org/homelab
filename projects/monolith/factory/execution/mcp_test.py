@@ -1893,6 +1893,30 @@ def test_broker_login_start_surfaces_code_and_notifies(monkeypatch):
     assert "ABCD-EFGH" in notified[0][0] and notified[0][1] == "warn"
 
 
+def test_broker_request_uses_shared_verified_transport(monkeypatch):
+    monkeypatch.setenv("EMBER_TOKENBROKER_URL", "https://broker:8443")
+    calls = []
+
+    async def fake_request(method, url, *, timeout):
+        calls.append((method, url, timeout))
+        return httpx.Response(
+            200,
+            json={"state": "granted"},
+            request=httpx.Request(method, url),
+        )
+
+    monkeypatch.setattr(mcp.broker_client, "request", fake_request)
+
+    result = asyncio.run(
+        mcp._broker_request("GET", "/grants/codex-cluster/login/status")
+    )
+
+    assert result == {"state": "granted"}
+    assert calls == [
+        ("GET", "https://broker:8443/grants/codex-cluster/login/status", 30)
+    ]
+
+
 def test_broker_login_status_granted_notifies(monkeypatch):
     monkeypatch.setenv("EMBER_TOKENBROKER_URL", "http://broker")
     notified = []

@@ -154,6 +154,52 @@ def _progress(nodes: list[dict]) -> dict:
     }
 
 
+def _stop_summary(receipt: dict) -> dict:
+    """Truthful cancellation state from durable factory-owned evidence only."""
+    starts = receipt.get("starts") or []
+    start_keys = {start.get("start_key") for start in starts if start.get("start_key")}
+    outstanding = sorted(
+        start.get("start_key")
+        for start in starts
+        if start.get("start_key") and start.get("status") in ("reserved", "uncertain")
+    )
+    confirmed = sorted(
+        {
+            event.get("workflow_id")
+            for event in receipt.get("stop_events") or []
+            if event.get("workflow_id") and event.get("cessation_confirmed") is True
+        }
+    )
+    running = sorted(
+        node.get("node_key")
+        for node in receipt.get("nodes") or []
+        if node.get("node_key") and node.get("state") == "running"
+    )
+    requested = receipt.get("cancellation_requested") is True
+    if not requested:
+        state = "not_requested"
+    elif running:
+        state = "work_still_running"
+    elif not start_keys:
+        state = "no_owned_work"
+    elif outstanding:
+        state = "unknown_or_unreachable"
+    elif start_keys.issubset(confirmed):
+        # Deliberately strict. A cancellation acknowledgement, terminal row or
+        # elapsed lease cannot put a workflow in this set. Only an exact stop
+        # event carrying positive cessation evidence can do that.
+        state = "cessation_confirmed"
+    else:
+        state = "cancellation_requested"
+    return {
+        "state": state,
+        "requested": requested,
+        "running_nodes": running,
+        "outstanding_workflows": outstanding,
+        "cessation_confirmed_workflows": confirmed,
+    }
+
+
 def _task_row(receipt: dict, *, queue_position: int | None = None) -> dict:
     """One task trimmed to what a triage conversation needs.
 
@@ -196,6 +242,7 @@ def _task_row(receipt: dict, *, queue_position: int | None = None) -> dict:
         "queue_position": queue_position,
         "outcome_evidence": _evidence_summary(receipt.get("evidence")),
         "progress": _progress(receipt.get("nodes") or []),
+        "stop": _stop_summary(receipt),
     }
 
 

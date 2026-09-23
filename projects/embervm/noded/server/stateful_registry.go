@@ -120,8 +120,10 @@ type statefulEntry struct {
 	checkpointToken string
 	checkpointTimer *time.Timer
 
-	mu       sync.Mutex // guards inFlight
-	inFlight bool
+	mu                sync.Mutex // guards inFlight and teardownRetryable
+	inFlight          bool
+	teardownRetryable bool
+	teardown          vmTeardown
 }
 
 // statefulRegistry is the daemon's inventory of LIVE stateful microVMs, keyed
@@ -163,6 +165,42 @@ func (r *statefulRegistry) beginStop(id string) (*statefulEntry, bool) {
 	}
 	e.inFlight = true
 	return e, true
+}
+
+// beginDestroy claims teardown ownership while retaining the registry entry.
+// A destroy or failed cleanup remains retryable, while another stop mode keeps
+// its existing serialization guard until that mode's cleanup fails. An unknown
+// id is an idempotent success and returns (nil, true).
+func (r *statefulRegistry) beginDestroy(id string) (*statefulEntry, bool) {
+	r.mu.Lock()
+	e := r.vms[id]
+	r.mu.Unlock()
+	if e == nil {
+		return nil, true
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.inFlight && !e.teardownRetryable {
+		return nil, false
+	}
+	e.inFlight = true
+	e.teardownRetryable = true
+	e.teardown.started.Store(true)
+	return e, true
+}
+
+// allowTeardownRetry converts a failed non-destroy stop into retryable cleanup.
+// Until this transition, the stop owner alone may finish its teardown.
+func (r *statefulRegistry) allowTeardownRetry(id string) {
+	r.mu.Lock()
+	e := r.vms[id]
+	r.mu.Unlock()
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	e.teardownRetryable = true
+	e.mu.Unlock()
 }
 
 // clearInFlight releases the stop-serialization guard set by beginStop without

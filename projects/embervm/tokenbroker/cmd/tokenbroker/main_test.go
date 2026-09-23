@@ -216,6 +216,27 @@ func TestQuotaGrantKeyedObservationRollsUpToProvider(t *testing.T) {
 	}
 }
 
+func TestQuotaGetEnumeratesConfiguredUnobservedQuotaGrants(t *testing.T) {
+	s, _ := quotaTestServer("codex", "claude")
+	s.configs["codex-b"] = grantConfig{Name: "codex-b", ProviderName: "codex-chatgpt"}
+	s.configs["agent-mcp"] = grantConfig{Name: "agent-mcp", ProviderName: "authentik"}
+
+	all := decodeBody(t, requestQuota(t, s, http.MethodGet, "/quota", ""))
+	if all["grants_complete"] != true {
+		t.Fatalf("grant inventory is not marked complete: %v", all)
+	}
+	grants := all["grants"].(map[string]any)
+	if len(grants) != 2 {
+		t.Fatalf("expected both Codex grants and no service-account grant, got %v", grants)
+	}
+	for _, name := range []string{"codex-cluster", "codex-b"} {
+		view := grants[name].(map[string]any)
+		if view["grant"] != name || view["provider"] != "codex" || view["observed"] != false {
+			t.Fatalf("unexpected unobserved view for %s: %v", name, view)
+		}
+	}
+}
+
 func requestQuota(t *testing.T, s *server, method, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
@@ -237,6 +258,19 @@ func TestQuotaPostThenGetRoundTrip(t *testing.T) {
 	}
 	decoded := decodeBody(t, got)
 	if decoded["provider"] != "codex" || decoded["observed"] != true || decoded["status"] != "allowed" || decoded["exhausted"] != false {
+		t.Fatalf("view = %#v", decoded)
+	}
+}
+
+func TestClaudeQuotaOverageStatusRoundTripsWithoutExhaustion(t *testing.T) {
+	s, _ := quotaTestServer("codex", "claude")
+	body := `{"observed_at":"2026-09-05T18:10:00Z","status":"allowed","reached_type":"","overage_status":"rejected","windows":[{"name":"5h","used_percent":24,"window_minutes":300}]}`
+	posted := requestQuota(t, s, http.MethodPost, "/quota/claude", body)
+	if posted.Code != http.StatusNoContent {
+		t.Fatalf("POST = %d %s", posted.Code, posted.Body.String())
+	}
+	decoded := decodeBody(t, requestQuota(t, s, http.MethodGet, "/quota/claude", ""))
+	if decoded["status"] != "allowed" || decoded["overage_status"] != "rejected" || decoded["reached_type"] != "" || decoded["exhausted"] != false {
 		t.Fatalf("view = %#v", decoded)
 	}
 }

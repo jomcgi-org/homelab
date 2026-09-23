@@ -175,19 +175,25 @@ defmodule Embervm.LogFormatterTest do
 
   test "preserves every retention manifest field in structured JSON" do
     metadata = [
+      ref: "ref-1",
       node_id: "node-1",
       path: "/var/lib/embervm/scratch/bases/ref-1",
       size_bytes: 42,
       workload: "claude-runtime",
       vendor: "intel",
       age_seconds: 72_000,
-      reason_unreferenced: "known workload superseded: not in current, CP snapshot, or active base_refs",
+      reason_unreferenced:
+        "known workload superseded: not in current, CP snapshot, or active base_refs",
       base_generation: 17
     ]
 
     line =
       Embervm.LogFormatter.format(
-        %{level: :info, msg: {:string, "embervm base retention candidate"}, meta: Map.new(metadata)},
+        %{
+          level: :info,
+          msg: {:string, "embervm base retention candidate"},
+          meta: Map.new(metadata)
+        },
         %{}
       )
       |> IO.iodata_to_binary()
@@ -197,6 +203,51 @@ defmodule Embervm.LogFormatterTest do
     for {key, value} <- metadata do
       assert Map.get(decoded, Atom.to_string(key)) == value
     end
+  end
+
+  test "preserves local eviction proof and decision fields in structured JSON" do
+    metadata = %{
+      workload: "claude-runtime",
+      ref: "ref-1",
+      node_id: "node-1/pod-a",
+      store_key: "base/intel/claude-runtime/ref-1/meta.json",
+      owner_proof: "exact_remote_marker_head_2xx",
+      decision: "deleted_local_only",
+      retry_outcome: "success",
+      reason: "verified"
+    }
+
+    decoded =
+      Embervm.LogFormatter.format(
+        %{
+          level: :info,
+          msg: {:string, "embervm base builder: local base eviction complete"},
+          meta: metadata
+        },
+        %{}
+      )
+      |> IO.iodata_to_binary()
+      |> :json.decode()
+
+    for {key, value} <- metadata do
+      assert decoded[Atom.to_string(key)] == value
+    end
+  end
+
+  test "preserves held-current-base accounting in structured JSON" do
+    decoded =
+      Embervm.LogFormatter.format(
+        %{
+          level: :warning,
+          msg: {:string, "embervm base retention summary"},
+          meta: %{bases_kept_current_unverified: 2}
+        },
+        %{}
+      )
+      |> IO.iodata_to_binary()
+      |> :json.decode()
+
+    assert decoded["bases_kept_current_unverified"] == 2
   end
 
   test "preserves StatefulSweeper pressure transition fields in structured JSON" do
@@ -292,7 +343,11 @@ defmodule Embervm.LogFormatterTest do
 
     line =
       Embervm.LogFormatter.format(
-        %{level: :warning, msg: {:string, "embervm store probe: store fetch failed"}, meta: metadata},
+        %{
+          level: :warning,
+          msg: {:string, "embervm store probe: store fetch failed"},
+          meta: metadata
+        },
         %{}
       )
       |> IO.iodata_to_binary()

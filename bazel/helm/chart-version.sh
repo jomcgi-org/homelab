@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # Compute the next semver version for a Helm chart based on conventional commits
-# scoped to the chart's Bazel dependency closure.
+# selected by the chart's Bazel dependency closure. Release numbers use the
+# same repository-wide history as the digest-authority fallback.
 #
 # Usage: chart-version.sh <chart-dir> [<bazel-package-label>]
 # Output: Next semver version to stdout (e.g., "0.9.0")
 #         Outputs current version if no bump needed.
 #
-# Requires: git, bazel (optional — falls back to chart-dir-only scoping)
+# Requires: git, bazel when a Bazel package label is supplied
 set -o errexit -o nounset -o pipefail
 
 CHART_DIR="${1:?Usage: chart-version.sh <chart-dir>}"
@@ -64,7 +65,7 @@ if [[ -z "$VERSION_COMMIT" ]]; then
 	exit 0
 fi
 
-# --- Determine dependency directories ---
+# --- Determine release inputs ---
 #
 # CHART_VERSION_ALL_PATHS ignores the dependency closure and counts commits
 # across the WHOLE repo. It exists for the caller that already knows the chart's
@@ -74,40 +75,176 @@ fi
 # change gets reported as "no bump needed" (see the digest-authority branch in
 # push.sh.tpl). Counting repo-wide overcounts, which is harmless, rather than
 # undercounting, which silently skips a deploy.
-DEP_DIRS=""
+INPUT_PATHS=()
+RENAME_GUARD_DIRS=()
+
+append_unique() {
+	local value="$1" existing
+	shift
+	for existing in "$@"; do
+		[[ "$existing" == "$value" ]] && return 1
+	done
+	return 0
+}
+
+add_input_path() {
+	local path="$1"
+	if append_unique "$path" "${INPUT_PATHS[@]}"; then
+		INPUT_PATHS+=("$path")
+	fi
+}
+
+add_guard_dir() {
+	local dir="$1"
+	[[ -z "$dir" ]] && dir="."
+	if append_unique "$dir" "${RENAME_GUARD_DIRS[@]}"; then
+		RENAME_GUARD_DIRS+=("$dir")
+	fi
+}
+
+use_all_paths() {
+	INPUT_PATHS=(".")
+	RENAME_GUARD_DIRS=()
+}
+
 if [[ -n "${CHART_VERSION_ALL_PATHS:-}" ]]; then
 	echo >&2 "INFO: CHART_VERSION_ALL_PATHS set; counting commits repo-wide instead of over the dependency closure."
-	DEP_DIRS="."
+	use_all_paths
 elif [[ -n "$BAZEL_PACKAGE" ]]; then
-	# Query Bazel for transitive source deps. --keep_going is load-bearing: a
-	# dependency whose external closure fails to preload (e.g. an apko image
-	# layer pulling wolfi packages) otherwise fails the WHOLE query, and we
-	# silently under-scope to the chart dir below, missing image-content changes
-	# that must bump the chart. With --keep_going the query still emits the
-	# main-repo packages it could load, including the guest package where content
-	# like recipes lives. See oci_image_info(image=...), which widens this closure
-	# on purpose so a change layered into a pinned image bumps the dependent chart.
-	DEP_DIRS=$(bazel query "deps(${BAZEL_PACKAGE})" --output=package --keep_going 2>/dev/null |
-		grep -v '^@' |
-		sed 's|^//||' ||
-		true)
+	# The package closure is deliberately converted to concrete source files.
+	# Whole Bazel package directories also contain design notes, tests and STPA
+	# fragments that do not affect a chart or a pinned image. Source files in the
+	# chart.package closure do: this includes chart files, image inputs, shared
+	# sources, apko configuration and the BUILD and .bzl files that define them.
+	QUERY_ROOT="deps(${BAZEL_PACKAGE})"
+
+	# Deployment values are inputs to the rendered release but are not inputs to
+	# chart.package. Add the repository's explicit render targets for the nearest
+	# project deploy directories. Application and kustomization files are also
+	# release inputs even though the render action does not read them.
+	PROJECT_ROOT="$CHART_DIR"
+	while [[ "$PROJECT_ROOT" != "." ]] && [[ "$PROJECT_ROOT" != "/" ]] &&
+		[[ ! -d "$PROJECT_ROOT/deploy" ]] && [[ ! -d "$PROJECT_ROOT/dev/deploy" ]]; do
+		PROJECT_ROOT=$(dirname "$PROJECT_ROOT")
+	done
+	for deploy_dir in "$PROJECT_ROOT/deploy" "$PROJECT_ROOT/dev/deploy"; do
+		[[ -d "$deploy_dir" ]] || continue
+		deploy_build=""
+		for candidate in "$deploy_dir/BUILD" "$deploy_dir/BUILD.bazel"; do
+			[[ -f "$candidate" ]] && deploy_build="$candidate" && break
+		done
+		if [[ -n "$deploy_build" ]]; then
+			deploy_package="//${deploy_dir}:"
+			for render_target in render_manifests render_manifests_gke; do
+				if grep -q "name = \"${render_target}\"" "$deploy_build"; then
+					QUERY_ROOT+=" union deps(${deploy_package}${render_target})"
+				fi
+			done
+		fi
+		for deploy_input in "$deploy_dir/application.yaml" "$deploy_dir/kustomization.yaml"; do
+			if git ls-files --error-unmatch -- "$deploy_input" >/dev/null 2>&1; then
+				add_input_path "$deploy_input"
+			fi
+		done
+	done
+
+	QUERY_EXPR="kind(\"source file\", ${QUERY_ROOT}) union buildfiles(${QUERY_ROOT})"
+	QUERY_ERROR=$(mktemp)
+	set +e
+	QUERY_OUTPUT=$(bazel query "$QUERY_EXPR" --output=label --keep_going 2>"$QUERY_ERROR")
+	QUERY_STATUS=$?
+	set -e
+	if [[ $QUERY_STATUS -ne 0 ]]; then
+		echo >&2 "WARNING: Bazel release-input query failed for ${BAZEL_PACKAGE}; counting commits repo-wide so partial output cannot hide a release input."
+		head -5 "$QUERY_ERROR" >&2 || true
+		use_all_paths
+	else
+		UNSUPPORTED_QUERY_OUTPUT="false"
+		QUERY_PATH_COUNT=0
+		while IFS= read -r label; do
+			[[ -z "$label" ]] && continue
+			# External repository sources are immutable inputs selected by main-repo
+			# MODULE and BUILD files. Only main-repo paths can appear in this Git walk.
+			[[ "$label" == @* ]] && continue
+			if [[ "$label" != //*:* ]]; then
+				UNSUPPORTED_QUERY_OUTPUT="true"
+				break
+			fi
+			label_body="${label#//}"
+			package="${label_body%%:*}"
+			name="${label_body#*:}"
+			if [[ -z "$name" ]]; then
+				UNSUPPORTED_QUERY_OUTPUT="true"
+				break
+			fi
+			if [[ -n "$package" ]]; then
+				path="${package}/${name}"
+			else
+				path="$name"
+			fi
+			if ! git ls-files --error-unmatch -- "$path" >/dev/null 2>&1; then
+				UNSUPPORTED_QUERY_OUTPUT="true"
+				break
+			fi
+			add_input_path "$path"
+			[[ -n "$package" ]] && add_guard_dir "$package"
+			QUERY_PATH_COUNT=$((QUERY_PATH_COUNT + 1))
+		done <<<"$QUERY_OUTPUT"
+
+		if [[ "$UNSUPPORTED_QUERY_OUTPUT" == "true" ]] || [[ $QUERY_PATH_COUNT -eq 0 ]]; then
+			echo >&2 "WARNING: Bazel release-input query returned an empty or unsupported closure for ${BAZEL_PACKAGE}; counting commits repo-wide."
+			use_all_paths
+		else
+			# Bazel does not model every repository-level configuration file as a
+			# source dependency. These files can change how every selected target is
+			# analysed or built, so keep them as explicit release inputs.
+			for build_config in MODULE.bazel MODULE.bazel.lock .bazelrc bazel/remote.bazelrc; do
+				if git ls-files --error-unmatch -- "$build_config" >/dev/null 2>&1; then
+					add_input_path "$build_config"
+				fi
+			done
+		fi
+	fi
+	rm -f "$QUERY_ERROR"
+else
+	# Package-less callers retain the original chart-only behaviour. Production
+	# always supplies chart.package, while this mode is useful for standalone use.
+	add_input_path "$CHART_DIR"
 fi
 
-if [[ -z "$DEP_DIRS" ]]; then
-	# Fallback: chart directory only. This is a DEGRADED mode: a change to a
-	# dependency outside the chart dir (application code, a pinned image's
-	# content) will NOT bump the chart. Logged as a warning so a regression to
-	# dir-only scoping is visible in CI instead of surfacing later as a missing
-	# bump that needs a manual chart version fix.
-	echo >&2 "WARNING: Bazel dependency query returned nothing for ${BAZEL_PACKAGE}; falling back to chart-dir-only scoping (${CHART_DIR}). Dependency-scoped version bumping is DISABLED for this run."
-	DEP_DIRS="$CHART_DIR"
+if [[ ${#INPUT_PATHS[@]} -eq 0 ]]; then
+	echo >&2 "ERROR: no release input paths were selected"
+	exit 1
 fi
 
-# Convert package paths to -- path arguments for git log
-GIT_PATHS=()
-while IFS= read -r dir; do
-	[[ -n "$dir" ]] && GIT_PATHS+=("$dir")
-done <<<"$DEP_DIRS"
+# Resolve commits in two stages. --full-history prevents Git's path-history
+# simplification from hiding a relevant merge. Exact current inputs handle the
+# normal case. A conservative D/R guard over their Bazel package directories
+# catches a globbed input that was deleted or renamed out of the current
+# closure. It may over-publish for a deleted non-input, but cannot silently skip
+# content that disappeared from the built artifact.
+if ! INPUT_COMMITS=$(git log --full-history --format=%H "${VERSION_COMMIT}..HEAD" -- "${INPUT_PATHS[@]}"); then
+	echo >&2 "ERROR: failed to walk release-input history"
+	exit 1
+fi
+
+DR_COMMITS=""
+if [[ ${#RENAME_GUARD_DIRS[@]} -gt 0 ]]; then
+	if ! DR_HISTORY=$(git log --full-history --format='commit %H' --name-status --find-renames \
+		"${VERSION_COMMIT}..HEAD" -- "${RENAME_GUARD_DIRS[@]}"); then
+		echo >&2 "ERROR: failed to inspect release-input deletions and renames"
+		exit 1
+	fi
+	DR_COMMITS=$(awk '
+		$1 == "commit" { commit = $2; next }
+		$1 ~ /^D/ || $1 ~ /^R/ { print commit }
+	' <<<"$DR_HISTORY" | sort -u)
+fi
+
+if ! ORDERED_COMMITS=$(git rev-list --reverse "${VERSION_COMMIT}..HEAD"); then
+	echo >&2 "ERROR: failed to order release-input commits"
+	exit 1
+fi
 
 # --- Find conventional commits since last version ---
 #
@@ -132,11 +269,16 @@ COMMIT_COUNT=0
 MINOR_BOUNDARY=-1 # index of the first commit to force minor-or-higher
 MAJOR_BOUNDARY=-1 # index of the first commit to force major
 
-while IFS= read -r subject; do
-	[[ -z "$subject" ]] && continue
+while IFS= read -r commit; do
+	[[ -z "$commit" ]] && continue
+	if ! grep -Fqx "$commit" <<<"$INPUT_COMMITS" && ! grep -Fqx "$commit" <<<"$DR_COMMITS"; then
+		continue
+	fi
+	AUTHOR=$(git show -s --format=%an "$commit")
+	SUBJECT=$(git show -s --format=%s "$commit")
 
 	# Skip automated commits
-	case "$subject" in
+	case "$AUTHOR|||$SUBJECT" in
 	*"ci-format-bot"* | *"chart-version-bot"*) continue ;;
 	esac
 
@@ -147,7 +289,7 @@ while IFS= read -r subject; do
 	# Pre-1.0: breaking changes bump minor (semver allows breaking changes in 0.x)
 	# Post-1.0: breaking changes bump major
 	BREAKING_RE='^[a-z]+(\([^)]*\))?!:'
-	if [[ "$subject" =~ $BREAKING_RE ]]; then
+	if [[ "$SUBJECT" =~ $BREAKING_RE ]]; then
 		IFS='.' read -r CUR_MAJOR _ _ <<<"$CURRENT_VERSION"
 		if [[ "$CUR_MAJOR" -ge 1 ]]; then
 			[[ "$MAJOR_BOUNDARY" -lt 0 ]] && MAJOR_BOUNDARY="$INDEX"
@@ -161,7 +303,7 @@ while IFS= read -r subject; do
 	fi
 
 	# Check commit type
-	TYPE=$(echo "$subject" | sed -E -n 's/^([a-z]+)(\([^)]*\))?:.*/\1/p')
+	TYPE=$(echo "$SUBJECT" | sed -E -n 's/^([a-z]+)(\([^)]*\))?:.*/\1/p')
 	case "$TYPE" in
 	feat)
 		[[ "$MINOR_BOUNDARY" -lt 0 ]] && MINOR_BOUNDARY="$INDEX"
@@ -171,15 +313,23 @@ while IFS= read -r subject; do
 		[[ "$BUMP" == "none" ]] && BUMP="patch"
 		;;
 	esac
-done < <(git log --reverse --format='%an|||%s' "${VERSION_COMMIT}..HEAD" -- "${GIT_PATHS[@]}" 2>/dev/null |
-	grep -v '^\(ci-format-bot\|chart-version-bot\)|||' |
-	sed 's/^[^|]*|||//')
+done <<<"$ORDERED_COMMITS"
 
 # --- Apply bump ---
 if [[ "$BUMP" == "none" ]]; then
 	echo >&2 "INFO: No conventional commits found since ${CURRENT_VERSION}, no bump needed"
 	echo "$CURRENT_VERSION"
 	exit 0
+fi
+
+# The closure decides whether a release is needed, not its number. A previous
+# publish can have used the digest-authority ALL_PATHS fallback and included a
+# feature outside this closure. A later scoped fix must not fall back below that
+# minor boundary (for example 0.537.1 followed by 0.536.40). Allocate both paths
+# from the same history, while unchanged closures still return above. This
+# second invocation skips the Bazel query and cannot recurse again.
+if [[ -z "${CHART_VERSION_ALL_PATHS:-}" ]]; then
+	exec env CHART_VERSION_ALL_PATHS=1 bash "$0" "$@"
 fi
 
 # The serial is the number of qualifying commits AFTER the boundary. The last

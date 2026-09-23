@@ -33,6 +33,7 @@ from factory.orchestration.factory_controls import (
     _read_session,
     auto_merge_enabled,
     request_landing_recovery,
+    finish_task,
 )
 from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt
 
@@ -271,6 +272,8 @@ LANDING_ACTIONS = (
     "landing_recovery_skipped",
     "merge_arm_refused",
     "merged",
+    "rollout_verified",
+    "rollout_observed",
     "issue_closed",
     "repository_delivery_complete",
 )
@@ -313,7 +316,7 @@ def _delivery_prs(db, task_ids: list[str]) -> dict[str, tuple[int, str | None]]:
         select(FactoryAudit)
         .where(
             FactoryAudit.task_id.in_(task_ids),
-            FactoryAudit.action == "finish_task",
+            FactoryAudit.action.in_(("finish_task", "delivery_ready")),
         )
         .order_by(FactoryAudit.id.desc())
     ).all()
@@ -356,7 +359,7 @@ def _deliveries(policy: dict, *, include_refused: bool = False) -> list[dict]:
             select(FactoryReceipt)
             .where(
                 FactoryReceipt.repo == repo,
-                FactoryReceipt.state == "succeeded",
+                FactoryReceipt.state.in_(("succeeded", "landing")),
                 FactoryReceipt.task_id.is_not(None),
                 FactoryReceipt.task_id.not_in(terminal),
                 # A receipt written before classes existed reads as delivery.
@@ -383,7 +386,7 @@ def _deliveries(policy: dict, *, include_refused: bool = False) -> list[dict]:
         touched = bool(
             armed or ejected or audits["merged"] or audits["merge_arm_refused"]
         )
-        if not touched and _aware(row.updated_at) < cutoff:
+        if row.state != "landing" and not touched and _aware(row.updated_at) < cutoff:
             continue
         number, head = delivery
         result.append(
@@ -409,6 +412,13 @@ def _deliveries(policy: dict, *, include_refused: bool = False) -> list[dict]:
                 "armed": len(armed),
                 "ejected": len(ejected),
                 "merged": bool(audits["merged"]),
+                "merge_commit_sha": audits["merged"][-1].get("merge_commit_sha")
+                if audits["merged"]
+                else None,
+                "rollout_verified": bool(audits["rollout_verified"]),
+                "rollout_observation": audits["rollout_observed"][-1]
+                if audits["rollout_observed"]
+                else None,
                 "closed": bool(
                     audits["issue_closed"] or audits["repository_delivery_complete"]
                 ),
@@ -523,8 +533,15 @@ def _arm(repo: str, item: dict) -> None:
         if pr.get("merged"):
             # Someone merged it by hand between approval and this tick. The
             # rest of the landing still owes the issue its close.
-            _record(item["task_id"], "merged", pr_number=number, armed_by_factory=False)
+            _record(
+                item["task_id"],
+                "merged",
+                pr_number=number,
+                armed_by_factory=False,
+                merge_commit_sha=pr.get("merge_commit_sha"),
+            )
             item["merged"] = True
+            item["merge_commit_sha"] = pr.get("merge_commit_sha")
             return
         if pr.get("state") != "open" or pr.get("draft"):
             _refuse(item, "pull request is not open and ready")
@@ -675,13 +692,12 @@ def _observe(repo: str, item: dict) -> None:
             pr_number=number,
             merge_commit_sha=pr.get("merge_commit_sha"),
             armed_by_factory=True,
-            # The hook phase 4 still owes. Confirming that the chart version
-            # write-back landed and that the new image is live is a verify
-            # node, not a field, and this is where its verdict will be read
-            # from once that node exists (#6002).
+            # Merge is not rollout proof. A separate rollout_verified audit
+            # records publication, actual revisions and running workloads.
             rollout_verified=None,
         )
         item["merged"] = True
+        item["merge_commit_sha"] = pr.get("merge_commit_sha")
         return
     if pr.get("state") == "closed":
         _refuse(item, "pull request closed without merging")
@@ -726,10 +742,67 @@ def _observe(repo: str, item: dict) -> None:
     _recover_delivery(item, head, "merge_queue", reason="queue_ejection")
 
 
+def _verify_rollout(repo: str, item: dict) -> bool:
+    """One bounded observation per minute; unknown evidence keeps landing open."""
+    from factory.orchestration import factory_rollout
+
+    if item.get("rollout_verified"):
+        return True
+    previous = item.get("rollout_observation") or {}
+    if previous.get("observed_at"):
+        observed = datetime.fromisoformat(previous["observed_at"])
+        if (_now() - _aware(observed)).total_seconds() < 60:
+            return False
+    merge_sha = item.get("merge_commit_sha")
+    if not merge_sha:
+        try:
+            pr = github_get(repo, f"pulls/{item['pr_number']}")
+            if pr.get("merged"):
+                merge_sha = pr.get("merge_commit_sha")
+        except (httpx.HTTPError, ValueError) as exc:
+            _error(item["task_id"], "rollout_identity", exc)
+            return False
+    result = factory_rollout.verify(repo, merge_sha)
+    if result["verified"]:
+        _record(
+            item["task_id"],
+            "rollout_verified",
+            pr_number=item["pr_number"],
+            approved_head_sha=item["approved_head_sha"],
+            **result,
+        )
+        item["rollout_verified"] = True
+        return True
+    detail = {
+        **result,
+        "observed_at": _now().isoformat(),
+        "pr_number": item["pr_number"],
+    }
+    _append(item["task_id"], "rollout_observed", **detail)
+    item["rollout_observation"] = detail
+    return False
+
+
 def _close_issue(repo: str, item: dict) -> None:
     issue, number = item["issue_number"], item["pr_number"]
     from factory.orchestration.factory_gates import live_checks
 
+    if not _verify_rollout(repo, item):
+        return
+    with _read_session() as db:
+        ready = db.exec(
+            select(FactoryAudit)
+            .where(
+                FactoryAudit.task_id == item["task_id"],
+                FactoryAudit.action == "delivery_ready",
+            )
+            .order_by(FactoryAudit.id.desc())
+        ).first()
+        evidence = json.loads(ready.detail_json).get("evidence") if ready else None
+    if ready is not None:
+        result = finish_task(item["task_id"], "succeeded", ACTOR, evidence=evidence)
+        if not result["ok"] or result.get("state", "succeeded") != "succeeded":
+            return
     if live_checks(item):
         _record(
             item["task_id"],
@@ -750,8 +823,8 @@ def _close_issue(repo: str, item: dict) -> None:
                 f"issues/{issue}/comments",
                 {
                     "body": (
-                        f"Closed by the factory against the observed merge of "
-                        f"pull request #{number}."
+                        f"Closed by the factory after verifying publication and "
+                        f"the managed live rollout of pull request #{number}."
                     )
                 },
             )

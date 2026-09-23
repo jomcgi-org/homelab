@@ -1,6 +1,7 @@
 defmodule Embervm.RestoreCapabilityTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
+  alias Embervm.Application, as: EmbervmApplication
   alias Embervm.KeyService.Envelope
   alias Embervm.RestoreCapability
 
@@ -28,6 +29,25 @@ defmodule Embervm.RestoreCapabilityTest do
   end
 
   setup do
+    restore_key_env = System.get_env("EMBERVM_RESTORE_CAPABILITY_KEY")
+    restore_key_app = Application.get_env(:embervm, :restore_capability_key, :not_set)
+    bearer_app = Application.get_env(:embervm, :noded_bearer_token, :not_set)
+
+    System.delete_env("EMBERVM_RESTORE_CAPABILITY_KEY")
+    Application.delete_env(:embervm, :restore_capability_key)
+    Application.delete_env(:embervm, :noded_bearer_token)
+
+    on_exit(fn ->
+      if restore_key_env do
+        System.put_env("EMBERVM_RESTORE_CAPABILITY_KEY", restore_key_env)
+      else
+        System.delete_env("EMBERVM_RESTORE_CAPABILITY_KEY")
+      end
+
+      restore_app_env(:restore_capability_key, restore_key_app)
+      restore_app_env(:noded_bearer_token, bearer_app)
+    end)
+
     {:ok, s3} = Agent.start_link(fn -> %{calls: [], reply: {:error, :not_found}} end)
     {:ok, keys} = Agent.start_link(fn -> %{epoch: 0, unwrap: {:ok, :binary.copy(<<7>>, 32)}} end)
 
@@ -59,6 +79,21 @@ defmodule Embervm.RestoreCapabilityTest do
     ]
 
     %{s3: s3, keys: keys, envelope: envelope, req: req, opts: opts}
+  end
+
+  test "boot wiring treats an absent or empty dedicated key as unset" do
+    Application.put_env(:embervm, :restore_capability_key, "stale")
+    EmbervmApplication.configure_restore_capability_key()
+    assert Application.fetch_env(:embervm, :restore_capability_key) == :error
+
+    System.put_env("EMBERVM_RESTORE_CAPABILITY_KEY", "   ")
+    Application.put_env(:embervm, :restore_capability_key, "stale")
+    EmbervmApplication.configure_restore_capability_key()
+    assert Application.fetch_env(:embervm, :restore_capability_key) == :error
+
+    System.put_env("EMBERVM_RESTORE_CAPABILITY_KEY", " dedicated-key ")
+    EmbervmApplication.configure_restore_capability_key()
+    assert Application.fetch_env!(:embervm, :restore_capability_key) == "dedicated-key"
   end
 
   test "mint reproduces noded's golden vector byte for byte" do
@@ -137,6 +172,59 @@ defmodule Embervm.RestoreCapabilityTest do
              "kind" => "session",
              "generation" => 7
            }
+  end
+
+  test "minting prefers the dedicated key, then falls back to the legacy bearer", %{
+    s3: s3,
+    envelope: envelope,
+    req: req,
+    opts: opts
+  } do
+    meta = :json.encode(%{envelope: Base.encode64(envelope)}) |> IO.iodata_to_binary()
+    Agent.update(s3, &Map.put(&1, :reply, {:ok, meta}))
+    opts = Keyword.delete(opts, :mac_key)
+    scope = capability_scope()
+    data_key = :binary.copy(<<7>>, 32)
+
+    Application.put_env(:embervm, :restore_capability_key, "dedicated-key")
+    Application.put_env(:embervm, :noded_bearer_token, "legacy-bearer")
+
+    assert {:ok, %{capability: dedicated_capability}} =
+             RestoreCapability.stamp(req, brick(), context(), opts)
+
+    assert dedicated_capability ==
+             RestoreCapability.mint("dedicated-key", data_key, 301_000, scope)
+
+    Application.delete_env(:embervm, :restore_capability_key)
+
+    assert {:ok, %{capability: legacy_capability}} =
+             RestoreCapability.stamp(req, brick(), context(), opts)
+
+    assert legacy_capability ==
+             RestoreCapability.mint("legacy-bearer", data_key, 301_000, scope)
+  end
+
+  test "an explicit mac_key remains authoritative over both configured keys", %{
+    s3: s3,
+    envelope: envelope,
+    req: req,
+    opts: opts
+  } do
+    meta = :json.encode(%{envelope: Base.encode64(envelope)}) |> IO.iodata_to_binary()
+    Agent.update(s3, &Map.put(&1, :reply, {:ok, meta}))
+    Application.put_env(:embervm, :restore_capability_key, "dedicated-key")
+    Application.put_env(:embervm, :noded_bearer_token, "legacy-bearer")
+
+    assert {:ok, %{capability: capability}} =
+             RestoreCapability.stamp(req, brick(), context(), opts)
+
+    assert capability ==
+             RestoreCapability.mint(
+               "shared-bearer",
+               :binary.copy(<<7>>, 32),
+               301_000,
+               capability_scope()
+             )
   end
 
   test "below-floor envelopes are refused", %{
@@ -220,13 +308,52 @@ defmodule Embervm.RestoreCapabilityTest do
     assert Agent.get(keys, & &1.epoch) == 1
   end
 
-  test "an empty bearer refuses capability minting", %{req: req, opts: opts} do
+  test "an explicit unusable mac_key refuses capability minting", %{req: req, opts: opts} do
+    Application.put_env(:embervm, :restore_capability_key, "dedicated-key")
+    Application.put_env(:embervm, :noded_bearer_token, "legacy-bearer")
+
+    for explicit_key <- ["", nil] do
+      assert {:error, :no_capability_key} =
+               RestoreCapability.stamp(
+                 req,
+                 %{node_id: "node-a", pod_uid: "uid-a"},
+                 %{principal: "acct:alice", lineage: "lineage-42", generation: 7},
+                 Keyword.put(opts, :mac_key, explicit_key)
+               )
+    end
+  end
+
+  test "minting fails closed when neither configured key is usable", %{req: req, opts: opts} do
+    Application.put_env(:embervm, :restore_capability_key, "")
+    Application.put_env(:embervm, :noded_bearer_token, "")
+
     assert {:error, :no_capability_key} =
              RestoreCapability.stamp(
                req,
-               %{node_id: "node-a", pod_uid: "uid-a"},
-               %{principal: "acct:alice", lineage: "lineage-42", generation: 7},
-               Keyword.put(opts, :mac_key, "")
+               brick(),
+               context(),
+               Keyword.delete(opts, :mac_key)
              )
   end
+
+  defp brick, do: %{node_id: "node-a", pod_uid: "uid-a"}
+
+  defp context,
+    do: %{principal: "acct:alice", lineage: "lineage-42", generation: 7}
+
+  defp capability_scope do
+    %{
+      principal: "acct:alice",
+      lineage: "lineage-42",
+      node: "node-a",
+      pod_uid: "uid-a",
+      workload: "sandbox-session",
+      ref: "sess-42",
+      kind: "session",
+      generation: 7
+    }
+  end
+
+  defp restore_app_env(key, :not_set), do: Application.delete_env(:embervm, key)
+  defp restore_app_env(key, value), do: Application.put_env(:embervm, key, value)
 end

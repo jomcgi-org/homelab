@@ -13,7 +13,7 @@ import (
 const restoreCapabilityLabel = "embervm-restore-cap-v1"
 
 var (
-	ErrNoCapabilityKey              = errors.New("restore capability bearer key is not configured")
+	ErrNoCapabilityKey              = errors.New("restore capability MAC key is not configured")
 	ErrMissingCapability            = errors.New("restore capability is missing")
 	ErrMalformedCapability          = errors.New("restore capability has malformed framing")
 	ErrBadCapabilityVersion         = errors.New("restore capability has an unsupported version")
@@ -29,6 +29,36 @@ var (
 	ErrCapabilityLineageMismatch    = errors.New("restore capability lineage mismatch")
 	ErrCapabilityKeyLength          = errors.New("restore capability data key length is not 32 bytes")
 )
+
+// parseAndVerifyCapabilityKeys accepts the dedicated restore key first, then
+// the legacy transport bearer during the phase 2a migration. Remove legacyKey
+// in the first chart release after #5706's phase 2c checklist has enabled and
+// verified the dedicated key fleet-wide. That bounds compatibility to one
+// release without changing the v1 framing or accepting an unauthenticated
+// embedded data key.
+func parseAndVerifyCapabilityKeys(raw, dedicatedKey, legacyKey []byte, now time.Time, want capabilityScope) ([]byte, error) {
+	var firstErr error
+	if len(dedicatedKey) > 0 {
+		key, err := parseAndVerifyCapability(raw, dedicatedKey, now, want)
+		if err == nil {
+			return key, nil
+		}
+		firstErr = err
+	}
+	if len(legacyKey) > 0 {
+		key, err := parseAndVerifyCapability(raw, legacyKey, now, want)
+		if err == nil {
+			return key, nil
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	if firstErr == nil {
+		return nil, ErrNoCapabilityKey
+	}
+	return nil, firstErr
+}
 
 // capabilityScope is the v1 MAC-authenticated tuple. Field order is part of the
 // cross-language golden vector because tuple_json is carried verbatim in the

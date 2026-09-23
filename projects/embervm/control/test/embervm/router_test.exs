@@ -159,6 +159,9 @@ defmodule Embervm.RouterTest do
     def create(_srv, "wl-lineage-restore-in-flight", _principal, _restore_lineage, _opts),
       do: {:error, {:denied, :lineage_restore_in_flight}}
 
+    def create(_srv, "wl-lineage-relinquishment-failed", _principal, _restore_lineage, _opts),
+      do: {:error, {:denied, {:lineage_relinquishment_failed, {:error, :dial_down}}}}
+
     # #4919: the replay/conflict/invalid-key response shapes, plus wl-idem-echo,
     # which answers successfully ONLY when the router threaded the exact
     # Idempotency-Key header value through, proving the hop.
@@ -239,6 +242,8 @@ defmodule Embervm.RouterTest do
     def invoke(_srv, _id, _req), do: {:error, :not_found}
 
 
+    def destroy_parked(_srv, "s-parked", %{"session_id" => "s-parked"}), do: {:ok, :destroyed}
+    def destroy_parked(_srv, _id, _expected), do: {:error, :stop_precondition_failed}
     def stop_identity(_srv, _id), do: nil
     def destroy(_srv, "s-live", %{"session_id" => "s-live", "invoke_started_at" => nil}), do: {:ok, :destroying}
     def destroy(_srv, _id, _expected), do: {:error, :stop_precondition_failed}
@@ -1756,6 +1761,24 @@ defmodule Embervm.RouterTest do
     assert body["retryable"] == true
   end
 
+  test "restore lineage relinquishment failure is 503, retryable, and hides transport detail" do
+    with_session_fakes()
+
+    resp =
+      req(
+        :post,
+        "/v1/workloads/wl-lineage-relinquishment-failed/sessions",
+        auth("good"),
+        ~s({"restore_lineage": "lineage-x"})
+      )
+
+    assert resp.status == 503
+    body = json(resp.body)
+    assert body["reason"] == "lineage_relinquishment_failed"
+    assert body["retryable"] == true
+    refute resp.body =~ "dial_down"
+  end
+
   test "invoke is gated on the SESSION token: a management token alone is rejected 403" do
     with_session_fakes()
 
@@ -1931,12 +1954,20 @@ defmodule Embervm.RouterTest do
     successful_invoke =
       spans
       |> TestSpanExporter.named("embervm.session.invoke")
-      |> Enum.find(&(TestSpanExporter.attributes(&1)["ember.session_id"] == "s-live"))
+      |> Enum.find(fn span ->
+        attributes = TestSpanExporter.attributes(span)
+        attributes["ember.session_id"] == "s-live" and
+          not Map.has_key?(attributes, "ember.reason")
+      end)
 
     successful_wait =
       spans
       |> TestSpanExporter.named("embervm.session.output_wait")
-      |> Enum.find(&(TestSpanExporter.attributes(&1)["ember.session_id"] == "s-live"))
+      |> Enum.find(fn span ->
+        attributes = TestSpanExporter.attributes(span)
+        attributes["ember.session_id"] == "s-live" and
+          not Map.has_key?(attributes, "ember.reason")
+      end)
 
     assert TestSpanExporter.status_code(successful_invoke) == :unset
     assert TestSpanExporter.status_code(successful_wait) == :unset
@@ -2002,6 +2033,10 @@ defmodule Embervm.RouterTest do
              {:relight_failed, {:pressure_wait_expired, :capacity}}
            ) == true
 
+    assert Embervm.Router.classify_error_as_retryable(
+             {:relight_failed, {:pressure_wait_expired, {:node_unreported, "node-4"}}}
+           ) == true
+
     refute Embervm.Router.classify_error_as_retryable(%GRPC.RPCError{status: 14})
     refute Embervm.Router.classify_error_as_retryable(%GRPC.RPCError{status: 4})
     assert Embervm.Router.classify_error_as_retryable({:relight_failed, {:prime_failed, %GRPC.RPCError{status: 8}}})
@@ -2061,6 +2096,19 @@ defmodule Embervm.RouterTest do
     assert req(:delete, "/v1/sessions/s-error", auth("good")).status == 500
     # Management auth required.
     assert req(:delete, "/v1/sessions/s-live").status == 401
+  end
+
+  test "parked DELETE requires management auth and a complete exact snapshot" do
+    with_session_fakes()
+    expected = %{"session_id" => "s-parked", "generation" => 0, "invoke_started_at" => 10, "updated_at" => 20}
+    body = :json.encode(%{"parked_precondition" => expected}) |> IO.iodata_to_binary()
+    assert req(:delete, "/v1/sessions/s-parked", auth("good"), body).status == 200
+    assert req(:delete, "/v1/sessions/s-live", auth("good"), body).status == 409
+    assert req(:delete, "/v1/sessions/s-parked", [], body).status == 401
+    for bad <- [:null, %{}, Map.put(expected, "generation", true), Map.put(expected, "updated_at", 1)] do
+      invalid = :json.encode(%{"parked_precondition" => bad}) |> IO.iodata_to_binary()
+      assert req(:delete, "/v1/sessions/s-parked", auth("good"), invalid).status == 400
+    end
   end
 
   test "exact DELETE parses null invocation identity and rejects malformed or stale preconditions" do

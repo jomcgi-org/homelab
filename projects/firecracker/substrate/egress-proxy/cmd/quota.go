@@ -28,12 +28,13 @@ type QuotaObservation struct {
 	// Grant is the broker grant the observed response was served with. It
 	// travels as a query parameter, never in the body, so the wire body the
 	// broker validates is unchanged.
-	Grant       string   `json:"-"`
-	Provider    string   `json:"provider"`
-	ObservedAt  string   `json:"observed_at"`
-	Status      string   `json:"status"`
-	ReachedType string   `json:"reached_type"`
-	Windows     []Window `json:"windows"`
+	Grant         string   `json:"-"`
+	Provider      string   `json:"provider"`
+	ObservedAt    string   `json:"observed_at"`
+	Status        string   `json:"status"`
+	ReachedType   string   `json:"reached_type"`
+	OverageStatus string   `json:"overage_status"`
+	Windows       []Window `json:"windows"`
 }
 
 func parseCodexQuota(h http.Header, statusCode int, now time.Time) (QuotaObservation, bool) {
@@ -57,11 +58,18 @@ func parseCodexQuota(h http.Header, statusCode int, now time.Time) (QuotaObserva
 			continue
 		}
 		window := Window{Name: name, UsedPercent: used}
+		hasWindowMinutes := false
 		if minutes, err := strconv.Atoi(strings.TrimSpace(h.Get(prefix + "window-minutes"))); err == nil && minutes >= 0 {
 			window.WindowMinutes = minutes
+			hasWindowMinutes = true
 		}
+		hasReset := false
 		if reset, ok := parseEpochReset(h.Get(prefix + "reset-at")); ok {
 			window.ResetsAt = reset
+			hasReset = true
+		}
+		if used == 0 && !hasWindowMinutes && !hasReset {
+			continue
 		}
 		obs.Windows = append(obs.Windows, window)
 	}
@@ -91,11 +99,11 @@ func parseClaudeQuota(h http.Header, statusCode int, now time.Time) (QuotaObserv
 	}
 
 	obs := QuotaObservation{
-		Provider:    "claude",
-		ObservedAt:  now.UTC().Format(time.RFC3339),
-		Status:      status,
-		ReachedType: strings.TrimSpace(h.Get("anthropic-ratelimit-unified-overage-status")),
-		Windows:     make([]Window, 0, 2),
+		Provider:      "claude",
+		ObservedAt:    now.UTC().Format(time.RFC3339),
+		Status:        status,
+		OverageStatus: strings.TrimSpace(h.Get("anthropic-ratelimit-unified-overage-status")),
+		Windows:       make([]Window, 0, 2),
 	}
 	unifiedReset, hasUnifiedReset := parseFlexibleReset(h.Get("anthropic-ratelimit-unified-reset"))
 	for _, spec := range []struct {
