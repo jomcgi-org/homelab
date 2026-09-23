@@ -17,6 +17,7 @@ description matching. Open only when:
 |---------|------|
 | [argocd-outofsync.md](argocd-outofsync.md) | ArgoCD OutOfSync / "is my change live?" |
 | [gke-cutover-window.md](gke-cutover-window.md) | The home-to-GKE downtime window (#5458): copy, recover, verify, wipe |
+| [factory-response-loss-canary.md](factory-response-loss-canary.md) | Bounded manual response-loss receipt canary, explicit only (#5938) |
 | [public-tier-checklist.md](public-tier-checklist.md) | Public tier / jomcgi.dev / `public_reader` |
 | [embervm-node-scratch-setup.md](embervm-node-scratch-setup.md) | EmberVM node scratch |
 | [embervm-stateful-generation-quarantine.md](embervm-stateful-generation-quarantine.md) | Stateful generation quarantine |
