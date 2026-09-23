@@ -123,3 +123,20 @@ def test_public_functions_route_still_targets_the_web_component():
     rule = route["spec"]["rules"][0]
     assert rule["matches"] == [{"path": {"type": "PathPrefix", "value": "/functions/"}}]
     assert rule["backendRefs"][0]["name"].endswith("-web")
+
+
+def test_public_web_renders_otel_traces_endpoint():
+    deployments = [doc for doc in _render() if doc.get("kind") == "Deployment"]
+    web = [
+        doc
+        for doc in deployments
+        if doc["spec"]["template"]["metadata"]["labels"].get(
+            "app.kubernetes.io/component"
+        )
+        == "web"
+    ]
+    assert len(web) == 1
+    container = web[0]["spec"]["template"]["spec"]["containers"][0]
+    env = {item["name"]: item.get("value") for item in container["env"]}
+    endpoint = env.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
+    assert endpoint.endswith(":4318/v1/traces")

@@ -165,6 +165,7 @@ flowchart TD
 
 - **Built:** framework/core.py composition and profiles, separate private/public module registries, Postgres leader-lease singletons (Discord bot, AIS ingest, outbox drain, message-lock sweep), the agent_sessions claim-lease turn engine (atomic per-message claiming across all replicas plus a leader-owned stale-claim sweep) backing both the Discord bot and the private /agents console HTTP API, goosecracker recipe/repo catalog, chat feature ACL with 30s grant cache, public_reader/public_writer roles with schema/view confinement, public/private HTTPRoutes, Turnstile secret isolation, public chat admission/concurrency limits, public FaaS identity gate, observability snapshot rollup, the shotter MCP domain (URL/host validation, EmberVM task dispatch, best-effort SeaweedFS PNG storage with a random per-call Idempotency-Key), the sandbox MCP domain (run_code, six per-language EmberVM task workloads, zero-egress except an optional scratch-Postgres credential), the native /mcp mount on stateless streamable HTTP with PrincipalMiddleware authenticating every message via cached JWKS, and the docs/posts manifest generators that publish an exact allowlist of committed repository documents to the public site. The factory knowledge-graph evidence lanes (#5527, ADR agents/063) add a shared raw-input write boundary (knowledge/ingest_queue.py ingest_raw_with_status) reached by the generic POST /api/knowledge/raws endpoint, three MCP tools (report_knowledge, dispute_fact, report_distress), and a leader-owned Ember-session exporter (agent_sessions/kg_feed.py), a daily-capped DBOS drainer (swarm/drainer.py) that runs Luna extraction in an EmberVM guest and writes atoms with server-side provenance (knowledge/extraction.py, knowledge/atoms.py), and a live disputed/verification_state signal on search results (knowledge/store.py).
 - **Designed-only:** Strict per-domain database isolation and the ADR 010 cross-domain contract remain architectural goals; the Module/build_app framework itself is built. ADR 059 (Draft) proposes removing Context Forge entirely as the MCP entry point and serving /mcp directly behind Cloudflare; only the first, independently-sequenced slice (the stateless-HTTP transport switch) has landed, Context Forge is still deployed and still in the request path. The Context Forge tool-visibility reconcile pass (#4569) that would scope which principal may call which tool is designed, not built, so per-tool authorization beyond bearer-token authentication does not exist for any MCP tool yet.
+- **Note:** Policy-removal corrections for #5816 only; other findings retain their earlier review stamp.
 </details>
 
 ### Losses
@@ -262,8 +263,8 @@ flowchart TD
 ### Open questions
 
 - #5568's claude-session/codex-session producers are not yet shipped, but EXTRACTABLE_SOURCES already accepts those source labels via the generic POST /api/knowledge/raws endpoint today; will that producer route through the same unredacted shared boundary, or call agent_sessions.redact.redact_text itself the way kg_feed.py does?
-- ADR 059 is still Draft: does the full Context Forge removal change anything about the ingestion allowlist in cilium-ingress-policy.yaml (the mcp entry), or does the direct-mount path simply add a second ingress source alongside it?
 - Does any workload other than shotter and the six sandbox languages share the same EmberVM Idempotency-Key-from-request-parameters pattern, and if so does its key cover every parameter that affects the result?
+- How should the native ingress successor cover Context Forge and direct-mount callers after #5816 removed the inert Cilium ingress template?
 - In production, can a chat message handler (LLM summarizer) exceed the 30s message-lock TTL under load and trip lock.reclaim.wrong-timing, or is processing reliably shorter?
 - Is the X-Auth-Email header ever going to gate an authorization decision, or does #4940's delegation model deliberately avoid keying on inbound headers at all? If the latter, header-authz-drift can be downgraded once that is documented somewhere durable.
 - Is the shotter SeaweedFS bucket's read path gated the way artifact's is (proxied through a monolith-mediated read), or does anything with in-cluster network reach get an anonymous GET against the S3 endpoint once it has or guesses a content hash?
@@ -283,7 +284,8 @@ flowchart TD
 <summary>Maturity detail</summary>
 
 - **Built:** Separate public and private binaries (ADR security/004), public_reader role with visibility filters on the replica, Turnstile-gated chat with three nested budgets, PrincipalMiddleware bearer-token verification on every MCP message, Discord trust ledger with per-guild per-user scoring and heuristics-fed instant enforcement, Cloudflare Access lane projecting verified email to agents console, Kubernetes RBAC scoping cluster mutation to the private pod.
-- **Designed-only:** Per-tool authorization on the monolith's MCP surface (ADR 059 to route through delegation-consuming broker, #4569 tool-visibility reconcile pass), default-deny egress CiliumNetworkPolicy for the private pod, per-domain database isolation and cross-domain contract.
+- **Designed-only:** Per-tool authorization on the monolith's MCP surface (ADR 059 to route through delegation-consuming broker, #4569 tool-visibility reconcile pass), activation of the staged native default-deny egress NetworkPolicy for the private pod, per-domain database isolation and cross-domain contract.
+- **Note:** Policy-removal corrections for #5816 only; other findings retain their earlier review stamp.
 </details>
 
 ### Losses
@@ -300,11 +302,11 @@ flowchart TD
 
 | ID | View | Hazard (unsafe state) | → Losses | Maturity | Status | Issue |
 |----|----|----|----|----|----|----|
-| `no-egress-policy` | physical | The private monolith pod carries no default-deny egress CiliumNetworkPolicy, so a compromised pod has open-ended cluster and internet reach | L.unauthorized-access, L.secret-exposure | designed | none | #5277 |
+| `no-egress-policy` | physical | The private monolith pod has no enforced default-deny egress policy on the hub; the native policy is staged off, so a compromised pod has open-ended cluster and internet reach | L.unauthorized-access, L.secret-exposure | designed | none | #5277 |
 | `over-broad-public-grant` | physical | public_reader is granted on a schema or view that includes non-public rows | L.unauthorized-access, L.secret-exposure | built |  |  |
 | `private-capture-retained` | physical | A captured screenshot, including of the private tier, is written to SeaweedFS with no expiry policy and persists indefinitely at a stable content-addressed URL after the request that produced it | L.unauthorized-access | built |  |  |
 | `public-route-exposes-private-path` | physical | The public HTTPRoute forwards an internal or unfiltered path to a served handler | L.unauthorized-access | built |  |  |
-| `public-tier-broad-cluster-reach` | physical | The public tier's CiliumNetworkPolicy scopes by 'in-cluster or not' (toEntities: cluster), allowing every in-cluster pod endpoint rather than only the intended four (Postgres, vLLM, embeddings, SeaweedFS) | L.unauthorized-access | built | none | #5276 |
+| `public-tier-broad-cluster-reach` | physical | The public tier has no enforced network isolation on the hub. Its inert Cilium templates were removed in #5816, so compromised public pods retain broad in-cluster reach until native-policy successor work lands | L.unauthorized-access | built | none | #5276 |
 | `public-write-admission-bypass` | physical | The internet-adjacent public tier can write outside the intended chat_public path, or bypasses Turnstile, per-session limits, and the cluster-wide inference cap | L.integrity-loss, L.capacity-exhaustion | built |  |  |
 | `sandbox-credential-egress` | logical | The scratch-Postgres feature, when enabled, injects a database DSN into the executed code's own process environment, so a Python run in the advertised zero-network sandbox gains credentialed, in-cluster network reach to a shared datastore; the tool's own docstring still claims there is no network at all | L.secret-exposure, L.unauthorized-access | built |  |  |
 | `secret-in-wrong-tier` | physical | A private secret or a K8s token is delivered to the public or frontend tier | L.secret-exposure | built |  |  |
@@ -351,5 +353,5 @@ flowchart TD
 
 - Should run_code's docstring be corrected to stop claiming zero network for Python, or should the scratch-Postgres DSN injection move behind a separate explicitly-network-capable tool?
 - When #4569's tool-visibility reconcile pass lands, will it gate shotter.capture, sandbox.run, k8s_sync_argocd_app, and agent-session tools by Principal scope, or only by coarser tool-granular ACL?
-- When will the default-deny egress CiliumNetworkPolicy (#5277) land for the private pod's open-ended cluster and internet reach?
+- When will the staged native default-deny egress NetworkPolicy (#5277 / #3897) be validated and activated for the private pod's open-ended cluster and internet reach?
 - Will the public tier's cluster-reach policy (#5276) be scoped to only the four intended destinations (Postgres, vLLM, embeddings, SeaweedFS)?
