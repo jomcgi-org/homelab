@@ -254,6 +254,8 @@ spec:
               value: {{ .Values.swarm.factoryGithubWebhookRepository | quote }}
             - name: FACTORY_GITHUB_WEBHOOK_TRUSTED_AUTHORS
               value: {{ .Values.swarm.factoryGithubWebhookTrustedAuthors | quote }}
+            - name: FACTORY_AGENT_BOARD_POLL_ENABLED
+              value: {{ .Values.swarm.factoryAgentBoardPollEnabled | default false | quote }}
             - name: FACTORY_WORK_ITEM_POINTER_ENABLED
               value: {{ .Values.swarm.factoryWorkItemPointerEnabled | default false | quote }}
             - name: FACTORY_WORK_ITEM_BASE_URL

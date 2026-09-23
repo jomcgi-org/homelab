@@ -1498,6 +1498,10 @@ swarm:
   factoryGithubWebhookEnabled: false
   factoryGithubWebhookRepository: jomcgi-org/homelab
   factoryGithubWebhookTrustedAuthors: jomcgi
+  # Staged between-job blocker poll (#5704). This is independent of the board
+  # server flag and remains off until trusted binding and live queue checks are
+  # complete.
+  factoryAgentBoardPollEnabled: false
   factoryWorkItemPointerEnabled: false
   factoryWorkItemBaseUrl: https://jomcgi.dev/slop
   factoryConductorFundingEnabled: false

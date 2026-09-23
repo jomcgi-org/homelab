@@ -33,6 +33,7 @@ from factory.orchestration.factory_controls import (
     DEFAULT_TASK_CLASS,
     EFFECT_WORD,
     JUDGMENT_CLASSES,
+    LANES,
     MAX_OPTIONS,
     MIN_OPTIONS,
     OPTION_SCHEMA,
@@ -6159,8 +6160,13 @@ def tick() -> None:
     if len(active) >= limit:
         return
     try:
+        from factory.orchestration.agent_board_poll import eligible_lanes
         from factory.orchestration.factory_intake_loop import intake_tick
 
+        # One staged poll governs both discovery and the actual queued-receipt
+        # claim boundary. Reusing this tuple keeps one tick internally
+        # consistent even if a blocker is posted or expires during the tick.
+        lanes = eligible_lanes(LANES)
         # The operator's allowlist is read first on purpose. Both paths write
         # queued receipts and admit_next takes the oldest, so discovering an
         # issue before ingesting the named ones would hand the free slot to
@@ -6169,9 +6175,10 @@ def tick() -> None:
         intake_tick(
             snapshot["policy"],
             generation=snapshot["policy"].get("generation", 0),
+            lanes=lanes,
         )
         while len(active) < limit:
-            admitted = admit_next(ACTOR)
+            admitted = admit_next(ACTOR, lanes=lanes)
             if not admitted["ok"]:
                 break
             # A task admitted this tick is reconciled on the next one.

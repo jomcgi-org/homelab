@@ -444,7 +444,19 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
     """
     try:
         intake = intake_policy(policy)
+        lanes = tuple(lane for lane in LANES if lane in lanes)
+        deferred_lanes = tuple(lane for lane in LANES if lane not in lanes)
+        if deferred_lanes:
+            _throttled(
+                "agent_board_lanes_deferred",
+                {
+                    "deferred_lanes": list(deferred_lanes),
+                    "eligible_lanes": list(lanes),
+                },
+            )
         if not intake["enabled"]:
+            return []
+        if not lanes:
             return []
         # The ceiling is chart configuration and the lane maxima are posted
         # policy, so neither says the other is the binding constraint. Name it

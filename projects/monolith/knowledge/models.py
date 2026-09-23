@@ -320,6 +320,40 @@ class AgentReportWriteFailure(SQLModel, table=True):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class AgentBoardMessage(SQLModel, table=True):
+    """One expiring, scoped coordination message on the agents tier.
+
+    ``acknowledged_by`` is an array of trusted board principal identifiers.
+    Writers replace it with a compare-and-swap update so acknowledgements from
+    concurrent readers are additive rather than last-writer-wins.
+    """
+
+    __tablename__ = "agent_board_messages"
+    __table_args__ = (
+        UniqueConstraint("source_id"),
+        {"schema": "knowledge", "extend_existing": True},
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    principal: str = Field(sa_column=Column(String, nullable=False))
+    authenticated_subject: str = Field(sa_column=Column(String, nullable=False))
+    topic: str = Field(sa_column=Column(String, nullable=False))
+    body: str = Field(sa_column=Column(String, nullable=False))
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+    expires_at: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=False)
+    )
+    acknowledged_by: list[str] = Field(
+        default_factory=list, sa_column=Column(_JSONB, nullable=False)
+    )
+    # Distress mirroring uses ``distress:<raw_id>`` here. Ordinary board posts
+    # leave it null, and PostgreSQL permits multiple nulls under UNIQUE.
+    source_id: str | None = Field(default=None, sa_column=Column(String, nullable=True))
+
+
 class AtomRawProvenance(SQLModel, table=True):
     __tablename__ = "atom_raw_provenance"
     __table_args__ = {"schema": "knowledge", "extend_existing": True}

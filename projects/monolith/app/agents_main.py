@@ -17,6 +17,7 @@ from auth.api import (
     current_principal,
     get_default_resolver,
 )
+from knowledge.board import ack_message, post_message, read_board
 from knowledge.mcp import (
     dispute_fact,
     report_distress,
@@ -36,6 +37,9 @@ AGENT_TOOLS = (
     report_knowledge,
     dispute_fact,
     report_distress,
+    post_message,
+    read_board,
+    ack_message,
     kubernetes_read,
     kubernetes_pod_logs,
 )

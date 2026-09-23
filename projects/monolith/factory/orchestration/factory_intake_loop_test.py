@@ -185,6 +185,28 @@ def test_disabled_intake_has_no_github_or_audit(db, monkeypatch):
     assert audits(db, "intake_idle") == []
 
 
+def test_staged_all_lane_deferral_is_audited_before_listing(db, monkeypatch):
+    monkeypatch.setattr(
+        intake_loop,
+        "github_list",
+        lambda *_args: pytest.fail("blocked intake listed or claimed work"),
+    )
+    assert (
+        intake_loop.intake_tick(
+            policy(labels=["agent-ready"], refine_enabled=True),
+            generation=0,
+            lanes=(),
+        )
+        == []
+    )
+    rows = audits(db, "agent_board_lanes_deferred")
+    assert len(rows) == 1
+    assert json.loads(rows[0].detail_json) == {
+        "deferred_lanes": ["delivery", "advisory"],
+        "eligible_lanes": [],
+    }
+
+
 @pytest.mark.parametrize("state", ["queued", "admitted", "uncertain"])
 def test_current_generation_work_blocks_intake(db, monkeypatch, state):
     fake_pages(monkeypatch, [issue(1, ["agent-ready"])])

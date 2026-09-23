@@ -31,7 +31,7 @@ import pytest  # noqa: F401  (keeps the gazelle pytest dep; see module docstring
 from sqlalchemy import text
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from auth.principal import Authority, Principal, PrincipalKind
+from auth.principal import Authority, Principal, PrincipalKind, anonymous_principal
 from knowledge.models import AgentReportWriteFailure, Note, RawInput
 from knowledge.raw_write import write_raw
 
@@ -198,6 +198,33 @@ def test_report_distress_is_in_the_agent_catalogue():
     assert "report_distress" in agents_main.AGENT_TOOL_NAMES
 
 
+def test_agent_mcp_anonymous_boundary_returns_401_before_tools():
+    import app.agents_main as agents_main
+
+    downstream_called = False
+    messages = []
+
+    async def downstream(_scope, _receive, _send):
+        nonlocal downstream_called
+        downstream_called = True
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        messages.append(message)
+
+    gate = agents_main._AuthenticatedPrincipalGate(downstream)
+    with patch.object(
+        agents_main, "current_principal", return_value=anonymous_principal()
+    ):
+        asyncio.run(gate({"type": "http"}, receive, send))
+
+    assert downstream_called is False
+    assert messages[0]["type"] == "http.response.start"
+    assert messages[0]["status"] == 401
+
+
 def test_only_narrow_kubernetes_tools_join_the_agent_catalogue():
     import app.agents_main as agents_main
 
@@ -206,6 +233,9 @@ def test_only_narrow_kubernetes_tools_join_the_agent_catalogue():
         "report_knowledge",
         "dispute_fact",
         "report_distress",
+        "post_message",
+        "read_board",
+        "ack_message",
         "kubernetes_read",
         "kubernetes_pod_logs",
     )
@@ -389,3 +419,70 @@ def test_report_knowledge_returns_structured_write_error(agents_db) -> None:
         failure = session.exec(select(AgentReportWriteFailure)).one()
         assert failure.reporter_kind == "workload"
         assert failure.error_type == "RuntimeError"
+
+
+def test_distress_mirror_failure_replay_and_single_notification(agents_db) -> None:
+    """Mirror availability never breaks or duplicates the human path."""
+    import knowledge.mcp as knowledge_mcp
+
+    mirror = AsyncMock(
+        side_effect=[RuntimeError("board unavailable"), {"status": "posted"}]
+    )
+    notify = AsyncMock(return_value={"ok": True})
+    with (
+        patch("knowledge.mcp.get_engine", return_value=agents_db.engine),
+        patch("knowledge.mcp.current_principal", return_value=_agents_principal()),
+        patch("knowledge.mcp.mirror_distress", mirror),
+        patch("knowledge.mcp._notify", notify),
+    ):
+        first = asyncio.run(
+            knowledge_mcp.report_distress(
+                "Agent is blocked",
+                "blocked",
+                "same durable report",
+                "inspect dependency",
+            )
+        )
+        replay = asyncio.run(
+            knowledge_mcp.report_distress(
+                "Agent is blocked",
+                "blocked",
+                "same durable report",
+                "inspect dependency",
+            )
+        )
+
+    assert first["status"] == "notified"
+    assert replay == {
+        "intervention_id": first["intervention_id"],
+        "status": "recorded",
+    }
+    assert mirror.await_count == 2
+    notify.assert_awaited_once()
+
+
+def test_distress_mirror_timeout_does_not_delay_notification(agents_db) -> None:
+    import knowledge.mcp as knowledge_mcp
+
+    async def stalled_mirror(**_kwargs):
+        await asyncio.sleep(1)
+
+    notify = AsyncMock(return_value={"ok": True})
+    with (
+        patch("knowledge.mcp.get_engine", return_value=agents_db.engine),
+        patch("knowledge.mcp.current_principal", return_value=_agents_principal()),
+        patch("knowledge.mcp.mirror_distress", stalled_mirror),
+        patch("knowledge.mcp._notify", notify),
+        patch("knowledge.mcp._DISTRESS_MIRROR_TIMEOUT_SECONDS", 0.001),
+    ):
+        result = asyncio.run(
+            knowledge_mcp.report_distress(
+                "Agent is blocked on a timeout",
+                "blocked",
+                "mirror does not return",
+                "inspect dependency",
+            )
+        )
+
+    assert result["status"] == "notified"
+    notify.assert_awaited_once()

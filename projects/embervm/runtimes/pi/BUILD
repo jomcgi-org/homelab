@@ -3,6 +3,12 @@ load("@aspect_bazel_lib//lib:tar.bzl", "tar")
 load("//bazel/tools/oci:apko_image.bzl", "apko_image")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
+filegroup(
+    name = "agent_mcp_source",
+    srcs = ["agent-mcp.ts"],
+    visibility = ["//projects/monolith:__pkg__"],
+)
+
 # EmberVM pi runtime base image. A session-class guest whose PID 1 is the SAME
 # stdlib-python shim the claude runtime uses, answering the same frozen
 # HTTP-over-vsock guest contract on port 1027, but carrying ONLY the pi coding
@@ -37,7 +43,7 @@ tar(
 )
 
 # Pi's bridge to the agents MCP server (#5569). Pi has no MCP client, so this
-# extension registers the tier's four knowledge tools as pi tools and calls
+# extension registers the tier's full nine-tool catalogue as pi tools and calls
 # them over streamable HTTP through curl, on the same brokered egress lane as
 # web-research above. The shim loads it only when EMBER_AGENT_MCP_URL is set
 # and the endpoint answers a probe, so a guest on a cluster without the tier

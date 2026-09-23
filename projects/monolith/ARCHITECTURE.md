@@ -184,10 +184,10 @@ closure.
 (see: /projects/monolith/app/main_public_imports_test.py)
 
 The agents tier is a third composition with no registry at all. Its entrypoint
-builds a Starlette app that serves exactly four knowledge tools over stateless
-MCP plus one health route, behind identity middleware that rejects anonymous
-callers. The binary is pruned by source glob, and an import test proves the
-private domains never enter its closure.
+builds a Starlette app that serves an explicit nine-tool catalogue over
+stateless MCP plus one health route, behind identity middleware that rejects
+anonymous callers. The binary is pruned by source glob, and an import test
+proves the private domains never enter its closure.
 (see: /projects/monolith/app/agents_main.py)
 (see: /projects/monolith/app/main_agents_imports_test.py)
 
@@ -1108,8 +1108,9 @@ instead, so its BDD specs can attach the tools deterministically.
 
 The agents tier is the second surface, intended for guests.
 `monolith-agents` runs in its own namespace and serves four knowledge tools (`search_knowledge`,
-`report_knowledge`, `dispute_fact`, `report_distress`) plus two Kubernetes
-observation tools (`kubernetes_read`, `kubernetes_pod_logs`) over stateless MCP.
+`report_knowledge`, `dispute_fact`, `report_distress`), three staged board tools
+(`post_message`, `read_board`, `ack_message`), and two Kubernetes observation
+tools (`kubernetes_read`, `kubernetes_pod_logs`) over stateless MCP.
 Identity middleware rejects anonymous callers, the tokens are minted by
 authentik's agent provider, and an Ember guest reaches the tier only through
 its egress sidecar, since the guest itself has no network. The tier holds its
@@ -1122,6 +1123,17 @@ There is no watch, mutation, Secret, exec, attach, port-forward, or proxy grant.
 The read tools independently require the standing workload principal
 `kg-agent-sa` in `kg-agents` on every invocation. The knowledge tools retain
 the tier's existing non-anonymous gate.
+
+The agent board is repository-staged and disabled by default with
+`AGENT_BOARD_ENABLED=false`. It stores expiring claim, lane or service blocker,
+and distress mirror messages in one table. Every read labels bodies as untrusted
+data and returns provenance and expiry. Authorization does not come from a topic
+or the shared bearer. A separate server-trusted binding must resolve the exact
+session principal, receipt, task, repository, branch or worktree, issue, pull
+request, lane, and allowed services. No production resolver exists in this
+slice, so enabling storage alone returns `scope_unavailable` for shared
+`kg-agent-sa` callers. Distress mirroring is idempotent and best effort, and it
+never invokes the human notification path.
 
 These are repository manifests and application code, not a claim about live
 permissions. The hub consumes a hand-advanced chart pin, so the permissions do
@@ -1182,7 +1194,7 @@ The request outcomes differ by surface:
 | Surface | Missing or unusable authorization | Valid standing token | Resource and result authorization |
 | --- | --- | --- | --- |
 | Shared private `/mcp` | No header, a blank header, or a non-Bearer scheme becomes the anonymous principal. Anonymous `tools/list` returns the catalogue for Context Forge refresh, but `GroupPolicyMiddleware.on_call_tool` denies every non-public tool. No current tool carries `mcp:public`. `Bearer` without a credential and any invalid or unrecognized bearer return 401; verifier or JWKS configuration faults return 503. | The verified claims become a standing `Principal`. Listing is filtered and calls require the literal `operators` group unless a tool is explicitly tagged public. | `GroupPolicyMiddleware` owns the coarse call gate. Domain checks can narrow it further. Factory orchestration uses `factory.access.is_operator`, knowledge and Grimoire HTTP mutations require a standing human operator, and `submit_product_update` requires `updates:submit`. Tool visibility, a populated `Principal`, and network reachability do not grant permission. |
-| Agent `/mcp` | `/healthz` is open. The MCP gate turns the anonymous principal into 401, while an invalid bearer is rejected by `PrincipalMiddleware` with 401 and an infrastructure fault with 503. | The resolver is configured for both `mcp-friends` and `mcp-agents`; `_AuthenticatedPrincipalGate` accepts any non-anonymous principal for the four knowledge tools. Each of the two Kubernetes observation tools additionally requires a standing, undelegated workload principal whose subject is `kg-agent-sa` and whose groups include `kg-agents`. | `search_knowledge` does not filter rows by principal. The three reporting tools record the resolved subject and authority for attribution. Kubernetes reads are confined again by the client allowlist, bounds, and the tier's separate Roles. Identity facts alone do not widen either surface. |
+| Agent `/mcp` | `/healthz` is open. The MCP gate turns the anonymous principal into 401, while an invalid bearer is rejected by `PrincipalMiddleware` with 401 and an infrastructure fault with 503. | The resolver is configured for both `mcp-friends` and `mcp-agents`; `_AuthenticatedPrincipalGate` accepts any non-anonymous principal for the four knowledge tools. The three board tools additionally require the default-off board flag and an internal server-trusted binding, so a shared bearer alone returns `scope_unavailable`. Each of the two Kubernetes observation tools additionally requires a standing, undelegated workload principal whose subject is `kg-agent-sa` and whose groups include `kg-agents`. | `search_knowledge` does not filter rows by principal. The three reporting tools record the resolved subject and authority for attribution. Board scope derives from the trusted session, task, resource, lane, and service binding, never caller content. Kubernetes reads are confined again by the client allowlist, bounds, and the tier's separate Roles. Identity facts alone do not widen either surface. |
 | Private HTTP API | Only routes that opt into `get_principal` parse a bearer. On those routes, absence becomes anonymous and invalid bearer material returns 401 or 503; their owner may then return 403. Most private routes do not opt in and ignore bearer identity. | Knowledge intervention and Grimoire alias owners require a standing human in `operators`. Browser factory decisions instead use the single `X-Auth-Email` claim projected from a verified Cloudflare Access JWT and optionally narrow it with `FACTORY_OPERATOR_EMAILS`. | Cloudflare Access owns the external ingress gate. The application defines no blanket anonymous-principal policy. For example, `GET /api/agents/sessions/{session_id}` returns prompts and verbatim turn results without an application-level principal or per-session ownership check. Direct network reachability supplies no permission. The missing object-level result check remains unresolved and does not redefine the edge policy. |
 | Result receipt callback `/ingest/results/{receipt_id}` | Missing, malformed, unknown, or mismatched receipt bearer material returns 401. An expired acceptance window returns 410 and a different body for an already captured receipt returns 409. It never falls back to an anonymous principal. | `result_receipts.authenticate_receipt` compares the presented capability hash before reading the body; `capture_result` rechecks it, the expiry, and exact-byte idempotency. | This is a write-only callback for one receipt minted by `prepare_receipt` while the session, turn, dispatch owner, and guest are active. Capturing is evidence only; later consumption revalidates current executor ownership. The callback exposes no result-reading operation and does not use the authentik `Principal`. |
 
