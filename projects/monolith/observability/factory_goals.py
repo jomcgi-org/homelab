@@ -42,9 +42,7 @@ class FactoryGoal(SQLModel, table=True):
 
     id: int | None = Field(default=None, primary_key=True)
     statement: str
-    issue_numbers: list[int] = Field(
-        default_factory=list, sa_column=Column(_INT_ARRAY)
-    )
+    issue_numbers: list[int] = Field(default_factory=list, sa_column=Column(_INT_ARRAY))
     declared_by: str
     declared_at: datetime = Field(
         default_factory=_utc_now,
@@ -85,7 +83,9 @@ def validate_goals(goals: list[dict], declared_by: str) -> list[dict]:
             raise ValueError(f"goal {index} needs a non-empty statement")
         statement = statement.strip()
         if len(statement) > MAX_STATEMENT_CHARS:
-            raise ValueError(f"goal {index} statement exceeds {MAX_STATEMENT_CHARS} chars")
+            raise ValueError(
+                f"goal {index} statement exceeds {MAX_STATEMENT_CHARS} chars"
+            )
         issues = goal.get("issue_numbers", [])
         if not isinstance(issues, list) or not issues:
             raise ValueError(f"goal {index} needs at least one linked issue")

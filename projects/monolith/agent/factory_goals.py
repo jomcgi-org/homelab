@@ -43,8 +43,6 @@ def replace_goals(goals: list[dict], declared_by: str) -> dict:
             session.refresh(row)
         return {
             "ok": True,
-            "goals": [
-                {"id": row.id, "statement": row.statement} for row in inserted
-            ],
+            "goals": [{"id": row.id, "statement": row.statement} for row in inserted],
             "retired": len(current),
         }
