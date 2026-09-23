@@ -224,6 +224,26 @@ def test_reasoning_output_tokens_are_not_added_to_output():
     assert with_reasoning == without_reasoning
 
 
+@pytest.mark.parametrize(
+    ("model", "expected_cost"),
+    [("gpt-5.6-sol", 0.002564), ("sol", 0.001282)],
+)
+def test_reasoning_key_keeps_shim_cache_read_discount(model, expected_cost):
+    # reasoning_output_tokens selects the Codex branch; the cache still sits
+    # under the shim key, and dropping it prices gpt-5.6-sol at $0.0062.
+    shim_usage = {
+        "input_tokens": 1_100,
+        "cache_read_tokens": 1_010,
+        "output_tokens": 90,
+    }
+
+    priced = price_usage(model, {**shim_usage, "reasoning_output_tokens": 30})
+
+    assert priced is not None
+    assert priced.cost_usd == pytest.approx(expected_cost)
+    assert priced == price_usage(model, shim_usage)
+
+
 def test_claude_transcript_shape_uses_exclusive_input_semantics():
     shaped = price_usage(
         "claude-opus-5-5",
