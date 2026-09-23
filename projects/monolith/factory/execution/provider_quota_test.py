@@ -22,7 +22,8 @@ class FakeAsyncClient:
     async def __aexit__(self, *_args):
         return None
 
-    async def get(self, url: str) -> httpx.Response:
+    async def request(self, method: str, url: str) -> httpx.Response:
+        assert method == "GET"
         self.calls.append(url)
         result = self.handler(url)
         if isinstance(result, Exception):
@@ -41,7 +42,8 @@ class FakeSyncClient:
     def __exit__(self, *_args):
         return None
 
-    def get(self, url: str) -> httpx.Response:
+    def request(self, method: str, url: str) -> httpx.Response:
+        assert method == "GET"
         self.calls.append(url)
         result = self.handler(url)
         if isinstance(result, Exception):
@@ -75,7 +77,7 @@ def _patch_client(monkeypatch, handler, fetch_kind: str):
         return FakeSyncClient(handler, calls)
 
     client_name = "AsyncClient" if fetch_kind == "async" else "Client"
-    monkeypatch.setattr(quota.httpx, client_name, client)
+    monkeypatch.setattr(quota.broker_client.httpx, client_name, client)
     return calls, timeouts
 
 
@@ -184,10 +186,45 @@ def test_summarise_picks_named_headline_windows():
     assert result["codex"]["headline_window"] == "primary"
     assert result["codex"]["age_seconds"] == 42.0
     assert result["codex"]["resets_at"] == "c1"
+    assert result["codex"]["windows"] == [
+        {
+            "name": "secondary",
+            "used_percent": 3.5,
+            "resets_at": "c2",
+            "usable": True,
+        },
+        {
+            "name": "primary",
+            "used_percent": 24.0,
+            "resets_at": "c1",
+            "usable": True,
+        },
+    ]
     assert result["claude"]["headline_used_percent"] == 75.0
     assert result["claude"]["headline_window"] == "5h"
     assert result["claude"]["age_seconds"] == 3.5
     assert result["claude"]["resets_at"] == "a1"
+
+
+def test_summarise_ignores_rejected_overage_billing_for_allowed_claude():
+    result = quota.summarise(
+        {
+            "claude": {
+                "observed": True,
+                "status": "allowed",
+                "reached_type": "",
+                "overage_status": "rejected",
+                "exhausted": False,
+                "windows": [{"name": "5h", "used_percent": 24}],
+            }
+        }
+    )["claude"]
+
+    assert result["status"] == "allowed"
+    assert result["exhausted"] is False
+    assert result["headline_used_percent"] == 24.0
+    assert "overage_status" not in result
+    assert "reached_type" not in result
 
 
 def test_summarise_falls_back_to_first_active_window():
@@ -220,6 +257,39 @@ def test_summarise_returns_none_without_active_windows(windows):
     assert result["codex"]["headline_window"] is None
     assert result["codex"]["age_seconds"] is None
     assert result["codex"]["resets_at"] is None
+    assert result["codex"]["windows_observed"] is bool(windows)
+
+
+def test_summarise_marks_malformed_active_windows_and_discards_expired_ones():
+    result = quota.summarise(
+        {
+            "codex": {
+                "observed": True,
+                "age_seconds": float("nan"),
+                "windows": [
+                    {"name": "primary", "used_percent": 100, "expired": True},
+                    {"name": "secondary", "used_percent": "unknown"},
+                    "not-a-window",
+                ],
+            }
+        }
+    )["codex"]
+
+    assert result["age_seconds"] is None
+    assert result["windows"] == [
+        {
+            "name": "secondary",
+            "used_percent": None,
+            "resets_at": None,
+            "usable": False,
+        },
+        {
+            "name": None,
+            "used_percent": None,
+            "resets_at": None,
+            "usable": False,
+        },
+    ]
 
 
 def _patch_fetch(monkeypatch, result):
@@ -248,6 +318,8 @@ async def test_health_is_ok_when_observed_providers_have_quota(monkeypatch):
                     "observed": True,
                     "age_seconds": 3,
                     "status": "allowed",
+                    "reached_type": "",
+                    "overage_status": "rejected",
                     "exhausted": False,
                     "windows": [{"name": "5h", "used_percent": 75}],
                 },
@@ -401,6 +473,7 @@ def test_available_result_keeps_grants_and_summarises_them():
 
     payload = {
         "providers": {},
+        "grants_complete": True,
         "grants": {
             "codex-b": {
                 "provider": "codex",
@@ -422,10 +495,41 @@ def test_available_result_keeps_grants_and_summarises_them():
     }
     result = _available_result(payload)
     assert result["grants"] == payload["grants"]
+    assert result["grants_complete"] is True
+    assert result["grants_valid"] is True
     assert _available_result({"providers": {}})["grants"] == {}
-    summary = summarise_grants(result["grants"])
-    assert list(summary) == ["codex-b"]
+    assert _available_result({"providers": {}})["grants_complete"] is False
+    summary, validity = summarise_grants(result["grants"])
+    assert validity == {"codex": True, "claude": True}
+    assert list(summary) == ["codex-b", "codex-cluster"]
     assert summary["codex-b"]["grant"] == "codex-b"
     assert summary["codex-b"]["provider"] == "codex"
     assert summary["codex-b"]["headline_used_percent"] == 33.0
     assert summary["codex-b"]["resets_at"] == "2026-09-15T01:25:04Z"
+    assert summary["codex-cluster"] == {
+        "grant": "codex-cluster",
+        "provider": "codex",
+        "observed": False,
+    }
+
+
+def test_malformed_grant_inventory_keeps_completeness_and_validity_separate():
+    from factory.execution.provider_quota import _available_result, summarise_grants
+
+    normalised = _available_result(
+        {"providers": {}, "grants": ["not-an-object"], "grants_complete": True}
+    )
+    assert normalised["grants"] == {}
+    assert normalised["grants_complete"] is True
+    assert normalised["grants_valid"] is False
+
+    summary, validity = summarise_grants(
+        {
+            "codex-good": {"provider": "codex", "observed": False},
+            "claude-bad": {"provider": "claude", "observed": "maybe"},
+            "agent-mcp": {"provider": "authentik", "observed": True},
+        }
+    )
+    assert summary["codex-good"]["observed"] is False
+    assert "agent-mcp" not in summary
+    assert validity == {"codex": True, "claude": False}

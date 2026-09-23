@@ -564,14 +564,8 @@ common ancestor followed by reconnect without comparison.
 ### Implementation conformance gaps found by the mapping
 
 A clean abstract model is not proof that the code conforms. Mapping the actions
-to the current source found four bounded gaps. This PR intentionally changes no
-runtime code.
+to the source originally found four bounded gaps. Two remain:
 
-- Terminal predecessor: `validate_restore_lineage/4` accepts `:destroying`, but
-  `SessionState.terminal_states/0` contains only `:expired`, `:evicted`,
-  `:destroyed`, and `:failed`. The bounded fix is to gate with
-  `SessionState.terminal?/1`, so a destroy intent cannot be inherited before
-  node-confirmed completion.
 - Exclusive heir across a CP crash: `inflight_restore_lineages` is a volatile
   `MapSet`, while the restore effect runs in an unlinked `spawn_monitor` worker.
   A CP restart can forget the claim before the first worker's node effects are
@@ -585,14 +579,28 @@ runtime code.
   a per-lineage generation and common-ancestor stamp on local and S3 workspace
   metadata, followed by reconnect refusal or quarantine when both branches
   advanced. Silent merge must never be a recovery path.
-- Relinquish ordering: retire_session_volume (session_manager.ex around lines
-  5622 to 5657) spawns the RetireVolume RPC and advances the session lifecycle
-  immediately without waiting for durable relinquish marker or successful
-  export. A durable relinquish is not ordered before terminal eligibility or
-  heir admission. See issue #6250. The noded side does not yet conform (Export is ordered
-  correctly), but the CP side needs ordering enforcement.
 
-The last two gaps (exclusive heir and reconnect divergence) are why
+The runtime closes the other two mappings. `validate_restore_lineage/4` now
+admits only `SessionState`'s four terminal states, so `:destroying` cannot be
+inherited. The restoring create worker also reissues `RetireVolume` on the exact
+volume-owner instance and waits for its acknowledgement before `RestoreArtifact`
+or `Prime`. That acknowledgement follows noded's durable
+`.retirement-intent` write, while export and deletion remain asynchronous. A
+missing local volume reported by that authoritative owner is treated as already
+relinquished and `RestoreArtifact` still decides whether the store copy exists.
+An absent capacity row is not proof that the recorded owner departed, because
+the registry is volatile and also removes temporarily unavailable daemons.
+Restore therefore fails closed and remains retryable until an owner instance can
+acknowledge retirement. If one owner instance remains but its volume scan omits
+the lineage, placement stays pinned there so its retirement intent gates
+`RestoreArtifact`. If multiple co-located instances remain and none reports the
+lineage, restore also fails closed: this preserves safety but can delay recovery
+until ownership becomes unambiguous. Every dial or RPC error from an available
+owner fails the restore closed and remains retryable. This closes issue #6250
+without blocking the SessionManager mailbox or relying on its volatile in-flight
+map.
+
+The remaining two gaps (exclusive heir and reconnect divergence) are why
 `ExclusiveHeirGuard` and `ReconnectComparison` are declared assumptions in the
 positive cfg. The negative cfgs demonstrate the counterexamples those missing
 mechanisms must prevent. Runtime fixes and a conformance harness remain separate

@@ -7,6 +7,7 @@ import {
   contextKey,
   contextRows,
   decisionBody,
+  decisionRequestKey,
   effectLine,
   escapeForKey,
   escapeHotkey,
@@ -309,7 +310,26 @@ describe("escalations view helpers", () => {
     expect(decisionBody("close", " agreed ", "decision:abc")).toEqual({
       option_key: "close",
       note: "agreed",
-      expected_decision_id: "decision:abc",
+      decision_id: "decision:abc",
     });
+    expect(chatBody(" more ", "decision:abc")).toEqual({
+      action: "chat",
+      note: "more",
+      decision_id: "decision:abc",
+    });
+  });
+
+  test("the browser request identity is stable for one exact intent", async () => {
+    const body = decisionBody("close", "agreed", "decision:abc");
+    const first = await decisionRequestKey(3, body);
+    expect(await decisionRequestKey(3, body)).toBe(first);
+    expect(first).toMatch(/^browser-v1:[0-9a-f]{64}$/);
+    expect(await decisionRequestKey(3, body, 1)).not.toBe(first);
+    expect(
+      await decisionRequestKey(
+        3,
+        decisionBody("close", "different", "decision:abc"),
+      ),
+    ).not.toBe(first);
   });
 });

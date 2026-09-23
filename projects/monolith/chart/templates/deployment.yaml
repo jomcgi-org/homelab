@@ -8,6 +8,14 @@
 {{- if not (kindIs "bool" .Values.sharedS3.enabled) }}
 {{- fail "sharedS3.enabled must be a boolean" }}
 {{- end }}
+{{- if .Values.tokenBroker.spiffe.enabled }}
+{{- if not (hasPrefix "https://" .Values.tokenBroker.spiffe.url) }}
+{{- fail "tokenBroker.spiffe.url must use https when SPIFFE is enabled" }}
+{{- end }}
+{{- if not (hasPrefix "spiffe://" .Values.tokenBroker.spiffe.serverId) }}
+{{- fail "tokenBroker.spiffe.serverId is required when SPIFFE is enabled" }}
+{{- end }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -126,11 +134,23 @@ spec:
             - name: EMBER_SYNTHETIC_BASE_URL
               value: {{ .Values.emberSynthetic.baseUrl | quote }}
             {{- end }}
-            {{- if .Values.tokenBroker.url }}
+            {{- if or .Values.tokenBroker.url .Values.tokenBroker.spiffe.enabled }}
             # OAuth token broker (ADR 048): the agent surface proxies its
             # device-code login flow so a login can run from a chat.
             - name: EMBER_TOKENBROKER_URL
-              value: {{ .Values.tokenBroker.url | quote }}
+              value: {{ ternary .Values.tokenBroker.spiffe.url .Values.tokenBroker.url .Values.tokenBroker.spiffe.enabled | quote }}
+            - name: EMBER_TOKENBROKER_SPIFFE_ENABLED
+              value: {{ .Values.tokenBroker.spiffe.enabled | quote }}
+            {{- if .Values.tokenBroker.spiffe.enabled }}
+            - name: EMBER_TOKENBROKER_SPIFFE_ID
+              value: {{ .Values.tokenBroker.spiffe.serverId | quote }}
+            - name: EMBER_TOKENBROKER_SVID_CERT
+              value: /run/tokenbroker-svid/svid.pem
+            - name: EMBER_TOKENBROKER_SVID_KEY
+              value: /run/tokenbroker-svid/svid_key.pem
+            - name: EMBER_TOKENBROKER_SVID_BUNDLE
+              value: /run/tokenbroker-svid/svid_bundle.pem
+            {{- end }}
             {{- end }}
             {{- if .Values.faas }}
             # FaaS zip-lane function registry (ADR 045 / embervm R1). The read
@@ -712,6 +732,44 @@ spec:
           volumeMounts:
             - name: backend-tmp
               mountPath: /tmp
+            {{- if .Values.tokenBroker.spiffe.enabled }}
+            - name: tokenbroker-svid
+              mountPath: /run/tokenbroker-svid
+              readOnly: true
+            {{- end }}
+        {{- if .Values.tokenBroker.spiffe.enabled }}
+        - name: tokenbroker-spiffe-helper
+          image: "{{ .Values.tokenBroker.spiffe.helper.image.repository }}:{{ .Values.tokenBroker.spiffe.helper.image.tag }}"
+          imagePullPolicy: {{ .Values.tokenBroker.spiffe.helper.image.pullPolicy }}
+          args: ["-config", "/etc/spiffe-helper/helper.conf"]
+          ports:
+            - name: spiffe-health
+              containerPort: 8081
+              protocol: TCP
+          livenessProbe:
+            httpGet: { path: /live, port: spiffe-health }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+          readinessProbe:
+            httpGet: { path: /ready, port: spiffe-health }
+            initialDelaySeconds: 1
+            periodSeconds: 2
+            timeoutSeconds: 1
+          resources:
+            {{- toYaml .Values.tokenBroker.spiffe.helper.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: spiffe-workload-api
+              mountPath: /spiffe-workload-api
+              readOnly: true
+            - name: tokenbroker-spiffe-helper-config
+              mountPath: /etc/spiffe-helper
+              readOnly: true
+            - name: tokenbroker-svid
+              mountPath: /run/tokenbroker-svid
+        {{- end }}
         # ADR agents/051: the progress-ingest listener is its own image and
         # port so the EmberVM egress allowlist entry (host:port granular)
         # exposes exactly one write-only route, never the main API on 8000.
@@ -811,3 +869,17 @@ spec:
           emptyDir: {}
         - name: frontend-tmp
           emptyDir: {}
+        {{- if .Values.tokenBroker.spiffe.enabled }}
+        - name: spiffe-workload-api
+          csi:
+            driver: csi.spiffe.io
+            readOnly: true
+        - name: tokenbroker-spiffe-helper-config
+          configMap:
+            name: {{ include "monolith.fullname" . }}-tokenbroker-spiffe-helper
+            defaultMode: 0444
+        - name: tokenbroker-svid
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+        {{- end }}

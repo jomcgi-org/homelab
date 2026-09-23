@@ -393,3 +393,25 @@ def test_enablement_is_explicit_and_defaults_off(monkeypatch):
     assert publisher.enabled() is False
     monkeypatch.setenv(publisher.PUBLISH_ENABLED_ENV, "true")
     assert publisher.enabled() is True
+
+
+def test_landing_delivery_can_publish_review_before_task_settles(db, monkeypatch):
+    seed(db)
+    with Session(db) as session:
+        receipt = session.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == TASK_ID)
+        ).one()
+        receipt.state = "landing"
+        session.add(receipt)
+        audit = session.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == TASK_ID, FactoryAudit.action == "finish_task"
+            )
+        ).one()
+        audit.action = "delivery_ready"
+        session.add(audit)
+        session.commit()
+    monkeypatch.setattr(landing, "github_get", lambda *_args: current_pull())
+    evidence = publisher.collect(TASK_ID)
+    assert isinstance(evidence, publisher.ReviewEvidence)
+    assert evidence.head_sha == HEAD

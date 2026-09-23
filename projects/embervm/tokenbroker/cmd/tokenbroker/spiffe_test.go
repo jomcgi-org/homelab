@@ -50,6 +50,55 @@ func TestConfiguredListenersRequiresClientIDsForTLS(t *testing.T) {
 	}
 }
 
+func TestConfiguredListenersRejectsPlaintextRetirementWithoutTLS(t *testing.T) {
+	t.Setenv("BROKER_TLS_LISTEN_ADDR", "")
+	t.Setenv("BROKER_RETIRE_PLAINTEXT_PROTECTED_ROUTES", "true")
+
+	_, err := configuredListeners()
+	if err == nil || !strings.Contains(err.Error(), "requires BROKER_TLS_LISTEN_ADDR") {
+		t.Fatalf("configuredListeners() error = %v, want TLS listener requirement", err)
+	}
+}
+
+func TestConfiguredListenersRejectsInvalidPlaintextRetirement(t *testing.T) {
+	t.Setenv("BROKER_RETIRE_PLAINTEXT_PROTECTED_ROUTES", "yes")
+
+	_, err := configuredListeners()
+	if err == nil || !strings.Contains(err.Error(), "must be true or false") {
+		t.Fatalf("configuredListeners() error = %v, want boolean validation", err)
+	}
+}
+
+func TestRetiredPlaintextRejectsProtectedRoutesButKeepsOperations(t *testing.T) {
+	s := newServerWithStoredGrant(t)
+	handler := s.plaintextMux(listenerConfig{
+		tlsListenAddr:            ":8443",
+		retirePlaintextProtected: true,
+	})
+
+	for _, request := range []struct {
+		method string
+		path   string
+	}{
+		{http.MethodPost, "/grants/codex-cluster/login/start"},
+		{http.MethodGet, "/grants/codex-cluster/login/status"},
+		{http.MethodPost, "/grants/codex-cluster/refresh"},
+		{http.MethodGet, "/quota"},
+		{http.MethodPost, "/quota/codex"},
+	} {
+		response := performRequest(handler, request.method, request.path)
+		if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "plaintext_retired") {
+			t.Errorf("%s %s = %d %q, want 403 plaintext_retired", request.method, request.path, response.Code, response.Body.String())
+		}
+	}
+	if health := performRequest(handler, http.MethodGet, "/healthz"); health.Code != http.StatusOK {
+		t.Errorf("health status = %d, want %d", health.Code, http.StatusOK)
+	}
+	if metrics := performRequest(handler, http.MethodGet, "/metrics"); metrics.Code != http.StatusOK {
+		t.Errorf("metrics status = %d, want %d", metrics.Code, http.StatusOK)
+	}
+}
+
 func TestPlaintextHandlerRequiresMTLSForTokenWhenEnabled(t *testing.T) {
 	s := newServerWithStoredGrant(t)
 	handler := s.grantsHandler(false, true)
@@ -122,6 +171,15 @@ func TestMTLSHandlerAuthorizesConfiguredClient(t *testing.T) {
 	_, err = disallowedClient.Get(testServer.URL + "/grants/codex-cluster/token")
 	if err == nil {
 		t.Fatal("disallowed client request succeeded, want TLS handshake error")
+	}
+
+	missingClient := &http.Client{Transport: &http.Transport{TLSClientConfig: tlsconfig.TLSClientConfig(
+		allowedSource,
+		tlsconfig.AuthorizeOneOf(serverID),
+	)}}
+	_, err = missingClient.Get(testServer.URL + "/grants/codex-cluster/token")
+	if err == nil {
+		t.Fatal("client without an SVID succeeded, want TLS handshake error")
 	}
 }
 

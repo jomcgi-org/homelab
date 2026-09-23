@@ -159,6 +159,9 @@ defmodule Embervm.RouterTest do
     def create(_srv, "wl-lineage-restore-in-flight", _principal, _restore_lineage, _opts),
       do: {:error, {:denied, :lineage_restore_in_flight}}
 
+    def create(_srv, "wl-lineage-relinquishment-failed", _principal, _restore_lineage, _opts),
+      do: {:error, {:denied, {:lineage_relinquishment_failed, {:error, :dial_down}}}}
+
     # #4919: the replay/conflict/invalid-key response shapes, plus wl-idem-echo,
     # which answers successfully ONLY when the router threaded the exact
     # Idempotency-Key header value through, proving the hop.
@@ -1758,6 +1761,24 @@ defmodule Embervm.RouterTest do
     assert body["retryable"] == true
   end
 
+  test "restore lineage relinquishment failure is 503, retryable, and hides transport detail" do
+    with_session_fakes()
+
+    resp =
+      req(
+        :post,
+        "/v1/workloads/wl-lineage-relinquishment-failed/sessions",
+        auth("good"),
+        ~s({"restore_lineage": "lineage-x"})
+      )
+
+    assert resp.status == 503
+    body = json(resp.body)
+    assert body["reason"] == "lineage_relinquishment_failed"
+    assert body["retryable"] == true
+    refute resp.body =~ "dial_down"
+  end
+
   test "invoke is gated on the SESSION token: a management token alone is rejected 403" do
     with_session_fakes()
 
@@ -1933,12 +1954,20 @@ defmodule Embervm.RouterTest do
     successful_invoke =
       spans
       |> TestSpanExporter.named("embervm.session.invoke")
-      |> Enum.find(&(TestSpanExporter.attributes(&1)["ember.session_id"] == "s-live"))
+      |> Enum.find(fn span ->
+        attributes = TestSpanExporter.attributes(span)
+        attributes["ember.session_id"] == "s-live" and
+          not Map.has_key?(attributes, "ember.reason")
+      end)
 
     successful_wait =
       spans
       |> TestSpanExporter.named("embervm.session.output_wait")
-      |> Enum.find(&(TestSpanExporter.attributes(&1)["ember.session_id"] == "s-live"))
+      |> Enum.find(fn span ->
+        attributes = TestSpanExporter.attributes(span)
+        attributes["ember.session_id"] == "s-live" and
+          not Map.has_key?(attributes, "ember.reason")
+      end)
 
     assert TestSpanExporter.status_code(successful_invoke) == :unset
     assert TestSpanExporter.status_code(successful_wait) == :unset
@@ -2002,6 +2031,10 @@ defmodule Embervm.RouterTest do
 
     assert Embervm.Router.classify_error_as_retryable(
              {:relight_failed, {:pressure_wait_expired, :capacity}}
+           ) == true
+
+    assert Embervm.Router.classify_error_as_retryable(
+             {:relight_failed, {:pressure_wait_expired, {:node_unreported, "node-4"}}}
            ) == true
 
     refute Embervm.Router.classify_error_as_retryable(%GRPC.RPCError{status: 14})

@@ -61,6 +61,13 @@ auth:
 frontend:
   otelCollectorUrl: ""
 
+# Repository support for the token broker's SPIFFE listener is staged only.
+# Live production keeps the existing plaintext route until the issue checklist
+# has validated both listener authorization and SVID rotation.
+tokenBroker:
+  spiffe:
+    enabled: false
+
 jobs:
   snapshotMergedPrs:
     suspend: false

@@ -13,6 +13,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 import factory.orchestration.factory_controls as controls
 import factory.orchestration.factory_landing as landing
+from factory.orchestration import factory_rollout
 from factory.orchestration.factory_models import (
     FactoryAudit,
     FactoryControl,
@@ -31,6 +32,9 @@ HEAD = "a" * 40
 
 @pytest.fixture
 def db(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        factory_rollout, "verify", lambda *_args: {"verified": True, "applications": []}
+    )
     engine = create_engine(
         f"sqlite:///{tmp_path / 'landing.db'}",
         connect_args={"check_same_thread": False, "timeout": 5},
@@ -86,6 +90,7 @@ def delivered(
     task_class="bug-fix",
     settled=None,
     head=HEAD,
+    state="succeeded",
 ):
     """One settled delivery: its task, its succeeded receipt and its evidence."""
     with Session(db) as session:
@@ -112,7 +117,7 @@ def delivered(
                 body="",
                 url=f"https://github.com/owner/repo/issues/{issue_number}",
                 actor="test",
-                state="succeeded",
+                state=state,
                 task_class=task_class,
                 task_id=task_id,
                 updated_at=settled or (NOW - timedelta(minutes=5)),
@@ -122,7 +127,7 @@ def delivered(
         session.add(
             FactoryAudit(
                 actor="factory:reconciler",
-                action="finish_task",
+                action="delivery_ready" if state == "landing" else "finish_task",
                 task_id=task_id,
                 detail_json=json.dumps(
                     {
@@ -468,7 +473,7 @@ def test_a_merge_records_the_merge_and_closes_the_issue(db, monkeypatch):
     # The comment says what was observed. It must not claim the body lacked a
     # closing keyword, which is one cause of an open issue and not the only one.
     body = calls["write"][0][2]["body"]
-    assert "#3" in body and "observed merge" in body
+    assert "#3" in body and "verifying publication" in body
     assert "keyword" not in body
     assert audits(db, "issue_closed", "t-1") == [
         {"issue_number": 11, "pr_number": 3, "closed_by_factory": True}
@@ -515,7 +520,9 @@ def test_a_pull_request_merged_by_hand_is_never_armed(db, monkeypatch):
     )
     landing.landing_tick(POLICY)
     assert calls["graphql"] == []
-    assert audits(db, "merged", "t-1") == [{"pr_number": 3, "armed_by_factory": False}]
+    assert audits(db, "merged", "t-1") == [
+        {"pr_number": 3, "armed_by_factory": False, "merge_commit_sha": "b" * 40}
+    ]
     assert audits(db, "issue_closed", "t-1")[0]["closed_by_factory"] is True
 
 
@@ -720,10 +727,11 @@ def test_failed_conflict_disarm_keeps_slot_until_retry_succeeds(db, monkeypatch)
     assert pulls[4]["auto_merge"] is not None
 
 
+@pytest.mark.parametrize("state", ["succeeded", "landing"])
 def test_a_merge_conflict_ejection_reopens_for_correction_instead_of_rearming(
-    db, monkeypatch
+    db, monkeypatch, state
 ):
-    delivered(db, "t-1", 11, 3)
+    delivered(db, "t-1", 11, 3, state=state)
     pulls = {3: pull(3)}
     calls = github(monkeypatch, pulls=pulls)
     landing.landing_tick(POLICY)
@@ -1344,6 +1352,7 @@ def test_repository_delivery_lands_without_closing_live_acceptance(db, monkeypat
         "github_write",
         lambda *a, **kw: pytest.fail("operational issue must remain open"),
     )
+    landing._record("t-live", "merged", pr_number=10, merge_commit_sha="b" * 40)
     item = landing._deliveries(POLICY)[0]
     landing._close_issue("owner/repo", item)
     assert item["closed"] is True
@@ -1355,3 +1364,103 @@ def test_repository_delivery_lands_without_closing_live_acceptance(db, monkeypat
             )
         ).one()
         assert json.loads(audit.detail_json)["operational_acceptance_pending"] is True
+
+
+@pytest.mark.parametrize("state", ["succeeded", "landing"])
+def test_merge_waits_for_rollout_and_retries_after_bounded_observation(
+    db, monkeypatch, state
+):
+    delivered(db, "t-wait", 11, 3, state=state)
+    calls = github(
+        monkeypatch,
+        pulls={3: pull(3, merged=True)},
+        issues={11: {"number": 11, "state": "open"}},
+    )
+    observations = []
+
+    def pending(repo, merge_sha):
+        observations.append((repo, merge_sha))
+        return {"verified": False, "reason": "published_chart_not_deployed"}
+
+    monkeypatch.setattr(factory_rollout, "verify", pending)
+    landing.landing_tick(POLICY)
+    landing.landing_tick(POLICY)
+    assert receipt_state(db, "t-wait") == state
+    assert observations == [("owner/repo", "b" * 40)]
+    assert len(audits(db, "rollout_observed")) == 1
+    assert not audits(db, "issue_closed")
+    assert not calls["write"]
+    assert landing._deliveries(POLICY)[0]["merged"] is True
+    monkeypatch.setattr(landing, "_now", lambda: NOW + timedelta(seconds=61))
+    monkeypatch.setattr(
+        factory_rollout,
+        "verify",
+        lambda *_: {"verified": True, "merge_commit_sha": "b" * 40, "applications": []},
+    )
+    landing.landing_tick(POLICY)
+    assert len(audits(db, "rollout_verified")) == 1
+    assert len(audits(db, "issue_closed")) == 1
+    assert receipt_state(db, "t-wait") == "succeeded"
+    if state == "landing":
+        with Session(db) as session:
+            assert session.get(SwarmTask, "t-wait").settled_at is not None
+    landing.landing_tick(POLICY)
+    assert len(audits(db, "rollout_verified")) == 1
+
+
+def test_unavailable_rollout_evidence_keeps_operational_acceptance_pending(
+    db, monkeypatch
+):
+    delivered(db, "t-unavailable", 11, 3)
+    github(
+        monkeypatch,
+        pulls={3: pull(3, merged=True)},
+        issues={11: {"number": 11, "state": "open"}},
+    )
+    monkeypatch.setattr(
+        factory_rollout,
+        "verify",
+        lambda *_: {
+            "verified": False,
+            "reason": "observation_unavailable",
+            "error_type": "TimeoutError",
+        },
+    )
+    landing.landing_tick(POLICY)
+    assert not audits(db, "rollout_verified")
+    assert not audits(db, "issue_closed")
+    assert not audits(db, "repository_delivery_complete")
+    assert landing._deliveries(POLICY)
+
+
+def test_new_pending_delivery_does_not_age_out_or_lose_verified_settlement(
+    db, monkeypatch
+):
+    delivered(
+        db, "t-old-pending", 11, 3, state="landing", settled=NOW - timedelta(days=30)
+    )
+    item = landing._deliveries(POLICY)[0]
+    assert item["task_id"] == "t-old-pending"
+    github(
+        monkeypatch,
+        pulls={3: pull(3, merged=True)},
+        issues={11: {"number": 11, "state": "open"}},
+    )
+    # Simulate a process exit after the proof committed but before settlement.
+    landing._record("t-old-pending", "merged", pr_number=3, merge_commit_sha="b" * 40)
+    landing._record(
+        "t-old-pending",
+        "rollout_verified",
+        verified=True,
+        pr_number=3,
+        approved_head_sha=HEAD,
+    )
+    monkeypatch.setattr(
+        factory_rollout, "verify", lambda *_: pytest.fail("proof already durable")
+    )
+    landing.landing_tick(POLICY)
+    assert receipt_state(db, "t-old-pending") == "succeeded"
+    assert len(audits(db, "finish_task", "t-old-pending")) == 1
+    assert len(audits(db, "issue_closed", "t-old-pending")) == 1
+    landing.landing_tick(POLICY)
+    assert len(audits(db, "finish_task", "t-old-pending")) == 1

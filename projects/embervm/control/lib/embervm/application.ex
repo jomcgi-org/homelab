@@ -57,6 +57,10 @@ defmodule Embervm.Application do
     # Like configured_nodes/0, this is pure environment wiring and stays Finch-free.
     Application.put_env(:embervm, :noded_bearer_token, trimmed_env("EMBERVM_NODED_BEARER_TOKEN"))
 
+    # Restore-capability authentication is independent of transport auth. Empty
+    # means unset so the minting path uses the one-release bearer fallback.
+    configure_restore_capability_key()
+
     # Principal-artifact envelope encryption is one control-plane gate shared by
     # wrap and restore capability minting. It defaults off and performs no store
     # I/O while off. The store client reuses the warmth GC's S3 configuration.
@@ -112,7 +116,7 @@ defmodule Embervm.Application do
       # The async lifecycle-write queue (ADR embervm/014 decision 2), gated by
       # EMBERVM_ASYNC_LIFECYCLE_WRITES. Placed AFTER the op-log (it appends through
       # it) and BEFORE TaskStore/SessionStore/SessionManager (they enqueue their
-      # off-hot-path :assigned/:started and session_created/session_relit appends
+      # off-hot-path :assigned/:started and session_relit appends
       # here). Owns no ETS and effectively never crashes, so leading the stores in
       # the rest_for_one chain costs nothing; it drains on graceful shutdown so a CP
       # roll loses no pending append. Started unconditionally: with the gate OFF it
@@ -226,6 +230,16 @@ defmodule Embervm.Application do
       # ordering. The TaskStore charge hook targets the module (the public table),
       # not the process, so TaskStore may start earlier.
       {Embervm.Metering, [op_log_mod: op_log_mod()]},
+      # Durable live-session VM claims must exist before Dispatcher's first boot
+      # sweep adopts node-reported primed inventory. Rebuilding SessionStore here
+      # makes that ordering explicit and fail-closed.
+      {Embervm.SessionStore,
+       [
+         op_log_mod: op_log_mod(),
+         on_metered: &Embervm.Metering.on_metered/1,
+         async_writer: Embervm.AsyncWriter,
+         async_lifecycle_writes: async_lifecycle_writes_enabled()
+       ]},
       # The dispatcher (Task 11): the heart of R0. Owns the per-workload fair
       # queues, the primed-VM inventory, the enforcement caps, and drives queued
       # tasks to terminal via Assign. Placed AFTER TaskStore (drives its FSM +
@@ -254,25 +268,18 @@ defmodule Embervm.Application do
       # reads registered bricks from the capacity ledger). Inert while
       # bricks.enabled=false renders no classes into its config.
       {Embervm.BrickController, brick_controller_opts()},
-      # Session lifecycle (R2). The SessionStore (ETS hot set over the durable
-      # `sessions` projection, rebuilt on boot) comes first; the SessionRegistry
-      # (session_id -> live Embervm.Session pid) and the SessionSupervisor
+      # Session lifecycle (R2). SessionStore was started before Dispatcher so its
+      # rebuilt durable claims gate the first inventory adoption. SessionRegistry
+      # (session_id -> live Embervm.Session pid) and SessionSupervisor
       # (DynamicSupervisor for the per-live-session processes) next; the
       # SessionManager (create/destroy/route brain) last, since it starts children
       # into the supervisor and reads the store/registry. Placed AFTER Metering
       # (create reads the quota table + budgets), the Dispatcher (create CLAIMs a
       # primed VM from its inventory), and NodeChannel (the SessionAssign channel),
       # and BEFORE the Router (its session handlers call the manager + store). Under
-      # :rest_for_one a SessionStore restart bounces the manager and Router, which
-      # rebuild from the durable projection. With no node wired, create denies
+      # :rest_for_one a SessionStore restart bounces Dispatcher and the manager,
+      # which rebuild from the durable projection. With no node wired, create denies
       # :no_capacity and nothing runs, exactly like the dispatcher in R0.
-      {Embervm.SessionStore,
-       [
-         op_log_mod: op_log_mod(),
-         on_metered: &Embervm.Metering.on_metered/1,
-         async_writer: Embervm.AsyncWriter,
-         async_lifecycle_writes: async_lifecycle_writes_enabled()
-       ]},
       {Registry, keys: :unique, name: Embervm.SessionRegistry},
       {DynamicSupervisor, strategy: :one_for_one, name: Embervm.SessionSupervisor},
       {Embervm.SessionManager, session_manager_opts()},
@@ -757,6 +764,17 @@ defmodule Embervm.Application do
     end
   end
 
+  # Public for the boot-wiring regression test. The application calls this
+  # before starting any supervised child, and an empty or whitespace-only value
+  # is deliberately absent from app env rather than becoming a usable MAC key.
+  @doc false
+  def configure_restore_capability_key do
+    case trimmed_env("EMBERVM_RESTORE_CAPABILITY_KEY") do
+      "" -> Application.delete_env(:embervm, :restore_capability_key)
+      key -> Application.put_env(:embervm, :restore_capability_key, key)
+    end
+  end
+
   defp trimmed_env(name) do
     case System.get_env(name) do
       nil -> ""
@@ -1141,14 +1159,14 @@ defmodule Embervm.Application do
 
   # EMBERVM_ASYNC_LIFECYCLE_WRITES (ADR embervm/014 decision 2). UNSET or
   # "0"/"false"/"" (the chart and reference-deployment setting) => the
-  # boot/wake lifecycle appends (:assigned/:started on dispatch,
-  # session_created/session_relit on session boot/wake) stay write-through: the
+  # boot/wake lifecycle appends (:assigned/:started on dispatch and
+  # session_relit on session wake) stay write-through: the
   # durable oplog append blocks the hot-path caller
-  # before the instance is handed back. "1"/"true" => those four
+  # before the instance is handed back. "1"/"true" => those three
   # appends are deferred to Embervm.AsyncWriter AFTER the in-memory state is advanced
   # (RPC already succeeded), taking the durable write off the hot path; a lost write
   # (CP crash before the async append) is repaired by the adoption backfill. Metering,
-  # :submitted, destruction, and bank ops are NEVER deferred. Wired here so it flips
+  # :submitted, session_created, destruction, and bank ops are NEVER deferred. Wired here so it flips
   # via a deploy values env change, no code change: the chart's `asyncLifecycleWrites`
   # key (chart/values.yaml) renders this variable in deployment.yaml.
   defp async_lifecycle_writes_enabled do

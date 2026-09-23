@@ -72,7 +72,7 @@ COMMENT_PAGE_SIZE = 100
 MAX_COMMENT_PAGES = 3
 CHAT_PREFIX = "Operator asks:"
 # Receipt states that mean a node is live on this issue right now.
-_RUNNING_STATES = ("admitted", "uncertain")
+_RUNNING_STATES = ("admitted", "uncertain", "landing")
 # Receipt states a settled refine can be decided from.
 _SETTLED_STATES = ("succeeded", "failed")
 # The effects that put the work back in front of the lane rather than ending

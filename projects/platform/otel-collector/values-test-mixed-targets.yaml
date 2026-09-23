@@ -1,0 +1,8 @@
+httpcheck:
+  enabled: true
+  targets:
+    - "https://legacy.example.test/healthz"
+    - endpoint: "https://structured.example.test/healthz"
+      method: GET
+      tls:
+        ca_file: /etc/otel/argocd-ca/ca.crt

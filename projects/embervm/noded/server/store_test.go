@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -25,6 +26,7 @@ import (
 	nodev1 "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1"
 
 	"github.com/jomcgi/homelab/projects/embervm/noded/config"
+	"github.com/jomcgi/homelab/projects/embervm/noded/snapshotmeta"
 	"github.com/jomcgi/homelab/projects/embervm/noded/store"
 	"github.com/jomcgi/homelab/projects/embervm/noded/substrate"
 )
@@ -39,12 +41,14 @@ type fakeStore struct {
 	// arts maps a store prefix to its exported files (name -> content) and gen.
 	arts map[string]fakeArtifact
 	// exportCalls counts Export invocations per prefix (skipped or not).
-	exportCalls     map[string]int
-	overwriteCalls  map[string]int
-	dataKeyCalls    map[string]int
-	rewrapCh        chan fakeRewrapCall
-	artifactFileErr error
-	restoreCalls    int
+	exportCalls      map[string]int
+	overwriteCalls   map[string]int
+	dataKeyCalls     map[string]int
+	rewrapCh         chan fakeRewrapCall
+	artifactFileErr  error
+	restoreCalls     int
+	restoreErr       error
+	restoreFailAfter int
 	// Optional gates let retirement tests hold an asynchronous export at a
 	// deterministic boundary without sleeping or touching the real store.
 	exportStarted chan string
@@ -75,6 +79,8 @@ type fakeArtifact struct {
 	// what remote retention orders on.
 	createdAtMs int64
 	envelope    []byte
+	deviceKnown bool
+	deviceIDs   []string
 }
 
 func newFakeStore() *fakeStore {
@@ -150,11 +156,24 @@ func (f *fakeStore) Export(ctx context.Context, prefix, localDir string, files [
 		got[name] = string(b)
 		total += int64(len(b))
 	}
+	var devices snapshotmeta.DeviceSet
+	if data, ok := got[snapshotmeta.JailResourcesFile]; ok {
+		var err error
+		devices, err = snapshotmeta.DeviceSetFromJailResources([]byte(data))
+		if err != nil {
+			return 0, false, err
+		}
+	}
 	// Idempotency: if the stored content is identical, skip.
 	if existing, ok := f.arts[prefix]; !overwrite && ok && sameStringMap(existing.files, got) {
 		return 0, true, nil
 	}
-	f.arts[prefix] = fakeArtifact{files: got, gen: generation, cpuVendor: cpuVendor, cpuTemplate: cpuTemplate, createdAtMs: nowMs, envelope: envelope}
+	if existing, ok := f.arts[prefix]; ok && len(options) > 0 && options[0].EnforceDeviceShape {
+		if !devices.Known || !existing.deviceKnown || !slices.Equal(devices.IDs, existing.deviceIDs) {
+			return 0, false, store.ErrIncompatibleDeviceShape
+		}
+	}
+	f.arts[prefix] = fakeArtifact{files: got, gen: generation, cpuVendor: cpuVendor, cpuTemplate: cpuTemplate, createdAtMs: nowMs, envelope: envelope, deviceKnown: devices.Known, deviceIDs: append([]string(nil), devices.IDs...)}
 	f.order = append(f.order, prefix)
 	return total, false, nil
 }
@@ -163,6 +182,8 @@ func (f *fakeStore) Restore(_ context.Context, prefix, localDir string, key []by
 	f.mu.Lock()
 	f.restoreCalls++
 	art, ok := f.arts[prefix]
+	restoreErr := f.restoreErr
+	restoreFailAfter := f.restoreFailAfter
 	f.mu.Unlock()
 	if !ok {
 		return 0, 0, errFakeNotPresent
@@ -183,6 +204,15 @@ func (f *fakeStore) Restore(_ context.Context, prefix, localDir string, key []by
 			return 0, 0, err
 		}
 		total += int64(len(content))
+		if restoreErr != nil && restoreFailAfter > 0 {
+			restoreFailAfter--
+			if restoreFailAfter == 0 {
+				return total, 0, restoreErr
+			}
+		}
+	}
+	if restoreErr != nil {
+		return total, 0, restoreErr
 	}
 	return total, art.gen, nil
 }
@@ -245,6 +275,16 @@ func (f *fakeStore) ArtifactInfo(_ context.Context, prefix string) (bool, int64,
 		total += uint64(len(c))
 	}
 	return true, art.createdAtMs, total, art.cpuVendor, art.cpuTemplate, strings.TrimSpace(art.files["rootfsid"]), strings.TrimSpace(art.files["imageref"]), art.gen, append([]byte(nil), art.envelope...), nil
+}
+
+func (f *fakeStore) ArtifactDeviceShape(_ context.Context, prefix string) (bool, bool, []string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	art, ok := f.arts[prefix]
+	if !ok {
+		return false, false, nil, nil
+	}
+	return true, art.deviceKnown, append([]string(nil), art.deviceIDs...), nil
 }
 
 func (f *fakeStore) ArtifactFileSHA256(_ context.Context, prefix, name string) (bool, bool, string, error) {
@@ -336,7 +376,13 @@ func restoreCapabilityForTest(t *testing.T, s *Server, ref *nodev1.ArtifactRef, 
 func (f *fakeStore) seedArtifactAt(prefix string, files map[string]string, generation uint64, cpuVendor, cpuTemplate string, createdAtMs int64) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.arts[prefix] = fakeArtifact{files: files, gen: generation, cpuVendor: cpuVendor, cpuTemplate: cpuTemplate, createdAtMs: createdAtMs}
+	devices := snapshotmeta.DeviceSet{}
+	if data, ok := files[snapshotmeta.JailResourcesFile]; ok {
+		if parsed, err := snapshotmeta.DeviceSetFromJailResources([]byte(data)); err == nil {
+			devices = parsed
+		}
+	}
+	f.arts[prefix] = fakeArtifact{files: files, gen: generation, cpuVendor: cpuVendor, cpuTemplate: cpuTemplate, createdAtMs: createdAtMs, deviceKnown: devices.Known, deviceIDs: append([]string(nil), devices.IDs...)}
 }
 
 // errFakeNotPresent stands in for store.ErrNotPresent in these in-package tests
@@ -736,7 +782,10 @@ func TestExportArtifactBaseSkipsWhenSiblingVendorCopyExists(t *testing.T) {
 
 	// A sibling node of the same vendor already exported this ref, with ITS OWN
 	// snapshot bytes.
-	sibling := map[string]string{"imageref": "img", "memfile": "SIBLING-mem", "rootfsid": testRootfsUUIDA, "snapfile": "SIBLING-snap"}
+	sibling := map[string]string{
+		"imageref": "img", "jail-resources.json": `[{"role":"rootfs"}]`,
+		"memfile": "SIBLING-mem", "rootfsid": testRootfsUUIDA, "snapfile": "SIBLING-snap",
+	}
 	fs.seedArtifact(prefix, sibling, 0, "amd", "")
 
 	s.registry.sync([]workloadEntry{{Workload: workload, ImageRef: digest, RootfsRef: "/rootfs/bazel-query"}})
@@ -745,7 +794,10 @@ func TestExportArtifactBaseSkipsWhenSiblingVendorCopyExists(t *testing.T) {
 	dir := filepath.Join(s.cfg.SnapshotRoot, "bases", ref)
 	// Deliberately DIFFERENT bytes from the seeded sibling copy, which is the
 	// real cross-node situation.
-	writeBundleFiles(t, dir, map[string]string{"imageref": "img", "memfile": "LOCAL-mem", "rootfsid": testRootfsUUIDA, "snapfile": "LOCAL-snap"})
+	writeBundleFiles(t, dir, map[string]string{
+		"imageref": "img", "jail-resources.json": `[{"role":"rootfs"}]`,
+		"memfile": "LOCAL-mem", "rootfsid": testRootfsUUIDA, "snapfile": "LOCAL-snap",
+	})
 
 	if _, err := s.ExportArtifact(ctx, &nodev1.ExportArtifactRequest{
 		Artifact: &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_BASE, Workload: workload, Ref: ref},
@@ -773,6 +825,62 @@ func TestExportArtifactBaseSkipsWhenSiblingVendorCopyExists(t *testing.T) {
 	fs.mu.Unlock()
 	if !sameStringMap(stored, sibling) {
 		t.Fatalf("sibling copy was overwritten: got %v, want %v", stored, sibling)
+	}
+}
+
+func TestExportArtifactBasePresenceDoesNotBypassDeviceShapeFence(t *testing.T) {
+	rootOnly := `[{"role":"rootfs"}]`
+	withVolume := `[{"role":"rootfs"},{"role":"volume"}]`
+	for _, tc := range []struct {
+		name           string
+		localMetadata  string
+		remoteMetadata string
+	}{
+		{name: "different known shapes", localMetadata: rootOnly, remoteMetadata: withVolume},
+		{name: "known cannot adopt unknown", localMetadata: rootOnly},
+		{name: "unknown cannot adopt known", remoteMetadata: withVolume},
+		{name: "different unknown copies"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fs := newFakeStore()
+			s := newStoreTestServer(t, fs)
+			ref := &nodev1.ArtifactRef{
+				Kind: nodev1.ArtifactKind_ARTIFACT_KIND_BASE, Workload: "echo", Ref: "echo__same",
+			}
+			prefix := artifactPrefix(ref, s.cfg.CpuVendor)
+			remote := map[string]string{
+				"imageref": "img", "memfile": "REMOTE-mem",
+				"rootfsid": testRootfsUUIDA, "snapfile": "REMOTE-snap",
+			}
+			if tc.remoteMetadata != "" {
+				remote[snapshotmeta.JailResourcesFile] = tc.remoteMetadata
+			}
+			fs.seedArtifact(prefix, remote, 0, "amd", "")
+
+			local := map[string]string{
+				"imageref": "img", "memfile": "LOCAL-mem",
+				"rootfsid": testRootfsUUIDA, "snapfile": "LOCAL-snap",
+			}
+			if tc.localMetadata != "" {
+				local[snapshotmeta.JailResourcesFile] = tc.localMetadata
+			}
+			writeBundleFiles(t, s.artifactLocalDir(ref), local)
+
+			s.runExportJob(context.Background(), exportJob{ref: ref, key: prefix})
+
+			if _, ok := s.exported.generation(prefix); ok {
+				t.Fatal("incompatible store copy was marked durable for the local base")
+			}
+			if got := fs.calls(prefix); got != 1 {
+				t.Fatalf("store.Export calls = %d, want 1 compatibility check", got)
+			}
+			fs.mu.Lock()
+			stored := fs.arts[prefix].files
+			fs.mu.Unlock()
+			if !sameStringMap(stored, remote) {
+				t.Fatalf("incompatible store winner changed: got %v, want %v", stored, remote)
+			}
+		})
 	}
 }
 
@@ -1338,6 +1446,139 @@ func TestRestoreArtifactBaseIsAsync(t *testing.T) {
 	if b, ok := s.bases.get(ref); !ok || b.state != nodev1.BaseBuildState_BASE_BUILD_STATE_READY {
 		t.Fatal("restored base not re-registered READY")
 	}
+}
+
+func TestBaseHydrationRoundTripsCapturedDeviceShapes(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		metadata string
+		wantIDs  []string
+	}{
+		{name: "root-only", metadata: `[{"role":"rootfs"}]`},
+		{name: "placeholder", metadata: `[{"role":"rootfs"},{"role":"volume"}]`, wantIDs: []string{"volume"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fs := newFakeStore()
+			s := newStoreTestServer(t, fs)
+			ref := "echo__" + tc.name
+			prefix := "base/amd/echo/" + ref
+			rootfs := writeExt4Rootfs(t, t.TempDir(), "rootfs.ext4", testRootfsUUIDA)
+			bundle := map[string]string{
+				"imageref": "img", "memfile": "mem", "rootfsid": testRootfsUUIDA,
+				"rootfspath": rootfs, "snapfile": "snap", "jail-resources.json": tc.metadata,
+			}
+			fs.seedArtifact(prefix, bundle, 0, "amd", "")
+			s.runRestoreJob(context.Background(), restoreJob{
+				ref:    &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_BASE, Workload: "echo", Ref: ref},
+				prefix: prefix, localDir: filepath.Join(s.cfg.SnapshotRoot, "bases", ref),
+			})
+			got, ok := s.bases.get(ref)
+			if !ok || got.state != nodev1.BaseBuildState_BASE_BUILD_STATE_READY || !got.devices.Known || !slices.Equal(got.devices.IDs, tc.wantIDs) {
+				t.Fatalf("hydrated base = %+v ok=%v, want READY known ids=%v", got, ok, tc.wantIDs)
+			}
+		})
+	}
+}
+
+func TestBaseHydrationRefusesIncompatibleSameRefBothDirections(t *testing.T) {
+	rootOnly := `[{"role":"rootfs"}]`
+	withVolume := `[{"role":"rootfs"},{"role":"volume"}]`
+	for _, tc := range []struct {
+		name           string
+		localMetadata  string
+		remoteMetadata string
+	}{
+		{name: "root-only local volume remote", localMetadata: rootOnly, remoteMetadata: withVolume},
+		{name: "volume local root-only remote", localMetadata: withVolume, remoteMetadata: rootOnly},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fs := newFakeStore()
+			s := newStoreTestServer(t, fs)
+			ref := "echo__same"
+			prefix := "base/amd/echo/" + ref
+			rootfs := writeExt4Rootfs(t, t.TempDir(), "rootfs.ext4", testRootfsUUIDA)
+			remote := map[string]string{
+				"imageref": "img", "memfile": "remote-mem", "rootfsid": testRootfsUUIDA,
+				"rootfspath": rootfs, "snapfile": "remote-snap", "jail-resources.json": tc.remoteMetadata,
+			}
+			fs.seedArtifact(prefix, remote, 0, "amd", "")
+			localDir := filepath.Join(s.cfg.SnapshotRoot, "bases", ref)
+			local := map[string]string{
+				"imageref": "img", "memfile": "local-mem", "rootfsid": testRootfsUUIDA,
+				"rootfspath": rootfs, "snapfile": "local-snap", "jail-resources.json": tc.localMetadata,
+			}
+			writeBundleFiles(t, localDir, local)
+			s.runRestoreJob(context.Background(), restoreJob{
+				ref:    &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_BASE, Workload: "echo", Ref: ref},
+				prefix: prefix, localDir: localDir,
+			})
+			got, err := os.ReadFile(filepath.Join(localDir, "snapfile"))
+			if err != nil || string(got) != "local-snap" {
+				t.Fatalf("incompatible hydration changed local bundle: snap=%q err=%v", got, err)
+			}
+		})
+	}
+}
+
+func TestBaseHydrationConflictingMarkerAndPartialFailureLeaveDestinationUntouched(t *testing.T) {
+	t.Run("conflicting marker", func(t *testing.T) {
+		fs := newFakeStore()
+		s := newStoreTestServer(t, fs)
+		ref := "echo__conflict"
+		prefix := "base/amd/echo/" + ref
+		rootfs := writeExt4Rootfs(t, t.TempDir(), "rootfs.ext4", testRootfsUUIDA)
+		fs.seedArtifact(prefix, map[string]string{
+			"imageref": "img", "memfile": "mem", "rootfsid": testRootfsUUIDA,
+			"rootfspath": rootfs, "snapfile": "snap", "jail-resources.json": `[{"role":"rootfs"}]`,
+		}, 0, "amd", "")
+		fs.mu.Lock()
+		art := fs.arts[prefix]
+		art.deviceKnown = true
+		art.deviceIDs = []string{"volume"}
+		fs.arts[prefix] = art
+		fs.mu.Unlock()
+		localDir := filepath.Join(s.cfg.SnapshotRoot, "bases", ref)
+		s.runRestoreJob(context.Background(), restoreJob{
+			ref:    &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_BASE, Workload: "echo", Ref: ref},
+			prefix: prefix, localDir: localDir,
+		})
+		if _, err := os.Stat(localDir); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("conflicting staged bundle published: %v", err)
+		}
+	})
+
+	t.Run("partial download", func(t *testing.T) {
+		fs := newFakeStore()
+		fs.restoreErr = errors.New("injected partial restore failure")
+		fs.restoreFailAfter = 1
+		s := newStoreTestServer(t, fs)
+		ref := "echo__partial"
+		prefix := "base/amd/echo/" + ref
+		rootfs := writeExt4Rootfs(t, t.TempDir(), "rootfs.ext4", testRootfsUUIDA)
+		fs.seedArtifact(prefix, map[string]string{
+			"imageref": "img", "memfile": "mem", "rootfsid": testRootfsUUIDA,
+			"rootfspath": rootfs, "snapfile": "snap", "jail-resources.json": `[{"role":"rootfs"}]`,
+		}, 0, "amd", "")
+		localDir := filepath.Join(s.cfg.SnapshotRoot, "bases", ref)
+		writeBundleFiles(t, localDir, map[string]string{"partial-sentinel": "keep"})
+		s.runRestoreJob(context.Background(), restoreJob{
+			ref:    &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_BASE, Workload: "echo", Ref: ref},
+			prefix: prefix, localDir: localDir,
+		})
+		got, err := os.ReadFile(filepath.Join(localDir, "partial-sentinel"))
+		if err != nil || string(got) != "keep" {
+			t.Fatalf("partial failure changed destination: sentinel=%q err=%v", got, err)
+		}
+		entries, err := os.ReadDir(s.cfg.SnapshotRoot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range entries {
+			if strings.HasPrefix(entry.Name(), ".base-restore-") {
+				t.Fatalf("partial staging directory leaked: %s", entry.Name())
+			}
+		}
+	})
 }
 
 // TestRestoreArtifactBaseNotPresentFailsFast proves a BASE restore whose store

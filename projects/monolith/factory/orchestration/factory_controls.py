@@ -156,7 +156,7 @@ def delivery_branch_owner(
     rows = db.exec(
         select(FactoryReceipt).where(
             FactoryReceipt.repo == repo,
-            FactoryReceipt.state.in_(_ACTIVE),
+            FactoryReceipt.state.in_((*_ACTIVE, "landing")),
         )
     ).all()
     for row in rows:
@@ -1559,7 +1559,7 @@ def _snapshot(db: Session, row: FactoryReceipt, *, body: bool = False) -> dict:
             select(FactoryAudit)
             .where(
                 FactoryAudit.task_id == row.task_id,
-                FactoryAudit.action == "finish_task",
+                FactoryAudit.action.in_(("finish_task", "delivery_ready")),
             )
             .order_by(FactoryAudit.id.desc())
         ).first()
@@ -2004,6 +2004,7 @@ def status(*, session: Session | None = None) -> dict:
             "actor": control.actor,
             "receipts": receipts,
             "active_tasks": [r for r in receipts if r["state"] in _ACTIVE],
+            "landing_tasks": [r for r in receipts if r["state"] == "landing"],
         }
 
 
@@ -2044,7 +2045,7 @@ def _generation_retirement_candidates(
         .order_by(FactoryReceipt.id)
     ).all()
     for row in rows:
-        if row.state in _ACTIVE:
+        if row.state in (*_ACTIVE, "landing"):
             continue
         escalation = json.loads(row.escalation_json) if row.escalation_json else None
         unresolved = isinstance(escalation, dict) and escalation.get("resolved") is None
@@ -2802,6 +2803,36 @@ def finish_task(
                 and json.loads(last.detail_json).get("evidence") == evidence
             )
             return {"ok": same, "reason": None if same else "conflicting_outcome"}
+        if row.state == "landing":
+            ready = db.exec(
+                select(FactoryAudit)
+                .where(
+                    FactoryAudit.task_id == task_id,
+                    FactoryAudit.action == "delivery_ready",
+                )
+                .order_by(FactoryAudit.id.desc())
+            ).first()
+            original = json.loads(ready.detail_json).get("evidence") if ready else None
+            if outcome != "succeeded" or evidence != original or not ready:
+                return {"ok": False, "reason": "conflicting_outcome"}
+            proofs = db.exec(
+                select(FactoryAudit).where(
+                    FactoryAudit.task_id == task_id,
+                    FactoryAudit.action == "rollout_verified",
+                    FactoryAudit.actor == "factory:landing",
+                    FactoryAudit.id > ready.id,
+                )
+            ).all()
+            pr_url = (evidence or {}).get("pr_url", "")
+            verified = any(
+                proof.get("verified") is True
+                and proof.get("approved_head_sha") == (evidence or {}).get("head_sha")
+                and pr_url
+                == f"https://github.com/{row.repo}/pull/{proof.get('pr_number')}"
+                for proof in (json.loads(event.detail_json) for event in proofs)
+            )
+            if not verified:
+                return {"ok": True, "state": "landing"}
         if outcome == "succeeded":
             barrier = landing_recovery_barrier(task_id, session=db)
             if barrier is not None:
@@ -2886,9 +2917,26 @@ def finish_task(
             and _accounting(_starts(db, task_id))["unresolved_starts"]
         ):
             return {"ok": False, "reason": "unresolved_starts"}
+        action = "finish_task"
+        if (
+            outcome == "succeeded"
+            and row.state != "landing"
+            and (evidence or {}).get("state") == "ready_for_review"
+            and (evidence or {}).get("pr_url")
+            and auto_merge_enabled(json.loads(_control.policy_json or "{}"))
+        ):
+            # Delivery approval ends guest execution, not the deployment task.
+            outcome = "landing"
+            action = "delivery_ready"
         row.state = outcome
         row.updated_at = _now()
         db.add(row)
+        if outcome == "landing":
+            task = db.get(SwarmTask, task_id)
+            task.start_state = "landing"
+            task.start_updated_at = _now()
+            task.settled_at = None
+            db.add(task)
         if outcome in _SETTLED:
             # An escalated task is settled the same way a terminal one is.
             # Nothing the server does on its own runs another node on it, and
@@ -2901,7 +2949,7 @@ def finish_task(
         _audit(
             db,
             actor,
-            "finish_task",
+            action,
             task_id=task_id,
             outcome=outcome,
             evidence=evidence,
@@ -2942,7 +2990,9 @@ def request_landing_recovery(
             select(FactoryAudit)
             .where(
                 FactoryAudit.task_id == task_id,
-                FactoryAudit.action.in_(("landing_recovery_requested", "finish_task")),
+                FactoryAudit.action.in_(
+                    ("landing_recovery_requested", "finish_task", "delivery_ready")
+                ),
             )
             .order_by(FactoryAudit.id)
         ).all()
@@ -2950,7 +3000,12 @@ def request_landing_recovery(
             event for event in events if event.action == "landing_recovery_requested"
         ]
         latest_finish = max(
-            (event.id for event in events if event.action == "finish_task"), default=0
+            (
+                event.id
+                for event in events
+                if event.action in ("finish_task", "delivery_ready")
+            ),
+            default=0,
         )
         barrier = landing_recovery_barrier(task_id, session=db) if previous else None
         replaying = bool(
@@ -2961,7 +3016,7 @@ def request_landing_recovery(
             return {"ok": True, "replayed": True, "state": row.state}
         if not replaying and len(previous) >= MAX_LANDING_RECOVERIES:
             return {"ok": False, "reason": "recovery_limit"}
-        if row.state not in ("admitted", "succeeded"):
+        if row.state not in ("admitted", "landing", "succeeded"):
             return {"ok": False, "reason": "task_not_correctable"}
         if row.task_paused or row.cancellation_requested:
             return {"ok": False, "reason": "task_paused"}
@@ -2969,7 +3024,7 @@ def request_landing_recovery(
             start.status in ("reserved", "uncertain") for start in _starts(db, task_id)
         ):
             return {"ok": False, "reason": "unresolved_execution"}
-        if row.state == "succeeded":
+        if row.state in ("succeeded", "landing"):
             live_policy = json.loads(_control.policy_json or "{}")
             if _control.state != "enabled" or not auto_merge_enabled(live_policy):
                 return {"ok": False, "reason": "factory_disabled"}
@@ -3036,6 +3091,7 @@ def reconcile_sessionless_start(
     actor: str,
     *,
     workflow_status: str | None,
+    workflow_absent: bool = False,
     session: Session | None = None,
 ) -> dict:
     """Atomically fail one aged start proven never to have made a session.
@@ -3048,9 +3104,11 @@ def reconcile_sessionless_start(
 
     Refusals are ordinary observations for the periodic sweeper. Unexpected
     lookup failures raise and roll the whole transaction back, so unavailable
-    evidence can never become a no-session proof. The caller must also supply
-    the exact owning DBOS workflow's terminal error or cancellation status as
-    external cessation evidence.
+    evidence can never become a no-session proof. The caller must supply the
+    exact owning DBOS workflow's terminal error/cancellation status, or an
+    explicit successful lookup that found no workflow. Absence alone cannot
+    settle anything: the locked no-session proof and terminal graph transition
+    also fence a submitter that creates the workflow after that lookup.
     """
     from factory.execution.api import inspect_lost_before_session_factory_attempt
     from factory.orchestration import graph
@@ -3058,7 +3116,12 @@ def reconcile_sessionless_start(
     actor = _text(actor, "actor")
     node_key = _text(node_key, "node_key")
     _integer(attempt, "attempt", 1, 2**31 - 1)
-    if workflow_status not in _SESSIONLESS_START_TERMINAL_WORKFLOW_STATUSES:
+    terminal = (
+        workflow_absent is False
+        and workflow_status in _SESSIONLESS_START_TERMINAL_WORKFLOW_STATUSES
+    )
+    absent = workflow_absent is True and workflow_status is None
+    if not (terminal or absent):
         return {"ok": False, "reason": "workflow_not_terminal"}
     with _locked_session(session) as (db, _control):
         run = db.exec(
@@ -3084,7 +3147,11 @@ def reconcile_sessionless_start(
         proof, refusal = inspect_lost_before_session_factory_attempt(db, pin)
         if proof is None:
             return {"ok": False, "reason": refusal}
-        proof = {**proof, "workflow_status": workflow_status}
+        proof = {
+            **proof,
+            "workflow_status": workflow_status,
+            "workflow_absent": absent,
+        }
 
         # The start ledger is ordered first, matching task settlement's
         # unresolved-start constraint. Both writes still share this transaction,

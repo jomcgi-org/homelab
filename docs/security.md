@@ -169,6 +169,17 @@ nothing else mounts it, the control-plane-to-noded hop still carries a
 static bearer token, and guests hold no identity. Phase 2 is #5755 to
 #5759; the phase plan is #5706.
 
+Restore-capability MAC key decoupling is phase 2a (#5756). Its rollout order is:
+ship the default-off shared Secret wiring and a noded verifier that accepts the
+dedicated key before the legacy bearer, enable the dedicated key on the control
+plane and every noded pod in one staged values change, then verify restores
+before rotating or retiring the transport bearer. The legacy verifier is a
+one-release migration window only. Remove it in the first chart release after
+the phase 2c checklist in #5706 has enabled and verified the dedicated key
+fleet-wide. The repository defaults and current production values do not
+enable the dedicated key, so this documents sequencing and does not claim a
+rollout.
+
 **Discord features are allow-list only** (`projects/monolith/chat/acl.py`,
 the `discord_feature_grant` table). **Codex OAuth is refreshed by one
 process**, the token broker (`projects/embervm/tokenbroker/`), so no

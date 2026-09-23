@@ -5,6 +5,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jomcgi/homelab/projects/embervm/noded/snapshotmeta"
 	nodev1 "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1"
 
 	"github.com/jomcgi/homelab/projects/embervm/noded/substrate"
@@ -485,6 +486,7 @@ type baseEntry struct {
 	readyPath       string
 	state           nodev1.BaseBuildState
 	buildErr        string
+	devices         snapshotmeta.DeviceSet
 }
 
 // baseRegistry tracks base build state per snapshot_ref. It survives across a VM
@@ -603,9 +605,13 @@ func (b *baseRegistry) beginBuild(ref, workload, rootfsPath, readyPath string) b
 }
 
 // readyBuild records a completed base build.
-func (b *baseRegistry) readyBuild(ref, workload, imageDigest, rootfsPath, readyPath string, sizeBytes int64) {
+func (b *baseRegistry) readyBuild(ref, workload, imageDigest, rootfsPath, readyPath string, sizeBytes int64, deviceSets ...snapshotmeta.DeviceSet) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	var devices snapshotmeta.DeviceSet
+	if len(deviceSets) > 0 {
+		devices = deviceSets[0]
+	}
 	b.bases[ref] = &baseEntry{
 		snapshotRef: ref,
 		workload:    workload,
@@ -618,6 +624,7 @@ func (b *baseRegistry) readyBuild(ref, workload, imageDigest, rootfsPath, readyP
 		// fresh build to the lexical tie-break against adopted bases.
 		createdAtUnixMs: time.Now().UnixMilli(),
 		state:           nodev1.BaseBuildState_BASE_BUILD_STATE_READY,
+		devices:         devices,
 	}
 }
 
@@ -662,6 +669,7 @@ func (b *baseRegistry) register(e baseEntry) {
 		// buildErr (a missing backing rootfs), and that reason is the only thing
 		// distinguishing it from a base that was simply never built.
 		buildErr: e.buildErr,
+		devices:  snapshotmeta.DeviceSet{Known: e.devices.Known, IDs: append([]string(nil), e.devices.IDs...)},
 	}
 }
 

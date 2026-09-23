@@ -1,4 +1,4 @@
-"""Rule that writes one line per pushable image: push label, repository, digest.
+"""Rule that writes one line per pushable image: label, repository, digest, tag.
 
 Exists so main's deploy can decide WHICH images to push without staging any of
 them. `bazel run` materialises every command's runfiles on the CI runner before
@@ -7,7 +7,7 @@ dual-arch images out of CAS even when every action is a cache hit. That is the
 single largest source of BuildBuddy download traffic in this repo (measured
 2026-08-10: the `deploy` runner alone was 488 GB/day, 29.6% of the total).
 
-The manifest is the cheap half of that data: three short strings per image,
+The manifest is the cheap half of that data: four short strings per image,
 built from the same OciImageInfo the Helm values are pinned from, so the digest
 here is exactly the digest a chart would deploy. bazel/images/push/push-changed.sh
 reads it, asks the registry whether each digest is already published, and runs
@@ -45,14 +45,16 @@ def _oci_digest_manifest_impl(ctx):
         info = target[OciImageInfo]
         inputs.append(info.repository)
         inputs.append(info.digest)
+        inputs.append(info.image_tags)
 
-        # Both files are read with $(cat), which strips the trailing newline the
-        # rules_oci digest file carries and the repository file does not.
+        # Command substitution strips the trailing newline carried by digest
+        # and tag files; the repository file has none.
         commands.append(
-            'printf "%s\\t%s\\t%s\\n" "{label}" "$(cat {repository})" "$(cat {digest})" >> {output}'.format(
+            'printf "%s\\t%s\\t%s\\t%s\\n" "{label}" "$(cat {repository})" "$(cat {digest})" "$(head -1 {tags})" >> {output}'.format(
                 label = push_label,
                 repository = info.repository.path,
                 digest = info.digest.path,
+                tags = info.image_tags.path,
                 output = output.path,
             ),
         )
@@ -80,5 +82,5 @@ oci_digest_manifest = rule(
                   "push-changed.sh skip an image that genuinely changed.",
         ),
     },
-    doc = "Writes a `push_label<TAB>repository<TAB>digest` manifest for a set of images.",
+    doc = "Writes a `push_label<TAB>repository<TAB>digest<TAB>tag` manifest for a set of images.",
 )

@@ -83,12 +83,11 @@ FACTORY_RECOVERY_ABANDON_SECONDS = 900
 FACTORY_RECONCILER_PAUSE_TTL_SECONDS = 7200
 ESCALATION_REVALIDATION_BATCH_SIZE = 50
 ESCALATION_REVALIDATION_ACTOR = "factory:escalation-revalidation"
-# How long past its deadline a task may sit holding an unresolved start before
-# the backstop releases the slot. Matched to the reconciler pause TTL above,
-# which is the other force-settle on this lane, and long enough that every
-# proof-based release has had hundreds of ticks to settle the attempt on
-# evidence first.
+# Historical deadline release timing. Repository-only staging keeps the release
+# capability hard-disabled: elapsed time is not cessation evidence and cannot
+# settle an unknown start or its capacity hold.
 FACTORY_DEADLINE_BACKSTOP_GRACE_SECONDS = 7200
+FACTORY_DEADLINE_BACKSTOP_RELEASE_STAGED = False
 # Process start, for the settling window stall detection waits out. Monotonic
 # because it is only ever compared against itself.
 _STARTED_AT = time.monotonic()
@@ -2290,19 +2289,46 @@ def _consume_intervention_notifications(task_id: str) -> None:
                 select(FactoryAudit)
                 .where(
                     FactoryAudit.task_id == task_id,
-                    FactoryAudit.action == "stop_observation",
+                    FactoryAudit.action.in_(
+                        (
+                            "stop_observation",
+                            "stop_settled",
+                            "interrupted_continuation_settled",
+                            "record_start_outcome",
+                        )
+                    ),
                 )
                 .order_by(FactoryAudit.id)
             ).all()
         required = {}
         for row in rows:
             detail = json.loads(row.detail_json)
-            workflow_id = detail.get("workflow_id")
-            if isinstance(workflow_id, str):
+            workflow_id = detail.get(
+                "start_key" if row.action == "record_start_outcome" else "workflow_id"
+            )
+            if not isinstance(workflow_id, str) or not workflow_id:
+                continue
+            if row.action == "stop_observation":
                 if detail.get("intervention_required") is True:
                     required[workflow_id] = detail
                 else:
                     required.pop(workflow_id, None)
+            elif (
+                (
+                    row.action == "stop_settled"
+                    and detail.get("cessation_confirmed") is True
+                )
+                or row.action == "interrupted_continuation_settled"
+                or (
+                    row.action == "record_start_outcome"
+                    and detail.get("reconciled") is True
+                    and detail.get("status") in ("succeeded", "failed")
+                )
+            ):
+                # Settlement writers validate the exact attempt under the control
+                # lock. Retain their history without asking a person to settle it
+                # again or consuming the task's notification fence on a stale hold.
+                required.pop(workflow_id, None)
         summary = []
         for workflow_id, detail in required.items():
             refusal = str(
@@ -4265,6 +4291,11 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
             "session_id": run.get("session_id"),
         }
     if result["status"] == "uncertain":
+        from factory.orchestration.factory_supervision import recover_completed_receipt
+
+        recover_completed_receipt(
+            pin, result.get("session_id") or run.get("session_id"), workflow_status
+        )
         confirmed = reconcile_completed_node(
             pin, result.get("session_id") or run.get("session_id")
         )
@@ -4288,7 +4319,19 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
                 if session_id is not None:
                     result = {**result, "session_id": session_id}
             _abandon_recovering_factory_session(pin, session_id, workflow_status)
-            if reconcile_uncertain_attempt(
+            from factory.execution.api import read_interrupted_factory_continuation
+
+            # Native terminal responses can settle a drain without a remote stop.
+            # Re-read the proof in the final transaction before changing anything.
+            with Session(get_engine()) as db:
+                with _locked_session(db):
+                    interrupted_ready = (
+                        read_interrupted_factory_continuation(
+                            db, pin, session_id, workflow_status
+                        )
+                        is not None
+                    )
+            if not interrupted_ready and reconcile_uncertain_attempt(
                 pin,
                 session_id,
                 result,
@@ -4303,8 +4346,70 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
                 and run.get("cost_usd") is None
             ):
                 from factory.execution.api import (
+                    read_interrupted_factory_continuation,
+                    settle_interrupted_factory_continuation,
+                )
+
+                interrupted = read_interrupted_factory_continuation(
+                    db,
+                    pin,
+                    result.get("session_id") or run.get("session_id"),
+                    workflow_status,
+                )
+                if interrupted is not None:
+                    current = next(
+                        (
+                            value
+                            for value in graph.node_runs(
+                                task["id"], run["node_key"], session=db
+                            )
+                            if value["attempt"] == run["attempt"]
+                        ),
+                        None,
+                    )
+                    if (
+                        current is None
+                        or current["pin"] != pin
+                        or current["dispatch_key"] != key
+                        or current["session_id"]
+                        not in (None, interrupted["session_id"])
+                        or current["status"]
+                        not in ("admitted", "dispatched", "uncertain")
+                        or current["cost_usd"] is not None
+                    ):
+                        raise ValueError("interrupted factory continuation changed")
+                    settle_interrupted_factory_continuation(db, pin, interrupted)
+                    result = {
+                        **result,
+                        "status": "failed",
+                        "session_id": interrupted["session_id"],
+                        "cost_usd": None,
+                        "cost_basis": "unknown",
+                        "head_sha": current.get("head_sha") or result.get("head_sha"),
+                        "invocation_phase": "interrupted_continuation_retired",
+                        "capacity_denied": False,
+                        "reason": "interrupted_continuation_retired: every dispatch ended for drain and the owning workflow is terminal",
+                        "previous_outcome": _outcome(current) or result,
+                        "interrupted_continuation_retired": interrupted,
+                    }
+                    _controls_audit(
+                        db,
+                        ACTOR,
+                        "interrupted_continuation_settled",
+                        task_id=task["id"],
+                        workflow_id=key,
+                        session_id=interrupted["session_id"],
+                        identity=interrupted,
+                    )
+            if (
+                result["status"] == "uncertain"
+                and result.get("cost_usd") is None
+                and run.get("cost_usd") is None
+            ):
+                from factory.execution.api import (
                     read_never_dispatched_factory_attempt,
                     read_not_invoked_factory_attempt,
+                    read_interrupted_retry_not_invoked_factory_attempt,
                     settle_never_dispatched_factory_attempt,
                 )
 
@@ -4355,6 +4460,10 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
                         pin,
                         result.get("session_id") or run.get("session_id"),
                     )
+                    if proof is None:
+                        proof = read_interrupted_retry_not_invoked_factory_attempt(
+                            db, pin, result.get("session_id") or run.get("session_id")
+                        )
                 if never_dispatched is None and proof is not None:
                     current = next(
                         (
@@ -4376,6 +4485,10 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
                         or current["cost_usd"] is not None
                     ):
                         raise ValueError("not-invoked factory attempt changed")
+                    interrupted = "interrupted_dispatches" in proof
+                    proof_key = (
+                        "interrupted_then_not_invoked" if interrupted else "not_invoked"
+                    )
                     result = {
                         **result,
                         "status": "failed",
@@ -4383,9 +4496,20 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
                         "cost_usd": None,
                         "cost_basis": "unknown",
                         "head_sha": current.get("head_sha") or result.get("head_sha"),
-                        "reason": "not_invoked: exact session-owner failure before model POST",
+                        "reason": (
+                            "interrupted_then_not_invoked: drain receipts prove prior dispatches ended; latest retry failed before model POST"
+                            if interrupted
+                            else "not_invoked: exact session-owner failure before model POST"
+                        ),
                         "previous_outcome": _outcome(current) or result,
-                        "not_invoked": proof,
+                        # Keep earlier unknown spend charged. Only the original
+                        # first-dispatch key grants no_model_post accounting.
+                        proof_key: proof,
+                        **(
+                            {"invocation_phase": "interrupted_then_not_invoked"}
+                            if interrupted
+                            else {}
+                        ),
                         # A refused slot is the control plane's state, not this
                         # attempt's, so the marker rides on the outcome and the
                         # attempt count reads it back off the ledger.
@@ -5458,7 +5582,7 @@ def observe_reviewer_routing(policy: dict) -> None:
 
 
 def _expire_reconciler_pause(task_id: str) -> bool:
-    """Cancel one stale reconciler-owned pause and release uncertain starts."""
+    """Cancel a stale reconciler pause only after all starts are settled."""
     if os.environ.get("FACTORY_STOP_SUPERVISION_ENABLED", "false").lower() != "true":
         return False
 
@@ -5466,13 +5590,8 @@ def _expire_reconciler_pause(task_id: str) -> bool:
         _audit,
         _locked_session,
         finish_task,
-        record_start_outcome,
     )
-    from factory.orchestration.factory_models import (
-        FactoryAudit,
-        FactoryReceipt,
-        FactoryStart,
-    )
+    from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt
 
     expired = False
     with Session(get_engine()) as db:
@@ -5525,47 +5644,45 @@ def _expire_reconciler_pause(task_id: str) -> bool:
                 task_id, "cancelled", ACTOR, evidence=evidence, session=db
             )
             if not result["ok"] and result.get("reason") == "unresolved_starts":
-                starts = db.exec(
-                    select(FactoryStart).where(
-                        FactoryStart.task_id == task_id,
-                        FactoryStart.status == "uncertain",
+                # Elapsed pause time is not an execution outcome. Keep the
+                # receipt paused and retain every start, cost and capacity
+                # hold until its owner records exact terminal evidence.
+                already_recorded = db.exec(
+                    select(FactoryAudit.id).where(
+                        FactoryAudit.task_id == task_id,
+                        FactoryAudit.action == "reconciler_pause_expiry_held",
+                        FactoryAudit.id > pause.id,
                     )
-                ).all()
-                for start in starts:
-                    settled = record_start_outcome(
-                        task_id,
-                        start.start_key,
-                        "failed",
+                ).first()
+                if already_recorded is None:
+                    _audit(
+                        db,
                         ACTOR,
-                        cost_usd=0.0,
-                        session_id=start.session_id,
-                        reconciled=True,
-                        session=db,
+                        "reconciler_pause_expiry_held",
+                        task_id=task_id,
+                        reason=reason,
+                        refusal="unresolved_starts",
                     )
-                    if not settled["ok"]:
-                        return False
-                result = finish_task(
-                    task_id, "cancelled", ACTOR, evidence=evidence, session=db
-                )
             if not result["ok"]:
-                return False
-            receipt.task_paused = False
-            receipt.updated_at = datetime.now(timezone.utc)
-            db.add(receipt)
-            _audit(
-                db,
-                ACTOR,
-                "reconciler_pause_expired",
-                task_id=task_id,
-                reason=reason,
-            )
-            expired = True
+                expired = False
+            else:
+                receipt.task_paused = False
+                receipt.updated_at = datetime.now(timezone.utc)
+                db.add(receipt)
+                _audit(
+                    db,
+                    ACTOR,
+                    "reconciler_pause_expired",
+                    task_id=task_id,
+                    reason=reason,
+                )
+                expired = True
         db.commit()
     return expired
 
 
 def _deadline_backstop_enabled() -> bool:
-    return (
+    return FACTORY_DEADLINE_BACKSTOP_RELEASE_STAGED and (
         os.environ.get("FACTORY_DEADLINE_BACKSTOP_ENABLED", "false").lower() == "true"
     )
 
@@ -5590,9 +5707,10 @@ def _sweep_sessionless_starts(task: dict, dbos) -> int:
     deadline backstop. It therefore reaches the reserved-start shape even when
     funding refuses unresolved starts or the deadline path deliberately skips
     every reserved row. The exact owning DBOS workflow must report a terminal
-    error or cancellation before the database proof may run. Settlement only
-    changes the two attempt ledgers; normal conductor reconciliation decides
-    whether a bounded retry or re-plan is allowed next.
+    error/cancellation or be absent after a successful lookup. The locked
+    database proof and terminal run fence prevent a delayed submitter from
+    creating a session after settlement. Only the two attempt ledgers change;
+    normal reconciliation decides whether a bounded retry or re-plan is allowed.
     """
     from factory.orchestration.factory_controls import reconcile_sessionless_start
 
@@ -5611,6 +5729,7 @@ def _sweep_sessionless_starts(task: dict, dbos) -> int:
             run["attempt"],
             ACTOR,
             workflow_status=workflow_status,
+            workflow_absent=workflow is None,
         )
         settled += bool(result["ok"])
     return settled

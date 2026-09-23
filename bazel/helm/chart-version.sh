@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Compute the next semver version for a Helm chart based on conventional commits
-# scoped to the chart's Bazel dependency closure.
+# selected by the chart's Bazel dependency closure. Release numbers use the
+# same repository-wide history as the digest-authority fallback.
 #
 # Usage: chart-version.sh <chart-dir> [<bazel-package-label>]
 # Output: Next semver version to stdout (e.g., "0.9.0")
@@ -319,6 +320,16 @@ if [[ "$BUMP" == "none" ]]; then
 	echo >&2 "INFO: No conventional commits found since ${CURRENT_VERSION}, no bump needed"
 	echo "$CURRENT_VERSION"
 	exit 0
+fi
+
+# The closure decides whether a release is needed, not its number. A previous
+# publish can have used the digest-authority ALL_PATHS fallback and included a
+# feature outside this closure. A later scoped fix must not fall back below that
+# minor boundary (for example 0.537.1 followed by 0.536.40). Allocate both paths
+# from the same history, while unchanged closures still return above. This
+# second invocation skips the Bazel query and cannot recurse again.
+if [[ -z "${CHART_VERSION_ALL_PATHS:-}" ]]; then
+	exec env CHART_VERSION_ALL_PATHS=1 bash "$0" "$@"
 fi
 
 # The serial is the number of qualifying commits AFTER the boundary. The last

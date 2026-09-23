@@ -473,6 +473,38 @@ then runtime evidence before the separately gated retirement decision in
 [#4013](https://github.com/jomcgi-org/homelab/issues/4013). No earlier step
 authorizes deletion, and the sequence does not imply Fork B.
 
+### Base snapshot device compatibility
+
+Base capture writes `jail-resources.json` before publishing the bundle. That
+producer-owned file records the backing resources embedded in the Firecracker
+snapshot and therefore establishes whether the captured device table contains
+the non-root `volume` drive. The same file is included by recursive artifact
+export, restored into staging, checked against store metadata, and read again
+when noded rebuilds its base registry after restart.
+
+A volume request patches and resumes a base only when this captured metadata
+proves that `volume` exists and the receiving node's
+`WarmRestoreWithVolume` safety gate is armed. The gate therefore controls both
+placeholder-volume capture and restore: a disarmed node cold-boots even if it
+hydrates or adopts a placeholder-bearing base captured by an armed sibling. A
+current rootfs-only base is cold-booted with the requested volume, so
+Firecracker is never asked to patch a nonexistent device.
+A bundle without `jail-resources.json` predates this contract and is **unknown**,
+not rootfs-only: historical bundles can have either device shape. Such a legacy
+bundle remains warm-restorable for volume-less work. A volume request takes the
+same safe cold-boot path, while the node-stable placeholder backing file remains
+available so a legacy placeholder-bearing bundle can still load for volume-less
+work. Malformed or internally conflicting metadata is refused without deleting
+the bundle.
+
+The base identity does not include the device set. Publication, store export,
+and hydration therefore fence same-ref replacements unless both known device
+sets match. Hydration downloads to an isolated directory and publishes the
+complete bundle atomically, so a failed or incompatible download cannot partly
+rewrite an existing base. For legacy store markers, the downloaded bundle file
+is the available compatibility evidence; absent metadata remains explicitly
+unknown and is never guessed from the brick's current configuration.
+
 ### Sessions: the durability ladder
 
 | Tier | Window | Artifact | Pinning |

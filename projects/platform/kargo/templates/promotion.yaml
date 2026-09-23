@@ -80,6 +80,22 @@ spec:
         name: {{ $stage.name }}
       autoPromotionEnabled: {{ $stage.autoPromotion }}
     {{- end }}
+{{- with $pipeline.credentialItemPath }}
+---
+# The operator copies these labels to the generated Secret. Kargo matches the
+# item's repoURL, username and password fields in this project's namespace.
+apiVersion: onepassword.com/v1
+kind: OnePasswordItem
+metadata:
+  name: {{ $pipeline.name }}-chart-creds
+  namespace: {{ $pipeline.project }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  labels:
+    kargo.akuity.io/cred-type: helm
+spec:
+  itemPath: {{ . | quote }}
+{{- end }}
 ---
 {{- /*
 Subscribes to the chart repository, not to images. Images are already pinned by
@@ -134,8 +150,9 @@ the cluster. The repo's own guidance is never to make CI a ruleset bypass
 actor, and an admin PAT is a far larger surface than the problem.
 
 argocd-update needs no credential at all: it is a Kubernetes RBAC permission
-the controller already holds, and the charts are public so the Warehouse needs
-no registry credential either. ADR 009 called the git write credential "the
+the controller already holds. Warehouses read public charts without credentials;
+private chart repositories opt into credentialItemPath. ADR 009 called the git
+write credential "the
 main new surface"; this design removes it.
 
 THE COST, stated plainly: targetRevision stops being git truth. It lives in the

@@ -34,10 +34,12 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/jomcgi/homelab/projects/embervm/noded/snapshotmeta"
 	"github.com/jomcgi/homelab/projects/embervm/noded/sparse"
 	"github.com/klauspost/compress/zstd"
 )
@@ -97,6 +99,10 @@ var ErrPreconditionFailed = errors.New("store: conditional update precondition f
 // blind overwrite.
 var ErrMissingETag = errors.New("store: object response has no ETag")
 
+// ErrIncompatibleDeviceShape refuses a same-identity artifact replacement when
+// the captured Firecracker non-root drive set differs or either side is unknown.
+var ErrIncompatibleDeviceShape = errors.New("store: incompatible snapshot device shape")
+
 // FileMeta is one file's completeness record within an artifact's meta.json:
 // its exact byte size and hex SHA-256, verified on restore so a corrupt or
 // truncated object never overwrites good local bytes.
@@ -129,6 +135,10 @@ type Meta struct {
 	RootfsID        string              `json:"rootfsId,omitempty"`
 	ImageRef        string              `json:"imageRef,omitempty"`
 	Envelope        []byte              `json:"envelope,omitempty"`
+	// DeviceIDs is nil for legacy/unknown artifacts and points at a possibly
+	// empty set for current artifacts. The pointer preserves unknown versus a
+	// proven rootfs-only snapshot in JSON.
+	DeviceIDs *[]string `json:"deviceIds,omitempty"`
 }
 
 // DataKeyProvider returns a control-plane-minted data key and its opaque
@@ -151,6 +161,9 @@ type ExportOptions struct {
 	Workload  string
 	Ref       string
 	Overwrite bool
+	// EnforceDeviceShape prevents a same-key snapshot from overwriting a copy
+	// with a different or unknown captured device table.
+	EnforceDeviceShape bool
 	// DataKeySucceededFn observes a validated key and envelope before upload.
 	DataKeySucceededFn func()
 }
@@ -467,6 +480,18 @@ func (s *Store) Export(ctx context.Context, prefix, localDir string, files []str
 			}
 			meta.ImageRef = strings.TrimSpace(string(imageRef))
 		}
+		if name == snapshotmeta.JailResourcesFile {
+			data, rerr := os.ReadFile(path)
+			if rerr != nil {
+				return 0, false, fmt.Errorf("store: read artifact device metadata: %w", rerr)
+			}
+			devices, derr := snapshotmeta.DeviceSetFromJailResources(data)
+			if derr != nil {
+				return 0, false, fmt.Errorf("store: read artifact device metadata: %w", derr)
+			}
+			ids := append([]string{}, devices.IDs...)
+			meta.DeviceIDs = &ids
+		}
 	}
 	var opts ExportOptions
 	if len(options) > 0 {
@@ -480,7 +505,15 @@ func (s *Store) Export(ctx context.Context, prefix, localDir string, files []str
 	if !opts.Overwrite {
 		if present, remoteMeta, merr := s.getMeta(ctx, prefix); merr == nil && present {
 			if sameFiles(remoteMeta.Files, meta.Files) {
+				if opts.EnforceDeviceShape && remoteMeta.DeviceIDs != nil && !compatibleDeviceIDs(remoteMeta.DeviceIDs, meta.DeviceIDs) {
+					return 0, false, fmt.Errorf("%w: local %s, store %s", ErrIncompatibleDeviceShape, deviceIDsString(meta.DeviceIDs), deviceIDsString(remoteMeta.DeviceIDs))
+				}
 				markerChanged := false
+				if opts.EnforceDeviceShape && remoteMeta.DeviceIDs == nil && meta.DeviceIDs != nil {
+					ids := append([]string{}, (*meta.DeviceIDs)...)
+					remoteMeta.DeviceIDs = &ids
+					markerChanged = true
+				}
 				if meta.RootfsID != "" && remoteMeta.RootfsID != meta.RootfsID {
 					remoteMeta.RootfsID = meta.RootfsID
 					markerChanged = true
@@ -500,6 +533,9 @@ func (s *Store) Export(ctx context.Context, prefix, localDir string, files []str
 				}
 				return 0, true, nil
 			}
+			if opts.EnforceDeviceShape && !compatibleDeviceIDs(remoteMeta.DeviceIDs, meta.DeviceIDs) {
+				return 0, false, fmt.Errorf("%w: local %s, store %s", ErrIncompatibleDeviceShape, deviceIDsString(meta.DeviceIDs), deviceIDsString(remoteMeta.DeviceIDs))
+			}
 			// Content DIFFERS. Before this fence that fell straight through to a full
 			// re-upload, so an older copy silently overwrote a newer one on the shared
 			// singleton volume key. Compare the generation the marker already carries.
@@ -512,6 +548,13 @@ func (s *Store) Export(ctx context.Context, prefix, localDir string, files []str
 					"%w: local generation %d, store generation %d",
 					ErrStaleGeneration, generation, remoteMeta.Generation)
 			}
+		}
+	}
+	if opts.Overwrite && opts.EnforceDeviceShape {
+		if present, remoteMeta, merr := s.getMeta(ctx, prefix); merr != nil {
+			return 0, false, merr
+		} else if present && !compatibleDeviceIDs(remoteMeta.DeviceIDs, meta.DeviceIDs) {
+			return 0, false, fmt.Errorf("%w: local %s, store %s", ErrIncompatibleDeviceShape, deviceIDsString(meta.DeviceIDs), deviceIDsString(remoteMeta.DeviceIDs))
 		}
 	}
 
@@ -606,6 +649,20 @@ func (s *Store) Export(ctx context.Context, prefix, localDir string, files []str
 		return bytesMoved, false, perr
 	}
 	return bytesMoved, false, nil
+}
+
+func compatibleDeviceIDs(a, b *[]string) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	return slices.Equal(*a, *b)
+}
+
+func deviceIDsString(ids *[]string) string {
+	if ids == nil {
+		return "unknown"
+	}
+	return fmt.Sprintf("known %v", *ids)
 }
 
 // Restore fetches meta.json first (ErrNotPresent when absent, which the caller
@@ -889,6 +946,19 @@ func (s *Store) ArtifactInfo(ctx context.Context, prefix string) (present bool, 
 		total += fm.Size
 	}
 	return true, meta.CreatedAtUnixMs, uint64(total), meta.CpuVendor, meta.CpuTemplate, meta.RootfsID, meta.ImageRef, meta.Generation, append([]byte(nil), meta.Envelope...), nil
+}
+
+// ArtifactDeviceShape returns the captured non-root drive set recorded in the
+// completeness marker. known=false identifies legacy metadata, not an empty set.
+func (s *Store) ArtifactDeviceShape(ctx context.Context, prefix string) (present, known bool, deviceIDs []string, err error) {
+	if s == nil {
+		return false, false, nil, nil
+	}
+	present, meta, err := s.getMeta(ctx, prefix)
+	if err != nil || !present || meta.DeviceIDs == nil {
+		return present, false, nil, err
+	}
+	return true, true, append([]string(nil), (*meta.DeviceIDs)...), nil
 }
 
 // ArtifactFileSHA256 reports the checksum recorded for one file in an

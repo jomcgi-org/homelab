@@ -60,6 +60,30 @@ func TestStoreKeepsLatest(t *testing.T) {
 	}
 }
 
+func TestStoreCarriesOverageStatusWithoutExhaustingAllowedClaude(t *testing.T) {
+	store := NewStore()
+	now := time.Now().UTC()
+	store.Put("claude", Observation{
+		ObservedAt: now.Format(time.RFC3339), Status: "allowed", OverageStatus: "rejected",
+		Windows: []Window{{Name: "5h", UsedPercent: 24}},
+	}, now)
+	view := store.Get("claude")
+	if view.OverageStatus != "rejected" || view.ReachedType != "" || view.Exhausted {
+		t.Fatalf("view = %#v", view)
+	}
+	encoded, err := json.Marshal(view)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded["overage_status"] != "rejected" || decoded["reached_type"] != "" || decoded["exhausted"] != false {
+		t.Fatalf("JSON = %s", encoded)
+	}
+}
+
 func TestValidObservationRejectsUnknownWithoutWindows(t *testing.T) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	if ValidObservation(Observation{ObservedAt: now, Status: "unknown"}) {

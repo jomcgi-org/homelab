@@ -74,6 +74,12 @@ defmodule Embervm.SessionManagerTest do
     def append(server, op), do: Embervm.OpLog.SQLite.append(server, op)
   end
 
+  defmodule UnavailableCreateOpLog do
+    def load_sessions(server), do: SQLite.load_sessions(server)
+    def append(_server, %Embervm.OpLog.Op{kind: :session_created}), do: {:error, :unavailable}
+    def append(server, op), do: SQLite.append(server, op)
+  end
+
   defmodule UnavailableParkingOpLog do
     def load_sessions(server), do: SQLite.load_sessions(server)
     def append(_server, %Embervm.OpLog.Op{kind: :session_parking}), do: {:error, :unavailable}
@@ -275,6 +281,9 @@ defmodule Embervm.SessionManagerTest do
           :quota_config,
           :quota_table,
           :create_concurrency,
+          :reserve_session_vm_fun,
+          :commit_session_vm_fun,
+          :release_session_vm_fun,
           :node_confirmed_destroy,
           :destroying_alarm_ms,
           :orphan_grace_ms,
@@ -315,6 +324,7 @@ defmodule Embervm.SessionManagerTest do
       node_id: "node-4",
       pod_uid: "pod-node-4",
       configured_id: "node-4",
+      instance_id: Keyword.get(opts, :instance_id),
       workloads: %{
         wl => %{
           free_primed_slots: 1,
@@ -353,6 +363,125 @@ defmodule Embervm.SessionManagerTest do
   end
 
   defp fake_channel_fun, do: fn _node -> {:ok, :fake_channel} end
+
+  test "a durable primed claim survives control-plane rebuild and cannot reach session B" do
+    ctx = start_stack(claim_fun: fn _dispatcher, _node, _workload -> {:ok, "vm-session-a"} end)
+    put_session_workload(ctx, "wl-restart-claim",
+      primed_ids: ["vm-session-a", "vm-unowned"],
+      instance_id: "node-4"
+    )
+
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-restart-claim", "p1")
+    assert {:ok, %{vm_id: "vm-session-a"}} = SessionStore.get(ctx.store, created.session_id)
+
+    # Crash the control-plane-owned session process and rebuild SessionStore from
+    # the same durable SQLite projection. Node inventory outlives this boundary.
+    GenServer.stop(ctx.mgr)
+
+    for {_, pid, _, _} <- DynamicSupervisor.which_children(ctx.sup) do
+      :ok = DynamicSupervisor.terminate_child(ctx.sup, pid)
+    end
+
+    GenServer.stop(ctx.store)
+    {:ok, rebuilt} = SessionStore.start_link(name: nil, op_log: ctx.op_log)
+    assert :error = SessionStore.residency(rebuilt, created.session_id)
+    assert SessionStore.claimed_vm_ids(rebuilt) == MapSet.new(["vm-session-a"])
+
+    suffix = System.unique_integer([:positive])
+    dispatcher = String.to_atom("restart_claim_dispatcher_#{suffix}")
+    depth_table = String.to_atom("restart_claim_depth_#{suffix}")
+
+    {:ok, task_store} =
+      TaskStore.start_link(
+        name: nil,
+        op_log: ctx.op_log,
+        on_queued: fn task -> Dispatcher.enqueue(dispatcher, task) end
+      )
+
+    {:ok, _dispatcher_pid} =
+      Dispatcher.start_link(
+        name: dispatcher,
+        task_store: task_store,
+        capacity_table: ctx.cap_table,
+        catalog_table: ctx.cat_table,
+        depth_table: depth_table,
+        claimed_vm_ids_fun: fn -> SessionStore.claimed_vm_ids(rebuilt) end,
+        start_sweep: false
+      )
+
+    # Rebuild inventory before the manager restarts. Only the genuinely unowned
+    # warm VM is dispatchable even though stale node status still reports A's VM.
+    assert :ok = Dispatcher.sweep(dispatcher)
+    assert Dispatcher.stats(dispatcher).inventory[{"node-4", "wl-restart-claim"}] == 1
+
+    {:ok, mgr} =
+      SessionManager.start_link(
+        name: nil,
+        session_store: rebuilt,
+        dispatcher: dispatcher,
+        supervisor: ctx.sup,
+        registry: ctx.registry,
+        capacity_table: ctx.cap_table,
+        catalog_table: ctx.cat_table,
+        clock: fn -> 5_000_000 end,
+        monotonic_clock: fn -> -800_000 end,
+        node_inventory_fun: fn -> {:error, :not_configured} end,
+        expected_instances_fun: fn -> %{"node-4" => %{configured_id: "node-4"}} end,
+        session_opts: [
+          channel_fun: fake_channel_fun(),
+          assign_fun: &default_assign/2,
+          brick_status_fun: fn _node ->
+            %{health: :healthy, draining: false, registered: true, tombstoned: false}
+          end
+        ],
+        reconcile_interval_ms: 0,
+        sweep_interval_ms: 0
+      )
+
+    assert :ok = SessionManager.reconcile(mgr)
+    assert eventually(fn -> Registry.lookup(ctx.registry, created.session_id) != [] end)
+    assert {:ok, {"node-4", "vm-session-a"}} = SessionStore.residency(rebuilt, created.session_id)
+
+    {:ok, created_b} = SessionManager.create(mgr, "wl-restart-claim", "p2")
+    assert {:ok, %{vm_id: "vm-unowned"}} = SessionStore.get(rebuilt, created_b.session_id)
+    assert :miss = Dispatcher.claim(dispatcher, "node-4", "wl-restart-claim")
+
+    assert {:ok, %{body: "still-a"}} =
+             SessionManager.invoke(mgr, created.session_id, %{body: "still-a"})
+  end
+
+  test "a rejected durable ownership write releases the in-flight VM reservation" do
+    parent = self()
+
+    ctx =
+      start_stack(
+        store_op_log_mod: UnavailableCreateOpLog,
+        claim_fun: fn _dispatcher, _node, _workload -> {:ok, "vm-write-failed"} end,
+        reserve_session_vm_fun: fn _dispatcher, vm_id ->
+          send(parent, {:reserved, vm_id})
+          :ok
+        end,
+        commit_session_vm_fun: fn _dispatcher, vm_id ->
+          send(parent, {:committed, vm_id})
+          :ok
+        end,
+        release_session_vm_fun: fn _dispatcher, vm_id ->
+          send(parent, {:released, vm_id})
+          :ok
+        end
+      )
+
+    put_session_workload(ctx, "wl-create-write-failure")
+
+    assert {:error, {:denied, {:store, :unavailable}}} =
+             SessionManager.create(ctx.mgr, "wl-create-write-failure", "p1")
+
+    assert_received {:reserved, "vm-write-failed"}
+    assert_received {:released, "vm-write-failed"}
+    refute_received {:committed, "vm-write-failed"}
+    assert SessionStore.all(ctx.store) == []
+    assert SessionStore.claimed_vm_ids(ctx.store) == MapSet.new()
+  end
 
   defp start_spec_trace do
     System.put_env("EMBERVM_SPEC_TRACE", "on")
@@ -651,7 +780,7 @@ defmodule Embervm.SessionManagerTest do
     assert_receive {:bank_dialed, "node-4/bank-owner"}
   end
 
-  test "a successful bank drops stale dispatcher inventory before another placement" do
+  test "a durable claim prevents stale re-adoption through a successful bank" do
     dispatcher_name = :"bank_inventory_dispatcher_#{System.unique_integer([:positive])}"
 
     ctx =
@@ -669,9 +798,9 @@ defmodule Embervm.SessionManagerTest do
     {:ok, created} = SessionManager.create(ctx.mgr, "wl-bank-inventory", "p1")
 
     # The node status still advertises the claimed VM until Bank adopts it into
-    # the session registry. A sweep during that window re-adopts the stale copy.
+    # the session registry. The durable claim keeps a sweep from re-adopting it.
     Dispatcher.sweep(dispatcher.name)
-    assert Dispatcher.stats(dispatcher.name).inventory[{"node-4", "wl-bank-inventory"}] == 1
+    assert Dispatcher.stats(dispatcher.name).inventory[{"node-4", "wl-bank-inventory"}] == 0
 
     assert :ok = SessionManager.bank(ctx.mgr, created.session_id)
     assert wait_for_state(ctx, created.session_id, :banked).state == :banked
@@ -684,7 +813,7 @@ defmodule Embervm.SessionManagerTest do
     assert {:ok, "vm-new"} = Dispatcher.claim(dispatcher.name, "node-4", "wl-bank-inventory")
   end
 
-  test "a confirmed destroy drops stale dispatcher inventory" do
+  test "a durable claim prevents stale re-adoption through confirmed destroy" do
     dispatcher_name = :"destroy_inventory_dispatcher_#{System.unique_integer([:positive])}"
 
     ctx =
@@ -699,7 +828,7 @@ defmodule Embervm.SessionManagerTest do
     Dispatcher.sweep(dispatcher.name)
     {:ok, created} = SessionManager.create(ctx.mgr, "wl-destroy-inventory", "p1")
     Dispatcher.sweep(dispatcher.name)
-    assert Dispatcher.stats(dispatcher.name).inventory[{"node-4", "wl-destroy-inventory"}] == 1
+    assert Dispatcher.stats(dispatcher.name).inventory[{"node-4", "wl-destroy-inventory"}] == 0
 
     assert {:ok, _} = SessionManager.destroy(ctx.mgr, created.session_id)
     assert wait_for_state(ctx, created.session_id, :destroyed).state == :destroyed
@@ -1573,6 +1702,29 @@ defmodule Embervm.SessionManagerTest do
       })
     end
 
+    defp put_other_node_fact(ctx, wl) do
+      NodeCapacity.put(ctx.cap_table, "node-5", %{
+        node_id: "node-5",
+        pod_uid: "pod-node-5",
+        configured_id: "node-5",
+        workloads: %{
+          wl => %{
+            free_primed_slots: 1,
+            snapshot_ref: "snap-#{wl}",
+            base_state: :BASE_BUILD_STATE_READY,
+            primed_vm_ids: []
+          }
+        },
+        live_vms: 0,
+        max_live_vms: 8,
+        session_vms: [],
+        session_snapshots: [],
+        draining: false,
+        store_reachable: true,
+        updated_at: 5_000_000
+      })
+    end
+
     defp pressure_error do
       %GRPC.RPCError{status: 8, message: "noded: pressure:mem (need 4096 MiB, floor 512 MiB)"}
     end
@@ -1645,6 +1797,241 @@ defmodule Embervm.SessionManagerTest do
       assert {:ok, resp} = Task.await(task)
       assert resp.status_code == 200
       assert resp.body == "wait-for-brick"
+    end
+
+    test "partial registration protects a banked snapshot and recovers when its node returns at the bound" do
+      parent = self()
+      {:ok, mono} = Agent.start_link(fn -> 0 end)
+
+      relight_fun = fn _channel, _req ->
+        send(parent, {:relight_started, self()})
+
+        receive do
+          :finish_relight -> {:ok, %RelightResponse{vm_id: "vm-after-registration"}}
+        end
+      end
+
+      evict_fun = fn _channel, req -> send(parent, {:evicted, req.snapshot_ref}) && {:ok, %{}} end
+
+      ctx =
+        start_stack(
+          relight_fun: relight_fun,
+          evict_fun: evict_fun,
+          monotonic_clock: fn -> Agent.get(mono, & &1) end,
+          pressure_retry_interval_ms: 60_000,
+          pressure_wait_bound_ms: 100
+        )
+
+      put_session_workload(ctx, "wl-partial-return")
+      {:ok, created} = SessionManager.create(ctx.mgr, "wl-partial-return", "p1")
+      assert :ok = SessionManager.bank(ctx.mgr, created.session_id)
+      wait_for_state(ctx, created.session_id, :banked)
+      put_other_node_fact(ctx, "wl-partial-return")
+      NodeCapacity.drop(ctx.cap_table, "node-4")
+
+      task =
+        Task.async(fn ->
+          SessionManager.invoke(ctx.mgr, created.session_id, %{body: "registration-returned"})
+        end)
+
+      assert eventually(fn ->
+               get_in(:sys.get_state(ctx.mgr), [:pressure_waits, created.session_id, :last_reason]) ==
+                 {:node_unreported, "node-4"}
+             end)
+
+      assert wait_for_state(ctx, created.session_id, :banked).terminal_reason == nil
+      assert Task.yield(task, 0) == nil
+      refute_received {:evicted, _}
+
+      # At the exact boundary, a newly reported owner wins the final recheck.
+      :ok = Agent.update(mono, fn _ -> 100 end)
+      put_snapshot_fact(ctx, "wl-partial-return", created.session_id)
+      send(ctx.mgr, {:relight_pressure_retry, created.session_id})
+      assert_receive {:relight_started, relight_worker}, 1_000
+
+      # A duplicate timer from the prior parked attempt is stale while this worker
+      # owns the row. It must not drain the caller or evict the snapshot.
+      send(ctx.mgr, {:relight_pressure_retry, created.session_id})
+      _ = :sys.get_state(ctx.mgr)
+      assert Task.yield(task, 0) == nil
+      refute_received {:evicted, _}
+
+      send(relight_worker, :finish_relight)
+      assert {:ok, %{status_code: 200, body: "registration-returned"}} = Task.await(task)
+      assert wait_for_state(ctx, created.session_id, :running).vm_id == "vm-after-registration"
+      refute Map.has_key?(:sys.get_state(ctx.mgr).pressure_waits, created.session_id)
+      refute_received {:evicted, _}
+    end
+
+    test "a relight worker stalled after the registration deadline drains at the fallback bound" do
+      parent = self()
+      {:ok, mono} = Agent.start_link(fn -> 0 end)
+
+      relight_fun = fn _channel, _req ->
+        send(parent, {:stalled_relight, self()})
+
+        receive do
+          :never -> {:ok, %RelightResponse{vm_id: "unused"}}
+        end
+      end
+
+      ctx =
+        start_stack(
+          relight_fun: relight_fun,
+          monotonic_clock: fn -> Agent.get(mono, & &1) end,
+          pressure_retry_interval_ms: 60_000,
+          pressure_wait_bound_ms: 100
+        )
+
+      put_session_workload(ctx, "wl-stalled-registration")
+      {:ok, created} = SessionManager.create(ctx.mgr, "wl-stalled-registration", "p1")
+      assert :ok = SessionManager.bank(ctx.mgr, created.session_id)
+      wait_for_state(ctx, created.session_id, :banked)
+      put_other_node_fact(ctx, "wl-stalled-registration")
+      NodeCapacity.drop(ctx.cap_table, "node-4")
+
+      task =
+        Task.async(fn ->
+          SessionManager.invoke(ctx.mgr, created.session_id, %{body: "stalled-registration"})
+        end)
+
+      assert eventually(fn ->
+               get_in(:sys.get_state(ctx.mgr), [:pressure_waits, created.session_id, :last_reason]) ==
+                 {:node_unreported, "node-4"}
+             end)
+
+      :ok = Agent.update(mono, fn _ -> 100 end)
+      put_snapshot_fact(ctx, "wl-stalled-registration", created.session_id)
+      send(ctx.mgr, {:relight_pressure_retry, created.session_id})
+      assert_receive {:stalled_relight, relight_worker}, 1_000
+
+      on_exit(fn ->
+        if Process.alive?(relight_worker), do: Process.exit(relight_worker, :kill)
+      end)
+
+      :ok = Agent.update(mono, fn _ -> 60_100 end)
+      send(ctx.mgr, {:relight_pressure_retry, created.session_id})
+
+      reason =
+        {:relight_failed,
+         {:pressure_wait_expired, {:node_unreported, "node-4"}}}
+
+      assert {:error, ^reason} = Task.await(task)
+      assert Embervm.Router.classify_error_as_retryable(reason)
+      assert wait_for_state(ctx, created.session_id, :banked).terminal_reason == nil
+
+      manager_state = :sys.get_state(ctx.mgr)
+      refute Map.has_key?(manager_state.pressure_waits, created.session_id)
+      refute Map.has_key?(manager_state.relighting, created.session_id)
+    end
+
+    test "empty registration terminalizes when another node reports at the bound but its owner stays absent" do
+      parent = self()
+      {:ok, mono} = Agent.start_link(fn -> 0 end)
+      evict_fun = fn _channel, req -> send(parent, {:evicted, req.snapshot_ref}) && {:ok, %{}} end
+
+      ctx =
+        start_stack(
+          evict_fun: evict_fun,
+          monotonic_clock: fn -> Agent.get(mono, & &1) end,
+          pressure_retry_interval_ms: 60_000,
+          pressure_wait_bound_ms: 100
+        )
+
+      put_session_workload(ctx, "wl-partial-gone")
+      {:ok, created} = SessionManager.create(ctx.mgr, "wl-partial-gone", "p1")
+      assert :ok = SessionManager.bank(ctx.mgr, created.session_id)
+      banked = wait_for_state(ctx, created.session_id, :banked)
+      NodeCapacity.drop(ctx.cap_table, "node-4")
+
+      task =
+        Task.async(fn ->
+          SessionManager.invoke(ctx.mgr, created.session_id, %{body: "owner-never-returned"})
+        end)
+
+      assert eventually(fn ->
+               get_in(:sys.get_state(ctx.mgr), [:pressure_waits, created.session_id, :last_reason]) ==
+                 :no_bricks
+             end)
+
+      assert wait_for_state(ctx, created.session_id, :banked).terminal_reason == nil
+      assert Task.yield(task, 0) == nil
+      refute_received {:evicted, _}
+
+      # The comparison is inclusive. Partial registration begins at exactly 100ms,
+      # so the current table, not the episode's stale no_bricks reason, decides.
+      :ok = Agent.update(mono, fn _ -> 100 end)
+      put_other_node_fact(ctx, "wl-partial-gone")
+      send(ctx.mgr, {:relight_pressure_retry, created.session_id})
+
+      assert {:error, {:gone, "snapshot_lost"}} = Task.await(task)
+      assert_receive {:evicted, snapshot_ref}, 1_000
+      assert snapshot_ref == banked.snapshot_ref
+
+      failed = wait_for_state(ctx, created.session_id, :failed)
+      assert failed.terminal_reason == "snapshot_lost"
+      refute Map.has_key?(:sys.get_state(ctx.mgr).pressure_waits, created.session_id)
+
+      # A queued duplicate retry after terminalization is harmless and cannot
+      # trigger a second eviction.
+      send(ctx.mgr, {:relight_pressure_retry, created.session_id})
+      _ = :sys.get_state(ctx.mgr)
+      refute_received {:evicted, _}
+    end
+
+    test "an active stale owner-absent result rechecks an owner that returned at the bound" do
+      parent = self()
+      {:ok, mono} = Agent.start_link(fn -> 0 end)
+
+      relight_fun = fn _channel, _req ->
+        send(parent, :relight_rechecked)
+        {:ok, %RelightResponse{vm_id: "vm-after-stale-result"}}
+      end
+
+      evict_fun = fn _channel, req -> send(parent, {:evicted, req.snapshot_ref}) && {:ok, %{}} end
+
+      ctx =
+        start_stack(
+          relight_fun: relight_fun,
+          evict_fun: evict_fun,
+          monotonic_clock: fn -> Agent.get(mono, & &1) end,
+          pressure_retry_interval_ms: 60_000,
+          pressure_wait_bound_ms: 100
+        )
+
+      put_session_workload(ctx, "wl-active-return")
+      {:ok, created} = SessionManager.create(ctx.mgr, "wl-active-return", "p1")
+      assert :ok = SessionManager.bank(ctx.mgr, created.session_id)
+      wait_for_state(ctx, created.session_id, :banked)
+      put_other_node_fact(ctx, "wl-active-return")
+      NodeCapacity.drop(ctx.cap_table, "node-4")
+
+      task =
+        Task.async(fn ->
+          SessionManager.invoke(ctx.mgr, created.session_id, %{body: "active-owner-returned"})
+        end)
+
+      assert eventually(fn ->
+               get_in(:sys.get_state(ctx.mgr), [:pressure_waits, created.session_id, :last_reason]) ==
+                 {:node_unreported, "node-4"}
+             end)
+
+      # Model the worker having read the absent-owner table while its result is in
+      # flight. The owner reports before the manager handles that stale result.
+      assert {:ok, _} = SessionStore.mark(ctx.store, created.session_id, :relight)
+      :ok = Agent.update(mono, fn _ -> 100 end)
+      put_snapshot_fact(ctx, "wl-active-return", created.session_id)
+
+      send(
+        ctx.mgr,
+        {:relight_done, created.session_id, {:error, {:node_unreported, "node-4"}}}
+      )
+
+      assert_receive :relight_rechecked, 1_000
+      assert {:ok, %{status_code: 200, body: "active-owner-returned"}} = Task.await(task)
+      assert wait_for_state(ctx, created.session_id, :running).vm_id == "vm-after-stale-result"
+      refute Map.has_key?(:sys.get_state(ctx.mgr).pressure_waits, created.session_id)
+      refute_received {:evicted, _}
     end
 
     test "a failed relight mark clears the existing pressure wait" do
@@ -2116,6 +2503,47 @@ defmodule Embervm.SessionManagerTest do
     assert Embervm.Router.classify_error_as_retryable(reason)
   end
 
+  test "an active parked rejoin no-bricks result stays non-terminal at the bound" do
+    {:ok, mono} = Agent.start_link(fn -> 0 end)
+
+    ctx =
+      start_stack(
+        prime_fun: fake_prime_fun("vm-active-rejoin-expired"),
+        channel_fun: fake_channel_fun(),
+        monotonic_clock: fn -> Agent.get(mono, & &1) end,
+        pressure_retry_interval_ms: 60_000,
+        pressure_wait_bound_ms: 100
+      )
+
+    created = create_persistence_session(ctx)
+    park_session(ctx, created)
+    NodeCapacity.drop(ctx.cap_table, "node-4")
+
+    task =
+      Task.async(fn ->
+        SessionManager.invoke(ctx.mgr, created.session_id, %{body: "active-expire-rejoin"})
+      end)
+
+    assert eventually(fn ->
+             get_in(:sys.get_state(ctx.mgr), [:pressure_waits, created.session_id, :last_reason]) ==
+               :no_bricks
+           end)
+
+    # Model a rejoin worker whose no-bricks result crosses the deadline while in
+    # flight. The transient relighting state must not be mistaken for a banked
+    # snapshot relight.
+    assert {:ok, _} = SessionStore.mark(ctx.store, created.session_id, :relight)
+    :ok = Agent.update(mono, fn _ -> 100 end)
+    send(ctx.mgr, {:rejoin_done, created.session_id, {:error, :no_bricks}})
+
+    reason = {:relight_failed, {:pressure_wait_expired, :no_bricks}}
+    assert {:error, ^reason} = Task.await(task)
+
+    parked = wait_for_state(ctx, created.session_id, :parked)
+    assert parked.terminal_reason == nil
+    assert Embervm.Router.classify_error_as_retryable(reason)
+  end
+
   test "fatal workspace restore aborts the rejoin and keeps the session parked" do
     # A store failure that is NOT a clean miss must stop the rejoin: priming a
     # blank workspace over data that exists remotely is the data-loss path.
@@ -2374,6 +2802,417 @@ defmodule Embervm.SessionManagerTest do
 
     assert {:error, {:denied, :lineage_live_heir}} =
              SessionManager.create(ctx.mgr, "wl-persist", "p1", live.session_id)
+  end
+
+  test "restore_lineage validation: a destroying holder is not terminal" do
+    parent = self()
+
+    ctx =
+      start_stack(
+        prime_fun: fake_prime_fun("vm-restore-destroying"),
+        channel_fun: fake_channel_fun(),
+        retire_volume_fun: fn _channel, request ->
+          send(parent, {:unexpected_retire, request.lineage_id})
+          {:ok, %{}}
+        end
+      )
+
+    holder = create_persistence_session(ctx)
+
+    assert {:ok, %{state: :destroying}} =
+             SessionStore.transition(
+               ctx.store,
+               holder.session_id,
+               :begin_destroy,
+               :session_destroying,
+               %{reason: :destroyed},
+               %{}
+             )
+
+    assert {:error, {:denied, :lineage_restore_in_flight}} =
+             SessionManager.create(ctx.mgr, "wl-persist", "p1", holder.lineage_id)
+
+    refute_receive {:unexpected_retire, _lineage_id}
+  end
+
+  test "InheritanceOnlyFromTerminal: an heir waits for durable RetireVolume acknowledgement while the manager stays responsive" do
+    parent = self()
+
+    ctx =
+      start_stack(
+        prime_fun: fake_prime_fun("vm-relinquishment-order"),
+        channel_fun: fake_channel_fun(),
+        retire_volume_fun: fn _channel, request ->
+          send(parent, {:retire_waiting, self(), request.lineage_id})
+
+          receive do
+            :ack_retirement -> {:ok, %{}}
+          end
+        end
+      )
+
+    original = create_persistence_session(ctx)
+    assert {:ok, :destroying} = SessionManager.destroy(ctx.mgr, original.session_id)
+    assert wait_for_state(ctx, original.session_id, :destroyed).state == :destroyed
+    assert_receive {:retire_waiting, terminal_retire, lineage_id}
+    assert lineage_id == original.lineage_id
+
+    put_brick(ctx, "wl-persist", "volume",
+      session_volumes: [
+        %{workload: "wl-persist", lineage_id: original.lineage_id, size_bytes: 1}
+      ]
+    )
+
+    heir =
+      Task.async(fn ->
+        SessionManager.create(ctx.mgr, "wl-persist", "p1", original.lineage_id)
+      end)
+
+    assert_receive {:retire_waiting, restore_retire, ^lineage_id}
+    assert Task.yield(heir, 0) == nil
+    assert :pong = SessionManager.ping(ctx.mgr, 100)
+
+    send(restore_retire, :ack_retirement)
+
+    assert {:ok, restored} = Task.await(heir)
+    assert restored.lineage_id == lineage_id
+    assert restored.session_id != original.session_id
+
+    # The older terminal caller can complete after the heir is live. Its result
+    # is logging-only and cannot mutate the SessionStore or replace the holder.
+    send(terminal_retire, :ack_retirement)
+    assert {:ok, latest} = SessionStore.get_latest_by_lineage(ctx.store, lineage_id)
+    assert latest.session_id == restored.session_id
+    assert latest.state == :running
+  end
+
+  test "restore relinquishment fails closed on dial and RPC errors and retries safely" do
+    parent = self()
+    {:ok, mode} = Agent.start_link(fn -> :ok end)
+
+    channel_fun = fn _dial_id ->
+      case Agent.get(mode, & &1) do
+        :dial_error -> {:error, :dial_down}
+        _ -> {:ok, :fake_channel}
+      end
+    end
+
+    retire_volume_fun = fn _channel, request ->
+      current = Agent.get(mode, & &1)
+      send(parent, {:retire_attempt, current, request.lineage_id})
+
+      case current do
+        :rpc_error -> {:error, :store_down}
+        _ -> {:ok, %{}}
+      end
+    end
+
+    ctx =
+      start_stack(
+        prime_fun: fake_prime_fun("vm-relinquishment-retry"),
+        channel_fun: channel_fun,
+        retire_volume_fun: retire_volume_fun
+      )
+
+    original = create_persistence_session(ctx)
+    assert {:ok, :destroying} = SessionManager.destroy(ctx.mgr, original.session_id)
+    assert wait_for_state(ctx, original.session_id, :destroyed).state == :destroyed
+    assert_receive {:retire_attempt, :ok, lineage_id}
+    assert lineage_id == original.lineage_id
+
+    Agent.update(mode, fn _ -> :dial_error end)
+
+    assert {:error, {:denied, {:lineage_relinquishment_failed, {:error, :dial_down}}}} =
+             SessionManager.create(ctx.mgr, "wl-persist", "p1", lineage_id)
+
+    Agent.update(mode, fn _ -> :rpc_error end)
+
+    assert {:error, {:denied, {:lineage_relinquishment_failed, {:error, :store_down}}}} =
+             SessionManager.create(ctx.mgr, "wl-persist", "p1", lineage_id)
+
+    assert_receive {:retire_attempt, :rpc_error, ^lineage_id}
+    Agent.update(mode, fn _ -> :ok end)
+
+    assert {:ok, restored} = SessionManager.create(ctx.mgr, "wl-persist", "p1", lineage_id)
+    assert restored.lineage_id == lineage_id
+  end
+
+  test "a store-only lineage treats RetireVolume not found as already relinquished" do
+    parent = self()
+
+    ctx =
+      start_stack(
+        prime_fun: fake_prime_fun("vm-already-relinquished"),
+        channel_fun: fake_channel_fun(),
+        retire_volume_fun: fn _channel, request ->
+          send(parent, {:retire_not_found, request.lineage_id})
+          {:error, %GRPC.RPCError{status: 5, message: "workspace absent"}}
+        end
+      )
+
+    original = create_persistence_session(ctx)
+    assert {:ok, :destroying} = SessionManager.destroy(ctx.mgr, original.session_id)
+    assert wait_for_state(ctx, original.session_id, :destroyed).state == :destroyed
+    assert_receive {:retire_not_found, lineage_id}
+
+    assert {:ok, restored} = SessionManager.create(ctx.mgr, "wl-persist", "p1", lineage_id)
+    assert_receive {:retire_not_found, ^lineage_id}
+    assert restored.lineage_id == lineage_id
+  end
+
+  test "InheritanceOnlyFromTerminal: reconstructed state waits through missing owner facts and retries after acknowledgement" do
+    parent = self()
+    {:ok, mode} = Agent.start_link(fn -> :initial end)
+
+    channel_fun = fn dial_id ->
+      current = Agent.get(mode, & &1)
+      send(parent, {:owner_dial, current, dial_id})
+      {:ok, {:channel, dial_id}}
+    end
+
+    prime_fun = fn _channel, request ->
+      current = Agent.get(mode, & &1)
+      send(parent, {:owner_prime, current, request.lineage_id})
+      {:ok, %PrimeResponse{vm_id: "vm-owner-#{current}"}}
+    end
+
+    ctx =
+      start_stack(
+        channel_fun: channel_fun,
+        prime_fun: prime_fun,
+        retire_volume_fun: fn {:channel, dial_id}, request ->
+          current = Agent.get(mode, & &1)
+          case current do
+            :available ->
+              send(parent, {:owner_retire_waiting, self(), dial_id, request.lineage_id})
+
+              receive do
+                :ack_retirement -> {:ok, %{}}
+              end
+
+            _ ->
+              send(parent, {:owner_retire, current, dial_id, request.lineage_id})
+              {:ok, %{}}
+          end
+        end,
+        restore_artifact_fun: fn _channel, request ->
+          send(parent, {:owner_restore, Agent.get(mode, & &1), request.artifact.ref})
+          {:error, %GRPC.RPCError{status: 5, message: "workspace absent"}}
+        end
+      )
+
+    original = create_persistence_session(ctx)
+    lineage_id = original.lineage_id
+    assert_receive {:owner_prime, :initial, ^lineage_id}
+    assert {:ok, :destroying} = SessionManager.destroy(ctx.mgr, original.session_id)
+    assert wait_for_state(ctx, original.session_id, :destroyed).state == :destroyed
+    assert_receive {:owner_retire, :initial, "node-4", ^lineage_id}
+
+    rebuilt =
+      start_supervised!(
+        {SessionStore, name: nil, op_log: ctx.op_log, op_log_mod: SQLite}
+      )
+
+    assert {:ok, %{state: :destroyed, volume_node_id: "node-4"}} =
+             SessionStore.get_latest_by_lineage(rebuilt, original.lineage_id)
+
+    :sys.replace_state(ctx.mgr, fn state ->
+      %{
+        state
+        | session_store: rebuilt,
+          inflight_restore_lineages: MapSet.new(),
+          session_dials: %{}
+      }
+    end)
+
+    NodeCapacity.drop(ctx.cap_table, "node-4")
+    put_brick(ctx, "wl-persist", "replacement", node_id: "node-5")
+    Agent.update(mode, fn _ -> :missing end)
+
+    assert {:error,
+            {:denied,
+             {:lineage_relinquishment_failed,
+              {:volume_owner_unavailable, "node-4"}}}} =
+             SessionManager.create(ctx.mgr, "wl-persist", "p1", original.lineage_id)
+
+    refute_receive {:owner_retire, :missing, _dial_id, _lineage_id}
+    refute_receive {:owner_restore, :missing, _lineage_id}
+    refute_receive {:owner_prime, :missing, _lineage_id}
+
+    # A capacity row can disappear temporarily while the owner daemon is still
+    # alive. Once that exact node is dispatchable again, retry and wait for its
+    # durable retirement acknowledgement before either restore operation runs.
+    put_brick(ctx, "wl-persist", "owner", node_id: "node-4")
+    Agent.update(mode, fn _ -> :available end)
+
+    retry =
+      Task.async(fn ->
+        SessionManager.create(ctx.mgr, "wl-persist", "p1", original.lineage_id)
+      end)
+
+    assert_receive {:owner_retire_waiting, retire_worker, "node-4/owner", ^lineage_id}
+    refute_receive {:owner_restore, :available, _lineage_id}
+    refute_receive {:owner_prime, :available, _lineage_id}
+
+    send(retire_worker, :ack_retirement)
+    assert {:ok, restored} = Task.await(retry)
+    assert_receive {:owner_restore, :available, ^lineage_id}
+    assert_receive {:owner_prime, :available, ^lineage_id}
+
+    assert {:ok, %{session_id: session_id, state: :running}} =
+             SessionStore.get_latest_by_lineage(rebuilt, original.lineage_id)
+
+    assert session_id == restored.session_id
+    assert session_id != original.session_id
+  end
+
+  test "InheritanceOnlyFromTerminal: a malformed owner cannot become a store-only restore" do
+    parent = self()
+
+    ctx =
+      start_stack(
+        prime_fun: fn _channel, request ->
+          send(parent, {:malformed_owner_prime, request.lineage_id})
+          {:ok, %PrimeResponse{vm_id: "vm-malformed-owner"}}
+        end,
+        retire_volume_fun: fn _channel, request ->
+          send(parent, {:malformed_owner_retire, request.lineage_id})
+          {:ok, %{}}
+        end,
+        restore_artifact_fun: fn _channel, request ->
+          send(parent, {:malformed_owner_restore, request.artifact.ref})
+          {:ok, %{}}
+        end
+      )
+
+    put_session_workload(ctx, "wl-persist", persistence_workload_opts())
+
+    {:ok, holder} =
+      SessionStore.create(ctx.store, %{
+        tenant: "homelab",
+        principal: "p1",
+        workload: "wl-persist",
+        node_id: "node-4",
+        vm_id: "vm-malformed-holder",
+        volume_node_id: "   ",
+        base_snapshot_ref: "base@sha256:abc",
+        base_digest: "sha256:abc",
+        expires_at: 9_999_999
+      })
+
+    assert {:ok, %{state: :failed}} =
+             SessionStore.transition(
+               ctx.store,
+               holder.session_id,
+               :fail,
+               :session_failed,
+               %{},
+               %{}
+             )
+
+    assert {:error,
+            {:denied,
+             {:lineage_relinquishment_failed, :volume_owner_invalid}}} =
+             SessionManager.create(ctx.mgr, "wl-persist", "p1", holder.lineage_id)
+
+    refute_receive {:malformed_owner_retire, _lineage_id}
+    refute_receive {:malformed_owner_restore, _lineage_id}
+    refute_receive {:malformed_owner_prime, _lineage_id}
+  end
+
+  test "InheritanceOnlyFromTerminal: a sole owner pins restore when its volume scan omits the lineage" do
+    parent = self()
+    {:ok, mode} = Agent.start_link(fn -> :initial end)
+
+    ctx =
+      start_stack(
+        channel_fun: fn dial_id -> {:ok, {:channel, dial_id}} end,
+        prime_fun: fn {:channel, dial_id}, request ->
+          send(parent, {:scan_prime, Agent.get(mode, & &1), dial_id, request.lineage_id})
+          {:ok, %PrimeResponse{vm_id: "vm-scan-#{Agent.get(mode, & &1)}"}}
+        end,
+        retire_volume_fun: fn {:channel, dial_id}, request ->
+          send(parent, {:scan_retire, Agent.get(mode, & &1), dial_id, request.lineage_id})
+          {:ok, %{}}
+        end,
+        restore_artifact_fun: fn {:channel, dial_id}, request ->
+          send(parent, {:scan_restore, Agent.get(mode, & &1), dial_id, request.artifact.ref})
+          {:error, %GRPC.RPCError{status: 5, message: "workspace absent"}}
+        end
+      )
+
+    original = create_persistence_session(ctx)
+    lineage_id = original.lineage_id
+    assert_receive {:scan_prime, :initial, "node-4", ^lineage_id}
+    assert {:ok, :destroying} = SessionManager.destroy(ctx.mgr, original.session_id)
+    assert wait_for_state(ctx, original.session_id, :destroyed).state == :destroyed
+    assert_receive {:scan_retire, :initial, "node-4", ^lineage_id}
+
+    NodeCapacity.drop(ctx.cap_table, "node-4")
+    put_brick(ctx, "wl-persist", "owner", node_id: "node-4")
+    put_brick(ctx, "wl-persist", "replacement", node_id: "node-5")
+    Agent.update(mode, fn _ -> :scan_missing end)
+
+    assert {:ok, restored} =
+             SessionManager.create(ctx.mgr, "wl-persist", "p1", lineage_id)
+
+    assert_receive {:scan_retire, :scan_missing, "node-4/owner", ^lineage_id}
+    assert_receive {:scan_restore, :scan_missing, "node-4/owner", ^lineage_id}
+    assert_receive {:scan_prime, :scan_missing, "node-4/owner", ^lineage_id}
+    refute_receive {:scan_restore, :scan_missing, "node-5/replacement", ^lineage_id}
+    assert restored.lineage_id == lineage_id
+  end
+
+  test "InheritanceOnlyFromTerminal: an unproven co-located owner fails closed" do
+    parent = self()
+    {:ok, mode} = Agent.start_link(fn -> :initial end)
+
+    ctx =
+      start_stack(
+        channel_fun: fn dial_id -> {:ok, {:channel, dial_id}} end,
+        prime_fun: fn _channel, request ->
+          current = Agent.get(mode, & &1)
+          send(parent, {:ambiguous_prime, current, request.lineage_id})
+          {:ok, %PrimeResponse{vm_id: "vm-ambiguous-#{current}"}}
+        end,
+        retire_volume_fun: fn {:channel, dial_id}, request ->
+          current = Agent.get(mode, & &1)
+          send(parent, {:ambiguous_retire, current, dial_id, request.lineage_id})
+
+          if current == :ambiguous do
+            {:error, %GRPC.RPCError{status: 5, message: "workspace absent"}}
+          else
+            {:ok, %{}}
+          end
+        end,
+        restore_artifact_fun: fn _channel, request ->
+          send(parent, {:ambiguous_restore, Agent.get(mode, & &1), request.artifact.ref})
+          {:error, %GRPC.RPCError{status: 5, message: "workspace absent"}}
+        end
+      )
+
+    original = create_persistence_session(ctx)
+    lineage_id = original.lineage_id
+    assert_receive {:ambiguous_prime, :initial, ^lineage_id}
+    assert {:ok, :destroying} = SessionManager.destroy(ctx.mgr, original.session_id)
+    assert wait_for_state(ctx, original.session_id, :destroyed).state == :destroyed
+    assert_receive {:ambiguous_retire, :initial, "node-4", ^lineage_id}
+
+    NodeCapacity.drop(ctx.cap_table, "node-4")
+    put_brick(ctx, "wl-persist", "sibling-a", node_id: "node-4")
+    put_brick(ctx, "wl-persist", "sibling-b", node_id: "node-4")
+    Agent.update(mode, fn _ -> :ambiguous end)
+
+    assert {:error,
+            {:denied,
+             {:lineage_relinquishment_failed,
+              {:volume_owner_ambiguous, "node-4", [],
+               ["node-4/sibling-a", "node-4/sibling-b"]}}}} =
+             SessionManager.create(ctx.mgr, "wl-persist", "p1", lineage_id)
+
+    refute_receive {:ambiguous_retire, :ambiguous, _dial_id, _lineage_id}
+    refute_receive {:ambiguous_restore, :ambiguous, _lineage_id}
+    refute_receive {:ambiguous_prime, :ambiguous, _lineage_id}
   end
 
   test "a restoring create whose prime fails re-drives reclamation for the lineage (#4306/#4313)" do
@@ -5547,7 +6386,10 @@ defmodule Embervm.SessionManagerTest do
     :ok = DynamicSupervisor.terminate_child(ctx.sup, pid)
 
     rebuilt = start_supervised!({SessionStore, name: nil, op_log: ctx.op_log, op_log_mod: SQLite})
-    assert {:ok, %{state: :destroying, vm_id: nil}} = SessionStore.get(rebuilt, created.session_id)
+    assert {:ok, %{state: :destroying, vm_id: vm_id}} = SessionStore.get(rebuilt, created.session_id)
+    assert vm_id == prior.vm_id
+    assert SessionStore.claimed_vm_ids(rebuilt) == MapSet.new([prior.vm_id])
+    assert :error = SessionStore.residency(rebuilt, created.session_id)
     :sys.replace_state(ctx.mgr, fn state -> %{state | session_store: rebuilt, session_dials: %{}} end)
     ctx = %{ctx | store: rebuilt}
 

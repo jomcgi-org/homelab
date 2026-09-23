@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 import pytest
 
 from factory.orchestration import model_pool
@@ -46,6 +48,94 @@ def test_stale_headline_does_not_route_away_from_preferred():
     choice = model_pool.select_model("worker", policy(), quota=quota)
     assert choice["model"] == "sol"
     assert choice["reason"].startswith("stale_observation")
+
+
+def _confirmed_quota(windows, *, age=30.0, exhausted=False):
+    return {
+        "codex": {
+            "observed": True,
+            "grant_inventory_complete": True,
+            "grant_inventory_valid": True,
+            "age_seconds": age,
+            "exhausted": exhausted,
+            "windows": windows,
+        }
+    }
+
+
+def _window(name, used, resets_at=None):
+    return {
+        "name": name,
+        "used_percent": used,
+        "resets_at": resets_at,
+        "usable": True,
+    }
+
+
+def test_confirmed_availability_honors_a_binding_non_headline_window():
+    quota = _confirmed_quota([_window("primary", 10.0), _window("secondary", 97.0)])
+
+    assert model_pool.availability("luna", quota) == (True, "available")
+    assert model_pool.confirmed_availability("luna", quota) == (
+        False,
+        "window secondary used_percent 97",
+    )
+
+
+def test_confirmed_availability_evaluates_distinct_resets_independently():
+    now = datetime(2026, 9, 22, 12, 0, tzinfo=timezone.utc)
+    quota = _confirmed_quota(
+        [
+            _window("primary", 100.0, "2026-09-22T11:00:00Z"),
+            _window("secondary", 99.0, "2026-09-22T13:00:00Z"),
+        ]
+    )
+
+    assert model_pool.confirmed_availability("luna", quota, now=now) == (
+        False,
+        "window secondary used_percent 99",
+    )
+    quota["codex"]["windows"][1]["resets_at"] = "2026-09-22T11:30:00Z"
+    assert model_pool.confirmed_availability("luna", quota, now=now) == (
+        True,
+        "all_windows_reset",
+    )
+
+
+@pytest.mark.parametrize(
+    "quota,reason",
+    [
+        ({}, "unobserved"),
+        (_confirmed_quota([], age=30.0), "windows_unobserved"),
+        (
+            _confirmed_quota([_window("primary", 10.0)], age=None),
+            "observation_age_unknown",
+        ),
+        (
+            _confirmed_quota([_window("primary", 10.0)], age=901.0),
+            "stale_observation age 901",
+        ),
+        (
+            _confirmed_quota(
+                [
+                    {
+                        "name": "primary",
+                        "used_percent": None,
+                        "resets_at": None,
+                        "usable": False,
+                    }
+                ]
+            ),
+            "window_unusable",
+        ),
+        (
+            _confirmed_quota([_window("primary", 10.0, "not-a-reset")]),
+            "window primary reset_unusable",
+        ),
+    ],
+)
+def test_confirmed_availability_rejects_insufficient_evidence(quota, reason):
+    assert model_pool.confirmed_availability("luna", quota) == (False, reason)
 
 
 def test_unobserved_provider_keeps_preferred():
@@ -172,6 +262,8 @@ def test_reset_passed_accepts_epoch_and_rejects_garbage():
     assert model_pool.reset_passed("not a time") is None
     assert model_pool.reset_passed(None) is None
     assert model_pool.reset_passed(True) is None
+    assert model_pool.reset_passed(float("nan")) is None
+    assert model_pool.reset_passed(float("inf")) is None
 
 
 def test_single_member_pool_never_reads_the_broker(monkeypatch):
@@ -316,12 +408,146 @@ def test_quota_summary_rolls_broker_grants_into_the_class(monkeypatch):
                 ],
             }
         },
+        "grants_complete": True,
     }
     monkeypatch.setattr(quota, "fetch_provider_quota_sync", lambda **_k: payload)
     summary = model_pool.quota_summary()
     assert summary["codex"]["exhausted"] is False
     assert summary["codex"]["headline_used_percent"] == 20.0
     assert summary["codex"]["grant"] == "codex-b"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"available": False, "reason": "broker unavailable", "providers": {}},
+        {"available": True, "providers": {"codex": {"observed": False}}},
+        {"available": True, "providers": "invalid"},
+    ],
+)
+def test_broker_success_without_a_fresh_observation_cannot_confirm_room(
+    monkeypatch, payload
+):
+    import factory.execution.provider_quota as quota
+
+    monkeypatch.setattr(quota, "fetch_provider_quota_sync", lambda **_k: payload)
+    summary = model_pool.quota_summary()
+
+    assert model_pool.confirmed_availability("luna", summary) == (
+        False,
+        "unobserved",
+    )
+
+
+def test_expired_windows_do_not_bind_a_fresh_confirmed_observation():
+    import factory.execution.provider_quota as quota
+
+    summary = model_pool.rollup_grants(
+        quota.summarise(
+            {
+                "codex": {
+                    "observed": True,
+                    "age_seconds": 10.0,
+                    "windows": [
+                        {"name": "primary", "used_percent": 100.0, "expired": True},
+                        {"name": "secondary", "used_percent": 20.0, "expired": False},
+                    ],
+                }
+            }
+        ),
+        {},
+        grants_complete=True,
+    )
+
+    assert model_pool.confirmed_availability("luna", summary) == (
+        True,
+        "confirmed_available",
+    )
+
+    expired_only = model_pool.rollup_grants(
+        quota.summarise(
+            {
+                "codex": {
+                    "observed": True,
+                    "age_seconds": 10.0,
+                    "windows": [
+                        {"name": "primary", "used_percent": 100.0, "expired": True}
+                    ],
+                }
+            }
+        ),
+        {},
+        grants_complete=True,
+    )
+    assert model_pool.confirmed_availability("luna", expired_only) == (
+        True,
+        "all_windows_expired",
+    )
+
+
+def test_incomplete_grant_inventory_cannot_confirm_room():
+    quota = _confirmed_quota([_window("primary", 10.0)])
+    quota["codex"]["grant_inventory_complete"] = False
+
+    assert model_pool.confirmed_availability("luna", quota) == (
+        False,
+        "grant_inventory_incomplete",
+    )
+
+
+def test_malformed_inventory_cannot_be_hidden_by_a_healthy_headline(monkeypatch):
+    import factory.execution.provider_quota as quota
+
+    raw = {
+        "providers": {
+            "codex": {
+                "observed": True,
+                "age_seconds": 10.0,
+                "windows": [{"name": "primary", "used_percent": 10.0}],
+            }
+        },
+        "grants_complete": True,
+        "grants": "not-an-inventory",
+    }
+    monkeypatch.setattr(
+        quota,
+        "fetch_provider_quota_sync",
+        lambda **_kwargs: quota._available_result(raw),
+    )
+
+    rolled = model_pool.quota_summary()
+
+    assert model_pool.availability("luna", rolled) == (True, "available")
+    assert model_pool.confirmed_availability("luna", rolled) == (
+        False,
+        "grant_inventory_unusable",
+    )
+
+
+def test_unobserved_configured_grant_prevents_cross_account_admission():
+    grants = {
+        "account-a": {
+            "grant": "account-a",
+            "provider": "codex",
+            "observed": True,
+            "exhausted": False,
+            "age_seconds": 10.0,
+            "headline_used_percent": 10.0,
+            "windows": [_window("primary", 10.0)],
+        },
+        "account-b": {
+            "grant": "account-b",
+            "provider": "codex",
+            "observed": False,
+        },
+    }
+    rolled = model_pool.rollup_grants({}, grants, grants_complete=True)
+
+    assert model_pool.availability("luna", rolled) == (True, "available")
+    assert model_pool.confirmed_availability("luna", rolled) == (
+        False,
+        "grant account-b unobserved",
+    )
 
 
 def test_rollup_does_not_let_a_window_less_grant_hide_a_spent_class():
@@ -345,6 +571,49 @@ def test_rollup_does_not_let_a_window_less_grant_hide_a_spent_class():
     assert merged["codex"]["headline_used_percent"] == 99.0
     only = {"codex-b": grants["codex-b"]}
     assert model_pool.rollup_grants({}, only)["codex"]["headline_used_percent"] is None
+
+
+def test_confirmed_grant_rollup_never_mixes_windows_between_accounts():
+    grants = {
+        "account-a": {
+            "grant": "account-a",
+            "provider": "codex",
+            "observed": True,
+            "exhausted": False,
+            "age_seconds": 10.0,
+            "headline_used_percent": 10.0,
+            "windows": [_window("primary", 10.0), _window("secondary", 99.0)],
+        },
+        "account-b": {
+            "grant": "account-b",
+            "provider": "codex",
+            "observed": True,
+            "exhausted": False,
+            "age_seconds": 10.0,
+            "headline_used_percent": 99.0,
+            "windows": [_window("primary", 99.0), _window("secondary", 10.0)],
+        },
+    }
+    rolled = model_pool.rollup_grants({}, grants, grants_complete=True)
+
+    ok, reason = model_pool.confirmed_availability("luna", rolled)
+    assert ok is False
+    assert "account-a window secondary used_percent 99" in reason
+    assert "account-b window primary used_percent 99" in reason
+
+    grants["account-a"]["windows"] = [
+        _window("primary", 10.0),
+        _window("secondary", 20.0),
+    ]
+    grants["account-b"]["windows"] = [
+        _window("primary", 10.0),
+        _window("secondary", 20.0),
+    ]
+    rolled = model_pool.rollup_grants({}, grants, grants_complete=True)
+    assert model_pool.confirmed_availability("luna", rolled) == (
+        True,
+        "all_grants_confirmed_available",
+    )
 
 
 def test_the_implement_pool_defaults_to_the_worker_pool():

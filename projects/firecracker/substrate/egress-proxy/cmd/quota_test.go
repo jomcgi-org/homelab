@@ -44,6 +44,41 @@ func TestParseCodexQuota(t *testing.T) {
 			statusCode: http.StatusOK, wantOK: true, wantStatus: "allowed", wantNames: []string{"primary", "secondary"},
 		},
 		{
+			name: "empty secondary placeholder is skipped",
+			headers: http.Header{
+				"X-Codex-Primary-Used-Percent":   []string{"24"},
+				"X-Codex-Primary-Window-Minutes": []string{"10080"},
+				"X-Codex-Secondary-Used-Percent": []string{"0"},
+			},
+			statusCode: http.StatusOK, wantOK: true, wantStatus: "allowed", wantNames: []string{"primary"},
+		},
+		{
+			name:       "placeholder-only response is not an observation",
+			headers:    http.Header{"X-Codex-Secondary-Used-Percent": []string{"0"}},
+			statusCode: http.StatusOK, wantOK: false,
+		},
+		{
+			name:       "nonzero secondary without metadata is preserved",
+			headers:    http.Header{"X-Codex-Secondary-Used-Percent": []string{"3.5"}},
+			statusCode: http.StatusOK, wantOK: true, wantStatus: "allowed", wantNames: []string{"secondary"},
+		},
+		{
+			name: "zero secondary with duration is preserved",
+			headers: http.Header{
+				"X-Codex-Secondary-Used-Percent":   []string{"0"},
+				"X-Codex-Secondary-Window-Minutes": []string{"300"},
+			},
+			statusCode: http.StatusOK, wantOK: true, wantStatus: "allowed", wantNames: []string{"secondary"},
+		},
+		{
+			name: "zero secondary with reset is preserved",
+			headers: http.Header{
+				"X-Codex-Secondary-Used-Percent": []string{"0"},
+				"X-Codex-Secondary-Reset-At":     []string{"1788602828"},
+			},
+			statusCode: http.StatusOK, wantOK: true, wantStatus: "allowed", wantNames: []string{"secondary"},
+		},
+		{
 			name:       "429 with reached type",
 			headers:    http.Header{"X-Codex-Rate-Limit-Reached-Type": []string{"primary"}},
 			statusCode: http.StatusTooManyRequests, wantOK: true, wantStatus: "rejected",
@@ -110,6 +145,7 @@ func TestParseClaudeQuota(t *testing.T) {
 			name: "allowed fraction utilization",
 			headers: http.Header{
 				"Anthropic-Ratelimit-Unified-Status":         []string{"allowed"},
+				"Anthropic-Ratelimit-Unified-Overage-Status": []string{"rejected"},
 				"Anthropic-Ratelimit-Unified-5h-Utilization": []string{"0.24"},
 				"Anthropic-Ratelimit-Unified-5h-Reset":       []string{"2026-09-05T20:00:00Z"},
 			},
@@ -162,6 +198,11 @@ func TestParseClaudeQuota(t *testing.T) {
 			}
 			if tt.wantWindows > 0 && obs.Windows[0].UsedPercent != tt.wantUsed {
 				t.Errorf("used percent = %v, want %v", obs.Windows[0].UsedPercent, tt.wantUsed)
+			}
+			if tt.name == "allowed fraction utilization" {
+				if obs.OverageStatus != "rejected" || obs.ReachedType != "" {
+					t.Errorf("overage_status = %q, reached_type = %q", obs.OverageStatus, obs.ReachedType)
+				}
 			}
 		})
 	}
@@ -281,6 +322,29 @@ func TestQuotaReporterLatestWins(t *testing.T) {
 	}
 	if received[1].ObservedAt != "2026-09-05T18:12:00Z" {
 		t.Fatalf("second POST = %#v, want third observation", received[1])
+	}
+}
+
+func TestQuotaReporterSerializesOverageStatusSeparately(t *testing.T) {
+	received := make(chan map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode observation: %v", err)
+		}
+		received <- body
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	reporter := newQuotaReporter(server.URL, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	reporter.post(QuotaObservation{
+		Provider: "claude", ObservedAt: "2026-09-05T18:10:00Z", Status: "allowed",
+		OverageStatus: "rejected", Windows: []Window{{Name: "5h", UsedPercent: 24}},
+	})
+	body := <-received
+	if body["overage_status"] != "rejected" || body["reached_type"] != "" {
+		t.Fatalf("reported observation = %#v", body)
 	}
 }
 

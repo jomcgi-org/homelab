@@ -1091,6 +1091,25 @@ emberSynthetic:
 # code surfaced in the tool response. Empty disables the tools.
 tokenBroker:
   url: "http://embervm-embervm-tokenbroker.embervm.svc.cluster.local:8080"
+  spiffe:
+    # Staged plaintext-retirement client. Keep false until the broker listener
+    # and its exact monolith allowlist are live and verified separately.
+    enabled: false
+    url: "https://embervm-embervm-tokenbroker.embervm.svc:8443"
+    serverId: "spiffe://embervm.jomcgi.dev/ns/embervm/sa/embervm-embervm-tokenbroker"
+    tlsPort: 8443
+    helper:
+      hint: monolith-platform
+      image:
+        repository: ghcr.io/spiffe/spiffe-helper
+        tag: "0.11.0"
+        pullPolicy: IfNotPresent
+      resources:
+        requests:
+          cpu: 5m
+          memory: 16Mi
+        limits:
+          memory: 32Mi
 
 frontend:
   otelCollectorUrl: ""

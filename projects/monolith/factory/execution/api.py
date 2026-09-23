@@ -8,6 +8,7 @@ from factory.execution import admission as _admission
 from factory.execution.constants import DRAINER_NODE_KEY as DRAINER_NODE_KEY
 from factory.execution.constants import KG_NODE_KEY as KG_NODE_KEY
 from factory.execution.reconciliation import (
+    adopt_completed_factory_receipt as adopt_completed_factory_receipt,
     cancel_queued_factory_attempt as cancel_queued_factory_attempt,
     confirm_reconciled_guest_cessation as confirm_reconciled_guest_cessation,
     confirm_reconciled_unbound_attempt as confirm_reconciled_unbound_attempt,
@@ -17,7 +18,9 @@ from factory.execution.reconciliation import (
     lock_cessation_session as lock_cessation_session,
     read_bound_zero_turn_factory_attempt as read_bound_zero_turn_factory_attempt,
     read_drained_lost_factory_attempt as read_drained_lost_factory_attempt,
+    read_interrupted_factory_continuation as read_interrupted_factory_continuation,
     read_factory_dispatch as read_factory_dispatch,
+    read_interrupted_retry_not_invoked_factory_attempt as read_interrupted_retry_not_invoked_factory_attempt,
     read_lost_before_guest_factory_attempt as read_lost_before_guest_factory_attempt,
     read_never_dispatched_factory_attempt as read_never_dispatched_factory_attempt,
     read_not_invoked_factory_attempt as read_not_invoked_factory_attempt,
@@ -25,6 +28,7 @@ from factory.execution.reconciliation import (
     release_bound_zero_turn_factory_fence as release_bound_zero_turn_factory_fence,
     settle_bound_zero_turn_factory_attempt as settle_bound_zero_turn_factory_attempt,
     settle_drained_lost_factory_attempt as settle_drained_lost_factory_attempt,
+    settle_interrupted_factory_continuation as settle_interrupted_factory_continuation,
     settle_lost_before_guest_factory_attempt as settle_lost_before_guest_factory_attempt,
     settle_lost_before_session_factory_attempt as settle_lost_before_session_factory_attempt,
     settle_never_dispatched_factory_attempt as settle_never_dispatched_factory_attempt,

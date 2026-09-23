@@ -767,6 +767,87 @@ def test_intervention_required_notifies_once_per_task(db, github, notices):
     }
 
 
+@pytest.mark.parametrize(
+    "action,detail,cleared",
+    [
+        ("stop_settled", {"cessation_confirmed": True}, True),
+        ("stop_settled", {"cessation_confirmed": False}, False),
+        ("stop_settled", {}, False),
+        ("interrupted_continuation_settled", {}, True),
+        ("record_start_outcome", {"reconciled": True, "status": "failed"}, True),
+        ("record_start_outcome", {"reconciled": True, "status": "succeeded"}, True),
+        ("record_start_outcome", {"reconciled": True, "status": "uncertain"}, False),
+        ("record_start_outcome", {"reconciled": False, "status": "failed"}, False),
+        ("record_start_outcome", {"status": "failed"}, False),
+    ],
+)
+def test_settled_intervention_does_not_consume_notification_fence(
+    db, github, notices, action, detail, cleared
+):
+    task_id, _policy = admitted(ISSUE)
+    workflow = "factory-node:worker:1"
+    add_intervention(db, task_id, workflow, required=True, reason="guest missing")
+    key = "start_key" if action == "record_start_outcome" else "workflow_id"
+    with Session(db) as session:
+        session.add(
+            FactoryAudit(
+                actor="factory:reconcile",
+                action=action,
+                task_id=task_id,
+                detail_json=json.dumps({key: workflow, **detail}),
+            )
+        )
+        session.commit()
+    conductor._consume_intervention_notifications(task_id)
+    conductor._consume_intervention_notifications(task_id)
+    assert len(notices) == (0 if cleared else 1)
+    assert len(audits(db, "intervention_required_notified")) == (0 if cleared else 1)
+    assert len(audits(db, "stop_observation")) == 1
+
+    # A different attempt still requires help, including after a quiet scan.
+    add_intervention(
+        db, task_id, "factory-node:worker:2", required=True, reason="stop failed"
+    )
+    conductor._consume_intervention_notifications(task_id)
+    conductor._consume_intervention_notifications(task_id)
+    assert len(notices) == 1
+    if cleared:
+        assert "workflow=factory-node:worker:2" in notices[0][0]
+        assert "workflow=factory-node:worker:1" not in notices[0][0]
+
+
+@pytest.mark.parametrize("settled_first", [False, True])
+def test_intervention_settlement_is_ordered_and_exact_attempt_only(
+    db, github, notices, settled_first
+):
+    task_id, _policy = admitted(ISSUE)
+
+    def settled():
+        with Session(db) as session:
+            session.add(
+                FactoryAudit(
+                    actor="factory:reconcile",
+                    action="stop_settled",
+                    task_id=task_id,
+                    detail_json=json.dumps(
+                        {"workflow_id": "worker:1", "cessation_confirmed": True}
+                    ),
+                )
+            )
+            session.commit()
+
+    if settled_first:
+        settled()
+    add_intervention(db, task_id, "worker:1", required=True, reason="missing proof")
+    add_intervention(db, task_id, "worker:2", required=True, reason="stop failed")
+    if not settled_first:
+        settled()
+    conductor._consume_intervention_notifications(task_id)
+    assert len(notices) == 1
+    assert "workflow=worker:2" in notices[0][0]
+    assert ("workflow=worker:1" in notices[0][0]) is settled_first
+
+
 def test_exhausted_stop_notification_carries_safe_reconciliation_context(
     db, github, notices
 ):

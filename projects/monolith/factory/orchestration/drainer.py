@@ -166,6 +166,22 @@ def provider_walled() -> tuple[bool, str]:
         return False, "unreadable"
 
 
+def kg_provider_walled() -> tuple[bool, str]:
+    """Whether fresh observations confirm room for a KG session."""
+    try:
+        from factory.orchestration.model_pool import (
+            confirmed_availability,
+            quota_summary,
+        )
+
+        ok, reason = confirmed_availability(DRAIN_MODEL, quota_summary())
+        return (not ok), reason
+    # nosemgrep: no-broad-except-swallow
+    except Exception:  # unknown capacity must not admit KG work
+        logger.debug("KG drain provider quota unreadable", exc_info=True)
+        return True, "unreadable"
+
+
 @DBOS.step()
 def claim_drainer_job(
     ttl_secs: int,
@@ -208,9 +224,22 @@ def claim_drainer_job(
                 reason,
             )
             return None
+        kg_walled, kg_reason = kg_provider_walled()
+        remaining_kinds = tuple(kinds)
+        if kg_walled and KG_JOB_KIND in remaining_kinds:
+            remaining_kinds = tuple(
+                kind for kind in remaining_kinds if kind != KG_JOB_KIND
+            )
+            set_attributes(span, {"drain.kg_deferred": kg_reason})
+            logger.info(
+                "KG drain claim deferred: %s capacity is unconfirmed (%s)",
+                DRAIN_MODEL,
+                kg_reason,
+            )
+            if not remaining_kinds:
+                return None
         lock_pool(session)
         adopt_existing(session)
-        remaining_kinds = tuple(kinds)
         while remaining_kinds:
             # Keep the pool lock while rolling back a refused job's lease.
             # Another worker cannot spend the same allowance or freshness turn.
