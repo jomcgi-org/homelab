@@ -15,14 +15,20 @@ next. Platform mechanics (ingress library, delivery, storage) are in
 
 ## Where things run
 
-One cluster hosts every application: the GKE hub, two node pools, an
-on-demand `core-e2` pool for everything stateful or platform-shaped and a
+The GKE hub has hosted every application since the 2026-08-31 cutover, with two
+node pools: an on-demand `core-e2` pool for everything stateful or platform-shaped and a
 Spot `ember-bricks` pool with nested virtualization for the Firecracker
 bricks and the embeddings pod. The pools, the GCS buckets, and the IAM
 bindings are managed with `gcloud`, not from git; ADR platform/016 is the
-record of the shape. The home k3s cluster was pruned of its workloads on
-2026-08-31 and runs only the GPU inference host, which the hub reaches over
-the tailnet until #5485 finishes the teardown. The cluster roots are
+record of the shape. The last recorded home state was a k3s cluster pruned of
+application workloads and a GPU inference host reached over the tailnet. The
+current direction instead keeps GKE as the always-on, more reliable hub while
+already-owned nodes shipped to the UK return as primary home capacity after a
+separate bring-up and placement plan
+([#4964](https://github.com/jomcgi-org/homelab/issues/4964)). The closed
+[#5485](https://github.com/jomcgi-org/homelab/issues/5485) and
+[#5461](https://github.com/jomcgi-org/homelab/issues/5461) decisions authorize
+no teardown, migration or hardware disposal. The cluster roots are
 `projects/platform-gke/kustomization.yaml` and
 `projects/gke-apps/kustomization.yaml`; every chart carries a
 `values-gke.yaml` overlay, and that overlay is where most security-relevant
@@ -100,16 +106,23 @@ dashboard; the repo carries only the verification half,
 renders an Envoy `SecurityPolicy` that validates `Cf-Access-Jwt-Assertion`
 and projects the `email` claim to `X-Auth-Email`. Live consumers on the hub:
 `monolith-private-cf-access` and `kargo-private-cf-access`
-(`kubectl get securitypolicies -A`). ArgoCD has no route on the hub
+(`kubectl get securitypolicies -A`). ArgoCD has no UI route on the hub
 (`cfIngress.enabled: false` in `projects/platform/argocd/values-gke.yaml`);
-it is reached through the Kubernetes API over the tailnet.
+the UI is reached through the Kubernetes API over the tailnet, and only the
+push webhook route below is exposed here.
 
 Documented holes in that gate, each deliberate:
 
-- `/webhooks/github/semgrep` and `/webhooks/semgrep` are a separate route
-  with no `SecurityPolicy`, reachable through an IP-allowlist bypass in the
-  Access policy and authenticated by HMAC in the handler
+- `/webhooks/github/factory` is a separate route with no `SecurityPolicy`,
+  reachable through an IP-allowlist bypass in the Access policy and
+  authenticated by HMAC in the handler
   (`projects/monolith/chart/templates/httproute-private.yaml`).
+- `/webhooks/github/argocd` is the ArgoCD push-sync webhook route, enabled on
+  the hub by `cfIngress.githubWebhook.enabled: true` in
+  `projects/platform/argocd/values-gke.yaml`. It is a separate route with no
+  `SecurityPolicy`, reachable through the same IP-allowlist bypass, so GitHub
+  push events reach `argocd-server` instead of falling through to the
+  monolith's private route. ArgoCD treats it as an unsigned refresh trigger.
 - `/img/` on `private.jomcgi.dev` is the public tier's imgproxy route and
   carries no `SecurityPolicy`; the edge Access policy is the only gate.
 - `friends.jomcgi.dev` has no Access application. The authentik
@@ -155,6 +168,17 @@ Workload API and serve `/token` over SPIFFE mTLS on a second port, gated on
 nothing else mounts it, the control-plane-to-noded hop still carries a
 static bearer token, and guests hold no identity. Phase 2 is #5755 to
 #5759; the phase plan is #5706.
+
+Restore-capability MAC key decoupling is phase 2a (#5756). Its rollout order is:
+ship the default-off shared Secret wiring and a noded verifier that accepts the
+dedicated key before the legacy bearer, enable the dedicated key on the control
+plane and every noded pod in one staged values change, then verify restores
+before rotating or retiring the transport bearer. The legacy verifier is a
+one-release migration window only. Remove it in the first chart release after
+the phase 2c checklist in #5706 has enabled and verified the dedicated key
+fleet-wide. The repository defaults and current production values do not
+enable the dedicated key, so this documents sequencing and does not claim a
+rollout.
 
 **Discord features are allow-list only** (`projects/monolith/chat/acl.py`,
 the `discord_feature_grant` table). **Codex OAuth is refreshed by one

@@ -30,6 +30,7 @@ from opentelemetry import trace
 
 from factory import execution as agent_sessions
 from factory.execution import model_family
+from factory.execution.constants import exact_dispatch_id
 from faas.embervm_client import (
     EmberVMTimeout,
     EmberVMTransportError,
@@ -121,20 +122,6 @@ PREWARM_SESSION_TIMEOUT = 2.0
 # provisioning or other control operations into twelve-hour waits.
 INVOKE_READ_TIMEOUT = 43500.0
 CREATE_SESSION_READ_TIMEOUT = 1800.0
-
-
-def exact_dispatch_id(
-    agent_session_id: int,
-    guest_id: str,
-    turn_seq: int,
-    claim_owner: str,
-    dispatch_count: int,
-) -> str:
-    """Opaque identity shared by invoke, stop validation, and every relay hop."""
-    fields = [agent_session_id, guest_id, turn_seq, claim_owner, dispatch_count]
-    return hashlib.sha256(
-        json.dumps(fields, separators=(",", ":"), ensure_ascii=True).encode()
-    ).hexdigest()
 
 
 def _retryable_from_response(exc: httpx.HTTPStatusError) -> bool:
@@ -586,15 +573,34 @@ async def _observe_native_result(
             # The callback commits before the guest writes its response. Read
             # once more after an HTTP failure so a poll interval cannot hide an
             # already committed result behind an automatic transport retry.
-            captured = await _receipt_database_call(
-                result_receipts.read_active_result, **identity
-            )
-            if captured is not None:
-                turn = captured_turn(captured)
-                receipt_won = True
-                return turn
+            try:
+                captured = await _receipt_database_call(
+                    result_receipts.read_active_result, **identity
+                )
+                turn = captured_turn(captured) if captured is not None else None
+            except Exception as exc:
+                # Optional receipt failures must not replace the POST's actual
+                # failure, which determines transport recovery and accounting.
+                logger.warning(
+                    "Final receipt observation unavailable: %s", type(exc).__name__
+                )
+            else:
+                if turn is not None:
+                    receipt_won = True
+                    return turn
             return posted.result()
-        result = received.result()
+        try:
+            result = received.result()
+        except Exception as exc:
+            # A receipt can be denied for an expired heartbeat while the same
+            # executor still owns a healthy POST. Stop adoption, not that POST.
+            # The normal result writer separately rechecks exact ownership;
+            # observing a response grants no right to overwrite a new owner.
+            logger.warning(
+                "Receipt adoption unavailable; awaiting original response: %s",
+                type(exc).__name__,
+            )
+            return await posted
         receipt_won = True
         return result
     finally:
@@ -983,7 +989,11 @@ class EmberVmShimTransport:
             raise EmberVMTransportError(str(exc)) from exc
 
     async def destroy_session(
-        self, ember_session_id: str, *, stop_precondition: dict | None = None
+        self,
+        ember_session_id: str,
+        *,
+        stop_precondition: dict | None = None,
+        parked_precondition: dict | None = None,
     ) -> dict:
         """Destroy one control plane session by its EmberVM session id (management auth).
 
@@ -1000,6 +1010,13 @@ class EmberVmShimTransport:
         if not EMBERVM_URL:
             raise EmberVMTransportError("EMBERVM_URL is not configured")
 
+        if stop_precondition is not None and parked_precondition is not None:
+            raise ValueError("choose one destroy precondition")
+        request_body = (
+            {"parked_precondition": parked_precondition}
+            if parked_precondition is not None
+            else {"stop_precondition": stop_precondition}
+        )
         url = f"{EMBERVM_URL}/v1/sessions/{ember_session_id}"
         headers = auth_headers()
         # Destroy is on the interactive cancel path, and a wedged control plane
@@ -1012,14 +1029,14 @@ class EmberVmShimTransport:
 
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
-                if stop_precondition is None:
+                if stop_precondition is None and parked_precondition is None:
                     response = await client.delete(url, headers=headers)
                 else:
                     response = await client.request(
                         "DELETE",
                         url,
                         headers=headers,
-                        json={"stop_precondition": stop_precondition},
+                        json=request_body,
                     )
                 response.raise_for_status()
                 return response.json()

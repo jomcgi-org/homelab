@@ -18,7 +18,9 @@ import os
 from sqlmodel import select
 
 from factory.execution.api import (
+    read_drained_lost_factory_attempt,
     read_uncertain_factory_attempt,
+    settle_drained_lost_factory_attempt,
     settle_uncertain_factory_attempt,
 )
 from factory.orchestration import graph
@@ -27,10 +29,16 @@ from factory.orchestration.factory_models import FactoryAudit, FactoryStart
 from factory.orchestration.models import SwarmNodeRun
 
 ACTOR = "factory:stop-supervision"
+# Preserve the existing request budget unless the staged transient behavior is
+# enabled. Under the staged behavior, a conditional DELETE whose response is
+# lost has an unknown external outcome, so later ticks only observe.
 MAX_STOP_REQUESTS = 3
+TRANSIENT_MAX_STOP_REQUESTS = 1
 MAX_NODE_GONE_DESTROY_REQUESTS = 2
 HTTP_SECONDS = 5
 COMPLETION_ALARM_SECONDS = 120
+TRANSIENT_RETRY_INTERVAL_SECONDS = 300
+TRANSIENT_RETRY_WINDOW_SECONDS = 900
 # How long after the attempt's failed turn the guest stop becomes due. Long
 # enough for the conductor's own native completion check to settle the attempt
 # first, short enough that a four-hour policy timeout never decides it.
@@ -157,7 +165,15 @@ def _stop_deadline(snapshot: dict, identity: dict, pin: dict) -> datetime:
     return deadline
 
 
-def _locked_attempt(db, control, pin, sid, *, require_stop_due=True):
+def _locked_attempt(
+    db,
+    control,
+    pin,
+    sid,
+    *,
+    require_stop_due=True,
+    identity_reader=None,
+):
     run = db.exec(
         select(SwarmNodeRun)
         .where(
@@ -199,7 +215,8 @@ def _locked_attempt(db, control, pin, sid, *, require_stop_due=True):
         or start.max_cost_usd != pin["max_cost_usd"]
     ):
         raise ValueError("factory_start_changed")
-    identity = read_uncertain_factory_attempt(db, pin, sid)
+    reader = identity_reader or read_uncertain_factory_attempt
+    identity = reader(db, pin, sid)
     snapshot = controls.task_snapshot(pin["task_id"], session=db)
     deadline = _stop_deadline(snapshot, identity, pin)
     from factory.orchestration.factory_attempt_stop import matching_request
@@ -214,6 +231,39 @@ def _locked_attempt(db, control, pin, sid, *, require_stop_due=True):
     ):
         raise ValueError("factory_stop_not_due")
     return identity, run
+
+
+def recover_completed_receipt(pin, session_id, workflow_status):
+    """Adopt authenticated completion before attempting remote cessation.
+
+    The native result and recovery audit commit together. Graph/start settlement
+    remains the conductor's normal artifact-validation path, which can replay
+    the newly durable turn after a crash without invoking another model.
+    """
+    from factory.execution.api import adopt_completed_factory_receipt
+
+    if session_id is None or workflow_status not in ("SUCCESS", "ERROR", "CANCELLED"):
+        return False
+    with controls._locked_session() as (db, control):
+        try:
+            identity, _ = _locked_attempt(
+                db, control, pin, session_id, require_stop_due=False
+            )
+            # Invalid evidence leaves no partial changes in the outer control
+            # transaction, including parser failures after a receipt was read.
+            with db.begin_nested():
+                evidence = adopt_completed_factory_receipt(db, pin, identity)
+                controls._audit(
+                    db,
+                    "factory:receipt-recovery",
+                    "completed_receipt_recovered",
+                    task_id=pin["task_id"],
+                    workflow_id=pin["workflow_id"],
+                    **evidence,
+                )
+        except (ValueError, TypeError, KeyError):
+            return False
+    return True
 
 
 def _settlement_accounting(chosen: float | None, original: dict) -> dict:
@@ -303,6 +353,75 @@ def _completion(view, expected):
     return {key: proof[key] for key in keys | {"completed_at_unix_ms"}}
 
 
+def _initial_guest_cessation(view, identity, saved=None):
+    """Match an idle-evicted initial allocation to this exact failed dispatch.
+
+    A guest allocated during the dispatch can be cancelled before its first
+    invoke stamp, then parked and evicted by idle TTL. Its durable creation
+    timestamp identifies that allocation when an invoke timestamp cannot. The
+    later terminal transition proves cessation, never a zero-cost model turn.
+    The caller still revalidates local ownership and retains unknown spend.
+    """
+    required = {
+        "session_id",
+        "state",
+        "terminal_reason",
+        "generation",
+        "turn_seq",
+        "created_at",
+        "updated_at",
+        "invoke_started_at",
+        "last_invoke_at",
+        "interrupted_turn",
+        "stop_precondition",
+        "stop_intent",
+        "stop_completion",
+    }
+    if (
+        not required.issubset(view)
+        or view["session_id"] != identity["guest_id"]
+        or view["state"] != "evicted"
+        or view["terminal_reason"] != "idle_ttl"
+        or type(view["generation"]) is not int
+        or view["generation"] != 0
+        or type(view["turn_seq"]) is not int
+        or view["turn_seq"] != 0
+        or any(
+            view[key] is not None
+            for key in (
+                "invoke_started_at",
+                "last_invoke_at",
+                "interrupted_turn",
+                "stop_precondition",
+                "stop_intent",
+                "stop_completion",
+            )
+        )
+        or saved is not None
+        or any(
+            type(view[key]) is not int or view[key] < 1
+            for key in ("created_at", "updated_at")
+        )
+    ):
+        return None
+    dispatched = int(_timestamp(identity["dispatched_at"]).timestamp() * 1000)
+    failed = int(_timestamp(identity["failed_turn_at"]).timestamp() * 1000)
+    if not dispatched < view["created_at"] <= failed < view["updated_at"]:
+        return None
+    return {
+        "session_id": identity["guest_id"],
+        "state": "evicted",
+        "terminal_reason": "idle_ttl",
+        "generation": 0,
+        "turn_seq": 0,
+        "created_at": view["created_at"],
+        "updated_at": view["updated_at"],
+        "invoke_started_at": None,
+        "last_invoke_at": None,
+        "cessation_evidence": "terminal_initial_guest",
+    }
+
+
 def _control_plane_cessation(view, identity, saved=None):
     """Return terminal CP evidence ordered after this factory dispatch.
 
@@ -316,6 +435,9 @@ def _control_plane_cessation(view, identity, saved=None):
     the view's own invocation fields, ordered against the recorded attempt the
     way the permit loop orders its own observation.
     """
+    initial = _initial_guest_cessation(view, identity, saved)
+    if initial is not None:
+        return initial
     if view.get("state") not in {"evicted", "destroyed"}:
         return None
     generation = view.get("generation")
@@ -478,6 +600,69 @@ def _brick_restart_cessation(view, identity, saved=None):
     }
 
 
+def _drained_loss_cessation(view, identity):
+    """Prove the exact drained dispatch has no valid restoration path.
+
+    ``evicted/node_gone`` is written for a dormant session only after the
+    control plane confirms the owning brick instance departed and finds no
+    surviving local artifact or exported bundle target that can relight it.
+    The interrupted marker was committed by the guest before banking and
+    carries the opaque dispatch ID, CLI transcript and sequence. Requiring both
+    facts distinguishes permanent loss of this drained incarnation from mere
+    cessation, a generic missing guest, a transient read failure, or a
+    banked/relighting session that remains resumable.
+    """
+    if (
+        not isinstance(view, dict)
+        or view.get("session_id") != identity["guest_id"]
+        or view.get("state") != "evicted"
+        or view.get("terminal_reason") != "node_gone"
+    ):
+        return None
+    generation = view.get("generation")
+    started = view.get("invoke_started_at")
+    completed = view.get("last_invoke_at")
+    updated = view.get("updated_at")
+    interrupted = view.get("interrupted_turn")
+    node = view.get("node")
+    node_id = node.get("node_id") if isinstance(node, dict) else None
+    if (
+        type(generation) is not int
+        or generation < 0
+        or type(started) is not int
+        or started < 1
+        or type(completed) is not int
+        or completed < started
+        or type(updated) is not int
+        or updated < completed
+        or not isinstance(node_id, str)
+        or not node_id
+        or not isinstance(interrupted, dict)
+        or interrupted.get("seq") != identity["seq"]
+        or interrupted.get("dispatch_id") != identity["dispatch_id"]
+        or interrupted.get("cli_session_id") != identity["cli_session_id"]
+        or not isinstance(interrupted.get("transcript_path"), str)
+        or not interrupted["transcript_path"]
+    ):
+        return None
+    return {
+        "session_id": identity["guest_id"],
+        "state": "evicted",
+        "terminal_reason": "node_gone",
+        "generation": generation,
+        "invoke_started_at": started,
+        "last_invoke_at": completed,
+        "updated_at": updated,
+        "node_id": node_id,
+        "turn_seq": identity["seq"],
+        "dispatch_id": identity["dispatch_id"],
+        "cli_session_id": identity["cli_session_id"],
+        "transcript_path": interrupted["transcript_path"],
+        "cessation_evidence": "drained_node_gone_no_relight_target",
+        "workspace_recovery": "permanently_lost",
+    }
+
+
 def _replacement_invocation_cessation(view, identity, saved):
     """Prove that a same-guest control-plane record replaced the old invoke.
 
@@ -620,6 +805,183 @@ def _note(pin, reason, *, error=None):
             _audit(db, pin, "stop_observation", **detail)
 
 
+def _transient_retry_enabled():
+    return (
+        os.environ.get("FACTORY_TRANSIENT_STOP_RETRY_ENABLED", "false").lower()
+        == "true"
+    )
+
+
+def _max_stop_requests():
+    if _transient_retry_enabled():
+        return TRANSIENT_MAX_STOP_REQUESTS
+    return MAX_STOP_REQUESTS
+
+
+def _retry_details(pin, identity, *, refusal, deadline, error=None):
+    detail = {
+        "retry_kind": "transient_stop_observation",
+        "refusal": refusal,
+        "retry_deadline_at": deadline.isoformat(),
+        "node_key": pin.get("node_key"),
+        "attempt": pin.get("attempt"),
+        "session_id": identity["session_id"],
+        "guest_id": identity["guest_id"],
+        "identity_sha256": identity["identity_sha256"],
+        "missing_proof": (
+            "No positive cessation proof bound to this exact factory dispatch "
+            "and guest incarnation was observed."
+        ),
+    }
+    if error is not None:
+        detail["error"] = error
+    return detail
+
+
+def _transient_records(records, identity):
+    matching = [
+        detail
+        for action, detail in records
+        if action == "stop_observation"
+        and detail.get("retry_kind") == "transient_stop_observation"
+        and detail.get("identity_sha256") == identity["identity_sha256"]
+    ]
+    for index in range(len(matching) - 1, -1, -1):
+        if matching[index].get("retry_resolved") is True:
+            return matching[index + 1 :]
+    return matching
+
+
+def _transient_retry_gate(db, pin, identity, records):
+    """Return the durable state of one transient retry window.
+
+    The first failed observation fixes the deadline. Audit rows are the retry
+    schedule, so a process restart cannot reset it and concurrent ticks cannot
+    add more than one sample per interval. Exhaustion fences further retry
+    samples and notifications, but does not prevent later proof observation.
+    """
+    if not _transient_retry_enabled():
+        return "due"
+    attempts = _transient_records(records, identity)
+    if any(detail.get("retry_exhausted") is True for detail in attempts):
+        return "exhausted"
+    samples = [detail for detail in attempts if detail.get("retry_sample") is True]
+    if not samples:
+        return "due"
+    deadline = _timestamp(samples[0]["retry_deadline_at"])
+    now = _now()
+    if now >= deadline:
+        last = samples[-1]
+        _audit(
+            db,
+            pin,
+            "stop_observation",
+            reason="stop_supervision_retry_exhausted",
+            retry_exhausted=True,
+            retry_started_at=samples[0]["retry_started_at"],
+            observations=len(samples),
+            intervention_required=True,
+            cessation_confirmed=False,
+            **_retry_details(
+                pin,
+                identity,
+                refusal=last["refusal"],
+                deadline=deadline,
+                error=last.get("error"),
+            ),
+        )
+        return "newly_exhausted"
+    latest = _timestamp(
+        samples[-1].get("retry_observed_at", samples[-1]["recorded_at"])
+    )
+    if (now - latest).total_seconds() < TRANSIENT_RETRY_INTERVAL_SECONDS:
+        return "waiting"
+    return "due"
+
+
+def _record_transient_refusal(pin, session_id, identity, refusal, *, error=None):
+    """Persist one sampled refusal or the single exhaustion intervention."""
+    with controls._locked_session() as (db, control):
+        current, _run = _locked_attempt(
+            db, control, pin, session_id, require_stop_due=True
+        )
+        if current != identity:
+            raise ValueError("factory_attempt_changed")
+        records = _records(db, pin)
+        gate = _transient_retry_gate(db, pin, identity, records)
+        if gate != "due":
+            return gate
+        samples = _transient_records(records, identity)
+        started_at = _now()
+        if samples:
+            started_at = _timestamp(samples[0]["retry_started_at"])
+        deadline = started_at + timedelta(seconds=TRANSIENT_RETRY_WINDOW_SECONDS)
+        _audit(
+            db,
+            pin,
+            "stop_observation",
+            reason=refusal,
+            retry_sample=True,
+            retry_started_at=started_at.isoformat(),
+            retry_observed_at=_now().isoformat(),
+            observation=len(samples) + 1,
+            intervention_required=False,
+            cessation_confirmed=False,
+            **_retry_details(
+                pin,
+                identity,
+                refusal=refusal,
+                deadline=deadline,
+                error=error,
+            ),
+        )
+        return "waiting"
+
+
+def _resolve_transient_retry(pin, session_id, identity, resolution):
+    """Close a recovered transient epoch before another proof path begins."""
+    if not _transient_retry_enabled():
+        return
+    with controls._locked_session() as (db, control):
+        current, _run = _locked_attempt(
+            db, control, pin, session_id, require_stop_due=True
+        )
+        if current != identity:
+            raise ValueError("factory_attempt_changed")
+        attempts = _transient_records(_records(db, pin), identity)
+        if not attempts or any(
+            detail.get("retry_exhausted") is True for detail in attempts
+        ):
+            return
+        _audit(
+            db,
+            pin,
+            "stop_observation",
+            reason="stop_supervision_retry_resolved",
+            retry_kind="transient_stop_observation",
+            retry_resolved=True,
+            resolution=resolution,
+            identity_sha256=identity["identity_sha256"],
+            session_id=identity["session_id"],
+            guest_id=identity["guest_id"],
+            intervention_required=False,
+            cessation_confirmed=False,
+        )
+
+
+def _defer_transient_refusal(pin, session_id, identity, refusal, *, error=None):
+    if not _transient_retry_enabled():
+        if error is None:
+            _note(pin, refusal)
+        else:
+            _note(pin, refusal, error=error)
+        return
+    try:
+        _record_transient_refusal(pin, session_id, identity, refusal, error=error)
+    except ValueError as exc:
+        _note(pin, "local_identity_unconfirmed", error=str(exc))
+
+
 def _node_gone_note(
     pin, reason, node_id, *, exception=None, intervention_required=True
 ):
@@ -755,6 +1117,7 @@ def _settle_failed_attempt(
     reason,
     evidence_key,
     evidence,
+    settle_attempt=None,
 ):
     """Record one uncertain attempt as failed, under a lock the caller holds.
 
@@ -792,7 +1155,9 @@ def _settle_failed_attempt(
         "previous_outcome": json.loads(run.outcome_json or "{}"),
         evidence_key: evidence,
     }
-    settle_uncertain_factory_attempt(db, pin, identity)
+    if settle_attempt is None:
+        settle_attempt = settle_uncertain_factory_attempt
+    settle_attempt(db, pin, identity)
     if run.session_id is None:
         bound = graph.record_dispatch(
             pin["task_id"],
@@ -829,6 +1194,90 @@ def _settle_failed_attempt(
     if not charged["ok"]:
         raise ValueError("factory_start_outcome_refused")
     return result
+
+
+def _reconcile_drained_lost_attempt(pin, session_id, original_result):
+    """Settle one exact orphaned drain, or report that this is another shape.
+
+    Returns ``(applicable, settled)``. Once a drain is applicable, every
+    uncertain or live observation leaves it on its ordinary resumable path and
+    prevents the general UNKNOWN settlement loop from consuming its retry.
+    """
+    if (
+        os.environ.get("FACTORY_DRAINED_LOSS_SETTLEMENT_ENABLED", "false").lower()
+        != "true"
+    ):
+        return False, False
+    try:
+        with controls._locked_session() as (db, control):
+            identity, _run = _locked_attempt(
+                db,
+                control,
+                pin,
+                session_id,
+                require_stop_due=False,
+                identity_reader=read_drained_lost_factory_attempt,
+            )
+    except ValueError:
+        return False, False
+
+    try:
+        view = _http(identity["guest_id"])
+    except Exception:
+        _note(pin, "drained_loss_observation_unavailable")
+        return True, False
+    proof = _drained_loss_cessation(view, identity)
+    if proof is None:
+        if (
+            isinstance(view, dict)
+            and view.get("state") == "evicted"
+            and view.get("terminal_reason") == "node_gone"
+        ):
+            _note(pin, "drained_loss_evidence_changed")
+        return True, False
+    try:
+        with controls._locked_session() as (db, control):
+            current, run = _locked_attempt(
+                db,
+                control,
+                pin,
+                session_id,
+                require_stop_due=False,
+                identity_reader=read_drained_lost_factory_attempt,
+            )
+            if current != identity:
+                raise ValueError("factory_attempt_changed")
+            records = _records(db, pin)
+            if any(action == "stop_settled" for action, _ in records):
+                return True, True
+            _settle_failed_attempt(
+                db,
+                pin,
+                session_id,
+                identity,
+                run,
+                original_result,
+                reason=(
+                    "drained_guest_permanently_lost: exact interrupted dispatch "
+                    "has no control-plane relight target after node departure"
+                ),
+                evidence_key="drained_loss",
+                evidence=proof,
+                settle_attempt=settle_drained_lost_factory_attempt,
+            )
+            _audit(
+                db,
+                pin,
+                "stop_settled",
+                identity=identity,
+                drained_loss=proof,
+                cessation_confirmed=True,
+                intervention_required=False,
+            )
+            return True, True
+    except ValueError as exc:
+        _note(pin, "drained_loss_evidence_or_ownership_changed", error=str(exc))
+        return True, False
 
 
 def _absence_run(records, identity):
@@ -1008,8 +1457,9 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
     """One bounded supervision tick for an already terminal DBOS workflow.
 
     A live DBOS workflow still owns its deadline/cancellation path. No work is
-    started or cancelled here. Three conditional requests maximum are retained
-    across observer restart; Ember owns retrying its accepted durable intent.
+    started or cancelled here. The legacy conditional request budget remains
+    unless staged transient supervision is enabled; Ember owns retrying its
+    accepted durable intent.
     """
     if os.environ.get("FACTORY_STOP_SUPERVISION_ENABLED", "false").lower() != "true":
         return False
@@ -1022,6 +1472,9 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
         return False
     if original_result.get("status") != "uncertain" or type(session_id) is not int:
         return False
+    drained, settled = _reconcile_drained_lost_attempt(pin, session_id, original_result)
+    if drained:
+        return settled
     cessation_enabled = (
         os.environ.get("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "false").lower()
         == "true"
@@ -1047,6 +1500,9 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
             saved = intents[0] if intents else None
             if saved is not None and saved["identity"] != identity:
                 raise ValueError("factory_attempt_changed")
+            retry_gate = _transient_retry_gate(db, pin, identity, _records(db, pin))
+            if retry_gate in {"waiting", "newly_exhausted"}:
+                return False
     except ValueError as exc:
         if str(exc) != "factory_stop_not_due":
             _note(pin, "local_identity_unconfirmed", error=str(exc))
@@ -1064,6 +1520,9 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
         # stop_observation_unavailable, so an unreachable control plane can
         # never be read as a torn-down guest.
         try:
+            _resolve_transient_retry(
+                pin, session_id, identity, "authoritative_guest_absence"
+            )
             return _absence_settled(pin, session_id, identity, original_result)
         except ValueError as exc:
             if str(exc) != "factory_stop_not_due":
@@ -1074,7 +1533,12 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
                 )
             return False
     except Exception:
-        _note(pin, "stop_observation_unavailable")
+        _defer_transient_refusal(
+            pin,
+            session_id,
+            identity,
+            "stop_observation_unavailable",
+        )
         return False
     try:
         if not isinstance(view, dict) or view.get("session_id") != identity["guest_id"]:
@@ -1085,6 +1549,9 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
         if view.get("terminal_reason") == "interrupted_for_drain" and view.get(
             "state"
         ) in {"running", "banking", "banked", "parked", "relighting"}:
+            _resolve_transient_retry(
+                pin, session_id, identity, "drain_interruption_observed"
+            )
             return False
         if _destroy_guest_on_departed_node(pin, identity, view):
             return False
@@ -1161,7 +1628,8 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
                 )
                 return True
             requests = sum(action == "stop_request" for action, _ in records)
-            if view.get("stop_intent") is not None or requests >= MAX_STOP_REQUESTS:
+            max_stop_requests = _max_stop_requests()
+            if view.get("stop_intent") is not None or requests >= max_stop_requests:
                 dispatch = False
             else:
                 _audit(
@@ -1174,15 +1642,35 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
                 )
                 dispatch = True
         if dispatch:
+            _resolve_transient_retry(
+                pin, session_id, identity, "valid_stop_identity_observed"
+            )
             # The durable local request budget was consumed before the external
-            # effect. An observation timeout never creates another identity.
+            # effect. An observation timeout never creates another identity or
+            # another request. Later ticks can only observe this operation.
             try:
                 _http(identity["guest_id"], expected)
             except Exception:
-                _note(pin, "stop_request_unconfirmed")
-        elif requests >= MAX_STOP_REQUESTS and view.get("stop_intent") is None:
-            _note(pin, "stop_request_bound_reached")
+                _defer_transient_refusal(
+                    pin,
+                    session_id,
+                    identity,
+                    "stop_request_unconfirmed",
+                )
+        elif requests >= max_stop_requests and view.get("stop_intent") is None:
+            if _transient_retry_enabled():
+                _defer_transient_refusal(
+                    pin,
+                    session_id,
+                    identity,
+                    "stop_request_unconfirmed",
+                )
+            else:
+                _note(pin, "stop_request_bound_reached")
         elif view.get("stop_intent") is not None:
+            _resolve_transient_retry(
+                pin, session_id, identity, "accepted_stop_intent_observed"
+            )
             accepted = [
                 detail for action, detail in records if action == "stop_accepted"
             ]
@@ -1193,7 +1681,15 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
             ):
                 _note(pin, "node_completion_pending")
     except ValueError as exc:
-        if not (cessation_enabled and str(exc) == "factory_stop_not_due"):
+        if str(exc) == "missing_stop_precondition" and _transient_retry_enabled():
+            _defer_transient_refusal(
+                pin,
+                session_id,
+                identity,
+                "missing_stop_precondition",
+                error=str(exc),
+            )
+        elif not (cessation_enabled and str(exc) == "factory_stop_not_due"):
             _note(
                 pin,
                 "stop_evidence_or_ownership_changed",

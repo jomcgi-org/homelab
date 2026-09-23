@@ -9,6 +9,10 @@ password as fields. The 1Password operator syncs them into a Secret and
 propagates this OnePasswordItem's labels onto it, so the synced Secret carries
 the argocd.argoproj.io/secret-type=repo-creds label that ArgoCD auto-discovers
 as a credential template matching the url prefix. Charts can now stay private.
+
+The shared item also carries repoURL for Kargo's monolith-agents chart only.
+Kargo's OnePasswordItem creates a separate project-scoped Secret with its own
+helm-credential label; both consumers retain the same managed login rotation.
 */}}
 apiVersion: onepassword.com/v1
 kind: OnePasswordItem

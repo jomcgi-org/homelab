@@ -51,10 +51,22 @@ tunnel:
   # These carry the values-prod.yaml tunnel settings into the hub overlay, which
   # previously dropped them: with no priority class and no resource requests the
   # connector runs BestEffort at default priority and is among the first pods
-  # the kubelet evicts. system-cluster-critical plus a request ranks it last.
+  # the kubelet evicts. A priority class plus a request ranks it last.
+  #
+  # homelab-critical, not system-cluster-critical: GKE reserves
+  # system-cluster-critical and system-node-critical for its own system
+  # namespaces, so a pod that requests them in envoy-gateway-system is rejected
+  # at admission ("insufficient quota to match these scopes: [{PriorityClass In
+  # [system-node-critical system-cluster-critical]}]"). That denial froze the
+  # cloudflared rollout from 2026-09-18: with maxUnavailable 0 the 1-pod surge
+  # could never be created, so the hardened revision never ran and the
+  # September 13 BestEffort pods stayed serving. homelab-critical (value
+  # 100000) is a user class, admissible in any namespace, and still ranks the
+  # connector above default-priority tenants, which is the eviction ordering
+  # this comment is about.
   # The spread rule is best effort; it cannot separate the replicas while only
   # one node is schedulable, but it will once a second on-demand node exists.
-  priorityClassName: system-cluster-critical
+  priorityClassName: homelab-critical
   resources:
     requests:
       cpu: 25m

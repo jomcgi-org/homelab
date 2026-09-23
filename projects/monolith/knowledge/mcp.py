@@ -463,6 +463,7 @@ def _dispute_fact_sync(
                 evidence=evidence or [],
                 reporter_subject=reporter["reporter_subject"],
                 reporter_authority=reporter["reporter_authority"],
+                previous_verification_state=note["verification_state"],
                 state="open",
             )
             session.add(dispute)

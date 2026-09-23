@@ -21,11 +21,21 @@ function listJob(overrides = {}) {
 }
 
 function frame(job) {
+  const queue = {
+    running: 0,
+    due: 0,
+    scheduled: 0,
+    deferred: 0,
+    error: 0,
+    ok: 0,
+    parked: 0,
+  };
+  queue[job.state] = 1;
   return {
     now: "2026-08-29T12:01:00Z",
     lane: { state: "idle", cycle: null, error: null },
     recent_cycles: [],
-    queue: { running: 0, due: 0, scheduled: 0, error: 0, ok: 1, parked: 0 },
+    queue,
     jobs: [job],
   };
 }
@@ -168,6 +178,23 @@ describe("job row outcome text", () => {
 
     expect(row.textContent).toContain("Audited the repository");
     expect(row.textContent).not.toContain("Audit the repository");
+  });
+
+  test("deferred rows show the deferral reason separately from success", async () => {
+    const target = await renderPage(
+      listJob({
+        state: "deferred",
+        outcome: "report",
+        summary_head: "kg daily cap reached",
+      }),
+    );
+    const row = target.querySelector(".job-row");
+
+    expect(row.textContent).toContain("kg daily cap reached");
+    expect(row.querySelector(".job-state").textContent.trim()).toBe("deferred");
+    expect(target.querySelector(".chip-attn").textContent).toContain(
+      "deferred",
+    );
   });
 
   test("error rows show the summary and never the prompt", async () => {

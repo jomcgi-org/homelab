@@ -906,7 +906,11 @@ defmodule Embervm.NodeRegistry do
       end
 
     %{
-      node_id: s.node_id,
+      # NodeCapacity's node-scoped identity is registration-authoritative and
+      # must agree with the ETS tuple key. Keep the daemon's status name only
+      # as diagnostics so a divergent report cannot redirect a node lookup.
+      node_id: configured_id,
+      reported_node_id: s.node_id,
       configured_id: configured_id,
       # Instance identity (R0 PR-2): pod_uid is the daemon-reported pod UID
       # (falling back to the runtime's registered pod_uid when a daemon predates

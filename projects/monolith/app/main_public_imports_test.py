@@ -51,10 +51,6 @@ FORBIDDEN_MODULES = [
     "scheduler",
     "moving",
     "updates",
-    # Firecracker demos: an authenticated-only router that wraps the private
-    # sandbox/semgrep/goosecracker handlers; it must never enter the public
-    # closure (it is not globbed into the public binary either).
-    "demos",
     # Trips read path (models + read_router) is public; the write/heavy path
     # must stay out of the public closure (pillow/boto3/defusedxml).
     "trips.ingest_router",
@@ -96,8 +92,8 @@ FORBIDDEN_MODULES = [
     "worldcup.sim",
     # Ember synthetic prober and private trigger: the public tier reads the probe
     # latch (ember_public.synthetic) to answer /api/health, but the prober and
-    # internal endpoint that drive the demos run only in private images. Pruned from the public
-    # file set in BUILD; this locks the split so a future health.py edit
+    # internal endpoint that drives the probes runs only in private images.
+    # Pruned from the public file set in BUILD; this locks the split so a future health.py edit
     # cannot quietly pull the prober into the public closure.
     "ember_public.synthetic_probe",
     "ember_public.synthetic_router",

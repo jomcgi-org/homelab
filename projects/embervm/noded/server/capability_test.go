@@ -8,8 +8,15 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
+	"log/slog"
 	"testing"
 	"time"
+
+	"github.com/jomcgi/homelab/projects/embervm/noded/config"
+	nodev1 "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func mintCapability(t *testing.T, macKey, dataKey []byte, expiry time.Time, scope capabilityScope) []byte {
@@ -86,6 +93,121 @@ func TestParseAndVerifyCapability(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRestoreDataKeyDedicatedAndLegacyMigration(t *testing.T) {
+	dedicatedKey := []byte("dedicated-capability-key")
+	legacyKey := []byte("legacy-bearer-key")
+	dataKey := bytes.Repeat([]byte{0x7a}, 32)
+	generation := uint64(12)
+	ref := &nodev1.ArtifactRef{
+		Kind:     nodev1.ArtifactKind_ARTIFACT_KIND_SESSION,
+		Workload: "sandbox-session",
+		Ref:      "session-12",
+	}
+	scope := capabilityScope{
+		Principal: "acct:alice", Lineage: "lineage-12", Node: "node-a", PodUID: "pod-a",
+		Workload: ref.GetWorkload(), Ref: ref.GetRef(), Kind: "session", Generation: generation,
+	}
+	dedicatedCapability := mintCapability(t, dedicatedKey, dataKey, time.Now().Add(time.Minute), scope)
+
+	// Non-vacuity control: the legacy-only verifier rejects this capability.
+	// The real restoreDataKey consumer must therefore use the new dedicated key
+	// for the success assertion below; a self-roundtrip cannot satisfy it.
+	if _, err := parseAndVerifyCapability(dedicatedCapability, legacyKey, time.Now(), scope); !errors.Is(err, ErrCapabilityMACMismatch) {
+		t.Fatalf("legacy-only verifier error = %v, want %v", err, ErrCapabilityMACMismatch)
+	}
+
+	t.Run("dedicated key survives bearer rotation", func(t *testing.T) {
+		s := capabilityTestServer(config.Config{
+			Node:                 "node-a",
+			PodUID:               "pod-a",
+			RestoreCapabilityKey: string(dedicatedKey),
+			BearerToken:          "rotated-transport-bearer",
+		})
+		got, err := s.restoreDataKey(dedicatedCapability, ref, generation)
+		if err != nil || !bytes.Equal(got, dataKey) {
+			t.Fatalf("restoreDataKey(dedicated) = (%x, %v), want data key", got, err)
+		}
+	})
+
+	t.Run("legacy bearer remains a one-release fallback", func(t *testing.T) {
+		legacyCapability := mintCapability(t, legacyKey, dataKey, time.Now().Add(time.Minute), scope)
+		s := capabilityTestServer(config.Config{
+			Node:                 "node-a",
+			PodUID:               "pod-a",
+			RestoreCapabilityKey: string(dedicatedKey),
+			BearerToken:          string(legacyKey),
+		})
+		got, err := s.restoreDataKey(legacyCapability, ref, generation)
+		if err != nil || !bytes.Equal(got, dataKey) {
+			t.Fatalf("restoreDataKey(legacy fallback) = (%x, %v), want data key", got, err)
+		}
+	})
+}
+
+func TestRestoreDataKeyRejectsInvalidCapabilitiesWithEnforcementUnchanged(t *testing.T) {
+	dedicatedKey := []byte("dedicated-capability-key")
+	legacyKey := []byte("legacy-bearer-key")
+	dataKey := bytes.Repeat([]byte{0x4c}, 32)
+	generation := uint64(21)
+	ref := &nodev1.ArtifactRef{
+		Kind:     nodev1.ArtifactKind_ARTIFACT_KIND_SESSION,
+		Workload: "sandbox-session",
+		Ref:      "session-21",
+	}
+	scope := capabilityScope{
+		Principal: "acct:alice", Lineage: "lineage-21", Node: "node-a", PodUID: "pod-a",
+		Workload: ref.GetWorkload(), Ref: ref.GetRef(), Kind: "session", Generation: generation,
+	}
+
+	tests := []struct {
+		name string
+		raw  func() []byte
+	}{
+		{name: "missing", raw: func() []byte { return nil }},
+		{name: "malformed", raw: func() []byte { return []byte{0x01} }},
+		{name: "wrong_key", raw: func() []byte {
+			return mintCapability(t, []byte("wrong-key"), dataKey, time.Now().Add(time.Minute), scope)
+		}},
+		{name: "scope_mismatch", raw: func() []byte {
+			return mintCapability(t, dedicatedKey, dataKey, time.Now().Add(time.Minute), withScope(scope, func(s *capabilityScope) { s.Node = "node-b" }))
+		}},
+		{name: "generation_mismatch", raw: func() []byte {
+			return mintCapability(t, dedicatedKey, dataKey, time.Now().Add(time.Minute), withScope(scope, func(s *capabilityScope) { s.Generation++ }))
+		}},
+		{name: "expired", raw: func() []byte {
+			return mintCapability(t, dedicatedKey, dataKey, time.Now().Add(-time.Minute), scope)
+		}},
+	}
+
+	for _, tt := range tests {
+		for _, enforcement := range []struct {
+			name     string
+			required bool
+			wantCode codes.Code
+		}{
+			{name: "required", required: true, wantCode: codes.PermissionDenied},
+			{name: "inert", required: false, wantCode: codes.FailedPrecondition},
+		} {
+			t.Run(tt.name+"/"+enforcement.name, func(t *testing.T) {
+				s := capabilityTestServer(config.Config{
+					Node:                     "node-a",
+					PodUID:                   "pod-a",
+					RestoreCapabilityKey:     string(dedicatedKey),
+					BearerToken:              string(legacyKey),
+					RequireRestoreCapability: enforcement.required,
+				})
+				if _, err := s.restoreDataKey(tt.raw(), ref, generation); status.Code(err) != enforcement.wantCode {
+					t.Fatalf("restoreDataKey error = %v (code %v), want code %v", err, status.Code(err), enforcement.wantCode)
+				}
+			})
+		}
+	}
+}
+
+func capabilityTestServer(cfg config.Config) *Server {
+	return &Server{cfg: cfg, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 }
 
 func withScope(scope capabilityScope, change func(*capabilityScope)) capabilityScope {

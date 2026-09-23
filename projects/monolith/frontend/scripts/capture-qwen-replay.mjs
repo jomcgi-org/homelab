@@ -6,7 +6,7 @@ import { performance } from "node:perf_hooks";
 import {
   attributeExpertActivity,
   calculateTierSummary,
-} from "../src/routes/private/demos/qwen-flash/metrics.js";
+} from "./qwen-replay-metrics.mjs";
 
 const base = process.env.QWEN_REPLAY_API;
 const build = process.env.QWEN_REPLAY_BUILD;

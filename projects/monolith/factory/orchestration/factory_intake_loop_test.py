@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 import json
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import event
@@ -1136,6 +1136,7 @@ def test_work_item_sync_failure_does_not_change_admission(db, monkeypatch):
 
 
 def test_local_ready_item_creates_linked_delivery_receipt(db, monkeypatch):
+    monkeypatch.setenv("FACTORY_GITHUB_WEBHOOK_ENABLED", "true")
     fake_pages(monkeypatch, [])
     with Session(db) as session:
         item = WorkItem(
@@ -1159,6 +1160,234 @@ def test_local_ready_item_creates_linked_delivery_receipt(db, monkeypatch):
     assert result[0]["receipt"]["task_class"] == "docs"
     detail = json.loads(audits(db, "intake_admitted")[0].detail_json)
     assert detail["source"] == "local"
+
+
+def test_webhook_ingress_keeps_sweep_and_uses_live_listing_for_admission(
+    db, monkeypatch
+):
+    monkeypatch.setenv("FACTORY_GITHUB_WEBHOOK_ENABLED", "true")
+    calls = fake_pages(
+        monkeypatch,
+        [issue(201, ["agent-ready"], created_at="2026-09-01T00:00:00Z")],
+    )
+    with Session(db) as session:
+        for number, trust in (
+            (201, "trusted"),
+            (202, "semi_trusted"),
+            (203, "untrusted"),
+        ):
+            session.add(
+                WorkItem(
+                    title=f"{trust} webhook item",
+                    body="stored payload",
+                    state="ready",
+                    labels=["agent-ready"],
+                    source_kind="github",
+                    source_ref=f"https://github.com/owner/repo/issues/{number}",
+                    trust=trust,
+                    authority="github",
+                    github_repo="owner/repo",
+                    github_issue_number=number,
+                    github_created_at=NOW - timedelta(days=1),
+                )
+            )
+        session.commit()
+
+    admitted = intake_loop.intake_tick(policy(labels=["agent-ready"]), generation=0)
+    assert len(admitted) == 1
+    assert admitted[0]["receipt"]["issue_number"] == 201
+    detail = json.loads(audits(db, "intake_admitted")[0].detail_json)
+    assert detail["source"] == "github"
+    assert any(call.startswith("issues?") for call in calls)
+    assert any(call.startswith("pulls?") for call in calls)
+    with Session(db) as session:
+        assert [
+            row.issue_number for row in session.exec(select(FactoryReceipt)).all()
+        ] == [201]
+
+
+@pytest.mark.parametrize("guard", ["assigned", "linked_pr"])
+def test_webhook_item_cannot_bypass_live_github_admission_guards(
+    db, monkeypatch, guard
+):
+    monkeypatch.setenv("FACTORY_GITHUB_WEBHOOK_ENABLED", "true")
+    listed = issue(204, ["agent-ready"], created_at="2026-09-04T00:00:00Z")
+    pulls = []
+    if guard == "assigned":
+        listed["assignees"] = [{"login": "owner"}]
+    else:
+        pulls = [{"title": "Already in flight", "body": "Works on #204"}]
+    fake_pages(monkeypatch, [listed], pulls)
+    with Session(db) as session:
+        session.add(
+            WorkItem(
+                title="stored trusted item",
+                body="stored payload",
+                state="ready",
+                labels=["agent-ready"],
+                source_kind="github",
+                trust="trusted",
+                authority="github",
+                github_repo="owner/repo",
+                github_issue_number=204,
+                github_created_at=NOW - timedelta(days=1),
+            )
+        )
+        session.commit()
+
+    assert intake_loop.intake_tick(policy(labels=["agent-ready"]), generation=0) == []
+    detail = json.loads(audits(db, "intake_idle")[0].detail_json)
+    assert detail["excluded"] == {guard: 1}
+    with Session(db) as session:
+        assert session.exec(select(FactoryReceipt)).all() == []
+
+
+def test_webhook_item_left_ready_by_missed_close_is_not_admitted(db, monkeypatch):
+    monkeypatch.setenv("FACTORY_GITHUB_WEBHOOK_ENABLED", "true")
+    fake_pages(monkeypatch, [])
+    with Session(db) as session:
+        session.add(
+            WorkItem(
+                title="closed issue with missed delivery",
+                body="stored payload",
+                state="ready",
+                labels=["agent-ready"],
+                source_kind="github",
+                trust="trusted",
+                authority="github",
+                github_repo="owner/repo",
+                github_issue_number=205,
+                github_created_at=NOW - timedelta(days=1),
+            )
+        )
+        session.commit()
+
+    assert intake_loop.intake_tick(policy(labels=["agent-ready"]), generation=0) == []
+    with Session(db) as session:
+        stored = session.exec(
+            select(WorkItem).where(WorkItem.github_issue_number == 205)
+        ).one()
+        assert stored.state == "ready"
+        assert session.exec(select(FactoryReceipt)).all() == []
+
+
+@pytest.mark.parametrize("listing_status", ["failed", "not_due"])
+def test_webhook_item_waits_for_live_listing(db, monkeypatch, listing_status):
+    monkeypatch.setenv("FACTORY_GITHUB_WEBHOOK_ENABLED", "true")
+    calls = []
+
+    if listing_status == "failed":
+
+        def fail_listing(_repo, suffix):
+            calls.append(suffix)
+            raise RuntimeError("GitHub unavailable")
+
+        monkeypatch.setattr(intake_loop, "github_list", fail_listing)
+    else:
+        calls = fake_pages(
+            monkeypatch,
+            [issue(206, ["agent-ready"], created_at="2026-09-06T00:00:00Z")],
+        )
+
+    with Session(db) as session:
+        if listing_status == "not_due":
+            session.add(
+                FactoryAudit(
+                    actor=intake_loop.ACTOR,
+                    action="intake_swept",
+                    detail_json="{}",
+                    created_at=NOW,
+                )
+            )
+        session.add(
+            WorkItem(
+                title="stored item awaiting listing",
+                body="stored payload",
+                state="ready",
+                labels=["agent-ready"],
+                source_kind="github",
+                trust="trusted",
+                authority="github",
+                github_repo="owner/repo",
+                github_issue_number=206,
+                github_created_at=NOW - timedelta(days=1),
+            )
+        )
+        session.commit()
+
+    assert intake_loop.intake_tick(policy(labels=["agent-ready"]), generation=0) == []
+    detail = json.loads(audits(db, "intake_idle")[0].detail_json)
+    assert detail["github"] == listing_status
+    assert detail["local_listed"] == 0
+    if listing_status == "not_due":
+        assert calls == []
+    else:
+        assert len(calls) == 1
+    with Session(db) as session:
+        assert session.exec(select(FactoryReceipt)).all() == []
+
+
+def test_webhook_item_is_blocked_until_its_dependency_closes(db, monkeypatch):
+    monkeypatch.setenv("FACTORY_GITHUB_WEBHOOK_ENABLED", "true")
+    fake_pages(
+        monkeypatch,
+        [
+            issue(211, ["agent-ready"], created_at="2026-09-11T00:00:00Z"),
+            issue(212, ["needs-thought"], created_at="2026-09-12T00:00:00Z"),
+        ],
+    )
+    with Session(db) as session:
+        blocked = WorkItem(
+            title="blocked webhook item",
+            body="Blocked by #212",
+            state="ready",
+            labels=["agent-ready"],
+            source_kind="github",
+            trust="trusted",
+            authority="github",
+            github_repo="owner/repo",
+            github_issue_number=211,
+            github_created_at=NOW - timedelta(days=2),
+        )
+        blocker = WorkItem(
+            title="open dependency",
+            state="open",
+            labels=["needs-thought"],
+            source_kind="github",
+            trust="trusted",
+            authority="github",
+            github_repo="owner/repo",
+            github_issue_number=212,
+            github_created_at=NOW - timedelta(days=3),
+        )
+        session.add_all([blocked, blocker])
+        session.flush()
+        session.add(
+            WorkItemEdge(
+                from_id=blocker.id,
+                to_id=blocked.id,
+                kind="blocks",
+                source="github_body",
+            )
+        )
+        session.commit()
+
+    assert intake_loop.intake_tick(policy(), generation=0) == []
+    detail = json.loads(audits(db, "intake_idle")[0].detail_json)
+    assert detail["excluded"] == {"blocked": 1, "deferred": 1}
+
+    with Session(db) as session:
+        blocker = session.exec(
+            select(WorkItem).where(WorkItem.github_issue_number == 212)
+        ).one()
+        blocker.state = "closed"
+        blocker.close_reason = "github_closed"
+        session.add(blocker)
+        session.commit()
+    release_sweep(db)
+
+    admitted = intake_loop.intake_tick(policy(), generation=0)
+    assert [row["receipt"]["issue_number"] for row in admitted] == [211]
 
 
 def test_local_open_item_follows_refine_flag(db, monkeypatch):

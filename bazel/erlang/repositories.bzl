@@ -125,8 +125,8 @@ _HEX_DEPS = [
     ("opentelemetry_semantic_conventions", "1.27.0", "9681ccaa24fd3d810b4461581717661fd85ff7019b082c2dff89c7d5b1fc2864"),
     # Observable metrics API + SDK. These remain separate experimental
     # packages in opentelemetry-erlang 1.x and are compatible with the pins above.
-    ("opentelemetry_api_experimental", "0.5.1", "10297057eada47267d4f832011becef07d25690e6bf91febccfc4e740dba1a6f"),
-    ("opentelemetry_experimental", "0.5.1", "a1ad941294f1d3623c33e151faa35613849a10cb468dbfc9ad16367f7ddf80bf"),
+    ("opentelemetry_api_experimental", "0.6.0", "8a4d5902034e95a1eda09575c4e9902245f16dac1c08c7b0cc0b1f7c593ce56a"),
+    ("opentelemetry_experimental", "0.6.0", "01483c4dfc46044e8f2f3955a5d372765fd3e2584a9ad05ac81a8e495029919e"),
     ("grpcbox", "0.18.0", "5ec9f8fe664ab51201b32c117a61511a1f9d6316771e3891ba8a88d289a732ab"),
     ("acceptor_pool", "1.0.1", "f172f3d74513e8edd445c257d596fc84dbdd56d2c6fa287434269648ae5a421e"),
     ("ctx", "0.6.0", "a14ed2d1b67723dbebbe423b28d7615eb0bdcba6ff28f2d1f1b0a7e1d4aa5fc2"),

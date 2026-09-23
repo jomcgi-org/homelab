@@ -56,10 +56,12 @@ defmodule Embervm.S3WarmthGc do
     1. `ref` is not any non-terminal StatefulStore instance's snapshot_ref
        (desired, across vendors: refs are globally unique).
     2. `ref` is not in any node's reported stateful_bundles.
-    3. Tier gate: Tier 1 (dead workload: no non-terminal instance AND no volume
-       row) makes the whole namespace eligible; Tier 2 (live workload) protects
-       the current snapshot_ref(s) plus the newest ref per (vendor, workload)
-       and trims only strictly older predecessors (the S3 newest-1 retention).
+    3. Tier gate: Tier 1 (dead vendor/workload owner: no non-terminal instance
+       AND no volume row assigned to that vendor pool) makes the whole namespace
+       eligible; Tier 2 (live vendor/workload owner) protects the current
+       snapshot_ref(s) plus the configured number of newest generations per
+       (vendor, workload) and trims only strictly older predecessors. Missing
+       or unmodelled assignment/vendor evidence holds the namespace fail-closed.
     4. Age: meta.json createdAtUnixMs (or newest Last-Modified when meta is
        absent) older than the per-prefix TTL: 8 hours for stateful/ and 7 days
        for the other allowlisted artifact kinds.
@@ -120,6 +122,10 @@ defmodule Embervm.S3WarmthGc do
   @max_prefixes 10
   @max_bytes 20 * 1024 * 1024 * 1024
 
+  # Stateful Tier-2 history is bounded per (vendor, workload). One preserves
+  # the shipped newest-1 behavior while making the retention policy explicit.
+  @generation_retention_cap 1
+
   # The vendor tokens noded can stamp (config.go detectCpuVendor): segment-2
   # membership here disambiguates the vendored (5-segment) from the legacy
   # (4-segment) key layout.
@@ -133,9 +139,15 @@ defmodule Embervm.S3WarmthGc do
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
-    case Keyword.get(opts, :name, __MODULE__) do
-      nil -> GenServer.start_link(__MODULE__, opts)
-      name -> GenServer.start_link(__MODULE__, opts, name: name)
+    generation_retention_cap = Keyword.get(opts, :generation_retention_cap, @generation_retention_cap)
+
+    if is_integer(generation_retention_cap) and generation_retention_cap > 0 do
+      case Keyword.get(opts, :name, __MODULE__) do
+        nil -> GenServer.start_link(__MODULE__, opts)
+        name -> GenServer.start_link(__MODULE__, opts, name: name)
+      end
+    else
+      {:error, {:invalid_generation_retention_cap, generation_retention_cap}}
     end
   end
 
@@ -191,6 +203,7 @@ defmodule Embervm.S3WarmthGc do
 
     clock = Keyword.get(opts, :clock, fn -> System.monotonic_time(:millisecond) end)
     stateful_store = Keyword.get(opts, :stateful_store, StatefulStore)
+    generation_retention_cap = Keyword.get(opts, :generation_retention_cap, @generation_retention_cap)
 
     state = %{
       s3: s3,
@@ -209,6 +222,7 @@ defmodule Embervm.S3WarmthGc do
       freshness_window_ms: Keyword.get(opts, :freshness_window_ms, @freshness_window_ms),
       min_uptime_ms: Keyword.get(opts, :min_uptime_ms, @min_uptime_ms),
       ttls: Map.merge(@default_ttls, Keyword.get(opts, :ttls, %{})),
+      generation_retention_cap: generation_retention_cap,
       max_prefixes: Keyword.get(opts, :max_prefixes, @max_prefixes),
       max_bytes: Keyword.get(opts, :max_bytes, @max_bytes),
       # Explicit operator statement that a workload class is retired (its
@@ -259,13 +273,13 @@ defmodule Embervm.S3WarmthGc do
 
   defp run_sweep(state) do
     with :ok <- check_uptime(state),
-         :ok <- check_fleet_fresh(state),
+         {:ok, fleet} <- fleet_snapshot(state),
          {:ok, stateful_keys} <- list_or_abort(state, "stateful/"),
          {:ok, session_keys} <- list_or_abort(state, "session/"),
          {:ok, serving_keys} <- list_or_abort(state, "serving/"),
          {:ok, workspace_keys} <- list_or_abort(state, "session-workspace/"),
          {:ok, group_keys} <- list_or_abort(state, "group_set/"),
-         {:ok, snapshot} <- cp_snapshot(state),
+         {:ok, snapshot} <- cp_snapshot(state, fleet),
          :ok <- check_empty_cp_state(snapshot, stateful_keys, session_keys, serving_keys, workspace_keys, group_keys, state.allow_empty_kinds) do
       {candidates, shadowed, ambiguous} = parse_candidates(state, stateful_keys, session_keys, serving_keys, workspace_keys, group_keys)
       {eligible, held} = build_plan(state, snapshot, candidates)
@@ -304,34 +318,58 @@ defmodule Embervm.S3WarmthGc do
   # it stops being dispatchable. So "this node's disk inventory is represented
   # in the facts we exclude against" requires BOTH presence and freshness for
   # EVERY live or tombstoned registry instance; a down/stale instance's
-  # unreported bundles must never look orphaned. An empty registry aborts because
-  # brick capacity is expected and there is no basis to claim the inventory is
-  # complete.
-  defp check_fleet_fresh(state) do
+  # unreported bundles must never look orphaned. The capacity fact must also name
+  # a modeled CPU vendor so stateful assignments can be matched to their vendor
+  # pool. An empty registry aborts because brick capacity is expected and there
+  # is no basis to claim the inventory is complete.
+  defp fleet_snapshot(state) do
     now = state.clock.()
     expected_instances = expected_instances(state)
 
     if expected_instances == [] do
       abort(:no_expected_nodes, "node registry is empty while brick capacity is expected")
     else
-      stale =
-        Enum.filter(expected_instances, fn instance ->
+      {facts, stale} =
+        Enum.reduce(expected_instances, {[], []}, fn instance, {facts, stale} ->
           case NodeCapacity.fetch(state.capacity_table, {instance.node_id, instance.pod_uid}) do
-            {:ok, facts} ->
-              now - Map.get(facts, :updated_at, now - state.freshness_window_ms - 1) >
-                state.freshness_window_ms
+            {:ok, capacity} ->
+              vendor = normalized_vendor(capacity)
+              age = now - Map.get(capacity, :updated_at, now - state.freshness_window_ms - 1)
+
+              if age <= state.freshness_window_ms and vendor in state.vendors do
+                {[capacity | facts], stale}
+              else
+                {facts, [instance.instance_id | stale]}
+              end
 
             :error ->
-              true
+              {facts, [instance.instance_id | stale]}
           end
         end)
 
       if stale == [] do
-        :ok
+        facts = Enum.reverse(facts)
+        expected_ids = MapSet.new(expected_instances, & &1.instance_id)
+
+        unexpected =
+          state.capacity_table
+          |> NodeCapacity.all()
+          |> Enum.reject(&MapSet.member?(expected_ids, Map.get(&1, :instance_id)))
+
+        if unexpected == [] do
+          {:ok, %{facts: facts, node_vendors: node_vendors(facts, state.vendors)}}
+        else
+          abort(
+            :fleet_stale,
+            "NodeCapacity contains instances absent from NodeRegistry: " <>
+              inspect(Enum.map(unexpected, &Map.get(&1, :instance_id)))
+          )
+        end
       else
         abort(
           :fleet_stale,
-          "instances missing or stale in NodeCapacity: #{inspect(Enum.map(stale, & &1.instance_id))}"
+          "instances missing, stale, or outside modeled vendor pools in NodeCapacity: " <>
+            inspect(Enum.reverse(stale))
         )
       end
     end
@@ -357,6 +395,13 @@ defmodule Embervm.S3WarmthGc do
     _, _ -> []
   end
 
+  defp normalized_vendor(facts) do
+    case Map.get(facts, :cpu_vendor) do
+      vendor when is_binary(vendor) -> String.trim(vendor)
+      _ -> ""
+    end
+  end
+
   defp list_or_abort(state, prefix) do
     case state.s3.list.(prefix) do
       {:ok, entries} ->
@@ -371,12 +416,12 @@ defmodule Embervm.S3WarmthGc do
 
   # One consistent read of every CP truth source. Store call failures abort (a
   # dead store must read as "unknown", never as "empty").
-  defp cp_snapshot(state) do
+  defp cp_snapshot(state, fleet) do
     stateful_rows = StatefulStore.all(state.stateful_store)
     group_rows = GroupStore.all(state.group_store)
     session_rows = SessionStore.all(state.session_store)
     serving_rows = ServingStore.all(state.serving_store)
-    facts = NodeCapacity.all(state.capacity_table)
+    facts = fleet.facts
 
     reported_refs =
       for fact <- facts,
@@ -431,6 +476,7 @@ defmodule Embervm.S3WarmthGc do
           into: MapSet.new(), do: row.snapshot_ref
 
     non_terminal_stateful = Enum.reject(stateful_rows, &StatefulState.terminal?(&1.state))
+    assignment_evidence = stateful_assignment_evidence(non_terminal_stateful, fleet.node_vendors)
 
     snapshot = %{
       stateful_count: length(stateful_rows),
@@ -440,6 +486,9 @@ defmodule Embervm.S3WarmthGc do
       desired_refs:
         for(%{snapshot_ref: ref} <- non_terminal_stateful, is_binary(ref), ref != "", into: MapSet.new(), do: ref),
       live_workloads: MapSet.new(non_terminal_stateful, & &1.workload),
+      live_vendor_workloads: assignment_evidence.live_vendor_workloads,
+      unknown_vendor_workloads: assignment_evidence.unknown_vendor_workloads,
+      node_vendors: assignment_evidence.node_vendors,
       desired_set_ids:
         for(
           row <- group_rows,
@@ -486,6 +535,54 @@ defmodule Embervm.S3WarmthGc do
     e -> abort(:cp_snapshot_failed, inspect(e))
   catch
     kind, reason -> abort(:cp_snapshot_failed, inspect({kind, reason}))
+  end
+
+  defp stateful_assignment_evidence(rows, node_vendors) do
+    initial = %{
+      node_vendors: node_vendors,
+      live_vendor_workloads: MapSet.new(),
+      unknown_vendor_workloads: MapSet.new()
+    }
+
+    Enum.reduce(rows, initial, fn row, evidence ->
+      workload = Map.get(row, :workload)
+      vendor = Map.get(node_vendors, Map.get(row, :node_id), :unknown)
+
+      cond do
+        not is_binary(workload) or workload == "" ->
+          evidence
+
+        is_binary(vendor) ->
+          %{
+            evidence
+            | live_vendor_workloads:
+                MapSet.put(evidence.live_vendor_workloads, {vendor, workload})
+          }
+
+        true ->
+          %{
+            evidence
+            | unknown_vendor_workloads:
+                MapSet.put(evidence.unknown_vendor_workloads, workload)
+          }
+      end
+    end)
+  end
+
+  defp node_vendors(facts, vendors) do
+    Enum.reduce(facts, %{}, fn fact, acc ->
+      node_id = Map.get(fact, :configured_id) || Map.get(fact, :node_id)
+      vendor = normalized_vendor(fact)
+
+      if is_binary(node_id) and node_id != "" and vendor in vendors do
+        Map.update(acc, node_id, vendor, fn
+          ^vendor -> vendor
+          _other -> :unknown
+        end)
+      else
+        if is_binary(node_id) and node_id != "", do: Map.put(acc, node_id, :unknown), else: acc
+      end
+    end)
   end
 
   # If S3 holds warmth of a kind while the corresponding store tracks NOTHING
@@ -668,19 +765,24 @@ defmodule Embervm.S3WarmthGc do
       now - created_at < ttl(state, cand.kind) ->
         {:held, "younger_than_age_floor"}
 
-      workload_live?(state, snapshot, cand.workload) ->
-        # Tier 2 (live-workload predecessor trim): the newest ref per
-        # (vendor, workload) survives; only a
-        # strictly older predecessor is eligible. A DEAD workload (Tier 1
-        # below) is evicted whole, so the protection applies only here.
-        if MapSet.member?(protected, cand.prefix) do
-          {:held, "tier2_protected_newest"}
-        else
-          {:eligible, 2, created_at}
-        end
-
       true ->
-        {:eligible, 1, created_at}
+        case workload_liveness(state, snapshot, cand.vendor, cand.workload) do
+          :live ->
+            # Tier 2 (live vendor/workload predecessor trim): the configured
+            # newest generations survive. A dead vendor owner (Tier 1 below) is
+            # evicted whole, so the protection applies only here.
+            if MapSet.member?(protected, cand.prefix) do
+              {:held, "tier2_generation_retained"}
+            else
+              {:eligible, 2, created_at}
+            end
+
+          :unknown ->
+            {:held, "vendor_pool_unknown"}
+
+          :dead ->
+            {:eligible, 1, created_at}
+        end
     end
   end
 
@@ -729,12 +831,53 @@ defmodule Embervm.S3WarmthGc do
 
   defp ttl(state, kind), do: Map.fetch!(state.ttls, kind)
 
-  # A workload is LIVE when the CP tracks a non-terminal instance for it OR the
-  # volume ledger holds a row (a cold-but-real workload whose data volume
-  # persists). Tier 2 (predecessor trim) applies; Tier 1 (whole-namespace
-  # reclaim) requires neither.
-  defp workload_live?(state, snapshot, workload) do
-    MapSet.member?(snapshot.live_workloads, workload) or state.volume_fun.(workload) != nil
+  # A vendored namespace is live only when its current instance or volume
+  # assignment resolves to that vendor's fresh pool. A known different vendor
+  # means this tree's owner is retired and Tier 1 may reclaim it. Missing node,
+  # vendor, or assignment evidence is unknown and holds fail-closed. Legacy
+  # unvendored trees keep the previous workload-wide behavior because their pool
+  # cannot be reconstructed from the key.
+  defp workload_liveness(state, snapshot, vendor, workload) do
+    instance_liveness =
+      cond do
+        vendor == "" and MapSet.member?(snapshot.live_workloads, workload) -> :live
+        vendor == "" and MapSet.member?(snapshot.unknown_vendor_workloads, workload) -> :unknown
+        MapSet.member?(snapshot.live_vendor_workloads, {vendor, workload}) -> :live
+        MapSet.member?(snapshot.unknown_vendor_workloads, workload) -> :unknown
+        true -> :dead
+      end
+
+    volume_liveness = volume_liveness(state, snapshot.node_vendors, vendor, workload)
+
+    cond do
+      instance_liveness == :live or volume_liveness == :live -> :live
+      instance_liveness == :unknown or volume_liveness == :unknown -> :unknown
+      true -> :dead
+    end
+  end
+
+  defp volume_liveness(state, node_vendors, vendor, workload) do
+    case state.volume_fun.(workload) do
+      nil ->
+        :dead
+
+      _volume when vendor == "" ->
+        :live
+
+      volume when is_map(volume) ->
+        case Map.get(node_vendors, Map.get(volume, :node_id)) do
+          ^vendor -> :live
+          pool when is_binary(pool) -> :dead
+          _ -> :unknown
+        end
+
+      _ ->
+        :unknown
+    end
+  rescue
+    _ -> :unknown
+  catch
+    _, _ -> :unknown
   end
 
   # created-at per prefix: meta.json createdAtUnixMs when present; the newest
@@ -770,24 +913,33 @@ defmodule Embervm.S3WarmthGc do
   end
 
   # Tier-2 predecessor retention: within each (vendor, workload) stateful
-  # namespace, the newest ref by created-at is protected regardless of age.
-  # Computed over ALL parsed refs, desired or not, so the protection is at least
-  # as wide as the retention contract. Session and serving have no such guard.
-  defp tier2_protected(_state, _snapshot, candidates, created) do
+  # namespace, the configured number of newest refs by created-at are protected
+  # regardless of age.
+  # Desired, node-reported, and unreadable refs are held independently and do
+  # not consume predecessor slots. Session and serving have no such guard.
+  defp tier2_protected(state, snapshot, candidates, created) do
     candidates
     |> Enum.filter(&(&1.kind == :stateful))
+    |> Enum.reject(fn candidate ->
+      MapSet.member?(snapshot.desired_refs, candidate.ref) or
+        MapSet.member?(snapshot.reported_refs, candidate.ref) or
+        Map.get(created, candidate.prefix) == :error
+    end)
     |> Enum.group_by(&{&1.vendor, &1.workload})
     |> Enum.flat_map(fn {_vw, cands} ->
       cands
-      |> Enum.sort_by(fn c -> sort_created(Map.get(created, c.prefix), c.newest_modified_ms) end, :desc)
-      |> Enum.take(1)
+      |> Enum.sort_by(
+        fn c -> {sort_created(Map.get(created, c.prefix), c.newest_modified_ms), c.prefix} end,
+        :desc
+      )
+      |> Enum.take(state.generation_retention_cap)
       |> Enum.map(& &1.prefix)
     end)
     |> MapSet.new()
   end
 
-  # An unreadable meta sorts as NEWEST so it also lands inside the protected-1
-  # window rather than aging a sibling out of it incorrectly.
+  # Defensive fallback if another caller ever ranks an unreadable meta. The
+  # selector above excludes unreadable candidates from the retention window.
   defp sort_created(:error, _fallback), do: :infinity
   defp sort_created(nil, fallback), do: fallback
   defp sort_created(ms, _fallback), do: ms
@@ -849,6 +1001,7 @@ defmodule Embervm.S3WarmthGc do
       "ts_unix_ms" => ts,
       "mode" => if(state.enabled, do: "armed", else: "dry_run"),
       "ttls_ms" => Map.new(state.ttls, fn {kind, ttl_ms} -> {Atom.to_string(kind), ttl_ms} end),
+      "generation_retention_cap" => state.generation_retention_cap,
       "caps" => %{"max_prefixes" => state.max_prefixes, "max_bytes" => state.max_bytes},
       "plan" => Enum.map(plan, &manifest_entry/1),
       "eligible_beyond_caps" => Enum.map(eligible -- plan, &manifest_entry/1),
@@ -910,86 +1063,115 @@ defmodule Embervm.S3WarmthGc do
   # ref, a node re-reporting a bundle, a workload waking). Age and parse cannot
   # regress, so they are not re-evaluated.
   defp recheck_live(state, %{kind: :stateful} = entry) do
-    facts = NodeCapacity.all(state.capacity_table)
+    with {:ok, fleet} <- fleet_snapshot(state) do
+      reported? =
+        Enum.any?(fleet.facts, fn fact ->
+          Enum.any?(Map.get(fact, :stateful_bundles, []) || [], &(&1.snapshot_ref == entry.ref))
+        end)
 
-    reported? =
-      Enum.any?(facts, fn fact ->
-        Enum.any?(Map.get(fact, :stateful_bundles, []) || [], &(&1.snapshot_ref == entry.ref))
-      end)
+      desired? =
+        Enum.any?(StatefulStore.all(state.stateful_store), fn row ->
+          not StatefulState.terminal?(row.state) and row.snapshot_ref == entry.ref
+        end)
 
-    desired? =
-      Enum.any?(StatefulStore.all(state.stateful_store), fn row ->
-        not StatefulState.terminal?(row.state) and row.snapshot_ref == entry.ref
-      end)
+      tier1_liveness =
+        if entry.tier == 1,
+          do: workload_liveness_now(state, fleet, entry.vendor, entry.workload),
+          else: :dead
 
-    tier1_still? = entry.tier != 1 or not workload_live_now?(state, entry.workload)
-
-    cond do
-      desired? -> {:blocked, "ref became desired"}
-      reported? -> {:blocked, "ref became node-reported"}
-      not tier1_still? -> {:blocked, "workload came alive since plan"}
-      true -> :ok
+      cond do
+        desired? -> {:blocked, "ref became desired"}
+        reported? -> {:blocked, "ref became node-reported"}
+        tier1_liveness == :live -> {:blocked, "vendor/workload owner came alive since plan"}
+        tier1_liveness == :unknown -> {:blocked, "vendor pool evidence became unknown"}
+        true -> :ok
+      end
+    else
+      {:error, _reason} -> {:blocked, "fleet evidence became incomplete"}
     end
   end
 
   defp recheck_live(state, %{kind: :group} = entry) do
-    facts = NodeCapacity.all(state.capacity_table)
+    with {:ok, fleet} <- fleet_snapshot(state) do
+      reported? =
+        Enum.any?(fleet.facts, fn fact ->
+          Enum.any?(Map.get(fact, :group_bundle_sets, []) || [], &(&1.set_id == entry.set_id))
+        end)
 
-    reported? =
-      Enum.any?(facts, fn fact ->
-        Enum.any?(Map.get(fact, :group_bundle_sets, []) || [], &(&1.set_id == entry.set_id))
-      end)
+      live? =
+        Enum.any?(GroupStore.all(state.group_store), fn row ->
+          not GroupState.terminal?(row.state) and (row.set_id == entry.set_id or row.instance_id == entry.group_instance_id)
+        end)
 
-    live? =
-      Enum.any?(GroupStore.all(state.group_store), fn row ->
-        not GroupState.terminal?(row.state) and (row.set_id == entry.set_id or row.instance_id == entry.group_instance_id)
-      end)
-
-    cond do
-      live? -> {:blocked, "group became live/desired"}
-      reported? -> {:blocked, "set became node-reported"}
-      true -> :ok
+      cond do
+        live? -> {:blocked, "group became live/desired"}
+        reported? -> {:blocked, "set became node-reported"}
+        true -> :ok
+      end
+    else
+      {:error, _reason} -> {:blocked, "fleet evidence became incomplete"}
     end
   end
 
   defp recheck_live(state, %{kind: kind} = entry) when kind in [:session, :serving, :session_workspace] do
-    try do
-      facts = NodeCapacity.all(state.capacity_table)
-      session_rows = SessionStore.all(state.session_store)
-      serving_rows = ServingStore.all(state.serving_store)
+    with {:ok, fleet} <- fleet_snapshot(state) do
+      try do
+        facts = fleet.facts
+        session_rows = SessionStore.all(state.session_store)
+        serving_rows = ServingStore.all(state.serving_store)
 
-      cond do
-        kind == :session and
-            (Enum.any?(facts, fn f -> Enum.any?(Map.get(f, :session_snapshots, []) || [], &(&1.snapshot_ref == entry.ref)) end) or
-               Enum.any?(session_rows, fn r -> session_actively_live?(r) and r.snapshot_ref == entry.ref end)) ->
-          {:blocked, "session ref became referenced"}
+        cond do
+          kind == :session and
+              (Enum.any?(facts, fn f ->
+                 Enum.any?(Map.get(f, :session_snapshots, []) || [], &(&1.snapshot_ref == entry.ref))
+               end) or
+                 Enum.any?(session_rows, fn r -> session_actively_live?(r) and r.snapshot_ref == entry.ref end)) ->
+            {:blocked, "session ref became referenced"}
 
-        kind == :serving and
-            (Enum.any?(facts, fn f -> Enum.any?(Map.get(f, :serving_snapshots, []) || [], &(&1.snapshot_ref == entry.ref)) end) or
-               Enum.any?(serving_rows, fn r -> serving_actively_live?(r) and r.snapshot_ref == entry.ref end)) ->
-          {:blocked, "serving ref became referenced"}
+          kind == :serving and
+              (Enum.any?(facts, fn f ->
+                 Enum.any?(Map.get(f, :serving_snapshots, []) || [], &(&1.snapshot_ref == entry.ref))
+               end) or
+                 Enum.any?(serving_rows, fn r -> serving_actively_live?(r) and r.snapshot_ref == entry.ref end)) ->
+            {:blocked, "serving ref became referenced"}
 
-        kind == :session_workspace and
-            (Enum.any?(facts, fn f -> Enum.any?(Map.get(f, :session_volumes, []) || [], &(&1.lineage_id == entry.lineage)) end) or
-               Enum.any?(session_rows, fn r -> session_actively_live?(r) and r.lineage_id == entry.lineage end)) ->
-          {:blocked, "lineage became referenced"}
+          kind == :session_workspace and
+              (Enum.any?(facts, fn f ->
+                 Enum.any?(Map.get(f, :session_volumes, []) || [], &(&1.lineage_id == entry.lineage))
+               end) or
+                 Enum.any?(session_rows, fn r -> session_actively_live?(r) and r.lineage_id == entry.lineage end)) ->
+            {:blocked, "lineage became referenced"}
 
-        true -> :ok
+          true ->
+            :ok
+        end
+      rescue
+        _ -> {:blocked, "registry_unreadable"}
+      catch
+        _, _ -> {:blocked, "registry_unreadable"}
       end
-    rescue
-      _ -> {:blocked, "registry_unreadable"}
-    catch
-      _, _ -> {:blocked, "registry_unreadable"}
+    else
+      {:error, _reason} -> {:blocked, "fleet evidence became incomplete"}
     end
   end
 
-  defp workload_live_now?(state, workload) do
-    live_instance? =
-      Enum.any?(StatefulStore.all(state.stateful_store), fn row ->
-        not StatefulState.terminal?(row.state) and row.workload == workload
-      end)
+  defp workload_liveness_now(state, fleet, vendor, workload) do
+    rows = StatefulStore.all(state.stateful_store)
+    non_terminal = Enum.reject(rows, &StatefulState.terminal?(&1.state))
+    evidence = stateful_assignment_evidence(non_terminal, fleet.node_vendors)
 
-    live_instance? or state.volume_fun.(workload) != nil
+    snapshot = %{
+      live_workloads: MapSet.new(non_terminal, & &1.workload),
+      live_vendor_workloads: evidence.live_vendor_workloads,
+      unknown_vendor_workloads: evidence.unknown_vendor_workloads,
+      node_vendors: evidence.node_vendors
+    }
+
+    workload_liveness(state, snapshot, vendor, workload)
+  rescue
+    _ -> :unknown
+  catch
+    _, _ -> :unknown
   end
 
   defp delete_prefix(state, entry) do

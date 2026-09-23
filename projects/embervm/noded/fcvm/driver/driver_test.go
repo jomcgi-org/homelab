@@ -334,6 +334,23 @@ func TestDriverThreadsWorkloadAndPhaseToLauncher(t *testing.T) {
 	}
 }
 
+func TestDriverForwardsHugePageConfiguration(t *testing.T) {
+	launcher := &fakeLauncher{}
+	d := New(Config{
+		KernelImagePath: "/kernel", RootfsPath: "/rootfs", SnapshotRoot: shortTempDir(t),
+		HugePages: "2M", MemMib: 2048,
+	}, launcher, nil)
+	h, err := d.Claim(context.Background(), substrate.ClaimSpec{ThreadID: "huge-pages"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Release(context.Background(), h) })
+	configs := launcher.machineConfigBodies()
+	if len(configs) != 1 || configs[0]["huge_pages"] != "2M" {
+		t.Fatalf("huge-page machine configuration was not forwarded: %v", configs)
+	}
+}
+
 func TestDriverTracksDirtyPagesOnlyForBankingClaims(t *testing.T) {
 	launcher := &fakeLauncher{}
 	d := New(Config{
@@ -366,15 +383,22 @@ func TestDriverTracksDirtyPagesOnlyForBankingClaims(t *testing.T) {
 	}
 }
 
-func TestDriverClaimWithVolumeColdBootsWhenWarmRestoreDisabled(t *testing.T) {
+func TestDriverClaimWithVolumeColdBootsWhenLegacyDeviceShapeUnknown(t *testing.T) {
 	launcher := &fakeLauncher{}
+	root := shortTempDir(t)
 	d := New(Config{
 		KernelImagePath: "/opt/kata/vmlinux",
 		RootfsPath:      "/dev/mapper/thread",
-		SnapshotRoot:    shortTempDir(t),
+		SnapshotRoot:    root,
 		Node:            "node-4",
 		Arch:            "amd64",
 	}, launcher, nil)
+	if err := os.MkdirAll(d.baseDir("base"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(d.baseSnapfile("base"), []byte("legacy-snap"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	h, err := d.Claim(context.Background(), substrate.ClaimSpec{
 		ThreadID:        "cold-volume",
 		BaseSnapshotRef: substrate.SnapshotRef{ID: "base"},
@@ -387,7 +411,7 @@ func TestDriverClaimWithVolumeColdBootsWhenWarmRestoreDisabled(t *testing.T) {
 	paths := launcher.requestPaths()
 	for _, path := range paths {
 		if path == "PUT /snapshot/load" {
-			t.Fatalf("disabled warm restore unexpectedly loaded a snapshot: %v", paths)
+			t.Fatalf("legacy-unknown volume restore unexpectedly loaded a snapshot: %v", paths)
 		}
 	}
 	foundVolume := false
@@ -398,6 +422,53 @@ func TestDriverClaimWithVolumeColdBootsWhenWarmRestoreDisabled(t *testing.T) {
 	}
 	if !foundVolume {
 		t.Fatalf("cold boot did not attach volume: %v", paths)
+	}
+}
+
+func TestDriverLegacyUnknownBaseStagesPlaceholderWithoutInferringDevice(t *testing.T) {
+	launcher := &fakeLauncher{}
+	root := shortTempDir(t)
+	d := New(Config{SnapshotRoot: root, Arch: "amd64"}, launcher, nil)
+	dir := d.baseDir("legacy")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "snapfile"), []byte("snap"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "rootfspath"), []byte("/rootfs"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h, err := d.Claim(context.Background(), substrate.ClaimSpec{
+		ThreadID: "legacy-load", BaseSnapshotRef: substrate.SnapshotRef{ID: "legacy"},
+	})
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Release(context.Background(), h) })
+	if !slices.Contains(launcher.requestPaths(), "PUT /snapshot/load") {
+		t.Fatalf("legacy volume-less base did not restore: %v", launcher.requestPaths())
+	}
+	for _, path := range launcher.requestPaths() {
+		if path == "PATCH /drives/volume" {
+			t.Fatalf("legacy unknown base was patched: %v", launcher.requestPaths())
+		}
+	}
+	specs := launcher.specs()
+	if len(specs) != 1 {
+		t.Fatalf("launch specs = %d, want 1", len(specs))
+	}
+	foundBacking := false
+	for _, resource := range specs[0].Resources {
+		if resource.Role == "legacy-placeholder-backing" {
+			foundBacking = true
+		}
+		if resource.Role == "volume" {
+			t.Fatalf("legacy backing was misclassified as a captured device: %+v", specs[0].Resources)
+		}
+	}
+	if !foundBacking {
+		t.Fatalf("legacy placeholder backing was not staged: %+v", specs[0].Resources)
 	}
 }
 
@@ -417,6 +488,10 @@ func TestDriverClaimWithVolumeLoadPatchResume(t *testing.T) {
 	}
 	if err := os.WriteFile(d.baseSnapfile("base"), []byte("snap"), 0o600); err != nil {
 		t.Fatalf("write snapfile: %v", err)
+	}
+	resources := `[{"role":"rootfs","host_path":"/rootfs","jail_path":"/rootfs"},{"role":"volume","host_path":"/placeholder","jail_path":"/placeholder","writable":true}]`
+	if err := os.WriteFile(filepath.Join(d.baseDir("base"), jailResourcesName), []byte(resources), 0o600); err != nil {
+		t.Fatalf("write device metadata: %v", err)
 	}
 	h, err := d.Claim(context.Background(), substrate.ClaimSpec{
 		ThreadID:        "warm-volume",
@@ -441,6 +516,125 @@ func TestDriverClaimWithVolumeLoadPatchResume(t *testing.T) {
 		if paths[i] != want[i] {
 			t.Fatalf("request path[%d] = %q, want %q", i, paths[i], want[i])
 		}
+	}
+}
+
+func TestDriverClaimWithVolumeColdBootsWhenWarmRestoreDisabled(t *testing.T) {
+	launcher := &fakeLauncher{}
+	root := shortTempDir(t)
+	d := New(Config{
+		KernelImagePath: "/opt/kata/vmlinux",
+		RootfsPath:      "/dev/mapper/thread",
+		SnapshotRoot:    root,
+		Node:            "node-4",
+		Arch:            "amd64",
+	}, launcher, nil)
+	dir := d.baseDir("volume-base")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "snapfile"), []byte("snap"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resources := `[{"role":"rootfs","host_path":"/rootfs","jail_path":"/rootfs"},{"role":"volume","host_path":"/placeholder","jail_path":"/placeholder","writable":true}]`
+	if err := os.WriteFile(filepath.Join(dir, jailResourcesName), []byte(resources), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h, err := d.Claim(context.Background(), substrate.ClaimSpec{
+		ThreadID:        "disarmed-volume",
+		BaseSnapshotRef: substrate.SnapshotRef{ID: "volume-base", Arch: "amd64", DeviceSetKnown: true, DeviceIDs: []string{"volume"}},
+		VolumeDiskPath:  "/sessions/s1/workspace.img",
+	})
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Release(context.Background(), h) })
+	paths := launcher.requestPaths()
+	for _, path := range paths {
+		if path == "PUT /snapshot/load" || path == "PATCH /drives/volume" {
+			t.Fatalf("disarmed volume restore unexpectedly used warm base: %v", paths)
+		}
+	}
+	if !slices.Contains(paths, "PUT /drives/volume") {
+		t.Fatalf("cold boot did not attach requested volume: %v", paths)
+	}
+}
+
+func TestDriverClaimWithVolumeColdBootsWhenCapturedBaseHasNoVolume(t *testing.T) {
+	launcher := &fakeLauncher{}
+	root := shortTempDir(t)
+	d := New(Config{
+		KernelImagePath: "/opt/kata/vmlinux",
+		RootfsPath:      "/dev/mapper/thread",
+		SnapshotRoot:    root,
+		Node:            "node-4",
+		Arch:            "amd64",
+	}, launcher, nil)
+	dir := d.baseDir("root-only")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "snapfile"), []byte("snap"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, jailResourcesName), []byte(`[{"role":"rootfs","host_path":"/rootfs","jail_path":"/rootfs"}]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h, err := d.Claim(context.Background(), substrate.ClaimSpec{
+		ThreadID:        "known-root-only",
+		BaseSnapshotRef: substrate.SnapshotRef{ID: "root-only", DeviceSetKnown: true},
+		VolumeDiskPath:  "/sessions/s1/workspace.img",
+	})
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Release(context.Background(), h) })
+	paths := launcher.requestPaths()
+	for _, path := range paths {
+		if path == "PUT /snapshot/load" || path == "PATCH /drives/volume" {
+			t.Fatalf("root-only base attempted warm volume patch: %v", paths)
+		}
+	}
+	if !slices.Contains(paths, "PUT /drives/volume") {
+		t.Fatalf("cold boot did not attach requested volume: %v", paths)
+	}
+	specs := launcher.specs()
+	if len(specs) != 1 {
+		t.Fatalf("launch specs = %d, want 1", len(specs))
+	}
+	foundRootfs := false
+	for _, resource := range specs[0].Resources {
+		if resource.Role == "rootfs" && resource.HostPath == d.cfg.RootfsPath {
+			foundRootfs = true
+		}
+	}
+	if !foundRootfs {
+		t.Fatalf("cold boot omitted configured rootfs %q: %+v", d.cfg.RootfsPath, specs[0].Resources)
+	}
+}
+
+func TestDriverClaimRejectsRegistryDeviceShapeConflictBeforeLaunch(t *testing.T) {
+	launcher := &fakeLauncher{}
+	root := shortTempDir(t)
+	d := New(Config{SnapshotRoot: root, Arch: "amd64"}, launcher, nil)
+	dir := d.baseDir("changed")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "snapfile"), []byte("snap"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, jailResourcesName), []byte(`[{"role":"rootfs"}]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := d.Claim(context.Background(), substrate.ClaimSpec{
+		BaseSnapshotRef: substrate.SnapshotRef{ID: "changed", DeviceSetKnown: true, DeviceIDs: []string{"volume"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "device metadata changed after registration") {
+		t.Fatalf("Claim error = %v, want device metadata conflict", err)
+	}
+	if paths := launcher.requestPaths(); len(paths) != 0 {
+		t.Fatalf("conflicting base launched Firecracker: %v", paths)
 	}
 }
 
@@ -477,6 +671,17 @@ func TestDriverWarmRestoreFlagAttachesBasePlaceholderVolume(t *testing.T) {
 	}
 	if !foundVolume {
 		t.Fatalf("warm base cold boot did not attach placeholder volume: %v", paths)
+	}
+	ref, err := d.SnapshotBase(context.Background(), h, "placeholder-base")
+	if err != nil {
+		t.Fatalf("SnapshotBase: %v", err)
+	}
+	if !ref.DeviceSetKnown || len(ref.DeviceIDs) != 1 || ref.DeviceIDs[0] != "volume" {
+		t.Fatalf("captured devices = known %v ids %v, want [volume]", ref.DeviceSetKnown, ref.DeviceIDs)
+	}
+	resources, hasMetadata, err := readJailResources(d.baseDir("placeholder-base"))
+	if err != nil || !hasMetadata || !hasResourceRole(resources, "volume") {
+		t.Fatalf("captured producer metadata = %+v present=%v err=%v, want volume", resources, hasMetadata, err)
 	}
 }
 
@@ -1021,7 +1226,7 @@ func TestDriverWarmBaseStartReusesBaseBundle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SnapshotBase: %v", err)
 	}
-	if !baseRef.Base || baseRef.ID != "base-homelab-amd64" || baseRef.SizeBytes == 0 {
+	if !baseRef.Base || baseRef.ID != "base-homelab-amd64" || baseRef.SizeBytes == 0 || !baseRef.DeviceSetKnown || len(baseRef.DeviceIDs) != 0 {
 		t.Fatalf("unexpected base ref: %+v", baseRef)
 	}
 	baseDir := d.baseDir("base-homelab-amd64")
@@ -1032,6 +1237,10 @@ func TestDriverWarmBaseStartReusesBaseBundle(t *testing.T) {
 	}
 	if _, err := os.Stat(baseDir + ".building"); !os.IsNotExist(err) {
 		t.Fatalf("base staging dir still exists, stat err=%v", err)
+	}
+	resources, hasMetadata, err := readJailResources(baseDir)
+	if err != nil || !hasMetadata || hasResourceRole(resources, "volume") {
+		t.Fatalf("captured producer metadata = %+v present=%v err=%v, want known root-only", resources, hasMetadata, err)
 	}
 	if err := d.Release(ctx, warm); err != nil {
 		t.Fatalf("Release warm: %v", err)
@@ -1209,6 +1418,7 @@ func TestDriverSnapshotBaseAdoptsSiblingBundle(t *testing.T) {
 				t.Fatalf("mkdir sibling dir: %v", err)
 			}
 			files := map[string]string{"memfile": "SIBLING-mem", "snapfile": "SIBLING-snap"}
+			files[jailResourcesName] = `[{"role":"rootfs","host_path":"/dev/mapper/thread","jail_path":"/dev/mapper/thread","writable":true}]`
 			if tc.name == "published" {
 				files["imageref"] = "img:1"
 			}
@@ -1236,6 +1446,56 @@ func TestDriverSnapshotBaseAdoptsSiblingBundle(t *testing.T) {
 			}
 			if err := d.Release(ctx, h); err != nil {
 				t.Fatalf("Release: %v", err)
+			}
+		})
+	}
+}
+
+func TestResolveBasePublishCollisionRefusesUnprovenOrDifferentDeviceShape(t *testing.T) {
+	rootOnly := `[{"role":"rootfs"}]`
+	withVolume := `[{"role":"rootfs"},{"role":"volume"}]`
+	for _, tc := range []struct {
+		name             string
+		buildingMetadata string
+		finalMetadata    string
+	}{
+		{name: "root-only cannot replace volume", buildingMetadata: rootOnly, finalMetadata: withVolume},
+		{name: "volume cannot replace root-only", buildingMetadata: withVolume, finalMetadata: rootOnly},
+		{name: "known cannot replace unknown", buildingMetadata: rootOnly},
+		{name: "unknown cannot replace known", finalMetadata: withVolume},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			parent := shortTempDir(t)
+			buildingDir := filepath.Join(parent, "base.building")
+			finalDir := filepath.Join(parent, "base")
+			for _, dir := range []string{buildingDir, finalDir} {
+				if err := os.MkdirAll(dir, 0o750); err != nil {
+					t.Fatal(err)
+				}
+				for _, name := range []string{"memfile", "snapfile"} {
+					if err := os.WriteFile(filepath.Join(dir, name), []byte(name), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if tc.buildingMetadata != "" {
+				if err := os.WriteFile(filepath.Join(buildingDir, jailResourcesName), []byte(tc.buildingMetadata), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.finalMetadata != "" {
+				if err := os.WriteFile(filepath.Join(finalDir, jailResourcesName), []byte(tc.finalMetadata), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			adopted, err := resolveBasePublishCollision(buildingDir, finalDir)
+			if err == nil || adopted {
+				t.Fatalf("resolveBasePublishCollision = (%v, %v), want refusal", adopted, err)
+			}
+			for _, dir := range []string{buildingDir, finalDir} {
+				if _, statErr := os.Stat(dir); statErr != nil {
+					t.Fatalf("refusal removed %s: %v", dir, statErr)
+				}
 			}
 		})
 	}

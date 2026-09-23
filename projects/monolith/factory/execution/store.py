@@ -168,8 +168,35 @@ def _cleanup_dispatches_unchanged(row: AgentSession, dispatches: list[dict]) -> 
     return isinstance(issued, list) and all(item in issued for item in dispatches)
 
 
+def settled_guest_cleanup_conditions():
+    """Select terminal workflow bindings with settled permits and no queued turn."""
+    return (
+        AgentSession.status.in_(("completed", "failed", "warn", "cancelled")),
+        AgentSession.workflow_id.isnot(None),
+        AgentSession.ember_session_id.isnot(None),
+        exists().where(
+            AgentCapacityReservation.session_id == AgentSession.id,
+            AgentCapacityReservation.state == "settled",
+            AgentCapacityReservation.settled_at.isnot(None),
+        ),
+        ~exists().where(
+            AgentCapacityReservation.session_id == AgentSession.id,
+            or_(
+                AgentCapacityReservation.state != "settled",
+                AgentCapacityReservation.settled_at.is_(None),
+            ),
+        ),
+        ~exists().where(PendingMessage.session_id == AgentSession.id),
+    )
+
+
 def begin_guest_cleanup(
-    session: Session, session_id: int, guest_id: str, workflow_id: str
+    session: Session,
+    session_id: int,
+    guest_id: str,
+    workflow_id: str,
+    *,
+    settled_only: bool = False,
 ) -> dict:
     """Commit exact cleanup ownership before the workflow performs a DELETE.
 
@@ -188,6 +215,16 @@ def begin_guest_cleanup(
         or not workflow_id
     ):
         return {"hold": "binding_changed"}
+    if (
+        settled_only
+        and session.exec(
+            select(AgentSession.id).where(
+                AgentSession.id == session_id, *settled_guest_cleanup_conditions()
+            )
+        ).first()
+        is None
+    ):
+        return {"hold": "session_not_settled"}
     resuming = row.guest_cleanup_id is not None
     if resuming:
         if (
@@ -781,7 +818,9 @@ def find_response_lost_session_ids(limit: int = 5) -> list[int]:
         )
 
 
-def settle_response_lost_hold(session_id: int, reason: str) -> bool:
+def settle_response_lost_hold(
+    session_id: int, reason: str, *, expected_hold: dict | None = None
+) -> bool:
     """End a hold that can no longer be recovered, exactly as today's paths do.
 
     Used when the guest has ceased or completed its invoke with no receipt
@@ -798,8 +837,26 @@ def settle_response_lost_hold(session_id: int, reason: str) -> bool:
         if row is None or pending is None:
             return False
         turn = get_turn(session, session_id, pending.seq)
-        if _response_lost_hold(turn, pending) is None:
+        hold = _response_lost_hold(turn, pending)
+        if hold is None:
             return False
+        if expected_hold is not None:
+            if hold != expected_hold or row.ember_session_id != hold["guest_id"]:
+                return False
+            # Serialize with capture_result after locking execution state.
+            # A callback committed before settlement must still be adopted.
+            session.execute(
+                update(AgentResultReceipt)
+                .where(AgentResultReceipt.id == hold["receipt_id"])
+                .values(created_at=AgentResultReceipt.created_at)
+            )
+            receipt = session.exec(
+                select(AgentResultReceipt.id, AgentResultReceipt.result_sha256).where(
+                    AgentResultReceipt.id == hold["receipt_id"]
+                )
+            ).one_or_none()
+            if receipt is None or receipt.result_sha256 is not None:
+                return False
         _finish_unknown_locked(session, row, pending, reason)
         session.commit()
         return True

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import json
+
 from shared.invocation_outcomes import UNKNOWN_INVOCATION as UNKNOWN_INVOCATION
 
 # Keep this legacy node key aligned with the registered routine-job kind so
@@ -42,3 +45,17 @@ RESPONSE_LOST = "response_lost"
 # response-lost hold can never outlive it, whatever a node's own turn timeout
 # says, so an unrecoverable hold cannot pin an admission slot indefinitely.
 RESPONSE_LOST_BACKSTOP_SECONDS = 12 * 60 * 60
+
+
+def exact_dispatch_id(
+    agent_session_id: int,
+    guest_id: str,
+    turn_seq: int,
+    claim_owner: str,
+    dispatch_count: int,
+) -> str:
+    """Opaque identity shared by invoke, stop validation, and every relay hop."""
+    fields = [agent_session_id, guest_id, turn_seq, claim_owner, dispatch_count]
+    return hashlib.sha256(
+        json.dumps(fields, separators=(",", ":"), ensure_ascii=True).encode()
+    ).hexdigest()

@@ -1,0 +1,36 @@
+# INACTIVE GKE store-validation preset for issue #6193.
+#
+# No Application or kustomization references this file. An operator must render
+# it after the dev values and the existing GKE overrides in an isolated
+# validation release and complete the store-validation runbook before a later,
+# reviewed activation.
+#
+# The 1Password item path is deliberately empty. The preset renders required
+# SecretKeyRefs to the named Kubernetes Secret, so pods fail closed while that
+# Secret is absent, but it does not invent an external credential path. A later
+# activation must supply a verified item path without committing credentials.
+#
+# The base dev values arm several application-level retention sweep delete
+# gates. This validation preset disarms every one of them. The checked-in GCS
+# seven-day lifecycle is the only deletion policy intended for this bucket, and
+# an operator applies it separately after inspecting the bucket safeguards.
+baseRetention:
+  sweepEnabled: ""
+  diskDrivenEnabled: ""
+  remoteSweepEnabled: ""
+
+warmthRetention:
+  sweepEnabled: ""
+
+warmthS3Gc:
+  enabled: ""
+
+noded:
+  store:
+    endpoint: "https://storage.googleapis.com"
+    bucket: "h0melab-ember-bases-dev"
+    credentials:
+      enabled: true
+      secretName: "embervm-store-validation-gcs"
+      onepassword:
+        itemPath: ""

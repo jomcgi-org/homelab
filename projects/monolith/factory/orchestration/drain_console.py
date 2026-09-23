@@ -129,9 +129,16 @@ def job_state(job: dict, now: datetime) -> str:
         return "running"
     next_run_at = _as_utc(job.get("next_run_at"))
     if next_run_at is not None:
-        return "due" if next_run_at <= now else "scheduled"
+        if next_run_at <= now:
+            return "due"
+        if job.get("last_status") == "deferred":
+            return "deferred"
+        return "scheduled"
     if job.get("last_run_at") is not None:
-        return "error" if job.get("last_status") == "error" else "ok"
+        return {
+            "deferred": "deferred",
+            "error": "error",
+        }.get(job.get("last_status"), "ok")
     # Registered but never armed and never run: parked until trigger_job.
     return "parked"
 
@@ -140,6 +147,7 @@ _STATE_ORDER = {
     "running": 0,
     "due": 1,
     "scheduled": 2,
+    "deferred": 2,
     "error": 3,
     "ok": 3,
     "parked": 4,
@@ -152,7 +160,7 @@ def _job_sort_key(entry: dict) -> tuple:
     last_run_at = entry.get("last_run_at") or ""
     # Waiting work drains oldest-first (the claim order). Finished work (ok and
     # error together) reads newest-first as one linear history.
-    if state in ("due", "scheduled"):
+    if state in ("due", "scheduled", "deferred"):
         return (_STATE_ORDER[state], 0, next_run_at, entry["name"])
     return (_STATE_ORDER.get(state, 9), 1, _invert(last_run_at), entry["name"])
 

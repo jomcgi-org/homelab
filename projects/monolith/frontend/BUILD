@@ -203,6 +203,10 @@ js_library(
         ["src/**/*.test.js"],
         allow_empty = True,
     ) + [
+        # The public replay capture retains these calculations after the
+        # private Qwen route was removed.
+        "scripts/qwen-replay-metrics.mjs",
+        "scripts/qwen-replay-metrics.test.mjs",
         "vitest.config.js",
         # Resolved by the $app/environment alias in vitest.config.js; lives
         # outside src/ so it never reaches the app bundle.

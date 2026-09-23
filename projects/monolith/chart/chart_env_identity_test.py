@@ -534,7 +534,7 @@ _DEFAULT_CLUSTER_RULES = [
     },
     {
         "apiGroups": ["metrics.k8s.io"],
-        "resources": ["nodes", "pods"],
+        "resources": ["nodes"],
         "verbs": ["get", "list"],
     },
 ]
@@ -1428,6 +1428,12 @@ def test_github_api_token_follows_secret_availability_only(
         if item["name"] == "GITHUB_API_TOKEN"
     ]
     producers = _chat_secret_producers(rendered)
+    # Even legacy values must not restore the retired Route B credentials.
+    assert not {
+        "SEMGREP_APP_TOKEN",
+        "GITHUB_SEMGREP_WEBHOOK_SECRET",
+        "SEMGREP_SHADOW_PROJECT",
+    }.intersection(item["name"] for item in _deployment_backend_env(rendered))
 
     if not token_item_path:
         assert entries == []
@@ -1807,3 +1813,49 @@ def test_clone_merge_job_is_manual_only_and_receives_database(renders):
         _env_by_name(container["env"])["DATABASE_URL"]
         == _env_by_name(seed_container["env"])["DATABASE_URL"]
     )
+
+
+def test_grimoire_friend_routes_are_isolated_and_backend_revalidates(renders):
+    docs = [doc for doc in yaml.safe_load_all(renders["prod"]) if doc]
+    routes = {
+        doc["metadata"]["name"]: doc for doc in docs if doc["kind"] == "HTTPRoute"
+    }
+    policies = {
+        doc["metadata"]["name"]: doc for doc in docs if doc["kind"] == "SecurityPolicy"
+    }
+    route = next(row for name, row in routes.items() if name.endswith("-grimoire"))
+    name = route["metadata"]["name"]
+    assert route["spec"]["hostnames"] == ["friends.jomcgi.dev"]
+    assert [
+        match["path"]["value"]
+        for rule in route["spec"]["rules"]
+        for match in rule["matches"]
+    ] == ["/grimoire"]
+    assert policies[name]["spec"]["targetRefs"][0]["name"] == name
+    provider = policies[name]["spec"]["jwt"]["providers"][0]
+    assert provider["audiences"] == ["grimoire-friends"]
+    assert provider["extractFrom"]["cookies"] == ["grimoire-id-token"]
+    assert (
+        policies[name]["spec"]["oidc"]["redirectURL"]
+        == "https://friends.jomcgi.dev/grimoire/oauth2/callback"
+    )
+    asset_routes = [
+        row
+        for row in routes.values()
+        if any(
+            match["path"]["value"] == "/_app/"
+            for rule in row["spec"]["rules"]
+            for match in rule.get("matches", [])
+        )
+        and row["spec"]["hostnames"] == ["friends.jomcgi.dev"]
+    ]
+    assert len(asset_routes) == 1
+    asset_name = asset_routes[0]["metadata"]["name"]
+    assert {p["name"] for p in policies[asset_name]["spec"]["jwt"]["providers"]} == {
+        "moving",
+        "grimoire",
+    }
+    assert "GRIMOIRE_AUTH_ISSUER" in renders["prod"]
+    assert "GRIMOIRE_AUTH_AUDIENCE" in renders["prod"]
+    assert "GRIMOIRE_AUTH_JWKS_URL" in renders["prod"]
+    assert "GRIMOIRE_AUTH_ISSUER" not in renders["dev"]

@@ -46,6 +46,10 @@ allowlist does not name the Context Forge gateway in any case.
 {{- end }}
 {{- if .Values.ciliumPolicy.egress.enabled }}
 {{- $targets := .Values.ciliumPolicy.egress.targets }}
+{{- $tokenBrokerTarget := deepCopy $targets.tokenBroker }}
+{{- if .Values.tokenBroker.spiffe.enabled }}
+{{- $_ := set $tokenBrokerTarget "port" .Values.tokenBroker.spiffe.tlsPort }}
+{{- end }}
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -87,7 +91,7 @@ spec:
         - ports:
             - port: "5432"
               protocol: TCP
-    {{- range $target := list $targets.inference $targets.embeddings $targets.authentik $targets.otelCollector $targets.embervm $targets.tokenBroker $targets.embervmServing $targets.dcgmExporter $targets.inferenceBridge }}
+    {{- range $target := list $targets.inference $targets.embeddings $targets.authentik $targets.otelCollector $targets.embervm $tokenBrokerTarget $targets.embervmServing $targets.dcgmExporter }}
     - toEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: {{ $target.namespace }}

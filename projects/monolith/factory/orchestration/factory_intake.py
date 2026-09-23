@@ -80,18 +80,25 @@ def receipts_for_work(
     return db.exec(query).all()
 
 
-def get_issue_receipt(repo: str, issue_number: int, generation: int) -> dict | None:
+def get_issue_receipt(
+    repo: str,
+    issue_number: int,
+    generation: int,
+    *,
+    task_class: str = DEFAULT_TASK_CLASS,
+) -> dict | None:
     """Read an existing delivery receipt without depending on GitHub availability."""
     repo = normalize_repo(repo)
     issue_number = _integer(issue_number, "issue_number", 1, 2**31 - 1)
     generation = _integer(generation, "generation", 0, 2**31 - 1)
+    task_class = validate_task_class(task_class)
     with _read_session() as db:
         row = db.exec(
             select(FactoryReceipt).where(
                 FactoryReceipt.repo == repo,
                 FactoryReceipt.issue_number == issue_number,
                 FactoryReceipt.generation == generation,
-                FactoryReceipt.task_class == DEFAULT_TASK_CLASS,
+                FactoryReceipt.task_class == task_class,
             )
         ).one_or_none()
         return (
@@ -113,6 +120,7 @@ def receive_issue(
     task_class: str = DEFAULT_TASK_CLASS,
     issue: dict | None = None,
     work_item_id: int | None = None,
+    delivery_target: dict | None = None,
     session: Session | None = None,
 ) -> dict:
     """Store one bounded issue snapshot. A duplicate can never replace its text.
@@ -133,6 +141,21 @@ def receive_issue(
         or url.lower() != f"https://github.com/{repo}/issues/{issue_number}"
     ):
         raise ValueError("url must identify the received GitHub issue")
+    if delivery_target is not None:
+        if not isinstance(delivery_target, dict) or set(delivery_target) != {
+            "delivery_branch",
+            "delivery_pr_number",
+            "delivery_adoption",
+        }:
+            raise ValueError("invalid delivery target")
+        branch, pr_number = granted_delivery_surface(delivery_target)
+        if (
+            not delivery_target.get("delivery_adoption")
+            or branch is None
+            or not branch.startswith("factory/")
+            or pr_number is None
+        ):
+            raise ValueError("invalid delivery target")
     with _locked_session(session) as (db, _control):
         existing = db.exec(
             select(FactoryReceipt).where(
@@ -144,6 +167,12 @@ def receive_issue(
         ).first()
         if existing is not None:
             return {"ok": True, "created": False, "receipt": _snapshot(db, existing)}
+        if delivery_target is not None:
+            owner = delivery_branch_owner(db, repo, branch)
+            if owner is not None:
+                raise ValueError(
+                    f"delivery branch {branch} is owned by running task {owner}"
+                )
         # The sweep mints the work item before admission runs on the same
         # tick, so a receipt links to it at creation; an operator-posted
         # receipt for an issue the sweep has not seen yet links on the next
@@ -189,6 +218,7 @@ def receive_issue(
             url=url,
             actor=actor,
             task_class=task_class,
+            direction_json=_json(delivery_target) if delivery_target else None,
         )
         db.add(row)
         db.flush()
@@ -201,6 +231,9 @@ def receive_issue(
             issue_number=issue_number,
             generation=generation,
             task_class=task_class,
+            delivery_pr_number=(
+                delivery_target["delivery_pr_number"] if delivery_target else None
+            ),
         )
         return {"ok": True, "created": True, "receipt": _snapshot(db, row)}
 
@@ -360,12 +393,12 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
     by hand, rather than anything the lane can do to itself.
 
     A refine re-brief costs one advisory node. A delivery re-admission is a
-    whole new task: a fresh graph, a fresh allowance and a fresh
-    task_budget_usd, because the escalated attempt's spend is history and the
-    new task has to be able to plan and deliver inside its own envelope. The
-    receipt carries its previous task ids so the board can show what the issue
-    has cost across all of them, and the escalations are the place to watch
-    that, since nothing here caps how many times one issue may be re-admitted.
+    whole new task with a fresh graph and allowance. Its task_budget_usd is the
+    pinned policy unless an operator-authorized dispatch-refusal overlay was
+    carried from the settled task. That overlay is revalidated against its
+    append-only source and the cumulative objective bound before admission.
+    The receipt carries its previous task ids so the board can show what the
+    issue has cost across all of them.
     """
     actor = _text(actor, "actor")
     lanes = tuple(lane for lane in LANES if lane in lanes)
@@ -421,10 +454,16 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
             eligible = or_(eligible, FactoryReceipt.actor == INTAKE_ACTOR)
         # A new generation may coexist with an older task. A direct receipt
         # cannot start a second task on that same issue, even in another lane.
-        busy_issues = [r.issue_number for r in active if r.repo == policy["repo"]]
+        owned = [
+            *active,
+            *db.exec(
+                select(FactoryReceipt).where(FactoryReceipt.state == "landing")
+            ).all(),
+        ]
+        busy_issues = [r.issue_number for r in owned if r.repo == policy["repo"]]
         busy_work_items = [
             r.work_item_id
-            for r in active
+            for r in owned
             if r.work_item_id is not None and r.repo == policy["repo"]
         ]
         base_query = select(FactoryReceipt).where(
@@ -540,6 +579,22 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
                     "task_id": owner,
                     "branch": granted_branch,
                 }
+        from factory.orchestration import factory_funding
+
+        try:
+            dispatch_grant = factory_funding.dispatch_continuation_grant(
+                db, row, policy
+            )
+        except ValueError as exc:
+            return {
+                "ok": False,
+                "reason": "funding_overlay_invalid",
+                "detail": str(exc),
+            }
+        effective_policy = {
+            **policy,
+            **(dispatch_grant["policy_overlay"] if dispatch_grant else {}),
+        }
         task_id = mint_task_id()
         task = SwarmTask(
             id=task_id,
@@ -547,7 +602,7 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
             repo=policy["repo"],
             base_branch=policy["base_branch"],
             conductor_model=policy["conductor_model"],
-            budget_usd=policy["task_budget_usd"],
+            budget_usd=effective_policy["task_budget_usd"],
             workflow_id=f"factory:{task_id}",
             start_state="factory",
             start_triggered_by=actor,
@@ -565,6 +620,10 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
         control.updated_at = _now()
         db.add(row)
         db.add(control)
+        if dispatch_grant:
+            factory_funding.inherit_dispatch_grant(
+                db, row, task, dispatch_grant, policy
+            )
         _audit(
             db,
             actor,
@@ -601,6 +660,6 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
             "task_id": task_id,
             "receipt_id": row.id,
             "lane": lane_of(row),
-            "policy": policy,
+            "policy": effective_policy,
             "receipt": _snapshot(db, row, body=True),
         }

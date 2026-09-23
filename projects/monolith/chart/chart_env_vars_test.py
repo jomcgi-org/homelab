@@ -19,11 +19,12 @@ config.py. An opt-out set may be added if needed (see code below).
 """
 
 import ast
+import os
 import re
 import subprocess
-import os
-import pytest
 from pathlib import Path
+
+import pytest
 
 
 def find_config_modules():
@@ -204,6 +205,35 @@ def test_chat_max_tokens_defaults_to_empty_env(chart_context):
 
     assert re.search(
         r"- name: CHAT_MAX_TOKENS\n\s+value: \"\"",
+        rendered,
+    )
+
+
+def test_factory_webhook_and_pointer_ship_staged_off(chart_context):
+    """The new inbound and existing outbound path require separate live gates."""
+    rendered = chart_context["rendered"]
+
+    assert re.search(
+        r'- name: FACTORY_GITHUB_WEBHOOK_ENABLED\n\s+value: "false"',
+        rendered,
+    )
+    assert re.search(
+        r'- name: FACTORY_WORK_ITEM_POINTER_ENABLED\n\s+value: "false"',
+        rendered,
+    )
+    assert "value: /webhooks/github/factory" in rendered
+    assert re.search(
+        r"key: FACTORY_GITHUB_WEBHOOK_SECRET\n\s+optional: true",
+        rendered,
+    )
+
+
+def test_factory_lost_before_session_sweep_ships_staged_off(chart_context):
+    """The chart wires the runtime gate without enabling the new sweep."""
+    rendered = chart_context["rendered"]
+
+    assert re.search(
+        r'- name: FACTORY_LOST_BEFORE_SESSION_SWEEP_ENABLED\n\s+value: "false"',
         rendered,
     )
 

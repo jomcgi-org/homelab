@@ -30,6 +30,7 @@ defmodule Embervm.LogFormatter do
     :restore_target,
     :exported_generation,
     :reason,
+    :endpoint,
     :attempt,
     :kind,
     :mfa,
@@ -59,6 +60,9 @@ defmodule Embervm.LogFormatter do
     :claim_age_ms,
     # Parsed, inert future-facing capacity configuration.
     :desired_capacity,
+    # Brick portfolio floor transitions.
+    :computed_floor,
+    :max_replicas,
     # StatefulSweeper pressure-state transitions.
     :brick_id,
     :from,
@@ -76,11 +80,16 @@ defmodule Embervm.LogFormatter do
     :candidates,
     :bytes_reclaimable,
     :base_generation,
+    :store_key,
+    :owner_proof,
+    :decision,
+    :retry_outcome,
     :bases_seen_on_disk,
     :bases_in_desired_set,
     :bases_protected_by_refcounts,
     :bases_excluded_as_too_young,
     :bases_selected_as_candidates,
+    :bases_kept_current_unverified,
     :total_candidates,
     :shown,
     :hidden

@@ -7,6 +7,7 @@ const UUID =
 function authenticatedHeaders(request, supplied) {
   const headers = new Headers(supplied);
   for (const name of [
+    "x-grimoire-token",
     "authorization",
     "cf-access-jwt-assertion",
     "x-auth-email",

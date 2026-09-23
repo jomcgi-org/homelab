@@ -12,7 +12,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from factory.execution import kg_feed
 from factory.execution.constants import KG_NODE_KEY, SYNTHETIC_SESSION_PREFIX
 from factory.execution.models import AgentSession, AgentTurn, PendingMessage
-from knowledge.models import RawInput
+from knowledge.models import KnowledgeFeedState, RawInput
 
 
 @pytest.fixture(name="engine")
@@ -105,13 +105,21 @@ def test_pick_finished_sessions_applies_all_predicates(engine):
         ]
 
 
-def test_pick_finished_sessions_skips_session_before_default_floor(engine, monkeypatch):
+def test_pick_finished_sessions_skips_session_before_durable_floor(engine, monkeypatch):
     monkeypatch.delenv("KG_FEED_SINCE", raising=False)
+    floor = datetime(2026, 1, 1, tzinfo=timezone.utc)
     with Session(engine) as session:
+        session.add(
+            KnowledgeFeedState(
+                feed_name=kg_feed.EMBER_SESSIONS_FEED,
+                first_enabled_at=floor,
+            )
+        )
+        session.commit()
         _add_session(
             session,
-            "before-process-start",
-            created_at=kg_feed.PROCESS_STARTED_AT - timedelta(seconds=1),
+            "before-durable-floor",
+            created_at=floor - timedelta(seconds=1),
         )
 
         picked = kg_feed.pick_finished_sessions(session)
@@ -137,6 +145,31 @@ def test_pick_finished_sessions_uses_configured_since_floor(engine, monkeypatch)
         picked = kg_feed.pick_finished_sessions(session)
 
     assert [(row.id, seq) for row, seq in picked] == [(after.id, 1)]
+    with Session(engine) as session:
+        assert session.get(KnowledgeFeedState, kg_feed.EMBER_SESSIONS_FEED) is None
+
+
+def test_feed_once_reuses_durable_floor_after_engine_restart(engine, monkeypatch):
+    monkeypatch.setenv("KG_FEED_ENABLED", "true")
+    monkeypatch.delenv("KG_FEED_SINCE", raising=False)
+    monkeypatch.setattr(kg_feed, "get_engine", lambda: engine)
+
+    assert asyncio.run(kg_feed.feed_once()) == 0
+    with Session(engine) as session:
+        first_floor = session.get(
+            KnowledgeFeedState, kg_feed.EMBER_SESSIONS_FEED
+        ).first_enabled_at
+
+    url = engine.url
+    engine.dispose()
+    restarted = create_engine(url, connect_args={"check_same_thread": False})
+    monkeypatch.setattr(kg_feed, "get_engine", lambda: restarted)
+
+    assert asyncio.run(kg_feed.feed_once()) == 0
+    with Session(restarted) as session:
+        state = session.get(KnowledgeFeedState, kg_feed.EMBER_SESSIONS_FEED)
+        assert state.first_enabled_at == first_floor
+    restarted.dispose()
 
 
 def test_render_caps_turns_preserves_rationale_and_elides_middle():

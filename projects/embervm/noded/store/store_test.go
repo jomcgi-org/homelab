@@ -718,6 +718,74 @@ func TestExportBackfillsIdentityMetadataOnUnchangedArtifact(t *testing.T) {
 	}
 }
 
+func TestExportFencesIncompatibleBaseDeviceShapes(t *testing.T) {
+	s, fake := newTestStore(t)
+	ctx := context.Background()
+	rootOnly, rootFiles := writeLocalArtifact(t, map[string]string{
+		"jail-resources.json": `[{"role":"rootfs","host_path":"/root"}]`,
+		"memfile":             "root-only-mem",
+		"snapfile":            "root-only-snap",
+	})
+	withVolume, volumeFiles := writeLocalArtifact(t, map[string]string{
+		"jail-resources.json": `[{"role":"rootfs","host_path":"/root"},{"role":"volume","host_path":"/placeholder"}]`,
+		"memfile":             "volume-mem",
+		"snapfile":            "volume-snap",
+	})
+	legacy, legacyFiles := writeLocalArtifact(t, map[string]string{
+		"memfile":  "legacy-mem",
+		"snapfile": "legacy-snap",
+	})
+
+	for _, tc := range []struct {
+		name        string
+		firstDir    string
+		firstFiles  []string
+		secondDir   string
+		secondFiles []string
+	}{
+		{name: "root-only to volume", firstDir: rootOnly, firstFiles: rootFiles, secondDir: withVolume, secondFiles: volumeFiles},
+		{name: "volume to root-only", firstDir: withVolume, firstFiles: volumeFiles, secondDir: rootOnly, secondFiles: rootFiles},
+		{name: "known to legacy unknown", firstDir: rootOnly, firstFiles: rootFiles, secondDir: legacy, secondFiles: legacyFiles},
+		{name: "legacy unknown to known", firstDir: legacy, firstFiles: legacyFiles, secondDir: withVolume, secondFiles: volumeFiles},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prefix := "base/amd/echo/" + strings.ReplaceAll(tc.name, " ", "-")
+			if _, _, err := s.Export(ctx, prefix, tc.firstDir, tc.firstFiles, 0, 1, "amd", "", ExportOptions{EnforceDeviceShape: true}); err != nil {
+				t.Fatalf("first Export: %v", err)
+			}
+			if _, _, err := s.Export(ctx, prefix, tc.secondDir, tc.secondFiles, 0, 2, "amd", "", ExportOptions{EnforceDeviceShape: true}); !errors.Is(err, ErrIncompatibleDeviceShape) {
+				t.Fatalf("replacement error = %v, want ErrIncompatibleDeviceShape", err)
+			}
+		})
+	}
+
+	present, known, ids, err := s.ArtifactDeviceShape(ctx, "base/amd/echo/root-only-to-volume")
+	if err != nil || !present || !known || len(ids) != 0 {
+		t.Fatalf("ArtifactDeviceShape = (%v, %v, %v, %v), want present known root-only", present, known, ids, err)
+	}
+
+	// The file checksums alone are not enough when the marker contradicts the
+	// producer metadata. Refuse even though every stored file is byte-identical.
+	const conflictPrefix = "base/amd/echo/root-only-to-volume"
+	metaKey := "/embervm/" + conflictPrefix + "/" + metaObject
+	var conflicting Meta
+	if err := json.Unmarshal(fake.object(metaKey), &conflicting); err != nil {
+		t.Fatal(err)
+	}
+	wrong := []string{"volume"}
+	conflicting.DeviceIDs = &wrong
+	conflictingBytes, err := json.Marshal(conflicting)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake.mu.Lock()
+	fake.objects[metaKey] = conflictingBytes
+	fake.mu.Unlock()
+	if _, _, err := s.Export(ctx, conflictPrefix, rootOnly, rootFiles, 0, 3, "amd", "", ExportOptions{EnforceDeviceShape: true}); !errors.Is(err, ErrIncompatibleDeviceShape) {
+		t.Fatalf("conflicting marker error = %v, want ErrIncompatibleDeviceShape", err)
+	}
+}
+
 func TestExportOverwriteUploadsUnchanged(t *testing.T) {
 	s, fake := newTestStore(t)
 	ctx := context.Background()

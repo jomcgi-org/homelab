@@ -63,3 +63,13 @@ filegroup(
     srcs = ["values-gke.yaml"],
     visibility = ["//projects/embervm/runtimes/claude:__pkg__"],
 )
+
+exports_files(
+    [
+        "kustomization.yaml",
+        "store-validation/README.md",
+        "store-validation/cloud-storage-budget.json",
+        "store-validation/h0melab-ember-bases-dev-lifecycle.json",
+    ],
+    visibility = ["//projects/embervm/chart:__pkg__"],
+)

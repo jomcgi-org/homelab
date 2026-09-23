@@ -36,7 +36,8 @@ defmodule Embervm.BrickControllerTest do
       interval_ms: 3_600_000,
       fleet_full_after_ms: 300_000,
       reconcile_on_start: false,
-      registered_fun: fn -> %{} end
+      registered_fun: fn -> %{} end,
+      catalog_fun: fn -> [] end
     ]
 
     {:ok, pid} = BrickController.start_link(Keyword.merge(defaults, opts))
@@ -69,6 +70,168 @@ defmodule Embervm.BrickControllerTest do
 
     assert calls.() == []
     assert BrickController.flagged(pid) == MapSet.new()
+  end
+
+  test "catalog floors raise the static target from zero replicas" do
+    {record, calls} = new_recorder()
+
+    pid =
+      start(
+        classes: [
+          %{
+            name: "2gi",
+            desired: 0,
+            min: 0,
+            max: 3,
+            usable_mib: 1_792,
+            mem_reject_floor_mib: 512,
+            slots: 8
+          }
+        ],
+        catalog_fun: fn -> [%{name: "warm", floor: 2, mem_mib: 600}] end,
+        scale_fun: record,
+        registered_fun: fn -> %{} end
+      )
+
+    BrickController.reconcile_now(pid)
+
+    assert calls.() == [{"embervm", "embervm-embervm-noded-brick-2gi", 1}]
+  end
+
+  test "manual minimum and desired counts are never lowered by a computed floor" do
+    {record, calls} = new_recorder()
+
+    pid =
+      start(
+        classes: [
+          %{
+            name: "16gi",
+            desired: 3,
+            min: 2,
+            max: 4,
+            usable_mib: 16_000,
+            mem_reject_floor_mib: 512,
+            slots: 8
+          }
+        ],
+        catalog_fun: fn -> [%{name: "warm", floor: 1, mem_mib: 4_000}] end,
+        scale_fun: record,
+        registered_fun: fn -> %{"16gi" => 3} end
+      )
+
+    BrickController.reconcile_now(pid)
+
+    assert calls.() == [{"embervm", "embervm-embervm-noded-brick-16gi", 3}]
+  end
+
+  test "floor overflow alerts before scale and clears on catalog recovery" do
+    {record, calls} = new_recorder()
+    {:ok, catalog} = Agent.start_link(fn -> [%{name: "busy", floor: 3, mem_mib: 800}] end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(catalog) end)
+
+    pid =
+      start(
+        classes: [
+          %{
+            name: "2gi",
+            desired: 0,
+            min: 0,
+            max: 2,
+            usable_mib: 1_000,
+            mem_reject_floor_mib: 512,
+            slots: 8
+          }
+        ],
+        catalog_fun: fn -> Agent.get(catalog, & &1) end,
+        scale_fun: record,
+        registered_fun: fn -> %{} end
+      )
+
+    first = ExUnit.CaptureLog.capture_log(fn -> BrickController.reconcile_now(pid) end)
+    second = ExUnit.CaptureLog.capture_log(fn -> BrickController.reconcile_now(pid) end)
+
+    assert first =~ "embervm brick floor overflow"
+    refute second =~ "embervm brick floor overflow"
+    assert BrickController.floor_overflow?(pid, "2gi")
+    assert calls.() == []
+
+    Agent.update(catalog, fn _ -> [%{name: "busy", floor: 2, mem_mib: 200}] end)
+    recovered = ExUnit.CaptureLog.capture_log(fn -> BrickController.reconcile_now(pid) end)
+
+    assert recovered =~ "embervm brick floor overflow cleared"
+    refute BrickController.floor_overflow?(pid, "2gi")
+    assert calls.() == [{"embervm", "embervm-embervm-noded-brick-2gi", 1}]
+  end
+
+  test "floor overflow suppresses only its class and unaffected state recovers" do
+    {record, calls} = new_recorder()
+    {clock, advance} = new_clock()
+
+    {:ok, catalog} =
+      Agent.start_link(fn ->
+        [
+          %{name: "small", floor: 2, mem_mib: 400},
+          %{name: "large", floor: 1, mem_mib: 1_200}
+        ]
+      end)
+
+    on_exit(fn -> Embervm.TestProcess.stop_safely(catalog) end)
+
+    pid =
+      start(
+        classes: [
+          %{
+            name: "1gi",
+            desired: 0,
+            min: 0,
+            max: 1,
+            usable_mib: 1_000,
+            mem_reject_floor_mib: 512,
+            slots: 8
+          },
+          %{
+            name: "2gi",
+            desired: 0,
+            min: 0,
+            max: 2,
+            usable_mib: 2_000,
+            mem_reject_floor_mib: 512,
+            slots: 8
+          }
+        ],
+        catalog_fun: fn -> Agent.get(catalog, & &1) end,
+        scale_fun: record,
+        registered_fun: fn -> %{} end,
+        fleet_full_after_ms: 100,
+        clock: clock
+      )
+
+    BrickController.reconcile_now(pid)
+    assert BrickController.floor_overflow?(pid, "1gi")
+    assert calls.() == [{"embervm", "embervm-embervm-noded-brick-2gi", 1}]
+
+    advance.(200)
+    BrickController.reconcile_now(pid)
+    assert BrickController.fleet_full?(pid, "2gi")
+
+    Agent.update(catalog, fn _ ->
+      [
+        %{name: "small", floor: 1, mem_mib: 400},
+        %{name: "large", floor: 1, mem_mib: 1_200}
+      ]
+    end)
+
+    recovered = ExUnit.CaptureLog.capture_log(fn -> BrickController.reconcile_now(pid) end)
+
+    assert recovered =~ "embervm brick floor overflow cleared"
+    refute BrickController.floor_overflow?(pid, "1gi")
+
+    assert calls.() == [
+             {"embervm", "embervm-embervm-noded-brick-2gi", 1},
+             {"embervm", "embervm-embervm-noded-brick-2gi", 1},
+             {"embervm", "embervm-embervm-noded-brick-1gi", 1},
+             {"embervm", "embervm-embervm-noded-brick-2gi", 1}
+           ]
   end
 
   test "a scale error never crashes the loop" do

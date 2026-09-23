@@ -771,6 +771,29 @@ def _observe_held_guest(guest_id: str) -> dict | None:
     return view if isinstance(view, dict) else None
 
 
+def _retire_parked_guest(view: dict) -> None:
+    """Conditionally retire a cold parked snapshot without racing a queued wake."""
+    from factory.execution.transport import EmberVmShimTransport
+
+    expected = {
+        key: view[key]
+        for key in ("session_id", "generation", "invoke_started_at", "updated_at")
+    }
+
+    async def request():
+        return await asyncio.wait_for(
+            EmberVmShimTransport().destroy_session(
+                view["session_id"], parked_precondition=expected
+            ),
+            HELD_GUEST_TIMEOUT_SECONDS,
+        )
+
+    try:
+        asyncio.run(request())
+    except Exception:  # noqa: BLE001 - old servers, races and outages retain the hold.
+        logger.info("Parked retirement deferred for guest %s", view["session_id"])
+
+
 def _recover_response_lost(pin: dict, session_id: int) -> dict | None:
     """Adopt this attempt's committed result, or end a hold that cannot recover.
 
@@ -803,6 +826,8 @@ def _recover_response_lost(pin: dict, session_id: int) -> dict | None:
     view = _observe_held_guest(hold["guest_id"])
     if view is None or view.get("session_id") != hold["guest_id"]:
         return outcome
+    from shared.invocation_outcomes import parked_invocation_candidate
+
     reason = None
     if view.get("state") in {"evicted", "destroyed"}:
         reason = "response_lost_guest_ceased"
@@ -812,6 +837,11 @@ def _recover_response_lost(pin: dict, session_id: int) -> dict | None:
         # banked and relit, or it has been given another turn. Either way the
         # result of ours can no longer arrive.
         reason = "response_lost_invocation_changed"
+    elif parked_invocation_candidate(view):
+        _retire_parked_guest(view)
+        # A DELETE response is not cessation evidence. Keep the held receipt
+        # and capacity until a subsequent authoritative read sees destroyed.
+        return outcome
     elif not invoke_in_progress(view):
         # The guest publishes its receipt before it answers, so a completed
         # invoke with nothing published means the callback failed rather than
@@ -824,7 +854,7 @@ def _recover_response_lost(pin: dict, session_id: int) -> dict | None:
     retried = adopt_response_lost_result(session_id, pin["artifact_path"])
     if retried is None or retried["status"] != "waiting":
         return retried
-    if settle_response_lost_hold(session_id, reason):
+    if settle_response_lost_hold(session_id, reason, expected_hold=hold):
         logger.warning(
             "Ended response-loss hold for session %s: %s", session_id, reason
         )

@@ -222,3 +222,54 @@ metadata:
         _parse_and_check_blueprint(yaml_text, "test_env_mapping_form_invalid")
 
     assert "must be a scalar or a 2-element sequence" in str(exc_info.value)
+
+
+def test_grimoire_enrollment_requires_invitation_and_grants_no_admin_groups():
+    """Walk the actual blueprint objects, retaining references as strings."""
+
+    class BlueprintLoader(yaml.SafeLoader):
+        pass
+
+    BlueprintLoader.add_multi_constructor(
+        "!",
+        lambda loader, tag, node: (
+            loader.construct_scalar(node)
+            if isinstance(node, yaml.ScalarNode)
+            else loader.construct_sequence(node)
+        ),
+    )
+    blueprint = pathlib.Path(__file__).parent / "blueprints/grimoire-auth.yaml"
+    entries = yaml.load(blueprint.read_text(), Loader=BlueprintLoader)["entries"]
+    by_id = {entry["id"]: entry for entry in entries if "id" in entry}
+    assert by_id["invitation"]["attrs"]["continue_flow_without_invitation"] is False
+    assert by_id["enrollment"]["attrs"]["authentication"] == "require_unauthenticated"
+    assert by_id["write"]["attrs"]["user_creation_mode"] == "always_create"
+    assert by_id["write"]["attrs"]["user_type"] == "external"
+    assert "create_users_group" not in by_id["write"]["attrs"]
+    assert by_id["prompt"]["attrs"]["validation_policies"] == ["validate-invitation"]
+    fields = [
+        by_id[key]["attrs"]["field_key"] for key in by_id["prompt"]["attrs"]["fields"]
+    ]
+    assert "email" not in fields  # Fixed by the administrator's invitation.
+    bindings = sorted(
+        (e["identifiers"]["order"], e["identifiers"]["stage"])
+        for e in entries
+        if e["model"] == "authentik_flows.flowstagebinding"
+    )
+    assert [stage for _, stage in bindings] == [
+        "invitation",
+        "prompt",
+        "write",
+        "login",
+    ]
+    assert by_id["provider"]["attrs"]["client_id"] == "grimoire-friends"
+    for entry in entries:
+        if entry["model"] == "authentik_policies_expression.expressionpolicy":
+            compile(
+                "def policy():\n"
+                + "\n".join(
+                    "    " + line for line in entry["attrs"]["expression"].splitlines()
+                ),
+                str(blueprint),
+                "exec",
+            )

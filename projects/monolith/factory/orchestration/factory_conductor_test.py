@@ -437,10 +437,74 @@ def test_tick_at_the_limit_reconciles_without_ingesting_or_admitting(monkeypatch
     assert reconciled == ["t-1"]
 
 
+@pytest.mark.parametrize(
+    "configured, expected",
+    [(None, []), ("false", []), ("true", ["t-1"])],
+)
+def test_tick_gates_only_the_automatic_sessionless_sweep(
+    monkeypatch, configured, expected
+):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_landing,
+        factory_pr_lifecycle,
+        factory_problem_issues,
+        work_item_pointer,
+    )
+
+    policy = {"max_tasks": 1}
+    task = {"task_id": "t-1", "policy": policy}
+    if configured is None:
+        monkeypatch.delenv("FACTORY_LOST_BEFORE_SESSION_SWEEP_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("FACTORY_LOST_BEFORE_SESSION_SWEEP_ENABLED", configured)
+    monkeypatch.setattr(
+        controls,
+        "status",
+        lambda: {"state": "paused", "policy": policy, "active_tasks": [task]},
+    )
+    monkeypatch.setattr(conductor.runtime, "is_launched", lambda: True)
+    monkeypatch.setattr(conductor.runtime, "init_dbos", lambda: object())
+    monkeypatch.setattr(conductor, "revalidate_escalations", lambda: None)
+    monkeypatch.setattr(conductor, "observe_reviewer_routing", lambda _policy: None)
+    monkeypatch.setattr(factory_pr_lifecycle, "reconcile_tick", lambda _policy: None)
+    monkeypatch.setattr(factory_landing, "landing_tick", lambda _policy: None)
+    monkeypatch.setattr(
+        factory_problem_issues, "problem_issues_tick", lambda _policy: None
+    )
+    monkeypatch.setattr(work_item_pointer, "sync_pointers", lambda **_kwargs: None)
+    swept = []
+    reconciled = []
+    deadlines = []
+    monkeypatch.setattr(
+        conductor,
+        "_sweep_sessionless_starts",
+        lambda current, _dbos: swept.append(current["task_id"]),
+    )
+    monkeypatch.setattr(
+        conductor,
+        "reconcile_task",
+        lambda task_id, _policy, _dbos: reconciled.append(task_id),
+    )
+    monkeypatch.setattr(
+        conductor,
+        "_expire_task_deadline",
+        lambda current: deadlines.append(current["task_id"]),
+    )
+
+    conductor.tick()
+
+    assert swept == expected
+    assert reconciled == ["t-1"]
+    assert deadlines == ["t-1"]
+
+
 def test_tick_syncs_work_item_pointers_while_paused(monkeypatch):
     from factory.orchestration import (
         factory_controls as controls,
         factory_landing,
+        factory_problem_issues,
+        factory_pr_lifecycle,
         work_item_pointer,
     )
 
@@ -456,7 +520,17 @@ def test_tick_syncs_work_item_pointers_while_paused(monkeypatch):
     monkeypatch.setattr(conductor, "observe_reviewer_routing", lambda _policy: None)
     calls = []
     monkeypatch.setattr(
+        factory_pr_lifecycle,
+        "reconcile_tick",
+        lambda value: calls.append(("pr_lifecycle", value)),
+    )
+    monkeypatch.setattr(
         factory_landing, "landing_tick", lambda value: calls.append(("landing", value))
+    )
+    monkeypatch.setattr(
+        factory_problem_issues,
+        "problem_issues_tick",
+        lambda value: calls.append(("problem_issues", value)),
     )
     monkeypatch.setattr(
         work_item_pointer,
@@ -465,7 +539,9 @@ def test_tick_syncs_work_item_pointers_while_paused(monkeypatch):
     )
     conductor.tick()
     assert calls == [
+        ("pr_lifecycle", policy),
         ("landing", policy),
+        ("problem_issues", policy),
         ("pointer", {"actor": conductor.ACTOR}),
     ]
 
@@ -513,13 +589,16 @@ def test_tick_isolates_a_failing_task_and_a_failing_ingest(monkeypatch):
 
 
 def test_stopped_factory_never_polls_or_admits(monkeypatch):
-    import factory.orchestration.factory_controls as controls
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import factory_pr_lifecycle
 
+    policy = {"repo": "owner/repo"}
     monkeypatch.setattr(
         controls,
         "status",
         lambda: {
             "state": "stopped",
+            "policy": policy,
             "active_tasks": [{"task_id": "t-1"}, {"task_id": "t-2"}],
         },
     )
@@ -527,6 +606,11 @@ def test_stopped_factory_never_polls_or_admits(monkeypatch):
     monkeypatch.setattr(conductor.runtime, "init_dbos", lambda: object())
     monkeypatch.setattr(
         conductor, "ingest_eligible", lambda _: pytest.fail("stopped admission")
+    )
+    monkeypatch.setattr(
+        factory_pr_lifecycle,
+        "reconcile_tick",
+        lambda _policy: pytest.fail("stopped PR lifecycle write"),
     )
     cancelled = []
 
@@ -1370,6 +1454,59 @@ def planner_context(prompt):
 
 
 @pytest.mark.parametrize(
+    "text", ["funded next step ", 'Review \U0001f525\\" evidence ']
+)
+def test_funded_planner_bounds_complete_context_before_trimming(
+    feedback_db, monkeypatch, text
+):
+    from factory.orchestration import factory_funding as funding
+
+    task, runs = delivery(monkeypatch)
+    task["task_text"] = "Implement the requested repair. " * 400
+    monkeypatch.setattr(conductor, "_decision_evidence", lambda _task: [])
+    monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "true")
+    monkeypatch.setattr(funding, "amendment", lambda *_: None)
+    baseline = planner_context(conductor.planner_prompt(task, [], runs))
+    limit = len(conductor._planner_json(baseline)) + 64
+    monkeypatch.setattr(conductor, "PLANNER_CONTEXT_CHARS", limit)
+    grant = {
+        "reason": text * 40,
+        "next_plan": text * 100,
+        "deadline_at": "2026-09-22T04:00:00+00:00",
+    }
+    monkeypatch.setattr(funding, "amendment", lambda *_: grant)
+
+    prompt = conductor.planner_prompt(task, [], runs, decision_revision=123456)
+    context = planner_context(prompt)
+
+    assert len(prompt.split("\n", 1)[1].encode("utf-8")) <= limit
+    assert context["conductor_funding"] == grant
+    assert context["graph_revision"] == 123456
+    assert context["delivery_evidence"] == baseline["delivery_evidence"]
+    assert context["omitted"]["task_characters"] > 0
+
+
+def test_funded_planner_refuses_when_required_funding_cannot_fit(
+    feedback_db, monkeypatch
+):
+    from factory.orchestration import factory_funding as funding
+
+    task, runs = delivery(monkeypatch)
+    task["task_text"] = "Fix the reported defect."
+    monkeypatch.setattr(conductor, "_decision_evidence", lambda _task: [])
+    monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "true")
+    grant = {
+        "reason": "Preserve all funding conditions.",
+        "next_plan": "x" * conductor.PLANNER_CONTEXT_CHARS,
+        "deadline_at": "2026-09-22T04:00:00+00:00",
+    }
+    monkeypatch.setattr(funding, "amendment", lambda *_: grant)
+
+    with pytest.raises(conductor.PlannerContextOverflow):
+        conductor.planner_prompt(task, [], runs)
+
+
+@pytest.mark.parametrize(
     "selected_profile",
     [pytest.param("absent", id="absent"), None, "explicit"],
 )
@@ -2139,6 +2276,7 @@ def queued_factory(feedback_db, monkeypatch):
         PendingMessage,
         AgentCapacityPool,
         AgentCapacityReservation,
+        AgentResultReceipt,
     )
 
     engine = feedback_db.execution_options(
@@ -2154,10 +2292,13 @@ def queued_factory(feedback_db, monkeypatch):
                 PendingMessage,
                 AgentCapacityPool,
                 AgentCapacityReservation,
+                AgentResultReceipt,
             )
         ],
     )
-    for module in (conductor, conductor.graph, core.db):
+    from factory.orchestration import factory_controls as controls
+
+    for module in (conductor, conductor.graph, core.db, controls):
         monkeypatch.setattr(module, "get_engine", lambda: engine)
     task, policy = feedback_task()
     key = "conductor_1"
@@ -2487,18 +2628,32 @@ def test_resume_audit_after_reconciler_pause_prevents_expiry(
     assert snapshot["task_paused"] is True
 
 
-def test_pause_expiry_resolves_uncertain_starts_before_retrying_finish(
+def test_pause_expiry_retains_uncertain_starts_and_accounting(
     queued_factory, monkeypatch
 ):
+    import json
+    from sqlmodel import Session, select
     from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryAudit
 
     s = _aged_pause(queued_factory, monkeypatch, conductor.ACTOR, unresolved=True)
+    before = controls.task_snapshot(s.task["id"])
 
-    assert conductor._expire_reconciler_pause(s.task["id"])
+    assert not conductor._expire_reconciler_pause(s.task["id"])
+    assert not conductor._expire_reconciler_pause(s.task["id"])
     snapshot = controls.task_snapshot(s.task["id"])
-    assert snapshot["state"] == "cancelled"
-    assert snapshot["starts"][0]["status"] == "failed"
-    assert snapshot["starts"][0]["cost_usd"] == 0.0
+    assert snapshot["state"] == "admitted"
+    assert snapshot["task_paused"] is True
+    assert snapshot["starts"] == before["starts"]
+    assert snapshot["committed_cost_usd"] == before["committed_cost_usd"]
+    with Session(s.engine) as db:
+        held = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.action == "reconciler_pause_expiry_held"
+            )
+        ).all()
+        assert len(held) == 1
+        assert json.loads(held[0].detail_json)["refusal"] == "unresolved_starts"
 
 
 def test_departed_node_destroy_request_settles_on_following_destroyed_view(
@@ -4257,6 +4412,428 @@ def _uncertain_snapshot(s):
         }
 
 
+@pytest.fixture
+def drained_lost_factory(queued_factory, monkeypatch):
+    """The #6271 shape: a durable drain plus its orphaned continuation."""
+    import copy
+    from datetime import datetime, timedelta, timezone
+
+    from sqlmodel import Session
+
+    from factory.execution import admission, store
+    from factory.execution.models import AgentSession, AgentTurn
+    from factory.execution.transport import exact_dispatch_id
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import factory_supervision as supervisor
+    from factory.orchestration import node_workflows
+
+    s = queued_factory
+    for module in (controls, admission, store):
+        monkeypatch.setattr(module, "get_engine", lambda: s.engine)
+    monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "true")
+    monkeypatch.setenv("FACTORY_DRAINED_LOSS_SETTLEMENT_ENABLED", "true")
+    monkeypatch.setattr(node_workflows, "reconcile_completed_node", lambda *_a: None)
+    owner = "drained-factory-executor"
+    assert store.claim_pending_message_for_session_sync(s.sid, owner) == 1
+    assert admission.recheck(s.sid, 1, owner)
+    s.dispatched_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+    s.interrupted_at = s.dispatched_at + timedelta(minutes=1)
+    s.invoke_started_at = int(
+        (s.dispatched_at + timedelta(seconds=1)).timestamp() * 1000
+    )
+    s.last_invoke_at = s.invoke_started_at + 1000
+    with Session(s.engine) as db:
+        agent = db.get(AgentSession, s.sid)
+        agent.status = "recovering"
+        agent.ember_session_id = "s-drained-factory"
+        agent.ember_session_token = "token-drained"
+        agent.ember_lineage_id = "lineage-drained"
+        agent.cli_session_id = "cli-drained"
+        agent.last_turn_at = s.interrupted_at
+        pending = store.get_pending_message(db, s.sid, 1)
+        pending.claimed_by_replica = None
+        pending.claimed_at = None
+        # The live issue had already consumed the relight dispatch, so the
+        # orphaned continuation carried dispatch_count=2.
+        pending.dispatch_count = 2
+        pending.last_dispatch_at = s.dispatched_at
+        db.add(
+            AgentTurn(
+                session_id=s.sid,
+                seq=1,
+                prompt=pending.message_text,
+                model="opus",
+                voice_summary="Work saved for drain",
+                result_text="Durable partial implementation",
+                terminal_reason="interrupted_for_drain",
+                stop_reason="interrupted_for_drain",
+                permission_denials="[]",
+                usage_json=json.dumps({"activities": [], "retry_dispatch_count": 2}),
+                cost_usd=0.25,
+                created_at=s.interrupted_at,
+            )
+        )
+        db.add_all([agent, pending])
+        db.commit()
+    s.dispatch_id = exact_dispatch_id(s.sid, "s-drained-factory", 1, owner, 2)
+    s.result = {
+        "status": "uncertain",
+        "session_id": s.sid,
+        "cost_usd": None,
+        "cost_basis": "unknown",
+        "reason": "node workflow timed out waiting for drain relight",
+        "head_sha": "a" * 40,
+    }
+    conductor.graph.record_dispatch(s.task["id"], s.run["node_key"], 1, s.sid, "b" * 40)
+    assert conductor.graph.record_outcome(
+        s.task["id"],
+        s.run["node_key"],
+        1,
+        "uncertain",
+        None,
+        "a" * 40,
+        json.dumps(s.result),
+    ).ok
+    assert controls.record_start_outcome(
+        s.task["id"],
+        s.run["pin"]["workflow_id"],
+        "uncertain",
+        "executor",
+        session_id=s.sid,
+    )["ok"]
+    s.run = conductor.graph.node_runs(s.task["id"])[0]
+    s.cp = {
+        "session_id": "s-drained-factory",
+        "state": "evicted",
+        "terminal_reason": "node_gone",
+        "generation": 0,
+        "invoke_started_at": s.invoke_started_at,
+        "last_invoke_at": s.last_invoke_at,
+        "updated_at": s.last_invoke_at + 1000,
+        "interrupted_turn": {
+            "seq": 1,
+            "dispatch_id": s.dispatch_id,
+            "cli_session_id": "cli-drained",
+            "transcript_path": "/workspace/.codex/transcript.jsonl",
+        },
+        "node": {"node_id": "node-departed", "health": "down"},
+    }
+    s.calls = []
+
+    def http(guest_id, precondition=None):
+        assert precondition is None
+        s.calls.append(guest_id)
+        return copy.deepcopy(s.cp)
+
+    monkeypatch.setattr(supervisor, "_http", http)
+    s.dbos = SimpleNamespace(
+        get_workflow_status=lambda _key: SimpleNamespace(status="SUCCESS"),
+        retrieve_workflow=lambda _key: SimpleNamespace(get_result=lambda: s.result),
+    )
+    return s
+
+
+def test_factory_consumer_settles_only_proven_drained_loss_and_is_idempotent(
+    drained_lost_factory, monkeypatch
+):
+    from sqlmodel import Session, select
+
+    from factory.execution.constants import UNKNOWN_INVOCATION
+    from factory.execution.models import (
+        AgentCapacityReservation,
+        AgentSession,
+        AgentTurn,
+        PendingMessage,
+    )
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryAudit
+
+    s = drained_lost_factory
+    with Session(s.engine) as db:
+        original_turn = db.exec(select(AgentTurn)).one().model_dump()
+    conductor._submit_or_reconcile(s.task, s.run, s.dbos)
+    with Session(s.engine) as db:
+        agent = db.get(AgentSession, s.sid)
+        turn = db.exec(select(AgentTurn)).one()
+        permit = db.exec(select(AgentCapacityReservation)).one()
+        run = conductor.graph.node_runs(s.task["id"], session=db)[0]
+        start = controls.task_snapshot(s.task["id"], session=db)["starts"][0]
+        assert db.exec(select(PendingMessage)).all() == []
+        assert turn.model_dump() == original_turn
+        assert turn.stop_reason != UNKNOWN_INVOCATION
+        assert agent.status == "failed"
+        assert agent.ember_session_id is None
+        assert agent.prior_ember_lineage_id == "lineage-drained"
+        assert agent.prior_cli_session_id == "cli-drained"
+        assert agent.recovery_workspace_loss is True
+        assert permit.state == "settled"
+        assert permit.outcome == "drained_guest_permanently_lost"
+        assert run["status"] == "failed"
+        assert run["cost_usd"] == pytest.approx(0.25)
+        assert start["status"] == "failed"
+        outcome = json.loads(run["outcome_json"])
+        assert outcome["drained_loss"]["dispatch_id"] == s.dispatch_id
+        assert outcome["drained_loss"]["workspace_recovery"] == "permanently_lost"
+        assert "not_invoked" not in outcome
+        assert UNKNOWN_INVOCATION not in json.dumps(outcome)
+        audit = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == s.task["id"],
+                FactoryAudit.action == "stop_settled",
+            )
+        ).one()
+        detail = json.loads(audit.detail_json)
+        assert detail["drained_loss"]["dispatch_id"] == s.dispatch_id
+        assert detail["cessation_confirmed"] is True
+    after = _uncertain_snapshot(s)
+    conductor._submit_or_reconcile(s.task, s.run, s.dbos)
+    assert _uncertain_snapshot(s) == after
+    assert s.calls == ["s-drained-factory"]
+    monkeypatch.setattr(
+        conductor, "github_get", lambda *_args: {"object": {"sha": "c" * 40}}
+    )
+    conductor.reconcile_task(s.task["id"], s.policy, s.dbos)
+    assert [
+        (run["attempt"], run["status"])
+        for run in conductor.graph.node_runs(s.task["id"])
+    ] == [(1, "failed"), (2, "admitted")]
+
+
+def test_drained_loss_settlement_is_inert_while_staged_off(
+    drained_lost_factory, monkeypatch
+):
+    from sqlmodel import Session, select
+
+    from factory.execution.models import AgentCapacityReservation, PendingMessage
+
+    s = drained_lost_factory
+    monkeypatch.setenv("FACTORY_DRAINED_LOSS_SETTLEMENT_ENABLED", "false")
+    conductor._submit_or_reconcile(s.task, s.run, s.dbos)
+    with Session(s.engine) as db:
+        assert db.exec(select(PendingMessage)).one() is not None
+        assert db.exec(select(AgentCapacityReservation)).one().state == "running"
+        assert conductor.graph.node_runs(s.task["id"], session=db)[0]["status"] == (
+            "uncertain"
+        )
+
+
+@pytest.mark.parametrize(
+    "state,terminal_reason",
+    [
+        ("running", None),
+        ("banking", "interrupted_for_drain"),
+        ("banked", "interrupted_for_drain"),
+        ("parked", "interrupted_for_drain"),
+        ("relighting", "interrupted_for_drain"),
+        ("failed", "brick_gone"),
+        ("destroyed", "destroyed"),
+    ],
+)
+def test_live_restorable_or_generic_destroyed_drain_keeps_its_retry(
+    drained_lost_factory, state, terminal_reason
+):
+    from sqlmodel import Session, select
+
+    from factory.execution.models import AgentCapacityReservation, PendingMessage
+
+    s = drained_lost_factory
+    s.cp.update(state=state, terminal_reason=terminal_reason)
+    conductor._submit_or_reconcile(s.task, s.run, s.dbos)
+    with Session(s.engine) as db:
+        pending = db.exec(select(PendingMessage)).one()
+        permit = db.exec(select(AgentCapacityReservation)).one()
+        assert pending.claimed_by_replica is None
+        assert pending.dispatch_count == 2
+        assert permit.state == "running"
+        assert conductor.graph.node_runs(s.task["id"], session=db)[0]["status"] == (
+            "uncertain"
+        )
+
+
+@pytest.mark.parametrize("failure", ["dispatch", "cli", "transcript", "guest"])
+def test_stale_or_ambiguous_drained_loss_evidence_is_refused(
+    drained_lost_factory, failure
+):
+    from sqlmodel import Session, select
+
+    from factory.execution.models import AgentCapacityReservation, PendingMessage
+
+    s = drained_lost_factory
+    if failure == "dispatch":
+        s.cp["interrupted_turn"]["dispatch_id"] = "stale"
+    elif failure == "cli":
+        s.cp["interrupted_turn"]["cli_session_id"] = "cli-newer"
+    elif failure == "transcript":
+        s.cp["interrupted_turn"]["transcript_path"] = None
+    else:
+        s.cp["session_id"] = "s-newer"
+    conductor._submit_or_reconcile(s.task, s.run, s.dbos)
+    with Session(s.engine) as db:
+        assert db.exec(select(PendingMessage)).one() is not None
+        assert db.exec(select(AgentCapacityReservation)).one().state == "running"
+        assert conductor.graph.node_runs(s.task["id"], session=db)[0]["status"] == (
+            "uncertain"
+        )
+
+
+@pytest.mark.parametrize("change", ["claim", "dispatch", "turn", "permit"])
+def test_newer_or_ambiguous_local_drain_identity_is_refused(
+    drained_lost_factory, change
+):
+    from datetime import datetime, timezone
+
+    from sqlmodel import Session, select
+
+    from factory.execution.models import (
+        AgentCapacityReservation,
+        AgentSession,
+        AgentTurn,
+        PendingMessage,
+    )
+
+    s = drained_lost_factory
+    with Session(s.engine) as db:
+        agent = db.get(AgentSession, s.sid)
+        pending = db.exec(select(PendingMessage)).one()
+        if change == "claim":
+            pending.claimed_by_replica = "relight-executor"
+            pending.claimed_at = datetime.now(timezone.utc)
+            db.add(pending)
+        elif change == "dispatch":
+            pending.dispatch_count += 1
+            pending.last_dispatch_at = datetime.now(timezone.utc)
+            db.add(pending)
+        elif change == "turn":
+            db.add(
+                AgentTurn(
+                    session_id=s.sid,
+                    seq=2,
+                    prompt="newer turn",
+                    model="opus",
+                    result_text="newer result",
+                )
+            )
+        else:
+            db.add(
+                AgentCapacityReservation(
+                    local_session_id=agent.local_session_id,
+                    pending_seq=2,
+                    tier="project",
+                    model="opus",
+                )
+            )
+        db.commit()
+
+    conductor._submit_or_reconcile(s.task, s.run, s.dbos)
+    with Session(s.engine) as db:
+        pending = db.exec(select(PendingMessage)).one()
+        permit = db.exec(
+            select(AgentCapacityReservation).where(
+                AgentCapacityReservation.session_id == s.sid
+            )
+        ).one()
+        assert pending is not None
+        assert permit.state == "running"
+        assert conductor.graph.node_runs(s.task["id"], session=db)[0]["status"] == (
+            "uncertain"
+        )
+
+
+@pytest.mark.parametrize("missing", ["gone", "timeout"])
+def test_missing_guest_or_transient_observation_cannot_prove_drained_loss(
+    drained_lost_factory, monkeypatch, missing
+):
+    from sqlmodel import Session, select
+
+    from factory.execution.models import AgentCapacityReservation, PendingMessage
+    from factory.execution.transport import EmberSessionGone
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = drained_lost_factory
+
+    def unavailable(*_args):
+        if missing == "gone":
+            raise EmberSessionGone("missing")
+        raise TimeoutError("temporary control-plane timeout")
+
+    monkeypatch.setattr(supervisor, "_http", unavailable)
+    conductor._submit_or_reconcile(s.task, s.run, s.dbos)
+    with Session(s.engine) as db:
+        assert db.exec(select(PendingMessage)).one() is not None
+        assert db.exec(select(AgentCapacityReservation)).one().state == "running"
+        assert conductor.graph.node_runs(s.task["id"], session=db)[0]["status"] == (
+            "uncertain"
+        )
+
+
+def test_concurrent_relight_claim_wins_over_drained_loss_settlement(
+    drained_lost_factory, monkeypatch
+):
+    from datetime import datetime, timezone
+
+    from sqlmodel import Session, select
+
+    from factory.execution.models import AgentCapacityReservation, PendingMessage
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = drained_lost_factory
+    prove = supervisor._drained_loss_cessation
+
+    def race(view, identity):
+        proof = prove(view, identity)
+        with Session(s.engine) as db:
+            pending = db.exec(select(PendingMessage)).one()
+            pending.claimed_by_replica = "relight-executor"
+            pending.claimed_at = datetime.now(timezone.utc)
+            db.add(pending)
+            db.commit()
+        return proof
+
+    monkeypatch.setattr(supervisor, "_drained_loss_cessation", race)
+    conductor._submit_or_reconcile(s.task, s.run, s.dbos)
+    with Session(s.engine) as db:
+        pending = db.exec(select(PendingMessage)).one()
+        assert pending.claimed_by_replica == "relight-executor"
+        assert db.exec(select(AgentCapacityReservation)).one().state == "running"
+        assert conductor.graph.node_runs(s.task["id"], session=db)[0]["status"] == (
+            "uncertain"
+        )
+
+
+def test_drained_loss_gate_does_not_change_unknown_invocation_settlement(
+    uncertain_factory, monkeypatch
+):
+    from datetime import timedelta
+
+    from sqlmodel import Session, select
+
+    from factory.execution.constants import UNKNOWN_INVOCATION
+    from factory.execution.models import AgentCapacityReservation, AgentTurn
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = uncertain_factory
+    monkeypatch.setenv("FACTORY_DRAINED_LOSS_SETTLEMENT_ENABLED", "true")
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    s.cp.update(
+        state="failed",
+        terminal_reason="brick_gone",
+        last_invoke_at=None,
+        updated_at=int(
+            (s.failed_turn_at - timedelta(milliseconds=1)).timestamp() * 1000
+        ),
+        node={"node_id": "node-1", "health": "down", "draining": True},
+        stop_precondition=None,
+    )
+    assert supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    with Session(s.engine) as db:
+        assert db.exec(select(AgentTurn)).one().stop_reason == UNKNOWN_INVOCATION
+        permit = db.exec(select(AgentCapacityReservation)).one()
+        assert permit.state == "settled"
+        assert permit.outcome == "guest_cessation_confirmed"
+
+
 def test_attempt_stop_preview_survives_original_observer_loss(
     queued_factory, monkeypatch
 ):
@@ -5215,7 +5792,7 @@ def test_persisted_stop_operation_and_current_invocation_must_match(
         assert after[key] == before[key]
 
 
-def test_lost_stop_requests_keep_one_identity_and_persistent_bound(
+def test_flag_off_lost_stop_requests_keep_legacy_bound_and_reasons(
     uncertain_factory, monkeypatch
 ):
     import json
@@ -5248,7 +5825,353 @@ def test_lost_stop_requests_keep_one_identity_and_persistent_bound(
             for row in audit
             if row.action == "stop_observation"
         ]
-        assert set(notes) == {"stop_request_unconfirmed", "stop_request_bound_reached"}
+        assert set(notes) == {
+            "stop_request_unconfirmed",
+            "stop_request_bound_reached",
+        }
+
+
+def test_flag_off_missing_precondition_keeps_legacy_refusal_reason(
+    uncertain_factory, monkeypatch
+):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = uncertain_factory
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    monkeypatch.delenv("FACTORY_TRANSIENT_STOP_RETRY_ENABLED", raising=False)
+    s.cp.update(
+        stop_precondition=None,
+        stop_intent=None,
+        stop_completion=None,
+        last_invoke_at=None,
+    )
+
+    assert not supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    events = controls.task_snapshot(s.task["id"])["stop_events"]
+    refusals = [
+        event
+        for event in events
+        if event.get("reason") == "stop_evidence_or_ownership_changed"
+    ]
+    assert len(refusals) == 1
+    assert refusals[0]["error"] == "missing_stop_precondition"
+    assert not any(event.get("retry_kind") for event in events)
+
+
+def test_transient_missing_precondition_retries_on_one_durable_window(
+    uncertain_factory, monkeypatch
+):
+    """A restart reads the audit schedule instead of resetting its deadline."""
+    from datetime import timedelta
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = uncertain_factory
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    monkeypatch.setenv("FACTORY_TRANSIENT_STOP_RETRY_ENABLED", "true")
+    clock = [s.failed_turn_at + timedelta(minutes=3)]
+    monkeypatch.setattr(supervisor, "_now", lambda: clock[0])
+    s.cp.update(
+        stop_precondition=None,
+        stop_intent=None,
+        stop_completion=None,
+        last_invoke_at=None,
+    )
+
+    assert not supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    assert len(s.calls) == 1
+    retry_samples = [
+        event
+        for event in controls.task_snapshot(s.task["id"])["stop_events"]
+        if event.get("retry_sample") is True
+    ]
+    assert retry_samples, [
+        (event.get("reason"), event.get("error"))
+        for event in controls.task_snapshot(s.task["id"])["stop_events"]
+    ]
+    first = retry_samples[0]
+    deadline = first["retry_deadline_at"]
+    assert first["intervention_required"] is False
+
+    # A process restart has no in-memory timer to restore. The durable first
+    # observation still suppresses an early retry and retains its deadline.
+    clock[0] += timedelta(seconds=299)
+    assert not supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    assert len(s.calls) == 1
+    for seconds in (1, 300):
+        clock[0] += timedelta(seconds=seconds)
+        assert not supervisor.reconcile_uncertain_attempt(
+            s.run["pin"], s.sid, s.result, "SUCCESS"
+        )
+    assert len(s.calls) == 3
+
+    clock[0] += timedelta(seconds=300)
+    assert not supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    assert len(s.calls) == 3
+    events = controls.task_snapshot(s.task["id"])["stop_events"]
+    samples = [event for event in events if event.get("retry_sample") is True]
+    exhausted = [event for event in events if event.get("retry_exhausted") is True]
+    assert len(samples) == 3
+    assert {event["retry_deadline_at"] for event in samples} == {deadline}
+    assert len(exhausted) == 1
+    assert exhausted[0]["retry_deadline_at"] == deadline
+    assert exhausted[0]["refusal"] == "missing_stop_precondition"
+    assert exhausted[0]["intervention_required"] is True
+    assert exhausted[0]["session_id"] == s.sid
+    assert exhausted[0]["guest_id"] == "s-exact-factory"
+    assert exhausted[0]["observations"] == 3
+    assert exhausted[0]["retry_kind"] == "transient_stop_observation"
+    assert exhausted[0]["identity_sha256"]
+
+    # Exhaustion fences another notification, but later ticks still observe
+    # for positive proof and can settle after the control plane recovers.
+    from factory.execution.transport import EmberSessionGone
+    from factory.orchestration.factory_models import FactoryAudit
+    from sqlmodel import Session, select
+
+    def absent(_guest_id, precondition=None):
+        assert precondition is None
+        raise EmberSessionGone("guest absent")
+
+    monkeypatch.setattr(supervisor, "_http", absent)
+    for _ in range(4):
+        clock[0] += timedelta(seconds=supervisor.ABSENCE_OBSERVATION_INTERVAL_SECONDS)
+        assert not supervisor.reconcile_uncertain_attempt(
+            s.run["pin"], s.sid, s.result, "SUCCESS"
+        )
+        with Session(s.engine) as db:
+            latest = db.exec(
+                select(FactoryAudit)
+                .where(FactoryAudit.action == "stop_absence")
+                .order_by(FactoryAudit.id.desc())
+            ).first()
+            latest.created_at = clock[0]
+            db.add(latest)
+            db.commit()
+    assert supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    assert (
+        len(
+            [
+                event
+                for event in controls.task_snapshot(s.task["id"])["stop_events"]
+                if event.get("retry_exhausted") is True
+            ]
+        )
+        == 1
+    )
+    assert _uncertain_snapshot(s)["runs"][0]["status"] == "failed"
+
+
+def test_healthy_guest_does_not_open_transient_retry_epoch(
+    uncertain_factory, monkeypatch
+):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = uncertain_factory
+    monkeypatch.setenv("FACTORY_TRANSIENT_STOP_RETRY_ENABLED", "true")
+
+    assert not supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    events = controls.task_snapshot(s.task["id"])["stop_events"]
+    assert not any(event.get("retry_kind") for event in events)
+
+
+def test_transient_observation_recovers_before_exhaustion(
+    uncertain_factory, monkeypatch
+):
+    from datetime import timedelta
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = uncertain_factory
+    monkeypatch.setenv("FACTORY_TRANSIENT_STOP_RETRY_ENABLED", "true")
+    clock = [s.failed_turn_at + timedelta(minutes=3)]
+    monkeypatch.setattr(supervisor, "_now", lambda: clock[0])
+    available = [False]
+
+    def flaky(guest_id, precondition=None):
+        if not available[0]:
+            raise TimeoutError("control plane unavailable")
+        return s.http(guest_id, precondition)
+
+    monkeypatch.setattr(supervisor, "_http", flaky)
+    assert not supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    available[0] = True
+    clock[0] += timedelta(seconds=supervisor.TRANSIENT_RETRY_INTERVAL_SECONDS)
+    assert not supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    events = controls.task_snapshot(s.task["id"])["stop_events"]
+    assert len([event for event in events if event.get("retry_sample") is True]) == 1
+    assert not any(event.get("intervention_required") is True for event in events)
+    resolved = [event for event in events if event.get("retry_resolved") is True]
+    assert len(resolved) == 1
+    assert resolved[0]["retry_kind"] == "transient_stop_observation"
+    assert resolved[0]["resolution"] == "valid_stop_identity_observed"
+    assert resolved[0]["identity_sha256"]
+    assert len([call for call in s.calls if call[1] is not None]) == 1
+
+
+def test_recovered_observation_allows_absence_samples_to_accumulate(
+    uncertain_factory, monkeypatch
+):
+    from datetime import timedelta
+    from factory.execution.transport import EmberSessionGone
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import factory_supervision as supervisor
+    from factory.orchestration.factory_models import FactoryAudit
+    from sqlmodel import Session, select
+
+    s = uncertain_factory
+    monkeypatch.setenv("FACTORY_TRANSIENT_STOP_RETRY_ENABLED", "true")
+    clock = [s.failed_turn_at + timedelta(minutes=3)]
+    monkeypatch.setattr(supervisor, "_now", lambda: clock[0])
+    available = [False]
+
+    def absent(_guest_id, precondition=None):
+        assert precondition is None
+        if not available[0]:
+            raise TimeoutError("control plane unavailable")
+        raise EmberSessionGone("guest absent")
+
+    monkeypatch.setattr(supervisor, "_http", absent)
+    assert not supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    available[0] = True
+    for _ in range(4):
+        clock[0] += timedelta(seconds=supervisor.ABSENCE_OBSERVATION_INTERVAL_SECONDS)
+        assert not supervisor.reconcile_uncertain_attempt(
+            s.run["pin"], s.sid, s.result, "SUCCESS"
+        )
+        # FactoryAudit uses the database clock. Pin each sampled row to the
+        # controlled clock so this hermetic test advances fifteen minutes
+        # without sleeping.
+        with Session(s.engine) as db:
+            latest = db.exec(
+                select(FactoryAudit)
+                .where(FactoryAudit.action == "stop_absence")
+                .order_by(FactoryAudit.id.desc())
+            ).first()
+            latest.created_at = clock[0]
+            db.add(latest)
+            db.commit()
+    assert supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    events = controls.task_snapshot(s.task["id"])["stop_events"]
+    assert len([event for event in events if event["action"] == "stop_absence"]) == 4
+    assert any(event.get("retry_resolved") is True for event in events)
+    assert not any(event.get("retry_exhausted") is True for event in events)
+    assert _uncertain_snapshot(s)["runs"][0]["status"] == "failed"
+
+
+def test_concurrent_transient_ticks_persist_one_sample(uncertain_factory, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import timedelta
+    from threading import Barrier
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = uncertain_factory
+    monkeypatch.setenv("FACTORY_TRANSIENT_STOP_RETRY_ENABLED", "true")
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    monkeypatch.setattr(
+        supervisor, "_now", lambda: s.failed_turn_at + timedelta(minutes=3)
+    )
+    s.cp.update(stop_precondition=None, last_invoke_at=None)
+    readers = Barrier(2)
+
+    def simultaneous_read(_guest_id, precondition=None):
+        assert precondition is None
+        readers.wait(timeout=5)
+        return dict(s.cp)
+
+    monkeypatch.setattr(supervisor, "_http", simultaneous_read)
+
+    def tick():
+        return supervisor.reconcile_uncertain_attempt(
+            s.run["pin"], s.sid, s.result, "SUCCESS"
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert list(pool.map(lambda _index: tick(), range(2))) == [False, False]
+    events = controls.task_snapshot(s.task["id"])["stop_events"]
+    samples = [event for event in events if event.get("retry_sample") is True]
+    assert len(samples) == 1
+    assert samples[0]["observation"] == 1
+
+
+def test_hard_stop_refusal_is_actionable_without_waiting_for_retry_exhaustion(
+    uncertain_factory, monkeypatch
+):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = uncertain_factory
+    monkeypatch.setenv("FACTORY_TRANSIENT_STOP_RETRY_ENABLED", "true")
+    s.cp["session_id"] = "s-replacement"
+
+    assert not supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    events = controls.task_snapshot(s.task["id"])["stop_events"]
+    hard = [
+        event
+        for event in events
+        if event.get("reason") == "stop_evidence_or_ownership_changed"
+    ]
+    assert len(hard) == 1
+    assert hard[0]["error"] == "wrong_stop_observation"
+    assert hard[0]["intervention_required"] is True
+    assert not any(event.get("retry_sample") is True for event in events)
+
+
+def test_lost_conditional_delete_is_never_reissued_during_retry_window(
+    uncertain_factory, monkeypatch
+):
+    from datetime import timedelta
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = uncertain_factory
+    monkeypatch.setenv("FACTORY_TRANSIENT_STOP_RETRY_ENABLED", "true")
+    clock = [s.failed_turn_at + timedelta(minutes=3)]
+    monkeypatch.setattr(supervisor, "_now", lambda: clock[0])
+
+    def lost(guest_id, precondition=None):
+        if precondition is not None:
+            s.calls.append((guest_id, precondition))
+            raise TimeoutError("conditional DELETE response lost")
+        s.calls.append((guest_id, None))
+        return dict(s.cp)
+
+    monkeypatch.setattr(supervisor, "_http", lost)
+    assert not supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    assert len([call for call in s.calls if call[1] is not None]) == 1
+    for _ in range(2):
+        clock[0] += timedelta(seconds=supervisor.TRANSIENT_RETRY_INTERVAL_SECONDS)
+        assert not supervisor.reconcile_uncertain_attempt(
+            s.run["pin"], s.sid, s.result, "SUCCESS"
+        )
+    assert len([call for call in s.calls if call[1] is not None]) == 1
+    assert len([call for call in s.calls if call[1] is None]) == 3
 
 
 def test_pending_completion_surfaces_one_bounded_intervention_event(
@@ -6218,6 +7141,16 @@ def test_planner_prompt_names_only_the_judgment_floor(feedback_db):
     assert floor not in machine
 
 
+def test_planner_prompt_maps_legacy_conductor_names_without_granting_authority(
+    feedback_db,
+):
+    task, _policy = feedback_task()
+    prompt = conductor.planner_prompt(task, [], [], task_class="docs")
+    assert prompt.startswith("You are the per-task Planner")
+    assert "not the operator-facing Conductor" in prompt
+    assert "Names grant no authority" in prompt
+
+
 @pytest.mark.parametrize("task_class", ["bug-fix", "mechanical-refactor", "docs"])
 def test_planner_review_contract_accepts_pinned_fallback(feedback_db, task_class):
     task, _policy = feedback_task(task_class=task_class)
@@ -6371,18 +7304,6 @@ def test_plan_preserves_the_reserved_conductor_and_engine_round_prefixes(feedbac
     ]
     audits = feedback_audits(feedback_db, task["id"])
     assert audits[0]["refusal_code"] == "engine_loop_key_reserved"
-
-
-def test_plan_preserves_the_reserved_feedback_review_namespace(feedback_db):
-    task, _policy = planned_task(
-        feedback_task(),
-        [plan_edit("feedback_1", "review")],
-    )
-    assert [n["node_key"] for n in conductor.graph.load_graph(task["id"])] == [
-        "conductor_1"
-    ]
-    audits = feedback_audits(feedback_db, task["id"])
-    assert audits[0]["refusal_code"] == "feedback_review_key_reserved"
 
 
 def test_plan_refuses_a_stale_expected_version_whole(feedback_db):
@@ -6972,6 +7893,325 @@ def test_a_direct_conflict_backfills_a_lost_correction_audit(feedback_db, monkey
             )
         ).all()
         assert len(events) == 1
+
+
+def test_run_bearing_unrelated_dependent_gets_a_structural_recovery_round(
+    feedback_db, monkeypatch
+):
+    """A dependent is not proof, and immutable history does not block repair."""
+    from sqlmodel import Session, select
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryAudit
+    from factory.orchestration.models import SwarmPlanVersion
+
+    task, policy = reviewed_task(verdict="approve")
+    assert controls.request_landing_recovery(
+        task["id"], 21, HEAD_ONE, "merge_queue", "test"
+    )["ok"]
+    assert conductor._add(
+        task,
+        policy,
+        "integrate_delivery",
+        "Integrate unrelated work",
+        ["review_fix"],
+        "luna",
+        "test:unrelated-dependent",
+        "Existing dependent",
+    ).ok
+    unrelated = run_feedback_node(
+        task,
+        "integrate_delivery",
+        {
+            "status": "complete",
+            "summary": "Delivered a different pull request",
+            "pr_number": 22,
+            "head_sha": HEAD_TWO,
+        },
+        head=HEAD_TWO,
+    )
+    record = conductor._record_landing_recovery_round
+    calls = []
+
+    def lose_first_audit(task_id, conflict, ordinal):
+        calls.append(ordinal)
+        if len(calls) > 1:
+            record(task_id, conflict, ordinal)
+
+    monkeypatch.setattr(conductor, "_record_landing_recovery_round", lose_first_audit)
+    conductor.reconcile_task(task["id"], policy, object())
+
+    nodes = {node["node_key"]: node for node in conductor.graph.load_graph(task["id"])}
+    assert {"integrate_delivery", "correct_1", "review_1"} <= set(nodes)
+    assert nodes["correct_1"]["deps"] == ["review_fix"]
+    # The run-bearing node is retained exactly as durable history.
+    assert (
+        next(
+            run
+            for run in conductor.graph.node_runs(task["id"])
+            if run["node_key"] == "integrate_delivery"
+        )["id"]
+        == unrelated["id"]
+    )
+    with Session(feedback_db) as db:
+        causes = db.exec(
+            select(SwarmPlanVersion.cause_ref).where(
+                SwarmPlanVersion.task_id == task["id"],
+                SwarmPlanVersion.op == "add_node",
+            )
+        ).all()
+    assert any(
+        cause.startswith(conductor.LANDING_RECOVERY_CAUSE + ":") for cause in causes
+    )
+
+    # A repeated tick repairs the graph-commit/audit race from the immutable
+    # request-bound cause and neither inserts a duplicate nor rewrites history.
+    version = conductor.graph.current_version(task["id"])
+    monkeypatch.setattr(conductor, "_dispatch_ready", lambda *_a, **_k: False)
+    conductor.reconcile_task(task["id"], policy, object())
+    conductor.reconcile_task(task["id"], policy, object())
+    assert conductor.graph.current_version(task["id"]) == version
+    assert calls == [1, 1]
+    with Session(feedback_db) as db:
+        rounds = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == task["id"],
+                FactoryAudit.action == "landing_recovery_round",
+            )
+        ).all()
+    assert len(rounds) == 1
+
+
+def test_legacy_integrate_dependent_backfills_from_post_boundary_run(
+    feedback_db,
+):
+    """The receipt 582 graph shape repairs without discarding old nodes."""
+    from sqlmodel import Session, select
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryAudit
+
+    task, policy = feedback_task()
+    complete_feedback_node(
+        task,
+        policy,
+        "implement_delivery",
+        {
+            "status": "complete",
+            "summary": "Delivered the original head",
+            "pr_number": 21,
+            "head_sha": HEAD_ONE,
+        },
+        head=HEAD_ONE,
+    )
+    complete_feedback_node(
+        task,
+        policy,
+        "review_settlement",
+        {
+            "verdict": "approve",
+            "summary": "Approved the original head",
+            "pr_number": 21,
+            "head_sha": HEAD_ONE,
+        },
+        head=HEAD_ONE,
+        deps=["implement_delivery"],
+    )
+    assert controls.request_landing_recovery(
+        task["id"], 21, HEAD_ONE, "merge_queue", "test"
+    )["ok"]
+    assert conductor._add(
+        task,
+        policy,
+        "integrate_delivery",
+        "Rebase and integrate the delivery",
+        ["review_settlement"],
+        "luna",
+        "test:legacy-recovery",
+        "Legacy recovery graph",
+    ).ok
+    run_feedback_node(
+        task,
+        "integrate_delivery",
+        {
+            "status": "complete",
+            "summary": "Rebased the same pull request",
+            "pr_number": 21,
+            "head_sha": HEAD_TWO,
+        },
+        head=HEAD_TWO,
+    )
+
+    for _ in range(2):
+        assert (
+            conductor._pending_landing_recovery(
+                task,
+                conductor.graph.load_graph(task["id"]),
+                conductor.graph.node_runs(task["id"]),
+                detect_live=False,
+            )
+            is None
+        )
+    with Session(feedback_db) as db:
+        rounds = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == task["id"],
+                FactoryAudit.action == "landing_recovery_round",
+            )
+        ).all()
+    assert len(rounds) == 1
+    assert json.loads(rounds[0].detail_json)["round"] == 0
+
+    fresh = complete_feedback_node(
+        task,
+        policy,
+        "review_recovered_head",
+        {
+            "verdict": "approve",
+            "summary": "Approved the rebased exact head",
+            "pr_number": 21,
+            "head_sha": HEAD_TWO,
+        },
+        head=HEAD_TWO,
+        deps=["integrate_delivery"],
+    )
+    assert controls.finish_task(
+        task["id"],
+        "succeeded",
+        "test",
+        evidence={
+            "pr_url": "https://github.com/owner/repo/pull/21",
+            "head_sha": HEAD_TWO,
+            "review_session_id": fresh["session_id"],
+            "state": "ready_for_review",
+        },
+    )["ok"]
+
+
+@pytest.mark.parametrize(
+    ("verdict", "pr_number", "artifact_head", "evidence_head"),
+    [
+        ("changes_requested", 21, HEAD_TWO, HEAD_TWO),
+        ("approve", 22, HEAD_TWO, HEAD_TWO),
+        ("approve", 21, HEAD_TWO, HEAD_ONE),
+    ],
+)
+def test_recovery_audit_does_not_replace_exact_approving_review_evidence(
+    feedback_db, verdict, pr_number, artifact_head, evidence_head
+):
+    from factory.orchestration import factory_controls as controls
+
+    task, policy = reviewed_task(verdict="approve")
+    assert controls.request_landing_recovery(
+        task["id"], 21, HEAD_ONE, "merge_queue", "test"
+    )["ok"]
+    conflict = conductor._landing_recovery_requests(task["id"])[0]
+    conductor._record_landing_recovery_round(task["id"], conflict, 0)
+    assert conductor._add(
+        task,
+        policy,
+        "integrate_recovery_evidence",
+        "Write the recovered head",
+        ["review_fix"],
+        "luna",
+        "test:recovery-evidence",
+        "Recovery boundary evidence",
+    ).ok
+    run_feedback_node(
+        task,
+        "integrate_recovery_evidence",
+        {
+            "status": "complete",
+            "summary": "Wrote the recovered exact head",
+            "pr_number": 21,
+            "head_sha": HEAD_TWO,
+        },
+        head=HEAD_TWO,
+    )
+    fresh = complete_feedback_node(
+        task,
+        policy,
+        "review_recovery_evidence",
+        {
+            "verdict": verdict,
+            "summary": "Candidate recovery review",
+            "pr_number": pr_number,
+            "head_sha": artifact_head,
+        },
+        head=artifact_head,
+    )
+    assert controls.finish_task(
+        task["id"],
+        "succeeded",
+        "test",
+        evidence={
+            "pr_url": "https://github.com/owner/repo/pull/21",
+            "head_sha": evidence_head,
+            "review_session_id": fresh["session_id"],
+            "state": "ready_for_review",
+        },
+    ) == {"ok": False, "reason": "landing_recovery_pending"}
+
+
+def test_recovery_review_must_be_independent_of_the_head_writer(feedback_db):
+    from sqlmodel import Session, select
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.models import SwarmNodeRun
+
+    task, policy = reviewed_task(verdict="approve")
+    assert controls.request_landing_recovery(
+        task["id"], 21, HEAD_ONE, "merge_queue", "test"
+    )["ok"]
+    conflict = conductor._landing_recovery_requests(task["id"])[0]
+    conductor._record_landing_recovery_round(task["id"], conflict, 0)
+    assert conductor._add(
+        task,
+        policy,
+        "integrate_recovery_head",
+        "Write the recovered head",
+        ["review_fix"],
+        "luna",
+        "test:recovery-head",
+        "Recovery boundary evidence",
+    ).ok
+    writer = run_feedback_node(
+        task,
+        "integrate_recovery_head",
+        {
+            "status": "complete",
+            "summary": "Wrote the recovered exact head",
+            "pr_number": 21,
+            "head_sha": HEAD_TWO,
+        },
+        head=HEAD_TWO,
+    )
+    review = complete_feedback_node(
+        task,
+        policy,
+        "review_recovery_head",
+        {
+            "verdict": "approve",
+            "summary": "Approved the recovered exact head",
+            "pr_number": 21,
+            "head_sha": HEAD_TWO,
+        },
+        head=HEAD_TWO,
+        deps=["integrate_recovery_head"],
+    )
+    with Session(feedback_db) as db:
+        row = db.exec(select(SwarmNodeRun).where(SwarmNodeRun.id == review["id"])).one()
+        row.session_id = writer["session_id"]
+        db.add(row)
+        db.commit()
+    assert controls.finish_task(
+        task["id"],
+        "succeeded",
+        "test",
+        evidence={
+            "pr_url": "https://github.com/owner/repo/pull/21",
+            "head_sha": HEAD_TWO,
+            "review_session_id": writer["session_id"],
+            "state": "ready_for_review",
+        },
+    ) == {"ok": False, "reason": "landing_recovery_pending"}
 
 
 def test_a_failed_correction_opens_the_next_round_against_the_same_review(
@@ -8629,7 +9869,9 @@ def test_a_stale_allowance_is_re_derived_before_a_top_up_dispatch(
     assert controls.task_snapshot(task["id"])["allowance"] == derived
 
 
-def test_ingest_eligible_classifies_the_operators_named_issues(monkeypatch):
+def test_ingest_eligible_classifies_the_operators_named_issues(
+    feedback_db, monkeypatch
+):
     """The floor must not depend on which path found the work."""
     import factory.orchestration.factory_intake as intake
 
@@ -8646,6 +9888,8 @@ def test_ingest_eligible_classifies_the_operators_named_issues(monkeypatch):
             "labels": [{"name": "needs-thought"}],
         },
     )
+    monkeypatch.setattr(conductor, "github_list", lambda *_args: [])
+    monkeypatch.setattr(intake, "get_issue_receipt", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         intake,
         "receive_issue",
@@ -8673,6 +9917,7 @@ def test_ingest_eligible_links_receipt_to_work_item(feedback_db, monkeypatch):
             "created_at": "2026-09-19T12:00:00Z",
         },
     )
+    monkeypatch.setattr(conductor, "github_list", lambda *_args: [])
     conductor.ingest_eligible(
         {"repo": "owner/repo", "issue_numbers": [4], "generation": 0}
     )
@@ -8686,6 +9931,47 @@ def test_ingest_eligible_links_receipt_to_work_item(feedback_db, monkeypatch):
                 select(WorkItem.id).where(WorkItem.github_issue_number == 4)
             ).one()
         )
+
+
+def test_ingest_eligible_skips_delivery_discovery_for_existing_receipt(
+    feedback_db, monkeypatch
+):
+    import factory.orchestration.factory_intake as intake
+
+    issue = {
+        "number": 4,
+        "state": "open",
+        "assignees": [],
+        "title": "Existing receipt",
+        "body": "body",
+        "html_url": "https://github.com/owner/repo/issues/4",
+        "labels": [{"name": "needs-thought"}],
+    }
+    intake.receive_issue(
+        "owner/repo",
+        4,
+        issue["title"],
+        issue["body"],
+        issue["html_url"],
+        "test",
+        generation=3,
+        task_class="judgment-analysis",
+    )
+    monkeypatch.setattr(conductor, "github_get", lambda _repo, _suffix: issue)
+    monkeypatch.setattr(
+        conductor.factory_gates,
+        "receive_delivery_target",
+        lambda *_args: pytest.fail("rediscovered delivery target"),
+    )
+    monkeypatch.setattr(
+        intake,
+        "receive_issue",
+        lambda *_args, **_kwargs: pytest.fail("re-received existing issue"),
+    )
+
+    conductor.ingest_eligible(
+        {"repo": "owner/repo", "issue_numbers": [4], "generation": 3}
+    )
 
 
 def test_task_dict_includes_receipt_work_item_id(feedback_db):
@@ -9148,8 +10434,8 @@ def test_lost_before_session_proof_accepts_exact_unstarted_attempt(
         "workflow_id": s.run["dispatch_key"],
         "start_id": s.start_id,
         "seq": 1,
-        "cost_usd": None,
-        "invocation_phase": "lost_before_session",
+        "cost_usd": 0.0,
+        "invocation_phase": "never_dispatched",
     }
 
 
@@ -9308,7 +10594,7 @@ def test_operator_settles_attempt_lost_before_session_end_to_end(
     with Session(s.engine) as db:
         start = db.get(FactoryStart, s.start_id)
         assert start.status == "failed" and start.cost_usd == 0.0
-        assert start.accounting_basis == "no_session_created"
+        assert start.accounting_basis == "no_model_post"
     snapshot = controls.task_snapshot(s.task["id"])
     assert snapshot["unresolved_starts"] == 0
     finished = controls.finish_task(s.task["id"], "failed", "operator")
@@ -9378,9 +10664,10 @@ def test_lost_before_guest_proof_reads_the_exact_dispatch_identity(
     assert s.native_snapshot() == s.native_snapshot()
 
 
+@pytest.mark.parametrize("response_lost_recovery", [False, True])
 @pytest.mark.parametrize("historical", [False, True])
 def test_lost_before_guest_settles_failed_and_refunds_the_reservation(
-    lost_before_guest_factory, monkeypatch, historical
+    lost_before_guest_factory, monkeypatch, historical, response_lost_recovery
 ):
     import json
     from sqlmodel import Session, select
@@ -9392,6 +10679,10 @@ def test_lost_before_guest_settles_failed_and_refunds_the_reservation(
     from factory.orchestration import factory_controls as controls
 
     s = lost_before_guest_factory
+    monkeypatch.setenv(
+        "AGENT_RESPONSE_LOST_RECOVERY_ENABLED",
+        str(response_lost_recovery).lower(),
+    )
     if historical:
         _persist_uncertain_lost_before_guest(s)
     before = controls.task_snapshot(s.task["id"])
@@ -9434,13 +10725,16 @@ def test_lost_before_guest_settles_failed_and_refunds_the_reservation(
     monkeypatch.setattr(
         conductor, "github_get", lambda *_: {"object": {"sha": "a" * 40}}
     )
+    settled_native = s.native_snapshot()
     conductor.reconcile_task(s.task["id"], s.policy, s.dbos)
     assert conductor.graph.node_runs(s.task["id"])[0] == run
     assert len(_stop_events(s)) == 1
+    assert s.native_snapshot() == settled_native
 
 
+@pytest.mark.parametrize("response_lost_recovery", [False, True])
 def test_lost_before_guest_settlement_is_inert_while_the_flag_is_off(
-    lost_before_guest_factory, monkeypatch
+    lost_before_guest_factory, monkeypatch, response_lost_recovery
 ):
     from sqlmodel import Session, select
     from factory.execution.models import AgentCapacityReservation
@@ -9448,6 +10742,10 @@ def test_lost_before_guest_settlement_is_inert_while_the_flag_is_off(
 
     s = lost_before_guest_factory
     monkeypatch.setenv("FACTORY_LOST_BEFORE_GUEST_SETTLEMENT_ENABLED", "false")
+    monkeypatch.setenv(
+        "AGENT_RESPONSE_LOST_RECOVERY_ENABLED",
+        str(response_lost_recovery).lower(),
+    )
     _persist_uncertain_lost_before_guest(s)
     before = controls.task_snapshot(s.task["id"])
     native = s.native_snapshot()
@@ -9460,6 +10758,27 @@ def test_lost_before_guest_settlement_is_inert_while_the_flag_is_off(
     assert s.native_snapshot() == native
     with Session(s.engine) as db:
         assert db.exec(select(AgentCapacityReservation)).one().state == "uncertain"
+
+
+def test_lost_before_guest_does_not_claim_a_never_dispatched_attempt(
+    stranded_factory,
+):
+    from sqlmodel import Session
+    from factory.execution.api import (
+        inspect_lost_before_guest_factory_attempt,
+        read_never_dispatched_factory_attempt,
+    )
+
+    s = stranded_factory
+    with Session(s.engine) as db:
+        never_dispatched = read_never_dispatched_factory_attempt(
+            db, s.run["pin"], s.sid, "ERROR"
+        )
+        lost_before_guest = inspect_lost_before_guest_factory_attempt(
+            db, s.run["pin"], s.sid
+        )
+    assert never_dispatched["invocation_phase"] == "never_dispatched"
+    assert lost_before_guest == (None, "session_not_terminal")
 
 
 @pytest.mark.parametrize(
@@ -9596,8 +10915,71 @@ def test_lost_before_guest_refuses_conflicting_or_insufficient_proof(
     assert s.native_snapshot() == native
 
 
+@pytest.mark.parametrize(
+    "case",
+    ["late_binding", "active_dispatcher", "execution_evidence", "replacement_owner"],
+)
+def test_lost_before_guest_settlement_revalidates_the_proof(
+    lost_before_guest_factory, case
+):
+    from datetime import datetime, timezone
+    from sqlmodel import Session, select
+    from factory.execution.api import (
+        read_lost_before_guest_factory_attempt,
+        settle_lost_before_guest_factory_attempt,
+    )
+    from factory.execution.models import (
+        AgentCapacityReservation,
+        AgentSession,
+        AgentTurn,
+        PendingMessage,
+    )
+
+    s = lost_before_guest_factory
+    with Session(s.engine) as db:
+        proof = read_lost_before_guest_factory_attempt(db, s.run["pin"], s.sid)
+    assert proof is not None
+
+    with Session(s.engine) as db:
+        agent = db.get(AgentSession, s.sid)
+        turn = db.exec(select(AgentTurn)).one()
+        permit = db.exec(select(AgentCapacityReservation)).one()
+        if case == "late_binding":
+            agent.ember_session_id = "guest-bound-after-proof"
+        elif case == "active_dispatcher":
+            now = datetime.now(timezone.utc)
+            db.add(
+                PendingMessage(
+                    session_id=s.sid,
+                    seq=2,
+                    message_text="new work",
+                    model="opus",
+                    claimed_by_replica="active-executor",
+                    claimed_at=now,
+                    dispatch_count=1,
+                    last_dispatch_at=now,
+                )
+            )
+        elif case == "execution_evidence":
+            turn.artifact_blob = b"{}"
+        elif case == "replacement_owner":
+            permit.owner = "replacement-executor"
+        db.add_all([agent, turn, permit])
+        db.commit()
+
+    with Session(s.engine) as db:
+        with pytest.raises(ValueError, match="factory_attempt_changed"):
+            settle_lost_before_guest_factory_attempt(db, s.run["pin"], proof)
+        db.rollback()
+    with Session(s.engine) as db:
+        permit = db.exec(select(AgentCapacityReservation)).one()
+        assert permit.state == "uncertain" and permit.settled_at is None
+    assert _stop_events(s) == []
+
+
+@pytest.mark.parametrize("response_lost_recovery", [False, True])
 def test_operator_settle_lost_attempt_releases_one_attempt(
-    lost_before_guest_factory, monkeypatch
+    lost_before_guest_factory, monkeypatch, response_lost_recovery
 ):
     from sqlmodel import Session, select
     from factory.execution.models import AgentCapacityReservation
@@ -9606,6 +10988,10 @@ def test_operator_settle_lost_attempt_releases_one_attempt(
     s = lost_before_guest_factory
     # The operator path is deliberately usable while the reconciler flag is off.
     monkeypatch.setenv("FACTORY_LOST_BEFORE_GUEST_SETTLEMENT_ENABLED", "false")
+    monkeypatch.setenv(
+        "AGENT_RESPONSE_LOST_RECOVERY_ENABLED",
+        str(response_lost_recovery).lower(),
+    )
     _persist_uncertain_lost_before_guest(s)
     settled = controls.settle_lost_attempt(
         s.task["id"], s.run["node_key"], 1, "operator"
@@ -9622,8 +11008,11 @@ def test_operator_settle_lost_attempt_releases_one_attempt(
     assert len(events) == 1 and events[0]["reason"] == "lost_before_guest"
     # The receipt is untouched, so every other attempt on the task survives.
     assert current["state"] == "admitted"
+    settled_native = s.native_snapshot()
     with pytest.raises(ValueError, match="attempt_not_active"):
         controls.settle_lost_attempt(s.task["id"], s.run["node_key"], 1, "operator")
+    assert s.native_snapshot() == settled_native
+    assert len(_stop_events(s)) == 1
 
 
 @pytest.mark.parametrize(
@@ -10404,76 +11793,50 @@ def settle_funding(task, value):
     return request
 
 
-def test_advisory_review_settles_without_delivery_pr_number(feedback_db, monkeypatch):
-    from factory.orchestration import (
-        factory_controls as controls,
-        factory_feedback as feedback,
-    )
-
-    monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "true")
-    task, policy = feedback_task()
-    with Session(feedback_db) as db:
-        receipt = db.exec(
-            select(FactoryReceipt).where(FactoryReceipt.task_id == task["id"])
-        ).one()
-        receipt.routing_tier = feedback.ADVISORY_TIER
-        db.add(receipt)
-        db.commit()
-    task = conductor._task(task["id"])
-
-    conductor.reconcile_task(task["id"], policy, object())
-    run_feedback_node(
-        task,
-        feedback.ADVISORY_NODE_KEY,
-        {
-            "status": "complete",
-            "summary": "Safer recipe",
-            "comment_url": "https://github.com/owner/repo/issues/7#issuecomment-1",
-        },
-    )
-    conductor.reconcile_task(task["id"], policy, object())
-    run_feedback_node(
-        task,
-        feedback.REVIEW_NODE_KEY,
-        {
-            "verdict": "approve",
-            "summary": "Recipe is usable",
-            "comment_url": "https://github.com/owner/repo/issues/7#issuecomment-1",
-        },
-    )
-    monkeypatch.setattr(
-        conductor,
-        "github_list",
-        lambda *_args: [
-            {
-                "html_url": "https://github.com/owner/repo/issues/7#issuecomment-1",
-                "body": (
-                    "## Factory advisory\n\n### Why delivery is paused\n\n"
-                    "Below the floor.\n\n### Suggested recipe\n\n"
-                    "Investigate, implement, test, and review.\n\n"
-                    "### Evidence\n\nRecorded outcomes.\n\n"
-                    f"<!-- factory-feedback-advisory:{task['id']} -->"
-                ),
-            }
-        ],
-    )
-
-    conductor.reconcile_task(task["id"], policy, object())
-
-    assert controls.task_snapshot(task["id"])["state"] == "succeeded"
-
-
-def test_consecutive_funding_refusals_finish_task(feedback_db, monkeypatch):
-    from datetime import timedelta
+def test_expired_idle_task_stops_after_six_funding_refusals_and_releases_lane(
+    feedback_db, monkeypatch
+):
+    from datetime import datetime, timedelta, timezone
+    import factory.orchestration.factory_intake_loop as intake_loop
+    import factory.orchestration.factory_landing as landing
+    import factory.orchestration.work_item_pointer as work_item_pointer
     from factory.orchestration import (
         factory_controls as controls,
         factory_funding as funding,
     )
+    from factory.orchestration.factory_intake import receive_issue
+    from factory.orchestration.factory_models import FactoryAudit
+    from factory.orchestration.models import SwarmTask
 
     monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "true")
-    task, policy = feedback_task()
-    retry_after = (controls._now() - timedelta(minutes=1)).isoformat()
+    now = datetime(2026, 9, 20, 12, tzinfo=timezone.utc)
+    monkeypatch.setattr(controls, "_now", lambda: now)
+    task, policy = feedback_task(
+        issue_numbers=[7, 8], max_tasks={"delivery": 1, "advisory": 0}
+    )
+    assert conductor._add(
+        task,
+        policy,
+        "implement_pending",
+        "Implement the bounded change.",
+        [],
+        "luna",
+        "test:expired-idle-funding",
+        "Reproduce an expired admitted task with pending work.",
+    ).ok
+    receive_issue(
+        "owner/repo",
+        8,
+        "Next eligible issue",
+        "Queued behind the occupied delivery lane.",
+        "https://github.com/owner/repo/issues/8",
+        "poller",
+    )
+    retry_after = (now - timedelta(minutes=1)).isoformat()
     with controls._locked_session() as (db, _control):
+        stored = db.get(SwarmTask, task["id"])
+        stored.created_at = now - timedelta(seconds=policy["task_timeout_seconds"] + 1)
+        db.add(stored)
         for ordinal in range(funding.FUNDING_REFUSAL_LIMIT):
             controls._audit(
                 db,
@@ -10481,26 +11844,76 @@ def test_consecutive_funding_refusals_finish_task(feedback_db, monkeypatch):
                 "funding_review_settled",
                 task_id=task["id"],
                 request_id=ordinal,
-                refusal="Astra review could not start",
+                refusal=(
+                    "Review could not acquire execution capacity before its deadline"
+                ),
                 retry_after=retry_after,
             )
+
+    before = controls.task_snapshot(task["id"])
+    assert before["state"] == "admitted"
+    assert before["limits"]["deadline_expired"] is True
+    assert before["unresolved_starts"] == 0
+    assert conductor.graph.node_runs(task["id"]) == []
+    assert {node["node_key"] for node in conductor.graph.load_graph(task["id"])} == {
+        "implement_pending"
+    }
     monkeypatch.setattr(
         funding,
         "request",
         lambda *_args, **_kwargs: pytest.fail("refusal limit must stop retries"),
     )
+    monkeypatch.setattr(conductor.runtime, "is_launched", lambda: True)
+    monkeypatch.setattr(conductor.runtime, "init_dbos", lambda: object())
+    monkeypatch.setattr(conductor, "revalidate_escalations", lambda: None)
+    monkeypatch.setattr(conductor, "observe_reviewer_routing", lambda _policy: None)
+    monkeypatch.setattr(conductor, "ingest_eligible", lambda _policy: None)
+    monkeypatch.setattr(intake_loop, "intake_tick", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(landing, "landing_tick", lambda _policy: None)
+    monkeypatch.setattr(work_item_pointer, "sync_pointers", lambda **_kwargs: None)
 
-    conductor.reconcile_task(task["id"], policy, object())
+    conductor.tick()
 
-    snapshot = controls.task_snapshot(task["id"])
-    assert snapshot["state"] == "failed"
-    assert snapshot["evidence"] == {
+    with Session(feedback_db) as db:
+        settled = db.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == task["id"])
+        ).one()
+        queued = db.exec(
+            select(FactoryReceipt).where(FactoryReceipt.issue_number == 8)
+        ).one()
+        refusals = [
+            json.loads(row.detail_json)
+            for row in db.exec(
+                select(FactoryAudit).where(
+                    FactoryAudit.task_id == task["id"],
+                    FactoryAudit.action == "funding_review_settled",
+                )
+            ).all()
+        ]
+        assert settled.state == "failed"
+        assert queued.state == "queued"
+        assert len(refusals) == funding.FUNDING_REFUSAL_LIMIT
+        assert all(detail.get("refusal") for detail in refusals)
+    assert controls.task_snapshot(task["id"])["evidence"] == {
         "state": "funding_review_unavailable",
         "reason": (
             f"{funding.FUNDING_REFUSAL_LIMIT} consecutive funding "
             "reviews could not start"
         ),
     }
+
+    conductor.tick()
+
+    with Session(feedback_db) as db:
+        settled = db.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == task["id"])
+        ).one()
+        admitted = db.exec(
+            select(FactoryReceipt).where(FactoryReceipt.issue_number == 8)
+        ).one()
+        assert settled.state == "failed"
+        assert admitted.state == "admitted"
+        assert admitted.task_id is not None
 
 
 def test_astra_decides_extensions_repeatedly_without_mutating_original_policy(
@@ -10580,6 +11993,47 @@ def test_funding_review_outlives_only_its_exact_soft_deadline(feedback_db, monke
     ]
     controls.set_control("stop", "test")
     assert not controls.can_start(task["id"], start_key=request["start_key"])["ok"]
+
+
+@pytest.mark.parametrize("changed_issue", [False, True])
+def test_completed_funding_review_settles_after_admission_deadline(
+    feedback_db, monkeypatch, changed_issue
+):
+    from datetime import datetime, timedelta
+    from factory.orchestration import (
+        factory_funding as funding,
+        factory_controls as controls,
+    )
+
+    task, policy = funding_task(monkeypatch)
+    assert funding.request(task, "Review queued behind busy workers")
+    with controls._read_session() as db:
+        request = funding.pending(db, task["id"])
+    deadline = datetime.fromisoformat(request["deadline_at"])
+    monkeypatch.setattr(controls, "_now", lambda: deadline - timedelta(seconds=1))
+    run = run_feedback_node(task, request["node_key"], funding_decision())
+    # A rollout can delay reconciliation after the bounded review completes.
+    monkeypatch.setattr(controls, "_now", lambda: deadline + timedelta(minutes=10))
+    if changed_issue:
+        monkeypatch.setattr(
+            funding, "_issue", lambda _task: {"number": 21, "state": "closed"}
+        )
+    funding.settle(task, run, request)
+    # Replaying settlement must not grant a second tranche.
+    funding.settle(task, run, request)
+    with controls._read_session() as db:
+        grant = funding.amendment(db, task["id"])
+        settled = funding.latest(db, task["id"], "funding_review_settled")
+        assert funding.pending(db, task["id"]) is None
+        if changed_issue:
+            assert grant is None
+            assert settled["refusal"] == "funding evidence changed"
+        else:
+            assert grant["source_run_id"] == run["id"]
+            assert grant["policy_overlay"]["task_budget_usd"] == 20
+            assert settled["refusal"] is None
+    if changed_issue:
+        assert controls.task_snapshot(task["id"])["policy"] == policy
 
 
 def test_funding_changed_issue_cannot_apply_stale_authority(feedback_db, monkeypatch):
@@ -11241,41 +12695,42 @@ def _wedged_backstop_task(queued_factory, monkeypatch):
     return s, task, start_key
 
 
-def test_the_deadline_backstop_persists_its_settlement(queued_factory, monkeypatch):
-    """The settlement must survive the session, not just flush inside it.
-
-    _locked_session only flushes a supplied session, deliberately, so a
-    backstop that never commits rolls its own release back on close while
-    still posting the card: the slot stays held and every tick re-posts.
-    Asserted from a FRESH session so a flush-only write cannot pass.
-    """
+def test_the_deadline_backstop_stays_staged_off_and_retains_unknown_work(
+    queued_factory, monkeypatch
+):
+    """Even an environment opt-in cannot turn elapsed time into cessation."""
     from sqlmodel import Session, select
     from factory.orchestration.factory_models import FactoryReceipt, FactoryStart
 
     s, task, start_key = _wedged_backstop_task(queued_factory, monkeypatch)
 
-    assert conductor._expire_task_deadline(task) is True
+    assert conductor._expire_task_deadline(task) is False
 
     with Session(s.engine) as db:
         start = db.exec(
             select(FactoryStart).where(FactoryStart.start_key == start_key)
         ).one()
-        assert start.status == "failed"
-        # Unknown rather than zero, so _committed_cost keeps the ceiling this
-        # start had already committed instead of under-reporting the receipt.
+        assert start.status == "uncertain"
         assert start.cost_usd is None
         receipt = db.exec(
             select(FactoryReceipt).where(FactoryReceipt.task_id == s.task["id"])
         ).one()
-        assert receipt.state == "escalated"
+        assert receipt.state == "admitted"
 
 
-def test_the_deadline_backstop_is_idempotent_across_ticks(queued_factory, monkeypatch):
-    """A second tick finds nothing stranded and must not settle again."""
-    s, task, _key = _wedged_backstop_task(queued_factory, monkeypatch)
+def test_the_staged_deadline_backstop_never_changes_repeated_unknown_observations(
+    queued_factory, monkeypatch
+):
+    from factory.orchestration import factory_controls as controls
 
-    assert conductor._expire_task_deadline(task) is True
+    _s, task, _key = _wedged_backstop_task(queued_factory, monkeypatch)
+    before = controls.task_snapshot(task["task_id"])
+
     assert conductor._expire_task_deadline(task) is False
+    assert conductor._expire_task_deadline(task) is False
+    after = controls.task_snapshot(task["task_id"])
+    assert after["starts"] == before["starts"]
+    assert after["committed_cost_usd"] == before["committed_cost_usd"]
 
 
 def test_the_deadline_backstop_leaves_a_reserved_start_alone(
@@ -11532,7 +12987,19 @@ def test_dispatch_refusal_audit(
         assert (
             conductor.verify_option_list(decision["options"], subject="pause") is None
         )
-        assert "raised by hand to" in decision["options"][0]["label"]
+        target = decision["options"][0]["detail"]["target"]
+        assert target == {
+            "limit": limit,
+            "value": detail["used"] + detail["requested"],
+        }
+        assert decision["dispatch_refusal"] == {
+            name: detail[name]
+            for name in ("limit", "used", "requested", "allowed", "allowance")
+        }
+        if limit == "task_budget":
+            assert decision["options"][0]["label"].startswith("Raise task_budget")
+        else:
+            assert "raised by hand to" in decision["options"][0]["label"]
         snapshot = controls.task_snapshot(task["id"])
         assert snapshot["state"] == "escalated"
         assert snapshot["evidence"]["reason"]
@@ -11544,7 +13011,255 @@ def test_dispatch_refusal_audit(
             ).one()
             card = json.loads(receipt.escalation_json)
             assert card["options"] == decision["options"]
+            assert card["dispatch_refusal"] == decision["dispatch_refusal"]
             assert card["comment_url"] == "https://example.test/card"
+
+
+def _budget_refusal(feedback_db, monkeypatch, *, budget=8.0, spent=7.0):
+    from factory.orchestration import factory_landing
+    from factory.orchestration.factory_models import FactoryReceipt, FactoryStart
+    from factory.orchestration.models import SwarmNodeRun
+
+    monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "false")
+    task, policy = feedback_task(max_turns=5, task_budget_usd=budget)
+    complete_feedback_node(task, policy, "implement_first", {})
+    assert conductor._add(
+        task,
+        policy,
+        "implement_next",
+        "next",
+        [],
+        "luna",
+        "next",
+        "next",
+    ).ok
+    with Session(feedback_db) as db:
+        db.exec(
+            select(SwarmNodeRun).where(SwarmNodeRun.task_id == task["id"])
+        ).one().cost_usd = spent
+        db.exec(
+            select(FactoryStart).where(FactoryStart.task_id == task["id"])
+        ).one().cost_usd = spent
+        db.commit()
+
+    monkeypatch.setattr(conductor, "github_get", lambda *_: {"body": "Issue scope"})
+    monkeypatch.setattr(factory_landing, "github_write", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        conductor, "_post_decision_card", lambda *_: "https://example.test/card"
+    )
+    monkeypatch.setattr(conductor, "_notify_escalation", lambda *_: None)
+    monkeypatch.setattr(conductor, "hydration_branch", lambda _: "main")
+    monkeypatch.setattr(conductor, "branch_hydration", lambda *_: "main")
+
+    nodes, runs = graph_state(task["id"])
+    assert not conductor._dispatch_ready(
+        task, nodes, runs, 1, fan_out=False, parallel=1, policy=policy
+    )
+    with Session(feedback_db) as db:
+        receipt = db.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == task["id"])
+        ).one()
+        card = json.loads(receipt.escalation_json)
+        return task, policy, receipt.id, card
+
+
+def test_raise_envelope_grant_survives_requeue_and_admits_continuation(
+    feedback_db, monkeypatch
+):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_decisions as decisions,
+    )
+    from factory.orchestration.factory_intake import admit_next
+    from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt
+    from factory.orchestration.models import SwarmTask
+
+    task, _policy, receipt_id, card = _budget_refusal(feedback_db, monkeypatch)
+    assert card["options"][0]["detail"]["target"] == {
+        "limit": "task_budget",
+        "value": 9.0,
+    }
+
+    first = decisions.apply_decision(receipt_id, "raise_envelope", "operator")
+    second = decisions.apply_decision(receipt_id, "raise_envelope", "operator")
+    assert first["applied"] is True
+    assert second == {"ok": True, "applied": False, "resolution": first["resolution"]}
+    with Session(feedback_db) as db:
+        old_grants = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == task["id"],
+                FactoryAudit.action == "funding_granted",
+            )
+        ).all()
+        assert len(old_grants) == 1
+        old_grant = json.loads(old_grants[0].detail_json)
+        assert old_grant["policy_overlay"] == {"task_budget_usd": 9.0}
+        assert old_grant["dispatch_refusal"]["target"] == 9.0
+
+    admitted = admit_next("scheduler")
+    assert admitted["ok"]
+    assert admitted["policy"]["task_budget_usd"] == 9.0
+    continuation_id = admitted["task_id"]
+    assert continuation_id != task["id"]
+    snapshot = controls.task_snapshot(continuation_id)
+    assert snapshot["policy"]["task_budget_usd"] == 9.0
+    assert conductor.graph.budget_snapshot(continuation_id)["task_budget_usd"] == 9.0
+    with Session(feedback_db) as db:
+        assert db.get(SwarmTask, continuation_id).budget_usd == 9.0
+        grants = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == continuation_id,
+                FactoryAudit.action == "funding_granted",
+            )
+        ).all()
+        assert len(grants) == 1
+        inherited = json.loads(grants[0].detail_json)
+        assert inherited["policy_overlay"] == {"task_budget_usd": 9.0}
+        assert inherited["inherited_from_task_id"] == task["id"]
+
+    first_key = f"factory-node:{continuation_id}:implement_first:1"
+    assert controls.authorize_start(
+        continuation_id,
+        first_key,
+        "test",
+        model="luna",
+        max_cost_usd=1.0,
+    )["ok"]
+    assert controls.record_start_outcome(
+        continuation_id,
+        first_key,
+        "succeeded",
+        "test",
+        cost_usd=7.0,
+    )["ok"]
+    with Session(feedback_db) as db:
+        receipt = db.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == continuation_id)
+        ).one()
+        assert json.loads(receipt.policy_json)["task_budget_usd"] == 8.0
+        refusal = conductor._reservation_refusal(
+            db, continuation_id, "budget_limit", 2.0
+        )
+    assert refusal.allowed == 9.0
+    assert refusal.used == 7.0
+    assert controls.authorize_start(
+        continuation_id,
+        f"factory-node:{continuation_id}:implement_next:1",
+        "test",
+        model="luna",
+        max_cost_usd=2.0,
+    )["ok"]
+
+
+@pytest.mark.parametrize("corruption", ["target", "authority"])
+def test_raise_envelope_rejects_invalid_authority_before_github_effects(
+    feedback_db, monkeypatch, corruption
+):
+    from factory.orchestration import (
+        factory_decisions as decisions,
+        factory_funding as funding,
+        factory_landing,
+    )
+    from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt
+
+    task, _policy, receipt_id, _card = _budget_refusal(feedback_db, monkeypatch)
+    with Session(feedback_db) as db:
+        receipt = db.get(FactoryReceipt, receipt_id)
+        card = json.loads(receipt.escalation_json)
+        if corruption == "target":
+            card["options"][0]["detail"]["target"]["value"] += 1
+        else:
+            card["dispatch_refusal"]["used"] += 1
+        receipt.escalation_json = json.dumps(card)
+        db.add(receipt)
+        db.commit()
+
+    writes = []
+    monkeypatch.setattr(
+        factory_landing,
+        "github_write",
+        lambda *args, **kwargs: writes.append((args, kwargs)),
+    )
+    with pytest.raises(decisions.DecisionError, match="funding target changed"):
+        decisions.apply_decision(receipt_id, "raise_envelope", "operator")
+    assert writes == []
+    with Session(feedback_db) as db:
+        receipt = db.get(FactoryReceipt, receipt_id)
+        assert receipt.state == "escalated"
+        grants = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == task["id"],
+                FactoryAudit.action == "funding_granted",
+            )
+        ).all()
+        assert not any(
+            json.loads(grant.detail_json).get("grant_kind")
+            == funding.DISPATCH_GRANT_KIND
+            for grant in grants
+        )
+
+
+def test_raise_envelope_rejects_stale_policy_ceiling(feedback_db, monkeypatch):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_decisions as decisions,
+        factory_landing,
+    )
+
+    task, _policy, receipt_id, _card = _budget_refusal(feedback_db, monkeypatch)
+    with controls._locked_session() as (db, _control):
+        controls._audit(
+            db,
+            "test",
+            "funding_granted",
+            task_id=task["id"],
+            policy_overlay={"task_budget_usd": 8.5},
+        )
+    writes = []
+    monkeypatch.setattr(
+        factory_landing,
+        "github_write",
+        lambda *args, **kwargs: writes.append((args, kwargs)),
+    )
+    with pytest.raises(decisions.DecisionError, match="ceiling changed"):
+        decisions.apply_decision(receipt_id, "raise_envelope", "operator")
+    assert writes == []
+
+
+def test_raise_envelope_revalidates_target_at_continuation_admission(
+    feedback_db, monkeypatch
+):
+    from factory.orchestration import factory_decisions as decisions
+    from factory.orchestration.factory_intake import admit_next
+    from factory.orchestration.factory_models import FactoryReceipt
+
+    _task, _policy, receipt_id, _card = _budget_refusal(feedback_db, monkeypatch)
+    assert decisions.apply_decision(receipt_id, "raise_envelope", "operator")["applied"]
+    with Session(feedback_db) as db:
+        receipt = db.get(FactoryReceipt, receipt_id)
+        direction = json.loads(receipt.direction_json)
+        direction["detail"]["target"]["value"] += 1
+        receipt.direction_json = json.dumps(direction)
+        db.add(receipt)
+        db.commit()
+
+    admitted = admit_next("scheduler")
+    assert admitted["ok"] is False
+    assert admitted["reason"] == "funding_overlay_invalid"
+    assert admitted["detail"] == "dispatch refusal funding target changed"
+
+
+def test_raise_envelope_preserves_cumulative_objective_ceiling(
+    feedback_db, monkeypatch
+):
+    from factory.orchestration import factory_decisions as decisions
+
+    _task, _policy, receipt_id, card = _budget_refusal(
+        feedback_db, monkeypatch, budget=199.0, spent=198.0
+    )
+    assert card["options"][0]["detail"]["target"]["value"] == 200.0
+    with pytest.raises(decisions.DecisionError, match="exceeds objective budget"):
+        decisions.apply_decision(receipt_id, "raise_envelope", "operator")
 
 
 def test_fan_in_reinsertion_prices_a_legacy_review(feedback_db):
@@ -11574,7 +13289,7 @@ def test_fan_in_reinsertion_prices_a_legacy_review(feedback_db):
             8,
             36,
             20,
-            "Continue once task_budget is raised by hand to 43",
+            "Raise task_budget to 43 and continue",
         ),
         (
             "max_task_turns_hard",
@@ -11589,6 +13304,8 @@ def test_fan_in_reinsertion_prices_a_legacy_review(feedback_db):
 def test_dispatch_refusal_card_distinguishes_envelope_and_allowance(
     monkeypatch, limit, used, requested, allowed, allowance, label
 ):
+    from factory.orchestration import factory_funding as funding
+
     cards = []
     monkeypatch.setattr(
         conductor, "_escalate_task", lambda *args: cards.append(args[1])
@@ -11600,6 +13317,18 @@ def test_dispatch_refusal_card_distinguishes_envelope_and_allowance(
         {"id": "task"}, "review_delivery", "workflow", refusal, []
     )
     assert cards[0]["options"][0]["label"] == label
+    option = cards[0]["options"][0]
+    assert option["detail"]["target"] == {
+        "limit": limit,
+        "value": used + requested,
+    }
+    assert funding._dispatch_target(option) == (
+        float(used + requested) if limit == "task_budget" else None
+    )
+    authority = funding._dispatch_authority(cards[0], option)
+    assert (authority or {}).get("target") == (
+        float(used + requested) if limit == "task_budget" else None
+    )
 
 
 def live_gate():
@@ -11612,7 +13341,7 @@ def live_gate():
     }
 
 
-def test_feedback_advisory_route_skips_delivery_adoption(feedback_db, monkeypatch):
+def test_stale_advisory_receipt_uses_delivery_path(feedback_db, monkeypatch):
     from sqlmodel import Session, select
 
     from factory.orchestration import factory_feedback as feedback
@@ -11627,16 +13356,19 @@ def test_feedback_advisory_route_skips_delivery_adoption(feedback_db, monkeypatc
         db.add(receipt)
         db.commit()
 
-    def unexpected_adoption(*_args, **_kwargs):
-        pytest.fail("A comment-only advisory must not adopt a delivery PR")
+    adopted = []
 
-    monkeypatch.setattr(conductor.factory_gates, "adopt_delivery", unexpected_adoption)
+    def adopt_delivery(current):
+        adopted.append(current["id"])
+        return True
+
+    monkeypatch.setattr(conductor.factory_gates, "adopt_delivery", adopt_delivery)
     conductor.reconcile_task(task["id"], policy, object())
 
+    assert adopted == [task["id"]]
     assert [node["node_key"] for node in conductor.graph.load_graph(task["id"])] == [
-        feedback.ADVISORY_NODE_KEY
+        "conductor_1"
     ]
-    assert not conductor._task(task["id"])["delivery_target_checked"]
 
 
 def test_rescoped_delivery_keeps_operational_issue_open(monkeypatch):
@@ -11748,3 +13480,1127 @@ def test_investigation_default_is_decided_before_next_planner(feedback_db, monke
     assert conductor._decision_processed(
         task["id"], "investigate-gate:investigate_threshold:1"
     )
+
+
+@pytest.fixture
+def drained_retry_not_invoked(not_invoked_factory):
+    import hashlib
+    import json
+    from datetime import datetime, timedelta
+    from sqlmodel import Session, select
+    from factory.execution.models import AgentSession, AgentTurn, AgentResultReceipt
+
+    s = not_invoked_factory
+    with Session(s.engine) as db:
+        agent = db.get(AgentSession, s.sid)
+        agent.ember_session_id = "drained-guest"
+        turn = db.exec(select(AgentTurn).where(AgentTurn.session_id == s.sid)).one()
+        usage = json.loads(turn.usage_json)
+        usage["recovery"]["dispatch_count"] = 2
+        turn.usage_json = json.dumps(usage)
+        dispatched = datetime.fromisoformat(usage["recovery"]["last_dispatch_at"])
+        body = json.dumps(
+            {
+                "terminal_reason": "interrupted_for_drain",
+                "stop_reason": "interrupted_for_drain",
+                "cost_usd": None,
+            }
+        ).encode()
+        db.add(
+            AgentResultReceipt(
+                id="drain-1",
+                token_sha256="b" * 64,
+                session_id=s.sid,
+                local_session_id=agent.local_session_id,
+                seq=1,
+                dispatch_count=1,
+                claim_owner="prior-executor",
+                guest_id=agent.ember_session_id,
+                request_sha256="c" * 64,
+                created_at=dispatched - timedelta(seconds=20),
+                received_at=dispatched - timedelta(seconds=10),
+                accept_until=dispatched + timedelta(hours=1),
+                retain_until=dispatched + timedelta(days=1),
+                result_body=body,
+                result_sha256=hashlib.sha256(body).hexdigest(),
+            )
+        )
+        db.add_all([agent, turn])
+        db.commit()
+    return s
+
+
+def test_drained_retry_settles_without_refunding_earlier_unknown_spend(
+    drained_retry_not_invoked,
+):
+    import json
+    from sqlmodel import Session
+    from factory.execution.api import read_not_invoked_factory_attempt
+    from factory.orchestration import factory_controls as controls
+
+    s = drained_retry_not_invoked
+    with Session(s.engine) as db:
+        assert read_not_invoked_factory_attempt(db, s.run["pin"], s.sid) is None
+    # An old cached outcome cannot smuggle in no-model-post accounting.
+    s.result["invocation_phase"] = "not_invoked"
+    _persist_uncertain_not_invoked(s)
+    native = s.native_snapshot()
+    before = controls.task_snapshot(s.task["id"])
+    conductor.reconcile_task(s.task["id"], s.policy, s.dbos)
+    run = conductor.graph.node_runs(s.task["id"])[0]
+    result = json.loads(run["outcome_json"])
+    assert result["status"] == "failed"
+    assert result["invocation_phase"] == "interrupted_then_not_invoked"
+    assert (
+        result["interrupted_then_not_invoked"]["interrupted_dispatches"][0][
+            "receipt_id"
+        ]
+        == "drain-1"
+    )
+    run = conductor.graph.node_runs(s.task["id"])[0]
+    current = controls.task_snapshot(s.task["id"])
+    assert run["status"] == current["starts"][0]["status"] == "failed"
+    assert run["cost_usd"] is current["starts"][0]["cost_usd"] is None
+    assert run["accounting_basis"] == "reserved_unknown_cost"
+    assert run["accounted_cost_usd"] == s.run["pin"]["max_cost_usd"]
+    assert current["committed_cost_usd"] == before["committed_cost_usd"]
+    assert current["turns_used"] == before["turns_used"]
+    assert current["unresolved_starts"] == 0
+    assert current["deadline_at"] == before["deadline_at"]
+    assert current["policy"] == before["policy"]
+    assert current["state"] == "admitted"
+    assert not result["capacity_denied"]
+    assert s.native_snapshot() == native
+
+
+@pytest.mark.parametrize(
+    "conflict",
+    [
+        "missing",
+        "wrong_session",
+        "wrong_local",
+        "wrong_seq",
+        "empty_owner",
+        "bad_hash",
+        "completed",
+        "wrong_stop",
+        "invalid_json",
+        "late_response",
+        "missing_response",
+        "duplicate",
+        "alias",
+        "pending",
+        "observer",
+        "active_permit",
+    ],
+)
+def test_drained_retry_refuses_incomplete_or_conflicting_receipt_chain(
+    drained_retry_not_invoked, conflict
+):
+    import hashlib
+    import json
+    from datetime import datetime, timedelta
+    from sqlmodel import Session, select
+    from factory.execution.models import (
+        AgentResultReceipt,
+        AgentSession,
+        AgentTurn,
+        AgentCapacityReservation,
+        PendingMessage,
+    )
+    from factory.execution.api import read_interrupted_retry_not_invoked_factory_attempt
+
+    s = drained_retry_not_invoked
+    with Session(s.engine) as db:
+        receipt = db.get(AgentResultReceipt, "drain-1")
+        agent = db.get(AgentSession, s.sid)
+        turn = db.exec(select(AgentTurn).where(AgentTurn.session_id == s.sid)).one()
+        dispatched = datetime.fromisoformat(
+            json.loads(turn.usage_json)["recovery"]["last_dispatch_at"]
+        )
+        if conflict == "missing":
+            db.delete(receipt)
+        elif conflict == "wrong_session":
+            receipt.session_id = s.sid + 99
+        elif conflict == "wrong_local":
+            receipt.local_session_id = "another-owner"
+        elif conflict == "wrong_seq":
+            receipt.seq = 2
+        elif conflict == "empty_owner":
+            receipt.claim_owner = ""
+        elif conflict == "bad_hash":
+            receipt.result_sha256 = "0" * 64
+        elif conflict in ("completed", "wrong_stop", "invalid_json"):
+            body = (
+                {"terminal_reason": "completed", "stop_reason": "completed"}
+                if conflict == "completed"
+                else {
+                    "terminal_reason": "interrupted_for_drain",
+                    "stop_reason": "unknown",
+                }
+            )
+            receipt.result_body = (
+                b"not JSON" if conflict == "invalid_json" else json.dumps(body).encode()
+            )
+            receipt.result_sha256 = hashlib.sha256(receipt.result_body).hexdigest()
+        elif conflict == "late_response":
+            receipt.received_at = dispatched + timedelta(seconds=1)
+        elif conflict == "missing_response":
+            receipt.received_at = None
+        elif conflict == "duplicate":
+            duplicate = AgentResultReceipt(
+                **{
+                    **receipt.model_dump(),
+                    "id": "drain-duplicate",
+                    "token_sha256": "e" * 64,
+                }
+            )
+            db.add(duplicate)
+        elif conflict == "alias":
+            db.add(
+                AgentSession(
+                    local_session_id="alias",
+                    workspace="guest",
+                    branch="main",
+                    ember_session_id=agent.ember_session_id,
+                )
+            )
+        elif conflict == "pending":
+            db.add(PendingMessage(session_id=s.sid, seq=1, message_text="new work"))
+        elif conflict == "observer":
+            agent.result_receipt_fence_id = "observer"
+        elif conflict == "active_permit":
+            permit = db.exec(
+                select(AgentCapacityReservation).where(
+                    AgentCapacityReservation.session_id == s.sid
+                )
+            ).one()
+            permit.state = "running"
+            db.add(permit)
+        if conflict != "missing":
+            db.add(receipt)
+        db.add(agent)
+        db.commit()
+    native = s.native_snapshot()
+    with Session(s.engine) as db:
+        assert (
+            read_interrupted_retry_not_invoked_factory_attempt(db, s.run["pin"], s.sid)
+            is None
+        )
+    assert s.native_snapshot() == native
+
+
+@pytest.mark.parametrize(
+    "shape,accepted",
+    [
+        ("complete", True),
+        ("prepared", True),
+        ("missing_middle", False),
+        ("overlap", False),
+        ("final_response", False),
+        ("wrong_owner", False),
+        ("wrong_guest", False),
+    ],
+)
+def test_drained_retry_three_dispatch_chain(drained_retry_not_invoked, shape, accepted):
+    import json
+    from datetime import datetime, timedelta
+    from sqlmodel import Session, select
+    from factory.execution.models import AgentResultReceipt, AgentTurn
+    from factory.execution.api import read_interrupted_retry_not_invoked_factory_attempt
+
+    s = drained_retry_not_invoked
+    with Session(s.engine) as db:
+        first = db.get(AgentResultReceipt, "drain-1")
+        turn = db.exec(select(AgentTurn).where(AgentTurn.session_id == s.sid)).one()
+        usage = json.loads(turn.usage_json)
+        usage["recovery"]["dispatch_count"] = 3
+        turn.usage_json = json.dumps(usage)
+        dispatched = datetime.fromisoformat(usage["recovery"]["last_dispatch_at"])
+        if shape != "missing_middle":
+            second = AgentResultReceipt(
+                **{
+                    **first.model_dump(),
+                    "id": "drain-2",
+                    "token_sha256": "d" * 64,
+                    "dispatch_count": 2,
+                    "claim_owner": "second-executor",
+                    "created_at": dispatched
+                    - timedelta(seconds=15 if shape == "overlap" else 8),
+                    "received_at": dispatched - timedelta(seconds=2),
+                }
+            )
+            db.add(second)
+        if shape in ("prepared", "final_response", "wrong_owner", "wrong_guest"):
+            last = AgentResultReceipt(
+                **{
+                    **first.model_dump(),
+                    "id": "final",
+                    "token_sha256": "e" * 64,
+                    "dispatch_count": 3,
+                    "claim_owner": "other"
+                    if shape == "wrong_owner"
+                    else usage["recovery"]["claim_owner"],
+                    "guest_id": "other" if shape == "wrong_guest" else first.guest_id,
+                    "created_at": dispatched,
+                    "received_at": dispatched if shape == "final_response" else None,
+                    "result_body": first.result_body
+                    if shape == "final_response"
+                    else None,
+                    "result_sha256": first.result_sha256
+                    if shape == "final_response"
+                    else None,
+                }
+            )
+            db.add(last)
+        db.add(turn)
+        db.commit()
+    with Session(s.engine) as db:
+        proof = read_interrupted_retry_not_invoked_factory_attempt(
+            db, s.run["pin"], s.sid
+        )
+        assert (proof is not None) is accepted
+        if accepted:
+            assert proof["invocation_phase"] == "interrupted_then_not_invoked"
+            assert [r["receipt_id"] for r in proof["interrupted_dispatches"]] == [
+                "drain-1",
+                "drain-2",
+            ]
+
+
+@pytest.fixture
+def interrupted_continuation(drained_retry_not_invoked, request):
+    import json
+    from datetime import datetime, timedelta
+    from sqlmodel import Session, select
+    from factory.execution.models import (
+        AgentSession,
+        AgentTurn,
+        PendingMessage,
+        AgentCapacityReservation,
+        AgentResultReceipt,
+    )
+
+    s = drained_retry_not_invoked
+    count = getattr(request, "param", 2)
+    with Session(s.engine) as db:
+        agent = db.get(AgentSession, s.sid)
+        turn = db.exec(select(AgentTurn).where(AgentTurn.session_id == s.sid)).one()
+        permit = db.exec(
+            select(AgentCapacityReservation).where(
+                AgentCapacityReservation.session_id == s.sid
+            )
+        ).one()
+        first = db.get(AgentResultReceipt, "drain-1")
+        dispatched = datetime.fromisoformat(
+            json.loads(turn.usage_json)["recovery"]["last_dispatch_at"]
+        )
+        agent.status = "recovering"
+        agent.ember_lineage_id = "drained-guest"
+        agent.cli_session_id = "original-cli"
+        agent.recovery_completed_at = None
+        turn.terminal_reason = turn.stop_reason = "interrupted_for_drain"
+        turn.created_at = dispatched + timedelta(seconds=5)
+        turn.usage_json = json.dumps({"retry_dispatch_count": count})
+        permit.state, permit.outcome, permit.settled_at = "running", None, None
+        final = AgentResultReceipt(
+            **{
+                **first.model_dump(),
+                "id": "drain-final",
+                "token_sha256": "f" * 64,
+                "dispatch_count": count,
+                "claim_owner": permit.owner,
+                "created_at": dispatched,
+                "received_at": dispatched + timedelta(seconds=2),
+            }
+        )
+        if count == 1:
+            db.delete(first)
+        elif count == 3:
+            db.add(
+                AgentResultReceipt(
+                    **{
+                        **first.model_dump(),
+                        "id": "drain-middle",
+                        "token_sha256": "e" * 64,
+                        "dispatch_count": 2,
+                        "claim_owner": "middle-owner",
+                        "created_at": dispatched - timedelta(seconds=8),
+                        "received_at": dispatched - timedelta(seconds=2),
+                    }
+                )
+            )
+        pending = PendingMessage(
+            session_id=s.sid,
+            seq=1,
+            message_text="original prompt",
+            model=agent.model,
+            dispatch_count=count,
+            last_dispatch_at=dispatched,
+        )
+        db.add_all([agent, turn, permit, final, pending])
+        db.commit()
+    return s
+
+
+@pytest.mark.parametrize("interrupted_continuation", [1, 2, 3], indirect=True)
+@pytest.mark.parametrize("workflow_status", ["SUCCESS", "ERROR", "CANCELLED"])
+def test_interrupted_continuation_reconciles_without_remote_action(
+    interrupted_continuation, workflow_status, monkeypatch
+):
+    import json
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryAudit
+    from sqlmodel import Session, select
+
+    s = interrupted_continuation
+    monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "true")
+    s.dbos.get_workflow_status = lambda _: SimpleNamespace(status=workflow_status)
+    s.result.update(invocation_phase="not_invoked", capacity_denied=True)
+    _persist_uncertain_not_invoked(s)
+    native = s.native_snapshot()
+    before = controls.task_snapshot(s.task["id"])
+    conductor.reconcile_task(s.task["id"], s.policy, s.dbos)
+    run = conductor.graph.node_runs(s.task["id"])[0]
+    outcome = json.loads(run["outcome_json"])
+    current = controls.task_snapshot(s.task["id"])
+    assert run["status"] == current["starts"][0]["status"] == "failed"
+    assert run["accounting_basis"] == "reserved_unknown_cost"
+    assert run["accounted_cost_usd"] == run["pin"]["max_cost_usd"]
+    assert current["committed_cost_usd"] == before["committed_cost_usd"]
+    assert current["turns_used"] == before["turns_used"]
+    assert current["unresolved_starts"] == 0
+    assert current["state"] == "admitted"
+    assert current["deadline_at"] == before["deadline_at"]
+    assert current["policy"] == before["policy"]
+    assert outcome["invocation_phase"] == "interrupted_continuation_retired"
+    assert not outcome["capacity_denied"]
+    after = s.native_snapshot()
+    assert after["agent_turns"] == native["agent_turns"]
+    assert after["result_receipts"] == native["result_receipts"]
+    assert after["pending_messages"] == []
+    assert after["agent_sessions"] == [
+        {**native["agent_sessions"][0], "status": "failed"}
+    ]
+    permit = after["capacity_reservations"][0]
+    assert permit["state"] == "settled"
+    assert permit["outcome"] == "drain_continuation_retired"
+    assert permit["settled_at"] is not None
+    assert {
+        k: v for k, v in permit.items() if k not in {"state", "outcome", "settled_at"}
+    } == {
+        k: v
+        for k, v in native["capacity_reservations"][0].items()
+        if k not in {"state", "outcome", "settled_at"}
+    }
+    # Terminal graph settlement cannot release the same allowance twice.
+    conductor.reconcile_task(s.task["id"], s.policy, s.dbos)
+    assert s.native_snapshot() == after
+    assert (
+        controls.task_snapshot(s.task["id"])["committed_cost_usd"]
+        == current["committed_cost_usd"]
+    )
+    with Session(s.engine) as db:
+        audits = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.action == "interrupted_continuation_settled"
+            )
+        ).all()
+        assert len(audits) == 1
+
+
+@pytest.mark.parametrize(
+    "conflict",
+    [
+        "pending_workflow",
+        "enqueued_workflow",
+        "missing_workflow",
+        "unknown_workflow",
+        "missing_first",
+        "missing_last",
+        "extra_receipt",
+        "bad_hash",
+        "not_drain",
+        "unknown_stop",
+        "late_response",
+        "unreceived",
+        "wrong_owner",
+        "wrong_guest",
+        "before_dispatch",
+        "claimed",
+        "advanced_dispatch",
+        "missing_grant",
+        "partial",
+        "observer",
+        "cleanup",
+        "alias",
+        "changed_branch",
+        "priced",
+        "response_after_turn",
+    ],
+)
+def test_interrupted_continuation_requires_complete_exact_proof(
+    interrupted_continuation, conflict
+):
+    import hashlib
+    import json
+    from datetime import timedelta
+    from sqlmodel import Session, select
+    from factory.execution.models import (
+        AgentSession,
+        AgentTurn,
+        PendingMessage,
+        AgentResultReceipt,
+    )
+    from factory.execution.api import read_interrupted_factory_continuation
+
+    s = interrupted_continuation
+    workflow_status = {
+        "pending_workflow": "PENDING",
+        "enqueued_workflow": "ENQUEUED",
+        "missing_workflow": None,
+        "unknown_workflow": "UNKNOWN",
+    }.get(conflict, "SUCCESS")
+    with Session(s.engine) as db:
+        agent = db.get(AgentSession, s.sid)
+        turn = db.exec(select(AgentTurn).where(AgentTurn.session_id == s.sid)).one()
+        pending = db.exec(
+            select(PendingMessage).where(PendingMessage.session_id == s.sid)
+        ).one()
+        receipt = db.get(AgentResultReceipt, "drain-final")
+        if conflict == "missing_first":
+            db.delete(db.get(AgentResultReceipt, "drain-1"))
+        elif conflict == "missing_last":
+            db.delete(receipt)
+        elif conflict == "extra_receipt":
+            db.add(
+                AgentResultReceipt(
+                    **{
+                        **receipt.model_dump(),
+                        "id": "extra",
+                        "token_sha256": "9" * 64,
+                        "dispatch_count": 3,
+                    }
+                )
+            )
+        elif conflict == "bad_hash":
+            receipt.result_sha256 = "0" * 64
+        elif conflict in ("not_drain", "unknown_stop"):
+            body = json.loads(receipt.result_body)
+            body["terminal_reason" if conflict == "not_drain" else "stop_reason"] = (
+                "invocation_outcome_unknown"
+            )
+            receipt.result_body = json.dumps(body).encode()
+            receipt.result_sha256 = hashlib.sha256(receipt.result_body).hexdigest()
+        elif conflict == "late_response":
+            first = db.get(AgentResultReceipt, "drain-1")
+            first.received_at = pending.last_dispatch_at + timedelta(seconds=1)
+            db.add(first)
+        elif conflict == "unreceived":
+            receipt.received_at = None
+        elif conflict == "wrong_owner":
+            receipt.claim_owner = "another-owner"
+        elif conflict == "wrong_guest":
+            receipt.guest_id = "another-guest"
+        elif conflict == "before_dispatch":
+            receipt.created_at = pending.last_dispatch_at - timedelta(seconds=1)
+        elif conflict == "claimed":
+            pending.claimed_by_replica = "next-executor"
+            pending.claimed_at = turn.created_at
+        elif conflict == "advanced_dispatch":
+            pending.dispatch_count = 3
+        elif conflict == "missing_grant":
+            turn.usage_json = "{}"
+        elif conflict == "partial":
+            pending.partial_text = "later progress"
+        elif conflict == "observer":
+            agent.result_receipt_fence_id = "receipt-observer"
+        elif conflict == "cleanup":
+            agent.guest_cleanup_id = "cleanup-owner"
+        elif conflict == "alias":
+            db.add(
+                AgentSession(
+                    local_session_id="alias-owner",
+                    workspace="guest",
+                    branch="main",
+                    ember_session_id=agent.ember_session_id,
+                )
+            )
+        elif conflict == "changed_branch":
+            agent.branch = "different-branch"
+        elif conflict == "priced":
+            turn.cost_usd = 1.0
+        elif conflict == "response_after_turn":
+            receipt.received_at = turn.created_at + timedelta(seconds=1)
+        if conflict != "missing_last":
+            db.add(receipt)
+        db.add_all([agent, turn, pending])
+        db.commit()
+    native = s.native_snapshot()
+    with Session(s.engine) as db:
+        assert (
+            read_interrupted_factory_continuation(
+                db, s.run["pin"], s.sid, workflow_status
+            )
+            is None
+        )
+    assert s.native_snapshot() == native
+
+
+def test_interrupted_continuation_revalidates_before_consuming_grant(
+    interrupted_continuation,
+):
+    from sqlmodel import Session, select
+    from factory.execution.models import PendingMessage
+    from factory.execution.api import (
+        read_interrupted_factory_continuation,
+        settle_interrupted_factory_continuation,
+    )
+
+    s = interrupted_continuation
+    with Session(s.engine) as db:
+        proof = read_interrupted_factory_continuation(
+            db, s.run["pin"], s.sid, "SUCCESS"
+        )
+        assert proof is not None
+    with Session(s.engine) as db:
+        pending = db.exec(
+            select(PendingMessage).where(PendingMessage.session_id == s.sid)
+        ).one()
+        pending.claimed_by_replica = "new-executor"
+        db.add(pending)
+        db.commit()
+    native = s.native_snapshot()
+    with Session(s.engine) as db:
+        with pytest.raises(
+            ValueError, match="factory_interrupted_continuation_changed"
+        ):
+            settle_interrupted_factory_continuation(db, s.run["pin"], proof)
+    assert s.native_snapshot() == native
+
+
+def test_interrupted_continuation_rolls_back_with_start_settlement(
+    interrupted_continuation, monkeypatch
+):
+    from factory.orchestration import factory_controls as controls
+
+    s = interrupted_continuation
+    _persist_uncertain_not_invoked(s)
+    native = s.native_snapshot()
+    before = controls.task_snapshot(s.task["id"])
+    runs = conductor.graph.node_runs(s.task["id"])
+
+    def failed_start(*_args, **_kwargs):
+        raise RuntimeError("start ledger unavailable")
+
+    monkeypatch.setattr(controls, "record_start_outcome", failed_start)
+    with pytest.raises(RuntimeError, match="start ledger unavailable"):
+        conductor.reconcile_task(s.task["id"], s.policy, s.dbos)
+    assert s.native_snapshot() == native
+    assert controls.task_snapshot(s.task["id"])["starts"] == before["starts"]
+    assert conductor.graph.node_runs(s.task["id"]) == runs
+
+
+@pytest.fixture
+def initial_evicted_guest(uncertain_factory, monkeypatch):
+    from datetime import timedelta
+
+    s = uncertain_factory
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    s.cp.update(
+        state="evicted",
+        terminal_reason="idle_ttl",
+        generation=0,
+        turn_seq=0,
+        created_at=int((s.dispatched_at + timedelta(seconds=1)).timestamp() * 1000),
+        updated_at=int((s.failed_turn_at + timedelta(seconds=1)).timestamp() * 1000),
+        invoke_started_at=None,
+        last_invoke_at=None,
+        interrupted_turn=None,
+        stop_precondition=None,
+        stop_intent=None,
+        stop_completion=None,
+    )
+    return s
+
+
+def test_initial_evicted_guest_releases_hold_without_refunding_spend(
+    initial_evicted_guest,
+):
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = initial_evicted_guest
+    before = _uncertain_snapshot(s)
+    assert supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    after = _uncertain_snapshot(s)
+    assert after["turns"] == before["turns"]
+    assert after["pending"] == before["pending"] == []
+    assert after["session"]["ember_session_id"] is None
+    assert (
+        after["session"]["prior_ember_lineage_id"]
+        == before["session"]["ember_lineage_id"]
+    )
+    assert after["permits"][0]["state"] == "settled"
+    assert after["permits"][0]["outcome"] == "guest_cessation_confirmed"
+    assert (
+        after["runs"][0]["status"]
+        == after["factory"]["starts"][0]["status"]
+        == "failed"
+    )
+    assert after["runs"][0]["cost_usd"] is None
+    assert after["runs"][0]["accounting_basis"] == "reserved_unknown_cost"
+    assert (
+        after["factory"]["committed_cost_usd"]
+        == before["factory"]["committed_cost_usd"]
+    )
+    assert after["factory"]["turns_used"] == before["factory"]["turns_used"]
+    assert after["factory"]["policy"] == before["factory"]["policy"]
+    assert after["factory"]["deadline_at"] == before["factory"]["deadline_at"]
+    assert after["factory"]["state"] == "admitted"
+    assert after["factory"]["unresolved_starts"] == 0
+    outcome = json.loads(after["runs"][0]["outcome_json"])
+    assert outcome["cessation"]["cessation_evidence"] == "terminal_initial_guest"
+    assert all(precondition is None for _, precondition in s.calls)
+    # Settlement is durable and cannot clear another attempt on repeat.
+    assert supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    assert _uncertain_snapshot(s) == after
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("session_id", "another-guest"),
+        ("state", "running"),
+        ("state", "parked"),
+        ("terminal_reason", "node_gone"),
+        ("generation", 1),
+        ("generation", False),
+        ("turn_seq", 1),
+        ("turn_seq", False),
+        ("invoke_started_at", 1),
+        ("last_invoke_at", 1),
+        ("interrupted_turn", {}),
+        ("stop_precondition", {}),
+        ("stop_intent", {}),
+        ("stop_completion", {}),
+        ("created_at", None),
+        ("updated_at", None),
+        ("created_at", True),
+        ("updated_at", "123"),
+    ],
+)
+def test_initial_evicted_guest_refuses_conflicting_fields(
+    initial_evicted_guest, field, value
+):
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = initial_evicted_guest
+    s.cp[field] = value
+    identity = {
+        "guest_id": "s-exact-factory",
+        "dispatched_at": s.dispatched_at.isoformat(),
+        "failed_turn_at": s.failed_turn_at.isoformat(),
+    }
+    assert supervisor._initial_guest_cessation(s.cp, identity) is None
+
+
+@pytest.mark.parametrize(
+    "conflict",
+    ["older_guest", "late_creation", "early_eviction", "missing_field", "saved_stop"],
+)
+def test_initial_evicted_guest_requires_creation_and_terminal_order(
+    initial_evicted_guest, conflict
+):
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = initial_evicted_guest
+    saved = None
+    if conflict == "older_guest":
+        s.cp["created_at"] = int(s.dispatched_at.timestamp() * 1000)
+    elif conflict == "late_creation":
+        s.cp["created_at"] = int(s.failed_turn_at.timestamp() * 1000) + 1
+    elif conflict == "early_eviction":
+        s.cp["updated_at"] = int(s.failed_turn_at.timestamp() * 1000)
+    elif conflict == "missing_field":
+        s.cp.pop("turn_seq")
+    else:
+        saved = {"precondition": s.precondition}
+    identity = {
+        "guest_id": "s-exact-factory",
+        "dispatched_at": s.dispatched_at.isoformat(),
+        "failed_turn_at": s.failed_turn_at.isoformat(),
+    }
+    assert supervisor._control_plane_cessation(s.cp, identity, saved) is None
+
+
+@pytest.fixture
+def completed_receipt_factory(uncertain_factory):
+    """A lost pending row after a drain and a published completed response."""
+    import hashlib
+    from datetime import timedelta
+    from factory.execution.constants import exact_dispatch_id
+    from factory.execution.models import AgentResultReceipt, AgentSession, AgentTurn
+
+    s = uncertain_factory
+    with Session(s.engine) as db:
+        agent = db.get(AgentSession, s.sid)
+        turn = db.exec(select(AgentTurn).where(AgentTurn.session_id == s.sid)).one()
+        usage = json.loads(turn.usage_json)
+        usage["recovery"]["dispatch_count"] = 2
+        usage["recovery"]["cause"] = "result_persistence_failed"
+        turn.usage_json = json.dumps(usage)
+        owner = usage["recovery"]["claim_owner"]
+        for count in (1, 2):
+            created = s.dispatched_at + timedelta(seconds=2 if count == 2 else -30)
+            body = json.dumps(
+                {
+                    "dispatch_id": exact_dispatch_id(
+                        s.sid, agent.ember_session_id, 1, owner, count
+                    ),
+                    "turn_seq": count,
+                    "session_id": agent.cli_session_id,
+                    "terminal_reason": "completed"
+                    if count == 2
+                    else "interrupted_for_drain",
+                    "stop_reason": None if count == 2 else "interrupted_for_drain",
+                    "result": "completed native result"
+                    if count == 2
+                    else "drained prefix",
+                    "voice": "finished",
+                    "usage": {"input_tokens": 100, "output_tokens": 50},
+                    "total_cost_usd": 0.25,
+                }
+            ).encode()
+            db.add(
+                AgentResultReceipt(
+                    id=f"completed-receipt-{count}",
+                    token_sha256=str(count) * 64,
+                    session_id=s.sid,
+                    local_session_id=agent.local_session_id,
+                    seq=1,
+                    dispatch_count=count,
+                    claim_owner=owner,
+                    guest_id=agent.ember_session_id,
+                    request_sha256="a" * 64,
+                    created_at=created,
+                    received_at=created + timedelta(seconds=5),
+                    accept_until=created + timedelta(hours=13),
+                    retain_until=created + timedelta(days=7),
+                    superseded_at=s.dispatched_at + timedelta(seconds=2)
+                    if count == 1
+                    else None,
+                    result_body=body,
+                    result_sha256=hashlib.sha256(body).hexdigest(),
+                )
+            )
+        db.add(turn)
+        db.commit()
+        db.refresh(turn)
+        s.previous_turn = json.loads(
+            json.dumps(turn.model_dump(), default=lambda x: x.isoformat())
+        )
+    return s
+
+
+def test_completed_receipt_recovers_result_once_without_refunding_prefix(
+    completed_receipt_factory,
+):
+    from factory.execution.models import (
+        AgentCapacityReservation,
+        AgentSession,
+        AgentTurn,
+        PendingMessage,
+    )
+    from factory.orchestration.factory_models import FactoryAudit
+    from factory.orchestration.factory_supervision import recover_completed_receipt
+
+    s = completed_receipt_factory
+    assert recover_completed_receipt(s.run["pin"], s.sid, "SUCCESS")
+    assert not recover_completed_receipt(s.run["pin"], s.sid, "SUCCESS")
+    assert s.calls == []
+    with Session(s.engine) as db:
+        turn = db.exec(select(AgentTurn)).one()
+        assert turn.result_text == "completed native result"
+        assert turn.terminal_reason == "completed" and turn.stop_reason is None
+        assert turn.cost_usd is None and turn.list_cost_usd is None
+        usage = json.loads(turn.usage_json)
+        assert usage["factory_receipt_recovery"]["previous_turn"] == s.previous_turn
+        assert len(usage["factory_receipt_recovery"]["dispatch_receipts"]) == 2
+        assert usage["native_result_receipt"]["receipt_id"] == "completed-receipt-2"
+        assert (
+            db.get(AgentSession, s.sid).result_receipt_fence_id == "completed-receipt-2"
+        )
+        assert db.exec(select(AgentCapacityReservation)).one().state == "settled"
+        assert db.exec(select(PendingMessage)).all() == []
+        audits = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.action == "completed_receipt_recovered"
+            )
+        ).all()
+        assert len(audits) == 1
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "missing_prefix",
+        "prefix_not_drained",
+        "wrong_dispatch",
+        "wrong_cli",
+        "wrong_guest",
+        "wrong_owner",
+        "wrong_seq",
+        "wrong_physical_seq",
+        "bad_hash",
+        "expired",
+        "superseded",
+        "overlapping_dispatch",
+        "unaccepted",
+        "newer_pending",
+        "wrong_pin",
+        "live_workflow",
+        "missing_body",
+        "nonterminal",
+        "bad_usage",
+        "bad_cost",
+        "cleanup_claim",
+        "newer_receipt",
+        "prior_binding",
+        "guest_alias",
+        "newer_attempt",
+    ],
+)
+def test_completed_receipt_refuses_incomplete_or_changed_proof(
+    completed_receipt_factory, change
+):
+    import hashlib
+    from datetime import timedelta
+    from factory.execution.models import (
+        AgentResultReceipt,
+        AgentSession,
+        PendingMessage,
+    )
+    from factory.orchestration.factory_supervision import recover_completed_receipt
+
+    s = completed_receipt_factory
+    pin = dict(s.run["pin"])
+    workflow = "SUCCESS"
+    with Session(s.engine) as db:
+        row = db.get(AgentResultReceipt, "completed-receipt-2")
+        first = db.get(AgentResultReceipt, "completed-receipt-1")
+        body = json.loads(row.result_body)
+        if change == "missing_prefix":
+            db.delete(first)
+        elif change == "prefix_not_drained":
+            b = json.loads(first.result_body)
+            b["terminal_reason"] = "completed"
+            first.result_body = json.dumps(b).encode()
+            first.result_sha256 = hashlib.sha256(first.result_body).hexdigest()
+        elif change == "wrong_dispatch":
+            body["dispatch_id"] = "f" * 64
+        elif change == "wrong_cli":
+            body["session_id"] = "other-cli"
+        elif change == "wrong_guest":
+            row.guest_id = "other-guest"
+        elif change == "wrong_owner":
+            row.claim_owner = "other-owner"
+        elif change == "wrong_seq":
+            row.seq = 2
+        elif change == "wrong_physical_seq":
+            body["turn_seq"] = 3
+        elif change == "bad_hash":
+            row.result_sha256 = "0" * 64
+        elif change == "expired":
+            row.retain_until = s.dispatched_at
+        elif change == "superseded":
+            row.superseded_at = row.received_at
+        elif change == "overlapping_dispatch":
+            first.superseded_at = row.created_at + timedelta(seconds=1)
+        elif change == "unaccepted":
+            row.accept_until = row.created_at
+        elif change == "newer_pending":
+            db.add(PendingMessage(session_id=s.sid, seq=2, message_text="new work"))
+        elif change == "wrong_pin":
+            pin["artifact_path"] = ".factory/other.json"
+        elif change == "live_workflow":
+            workflow = "PENDING"
+        elif change == "nonterminal":
+            body["terminal_reason"] = "interrupted_for_drain"
+        elif change == "bad_usage":
+            body["usage"] = []
+        elif change == "bad_cost":
+            body["total_cost_usd"] = -1
+        elif change == "cleanup_claim":
+            agent = db.get(AgentSession, s.sid)
+            agent.guest_cleanup_id = "a" * 32
+            db.add(agent)
+        elif change == "prior_binding":
+            agent = db.get(AgentSession, s.sid)
+            agent.prior_cli_session_id = "prior-cli"
+            db.add(agent)
+        elif change == "guest_alias":
+            agent = db.get(AgentSession, s.sid)
+            db.add(
+                AgentSession(
+                    local_session_id="alias",
+                    workspace="guest",
+                    branch=agent.branch,
+                    repo=agent.repo,
+                    model=agent.model,
+                    ember_session_id=agent.ember_session_id,
+                )
+            )
+        elif change == "newer_attempt":
+            from factory.orchestration.models import SwarmNodeRun
+
+            run = db.exec(select(SwarmNodeRun)).one()
+            db.add(
+                SwarmNodeRun(
+                    **{
+                        **run.model_dump(),
+                        "id": None,
+                        "attempt": 2,
+                        "dispatch_key": "newer-workflow",
+                    }
+                )
+            )
+        elif change == "newer_receipt":
+            other = AgentResultReceipt(
+                **{
+                    **row.model_dump(),
+                    "id": "newer-receipt",
+                    "token_sha256": "3" * 64,
+                    "dispatch_count": 3,
+                }
+            )
+            db.add(other)
+        row.result_body = json.dumps(body).encode()
+        if change != "bad_hash":
+            row.result_sha256 = hashlib.sha256(row.result_body).hexdigest()
+        if change == "missing_body":
+            row.result_body = None
+        db.add(row)
+        db.commit()
+    before = _uncertain_snapshot(s)
+    assert not recover_completed_receipt(pin, s.sid, workflow)
+    assert _uncertain_snapshot(s) == before
+    assert s.calls == []
+
+
+def test_completed_receipt_missing_artifact_uses_normal_failure_and_cost_gate(
+    completed_receipt_factory, monkeypatch
+):
+    from factory.orchestration import node_workflows as nodes
+    from factory.orchestration import factory_controls as controls
+
+    s = completed_receipt_factory
+    from factory.orchestration.factory_supervision import recover_completed_receipt
+
+    # Simulate a process loss after the native transaction, before graph settlement.
+    assert recover_completed_receipt(s.run["pin"], s.sid, "SUCCESS")
+    monkeypatch.setattr(nodes, "_read_reconciliation_head", lambda *_: "a" * 40)
+    monkeypatch.setattr(nodes, "_recover_response_lost", lambda *_: None)
+    conductor._submit_or_reconcile(s.task, s.run, s.dbos)
+    run = conductor.graph.node_runs(s.task["id"])[0]
+    assert run["status"] == "failed"
+    assert run["accounting_basis"] == "reserved_unknown_cost"
+    assert run["accounted_cost_usd"] == run["pin"]["max_cost_usd"]
+    outcome = json.loads(run["outcome_json"])
+    assert "artifact_missing" in outcome["reason"]
+    assert controls.task_snapshot(s.task["id"])["unresolved_starts"] == 0
+    assert s.calls == []
+
+
+def test_completed_receipt_atomic_rollback_and_concurrent_recovery(
+    completed_receipt_factory, monkeypatch
+):
+    from concurrent.futures import ThreadPoolExecutor
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_supervision import recover_completed_receipt
+
+    s = completed_receipt_factory
+    before = _uncertain_snapshot(s)
+    audit = controls._audit
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("audit write failed")
+
+    monkeypatch.setattr(controls, "_audit", fail)
+    with pytest.raises(RuntimeError, match="audit write failed"):
+        recover_completed_receipt(s.run["pin"], s.sid, "SUCCESS")
+    assert _uncertain_snapshot(s) == before
+    monkeypatch.setattr(controls, "_audit", audit)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(
+                lambda _: recover_completed_receipt(s.run["pin"], s.sid, "SUCCESS"),
+                range(2),
+            )
+        )
+    assert sorted(results) == [False, True]
+
+
+@pytest.mark.parametrize("observed", [False, True])
+def test_completed_receipt_single_dispatch_preserves_native_cost_and_artifact(
+    completed_receipt_factory, monkeypatch, observed
+):
+    import base64
+    import hashlib
+    from factory.execution.constants import exact_dispatch_id
+    from factory.execution.models import AgentResultReceipt, AgentTurn, AgentSession
+    from factory.orchestration import node_workflows as nodes
+
+    s = completed_receipt_factory
+    with Session(s.engine) as db:
+        db.delete(db.get(AgentResultReceipt, "completed-receipt-1"))
+        receipt = db.get(AgentResultReceipt, "completed-receipt-2")
+        receipt.dispatch_count = 1
+        if observed:
+            receipt.response_observed_at = receipt.received_at
+        body = json.loads(receipt.result_body)
+        body["dispatch_id"] = exact_dispatch_id(
+            s.sid, receipt.guest_id, 1, receipt.claim_owner, 1
+        )
+        body["turn_seq"] = 1
+        body["artifact"] = {
+            "path": s.run["pin"]["artifact_path"],
+            "outcome": "ok",
+            "content_b64": base64.b64encode(
+                json.dumps(
+                    {
+                        "action": "discard_node",
+                        "reason": "completed plan",
+                        "node_key": "unused",
+                    }
+                ).encode()
+            ).decode(),
+        }
+        receipt.result_body = json.dumps(body).encode()
+        receipt.result_sha256 = hashlib.sha256(receipt.result_body).hexdigest()
+        turn = db.exec(select(AgentTurn)).one()
+        usage = json.loads(turn.usage_json)
+        usage["recovery"]["dispatch_count"] = 1
+        turn.usage_json = json.dumps(usage)
+        db.add_all([receipt, turn])
+        db.commit()
+    monkeypatch.setattr(nodes, "_read_reconciliation_head", lambda *_: "a" * 40)
+    monkeypatch.setattr(nodes, "_recover_response_lost", lambda *_: None)
+    conductor._submit_or_reconcile(s.task, s.run, s.dbos)
+    run = conductor.graph.node_runs(s.task["id"])[0]
+    assert run["status"] == "succeeded"
+    assert run["accounted_cost_usd"] == 0.25
+    with Session(s.engine) as db:
+        turn = db.exec(select(AgentTurn)).one()
+        assert turn.cost_usd == 0.25
+        assert json.loads(turn.artifact_blob) == {
+            "action": "discard_node",
+            "node_key": "unused",
+            "reason": "completed plan",
+        }
+        assert db.get(AgentSession, s.sid).result_receipt_fence_id == (
+            None if observed else "completed-receipt-2"
+        )

@@ -247,6 +247,7 @@ def test_search_and_get_note_project_scoped_fields_with_real_session(session):
         scope_filters=None,
         include_unscoped=False,
         exclude_invalidated=False,
+        include_legacy=False,
     )
     detail = KnowledgeStore(session).get_note_by_id("scoped")
     assert detail is not None
@@ -419,7 +420,7 @@ def test_search_rechecks_scope_while_hydrating_ranked_notes(session):
 def test_personal_audit_migration_enforces_retention_and_least_privilege():
     migration = (
         Path(__file__).parents[1]
-        / "chart/migrations/20260919231000_personal_retrieval_audit.sql"
+        / "chart/migrations/20260923020000_personal_retrieval_audit.sql"
     ).read_text()
 
     assert "SECURITY DEFINER" in migration

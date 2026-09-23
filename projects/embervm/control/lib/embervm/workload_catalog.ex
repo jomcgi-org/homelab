@@ -56,6 +56,16 @@ defmodule Embervm.WorkloadCatalog do
     :ets.select(table, [{{:"$1", :_}, [], [:"$1"]}])
   end
 
+  @doc "All catalog entries, or an empty list while the table is unavailable."
+  @spec all(atom()) :: [map()]
+  def all(table \\ @table) do
+    if :ets.whereis(table) == :undefined do
+      []
+    else
+      :ets.select(table, [{{:_, :"$1"}, [], [:"$1"]}])
+    end
+  end
+
   @doc """
   Looks up one workload's catalog entry against the default table. See
   `fetch/2` for the table-parameterized form used by tests.

@@ -15,6 +15,7 @@ from factory.orchestration.health import drainer_health
 
 def register(app) -> None:
     from factory.orchestration.factory_router import router as factory_router
+    from factory.orchestration.factory_webhook import router as factory_webhook_router
     from factory.orchestration.drain_console_router import (
         router as drain_console_router,
     )
@@ -30,6 +31,7 @@ def register(app) -> None:
     app.include_router(drainer_router)
     app.include_router(drain_console_router)
     app.include_router(factory_router)
+    app.include_router(factory_webhook_router)
 
 
 def _register_mcp() -> None:
@@ -74,6 +76,7 @@ async def _start_session_maintenance(app):
     """Start leader-owned agent session maintenance loops."""
     from factory.quota_probe import start_quota_probe_loop
     from factory.reservation_reviews import start_review_loop
+    from factory.execution.guest_cleanup import start_guest_cleanup_loop
     from factory.execution.kg_feed import start_kg_feed_loop
     from factory.execution.mcp import start_pending_message_sweep
     from factory.execution.permit_supervision import start_permit_supervision_loop
@@ -86,6 +89,7 @@ async def _start_session_maintenance(app):
         start_title_refresh_loop,
         start_kg_feed_loop,
         start_permit_supervision_loop,
+        start_guest_cleanup_loop,
         start_receipt_retention_loop,
         start_quota_probe_loop,
         start_review_loop,

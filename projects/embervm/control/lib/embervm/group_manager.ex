@@ -402,14 +402,12 @@ defmodule Embervm.GroupManager do
     |> Enum.find(:ok, &match?({:error, _}, &1))
   end
 
-  # A per-member CHILD span (Task 9): `ember.member` (the expanded member name),
-  # `ember.was_relight` (false for a FRESH start), and `ember.clock_delta_ms` (the
-  # clock-resync delta). A FRESH member start does no clock resync, and the daemon's
-  # StartGroupMemberResponse echoes no clock delta (only {vm_id, ip, was_relight}), so
-  # clock_delta_ms is the -1 "not reported" sentinel here (a concrete integer, never
-  # nil, per the OTel-needs-a-typed-value rule). The clock-resync signal lives on the
-  # RELIGHT path (resume_one_member), where `ember.was_relight=false` on a relight IS
-  # the clock-resync-failed derivation the Task 11 gate reads.
+  # A per-member CHILD span: `ember.member` (the expanded member name),
+  # `ember.was_relight` (false for a FRESH start), and `ember.clock_delta_ms`.
+  # A FRESH member start does no clock resync, and StartGroupMemberResponse echoes no
+  # numeric delta, so -1 is the typed "unknown / not reported" sentinel. It is never
+  # evidence that a clock measurement succeeded. The proposed numeric measurement
+  # and alert-data bridge were closed as not planned in #3953.
   defp start_one_member(state, member, plan, secret, subnet_cidr) do
     Tracer.with_span "embervm.group.member_start",
                      %{attributes: member_span_attrs(member.expanded_name, false, -1)} do
@@ -690,13 +688,14 @@ defmodule Embervm.GroupManager do
   # connection across the fallback. group_fresh_booted{reason} records the discarded
   # warmth.
   defp fallback_fresh(state, instance, subnet_cidr, secret, group, plan, reason) do
-    # The `fresh_boot` root span (Task 9): a ROOT span around the relight-fallback
+    # The `fresh_boot` root span: a ROOT span around the relight-fallback
     # fresh sequence (destroy stragglers + evict set + role-ordered FRESH member
     # starts + publish). `ember.reason` carries the discarded-warmth reason
     # (clock_resync_failed | partial_set | relight_failed | ...), the honest signal
-    # the fresh_boot{...} alerts key on. Per-member `member_start` child spans nest
-    # under it. A sibling of the `relight` root, so the trace shows both the discarded
-    # relight and the fresh recovery.
+    # available for trace queries. Per-member `member_start` child spans nest under
+    # it. A sibling of the `relight` root, so the trace shows both the discarded
+    # relight and the fresh recovery. No alert bridge or live alert coverage is
+    # implied; the historical alert proposal closed as not planned in #3953.
     Tracer.with_span "embervm.group.fresh_boot",
                      %{attributes: %{"ember.workload" => state.workload, "ember.instance_id" => instance.instance_id, "ember.reason" => fresh_reason_string(reason)}} do
       do_fallback_fresh(state, instance, subnet_cidr, secret, group, plan, reason)
@@ -840,13 +839,12 @@ defmodule Embervm.GroupManager do
     |> Enum.find(:ok, &match?({:error, _}, &1))
   end
 
-  # A per-member RELIGHT child span (Task 9): `ember.member`, `ember.was_relight`
-  # (the daemon's verified-relight verdict, the clock-resync signal), and
-  # `ember.clock_delta_ms` (-1 "not reported": the daemon echoes only the boolean
-  # verdict, not the measured delta). `ember.was_relight=false` on this span IS the
-  # clock-resync-failed derivation the Task 11 gate reads (a relight the daemon could
-  # not verify within its one-second clock bound). The span attribute is set from the
-  # RPC reply inside do_resume_one_member so it reflects the actual verdict.
+  # A per-member RELIGHT child span: `ember.member`, `ember.was_relight` (the
+  # daemon's verified resume-path verdict), and `ember.clock_delta_ms`. The delta is
+  # always -1, meaning unknown / not reported, because the daemon returns only the
+  # boolean. A true relight verdict does not become a numeric clock measurement.
+  # The span attribute is set from the RPC reply inside do_resume_one_member so it
+  # reflects the actual resume verdict.
   defp resume_one_member(state, member, subnet_cidr) do
     Tracer.with_span "embervm.group.member_relight",
                      %{attributes: member_span_attrs(member.expanded_name, true, -1)} do
@@ -1721,9 +1719,10 @@ defmodule Embervm.GroupManager do
 
   # The per-member span attribute map: `ember.member` (expanded member name),
   # `ember.was_relight` (the resume verdict; false for a fresh start), and
-  # `ember.clock_delta_ms` (the clock-resync delta in ms, or the -1 "not reported"
-  # sentinel when the daemon echoes only the boolean verdict). All three are concrete
-  # typed values (never nil), per the OTel Elixir SDK's per-key typing requirement.
+  # `ember.clock_delta_ms` (-1 for unknown / not reported because the daemon echoes
+  # only the boolean resume verdict). All three are concrete typed values (never
+  # nil), per the OTel Elixir SDK's per-key typing requirement. The sentinel is not
+  # evidence of a successful clock measurement.
   defp member_span_attrs(member_name, was_relight, clock_delta_ms) do
     %{
       "ember.member" => member_name,

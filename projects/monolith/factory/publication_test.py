@@ -24,12 +24,52 @@ from factory.publication import (
     shape_rationale,
     shape_stop_events,
     shape_usage,
+    shape_work_item,
     task_payload,
     task_phase,
     task_summary,
     turn_digest,
     turn_record,
 )
+
+
+def test_public_work_item_exposes_local_record_without_private_factory_details():
+    item = {
+        "id": 100123,
+        "title": "<script>untrusted title</script>",
+        "body": "sensitive task detail that must remain private",
+        "state": "ready",
+        "task_class": "bug-fix",
+        "labels": ["agent-ready", "<img onerror=alert(1)>"],
+        "trust": "trusted",
+        "authority": "github",
+        "github_repo": "owner/repo",
+        "github_issue_number": 6257,
+        "source_ref": "javascript:alert(1)",
+        "created_at": "2026-09-20T10:00:00Z",
+        "updated_at": "2026-09-20T11:00:00Z",
+        "receipts": [{"escalation_json": "private"}],
+        "events": [{"author": "operator@example.test"}],
+        "credential": "secret",
+    }
+    payload = shape_work_item(
+        item,
+        [{"to_id": 100124, "kind": "blocks", "source": "github_body", "id": 1}],
+        [{"from_id": 100125, "kind": "parent", "source": "decision", "id": 2}],
+        "2026-09-20T12:00:00+00:00",
+    )
+
+    assert payload["item"]["title"] == "<script>untrusted title</script>"
+    assert payload["item"]["labels"][-1] == "<img onerror=alert(1)>"
+    assert payload["item"]["source_ref"] == "https://github.com/owner/repo/issues/6257"
+    assert payload["edges_out"] == [
+        {"to_id": 100124, "kind": "blocks", "source": "github_body"}
+    ]
+    encoded = str(payload)
+    assert "escalation_json" not in encoded
+    assert "operator@example.test" not in encoded
+    assert "credential" not in encoded
+    assert "sensitive task detail" not in encoded
 
 
 def _attempt(attempt, status, session_id, created_at, finished_at=None):

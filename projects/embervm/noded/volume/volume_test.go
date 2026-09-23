@@ -363,14 +363,17 @@ func TestReleaseOrphanedReclaimsReplacedBoundAttach(t *testing.T) {
 	}
 }
 
-func TestReleaseOrphanedReclaimsUnboundAttachWithoutLiveVM(t *testing.T) {
+func TestReleaseOrphanedRetainsBoundAttachWithoutCessationEvidence(t *testing.T) {
 	m := NewManager(t.TempDir())
 	if err := m.Attach("wl-a"); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 	m.Bind("wl-a", "vm-a")
-	if reason, released := m.ReleaseOrphaned("wl-a", "", time.Hour); !released || reason != `owner vm "vm-a" is no longer live` {
-		t.Fatalf("ReleaseOrphaned missing live VM = %q, %v", reason, released)
+	if reason, released := m.ReleaseOrphaned("wl-a", "", time.Hour); released || reason != "" {
+		t.Fatalf("ReleaseOrphaned missing registry evidence = %q, %v want empty, false", reason, released)
+	}
+	if !m.IsAttached("wl-a") {
+		t.Fatal("registry absence released a bound owner")
 	}
 }
 

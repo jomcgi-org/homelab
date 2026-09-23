@@ -165,6 +165,28 @@ def _render_with_set(release: str, settings: list[str]) -> str:
     return result.stdout
 
 
+def test_store_probe_interval_renders_into_control_plane() -> None:
+    values = yaml.safe_load((_chart_dir() / "values.yaml").read_text())
+    assert values["controlPlane"]["storeProbe"]["intervalSeconds"] == 300
+
+    rendered = _render_with_set(
+        "store-probe", ["controlPlane.storeProbe.intervalSeconds=17"]
+    )
+    deployments = [
+        doc
+        for doc in yaml.safe_load_all(rendered)
+        if isinstance(doc, dict) and doc.get("kind") == "Deployment"
+    ]
+    control = next(
+        container
+        for deployment in deployments
+        for container in deployment["spec"]["template"]["spec"]["containers"]
+        if container["name"] == "control-plane"
+    )
+    env = {entry["name"]: entry for entry in control["env"]}
+    assert env["EMBERVM_STORE_PROBE_INTERVAL_SECONDS"]["value"] == "17"
+
+
 def _rootfs_builder_init_containers(rendered: str) -> list[dict]:
     containers = []
     for document in yaml.safe_load_all(rendered):
@@ -510,6 +532,107 @@ def test_noded_bearer_secret_flips_control_plane_and_bricks_together():
     assert "EMBERVM_NODED_BEARER_TOKEN" not in disabled
 
 
+def test_restore_capability_key_secret_flips_control_plane_and_all_noded_pods_together():
+    chart = _chart_dir()
+    enabled = _render(
+        "restore-key",
+        [chart / "values.yaml"],
+        [
+            "noded.enabled=true",
+            "bricks.enabled=true",
+            "bricks.nodeFloors[0].node=node-x",
+            "bricks.nodeFloors[0].class=1gi",
+            "controlPlane.restoreCapabilityKeySecret.enabled=true",
+            "controlPlane.restoreCapabilityKeySecret.name=custom-restore-secret",
+            "controlPlane.restoreCapabilityKeySecret.key=custom-restore-key",
+        ],
+    )
+
+    workloads = {
+        (kind, name): doc
+        for kind, name, doc in _docs(enabled)
+        if kind in {"Deployment", "DaemonSet"}
+    }
+    control_plane = workloads[("Deployment", "restore-key-embervm")]
+    noded_pods = [
+        doc
+        for (kind, name), doc in workloads.items()
+        if (kind == "DaemonSet" and name.endswith("-noded")) or "-noded-brick-" in name
+    ]
+    assert any(
+        kind == "DaemonSet" and name.endswith("-noded") for kind, name in workloads
+    ), "restore key render produced no noded DaemonSet; this test is inert"
+    assert any("-noded-brick-" in name for _, name in workloads), (
+        "restore key render produced no brick Deployment; this test is inert"
+    )
+    assert any(name.endswith("-noded-brick-1gi-node-x") for _, name in workloads), (
+        "restore key render produced no floor Deployment; this test is inert"
+    )
+
+    control_plane_ref = re.compile(
+        r"name:\s*EMBERVM_RESTORE_CAPABILITY_KEY\s+valueFrom:\s+"
+        r"secretKeyRef:\s+name:\s*custom-restore-secret\s+"
+        r"key:\s*custom-restore-key",
+        re.S,
+    )
+    noded_ref = re.compile(
+        r"name:\s*EMBERVM_NODED_RESTORE_CAPABILITY_KEY\s+valueFrom:\s+"
+        r"secretKeyRef:\s+name:\s*custom-restore-secret\s+"
+        r"key:\s*custom-restore-key",
+        re.S,
+    )
+    assert control_plane_ref.search(control_plane)
+    assert noded_pods and all(noded_ref.search(doc) for doc in noded_pods)
+
+    disabled = _render(
+        "restore-key",
+        [chart / "values.yaml"],
+        [
+            "noded.enabled=true",
+            "bricks.enabled=true",
+            "controlPlane.restoreCapabilityKeySecret.enabled=false",
+            "controlPlane.restoreCapabilityKeySecret.onepassword.itemPath=vaults/x/items/disabled",
+        ],
+    )
+    assert "EMBERVM_RESTORE_CAPABILITY_KEY" not in disabled
+    assert "EMBERVM_NODED_RESTORE_CAPABILITY_KEY" not in disabled
+    assert "restore-key-embervm-restore-capability-key" not in disabled
+
+
+def test_restore_capability_key_onepassword_item_uses_custom_item_path_and_default_name():
+    chart = _chart_dir()
+    rendered = _render(
+        "restore-key",
+        [chart / "values.yaml"],
+        [
+            "bricks.enabled=true",
+            "controlPlane.restoreCapabilityKeySecret.enabled=true",
+            "controlPlane.restoreCapabilityKeySecret.key=capability-key",
+            "controlPlane.restoreCapabilityKeySecret.onepassword.itemPath=vaults/x/items/restore-key",
+        ],
+    )
+
+    item_docs = [
+        doc
+        for kind, name, doc in _docs(rendered)
+        if kind == "OnePasswordItem"
+        and name == "restore-key-embervm-restore-capability-key"
+    ]
+    assert len(item_docs) == 1
+    assert 'itemPath: "vaults/x/items/restore-key"' in item_docs[0]
+
+    secret_refs = re.findall(
+        r"name:\s*EMBERVM_(?:NODED_)?RESTORE_CAPABILITY_KEY\s+valueFrom:\s+"
+        r"secretKeyRef:\s+name:\s*(\S+)\s+key:\s*(\S+)",
+        rendered,
+        re.S,
+    )
+    assert secret_refs
+    assert set(secret_refs) == {
+        ("restore-key-embervm-restore-capability-key", "capability-key")
+    }
+
+
 def test_noded_admission_model_defaults_observed_and_accepts_reserved():
     chart = _chart_dir()
 
@@ -519,6 +642,7 @@ def test_noded_admission_model_defaults_observed_and_accepts_reserved():
             {
                 "EMBERVM_NODED_ADMISSION_MODEL": "observed",
                 "EMBERVM_NODED_VM_OVERHEAD_MIB": "0",
+                "EMBERVM_NODED_MEM_REJECT_FLOOR_MIB": "512",
             },
         ),
         (
@@ -526,10 +650,12 @@ def test_noded_admission_model_defaults_observed_and_accepts_reserved():
                 "bricks.enabled=true",
                 "noded.admissionModel=reserved",
                 "noded.vmOverheadMib=512",
+                "noded.memRejectFloorMib=256",
             ],
             {
                 "EMBERVM_NODED_ADMISSION_MODEL": "reserved",
                 "EMBERVM_NODED_VM_OVERHEAD_MIB": "512",
+                "EMBERVM_NODED_MEM_REJECT_FLOOR_MIB": "256",
             },
         ),
     ]
@@ -570,6 +696,19 @@ def test_noded_max_live_vms_accepts_per_class_override(tmp_path: Path):
         assert rendered_env, "noded pod is missing EMBERVM_NODED_MAX_LIVE_VMS"
         return rendered_env.group(1)
 
+    def controller_classes(rendered: str) -> dict[str, dict]:
+        values = []
+        for document in yaml.safe_load_all(rendered):
+            if not isinstance(document, dict) or document.get("kind") != "Deployment":
+                continue
+            containers = document["spec"]["template"]["spec"].get("containers", [])
+            for container in containers:
+                for entry in container.get("env", []):
+                    if entry.get("name") == "EMBERVM_BRICK_CLASSES":
+                        values.append(json.loads(entry["value"]))
+        assert len(values) == 1, "expected one control-plane brick class environment"
+        return {entry["name"]: entry for entry in values[0]}
+
     default_render = _render(
         "noded-max-live-default",
         [chart / "values.yaml"],
@@ -584,6 +723,14 @@ def test_noded_max_live_vms_accepts_per_class_override(tmp_path: Path):
         "default max-live render produced no brick Deployment; this test is inert"
     )
     assert all(max_live_vms(brick) == fleet_value for brick in default_bricks)
+    assert all(
+        entry["slots"] == int(fleet_value)
+        for entry in controller_classes(default_render).values()
+    )
+    assert all(
+        entry["desired"] == 0 and entry["mem_reject_floor_mib"] == 512
+        for entry in controller_classes(default_render).values()
+    )
 
     override = tmp_path / "per-class-max-live.yaml"
     override.write_text(
@@ -621,7 +768,7 @@ def test_noded_max_live_vms_accepts_per_class_override(tmp_path: Path):
     override_render = _render(
         "noded-max-live-override",
         [chart / "values.yaml", override],
-        [f"noded.maxLiveVMs={fleet_value}"],
+        [f"noded.maxLiveVMs={fleet_value}", "noded.memRejectFloorMib=256"],
     )
     override_bricks = {
         name: doc
@@ -638,6 +785,14 @@ def test_noded_max_live_vms_accepts_per_class_override(tmp_path: Path):
         else:
             expected = fleet_value
         assert max_live_vms(deployment) == expected
+
+    declared_classes = controller_classes(override_render)
+    assert declared_classes["small"]["slots"] == 3
+    assert declared_classes["large"]["slots"] == int(fleet_value)
+    assert declared_classes["open"]["slots"] == 0
+    assert all(
+        entry["mem_reject_floor_mib"] == 256 for entry in declared_classes.values()
+    )
 
     for rendered in (default_render, override_render):
         wildcard = [
@@ -1348,7 +1503,9 @@ _TOKEN_REVIEW_RULE = {
     "verbs": ["create"],
 }
 _POD_RULE = {"apiGroups": [""], "resources": ["pods"], "verbs": ["list", "patch"]}
+_NODE_INVENTORY_RULE = {"apiGroups": [""], "resources": ["nodes"], "verbs": ["list"]}
 _DEFAULT_CLUSTER_RULES = [
+    _NODE_INVENTORY_RULE,
     *_WORKLOAD_RULES,
     _TOKEN_REVIEW_RULE,
     {"apiGroups": [""], "resources": ["secrets"], "verbs": ["get"]},
@@ -1551,7 +1708,12 @@ def test_namespace_rbac_effective_grants_and_subject_boundaries(
         ]
     )
     expected = _role_pair(
-        "ClusterRole", name, None, [_TOKEN_REVIEW_RULE], name, "recovery"
+        "ClusterRole",
+        name,
+        None,
+        [_NODE_INVENTORY_RULE, _TOKEN_REVIEW_RULE],
+        name,
+        "recovery",
     )
     expected.update(
         _role_pair(
@@ -1575,7 +1737,7 @@ def test_namespace_rbac_effective_grants_and_subject_boundaries(
         )
     )
     assert objects == expected
-    cp_grants = [(None, _TOKEN_REVIEW_RULE)] + [
+    cp_grants = [(None, _NODE_INVENTORY_RULE), (None, _TOKEN_REVIEW_RULE)] + [
         ("recovery", rule) for rule in runtime_rules
     ]
     if mode == "full":
@@ -1620,7 +1782,11 @@ def test_namespace_rbac_omits_scale_rule_when_no_class_deployments(
     objects = _rbac_objects(documents)
     grants = _effective_grants(objects, "recovery-lane", "recovery")
     assert grants == sorted(
-        [(None, _TOKEN_REVIEW_RULE), *[("recovery", rule) for rule in _WORKLOAD_RULES]],
+        [
+            (None, _NODE_INVENTORY_RULE),
+            (None, _TOKEN_REVIEW_RULE),
+            *[("recovery", rule) for rule in _WORKLOAD_RULES],
+        ],
         key=repr,
     )
     assert not any(
@@ -1747,7 +1913,7 @@ def test_recovery_namespace_rbac_matches_contract(recovery_render) -> None:
         "ClusterRole",
         _RECOVERY_CP,
         None,
-        [_TOKEN_REVIEW_RULE],
+        [_NODE_INVENTORY_RULE, _TOKEN_REVIEW_RULE],
         _RECOVERY_CP,
         _RECOVERY_NS,
     )
@@ -1773,7 +1939,8 @@ def test_recovery_namespace_rbac_matches_contract(recovery_render) -> None:
     )
     assert objects == expected
     assert _effective_grants(objects, _RECOVERY_CP, _RECOVERY_NS) == sorted(
-        [(None, _TOKEN_REVIEW_RULE)] + [(_RECOVERY_NS, rule) for rule in runtime_rules],
+        [(None, _NODE_INVENTORY_RULE), (None, _TOKEN_REVIEW_RULE)]
+        + [(_RECOVERY_NS, rule) for rule in runtime_rules],
         key=repr,
     )
     service_accounts = {

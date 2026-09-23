@@ -20,6 +20,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Integer,
+    Index,
     String,
     UniqueConstraint,
     text,
@@ -604,6 +605,10 @@ class AppUser(SQLModel, table=True):
             name="app_user_email_normalized_chk",
         ),
         UniqueConstraint("email", name="app_user_email_key"),
+        UniqueConstraint("issuer", "subject", name="app_user_identity_key"),
+        CheckConstraint(
+            "(issuer IS NULL) = (subject IS NULL)", name="app_user_identity_pair_chk"
+        ),
         {"schema": "grimoire", "extend_existing": True},
     )
 
@@ -612,6 +617,43 @@ class AppUser(SQLModel, table=True):
         sa_column=_uuid_column(primary_key=True),
     )
     email: str = Field(sa_column=Column(String, nullable=False))
+    issuer: str | None = Field(default=None, sa_column=Column(String))
+    subject: str | None = Field(default=None, sa_column=Column(String))
+    display_name: str | None = None
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True)),
+    )
+
+
+class CampaignInvitation(SQLModel, table=True):
+    __tablename__ = "campaign_invitation"
+    __table_args__ = (
+        Index("campaign_invitation_inbox_idx", "invitee_id", "status"),
+        UniqueConstraint(
+            "campaign_id", "invitee_id", name="campaign_invitation_recipient_key"
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'accepted', 'declined', 'revoked')",
+            name="campaign_invitation_status_chk",
+        ),
+        {"schema": "grimoire", "extend_existing": True},
+    )
+
+    id: str | None = Field(
+        default_factory=lambda: str(uuid.uuid4()),
+        sa_column=_uuid_column(primary_key=True),
+    )
+    campaign_id: str = Field(
+        sa_column=_uuid_column(nullable=False, fk="grimoire.campaign.id")
+    )
+    invitee_id: str = Field(
+        sa_column=_uuid_column(nullable=False, fk="grimoire.app_user.id")
+    )
+    invited_by_id: str = Field(
+        sa_column=_uuid_column(nullable=False, fk="grimoire.app_user.id")
+    )
+    status: str = Field(default="pending", sa_column=Column(String, nullable=False))
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         sa_column=Column(DateTime(timezone=True)),
@@ -631,6 +673,10 @@ class Campaign(SQLModel, table=True):
     )
     name: str
     dm_name: str | None = None
+    owner_app_user_id: str | None = Field(
+        default=None,
+        sa_column=_uuid_column(fk="grimoire.app_user.id"),
+    )
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         sa_column=Column(DateTime(timezone=True)),

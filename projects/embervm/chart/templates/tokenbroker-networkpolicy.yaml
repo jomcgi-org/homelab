@@ -31,6 +31,10 @@ spec:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: {{ .Release.Namespace | quote }}
             app.kubernetes.io/component: noded-brick
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: monolith
+            app.kubernetes.io/name: monolith
+            app.kubernetes.io/component: app
       toPorts: [{ ports: [{ port: {{ .Values.tokenBroker.spiffe.tlsPort | quote }}, protocol: TCP }] }]
     {{- end }}
     {{- if .Values.tokenBroker.githubApp.enabled }}

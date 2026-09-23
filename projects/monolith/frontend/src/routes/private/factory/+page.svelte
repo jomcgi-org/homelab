@@ -44,6 +44,7 @@
   const recent = $derived(board?.recent ?? []);
   const policy = $derived(board?.policy ?? null);
   const intake = $derived(board?.intake ?? null);
+  const problemIssues = $derived(board?.problem_issues ?? null);
   const lanes = $derived(board?.lanes ?? null);
   const routing = $derived(board?.review_routing ?? null);
   // Only worth a word when review is not on the model the policy asked for,
@@ -202,6 +203,14 @@
             : "off"}</span
         >
       </div>
+      <div>
+        <span class="k">problem issues</span>
+        <span class="v"
+          >{problemIssues?.status === "on"
+            ? `${problemIssues.writes_started_today}/${problemIssues.max_per_24_hours} writes / 24h`
+            : "off"}</span
+        >
+      </div>
     </section>
 
     <p class="policy-line">
@@ -222,6 +231,14 @@
             ? `admitted #${intake.last_admitted.detail?.issue_number ?? "?"}`
             : "found nothing"} at {new Date(
             intakeSeen,
+          ).toLocaleTimeString()}</span
+        >
+      {/if}
+      {#if problemIssues?.last_event}
+        <span
+          >problem issues {problemIssues.last_event.action.replaceAll("_", " ")} at
+          {new Date(
+            problemIssues.last_event.created_at,
           ).toLocaleTimeString()}</span
         >
       {/if}

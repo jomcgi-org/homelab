@@ -17,7 +17,7 @@ defmodule Embervm.StatefulManagerTest do
 
   alias Embervm.{NodeCapacity, NodeRegistry, StatefulManager, StatefulStore, WorkloadCatalog}
   alias Embervm.OpLog.SQLite
-  alias Embervm.Node.V1.{NodeStatus, StartStatefulResponse, StatefulVm}
+  alias Embervm.Node.V1.{NodeStatus, StartStatefulResponse, StatefulVm, Volume}
 
   defmodule FakePublisher do
     use GenServer
@@ -2363,6 +2363,69 @@ defmodule Embervm.StatefulManagerTest do
 
     assert {:ok, %{deleted: true}} = StatefulManager.delete_volume(ctx.mgr, "wl-a")
     assert Enum.sort(Agent.get(deleted, & &1)) == ["node-1", "node-2", "node-3"]
+    assert StatefulStore.get_volume(ctx.store, "wl-a") == nil
+  end
+
+  test "delete_volume cannot cross-route between swapped reported node names" do
+    {:ok, deleted} = Agent.start_link(fn -> [] end)
+    clock = fn -> 1_000 end
+
+    ctx =
+      start_stack(
+        clock: clock,
+        grace_registry: true,
+        channel_fun: instance_only_channel_fun(),
+        delete_volume_fun: fn instance_id, req ->
+          Agent.update(deleted, &[{instance_id, req.workload} | &1])
+          {:ok, %{}}
+        end,
+        evict_artifact_fun: fn _instance_id, _req -> {:ok, %{}} end
+      )
+
+    for {configured_id, pod_uid} <- [{"node-a", "pod-a"}, {"node-b", "pod-b"}] do
+      :ok =
+        NodeRegistry.register(ctx.registry, %{
+          "node" => configured_id,
+          "pod_uid" => pod_uid,
+          "address" => "#{configured_id}.test:9090"
+        })
+    end
+
+    :ok =
+      NodeRegistry.inject_status(ctx.registry, "node-a/pod-a", %NodeStatus{
+        node_id: "node-b",
+        volumes: [
+          %Volume{workload: "wl-a", generation: 1, size_bytes: 10, allocated_bytes: 1}
+        ]
+      })
+
+    :ok =
+      NodeRegistry.inject_status(ctx.registry, "node-b/pod-b", %NodeStatus{
+        node_id: "node-a",
+        volumes: [
+          %Volume{workload: "wl-b", generation: 1, size_bytes: 10, allocated_bytes: 1}
+        ]
+      })
+
+    assert {:ok, %{instance_id: "node-a/pod-a", reported_node_id: "node-b"}} =
+             NodeCapacity.fetch(ctx.cap_table, "node-a")
+
+    assert {:ok, %{instance_id: "node-b/pod-b", reported_node_id: "node-a"}} =
+             NodeCapacity.fetch(ctx.cap_table, "node-b")
+
+    stateful_workload(ctx, "wl-a")
+
+    StatefulStore.upsert_volume(ctx.store, "wl-a", %{
+      node_id: "node-a",
+      generation: 1,
+      size_bytes: 10,
+      allocated_bytes: 1
+    })
+
+    assert {:ok, %{deleted: true, unreachable: []}} =
+             StatefulManager.delete_volume(ctx.mgr, "wl-a")
+
+    assert Agent.get(deleted, & &1) == [{"node-a/pod-a", "wl-a"}]
     assert StatefulStore.get_volume(ctx.store, "wl-a") == nil
   end
 

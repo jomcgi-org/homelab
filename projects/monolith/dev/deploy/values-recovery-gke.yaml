@@ -94,6 +94,10 @@ semgrep:
     itemPath: ""
 tokenBroker:
   url: "http://embervm-dev-embervm-tokenbroker.embervm-dev:8080"
+  spiffe:
+    enabled: false
+    url: "https://embervm-dev-embervm-tokenbroker.embervm-dev.svc:8443"
+    serverId: "spiffe://embervm.jomcgi.dev/ns/embervm-dev/sa/embervm-dev-embervm-tokenbroker"
 sandbox:
   workloadPrefix: "sandbox-dev-"
 emberSynthetic:
@@ -151,7 +155,6 @@ imgproxySigning:
 
 frontend:
   otelCollectorUrl: ""
-  qwenFlashApiBase: "http://inference.inference:8080/v1"
 tailnet:
   enabled: false
 cfIngress:

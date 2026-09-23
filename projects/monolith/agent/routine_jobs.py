@@ -436,19 +436,38 @@ def complete_job(
     """Mark a job complete.
 
     Sets ``last_run_at = now()``, ``last_status``, and (if provided)
-    ``last_summary``; clears the lock fields. If ``interval_secs`` is non-null
-    on the row, advances ``next_run_at`` by that many seconds from now.
-    One-shot rows clear ``next_run_at`` and remain idle until ``trigger_job``
-    re-arms them.
+    ``last_summary``; clears the lock fields. ``defer_seconds`` schedules the
+    next run from now in the same update. Otherwise, a non-null ``interval_secs``
+    advances ``next_run_at`` by that many seconds, while one-shot rows clear it
+    and remain idle until ``trigger_job`` re-arms them.
     """
     engine = get_engine()
     sqlite = engine.dialect.name == "sqlite"
     table = "routine_jobs" if sqlite else "claude_agent.routine_jobs"
     now_expr = "CURRENT_TIMESTAMP" if sqlite else "now()"
-    next_expr = (
+    recurring_next_expr = (
         "datetime(CURRENT_TIMESTAMP, '+' || interval_secs || ' seconds')"
         if sqlite
         else "now() + (interval_secs || ' seconds')::interval"
+    )
+    deferred_next_expr = (
+        "datetime(CURRENT_TIMESTAMP, '+' || :defer_seconds || ' seconds')"
+        if sqlite
+        else "now() + (:defer_seconds || ' seconds')::interval"
+    )
+    next_run_expr = (
+        deferred_next_expr
+        if defer_seconds is not None
+        else f"""
+               CASE
+                   WHEN interval_secs IS NOT NULL
+                   THEN {recurring_next_expr}
+                   ELSE NULL
+               END
+        """
+    )
+    ownership_predicate = (
+        " AND locked_by = :expected_holder" if expected_holder is not None else ""
     )
     sql = text(
         f"""
@@ -458,37 +477,27 @@ def complete_job(
                last_summary = COALESCE(:summary, last_summary),
                locked_by = NULL,
                locked_at = NULL,
-               next_run_at = CASE
-                   WHEN interval_secs IS NOT NULL
-                   THEN {next_expr}
-                   ELSE NULL
-               END
+               next_run_at = {next_run_expr}
          WHERE name = :name AND routine_kind != '_drainer-worker'
            AND (last_status IS NULL OR last_status NOT IN (:unknown_outcome, 'factory_stopped'))
+           {ownership_predicate}
         """
     )
     with Session(get_engine()) as session:
-        if not lock_claim(session, name, expected_holder):
-            return False
+        params = {
+            "name": name,
+            "status": status,
+            "summary": summary,
+            "unknown_outcome": UNKNOWN_INVOCATION,
+        }
+        if defer_seconds is not None:
+            params["defer_seconds"] = defer_seconds
+        if expected_holder is not None:
+            params["expected_holder"] = expected_holder
         result = session.execute(
             sql,
-            {
-                "name": name,
-                "status": status,
-                "summary": summary,
-                "unknown_outcome": UNKNOWN_INVOCATION,
-            },
+            params,
         )
-        if result.rowcount and defer_seconds is not None:
-            deferred = (
-                "datetime(CURRENT_TIMESTAMP, '+' || :seconds || ' seconds')"
-                if sqlite
-                else "now() + (:seconds || ' seconds')::interval"
-            )
-            session.execute(
-                text(f"UPDATE {table} SET next_run_at={deferred} WHERE name=:name"),
-                {"name": name, "seconds": defer_seconds},
-            )
         if result.rowcount and deregister:
             retention = (
                 f"AND NOT {_repo_freshness_sql('candidate', sqlite=sqlite)}"

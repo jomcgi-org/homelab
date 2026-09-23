@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import time
 from datetime import datetime, timezone
 
 import httpx
+
+from factory.execution import broker_client
 
 logger = logging.getLogger(__name__)
 
@@ -45,8 +48,12 @@ def _available_result(payload: object) -> dict:
     return {
         "available": True,
         "providers": payload["providers"],
-        # Per-grant views (one account each) when the broker reports them.
+        # Per-grant views (one account each). New brokers enumerate configured
+        # but unobserved quota grants too, and explicitly mark that inventory
+        # complete so admission never trusts an older partial response.
         "grants": grants if isinstance(grants, dict) else {},
+        "grants_complete": payload.get("grants_complete") is True,
+        "grants_valid": isinstance(grants, dict),
         "fetched_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -97,8 +104,7 @@ async def fetch_provider_quota(*, force: bool = False) -> dict:
         return _store_result(now, _unavailable_result(str(exc), exc))
 
     try:
-        async with httpx.AsyncClient(timeout=5) as client:
-            response = await client.get(url)
+        response = await broker_client.request("GET", url, timeout=5)
         result = _classify(response)
     # nosemgrep: no-broad-except-swallow
     except Exception as exc:  # noqa: BLE001
@@ -119,8 +125,7 @@ def fetch_provider_quota_sync(*, force: bool = False) -> dict:
         return _store_result(now, _unavailable_result(str(exc), exc))
 
     try:
-        with httpx.Client(timeout=5) as client:
-            response = client.get(url)
+        response = broker_client.request_sync("GET", url, timeout=5)
         result = _classify(response)
     # nosemgrep: no-broad-except-swallow
     except Exception as exc:  # noqa: BLE001
@@ -149,55 +154,131 @@ def _headline_window(provider: str, windows: object) -> dict | None:
     )
 
 
+def _active_windows(windows: object) -> list[dict]:
+    """Retain every non-expired window and mark unusable evidence explicitly."""
+    if not isinstance(windows, list):
+        return []
+    active = []
+    for window in windows:
+        if not isinstance(window, dict):
+            active.append(
+                {
+                    "name": None,
+                    "used_percent": None,
+                    "resets_at": None,
+                    "usable": False,
+                }
+            )
+            continue
+        if window.get("expired") is True:
+            continue
+        name = window.get("name")
+        used = window.get("used_percent")
+        usable = (
+            isinstance(name, str)
+            and bool(name)
+            and isinstance(used, (int, float))
+            and not isinstance(used, bool)
+            and math.isfinite(float(used))
+            and 0.0 <= float(used) <= 100.0
+            and window.get("expired") in (None, False)
+        )
+        active.append(
+            {
+                "name": name if isinstance(name, str) and name else None,
+                "used_percent": float(used)
+                if isinstance(used, (int, float))
+                and not isinstance(used, bool)
+                and math.isfinite(float(used))
+                else None,
+                "resets_at": window.get("resets_at"),
+                "usable": usable,
+            }
+        )
+    return active
+
+
 def _preferred_window_name(provider: str) -> str:
     return "primary" if provider == "codex" else "5h"
 
 
-def summarise_grants(grants: object) -> dict:
-    """Summarise each reporting grant like a provider, keyed by grant name."""
+def summarise_grants(grants: object) -> tuple[dict, dict[str, bool]]:
+    """Summarise grants and retain provider-scoped inventory validity."""
+    providers = ("codex", "claude")
+    validity = {provider: isinstance(grants, dict) for provider in providers}
     if not isinstance(grants, dict):
-        return {}
+        return {}, validity
     summary = {}
     for name, value in grants.items():
-        if not isinstance(value, dict) or not value.get("observed", False):
+        if not isinstance(value, dict):
+            # Without a provider this entry could describe either quota class.
+            # Keep the valid siblings, but neither class may trust completeness.
+            validity = {provider: False for provider in providers}
             continue
         provider = value.get("provider")
-        if provider not in ("codex", "claude"):
+        if not isinstance(provider, str) or not provider:
+            validity = {known: False for known in providers}
             continue
-        summary[name] = {
-            **_summarise_view(provider, value),
-            "grant": name,
-            "provider": provider,
-        }
-    return summary
+        if provider not in providers:
+            # Non-quota service-account grants are unrelated to this contract.
+            continue
+        if not isinstance(name, str) or not name:
+            validity[provider] = False
+            continue
+        observed = value.get("observed")
+        if observed is True:
+            summary[name] = {
+                **_summarise_view(provider, value),
+                "grant": name,
+                "provider": provider,
+            }
+        elif observed is False:
+            summary[name] = {
+                "grant": name,
+                "provider": provider,
+                "observed": False,
+            }
+        else:
+            validity[provider] = False
+            summary[name] = {
+                "grant": name,
+                "provider": provider,
+                "observed": False,
+                "usable": False,
+            }
+    return summary, validity
 
 
 def summarise(providers: dict) -> dict:
-    """Select the actionable quota window for each observed provider."""
+    """Summarise each observed provider without discarding active windows."""
     summary = {}
     for provider in ("codex", "claude"):
         value = providers.get(provider)
-        if not isinstance(value, dict) or not value.get("observed", False):
+        if not isinstance(value, dict) or value.get("observed") is not True:
             continue
         summary[provider] = _summarise_view(provider, value)
     return summary
 
 
 def _summarise_view(provider: str, value: dict) -> dict:
-    headline = _headline_window(provider, value.get("windows"))
+    raw_windows = value.get("windows")
+    headline = _headline_window(provider, raw_windows)
     used_percent = headline.get("used_percent") if headline is not None else None
     window_name = headline.get("name") if headline is not None else None
     age_seconds = value.get("age_seconds")
+    age_usable = (
+        isinstance(age_seconds, (int, float))
+        and not isinstance(age_seconds, bool)
+        and math.isfinite(float(age_seconds))
+        and float(age_seconds) >= 0.0
+    )
     return {
         "observed": True,
         "exhausted": bool(value.get("exhausted", False)),
         "status": str(value.get("status", "unknown")),
-        "age_seconds": (
-            float(age_seconds)
-            if isinstance(age_seconds, (int, float))
-            and not isinstance(age_seconds, bool)
-            else None
-        ),
+        "age_seconds": (float(age_seconds) if age_usable else None),
+        "windows_observed": isinstance(raw_windows, list) and bool(raw_windows),
+        "windows": _active_windows(raw_windows),
         "headline_window": window_name if isinstance(window_name, str) else None,
         "headline_used_percent": (
             float(used_percent) if isinstance(used_percent, (int, float)) else None

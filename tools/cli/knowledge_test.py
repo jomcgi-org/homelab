@@ -308,6 +308,7 @@ class TestSearch:
                         "environment:homelab",
                     ),
                     include_unscoped=False,
+                    include_legacy=True,
                 )
         finally:
             del fastapi_app.dependency_overrides[get_embedding_client]
@@ -331,6 +332,7 @@ class TestSearch:
                         "environment:homelab",
                     ),
                     include_unscoped=False,
+                    include_legacy=True,
                 )
         finally:
             del fastapi_app.dependency_overrides[get_embedding_client]

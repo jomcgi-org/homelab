@@ -24,7 +24,9 @@ defmodule Embervm.ApplicationTest do
             "EMBERVM_NODE_ADDRESS",
             "EMBERVM_NODE_ID",
             "EMBERVM_OPLOG_DSN",
-            "EMBERVM_ARTIFACT_ENCRYPTION"
+            "EMBERVM_ARTIFACT_ENCRYPTION",
+            "EMBERVM_STORE_PROBE_INTERVAL_SECONDS",
+            "EMBERVM_BRICK_CLASSES"
           ] do
         {k, System.get_env(k)}
       end
@@ -71,6 +73,47 @@ defmodule Embervm.ApplicationTest do
 
     System.put_env("EMBERVM_ARTIFACT_ENCRYPTION", "0")
     assert App.artifact_encryption_enabled() == false
+  end
+
+  test "store probe interval defaults to five minutes and reads seconds from env" do
+    assert App.store_probe_interval_ms() == 300_000
+
+    System.put_env("EMBERVM_STORE_PROBE_INTERVAL_SECONDS", "17")
+    assert App.store_probe_interval_ms() == 17_000
+
+    System.put_env("EMBERVM_STORE_PROBE_INTERVAL_SECONDS", "0")
+    assert App.store_probe_interval_ms() == 1_000
+
+    System.put_env("EMBERVM_STORE_PROBE_INTERVAL_SECONDS", "not-a-number")
+    assert App.store_probe_interval_ms() == 300_000
+  end
+
+  test "brick class parsing carries zero-replica admission capacity" do
+    System.put_env(
+      "EMBERVM_BRICK_CLASSES",
+      ~s([{"name":"2gi","desired":0,"min":0,"max":4,"usable_mib":1792,"mem_reject_floor_mib":512,"slots":8}])
+    )
+
+    assert App.brick_classes_env() == [
+             %{
+               name: "2gi",
+               desired: 0,
+               min: 0,
+               max: 4,
+               usable_mib: 1_792,
+               mem_reject_floor_mib: 512,
+               slots: 8
+             }
+           ]
+  end
+
+  test "brick class parsing rejects a declaration without an admission cushion" do
+    System.put_env(
+      "EMBERVM_BRICK_CLASSES",
+      ~s([{"name":"2gi","desired":0,"usable_mib":1792,"slots":8}])
+    )
+
+    assert App.brick_classes_env() == nil
   end
 
   # op_log_mod/0 selection (PR-4, #18/#27): EMBERVM_OPLOG_DSN unset or empty

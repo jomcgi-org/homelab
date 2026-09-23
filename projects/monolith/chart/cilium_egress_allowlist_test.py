@@ -343,16 +343,6 @@ def _expected_endpoints(release: str, namespace: str, embervm: str) -> set[tuple
         ),
         ("gpu-operator", (("app", "nvidia-dcgm-exporter"),), tcp(9400)),
         (
-            "tailscale",
-            (
-                ("tailscale.com/managed", "true"),
-                ("tailscale.com/parent-resource", "inference-bridge-freetoken"),
-                ("tailscale.com/parent-resource-ns", "tailscale"),
-                ("tailscale.com/parent-resource-type", "svc"),
-            ),
-            tcp(8090),
-        ),
-        (
             namespace,
             (
                 ("app.kubernetes.io/component", "searxng"),

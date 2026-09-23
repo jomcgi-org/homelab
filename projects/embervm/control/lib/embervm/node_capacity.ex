@@ -28,12 +28,13 @@ defmodule Embervm.NodeCapacity do
   Dial-home registration (ADR embervm/005) makes two noded instances on one node
   simultaneously representable (a surge roll, ADR embervm/012: the draining old
   instance and the fresh one), so capacity, liveness, and dispatch are per
-  instance. Every facts map still carries `:node_id` (the K8s node name, shared
-  across a node's instances) and `:pod_uid`, plus a derived `:instance_id`
-  string (`"node/pod_uid"`) the dispatcher/NodeChannel/BaseBuilder key their own
-  string-keyed maps on. Node-scoped facts (vendor/template, serving subnet,
-  snapshots, volumes) survive an instance turnover because they are re-reported
-  by whichever instance owns the node's substrate.
+  instance. Every facts map carries registration-authoritative `:node_id` (the
+  K8s node name, shared across a node's instances), the daemon status name as
+  diagnostic-only `:reported_node_id`, and `:pod_uid`, plus a derived
+  `:instance_id` string (`"node/pod_uid"`) the dispatcher/NodeChannel/BaseBuilder
+  key their own string-keyed maps on. Node-scoped facts (vendor/template,
+  serving subnet, snapshots, volumes) survive an instance turnover because they
+  are re-reported by whichever instance owns the node's substrate.
   """
 
   @table :embervm_node_capacity
@@ -66,9 +67,11 @@ defmodule Embervm.NodeCapacity do
   Writes one dispatchable INSTANCE's capacity facts, keyed by the
   `{node_id, pod_uid}` tuple (the registry's stable per-instance key, used
   identically by `drop/2` and `fetch/2`); the node name and pod UID are also
-  carried inside the facts map (`:node_id`, `:pod_uid`, `:instance_id`). Only
-  called by the registry for an instance it has already decided is dispatchable,
-  so a row's mere presence is the dispatchable signal.
+  carried inside the facts map (`:node_id`, `:pod_uid`, `:instance_id`). The
+  canonical `:node_id` is the registration identity and therefore agrees with
+  the tuple key; a daemon's status name is retained separately for diagnostics.
+  Only called by the registry for an instance it has already decided is
+  dispatchable, so a row's mere presence is the dispatchable signal.
   """
   @spec put(atom(), {String.t(), String.t()}, map()) :: true
   def put(table \\ @table, instance_key, facts) do

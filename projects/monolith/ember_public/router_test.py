@@ -2,10 +2,8 @@
 
 These mount ONLY the router on a bare FastAPI app and stub every underlying
 handler, so nothing here reaches the embervm control plane or a real Postgres.
-Moved from demos/firecracker_api_test.py (paths updated from
-/api/demos/firecracker/postgres/* to /api/ember/postgres/*); the destructive
-reset endpoint stays private-only and its test stays in
-demos/firecracker_api_test.py.
+The destructive private reset endpoint has been retired. These tests cover the
+public lifecycle without reaching EmberVM or a real Postgres server.
 """
 
 from __future__ import annotations
@@ -974,8 +972,8 @@ def test_public_app_serves_ember_postgres_status():
     assert resp.json() == {"configured": False}
 
 
-def test_public_app_serves_no_demos_route():
-    """The public app must not mount any /api/demos route (demos is private-only)."""
+def test_public_app_serves_no_legacy_demos_route():
+    """The public app must not mount the retired /api/demos route."""
     from app.main_public import app as public_app
 
     paths = {getattr(r, "path", None) for r in public_app.routes}

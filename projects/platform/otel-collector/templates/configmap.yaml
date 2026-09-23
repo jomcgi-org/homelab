@@ -53,8 +53,17 @@ data:
         collection_interval: {{ .Values.httpcheck.intervalSeconds }}s
         targets:
           {{- range .Values.httpcheck.targets }}
+          {{- if kindIs "string" . }}
           - endpoint: {{ . | quote }}
             method: GET
+          {{- else }}
+          - endpoint: {{ .endpoint | quote }}
+            method: {{ .method | default "GET" }}
+            {{- with .tls }}
+            tls:
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
+          {{- end }}
           {{- end }}
       {{- end }}
 

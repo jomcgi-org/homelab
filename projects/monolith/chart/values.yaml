@@ -993,33 +993,6 @@ jobs:
           memory: 256Mi
         limits:
           memory: 256Mi
-    # Semgrep Managed Scans (SMS) scan-perf harvest for the Route B vs SMS
-    # comparison page: sweeps the deployment's findings for scan ids and
-    # upserts new SMS rows into semgrep.scan_perf. This job only POSTs the API
-    # pod's internal trigger; the actual harvest (API +
-    # DB only, no semgrep engine) runs in the API pod. Every 6h since SMS scans
-    # trickle in from PR activity rather than a single daily baseline.
-    - name: semgrep-scan-harvest
-      args: ["semgrep-harvest-trigger"]
-      # Hourly: SMS (managed scans) run per-PR continuously, not just daily, so
-      # an hourly sweep keeps each PR's SMS counterpart fresh next to its
-      # (real-time) Route B row. Load stays minimal: each run is one findings
-      # request plus a scan fetch for only the newly-seen scan ids (already
-      # stored ids are skipped), so most runs make a single call.
-      schedule: "0 * * * *" # hourly
-      concurrencyPolicy: Forbid
-      activeDeadlineSeconds: 120
-      suspend: false
-      env:
-        # The in-cluster API service the trigger POSTs; injected here (not baked
-        # in code) so a release rename cannot silently break the DNS name.
-        MONOLITH_INTERNAL_URL: "http://monolith.monolith.svc.cluster.local:8000"
-      resources:
-        requests:
-          cpu: 50m
-          memory: 128Mi
-        limits:
-          memory: 256Mi
     # Ember synthetic probes run in the API pod and write a pass/fail latch row
     # that the public tier's /api/health reads. The cron only triggers the API
     # endpoint, so its 180s request timeout plus margin covers a cold Postgres
@@ -1115,10 +1088,28 @@ emberSynthetic:
 # code surfaced in the tool response. Empty disables the tools.
 tokenBroker:
   url: "http://embervm-embervm-tokenbroker.embervm.svc.cluster.local:8080"
+  spiffe:
+    # Staged plaintext-retirement client. Keep false until the broker listener
+    # and its exact monolith allowlist are live and verified separately.
+    enabled: false
+    url: "https://embervm-embervm-tokenbroker.embervm.svc:8443"
+    serverId: "spiffe://embervm.jomcgi.dev/ns/embervm/sa/embervm-embervm-tokenbroker"
+    tlsPort: 8443
+    helper:
+      hint: monolith-platform
+      image:
+        repository: ghcr.io/spiffe/spiffe-helper
+        tag: "0.11.0"
+        pullPolicy: IfNotPresent
+      resources:
+        requests:
+          cpu: 5m
+          memory: 16Mi
+        limits:
+          memory: 32Mi
 
 frontend:
   otelCollectorUrl: ""
-  qwenFlashApiBase: "http://inference-bridge-freetoken.tailscale.svc.cluster.local:8090"
   image:
     repository: ghcr.io/jomcgi/homelab/projects/monolith/frontend
     tag: latest
@@ -1442,7 +1433,7 @@ scratchPostgres:
   listenPort: 5400
   # The demo-postgres workload's listenPort (must match the embervm chart's
   # demoPostgres.listenPort). Non-empty renders DEMO_POSTGRES_DSN for the
-  # firecracker demos page's sleep/wake exhibit; empty leaves it unrendered.
+  # public Ember Postgres page's sleep/wake exhibit; empty leaves it unrendered.
   # Same serving Service and password as scratch-postgres, different workload.
   demoListenPort: ""
   # The embervm namespace the serving Service lives in (the DSN host is
@@ -1473,20 +1464,6 @@ faas:
 semgrep:
   # EmberVM control-plane base URL for the semgrep workload.
   embervmUrl: ""
-  # Shadow project override (Route B vs SMS comparison): when set, the relay
-  # reports its App scans under THIS project name instead of the real repo, so
-  # Route B (self-hosted) scans land in a SEPARATE Semgrep project from SMS's
-  # jomcgi/homelab project. Injected as SEMGREP_SHADOW_PROJECT; empty (the
-  # cutover state) makes Route B report to the real project. Plain value, not a
-  # secret.
-  shadowProject: ""
-  # Semgrep AppSec Platform reporting (Route B, self-hosted CI reporting): the
-  # relay (semgrep_scan/report.py) uploads fc-invoke findings using pysemgrep's
-  # own client, authenticated by SEMGREP_APP_TOKEN. Set onepassword.itemPath in
-  # deploy/values.yaml to sync the token from 1Password into a Secret and inject
-  # it as env; empty disables the injection (the relay then has no token).
-  onepassword:
-    itemPath: ""
 
 # Shared provider secret. The values key and Kubernetes Secret retain their
 # historical name to avoid a coordinated rename across consumers.
@@ -1516,11 +1493,23 @@ swarm:
   factoryEnabled: false
   # Consume exact durable Ember teardown proof for stopped/expired attempts.
   factoryReservationReviewEnabled: false
+  # Authenticated issue lifecycle ingress. Keep off until the GitHub hook and
+  # optional 1Password field have been configured and live delivery is checked.
+  factoryGithubWebhookEnabled: false
+  factoryGithubWebhookRepository: jomcgi-org/homelab
+  factoryGithubWebhookTrustedAuthors: jomcgi
   factoryWorkItemPointerEnabled: false
-  factoryWorkItemBaseUrl: https://private.jomcgi.dev
+  factoryWorkItemBaseUrl: https://jomcgi.dev/slop
   factoryConductorFundingEnabled: false
   factoryAutonomousContinuationEnabled: false
   factoryStopSupervisionEnabled: false
+  # Sample transient stop refusals for a fixed bounded window before notifying.
+  # Keep staged off until the brick-roll and restart live checks pass (#6266).
+  factoryTransientStopRetryEnabled: false
+  # Settle only a drained factory continuation whose exact dispatch is proven
+  # permanently lost by the control plane. Staged off until the live checks in
+  # FACTORY.md have exercised the proof and refusal paths.
+  factoryDrainedLossSettlementEnabled: false
   # Stop an exact running attempt after provider-measured spend exceeds its
   # max_cost_usd. Settlement keeps the same post-hoc check as a backstop.
   factoryEnforceCostCeilingEnabled: false
@@ -1530,6 +1519,9 @@ swarm:
   # Flipped on in a follow-up PR after review, never in the PR adding the
   # template, so a behaviour change never rides in on a template change.
   factoryLostBeforeGuestSettlementEnabled: false
+  # Recover an aged reserved start only after the no-session and no-model-use
+  # proof succeeds. Keep staged off until #6285's live checks are complete.
+  factoryLostBeforeSessionSweepEnabled: false
   # Re-read open escalation cards from GitHub in bounded batches. Off until
   # the reconciliation path is reviewed and deliberately enabled.
   factoryEscalationRevalidationEnabled: false
@@ -1629,6 +1621,7 @@ swarm:
 # skips cleanly if the key is absent. S3 endpoint/creds reuse the shared
 # SeaweedFS block emitted alongside stars.
 grimoire:
+  authentikBaseUrl: "http://authentik-server.authentik:80"
   enabled: false
   s3Bucket: "grimoire"
   # Default extraction model (spec #5): DeepSeek V4 Flash via OpenRouter, with
@@ -1847,7 +1840,7 @@ cfIngress:
     # AGENTS: Access consumes the Authorization header at the edge, so a bearer
     # token cannot survive it, and no amount of configuration changes that.
     auth: cloudflare
-    # The GitHub Semgrep webhook route carries NO SecurityPolicy by design:
+    # The GitHub factory webhook route carries NO SecurityPolicy by design:
     # GitHub bypasses Cloudflare Access at the edge via an IP-allowlist Bypass
     # policy and sends no Access JWT, so any policy on it would reject every
     # real delivery. Its gate is the handler's HMAC verification.
@@ -1896,6 +1889,13 @@ cfIngress:
     rateLimit:
       requests: 100
       unit: Minute
+  grimoire:
+    enabled: false
+    issuer: https://auth.jomcgi.dev/application/o/grimoire/
+    jwksUri: https://auth.jomcgi.dev/application/o/grimoire/jwks/
+    clientID: grimoire-friends
+    clientSecretName: grimoire-oidc-client
+    onepasswordItemPath: vaults/k8s-homelab/items/grimoire-oidc
   # The moving planner's lane on friends.jomcgi.dev (ADR security/006), gated to
   # the authentik `family` group. See templates/httproute-friends.yaml.
   #
@@ -2081,16 +2081,6 @@ ciliumPolicy:
         matchLabels:
           app: nvidia-dcgm-exporter
         port: 9400
-      # Tailscale operator proxy for frontend.qwenFlashApiBase. These ownership
-      # labels identify one egress Service proxy rather than the whole namespace.
-      inferenceBridge:
-        namespace: tailscale
-        matchLabels:
-          tailscale.com/managed: "true"
-          tailscale.com/parent-resource-type: svc
-          tailscale.com/parent-resource: inference-bridge-freetoken
-          tailscale.com/parent-resource-ns: tailscale
-        port: 8090
     # Exact DNS names only, all on 443. No suffix wildcard is accepted by the
     # regression test. The list covers the private request paths and enabled
     # leader integrations visible in current code and deploy values. A

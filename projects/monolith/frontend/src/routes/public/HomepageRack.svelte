@@ -124,7 +124,8 @@
           <li>
             Bazel builds every image, ArgoCD ships the repo. <a
               class="more"
-              href="/docs">the pipeline &rarr;</a
+              href="/docs/platform/architecture#4-gitops-and-delivery"
+              >the pipeline &rarr;</a
             >
           </li>
         </ul>

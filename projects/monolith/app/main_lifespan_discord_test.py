@@ -77,8 +77,8 @@ class TestSingletons:
         ):
             await _start_singletons(app)
 
-        # Bot, outbox, scheduled tasks, lock sweep, and seven service loops.
-        assert len(created) == 11
+        # Bot, outbox, scheduled tasks, lock sweep, and eight service loops.
+        assert len(created) == 12
 
     @pytest.mark.asyncio
     async def test_start_singletons_starts_service_tasks_without_token(self):
@@ -99,8 +99,8 @@ class TestSingletons:
         ):
             await _start_singletons(app)
 
-        # Ships, pending-message sweep, titles, KG feed, retention, cd and quota probes.
-        assert len(created) == 7
+        # Ships, pending-message sweep, titles, KG feed, guest cleanup, retention, cd and quota probes.
+        assert len(created) == 8
 
     @pytest.mark.asyncio
     async def test_stop_singletons_closes_and_cancels(self):

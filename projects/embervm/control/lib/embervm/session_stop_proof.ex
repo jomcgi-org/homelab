@@ -7,6 +7,16 @@ defmodule Embervm.SessionStopProof do
   @identity_keys ~w(session_id generation invoke_started_at vm_id node_id instance_id pod_uid boot_id)
   @string_keys ~w(session_id vm_id node_id instance_id pod_uid boot_id)
 
+  @parked_keys ~w(session_id generation invoke_started_at updated_at)
+  def parked_precondition?(value) when is_map(value) do
+    Enum.sort(Map.keys(value)) == Enum.sort(@parked_keys) and
+      is_binary(value["session_id"]) and value["session_id"] != "" and
+      is_integer(value["generation"]) and value["generation"] >= 0 and
+      is_integer(value["invoke_started_at"]) and value["invoke_started_at"] > 0 and
+      is_integer(value["updated_at"]) and value["updated_at"] >= value["invoke_started_at"]
+  end
+  def parked_precondition?(_), do: false
+
   def precondition?(value) when is_map(value) do
     Enum.sort(Map.keys(value)) == Enum.sort(@identity_keys) and
       Enum.all?(@string_keys, &(is_binary(value[&1]) and value[&1] != "")) and

@@ -6,7 +6,7 @@ at the end of their group (routed domains before MCP-only domains) unless a
 route overlap forces otherwise.
 
 This file must NEVER be imported by the public entrypoint: it imports the
-private domains (chat, agent, demos, ...) that are pruned from the public
+private domains (chat, agent, ...) that are pruned from the public
 binary's file set. The public registry lives in app/modules_public.py.
 """
 
@@ -18,7 +18,6 @@ import artifact.module
 import campsites.module
 import chat.module
 import cluster.module
-import demos.module
 import dr_jobs.module
 import ember_public.module
 import faas.module
@@ -57,7 +56,6 @@ ALL_MODULES: tuple[Module, ...] = (
     worldcup.module.MODULE,
     artifact.module.MODULE,
     faas.module.MODULE,
-    demos.module.MODULE,
     ember_public.module.MODULE,
     moving.module.MODULE,
     updates.module.MODULE,

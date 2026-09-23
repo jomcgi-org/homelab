@@ -243,6 +243,14 @@ actions:
 
           python3 ./bazel/tools/ci/central_build_ratchet.py "$base_ref" HEAD
 
+          # ---- 1b. tracked Python test reachability -----------------------
+          # This is intentionally outside affected-target selection. A deleted
+          # registration or a newly unowned test file must fail even when the
+          # remaining graph has no dependency edge through which to select it.
+          # The checker asks Bazel for the evaluated srcs graph, so macros and
+          # globs count while comments, data, and unrelated deps do not.
+          python3 ./bazel/tools/ci/test_source_reachability.py
+
           # ORDER IS LOAD-BEARING: everything that analyses //... runs BEFORE the
           # format stage. `:format` runs gazelle, which generates BUILD files for
           # packages that have none committed, and some of them do not analyse
@@ -344,7 +352,7 @@ actions:
             # generated chart-version commit. BuildBuddy's runner identity
             # cannot bypass the required `pr-checks` status on its own.
             git remote set-url origin "https://x-access-token:${GHCR_TOKEN}@github.com/jomcgi-org/homelab.git"
-            ./bazel/helm/write-back-versions.sh .chart-version-records
+            ./bazel/helm/write-back-versions.sh .chart-version-records --record-publication
           elif [ "$ON_MAIN" = false ]; then
             # PR and merge-queue branches publish nothing. This build proves
             # the images while --remote_download_minimal leaves layers in CAS.

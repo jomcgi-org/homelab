@@ -67,6 +67,10 @@ defmodule Embervm.TestSpanExporter do
   @status_index 13
 
   def capture(fun, expected_names) when is_function(fun, 0) do
+    # The batch processor is global. Drain spans that ended before this capture
+    # before installing its exporter, otherwise a prior test's buffered span can
+    # be exported into this table and be mistaken for an event from fun/0.
+    :ok = :otel_tracer_provider.force_flush()
     table = :ets.new(:embervm_test_spans, [:bag, :public])
     :ok = :otel_batch_processor.set_exporter(:otel_exporter_tab, table)
 

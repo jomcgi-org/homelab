@@ -8,6 +8,14 @@
 {{- if not (kindIs "bool" .Values.sharedS3.enabled) }}
 {{- fail "sharedS3.enabled must be a boolean" }}
 {{- end }}
+{{- if .Values.tokenBroker.spiffe.enabled }}
+{{- if not (hasPrefix "https://" .Values.tokenBroker.spiffe.url) }}
+{{- fail "tokenBroker.spiffe.url must use https when SPIFFE is enabled" }}
+{{- end }}
+{{- if not (hasPrefix "spiffe://" .Values.tokenBroker.spiffe.serverId) }}
+{{- fail "tokenBroker.spiffe.serverId is required when SPIFFE is enabled" }}
+{{- end }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -126,11 +134,23 @@ spec:
             - name: EMBER_SYNTHETIC_BASE_URL
               value: {{ .Values.emberSynthetic.baseUrl | quote }}
             {{- end }}
-            {{- if .Values.tokenBroker.url }}
+            {{- if or .Values.tokenBroker.url .Values.tokenBroker.spiffe.enabled }}
             # OAuth token broker (ADR 048): the agent surface proxies its
             # device-code login flow so a login can run from a chat.
             - name: EMBER_TOKENBROKER_URL
-              value: {{ .Values.tokenBroker.url | quote }}
+              value: {{ ternary .Values.tokenBroker.spiffe.url .Values.tokenBroker.url .Values.tokenBroker.spiffe.enabled | quote }}
+            - name: EMBER_TOKENBROKER_SPIFFE_ENABLED
+              value: {{ .Values.tokenBroker.spiffe.enabled | quote }}
+            {{- if .Values.tokenBroker.spiffe.enabled }}
+            - name: EMBER_TOKENBROKER_SPIFFE_ID
+              value: {{ .Values.tokenBroker.spiffe.serverId | quote }}
+            - name: EMBER_TOKENBROKER_SVID_CERT
+              value: /run/tokenbroker-svid/svid.pem
+            - name: EMBER_TOKENBROKER_SVID_KEY
+              value: /run/tokenbroker-svid/svid_key.pem
+            - name: EMBER_TOKENBROKER_SVID_BUNDLE
+              value: /run/tokenbroker-svid/svid_bundle.pem
+            {{- end }}
             {{- end }}
             {{- if .Values.faas }}
             # FaaS zip-lane function registry (ADR 045 / embervm R1). The read
@@ -228,16 +248,26 @@ spec:
               value: {{ .Values.swarm.factoryEnabled | default false | quote }}
             - name: FACTORY_RESERVATION_REVIEW_ENABLED
               value: {{ .Values.swarm.factoryReservationReviewEnabled | default false | quote }}
+            - name: FACTORY_GITHUB_WEBHOOK_ENABLED
+              value: {{ .Values.swarm.factoryGithubWebhookEnabled | default false | quote }}
+            - name: FACTORY_GITHUB_WEBHOOK_REPOSITORY
+              value: {{ .Values.swarm.factoryGithubWebhookRepository | quote }}
+            - name: FACTORY_GITHUB_WEBHOOK_TRUSTED_AUTHORS
+              value: {{ .Values.swarm.factoryGithubWebhookTrustedAuthors | quote }}
             - name: FACTORY_WORK_ITEM_POINTER_ENABLED
               value: {{ .Values.swarm.factoryWorkItemPointerEnabled | default false | quote }}
             - name: FACTORY_WORK_ITEM_BASE_URL
-              value: {{ .Values.swarm.factoryWorkItemBaseUrl | default "https://private.jomcgi.dev" | quote }}
+              value: {{ .Values.swarm.factoryWorkItemBaseUrl | default "https://jomcgi.dev/slop" | quote }}
             - name: FACTORY_CONDUCTOR_FUNDING_ENABLED
               value: {{ .Values.swarm.factoryConductorFundingEnabled | default false | quote }}
             - name: FACTORY_AUTONOMOUS_CONTINUATION_ENABLED
               value: {{ .Values.swarm.factoryAutonomousContinuationEnabled | default false | quote }}
             - name: FACTORY_STOP_SUPERVISION_ENABLED
               value: {{ .Values.swarm.factoryStopSupervisionEnabled | default false | quote }}
+            - name: FACTORY_TRANSIENT_STOP_RETRY_ENABLED
+              value: {{ .Values.swarm.factoryTransientStopRetryEnabled | default false | quote }}
+            - name: FACTORY_DRAINED_LOSS_SETTLEMENT_ENABLED
+              value: {{ .Values.swarm.factoryDrainedLossSettlementEnabled | default false | quote }}
             - name: FACTORY_ENFORCE_COST_CEILING_ENABLED
               value: {{ .Values.swarm.factoryEnforceCostCeilingEnabled | default false | quote }}
             - name: FACTORY_LOST_BEFORE_GUEST_SETTLEMENT_ENABLED
@@ -292,6 +322,8 @@ spec:
               value: {{ .Values.swarm.decisionTimeoutSeconds | quote }}
             - name: SWARM_CODEX_CONCURRENCY
               value: {{ .Values.swarm.codexConcurrency | quote }}
+            - name: FACTORY_LOST_BEFORE_SESSION_SWEEP_ENABLED
+              value: {{ .Values.swarm.factoryLostBeforeSessionSweepEnabled | quote }}
             - name: SWARM_QUOTA_FLOORS
               value: {{ .Values.swarm.quotaFloors | default dict | toJson | quote }}
             {{- end }}
@@ -320,21 +352,14 @@ spec:
               value: "postgresql://postgres:$(SCRATCH_PG_PASSWORD)@{{ .Values.scratchPostgres.servingService }}.{{ .Values.scratchPostgres.embervmNamespace }}.svc:{{ .Values.scratchPostgres.listenPort }}/scratch"
             {{- end }}
             {{- if .Values.scratchPostgres.demoListenPort }}
-            # Demo-postgres DSN (the demos page's sleep/wake exhibit): the SAME
+            # Demo-postgres DSN (the public Ember Postgres exhibit): the SAME
             # serving Service and password (the demo workload reuses the scratch-
             # postgres Secret on the embervm side), a different stateful listen
-            # port. The demos API connects here so a page visit wakes the demo
+            # port. The public API connects here so a page visit wakes the demo
             # VM, never the real scratch-postgres tenant.
             - name: DEMO_POSTGRES_DSN
               value: "postgresql://postgres:$(SCRATCH_PG_PASSWORD)@{{ .Values.scratchPostgres.servingService }}.{{ .Values.scratchPostgres.embervmNamespace }}.svc:{{ .Values.scratchPostgres.demoListenPort }}/scratch"
             {{- end }}
-            {{- end }}
-            {{- if .Values.semgrep.shadowProject }}
-            # Route B shadow project: the relay reports App scans under this name
-            # instead of the real repo, keeping self-hosted scans in a separate
-            # Semgrep project from SMS for comparison. Unset at cutover.
-            - name: SEMGREP_SHADOW_PROJECT
-              value: {{ .Values.semgrep.shadowProject | quote }}
             {{- end }}
             {{- if .Values.chat.enabled }}
             - name: DISCORD_BOT_TOKEN
@@ -377,48 +402,10 @@ spec:
               value: {{ .Values.chat.changelogs | toJson | quote }}
             {{- end }}
             {{- end }}
-            {{- if .Values.semgrep.onepassword.itemPath }}
-            # Semgrep AppSec Platform token for the Route B CI-reporting relay
-            # (semgrep_scan/report.py). The 1Password item's SEMGREP_API_TOKEN
-            # field is exposed under the env name pysemgrep reads,
-            # SEMGREP_APP_TOKEN.
-            - name: SEMGREP_APP_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "monolith.fullname" . }}-semgrep-app
-                  key: SEMGREP_API_TOKEN
-            # HMAC secret for the GitHub PR webhook (semgrep_scan/router.py, Phase
-            # 2). GitHub signs the request body with it; the handler fails closed
-            # if it is unset. Lives in the SAME semgrep vault item as the App token
-            # (field GITHUB_SEMGREP_WEBHOOK_SECRET), mirrored into this Secret; Joe
-            # sets the identical value in the GitHub hook config. Optional so an
-            # older vault item without the field does not block the pod (the
-            # webhook then 401s every request, which is the fail-closed default).
-            - name: GITHUB_SEMGREP_WEBHOOK_SECRET
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "monolith.fullname" . }}-semgrep-app
-                  key: GITHUB_SEMGREP_WEBHOOK_SECRET
-                  optional: true
-            # HMAC secret for the Semgrep AppSec Platform scan webhook
-            # (semgrep_scan/perf_webhook.py). Semgrep signs the body with it
-            # (X-Semgrep-Signature-256) so we capture every managed scan's
-            # runtime findings-independently. Same semgrep vault item, field
-            # SEMGREP_WEBHOOK_SECRET; Joe sets the identical value in the Semgrep
-            # webhook config. Optional so an older vault item without the field
-            # does not block the pod (the webhook then 401s, the fail-closed
-            # default).
-            - name: SEMGREP_WEBHOOK_SECRET
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "monolith.fullname" . }}-semgrep-app
-                  key: SEMGREP_WEBHOOK_SECRET
-                  optional: true
-            {{- end }}
             {{- if .Values.chat.onepassword.itemPath }}
             # Real GitHub API token for every direct API consumer, including
-            # factory, CD health, knowledge docfix, and Semgrep changed-file
-            # fetches. The monolith's GITHUB_TOKEN env is a kloak: placeholder
+            # factory, CD health, and knowledge docfix. The monolith's GITHUB_TOKEN
+            # env is a kloak: placeholder
             # for guest egress swap, so direct callers use this distinct name.
             # Availability follows the existing chat secret's item path, not an
             # unrelated chat or Semgrep feature switch.
@@ -427,6 +414,14 @@ spec:
                 secretKeyRef:
                   name: {{ include "monolith.fullname" . }}-chat-secrets
                   key: {{ .Values.chat.githubApiTokenSecretKey }}
+            # Optional field in the existing private monolith item. The route
+            # stays disabled by default and fails closed if this field is absent.
+            - name: FACTORY_GITHUB_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "monolith.fullname" . }}-chat-secrets
+                  key: FACTORY_GITHUB_WEBHOOK_SECRET
+                  optional: true
             {{- end }}
             # cd health fault thresholds (issue #4597). The separate writer
             # interval below has an independent 750s reader-staleness constant in
@@ -673,6 +668,14 @@ spec:
             - name: ORCHESTRATOR_TIMEOUT_S
               value: {{ .Values.orchestrator.timeoutSeconds | quote }}
             {{- end }}
+            {{- if .Values.cfIngress.grimoire.enabled }}
+            - name: GRIMOIRE_AUTH_ISSUER
+              value: {{ .Values.cfIngress.grimoire.issuer | quote }}
+            - name: GRIMOIRE_AUTH_AUDIENCE
+              value: {{ .Values.cfIngress.grimoire.clientID | quote }}
+            - name: GRIMOIRE_AUTH_JWKS_URL
+              value: {{ printf "%s/application/o/grimoire/jwks/" .Values.grimoire.authentikBaseUrl | quote }}
+            {{- end }}
             - name: AUTH_AUTHENTIK_JWKS_URL
               value: {{ .Values.auth.authentik.jwksUrl | quote }}
             - name: AUTH_AUTHENTIK_ISSUER
@@ -727,6 +730,44 @@ spec:
           volumeMounts:
             - name: backend-tmp
               mountPath: /tmp
+            {{- if .Values.tokenBroker.spiffe.enabled }}
+            - name: tokenbroker-svid
+              mountPath: /run/tokenbroker-svid
+              readOnly: true
+            {{- end }}
+        {{- if .Values.tokenBroker.spiffe.enabled }}
+        - name: tokenbroker-spiffe-helper
+          image: "{{ .Values.tokenBroker.spiffe.helper.image.repository }}:{{ .Values.tokenBroker.spiffe.helper.image.tag }}"
+          imagePullPolicy: {{ .Values.tokenBroker.spiffe.helper.image.pullPolicy }}
+          args: ["-config", "/etc/spiffe-helper/helper.conf"]
+          ports:
+            - name: spiffe-health
+              containerPort: 8081
+              protocol: TCP
+          livenessProbe:
+            httpGet: { path: /live, port: spiffe-health }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+          readinessProbe:
+            httpGet: { path: /ready, port: spiffe-health }
+            initialDelaySeconds: 1
+            periodSeconds: 2
+            timeoutSeconds: 1
+          resources:
+            {{- toYaml .Values.tokenBroker.spiffe.helper.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: spiffe-workload-api
+              mountPath: /spiffe-workload-api
+              readOnly: true
+            - name: tokenbroker-spiffe-helper-config
+              mountPath: /etc/spiffe-helper
+              readOnly: true
+            - name: tokenbroker-svid
+              mountPath: /run/tokenbroker-svid
+        {{- end }}
         # ADR agents/051: the progress-ingest listener is its own image and
         # port so the EmberVM egress allowlist entry (host:port granular)
         # exposes exactly one write-only route, never the main API on 8000.
@@ -778,8 +819,6 @@ spec:
           env:
             - name: API_BASE
               value: "http://localhost:8000"
-            - name: QWEN_FLASH_API_BASE
-              value: {{ required "frontend.qwenFlashApiBase is required" .Values.frontend.qwenFlashApiBase | quote }}
             {{- if .Values.frontend.otelCollectorUrl }}
             - name: OTEL_COLLECTOR_HTTP_URL
               value: {{ .Values.frontend.otelCollectorUrl | quote }}
@@ -828,3 +867,17 @@ spec:
           emptyDir: {}
         - name: frontend-tmp
           emptyDir: {}
+        {{- if .Values.tokenBroker.spiffe.enabled }}
+        - name: spiffe-workload-api
+          csi:
+            driver: csi.spiffe.io
+            readOnly: true
+        - name: tokenbroker-spiffe-helper-config
+          configMap:
+            name: {{ include "monolith.fullname" . }}-tokenbroker-spiffe-helper
+            defaultMode: 0444
+        - name: tokenbroker-svid
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+        {{- end }}

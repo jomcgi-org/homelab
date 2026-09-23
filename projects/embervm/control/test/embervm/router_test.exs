@@ -60,6 +60,49 @@ defmodule Embervm.RouterTest do
     def list_usage(_server, _opts), do: {:error, :unavailable}
   end
 
+  defmodule StoreProbeOk do
+    def status,
+      do: %{state: :ok, reason: nil, last_ok_at: "2026-09-19T01:02:03Z", last_checked_at: "2026-09-19T01:02:03Z"}
+  end
+
+  defmodule StoreProbeDegraded do
+    def status,
+      do: %{
+        state: :degraded,
+        reason: "{:tls_alert, {:unknown_ca, :certificate_unknown}}",
+        last_ok_at: nil,
+        last_checked_at: "2026-09-19T01:02:03Z"
+      }
+  end
+
+  defmodule StoreProbeDisabled do
+    def status,
+      do: %{state: :disabled, reason: nil, last_ok_at: nil, last_checked_at: "2026-09-19T01:02:03Z"}
+  end
+
+  defmodule StoreProbeUnknown do
+    def status,
+      do: %{state: :unknown, reason: "not checked", last_ok_at: nil, last_checked_at: nil}
+  end
+
+  defmodule StoreProbeUnavailable do
+    def status, do: Embervm.StoreProbe.status(:router_store_probe_is_down)
+  end
+
+  defmodule StoreProbeInFlight do
+    def status, do: Embervm.StoreProbe.status(__MODULE__)
+  end
+
+  defmodule BlockingS3Client do
+    def get(%{owner: owner}, "probe/.keep") do
+      send(owner, {:router_store_probe_started, self()})
+
+      receive do
+        {:finish_router_store_probe, result} -> result
+      end
+    end
+  end
+
   # Fakes for the R2 session routes: the router resolves the session manager/store
   # from app-env (the :session_manager / :session_store_mod keys), so a request test
   # can drive the HTTP surface, and especially the SESSION-TOKEN auth boundary,
@@ -115,6 +158,9 @@ defmodule Embervm.RouterTest do
     # #4306/#4313 review fix 2: TOCTOU guard denial.
     def create(_srv, "wl-lineage-restore-in-flight", _principal, _restore_lineage, _opts),
       do: {:error, {:denied, :lineage_restore_in_flight}}
+
+    def create(_srv, "wl-lineage-relinquishment-failed", _principal, _restore_lineage, _opts),
+      do: {:error, {:denied, {:lineage_relinquishment_failed, {:error, :dial_down}}}}
 
     # #4919: the replay/conflict/invalid-key response shapes, plus wl-idem-echo,
     # which answers successfully ONLY when the router threaded the exact
@@ -196,6 +242,8 @@ defmodule Embervm.RouterTest do
     def invoke(_srv, _id, _req), do: {:error, :not_found}
 
 
+    def destroy_parked(_srv, "s-parked", %{"session_id" => "s-parked"}), do: {:ok, :destroyed}
+    def destroy_parked(_srv, _id, _expected), do: {:error, :stop_precondition_failed}
     def stop_identity(_srv, _id), do: nil
     def destroy(_srv, "s-live", %{"session_id" => "s-live", "invoke_started_at" => nil}), do: {:ok, :destroying}
     def destroy(_srv, _id, _expected), do: {:error, :stop_precondition_failed}
@@ -546,6 +594,7 @@ defmodule Embervm.RouterTest do
       Application.delete_env(:embervm, :artifact_key_service)
       Application.delete_env(:embervm, :artifact_principal)
       Application.delete_env(:embervm, :task_store_mod)
+      Application.delete_env(:embervm, :store_probe)
     end)
 
     :ok
@@ -1004,7 +1053,79 @@ defmodule Embervm.RouterTest do
     Application.put_env(:embervm, :session_manager_server, self())
     resp = req(:get, "/healthz")
     assert resp.status == 200
-    assert resp.body == "ok"
+    assert resp.body =~ ~r/^ok\nstore: (ok|disabled|unknown)$/
+  end
+
+  test "/healthz reports each store state without changing readiness" do
+    Application.put_env(:embervm, :session_manager, RaisingPingSessionManager)
+    Application.put_env(:embervm, :session_manager_server, self())
+
+    for {probe, line} <- [
+          {StoreProbeOk, "store: ok"},
+          {StoreProbeDegraded, "store: degraded {:tls_alert, {:unknown_ca, :certificate_unknown}}"},
+          {StoreProbeDisabled, "store: disabled"},
+          {StoreProbeUnknown, "store: unknown"}
+        ] do
+      Application.put_env(:embervm, :store_probe, probe)
+      resp = req(:get, "/healthz")
+      assert resp.status == 200
+      assert resp.body == "ok\n" <> line
+    end
+  end
+
+  test "/healthz answers within the readiness budget while a store check is in flight" do
+    Application.put_env(:embervm, :session_manager, RaisingPingSessionManager)
+    Application.put_env(:embervm, :session_manager_server, self())
+
+    spec =
+      Supervisor.child_spec(
+        {Embervm.StoreProbe,
+         name: StoreProbeInFlight,
+         client: %{endpoint: "https://storage.example", owner: self()},
+         s3_client: BlockingS3Client,
+         interval_ms: 60_000},
+        id: make_ref()
+      )
+
+    start_supervised!(spec)
+    assert_receive {:router_store_probe_started, task}, 1_000
+    Application.put_env(:embervm, :store_probe, StoreProbeInFlight)
+
+    started_at = System.monotonic_time(:millisecond)
+    resp = req(:get, "/healthz")
+    elapsed_ms = System.monotonic_time(:millisecond) - started_at
+
+    assert resp.status == 200
+    assert resp.body == "ok\nstore: unknown"
+    assert elapsed_ms < 2_000
+
+    send(task, {:finish_router_store_probe, {:error, :not_found}})
+  end
+
+  test "/healthz remains ready and reports the probe as unavailable when it is down" do
+    Application.put_env(:embervm, :session_manager, RaisingPingSessionManager)
+    Application.put_env(:embervm, :session_manager_server, self())
+    Application.put_env(:embervm, :store_probe, StoreProbeUnavailable)
+
+    resp = req(:get, "/healthz")
+
+    assert resp.status == 200
+    assert resp.body =~ "store: degraded probe unavailable:"
+  end
+
+  test "/v1/health/store is authenticated and returns the current observation" do
+    Application.put_env(:embervm, :store_probe, StoreProbeDegraded)
+    assert req(:get, "/v1/health/store").status == 401
+
+    resp = req(:get, "/v1/health/store", auth("good"))
+    assert resp.status == 200
+
+    assert json(resp.body) == %{
+             "state" => "degraded",
+             "reason" => "{:tls_alert, {:unknown_ca, :certificate_unknown}}",
+             "last_ok_at" => nil,
+             "last_checked_at" => "2026-09-19T01:02:03Z"
+           }
   end
 
   test "/livez needs no auth and reports an unresponsive session manager" do
@@ -1040,7 +1161,7 @@ defmodule Embervm.RouterTest do
 
     resp = req(:get, "/healthz")
     assert resp.status == 503
-    assert resp.body == "session manager down"
+    assert resp.body =~ ~r/^session manager down\nstore: (ok|disabled|unknown)$/
   end
 
   test "/livez reports a missing session manager" do
@@ -1640,6 +1761,24 @@ defmodule Embervm.RouterTest do
     assert body["retryable"] == true
   end
 
+  test "restore lineage relinquishment failure is 503, retryable, and hides transport detail" do
+    with_session_fakes()
+
+    resp =
+      req(
+        :post,
+        "/v1/workloads/wl-lineage-relinquishment-failed/sessions",
+        auth("good"),
+        ~s({"restore_lineage": "lineage-x"})
+      )
+
+    assert resp.status == 503
+    body = json(resp.body)
+    assert body["reason"] == "lineage_relinquishment_failed"
+    assert body["retryable"] == true
+    refute resp.body =~ "dial_down"
+  end
+
   test "invoke is gated on the SESSION token: a management token alone is rejected 403" do
     with_session_fakes()
 
@@ -1815,12 +1954,20 @@ defmodule Embervm.RouterTest do
     successful_invoke =
       spans
       |> TestSpanExporter.named("embervm.session.invoke")
-      |> Enum.find(&(TestSpanExporter.attributes(&1)["ember.session_id"] == "s-live"))
+      |> Enum.find(fn span ->
+        attributes = TestSpanExporter.attributes(span)
+        attributes["ember.session_id"] == "s-live" and
+          not Map.has_key?(attributes, "ember.reason")
+      end)
 
     successful_wait =
       spans
       |> TestSpanExporter.named("embervm.session.output_wait")
-      |> Enum.find(&(TestSpanExporter.attributes(&1)["ember.session_id"] == "s-live"))
+      |> Enum.find(fn span ->
+        attributes = TestSpanExporter.attributes(span)
+        attributes["ember.session_id"] == "s-live" and
+          not Map.has_key?(attributes, "ember.reason")
+      end)
 
     assert TestSpanExporter.status_code(successful_invoke) == :unset
     assert TestSpanExporter.status_code(successful_wait) == :unset
@@ -1886,6 +2033,10 @@ defmodule Embervm.RouterTest do
              {:relight_failed, {:pressure_wait_expired, :capacity}}
            ) == true
 
+    assert Embervm.Router.classify_error_as_retryable(
+             {:relight_failed, {:pressure_wait_expired, {:node_unreported, "node-4"}}}
+           ) == true
+
     refute Embervm.Router.classify_error_as_retryable(%GRPC.RPCError{status: 14})
     refute Embervm.Router.classify_error_as_retryable(%GRPC.RPCError{status: 4})
     assert Embervm.Router.classify_error_as_retryable({:relight_failed, {:prime_failed, %GRPC.RPCError{status: 8}}})
@@ -1945,6 +2096,19 @@ defmodule Embervm.RouterTest do
     assert req(:delete, "/v1/sessions/s-error", auth("good")).status == 500
     # Management auth required.
     assert req(:delete, "/v1/sessions/s-live").status == 401
+  end
+
+  test "parked DELETE requires management auth and a complete exact snapshot" do
+    with_session_fakes()
+    expected = %{"session_id" => "s-parked", "generation" => 0, "invoke_started_at" => 10, "updated_at" => 20}
+    body = :json.encode(%{"parked_precondition" => expected}) |> IO.iodata_to_binary()
+    assert req(:delete, "/v1/sessions/s-parked", auth("good"), body).status == 200
+    assert req(:delete, "/v1/sessions/s-live", auth("good"), body).status == 409
+    assert req(:delete, "/v1/sessions/s-parked", [], body).status == 401
+    for bad <- [:null, %{}, Map.put(expected, "generation", true), Map.put(expected, "updated_at", 1)] do
+      invalid = :json.encode(%{"parked_precondition" => bad}) |> IO.iodata_to_binary()
+      assert req(:delete, "/v1/sessions/s-parked", auth("good"), invalid).status == 400
+    end
   end
 
   test "exact DELETE parses null invocation identity and rejects malformed or stale preconditions" do

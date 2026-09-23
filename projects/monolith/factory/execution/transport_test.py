@@ -158,6 +158,115 @@ def test_receipt_observer_limit_preserves_one_synchronous_post(monkeypatch):
     assert len(requests) == 1
 
 
+@pytest.mark.parametrize("outcome", ["response", "failure", "timeout", "cancel"])
+def test_rejected_receipt_preserves_original_post_lifetime(monkeypatch, outcome):
+    from factory.execution import result_receipts
+
+    async def run():
+        started = asyncio.Event()
+        rejected = asyncio.Event()
+        release = asyncio.Event()
+        cancelled = []
+        response = transport.parse_native_turn(
+            {"result": "complete", "terminal_reason": "completed"}, "guest"
+        )
+        failure = httpx.ReadError("original response lost")
+        calls = []
+
+        async def post():
+            calls.append("post")
+            started.set()
+            try:
+                await release.wait()
+                if outcome == "failure":
+                    raise failure
+                return response
+            except asyncio.CancelledError:
+                cancelled.append(True)
+                raise
+
+        async def database(fn, **_identity):
+            if fn is result_receipts.read_active_result:
+                await started.wait()
+                rejected.set()
+                raise result_receipts.ReceiptRejected(409, "executor_ownership_changed")
+            calls.append(fn.__name__)
+            return True
+
+        monkeypatch.setattr(transport, "_receipt_database_call", database)
+        task = asyncio.create_task(
+            transport._observe_native_result(
+                post, {}, None, None, 0.05 if outcome == "timeout" else 5
+            )
+        )
+        try:
+            await asyncio.wait_for(rejected.wait(), 1)
+            if outcome == "cancel":
+                task.cancel()
+            elif outcome != "timeout":
+                release.set()
+            if outcome == "response":
+                assert await task is response
+                assert calls == ["post", "mark_response_observed"]
+            else:
+                error_type = {
+                    "failure": httpx.ReadError,
+                    "timeout": TimeoutError,
+                    "cancel": asyncio.CancelledError,
+                }[outcome]
+                with pytest.raises(error_type) as caught:
+                    await task
+                if outcome == "failure":
+                    assert caught.value is failure
+                assert calls == ["post", "mark_response_observer_released"]
+            assert bool(cancelled) == (outcome in {"timeout", "cancel"})
+            assert not transport._receipt_observers
+        finally:
+            release.set()
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("fallback", ["rejected", "database_error", "invalid_body"])
+def test_final_receipt_read_cannot_replace_original_post_failure(monkeypatch, fallback):
+    from factory.execution import result_receipts
+
+    async def run():
+        polling = asyncio.Event()
+        reads = []
+        failure = httpx.ReadError("original response lost")
+
+        async def post():
+            await polling.wait()
+            raise failure
+
+        async def database(fn, **_identity):
+            if fn is not result_receipts.read_active_result:
+                return True
+            reads.append(True)
+            if len(reads) == 1:
+                polling.set()
+                await asyncio.Event().wait()
+            if fallback == "rejected":
+                raise result_receipts.ReceiptRejected(409, "executor_ownership_changed")
+            if fallback == "database_error":
+                raise RuntimeError("database unavailable")
+            return {"result_body": "invalid JSON"}
+
+        monkeypatch.setattr(transport, "_receipt_database_call", database)
+        with pytest.raises(httpx.ReadError) as caught:
+            await asyncio.wait_for(
+                transport._observe_native_result(post, {}, None, None, 5), 2
+            )
+        assert caught.value is failure
+        assert len(reads) == 2
+        assert not transport._receipt_observers
+
+    asyncio.run(run())
+
+
 def test_receipt_database_cancellation_retains_actual_thread_slots(monkeypatch):
     release = threading.Event()
     both_started = threading.Event()
@@ -2308,6 +2417,38 @@ def test_exact_destroy_preserves_conditional_payload_and_never_retries(
     )
     if status == 202:
         assert asyncio.run(operation)["state"] == "destroying"
+    else:
+        with pytest.raises(EmberVMTransportError) as caught:
+            asyncio.run(operation)
+        assert not isinstance(caught.value, EmberSessionGone)
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("status", [200, 409, 503])
+def test_parked_destroy_preserves_snapshot_and_never_retries(monkeypatch, status):
+    calls = []
+    expected = {
+        "session_id": "s-1",
+        "generation": 0,
+        "invoke_started_at": 123,
+        "updated_at": 456,
+    }
+
+    async def handler(request):
+        calls.append(request)
+        assert request.method == "DELETE"
+        assert request.headers["authorization"] == "management"
+        assert json.loads(request.content) == {"parked_precondition": expected}
+        return httpx.Response(
+            status, json={"session_id": "s-1", "state": "destroyed"}, request=request
+        )
+
+    _client(monkeypatch, handler)
+    operation = transport.EmberVmShimTransport().destroy_session(
+        "s-1", parked_precondition=expected
+    )
+    if status == 200:
+        assert asyncio.run(operation)["state"] == "destroyed"
     else:
         with pytest.raises(EmberVMTransportError) as caught:
             asyncio.run(operation)

@@ -823,6 +823,51 @@ def test_concurrent_duplicate_answer_executes_effects_once(db, github, monkeypat
     assert durable_answer(receipt_id, identity) == result
 
 
+def test_generation_bump_waits_for_claimed_issue_effect(db, github, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    configure()
+    receipt_id = escalate(db, "deliver", task_class="bug-fix", state="escalated")
+    identity = current_decision_id()
+    started, release = Event(), Event()
+    apply = decisions._apply
+
+    def blocked(*args):
+        started.set()
+        assert release.wait(5)
+        return apply(*args)
+
+    monkeypatch.setattr(decisions, "_apply", blocked)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(
+            durable_answer,
+            receipt_id,
+            identity,
+            option="deliver",
+        )
+        try:
+            assert started.wait(5)
+            changed = controls.validate_policy(
+                {
+                    **controls.status()["policy"],
+                    "generation": 1,
+                    "task_budget_usd": 31,
+                }
+            )
+            refused = controls.set_control("configure", "operator", policy=changed)
+            assert refused["reason"] == "generation_retirement_decision_in_flight"
+            assert controls.status()["policy"]["generation"] == 0
+            assert github.writes == []
+        finally:
+            release.set()
+        assert future.result()["state"] == "completed"
+
+    assert controls.set_control("configure", "operator", policy=changed)["ok"]
+    with Session(db) as session:
+        assert session.get(FactoryReceipt, receipt_id).state == "cancelled"
+
+
 def test_interrupted_request_is_never_reexecuted(db, github, monkeypatch):
     receipt_id = escalate(db, "close")
     identity = current_decision_id()
@@ -1202,9 +1247,35 @@ def test_a_chat_the_lane_cannot_take_says_so(db, github):
 def test_a_generation_the_policy_has_moved_past_blocks_the_re_brief(db, github):
     configure(generation=4)
     receipt_id = escalate(db)
-    result = decisions.request_chat(receipt_id, "Which tier?", "joe@example.test")
-    assert result["requeued"] is False
-    assert "generation 0 and the policy is on 4" in result["blocked_by"]
+    with pytest.raises(decisions.DecisionError) as raised:
+        decisions.request_chat(receipt_id, "Which tier?", "joe@example.test")
+    assert raised.value.status == 409
+    assert "receipt generation 0" in raised.value.reason
+    assert "policy is on generation 4" in raised.value.reason
+    assert "no issue changes were made" in raised.value.reason
+    assert github.writes == []
+
+
+def test_stale_durable_decision_is_refused_before_issue_mutation(db, github):
+    configure(generation=4)
+    receipt_id = escalate(db, "deliver")
+    card = controls.escalations(controls.status()["receipts"])[0]
+
+    result = decisions.request_decision(
+        receipt_id,
+        card["decision_id"],
+        "deliver",
+        "joe@example.test",
+        request_key="stale-answer",
+    )
+
+    assert result["state"] == "refused"
+    assert result["status"] == 409
+    assert "receipt generation 0" in result["reason"]
+    assert "policy is on generation 4" in result["reason"]
+    assert "no issue changes were made" in result["reason"]
+    assert github.writes == []
+    assert escalation(db, receipt_id)["resolved"] is None
 
 
 def test_the_escape_group_is_offered_on_every_unresolved_escalation(db, github):

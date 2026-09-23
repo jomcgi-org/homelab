@@ -28,7 +28,7 @@ KG_FEED_QUIET_SECONDS = 1800
 PROMPT_CAP = 8 * 1024
 RESULT_CAP = 12 * 1024
 DOCUMENT_CAP = 400 * 1024
-PROCESS_STARTED_AT = datetime.now(timezone.utc)
+EMBER_SESSIONS_FEED = "ember-sessions"
 
 _kg_feed_task: asyncio.Task | None = None
 
@@ -42,13 +42,50 @@ def _enabled() -> bool:
     }
 
 
-def _since_floor() -> datetime:
+def _configured_since_floor() -> datetime | None:
     configured = os.environ.get("KG_FEED_SINCE", "").strip()
     if not configured:
-        return PROCESS_STARTED_AT
+        return None
     floor = datetime.fromisoformat(configured.replace("Z", "+00:00"))
     if floor.tzinfo is None:
         raise ValueError("KG_FEED_SINCE must be an RFC3339 timestamp with timezone")
+    return floor.astimezone(timezone.utc)
+
+
+def _since_floor(session: Session) -> datetime:
+    configured = _configured_since_floor()
+    if configured is not None:
+        return configured
+
+    table = (
+        "feed_state"
+        if session.get_bind().dialect.name == "sqlite"
+        else "knowledge.feed_state"
+    )
+    row = session.execute(
+        text(f"SELECT first_enabled_at FROM {table} WHERE feed_name = :feed_name"),
+        {"feed_name": EMBER_SESSIONS_FEED},
+    ).first()
+    if row is None:
+        row = session.execute(
+            text(
+                f"""
+                INSERT INTO {table} (feed_name)
+                VALUES (:feed_name)
+                ON CONFLICT (feed_name) DO UPDATE
+                    SET feed_name = excluded.feed_name
+                RETURNING first_enabled_at
+                """
+            ),
+            {"feed_name": EMBER_SESSIONS_FEED},
+        ).one()
+        session.commit()
+
+    floor = row.first_enabled_at
+    if isinstance(floor, str):
+        floor = datetime.fromisoformat(floor.replace("Z", "+00:00"))
+    if floor.tzinfo is None:
+        floor = floor.replace(tzinfo=timezone.utc)
     return floor.astimezone(timezone.utc)
 
 
@@ -67,6 +104,7 @@ def pick_finished_sessions(
     session: Session, limit: int = KG_FEED_BATCH
 ) -> list[tuple[AgentSession, int]]:
     """Return quiet finished sessions with turns beyond their KG watermark."""
+    since_floor = _since_floor(session)
     max_seq = (
         select(AgentTurn.session_id, func.max(AgentTurn.seq).label("max_seq"))
         .group_by(AgentTurn.session_id)
@@ -79,7 +117,7 @@ def pick_finished_sessions(
         .join(max_seq, max_seq.c.session_id == AgentSession.id)
         .where(AgentSession.status.in_(("completed", "warn")))
         .where(~pending)
-        .where(AgentSession.created_at >= _since_floor())
+        .where(AgentSession.created_at >= since_floor)
         .where(AgentSession.last_turn_at < quiet_before)
         .where(AgentSession.node_key.is_distinct_from(KG_NODE_KEY))
         .where(~AgentSession.local_session_id.startswith(SYNTHETIC_SESSION_PREFIX))

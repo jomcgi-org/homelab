@@ -8,6 +8,10 @@ backend:
   autoscaling:
     enabled: false
 
+tokenBroker:
+  spiffe:
+    enabled: false
+
 swarm:
   # Make the bounded reconciler available on the existing GKE stack. Durable
   # operator policy separately controls issue admission and starts disabled.
@@ -18,9 +22,16 @@ swarm:
   factoryConductorFundingEnabled: true
   factoryAutonomousContinuationEnabled: true
   factoryStopSupervisionEnabled: true
+  # Repository-staged for #6266. Live brick-roll, restart, and uncertain DELETE
+  # checks must pass before this hub behavior is enabled.
+  factoryTransientStopRetryEnabled: false
   # Settle attempts lost between "invoke sent" and "guest bound" (#6025):
   # the template landed one PR earlier; this is the behaviour flip.
   factoryLostBeforeGuestSettlementEnabled: true
+  # Recover aged reservations only after the locked no-session proof. The
+  # missing-workflow path also fences delayed creators (#6382); ordinary
+  # retry and funding policy decide what can run after settlement.
+  factoryLostBeforeSessionSweepEnabled: true
   # Release a lane slot held past its deadline by a start no cessation proof
   # can settle (#6025): the template landed in #6156, this is the behaviour
   # flip. Measured, not assumed. On 2026-09-14 four delivery slots were held

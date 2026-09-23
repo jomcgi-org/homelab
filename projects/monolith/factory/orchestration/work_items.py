@@ -2,22 +2,23 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import json
+from datetime import datetime, timezone
 from typing import Any
 
+from core.db import get_engine  # noqa: F401 - for test monkeypatching
 from sqlalchemy import func, update
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
-from core.db import get_engine  # noqa: F401 - for test monkeypatching
-
 from factory.orchestration.factory_controls import (
-    normalize_repo,
     _locked_session,
+    normalize_repo,
     receipt_task_class,
 )
 from factory.orchestration.factory_intake_loop import derive_task_class
 from factory.orchestration.factory_models import (
+    FactoryGithubIssueState,
     FactoryReceipt,
     WorkItem,
     WorkItemEdge,
@@ -50,12 +51,15 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def trust_for_github_author(author: dict | None) -> str:
+def trust_for_github_author(
+    author: dict | None, *, trusted_authors: frozenset[str] | None = None
+) -> str:
     """Map a GitHub user object to the work item's ingestion trust."""
     if not isinstance(author, dict):
         return "untrusted"
     login = author.get("login")
-    if isinstance(login, str) and login.lower() == "jomcgi":
+    configured = trusted_authors or frozenset(("jomcgi",))
+    if isinstance(login, str) and login.lower() in configured:
         return "trusted"
     if author.get("type") == "Bot" or (
         isinstance(login, str)
@@ -110,7 +114,115 @@ def _github_created_at(issue: dict) -> datetime | None:
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
 
-def _github_values(repo: str, issue: dict) -> dict[str, Any]:
+def _same_value(left: Any, right: Any) -> bool:
+    """Compare persisted values without treating SQLite timezone loss as a change."""
+    if isinstance(left, datetime) and isinstance(right, datetime):
+        if left.tzinfo is None:
+            left = left.replace(tzinfo=timezone.utc)
+        if right.tzinfo is None:
+            right = right.replace(tzinfo=timezone.utc)
+        return left.astimezone(timezone.utc) == right.astimezone(timezone.utc)
+    return left == right
+
+
+def github_issue_updated_at(issue: dict) -> datetime | None:
+    """Return GitHub's source-order timestamp without inventing a fallback."""
+    raw = issue.get("updated_at")
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise WorkItemError("GitHub issue updated_at must be an ISO timestamp")
+    try:
+        value = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise WorkItemError("GitHub issue updated_at must be an ISO timestamp") from exc
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def order_github_issue_snapshot(
+    db: Session,
+    repo: str,
+    issue: dict,
+    *,
+    source_ref: str,
+) -> tuple[FactoryGithubIssueState | None, str | None]:
+    """Lock and advance one issue watermark, or reject a non-new snapshot.
+
+    Missing source timestamps never mutate repository state. Equal timestamps
+    are conservatively treated as stale because GitHub supplies no ordering
+    within a tie. A legitimate reopen therefore needs a strictly newer
+    issue.updated_at than the recorded close.
+    """
+    number = _issue_number(issue)
+    source_updated_at = github_issue_updated_at(issue)
+    if source_updated_at is None:
+        return None, "missing_timestamp_ignored"
+    source_state = issue.get("state")
+    if source_state not in ("open", "closed"):
+        raise WorkItemError("GitHub issue state must be open or closed")
+
+    row = db.exec(
+        select(FactoryGithubIssueState)
+        .where(
+            FactoryGithubIssueState.repo == repo,
+            FactoryGithubIssueState.issue_number == number,
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one_or_none()
+    created = False
+    if row is None:
+        candidate = FactoryGithubIssueState(
+            repo=repo,
+            issue_number=number,
+            source_updated_at=source_updated_at,
+            source_state=source_state,
+            source_ref=source_ref,
+            updated_at=_now(),
+        )
+        try:
+            with db.begin_nested():
+                db.add(candidate)
+                db.flush()
+            row = candidate
+            created = True
+        except IntegrityError:
+            # A distinct first delivery for the same issue won the insert.
+            # The savepoint preserves this transaction's delivery claim.
+            row = db.exec(
+                select(FactoryGithubIssueState)
+                .where(
+                    FactoryGithubIssueState.repo == repo,
+                    FactoryGithubIssueState.issue_number == number,
+                )
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            ).one()
+
+    recorded_updated_at = row.source_updated_at
+    if recorded_updated_at.tzinfo is None:
+        recorded_updated_at = recorded_updated_at.replace(tzinfo=timezone.utc)
+    else:
+        recorded_updated_at = recorded_updated_at.astimezone(timezone.utc)
+    if not created and source_updated_at <= recorded_updated_at:
+        return row, "stale_ignored"
+    if not created:
+        row.source_updated_at = source_updated_at
+        row.source_state = source_state
+        row.source_ref = source_ref
+        row.updated_at = _now()
+        db.add(row)
+    return row, None
+
+
+def _github_values(
+    repo: str,
+    issue: dict,
+    *,
+    trusted_authors: frozenset[str] | None = None,
+) -> dict[str, Any]:
     number = _issue_number(issue)
     title = issue.get("title")
     body = issue.get("body") or ""
@@ -130,7 +242,10 @@ def _github_values(repo: str, issue: dict) -> dict[str, Any]:
         "task_class": task_class,
         "labels": sorted(labels),
         "source_ref": source_ref,
-        "trust": trust_for_github_author(issue.get("user") or issue.get("author")),
+        "trust": trust_for_github_author(
+            issue.get("user") or issue.get("author"),
+            trusted_authors=trusted_authors,
+        ),
         "github_created_at": _github_created_at(issue),
     }
 
@@ -151,12 +266,32 @@ def _lock_items(db: Session, *item_ids: int) -> dict[int, WorkItem]:
         .where(WorkItem.id.in_(wanted))
         .order_by(WorkItem.id)
         .with_for_update()
+        .execution_options(populate_existing=True)
     ).all()
     found = {item.id: item for item in rows if item.id is not None}
     missing = [item_id for item_id in wanted if item_id not in found]
     if missing:
         raise WorkItemError(f"work item {missing[0]} not found")
     return found
+
+
+def _lock_github_repo_items(db: Session, repo: str) -> dict[int, WorkItem]:
+    """Lock GitHub work items after source fences, in stable ID order."""
+    rows = db.exec(
+        select(WorkItem)
+        .where(
+            WorkItem.github_repo == repo,
+            WorkItem.github_issue_number.is_not(None),
+        )
+        .order_by(WorkItem.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).all()
+    return {
+        item.github_issue_number: item
+        for item in rows
+        if item.github_issue_number is not None
+    }
 
 
 def _event(
@@ -193,29 +328,21 @@ def _event(
     )
 
 
-def mint_or_sync_from_github(
-    db: Session, repo: str, issue: dict, *, actor: str
+def _mint_or_sync_from_github_locked(
+    db: Session,
+    repo: str,
+    issue: dict,
+    item: WorkItem | None,
+    *,
+    actor: str,
+    trusted_authors: frozenset[str] | None = None,
 ) -> tuple[WorkItem | None, str]:
-    """Mint or refresh one issue while respecting a local authority handoff."""
-    if issue.get("pull_request") is not None:
-        return None, "skipped"
-    try:
-        repo = normalize_repo(repo)
-    except ValueError as exc:
-        raise WorkItemError("invalid GitHub repository") from exc
+    """Apply one snapshot after its source fence and item lock are held."""
     number = _issue_number(issue)
-    item = db.exec(
-        select(WorkItem)
-        .where(
-            WorkItem.github_repo == repo,
-            WorkItem.github_issue_number == number,
-        )
-        .with_for_update()
-    ).one_or_none()
     if item is not None and item.authority == "local":
         return item, "local_untouched"
 
-    values = _github_values(repo, issue)
+    values = _github_values(repo, issue, trusted_authors=trusted_authors)
     now = _now()
     if item is None:
         item = WorkItem(
@@ -256,6 +383,7 @@ def mint_or_sync_from_github(
         return item, "minted"
 
     changes: dict[str, Any] = {}
+    transitioned = False
     labels_changed = item.labels != values["labels"]
     for field in (
         "title",
@@ -267,7 +395,7 @@ def mint_or_sync_from_github(
         "github_created_at",
     ):
         value = values[field]
-        if getattr(item, field) != value:
+        if not _same_value(getattr(item, field), value):
             setattr(item, field, value)
             changes[field] = value.isoformat() if isinstance(value, datetime) else value
     label_state = values["state"]
@@ -301,13 +429,14 @@ def mint_or_sync_from_github(
                     cause_ref=item.source_ref,
                     stated_reason=f"GitHub labels: {', '.join(sorted(values['labels']))}",
                 )
+            transitioned = True
             # Reload the item after transitions
             item = _lock_item(db, item.id)
         else:
             # Label state is unreachable; record it in sync event without changing state
             changes["label_state"] = label_state
     if not changes:
-        return item, "unchanged"
+        return item, "synced" if transitioned else "unchanged"
     item.updated_at = now
     db.add(item)
     _event(
@@ -322,6 +451,59 @@ def mint_or_sync_from_github(
         stated_reason="synced from GitHub issue",
     )
     return item, "synced"
+
+
+def mint_or_sync_from_github(
+    db: Session,
+    repo: str,
+    issue: dict,
+    *,
+    actor: str,
+    trusted_authors: frozenset[str] | None = None,
+    source_ordered: bool = False,
+    source_ref: str | None = None,
+) -> tuple[WorkItem | None, str]:
+    """Mint or refresh one issue while respecting a local authority handoff."""
+    if issue.get("pull_request") is not None:
+        return None, "skipped"
+    try:
+        repo = normalize_repo(repo)
+    except ValueError as exc:
+        raise WorkItemError("invalid GitHub repository") from exc
+    number = _issue_number(issue)
+    ordering_outcome = None
+    if source_ordered:
+        _source_state, ordering_outcome = order_github_issue_snapshot(
+            db,
+            repo,
+            issue,
+            source_ref=source_ref or actor,
+        )
+        # Source fences always precede work-item locks. Locking the repository
+        # set also gives dependency reconciliation the same stable ID order.
+        item = _lock_github_repo_items(db, repo).get(number)
+    else:
+        item = db.exec(
+            select(WorkItem)
+            .where(
+                WorkItem.github_repo == repo,
+                WorkItem.github_issue_number == number,
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).one_or_none()
+    if item is not None and item.authority == "local":
+        return item, "local_untouched"
+    if ordering_outcome is not None:
+        return item, ordering_outcome
+    return _mint_or_sync_from_github_locked(
+        db,
+        repo,
+        issue,
+        item,
+        actor=actor,
+        trusted_authors=trusted_authors,
+    )
 
 
 def transition(
@@ -672,8 +854,13 @@ def close_missing_from_github(
 
 
 def sync_github_work_items(
-    repo: str, issues: list, *, truncated: bool, actor: str
-) -> dict[str, int]:
+    repo: str,
+    issues: list,
+    *,
+    truncated: bool,
+    actor: str,
+    source_ordered: bool = False,
+) -> dict[str, int | str | None]:
     """Synchronize one bounded GitHub listing in a single transaction."""
     try:
         repo = normalize_repo(repo)
@@ -684,25 +871,72 @@ def sync_github_work_items(
         "synced": 0,
         "unchanged": 0,
         "local_untouched": 0,
+        "stale_ignored": 0,
+        "missing_timestamp_ignored": 0,
         "skipped": 0,
         "closed": 0,
         "close_skipped": None,
     }
     open_numbers: set[int] = set()
     with _locked_session() as (db, _control):
-        for issue in issues:
+        indexed_issues: list[tuple[int, dict]] = []
+        for index, issue in enumerate(issues):
             if not isinstance(issue, dict):
                 raise WorkItemError("GitHub issue entries must be objects")
-            item, outcome = mint_or_sync_from_github(db, repo, issue, actor=actor)
+            if issue.get("pull_request") is not None:
+                counts["skipped"] += 1
+                continue
+            _issue_number(issue)
+            indexed_issues.append((index, issue))
+
+        ordering_outcomes: dict[int, str | None] = {}
+        if source_ordered:
+            # Acquire every issue fence in source identity order before taking
+            # any work-item lock. This matches the webhook lock order and
+            # prevents a multi-issue sweep from deadlocking with delivery
+            # dependency reconciliation.
+            for index, issue in sorted(
+                indexed_issues, key=lambda indexed: _issue_number(indexed[1])
+            ):
+                _source_state, ordering_outcomes[index] = order_github_issue_snapshot(
+                    db,
+                    repo,
+                    issue,
+                    source_ref="github:sweep",
+                )
+
+        locked_items = _lock_github_repo_items(db, repo)
+        for index, issue in indexed_issues:
+            number = _issue_number(issue)
+            item = locked_items.get(number)
+            if item is not None and item.authority == "local":
+                outcome = "local_untouched"
+            elif ordering_outcomes.get(index) is not None:
+                outcome = ordering_outcomes[index]
+            else:
+                item, outcome = _mint_or_sync_from_github_locked(
+                    db,
+                    repo,
+                    issue,
+                    item,
+                    actor=actor,
+                )
+                if item is not None:
+                    locked_items[number] = item
             counts[outcome] += 1
             if item is not None:
-                open_numbers.add(_issue_number(issue))
-        if not truncated:
+                open_numbers.add(number)
+        if not truncated and not source_ordered:
             closed_count = close_missing_from_github(
                 db, repo, open_numbers, actor=actor
             )
             if not open_numbers:
                 counts["close_skipped"] = "empty_listing"
             counts["closed"] = closed_count
+        elif source_ordered:
+            # Absence from an open-issue listing carries no issue.updated_at,
+            # so it cannot safely advance the same source-order watermark.
+            # Webhook close events remain authoritative while ingress is on.
+            counts["close_skipped"] = "source_ordered"
         db.commit()
     return counts

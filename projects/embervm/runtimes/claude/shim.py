@@ -713,6 +713,8 @@ CLI_UID_ENV = "EMBER_CLI_UID"
 CLI_GID_ENV = "EMBER_CLI_GID"
 DEFAULT_CLI_UID = 65532
 DEFAULT_CLI_GID = 65532
+# Staged only. No chart or base setting enables this by default.
+MUSE_BINARY_PREFLIGHT_ENV = "EMBER_MUSE_BINARY_PREFLIGHT"
 PERSISTENCE_MOUNT_PATH_ENV = "EMBER_PERSISTENCE_MOUNT_PATH"
 DEFAULT_PERSISTENCE_MOUNT_PATH = "/session"
 GUEST_INIT_PATH = "/usr/local/bin/ember-runtime-guest-init"
@@ -783,6 +785,130 @@ def _cli_privilege_kwargs():
         "user": int(os.environ.get(CLI_UID_ENV, str(DEFAULT_CLI_UID))),
         "group": int(os.environ.get(CLI_GID_ENV, str(DEFAULT_CLI_GID))),
     }
+
+
+def _diagnostic_value(value, limit):
+    """Return a bounded representation for non-secret spawn context."""
+    rendered = repr(value)
+    if len(rendered) <= limit:
+        return rendered
+    return rendered[: limit - 3] + "..."
+
+
+def _identity_has_execute_permission(path_stat, uid, gids):
+    """Check mode-bit execute permission for the identity used by Popen."""
+    mode = path_stat.st_mode
+    if uid == 0:
+        # Linux still requires at least one execute bit when root executes a
+        # regular file. The same rule is sufficient for directory traversal.
+        return bool(mode & 0o111)
+    if path_stat.st_uid == uid:
+        return bool(mode & stat.S_IXUSR)
+    if path_stat.st_gid in gids:
+        return bool(mode & stat.S_IXGRP)
+    return bool(mode & stat.S_IXOTH)
+
+
+def _cli_executable_status(path, privilege_kwargs):
+    """Return whether path is statically executable by the Popen identity."""
+    uid = privilege_kwargs.get("user", os.geteuid())
+    gid = privilege_kwargs.get("group", os.getegid())
+    gids = set(os.getgroups())
+    gids.add(gid)
+    try:
+        executable_stat = os.stat(path)
+    except FileNotFoundError:
+        return False, "missing"
+    except OSError as exc:
+        return False, "stat_errno_%s" % (exc.errno or "unknown")
+    if not stat.S_ISREG(executable_stat.st_mode):
+        return False, "not_regular"
+    if not _identity_has_execute_permission(executable_stat, uid, gids):
+        return False, "not_executable_by_cli_identity"
+
+    # A file execute bit is not enough if the child cannot traverse a parent.
+    # Check both lexical and resolved parents so a symlink cannot hide a
+    # directory that the dropped CLI identity cannot enter.
+    directories = []
+    seen_directories = set()
+    for candidate in (path, os.path.realpath(path)):
+        directory = os.path.dirname(candidate)
+        while directory:
+            if directory not in seen_directories:
+                directories.append(directory)
+                seen_directories.add(directory)
+            parent = os.path.dirname(directory)
+            if parent == directory:
+                break
+            directory = parent
+    for directory in directories:
+        try:
+            directory_stat = os.stat(directory)
+        except OSError as exc:
+            return False, "parent_stat_errno_%s" % (exc.errno or "unknown")
+        if not stat.S_ISDIR(directory_stat.st_mode):
+            return False, "parent_not_directory"
+        if not _identity_has_execute_permission(directory_stat, uid, gids):
+            return False, "parent_not_traversable_by_cli_identity"
+    return True, "executable"
+
+
+def _muse_executable_candidates(executable, child_env, cwd):
+    """Resolve candidates with the cwd and PATH semantics Popen will use."""
+    if os.path.dirname(executable):
+        if os.path.isabs(executable):
+            return [executable]
+        return [os.path.abspath(os.path.join(cwd, executable))]
+
+    search_path = child_env.get("PATH")
+    if search_path is None:
+        search_path = os.defpath
+    candidates = []
+    seen = set()
+    for directory in search_path.split(os.pathsep):
+        directory = directory or cwd
+        if not os.path.isabs(directory):
+            directory = os.path.join(cwd, directory)
+        candidate = os.path.abspath(os.path.join(directory, executable))
+        if candidate not in seen:
+            candidates.append(candidate)
+            seen.add(candidate)
+    return candidates
+
+
+def _require_muse_executable(executable, child_env, cwd, privilege_kwargs):
+    """Raise a bounded StartupError when Muse cannot be executed by the child."""
+    first_unusable = None
+    candidates = _muse_executable_candidates(executable, child_env, cwd)
+    for candidate in candidates:
+        usable, reason = _cli_executable_status(candidate, privilege_kwargs)
+        if usable:
+            return
+        if reason != "missing" and first_unusable is None:
+            first_unusable = (candidate, reason)
+
+    uid = privilege_kwargs.get("user", os.geteuid())
+    gid = privilege_kwargs.get("group", os.getegid())
+    if first_unusable:
+        candidate, reason = first_unusable
+    else:
+        candidate, reason = None, "not_found"
+    path_context = child_env.get("PATH")
+    if path_context is None:
+        path_context = os.defpath
+    raise StartupError(
+        "Muse executable preflight failed before Popen: "
+        "executable=%s PATH=%s candidate=%s reason=%s cli_uid=%s cli_gid=%s "
+        "base_generation=unknown"
+        % (
+            _diagnostic_value(executable, 256),
+            _diagnostic_value(path_context, 512),
+            _diagnostic_value(candidate, 256),
+            reason,
+            uid,
+            gid,
+        )
+    )
 
 
 def _checkout_is_usable(path):
@@ -1561,36 +1687,80 @@ def _bounded_tool_input(value):
     return value
 
 
+_MISSING_TOOL_INPUT = object()
+
+
+def _tool_event_input(event):
+    for key in ("args", "input"):
+        if key in event:
+            return event[key]
+    if "arguments" not in event:
+        return _MISSING_TOOL_INPUT
+    value = event["arguments"]
+    if not isinstance(value, str):
+        return _MISSING_TOOL_INPUT
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError):
+        return _MISSING_TOOL_INPUT
+
+
+def _set_activity_input(item, name, value):
+    if value is _MISSING_TOOL_INPUT or value is None:
+        return
+    if name == "edit":
+        item["file_path"] = _input_value(value, "path")
+    elif name == "write":
+        item["file_path"] = _input_value(value, "path")
+    elif name == "bash":
+        if isinstance(value, dict) and isinstance(value.get("command"), str):
+            item["command"] = value["command"]
+    else:
+        item["input"] = _bounded_tool_input(value)
+
+
+def _new_tool_activity(name, value):
+    normalized_name = name.lower() if isinstance(name, str) else name
+    if normalized_name in ("edit", "write", "bash"):
+        item = {"type": normalized_name}
+    else:
+        item = {"type": "tool_use", "name": name}
+    _set_activity_input(item, normalized_name, value)
+    return item, normalized_name
+
+
 def activity_from_events(events):
     activity = []
+    tools_by_id = {}
     for event in events:
         if not isinstance(event, dict):
             continue
-        if event.get("type") == "tool_execution_start":
-            name = event.get("toolName")
-            value = event.get("args")
-            if name == "edit":
-                item = {"type": "edit"}
-                if value is not None:
-                    item["file_path"] = _input_value(value, "path")
-                activity.append(item)
-            elif name == "write":
-                item = {"type": "write"}
-                if value is not None:
-                    item["file_path"] = _input_value(value, "path")
-                activity.append(item)
-            elif name == "bash":
-                item = {"type": "bash"}
-                if value is not None:
-                    item["command"] = _input_value(value, "command")
-                activity.append(item)
-            else:
-                item = {"type": "tool_use", "name": name}
-                if value is not None:
-                    item["input"] = _bounded_tool_input(value)
-                activity.append(item)
+        event_type = event.get("type")
+        if event_type in ("tool_start", "tool_execution_start"):
+            name = event.get("toolName") or event.get("tool_name")
+            item, normalized_name = _new_tool_activity(name, _tool_event_input(event))
+            activity.append(item)
+            tool_id = (
+                event.get("toolCallId") or event.get("tool_call_id") or event.get("id")
+            )
+            if tool_id is not None:
+                tools_by_id[str(tool_id)] = (item, normalized_name)
             continue
-        if event.get("type") != "assistant":
+        if event_type in (
+            "tool_update",
+            "tool_end",
+            "tool_execution_update",
+            "tool_execution_end",
+        ):
+            tool_id = (
+                event.get("toolCallId") or event.get("tool_call_id") or event.get("id")
+            )
+            known_tool = tools_by_id.get(str(tool_id)) if tool_id is not None else None
+            if known_tool is not None:
+                item, name = known_tool
+                _set_activity_input(item, name, _tool_event_input(event))
+            continue
+        if event_type != "assistant":
             continue
         message = event.get("message")
         if not isinstance(message, dict):
@@ -1614,9 +1784,12 @@ def activity_from_events(events):
                         {"type": "write", "file_path": _input_value(value, "file_path")}
                     )
                 elif name == "Bash":
-                    activity.append(
-                        {"type": "bash", "command": _input_value(value, "command")}
-                    )
+                    item = {"type": "bash"}
+                    if isinstance(value, dict) and isinstance(
+                        value.get("command"), str
+                    ):
+                        item["command"] = value["command"]
+                    activity.append(item)
                 else:
                     activity.append(
                         {
@@ -1629,9 +1802,11 @@ def activity_from_events(events):
                 key = {"Edit": "file_path", "Write": "file_path", "Bash": "command"}[
                     block_type
                 ]
-                activity.append(
-                    {"type": block_type.lower(), key: _input_value(value, key)}
-                )
+                item = {"type": block_type.lower()}
+                input_value = _input_value(value, key)
+                if block_type != "Bash" or isinstance(input_value, str):
+                    item[key] = input_value
+                activity.append(item)
     return activity
 
 
@@ -3344,15 +3519,53 @@ url = %s
                     if event.get("id") == request_id:
                         if "error" in event:
                             raise RuntimeError(self._rpc_error(event))
+                        response = event.get("result", {})
+                        response_turn = response.get("turn", {})
+                        response_turn_id = response_turn.get("id")
+                        if isinstance(response_turn_id, str) and response_turn_id:
+                            # TurnStartResponse names the turn created by this
+                            # request. Capture it even if its turn/started
+                            # notification is ordered before the response.
+                            self._turn_id = response_turn_id
                         continue
                     self._handle_server_request(event)
                     event_type = event.get("method")
                     params = event.get("params", {})
+                    if event_type == "turn/started":
+                        started_id = params.get("turn", {}).get("id")
+                        if (
+                            params.get("threadId") != self.session_id
+                            or not isinstance(started_id, str)
+                            or not started_id
+                            or self._turn_id not in (None, started_id)
+                        ):
+                            continue
+                        # The server can emit turn/started before its response.
+                        self._turn_id = started_id
+                    elif event_type in (
+                        "turn/completed",
+                        "item/started",
+                        "item/completed",
+                        "item/agentMessage/delta",
+                        "thread/tokenUsage/updated",
+                    ):
+                        event_turn_id = (
+                            params.get("turn", {}).get("id")
+                            if event_type == "turn/completed"
+                            else params.get("turnId")
+                        )
+                        # One app-server carries parent and child threads.
+                        # A child's result must not finish or overwrite the
+                        # parent before it writes its factory artifact.
+                        if (
+                            not self._turn_id
+                            or params.get("threadId") != self.session_id
+                            or event_turn_id != self._turn_id
+                        ):
+                            continue
                     legacy_event = self._translate_activity_event(event)
                     events.append(legacy_event)
-                    if event_type == "turn/started":
-                        self._turn_id = params.get("turn", {}).get("id")
-                    elif event_type == "item/agentMessage/delta":
+                    if event_type == "item/agentMessage/delta":
                         delta = params.get("delta", {})
                         text = delta.get("text") if isinstance(delta, dict) else None
                         if isinstance(text, str):
@@ -3534,6 +3747,180 @@ MUSE_USAGE_TIMEOUT_SECONDS = 5.0
 MUSE_USAGE_MAX_PAGES = 20
 MUSE_USAGE_PAGE_SIZE = 100
 MUSE_USAGE_MAX_BYTES = 8 * 1024 * 1024
+
+
+def _muse_tool_events_from_view_events(events, session_id, command_id):
+    """Fold authoritative MSP tool-call revisions into one event per item."""
+    states = []
+    states_by_identity = {}
+    for position, event in enumerate(events):
+        if not isinstance(event, dict):
+            continue
+        if event.get("method") not in (
+            "item/started",
+            "item/updated",
+            "item/completed",
+        ):
+            continue
+        params = event.get("params")
+        if not isinstance(params, dict):
+            continue
+        item = params.get("item")
+        if (
+            params.get("sessionId") != session_id
+            or not isinstance(item, dict)
+            or item.get("kind") != "toolCall"
+            or item.get("turnId") != command_id
+        ):
+            continue
+        identities = [
+            identity
+            for identity in (item.get("itemId"), item.get("callId"))
+            if isinstance(identity, str) and identity
+        ]
+        if not identities:
+            continue
+        state = next(
+            (
+                states_by_identity[identity]
+                for identity in identities
+                if identity in states_by_identity
+            ),
+            None,
+        )
+        if state is None:
+            state = {"identities": [], "revisions": []}
+            states.append(state)
+        for identity in identities:
+            if identity not in state["identities"]:
+                state["identities"].append(identity)
+            states_by_identity[identity] = state
+        state["revisions"].append((position, item))
+
+    tool_events = []
+    for state in states:
+        revisions = sorted(
+            state["revisions"],
+            key=lambda entry: (
+                entry[1].get("revision")
+                if type(entry[1].get("revision")) is int
+                else entry[0]
+            ),
+        )
+        tool_name = None
+        arguments = _MISSING_TOOL_INPUT
+        item_id = None
+        call_id = None
+        for _position, item in revisions:
+            candidate_name = item.get("toolName")
+            if isinstance(candidate_name, str) and candidate_name:
+                tool_name = candidate_name
+            candidate_item_id = item.get("itemId")
+            if isinstance(candidate_item_id, str) and candidate_item_id:
+                item_id = candidate_item_id
+            candidate_call_id = item.get("callId")
+            if isinstance(candidate_call_id, str) and candidate_call_id:
+                call_id = candidate_call_id
+            candidate_arguments = item.get("arguments", _MISSING_TOOL_INPUT)
+            if isinstance(candidate_arguments, str):
+                try:
+                    json.loads(candidate_arguments)
+                except (TypeError, ValueError):
+                    continue
+                arguments = candidate_arguments
+        normalized = {
+            "type": "tool_execution_start",
+            "toolCallId": item_id or call_id,
+        }
+        if item_id is not None:
+            normalized["itemId"] = item_id
+        if call_id is not None:
+            normalized["callId"] = call_id
+        if tool_name is not None:
+            normalized["toolName"] = tool_name
+        if arguments is not _MISSING_TOOL_INPUT:
+            normalized["arguments"] = arguments
+        tool_events.append(normalized)
+    return tool_events
+
+
+def _muse_tool_event_identities(event):
+    return {
+        value
+        for value in (
+            event.get("toolCallId"),
+            event.get("tool_call_id"),
+            event.get("itemId"),
+            event.get("callId"),
+            event.get("id"),
+        )
+        if isinstance(value, str) and value
+    }
+
+
+def _muse_reconciled_activities(live_events, retained_events):
+    """Enrich matching live Bash tools and preserve every unmatched tool."""
+    retained_by_identity = {}
+    for index, event in enumerate(retained_events):
+        for identity in _muse_tool_event_identities(event):
+            retained_by_identity.setdefault(identity, index)
+
+    reconciled = []
+    used_retained = set()
+    for live_event in live_events:
+        match = next(
+            (
+                retained_by_identity[identity]
+                for identity in _muse_tool_event_identities(live_event)
+                if identity in retained_by_identity
+                and retained_by_identity[identity] not in used_retained
+            ),
+            None,
+        )
+        if match is None:
+            reconciled.append(live_event)
+            continue
+        retained_event = retained_events[match]
+        used_retained.add(match)
+        merged = dict(live_event)
+        retained_name = retained_event.get("toolName")
+        if isinstance(retained_name, str) and retained_name:
+            merged["toolName"] = retained_name
+        if "arguments" in retained_event:
+            merged["arguments"] = retained_event["arguments"]
+        reconciled.append(merged)
+
+    for index, retained_event in enumerate(retained_events):
+        if index in used_retained:
+            continue
+        reconciled.append(dict(retained_event))
+    return activity_from_events(reconciled)
+
+
+def _muse_activities_from_view_events(events, session_id, command_id):
+    return _muse_reconciled_activities(
+        [], _muse_tool_events_from_view_events(events, session_id, command_id)
+    )
+
+
+def _muse_live_tool_events(tasks_by_id):
+    events = []
+    for task_id, task in tasks_by_id.items():
+        task_kind = task.get("task_kind")
+        if not isinstance(task_kind, str) or not task_kind.startswith("tool."):
+            continue
+        event = {
+            "type": "tool_execution_start",
+            "toolCallId": task_id,
+            "toolName": task_kind[len("tool.") :],
+        }
+        idempotency_key = task.get("idempotency_key")
+        if isinstance(idempotency_key, str) and idempotency_key.startswith("tool:"):
+            call_id = idempotency_key[len("tool:") :]
+            if call_id:
+                event["callId"] = call_id
+        events.append(event)
+    return events
 
 
 def _muse_usage_projection(events, session_id, command_id, expected_completions):
@@ -3805,6 +4192,7 @@ class MuseProcess:
         self._stdout_queue = None
         self._prompt_file_path = None
         self._mcp_probe_cached = None
+        self._retained_tool_events = None
         # Set on every spawn; None until the first turn resolves a model.
         self._model = None
         self._process_workspace_identity = _workspace_identity(self.workspace)
@@ -3973,14 +4361,28 @@ class MuseProcess:
             self._prompt_file_path,
         ]
         try:
+            child_env = self._child_env()
+            privilege_kwargs = _cli_privilege_kwargs()
+            if child_env.get(MUSE_BINARY_PREFLIGHT_ENV, "").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+                "on",
+            ):
+                _require_muse_executable(
+                    self.executable,
+                    child_env,
+                    self.workspace,
+                    privilege_kwargs,
+                )
             process = subprocess.Popen(
                 command,
                 cwd=self.workspace,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                env=self._child_env(),
-                **_cli_privilege_kwargs(),
+                env=child_env,
+                **privilege_kwargs,
             )
         except Exception:
             try:
@@ -4059,6 +4461,7 @@ class MuseProcess:
         return RuntimeError(error_msg)
 
     def _collect_usage(self, command_id, expected_completions):
+        self._retained_tool_events = None
         unavailable = _muse_usage_projection(
             [], self.session_id, command_id, expected_completions
         )
@@ -4100,13 +4503,21 @@ class MuseProcess:
                 if cursor is not None:
                     params["cursor"] = cursor
                 page = reader.request("view/page", params)
-                # Pages can contain transcript items. Discard them in-process;
-                # only usage and exact turn identity reach the stored result.
+                # Tool-call items are authoritative for arguments that the live
+                # task lifecycle deliberately omits. They stay in-process and
+                # are projected separately from the public usage result.
                 page_events = [
                     event
                     for event in page["events"]
                     if event.get("method")
-                    in ("turn/started", "turn/completed", "session/tokenUsage")
+                    in (
+                        "turn/started",
+                        "turn/completed",
+                        "session/tokenUsage",
+                        "item/started",
+                        "item/updated",
+                        "item/completed",
+                    )
                 ]
                 events = page_events + events
                 if any(
@@ -4115,6 +4526,9 @@ class MuseProcess:
                     and event.get("params", {}).get("commandId") == command_id
                     for event in page_events
                 ):
+                    self._retained_tool_events = _muse_tool_events_from_view_events(
+                        events, self.session_id, command_id
+                    )
                     return _muse_usage_projection(
                         events, self.session_id, command_id, expected_completions
                     )
@@ -4124,6 +4538,9 @@ class MuseProcess:
                 if not isinstance(cursor, str) or cursor in cursors:
                     raise ValueError("non-progressing usage page")
                 cursors.add(cursor)
+            self._retained_tool_events = _muse_tool_events_from_view_events(
+                events, self.session_id, command_id
+            )
             return _muse_usage_projection(
                 events, self.session_id, command_id, expected_completions
             )
@@ -4199,6 +4616,7 @@ class MuseProcess:
             completed_model_attempts = set()
             terminal_reason = "completed"
             tasks_by_id = {}
+            live_activity_events = []
             cached_activities = []
             try:
                 pusher = _ProgressPusher(progress_token) if progress_token else None
@@ -4250,6 +4668,7 @@ class MuseProcess:
                         )
                         self._close_process(kill=False)
                         usage_collect_start = _turn_timing_now()
+                        self._retained_tool_events = None
                         try:
                             usage = self._collect_usage(
                                 payload.get("command_id"),
@@ -4263,6 +4682,19 @@ class MuseProcess:
                                 len(completed_model_attempts),
                             )
                             usage["muse"]["reason"] = "collection_failed"
+                        if self._retained_tool_events:
+                            cached_activities = _muse_reconciled_activities(
+                                live_activity_events,
+                                self._retained_tool_events,
+                            )[-300:]
+                            if pusher:
+                                try:
+                                    pusher.push(
+                                        result_text or accumulated_text,
+                                        cached_activities,
+                                    )
+                                except Exception:
+                                    pass
                         try:
                             muse_meta = (
                                 usage.get("muse", {}) if isinstance(usage, dict) else {}
@@ -4325,19 +4757,11 @@ class MuseProcess:
                                 # operation="tool:add_memory" here. Arguments
                                 # are not part of task.lifecycle, so do not
                                 # present that label as a command or tool input.
+                                live_activity_events = _muse_live_tool_events(
+                                    tasks_by_id
+                                )
                                 cached_activities = activity_from_events(
-                                    [
-                                        {
-                                            "type": "tool_execution_start",
-                                            "toolCallId": known_task_id,
-                                            "toolName": task["task_kind"][
-                                                len("tool.") :
-                                            ],
-                                        }
-                                        for known_task_id, task in tasks_by_id.items()
-                                        if isinstance(task.get("task_kind"), str)
-                                        and task["task_kind"].startswith("tool.")
-                                    ]
+                                    live_activity_events
                                 )[-300:]
             finally:
                 if getattr(self, "_interrupt_requested", False):
@@ -4695,13 +5119,25 @@ class PiProcess:
         event_type = event.get("type")
         if event_type in ("tool_start", "tool_execution_start"):
             tool_name = event.get("toolName") or event.get("tool_name")
-            args = event.get("args", event.get("input", {}))
             if tool_name:
-                return {
+                translated = {
                     "type": "tool_execution_start",
                     "toolName": str(tool_name).lower(),
-                    "args": args,
                 }
+                tool_id = (
+                    event.get("toolCallId")
+                    or event.get("tool_call_id")
+                    or event.get("id")
+                )
+                if tool_id is not None:
+                    translated["toolCallId"] = tool_id
+                if "args" in event:
+                    translated["args"] = event["args"]
+                elif "input" in event:
+                    translated["input"] = event["input"]
+                else:
+                    translated["args"] = {}
+                return translated
         return event
 
     def turn(
@@ -5002,6 +5438,7 @@ class PiProcess:
                         "tool_start",
                         "tool_end",
                         "tool_execution_start",
+                        "tool_execution_update",
                         "tool_execution_end",
                     ):
                         activities_are_stale = True

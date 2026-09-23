@@ -128,6 +128,31 @@ def test_knowledge_router_registered():
     )
 
 
+def test_retired_private_demo_and_perf_routes_are_absent():
+    """Removed UI backends must not remain reachable through composition."""
+    paths = set(_iter_route_paths(app.routes))
+    retired_prefixes = (
+        "/api/demos",
+        "/api/semgrep/perf",
+        "/internal/semgrep",
+        "/webhooks/semgrep",
+        "/webhooks/github/semgrep",
+    )
+    assert not {
+        path
+        for path in paths
+        if any(path.startswith(prefix) for prefix in retired_prefixes)
+    }
+
+
+def test_retained_factory_and_public_ember_routes_are_registered():
+    """Route B removal must preserve factory ingress and standalone scanning."""
+    paths = set(_iter_route_paths(app.routes))
+    assert "/webhooks/github/factory" in paths
+    assert "/api/ember/semgrep/scan" in paths
+    assert "/api/ember/postgres/status" in paths
+
+
 def test_schedule_router_today_endpoint_responds(client):
     """GET /api/home/schedule/today from the home router returns a 200 response."""
     response = client.get("/api/home/schedule/today")
@@ -203,7 +228,7 @@ async def test_lifespan_creates_background_tasks_on_startup():
             await _start_singletons(app)
 
     # Ships, pending-message sweep, titles, KG feed, receipt retention, cd probe, quota refresh.
-    assert len(created_tasks) == 7
+    assert len(created_tasks) == 8
 
 
 @pytest.mark.asyncio
@@ -226,7 +251,7 @@ async def test_lifespan_cancels_all_tasks_on_shutdown():
             await _stop_singletons(app)
 
     # Ships, pending-message sweep, titles, KG feed, receipt retention, cd probe, quota refresh.
-    assert len(mock_tasks) == 7
+    assert len(mock_tasks) == 8
     for task in mock_tasks:
         task.cancel.assert_called_once()
 
@@ -249,7 +274,7 @@ async def test_lifespan_no_tasks_cancelled_before_shutdown():
         with patches[0], patches[1], patches[2], patches[3], patches[4]:
             await _start_singletons(app)
             # Ships, pending-message sweep, titles, KG feed, retention, cd probe, quota refresh.
-            assert len(mock_tasks) == 7
+            assert len(mock_tasks) == 8
             for task in mock_tasks:
                 task.cancel.assert_not_called()
             await _stop_singletons(app)
@@ -504,8 +529,8 @@ async def test_lifespan_creates_discord_and_service_tasks_when_token_set():
             ):
                 await _start_singletons(app)
 
-    # Bot, outbox, scheduled tasks, lock sweep, and seven service loops.
-    assert len(created_tasks) == 11
+    # Bot, outbox, scheduled tasks, lock sweep, and eight service loops.
+    assert len(created_tasks) == 12
 
 
 @pytest.mark.asyncio

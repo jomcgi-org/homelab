@@ -17,6 +17,7 @@ from factory.execution import (
     admission,
     execution_api,
     mcp,
+    provider_quota,
     result_receipts,
     store,
     transport,
@@ -80,6 +81,33 @@ def database(tmp_path, monkeypatch):
     # This fixture has no operator burst grant. Eligibility and admission still
     # execute against the real database, including the rolling daily count.
     monkeypatch.setattr(burst, "kg_burst_state", lambda _db: burst.KGBurstState())
+    monkeypatch.setattr(
+        provider_quota,
+        "fetch_provider_quota_sync",
+        lambda **_kwargs: provider_quota._available_result(
+            {
+                "providers": {},
+                "grants_complete": True,
+                "grants": {
+                    "codex-cluster": {
+                        "provider": "codex",
+                        "grant": "codex-cluster",
+                        "observed": True,
+                        "status": "allowed",
+                        "exhausted": False,
+                        "age_seconds": 1.0,
+                        "windows": [
+                            {
+                                "name": "primary",
+                                "used_percent": 1.0,
+                                "expired": False,
+                            }
+                        ],
+                    }
+                },
+            }
+        ),
+    )
     monkeypatch.setattr(drainer, "_turn_has_unknown_outcome_lookup", None)
     monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "false")
     monkeypatch.setattr(mcp, "_schedule_next_message", lambda _sid: None)

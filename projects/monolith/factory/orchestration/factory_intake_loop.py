@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 import logging
+import os
 import re
+from datetime import datetime, timedelta, timezone
 
 from sqlmodel import select
 
@@ -12,15 +13,15 @@ from factory.orchestration.factory_controls import (
     DEFAULT_TASK_CLASS,
     LANES,
     _audit,
-    is_advisory,
-    receipt_task_class,
     _locked_session,
     _now,
     _read_session,
     delivery_admissions,
     intake_policy,
     intake_state,
+    is_advisory,
     lane_for,
+    receipt_task_class,
 )
 from factory.orchestration.factory_intake import (
     INTAKE_ACTOR,
@@ -156,7 +157,7 @@ def _receipt_exclusion(
         for row in rows
     ):
         return "delivered"
-    if any(row.state in ("admitted", "uncertain") for row in rows):
+    if any(row.state in ("admitted", "uncertain", "landing") for row in rows):
         return "active_issue"
     if any(row.state == "escalated" for row in rows):
         return "escalated"
@@ -275,11 +276,15 @@ def _local_candidates(
     room: dict[str, bool],
     cooldown_cutoff: datetime,
 ) -> tuple[list[dict], dict[str, int], int]:
-    """Build candidates from local-authority work scoped to this repository."""
+    """Build candidates from authoritative local rows without a GitHub read."""
     excluded = {reason: 0 for reason in _EXCLUSION_REASONS}
     exclude_labels = {label.lower() for label in intake["exclude_labels"]}
     candidates = []
 
+    # GitHub-authority rows are snapshots, not admission candidates. Until
+    # cutover adds equivalent source guards, the live listing owns assignee,
+    # linked-PR, and open-state validation. Local authority remains eligible
+    # without a GitHub read.
     with _read_session() as db:
         local_items = db.exec(
             select(WorkItem)
@@ -454,7 +459,9 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
             held = db.exec(
                 select(FactoryReceipt).where(
                     FactoryReceipt.generation == generation,
-                    FactoryReceipt.state.in_(("queued", "admitted", "uncertain")),
+                    FactoryReceipt.state.in_(
+                        ("queued", "admitted", "uncertain", "landing")
+                    ),
                 )
             ).all()
             room = open_lanes(policy, held, lanes)
@@ -535,11 +542,18 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
 
         if github_status is None:
             try:
-                from factory.orchestration.work_items import sync_github_work_items
                 from factory.orchestration.work_item_links import reconcile_body_edges
+                from factory.orchestration.work_items import sync_github_work_items
 
                 work_item_counts = sync_github_work_items(
-                    repo, issues, truncated=issues_cut, actor=ACTOR
+                    repo,
+                    issues,
+                    truncated=issues_cut,
+                    actor=ACTOR,
+                    source_ordered=os.getenv(
+                        "FACTORY_GITHUB_WEBHOOK_ENABLED", "false"
+                    ).lower()
+                    == "true",
                 )
                 logger.info("work_item_sync", extra=work_item_counts)
 
@@ -548,22 +562,16 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                     synced_items = db.exec(
                         select(WorkItem).where(
                             WorkItem.github_repo == repo,
-                            WorkItem.authority == "github",
                         )
                     ).all()
-                    # Build list of (item, body) tuples from the GitHub issues
-                    items_with_bodies = []
-                    issue_by_number = {
-                        issue.get("number"): issue
-                        for issue in issues
-                        if isinstance(issue, dict)
-                    }
-                    for item in synced_items:
-                        if item.github_issue_number is not None:
-                            issue = issue_by_number.get(item.github_issue_number)
-                            if issue is not None:
-                                body = issue.get("body") or ""
-                                items_with_bodies.append((item, body))
+                    # Reconcile only from persisted bodies. A stale sweep
+                    # payload rejected by source ordering must not reappear
+                    # here and undo newer webhook dependency state.
+                    items_with_bodies = [
+                        (item, item.body)
+                        for item in synced_items
+                        if item.github_issue_number is not None
+                    ]
 
                     if items_with_bodies:
                         edge_counts = reconcile_body_edges(
@@ -806,7 +814,9 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                 held = db.exec(
                     select(FactoryReceipt).where(
                         FactoryReceipt.generation == generation,
-                        FactoryReceipt.state.in_(("queued", "admitted", "uncertain")),
+                        FactoryReceipt.state.in_(
+                            ("queued", "admitted", "uncertain", "landing")
+                        ),
                     )
                 ).all()
                 room = open_lanes(policy, held, lanes)

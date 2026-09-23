@@ -318,9 +318,24 @@ export function decisionBody(optionKey, note, decisionId) {
   const body = trimmed
     ? { option_key: optionKey, note: trimmed }
     : { option_key: optionKey };
-  return decisionId ? { ...body, expected_decision_id: decisionId } : body;
+  return decisionId ? { ...body, decision_id: decisionId } : body;
 }
 
-export function chatBody(note) {
-  return { action: "chat", note: (note ?? "").trim() };
+export function chatBody(note, decisionId) {
+  const body = { action: "chat", note: (note ?? "").trim() };
+  return decisionId ? { ...body, decision_id: decisionId } : body;
+}
+
+/** Stable identity for one exact browser attempt, including its bounded note. */
+export async function decisionRequestKey(receiptId, body, attempt = 0) {
+  if (!body?.decision_id)
+    throw new Error("an exact decision identity is required");
+  const encoded = new TextEncoder().encode(
+    JSON.stringify({ receipt_id: receiptId, attempt, ...body }),
+  );
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", encoded);
+  const hex = [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+  return `browser-v1:${hex}`;
 }

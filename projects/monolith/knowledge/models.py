@@ -78,6 +78,22 @@ class RecallEmbedding(SQLModel, table=True):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class KnowledgeFeedState(SQLModel, table=True):
+    """Durable initialization state for database-backed knowledge feeds."""
+
+    __tablename__ = "feed_state"
+    __table_args__ = {"schema": "knowledge", "extend_existing": True}
+
+    feed_name: str = Field(primary_key=True)
+    first_enabled_at: datetime = Field(
+        sa_column=Column(
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=text("CURRENT_TIMESTAMP"),
+        )
+    )
+
+
 class Note(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory
     __tablename__ = "notes"
     __table_args__ = (
@@ -387,6 +403,12 @@ class Dispute(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-fac
             "'invalidated', 'rejected')",
             name="disputes_state_chk",
         ),
+        CheckConstraint(
+            "previous_verification_state IS NULL OR "
+            "previous_verification_state IN "
+            "('legacy', 'unverified', 'verified', 'disputed', 'invalidated')",
+            name="disputes_previous_verification_state_chk",
+        ),
         {"schema": "knowledge", "extend_existing": True},
     )
 
@@ -400,6 +422,9 @@ class Dispute(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-fac
     reporter_subject: str | None = None
     reporter_authority: str | None = None
     reporter_session: str | None = None
+    previous_verification_state: str | None = Field(
+        default=None, sa_column=Column(String, nullable=True)
+    )
     state: str = Field(
         default="open", sa_column=Column(String, nullable=False, server_default="open")
     )

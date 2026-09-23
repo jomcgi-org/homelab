@@ -175,19 +175,25 @@ defmodule Embervm.LogFormatterTest do
 
   test "preserves every retention manifest field in structured JSON" do
     metadata = [
+      ref: "ref-1",
       node_id: "node-1",
       path: "/var/lib/embervm/scratch/bases/ref-1",
       size_bytes: 42,
       workload: "claude-runtime",
       vendor: "intel",
       age_seconds: 72_000,
-      reason_unreferenced: "known workload superseded: not in current, CP snapshot, or active base_refs",
+      reason_unreferenced:
+        "known workload superseded: not in current, CP snapshot, or active base_refs",
       base_generation: 17
     ]
 
     line =
       Embervm.LogFormatter.format(
-        %{level: :info, msg: {:string, "embervm base retention candidate"}, meta: Map.new(metadata)},
+        %{
+          level: :info,
+          msg: {:string, "embervm base retention candidate"},
+          meta: Map.new(metadata)
+        },
         %{}
       )
       |> IO.iodata_to_binary()
@@ -197,6 +203,51 @@ defmodule Embervm.LogFormatterTest do
     for {key, value} <- metadata do
       assert Map.get(decoded, Atom.to_string(key)) == value
     end
+  end
+
+  test "preserves local eviction proof and decision fields in structured JSON" do
+    metadata = %{
+      workload: "claude-runtime",
+      ref: "ref-1",
+      node_id: "node-1/pod-a",
+      store_key: "base/intel/claude-runtime/ref-1/meta.json",
+      owner_proof: "exact_remote_marker_head_2xx",
+      decision: "deleted_local_only",
+      retry_outcome: "success",
+      reason: "verified"
+    }
+
+    decoded =
+      Embervm.LogFormatter.format(
+        %{
+          level: :info,
+          msg: {:string, "embervm base builder: local base eviction complete"},
+          meta: metadata
+        },
+        %{}
+      )
+      |> IO.iodata_to_binary()
+      |> :json.decode()
+
+    for {key, value} <- metadata do
+      assert decoded[Atom.to_string(key)] == value
+    end
+  end
+
+  test "preserves held-current-base accounting in structured JSON" do
+    decoded =
+      Embervm.LogFormatter.format(
+        %{
+          level: :warning,
+          msg: {:string, "embervm base retention summary"},
+          meta: %{bases_kept_current_unverified: 2}
+        },
+        %{}
+      )
+      |> IO.iodata_to_binary()
+      |> :json.decode()
+
+    assert decoded["bases_kept_current_unverified"] == 2
   end
 
   test "preserves StatefulSweeper pressure transition fields in structured JSON" do
@@ -235,6 +286,29 @@ defmodule Embervm.LogFormatterTest do
     assert :json.decode(line)["desired_capacity"] == 12
   end
 
+  test "preserves brick floor overflow transition fields" do
+    line =
+      Embervm.LogFormatter.format(
+        %{
+          level: :warning,
+          msg: {:string, "embervm brick floor overflow"},
+          meta: %{
+            size_class: "2gi",
+            computed_floor: 3,
+            max_replicas: 2,
+            reason: :floor_overflow
+          }
+        },
+        %{}
+      )
+      |> IO.iodata_to_binary()
+
+    decoded = :json.decode(line)
+    assert decoded["computed_floor"] == 3
+    assert decoded["max_replicas"] == 2
+    assert decoded["reason"] == "floor_overflow"
+  end
+
   test "preserves volume restore refusal fields in structured JSON" do
     metadata = %{
       workload: "wl-a",
@@ -259,5 +333,27 @@ defmodule Embervm.LogFormatterTest do
     for {key, value} <- metadata do
       assert Map.get(decoded, Atom.to_string(key)) == value
     end
+  end
+
+  test "preserves store probe endpoint and reason fields in structured JSON" do
+    metadata = %{
+      endpoint: "https://storage.googleapis.com",
+      reason: "{:tls_alert, {:unknown_ca, :certificate_unknown}}"
+    }
+
+    line =
+      Embervm.LogFormatter.format(
+        %{
+          level: :warning,
+          msg: {:string, "embervm store probe: store fetch failed"},
+          meta: metadata
+        },
+        %{}
+      )
+      |> IO.iodata_to_binary()
+
+    decoded = :json.decode(line)
+    assert decoded["endpoint"] == metadata.endpoint
+    assert decoded["reason"] == metadata.reason
   end
 end

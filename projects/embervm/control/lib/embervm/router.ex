@@ -18,6 +18,7 @@ defmodule Embervm.Router do
     * `GET  /v1/health/durability`     both ADR 031 durability tiers (#4338):
       tier 1 export-failure streaks + tier 2 gc-manifests stall. 200 ok /
       503 not-ok / 404 while dark.
+    * `GET  /v1/health/store`          latest artifact-store TLS probe result.
     * `GET  /healthz`                  unauthenticated readiness.
     * `GET  /livez`                    unauthenticated liveness.
 
@@ -127,6 +128,10 @@ defmodule Embervm.Router do
   # detector neither reads healthy nor pages anybody.
   get "/v1/health/durability" do
     handle_durability(conn)
+  end
+
+  get "/v1/health/store" do
+    handle_store_health(conn)
   end
 
   # POST /v1/nodes/register (NODE auth ONLY): the dial-home registration a noded
@@ -615,9 +620,9 @@ defmodule Embervm.Router do
 
   defp handle_healthz(conn) do
     if session_manager_alive?() do
-      text_response(conn, 200, "ok")
+      text_response(conn, 200, "ok\n" <> store_health_line())
     else
-      text_response(conn, 503, "session manager down")
+      text_response(conn, 503, "session manager down\n" <> store_health_line())
     end
   end
 
@@ -702,6 +707,39 @@ defmodule Embervm.Router do
   rescue
     e -> {:error, e}
   end
+
+  defp handle_store_health(conn) do
+    send_json(conn, 200, store_probe_status() |> Map.update!(:state, &Atom.to_string/1))
+  end
+
+  defp store_health_line do
+    case store_probe_status() do
+      %{state: :degraded, reason: reason} -> "store: degraded " <> single_line(reason)
+      %{state: :unknown} -> "store: unknown"
+      %{state: state} when state in [:ok, :disabled] -> "store: " <> Atom.to_string(state)
+    end
+  end
+
+  defp store_probe_status do
+    probe = Application.get_env(:embervm, :store_probe, Embervm.StoreProbe)
+    probe.status()
+  rescue
+    error -> unavailable_store_status(error)
+  catch
+    kind, reason -> unavailable_store_status({kind, reason})
+  end
+
+  defp unavailable_store_status(reason) do
+    %{
+      state: :degraded,
+      reason: "probe unavailable: #{inspect(reason)}",
+      last_ok_at: nil,
+      last_checked_at: nil
+    }
+  end
+
+  defp single_line(nil), do: "unknown"
+  defp single_line(reason), do: String.replace(reason, ~r/[\r\n]/, " ")
 
   defp conformance_view(query_params) do
     if Embervm.SpecTrace.enabled_now?() do
@@ -1393,6 +1431,14 @@ defmodule Embervm.Router do
           retryable: true
         })
 
+      {:lineage_relinquishment_failed, _reason} ->
+        send_json(conn, 503, %{
+          error: "lineage relinquishment could not be confirmed",
+          reason: "lineage_relinquishment_failed",
+          workload: workload,
+          retryable: true
+        })
+
       # Brick capacity (PR-3): no brick of the workload's size class has room and
       # the class is flagged fleet-full (desired outran registered past the dwell),
       # so placement is TERMINALLY denied rather than parked. 503 (not the 429 the
@@ -1614,11 +1660,14 @@ defmodule Embervm.Router do
   end
 
   # Memory pressure is inherent to the claude fleet (4096 MiB VMs, single 16gi brick host); idle sessions park/evict on TTL, so RESOURCE_EXHAUSTED is transient and retryable.
-  # A placement denial (:no_bricks, :capacity) is the same class; the session manager parks the wake behind it and the expiry reason wraps the atom, so callers may back off and retry.
+  # A placement or registration denial (:no_bricks, :capacity, :node_unreported)
+  # is the same class; the session manager parks the wake behind it and the expiry
+  # reason wraps the atom, so callers may back off and retry.
   def classify_error_as_retryable(:unavailable), do: true
   def classify_error_as_retryable(:brick_gone), do: true
   def classify_error_as_retryable(:no_bricks), do: true
   def classify_error_as_retryable(:capacity), do: true
+  def classify_error_as_retryable(:node_unreported), do: true
   def classify_error_as_retryable(%GRPC.RPCError{status: 8}), do: true
   def classify_error_as_retryable(%GRPC.RPCError{}), do: false
   def classify_error_as_retryable(reason) when is_tuple(reason) do
@@ -1712,6 +1761,7 @@ defmodule Embervm.Router do
       result =
         case request do
           :legacy -> session_manager().destroy(session_manager_server(), session_id)
+          {:parked, expected} -> session_manager().destroy_parked(session_manager_server(), session_id, expected)
           expected -> session_manager().destroy(session_manager_server(), session_id, expected)
         end
 
@@ -1735,6 +1785,8 @@ defmodule Embervm.Router do
       %{"stop_precondition" => expected} = request when map_size(request) == 1 ->
         expected = Embervm.SessionStopProof.from_json(expected)
         if Embervm.SessionStopProof.precondition?(expected), do: {:ok, expected}, else: :error
+      %{"parked_precondition" => expected} = request when map_size(request) == 1 ->
+        if Embervm.SessionStopProof.parked_precondition?(expected), do: {:ok, {:parked, expected}}, else: :error
       request when request == %{} -> {:ok, :legacy}
       _ -> :error
     end
@@ -2467,8 +2519,8 @@ defmodule Embervm.Router do
 
     # Capture the W3C traceparent (Task 13 distributed tracing): stored in the
     # submitted op so the dispatcher can restore the CALLER's trace context and
-    # nest the dispatch/guest_exec spans under it, joining the caller's trace (the
-    # demos waterfall). Async submit means the dispatch happens off-request, so
+    # nest the dispatch/guest_exec spans under it, joining the caller's trace.
+    # Async submit means the dispatch happens off-request, so
     # the context must ride the durable op-log, not the live process context.
     base =
       case header_value(conn, "traceparent") do

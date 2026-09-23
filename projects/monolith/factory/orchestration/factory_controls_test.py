@@ -1461,6 +1461,203 @@ def test_identical_configure_retry_does_not_require_a_new_generation(db, policy)
     assert controls.can_start(task)["ok"]
 
 
+def test_generation_bump_retires_only_stranded_receipts_atomically(db, policy):
+    assert controls.set_control("configure", "operator", policy=policy)["ok"]
+    escalation = json.dumps(
+        {
+            "question": "Which scope?",
+            "options": [],
+            "resolved": None,
+        }
+    )
+    with Session(db) as session:
+        rows = {
+            "queued": FactoryReceipt(
+                repo="owner/repo",
+                issue_number=10,
+                generation=0,
+                title="queued",
+                body="body",
+                url="https://github.com/owner/repo/issues/10",
+                actor="test",
+                state="queued",
+            ),
+            "escalated": FactoryReceipt(
+                repo="owner/repo",
+                issue_number=11,
+                generation=0,
+                title="escalated",
+                body="body",
+                url="https://github.com/owner/repo/issues/11",
+                actor="test",
+                state="escalated",
+                escalation_json=escalation,
+            ),
+            "active": FactoryReceipt(
+                repo="owner/repo",
+                issue_number=12,
+                generation=0,
+                title="active",
+                body="body",
+                url="https://github.com/owner/repo/issues/12",
+                actor="test",
+                state="admitted",
+            ),
+            "terminal": FactoryReceipt(
+                repo="owner/repo",
+                issue_number=13,
+                generation=0,
+                title="terminal",
+                body="body",
+                url="https://github.com/owner/repo/issues/13",
+                actor="test",
+                state="failed",
+            ),
+            "current": FactoryReceipt(
+                repo="owner/repo",
+                issue_number=14,
+                generation=1,
+                title="current",
+                body="body",
+                url="https://github.com/owner/repo/issues/14",
+                actor="test",
+                state="queued",
+            ),
+        }
+        session.add_all(rows.values())
+        session.commit()
+        ids = {key: row.id for key, row in rows.items()}
+
+    changed = {**policy, "generation": 1, "task_budget_usd": 10}
+    assert controls.set_control("configure", "operator", policy=changed)["ok"]
+
+    with Session(db) as session:
+        persisted = {
+            key: session.get(FactoryReceipt, value) for key, value in ids.items()
+        }
+        assert persisted["queued"].state == "cancelled"
+        assert persisted["escalated"].state == "cancelled"
+        assert persisted["active"].state == "admitted"
+        assert persisted["terminal"].state == "failed"
+        assert persisted["current"].state == "queued"
+        resolution = json.loads(persisted["escalated"].escalation_json)["resolved"]
+        assert resolution["effect"] == "escape-dismiss"
+        assert resolution["effects"] == {
+            "dismissed": True,
+            "receipt_retired": True,
+        }
+        assert "from 0 to 1" in resolution["note"]
+        retirements = session.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.action == "generation_stale_receipt_retired"
+            )
+        ).all()
+        assert len(retirements) == 2
+    assert controls.status()["policy"]["generation"] == 1
+
+
+def test_identical_and_rejected_configure_do_not_retire_queues(db, policy):
+    assert controls.set_control("configure", "operator", policy=policy)["ok"]
+    with Session(db) as session:
+        queued = FactoryReceipt(
+            repo="owner/repo",
+            issue_number=10,
+            generation=0,
+            title="queued",
+            body="body",
+            url="https://github.com/owner/repo/issues/10",
+            actor="test",
+        )
+        active = FactoryReceipt(
+            repo="owner/repo",
+            issue_number=11,
+            generation=0,
+            title="active",
+            body="body",
+            url="https://github.com/owner/repo/issues/11",
+            actor="test",
+            state="admitted",
+        )
+        session.add_all([queued, active])
+        session.commit()
+        queued_id = queued.id
+
+    assert controls.set_control("configure", "operator", policy=policy)["ok"]
+    refused = controls.set_control(
+        "configure", "operator", policy={**policy, "task_budget_usd": 99}
+    )
+    assert refused["reason"] == "generation_not_advanced"
+    with Session(db) as session:
+        assert session.get(FactoryReceipt, queued_id).state == "queued"
+        assert not session.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.action == "generation_stale_receipt_retired"
+            )
+        ).all()
+
+
+def test_multiple_generation_bumps_retire_each_old_queue_once(db, policy):
+    assert controls.set_control("configure", "operator", policy=policy)["ok"]
+    receipt_ids = []
+    for generation in (0, 1):
+        with Session(db) as session:
+            row = FactoryReceipt(
+                repo="owner/repo",
+                issue_number=10 + generation,
+                generation=generation,
+                title=f"generation {generation}",
+                body="body",
+                url=f"https://github.com/owner/repo/issues/{10 + generation}",
+                actor="test",
+            )
+            session.add(row)
+            session.commit()
+            receipt_ids.append(row.id)
+        assert controls.set_control(
+            "configure",
+            "operator",
+            policy={**policy, "generation": generation + 1},
+        )["ok"]
+
+    with Session(db) as session:
+        states = [session.get(FactoryReceipt, row_id).state for row_id in receipt_ids]
+        assert states == [
+            "cancelled",
+            "cancelled",
+        ]
+        audits = session.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.action == "generation_stale_receipt_retired"
+            )
+        ).all()
+        assert len(audits) == 2
+
+
+@pytest.mark.parametrize("historical_value", ["omitted", None])
+def test_inert_problem_issues_default_does_not_advance_active_generation(
+    db, policy, historical_value
+):
+    task = admitted(policy)
+    with Session(db) as session:
+        control = session.get(FactoryControl, "factory")
+        stored = json.loads(control.policy_json)
+        if historical_value == "omitted":
+            stored.pop("problem_issues")
+        else:
+            stored["problem_issues"] = historical_value
+        control.policy_json = json.dumps(stored)
+        session.add(control)
+        session.commit()
+
+    result = controls.set_control("configure", "operator", policy=policy)
+
+    assert result["ok"] and result["reason"] is None
+    assert controls.can_start(task)["ok"]
+    assert controls.status()["policy"]["problem_issues"] == (
+        controls.DEFAULT_PROBLEM_ISSUES
+    )
+
+
 def test_configure_preserves_paused_admissions_and_uncertain_accounting(db, policy):
     task = admitted(policy)
     grant(task)
@@ -1910,3 +2107,137 @@ def test_control_request_rejects_ambiguous_or_unsupported_actions(db, action, ta
         )
     with Session(db) as session:
         assert session.exec(select(FactoryAudit)).all() == []
+
+
+def test_automerge_delivery_pending_until_exact_trusted_rollout(db, policy):
+    policy["auto_merge"] = True
+    task = admitted(policy)
+    evidence = {
+        "pr_url": "https://github.com/owner/repo/pull/9",
+        "head_sha": "a" * 40,
+        "review_session_id": 7,
+        "state": "ready_for_review",
+    }
+    assert controls.finish_task(task, "succeeded", "scheduler", evidence=evidence) == {
+        "ok": True,
+        "state": "landing",
+    }
+    assert controls.task_snapshot(task)["evidence"] == evidence
+    with Session(db) as session:
+        assert session.get(SwarmTask, task).settled_at is None
+        assert session.get(SwarmTask, task).start_state == "landing"
+        assert not session.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == task, FactoryAudit.action == "finish_task"
+            )
+        ).all()
+    # A flag change cannot turn deployment evidence into an optional gate.
+    policy["auto_merge"] = False
+    assert controls.set_control("configure", "operator", policy=policy)["ok"]
+    for actor, head, pr in [
+        ("worker", "a" * 40, 9),
+        ("factory:landing", "b" * 40, 9),
+        ("factory:landing", "a" * 40, 10),
+    ]:
+        with Session(db) as session:
+            session.add(
+                FactoryAudit(
+                    actor=actor,
+                    action="rollout_verified",
+                    task_id=task,
+                    detail_json=json.dumps(
+                        {"verified": True, "approved_head_sha": head, "pr_number": pr}
+                    ),
+                )
+            )
+            session.commit()
+        assert controls.finish_task(
+            task, "succeeded", "scheduler", evidence=evidence
+        ) == {"ok": True, "state": "landing"}
+    assert (
+        controls.finish_task(
+            task, "succeeded", "scheduler", evidence={**evidence, "head_sha": "c" * 40}
+        )["reason"]
+        == "conflicting_outcome"
+    )
+    with Session(db) as session:
+        session.add(
+            FactoryAudit(
+                actor="factory:landing",
+                action="rollout_verified",
+                task_id=task,
+                detail_json=json.dumps(
+                    {"verified": True, "approved_head_sha": "a" * 40, "pr_number": 9}
+                ),
+            )
+        )
+        session.commit()
+    assert controls.finish_task(
+        task, "succeeded", "factory:landing", evidence=evidence
+    ) == {"ok": True, "state": "succeeded"}
+    assert controls.finish_task(
+        task, "succeeded", "factory:landing", evidence=evidence
+    )["ok"]
+    with Session(db) as session:
+        assert session.get(SwarmTask, task).settled_at is not None
+        assert (
+            len(
+                session.exec(
+                    select(FactoryAudit).where(
+                        FactoryAudit.task_id == task,
+                        FactoryAudit.action == "delivery_ready",
+                    )
+                ).all()
+            )
+            == 1
+        )
+        assert (
+            len(
+                session.exec(
+                    select(FactoryAudit).where(
+                        FactoryAudit.task_id == task,
+                        FactoryAudit.action == "finish_task",
+                    )
+                ).all()
+            )
+            == 1
+        )
+
+
+def test_landing_retains_ownership_across_generation_without_guest_slot(db, policy):
+    policy["auto_merge"] = True
+    task = admitted(policy)
+    controls.finish_task(
+        task,
+        "succeeded",
+        "scheduler",
+        evidence={
+            "pr_url": "https://github.com/owner/repo/pull/9",
+            "head_sha": "a" * 40,
+            "state": "ready_for_review",
+        },
+    )
+    assert controls.can_start(task)["ok"] is False
+    policy["generation"] = 1
+    assert controls.set_control("configure", "operator", policy=policy)["ok"]
+    for issue in [1, 2]:
+        receive_issue(
+            "owner/repo",
+            issue,
+            "issue",
+            "body",
+            f"https://github.com/owner/repo/issues/{issue}",
+            "poller",
+            generation=1,
+        )
+    result = admit_next("scheduler")
+    assert result["ok"]
+    with Session(db) as session:
+        receipt = session.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == result["task_id"])
+        ).one()
+        assert receipt.issue_number == 2
+        pending = session.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == task)
+        ).one()
+        assert pending.state == "landing"

@@ -61,6 +61,13 @@ auth:
 frontend:
   otelCollectorUrl: ""
 
+# Repository support for the token broker's SPIFFE listener is staged only.
+# Live production keeps the existing plaintext route until the issue checklist
+# has validated both listener authorization and SVID rotation.
+tokenBroker:
+  spiffe:
+    enabled: false
+
 jobs:
   snapshotMergedPrs:
     suspend: false
@@ -154,6 +161,8 @@ cfIngress:
   #   3. in `family`           -> the page renders
   #   4. https://friends.jomcgi.dev/preview/ still works, and every other
   #      path on this hostname still 404s
+  grimoire:
+    enabled: true
   friends:
     enabled: true
     authentik:
@@ -250,25 +259,8 @@ faas:
   s3Bucket: "faas"
 
 semgrep:
-  # EmberVM serves the per-PR Semgrep diff scan and Python sandbox.
+  # EmberVM serves standalone Semgrep scans and the Python sandbox.
   embervmUrl: "http://embervm-embervm.embervm.svc.cluster.local:8080"
-  # Route B shadow project (Route B vs SMS comparison): self-hosted scans report
-  # here instead of jomcgi/homelab, so they land in a separate Semgrep project.
-  # UNSET this single value at cutover to report to the real project.
-  # CUT OVER 2026-07-11: Route B now reports to the REAL jomcgi/homelab project
-  # (empty -> report.py _reported_repository returns the real repo). The shadow
-  # project recorded scan findingsCounts but the App's "See findings" view is
-  # gated on a GitHub SCM integration a synthetic shadow repo cannot have, so
-  # findings never showed. The connected real project indexes them (Route B vs SMS
-  # distinguishable by scan environment "homelab-fc-invoke"). Re-set to
-  # "jomcgi/homelab-selfhosted" to revert to the shadow.
-  shadowProject: ""
-  # Semgrep AppSec Platform token for the Route B CI-reporting relay. The vault
-  # item exposes the field SEMGREP_API_TOKEN, mirrored into the
-  # monolith-semgrep-app Secret and injected as the SEMGREP_APP_TOKEN env var
-  # (the name pysemgrep reads).
-  onepassword:
-    itemPath: "vaults/k8s-homelab/items/semgrep-mcp"
 
 # Shared LLM provider keys, in the OnePasswordItem-backed `goosecracker` Secret.
 # The NAME is historical: this Secret long outlived the retired goosecracker
@@ -411,11 +403,11 @@ agent:
 # the loom deployment, is decommissioned): SCRATCH_POSTGRES_DSN is unrendered,
 # so run_code python runs get no scratch DB env and the sandbox client leaves
 # the feature off. demoListenPort keeps DEMO_POSTGRES_DSN and the password
-# Secret alive for the demos page exhibit. Flip enabled back on (with the
+# Secret alive for the public Ember Postgres exhibit. Flip enabled back on (with the
 # embervm side) to restore the tenant datastore.
 scratchPostgres:
   enabled: false
-  # Renders DEMO_POSTGRES_DSN for the firecracker demos page's sleep/wake
+  # Renders DEMO_POSTGRES_DSN for the public Ember Postgres page's sleep/wake
   # exhibit (matches the embervm chart's demoPostgres.listenPort).
   # COUPLING (#4198): the demo workload itself is gated on demoPostgres.enabled
   # in projects/embervm/deploy/values.yaml and nothing cross-checks the two. If

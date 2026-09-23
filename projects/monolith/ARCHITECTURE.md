@@ -83,17 +83,17 @@ flowchart LR
     Sidecar --> AgentsApi[monolith-agents /mcp]
     Internal[Internal agents] --> ClusterIP[Kubernetes ClusterIP]
     ClusterIP --> PrivateApi
-    Webhooks[GitHub / Semgrep webhooks] --> PrivateIngress
+    Webhooks[GitHub Semgrep webhook] --> PrivateIngress
     PrivateIngress --> WebhookRoute[HMAC-verified webhook route]
     WebhookRoute --> PrivateApi
 ```
 
 The public and private ingress split, the friends policy, and the internal
-service ports are rendered by the Helm chart. Two routes on the private
-hostname carry no `SecurityPolicy` on purpose: the GitHub and Semgrep webhook
-paths reach the backend through a Cloudflare Access IP bypass and are
-authenticated by the handler's HMAC verification alone, which is why they live
-on their own HTTPRoute rather than as rules on the private one.
+service ports are rendered by the Helm chart. The GitHub Semgrep webhook route
+on the private hostname carries no `SecurityPolicy` on purpose: it reaches the
+backend through a Cloudflare Access IP bypass and is authenticated by the
+handler's HMAC verification alone, which is why it lives on its own HTTPRoute
+rather than as a rule on the private one.
 (see: /projects/monolith/chart/templates/httproute-private.yaml)
 (see: /projects/monolith/chart/templates/service.yaml)
 (see: /projects/mcp/ARCHITECTURE.md)
@@ -222,6 +222,12 @@ database is divided into domain schemas including `knowledge`, `chat`,
 `campsites`, and `swarm`. The migration bundle is rendered into a ConfigMap for
 Atlas, and bulk seed data is kept out of it because client-side apply records
 the manifest in an annotation with a 256 KiB ceiling.
+
+Historical migrations still define the retired private demo load tables and
+Semgrep scan-performance table. Their application writers and readers are gone,
+but the tables remain because removing them would delete production schema and
+data. Any later cleanup requires a separately authorized migration and retention
+decision.
 (see: /projects/monolith/chart/templates/atlas-migration.yaml)
 (see: /projects/monolith/chart/templates/migrations-configmap.yaml)
 (see: /bazel/tools/hooks/check-large-migration-sql.sh)
@@ -443,6 +449,17 @@ rather than a wedge, and a head that moves under an armed pull request takes the
 arming back off. Landing stops at the merge: verifying the
 chart write-back and the live rollout is a node that does not exist yet
 (#6002).
+
+**Why.** Landing recovery is recorded from durable recovery structure, not a
+node-name convention. A request-bound engine edit is the normal proof that a
+bounded correction round exists. Plans written before that marker require a
+successful source-writing dependent above the request's run floor with typed
+evidence for the same pull request and exact written head. Other dependents do
+not block the engine from appending its correction and independent re-review,
+and armed or run-bearing nodes remain immutable history. Completion still
+requires the paired recovery audit plus a fresh, independent, approving review
+of the delivered pull request head above that floor; neither the audit, an old
+approval, nor a `changes_requested` result is sufficient.
 
 **Why.** An escalation is a decision, not a message. The refine lane's
 `needs-human` verdict used to end at a warning and a question, so eleven of
@@ -700,6 +717,31 @@ settles them, and covering them needs a check that their DBOS workflow is
 terminal, which this loop does not have.
 (see: /projects/monolith/factory/execution/permit_supervision.py)
 
+**Why.** A node can reserve its `FactoryStart` and admitted graph run before
+the durable workflow creates an agent session. If session creation never
+happens, funding refuses the unresolved start and the deadline backstop refuses
+every reserved start, so the task holds its delivery slot indefinitely. The
+periodic conductor can examine that exact pre-session window after the node's
+pinned `turn_timeout_seconds` has elapsed. The automatic sweep is staged behind
+`swarm.factoryLostBeforeSessionSweepEnabled`, which is wired to runtime and
+defaults false. Enabling it does not widen the manual repair, session-based
+reconciliation, ordinary task reconciliation, or deadline behavior.
+
+The exact owning DBOS workflow must first report `ERROR` or `CANCELLED`, the
+same external cessation evidence required by the existing never-dispatched
+proof. Under the control lock that fences session creation, the database proof
+then requires immutable run and start ownership, no bound or deterministic
+session, no cost or outcome, and no permit or result receipt. A nonterminal or
+missing workflow, failed ownership, or lookup error leaves the attempt
+untouched. A matching attempt settles both ledgers atomically as `failed` at
+zero cost with `no_model_post` and `never_dispatched`, after which ordinary
+bounded conductor reconciliation decides whether the node may retry. This is
+separate from the deadline backstop and from uncertain-execution release:
+neither elapsed time nor a missing binding can refund an attempt that carries
+contradictory execution evidence (#6285).
+(see: /projects/monolith/factory/execution/reconciliation.py)
+(see: /projects/monolith/factory/orchestration/factory_conductor.py)
+
 **Why.** A lost invoke response is not a lost invocation. Every monolith
 rollout cancelled the executor watching an in-flight turn, and the guest went
 on working while the executor recorded `invocation_outcome_unknown`, failed the
@@ -754,6 +796,13 @@ would only delay the same unknown outcome. Every owner that writes, finishes or
 ends a hold reads that one flag, including the lease backstop and the node
 recovery, so off is byte-for-byte the behaviour that preceded this whatever the
 receipt flags say.
+
+A separate control-plane result cache is not planned. The gate in
+[#4322](https://github.com/jomcgi-org/homelab/issues/4322) can be reconsidered
+only if [#5938](https://github.com/jomcgi-org/homelab/issues/5938)'s bounded
+native canary demonstrates a completed-result recovery gap that the receipt path
+cannot cover and a bounded receipt fix cannot address.
+
 (see: /projects/monolith/factory/execution/store.py)
 
 **Why.** The guest reuse fence had a hold and no release. A receipt that beat
@@ -803,8 +852,8 @@ namespace, whose controller owns cadence, concurrency, deadlines, and history.
 Each entry runs the digest-pinned jobs image with one `jobs_main.py`
 subcommand. A job pod gets `DATABASE_URL` from a Kyverno-cloned Secret plus
 whatever the entry declares, never the deployment's environment. Entries marked
-`internalApi` only POST a private endpoint on the leader (the drain tick, the
-synthetic probes, the Semgrep harvest), so that work runs inside the API pod
+`internalApi` only POST a private endpoint on the leader (the drain tick and
+the synthetic probes), so that work runs inside the API pod
 where the credentials already live. Suspended entries remain available for
 manual submission.
 (see: /projects/monolith/chart/templates/cronworkflows.yaml)
@@ -1011,9 +1060,12 @@ pipeline (#3961) remain proposals, each gated on membership landing and on Joe
 naming the concrete table workflow it serves with a bounded first deliverable;
 finishing membership does not authorise sheets, transcription, auto-reveals,
 combat automation or public replays. Voice capture with in-cluster transcription
-is deliberately last because the hub has no GPU pool for an ASR service (#5461),
-and derived character-knowledge automation (#3910) was dropped in favour of
-explicit DM grants until manual assignment is shown to be a burden.
+is deliberately last because the hub has no selected GPU capacity for an ASR
+service. The former GKE GPU proposal
+([#5461](https://github.com/jomcgi-org/homelab/issues/5461)) closed as not planned,
+so a new capacity decision would be required. Derived character-knowledge
+automation (#3910) was dropped in favour of explicit DM grants until manual
+assignment is shown to be a burden.
 
 The Grimoire ingest path converts extracted documents into ordered text and
 image-derived chunks, records section hierarchy and image references, embeds
@@ -1243,12 +1295,14 @@ spans over HTTP/protobuf to the platform's OpenTelemetry collector, which
 forwards to Honeycomb. The endpoint value must spell out the collector's HTTP
 port and the full traces path, because the exporter posts to it verbatim, and
 the service name must stay on the collector's allow list or the spans are
-dropped after they arrive. The frontend exports nothing, and the demo trace
-waterfall returns no spans until a span store is connected (#5363). The public
-stats ticker scrapes the DCGM exporter directly for GPU utilization and frame
-buffer usage.
+dropped after they arrive. The frontend exports nothing and there is no trace
+query API. The public Firecracker story still serves its committed measurements,
+but its former bake workflow depended on the retired private demos API and the
+removed SigNoz ClickHouse store, so it cannot regenerate those measurements.
+The public stats ticker scrapes the DCGM exporter directly for GPU utilization
+and frame buffer usage.
 (see: /projects/monolith/deploy/values.yaml)
-(see: /projects/monolith/home/observability/traces.py)
+(see: /projects/monolith/frontend/src/lib/public/fcstory/bake-fc-story.sh)
 (see: /projects/monolith/home/observability/stats.py)
 (see: /projects/platform/ARCHITECTURE.md)
 
@@ -1293,9 +1347,11 @@ deploy. Read the live one:
 (see: /projects/platform/kargo/values.yaml)
 
 The home Application is dormant (backend replicas zero by values commit,
-WhatsApp off) and keeps its write-back-maintained revision as the revert lever
-until the home cluster is wiped (#4964); the development overlays are inert
-until development Applications exist on the hub.
+WhatsApp off) and keeps its write-back-maintained revision as the revert lever.
+The home-plus-GKE direction in
+[#4964](https://github.com/jomcgi-org/homelab/issues/4964) authorizes no wipe;
+revalidate the selected UK placement before reusing the overlay. The development
+overlays are inert until development Applications exist on the hub.
 (see: /projects/monolith/deploy/application.yaml)
 
 **Why.** Branch-side version bumps made concurrent pull requests collide and
@@ -1316,9 +1372,10 @@ this table when the work ships or the issue closes without it.
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
 | The orchestration-level graph becomes a mutable DAG dispatched per node, replacing the workflow's Python control flow | section 4 | #5419 | in progress: the factory lane plans its DAG at plan time and runs engine-owned review rounds; legacy swarm runs are still `implement_then_review` |
-| One factory conductor above every per-run conductor selects and coordinates work under a versioned charter, acting on Joe's behalf | The factory conductor | #5784 (children #5785, #5787, #5788, #5789, #5804; #5786 closed 2026-09-14) | not started |
+| One operator-facing Conductor above every per-task Planner selects and coordinates work, acting on Joe's behalf | The factory conductor | #5784 (children #5785, #5787, #5788, #5789, #5804; #5786 closed 2026-09-14) | not started |
 | The conductor decides reversible defaults, stages repository-only delivery when live checks are unavailable, and adopts unowned existing PRs; one human-needed notification per task | section 11, reversible gates | #6208 | implemented, awaiting validation |
-| The charter document and its loader govern what the conductor may read, coordinate, or act on | The factory conductor | #5785 | not started |
+| Factory PR lifecycle follows settlement, adopts linked delivery targets at receipt creation, and incrementally retires stale duplicate or closed-issue factory PRs | section 11, factory PR lifecycle | #6255 | implemented in repository; operational rollout and first live `factory_pr_retired` audit not yet observed |
+| A sessionless reserved factory start is recovered only after its pinned turn timeout by an ownership-fenced no-dispatch proof, then ordinary bounded reconciliation may retry it | section 4, factory settlement | #6285 | repository implementation staged default-off by Conductor rescope; separately authorized enablement, live wedge settlement, next-tick re-plan and concurrent-binding refusal remain to be observed |
 | Product-goal records, the factory index, and acceptance evidence drive work selection | The factory conductor | #5786 | not started |
 | Conductor journal, memory assembly, and session lifecycle persist across restarts | The factory conductor | #5787 | not started |
 | One factory conversation spans web, Discord, and voice for the same conductor | The factory conductor | #5788 | not started |
@@ -1331,7 +1388,7 @@ this table when the work ships or the issue closes without it.
 | Evidence-lane follow-ons: deployment observations (#5571), default retrieval scopes with personal opt-in (#5573), distress inbox (#5574), #5569, #5587 | section 6 (agents/063) | #5527 | in progress: slice live 2026-09-03, children open |
 | Grimoire private routes enforce campaign membership instead of the `?as=` override | section 6 | #3959 | in progress (PR #6125) |
 | Approved character sheets with DM approval become Grimoire's mechanical source of truth | section 6 | #3960 | proposal, gated on #3959 and a selected table workflow |
-| A Discord-backed session transcript pipeline with ACL-filtered surfacing and reviewed replays | section 6 | #3961 | proposal, gated on #3959, a selected table workflow and ASR capacity (#5461) |
+| A Discord-backed session transcript pipeline with ACL-filtered surfacing and reviewed replays | section 6 | #3961 | proposal, gated on #3959, a selected table workflow and a new ASR-capacity decision; #5461 closed as not planned |
 | Discord chat automation gets persisted scheduled tasks, configurable message triggers, and per-channel memory notes | Decision history (services/002) | #3901 | in progress: configurable message triggers are implemented; persisted scheduled tasks and per-channel memory notes remain |
 | Grimoire post-extraction quality passes (evidence-grounded stat verification, review-approved alias merges) ship | Decision history (services/014) | #3912 | not started |
 | Public chat retention and takedown purge tooling ships | Decision history (security/005) | #3899 | not started |
@@ -1354,10 +1411,9 @@ under #6208 without granting deployment or credential authority.
 
 ### The factory conductor
 
-One logical conductor per operator sits above every per-run conductor and drain
+One logical Conductor per operator sits above every per-task Planner and drain
 lane. It runs in a replaceable fenced EmberVM session, on Astra since policy
-generation 11, and selects and coordinates work on Joe's behalf under a
-versioned charter. An
+generation 11, and selects and coordinates work on Joe's behalf. An
 escalation means Joe is needed. Its default view answers what advanced, what is
 running, what needs Joe, and why capacity is idle. Its objective is to keep all
 safely available subscription quota doing useful work toward agreed product
@@ -1371,7 +1427,7 @@ design text is on #5784.
 | --- | --- | --- |
 | Entry point | One factory conversation across web, Discord, and voice, integrating the existing launcher (#4781) on the private agents page; no choice of model, session, run, or conductor is required | #5788 |
 | Responsiveness | Input is persisted and acknowledged before model execution; one durable ordered queue feeds one executor, operator input ahead of coalesced background events; pause and stop are authenticated deterministic controls that bypass the model; status reads from records when the model is busy | #5787 |
-| Charter | A versioned document under `projects/monolith`, changed by reviewed PR, with a stable identifier per clause; goals in priority order are platform stability, useful product progress, efficient quota use; the loader, prompt, admission layer and ledger expose the same version hash; a retained prompt or a replaced session cannot preserve revoked authority; the ask-first set is charter or quota-policy changes, security-relevant changes, anything needing a new or amended decision record, and irreversible or production-impacting actions outside the allowed GitOps operations, and no clause authorises a cluster write the GitOps invariant forbids | #5785 |
+| Roles and context | Factory deploys and orchestrates agents on Ember; the operator-facing Conductor selects work and delegates one bounded task to the Astra Planner; the Planner creates or amends its DAG; the Executor dispatches recorded nodes under existing identities and authorization; operator instructions, approved decisions, and retrieved KG claims remain distinct | #5785 |
 | Work selection | Durable records link product outcome to milestone, task, and acceptance evidence; a completion claim or a session count does not satisfy acceptance; every selected task advances an agreed goal or has a bounded maintenance allocation | #5786 |
 | Factory index | A materialised join of goal and task records, sessions, runs, drainer jobs, issues and PRs, decision rows, distress, platform health, provider quota, and reservations, served as MCP tools (`factory_status`, `task_status`, `queue_next`, `overlaps`), where `queue_next` only recommends; every row carries source time and freshness, and cloud sessions are an explicit coverage gap; index rows are untrusted evidence, so every mutation revalidates target state, ownership, health, and reservations at execution time | #5786 |
 | Scheduling | The conductor proposes work through #3840's existing dispatch boundary, with no second queue; the server admits it against every active provider window, observation freshness, in-flight reservations, VM and CI and review throughput, and work-in-progress limits; capacity for Joe's interactive work, the conductor, and the review and correction needed to finish admitted work is reserved first, and unknown capacity is not headroom; reservations are atomic and shared across lanes; a reset permits only a probe | #5804 |
@@ -1391,7 +1447,7 @@ before the matching autonomous control is enabled. Fable is evaluated against
 recorded coordination correctness, unnecessary escalations, latency, and cost
 as an escalation model, not a lane.
 
-**Why.** A per-run conductor owns one DAG and cannot pick priorities or
+**Why.** A per-task Planner owns one DAG and cannot pick priorities or
 reconcile overlap across local and cloud Claude sessions, Codex workers,
 drainer lanes, and swarm runs, so every added run adds coordination work for
 Joe. Quota observation and per-lane routing (#5752, #5753) see headroom but do

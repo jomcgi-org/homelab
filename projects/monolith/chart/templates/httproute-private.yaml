@@ -31,17 +31,6 @@ spec:
       backendRefs:
         - name: {{ include "monolith.fullname" . }}
           port: {{ .Values.service.apiPort | int }}
-    # Demos API: pass through to backend without rewriting
-    - matches:
-        - path:
-            type: PathPrefix
-            value: /api/demos
-      timeouts:
-        request: 600s
-        backendRequest: 600s
-      backendRefs:
-        - name: {{ include "monolith.fullname" . }}
-          port: {{ .Values.service.apiPort | int }}
     # Scheduler API — pass through to backend without rewriting
     - matches:
         - path:
@@ -254,7 +243,7 @@ spec:
 {{- end }}
 ---
 {{- if .Values.cfIngress.private.githubWebhook.enabled }}
-# GitHub Semgrep webhook route — a SEPARATE HTTPRoute on the same private gateway
+# GitHub webhook route, a SEPARATE HTTPRoute on the same private gateway
 # and hostname, carrying ONLY the webhook path and routed to the FastAPI backend
 # port. It is deliberately its own route so the cf-access SecurityPolicy above
 # (which targets the -private route as a whole) does NOT apply to it: GitHub
@@ -278,14 +267,7 @@ spec:
     - matches:
         - path:
             type: PathPrefix
-            value: /webhooks/github/semgrep
-        # Semgrep AppSec Platform scan webhook (semgrep_scan/perf_webhook.py).
-        # Same no-SecurityPolicy treatment: Semgrep sends no Access JWT, so it
-        # reaches this route via a Cloudflare Access IP-Bypass for Semgrep's
-        # egress IPs and is gated only by the handler's HMAC verification.
-        - path:
-            type: PathPrefix
-            value: /webhooks/semgrep
+            value: /webhooks/github/factory
       backendRefs:
         - name: {{ include "monolith.fullname" . }}
           port: {{ .Values.service.apiPort | int }}

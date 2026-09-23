@@ -1,20 +1,16 @@
 """Public-safe HTTP API for the demo-postgres exhibit.
 
-Mounted at ``/api/ember/postgres`` on BOTH the public app (Turnstile-gated) and
-the private app (the authenticated demos panel), so the two tiers serve
-identical paths against one implementation:
+Mounted at ``/api/ember/postgres`` on both the public and private apps, so the
+two tiers serve identical paths against one implementation:
 
 - ``GET  /status``  the demo-postgres stateful lifecycle (sleep indicator).
 - ``POST /query``   timed connect (the wake) + insert or aggregate against demo-postgres.
 - ``POST /session`` mint a session cookie for ledger attribution (Turnstile-gated when public).
 
-``POST /reset`` (destroy the live VM + evict its snapshot) stays private-only;
-see ``demos/firecracker_api.py``.
-
 Session admission uses ``chat_public.turnstile.siteverify`` (retries transient
 egress failures, fails closed): when ``TURNSTILE_SECRET_KEY`` is unset (the
-private tier, behind Cloudflare Access) it stub-accepts, matching this
-endpoint's private-tier "mint without token" requirement.
+private tier, behind Cloudflare Access) it stub-accepts, matching the
+private-tier "mint without token" requirement.
 """
 
 from __future__ import annotations

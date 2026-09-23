@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 from knowledge.api import get_embedding_client
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from grimoire.access import get_authenticated_identity
+from grimoire.access import get_authenticated_identity, get_grimoire_operator_email
 from grimoire.models import (
     AppUser,
     Book,
@@ -122,6 +122,7 @@ def _provision(
     player_email: str,
     character_id: str | None,
 ) -> dict:
+    client.app.dependency_overrides[get_grimoire_operator_email] = lambda: dm_email
     response = client.post(
         f"/api/grimoire/campaigns/{campaign_id}/members",
         headers=_auth(dm_email),
@@ -130,6 +131,7 @@ def _provision(
             "player_character_id": character_id,
         },
     )
+    del client.app.dependency_overrides[get_grimoire_operator_email]
     assert response.status_code == 200
     return response.json()
 
@@ -729,6 +731,7 @@ def test_foreign_object_and_character_ids_cannot_cross_campaigns(session, client
         == 404
     )
 
+    client.app.dependency_overrides[get_grimoire_operator_email] = lambda: DM_EMAIL
     provision_foreign_character = client.post(
         f"/api/grimoire/campaigns/{campaign_id}/members",
         headers=dm,
@@ -737,6 +740,7 @@ def test_foreign_object_and_character_ids_cannot_cross_campaigns(session, client
             "player_character_id": seed.foreign_character["id"],
         },
     )
+    del client.app.dependency_overrides[get_grimoire_operator_email]
     assert provision_foreign_character.status_code == 404
 
 

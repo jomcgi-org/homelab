@@ -176,12 +176,6 @@ def sweep_unqueued_raws(session: "Session", limit: int = 50) -> int:
     return _sweep_unqueued_raws(session, limit)
 
 
-def set_kg_swept_last_cycle(count: int) -> None:
-    from knowledge.health import set_swept_last_cycle
-
-    set_swept_last_cycle(count)
-
-
 def record_extraction_failure(
     session: "Session", raw_id: str, error: str, attempt: int
 ) -> None:

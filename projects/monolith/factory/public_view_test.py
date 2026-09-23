@@ -1,6 +1,6 @@
 """Unit tests for the public factory routes, their headers and their 404s.
 
-The routes read three public_api snapshot tables and nothing else, so a fake
+The routes read four public_api snapshot tables and nothing else, so a fake
 session that refuses any other query is the whole contract: if one of these ever
 reaches for agent_sessions.* or swarm.*, the test fails rather than the public
 tier 503-ing in prod.
@@ -9,12 +9,12 @@ tier 503-ing in prod.
 from __future__ import annotations
 
 import pytest
+from core.db import get_session
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import SQLAlchemyError
 
 from factory.public_view import router
-from core.db import get_session
 
 _ACTIVITY = {
     "snapshotted_at": "2026-09-11T10:00:00+00:00",
@@ -35,6 +35,12 @@ _SESSION = {
     "session": {"key": _SESSION_KEY, "issue_number": 6014, "turn_count": 2},
     "turns": [],
 }
+_WORK_ITEM = {
+    "snapshotted_at": "2026-09-11T10:00:00+00:00",
+    "item": {"id": 100123, "title": "Public work item"},
+    "edges_in": [],
+    "edges_out": [],
+}
 
 
 class _Result:
@@ -46,12 +52,15 @@ class _Result:
 
 
 class _FakeSession:
-    """Answers only the three snapshot queries; anything else is a test failure."""
+    """Answers only the four snapshot queries; anything else is a test failure."""
 
-    def __init__(self, *, activity=_ACTIVITY, tasks=None, sessions=None):
+    def __init__(
+        self, *, activity=_ACTIVITY, tasks=None, sessions=None, work_items=None
+    ):
         self.activity = activity
         self.tasks = {6014: _TASK} if tasks is None else tasks
         self.sessions = {_SESSION_KEY: _SESSION} if sessions is None else sessions
+        self.work_items = {100123: _WORK_ITEM} if work_items is None else work_items
         self.statements: list[str] = []
 
     def execute(self, statement, params=None):
@@ -64,6 +73,8 @@ class _FakeSession:
             return _Result(self._row(self.tasks.get(params["issue_number"])))
         if "public_api.factory_session_snapshot" in sql:
             return _Result(self._row(self.sessions.get(params["session_key"])))
+        if "public_api.factory_work_item_snapshot" in sql:
+            return _Result(self._row(self.work_items.get(params["work_item_id"])))
         raise AssertionError(f"unexpected query: {sql}")
 
     @staticmethod
@@ -90,6 +101,7 @@ def _client(fake_session):
         ("/api/agents/public/factory/activity", _ACTIVITY),
         ("/api/agents/public/factory/tasks/6014", _TASK),
         (f"/api/agents/public/factory/sessions/{_SESSION_KEY}", _SESSION),
+        ("/api/agents/public/factory/work-items/100123", _WORK_ITEM),
     ],
 )
 def test_each_route_serves_its_payload_with_a_stable_cached_etag(path, expected):
@@ -115,7 +127,7 @@ def test_each_route_serves_its_payload_with_a_stable_cached_etag(path, expected)
     assert all("swarm." not in sql for sql in fake_session.statements)
 
 
-def test_the_three_payload_kinds_do_not_share_an_etag():
+def test_the_four_payload_kinds_do_not_share_an_etag():
     fake_session = _FakeSession()
     with _client(fake_session) as client:
         tags = {
@@ -124,8 +136,9 @@ def test_the_three_payload_kinds_do_not_share_an_etag():
             client.get(f"/api/agents/public/factory/sessions/{_SESSION_KEY}").headers[
                 "etag"
             ],
+            client.get("/api/agents/public/factory/work-items/100123").headers["etag"],
         }
-    assert len(tags) == 3
+    assert len(tags) == 4
 
 
 def test_activity_is_404_until_the_job_has_written_a_snapshot():
@@ -142,6 +155,13 @@ def test_an_unpublished_task_or_session_is_404():
     assert task.status_code == 404 and task.json() == {"detail": "unknown task"}
     assert session.status_code == 404
     assert session.json() == {"detail": "unknown session"}
+
+
+def test_an_unpublished_work_item_is_404():
+    with _client(_FakeSession(work_items={})) as client:
+        response = client.get("/api/agents/public/factory/work-items/100999")
+    assert response.status_code == 404
+    assert response.json() == {"detail": "unknown work item"}
 
 
 def test_a_session_key_keeps_every_colon_of_a_node_key_that_has_one():

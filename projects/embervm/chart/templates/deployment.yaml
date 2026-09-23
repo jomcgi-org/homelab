@@ -184,6 +184,15 @@ spec:
                   name: {{ include "embervm.noded.bearerTokenSecretName" . }}
                   key: {{ .Values.noded.bearerTokenSecret.key }}
             {{- end }}
+            {{- if .Values.controlPlane.restoreCapabilityKeySecret.enabled }}
+            # Restore capabilities use one dedicated MAC key on both sides. The
+            # legacy bearer verifier remains only for the one-release migration.
+            - name: EMBERVM_RESTORE_CAPABILITY_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "embervm.restoreCapabilityKeySecretName" . }}
+                  key: {{ .Values.controlPlane.restoreCapabilityKeySecret.key }}
+            {{- end }}
             {{- if .Values.kekRoot.enabled }}
             # Platform KEK root (ADR embervm/036): base64, held only in the
             # KeyService process, never logged. Empty leaves the custodian inert.
@@ -374,8 +383,9 @@ spec:
             {{- if .Values.bricks.enabled }}
             # Brick capacity (PR-3): the per-size-class DESIRED replica counts the
             # Embervm.BrickController reconciles the brick Deployments to, as a JSON
-            # array of {name,desired,min,max,usable_mib}; usable_mib is declared here
-            # rather than observed because classes must work before any brick exists.
+            # array of {name,desired,min,max,usable_mib,mem_reject_floor_mib,slots};
+            # capacities are declared here rather than observed because classes
+            # must work before any brick exists.
             # desired from the bricks.desiredReplicas
             # map, default 0 for an unlisted class; min/max are the Axis C autoscale
             # clamp from bricks.autoscale.minReplicas/maxReplicas, unlisted min reads
@@ -389,11 +399,13 @@ spec:
             {{- $mins := $auto.minReplicas | default dict }}
             {{- $maxs := $auto.maxReplicas | default dict }}
             {{- $daemonReserve := .Values.bricks.daemonReserveMib | default 512 | int }}
+            {{- $rejectFloor := .Values.noded.memRejectFloorMib | default 512 | int }}
             {{- $classes := list }}
             {{- range .Values.bricks.classes }}
             {{- $nameplateMib := trimSuffix "Gi" .resources.limits.memory | int | mul 1024 }}
             {{- $usableMib := max 0 (sub $nameplateMib $daemonReserve) }}
-            {{- $classes = append $classes (dict "name" .name "desired" (index $desired .name | default 0) "min" (index $mins .name | default 0) "max" (index $maxs .name | default (index $desired .name | default 0)) "usable_mib" $usableMib) }}
+            {{- $slots := ternary .maxLiveVMs $.Values.noded.maxLiveVMs (not (kindIs "invalid" .maxLiveVMs)) }}
+            {{- $classes = append $classes (dict "name" .name "desired" (index $desired .name | default 0) "min" (index $mins .name | default 0) "max" (index $maxs .name | default (index $desired .name | default 0)) "usable_mib" $usableMib "mem_reject_floor_mib" $rejectFloor "slots" $slots) }}
             {{- end }}
             - name: EMBERVM_BRICK_CLASSES
               value: {{ $classes | toJson | quote }}
@@ -518,6 +530,8 @@ spec:
               value: {{ .Values.noded.store.endpoint | quote }}
             - name: EMBERVM_STORE_BUCKET
               value: {{ .Values.noded.store.bucket | quote }}
+            - name: EMBERVM_STORE_PROBE_INTERVAL_SECONDS
+              value: {{ .Values.controlPlane.storeProbe.intervalSeconds | int64 | quote }}
             # Principal-artifact wrap and restore capability gate (#4691).
             # False by default; see artifactEncryption in values for rollout order.
             - name: EMBERVM_ARTIFACT_ENCRYPTION
@@ -552,6 +566,12 @@ spec:
             - name: EMBERVM_WARMTH_S3_GC
               value: {{ .Values.warmthS3Gc.enabled | quote }}
             {{- end }}
+            {{- $generationRetentionCap := toString .Values.warmthS3Gc.generationRetentionCap }}
+            {{- if not (regexMatch "^[1-9][0-9]*$" $generationRetentionCap) }}
+            {{- fail "warmthS3Gc.generationRetentionCap must be a positive integer" }}
+            {{- end }}
+            - name: EMBERVM_WARMTH_S3_GC_GENERATION_RETENTION_CAP
+              value: {{ $generationRetentionCap | quote }}
             {{- if .Values.warmthS3Gc.maxPrefixes }}
             - name: EMBERVM_WARMTH_S3_GC_MAX_PREFIXES
               value: {{ .Values.warmthS3Gc.maxPrefixes | quote }}

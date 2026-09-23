@@ -20,7 +20,7 @@ from sqlmodel import Session, select
 
 RECENT_LIMIT = 12
 RESULT_HEAD = 240
-ACTIVE_STATES = ("admitted", "uncertain")
+ACTIVE_STATES = ("admitted", "uncertain", "landing")
 QUEUED_STATES = ("queued",)
 
 # Node run statuses come from factory.orchestration.graph; a node with no run yet is pending
@@ -265,6 +265,7 @@ def build_factory_view(
                 "state": state.get("state"),
                 "policy": None,
                 "intake": None,
+                "problem_issues": None,
                 "lanes": None,
                 "review_routing": None,
                 "active": [],
@@ -308,6 +309,7 @@ def build_factory_view(
             "state": state["state"],
             "policy": shape_policy(state["policy"]),
             "intake": state.get("intake"),
+            "problem_issues": state.get("problem_issues"),
             "lanes": state.get("lanes"),
             "review_routing": state.get("review_routing"),
             "version": state["version"],

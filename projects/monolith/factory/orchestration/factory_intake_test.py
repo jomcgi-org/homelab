@@ -846,8 +846,13 @@ def test_reconfigure_admits_new_policy_without_repinning_running_work(
     before = controls.task_snapshot(first["task_id"])
     changed = {**policy, "generation": 1, "task_budget_usd": 10}
     assert controls.set_control("configure", "operator", policy=changed)["ok"]
-    # The old queued receipt is inert. A new one on the active issue also
-    # waits, but must not hide later eligible work in the same queue.
+    # The old queue is retired. A new receipt on the active issue also waits,
+    # but must not hide later eligible work in the same queue.
+    with Session(db) as session:
+        old = session.exec(
+            select(FactoryReceipt).where(FactoryReceipt.issue_number == 2)
+        ).one()
+        assert old.state == "cancelled" and old.generation == 0
     assert admit_next("scheduler")["reason"] == "no_eligible_issue"
     issue(1, generation=1)
     issue(2, generation=1)

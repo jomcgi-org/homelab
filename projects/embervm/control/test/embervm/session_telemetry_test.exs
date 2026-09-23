@@ -15,6 +15,9 @@ defmodule Embervm.SessionTelemetryTest do
     assert SessionTelemetry.reason({:rpc, 14}) == "rpc_error"
     assert SessionTelemetry.reason({:prime_failed, {:error, :unavailable}}) ==
              "prime_failed"
+
+    assert SessionTelemetry.reason({:lineage_relinquishment_failed, {:error, :dial_down}}) ==
+             "lineage_relinquishment_failed"
   end
 
   test "classifies known guest failures without returning guest output" do

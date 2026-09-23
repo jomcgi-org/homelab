@@ -23,7 +23,6 @@ from knowledge.api import (
     ExtractionOutputInvalid,
     KG_JOB_KIND,
     MAX_GARDENER_RETRIES,
-    set_kg_swept_last_cycle,
 )
 from knowledge.api import (
     find_reviewable_docfix_prs,
@@ -167,6 +166,22 @@ def provider_walled() -> tuple[bool, str]:
         return False, "unreadable"
 
 
+def kg_provider_walled() -> tuple[bool, str]:
+    """Whether fresh observations confirm room for a KG session."""
+    try:
+        from factory.orchestration.model_pool import (
+            confirmed_availability,
+            quota_summary,
+        )
+
+        ok, reason = confirmed_availability(DRAIN_MODEL, quota_summary())
+        return (not ok), reason
+    # nosemgrep: no-broad-except-swallow
+    except Exception:  # unknown capacity must not admit KG work
+        logger.debug("KG drain provider quota unreadable", exc_info=True)
+        return True, "unreadable"
+
+
 @DBOS.step()
 def claim_drainer_job(
     ttl_secs: int,
@@ -209,9 +224,22 @@ def claim_drainer_job(
                 reason,
             )
             return None
+        kg_walled, kg_reason = kg_provider_walled()
+        remaining_kinds = tuple(kinds)
+        if kg_walled and KG_JOB_KIND in remaining_kinds:
+            remaining_kinds = tuple(
+                kind for kind in remaining_kinds if kind != KG_JOB_KIND
+            )
+            set_attributes(span, {"drain.kg_deferred": kg_reason})
+            logger.info(
+                "KG drain claim deferred: %s capacity is unconfirmed (%s)",
+                DRAIN_MODEL,
+                kg_reason,
+            )
+            if not remaining_kinds:
+                return None
         lock_pool(session)
         adopt_existing(session)
-        remaining_kinds = tuple(kinds)
         while remaining_kinds:
             # Keep the pool lock while rolling back a refused job's lease.
             # Another worker cannot spend the same allowance or freshness turn.
@@ -582,7 +610,12 @@ def finish_drainer_job(
             if not completed:
                 raise RuntimeError("routine job claim ownership changed")
         else:
-            completed = complete_job(name, status=status, summary=summary)
+            completed = complete_job(
+                name,
+                status=status,
+                summary=summary,
+                defer_seconds=defer_seconds,
+            )
         if deregister and completed and expected_holder is None:
             # Keep the completed freshness row's cooldown through one-shot
             # cleanup, including final failure before extraction provenance.
@@ -1058,7 +1091,7 @@ def drain_cycle() -> dict:
 
         enabled_kinds = _job_kinds(settings)
         if KG_JOB_KIND in enabled_kinds:
-            set_kg_swept_last_cycle(sweep_kg_raws())
+            sweep_kg_raws()
 
         workflow_id = _workflow_id()
         try:
@@ -1114,17 +1147,13 @@ def drain_cycle() -> dict:
                     cancel_drainer_reservation(
                         _session_key(workflow_id, name, KG_NODE_KEY)
                     )
-                    if ownership:
-                        finish_drainer_job(
-                            name,
-                            "deferred",
-                            "kg daily cap reached",
-                            defer_seconds=3600,
-                            **ownership,
-                        )
-                    else:
-                        finish_drainer_job(name, "deferred", "kg daily cap reached")
-                        defer_drainer_job(name, 3600)
+                    finish_drainer_job(
+                        name,
+                        "deferred",
+                        "kg daily cap reached",
+                        defer_seconds=3600,
+                        **ownership,
+                    )
                     claim_kinds = [kind for kind in claim_kinds if kind != KG_JOB_KIND]
                     continue
 

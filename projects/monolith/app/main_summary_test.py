@@ -142,7 +142,7 @@ class TestChatStartupHook:
         # message lock sweep, the agent_sessions pending-message sweep, titles,
         # KG feed, receipt retention, the cd-probe that writes the platform_probe
         # latch, and quota refresh.
-        assert len(task_mocks) == 11
+        assert len(task_mocks) == 12
         # Assert the invariant rather than indexing a hand-numbered list: what
         # matters is that EVERY singleton gets the done callback, so a task that
         # crashes is logged. Indexing meant this broke whenever a singleton was

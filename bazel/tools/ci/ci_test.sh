@@ -178,7 +178,7 @@ main_publish_branch="$(awk '
 	in_branch && $0 == "          fi" { exit }
 ' "$BUILD_BUDDY")"
 if grep -Fq './bazel/images/push/push-changed.sh' <<<"$main_publish_branch" &&
-	grep -Fq './bazel/helm/write-back-versions.sh .chart-version-records' <<<"$main_publish_branch"; then
+	grep -Fq './bazel/helm/write-back-versions.sh .chart-version-records --record-publication' <<<"$main_publish_branch"; then
 	pass "buildbuddy_main_publish_branch"
 else
 	fail "buildbuddy_main_publish_branch" "main-only branch must publish changed images and write chart versions back"
@@ -222,6 +222,7 @@ else
 fi
 
 ratchet_ln=$(grep -n 'central_build_ratchet.py "$base_ref" HEAD' "$BUILD_BUDDY" | head -1 | cut -d: -f1)
+reachability_ln=$(grep -n 'test_source_reachability.py' "$BUILD_BUDDY" | head -1 | cut -d: -f1)
 affected_ln=$(grep -n 'affected-targets.sh "$base_ref" HEAD' "$BUILD_BUDDY" | head -1 | cut -d: -f1)
 if [[ -n "$ratchet_ln" && -n "$affected_ln" && "$ratchet_ln" -lt "$affected_ln" ]] &&
 	grep -q 'git fetch origin "${GIT_REPO_DEFAULT_BRANCH:-main}"' "$BUILD_BUDDY" &&
@@ -229,6 +230,12 @@ if [[ -n "$ratchet_ln" && -n "$affected_ln" && "$ratchet_ln" -lt "$affected_ln" 
 	pass "central_build_ratchet_in_pr_checks"
 else
 	fail "central_build_ratchet_in_pr_checks" "ratchet must fetch and resolve the merge base before affected tests"
+fi
+
+if [[ -n "$reachability_ln" && -n "$affected_ln" && "$reachability_ln" -lt "$affected_ln" ]]; then
+	pass "test_source_reachability_in_pr_checks"
+else
+	fail "test_source_reachability_in_pr_checks" "test source guard must run before affected-target selection"
 fi
 
 if grep -qx $'\tcmd_ratchet' "$CI" &&

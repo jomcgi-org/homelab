@@ -172,6 +172,7 @@ class TestSearchEndpoint:
                 type_filter="paper",
                 scope_filters=DEFAULT_SCOPES,
                 include_unscoped=False,
+                include_legacy=True,
             )
 
     def test_limit_forwarded_to_store(self, client):
@@ -186,6 +187,7 @@ class TestSearchEndpoint:
                 type_filter=None,
                 scope_filters=DEFAULT_SCOPES,
                 include_unscoped=False,
+                include_legacy=True,
             )
 
     def test_embedding_failure_returns_503(self, fake_session):
@@ -318,6 +320,7 @@ class TestSearchEndpoint:
                 type_filter=None,
                 scope_filters=DEFAULT_SCOPES,
                 include_unscoped=False,
+                include_legacy=True,
             )
 
     def test_search_results_include_edges(self, client, fake_embed_client):

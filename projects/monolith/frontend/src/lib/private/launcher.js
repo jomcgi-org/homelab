@@ -5,8 +5,7 @@
 //
 // Internal hrefs are browser paths on private.jomcgi.dev. The gateway-proxied
 // UIs (argocd/longhorn) live under /app/<name> (Envoy strips the prefix
-// and forwards to the real pod); /perf is a first-party route served by the
-// monolith itself. External tools open in a new tab.
+// and forwards to the real pod). External tools open in a new tab.
 //
 // Telemetry now lives in Honeycomb, which is external and so opens in a new
 // tab rather than sitting under /app/. The SigNoz tile was removed with SigNoz
@@ -21,7 +20,6 @@ export const launcher = [
     external: true,
   },
   { label: "Longhorn", desc: "cluster storage", href: "/app/longhorn" },
-  { label: "Perf", desc: "semgrep scan perf", href: "/perf" },
   { label: "Factory", desc: "autonomous work", href: "/factory" },
   { label: "Grimoire", desc: "character sheets", href: "/grimoire" },
   { label: "Updates", desc: "daily release journal", href: "/updates" },

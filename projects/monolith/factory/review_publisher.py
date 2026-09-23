@@ -141,7 +141,7 @@ def collect(task_id: str) -> ReviewEvidence | Refusal:
         ).first()
         if task is None or receipt is None:
             return _refusal(task_id, "task_missing")
-        if receipt.state != "succeeded":
+        if receipt.state not in ("succeeded", "landing"):
             return _refusal(task_id, "delivery_not_settled")
         if not receipt.policy_json:
             return _refusal(task_id, "policy_missing")

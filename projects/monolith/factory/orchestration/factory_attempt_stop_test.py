@@ -217,9 +217,20 @@ def attempt(database, operator_client, monkeypatch):
         "task_timeout_seconds": 14400,
         "max_attempts": 2,
     }
-    for body in ({"action": "configure", "policy": policy}, {"action": "enable"}):
-        response = operator_client.post("/api/swarm/factory/control", json=body)
-        assert response.status_code == 200 and response.json()["ok"]
+    configured = operator_client.post(
+        "/api/swarm/factory/control",
+        json={"action": "configure", "policy": policy},
+    )
+    assert configured.status_code == 200 and configured.json()["ok"]
+    enabled = operator_client.post(
+        "/api/swarm/factory/control",
+        json={
+            "action": "enable",
+            "request_key": "fixture-enable",
+            "expected_version": configured.json()["version"],
+        },
+    )
+    assert enabled.status_code == 200 and enabled.json()["ok"]
     for issue in (7, 8):
         receive_issue(
             REPO,

@@ -193,6 +193,7 @@ def _rank_search_chunks(
     scope_filters: tuple[str, ...] | None = None,
     include_unscoped: bool = False,
     exclude_invalidated: bool = False,
+    include_legacy: bool = False,
 ) -> list[tuple[int, int, float]]:
     """Return ranked ``(note_fk, chunk_fk, score)`` tuples using pgvector."""
     distance = Chunk.embedding.cosine_distance(query_embedding)
@@ -216,6 +217,13 @@ def _rank_search_chunks(
     scope_predicate = _scope_predicate(scope_filters, include_unscoped=include_unscoped)
     if scope_predicate is not None:
         notes_stmt = notes_stmt.where(scope_predicate)
+    if not include_legacy:
+        notes_stmt = notes_stmt.where(
+            or_(
+                Note.verification_state.is_(None),
+                Note.verification_state != "legacy",
+            )
+        )
     if exclude_invalidated:
         notes_stmt = notes_stmt.where(
             Note.valid_until.is_(None),
@@ -553,6 +561,7 @@ class KnowledgeStore:
         include_unscoped: bool = False,
         exclude_invalidated: bool = False,
         include_embeddings: bool = False,
+        include_legacy: bool = False,
     ) -> list[dict]:
         """Semantic search returning type, tags, best chunk section + snippet.
 
@@ -560,7 +569,9 @@ class KnowledgeStore:
         SQL queries:
 
         1. Top-N notes ranked by ``best_score = 1 - min(cosine_distance)``
-           across their chunks, with optional ``Note.type`` filter.
+           across their chunks, with optional note filters applied before the
+           ranking limit. Legacy notes are excluded unless ``include_legacy``
+           is explicitly enabled.
         2. A single batched ``SELECT DISTINCT ON (note_fk)`` to pick the
            best-matching chunk per top-N note, with no N+1.
 
@@ -580,6 +591,7 @@ class KnowledgeStore:
             scope_filters=effective_scope_filters,
             include_unscoped=include_unscoped,
             exclude_invalidated=exclude_invalidated,
+            include_legacy=include_legacy,
         )
         if not ranked:
             return []
@@ -587,7 +599,20 @@ class KnowledgeStore:
         top_ids = [note_fk for note_fk, _, _ in ranked]
         top_chunk_ids = [chunk_fk for _, chunk_fk, _ in ranked]
         score_by_note = {note_fk: score for note_fk, _, score in ranked}
-        note_stmt = select(Note).where(Note.id.in_(top_ids), Note.deleted_at.is_(None))
+        note_stmt = select(
+            Note.id,
+            Note.note_id,
+            Note.title,
+            Note.path,
+            Note.type,
+            Note.tags,
+            Note.scope,
+            Note.verification_state,
+            Note.confidence,
+            Note.valid_from,
+            Note.valid_until,
+            Note.observed_at,
+        ).where(Note.id.in_(top_ids), Note.deleted_at.is_(None))
         hydration_scope_predicate = _scope_predicate(
             effective_scope_filters, include_unscoped=include_unscoped
         )
@@ -596,11 +621,20 @@ class KnowledgeStore:
             # READ COMMITTED a concurrent scope change between the two queries
             # must fail closed rather than expose the newly unauthorized row.
             note_stmt = note_stmt.where(hydration_scope_predicate)
-        note_by_id = {note.id: note for note in self.session.exec(note_stmt).all()}
+        note_by_id = {
+            note.id: note for note in self.session.exec(note_stmt).all()
+        }
+        chunk_projection = [
+            Chunk.id,
+            Chunk.section_header,
+            Chunk.chunk_text,
+        ]
+        if include_embeddings:
+            chunk_projection.append(Chunk.embedding)
         chunk_by_id = {
             chunk.id: chunk
             for chunk in self.session.exec(
-                select(Chunk).where(Chunk.id.in_(top_chunk_ids))
+                select(*chunk_projection).where(Chunk.id.in_(top_chunk_ids))
             ).all()
         }
         best_chunk_by_note = {

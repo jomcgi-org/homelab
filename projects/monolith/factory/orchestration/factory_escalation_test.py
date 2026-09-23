@@ -131,6 +131,8 @@ class Github:
                 }
             )
             return self.comments[-1]
+        if method == "PATCH" and suffix.startswith("issues/") and "body" in payload:
+            self.issue_bodies[int(suffix.rsplit("/", 1)[1])] = payload["body"]
         if suffix == "issues":
             self.next_issue += 1
             return {"number": self.next_issue}
@@ -325,11 +327,14 @@ def github_batch(monkeypatch, issues):
     return calls
 
 
-def add_intervention(db, task_id, workflow_id, *, required, reason, node_id=None):
+def add_intervention(
+    db, task_id, workflow_id, *, required, reason, node_id=None, **context
+):
     detail = {
         "workflow_id": workflow_id,
         "intervention_required": required,
         "reason": reason,
+        **context,
     }
     if node_id is not None:
         detail["node_id"] = node_id
@@ -524,7 +529,15 @@ def test_closed_issue_cards_are_dismissed_together_with_close_times(
 
     result = conductor.revalidate_escalations()
 
-    assert result == {"cards": 2, "checked": 2, "resolved": 2, "batches": 1}
+    assert result == {
+        "cards": 2,
+        "checked": 2,
+        "resolved": 2,
+        "retired": 0,
+        "generation_candidates": 0,
+        "generation_blocked": 0,
+        "batches": 1,
+    }
     assert len(calls) == 1
     query, variables = calls[0]
     assert variables == {"owner": "owner", "name": "repo"}
@@ -597,6 +610,96 @@ def test_changed_issue_body_supersedes_card_without_inferring_an_answer(
     assert resolution["effects"] == {"dismissed": True}
 
 
+def test_revalidation_repairs_preexisting_stale_terminal_cards_locally(
+    db, github, notices, monkeypatch
+):
+    first, second = escalate_two(db, github, notices)
+    with Session(db) as session:
+        first_row = session.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == first)
+        ).one()
+        second_row = session.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == second)
+        ).one()
+        first_row.state = "succeeded"
+        second_row.state = "failed"
+        control = session.get(FactoryControl, "factory")
+        policy = json.loads(control.policy_json)
+        control.policy_json = json.dumps({**policy, "generation": 4})
+        session.add_all([first_row, second_row, control])
+        session.commit()
+
+    def unexpected(*_args):
+        pytest.fail("generation-stale cards need no GitHub read or write")
+
+    monkeypatch.setattr(landing, "github_graphql", unexpected)
+    monkeypatch.setenv("FACTORY_ESCALATION_REVALIDATION_ENABLED", "true")
+    writes = list(github.writes)
+
+    result = conductor.revalidate_escalations()
+
+    assert result == {
+        "cards": 2,
+        "checked": 0,
+        "resolved": 2,
+        "retired": 0,
+        "generation_candidates": 2,
+        "generation_blocked": 0,
+        "batches": 0,
+    }
+    with Session(db) as session:
+        for task_id, state in ((first, "succeeded"), (second, "failed")):
+            row = session.exec(
+                select(FactoryReceipt).where(FactoryReceipt.task_id == task_id)
+            ).one()
+            assert row.state == state
+            resolution = json.loads(row.escalation_json)["resolved"]
+            assert resolution["effect"] == "escape-dismiss"
+            assert resolution["effects"] == {
+                "dismissed": True,
+                "receipt_retired": False,
+            }
+            assert "from 0 to 4" in resolution["note"]
+    assert github.writes == writes
+
+
+def test_generation_reconciliation_is_bounded_and_idempotent(db, github, notices):
+    first, second = escalate_two(db, github, notices)
+    with Session(db) as session:
+        control = session.get(FactoryControl, "factory")
+        policy = json.loads(control.policy_json)
+        control.policy_json = json.dumps({**policy, "generation": 3})
+        session.add(control)
+        session.commit()
+    writes = list(github.writes)
+
+    first_pass = controls.reconcile_generation_stale_receipts(limit=1)
+    second_pass = controls.reconcile_generation_stale_receipts(limit=1)
+    third_pass = controls.reconcile_generation_stale_receipts(limit=1)
+
+    assert first_pass == {
+        "candidates": 1,
+        "retired": 1,
+        "cards_resolved": 1,
+        "blocked": 0,
+    }
+    assert second_pass == first_pass
+    assert third_pass == {
+        "candidates": 0,
+        "retired": 0,
+        "cards_resolved": 0,
+        "blocked": 0,
+    }
+    with Session(db) as session:
+        rows = session.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id.in_((first, second)))
+        ).all()
+        assert len(rows) == 2
+        assert all(row.state == "cancelled" for row in rows)
+        assert all(json.loads(row.escalation_json)["resolved"] for row in rows)
+    assert github.writes == writes
+
+
 def test_revalidation_off_does_not_read_github(db, github, notices, monkeypatch):
     task_id, _policy = escalate(db, github, notices)
 
@@ -609,6 +712,9 @@ def test_revalidation_off_does_not_read_github(db, github, notices, monkeypatch)
         "cards": 0,
         "checked": 0,
         "resolved": 0,
+        "retired": 0,
+        "generation_candidates": 0,
+        "generation_blocked": 0,
         "batches": 0,
     }
     assert json.loads(receipt_of(db, task_id).escalation_json)["resolved"] is None
@@ -659,6 +765,128 @@ def test_intervention_required_notifies_once_per_task(db, github, notices):
         "factory-node:first",
         "factory-node:second",
     }
+
+
+@pytest.mark.parametrize(
+    "action,detail,cleared",
+    [
+        ("stop_settled", {"cessation_confirmed": True}, True),
+        ("stop_settled", {"cessation_confirmed": False}, False),
+        ("stop_settled", {}, False),
+        ("interrupted_continuation_settled", {}, True),
+        ("record_start_outcome", {"reconciled": True, "status": "failed"}, True),
+        ("record_start_outcome", {"reconciled": True, "status": "succeeded"}, True),
+        ("record_start_outcome", {"reconciled": True, "status": "uncertain"}, False),
+        ("record_start_outcome", {"reconciled": False, "status": "failed"}, False),
+        ("record_start_outcome", {"status": "failed"}, False),
+    ],
+)
+def test_settled_intervention_does_not_consume_notification_fence(
+    db, github, notices, action, detail, cleared
+):
+    task_id, _policy = admitted(ISSUE)
+    workflow = "factory-node:worker:1"
+    add_intervention(db, task_id, workflow, required=True, reason="guest missing")
+    key = "start_key" if action == "record_start_outcome" else "workflow_id"
+    with Session(db) as session:
+        session.add(
+            FactoryAudit(
+                actor="factory:reconcile",
+                action=action,
+                task_id=task_id,
+                detail_json=json.dumps({key: workflow, **detail}),
+            )
+        )
+        session.commit()
+    conductor._consume_intervention_notifications(task_id)
+    conductor._consume_intervention_notifications(task_id)
+    assert len(notices) == (0 if cleared else 1)
+    assert len(audits(db, "intervention_required_notified")) == (0 if cleared else 1)
+    assert len(audits(db, "stop_observation")) == 1
+
+    # A different attempt still requires help, including after a quiet scan.
+    add_intervention(
+        db, task_id, "factory-node:worker:2", required=True, reason="stop failed"
+    )
+    conductor._consume_intervention_notifications(task_id)
+    conductor._consume_intervention_notifications(task_id)
+    assert len(notices) == 1
+    if cleared:
+        assert "workflow=factory-node:worker:2" in notices[0][0]
+        assert "workflow=factory-node:worker:1" not in notices[0][0]
+
+
+@pytest.mark.parametrize("settled_first", [False, True])
+def test_intervention_settlement_is_ordered_and_exact_attempt_only(
+    db, github, notices, settled_first
+):
+    task_id, _policy = admitted(ISSUE)
+
+    def settled():
+        with Session(db) as session:
+            session.add(
+                FactoryAudit(
+                    actor="factory:reconcile",
+                    action="stop_settled",
+                    task_id=task_id,
+                    detail_json=json.dumps(
+                        {"workflow_id": "worker:1", "cessation_confirmed": True}
+                    ),
+                )
+            )
+            session.commit()
+
+    if settled_first:
+        settled()
+    add_intervention(db, task_id, "worker:1", required=True, reason="missing proof")
+    add_intervention(db, task_id, "worker:2", required=True, reason="stop failed")
+    if not settled_first:
+        settled()
+    conductor._consume_intervention_notifications(task_id)
+    assert len(notices) == 1
+    assert "workflow=worker:2" in notices[0][0]
+    assert ("workflow=worker:1" in notices[0][0]) is settled_first
+
+
+def test_exhausted_stop_notification_carries_safe_reconciliation_context(
+    db, github, notices
+):
+    task_id, _policy = admitted(ISSUE)
+    add_intervention(
+        db,
+        task_id,
+        "factory-node:implement:1",
+        required=True,
+        reason="stop_supervision_retry_exhausted",
+        refusal="missing_stop_precondition",
+        node_key="implement",
+        attempt=1,
+        session_id=5381,
+        guest_id="s-exact-factory",
+        retry_deadline_at="2026-09-20T14:15:00+00:00",
+        missing_proof="exact incarnation-bound cessation evidence",
+    )
+
+    conductor._consume_intervention_notifications(task_id)
+
+    assert len(notices) == 1
+    text, level = notices[0]
+    assert level == "warn"
+    for expected in (
+        f"Factory task {task_id}",
+        "workflow=factory-node:implement:1",
+        "node=implement",
+        "attempt=1",
+        "session=5381",
+        "guest=s-exact-factory",
+        "refusal=missing_stop_precondition",
+        "deadline=2026-09-20T14:15:00+00:00",
+        "missing proof=exact incarnation-bound cessation evidence",
+        "Null invoke fields alone are not proof",
+    ):
+        assert expected in text
+    assert "release the slot" in text
+    assert "Settle only from positive cessation evidence" in text
 
 
 def test_intervention_notification_failure_does_not_escape_reconciliation(
@@ -865,10 +1093,8 @@ def test_an_ending_decision_settles_the_receipt_rather_than_re_admitting_it(
         assert session.get(SwarmTask, task_id).start_state == "escalated"
 
 
-def test_a_decision_the_lane_cannot_admit_says_so_instead_of_stranding_it(
-    db, github, notices
-):
-    """An answered card that schedules nothing is the state this replaced."""
+def test_a_stale_visible_decision_is_refused_before_issue_effects(db, github, notices):
+    """A generation-stale card cannot mutate its issue and schedule nothing."""
     task_id, _policy = escalate(db, github, notices)
     receipt_id = receipt_of(db, task_id).id
     moved = policy_for(ISSUE)
@@ -878,13 +1104,17 @@ def test_a_decision_the_lane_cannot_admit_says_so_instead_of_stranding_it(
         control.policy_json = json.dumps(moved)
         session.add(control)
         session.commit()
-    result = decisions.apply_decision(
-        receipt_id, "continue-narrowed", "joe@example.test"
-    )
-    effects = result["resolution"]["effects"]
-    assert effects["readmitted"] is False
-    assert "generation" in effects["blocked_by"]
-    assert receipt_of(db, receipt_id=receipt_id).state == "cancelled"
+    writes = list(github.writes)
+    with pytest.raises(decisions.DecisionError) as raised:
+        decisions.apply_decision(receipt_id, "continue-narrowed", "joe@example.test")
+    assert raised.value.status == 409
+    assert "receipt generation 0" in raised.value.reason
+    assert "policy is on generation 3" in raised.value.reason
+    assert github.writes == writes
+    with Session(db) as session:
+        row = session.get(FactoryReceipt, receipt_id)
+        assert row.state == "escalated"
+        assert json.loads(row.escalation_json)["resolved"] is None
 
 
 def test_the_chat_action_asks_on_the_issue_and_re_admits_with_the_note(
@@ -1113,7 +1343,17 @@ def test_revalidation_is_paced_independently_of_the_tick(monkeypatch):
     monkeypatch.setattr(conductor, "_watchdog_clock", lambda: clock["now"])
     monkeypatch.setattr(conductor, "escalation_revalidation_enabled", lambda: True)
     monkeypatch.setattr(
-        controls, "_read_session", lambda: calls.append("read") or _NoRows()
+        controls,
+        "reconcile_generation_stale_receipts",
+        lambda _actor: {
+            "candidates": 0,
+            "retired": 0,
+            "cards_resolved": 0,
+            "blocked": 0,
+        },
+    )
+    monkeypatch.setattr(
+        controls, "_read_session", lambda *_args: calls.append("read") or _NoRows()
     )
 
     conductor.revalidate_escalations()
@@ -1135,6 +1375,9 @@ class _NoRows:
 
     def __exit__(self, *_a):
         return False
+
+    def get(self, *_args):
+        return None
 
     def exec(self, _statement):
         return self
@@ -1188,7 +1431,7 @@ def test_today_cards_continue_or_escalate_under_backstop(
     # A retry after settlement cannot emit another comment or card.
     conductor._escalate_task(task, decision, "replay-card", [])
     row = receipt_of(db, task_id)
-    if card["issue"] in {6193, 5444}:
+    if card["issue"] == 6193:
         assert row.state == "escalated"
         assert row.escalation_json is not None
         assert "Decided by the conductor:" not in github.bodies()
@@ -1238,17 +1481,24 @@ def test_parameter_with_irreversible_effect_still_escalates(
     assert len(notices) == 1
 
 
-@pytest.mark.parametrize("field", ["value", "reason"])
-def test_model_labelled_reversible_budget_gate_still_escalates(
-    db, github, notices, field
+@pytest.mark.parametrize(
+    "value",
+    [
+        "budget alert 50 USD per month",
+        "create bucket",
+        "delete prod data",
+        "rotate account credential",
+    ],
+)
+def test_model_labelled_reversible_restricted_value_still_escalates(
+    db, github, notices, value
 ):
     task_id, _policy = admitted(ISSUE)
     gate = {
         "kind": "parameter",
         "classification": "reversible",
-        "value": "N=3",
+        "value": value,
         "reason": "A reversible default",
-        field: "budget alert 50 USD per month",
     }
     conductor._escalate_task(
         task_of(task_id), pause(pause_options(), gate=gate), "budget", []
@@ -1257,6 +1507,54 @@ def test_model_labelled_reversible_budget_gate_still_escalates(
     assert "## Decision needed" in github.bodies()
     assert "Decided by the conductor:" not in github.bodies()
     assert len(notices) == 1
+
+
+@pytest.mark.parametrize("kind", ["parameter", "live_validation"])
+def test_reversible_gate_rationale_does_not_request_operational_authority(
+    db, github, notices, kind
+):
+    """Replay the explanatory wording that stranded #5505 and #5460."""
+    from factory.orchestration import factory_gates as gates
+
+    task_id, _policy = admitted(ISSUE)
+    gate = {
+        "kind": kind,
+        "classification": "reversible",
+        "reason": (
+            "The proposed configuration is repository-only and default-off; "
+            "it neither provisions an external account nor deletes production "
+            "data or spends money."
+        ),
+    }
+    if kind == "parameter":
+        gate["value"] = "bricks.autoscale.ceilingIdleMs=3600000 (60 minutes)"
+    else:
+        gate["scope"] = "Stage collector HTTPS and CA support, default-off."
+        gate["live_checks"] = [
+            "An authorized operator supplies verified CA material and validates HTTPS."
+        ]
+    decision = pause(pause_options(), gate=gate)
+    conductor._escalate_task(task_of(task_id), decision, "safe-rationale", [])
+    conductor._escalate_task(task_of(task_id), decision, "safe-rationale", [])
+
+    assert receipt_of(db, task_id).state == "admitted"
+    assert task_of(task_id)["conductor_gates"] == [gate]
+    assert len(audits(db, "conductor_gate_decided")) == 1
+    assert not notices
+    assert "## Decision needed" not in github.bodies()
+    if kind == "parameter":
+        assert github.bodies().count("Decided by the conductor:") == 1
+        assert gate["value"] in gates.guidance(task_of(task_id))
+    else:
+        assert gates.live_checks(task_of(task_id)) == gate["live_checks"]
+        body_writes = [
+            payload["body"]
+            for method, path, payload in github.writes
+            if method == "PATCH" and path == f"issues/{ISSUE}"
+        ]
+        assert len(body_writes) == 1
+        assert f"- [ ] {gate['live_checks'][0]}" in body_writes[0]
+        assert "do not close it" in gates.guidance(task_of(task_id))
 
 
 def test_plain_retention_count_resolves(db, github, notices):
@@ -1361,6 +1659,32 @@ def test_delivery_gate_without_open_pr_escalates(db, github, notices):
     assert receipt_of(db, task_id).state == "escalated"
     assert "## Decision needed" in github.bodies()
     assert len(notices) == 1
+
+
+@pytest.mark.parametrize(
+    "classification", ["reversible", "spending", "external_account", "prod_deletion"]
+)
+def test_delivery_adoption_uses_ownership_checks_not_proposal_keywords(
+    db, github, monkeypatch, classification
+):
+    from factory.orchestration import factory_gates as gates
+
+    task_id, _policy = admitted(ISSUE)
+    task = task_of(task_id)
+    pull = existing_pull(task)
+    monkeypatch.setattr(conductor, "github_list", lambda *_: [pull])
+    gate = {
+        "kind": "delivery_target",
+        "classification": classification,
+        "value": "Adopt the existing PR; do not create a duplicate.",
+        "reason": "Preserve unknown-cost accounting and the existing review requirements.",
+    }
+    assert gates.resolve(task, {"gate": gate}, "existing-delivery") is (
+        classification == "reversible"
+    )
+    assert bool(task_of(task_id)["delivery_adoption"]) is (
+        classification == "reversible"
+    )
 
 
 def test_rescope_mismatched_pr_logs_and_persists_gate(db, github, monkeypatch, caplog):

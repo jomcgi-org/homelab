@@ -16,7 +16,7 @@ from sqlmodel import Session
 import httpx
 
 import agent.api as agent_api
-from factory.execution import store, voice, voice_ui
+from factory.execution import broker_client, store, voice, voice_ui
 from factory.execution import model_family, normalize_model
 from factory.execution.constants import DRAINER_NODE_KEY
 from factory.execution.rationale import rationale_trailer_instruction
@@ -1172,6 +1172,21 @@ async def _execute_pending_message(session_id: int) -> None:
                 claimed_seq,
                 session_id,
             )
+            # The model already returned. Preserve its exact receipt and claim
+            # for bounded adoption instead of discarding the completed work as
+            # an unknown invocation. The hold writer refuses changed ownership
+            # or a turn whose database commit actually succeeded.
+            if _response_lost_eligible():
+                try:
+                    await asyncio.to_thread(
+                        _record_response_lost, "result_persistence_failed", {}
+                    )
+                except Exception:  # noqa: BLE001 - retain existing release fallback
+                    logger.exception(
+                        "Could not hold completed turn %s in session %s",
+                        claimed_seq,
+                        session_id,
+                    )
             return
         _clear_negative_oracle_verdict(session_id)
         if turn.terminal_reason == "interrupted_for_drain":
@@ -1374,8 +1389,60 @@ async def _reconcile_zombie_sessions() -> int:
     return recovered
 
 
+def _observe_response_lost_guest(guest_id: str) -> dict | None:
+    """Read fresh terminal evidence without holding a database transaction."""
+
+    async def request():
+        return await asyncio.wait_for(_transport.get_session(guest_id), 5)
+
+    try:
+        view = asyncio.run(request())
+    except Exception:  # noqa: BLE001 - unreadable guests retain their holds.
+        return None
+    return view if isinstance(view, dict) else None
+
+
+def _recover_terminal_response_lost(session_id: int, outcome: dict) -> dict | None:
+    """Hand a ceased guest to ordinary unknown-outcome reconciliation."""
+    hold = store.read_response_lost_hold_sync(session_id)
+    if hold is None:
+        return outcome
+    # Shutdown holds carry no observed generation or invoke stamp. A fresh
+    # terminal guest still cannot finish their work, but this only records an
+    # unknown outcome; permit supervision must independently prove cessation.
+    generation = hold.get("generation")
+    started = hold.get("invoke_started_at")
+    view = _observe_response_lost_guest(hold["guest_id"])
+    if (
+        view is None
+        or view.get("session_id") != hold["guest_id"]
+        or view.get("state") not in {"evicted", "destroyed"}
+        or type(view.get("generation")) is not int
+        or view["generation"] < 0
+        or type(view.get("invoke_started_at")) is not int
+        or view["invoke_started_at"] <= 0
+    ):
+        return outcome
+    if generation is not None and (
+        type(generation) is not int or view["generation"] != generation
+    ):
+        return outcome
+    if started is not None and (
+        type(started) is not int or view["invoke_started_at"] != started
+    ):
+        return outcome
+    # A result published during the observation wins over an unknown outcome.
+    retried = store.adopt_response_lost_result(session_id)
+    if retried is None or retried.get("status") != "waiting":
+        return retried
+    reason = "response_lost_guest_ceased"
+    if store.settle_response_lost_hold(session_id, reason, expected_hold=hold):
+        return {"status": "settled", "reason": reason}
+    return retried
+
+
 def _adopt_response_lost_results() -> list[int]:
-    """Finish held turns whose committed result has since arrived.
+    """Adopt committed results and reconcile holds over confirmed ceased guests.
 
     Every lane reaches this sweep, including the drainer and interactive turns
     that have no node workflow of their own to recover them. The sweep knows no
@@ -1390,6 +1457,8 @@ def _adopt_response_lost_results() -> list[int]:
     for session_id in store.find_response_lost_session_ids(5):
         try:
             outcome = store.adopt_response_lost_result(session_id)
+            if outcome is not None and outcome.get("status") == "waiting":
+                outcome = _recover_terminal_response_lost(session_id, outcome)
         except Exception:  # noqa: BLE001 - one session must not stop the sweep
             logger.exception("Response-loss adoption failed for session %s", session_id)
             continue
@@ -1868,10 +1937,9 @@ def _grant_or_raise(grant: str) -> str:
 
 
 async def _broker_request(method: str, path: str) -> dict:
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.request(method, _broker_url() + path)
-        resp.raise_for_status()
-        return resp.json()
+    resp = await broker_client.request(method, _broker_url() + path, timeout=30)
+    resp.raise_for_status()
+    return resp.json()
 
 
 @mcp.tool

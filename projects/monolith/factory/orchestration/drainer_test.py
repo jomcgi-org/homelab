@@ -27,6 +27,7 @@ trace.set_tracer_provider(_PROVIDER)
 
 _QUOTA_SPAN_ATTRIBUTES_STEP = drainer._quota_span_attributes
 _DRAINER_WAIT_ENABLED_STEP = drainer.drainer_wait_enabled
+_KG_PROVIDER_WALLED = drainer.kg_provider_walled
 
 
 SETTINGS = {
@@ -68,6 +69,7 @@ def _clear_spans(monkeypatch):
         "_quota_span_attributes",
         lambda: {},
     )
+    monkeypatch.setattr(drainer, "kg_provider_walled", lambda: (False, "available"))
     yield
 
 
@@ -120,11 +122,15 @@ def _run(
         await_turn
         or (lambda *_: {"result_text": "finished", "terminal_reason": "stop"}),
     )
-    monkeypatch.setattr(
-        drainer,
-        "finish_drainer_job",
-        lambda *args: completions.append(args) or True,
-    )
+
+    def finish(*args, **kwargs):
+        recorded = args
+        if "defer_seconds" in kwargs:
+            recorded += (kwargs["defer_seconds"],)
+        completions.append(recorded)
+        return True
+
+    monkeypatch.setattr(drainer, "finish_drainer_job", finish)
     monkeypatch.setattr(
         drainer,
         "notify_drainer_failure",
@@ -523,12 +529,6 @@ def test_recurring_kg_job_is_not_deregistered_on_completion(monkeypatch):
 
 def test_kg_daily_cap_defers_without_processing_or_notification(monkeypatch):
     monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 40)
-    deferred = []
-    monkeypatch.setattr(
-        drainer,
-        "defer_drainer_job",
-        lambda name, seconds: deferred.append((name, seconds)) or True,
-    )
     job = {
         "name": "kg:raw-1",
         "routine_kind": "kg-drain",
@@ -538,8 +538,7 @@ def test_kg_daily_cap_defers_without_processing_or_notification(monkeypatch):
     result, _, starts, completions, notifications, destroys = _run(monkeypatch, [job])
 
     assert result == {"status": "complete", "processed": 0}
-    assert completions == [("kg:raw-1", "deferred", "kg daily cap reached")]
-    assert deferred == [("kg:raw-1", 3600)]
+    assert completions == [("kg:raw-1", "deferred", "kg daily cap reached", 3600)]
     assert starts == []
     assert notifications == []
     assert destroys == []
@@ -643,19 +642,14 @@ def test_empty_queue_exits_immediately(monkeypatch):
     assert destroys == []
 
 
-def test_kg_sweep_runs_at_cycle_start_and_updates_health_value(monkeypatch):
-    health_updates = []
-    monkeypatch.setattr(drainer, "sweep_kg_raws", lambda: 4)
-    monkeypatch.setattr(
-        drainer,
-        "set_kg_swept_last_cycle",
-        lambda count: health_updates.append(count),
-    )
+def test_kg_sweep_runs_at_cycle_start(monkeypatch):
+    sweeps = []
+    monkeypatch.setattr(drainer, "sweep_kg_raws", lambda: sweeps.append(True) or 4)
 
     result, *_ = _run(monkeypatch, [])
 
     assert result == {"status": "complete", "processed": 0}
-    assert health_updates == [4]
+    assert sweeps == [True]
 
 
 def test_empty_job_kinds_pause_claims(monkeypatch):
@@ -715,22 +709,15 @@ def test_kg_cap_defers_once_then_drains_qwen_jobs(monkeypatch):
     monkeypatch.setattr(drainer, "DBOS", FakeDBOS)
     monkeypatch.setattr(drainer, "claim_drainer_job", claim)
     monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 40)
-    monkeypatch.setattr(
-        drainer,
-        "finish_drainer_job",
-        lambda *args: completions.append(args) or True,
-    )
-    monkeypatch.setattr(
-        drainer,
-        "defer_drainer_job",
-        lambda name, seconds: (
-            (
-                deferred.append((name, seconds)),
-                queue.remove(next(job for job in queue if job["name"] == name)),
-            )
-            and True
-        ),
-    )
+
+    def finish(name, status, summary, *, defer_seconds=None):
+        completions.append((name, status, summary))
+        if defer_seconds is not None:
+            deferred.append((name, defer_seconds))
+            queue.remove(next(job for job in queue if job["name"] == name))
+        return True
+
+    monkeypatch.setattr(drainer, "finish_drainer_job", finish)
     monkeypatch.setattr(drainer, "start_agent_session", remove_claimed)
     monkeypatch.setattr(
         drainer,
@@ -2679,6 +2666,35 @@ def test_provider_walled_is_only_positive_evidence(monkeypatch):
     assert walled is False and reason.startswith("stale_observation")
 
 
+def test_kg_provider_requires_confirmed_observation(monkeypatch):
+    from factory.orchestration import model_pool
+
+    monkeypatch.setattr(model_pool, "quota_summary", dict)
+    assert _KG_PROVIDER_WALLED() == (True, "unobserved")
+
+    monkeypatch.setattr(
+        model_pool,
+        "quota_summary",
+        lambda: {
+            "codex": {
+                "observed": True,
+                "grant_inventory_complete": True,
+                "grant_inventory_valid": True,
+                "age_seconds": 30.0,
+                "windows": [
+                    {
+                        "name": "primary",
+                        "used_percent": 12.0,
+                        "resets_at": None,
+                        "usable": True,
+                    }
+                ],
+            }
+        },
+    )
+    assert _KG_PROVIDER_WALLED() == (False, "confirmed_available")
+
+
 def test_an_unreadable_quota_never_defers_a_claim(monkeypatch):
     import factory.orchestration.model_pool as model_pool
 
@@ -2687,6 +2703,7 @@ def test_an_unreadable_quota_never_defers_a_claim(monkeypatch):
 
     monkeypatch.setattr(model_pool, "quota_summary", explode)
     assert drainer.provider_walled() == (False, "unreadable")
+    assert _KG_PROVIDER_WALLED() == (True, "unreadable")
 
 
 def test_a_walled_provider_defers_the_claim_without_spending_a_lease(
@@ -2698,6 +2715,194 @@ def test_a_walled_provider_defers_the_claim_without_spending_a_lease(
     monkeypatch.setattr(drainer, "provider_walled", lambda: (False, "available"))
     claimed = _admitted_claim("wf-open")
     assert claimed is not None and claimed["name"] == "kg-one"
+
+
+def test_unconfirmed_kg_defers_before_lease_reservation_or_burst_consumption(
+    admission_database, monkeypatch
+):
+    import knowledge.api as knowledge_api
+    from knowledge import burst
+    from sqlmodel import select
+
+    from factory.execution.models import AgentCapacityReservation, AgentSession
+    from factory.orchestration import model_pool
+
+    _queued_job(admission_database, "kg-one")
+    monkeypatch.setattr(drainer, "provider_walled", lambda: (False, "available"))
+    monkeypatch.setattr(drainer, "kg_provider_walled", _KG_PROVIDER_WALLED)
+    monkeypatch.setattr(
+        model_pool,
+        "quota_summary",
+        lambda: {
+            "codex": {
+                "observed": True,
+                "grant_inventory_complete": True,
+                "grant_inventory_valid": True,
+                "grant_views": [
+                    {
+                        "grant": "account-a",
+                        "observed": True,
+                        "age_seconds": 30.0,
+                        "windows": [
+                            {
+                                "name": "primary",
+                                "used_percent": 10.0,
+                                "resets_at": None,
+                                "usable": True,
+                            }
+                        ],
+                    },
+                    {"grant": "account-b", "observed": False},
+                ],
+            }
+        },
+    )
+    burst_reads = []
+    monkeypatch.setattr(
+        knowledge_api,
+        "kg_burst_state",
+        lambda *_args: (
+            burst_reads.append(True) or pytest.fail("burst must not be read")
+        ),
+    )
+
+    assert _admitted_claim("wf-deferred") is None
+    assert burst_reads == []
+    with Session(admission_database) as db:
+        job = db.execute(
+            text("SELECT locked_by, locked_at FROM routine_jobs WHERE name='kg-one'")
+        ).one()
+        assert job.locked_by is None and job.locked_at is None
+        assert db.exec(select(AgentCapacityReservation)).all() == []
+        assert db.exec(select(AgentSession)).all() == []
+
+    monkeypatch.setattr(
+        model_pool,
+        "quota_summary",
+        lambda: {
+            "codex": {
+                "observed": True,
+                "grant_inventory_complete": True,
+                "grant_inventory_valid": True,
+                "grant_views": [
+                    {
+                        "grant": grant,
+                        "observed": True,
+                        "age_seconds": 30.0,
+                        "windows": [
+                            {
+                                "name": "primary",
+                                "used_percent": 10.0,
+                                "resets_at": None,
+                                "usable": True,
+                            }
+                        ],
+                    }
+                    for grant in ("account-a", "account-b")
+                ],
+            }
+        },
+    )
+    monkeypatch.setattr(
+        knowledge_api,
+        "kg_burst_state",
+        lambda *_args: burst.KGBurstState(),
+    )
+    claimed = _admitted_claim("wf-admitted")
+    assert claimed is not None and claimed["name"] == "kg-one"
+    with Session(admission_database) as db:
+        reservations = db.exec(select(AgentCapacityReservation)).all()
+        assert len(reservations) == 1
+        assert reservations[0].model == drainer.DRAIN_MODEL == "luna"
+
+
+def test_malformed_broker_inventory_defers_then_complete_inventory_admits(
+    admission_database, monkeypatch
+):
+    import knowledge.api as knowledge_api
+    from knowledge import burst
+    from sqlmodel import select
+
+    from factory.execution import provider_quota
+    from factory.execution.models import AgentCapacityReservation, AgentSession
+
+    _queued_job(admission_database, "kg-one")
+    monkeypatch.setattr(drainer, "provider_walled", lambda: (False, "available"))
+    monkeypatch.setattr(drainer, "kg_provider_walled", _KG_PROVIDER_WALLED)
+
+    def grant(name):
+        return {
+            "provider": "codex",
+            "grant": name,
+            "observed": True,
+            "status": "allowed",
+            "exhausted": False,
+            "age_seconds": 10.0,
+            "windows": [
+                {
+                    "name": "primary",
+                    "used_percent": 10.0,
+                    "expired": False,
+                }
+            ],
+        }
+
+    raw = {
+        "providers": {"codex": grant("provider-headline")},
+        "grants_complete": True,
+        "grants": {"account-a": grant("account-a"), "account-b": "malformed"},
+    }
+    monkeypatch.setattr(
+        provider_quota,
+        "fetch_provider_quota_sync",
+        lambda **_kwargs: provider_quota._available_result(raw),
+    )
+    burst_reads = []
+    monkeypatch.setattr(
+        knowledge_api,
+        "kg_burst_state",
+        lambda *_args: (
+            burst_reads.append(True) or pytest.fail("burst must not be read")
+        ),
+    )
+
+    assert _admitted_claim("wf-malformed") is None
+    assert burst_reads == []
+    with Session(admission_database) as db:
+        job = db.execute(
+            text("SELECT locked_by, locked_at FROM routine_jobs WHERE name='kg-one'")
+        ).one()
+        assert job.locked_by is None and job.locked_at is None
+        assert db.exec(select(AgentCapacityReservation)).all() == []
+        assert db.exec(select(AgentSession)).all() == []
+
+    raw["grants"]["account-b"] = grant("account-b")
+    monkeypatch.setattr(
+        knowledge_api,
+        "kg_burst_state",
+        lambda *_args: burst.KGBurstState(),
+    )
+    claimed = _admitted_claim("wf-complete")
+    assert claimed is not None and claimed["name"] == "kg-one"
+    with Session(admission_database) as db:
+        reservations = db.exec(select(AgentCapacityReservation)).all()
+        assert len(reservations) == 1
+        assert reservations[0].model == drainer.DRAIN_MODEL == "luna"
+
+
+def test_unconfirmed_kg_does_not_hide_ordinary_drainer_work(
+    admission_database, monkeypatch
+):
+    _queued_job(admission_database, "kg-one")
+    _queued_job(admission_database, "project-one", "qwen-drain")
+    monkeypatch.setattr(drainer, "provider_walled", lambda: (False, "available"))
+    monkeypatch.setattr(drainer, "kg_provider_walled", lambda: (True, "unobserved"))
+
+    claimed = _admitted_claim("wf-project")
+
+    assert claimed is not None
+    assert claimed["name"] == "project-one"
+    assert claimed["routine_kind"] == "qwen-drain"
 
 
 def test_replanned_routine_receives_supervisor_guidance(monkeypatch):

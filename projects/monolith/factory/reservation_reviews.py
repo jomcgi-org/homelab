@@ -9,7 +9,8 @@ import logging
 import os
 from uuid import uuid4
 
-from sqlalchemy import func, text
+from sqlalchemy import func, or_, text
+from sqlalchemy.orm import aliased
 from sqlmodel import Session, select
 
 from core.db import get_engine
@@ -19,6 +20,7 @@ from factory.execution.models import (
     AgentSession,
     AgentTurn,
     PendingMessage,
+    ProbeObservation,
 )
 from factory.execution import review_leases as leases
 from factory.execution.review_leases import ReservationReview
@@ -245,6 +247,70 @@ def _same_attempt(before, after):
     )
 
 
+def _unresolved_reviewer_binding():
+    """A retained historical binding is not a live reviewer after exact cessation.
+
+    Permit supervision deliberately preserves failed turns and their bindings.
+    Its durable guest proof can release this concurrency gate without changing
+    that history, refunding spend, or authorizing the failed session to retry.
+    Any new work, observer fence, alias or mismatched proof still blocks.
+    """
+    alias = aliased(AgentSession)
+    newer_turn = (
+        select(AgentTurn.id)
+        .where(
+            AgentTurn.session_id == AgentSession.id,
+            AgentTurn.seq > AgentCapacityReservation.pending_seq,
+        )
+        .correlate(AgentSession, AgentCapacityReservation)
+        .exists()
+    )
+    ceased = (
+        select(ProbeObservation.permit_id)
+        .join(
+            AgentCapacityReservation,
+            AgentCapacityReservation.id == ProbeObservation.permit_id,
+        )
+        .where(
+            AgentCapacityReservation.session_id == AgentSession.id,
+            AgentCapacityReservation.local_session_id == AgentSession.local_session_id,
+            AgentCapacityReservation.state == "settled",
+            AgentCapacityReservation.outcome == "guest_cessation_confirmed",
+            AgentCapacityReservation.settled_at.is_not(None),
+            ProbeObservation.reason == "guest_cessation_confirmed",
+            ProbeObservation.guest_id == AgentSession.ember_session_id,
+            ProbeObservation.identity_sha256.is_not(None),
+            ProbeObservation.settled_at.is_not(None),
+            ProbeObservation.settled_at >= AgentCapacityReservation.settled_at,
+            ProbeObservation.settled_at >= AgentSession.last_turn_at,
+            ~newer_turn,
+        )
+        .correlate(AgentSession)
+        .exists()
+    )
+    return or_(
+        AgentSession.status.not_in(("failed", "warn", "completed", "cancelled")),
+        AgentSession.result_receipt_fence_id.is_not(None),
+        AgentSession.guest_cleanup_id.is_not(None),
+        select(PendingMessage.id)
+        .where(PendingMessage.session_id == AgentSession.id)
+        .exists(),
+        select(alias.id)
+        .where(
+            alias.ember_session_id == AgentSession.ember_session_id,
+            alias.id != AgentSession.id,
+        )
+        .exists(),
+        select(AgentCapacityReservation.id)
+        .where(
+            AgentCapacityReservation.session_id == AgentSession.id,
+            AgentCapacityReservation.state != "settled",
+        )
+        .exists(),
+        ~ceased,
+    )
+
+
 def claim_review():
     """One durable review at a time, using reserved interactive headroom."""
     with Session(get_engine()) as db, db.begin():
@@ -268,6 +334,7 @@ def claim_review():
                 .where(
                     AgentSession.local_session_id.startswith(leases.PREFIX),
                     AgentSession.ember_session_id.is_not(None),
+                    _unresolved_reviewer_binding(),
                 )
                 .limit(1)
             ).first()
@@ -740,6 +807,7 @@ def health_snapshot():
             select(AgentSession.id).where(
                 AgentSession.local_session_id.startswith(leases.PREFIX),
                 AgentSession.ember_session_id.is_not(None),
+                _unresolved_reviewer_binding(),
                 AgentSession.created_at
                 < now - timedelta(seconds=leases.REVIEW_TIMEOUT_SECONDS),
             )

@@ -19,6 +19,7 @@ exports_files([
     "push.sh.tpl",
     "render.sh",
     "render-manifests.sh",
+    "verify-published-images.sh",
     "write-back-versions.sh",
 ])
 
@@ -74,6 +75,7 @@ MANIFEST_SETS = [
 # the gate without leaving reviewable evidence here. The completeness test
 # below enforces the record against the source tree.
 SKIPPED_MANIFEST_SETS = {
+    "projects/embervm/dev/deploy/values-store-validation-gke.yaml": "Default-off store validation overlay, rendered by its hermetic config test.",
     "projects/embervm/dev/deploy/values-recovery-gke.yaml": "Recovery overlay, not rendered by CI.",
     "projects/monolith/dev/deploy/values-recovery-gke.yaml": "Recovery overlay, not rendered by CI.",
     "projects/platform/atlas-operator/deploy/values.yaml": "Remote chart with no local Chart.yaml or render target.",
@@ -132,7 +134,14 @@ sh_test(
     name = "chart_admissibility_completeness_test",
     srcs = ["chart-admissibility-completeness-test.sh"],
     args = ["$(rootpath chart-admissibility-completeness-test.sh)"],
+    data = ["BUILD"],
     tags = ["local"],
+)
+
+sh_test(
+    name = "chart_admissibility_completeness_regression_test",
+    srcs = ["chart-admissibility-completeness_test.sh"],
+    data = [":chart-admissibility-completeness-test.sh"],
 )
 
 sh_test(
@@ -175,6 +184,12 @@ sh_test(
     name = "push_test",
     srcs = ["push_test.sh"],
     data = [":push.sh.tpl"],
+)
+
+sh_test(
+    name = "verify_published_images_test",
+    srcs = ["verify-published-images_test.sh"],
+    data = [":verify-published-images.sh"],
 )
 
 sh_binary(

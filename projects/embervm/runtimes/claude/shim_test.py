@@ -338,6 +338,7 @@ scenario = os.environ.get("FAKE_CODEX_SCENARIO", "")
 config_fail_path = os.environ.get("FAKE_CODEX_CONFIG_FAIL_ONCE")
 config_fail_always = os.environ.get("FAKE_CODEX_CONFIG_FAIL_ALWAYS")
 turn_failure = os.environ.get("FAKE_CODEX_TURN_FAILURE", "")
+turn_number = 0
 
 def config_error_now():
     # Cross-process latch: the FIRST app-server to bind a thread fails with the
@@ -408,25 +409,77 @@ for line in sys.stdin:
             response(request, error={"code": -32004, "message": "thread not found"})
         else:
             response(request, {"thread": {"id": thread_id}, "model": "gpt-5.6-luna", "cwd": "/workspace"})
-            emit({"jsonrpc": "2.0", "method": "thread/resumed", "params": {"thread": {"id": thread_id}}})
+            if scenario == "resume-replay":
+                # The pinned app-server sends this after the resume response.
+                # It is historical usage for the completed turn, not usage for
+                # the new turn the client is about to start.
+                emit({"jsonrpc": "2.0", "method": "thread/tokenUsage/updated", "params": {"threadId": thread_id, "turnId": "turn-a", "tokenUsage": {"last": {"inputTokens": 11, "outputTokens": 7, "cachedInputTokens": 0, "cacheWriteInputTokens": 0, "reasoningOutputTokens": 0, "totalTokens": 18}}}})
     elif method == "turn/start":
         params = request.get("params", {})
-        emit({"jsonrpc": "2.0", "method": "turn/started", "params": {"turn": {"id": "turn-1"}}})
+        thread_id = params["threadId"]
+        turn_number += 1
+        turn_id = "turn-%s" % turn_number
+        def notification(method, payload, thread=thread_id, turn=turn_id):
+            params = {"threadId": thread, **payload}
+            if method not in ("turn/started", "turn/completed"):
+                params["turnId"] = turn
+            emit({"jsonrpc": "2.0", "method": method,
+                  "params": params})
+        if scenario == "child-before-start":
+            notification("turn/started", {"turn": {"id": "child-turn"}}, thread="review-child")
+        started = {"turn": {"id": turn_id, "status": "inProgress", "items": []}}
+        if scenario == "started-before-response":
+            # turn/start submits work before its JSON-RPC response is sent, so
+            # the pinned server can publish notifications first. The matching
+            # turn/started establishes identity for those early events.
+            notification("turn/started", started)
+            notification("thread/tokenUsage/updated", {"tokenUsage": {"last": {"inputTokens": 13, "outputTokens": 9, "cachedInputTokens": 2, "cacheWriteInputTokens": 1, "reasoningOutputTokens": 0, "totalTokens": 22}}})
+            response(request, {"turn": started["turn"]})
+        else:
+            response(request, {"turn": started["turn"]})
+            notification("turn/started", started)
         if turn_failure:
-            emit({"jsonrpc": "2.0", "method": "turn/completed", "params": {"turn": {"id": "turn-1", "status": "failed", "error": {"message": turn_failure}}}})
+            notification("turn/completed", {"turn": {"id": turn_id, "status": "failed", "error": {"message": turn_failure}}})
+            continue
+        if scenario == "resume-replay":
+            notification("turn/completed", {"turn": {"id": turn_id, "status": "interrupted"}})
             continue
         if scenario == "death-mid-turn":
             print("fake codex died mid-turn", file=sys.stderr, flush=True)
             sys.exit(17)
         if scenario != "no-tools":
-            emit({"jsonrpc": "2.0", "method": "item/started", "params": {"item": {"type": "commandExecution", "command": "echo test"}}})
+            notification("item/started", {"item": {"type": "commandExecution", "command": "echo test"}})
         if os.environ.get("FAKE_CODEX_SLEEP"):
             time.sleep(float(os.environ["FAKE_CODEX_SLEEP"]))
-        emit({"jsonrpc": "2.0", "method": "item/completed", "params": {"item": {"type": "agentMessage", "text": "Done <voice>Codex completed the work.</voice>"}}})
-        emit({"jsonrpc": "2.0", "method": "thread/tokenUsage/updated", "params": {"tokenUsage": {"last": {"inputTokens": 3, "outputTokens": 4, "cachedInputTokens": 0, "cacheWriteInputTokens": 0, "reasoningOutputTokens": 0, "totalTokens": 7}}}})
-        emit({"jsonrpc": "2.0", "method": "turn/completed", "params": {"turn": {"id": "turn-1"}}})
+        notification("item/completed", {"item": {"type": "agentMessage", "text": "Done <voice>Codex completed the work.</voice>"}})
+        if scenario in ("child-completed", "child-failed", "stale-completed", "child-before-start"):
+            foreign_thread = thread_id if scenario == "stale-completed" else "review-child"
+            notification("turn/started", {"turn": {"id": "foreign-turn"}}, thread=foreign_thread, turn="foreign-turn")
+            notification("item/completed", {"item": {"type": "agentMessage", "text": "Independent child review: changes requested"}}, thread=foreign_thread, turn="foreign-turn")
+            notification("item/started", {"item": {"type": "commandExecution", "command": "child-only-command"}}, thread=foreign_thread, turn="foreign-turn")
+            notification("turn/completed", {"turn": {"id": "foreign-turn", "status": "failed" if scenario == "child-failed" else "completed", "error": {"message": "child-only-failure"}}}, thread=foreign_thread, turn="foreign-turn")
+            # This parent action represents work still needed before completion.
+            with open(os.path.join(os.getcwd(), "parent-finished"), "w") as stream:
+                stream.write("parent artifact captured only after this point")
+        if scenario == "wrong-identities":
+            notification("turn/completed", {"turn": {"id": "stale-turn", "status": "completed"}}, turn="stale-turn")
+            notification("thread/tokenUsage/updated", {"tokenUsage": {"last": {"inputTokens": 3, "outputTokens": 4, "cachedInputTokens": 0, "cacheWriteInputTokens": 0, "reasoningOutputTokens": 0, "totalTokens": 7}}})
+            notification("thread/tokenUsage/updated", {"tokenUsage": {"last": {"inputTokens": 41, "outputTokens": 42, "cachedInputTokens": 0, "cacheWriteInputTokens": 0, "reasoningOutputTokens": 0, "totalTokens": 83}}}, thread="other-thread")
+            notification("thread/tokenUsage/updated", {"tokenUsage": {"last": {"inputTokens": 51, "outputTokens": 52, "cachedInputTokens": 0, "cacheWriteInputTokens": 0, "reasoningOutputTokens": 0, "totalTokens": 103}}}, turn="stale-turn")
+        elif scenario == "late-usage":
+            if turn_number == 1:
+                notification("turn/completed", {"turn": {"id": turn_id, "status": "completed"}})
+                notification("thread/tokenUsage/updated", {"tokenUsage": {"last": {"inputTokens": 11, "outputTokens": 7, "cachedInputTokens": 0, "cacheWriteInputTokens": 0, "reasoningOutputTokens": 0, "totalTokens": 18}}})
+                notification("turn/completed", {"turn": {"id": turn_id, "status": "completed"}})
+                continue
+            notification("thread/tokenUsage/updated", {"tokenUsage": {"last": {"inputTokens": 5, "outputTokens": 6, "cachedInputTokens": 1, "cacheWriteInputTokens": 2, "reasoningOutputTokens": 0, "totalTokens": 11}}})
+        elif scenario != "started-before-response":
+            notification("thread/tokenUsage/updated", {"tokenUsage": {"last": {"inputTokens": 3, "outputTokens": 4, "cachedInputTokens": 0, "cacheWriteInputTokens": 0, "reasoningOutputTokens": 0, "totalTokens": 7}}})
+        notification("turn/completed", {"turn": {"id": turn_id, "status": "completed"}})
     elif method == "turn/interrupt":
-        emit({"jsonrpc": "2.0", "method": "turn/completed", "params": {"turn": {"id": "turn-1"}}})
+        params = request.get("params", {})
+        response(request)
+        emit({"jsonrpc": "2.0", "method": "turn/completed", "params": {"threadId": params["threadId"], "turn": {"id": params["turnId"], "status": "interrupted"}}})
     else:
         response(request, error={"code": -32601, "message": "unknown method"})
 """
@@ -505,6 +558,20 @@ for line in sys.stdin:
         elif os.environ.get("FAKE_PI_MODE") == "textless":
             emit({"type": "agent_end", "messages": []})
         elif os.environ.get("FAKE_PI_MODE") == "no-output":
+            emit({"type": "agent_end", "messages": []})
+        elif os.environ.get("FAKE_PI_MODE") == "activity-updates":
+            # Recorded pi RPC shape: arguments are complete on start; updates
+            # and completion carry results for the same toolCallId.
+            emit({"type": "tool_execution_start", "toolCallId": "bash-1",
+                  "toolName": "bash", "args": {"command": "printf 'pi\\n'"}})
+            emit({"type": "tool_execution_update", "toolCallId": "bash-1",
+                  "partialResult": {"content": [{"type": "text", "text": "pi"}]}})
+            emit({"type": "tool_execution_end", "toolCallId": "bash-1",
+                  "result": {"content": [{"type": "text", "text": "pi"}]},
+                  "isError": False})
+            emit({"type": "message_end", "message": {"role": "assistant",
+                  "content": [{"type": "text", "text": "Updated"}],
+                  "stopReason": "stop", "usage": {"input": 5, "output": 7}}})
             emit({"type": "agent_end", "messages": []})
         elif os.environ.get("FAKE_PI_MODE") == "telemetry":
             emit({"type": "message_start", "message": {"role": "assistant"}})
@@ -940,6 +1007,129 @@ def _muse_manager(tmp_path, monkeypatch):
     return shim.MuseProcess(str(workspace), str(executable))
 
 
+def _muse_preflight_manager(tmp_path, monkeypatch, executable):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    # Exercise preflight against the current hermetic test identity. Host root
+    # status must not make this test depend on uid/gid 65532 being available.
+    monkeypatch.setattr(shim, "_cli_privilege_kwargs", lambda: {})
+    monkeypatch.delenv(shim.AGENT_MCP_URL_ENV, raising=False)
+    manager = shim.MuseProcess(str(workspace), executable)
+    manager.session_id = "preflight-session"
+    return manager
+
+
+def test_muse_enabled_preflight_reports_missing_path_binary_before_popen(
+    tmp_path, monkeypatch
+):
+    empty_bin = tmp_path / "empty-bin"
+    empty_bin.mkdir()
+    monkeypatch.setenv("PATH", str(empty_bin))
+    monkeypatch.setenv(shim.MUSE_BINARY_PREFLIGHT_ENV, "1")
+    manager = _muse_preflight_manager(tmp_path, monkeypatch, "muse")
+    popen_calls = []
+
+    def unexpected_popen(*args, **kwargs):
+        popen_calls.append((args, kwargs))
+        raise AssertionError("Popen must not run for a failed preflight")
+
+    monkeypatch.setattr(shim.subprocess, "Popen", unexpected_popen)
+
+    with pytest.raises(shim.StartupError) as exc_info:
+        manager._spawn("hello", "spark")
+
+    message = str(exc_info.value)
+    assert "Muse executable preflight failed before Popen" in message
+    assert "executable='muse'" in message
+    assert "PATH='%s'" % empty_bin in message
+    assert "reason=not_found" in message
+    assert "base_generation=unknown" in message
+    assert popen_calls == []
+
+
+@pytest.mark.parametrize("unusable_kind", ["not-executable", "directory"])
+def test_muse_enabled_preflight_rejects_unusable_custom_executable(
+    tmp_path, monkeypatch, unusable_kind
+):
+    executable = tmp_path / "custom-muse"
+    if unusable_kind == "directory":
+        executable.mkdir()
+        expected_reason = "not_regular"
+    else:
+        executable.write_text("#!/bin/sh\n")
+        executable.chmod(0o644)
+        expected_reason = "not_executable_by_cli_identity"
+    monkeypatch.setenv("PATH", str(tmp_path / "unused-path"))
+    monkeypatch.setenv(shim.MUSE_BINARY_PREFLIGHT_ENV, "true")
+    manager = _muse_preflight_manager(tmp_path, monkeypatch, str(executable))
+    popen_calls = []
+    monkeypatch.setattr(
+        shim.subprocess,
+        "Popen",
+        lambda *args, **kwargs: popen_calls.append((args, kwargs)),
+    )
+
+    with pytest.raises(shim.StartupError) as exc_info:
+        manager._spawn("hello", "spark")
+
+    message = str(exc_info.value)
+    assert "executable=%r" % str(executable) in message
+    assert "candidate=%r" % str(executable) in message
+    assert "reason=%s" % expected_reason in message
+    assert "base_generation=unknown" in message
+    assert popen_calls == []
+
+
+@pytest.mark.parametrize("executable_kind", ["path", "custom"])
+def test_muse_enabled_preflight_allows_valid_resolution(
+    tmp_path, monkeypatch, executable_kind
+):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    binary = bin_dir / "muse"
+    binary.write_text("#!/bin/sh\n")
+    binary.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    monkeypatch.setenv(shim.MUSE_BINARY_PREFLIGHT_ENV, "yes")
+    executable = "muse" if executable_kind == "path" else str(binary)
+    manager = _muse_preflight_manager(tmp_path, monkeypatch, executable)
+
+    class PopenReached(Exception):
+        pass
+
+    def capture_popen(command, **kwargs):
+        assert command[0] == executable
+        assert kwargs["env"]["PATH"] == str(bin_dir)
+        assert "user" not in kwargs
+        assert "group" not in kwargs
+        raise PopenReached
+
+    monkeypatch.setattr(shim.subprocess, "Popen", capture_popen)
+
+    with pytest.raises(PopenReached):
+        manager._spawn("hello", "spark")
+
+
+def test_muse_binary_preflight_is_default_off(tmp_path, monkeypatch):
+    empty_bin = tmp_path / "empty-bin"
+    empty_bin.mkdir()
+    monkeypatch.setenv("PATH", str(empty_bin))
+    monkeypatch.delenv(shim.MUSE_BINARY_PREFLIGHT_ENV, raising=False)
+    manager = _muse_preflight_manager(tmp_path, monkeypatch, "missing-muse")
+
+    class PopenReached(Exception):
+        pass
+
+    def capture_popen(command, **kwargs):
+        assert command[0] == "missing-muse"
+        raise PopenReached
+
+    monkeypatch.setattr(shim.subprocess, "Popen", capture_popen)
+
+    with pytest.raises(PopenReached):
+        manager._spawn("hello", "spark")
+
+
 def _manager_with_empty_cli(tmp_path, monkeypatch, cli, process_type):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -1283,6 +1473,26 @@ def test_muse_pushes_tool_activity_during_turn(tmp_path, monkeypatch):
     activity = [{"type": "tool_use", "name": "add_memory"}]
     assert ("OK", activity) in pushes
     assert pushes[-1] == ("OK", activity)
+
+
+def test_muse_empty_retained_projection_preserves_live_tool_activity(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("FAKE_MUSE_SCENARIO", "tool-activity")
+    manager = _muse_manager(tmp_path, monkeypatch)
+
+    def collect(command_id, completions):
+        manager._retained_tool_events = []
+        return {
+            "muse": {"status": "complete", "reason": "reported"},
+            "input_tokens": 1,
+        }
+
+    monkeypatch.setattr(manager, "_collect_usage", collect)
+
+    record = manager.turn("use a tool", model="spark")
+
+    assert record["activities"] == [{"type": "tool_use", "name": "add_memory"}]
 
 
 def test_pi_first_turn_returns_text_session_and_usage(tmp_path, monkeypatch):
@@ -1683,6 +1893,35 @@ def test_pi_pushes_progress_during_turn(tmp_path, monkeypatch):
     )
 
 
+def test_pi_retains_bash_command_through_update_completion_and_publication(
+    tmp_path, monkeypatch
+):
+    pushes = []
+
+    class FakePusher:
+        def __init__(self, token):
+            assert token == "pi-token"
+
+        def push(self, text, activities):
+            pushes.append((text, copy.deepcopy(activities)))
+
+        def stop(self):
+            pass
+
+    monkeypatch.setenv("FAKE_PI_MODE", "activity-updates")
+    monkeypatch.setattr(shim, "_ProgressPusher", FakePusher)
+    manager = _pi_manager(tmp_path, monkeypatch)
+
+    record = manager.turn("hello", model="spark", progress_token="pi-token")
+    manager._close_process()
+
+    expected = [{"type": "bash", "command": "printf 'pi\\n'"}]
+    assert record["activities"] == expected
+    published = [activities for _text, activities in pushes if activities]
+    assert published
+    assert all(activities == expected for activities in published)
+
+
 def test_pi_no_progress_without_token(tmp_path, monkeypatch):
     class UnexpectedPusher:
         def __init__(self, _token):
@@ -1907,6 +2146,101 @@ def test_codex_first_turn_returns_thread_voice_and_usage(tmp_path, monkeypatch):
         },
         "voice": "Codex completed the work.",
         "activities": [{"type": "bash", "command": "echo test"}],
+    }
+    manager._close_process()
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "child-completed",
+        "child-failed",
+        "stale-completed",
+        "child-before-start",
+        "started-before-response",
+    ],
+)
+def test_codex_parent_waits_for_its_own_completion(tmp_path, monkeypatch, scenario):
+    monkeypatch.setenv("FAKE_CODEX_SCENARIO", scenario)
+    manager = _codex_manager(tmp_path, monkeypatch)
+    try:
+        record = manager.turn("finish the parent artifact", model="sol")
+        assert record["result"] == "Done <voice>Codex completed the work.</voice>"
+        assert record["terminal_reason"] == "completed"
+        expected_input_tokens = 13 if scenario == "started-before-response" else 3
+        assert record["usage"]["input_tokens"] == expected_input_tokens
+        assert record["activities"] == [{"type": "bash", "command": "echo test"}]
+        if scenario != "started-before-response":
+            assert (tmp_path / "workspace" / "parent-finished").exists()
+    finally:
+        manager._close_process(kill=True)
+
+
+def test_codex_resume_replay_is_not_charged_to_interrupted_turn(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_CODEX_SCENARIO", "resume-replay")
+    manager = _codex_manager(tmp_path, monkeypatch)
+
+    record = manager.turn(
+        "resume after turn A", session_id="codex-thread", model="luna"
+    )
+
+    assert record["terminal_reason"] == "user_interrupt"
+    assert record["usage"] == {}
+    manager._close_process()
+
+
+def test_codex_accepts_matching_usage_before_turn_start_response(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_CODEX_SCENARIO", "started-before-response")
+    manager = _codex_manager(tmp_path, monkeypatch)
+
+    record = manager.turn("early matching usage", model="luna")
+
+    assert record["usage"] == {
+        "input_tokens": 13,
+        "output_tokens": 9,
+        "cache_read_tokens": 2,
+        "cache_write_tokens": 1,
+    }
+    manager._close_process()
+
+
+def test_codex_ignores_wrong_thread_turn_usage_and_stale_completion(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("FAKE_CODEX_SCENARIO", "wrong-identities")
+    manager = _codex_manager(tmp_path, monkeypatch)
+
+    record = manager.turn("identity filter", model="luna")
+
+    assert record["result"] == "Done <voice>Codex completed the work.</voice>"
+    assert record["usage"] == {
+        "input_tokens": 3,
+        "output_tokens": 4,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+    }
+    manager._close_process()
+
+
+def test_codex_late_usage_and_completion_do_not_leak_into_next_turn(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("FAKE_CODEX_SCENARIO", "late-usage")
+    manager = _codex_manager(tmp_path, monkeypatch)
+
+    first = manager.turn("first", model="luna")
+    second = manager.turn("second", model="luna")
+
+    # The producer emitted turn 1 usage after its completion. The adapter
+    # cannot attach it to the already returned record and must not manufacture
+    # a total or let it contaminate turn 2.
+    assert first["usage"] == {}
+    assert second["result"] == "Done <voice>Codex completed the work.</voice>"
+    assert second["usage"] == {
+        "input_tokens": 5,
+        "output_tokens": 6,
+        "cache_read_tokens": 1,
+        "cache_write_tokens": 2,
     }
     manager._close_process()
 
@@ -6120,6 +6454,226 @@ def test_activity_ignores_malformed_messages_and_bounds_tool_input():
     ]
 
 
+@pytest.mark.parametrize(
+    "argument_method", ["item/started", "item/updated", "item/completed"]
+)
+def test_muse_activity_uses_arguments_from_authoritative_item_revision(
+    argument_method,
+):
+    session_id = "018f0000-0000-7000-8000-000000000001"
+    command_id = "018f0000-0000-7000-8000-000000000002"
+    events = []
+    for revision, method in enumerate(
+        ("item/started", "item/updated", "item/completed"), 1
+    ):
+        item = {
+            "itemId": "018f0000-0000-7000-8000-000000000003",
+            "kind": "toolCall",
+            "turnId": command_id,
+            "revision": revision,
+            "status": "inProgress" if method != "item/completed" else "completed",
+            "toolName": "bash",
+            "callId": "call_bash_1",
+        }
+        if method == argument_method:
+            item["arguments"] = json.dumps(
+                {"command": "printf 'spark command content\\n'"}
+            )
+        events.append(
+            {
+                "method": method,
+                "params": {"sessionId": session_id, "item": item},
+            }
+        )
+    events.append(
+        {
+            "method": "item/started",
+            "params": {
+                "sessionId": session_id,
+                "item": {
+                    "itemId": "018f0000-0000-7000-8000-000000000004",
+                    "kind": "toolCall",
+                    "turnId": command_id,
+                    "revision": 1,
+                    "status": "inProgress",
+                    "toolName": "read",
+                    "callId": "call_read_1",
+                    "arguments": json.dumps({"path": "README.md"}),
+                },
+            },
+        }
+    )
+
+    assert shim._muse_activities_from_view_events(events, session_id, command_id) == [
+        {"type": "bash", "command": "printf 'spark command content\\n'"},
+        {"type": "tool_use", "name": "read", "input": {"path": "README.md"}},
+    ]
+
+
+def test_muse_reconciles_retained_revisions_with_live_tool_identities():
+    session_id = "018f0000-0000-7000-8000-000000000001"
+    command_id = "018f0000-0000-7000-8000-000000000002"
+
+    def retained(
+        method,
+        item_id,
+        call_id,
+        tool_name,
+        arguments=None,
+        event_session=None,
+        event_turn=None,
+    ):
+        item = {
+            "itemId": item_id,
+            "callId": call_id,
+            "kind": "toolCall",
+            "turnId": event_turn or command_id,
+            "toolName": tool_name,
+        }
+        if arguments is not None:
+            item["arguments"] = json.dumps(arguments)
+        return {
+            "method": method,
+            "params": {"sessionId": event_session or session_id, "item": item},
+        }
+
+    events = [
+        retained("item/started", "item-bash", "call-bash", "bash"),
+        retained(
+            "item/updated",
+            "item-bash",
+            "call-bash",
+            "bash",
+            {"command": "printf 'retained\\n'"},
+        ),
+        retained("item/completed", "item-bash", "call-bash", "bash"),
+        retained(
+            "item/completed",
+            "item-read",
+            "call-read",
+            "read",
+            {"path": "README.md"},
+        ),
+        retained(
+            "item/updated",
+            "item-only",
+            "call-only",
+            "bash",
+            {"command": "printf 'retained only\\n'"},
+        ),
+        retained(
+            "item/started",
+            "wrong-session",
+            "wrong-session-call",
+            "bash",
+            {"command": "wrong session"},
+            event_session="another-session",
+        ),
+        retained(
+            "item/started",
+            "wrong-turn",
+            "wrong-turn-call",
+            "bash",
+            {"command": "wrong turn"},
+            event_turn="another-turn",
+        ),
+    ]
+    retained_events = shim._muse_tool_events_from_view_events(
+        events, session_id, command_id
+    )
+    live_events = shim._muse_live_tool_events(
+        {
+            "live-bash": {
+                "task_kind": "tool.bash",
+                "idempotency_key": "tool:call-bash",
+            },
+            "live-read": {
+                "task_kind": "tool.read",
+                "idempotency_key": "tool:call-read",
+            },
+            "live-only": {"task_kind": "tool.add_memory"},
+        }
+    )
+
+    assert shim._muse_reconciled_activities(live_events, retained_events) == [
+        {"type": "bash", "command": "printf 'retained\\n'"},
+        {"type": "tool_use", "name": "read", "input": {"path": "README.md"}},
+        {"type": "tool_use", "name": "add_memory"},
+        {"type": "bash", "command": "printf 'retained only\\n'"},
+    ]
+
+
+def test_bash_activity_does_not_fabricate_command_from_missing_or_malformed_args():
+    assert shim.activity_from_events(
+        [
+            {
+                "type": "tool_execution_start",
+                "toolCallId": "missing",
+                "toolName": "bash",
+            },
+            {
+                "type": "tool_execution_start",
+                "toolCallId": "malformed",
+                "toolName": "bash",
+                "arguments": "{not-json",
+            },
+            {
+                "type": "tool_execution_start",
+                "toolCallId": "non-string-command",
+                "toolName": "bash",
+                "args": {"command": 42},
+            },
+        ]
+    ) == [{"type": "bash"}, {"type": "bash"}, {"type": "bash"}]
+
+
+@pytest.mark.parametrize(
+    "argument_event_type",
+    ["tool_execution_start", "tool_execution_update", "tool_execution_end"],
+)
+def test_pi_bash_activity_retains_command_from_each_tool_phase(argument_event_type):
+    manager = shim.PiProcess("/tmp/workspace")
+    events = [
+        {
+            "type": "tool_execution_start",
+            "toolCallId": "bash-1",
+            "toolName": "bash",
+        }
+    ]
+    arguments = {"command": "printf 'pi phase\\n'"}
+    if argument_event_type == "tool_execution_start":
+        events[0]["args"] = arguments
+    else:
+        events.append(
+            {
+                "type": argument_event_type,
+                "toolCallId": "bash-1",
+                "args": arguments,
+            }
+        )
+
+    translated = [manager._translate_activity_event(event) for event in events]
+
+    assert shim.activity_from_events(translated) == [
+        {"type": "bash", "command": "printf 'pi phase\\n'"}
+    ]
+
+
+def test_pi_activity_translation_preserves_empty_input_for_non_bash_tools():
+    translated = shim.PiProcess("/tmp/workspace")._translate_activity_event(
+        {
+            "type": "tool_execution_start",
+            "toolCallId": "read-1",
+            "toolName": "read",
+        }
+    )
+
+    assert translated["args"] == {}
+    assert shim.activity_from_events([translated]) == [
+        {"type": "tool_use", "name": "read", "input": {}}
+    ]
+
+
 def test_child_reaper_preserves_managed_exit_status_and_reaps_unmanaged_child():
     previous_handler = signal.getsignal(signal.SIGCHLD)
     shim.install_child_reaper()
@@ -7098,8 +7652,12 @@ def test_hydration_clones_once_then_skips_a_usable_checkout(tmp_path, monkeypatc
     assert clones == [checkout]
     assert manager._hydration_status == "ok"
     assert manager._checkout_dir == checkout
+    assert manager.claude.workspace == checkout
+    assert manager.codex.workspace == checkout
     assert manager.pi.workspace == checkout
     assert manager.muse.workspace == checkout
+    codex = shim.CodexProcess(manager.codex.workspace)
+    assert codex._child_env()["CODEX_HOME"] == os.path.join(checkout, ".codex")
     with open(os.path.join(checkout, ".git", "info", "exclude")) as stream:
         assert stream.read().endswith(".codex/\n.pi/\n.muse/\n")
 
@@ -8551,6 +9109,89 @@ def test_muse_usage_reader_pages_back_to_exact_turn_and_drops_content(
         "initialized",
         "session/read",
     ]
+
+
+def test_muse_turn_publishes_retained_bash_command(tmp_path, monkeypatch):
+    session_id = _MUSE_USAGE_RECORDED_EVENTS[0]["params"]["sessionId"]
+    command_id = "15cf6510-9de2-4c3d-aa2e-07c039e42394"
+    item_id = "018f0000-0000-7000-8000-000000000003"
+    base_item = {
+        "itemId": item_id,
+        "kind": "toolCall",
+        "turnId": command_id,
+        "toolName": "bash",
+        "callId": "call_bash_1",
+    }
+    pages = [
+        {
+            "events": [
+                {
+                    "method": "turn/started",
+                    "params": {
+                        "sessionId": session_id,
+                        "commandId": command_id,
+                    },
+                },
+                {
+                    "method": "item/started",
+                    "params": {
+                        "sessionId": session_id,
+                        "item": {
+                            **base_item,
+                            "revision": 1,
+                            "status": "inProgress",
+                        },
+                    },
+                },
+                {
+                    "method": "item/updated",
+                    "params": {
+                        "sessionId": session_id,
+                        "item": {
+                            **base_item,
+                            "revision": 2,
+                            "status": "inProgress",
+                            "arguments": json.dumps(
+                                {"command": "printf 'spark retained\\n'"}
+                            ),
+                        },
+                    },
+                },
+                {
+                    "method": "item/completed",
+                    "params": {
+                        "sessionId": session_id,
+                        "item": {
+                            **base_item,
+                            "revision": 3,
+                            "status": "completed",
+                        },
+                    },
+                },
+            ],
+            "nextCursor": None,
+        }
+    ]
+    manager = _muse_usage_transport_manager(tmp_path, monkeypatch, pages)
+    pushes = []
+
+    class FakePusher:
+        def __init__(self, token):
+            assert token == "muse-token"
+
+        def push(self, text, activities):
+            pushes.append((text, copy.deepcopy(activities)))
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(shim, "_ProgressPusher", FakePusher)
+
+    record = manager.turn("run a command", model="spark", progress_token="muse-token")
+
+    expected = [{"type": "bash", "command": "printf 'spark retained\\n'"}]
+    assert record["activities"] == expected
+    assert pushes[-1] == ("pong", expected)
 
 
 @pytest.mark.parametrize("scenario", ["hang", "oversized"])

@@ -7,7 +7,6 @@
 # gazelle:exclude cluster
 # gazelle:exclude app
 # gazelle:exclude core
-# gazelle:exclude demos
 # gazelle:exclude ember_public
 # gazelle:exclude e2e
 # gazelle:exclude framework
@@ -136,7 +135,6 @@ _BACKEND_SRCS = glob(
         "chat/**/*.py",
         "chat_public/**/*.py",
         "cluster/**/*.py",
-        "demos/**/*.py",
         "ember_public/**/*.py",
         "goosecracker/**/*.py",
         "knowledge/**/*.py",
@@ -199,12 +197,8 @@ py_venv_binary(
         # 036); the "chat/**/*.py" glob does not capture the .md, so ship it
         # explicitly or every escalation fails open with FileNotFoundError.
         "chat/orchestrator_bundle.md",
-        # loadtest_corpus.load_corpus reads these committed .sample files at
-        # runtime via Path(__file__).parent; the "demos/**/*.py" glob does not
-        # capture non-.py data, so ship them explicitly into runfiles (mirrors
-        # the worldcup Elo snapshot and campsites catalog above).
         ":frontend_dist",
-    ] + glob(["demos/loadtest_corpus/**/*.sample"]),
+    ],
     imports = ["."],  # keep
     main = "app/main.py",
     visibility = ["//:__subpackages__"],
@@ -855,15 +849,6 @@ py_library(
         "@pip//pydantic",
         "@pip//python_multipart",
         "@pip//pyyaml",
-        # NOTE: semgrep_scan/report.py uploads to the Semgrep App via plain
-        # authenticated HTTP (explicit Authorization: Bearer) using httpx (already
-        # a dep above), not ScanHandler.
-        # pysemgrep INTERNAL APIs for the fc-invoke -> Semgrep-App relay
-        # (semgrep_scan/report.py): only the out.* atd types (light) + __VERSION__.
-        # We do NOT use ScanHandler / get_state / app_session (auth never attaches
-        # outside a click command, and start_scan polls the OOM /config ruleset).
-        # Pinned 1.168.0 in bazel/requirements/tools.in.
-        "@pip//semgrep",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
         "@pip//tzdata",
@@ -1552,6 +1537,7 @@ py_library(
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//jsonschema",
+        "@pip//kubernetes_asyncio",
         "@pip//opentelemetry_exporter_otlp_proto_http",
         "@pip//opentelemetry_instrumentation_fastapi",
         "@pip//opentelemetry_instrumentation_httpx",
@@ -1609,49 +1595,6 @@ py_library(
 )
 
 py_library(
-    name = "pkg_demos",
-    srcs = glob(
-        [
-            "demos/**/*.py",
-        ],
-        exclude = [
-            "**/*_test.py",
-            "**/test_*.py",
-            "*/tests/**/*.py",
-        ],
-    ),
-    imports = ["."],
-    visibility = ["//:__subpackages__"],
-    deps = [
-        ":pkg_cluster",
-        ":pkg_core",
-        ":pkg_cyclegroup",
-        ":pkg_ember_public",
-        ":pkg_framework",
-        ":pkg_sandbox",
-        ":pkg_semgrep_scan",
-        ":pkg_shared",
-        "@pip//certifi",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//opentelemetry_exporter_otlp_proto_http",
-        "@pip//opentelemetry_instrumentation_fastapi",
-        "@pip//opentelemetry_instrumentation_httpx",
-        "@pip//opentelemetry_sdk",
-        "@pip//pgvector",
-        "@pip//psycopg",
-        "@pip//psycopg_binary",
-        "@pip//pydantic",
-        "@pip//python_multipart",
-        "@pip//pyyaml",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-        "@pip//tzdata",
-        "@pip//uvicorn",
-    ],
-)
-
-py_library(
     name = "monolith_backend",
     srcs = glob(
         [
@@ -1666,7 +1609,6 @@ py_library(
             "chat/**/*.py",
             "chat_public/**/*.py",
             "cluster/**/*.py",
-            "demos/**/*.py",
             "ember_public/**/*.py",
             "goosecracker/**/*.py",
             "knowledge/**/*.py",
@@ -1751,15 +1693,6 @@ py_library(
         "@pip//regex",
         # PyJWT is currently locked transitively through mcp and semgrep.
         "@pip//pyjwt",
-        # NOTE: semgrep_scan/report.py uploads to the Semgrep App via plain
-        # authenticated HTTP (explicit Authorization: Bearer) using httpx (already
-        # a dep above), not ScanHandler.
-        # pysemgrep INTERNAL APIs for the fc-invoke -> Semgrep-App relay
-        # (semgrep_scan/report.py): only the out.* atd types (light) + __VERSION__.
-        # We do NOT use ScanHandler / get_state / app_session (auth never attaches
-        # outside a click command, and start_scan polls the OOM /config ruleset).
-        # Pinned 1.168.0 in bazel/requirements/tools.in.
-        "@pip//semgrep",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
         "@pip//starlette",
@@ -1896,10 +1829,6 @@ _PUBLIC_PRUNE_EXCLUDE = [
     # and perf surfaces are private-only.
     "semgrep_scan/mcp.py",
     "semgrep_scan/module.py",
-    "semgrep_scan/report.py",
-    "semgrep_scan/router.py",
-    "semgrep_scan/cohorts.py",
-    "semgrep_scan/perf_*.py",
     "**/test_*.py",
     "*/tests/**/*.py",
     "shared/testing/**/*.py",
@@ -1949,7 +1878,7 @@ _PUBLIC_PRUNE_EXCLUDE = [
     # Private entrypoint + MCP app.
     "app/main.py",
     "app/mcp_app.py",
-    # Private module registry (imports chat/agent/demos/...) and the
+    # Private module registry (imports chat/agent/...) and the
     # single-domain entrypoint: never part of the public composition.
     "app/modules_private.py",
     "app/main_domain.py",
@@ -1981,7 +1910,6 @@ _PUBLIC_PRUNE_EXCLUDE = [
     "home/observability/slo.py",
     "home/observability/rollup.py",
     "home/observability/stats.py",
-    "home/observability/traces.py",
     # Grimoire: only the public read path ships. The daily ingest/extract jobs
     # import the scheduler (a forbidden public module), so they stay out of the
     # public binary; the read path (public/router_public/library/models/
@@ -2022,7 +1950,6 @@ _AGENTS_PRUNE_EXCLUDE = [
     "agent_sessions/**",
     "factory/**",
     "cluster/**",
-    "demos/**",
     "goosecracker/**",
     "moving/**",
     "sandbox/**",
@@ -2078,7 +2005,6 @@ _AGENTS_PRUNE_EXCLUDE = [
     "home/observability/slo.py",
     "home/observability/rollup.py",
     "home/observability/stats.py",
-    "home/observability/traces.py",
 ]
 
 py_library(
@@ -2206,8 +2132,8 @@ py_library(
             # below; main_public_imports_test enforces they stay out of the closure.
             "faas/**/*.py",
             # Ember public tier (docs/plans/2026-07-18-ember-public-pages.md Task 1):
-            # the demo-postgres core, public-safe by construction (never imports
-            # demos/sandbox.client; EMBERVM_URL read directly from the environment).
+            # the demo-postgres core, public-safe by construction (EMBERVM_URL
+            # is read directly from the environment).
             "ember_public/**/*.py",
             # Semgrep demo (ember_public.semgrep_router): only client.py + the
             # package __init__ ship; the rest is pruned below (private-only).
@@ -2334,7 +2260,7 @@ py_venv_binary(
         "chat/directive_seed.md",
         "chat/orchestrator_bundle.md",
         "worldcup/ratings/elo_2026.json",
-    ] + glob(["demos/loadtest_corpus/**/*.sample"]),
+    ],
     imports = ["."],  # keep
     main = "app/main_domain.py",
     visibility = ["//:__subpackages__"],
@@ -2885,123 +2811,6 @@ py_test(
         "@pip//httpx",
         "@pip//pytest",
         "@pip//pytest_asyncio",
-    ],
-)
-
-py_test(
-    name = "semgrep_report_test",
-    srcs = ["semgrep_scan/report_test.py"],
-    data = [
-        # report_test loads this captured cli_output fixture at runtime via
-        # Path(__file__).parent/"testdata"; the "semgrep_scan/**/*.py" backend
-        # glob does not capture the .json, so ship it into runfiles. 8 results
-        # (7 findings + 1 ignored), derived from a real 1.168.0 Pro finding.
-        "semgrep_scan/testdata/real_cli_output.json",
-    ],
-    imports = ["."],
-    # Drives the async relay via asyncio.run (sync test fns), so no
-    # pytest-asyncio plugin is needed.
-    deps = [
-        ":pkg_semgrep_scan",
-        "@pip//pytest",
-        # httpx: the test mocks semgrep_scan.report.httpx.post to capture the three
-        # App uploads (CREATE + /results + /complete) and their Bearer auth.
-        "@pip//httpx",
-        # pysemgrep out.* atd types (light). Pinned to 1.168.0 in
-        # bazel/requirements/tools.in to match the fc-invoke Pro engine that
-        # produced the fixture. NOT ScanHandler / app_session.
-        "@pip//semgrep",
-    ],
-)
-
-py_test(
-    name = "semgrep_router_test",
-    srcs = ["semgrep_scan/router_test.py"],
-    imports = ["."],
-    # gazelle:exclude semgrep_scan means this py_test is hand-added, not generated.
-    # Drives the async webhook via FastAPI TestClient (BackgroundTasks run inline
-    # after the response), mocking scan_files / report_pr_scan / httpx so no live
-    # GitHub, fc-invoke, or Semgrep App is touched.
-    deps = [
-        ":pkg_semgrep_scan",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//pytest",
-    ],
-)
-
-py_test(
-    name = "semgrep_perf_store_test",
-    srcs = ["semgrep_scan/perf_store_test.py"],
-    imports = ["."],
-    # gazelle:exclude semgrep_scan means this py_test is hand-added, not generated.
-    deps = [
-        ":pkg_semgrep_scan",
-        "@pip//pytest",
-        "@pip//sqlmodel",
-    ],
-)
-
-py_test(
-    name = "semgrep_perf_harvest_test",
-    srcs = ["semgrep_scan/perf_harvest_test.py"],
-    imports = ["."],
-    # gazelle:exclude semgrep_scan means this py_test is hand-added, not generated.
-    deps = [
-        ":pkg_semgrep_scan",
-        "@pip//httpx",
-        "@pip//pytest",
-        "@pip//sqlmodel",
-    ],
-)
-
-py_test(
-    name = "semgrep_cohorts_test",
-    srcs = ["semgrep_scan/cohorts_test.py"],
-    imports = ["."],
-    # gazelle:exclude semgrep_scan means this py_test is hand-added, not generated.
-    deps = [
-        ":pkg_semgrep_scan",
-        "@pip//pytest",
-    ],
-)
-
-py_test(
-    name = "semgrep_perf_compare_test",
-    srcs = ["semgrep_scan/perf_compare_test.py"],
-    imports = ["."],
-    # gazelle:exclude semgrep_scan means this py_test is hand-added, not generated.
-    deps = [
-        ":pkg_semgrep_scan",
-        "@pip//pytest",
-    ],
-)
-
-py_test(
-    name = "semgrep_perf_router_test",
-    srcs = ["semgrep_scan/perf_router_test.py"],
-    imports = ["."],
-    # gazelle:exclude semgrep_scan means this py_test is hand-added, not generated.
-    deps = [
-        ":pkg_core",
-        ":pkg_semgrep_scan",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//pytest",
-        "@pip//sqlmodel",
-    ],
-)
-
-py_test(
-    name = "semgrep_perf_webhook_test",
-    srcs = ["semgrep_scan/perf_webhook_test.py"],
-    imports = ["."],
-    # gazelle:exclude semgrep_scan means this py_test is hand-added, not generated.
-    deps = [
-        ":pkg_semgrep_scan",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//pytest",
     ],
 )
 
@@ -3600,6 +3409,62 @@ py_test(
         "@pip//pgvector",
         "@pip//pydantic_ai_slim",
         "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+# Hand-registered because chat is gazelle-excluded. These files were found by
+# the test-source reachability audit: they are executable unit tests, not data.
+py_test(
+    name = "chat_agent_temporal_grounding_test",
+    srcs = ["chat/agent_temporal_grounding_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "chat_bot_safeguards_test",
+    srcs = ["chat/bot_safeguards_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "chat_safeguards_forest_test",
+    srcs = ["chat/safeguards_forest_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "chat_safeguards_test",
+    srcs = ["chat/safeguards_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "chat_safeguards_train_job_test",
+    srcs = ["chat/safeguards_train_job_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
         "@pip//sqlmodel",
     ],
 )
@@ -4939,6 +4804,23 @@ py_test(
 )
 
 py_test(
+    name = "swarm_sessionless_start_recovery_test",
+    srcs = ["factory/orchestration/sessionless_start_recovery_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_agent_sessions",
+        ":pkg_auth",
+        ":pkg_factory",
+        ":pkg_swarm",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "swarm_model_pool_test",
     srcs = ["factory/orchestration/model_pool_test.py"],
     imports = ["."],
@@ -5011,8 +4893,39 @@ py_test(
 )
 
 py_test(
+    name = "swarm_factory_pr_lifecycle_test",
+    srcs = ["factory/orchestration/factory_pr_lifecycle_test.py"],
+    data = ["factory/orchestration/fixtures/pr_lifecycle_20260919.json"],
+    imports = ["."],
+    deps = [
+        ":pkg_auth",
+        ":pkg_swarm",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "swarm_factory_intake_loop_test",
     srcs = ["factory/orchestration/factory_intake_loop_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_auth",
+        ":pkg_swarm",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "swarm_factory_problem_issues_test",
+    srcs = ["factory/orchestration/factory_problem_issues_test.py"],
     imports = ["."],
     deps = [
         ":pkg_auth",
@@ -5038,6 +4951,30 @@ py_test(
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
     ],
+)
+
+# Hand-registered (factory is gazelle-excluded): raw-body HMAC authentication,
+# trust admission, durable replay fencing, safe retries and local authority.
+py_test(
+    name = "swarm_factory_webhook_test",
+    srcs = ["factory/orchestration/factory_webhook_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_auth",
+        ":pkg_swarm",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+# Hand-registered real-PostgreSQL coverage for source-fence row locking and
+# fresh first-creation decisions across concurrent webhook and sweep writers.
+bdd_test(
+    name = "swarm_factory_webhook_postgres_test",
+    srcs = ["factory/orchestration/factory_webhook_postgres_test.py"],
 )
 
 py_test(
@@ -5096,6 +5033,17 @@ py_test(
         "@pip//pytest",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "swarm_factory_rollout_test",
+    srcs = ["factory/orchestration/factory_rollout_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_swarm",
+        "@pip//pytest",
+        "@pip//pyyaml",
     ],
 )
 
@@ -6175,6 +6123,24 @@ py_test(
 
 # Hand-registered because grimoire is gazelle-excluded: authenticated campaign
 # ACL enforcement across the private HTTP surface.
+py_test(
+    name = "grimoire_onboarding_test",
+    srcs = ["grimoire/onboarding_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_auth",
+        ":pkg_core",
+        ":pkg_grimoire",
+        ":pkg_knowledge",
+        "@pip//cryptography",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pyjwt",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
 py_test(
     name = "grimoire_acl_test",
     srcs = ["grimoire/acl_test.py"],
@@ -8067,32 +8033,8 @@ py_test(
     ],
 )
 
-py_test(
-    name = "home_observability_traces_test",
-    srcs = ["home/observability/traces_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_cyclegroup",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-    ],
-)
-
-py_test(
-    name = "demos_firecracker_api_test",
-    srcs = ["demos/firecracker_api_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_demos",
-        ":pkg_ember_public",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-    ],
-)
-
 # Hand-registered (ember_public is gazelle-excluded): mounts the demo-postgres
-# router standalone plus asserts it against the composed public app (proving
-# both the route and the demos-absence guarantee).
+# router standalone plus asserts it against the composed public app.
 py_test(
     name = "ember_public_router_test",
     srcs = ["ember_public/router_test.py"],
@@ -8119,6 +8061,53 @@ py_test(
         "@pip//httpx",
         "@pip//pytest",
         "@pip//pytest_asyncio",
+    ],
+)
+
+py_test(
+    name = "ember_public_bazel_router_test",
+    srcs = ["ember_public/bazel_router_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "ember_public_durability_test",
+    srcs = ["ember_public/durability_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//httpx",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "ember_public_semgrep_core_test",
+    srcs = ["ember_public/semgrep_core_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "ember_public_semgrep_router_test",
+    srcs = ["ember_public/semgrep_router_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
     ],
 )
 
@@ -8183,31 +8172,6 @@ py_test(
         "@pip//opentelemetry_api",
         "@pip//opentelemetry_sdk",
         "@pip//pytest",
-    ],
-)
-
-py_test(
-    name = "demos_loadtest_corpus_test",
-    srcs = ["demos/loadtest_corpus_test.py"],
-    data = glob(["demos/loadtest_corpus/**/*.sample"]),
-    imports = ["."],
-    deps = [
-        ":pkg_demos",
-        "@pip//pytest",
-    ],
-)
-
-py_test(
-    name = "demos_loadtest_test",
-    srcs = ["demos/loadtest_test.py"],
-    # run_load_test defaults its corpus to load_corpus(workload), which reads
-    # the committed .sample files at runtime.
-    data = glob(["demos/loadtest_corpus/**/*.sample"]),
-    imports = ["."],
-    deps = [
-        ":pkg_demos",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
     ],
 )
 
@@ -8554,6 +8518,18 @@ py_test(
     ],
 )
 
+# Registration and description compliance are complementary. This smoke test
+# asserts the exact set of 15 agent tools exported through the real MCP app.
+py_test(
+    name = "agent_mcp_test",
+    srcs = ["agent/mcp_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+    ],
+)
+
 bdd_test(
     name = "agent_bdd_locks_test",
     srcs = [
@@ -8646,6 +8622,11 @@ py_test(
     ],
 )
 
+bdd_test(
+    name = "agent_sessions_kg_feed_postgres_test",
+    srcs = ["factory/execution/kg_feed_postgres_test.py"],
+)
+
 py_test(
     name = "agent_sessions_mcp_test",
     srcs = ["factory/execution/mcp_test.py"],
@@ -8656,6 +8637,18 @@ py_test(
         "@pip//httpx",
         "@pip//pytest",
         "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "agent_sessions_broker_client_test",
+    srcs = ["factory/execution/broker_client_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_agent_sessions",
+        "@pip//cryptography",
+        "@pip//httpx",
+        "@pip//pytest",
     ],
 )
 

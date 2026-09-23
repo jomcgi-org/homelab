@@ -49,6 +49,123 @@ shared admission across all execution surfaces, other incident feeds and
 autonomous landing retain their own acceptance gates. A successful node is not
 evidence that its task delivered the requested outcome.
 
+## Conductor, Planner, and Executor
+
+The **Factory** deploys and orchestrates agents on Ember to produce features
+and address issues. The **Conductor** is its operator-facing manager. It
+receives goals and steering, maintains a prioritized view of work and bounded
+task context, selects work, delegates each selected task to the Planner, and
+reports outcomes with evidence. A Conductor instruction proposes work through
+the existing factory interfaces. It does not bypass admission, controls, or
+the authority of the record being changed.
+
+The **Planner** is the Astra-selected per-task planning role. It receives one
+selected task, its acceptance and operator constraints, current factory state,
+and permitted task-relevant KG knowledge. It creates or amends that task's DAG.
+Existing `factory_conductor`, `task conductor`, `conductor_model`,
+`SwarmConductorCall`, and `conductor_<n>` names are legacy names for this
+Planner boundary. They are retained to keep durable and code identities stable,
+not because the Planner is the operator-facing Conductor.
+
+The **Executor** is the existing graph engine and dispatch path. It runs
+accepted DAG nodes for the existing `implement_`, `investigate_`, `review_`,
+`refine_`, `integrate_`, and legacy `conductor_` role prefixes. Those workloads
+keep their existing principals, profiles, and server-enforced authorization.
+Conductor, Planner, Executor, and node role names describe responsibility only.
+No role name grants permission.
+
+The broader #5784 direction retains the Conductor's goal priority order:
+platform stability, useful product progress, then efficient quota use. It also
+retains the ask-first boundary for charter or quota-policy changes,
+security-relevant changes, anything needing a new or amended decision record,
+and irreversible or production-impacting actions outside the allowed GitOps
+operations. No clause authorizes a cluster write that the GitOps invariant
+forbids.
+
+### Authoritative records and context
+
+The roles use the existing owners rather than a second scheduler or approval
+ledger:
+
+- `swarm.work_item` and its append-only `swarm.work_item_event` history record
+  the durable unit of requested work and its source-owned state. A
+  `swarm.factory_receipt` captures submission, queue/admission state, its work
+  item and issue identity, and the admitted `swarm_task` link.
+- Queue order is the eligible `factory_receipt` order `(created_at, id)` after
+  lane, policy, active-work, and blocker checks in `admit_next`. There is no
+  separate priority field for the Conductor to rewrite. Priority rationale may
+  be retained as context, but changing live order must use an existing
+  authorized task or control operation. KG text is never queue state.
+- `swarm.swarm_task`, `swarm.swarm_plan_version`, `swarm.swarm_plan_node`, and
+  `swarm.swarm_node_run` are the task, accepted DAG history, nodes, and execution
+  evidence. The Planner proposes graph edits and the server records accepted
+  edits; the Executor dispatches only recorded nodes.
+- A receipt's `escalation_json` is the current pending or resolved factory
+  decision, and `direction_json` is the approved direction supplied to a
+  re-admitted Planner. The append-only `swarm.factory_audit` rows retain
+  decision claims, requests, results, and control acknowledgements. A model
+  suggestion is not an approved decision.
+- The singleton `swarm.factory_control` row is the authoritative factory state,
+  policy, and version. Per-task pause and cancellation state remains on the
+  `factory_receipt`. Every mutation revalidates current records and authority.
+
+Issue #5787 owns maintenance and scoped retrieval of Conductor knowledge.
+Committed operator exchanges enter the existing KG ingestion and extraction
+path as attributed, unverified evidence. `factory_context` retrieves
+repository-scoped notes with provenance, freshness, verification, and dispute
+metadata while continuing to return factory state during a KG outage. Issue
+#5788 exposes that same contract through factory MCP. Issue #5849 supplies the
+task-relevant subset to the Planner, with current task and decision state read
+from the authoritative factory records above.
+
+Keep three inputs visibly distinct. Operator instructions are attributed task
+requests or steering applied through an authorized interface. Approved
+decisions are resolved receipt decisions and their audit evidence. Retrieved
+KG claims are cited context, not instructions, approval, or permission. A stale
+summary cannot reopen a completed task, reorder the queue, or restore revoked
+authority.
+
+### Submit, plan, execute, report
+
+A concrete flow uses the records and interfaces that exist today:
+
+1. The Conductor submits an approved open issue through `factory_submit_issue`.
+   The server returns a durable `factory_receipt`; a retry with the same
+   identity returns the same receipt.
+2. Admission selects the oldest eligible unblocked receipt in its available
+   lane and creates its `swarm_task`. The Astra Planner records a complete DAG
+   through plan versions and nodes within the receipt's pinned policy and
+   allowance.
+3. The Executor dispatches ready nodes under their existing workload identities
+   and records attempts in `swarm_node_run`. Required CI and an independent
+   exact-head review remain delivery evidence; a successful node alone is not
+   accepted delivery.
+4. The Conductor reports receipt and task state, blockers, accepted outcome,
+   evidence links, starts, and cost. It labels missing or stale coverage rather
+   than converting it into success or an empty queue.
+
+For steering, suppose the Planner pauses a task with a pending decision. The
+Conductor presents that exact receipt and decision identity. An operator uses
+`factory_decide` to select an option or `factory_request_brief` to provide
+bounded direction. The decision owner records the request and result, stores
+approved direction on the receipt, and, when the selected operation permits,
+returns it to `queued`. Normal admission order still applies, and the next
+Planner round receives `operator_direction`. This steers a pending task without
+editing KG text, silently changing policy, or inventing a priority mutation.
+
+### Operating rules
+
+The practical MVP decision in #5956 retains four rules for all of these roles:
+
+1. Do not add frozen packets, hash pinning, or timed approval windows. A PR is
+   accepted by required CI plus one independent exact-head review, as for a
+   human PR.
+2. Report one line per task: outcome, blocker, next action, starts, and USD
+   used. Do not narrate what did not happen.
+3. Cost per accepted PR is the metric. Record it on the PR when it lands.
+4. Planner turns share the task's start budget with implementation. If planning
+   consumes more than half of the starts, stop the task and respec it by hand.
+
 ## Availability and operator policy
 
 The chart's `swarm.factoryEnabled` defaults to false. It makes the reconciler
@@ -105,8 +222,23 @@ defaults to 0; it admits up to two extra rounds under the CI gate below.
 running task keeps its pinned policy, dispatch history, budget and deadline;
 only future admissions take the new policy. While tasks are active, a changed
 policy must supply a generation newer than the current control policy. An
-identical retry is accepted without another generation change. Queued receipts
-from older generations remain inert.
+identical retry is accepted without another generation change. An accepted
+generation advance cancels queued and escalated receipts from older
+generations in the same control-row transaction that publishes the new policy.
+Each retirement is audited with both generations and a reason. The receipt is
+never re-stamped, and admitted or uncertain work keeps running under its pinned
+old policy. Unrelated terminal history is left unchanged.
+
+An unresolved escalation on a retired receipt is dismissed locally in that
+same transaction, with a resolution explaining the generation change. The
+paced escalation reconciler repairs preexisting old-generation queues and
+cards in bounded groups of 50, including cards attached to terminal receipts;
+it resolves those cards without rewriting their terminal receipt state or
+touching GitHub. Repeated passes are idempotent. A claimed decision temporarily
+refuses the generation change, so policy retirement cannot race an external
+issue mutation. Conversely, a decision request whose receipt no longer matches
+the policy generation is refused before labels, comments, child issues, or
+issue state can change.
 
 Configuration preserves control state: enabled work continues, paused
 admissions stay paused, and initial configuration still needs `enable`.
@@ -411,6 +543,17 @@ receipt's identity carries the class for the same reason. Intake-created receipt
 `intake.enabled` is true. Turning intake off therefore leaves the operator's
 `issue_numbers` allowlist exactly as it was.
 
+Operator-posted and allowlisted delivery receipts take a separate linked-PR
+path. Before the receipt is written, the server performs the same bounded open
+PR discovery used at first reconciliation. A same-repository `factory/` PR
+that closes the issue is stored immediately as the receipt's delivery target,
+so an operator repost or a later readmission continues that branch. A person's
+branch or a branch held by another running task is never granted. Failed or
+truncated discovery fails closed instead of creating an unbound receipt that
+could open a competing PR. Ordinary autonomous discovery keeps the
+`linked_pr` exclusion because it has no operator repost to authorize a new
+receipt.
+
 Delivery candidates rank before every refine candidate. Within either group,
 `critical` ranks before `bug`, then the oldest issue ranks first. A refine
 candidate carrying `critical` never outranks a delivery candidate without a
@@ -526,6 +669,89 @@ no attempt in flight, no success, and the node absent from the conductor's
 ready set settles `refine_failed` there and then, naming the limit it hit.
 Idling instead held the advisory slot and its reservation for ever (#6045).
 
+### Exact-event problem issues
+
+The optional top-level `problem_issues` policy block turns three demonstrated
+factory failure signals into ordinary GitHub issues: `node_stalled`,
+`workflow_stranded`, and terminal `landing_recovery_exhausted`. It does not
+create a receipt, post an intake event, or admit a task. Generated issues can
+enter the factory only when the existing GitHub discovery and refine/intake
+policy later selects them.
+
+The block and every source switch default false. Its repository defaults are:
+
+```json
+{
+  "problem_issues": {
+    "enabled": false,
+    "sources": {
+      "node_stalled": false,
+      "workflow_stranded": false,
+      "landing_recovery_exhausted": false
+    },
+    "source_audit_limit": 50,
+    "issue_pages": 2,
+    "issues_per_page": 100,
+    "max_per_tick": 1,
+    "max_per_24_hours": 3,
+    "labels": ["bug"],
+    "retry_minutes": [2, 4, 8, 16, 32, 60]
+  }
+}
+```
+
+The first tick after the top-level switch or an individual source is enabled
+records `problem_issue_policy_observed` with a watermark at the newest matching
+source audit. History from before enablement is never replayed. Each later tick
+scans at most 50 exact source audits and creates at most one issue. The rolling
+24-hour cap counts durable `problem_issue_write_started` intents, including an
+ambiguous write, so uncertainty cannot buy extra external writes.
+
+Every body links the delivery issue, links the pull request when the signal is
+about landing, names the factory task and source audit, and contains an exact
+`factory-problem` fingerprint marker. The receipt's repository owns discovery,
+links and creation even if later global policy names another repository.
+Discovery inspects at most two pages of 100 newest open or closed issues for
+that marker. If both pages are full, the producer audits the bounded scan and
+continues from its durable pre-write ledger; otherwise a repository with more
+than 200 issues could never produce a new issue. Pull requests returned by the
+GitHub issues API never satisfy an issue marker. A repeated or replayed source
+event reconciles the existing issue. Fingerprint lookups use the audit trail's
+action index and database predicates rather than loading producer history. A
+missing source receipt, malformed event, discovery failure, scan cap, daily
+cap, or rejected GitHub write is audited and visible on the factory board.
+
+The producer records `problem_issue_write_started` before the GitHub request.
+A pending intent retains its original repository even if later policy points at
+a different repository. A definite client refusal is terminal. A timeout, rate
+limit (including a rate-limit `403`), transport loss, server error, oversized
+response, or response that does not confirm the marker is ambiguous. Response
+bytes are streamed into the documented bounded buffer. Disabling the producer
+stops new writes but lets these read-only reconciliations finish. The lane
+does not repeat that create request. It performs six marker reconciliation
+reads after 2, 4, 8, 16, 32, and 60 minutes, recording
+`problem_issue_write_uncertain`, `problem_issue_reconcile_retry`, and finally
+either `problem_issue_reconciled` or `problem_issue_unresolved`. This makes a
+crash immediately before the request conservative too: it can omit an issue,
+but cannot create the same one twice by guessing whether the write happened.
+
+Repository delivery is staged and does not complete #6002 operationally. The
+rollout checklist remains:
+
+- Deploy with `problem_issues` omitted or disabled. Confirm there are no issue
+  writes and the board reports the producer off without affecting factory
+  reconciliation.
+- Enable one source in a staged window and replay one safe known audit. Confirm
+  exactly one issue has only the `bug` label, the exact marker and source links,
+  with no receipt or task directly admitted.
+- Repeat the event across a reconciler restart and an uncertain-write drill.
+  Confirm marker reconciliation, visible retry/backoff audits, no duplicate,
+  the one-per-tick cap and the three-per-day cap.
+- Leave intake/refine policy unchanged, observe the generated issue using only
+  normal GitHub discovery, then disable the source and confirm writes stop.
+- Validate phase 4 chart write-back and live rollout separately before any
+  future change claims the parent programme complete.
+
 ### Escalation decisions
 
 A `needs-human` verdict is a decision waiting on a person, so it arrives as
@@ -626,7 +852,8 @@ with the label gone, which is exactly the state that puts it back in front of
 intake.
 
 **Deciding.** `POST /api/swarm/factory/decisions/{receipt_id}` behind the same
-operator gate as `/control`, with `{"option_key": "...", "note": "..."}` or
+operator gate as `/control`, with an exact `decision_id`, a stable
+`request_key`, and either `{"option_key": "...", "note": "..."}` or
 `{"action": "chat", "note": "..."}`. The private factory page at
 `/factory/escalations` reaches the same code through
 `POST /api/agents/factory/decisions/{receipt_id}`, which the browser can use
@@ -636,6 +863,13 @@ smuggled. Not `Cf-Access-Authenticated-User-Email`: nothing in the cluster
 validates or strips that one, so a caller reaching the backend can set it to
 any address. A request carrying no projected address, two of them, or only the
 Cloudflare header is refused.
+
+Both HTTP routes and MCP call `factory_decisions.request_decision`. The owner
+persists the accepted or refused outcome under the verified actor before any
+external effect. The browser hashes the exact receipt, decision, option or chat
+action, and note into a stable request key, so retry after response loss returns
+the original acknowledgement. No HTTP route may bypass this contract through
+the legacy direct apply or chat helpers.
 
 Cloudflare Access is the gate. `private.jomcgi.dev` is zero trust locked to one
 identity, so an address arriving on the projected header was already authorised
@@ -692,10 +926,10 @@ because it records what was asked rather than any one brief's answer.
 The question is posted whether or not the lane can take the re-brief, so the
 response says which happened. `requeued: false` carries `blocked_by` naming
 the reason: not a refine receipt, a brief already queued or running, a
-generation the policy has moved past, or an issue that is neither in the
-policy allowlist nor discoverable with intake on. The card renders it, because
-a question on an issue with nothing scheduled to answer it looks exactly like
-one that was taken.
+issue that is neither in the policy allowlist nor discoverable with intake on.
+A generation-stale chat is refused before its issue comment is posted, because
+the retirement path owns that card and the old receipt can never be selected by
+the current policy.
 
 Deciding after asking for chat is allowed and cancels the re-brief: the
 resolution returns a `queued` receipt to `succeeded`, so the lane never spends
@@ -864,6 +1098,72 @@ conductor records the turn as an unknown invocation first so the same stop
 supervision path can own the guest. Issue #6091 tracks the control-plane root
 cause.
 
+Receipt adoption is an optional observation of the original model request.
+If the receipt poll rejects ownership or its captured result cannot be parsed,
+adoption stops while the original request remains bounded by its existing
+transport deadline. The normal result writer still checks exact ownership before
+saving that response, so an expired heartbeat cannot cancel healthy work and a
+replaced owner cannot overwrite the current attempt. If the original request
+fails, an unavailable or rejected final receipt read preserves that original
+failure for transport recovery and accounting. Cancellation still releases the
+original observer; no fallback starts another model request.
+
+A terminal factory workflow may also recover a completed native result whose
+pending claim was already deleted by unknown-outcome settlement. Before remote
+stop supervision, the conductor validates the exact run, start, session, permit
+and complete physical dispatch receipt chain under the existing ownership locks.
+Every earlier response must be an authenticated drain, ordered before the next
+dispatch. The final response must be unsuperseded, retained, hash-valid and
+completed, with matching guest, CLI, logical turn and physical dispatch identity.
+Missing receipts, aliases, newer work, cleanup claims and changed bindings retain
+the hold. This path performs no guest invocation, stop or restart.
+
+Recovery replaces the failed native turn atomically with the completed result,
+settles its capacity permit, and writes `completed_receipt_recovered`. The full
+original failed turn remains in `usage.factory_receipt_recovery.previous_turn`,
+alongside the exact identity and receipt provenance. An unobserved response keeps
+a guest-reuse fence until its observer releases it. A single dispatch retains its
+native cost; a drain prefix retains unknown aggregate cost rather than pricing
+only the final response. Normal conductor artifact validation and graph/start
+accounting still decide the outcome. A missing artifact fails the node and unknown
+cost consumes the full reservation. A crash after native adoption can replay this
+normal settlement without another model call.
+
+A drained factory turn has a separate settlement path. The normal pending-row
+rejection remains unchanged because the row is normally the valid continuation
+grant. With `FACTORY_DRAINED_LOSS_SETTLEMENT_ENABLED=true`, the factory consumer
+may remove that row only when every local identity still matches under the
+factory control, capacity-pool, session, turn, pending-message, permit, run and
+start locks. The session must still be `recovering`; the pending message must be
+unclaimed; and its turn, dispatch count, permit owner, guest, lineage and CLI
+transcript must still describe the same first factory attempt. A newer turn,
+dispatch, guest, claim, receipt fence, cleanup claim, prior binding or relight
+refuses settlement.
+
+The remote proof is equally narrow. Ember must return the exact guest as
+durably `evicted` with terminal reason `node_gone`, a transition its dormant
+departure reconciler writes only after the owning brick is authoritatively gone
+and neither a surviving local artifact nor an exported bundle has a valid
+relight target. Its persisted `interrupted_turn` must match the opaque dispatch
+ID, turn sequence, CLI session and transcript path computed from the local
+rows. This is the paired evidence that the drained dispatch finished its flush
+and then permanently lost its only restoration paths. `failed/brick_gone`
+proves cessation but not permanent loss and is insufficient here. A missing
+guest, generic `destroyed`, timeout, API failure, malformed or stale marker, or
+a guest that is running, banking, banked, parked or relighting leaves the
+continuation untouched. Settlement keeps the interrupted turn and its result,
+transcript and cost history, marks the attempt failed without calling it
+`not_invoked` or `UNKNOWN_INVOCATION`, releases its reservation, and feeds the
+ordinary bounded replanning path.
+
+The feature is staged off in chart defaults. Enabling it and any production
+row remediation are separate operator actions. Before enabling it, exercise a
+real disposable factory drain through the consumer and verify both the exact
+`evicted/node_gone` settlement and refusal of `failed/brick_gone`, live,
+restorable, stale-dispatch and unavailable-control-plane observations. Sessions
+8410 and 8416 are not changed by this repository delivery; their remediation
+and the final issue acceptance remain separately authorized live checks.
+
 A replica lost mid-invoke used to cost the attempt outright. The rollout
 cancelled the executor watching the turn, the guest carried on working, and the
 executor recorded an unknown invocation that failed the session and left stop
@@ -881,6 +1181,25 @@ ordinary turn writer, and the conductor's late-completion reconciliation does
 the same before deciding the attempt has no result. The model runs once, and
 the node owner supplies the declared artifact path a hold reconstructed from
 durable rows cannot know, so a recovered attempt keeps its artifact.
+
+A queued executor that receives a result but fails to persist it also writes
+this bounded hold before releasing its claim. Receipt adoption can retry the
+database write without a second model invocation or a live-guest probe. The
+hold writer refuses changed ownership and already-committed terminal results;
+if recovery is disabled or the hold cannot be written, the existing conservative
+unknown-outcome path remains. Historical attempts whose claims were already
+removed still require separate positive reconciliation evidence.
+
+A factory guest cold-parked without a recorded drain continuation is a candidate
+for conditional retirement, not cessation proof by itself. Recovery asks EmberVM
+to retire the exact session ID, generation, invoke-start and update timestamps.
+The manager refuses a changed snapshot, live residency, registered process,
+queued wake or pressure retry; accepted retirement is durable before replying.
+The factory retains its hold until a later GET confirms the terminal session.
+A concurrent native result wins under the receipt lock. Existing supervision
+then matches the terminal invocation to the failed dispatch and settles its
+permit, node, and start together, preserving unknown or recorded cost. Old
+servers, malformed observations and transient errors leave the hold intact.
 
 Neither owner ends a hold on its own judgement. A guest that has ceased, that
 completed its invoke without ever publishing, or that has moved on to another
@@ -908,6 +1227,35 @@ hold would only delay the same unknown outcome. Every owner that writes,
 finishes or ends a hold reads that one flag, so off is the behaviour this lane
 had before any of this existed (#5938, #4322).
 
+The pre-guest response-loss window is intentionally separate. A response-loss
+hold requires the exact persisted guest binding, result receipt, executor
+claim, dispatch count, and permit. If the executor is lost before a guest is
+bound, there is no receipt to recover and no remote invocation to resume. The
+session instead records `invocation_outcome_unknown`; the
+`lost_before_guest` proof requires a terminal failed session, no current or
+prior binding, no pending executor, no receipt or work product, and one exact
+uncertain permit. The factory may then fail the attempt at zero cost and
+release that reservation exactly once. Changing
+`agents.sessions.responseLostRecoveryEnabled` does not widen or disable this
+proof. A bound guest, including one whose generation or invoke stamp changed,
+remains on the response-loss and stop-supervision paths and is never refunded
+by `lost_before_guest`. A message with dispatch count zero remains the separate
+`never_dispatched` proof.
+
+The in-process operator repair is
+`factory.orchestration.factory_controls.settle_lost_attempt(task_id, node_key,
+attempt, actor)`. Before calling it, an operator must confirm the exact node's
+DBOS workflow is terminal. The function has no DBOS handle and cannot perform
+that check itself. It then locks the factory control row and accepts only an
+active, unpriced run with no newer attempt and the exact pinned workflow and
+session ownership. The execution proof is re-read in the settlement
+transaction, so a late guest binding, a new dispatcher, changed ownership, or
+new execution evidence refuses the repair. Repeating the call after success
+also refuses because the attempt is already terminal. This repairs one attempt
+without cancelling or re-admitting the receipt, and it is deliberately
+available while `factoryLostBeforeGuestSettlementEnabled` is off. It is an
+operator action, not an HTTP endpoint.
+
 An attempt whose workflow died mid-way has no session recorded on its run,
 because `record_dispatch` binds one only at completion. The reconciler resolves
 it by the deterministic `local_session_id`, `factory:<task>:<node>:<attempt>`,
@@ -915,6 +1263,19 @@ under the same ownership checks `reconcile_completed_node` applies, and binds
 it, so supervision can start. A repeated observation of unknown execution
 records nothing: the first uncertain outcome stands until reconciliation makes
 it terminal.
+
+An aged reserved start can also be stranded before its DBOS workflow is created.
+A successful lookup of that exact workflow returning absent is recorded separately
+from a missing or malformed status and from a lookup error. The sessionless-start
+sweeper applies the same locked proof as for a terminal failed workflow: the pinned
+turn timeout has elapsed, and the exact admitted run and reserved start have no
+session, deterministic session identity, permit, receipt, cost, outcome or newer
+attempt. It atomically fails both ledgers at zero cost with `no_model_post` and
+records `workflow_absent` in the audit proof. A delayed workflow must acquire the
+same start guard and graph binding lock before creating its session; the terminal
+run then refuses creation. Normal retry and funding reconciliation retain their
+existing policy, deadlines and refusal bounds. An unavailable lookup, existing
+execution evidence or a live workflow keeps the reservation.
 
 Missing provider usage consumes the entire reserved ceiling. This is
 conservative admission accounting, not an interruptible dollar cap on a running
@@ -927,6 +1288,39 @@ row alike, because charging it the ceiling retired its node on the first
 failure (#6045). An attempt that may have reached
 the model with an unknown cost, `guest_cessation_confirmed` after dispatch
 among them, stays conservative and keeps its reservation.
+
+A retry interrupted by a drain is not a first-dispatch failure. The separate
+`interrupted_then_not_invoked` proof requires an authenticated native drain
+response for every preceding dispatch, in order, followed by an exact settled
+`not_invoked` permit and matching failed turn. Missing receipts, overlapping
+execution, captured final responses, pending work, aliases, and observation or
+cleanup ownership keep the attempt uncertain. A complete proof fails the graph
+attempt without changing native execution history or guest bindings. Earlier
+spend remains unknown and consumes the reserved ceiling and attempt allowance;
+only the unresolved hold is released so normal planning can proceed within the
+existing task policy and deadline.
+
+A terminal workflow can also leave an unclaimed drain continuation behind.
+`interrupted_continuation_retired` requires the exact native continuation grant
+and authenticated, chronologically ordered drain responses for every physical
+dispatch, including the last one. The conductor rechecks this proof under its
+control lock with the execution locks, settles the permit, consumes only that
+grant, and records the failed graph/start and audit in one transaction. The
+session becomes failed while its guest binding, native turns, receipts, policy,
+and deadline remain intact. Unknown spend consumes the reserved ceiling and
+attempt allowance. A live workflow, changed ownership, missing native response,
+or pending observer prevents settlement. This proves the model turns ended;
+it does not claim the guest was destroyed and does not issue a remote stop.
+
+An initial guest allocation can outlive a cancelled client request without an
+invoke timestamp. Its later `evicted/idle_ttl` record proves cessation only when
+the exact guest was created during the failed dispatch, the terminal update is
+after the recorded failure, generation and turn sequence are explicitly zero,
+and invocation, interruption, and stop fields are explicitly empty. Missing or
+conflicting fields, an older allocation, or a saved stop identity refuse this
+proof. The ordinary supervisor still revalidates local ownership and records
+`terminal_initial_guest` with the terminal evidence. It retains unknown spend
+at the reserved ceiling; guest cessation is not evidence of zero provider cost.
 
 A planner decision is one graph edit or one `plan` whose edits apply together
 under a single expected revision, so a rejected edit rejects the whole plan and
@@ -1080,7 +1474,10 @@ merge landing still off. Merge landing is the first factory step that writes
 pull request and issue state, so the process needs a GitHub token with those
 permissions before the merge flag is worth turning on.
 
-With the flag on, a task that settled `succeeded` with pull request evidence
+With the flag on, exact-head delivery approval records `delivery_ready` and
+moves the receipt and task to `landing`, with no settlement timestamp. This
+releases the guest execution slot but retains issue and branch ownership across
+generation changes. The review publisher accepts this pending state. The PR
 has its merge armed through the GitHub auto-merge mutation with the rebase
 method, the equivalent of `gh pr merge --auto --rebase`, and the lane audits
 `merge_armed`. Landing first checks that the pull request is still at the exact
@@ -1096,8 +1493,9 @@ because not knowing
 is not a licence. Every waiting delivery audits `merge_deferred`, once per
 blocking pull request, and is armed on a later tick.
 
-Selection is on landing state, never on recency: every non-advisory `succeeded`
-receipt whose landing has not reached a terminal audit, oldest first. Terminal
+Selection is on landing state, never on recency: every non-advisory `landing`
+receipt and legacy `succeeded` delivery whose landing has not reached a terminal
+audit, oldest first. New pending deliveries never age out. Terminal
 is `merge_arm_refused`, which hands the pull request to a human, or
 `issue_closed`, which is the last step of a successful landing. Taking the
 newest receipts of any class instead let a burst of advisory settlements push an
@@ -1106,6 +1504,31 @@ the holder reading as absent. A delivery the lane has never touched is skipped
 once it is a week old, so turning the flag on does not stampede over history,
 but anything the lane has armed is followed to a terminal state whatever its
 age.
+
+The same reconcile tick owns PR retirement independently of `auto_merge`.
+When a receipt settles `escalated`, `cancelled`, or `failed`, including the
+deadline-expired escalation, its open same-repository `factory/` PR is
+converted to draft. One marker-fenced comment names the receipt, settlement
+reason, and the next action: re-admission adopts that branch. A succeeded task
+is untouched. Before the comment and again before the draft mutation, the
+server re-reads the PR and checks active branch ownership. If a successor task
+has adopted it, that task owns readiness and the old settlement does nothing.
+
+The paced sweep on that tick examines at most 20 open PRs from a persisted page
+cursor. It never mutates a non-`factory/` head. An unowned factory PR is closed when one
+of its closing issues is closed, or when that issue has another open factory PR
+whose exact branch is owned by a running receipt. The comment names the
+survivor when one exists and otherwise says explicitly that the issue is
+already closed. The survivor is not modified. A prepared audit, a hidden
+comment marker, fresh PR and owner reads, and the `factory_pr_retired` audit
+make partial GitHub failures and repeated ticks safe. Cursor progress is
+durable, so 20 permanently live older PRs cannot hide later stale candidates.
+
+This is configured repository behavior, not an operational rollout claim. The
+2026-09-19 observation of duplicate pairs 6198/6070, 6199/6075, 6209/6082,
+and 6215/6078 is the replay fixture for the gap. This change does not assert
+that a deployed reconciler has run the sweep against GitHub; rollout and its
+first observed audits remain operational evidence.
 
 Later ticks observe the armed pull request:
 
@@ -1143,10 +1566,32 @@ retries. `merge_armed` and `merge_ejected` are counted rather than fenced,
 because a delivery can be armed, ejected and armed again; every other step
 writes one row per task and that row is its fence.
 
-Landing stops at the merge. Confirming that the chart version write-back landed
-and that the new image is live is the verify node #6002 phase 4 still owes; the
-`merged` audit carries a `rollout_verified` field that is null until that node
-exists.
+A merge is not task success. Landing verifies a completed chart publication
+receipt on main whose source includes the merged commit, plus successful
+`pr-checks` on that source. No-op publication receipts prove reused versions.
+It checks actual Argo sync revisions against the receipt and source ancestry,
+Healthy/Synced status, the compared source specification, workload generations,
+ready replica counts, and running pod images. Repository-built images must be
+digest pinned; external tagged images must match the workload specification.
+The verifier conservatively checks every live application managed by this
+repository, so an unrelated stale or unhealthy managed application keeps the
+delivery pending too. It does not claim functional acceptance or verify charts
+that have no live application.
+
+Unknown, missing, paginated or unavailable observations fail closed. Each task
+records at most one pending observation per minute; mutable reads are shared
+for at most 30 seconds, including failed reads that remain failures rather than
+empty successful inventories. This prevents a cluster timeout from repeating
+for every pending delivery in one tick. Immutable SHA reads have a bounded cache. Reads do
+not mutate Argo, restart guests, or grant credentials. A durable
+`rollout_verified` audit binds the approved PR head, merge, publication and
+source SHAs to observed application revisions and workload images. Only that
+trusted matching proof allows `landing` to settle `succeeded`. Disabling
+`auto_merge` cannot bypass the pending gate. Reconciliation safely resumes
+between verification, settlement and issue closure. Legacy already-settled
+deliveries also require this proof before the factory closes their issue.
+The merge-time audit retains a null rollout field because proof comes later
+in the separate `rollout_verified` event.
 
 ### A delivery pause is a decision request
 
@@ -1251,16 +1696,38 @@ including the shared pending-message sweep and transport creation/invoke retries
 The coordinator makes at most two recorded cancellation attempts per active node.
 Other operator-owned sessions are outside this control scope.
 
-A task pause written by the reconciler expires after two hours. The conductor
-settles any uncertain starts, cancels the task with
-`reconciler_pause_expired`, clears its paused flag, and releases its delivery
-slot. Only a successful reconciler pause audit is eligible. A pause written by
-an operator never expires automatically.
+MCP and `POST /api/swarm/factory/control` use
+`factory_controls.request_control` for these supported actions. The caller must
+supply a stable `request_key` and the exact control `expected_version` read from
+status. The owner records refused stale requests too, so the same request cannot
+become effective after state changes. `configure` remains a separate bearer-only
+policy operation and is not exposed through MCP. Priority edits, free-form
+direction, budget mutation and exact-attempt MCP stop have no supported owner in
+this surface and remain unavailable.
+
+A task pause written by the reconciler is eligible for cancellation after two
+hours only when all starts already have terminal evidence. An unresolved start
+keeps the pause, original cost and capacity hold and records
+`reconciler_pause_expiry_held`; elapsed time cannot settle it at zero. Only a
+successful reconciler pause audit is eligible. A pause written by an operator
+never expires automatically.
 
 A network operation already in flight can remain uncertain after stop. Status
 continues to show those reservations and cancellation requests; the stop flag
 does not assert that every guest has ceased. Stop is terminal for this first
 bounded lane. It cannot be reset by replaying an earlier enable request.
+
+The MCP task row reports stop state conservatively. A running graph node is
+`work_still_running`; a reserved or uncertain start without a running node is
+`unknown_or_unreachable`; a request with neither condition remains
+`cancellation_requested`. Only exact positive stop evidence for every owned
+workflow produces `cessation_confirmed`. Cancellation acceptance, lease expiry,
+deadline backstops and terminal database state do not count as that proof.
+
+The historical deadline-release implementation is hard-staged off in addition
+to `FACTORY_DEADLINE_BACKSTOP_ENABLED=false`. An environment change cannot
+activate it in this delivery. Its warning remains useful, but deadline expiry
+does not release a start, a task slot or an admission permit.
 
 Agent workloads have a twelve-hour runtime backstop. The caller's result wait
 and routine drainer observation wait exceed that ceiling. The CLI silence
@@ -1327,6 +1794,12 @@ ownership mechanism; it never renews the work-review lease. The factory begins
 an Astra review five minutes before expiry and bounds the review to four minutes.
 One durable review runs at a time, using reserved interactive headroom so a full
 background pool cannot starve supervision.
+A failed reviewer may retain its historical guest binding after permit
+supervision proves that exact guest ceased. A matching settled cessation audit
+releases the global reviewer concurrency hold and its retained-reviewer health
+warning. New turns, queued work, active permits, aliases, cleanup ownership,
+observer fences, or missing/mismatched proof retain the hold. This does not
+retry the failed reviewer, delete its binding, or change its costs or history.
 
 The review sees the task objective, exact attempt, bounded progress, previous
 review, and a fresh control-plane guest observation. Approval renews the exact
@@ -1430,8 +1903,11 @@ raise a decision card. A parameter classification of `reversible` includes its
 proposed `value` and `reason`. The builder chooses it and comments
 `Decided by the conductor: <value>, because <reason>; reversible` once.
 `spending`, `prod_deletion` and `external_account` keep the human decision path.
-A case-insensitive heuristic backstop also escalates restricted terms in the
-gate's value or reason, even when the model labels the gate reversible.
+A case-insensitive heuristic backstop also escalates restricted terms in a
+parameter's proposed value, even when the model labels the gate reversible.
+Explanatory reasons are not authority requests: saying a default does not spend
+money or touch an account must not block it. Recording a staged live-validation
+scope and its outstanding checklist does not authorize performing those checks.
 A documented default does not authorize bucket creation, deletion or credentials.
 Unclassified legacy questions retain their existing escalation path.
 
@@ -1439,8 +1915,8 @@ For `live_validation`, the conductor records a default-off or staged repository
 `scope` and appends `live_checks` as unchecked lines on the issue. The PR body
 states `Conductor rescope:` and retains references without closing keywords.
 The delivery gate refuses a PR that closes pending operational acceptance, and
-landing records `repository_delivery_complete` after merge without closing the
-issue. Required Linux CI and independent exact-head approval still apply.
+landing records `repository_delivery_complete` after the managed rollout is
+verified without closing the issue. Required Linux CI and independent exact-head approval still apply.
 Refine decisions carry into delivery admission; the receipt preserves decisions
 across restarts and every planner and worker receives the current scope.
 
@@ -1457,7 +1933,12 @@ are excluded from discovery candidates.
 
 Discord uses one durable human-needed fence per task and notification kind:
 refine, escalation, intervention, deadline and landing. Supervision combines the attempts
-known at the time into one summary. Later observations remain in the audit
+known at the time into one summary. Before notifying, it folds observations and
+subsequent confirmed stop settlements, authenticated drain settlements, and
+reconciled terminal start outcomes in audit order for each exact workflow.
+Settled attempts retain their history but do not consume the notification fence.
+Uncertain outcomes and other attempts do not clear an outstanding warning.
+Later observations remain in the audit
 instead of sending another message. Automatic stall recovery is audit-only.
 A failed notification attempt is audited without consuming the fence, so it
 can be retried, and does not block task settlement.

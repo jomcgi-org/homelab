@@ -1,0 +1,59 @@
+"""Package source-built Go tools into per-platform tar layers."""
+
+load("@aspect_bazel_lib//lib:tar.bzl", "tar")
+load("@rules_go//go:def.bzl", "go_binary", "go_reset_target")
+
+_PLATFORMS = {
+    "linux_amd64": {"goos": "linux", "goarch": "amd64"},
+    "linux_arm64": {"goos": "linux", "goarch": "arm64"},
+    "darwin_arm64": {"goos": "darwin", "goarch": "arm64"},
+}
+
+def go_tools_tar(name, tools, package_dir = "/usr/bin", visibility = None):
+    """Build Go binaries for each tools-image platform and put them in a tar.
+
+    Args:
+        name: Base name for generated targets.
+        tools: Dict from installed command name to a go_library label.
+        package_dir: Image directory that receives the commands.
+        visibility: Visibility of generated platform targets.
+    """
+    for platform, constraints in _PLATFORMS.items():
+        binaries = {}
+        for command, library in tools.items():
+            binary_name = "{}_{}_{}".format(name, command.replace("-", "_"), platform)
+            reset_name = binary_name + "_without_nogo"
+            go_binary(
+                name = binary_name,
+                embed = [library],
+                goarch = constraints["goarch"],
+                goos = constraints["goos"],
+                pure = "on",
+                tags = ["manual"],
+            )
+
+            # Cross-platform validation is redundant with the native source
+            # targets, and rules_go's nogo tool is built for the host. Reset
+            # it here so an arm64 target does not run an amd64 analyzer on the
+            # arm64 execution platform.
+            go_reset_target(
+                name = reset_name,
+                dep = ":" + binary_name,
+                tags = ["manual"],
+            )
+            binaries[command] = ":" + reset_name
+
+        tar(
+            name = name + "_" + platform,
+            srcs = binaries.values(),
+            tags = ["manual"],
+            mtree = [
+                "./{package_dir}/{command} type=file mode=0755 content=$(execpath {target})".format(
+                    package_dir = package_dir.lstrip("/"),
+                    command = command,
+                    target = target,
+                )
+                for command, target in binaries.items()
+            ],
+            visibility = visibility,
+        )

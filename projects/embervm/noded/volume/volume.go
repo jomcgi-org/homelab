@@ -174,9 +174,9 @@ func (m *Manager) Attach(workload string) error {
 }
 
 // Bind records the vmID that owns workload's writable attach, once the VM
-// exists. A bound attach can be reclaimed by a later start when the registry
-// says that vm is gone; an unbound one can only age out. No-op if the workload
-// is not attached.
+// exists. A bound attach can be reclaimed only when the registry identifies a
+// different live owner; registry absence alone is not cessation evidence. An
+// unbound attach can only age out. No-op if the workload is not attached.
 func (m *Manager) Bind(workload, vmID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -194,8 +194,9 @@ func (m *Manager) Bind(workload, vmID string) {
 // when it has none.
 //
 // Two stale cases, both conservative:
-//   - bound to an owner that is not liveVMID: the owning VM is gone or has
-//     been replaced, so nothing holds the device.
+//   - bound to an owner that differs from a non-empty liveVMID: the registry
+//     has an explicit replacement owner. Registry absence alone is not process
+//     cessation evidence and never releases a bound attach.
 //   - unbound for longer than pendingGrace: a start that never reached the VM.
 //     Gated on a grace far longer than any legitimate boot so a slow start is
 //     never robbed mid-flight.
@@ -215,7 +216,7 @@ func (m *Manager) ReleaseOrphaned(workload, liveVMID string, pendingGrace time.D
 		}
 		return "", false
 	}
-	if attach.owner == liveVMID {
+	if liveVMID == "" || attach.owner == liveVMID {
 		return "", false
 	}
 	delete(m.attached, workload)
