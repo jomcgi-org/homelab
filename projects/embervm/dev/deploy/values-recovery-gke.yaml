@@ -72,8 +72,6 @@ noded:
   enabled: false
   maxLiveVMs: 1
   admissionModel: observed
-  networkPolicy:
-    enabled: false
   bearerTokenSecret:
     enabled: true
     onepassword:
@@ -220,8 +218,6 @@ kekRoot:
     itemPath: ''
 tokenBroker:
   enabled: true
-  networkPolicy:
-    enabled: false
   authentik:
     enabled: true
     tokenEndpoint: https://auth.jomcgi.dev/application/o/token/

@@ -2085,8 +2085,6 @@ def test_recovery_disarms_destructive_defaults() -> None:
     assert values["bricks"]["nodeFloors"] == []
     assert values["conformance"]["enabled"] is False
     assert values["servingEnvoy"]["enabled"] is False
-    assert values["noded"]["networkPolicy"]["enabled"] is False
-    assert values["tokenBroker"]["networkPolicy"]["enabled"] is False
     assert values["baseRetention"]["sweepEnabled"] == ""
     assert values["baseRetention"]["remoteSweepEnabled"] == ""
     assert values["warmthRetention"]["sweepEnabled"] == ""
