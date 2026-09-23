@@ -140,6 +140,27 @@ def _seed(session) -> None:
         ),
         {"entity_id": private_entity_id},
     )
+    # Deleted-only entity: linked solely from the soft-deleted public note. It
+    # must stay out of the public catalog even though the note is public.
+    deleted_entity_id = session.execute(
+        text(
+            """
+            INSERT INTO knowledge.entities (kind, slug, title, source)
+            VALUES ('issue', '9997', '#9997', 'test')
+            RETURNING id
+            """
+        )
+    ).scalar_one()
+    session.execute(
+        text(
+            """
+            INSERT INTO knowledge.note_entities
+                (note_id, entity_id, role, source)
+            VALUES ('note-d', :entity_id, 'mentions', 'test')
+            """
+        ),
+        {"entity_id": deleted_entity_id},
+    )
     session.commit()
 
 
@@ -173,11 +194,12 @@ def test_views_derive_public_only_and_endpoints_filter(session, client):
     entity_rows = session.execute(
         text("SELECT slug FROM public_api.knowledge_entities")
     ).all()
-    # The private-only issue entity exists in the base table but is filtered.
+    # The private-only and deleted-only issue entities exist in the base
+    # table but are filtered: '9998' by visibility, '9997' by deleted_at.
     assert [row[0] for row in entity_rows] == ["view-test-project"]
     assert (
         session.execute(text("SELECT count(*) FROM knowledge.entities")).scalar_one()
-        == 2
+        == 3
     )
     note_entity_rows = session.execute(
         text(
