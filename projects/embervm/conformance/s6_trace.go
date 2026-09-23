@@ -102,6 +102,16 @@ func s6Bool(vars map[string]any, key string) bool {
 	return value
 }
 
+// tlaBool renders a TLA+ boolean literal. Go's "true"/"false" are not TLA+:
+// TLC would reject a generated window carrying them, so the S6 exporter must
+// speak the model's vocabulary (TRUE/FALSE, as in the committed fixtures).
+func tlaBool(value bool) string {
+	if value {
+		return "TRUE"
+	}
+	return "FALSE"
+}
+
 // tlaString renders a TLA+ double-quoted string literal.
 func tlaString(value string) string {
 	var builder strings.Builder
@@ -134,9 +144,9 @@ func s6TraceRecordConstant(record traceRecord) string {
 		"vm |-> " + tlaString(s6String(vars, "vm_id")),
 		"node |-> " + tlaString(s6String(vars, "node_id")),
 		"session |-> " + tlaString(s6String(vars, "session_id")),
-		"had_vm |-> " + strconv.FormatBool(s6Bool(vars, "had_vm")),
-		"gate |-> " + strconv.FormatBool(s6Bool(vars, "gate")),
-		"node_confirmed |-> " + strconv.FormatBool(s6Bool(vars, "node_confirmed")),
+		"had_vm |-> " + tlaBool(s6Bool(vars, "had_vm")),
+		"gate |-> " + tlaBool(s6Bool(vars, "gate")),
+		"node_confirmed |-> " + tlaBool(s6Bool(vars, "node_confirmed")),
 		"confirmed_by |-> " + tlaString(s6String(vars, "confirmed_by")),
 	}
 	return "[" + strings.Join(fields, ", ") + "]"
