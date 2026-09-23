@@ -140,3 +140,22 @@ def test_malformed_head_is_rejected_before_any_read(monkeypatch):
     )
     with pytest.raises(ValueError, match="exact head"):
         external.verify_external_disposition(TASK, 5921, "short")
+
+
+def test_settle_external_is_a_typed_decision_requiring_pr_and_head():
+    from factory.orchestration import factory_conductor as conductor
+    from factory.orchestration.turn_artifact import schema_errors
+
+    assert not schema_errors(
+        {
+            "action": "settle_external",
+            "reason": "delivered outside the factory",
+            "pr_number": 5921,
+            "head_sha": HEAD,
+        },
+        conductor.DECISION_SCHEMA,
+    )
+    assert schema_errors(
+        {"action": "settle_external", "reason": "missing head", "pr_number": 5921},
+        conductor.DECISION_SCHEMA,
+    )
