@@ -36,8 +36,9 @@ _MODEL_ALIASES = {
 
 # Contributor-tier figures documented beside the guest model table in
 # projects/embervm/runtimes/claude/shim.py:526-528. spark and qwen route to the
-# Muse adapter whose turn returns usage={} (shim.py:3424), so only pi-spark
-# reaches the table today.
+# Muse adapter (MuseProcess.turn); pi-spark routes to the Pi adapter. Both
+# report generic {input_tokens, output_tokens, cache_read_tokens,
+# cache_write_tokens} usage, so all three reach the table.
 FIXED_PRICES = {
     "muse-spark-1.3-contributor": {
         "input_per_million": 0.10,
