@@ -60,7 +60,7 @@ spec:
       jsonPointers:
         - /data
     - kind: ConfigMap
-      name: embervm-dev-tokenbroker-quota
+      name: embervm-dev-embervm-tokenbroker-quota
       jsonPointers:
         - /data
   syncPolicy:

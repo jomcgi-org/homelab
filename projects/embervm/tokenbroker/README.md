@@ -20,6 +20,9 @@ object and grants the broker only `get` and `update` on that exact name. Argo CD
 ignores its `/data` field and the object is not pruned or cascade-deleted, so pod
 replacement and chart reconciliation do not erase runtime state. Quota data is
 non-secret and is never stored beside rotating OAuth credentials.
+The current production and GKE release name renders
+`embervm-embervm-tokenbroker-quota`; the development release renders
+`embervm-dev-embervm-tokenbroker-quota`.
 
 Each update compares the ConfigMap resource version, reloads and merges after a
 conflict, and retries at most five times. Ordering is monotonic by `observed_at`,
