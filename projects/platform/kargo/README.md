@@ -162,21 +162,17 @@ additionally requires dev to have held the Freight for 2 minutes, which catches
 a rollout that comes up Healthy and then crashloops but is explicitly not long
 enough to catch a slower-onset regression.
 
-**Does not assert.** Anything functional beyond the readiness probe. The obvious
-next step, an `http` step against dev's deep `/api/health`, is blocked twice
-over and both are worth knowing before anyone tries it:
+**Does not assert.** Anything functional beyond the readiness probe, including
+end-to-end HTTP reachability from the Kargo controller to the workload. Waiting
+for Healthy verifies Kubernetes readiness through the Kubernetes API, not a
+separate HTTP path. The removed Cilium allowlist provides no justification for
+omitting that separate check, and its removal does not establish reachability.
 
-1. `monolith-dev`'s `/api/health` returns **503 today and always has**, because
-   the `stars` component fails closed on an empty `stars.sites` table and dev
-   has no stars data. The ember components fail *open* ("no probe recorded
-   yet"), so they are not the problem. Gating on that endpoint would freeze
-   production permanently.
-2. The `monolith-dev-api-ingress` CiliumNetworkPolicy allowlists
-   `envoy-gateway-system`, `mcp`, `monolith-workflows` jobs, the whatsapp
-   sidecar and `embervm`. The `kargo` namespace is **not** on it, so an `http`
-   step would silently dial-timeout rather than fail honestly. That policy
-   exists to limit who can send the `X-Auth-Email` identity header, so adding
-   Kargo is an auth-surface decision, not a config tweak.
+An `http` step against dev's deep `/api/health` also needs to account for the
+endpoint's data requirements: the `stars` component fails closed on an empty
+`stars.sites` table, so dev without stars data returns 503. The ember components
+fail *open* ("no probe recorded yet"), so they are not the problem. Gating on
+that endpoint without the required data would block production promotion.
 
 There is also a residual race: `argocd-wait` has no `desiredRevision` field, so
 it asserts against whatever target is current. `argocd-update` waits for its
