@@ -68,13 +68,19 @@ swarm:
   factoryEnforceCostCeilingEnabled: true
   # Per-class floors on remaining quota percent (#5974). A floor only bites
   # for a role whose stored factory policy carries a model_pools entry with
-  # somewhere to spill to (policy v41 has worker [sol, sonnet] and conductor
-  # [astra, spark]); a single-member pool never consults quota. Workers spill
-  # from sol below 10 percent Codex. The conductor has no floor, so it keeps
-  # drawing until the exhaustion band, leaving the last slice to planning.
+  # somewhere to spill to; a single-member pool never consults quota. The
+  # intended pools are conductor [opus, sol], worker and implement
+  # [spark, sol, astra] (Muse first, escalating one step per failed attempt
+  # or changes-requested review), and reviewer [opus, astra]. The policy
+  # itself is applied by the operator through the factory control surface,
+  # not by this chart. Workers spill from sol below 10 percent Codex. The
+  # planner spills from opus to sol below 25 percent Claude remaining, so
+  # planning never starves Claude review, which pauses at 85 percent used.
   quotaFloors:
     codex:
       worker: 10
+    claude:
+      conductor: 25
 
 agents:
   sessions:

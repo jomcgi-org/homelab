@@ -14714,3 +14714,193 @@ def test_completed_receipt_single_dispatch_preserves_native_cost_and_artifact(
         assert db.get(AgentSession, s.sid).result_receipt_fence_id == (
             None if observed else "completed-receipt-2"
         )
+
+
+CODEX_WALLED = {"codex": {"observed": True, "exhausted": True}}
+
+
+def escalation_task(
+    monkeypatch, *, pool, task_class="bug-fix", quota=None, max_attempts=3
+):
+    """A delivery task whose implement pool starts on Muse."""
+    from factory.orchestration import model_pool
+
+    monkeypatch.setattr(model_pool, "quota_summary", lambda: quota or {})
+    monkeypatch.setattr(conductor, "hydration_branch", lambda _: "main")
+    monkeypatch.setattr(conductor, "branch_hydration", lambda *_: "main")
+    return feedback_task(
+        task_class=task_class,
+        allowed_models=["astra", "opus", "sol", "spark"],
+        worker_model="spark",
+        model_pools={"implement": pool},
+        max_attempts=max_attempts,
+    )
+
+
+def dispatch_next(task, policy, node_key):
+    """Dispatch the node's next attempt and return its ledger row."""
+    nodes, runs = graph_state(task["id"])
+    assert conductor._dispatch_ready(
+        task, nodes, runs, 1, fan_out=False, parallel=1, policy=policy
+    )
+    return max(
+        conductor.graph.node_runs(task["id"], node_key), key=lambda run: run["id"]
+    )
+
+
+def stored_model(engine, run_id):
+    from factory.orchestration.models import SwarmNodeRun
+
+    with Session(engine) as db:
+        return db.get(SwarmNodeRun, run_id).model
+
+
+@pytest.mark.parametrize(
+    "pool, planned, quota, expected",
+    [
+        # A failed Muse attempt steps up to Sol.
+        (["spark", "sol", "astra"], "spark", None, "sol"),
+        # A walled next member is skipped, exactly as select_model skips it.
+        (["spark", "sol", "opus"], "spark", CODEX_WALLED, "opus"),
+    ],
+)
+def test_a_failed_attempt_escalates_up_the_implement_pool(
+    feedback_db, monkeypatch, pool, planned, quota, expected
+):
+    from factory.orchestration import factory_controls as controls
+
+    task, policy = escalation_task(monkeypatch, pool=pool, quota=quota)
+    complete_feedback_node(
+        task, policy, "implement_work", {}, model=planned, status="failed"
+    )
+    run = dispatch_next(task, policy, "implement_work")
+    assert run["attempt"] == 2
+    assert run["pin"]["model"] == expected
+    assert run["pin"]["escalated_from"] == planned
+    assert run["pin"]["escalation_reason"] == "failed"
+    assert stored_model(feedback_db, run["id"]) == expected
+    # The node keeps the model the plan asked for; the pin records what ran.
+    node = next(
+        n
+        for n in conductor.graph.load_graph(task["id"])
+        if n["node_key"] == "implement_work"
+    )
+    assert node["model"] == planned
+    # The start is authorized against the escalated model, from the node's
+    # remaining ceiling rather than a reservation priced for the old model.
+    starts = controls.task_snapshot(task["id"])["starts"]
+    assert starts[-1]["model"] == expected
+    assert run["pin"]["max_cost_usd"] == pytest.approx(policy["turn_budget_usd"] - 0.25)
+
+
+@pytest.mark.parametrize(
+    "pool, planned, task_class",
+    [
+        # The last member has nowhere to go.
+        (["spark", "sol"], "sol", "bug-fix"),
+        # An explicit planner pin outside the pool is honoured.
+        (["spark", "sol"], "opus", "bug-fix"),
+        # A one-member pool behaves exactly as before.
+        (["spark"], "spark", "bug-fix"),
+        # Judgment work stays where the judgment floor put it.
+        (["spark", "sol", "opus"], "spark", "judgment-analysis"),
+    ],
+)
+def test_a_failed_attempt_reuses_its_model_when_it_cannot_escalate(
+    feedback_db, monkeypatch, pool, planned, task_class
+):
+    task, policy = escalation_task(monkeypatch, pool=pool, task_class=task_class)
+    complete_feedback_node(
+        task, policy, "implement_work", {}, model=planned, status="failed"
+    )
+    run = dispatch_next(task, policy, "implement_work")
+    assert run["attempt"] == 2
+    assert run["pin"]["model"] == planned
+    assert "escalated_from" not in run["pin"]
+    assert stored_model(feedback_db, run["id"]) == planned
+
+
+def test_an_escalated_attempt_stays_on_its_rung_when_the_pool_is_spent(
+    feedback_db, monkeypatch
+):
+    task, policy = escalation_task(monkeypatch, pool=["spark", "sol"])
+    complete_feedback_node(
+        task, policy, "implement_work", {}, model="spark", status="failed"
+    )
+    second = dispatch_next(task, policy, "implement_work")
+    assert second["pin"]["model"] == "sol"
+    settle_admitted_node(task, "implement_work", {}, status="failed")
+    third = dispatch_next(task, policy, "implement_work")
+    assert third["attempt"] == 3
+    assert third["pin"]["model"] == "sol"
+    assert third["pin"]["escalated_from"] == "spark"
+
+
+def test_a_correction_escalates_after_changes_requested(feedback_db, monkeypatch):
+    head = "a" * 40
+    task, policy = escalation_task(monkeypatch, pool=["spark", "sol", "astra"])
+    complete_feedback_node(task, policy, "implement_work", {}, model="spark", head=head)
+    complete_feedback_node(
+        task,
+        policy,
+        "review_work",
+        {
+            "verdict": "changes_requested",
+            "summary": "fix it",
+            "pr_number": 5,
+            "head_sha": head,
+        },
+        deps=["implement_work"],
+        head=head,
+    )
+    nodes, runs = graph_state(task["id"])
+    review_run = next(run for run in runs if run["node_key"] == "review_work")
+    model, _ = conductor._correction_model(nodes, runs, review_run, policy)
+    assert model == "spark"
+    assert conductor._add(
+        task,
+        policy,
+        "correct_1",
+        "fix it",
+        ["review_work"],
+        model,
+        "test:correct_1",
+        "test fixture",
+        max_attempts=1,
+    ).ok
+    run = dispatch_next(task, policy, "correct_1")
+    assert run["pin"]["model"] == "sol"
+    assert run["pin"]["escalated_from"] == "spark"
+    assert run["pin"]["escalation_reason"] == "changes_requested"
+    assert stored_model(feedback_db, run["id"]) == "sol"
+
+
+def test_the_correction_model_reads_the_escalated_pin():
+    """The head's author is the model its run recorded, not the planned one."""
+    policy = {
+        "conductor_model": "opus",
+        "worker_model": "spark",
+        "reviewer_model": "opus",
+        "allowed_models": ["opus", "sol", "spark"],
+    }
+    nodes = [
+        {"node_key": "implement_work", "model": "spark", "deps": []},
+        {"node_key": "review_work", "model": "opus", "deps": ["implement_work"]},
+    ]
+    runs = [
+        {
+            "id": 1,
+            "node_key": "implement_work",
+            "status": "failed",
+            "pin": {"model": "spark"},
+        },
+        {
+            "id": 2,
+            "node_key": "implement_work",
+            "status": "succeeded",
+            "pin": {"model": "sol", "escalated_from": "spark"},
+        },
+    ]
+    review_run = {"node_key": "review_work", "id": 3}
+    model, _ = conductor._correction_model(nodes, runs, review_run, policy)
+    assert model == "sol"

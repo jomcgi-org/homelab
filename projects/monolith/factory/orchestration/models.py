@@ -133,6 +133,9 @@ class SwarmNodeRun(SQLModel, table=True):
     attempt: int
     dispatch_key: str | None = None
     pin_json: str | None = None
+    # The model this attempt was dispatched on, copied from its pin so outcomes
+    # can be grouped by model without parsing pin_json.
+    model: str | None = None
     reserved_cost_usd: float | None = None
     session_id: int | None = None
     status: str

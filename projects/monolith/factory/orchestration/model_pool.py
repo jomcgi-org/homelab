@@ -510,6 +510,45 @@ def select_model(role: str, policy: dict, *, quota: dict | None = None) -> dict:
     }
 
 
+def escalate(
+    role: str, policy: dict, failed_model: str | None, *, quota: dict | None = None
+) -> dict | None:
+    """The next available pool member after the model that failed, or None.
+
+    Selection starts on the pool head, which is the cheapest capable model the
+    operator ranked first; this is the step up from it when an attempt has
+    shown the task is too hard for the model that ran it. Only members after
+    the failed one are candidates, so a failure never moves work down the
+    pool. A walled member is skipped with the same quota semantics
+    :func:`select_model` applies. None means reuse the failed model: it is
+    the last member, it is not in the pool at all (an explicit planner pin),
+    or every member after it is walled.
+    """
+    pool = pool_for(role, policy)
+    if not failed_model or failed_model not in pool:
+        return None
+    later = pool[pool.index(failed_model) + 1 :]
+    if not later:
+        return None
+    if quota is None:
+        quota = quota_summary()
+    skipped: list[dict] = []
+    for model in later:
+        ok, reason = availability(model, quota, role)
+        if ok:
+            logger.warning(
+                "factory %s model escalation %s -> %s", role, failed_model, model
+            )
+            return {
+                "model": model,
+                "escalated_from": failed_model,
+                "skipped": skipped,
+                "reason": reason,
+            }
+        skipped.append({"model": model, "reason": reason})
+    return None
+
+
 def select_reviewer(
     policy: dict,
     *,

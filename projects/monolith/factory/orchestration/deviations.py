@@ -73,6 +73,11 @@ def compute_deviations(run: dict) -> list[dict]:
                 recorded = attempt.get("model")
                 if recorded is None or recorded == expected:
                     continue
+                # An attempt that escalated up its pool after a failure or a
+                # changes-requested review ran a different model on purpose,
+                # and its pin says so. That is routing, not a deviation.
+                if attempt.get("escalated_from"):
+                    continue
                 deviations.append(
                     _deviation(
                         "model_mismatch",

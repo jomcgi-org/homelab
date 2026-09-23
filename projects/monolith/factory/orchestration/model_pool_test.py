@@ -675,3 +675,79 @@ def test_the_judgment_floor_searches_the_implement_pool_first():
 def test_an_unknown_pool_role_is_refused():
     with pytest.raises(ValueError):
         model_pool.pool_for("planner", policy())
+
+
+def ladder(implement):
+    return policy(worker_model="spark", model_pools={"implement": implement})
+
+
+def test_escalation_steps_one_member_up_the_pool():
+    choice = model_pool.escalate(
+        "implement", ladder(["spark", "sol", "astra"]), "spark", quota={}
+    )
+    assert choice["model"] == "sol"
+    assert choice["escalated_from"] == "spark"
+    assert choice["skipped"] == []
+    choice = model_pool.escalate(
+        "implement", ladder(["spark", "sol", "astra"]), "sol", quota={}
+    )
+    assert choice["model"] == "astra"
+
+
+def test_escalation_skips_a_walled_member():
+    choice = model_pool.escalate(
+        "implement",
+        ladder(["spark", "sol", "opus"]),
+        "spark",
+        quota={"codex": {"exhausted": True}},
+    )
+    assert choice["model"] == "opus"
+    assert choice["skipped"] == [{"model": "sol", "reason": "exhausted"}]
+
+
+def test_escalation_honours_role_floors(monkeypatch):
+    monkeypatch.setenv("SWARM_QUOTA_FLOORS", '{"codex": {"implement": 10}}')
+    quota = {"codex": {"headline_used_percent": 95.0, "age_seconds": 30.0}}
+    assert (
+        model_pool.escalate(
+            "implement", ladder(["spark", "sol", "astra"]), "spark", quota=quota
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "pool, failed",
+    [
+        # The last member has nowhere to go.
+        (["spark", "sol"], "sol"),
+        # A model outside the pool, such as an explicit planner pin, stays.
+        (["spark", "sol"], "opus"),
+        # A one-member pool never moves.
+        (["spark"], "spark"),
+        # No recorded model is no evidence to move on.
+        (["spark", "sol"], None),
+    ],
+)
+def test_escalation_reuses_the_failed_model_when_it_cannot_step_up(pool, failed):
+    assert model_pool.escalate("implement", ladder(pool), failed, quota={}) is None
+
+
+def test_escalation_never_moves_down_the_pool():
+    choice = model_pool.escalate(
+        "implement",
+        ladder(["spark", "sol", "astra"]),
+        "sol",
+        quota={"codex": {"exhausted": True}},
+    )
+    assert choice is None
+
+
+def test_escalation_follows_the_worker_pool_for_worker_nodes():
+    choice = model_pool.escalate(
+        "worker",
+        policy(worker_model="spark", model_pools={"worker": ["spark", "sol"]}),
+        "spark",
+        quota={},
+    )
+    assert choice["model"] == "sol"

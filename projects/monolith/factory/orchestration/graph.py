@@ -1216,6 +1216,7 @@ def admit_dispatch(
     dispatch_key: str | None = None,
     execution_context: dict | None = None,
     model: str | None = None,
+    escalation: dict | None = None,
     session: Session | None = None,
 ) -> GraphOp:
     """Atomically reserve one bounded attempt, or replay its immutable pin.
@@ -1231,6 +1232,11 @@ def admit_dispatch(
     execution context on purpose: the context is what the guest receives and
     what replay identity is compared on, and a replay must return its original
     pin whatever the dispatcher would choose now.
+
+    ``escalation`` names the model an implementation attempt stepped up from
+    and why (``escalated_from``, ``escalation_reason``). It is recorded on the
+    pin beside the substituted model so the step is observable, and like
+    ``model`` it never takes part in replay identity.
     """
     context = {} if execution_context is None else execution_context
     args = {
@@ -1239,6 +1245,13 @@ def admit_dispatch(
         "execution_context": context,
         "model": model,
     }
+    stepped = {
+        field: escalation[field]
+        for field in ("escalated_from", "escalation_reason")
+        if escalation and escalation.get(field)
+    }
+    if stepped:
+        args["escalation"] = stepped
     with _session(session) as db:
         task = _lock_task(db, task_id)
         version = _current_version(db, task_id)
@@ -1340,6 +1353,7 @@ def admit_dispatch(
             "max_cost_usd": remaining,
             "max_attempts": node.max_attempts + excused,
             "turn_timeout_seconds": node.turn_timeout_seconds,
+            **stepped,
         }
         db.add(
             SwarmNodeRun(
@@ -1348,6 +1362,7 @@ def admit_dispatch(
                 attempt=attempt,
                 dispatch_key=dispatch_key,
                 pin_json=_json(pin),
+                model=pin["model"],
                 reserved_cost_usd=remaining,
                 status="admitted",
             )

@@ -464,6 +464,33 @@ the reviewer it asked for and gains a fallback behind it. A planner may name a
 review model only from this pool; anything else is refused as
 `reviewer_model_mismatch`.
 
+#### Escalation up the implementation pools
+
+Quota decides where an implementation node starts; outcomes decide where its
+next attempt runs. When an `implement_`, `integrate_`, `correct_` or
+`investigate_` attempt failed, or a correction answers a review that returned
+`changes_requested`, dispatch runs the next attempt on the next member of the
+node's pool (`implement`, or `worker` for investigation) after the model that
+did the work, skipping members that `availability()` walls. The node keeps
+its planned model; the attempt's pin carries the new `model` plus
+`escalated_from` and `escalation_reason` (`failed` or `changes_requested`), and
+an attempt that already climbed stays on its rung when the pool is spent. The
+failed model is reused, as before, when it is the last member, when it is not
+in the pool at all (an explicit planner pin outside it), or when every member
+above it is walled. Judgment classes never escalate: they stay on the judgment
+floor. An escalated attempt is admitted and authorized against its new model,
+from the node's remaining `max_cost_usd`. Every `swarm.swarm_node_run` row
+records the dispatched model in its `model` column.
+
+**Why.** Implementation starts on the cheapest capable model (Muse, `spark`)
+and escalates one pool step per failed attempt or changes-requested review,
+rather than handing the same model the same problem again: a retry on the
+model that just failed spends a turn on the outcome most likely to repeat,
+while starting every task on the strongest model spends it on work the
+cheapest one could have done. The per-run `model` column exists so escalation
+outcomes by task class can be measured, which feeds #6283's decision on
+whether routing should learn from that history.
+
 ### Shared session admission
 
 Factory nodes draw execution permits from the same pool as the work-queue
