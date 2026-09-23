@@ -384,6 +384,72 @@ Facts that make this safe:
   snapshot whose VM resumes is discarded (the abort orders bless-generation,
   delete-temp, resume, so a surviving temp is always refused by pairing).
 
+| Direction | Status | Tracking |
+| --------- | ------ | -------- |
+| On any future `pair_broken` recurrence, use the existing bounded metadata and log owners to capture the paired volume and snapshot generations together and retain control-plane and noded logs spanning the event before any wake, repair, lease change, export or data mutation | Standing watch; the 2026-09-06 trigger is unproven and no new defect is confirmed | [#5858](https://github.com/jomcgi-org/homelab/issues/5858) |
+
+**Why.** The known lagging-generation-report mechanism was fixed on 2026-07-20
+PDT by [PR #3770](https://github.com/jomcgi-org/homelab/pull/3770), merged at
+2026-07-21 06:54:11 UTC, about six weeks before the #5856 rollout. Its
+monotonic pair-key floor is present in the source deployed for that rollout,
+so it cannot explain the later eviction. The retained observations begin after
+the eviction and do not establish which other trigger occurred. Recording the
+evidence gap and the smallest future observation is therefore the resolution,
+not a speculative code change.
+
+#### 2026-09-06 demo-postgres warm-pair evidence
+
+The direct runtime evidence below is retained in
+[#5858](https://github.com/jomcgi-org/homelab/issues/5858): its issue body and
+2026-09-07 follow-up. The follow-up names temporary coordinator evidence files,
+but they are not repository artifacts. The CP and noded logs from before the
+first retained read at 2026-09-06 20:20:24 UTC, including the eviction window,
+are permanently unavailable. Times without seconds in the issue are preserved
+at their reported precision.
+
+| UTC | Direct evidence |
+| --- | --- |
+| 2026-09-06 20:11:13 | [#5856](https://github.com/jomcgi-org/homelab/pull/5856) merged as `3878200fa2c7f802949a2e8e5d0149f5557aa2b3`; the issue records the Ember 0.70.6 rollout as the event context, but does not provide a rollout-start timestamp. |
+| 2026-09-06 20:15:33.743 | Predecessor `stf-01M1VR6TPHM7RCDN4H14SHTVAG`, stored snapshot generation 534569, was recorded `evicted` with reason `pair_broken`. |
+| 2026-09-06 20:20:22.956 | Successor `stf-01M1W624SCMHZX2386EBK1GS2F` was created and later observed healthy. |
+| 2026-09-06 20:20:24 | The first of four bounded CP and noded log reads began. They contained no warning or fault match, but none covered the 20:15 eviction or earlier rollout activity. |
+| 2026-09-06 20:25:14.936 | The successor was banked with no live VM. Complete diagnostics at 20:36, 20:39 and 20:48 found its volume/snapshot pair valid; #5858 does not supply the paired generation value for those diagnostics. |
+| 2026-09-07 00:30:12 and 00:30:23 | Noded logged blessing-lease exhaustion, then an observe-only UNBLESSED asynchronous export warning for volume generation 534623. |
+| 2026-09-07 01:03 to 01:06 | The read-only follow-up found unchanged pod identities, image IDs and restart counts, and found the banked successor's snapshot generation 534629 paired with the volume generation. |
+
+The follow-up pins the historical deployed source to
+`3878200fa2c7f802949a2e8e5d0149f5557aa2b3`. The source reviewed for this
+record is `7da0236d174ceeaaa22e17807ce2aa92072f2b00` on 2026-09-23. Both contain
+the monotonic `upsert_volume` generation floor from
+`eb0e6d7f16959440f2f9332b3592bd40c8be4444`. At both pins, an invalid warm
+pair found by a wake causes immediate instance-bundle eviction with
+`pair_broken`; the ordinary anchored path then plans a cold boot from the
+existing volume. The eager sweeper instead requires three consecutive broken
+observations. If an anchor is confirmed gone, recovery must exist before
+eviction; otherwise the broken bundle is retained and the wake is refused. The
+eviction transition does not delete the volume. These source facts establish
+the transition semantics, not the historical trigger.
+
+Three trigger candidates remain distinct:
+
+| Candidate | What the retained evidence establishes |
+| --- | --- |
+| Expected forward volume activity | Possible, but the predecessor snapshot and later volume generations were not collected together. Their difference does not establish when or why the volume advanced. |
+| Stale or rebuilt generation facts | The specific lagging-report regression is ruled out by the deployed monotonic floor. No contemporaneous CP rebuild, raw generation report or paired generation sample survives to decide another stale or rebuilt-fact path. |
+| A new regression | Not demonstrated. The `pair_broken` state and later valid successor pairing are compatible with normal invalid-warmth eviction as well as a defect, so the transition result alone cannot choose between them. |
+
+Generations 534623 and 534629, and the 2026-09-07 lease and export warnings,
+all postdate the eviction. At the pinned source those warnings describe the
+node-local activator's lease-exhaustion self-bump and observe-only asynchronous
+export path. They explain the later warnings, but do not establish causality
+for the earlier eviction. The last bounded observation establishes only
+pairing consistency at that time. It does not verify application data, prove a
+successful data recovery, or establish continuous stability. The older
+`snapshot_unrestorable` entry remains historical evidence of a different
+failure; its timing and artifacts are not supplied by #5858, and it is not
+evidence for this incident. The closed #4077 and #4146 reports likewise remain
+separate.
+
 ### Generation blessing and quarantine
 
 The control plane is the adjudicator of volume generations, with exactly
