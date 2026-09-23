@@ -900,7 +900,6 @@ def lane_usage(policy: dict, receipts: list[dict]) -> dict:
     receipts are generation-scoped, because older queues cannot be admitted.
     """
     limits = lane_limits(policy)
-    generation = policy.get("generation", 0)
     usage = {lane: {"limit": limits[lane], "active": 0, "queued": 0} for lane in LANES}
     for receipt in receipts:
         lane = receipt.get("routing_tier") or lane_for(
@@ -908,11 +907,21 @@ def lane_usage(policy: dict, receipts: list[dict]) -> dict:
         )
         if receipt.get("state") in _ACTIVE:
             usage[lane]["active"] += 1
-        elif (
-            receipt.get("state") == "queued" and receipt.get("generation") == generation
-        ):
+        elif is_current_generation_queue(policy, receipt):
             usage[lane]["queued"] += 1
     return usage
+
+
+def is_current_generation_queue(policy: dict, receipt: object) -> bool:
+    """Whether a receipt belongs to the only queue admission can consume."""
+    generation = policy.get("generation", 0)
+    if isinstance(receipt, dict):
+        state = receipt.get("state")
+        receipt_generation = receipt.get("generation", 0)
+    else:
+        state = getattr(receipt, "state", None)
+        receipt_generation = getattr(receipt, "generation", 0)
+    return state == "queued" and receipt_generation == generation
 
 
 def _validate_model_pools(pools: object, policy: dict) -> dict:
@@ -1366,7 +1375,7 @@ def _accounting(starts: list[FactoryStart]) -> dict:
 
 
 def _start_dict(row: FactoryStart) -> dict:
-    return {
+    result = {
         key: getattr(row, key)
         for key in (
             "id",
@@ -1381,6 +1390,11 @@ def _start_dict(row: FactoryStart) -> dict:
             "session_id",
         )
     }
+    created_at = row.created_at
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    result["created_at"] = created_at.isoformat()
+    return result
 
 
 def _recovery_deadline(db: Session, task_id: str, ordinary: datetime) -> datetime:
@@ -1409,10 +1423,13 @@ def _snapshot(db: Session, row: FactoryReceipt, *, body: bool = False) -> dict:
             "generation",
             "title",
             "url",
+            "actor",
             "state",
             "task_id",
             "task_paused",
             "cancellation_requested",
+            "created_at",
+            "updated_at",
         )
     }
     result["task_class"] = receipt_task_class(row)
@@ -2002,6 +2019,7 @@ def status(*, session: Session | None = None) -> dict:
             "admitted_count": control.admitted_count,
             "version": control.version,
             "actor": control.actor,
+            "control_updated_at": control.updated_at,
             "receipts": receipts,
             "active_tasks": [r for r in receipts if r["state"] in _ACTIVE],
             "landing_tasks": [r for r in receipts if r["state"] == "landing"],

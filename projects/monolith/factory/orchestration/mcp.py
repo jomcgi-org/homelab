@@ -15,13 +15,13 @@ Trimmed results keep ordinary calls usable in a voice conversation.
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, timezone
 from typing import Annotated, Literal
 
-from pydantic import BeforeValidator, Field
-
 from auth.api import Principal, current_principal
 from core.mcp_app import mcp
+from pydantic import BeforeValidator, Field
 
 from factory.access import OPERATOR_GROUP, OPERATOR_REQUIRED, is_operator
 
@@ -32,6 +32,30 @@ from factory.access import OPERATOR_GROUP, OPERATOR_REQUIRED, is_operator
 COVERAGE = {
     "factory_records": "covered",
     "cloud_sessions": "not_indexed",
+}
+
+STATUS_LIMIT = 20
+STATUS_LIMIT_MAX = 50
+
+# Honest discovery is part of the adapter contract. The unavailable entries
+# name owner gaps rather than silently accepting prose as authority or growing
+# a second queue/conversation implementation here.
+CAPABILITIES = {
+    "reads": {
+        "status": "supported",
+        "task_detail": "supported",
+        "receipt_context": "supported",
+        "pending_decisions": "supported",
+    },
+    "mutations": {
+        "submit_existing_issue": "supported",
+        "decision_reply": "supported",
+        "decision_direction": "supported_when_pending",
+        "pause_resume_stop": "supported",
+        "priority_change": "unavailable_no_owner",
+        "standalone_conductor_request": "unavailable_no_shared_owner",
+        "standalone_conversation_selection": "unavailable_no_shared_owner",
+    },
 }
 
 
@@ -69,6 +93,51 @@ def _refuse(principal: Principal) -> dict | None:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _iso(value: object) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.isoformat()
+    return str(value)
+
+
+def _page(items: list[dict], offset: int, limit: int) -> tuple[list[dict], dict]:
+    page = items[offset : offset + limit]
+    next_offset = offset + limit if offset + limit < len(items) else None
+    return page, {
+        "offset": offset,
+        "limit": limit,
+        "returned": len(page),
+        "total": len(items),
+        "next_offset": next_offset,
+        "truncated": next_offset is not None,
+    }
+
+
+def _evidence_summary(evidence: object) -> dict | None:
+    """Bound task evidence to stable operator-facing fields."""
+    if not isinstance(evidence, dict):
+        return None
+    result = {
+        key: evidence.get(key)
+        for key in (
+            "state",
+            "pr_url",
+            "head_sha",
+            "review_session_id",
+            "reviewer_model",
+            "comment_url",
+        )
+        if evidence.get(key) is not None
+    }
+    reason = evidence.get("reason")
+    if isinstance(reason, str) and reason:
+        result["reason"] = reason[:600]
+    return result or None
 
 
 def _progress(nodes: list[dict]) -> dict:
@@ -131,7 +200,7 @@ def _stop_summary(receipt: dict) -> dict:
     }
 
 
-def _task_row(receipt: dict) -> dict:
+def _task_row(receipt: dict, *, queue_position: int | None = None) -> dict:
     """One task trimmed to what a triage conversation needs.
 
     ``limits`` keeps only the flags that are actually tripped. All four are
@@ -147,14 +216,19 @@ def _task_row(receipt: dict) -> dict:
         "repo": receipt.get("repo"),
         "generation": receipt.get("generation"),
         "issue_number": receipt.get("issue_number"),
+        "work_item_id": receipt.get("work_item_id"),
         "title": receipt.get("title"),
         "url": receipt.get("url"),
+        "actor": receipt.get("actor"),
         "state": receipt.get("state"),
         "task_class": receipt.get("task_class"),
+        "routing_tier": receipt.get("routing_tier"),
         "task_id": receipt.get("task_id"),
         "task_paused": receipt.get("task_paused"),
         "cancellation_requested": receipt.get("cancellation_requested"),
         "admitted_at": receipt.get("admitted_at"),
+        "created_at": _iso(receipt.get("created_at")),
+        "updated_at": _iso(receipt.get("updated_at")),
         "deadline_at": receipt.get("deadline_at"),
         "turns_used": receipt.get("turns_used"),
         "allowance_turns": allowance.get("turns"),
@@ -165,18 +239,23 @@ def _task_row(receipt: dict) -> dict:
         # rather than admission, so it reads separately from the limits.
         "unresolved_starts": receipt.get("unresolved_starts"),
         "escalation_open": bool(escalation) and escalation.get("resolved") is None,
+        "queue_position": queue_position,
+        "outcome_evidence": _evidence_summary(receipt.get("evidence")),
         "progress": _progress(receipt.get("nodes") or []),
         "stop": _stop_summary(receipt),
     }
 
 
-def _status_payload(include_recent: bool, session=None) -> dict:
+def _status_payload(
+    include_recent: bool, offset: int = 0, limit: int = STATUS_LIMIT, session=None
+) -> dict:
     """Compose the board and trim it. Runs in a worker thread.
 
     ``session`` exists so a test fixture can drive the sync core
     directly. The tool never passes one: a session is not safe across
     the thread boundary, and the composer opens its own.
     """
+    from factory.orchestration.factory_controls import is_current_generation_queue
     from factory.private_view import build_factory_view
 
     view = build_factory_view(session=session)
@@ -191,10 +270,44 @@ def _status_payload(include_recent: bool, session=None) -> dict:
     open_escalations = [
         item for item in view.get("escalations") or [] if item.get("open")
     ]
+    active = [_task_row(receipt) for receipt in view.get("active") or []]
+    queued_receipts = sorted(
+        (
+            receipt
+            for receipt in view.get("queued") or []
+            if is_current_generation_queue(view.get("policy") or {}, receipt)
+        ),
+        key=lambda receipt: (
+            _iso(receipt.get("created_at")) or "",
+            receipt.get("id") or 0,
+        ),
+    )
+    queued = [
+        _task_row(receipt, queue_position=index)
+        for index, receipt in enumerate(queued_receipts, start=1)
+    ]
+    active_page, active_pagination = _page(active, offset, limit)
+    queued_page, queued_pagination = _page(queued, offset, limit)
+    needs_operator = [
+        {
+            "issue_number": item.get("issue_number"),
+            "title": item.get("title"),
+            "kind": item.get("kind"),
+            "question": item.get("question"),
+        }
+        for item in open_escalations
+    ]
+    needs_operator_page, needs_operator_pagination = _page(
+        needs_operator, offset, limit
+    )
     payload = {
         "ok": True,
         "state": view.get("state"),
         "observed_at": view.get("generated_at") or _now(),
+        "source_timestamps": {
+            "control_updated_at": view.get("control_updated_at"),
+            "view_generated_at": view.get("generated_at"),
+        },
         "version": view.get("version"),
         "actor": view.get("actor"),
         "admitted_count": view.get("admitted_count"),
@@ -204,25 +317,28 @@ def _status_payload(include_recent: bool, session=None) -> dict:
         "intake": view.get("intake"),
         "lanes": view.get("lanes"),
         "review_routing": view.get("review_routing"),
-        "active": [_task_row(receipt) for receipt in view.get("active") or []],
-        "queued": [_task_row(receipt) for receipt in view.get("queued") or []],
-        "needs_operator": [
-            {
-                "issue_number": item.get("issue_number"),
-                "title": item.get("title"),
-                "kind": item.get("kind"),
-                "question": item.get("question"),
-            }
-            for item in open_escalations
-        ],
+        "active": active_page,
+        "queued": queued_page,
+        "needs_operator": needs_operator_page,
         "coverage": COVERAGE,
+        "capabilities": CAPABILITIES,
+        "pagination": {
+            "active": active_pagination,
+            "queued": queued_pagination,
+            "needs_operator": needs_operator_pagination,
+        },
     }
     if include_recent:
-        payload["recent"] = [_task_row(receipt) for receipt in view.get("recent") or []]
+        recent = [_task_row(receipt) for receipt in view.get("recent") or []]
+        payload["recent"], payload["pagination"]["recent"] = _page(
+            recent, offset, limit
+        )
     return payload
 
 
-def _escalations_payload(include_resolved: bool, session=None) -> dict:
+def _escalations_payload(
+    include_resolved: bool, offset: int = 0, limit: int = STATUS_LIMIT, session=None
+) -> dict:
     """Escalation cards straight from the control state. Worker thread.
 
     Deliberately not composed from the board: the board loads a plan for
@@ -241,17 +357,24 @@ def _escalations_payload(include_resolved: bool, session=None) -> dict:
     items = escalations(state["receipts"])
     if not include_resolved:
         items = [item for item in items if item.get("open")]
+    page, pagination = _page(items, offset, limit)
     return {
         "ok": True,
         "observed_at": _now(),
         "open_count": sum(1 for item in items if item.get("open")),
-        "escalations": items,
+        "escalations": page,
+        "pagination": pagination,
         "coverage": COVERAGE,
+        "capabilities": CAPABILITIES,
     }
 
 
 @mcp.tool
-async def factory_status(include_recent: bool = False) -> dict:
+async def factory_status(
+    include_recent: bool = False,
+    offset: Annotated[MCPInteger, Field(ge=0)] = 0,
+    limit: Annotated[MCPInteger, Field(ge=1, le=STATUS_LIMIT_MAX)] = STATUS_LIMIT,
+) -> dict:
     """Read what the software factory is working on and what is blocked.
 
     Use this to answer "what is the factory doing", "why is nothing being
@@ -262,6 +385,8 @@ async def factory_status(include_recent: bool = False) -> dict:
         include_recent: Also return the most recently settled tasks. Off by
             default, since a triage question is usually about what is running
             now rather than what already finished.
+        offset: Zero-based offset applied independently to each state bucket.
+        limit: Maximum rows returned per bucket, from one to fifty.
 
     Returns:
         The control state and policy, the intake block and lane usage that
@@ -275,11 +400,15 @@ async def factory_status(include_recent: bool = False) -> dict:
     refusal = _refuse(current_principal())
     if refusal is not None:
         return refusal
-    return await asyncio.to_thread(_status_payload, include_recent)
+    return await asyncio.to_thread(_status_payload, include_recent, offset, limit)
 
 
 @mcp.tool
-async def factory_escalations(include_resolved: bool = False) -> dict:
+async def factory_escalations(
+    include_resolved: bool = False,
+    offset: Annotated[MCPInteger, Field(ge=0)] = 0,
+    limit: Annotated[MCPInteger, Field(ge=1, le=STATUS_LIMIT_MAX)] = STATUS_LIMIT,
+) -> dict:
     """Read the factory escalations waiting on an operator decision.
 
     An escalation means the lane stopped and wants a person. Each card
@@ -291,6 +420,8 @@ async def factory_escalations(include_resolved: bool = False) -> dict:
         include_resolved: Also return escalations that already have a
             recorded resolution. Off by default, so the answer is the list of
             things still owed a decision.
+        offset: Zero-based offset into the decision cards.
+        limit: Maximum cards returned, from one to fifty.
 
     Returns:
         Open escalations first, newest issue first, each with its issue
@@ -300,13 +431,292 @@ async def factory_escalations(include_resolved: bool = False) -> dict:
     refusal = _refuse(current_principal())
     if refusal is not None:
         return refusal
-    return await asyncio.to_thread(_escalations_payload, include_resolved)
+    return await asyncio.to_thread(
+        _escalations_payload, include_resolved, offset, limit
+    )
 
 
-def _detail_payload(receipt_id: int, node_offset: int, limit: int) -> dict:
-    from factory.orchestration import factory_controls as controls, graph
+def _work_item_context(db, row, limit: int) -> dict:
+    """Current blocker/correction evidence from the work-item owner."""
+    from sqlalchemy import or_
+    from sqlmodel import select
+
+    from factory.orchestration.factory_models import (
+        FactoryGithubIssueState,
+        WorkItem,
+        WorkItemEdge,
+        WorkItemEvent,
+    )
+    from factory.orchestration.work_items import open_blockers
+
+    work_item_id = getattr(row, "work_item_id", None)
+    if work_item_id is None:
+        return {"status": "not_linked"}
+    item = db.get(WorkItem, work_item_id)
+    if item is None:
+        return {"status": "unavailable", "reason": "unknown_work_item"}
+    source = db.exec(
+        select(FactoryGithubIssueState).where(
+            FactoryGithubIssueState.repo == row.repo,
+            FactoryGithubIssueState.issue_number == row.issue_number,
+        )
+    ).one_or_none()
+    edge_rows = db.exec(
+        select(WorkItemEdge)
+        .where(
+            or_(
+                WorkItemEdge.from_id == item.id,
+                WorkItemEdge.to_id == item.id,
+            )
+        )
+        .order_by(WorkItemEdge.id)
+        .limit(limit + 1)
+    ).all()
+    visible_edges = edge_rows[:limit]
+    blocker_rows = open_blockers(db, item.id)
+    related_ids = {
+        edge.to_id if edge.from_id == item.id else edge.from_id
+        for edge in visible_edges
+    }
+    related = {
+        other.id: other
+        for other in (
+            db.exec(select(WorkItem).where(WorkItem.id.in_(related_ids))).all()
+            if related_ids
+            else []
+        )
+    }
+
+    def reference(other_id: int) -> dict:
+        other = related.get(other_id)
+        return {
+            "work_item_id": other_id,
+            "repo": other.github_repo if other else None,
+            "issue_number": other.github_issue_number if other else None,
+            "title": other.title[:240] if other else None,
+            "state": other.state if other else "unknown",
+        }
+
+    blockers = [
+        {
+            "work_item_id": blocker.id,
+            "repo": blocker.github_repo,
+            "issue_number": blocker.github_issue_number,
+            "title": blocker.title[:240],
+            "state": blocker.state,
+        }
+        for blocker in blocker_rows[:limit]
+    ]
+    edges = [
+        {
+            "kind": edge.kind,
+            "direction": "out" if edge.from_id == item.id else "in",
+            "item": reference(edge.to_id if edge.from_id == item.id else edge.from_id),
+            "source": edge.source,
+            "created_at": _iso(edge.created_at),
+        }
+        for edge in visible_edges
+    ]
+    event_rows = db.exec(
+        select(WorkItemEvent)
+        .where(WorkItemEvent.work_item_id == item.id)
+        .order_by(WorkItemEvent.version.desc(), WorkItemEvent.id.desc())
+        .limit(limit + 1)
+    ).all()
+    corrections = []
+    for event in event_rows[:limit]:
+        try:
+            change = json.loads(event.change_json)
+        except (TypeError, ValueError):
+            change = {"status": "unparseable"}
+        if isinstance(change, dict):
+            change = {
+                key: change[key]
+                for key in (
+                    "state",
+                    "close_reason",
+                    "task_class",
+                    "labels",
+                    "authority",
+                    "source_ref",
+                )
+                if key in change
+            }
+        else:
+            change = {"status": "unparseable"}
+        corrections.append(
+            {
+                "version": event.version,
+                "operation": event.op,
+                "actor": event.author,
+                "actor_kind": event.author_kind,
+                "cause_kind": event.cause_kind,
+                "cause_ref": (event.cause_ref or "")[:600] or None,
+                "reason": (event.stated_reason or "")[:600] or None,
+                "change": change,
+                "created_at": _iso(event.created_at),
+            }
+        )
+    return {
+        "status": "available",
+        "id": item.id,
+        "repo": item.github_repo,
+        "issue_number": item.github_issue_number,
+        "state": item.state,
+        "labels": list(item.labels)[:32],
+        "labels_truncated": len(item.labels) > 32,
+        "authority": item.authority,
+        "trust": item.trust,
+        "source_ref": item.source_ref,
+        "created_at": _iso(item.created_at),
+        "updated_at": _iso(item.updated_at),
+        "source_updated_at": _iso(source.source_updated_at) if source else None,
+        "source_state": source.source_state if source else None,
+        "blocked": bool(blocker_rows),
+        "blocked_by": blockers,
+        "blockers_truncated": len(blocker_rows) > limit,
+        "edges": edges,
+        "edges_truncated": len(edge_rows) > limit,
+        "corrections": corrections,
+        "corrections_truncated": len(event_rows) > limit,
+    }
+
+
+def _queue_context(db, row) -> dict | None:
+    """Expose the durable FIFO order without claiming it is a policy override."""
+    from sqlalchemy import and_, func, or_
+    from sqlmodel import select
+
+    from factory.orchestration.factory_controls import is_current_generation_queue
+    from factory.orchestration.factory_models import FactoryControl, FactoryReceipt
+
+    if getattr(row, "state", None) != "queued":
+        return None
+    control = db.get(FactoryControl, "factory")
+    policy = json.loads(control.policy_json) if control else {}
+    if not is_current_generation_queue(policy, row):
+        return {
+            "position": None,
+            "count": None,
+            "basis": "receipt_created_at_then_id",
+            "coverage": "not_in_current_generation_queue",
+            "note": "older queue generations cannot be admitted",
+            "priority_mutation": "unavailable_no_owner",
+        }
+    queue_filter = (
+        FactoryReceipt.state == "queued",
+        FactoryReceipt.generation == row.generation,
+    )
+    before_or_same = or_(
+        FactoryReceipt.created_at < row.created_at,
+        and_(
+            FactoryReceipt.created_at == row.created_at,
+            FactoryReceipt.id <= row.id,
+        ),
+    )
+    position = db.exec(
+        select(func.count(FactoryReceipt.id)).where(*queue_filter, before_or_same)
+    ).one()
+    count = db.exec(select(func.count(FactoryReceipt.id)).where(*queue_filter)).one()
+    return {
+        "position": position,
+        "count": count,
+        "basis": "receipt_created_at_then_id",
+        "coverage": "raw_fifo_order_only",
+        "note": "policy eligibility and open blockers can cause admission to skip a receipt",
+        "priority_mutation": "unavailable_no_owner",
+    }
+
+
+def _lifecycle_evidence(db, row, snapshot: dict) -> dict:
+    """Keep activity, artifact, acceptance, landing and deployment distinct."""
+    from sqlmodel import select
+
+    from factory.orchestration.factory_models import (
+        FactoryAudit,
+        FactoryReviewVerdict,
+    )
+
+    starts = snapshot.get("starts") or []
+    review = (
+        db.exec(
+            select(FactoryReviewVerdict).where(
+                FactoryReviewVerdict.task_id == row.task_id
+            )
+        ).one_or_none()
+        if getattr(row, "task_id", None)
+        else None
+    )
+    landing_actions = (
+        db.exec(
+            select(FactoryAudit)
+            .where(
+                FactoryAudit.task_id == row.task_id,
+                FactoryAudit.action.in_(
+                    (
+                        "merge_armed",
+                        "merged",
+                        "issue_closed",
+                        "repository_delivery_complete",
+                    )
+                ),
+            )
+            .order_by(FactoryAudit.id.desc())
+            .limit(20)
+        ).all()
+        if getattr(row, "task_id", None)
+        else []
+    )
+    actions = {audit.action: audit for audit in landing_actions}
+    evidence = _evidence_summary(snapshot.get("evidence"))
+    accepted = bool(evidence and evidence.get("state") == "ready_for_review")
+    repository_complete = actions.get("repository_delivery_complete") or actions.get(
+        "issue_closed"
+    )
+    return {
+        "work_started": {
+            "status": "observed" if starts else "not_observed",
+            "at": _iso(starts[0].get("created_at")) if starts else None,
+            "start_count": len(starts),
+        },
+        "artifact_produced": {
+            "status": "observed" if evidence else "not_observed",
+            "evidence": evidence,
+        },
+        "delivery_accepted": {
+            "status": "observed" if accepted else "not_observed",
+            "evidence": evidence if accepted else None,
+            "first_pass_review": (
+                {
+                    "verdict": review.verdict,
+                    "summary": (review.summary or "")[:600] or None,
+                    "head_sha": review.head_sha,
+                    "reviewed_at": _iso(review.reviewed_at),
+                }
+                if review
+                else None
+            ),
+        },
+        "repository_delivery": {
+            "status": "complete" if repository_complete else "not_observed",
+            "action": repository_complete.action if repository_complete else None,
+            "at": _iso(repository_complete.created_at) if repository_complete else None,
+        },
+        "deployment": {
+            "status": "unknown",
+            "coverage": "not_tracked_by_factory",
+            "evidence": None,
+        },
+    }
+
+
+def _detail_payload(
+    receipt_id: int, node_offset: int, limit: int, history_limit: int = 10
+) -> dict:
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import graph
     from factory.orchestration.factory_models import FactoryReceipt
-    from factory.private_view import _iso, shape_node
+    from factory.private_view import shape_node
 
     with controls._read_session() as db:
         row = db.get(FactoryReceipt, receipt_id)
@@ -323,6 +733,7 @@ def _detail_payload(receipt_id: int, node_offset: int, limit: int) -> dict:
         for node in page:
             node["attempt_count"] = len(node["attempts"])
             node["attempts"] = node["attempts"][-3:]
+        work_item = _work_item_context(db, row, history_limit)
         return {
             "ok": True,
             "observed_at": _now(),
@@ -333,7 +744,17 @@ def _detail_payload(receipt_id: int, node_offset: int, limit: int) -> dict:
             "next_node_offset": node_offset + limit
             if node_offset + limit < len(shaped)
             else None,
+            "queue": _queue_context(db, row),
+            "work_item": work_item,
+            "lifecycle": _lifecycle_evidence(db, row, snapshot),
+            "source_timestamps": {
+                "receipt_created_at": _iso(getattr(row, "created_at", None)),
+                "receipt_updated_at": _iso(getattr(row, "updated_at", None)),
+                "work_item_updated_at": work_item.get("updated_at"),
+                "github_source_updated_at": work_item.get("source_updated_at"),
+            },
             "coverage": COVERAGE,
+            "capabilities": CAPABILITIES,
         }
 
 
@@ -342,6 +763,7 @@ async def factory_task_detail(
     receipt_id: Annotated[MCPInteger, Field(gt=0)],
     node_offset: Annotated[MCPInteger, Field(ge=0)] = 0,
     limit: Annotated[MCPInteger, Field(ge=1, le=50)] = 20,
+    history_limit: Annotated[MCPInteger, Field(ge=1, le=50)] = 10,
 ) -> dict:
     """Inspect an exact factory receipt and a bounded page of its plan nodes.
 
@@ -350,20 +772,24 @@ async def factory_task_detail(
     and their last three attempts with session IDs for further inspection.
     Follow next_node_offset for more nodes. Node success alone is not evidence
     of accepted delivery or deployment. This read requires a human operator.
+    history_limit bounds work-item edges and correction history independently.
     """
     refusal = _refuse(current_principal())
     if refusal is not None:
         return refusal
-    return await asyncio.to_thread(_detail_payload, receipt_id, node_offset, limit)
+    return await asyncio.to_thread(
+        _detail_payload, receipt_id, node_offset, limit, history_limit
+    )
 
 
 def _submit_issue(
     repo: str, issue_number: int, generation: int, principal: Principal
 ) -> dict:
     from fastapi import HTTPException
+    from goosecracker.api import REPO_CATALOG
+
     from factory.orchestration.factory_intake import get_issue_receipt
     from factory.orchestration.factory_router import ReceiptRequest, factory_receipt
-    from goosecracker.api import REPO_CATALOG
 
     # Reuse the HTTP adapter's repository eligibility and issue validation,
     # which ultimately calls the same durable intake owner as the scheduler.

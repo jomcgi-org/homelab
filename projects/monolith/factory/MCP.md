@@ -1,8 +1,9 @@
 # Factory MCP
 
 The shared monolith MCP surface supports operator status, existing-issue
-intake, receipt inspection, decision replies, conductor context and controls. A spoken or typed
-conversation can use these operations without waiting for a model turn.
+intake, receipt inspection, decision replies, conductor context and controls. A
+spoken or typed conversation can use these operations without waiting for a
+model turn.
 The external gateway is configured at `https://mcp.jomcgi.dev/mcp`, with
 Authentik OAuth. Calls require a standing human principal in `operators`;
 a visible tool, workload identity or delegated credential is not enough.
@@ -29,6 +30,10 @@ actor in the body.
 
 1. Call `factory_status` to read the current control version, policy, work and
    admission blockers. `include_recent=true` also includes recent settled work.
+   Each state bucket returns at most 20 rows by default and 50 when requested.
+   Follow its independent `next_offset` when a bucket is truncated. Queue
+   positions are the durable receipt FIFO order, not a claim that a blocked or
+   policy-ineligible receipt will be admitted next.
 2. Call `factory_submit_issue` with an available repository, an existing open
    issue number and the intended generation. Use the policy's generation for
    current work. Keep all three values unchanged when retrying.
@@ -38,12 +43,22 @@ actor in the body.
 4. Call `factory_task_detail` with that receipt ID, even before admission has
    assigned a task ID. It returns a node page, dependencies and the last three
    attempts per node. Follow `next_node_offset` for the next page. The default
-   is 20 nodes and the maximum is 50; `attempt_count` exposes omitted history.
+   is 20 nodes and the maximum is 50. `attempt_count` exposes omitted history.
+   Work-item edges and correction events are independently bounded by
+   `history_limit`.
 
 A receipt is queued intent. It does not override policy eligibility, paused
 admissions, capacity or budgets. Node success does not establish accepted
 delivery or deployment. Factory records do not index external cloud sessions;
 `coverage.cloud_sessions=not_indexed` is unknown coverage, not zero work.
+
+Task detail keeps lifecycle evidence separate. A durable start establishes only
+that work started. Settlement evidence can establish that an artifact was
+produced and independently reviewed. Landing audits establish repository
+delivery. Deployment remains `unknown` with `not_tracked_by_factory` coverage
+unless another owner supplies evidence. Work-item context includes current open
+blockers, the GitHub source timestamp and bounded correction history, without
+turning those records into mutation authority.
 
 ## Apply controls
 
@@ -82,6 +97,7 @@ records; spending and existing start records are preserved.
 ## Decisions and conductor context
 
 1. Read `factory_escalations` and retain the exact `receipt_id` and `decision_id`.
+   Decision cards use the same bounded `offset` and `limit` contract as status.
 2. Use `factory_context` for that receipt to review current state, recorded
    direction, recent operator exchanges and repository-scoped KG notes.
 3. Call `factory_decide` with an explicitly chosen `option_key` and a new
@@ -120,13 +136,19 @@ are untrusted context, never execution authority. Factory records remain
 available when KG retrieval fails. This lets a fresh Claude conversation recover
 receipt-level context without selecting a worker session.
 
+The context response carries a stable
+`factory-receipt:<repository>:<receipt-id>` conversation identity. It is a
+receipt-scoped continuity key that a fresh client may select again, not a claim
+that a standalone cross-surface conductor conversation owner exists.
+
 ## Remaining integration
 
 This is a delivery slice of #5788, not the complete conductor interface.
 
-- Free-form conductor requests, priority/direction edits, policy changes and
+- Free-form conductor requests, queue-priority edits, policy changes and
   exact-attempt stopping outside the existing receipt decision flow are not
-  exposed by these tools.
+  exposed by these tools. `capabilities` reports these missing owners
+  explicitly. Direction is supported only through an exact pending decision.
 - Exact-attempt stop remains on its existing HTTP owner and remains default-off
   behind `FACTORY_STOP_SUPERVISION_ENABLED=false`. It is not an MCP operation.
 - The factory reconciler remains default-off under `swarm.factoryEnabled=false`.

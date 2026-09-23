@@ -79,14 +79,18 @@ def test_tools_refuse_callers_below_the_operator_floor(principal, tool, monkeypa
 
 def test_status_reaches_the_composer_for_an_operator(monkeypatch):
     monkeypatch.setattr(
-        mcp, "_status_payload", lambda include_recent, session=None: {"ok": True}
+        mcp,
+        "_status_payload",
+        lambda include_recent, offset=0, limit=20, session=None: {"ok": True},
     )
     assert _as(_principal(), mcp.factory_status) == {"ok": True}
 
 
 def test_escalations_reach_the_composer_for_an_operator(monkeypatch):
     monkeypatch.setattr(
-        mcp, "_escalations_payload", lambda include_resolved, session=None: {"ok": True}
+        mcp,
+        "_escalations_payload",
+        lambda include_resolved, offset=0, limit=20, session=None: {"ok": True},
     )
     assert _as(_principal(), mcp.factory_escalations) == {"ok": True}
 
@@ -235,7 +239,9 @@ def test_status_payload_trims_the_board_and_stamps_coverage(monkeypatch):
         "lanes": {"delivery": 1},
         "review_routing": {"model": "opus"},
         "active": [{"issue_number": 1, "title": "a", "limits": {}}],
-        "queued": [{"issue_number": 2, "title": "b"}],
+        "queued": [
+            {"issue_number": 2, "title": "b", "state": "queued", "generation": 0}
+        ],
         "recent": [{"issue_number": 3, "title": "c"}],
         "escalations": [
             {"issue_number": 4, "title": "d", "question": "which?", "open": True},
@@ -275,6 +281,84 @@ def test_status_payload_includes_recent_on_request(monkeypatch):
     assert [task["issue_number"] for task in payload["recent"]] == [3]
 
 
+def test_status_payload_pages_each_bucket_and_keeps_queue_positions(monkeypatch):
+    board = {
+        "ok": True,
+        "state": "enabled",
+        "active": [{"issue_number": number} for number in range(1, 7)],
+        "queued": [
+            {"issue_number": number, "state": "queued", "generation": 0}
+            for number in range(11, 18)
+        ],
+        "recent": [],
+        "escalations": [],
+    }
+    monkeypatch.setattr(
+        "factory.private_view.build_factory_view", lambda session=None: board
+    )
+
+    payload = mcp._status_payload(False, offset=2, limit=3)
+
+    assert [row["issue_number"] for row in payload["active"]] == [3, 4, 5]
+    assert [row["issue_number"] for row in payload["queued"]] == [13, 14, 15]
+    assert [row["queue_position"] for row in payload["queued"]] == [3, 4, 5]
+    assert payload["pagination"]["active"] == {
+        "offset": 2,
+        "limit": 3,
+        "returned": 3,
+        "total": 6,
+        "next_offset": 5,
+        "truncated": True,
+    }
+    assert payload["pagination"]["queued"]["total"] == 7
+    assert payload["capabilities"]["mutations"]["priority_change"] == (
+        "unavailable_no_owner"
+    )
+
+
+def test_status_queue_positions_exclude_stale_generations(monkeypatch):
+    board = {
+        "ok": True,
+        "state": "enabled",
+        "policy": {"generation": 2},
+        "active": [],
+        "queued": [
+            {
+                "id": 1,
+                "repo": "old/repo",
+                "generation": 1,
+                "issue_number": 1,
+                "state": "queued",
+            },
+            {
+                "id": 2,
+                "repo": "one/repo",
+                "generation": 2,
+                "issue_number": 2,
+                "state": "queued",
+            },
+            {
+                "id": 3,
+                "repo": "two/repo",
+                "generation": 2,
+                "issue_number": 3,
+                "state": "queued",
+            },
+        ],
+        "recent": [],
+        "escalations": [],
+    }
+    monkeypatch.setattr(
+        "factory.private_view.build_factory_view", lambda session=None: board
+    )
+
+    payload = mcp._status_payload(False)
+
+    assert [row["issue_number"] for row in payload["queued"]] == [2, 3]
+    assert [row["queue_position"] for row in payload["queued"]] == [1, 2]
+    assert payload["pagination"]["queued"]["total"] == 2
+
+
 def test_status_payload_passes_through_an_uninitialised_factory(monkeypatch):
     monkeypatch.setattr(
         "factory.private_view.build_factory_view",
@@ -311,6 +395,17 @@ def test_escalations_payload_hides_resolved_cards_by_default(monkeypatch):
     everything = mcp._escalations_payload(include_resolved=True)
     assert [card["issue_number"] for card in everything["escalations"]] == [9, 8]
     assert everything["open_count"] == 1
+
+    second = mcp._escalations_payload(include_resolved=True, offset=1, limit=1)
+    assert [card["issue_number"] for card in second["escalations"]] == [8]
+    assert second["pagination"] == {
+        "offset": 1,
+        "limit": 1,
+        "returned": 1,
+        "total": 2,
+        "next_offset": None,
+        "truncated": False,
+    }
 
 
 def test_escalations_payload_passes_through_an_uninitialised_factory(monkeypatch):
@@ -464,6 +559,49 @@ def test_context_knowledge_is_scoped_and_does_not_expand_neighbours(monkeypatch)
     assert result["notes"][0]["disputed"] is True
     assert result["notes"][0]["evidence_raw_ids"] == ["raw"]
     assert "edges" not in result["notes"][0]
+
+
+def test_receipt_context_has_a_stable_fresh_session_identity(monkeypatch):
+    from contextlib import nullcontext
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    from factory.orchestration import conductor_context as context
+
+    row = SimpleNamespace(
+        id=7,
+        repo="owner/repo",
+        task_id="task-7",
+        updated_at=datetime(2026, 9, 20, tzinfo=timezone.utc),
+    )
+    db = SimpleNamespace(get=lambda model, identity: row if identity == 7 else None)
+    monkeypatch.setattr(context.controls, "_read_session", lambda: nullcontext(db))
+    monkeypatch.setattr(
+        context.controls,
+        "_snapshot",
+        lambda db, receipt: {
+            "id": receipt.id,
+            "repo": receipt.repo,
+            "task_id": receipt.task_id,
+            "title": "Current task",
+            "direction": None,
+        },
+    )
+    monkeypatch.setattr(context, "_request_records", lambda db: {})
+    monkeypatch.setattr(context.controls, "escalation_view", lambda snapshot: None)
+
+    result = context._factory_context(7)
+
+    assert result["conversation"] == {
+        "id": "factory-receipt:owner/repo:7",
+        "kind": "receipt_context",
+        "receipt_id": 7,
+        "task_id": "task-7",
+        "selectable_in_fresh_session": True,
+    }
+    assert result["coverage"]["standalone_conductor_conversations"] == (
+        "unavailable_no_shared_owner"
+    )
 
 
 def test_knowledge_failure_does_not_undo_a_completed_decision(monkeypatch):
@@ -622,6 +760,25 @@ def test_mcp_client_lists_and_calls_controls_with_schema_validation(monkeypatch)
     _as(_principal(), exercise)
 
 
+def test_read_pagination_schema_rejects_integer_coercion(monkeypatch):
+    from core.mcp_app import mcp as shared
+    from fastmcp import Client
+
+    monkeypatch.setattr(mcp, "_status_payload", lambda *args: {"ok": True})
+    monkeypatch.setattr(mcp, "_escalations_payload", lambda *args: {"ok": True})
+
+    async def exercise():
+        async with Client(shared) as client:
+            for name in ("factory_status", "factory_escalations"):
+                for value in (True, "1"):
+                    result = await client.call_tool(
+                        name, {"offset": value, "limit": 1}, raise_on_error=False
+                    )
+                    assert result.is_error
+
+    _as(_principal(), exercise)
+
+
 def test_detail_pages_nodes_and_bounds_attempt_history(monkeypatch):
     from contextlib import nullcontext
     from datetime import datetime, timezone
@@ -655,6 +812,17 @@ def test_detail_pages_nodes_and_bounds_attempt_history(monkeypatch):
             for i in range(1, 6)
         ],
     )
+    monkeypatch.setattr(
+        mcp, "_work_item_context", lambda *args: {"status": "not_linked"}
+    )
+    monkeypatch.setattr(mcp, "_queue_context", lambda *args: None)
+    monkeypatch.setattr(
+        mcp,
+        "_lifecycle_evidence",
+        lambda *args: {
+            "deployment": {"status": "unknown", "coverage": "not_tracked_by_factory"}
+        },
+    )
     result = _as(
         _principal(), lambda: mcp.factory_task_detail(42, node_offset=1, limit=2)
     )
@@ -668,10 +836,255 @@ def test_detail_pages_nodes_and_bounds_attempt_history(monkeypatch):
     assert [a["session_id"] for a in node["attempts"]] == [3, 4, 5]
     assert node["state"] == "failed"
     assert result["updated_at"] == "2026-09-14T00:00:00+00:00"
+    assert result["lifecycle"]["deployment"]["status"] == "unknown"
     assert (
         _as(_principal(), lambda: mcp.factory_task_detail(99))["reason"]
         == "unknown_receipt"
     )
+
+
+def test_work_item_and_queue_context_use_real_owner_schemas(tmp_path):
+    from datetime import datetime, timezone
+
+    from sqlmodel import Session, SQLModel, create_engine
+
+    from factory.orchestration.factory_models import (
+        FactoryControl,
+        FactoryGithubIssueState,
+        FactoryReceipt,
+        WorkItem,
+        WorkItemEdge,
+        WorkItemEvent,
+    )
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'mcp-owner-contract.db'}",
+        execution_options={"schema_translate_map": {"swarm": None}},
+    )
+    SQLModel.metadata.create_all(
+        engine,
+        tables=[
+            model.__table__
+            for model in (
+                FactoryControl,
+                FactoryReceipt,
+                WorkItem,
+                WorkItemEdge,
+                WorkItemEvent,
+                FactoryGithubIssueState,
+            )
+        ],
+    )
+    source_time = datetime(2026, 9, 20, 12, tzinfo=timezone.utc)
+    with Session(engine) as db:
+        db.add(
+            FactoryControl(
+                id="factory",
+                state="enabled",
+                policy_json='{"generation":2}',
+                actor="test",
+            )
+        )
+        blocker = WorkItem(
+            title="Blocking work",
+            state="open",
+            source_kind="github",
+            source_ref="https://github.com/owner/repo/issues/6",
+            trust="trusted",
+            authority="github",
+            github_repo="owner/repo",
+            github_issue_number=6,
+        )
+        item = WorkItem(
+            title="Current work",
+            state="ready",
+            source_kind="github",
+            source_ref="https://github.com/owner/repo/issues/7",
+            trust="trusted",
+            authority="github",
+            github_repo="owner/repo",
+            github_issue_number=7,
+            labels=["agent-ready"],
+        )
+        db.add_all([blocker, item])
+        db.flush()
+        db.add(WorkItemEdge(from_id=blocker.id, to_id=item.id, kind="blocks"))
+        for version in range(1, 4):
+            db.add(
+                WorkItemEvent(
+                    work_item_id=item.id,
+                    version=version,
+                    op="sync",
+                    author_kind="factory",
+                    author="factory:webhook",
+                    change_json='{"state":"ready"}',
+                    cause_kind="github_sync",
+                    cause_ref=f"delivery:{version}",
+                    stated_reason=f"correction {version}",
+                )
+            )
+        db.add(
+            FactoryGithubIssueState(
+                repo="owner/repo",
+                issue_number=7,
+                source_updated_at=source_time,
+                source_state="open",
+                source_ref="delivery:3",
+            )
+        )
+        stale = FactoryReceipt(
+            repo="old/repo",
+            issue_number=5,
+            generation=1,
+            title="Stale work",
+            body="",
+            url="https://github.com/old/repo/issues/5",
+            actor="joe",
+        )
+        other_repo = FactoryReceipt(
+            repo="other/repo",
+            issue_number=9,
+            generation=2,
+            title="Earlier work in another repo",
+            body="",
+            url="https://github.com/other/repo/issues/9",
+            actor="joe",
+        )
+        first = FactoryReceipt(
+            repo="owner/repo",
+            issue_number=7,
+            generation=2,
+            title="Current work",
+            body="",
+            url="https://github.com/owner/repo/issues/7",
+            actor="joe",
+            work_item_id=item.id,
+        )
+        second = FactoryReceipt(
+            repo="owner/repo",
+            issue_number=8,
+            generation=2,
+            title="Later work",
+            body="",
+            url="https://github.com/owner/repo/issues/8",
+            actor="joe",
+        )
+        db.add_all([stale, other_repo, first, second])
+        db.commit()
+        db.refresh(first)
+        db.refresh(stale)
+
+        context = mcp._work_item_context(db, first, limit=2)
+        queue = mcp._queue_context(db, first)
+        stale_queue = mcp._queue_context(db, stale)
+
+    engine.dispose()
+    assert context["blocked"] is True
+    assert context["blocked_by"][0]["issue_number"] == 6
+    assert context["source_updated_at"] == source_time.isoformat()
+    assert [event["version"] for event in context["corrections"]] == [3, 2]
+    assert context["corrections_truncated"] is True
+    assert queue["position"] == 2
+    assert queue["count"] == 3
+    assert queue["priority_mutation"] == "unavailable_no_owner"
+    assert stale_queue["position"] is None
+    assert stale_queue["count"] is None
+    assert stale_queue["coverage"] == "not_in_current_generation_queue"
+
+
+def test_lifecycle_keeps_artifact_acceptance_and_deployment_distinct(tmp_path):
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    from sqlmodel import Session, SQLModel, create_engine
+
+    from factory.orchestration.factory_models import (
+        FactoryAudit,
+        FactoryReviewVerdict,
+        FactoryStart,
+    )
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'mcp-lifecycle-contract.db'}",
+        execution_options={"schema_translate_map": {"swarm": None}},
+    )
+    SQLModel.metadata.create_all(
+        engine,
+        tables=[
+            model.__table__
+            for model in (FactoryStart, FactoryAudit, FactoryReviewVerdict)
+        ],
+    )
+    observed = datetime(2026, 9, 20, 13, tzinfo=timezone.utc)
+    with Session(engine) as db:
+        db.add_all(
+            [
+                FactoryStart(
+                    task_id="task-1",
+                    start_key="factory-node:task-1:implement:1",
+                    actor="factory",
+                    model="luna",
+                    max_cost_usd=2,
+                    status="succeeded",
+                    cost_usd=1,
+                    created_at=observed,
+                ),
+                FactoryReviewVerdict(
+                    task_id="task-1",
+                    review_run_id=9,
+                    task_class="bug-fix",
+                    sample_kind="delivery",
+                    verdict="changes_requested",
+                    summary="First pass requested changes",
+                    head_sha="b" * 40,
+                    reviewed_at=observed,
+                ),
+                FactoryAudit(
+                    actor="factory:landing",
+                    action="repository_delivery_complete",
+                    task_id="task-1",
+                    created_at=observed,
+                ),
+            ]
+        )
+        db.commit()
+        lifecycle = mcp._lifecycle_evidence(
+            db,
+            SimpleNamespace(task_id="task-1"),
+            {
+                "starts": [
+                    {
+                        "start_key": "factory-node:task-1:implement:1",
+                        "created_at": observed,
+                    }
+                ],
+                "evidence": {
+                    "state": "ready_for_review",
+                    "pr_url": "https://github.com/owner/repo/pull/9",
+                    "head_sha": "a" * 40,
+                    "reviewer_model": "opus",
+                },
+            },
+        )
+
+    engine.dispose()
+    assert lifecycle["work_started"]["status"] == "observed"
+    assert lifecycle["artifact_produced"]["status"] == "observed"
+    assert lifecycle["delivery_accepted"]["status"] == "observed"
+    assert lifecycle["delivery_accepted"]["evidence"]["head_sha"] == "a" * 40
+    assert lifecycle["delivery_accepted"]["first_pass_review"] == {
+        "verdict": "changes_requested",
+        "summary": "First pass requested changes",
+        "head_sha": "b" * 40,
+        "reviewed_at": observed.isoformat(),
+    }
+    assert "last_review" not in lifecycle["delivery_accepted"]
+    assert lifecycle["repository_delivery"]["status"] == "complete"
+    assert lifecycle["deployment"] == {
+        "status": "unknown",
+        "coverage": "not_tracked_by_factory",
+        "evidence": None,
+    }
 
 
 def test_submission_retry_reads_receipt_without_github(monkeypatch):
