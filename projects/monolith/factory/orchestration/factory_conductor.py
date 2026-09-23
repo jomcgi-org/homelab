@@ -485,9 +485,7 @@ def escalation_revalidation_enabled() -> bool:
 
 def planner_knowledge_enabled() -> bool:
     """Whether receipt-authorized KG evidence may enter planner inputs."""
-    return (
-        os.environ.get("FACTORY_PLANNER_KNOWLEDGE_ENABLED", "false").lower() == "true"
-    )
+    return os.environ.get("CONDUCTOR_CONTINUITY_ENABLED", "false").lower() == "true"
 
 
 def _outcome(run: dict) -> dict:
@@ -2411,7 +2409,15 @@ def _record_escalation(
                 # and the page renders it under whichever question is current.
                 document["chat"] = stored.get("chat") or []
         conversation = list((stored or {}).get("conversation") or [])
-        message_id = f"factory-brief:{task_id}"
+        brief_identity = decision_identity(
+            {
+                "id": row.id,
+                "repo": row.repo,
+                "generation": row.generation,
+                "escalation": document,
+            }
+        )
+        message_id = f"factory-brief:{task_id}:{brief_identity}"
         if not any(item.get("message_id") == message_id for item in conversation):
             latest_chat = ((stored or {}).get("chat") or [None])[-1]
             parts = [
@@ -2440,14 +2446,6 @@ def _record_escalation(
                 }
             )
         document["conversation"] = conversation[-20:]
-        brief_identity = decision_identity(
-            {
-                "id": row.id,
-                "repo": row.repo,
-                "generation": row.generation,
-                "escalation": document,
-            }
-        )
         for item in document["conversation"]:
             if item.get("message_id") == message_id:
                 item["decision_id"] = brief_identity

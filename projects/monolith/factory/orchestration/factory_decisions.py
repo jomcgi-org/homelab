@@ -772,7 +772,7 @@ def _resolve(
             _append_operator_exchange(
                 escalation,
                 message_id=(
-                    f"factory-request:{request_key}"
+                    f"factory-request:{actor}:{request_key}"
                     if request_key
                     else f"factory-decision:{expected_decision_id}:{actor}:{option['key']}"
                 ),
@@ -1140,7 +1140,7 @@ def _requeue_refine(
     _append_operator_exchange(
         escalation,
         message_id=(
-            f"factory-request:{request_key}"
+            f"factory-request:{actor}:{request_key}"
             if request_key
             else f"factory-chat:{row.id}:{len(chat)}"
         ),

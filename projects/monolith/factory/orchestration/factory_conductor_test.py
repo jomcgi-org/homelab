@@ -13015,7 +13015,9 @@ def test_dispatch_refusal_audit(
             assert card["dispatch_refusal"] == decision["dispatch_refusal"]
             assert card["comment_url"] == "https://example.test/card"
             brief = card["conversation"][0]
-            assert brief["message_id"] == f"factory-brief:{task['id']}"
+            assert brief["message_id"] == (
+                f"factory-brief:{task['id']}:{brief['decision_id']}"
+            )
             assert brief["role"] == "conductor"
             assert brief["actor"] == conductor.ACTOR
             assert brief["source"] == "factory_brief"
