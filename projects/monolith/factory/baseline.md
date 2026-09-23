@@ -1,0 +1,192 @@
+# Factory delivery baseline
+
+This is a default-off, read-only report procedure for issue #5851. It reads
+existing records and writes JSON or CSV. It does not schedule work, mutate a
+database, call a deployment API, set policy, or enforce an SLO.
+
+The checked-in observation is
+[`baseline_observed_20260923.json`](baseline_observed_20260923.json), with a
+compact CSV companion. Its half-open window is
+`[2026-09-16T00:00:00Z, 2026-09-23T00:00:00Z)`, the seven completed UTC days
+before extraction on 2026-09-23. It contains public repository observations
+and an inventory of repository-declared GKE production Applications. Private
+factory history and live production evidence were not available to this
+repository-only runner, so those fields are unavailable, not zero.
+
+## Boundaries and identities
+
+- Repository boundary: `jomcgi-org/homelab`, base branch `main`.
+- Factory cohort: tasks whose first `task_intake` falls inside the window.
+- Accepted factory change: a cohort task with active `verified_outcome`
+  evidence before the exclusive end. A merge or deployment is not enough.
+- Repository delivery: a distinct pull request merge. It is a supported proxy
+  only, not DORA lead time or a factory accepted change.
+- Production boundary: every Application declared below is its own service and
+  environment row. Do not combine application denominators.
+- Stable identities: `task_id`, GitHub PR number or `change_id`,
+  `deployment_id`, and source-table primary keys in `event_id`.
+- Extraction identity: every report records `source_as_of`, window start/end,
+  query text, source coverage, and evidence URLs.
+
+The production inventory is the 22 GKE Applications declared under
+`projects/gke-apps/*/application.yaml` and
+`projects/platform-gke/*/application.yaml`: `context-forge-gateway`, `embervm`,
+`inference`, `monolith-agents`, `monolith-public`, `monolith`, `argo-workflows`,
+`argocd`, `atlas-operator`, `authentik`, `cert-manager`, `cloudflare-gateway`,
+`cloudnative-pg`, `kargo`, `kyverno`, `onepassword`, `otel-collector`,
+`polylane`, `priority-classes`, `renovate`, `spire`, and `tailscale`.
+Repository declaration proves inventory only. It does not prove that an
+Application, workload, image digest, or chart is live.
+
+## Metric contract
+
+The machine-readable definition sheet is `DEFINITIONS` in
+[`baseline.py`](baseline.py). Every metric states its start/end events or
+numerator/denominator, unit, exact source query, inclusion and exclusion rules,
+and missing-data behavior.
+
+Key distinctions are enforced by event type:
+
+- `pr_merged`: repository acceptance only.
+- `deployment_succeeded` or `deployment_failed`: a production deployment with
+  application, environment, change, and deployment identities.
+- `verified_outcome`: accepted factory outcome.
+- `agent_attempt_finished` with failed outcome: agent failure, never a failed
+  production deployment and never another change.
+- `operator_intervention`: an explicit completed action with an actor.
+  `intervention_required` is reported separately and never counted as an act.
+
+Deployment frequency counts distinct deployments per UTC day. Production lead
+time is merge to successful deployment. Change failure rate is failed
+deployments divided by deployments. Recovery is failure to linked recovery.
+Production rework requires a causally linked corrective deployment. None are
+derived from issue closure.
+
+Factory intake-to-verified time is one elapsed interval per task. Parallel or
+overlapping attempts are never summed. Rework is accepted tasks with review or
+correction work divided by accepted tasks. Cohort cost includes every expected
+attempt and review/correction cost across accepted, failed, cancelled,
+incomplete, and abandoned tasks. Actual known cost and reserved ceilings are
+separate. Any unknown expected cost makes complete cohort cost unavailable.
+
+## Reproduce the public observation
+
+The following paginated GraphQL query is the exact source for merged PRs. The
+checked-in observation filters `headRefName` beginning with `factory/` after
+retrieving all 184 merged PRs. It found 95 factory PRs.
+
+```sh
+gh api graphql --paginate -f query='query($endCursor:String){search(query:"repo:jomcgi-org/homelab is:pr is:merged merged:2026-09-16..2026-09-22",type:ISSUE,first:100,after:$endCursor){issueCount pageInfo{hasNextPage endCursor} nodes{... on PullRequest{number createdAt mergedAt closedAt headRefName mergeCommit{oid} url title}}}}'
+```
+
+The companion closed-unmerged query was:
+
+```sh
+gh api graphql --paginate -f query='query($endCursor:String){search(query:"repo:jomcgi-org/homelab is:pr is:closed -is:merged closed:2026-09-16..2026-09-22",type:ISSUE,first:100,after:$endCursor){issueCount pageInfo{hasNextPage endCursor} nodes{... on PullRequest{number createdAt closedAt headRefName url title}}}}'
+```
+
+It returned two repository PRs and zero `factory/` PRs. This is only the public
+PR attempt view. It does not show private failed, cancelled, incomplete,
+predecessor, or abandoned factory tasks.
+
+For the 95 factory PRs, `mergedAt - createdAt` was 877 seconds minimum, 14,084
+seconds median, and 636,316 seconds maximum. Example evidence spans
+[#6176](https://github.com/jomcgi-org/homelab/pull/6176),
+[#6177](https://github.com/jomcgi-org/homelab/pull/6177),
+[#6392](https://github.com/jomcgi-org/homelab/pull/6392), and
+[#6391](https://github.com/jomcgi-org/homelab/pull/6391). This is PR-open to
+merge, not production lead time.
+
+## Export private factory records
+
+Run this only in an authorized environment with read-only database access. The
+SQL cohort query uses the same explicit window and returns one JSON event per
+line. `factory_start` is the accounting owner, so the export does not also sum
+`swarm_node_run.cost_usd`.
+
+```sh
+psql "$DATABASE_URL" -X -q -A -t \
+  -v window_start='2026-09-16T00:00:00Z' \
+  -v window_end='2026-09-23T00:00:00Z' \
+  -f projects/monolith/factory/baseline_export.sql > /tmp/factory-events.jsonl
+```
+
+Wrap the lines in the versioned input document. The source row must describe
+the interval actually read. Set `complete` only after validating pagination,
+retention, predecessor identity, corrections, and late records.
+
+```sh
+jq -s --slurpfile inventory \
+  projects/monolith/factory/baseline_observed_20260923.json '{
+  contract_version: 1,
+  repository: "jomcgi-org/homelab",
+  source_as_of: "2026-09-23T01:50:44Z",
+  sources: (["factory","cost","audit"] | map({kind:.,complete:false,
+    coverage_start:null,coverage_end:null,
+    query:"projects/monolith/factory/baseline_export.sql"})),
+  managed_applications: ($inventory[0].managed_production_applications
+    | map({name,environment,service_boundary})),
+  events: .
+}' /tmp/factory-events.jsonl > /tmp/factory-baseline-input.json
+```
+
+Generate the default seven completed UTC days, or pass both explicit
+overrides. These commands are the only execution entry point, so the feature
+remains default-off.
+
+```sh
+PYTHONPATH=projects/monolith python projects/monolith/factory/baseline.py \
+  /tmp/factory-baseline-input.json --generated-at 2026-09-23T01:50:44Z \
+  --output /tmp/factory-baseline.json
+
+PYTHONPATH=projects/monolith python projects/monolith/factory/baseline.py \
+  /tmp/factory-baseline-input.json --start 2026-09-16T00:00:00Z \
+  --end 2026-09-23T00:00:00Z --format csv \
+  --output /tmp/factory-baseline.csv
+```
+
+## Corrections, replay, and missing data
+
+Exact replay of an `event_id` and revision is dropped. A higher revision
+replaces the lower one. Conflicting content at the same revision fails closed.
+An event with `supersedes_event_id` removes the predecessor from the active
+projection. A reopened outcome therefore supersedes the prior
+`verified_outcome`; the next report removes it from the accepted denominator
+and marks the task incomplete unless another terminal event exists. Input
+order does not change output. Repository changes and deployments are also
+deduplicated by `change_id` and `deployment_id` after event replay handling, so
+query join fanout does not inflate counts. Conflicting facts for one domain
+identity fail closed and require an explicit revision or superseding event.
+
+Coverage is source-specific. Incomplete intervals, right-censored work, absent
+failure evidence, unknown costs, and zero accepted denominators produce
+`unavailable`. A zero is emitted only when a source explicitly covers the full
+window and the denominator permits a zero. Synthetic records appear only in
+`baseline_test.py` and are never presented as observations.
+
+## Non-binding SLO proposal
+
+No numerical production, autonomy, or complete-cost target is supported by the
+repository-only observation. The proposed evaluation window is 28 completed
+UTC days after one fully covered window exists. Minimum evidence is a non-zero
+denominator plus complete factory, cost, deployment, incident, and operator
+audit coverage. Joe is the proposed decision owner and factory maintainers are
+the proposed measurement owners. A breach would trigger manual evidence review
+and a reviewed corrective proposal, with no automatic action or policy change.
+
+The observed report lists the evidence prerequisites separately for speed,
+reliability, autonomy, and cost. Joe must agree the targets, windows, minimum
+evidence, ownership, and breach actions before adoption or enforcement.
+
+## Outstanding operational acceptance
+
+- Recompute against private full-history factory tables and validate
+  pagination, identity, correction/dedupe rules, predecessor tasks,
+  failed/cancelled/incomplete work, reserved ceilings, and unknown cost.
+- Validate each managed production Application against live Argo Applications,
+  workloads, image digests, and chart-publication receipts for the same window.
+- Query Polylane or another authoritative incident source for failed
+  deployments, recovery, and incident-caused rework.
+- Validate completed operator actions and actors against audit, decision, and
+  control records, separately from intervention-required signals.
+- Obtain Joe's agreement before any SLO policy adoption or enforcement.

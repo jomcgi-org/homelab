@@ -9271,6 +9271,16 @@ py_library(
 )
 
 py_test(
+    name = "factory_baseline_test",
+    srcs = ["factory/baseline_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_factory",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "factory_module_test",
     srcs = ["factory/module_test.py"],
     imports = ["."],
