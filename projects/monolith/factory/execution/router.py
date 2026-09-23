@@ -1475,13 +1475,7 @@ async def prewarm_session(session_id: int) -> Response:
 
 
 def _require_session_owner(request: Request, row: AgentSession) -> None:
-    projected = request.headers.getlist("x-auth-email")
-    if len(projected) != 1:
-        raise HTTPException(
-            status_code=403,
-            detail="missing or ambiguous session owner identity",
-        )
-    caller = projected[0].strip().lower()
+    caller = factory_decider(request).strip().lower()
     owner = (row.triggered_by or "").strip().lower()
     if not caller or not owner or not hmac.compare_digest(caller, owner):
         raise HTTPException(status_code=403, detail="session owner does not match")

@@ -42,6 +42,20 @@ describe("Stop control state", () => {
     expect(result.terminal_reason).toBe("completed");
   });
 
+  test("clears an old terminal presentation when a successor is active", () => {
+    expect(
+      reconcileStop(
+        { ...identity, outcome: "requested" },
+        {
+          turns: [{ seq: 4, terminal_reason: "user_interrupt" }],
+          stop_control: {
+            active: { turn_seq: 5, dispatch_id: "dispatch-5" },
+          },
+        },
+      ),
+    ).toBe(null);
+  });
+
   test("retains failed outcomes and makes a lost requested identity unknown", () => {
     const failed = { ...identity, outcome: "failed", reason: "stale" };
     expect(reconcileStop(failed, { turns: [] })).toEqual(failed);

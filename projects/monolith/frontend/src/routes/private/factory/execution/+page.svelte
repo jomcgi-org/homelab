@@ -1245,7 +1245,7 @@
       !data.sessionStopControlEnabled ||
       !selectedId ||
       !identity ||
-      stopInFlight(stopRequest)
+      stopInFlight(stopPresentation)
     ) {
       return;
     }

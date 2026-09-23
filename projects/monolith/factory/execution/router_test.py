@@ -2145,6 +2145,50 @@ def test_stop_control_rejects_cross_owner_and_stale_dispatch_without_forwarding(
     assert calls == []
 
 
+def test_stop_control_rejects_observed_turn_after_successor_starts(
+    client, session, monkeypatch
+):
+    row, first_identity = _claimed_stop_session(session, "stop-stale-successor")
+    first = store.get_pending_message(session, row.id, 1)
+    session.delete(first)
+    successor = PendingMessage(
+        session_id=row.id,
+        seq=2,
+        message_text="successor prompt",
+        claimed_by_replica="replica-2",
+        claimed_at=datetime.now(timezone.utc),
+        dispatch_count=1,
+        last_dispatch_at=datetime.now(timezone.utc),
+    )
+    session.add(successor)
+    session.commit()
+    calls = []
+
+    async def must_not_forward(*args):
+        calls.append(args)
+
+    monkeypatch.setenv("AGENT_SESSION_STOP_CONTROL_ENABLED", "true")
+    monkeypatch.setattr(
+        "factory.execution.router._transport.interrupt_session", must_not_forward
+    )
+
+    response = client.post(
+        f"/api/agents/sessions/{row.id}/stop",
+        headers={"X-Auth-Email": "owner@example.com"},
+        json=first_identity,
+    )
+
+    assert response.status_code == 409
+    assert calls == []
+    detail = client.get(f"/api/agents/sessions/{row.id}").json()
+    assert detail["stop_control"]["active"] == {
+        "turn_seq": 2,
+        "dispatch_id": exact_dispatch_id(
+            row.id, "ember-stop-1", 2, "replica-2", 1
+        ),
+    }
+
+
 def test_stop_control_completion_race_preserves_completed_turn(
     client, session, monkeypatch
 ):
@@ -2188,6 +2232,7 @@ def test_stop_control_completion_race_preserves_completed_turn(
 
 def test_stop_control_unknown_relay_keeps_active_claim(client, session, monkeypatch):
     row, identity = _claimed_stop_session(session, "stop-unknown")
+    destroyed = []
 
     async def unavailable(*args):
         raise transport.EmberInterruptFailure(
@@ -2196,6 +2241,10 @@ def test_stop_control_unknown_relay_keeps_active_claim(client, session, monkeypa
             outcome="unknown",
             reason="control_plane_unavailable",
         )
+
+    async def destroy(ember_session_id):
+        destroyed.append(ember_session_id)
+        return {"session_id": ember_session_id, "state": "destroyed"}
 
     monkeypatch.setenv("AGENT_SESSION_STOP_CONTROL_ENABLED", "true")
     monkeypatch.setattr(
@@ -2222,6 +2271,17 @@ def test_stop_control_unknown_relay_keeps_active_claim(client, session, monkeypa
     assert pending.dispatch_count == 1
     assert permit.state == "running"
     assert permit.outcome is None
+
+    monkeypatch.setattr("factory.execution.router._load_session_row", lambda _: row)
+    monkeypatch.setattr("factory.execution.router._transport.destroy_session", destroy)
+    monkeypatch.setattr(
+        "factory.execution.router._clear_ember_bindings_for",
+        lambda ember_id: store.clear_ember_bindings_by_ember_id(session, ember_id),
+    )
+    fallback = client.delete(f"/api/agents/sessions/{row.id}")
+    assert fallback.status_code == 200
+    assert fallback.json()["state"] == "destroyed"
+    assert destroyed == ["ember-stop-1"]
 
 
 def test_delete_session(client, session, monkeypatch):
