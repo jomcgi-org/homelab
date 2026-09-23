@@ -963,45 +963,6 @@ def test_noded_onepassword_item_uses_default_shared_secret_name():
     assert set(token_secret_refs) == {"noded-auth-embervm-noded-token"}
 
 
-def test_noded_network_policy_gate_and_listener_ports():
-    chart = _chart_dir()
-    enabled = _render(
-        "noded-policy",
-        [chart / "values.yaml"],
-        ["noded.networkPolicy.enabled=true"],
-    )
-    policies = [
-        (name, doc)
-        for kind, name, doc in _docs(enabled)
-        if kind == "CiliumNetworkPolicy" and name.endswith("-noded")
-    ]
-    assert len(policies) == 1
-    _, policy = policies[0]
-    for port in ("8080", "8081", "9090", "30002"):
-        assert f'port: "{port}"' in policy
-    # The serving DNAT range is one endPort entry, never an enumerated list:
-    # the Cilium CRD caps toPorts.ports at 40 items.
-    assert "endPort: 30254" in policy
-    assert 'port: "30254"' not in policy
-    # noded binds the stateful and composite activator ranges by default even
-    # though the chart renders no env for them; omitting them dropped the
-    # stateful wake (2026-08-22, #4693).
-    for start, end in (("5400", 5409), ("5410", 5419)):
-        assert f'port: "{start}"' in policy
-        assert f"endPort: {end}" in policy
-
-    disabled = _render(
-        "noded-policy",
-        [chart / "values.yaml"],
-        ["noded.networkPolicy.enabled=false"],
-    )
-    assert not [
-        name
-        for kind, name, _ in _docs(disabled)
-        if kind == "CiliumNetworkPolicy" and name.endswith("-noded")
-    ]
-
-
 def test_dev_claims_no_cluster_scoped_object_production_owns(renders):
     """Cluster-scoped objects with shared names belong to two owners at once.
 
@@ -2124,8 +2085,6 @@ def test_recovery_disarms_destructive_defaults() -> None:
     assert values["bricks"]["nodeFloors"] == []
     assert values["conformance"]["enabled"] is False
     assert values["servingEnvoy"]["enabled"] is False
-    assert values["noded"]["networkPolicy"]["enabled"] is False
-    assert values["tokenBroker"]["networkPolicy"]["enabled"] is False
     assert values["baseRetention"]["sweepEnabled"] == ""
     assert values["baseRetention"]["remoteSweepEnabled"] == ""
     assert values["warmthRetention"]["sweepEnabled"] == ""

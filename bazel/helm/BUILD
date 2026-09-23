@@ -84,6 +84,32 @@ SKIPPED_MANIFEST_SETS = {
     "projects/shared/helm/homelab-library": "Library chart, which renders nothing.",
 }
 
+# Keep the four application charts free of inert custom policies in every
+# deployed values stack, including the historical home/dev render targets.
+NO_CILIUM_MANIFESTS = [
+    "//projects/%s/deploy:manifests%s/all.yaml" % (project, suffix)
+    for project in [
+        "monolith",
+        "monolith-public",
+        "monolith-agents",
+        "embervm",
+    ]
+    for suffix in [
+        "",
+        "_gke",
+    ]
+] + [
+    "//projects/monolith/dev/deploy:manifests/all.yaml",
+    "//projects/embervm/dev/deploy:manifests/all.yaml",
+]
+
+sh_test(
+    name = "no_cilium_policies_test",
+    srcs = ["no-cilium-policies-test.sh"],
+    args = ["$(rootpath %s)" % manifest for manifest in NO_CILIUM_MANIFESTS],
+    data = NO_CILIUM_MANIFESTS,
+)
+
 # Most CRD definitions are present in the rendered charts and are converted at
 # test time. These operators are installed from remote charts, or omit CRDs
 # from their wrapper chart, so their version-pinned definitions are additional

@@ -319,53 +319,11 @@ py_test(
     deps = ["@pip//pytest"],
 )
 
-# Hand-written guard for the ingress allowlist's SHAPE (#4660): no
-# namespace-wide grants outside the two documented embervm entries, envoy and
-# mcp narrowed to pod identity, cloudflared never granted. Renders the chart,
-# so it needs helm plus both environments' values and Applications; the env
-# fallbacks in the file also let it run under plain pytest outside Bazel.
-py_test(
-    name = "cilium_ingress_allowlist_test",
-    srcs = ["cilium_ingress_allowlist_test.py"],
-    # Chart.lock plus the vendored charts/ and migrations/ trees are load-bearing
-    # for `helm template`: without them the render aborts on the cf-ingress
-    # subchart dependency. Same data set as
-    # chart_env_identity_test above, which renders the same chart.
-    data = [
-        "Chart.lock",
-        "Chart.yaml",
-        "values.yaml",
-        "//projects/monolith:module_configs",
-        "//projects/monolith/deploy:application",
-        "//projects/monolith/deploy:deploy_values",
-        "//projects/monolith/dev/deploy:application",
-        "//projects/monolith/dev/deploy:deploy_values",
-        "@multitool//tools/helm",
-    ] + glob([
-        "templates/**/*",
-        "charts/**/*",
-        "migrations/**/*",
-    ]),
-    env = {
-        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
-        "DEPLOY_VALUES": "$(rootpath //projects/monolith/deploy:deploy_values)",
-        "DEV_VALUES": "$(rootpath //projects/monolith/dev/deploy:deploy_values)",
-        # The Applications, so releaseName is read from where it is DECLARED.
-        "PROD_APPLICATION": "$(rootpath //projects/monolith/deploy:application)",
-        "DEV_APPLICATION": "$(rootpath //projects/monolith/dev/deploy:application)",
-    },
-    deps = [
-        "@pip//pytest",
-        "@pip//pyyaml",
-    ],
-)
-
 # Rendered guard for the private app's default-deny egress policy (#3897):
-# Cilium audit stays additive, both enforcing arms pin required destinations,
-# and GKE emits native NetworkPolicy without an unsupported Cilium CR.
+# Native policy pins required destinations and stays staged off on GKE.
 py_test(
-    name = "cilium_egress_allowlist_test",
-    srcs = ["cilium_egress_allowlist_test.py"],
+    name = "native_egress_allowlist_test",
+    srcs = ["native_egress_allowlist_test.py"],
     data = [
         "Chart.lock",
         "Chart.yaml",
@@ -421,21 +379,8 @@ semgrep_test(
 )
 
 semgrep_test(
-    name = "cilium_ingress_allowlist_test_semgrep_test",
-    srcs = ["cilium_ingress_allowlist_test.py"],
-    exclude_rules = [
-        "avoid-sqlalchemy-text",
-        "sqlmodel-datetime-without-factory",
-        "tainted-fastapi-http-request-httpx",
-        "tainted-path-traversal-pillow-fastapi",
-        "tainted-path-traversal-stdlib-fastapi",
-    ],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-)
-
-semgrep_test(
-    name = "cilium_egress_allowlist_test_semgrep_test",
-    srcs = ["cilium_egress_allowlist_test.py"],
+    name = "native_egress_allowlist_test_semgrep_test",
+    srcs = ["native_egress_allowlist_test.py"],
     exclude_rules = [
         "avoid-sqlalchemy-text",
         "sqlmodel-datetime-without-factory",

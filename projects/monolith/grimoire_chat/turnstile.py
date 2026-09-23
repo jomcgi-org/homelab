@@ -8,11 +8,8 @@ by design; the secret key is a verification-only credential, shared with
 chat_public via the ``TURNSTILE_SECRET_KEY`` env var (one public-tier admission
 credential).
 
-The call is the FIRST off-cluster egress from the public namespace. This
-destination (challenges.cloudflare.com:443) is the single sanctioned off-cluster
-FQDN in the public tier's CiliumNetworkPolicy egress rules (ADR platform/012's
-translation of the old default-deny egress); see
-projects/monolith-public/chart/templates/cilium-policy.yaml. Nothing else opens.
+Verification requires challenges.cloudflare.com:443. The inert public-tier
+Cilium template was removed in #5816; native egress isolation remains #5276.
 
 Fail-closed posture: any verification we cannot complete (network error, timeout,
 non-2xx, malformed body) is treated as a failure, never a pass.

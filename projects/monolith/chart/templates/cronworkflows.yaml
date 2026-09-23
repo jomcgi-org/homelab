@@ -67,12 +67,7 @@ spec:
     # Stamp the JOB PODS, not just the CronWorkflow object. The labels above land
     # on the CR and do not propagate, so without this the pods carry no chart
     # labels at all and the only way to select them is by namespace.
-    #
-    # cilium-ingress-policy.yaml keys its monolith-workflows -> :8000 allow on
-    # this exact label, so that the grant covers THIS chart's jobs rather than
-    # everything sharing the namespace (renovate also deploys there and is a far
-    # larger third-party executor). Label and selector are rendered by the same
-    # chart, so they cannot drift apart.
+    # Preserve this identity for per-workload network policy and observability.
     podMetadata:
       labels:
         app.kubernetes.io/part-of: {{ $.Release.Name }}-jobs

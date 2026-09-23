@@ -7005,29 +7005,6 @@ py_test(
     deps = ["@pip//pyyaml"],
 )
 
-# Guard (#5142): the public tier's destination-scoped Cilium egress policies
-# must never regain `toEntities: cluster`, and the ENFORCED render must allow
-# exactly the audited dependency set. Same cross-package data-dep shape as the
-# HTTPRoute guard, plus what `helm template` needs: Chart.lock and the charts/
-# glob (helm aborts when a locked subchart tarball is missing; this chart has
-# no migrations/ directory), the deploy values, and the helm binary.
-py_test(
-    name = "public_cilium_scoped_egress_guard_test",
-    srcs = ["public_cilium_scoped_egress_guard_test.py"],
-    data = [
-        "//projects/monolith-public/chart:chart_render_inputs",
-        "//projects/monolith-public/chart:cilium_scoped_egress_template",
-        "//projects/monolith-public/deploy:deploy_values",
-        "@multitool//tools/helm",
-    ],
-    env = {
-        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
-        "DEPLOY_VALUES": "$(rootpath //projects/monolith-public/deploy:deploy_values)",
-    },
-    imports = ["."],
-    deps = ["@pip//pyyaml"],
-)
-
 # Guard: the packaged homelab-library must deploy images by content digest, not
 # by the build-timestamped tag that push-changed.sh frequently never pushes.
 # Reads the packaged tarball (what actually ships) rather than the library
@@ -9171,19 +9148,6 @@ semgrep_target_test(
     ],
     rules = ["//bazel/semgrep/rules:python_rules"],
     target = ":gen_posts_manifest",
-)
-
-semgrep_test(
-    name = "public_cilium_scoped_egress_guard_test_semgrep_test",
-    srcs = ["public_cilium_scoped_egress_guard_test.py"],
-    exclude_rules = [
-        "avoid-sqlalchemy-text",
-        "sqlmodel-datetime-without-factory",
-        "tainted-fastapi-http-request-httpx",
-        "tainted-path-traversal-pillow-fastapi",
-        "tainted-path-traversal-stdlib-fastapi",
-    ],
-    rules = ["//bazel/semgrep/rules:python_rules"],
 )
 
 semgrep_test(

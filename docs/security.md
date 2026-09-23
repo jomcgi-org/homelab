@@ -221,15 +221,10 @@ egress policy on the hub.**
 The managed dataplane exposes no `CiliumNetworkPolicy` or
 `CiliumClusterwideNetworkPolicy` CRD (`kubectl api-resources | grep cilium`)
 and reports `Encryption: Disabled`, so nothing on the wire is encrypted by
-the cluster and only Kubernetes `NetworkPolicy` can be expressed. Every
-Cilium policy template in this repo is gated off in the hub overlays:
-`ciliumPolicy.ingress` and `ciliumPolicy.egress` in
-`projects/monolith-public/deploy/values-gke.yaml`, `ciliumPolicy.ingress`,
-`ciliumPolicy.egress`, and `tokenReplayDeny` in
-`projects/monolith/deploy/values-gke.yaml`,
-`noded.networkPolicy` and `tokenBroker.networkPolicy` in
-`projects/embervm/deploy/values-gke.yaml`, `ciliumPolicy` in
-`projects/monolith-agents/deploy/values-gke.yaml`.
+the cluster and only Kubernetes `NetworkPolicy` can be expressed. The inert
+Cilium templates and policy-only values were removed in #5816 from monolith,
+monolith-public, monolith-agents and EmberVM. Removal changes no GKE rendered
+objects and does not provide replacement enforcement.
 
 The chart carries a native Kubernetes `NetworkPolicy` egress arm for the
 private app endpoint, but the GKE overlay leaves it disabled. Kubernetes
@@ -245,10 +240,8 @@ shared-address, and multicast ranges but cannot deny an arbitrary public HTTPS
 host. That is an accepted GKE residual, not an exact replacement for Cilium's
 FQDN rules. Metadata-server access would remain denied.
 
-The Cilium arm stays available, default-off, for clusters that expose its CRD.
-Its enforce mode uses exact external FQDNs. Its CoreDNS rule necessarily allows
-`matchPattern: "*"` so Cilium can learn addresses for those FQDNs, leaving a DNS
-channel as an accepted residual. Both arms intentionally scope default-deny to
+Native-policy successors remain #5276, #5277 and #3897. The staged native
+egress policy intentionally scopes default-deny to
 the private app endpoint. Searxng, WhatsApp, CNPG, Atlas migration jobs, and
 the separate `monolith-workflows` batch namespace retain their existing egress
 behavior because they are distinct workload and credential boundaries. They
@@ -463,9 +456,10 @@ closure is pruned in `projects/monolith/BUILD` and asserted by
   secret-shaped assignments. It is a fixed marker list: an identifier
   matching no marker publishes verbatim.
 
-The chart's destination-scoped egress policy and its guard test
-(`public_cilium_scoped_egress_guard_test.py`) describe a control the hub
-cannot apply (Network above). Kargo promotes `monolith-public` on the hub,
+The inert destination-scoped Cilium policy and its policy-only guard were
+removed in #5816. Public native-policy enforcement remains #5276 (Network
+above); the unrelated OTEL endpoint assertion survives in the public render
+test. Kargo promotes `monolith-public` on the hub,
 so the live `targetRevision` on the Application, not the git pin, says what
 is deployed.
 

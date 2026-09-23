@@ -206,22 +206,6 @@ noded:
     # initEnv only keys bases (#4429). Boot arguments must be effective on the
     # build node before a new base captures this environment (#4322, #4745).
     kernelBootArgs: "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda ro ember.env.EMBER_PROGRESS_URL=aHR0cDovL21vbm9saXRoLm1vbm9saXRoLnN2Yy5jbHVzdGVyLmxvY2FsOjgwOTEvaW5nZXN0L3Byb2dyZXNz"
-  # Ingress allow-list on every noded pod shape (#4693): gRPC from the control
-  # plane, health from kubelet, activator from
-  # serving-envoy and the CP, the serving DNAT range from serving-envoy. Dev has
-  # run it since 0.25.1. Flipped in production on its own, ahead of the bearer
-  # token, so a missed port shows up as a readiness or serving failure with one
-  # cause to revert.
-  # Ingress allow-list on every noded pod shape (#4693): gRPC from the control
-  # plane, health from kubelet, activator 8081 and the
-  # stateful/composite activator ranges (5400-5419, which noded binds by
-  # default) from serving-envoy and the CP, the serving DNAT range from
-  # serving-envoy. First enable on 2026-08-22 omitted the 5400-5419 ranges and
-  # dropped the cold wake to noded:5401 (demo-postgres down 14 min); chart
-  # 0.27.3 carries them. Re-enabled the same day after a cold relight through
-  # the policy was verified.
-  networkPolicy:
-    enabled: true
   # Static bearer token on noded's gRPC surface (#4693). One chart value renders
   # the same Secret into the control plane and every brick, so enforcement and
   # client attachment flip in this one chart version. The operator renders the
@@ -614,15 +598,9 @@ egress:
     # these two entries widen reachable destinations for every other
     # egress-enabled workload (today the claude runtime) too.
     #
-    # Do NOT justify that by saying these endpoints are already reachable
-    # in-cluster. On the home cluster they are not: both frontends are Cilium
-    # ingress default-deny there, and reaching them required explicit
-    # namespace-embervm-to-3000 rules in monolith-public's cilium-policy and
-    # monolith's cilium-ingress-policy in the same change. On the GKE hub no
-    # Cilium CRDs exist, so nothing but this allowlist bounds the reach. ADR
-    # embervm/035 section 4 claimed the endpoints were already reachable and
-    # that is wrong; the conclusion survives because the widening is SMALLER
-    # than stated, not because it is nil.
+    # The inert frontend Cilium policies were removed in #5816. They never
+    # enforced on the GKE hub. This allowlist still bounds guest-proxy reach;
+    # native-policy successor work must assess these paths independently.
     #
     # What actually bounds the widening is that this entry only makes a
     # destination permissible, and permission is not reach: no other egress

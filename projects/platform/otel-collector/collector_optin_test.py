@@ -480,15 +480,16 @@ def test_health_route_is_absent_by_default():
 
 
 def test_probe_targets_are_public_urls():
-    """An in-cluster target needs a matching Cilium ingress rule on the
-    destination, or the probe reports a permanent outage that is not
-    happening. monolith-api-ingress does not name this namespace, so an
-    in-cluster target added without that rule is a false alarm, not a check."""
+    """Keep probes on HTTPS endpoints to cover the public edge.
+
+    An in-cluster target would bypass that coverage. The removed Cilium
+    ingress policy is not an enforced reason to choose these endpoints.
+    """
     config = _collector_config(_render())
     for target in config["receivers"]["http_check"]["targets"]:
         assert target["endpoint"].startswith("https://"), (
             f"{target['endpoint']} is not a public HTTPS target; in-cluster "
-            "probes need a Cilium ingress rule added in the same change"
+            "probes would bypass public-edge coverage"
         )
 
 

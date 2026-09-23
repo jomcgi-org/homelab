@@ -68,7 +68,7 @@ Create swap.go with:
 - Add logic: if ANY egress.secrets entry has `brokerGrant`, render EGRESS_TOKEN_BROKER_URL
 - Default to: `embervm-embervm-tokenbroker.embervm.svc.cluster.local:8080`
 - Use the chart's `tokenBroker.fullname` helper if it exists and is easy; otherwise hardcode with a comment
-- Verify the broker's CiliumNetworkPolicy ingress admits noded/noded-brick pods on 8080 (run `helm template` to confirm, do not assume)
+- Historical checklist correction (#5816): the broker's Cilium ingress template has been removed and supplies no enforcement. Any successor policy must validate noded/noded-brick access on 8080 separately; this retired spec does not establish current network isolation.
 
 ### 5. DEPLOY VALUES: Convert OpenAI entry
 **File**: projects/embervm/deploy/values.yaml (egress.secrets)

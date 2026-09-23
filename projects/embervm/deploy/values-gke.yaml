@@ -57,11 +57,6 @@ noded:
       enabled: true
       onepassword:
         itemPath: "vaults/k8s-homelab/items/embervm-base-store-gcs"
-  # CiliumNetworkPolicy-shaped; no Cilium CRDs on the hub (same trade as the
-  # monolith overlays). Plain NetworkPolicy replacements come with activation
-  # hardening.
-  networkPolicy:
-    enabled: false
   # Bricks stay evict-first but must be able to summon a node: at the chart
   # default homelab-disposable (-1000) they sit below the cluster autoscaler's
   # expendable cutoff (-10), so a Pending brick NEVER triggers scale-up (the
@@ -69,8 +64,8 @@ noded:
   # projects/platform/priority-classes.
   priorityClassName: homelab-preemptible
 
-# Broker on, its CiliumNetworkPolicy off (no Cilium CRDs on the hub; same
-# trade as noded.networkPolicy above). Without the broker the codex-cluster
+# Broker on. Network isolation remains successor work; the inert Cilium
+# templates were removed in #5816. Without the broker the codex-cluster
 # grant never populates and every codex-lane session turn fails with
 # "-32600: failed to load configuration". The grant Secret's /data is
 # ignoreDifferences'd in projects/gke-apps/embervm/application.yaml per the
@@ -78,8 +73,6 @@ noded:
 # codex-broker-login round to seed the refresh token.
 tokenBroker:
   enabled: true
-  networkPolicy:
-    enabled: false
   plaintext:
     retireProtectedRoutes: false
   spiffe:

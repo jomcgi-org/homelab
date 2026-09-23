@@ -100,10 +100,6 @@ tokenBroker:
         repositoryIDs: [847803371]
         allowedSpiffeIds:
           - spiffe://embervm.jomcgi.dev/ns/monolith/sa/bosun-review-publisher
-    clientPodSelectors:
-      - matchLabels:
-          k8s:io.kubernetes.pod.namespace: monolith
-          app.kubernetes.io/component: bosun-review-publisher
 ```
 
 GitHub grants use `GET /github/grants/{name}/token` on the SPIFFE mTLS listener.
@@ -118,10 +114,10 @@ Argo ignoreDifferences entry. Never add them to `tokenBroker.grants` or egress
 `brokerGrants` pools. The egress client does not consume this GitHub route; its SPIFFE transport is
 for the existing OAuth and quota endpoints.
 
-On Cilium clusters, `clientPodSelectors` permits trusted callers on the TLS port
-and GitHub API egress is opened on 443. On the GKE overlay the existing Cilium
-policy is disabled, so mTLS remains mandatory. The checked-in SPIFFE listener
-default is off; enabling it also requires migrating existing token consumers
+The inert Cilium policies and `clientPodSelectors` setting were removed in
+#5816. The chart does not enforce network-level caller or GitHub egress
+restrictions. SPIFFE mTLS and per-grant authorization remain mandatory. The
+checked-in SPIFFE listener default is off; enabling it also requires migrating existing token consumers
 off plaintext before their current endpoint starts refusing requests.
 
 ## Migrate the existing egress client
@@ -283,8 +279,9 @@ image and configuration updates despite Kubernetes Job template immutability.
 The completed or failed Job remains available for inspection until that sync.
 To rerun while enabled, request a full Argo CD sync; selective syncs do not run
 hooks. Outside Argo CD, delete the old Job before applying a changed template.
-On Cilium clusters it has scoped broker/DNS/GitHub egress and broker ingress;
-GKE relies on SPIFFE authorization.
+The canary retains its dedicated ServiceAccount and SPIFFE authorization.
+Its inert Cilium policy was removed in #5816; network isolation is separate
+successor work, not a property supplied by this Job.
 
 Do not enable the production broker listener just to run this test: doing so
 also disables legacy plaintext token retrieval. First perform the client

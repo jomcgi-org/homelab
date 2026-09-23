@@ -380,10 +380,6 @@ tokenBroker:
     # Names alone are not credentials; only explicitly allowed mTLS callers
     # can retrieve a token. Do not authorize shared agent nodes for publishing.
     grants: []
-    # On Cilium clusters, selectors for the trusted service callers. Include
-    # k8s:io.kubernetes.pod.namespace in every matchLabels map. SPIFFE checks
-    # still authorize the caller separately for each grant.
-    clientPodSelectors: []
     canary:
       # Opt-in verification Job. Requires an explicitly allowed dedicated SPIFFE
       # identity, a reviewer grant and a publisher grant it must NOT retrieve.
@@ -402,11 +398,6 @@ tokenBroker:
     # ServiceAccount's ID, because the egress-proxy sidecar that fetches
     # tokens runs in the noded pods.
     clientSpiffeIds: []
-  # Gates only the CiliumNetworkPolicy (see tokenbroker-networkpolicy.yaml):
-  # false lets the broker run on clusters without Cilium CRDs at the cost of
-  # its network scoping. Home keeps true.
-  networkPolicy:
-    enabled: true
   replicas: 1
   # Optional OAuth2 client_credentials provider. authentik's machine-to-machine
   # grant authenticates a SERVICE ACCOUNT, so the standing credential is an
@@ -1438,13 +1429,6 @@ noded:
     key: token
     onepassword:
       itemPath: ""
-
-  # Ingress allow-list for every charted noded listener: control-plane gRPC,
-  # kubelet health checks, serving-envoy plus control-plane activator
-  # calls, and serving-envoy traffic to the per-VM DNAT range. Ingress-only, so
-  # noded egress remains unrestricted. Disabled by default and enabled in dev.
-  networkPolicy:
-    enabled: false
 
   # Firecracker substrate on node-4. The firecracker + jailer binaries and guest
   # kernel are baked into the image at /opt/fc, so the node only provides

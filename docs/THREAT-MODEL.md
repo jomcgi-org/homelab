@@ -70,9 +70,10 @@ Ranked by what an attacker gets. Each issue holds the detail.
    [monolith STPA security lens](../projects/monolith/STPA.md).
 4. **A compromised public-tier pod can reach every in-cluster endpoint**
    ([#5276](https://github.com/jomcgi-org/homelab/issues/5276)).
-   The destination-scoped egress policy exists in the chart but is gated
-   off on the GKE hub, which exposes no Cilium policy CRD, so no egress
-   policy renders for the public tier there.
+   The destination-scoped Cilium egress template was removed by #5816. It
+   never enforced on the GKE hub, which exposes no Cilium policy CRD. No
+   egress policy renders for the public tier there; replacement enforcement
+   remains tracked in #5276.
 5. **The private monolith pod has no egress policy at all**
    ([#5277](https://github.com/jomcgi-org/homelab/issues/5277)).
    The pod holding every backend secret can send anywhere the node

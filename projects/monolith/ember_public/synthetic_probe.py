@@ -210,9 +210,8 @@ async def _probe_pages_once() -> dict:
     started = perf_counter()
     # This deliberately goes out over the public internet rather than to the
     # monolith-public Service in-cluster: it covers Cloudflare, the HTTPRoute
-    # and SSR the way a visitor experiences them, and monolith-public's Cilium
-    # ingress policies would drop a cross-namespace fetch anyway. It is the one
-    # probe that still exercises the public edge now that the others call their
+    # and SSR the way a visitor experiences them. It is the one probe that
+    # still exercises the public edge now that the others call their
     # cores in-process. The single retry with 0.2s backoff keeps one Cloudflare
     # blip from latching the demo down for a whole five-minute cadence.
     try:

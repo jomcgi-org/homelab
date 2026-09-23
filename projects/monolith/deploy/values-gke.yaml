@@ -147,16 +147,6 @@ networkPolicy:
     apiServerCidrs: []
     dnsServiceCidrs: []
 
-# Cilium CRDs are not installed on GKE. Keep those resources disabled; the
-# native NetworkPolicy arm above is staged but does not enforce on the hub.
-ciliumPolicy:
-  tokenReplayDeny:
-    enabled: false
-  ingress:
-    enabled: false
-  egress:
-    enabled: false
-
 whatsapp:
   # This singleton holds an external WhatsApp session and must not connect from
   # the cutover destination while the home deployment is active.

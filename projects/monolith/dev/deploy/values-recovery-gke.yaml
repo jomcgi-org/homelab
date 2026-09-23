@@ -168,13 +168,6 @@ cfIngress:
     enabled: false
   friends:
     enabled: false
-ciliumPolicy:
-  tokenReplayDeny:
-    enabled: false
-  ingress:
-    enabled: false
-  egress:
-    enabled: false
 networkPolicy:
   egress:
     # The inactive recovery profile has its own separately reviewed policy

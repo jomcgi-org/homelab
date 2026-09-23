@@ -79,7 +79,6 @@ def test_enabled_render_packages_helper_svid_and_exact_server_identity() -> None
         "monolith",
         [
             "tokenBroker.spiffe.enabled=true",
-            "ciliumPolicy.egress.enabled=true",
         ],
     )
     deployment = _object(objects, "Deployment", "monolith")
@@ -129,21 +128,6 @@ def test_enabled_render_packages_helper_svid_and_exact_server_identity() -> None
     assert "cert_file_mode = 0444" in config
     assert "key_file_mode = 0440" in config
     assert 'agent_address = "/spiffe-workload-api/spire-agent.sock"' in config
-
-    policy = _object(objects, "CiliumNetworkPolicy", "monolith-app-egress")
-    broker_rules = [
-        rule
-        for rule in policy["spec"]["egress"]
-        if any(
-            endpoint.get("matchLabels", {}).get("app.kubernetes.io/component")
-            == "tokenbroker"
-            for endpoint in rule.get("toEndpoints", [])
-        )
-    ]
-    assert len(broker_rules) == 1
-    assert broker_rules[0]["toPorts"][0]["ports"] == [
-        {"port": "8443", "protocol": "TCP"}
-    ]
 
 
 def test_enabled_render_rejects_non_tls_url_and_missing_server_identity() -> None:

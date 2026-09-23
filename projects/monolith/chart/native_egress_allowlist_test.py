@@ -1,11 +1,8 @@
-"""Rendered guards for private-monolith destination-scoped egress (#3897).
+"""Rendered guards for private-monolith native egress (#3897).
 
-The Cilium policy is deliberately default-off. Audit mode must remain additive,
-while enforce mode must select the app pod for default-deny and permit only the
-exact endpoint, entity, FQDN, and port inventory declared here. GKE carries a
-default-off native policy template with the same internal inventory and the
-documented public-HTTPS residual. A missing dependency causes a silent dial
-timeout; a broad destination repairs that outage by reopening the compromise
+GKE carries a default-off native policy template with exact internal
+destinations and the documented public-HTTPS residual. A missing dependency
+causes a silent dial timeout; a broad destination repairs that outage by reopening the compromise
 path this policy exists to close. Both changes must therefore fail in CI
 instead of being accepted as harmless allowlist cleanup.
 """
@@ -22,34 +19,8 @@ from urllib.parse import urlsplit
 import pytest
 import yaml
 
-POLICY_SUFFIX = "-app-egress"
 NATIVE_POLICY_SUFFIX = "-app-egress-native"
 DNS_PORTS = (("53", "TCP"), ("53", "UDP"))
-EXPECTED_EXTERNAL_FQDNS = {
-    "7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com",
-    "api.deepseek.com",
-    "api.github.com",
-    "github.com",
-    "openrouter.ai",
-    "integrate.api.nvidia.com",
-    "api.meta.ai",
-    "semgrep.dev",
-    "stream.aisstream.io",
-    "discord.com",
-    "gateway.discord.gg",
-    "cdn.discordapp.com",
-    "media.discordapp.net",
-    "oauth2.googleapis.com",
-    "www.googleapis.com",
-    "challenges.cloudflare.com",
-    "jomcgi.dev",
-    "private.jomcgi.dev",
-    "api.met.no",
-    "api.open-meteo.com",
-    "geocoding-api.open-meteo.com",
-    "camping.bcparks.ca",
-    "www.walkhighlands.co.uk",
-}
 SCHEDULER_REGISTRATION_SOURCES = (
     "campsites/__init__.py",
     "chat/summarizer.py",
@@ -137,13 +108,6 @@ def _network_policies(docs: list[dict]) -> list[dict]:
     return [doc for doc in docs if doc.get("kind") == "NetworkPolicy"]
 
 
-def _policy(docs: list[dict], release: str) -> dict:
-    name = f"{release}{POLICY_SUFFIX}"
-    matches = [doc for doc in _cnps(docs) if doc["metadata"]["name"] == name]
-    assert len(matches) == 1, f"expected one {name}, found {len(matches)}"
-    return matches[0]
-
-
 def _native_policy(docs: list[dict], release: str) -> dict:
     name = f"{release}{NATIVE_POLICY_SUFFIX}"
     matches = [
@@ -151,23 +115,6 @@ def _native_policy(docs: list[dict], release: str) -> dict:
     ]
     assert len(matches) == 1, f"expected one {name}, found {len(matches)}"
     return matches[0]
-
-
-def _endpoint_rules(policy: dict) -> set[tuple]:
-    rules: set[tuple] = set()
-    for rule in policy["spec"]["egress"]:
-        for endpoint in rule.get("toEndpoints", []):
-            labels = dict(endpoint["matchLabels"])
-            namespace = labels.pop("k8s:io.kubernetes.pod.namespace", None)
-            ports = tuple(
-                sorted(
-                    (str(port["port"]), port["protocol"])
-                    for block in rule.get("toPorts", [])
-                    for port in block.get("ports", [])
-                )
-            )
-            rules.add((namespace, tuple(sorted(labels.items())), ports))
-    return rules
 
 
 def _native_endpoint_rules(policy: dict) -> set[tuple]:
@@ -226,33 +173,6 @@ def _registered_job_names() -> set[str]:
     return names
 
 
-def _fqdn_rules(policy: dict) -> set[tuple[str, tuple]]:
-    rules = set()
-    for rule in policy["spec"]["egress"]:
-        ports = tuple(
-            sorted(
-                (str(port["port"]), port["protocol"])
-                for block in rule.get("toPorts", [])
-                for port in block.get("ports", [])
-            )
-        )
-        for destination in rule.get("toFQDNs", []):
-            assert set(destination) == {"matchName"}, (
-                "external egress must use exact matchName, never matchPattern"
-            )
-            rules.add((destination["matchName"], ports))
-    return rules
-
-
-def _enabled(mode: str = "audit", token_replay: bool = False) -> dict:
-    return {
-        "ciliumPolicy": {
-            "egress": {"enabled": True, "mode": mode},
-            "tokenReplayDeny": {"enabled": token_replay},
-        }
-    }
-
-
 def _native_enabled() -> dict:
     """Enable the native template with inactive-profile render fixtures."""
     return {
@@ -266,21 +186,12 @@ def _native_enabled() -> dict:
     }
 
 
-def _prod(mode: str = "audit", token_replay: bool = False) -> list[dict]:
-    return _render(
-        "monolith",
-        "monolith",
-        [_chart_dir() / "values.yaml", _deploy_values()],
-        _enabled(mode, token_replay),
-    )
-
-
 def _expected_endpoints(release: str, namespace: str, embervm: str) -> set[tuple]:
     def tcp(port: int) -> tuple[tuple[str, str]]:
         return ((str(port), "TCP"),)
 
     return {
-        ("kube-system", (("k8s:k8s-app", "kube-dns"),), DNS_PORTS),
+        ("kube-system", (("k8s-app", "kube-dns"),), DNS_PORTS),
         (namespace, (("cnpg.io/cluster", f"{release}-pg"),), tcp(5432)),
         (
             "inference",
@@ -373,15 +284,11 @@ def test_shipped_overlays_render_only_their_supported_egress_policy():
         ),
     ]
     for release, namespace, values in disabled_cases:
-        cilium_names = {
-            doc["metadata"]["name"]
-            for doc in _cnps(_render(release, namespace, values))
-        }
+        assert not _cnps(_render(release, namespace, values))
         native_names = {
             doc["metadata"]["name"]
             for doc in _network_policies(_render(release, namespace, values))
         }
-        assert f"{release}{POLICY_SUFFIX}" not in cilium_names
         assert f"{release}{NATIVE_POLICY_SUFFIX}" not in native_names
 
     gke_docs = _render(
@@ -389,42 +296,9 @@ def test_shipped_overlays_render_only_their_supported_egress_policy():
         "monolith",
         [_chart_dir() / "values.yaml", _deploy_values(), _gke_values()],
     )
-    cilium_names = {doc["metadata"]["name"] for doc in _cnps(gke_docs)}
+    assert not _cnps(gke_docs)
     native_names = {doc["metadata"]["name"] for doc in _network_policies(gke_docs)}
-    assert "monolith-app-egress" not in cilium_names
     assert "monolith-app-egress-native" not in native_names
-
-
-def test_audit_is_additive_and_enforce_carries_default_deny():
-    audit = _policy(_prod("audit"), "monolith")
-    assert audit["spec"]["enableDefaultDeny"] == {"egress": False}
-
-    enforce = _policy(_prod("enforce"), "monolith")
-    assert "enableDefaultDeny" not in enforce["spec"]
-    assert enforce["spec"]["endpointSelector"]["matchLabels"] == {
-        "app.kubernetes.io/name": "monolith",
-        "app.kubernetes.io/instance": "monolith",
-        "app.kubernetes.io/component": "app",
-    }
-    assert enforce["spec"]["egress"], "an empty egress list would deny required flows"
-
-
-def test_enforce_pins_exact_internal_destinations_and_ports():
-    policy = _policy(_prod("enforce"), "monolith")
-    assert _endpoint_rules(policy) == _expected_endpoints(
-        "monolith", "monolith", "embervm"
-    )
-
-    dns = [
-        rule
-        for rule in policy["spec"]["egress"]
-        if any(
-            endpoint.get("matchLabels", {}).get("k8s:k8s-app") == "kube-dns"
-            for endpoint in rule.get("toEndpoints", [])
-        )
-    ]
-    assert len(dns) == 1
-    assert dns[0]["toPorts"][0]["rules"] == {"dns": [{"matchPattern": "*"}]}
 
 
 def test_dev_overlay_retargets_only_its_embervm_dependencies():
@@ -432,34 +306,25 @@ def test_dev_overlay_retargets_only_its_embervm_dependencies():
         "monolith-dev",
         "monolith-dev",
         [_chart_dir() / "values.yaml", _deploy_values(), _dev_values()],
-        _enabled("enforce"),
+        _native_enabled(),
     )
-    policy = _policy(docs, "monolith-dev")
-    assert _endpoint_rules(policy) == _expected_endpoints(
+    policy = _native_policy(docs, "monolith-dev")
+    assert _native_endpoint_rules(policy) == _expected_endpoints(
         "monolith-dev", "monolith-dev", "embervm-dev"
     )
     assert (
-        policy["spec"]["endpointSelector"]["matchLabels"]["app.kubernetes.io/instance"]
+        policy["spec"]["podSelector"]["matchLabels"]["app.kubernetes.io/instance"]
         == "monolith-dev"
     )
 
 
-def test_external_egress_is_exact_fqdn_on_https_only():
-    policy = _policy(_prod("enforce"), "monolith")
-    values = yaml.safe_load((_chart_dir() / "values.yaml").read_text())
-    expected_names = set(values["ciliumPolicy"]["egress"]["externalFqdns"])
-    assert expected_names == EXPECTED_EXTERNAL_FQDNS
-    assert _fqdn_rules(policy) == {(name, (("443", "TCP"),)) for name in expected_names}
-    assert all("*" not in name for name in expected_names)
-
-
-def test_in_pod_scheduler_extract_destination_is_allowlisted():
+def test_in_pod_scheduler_extract_destination_inventory():
     """Pin the external half of the register_job minus replaces audit.
 
     The source inventory leaves only grimoire.load_chunks and
     grimoire.extract_entities in the app pod. The loader uses internal S3 and
     embeddings. Extraction dials the deploy-configured URL, so a provider
-    change must update the exact Cilium allowlist in the same change.
+    change must retain the public HTTPS transport the native policy allows.
     """
     chart_values = yaml.safe_load((_chart_dir() / "values.yaml").read_text())
     deploy_values = yaml.safe_load(_deploy_values().read_text())
@@ -475,31 +340,7 @@ def test_in_pod_scheduler_extract_destination_is_allowlisted():
 
     extract_host = urlsplit(deploy_values["grimoire"]["extractBaseUrl"]).hostname
     assert extract_host == "api.deepseek.com"
-    assert extract_host in chart_values["ciliumPolicy"]["egress"]["externalFqdns"]
-
-
-def test_no_broad_cluster_or_internet_escape_hatch():
-    policy = _policy(_prod("enforce"), "monolith")
-    entity_rules = []
-    for rule in policy["spec"]["egress"]:
-        assert not rule.get("toCIDR")
-        assert not rule.get("toCIDRSet")
-        entities = set(rule.get("toEntities", []))
-        assert not ({"all", "cluster", "world"} & entities)
-        if entities:
-            entity_rules.append(rule)
-    assert len(entity_rules) == 1
-    assert set(entity_rules[0]["toEntities"]) == {
-        "kube-apiserver",
-        "host",
-        "remote-node",
-    }
-    ports = {
-        (str(port["port"]), port["protocol"])
-        for block in entity_rules[0]["toPorts"]
-        for port in block["ports"]
-    }
-    assert ports == {("443", "TCP"), ("6443", "TCP")}
+    assert urlsplit(deploy_values["grimoire"]["extractBaseUrl"]).scheme == "https"
 
 
 def test_gke_native_policy_template_denies_cluster_egress_and_keeps_required_flows():
@@ -570,15 +411,11 @@ def test_gke_native_policy_template_denies_cluster_egress_and_keeps_required_flo
 
 def test_native_policy_rejects_dns_selector_without_cilium_prefix():
     override = _native_enabled()
-    override["ciliumPolicy"] = {
-        "egress": {
-            "targets": {
-                "dns": {
-                    "matchLabels": {
-                        "k8s:k8s-app": None,
-                        "k8s-app": "kube-dns",
-                    }
-                }
+    override["networkPolicy"]["egress"]["targets"] = {
+        "dns": {
+            "matchLabels": {
+                "k8s:k8s-app": None,
+                "k8s-app": "kube-dns",
             }
         }
     }
@@ -591,61 +428,9 @@ def test_native_policy_rejects_dns_selector_without_cilium_prefix():
         )
 
 
-def test_egress_gate_does_not_change_existing_api_ingress():
-    disabled = _render(
-        "monolith",
-        "monolith",
-        [_chart_dir() / "values.yaml", _deploy_values()],
-        {"ciliumPolicy": {"egress": {"enabled": False}}},
-    )
-    enabled = _prod("enforce")
-
-    def ingress(docs: list[dict]) -> dict:
-        matches = [
-            doc
-            for doc in _cnps(docs)
-            if doc["metadata"]["name"] == "monolith-api-ingress"
-        ]
-        assert len(matches) == 1
-        return matches[0]
-
-    assert ingress(enabled) == ingress(disabled)
-
-
-def test_token_replay_deny_remains_a_separate_narrow_policy():
-    docs = _prod("enforce", token_replay=True)
-    names = {doc["metadata"]["name"] for doc in _cnps(docs)}
-    assert {"monolith-app-egress", "monolith-no-token-replay"} <= names
-    deny = next(
-        doc
-        for doc in _cnps(docs)
-        if doc["metadata"]["name"] == "monolith-no-token-replay"
-    )
-    assert "egressDeny" in deny["spec"]
-    assert "egress" not in deny["spec"]
-    assert deny["spec"]["egressDeny"][0]["toEndpoints"][0]["matchLabels"] == {
-        "io.kubernetes.pod.namespace": "mcp",
-        "app": "context-forge-gateway-mcp-stack-mcpgateway",
-    }
-
-
-def test_invalid_mode_fails_even_while_gate_is_off():
-    result = subprocess.run(
-        [
-            os.environ.get("HELM_BIN", "helm"),
-            "template",
-            "monolith",
-            str(_chart_dir()),
-            "--namespace",
-            "monolith",
-            "--values",
-            str(_chart_dir() / "values.yaml"),
-            "--set",
-            "ciliumPolicy.egress.mode=observe",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
-    assert result.returncode != 0
-    assert "must be audit or enforce" in result.stderr
+@pytest.mark.parametrize("missing", ["apiServerCidrs", "dnsServiceCidrs"])
+def test_native_policy_requires_live_validated_addresses(missing):
+    override = _native_enabled()
+    override["networkPolicy"]["egress"][missing] = []
+    with pytest.raises(RuntimeError, match=missing):
+        _render("monolith", "monolith", [_gke_values()], override)
