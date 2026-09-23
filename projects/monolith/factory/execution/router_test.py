@@ -2183,9 +2183,7 @@ def test_stop_control_rejects_observed_turn_after_successor_starts(
     detail = client.get(f"/api/agents/sessions/{row.id}").json()
     assert detail["stop_control"]["active"] == {
         "turn_seq": 2,
-        "dispatch_id": exact_dispatch_id(
-            row.id, "ember-stop-1", 2, "replica-2", 1
-        ),
+        "dispatch_id": exact_dispatch_id(row.id, "ember-stop-1", 2, "replica-2", 1),
     }
 
 
