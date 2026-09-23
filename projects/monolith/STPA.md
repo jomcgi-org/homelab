@@ -273,7 +273,7 @@ flowchart TD
 - Should an enqueue_extraction failure inside ingest_raw_with_status roll back the whole raw write instead of being swallowed, now that no sweep exists anywhere to repair a missed enqueue?
 - The framework is now built, but strict per-domain schema isolation and the cross-domain contract are still conventions. Re-run this analysis when those controls become enforceable rather than merely compositional.
 - The private chart enables HPA from 1 to 3 replicas; verify claim-lease behavior under real scale-out and termination, especially whether a terminating pod's in-flight claims are released promptly enough for the 30s lease to matter in practice.
-- The public backend has a deliberate primary write path and public FaaS invocation path. Confirm production Cilium/EmberVM policy matches the chart claims: public_writer must remain limited to chat_public, and the public service account must remain identity-only with no Kubernetes RBAC.
+- The public backend has a deliberate primary write path and public FaaS invocation path. Confirm production database grants and service-account permissions match the chart claims: public_writer must remain limited to chat_public, and the public service account must remain identity-only with no Kubernetes RBAC. The removed Cilium templates provide no replacement network enforcement; that remains separate work under #5276 and #5277.
 - When the scratch-Postgres feature is re-enabled (embervm side), should run_code's docstring be corrected to stop claiming zero network for python, or should the DSN injection move behind a separate, explicitly-network-capable tool so the isolation claim stays true for the tool most callers reach for?
 
 ## Lens: security

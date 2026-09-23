@@ -32,9 +32,10 @@
 // enforces only a node-level max-live-VM cap as a backstop and reports capacity
 // facts; the control plane decides what to Prime and Assign.
 //
-// Auth v1: mTLS is out of scope. The daemon listens on the pod network, gated
-// by Linkerd/Cilium policy plus a static bearer token from a Kubernetes Secret,
-// carried in gRPC call metadata (key "authorization: Bearer <token>"). The
+// Auth v1: mTLS is out of scope. The daemon listens on the pod network and uses
+// a static bearer token from a Kubernetes Secret, carried in gRPC call metadata
+// (key "authorization: Bearer <token>"). This is not network-level caller
+// isolation; the removed Cilium policy supplies no defence-in-depth guarantee. The
 // upgrade path to mTLS or SPIFFE identities is additive: a new credential field
 // on the metadata, not a wire-breaking change to these messages.
 
