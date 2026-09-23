@@ -35,6 +35,31 @@ Call with `{{- include "embervm.noded.podSpec" (dict "ctx" . "sizeClass" "" "res
 {{- end -}}
 {{- $sizeClass := .sizeClass -}}
 {{- $scratchGate := and $sizeClass $ctx.Values.scratchPrep.enabled -}}
+{{- /*
+Shared scratch: this release's bricks live in a subdirectory of ANOTHER
+release's prepared scratch mount (embervm-dev on the GKE hub, under
+production's capped loop). The hostPath is the prepared ROOT with type
+Directory, so kubelet never creates anything; the first init waits for the
+owning release's generation marker through that root; every other nvme mount
+takes `subPath`, which kubelet resolves (and creates) as each container
+starts, i.e. only after the wait. A DirectoryOrCreate leaf under the root
+could not do this: kubelet creates it at volume setup, before any init runs,
+so on a fresh node it lands on the boot disk and the later loop mount hides
+it without moving the pod's bind.
+*/ -}}
+{{- $shared := $ctx.Values.noded.firecracker.sharedScratch | default dict -}}
+{{- $sharedOn := and $shared $shared.enabled -}}
+{{- if $sharedOn -}}
+{{- if $ctx.Values.scratchPrep.enabled -}}
+{{- fail "noded.firecracker.sharedScratch uses another release's scratch-prep; set scratchPrep.enabled=false" -}}
+{{- end -}}
+{{- if or (not $shared.subPath) (hasPrefix "/" $shared.subPath) (contains ".." $shared.subPath) -}}
+{{- fail "noded.firecracker.sharedScratch.subPath must be a non-empty relative path without .." -}}
+{{- end -}}
+{{- if ne (printf "%s/%s" (trimSuffix "/" $shared.hostRoot) $shared.subPath) $ctx.Values.noded.firecracker.nvmeRoot -}}
+{{- fail "noded.firecracker.nvmeRoot must equal sharedScratch.hostRoot/sharedScratch.subPath so container and host paths agree" -}}
+{{- end -}}
+{{- end -}}
 {{- $nodeSelector := .nodeSelector | default $ctx.Values.noded.nodeSelector -}}
 # Safe-rollout drain: give the daemon time to finish in-flight Assigns on
 # SIGTERM before Kubernetes SIGKILLs it. Set above the daemon's own drain
@@ -59,7 +84,7 @@ tolerations:
 securityContext:
   runAsUser: 0
   runAsGroup: 0
-{{- if or $scratchGate $ctx.Values.workloads }}
+{{- if or $scratchGate $sharedOn $ctx.Values.workloads }}
 # Build each workload's base rootfs in-cluster from its pinned guest image
 # (crane export + mkfs.ext4 onto the nvme scratch), so node-4 never needs a
 # manual sudo rootfs placement. One builder per workload that declares a
@@ -68,6 +93,28 @@ securityContext:
 # into the workload's rootfsPath. Idempotent (a marker skips the multi-GB
 # rebuild when the guest ref is unchanged). Mirrors the fc-invoke pattern.
 initContainers:
+  {{- if $sharedOn }}
+  # Shared-scratch boot-order gate (see $sharedOn above). Mounts the owning
+  # release's scratch ROOT, not the subPath, and waits for its generation
+  # marker, so no container that resolves the subPath starts before the
+  # prepared mount exists on the host.
+  - name: wait-for-shared-scratch
+    image: "{{ $ctx.Values.rootfsBuilder.image.repository }}@{{ $ctx.Values.rootfsBuilder.image.digest }}"
+    command:
+      - /bin/sh
+      - -c
+      - |
+        while [ ! -s /shared-scratch/.scratch-generation ]; do
+          echo "wait-for-shared-scratch: the owning release's scratch-prep has not finished; retrying in 10s"
+          sleep 10
+        done
+        echo "wait-for-shared-scratch: shared scratch generation is ready"
+    volumeMounts:
+      - name: nvme
+        mountPath: /shared-scratch
+        mountPropagation: HostToContainer
+        readOnly: true
+  {{- end }}
   {{- if $scratchGate }}
   # The first brick init is the host scratch boot-order gate. The nvme hostPath
   # can exist before scratch-prep mounts its filesystem, so directory existence
@@ -136,7 +183,11 @@ initContainers:
     volumeMounts:
       - name: nvme
         mountPath: {{ $ctx.Values.noded.firecracker.nvmeRoot }}
+        {{- if $sharedOn }}
+        subPath: {{ $shared.subPath }}
+        {{- else }}
         mountPropagation: HostToContainer
+        {{- end }}
       - name: rootfs-builder-script
         mountPath: /scripts
         readOnly: true
@@ -496,7 +547,11 @@ containers:
         mountPath: /dev/kvm
       - name: nvme
         mountPath: {{ $ctx.Values.noded.firecracker.nvmeRoot }}
+        {{- if $sharedOn }}
+        subPath: {{ $shared.subPath }}
+        {{- else }}
         mountPropagation: HostToContainer
+        {{- end }}
 {{- if $ctx.Values.egress.enabled }}
   # Egress-proxy sidecar (ADR 023). noded tunnels each guest's vsock egress to
   # this process over localhost; it is the only thing in the pod that reaches the
@@ -653,6 +708,11 @@ volumes:
       type: CharDevice
   - name: nvme
     hostPath:
+      {{- if $sharedOn }}
+      # Shared scratch: the owning release's prepared root, never created here.
+      path: {{ $shared.hostRoot }}
+      type: Directory
+      {{- else }}
       path: {{ $ctx.Values.noded.firecracker.nvmeRoot }}
       # Directory (the default) refuses a missing host path. When scratch-prep is
       # enabled, the first init container's generation-marker gate also proves the
@@ -666,6 +726,7 @@ volumes:
       # so it inherits the NVMe's capacity rather than living uncapped on root
       # (ADR 012's uniform cap, and #4832).
       type: {{ $ctx.Values.noded.firecracker.nvmeRootHostPathType | default "Directory" }}
+      {{- end }}
   {{- if $ctx.Values.workloads }}
   - name: rootfs-builder-script
     configMap:
