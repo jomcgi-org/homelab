@@ -55,9 +55,9 @@ func runLoop(ctx context.Context, cfg config, client *controlPlaneClient, store 
 			store.finish(started, []scenarioVerdict{result})
 		} else {
 			totalBudget := cfg.budgets["S1"] + cfg.budgets["S2"] + cfg.budgets["S3"] + cfg.budgets["S4"] + cfg.budgets["S5"]
-		if cfg.s6Enabled {
-			totalBudget += cfg.budgets["S6"]
-		}
+			if cfg.s6Enabled {
+				totalBudget += cfg.budgets["S6"]
+			}
 			suiteCtx, cancelSuite := context.WithTimeout(ctx, totalBudget)
 			scenarios := runScenarios(suiteCtx, cfg, client, started)
 			cancelSuite()

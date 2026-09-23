@@ -112,7 +112,7 @@ func TestExtractViolatedInvariant(t *testing.T) {
 	}
 }
 
-func TestWriteS6TraceCFG(t *testing.T) {
+func TestWriteS6TraceModule(t *testing.T) {
 	records := []traceRecord{
 		{RunID: "run-1", Action: "prime", Vars: map[string]any{"vm_id": "v1", "node_id": "n1"}},
 		{RunID: "run-1", Action: "confirm_destroy", Vars: map[string]any{
@@ -120,23 +120,40 @@ func TestWriteS6TraceCFG(t *testing.T) {
 			"had_vm": true, "gate": true, "node_confirmed": true, "confirmed_by": "teardown",
 		}},
 	}
-	var builder strings.Builder
-	writeS6TraceCFG(records, 4, &builder)
-	cfg := builder.String()
+	var module, cfgText strings.Builder
+	writeS6TraceModule(records, 4, &module, &cfgText)
+	generated, cfg := module.String(), cfgText.String()
+	// The window rides in the module by INSTANCE substitution: TLC
+	// configuration files reject tuples and records, so the .cfg carries
+	// only the scalar specification and invariant selection.
 	for _, want := range []string{
-		"SPECIFICATION Spec",
-		"MinTraceEvents = 4",
-		"INVARIANT TraceWellFormed",
-		"INVARIANT NoDestroyBeforeConfirm",
-		"INVARIANT NoDoubleAssign",
+		"---- MODULE window ----",
+		"VARIABLES cursor",
+		"W ==",
+		`AT == INSTANCE adoption_trace WITH Fixture <- "live", LiveTrace <- W, MinTraceEvents <- 4, cursor <- cursor`,
+		"Spec == AT!Spec",
+		"TraceWellFormed == AT!TraceWellFormed",
+		"NoDestroyBeforeConfirm == AT!NoDestroyBeforeConfirm",
+		"NoDoubleAssign == AT!NoDoubleAssign",
 		`action |-> "prime"`,
 		`vm |-> "v1"`,
 		`had_vm |-> TRUE`,
 		// The quote and backslash in the vm_id must be escaped, never raw.
 		`vm |-> "v\"1"`,
 	} {
+		if !strings.Contains(generated, want) {
+			t.Fatalf("generated module missing %q:\n%s", want, generated)
+		}
+	}
+	for _, want := range []string{
+		"SPECIFICATION Spec",
+		"CHECK_DEADLOCK FALSE",
+		"INVARIANT TraceWellFormed",
+		"INVARIANT NoDestroyBeforeConfirm",
+		"INVARIANT NoDoubleAssign",
+	} {
 		if !strings.Contains(cfg, want) {
-			t.Fatalf("generated cfg missing %q:\n%s", want, cfg)
+			t.Fatalf("generated window cfg missing %q:\n%s", want, cfg)
 		}
 	}
 }
