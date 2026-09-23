@@ -84,6 +84,16 @@ def test_package_move_preserves_the_deployed_node_workflow_version():
             "factory.orchestration.drainer",
             ("MalformedPayload", "InvocationOutcomeUnknown"),
         ),
+        (
+            "swarm.factory_conductor",
+            "factory.orchestration.factory_conductor",
+            (
+                "PlannerContextOverflow",
+                "PlannerContextAuthorizationError",
+                "DeliveryRefused",
+                "_EditRefused",
+            ),
+        ),
     ],
 )
 def test_durable_errors_keep_one_class_and_the_legacy_pickle_path(

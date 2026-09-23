@@ -5450,7 +5450,16 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
                 operator_direction=direction,
                 factory_context=current_factory_context,
             )
-        except (PlannerContextOverflow, PlannerContextAuthorizationError) as exc:
+            included_context = (
+                None
+                if current_factory_context is None
+                else json.loads(prompt.rsplit("\n", 1)[1])
+            )
+        except (
+            PlannerContextOverflow,
+            PlannerContextAuthorizationError,
+            json.JSONDecodeError,
+        ) as exc:
             logger.warning(
                 "Factory planner cannot construct authorized required context for "
                 "task %s: %s",
@@ -5460,11 +5469,6 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
             set_control("pause_task", ACTOR, task_id=task_id)
             return
         choice = select_model("conductor", policy)
-        included_context = (
-            None
-            if current_factory_context is None
-            else json.loads(prompt.rsplit("\n", 1)[1])
-        )
         reason = selection_reason(
             f"Reconcile task evidence after {deviation['code']}", choice
         )
@@ -6658,5 +6662,6 @@ def start_loop() -> list[asyncio.Task]:
 
 # Keep stored exceptions readable by replicas on either side of a deploy.
 PlannerContextOverflow.__module__ = "swarm.factory_conductor"
+PlannerContextAuthorizationError.__module__ = "swarm.factory_conductor"
 DeliveryRefused.__module__ = "swarm.factory_conductor"
 _EditRefused.__module__ = "swarm.factory_conductor"
