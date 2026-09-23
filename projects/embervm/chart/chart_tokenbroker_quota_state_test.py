@@ -60,9 +60,9 @@ def _rendered_quota_configmap_name(release: str) -> str:
         document
         for document in _render(release)
         if document.get("kind") == "ConfigMap"
-        and document.get("metadata", {}).get("annotations", {}).get(
-            "argocd.argoproj.io/sync-options"
-        )
+        and document.get("metadata", {})
+        .get("annotations", {})
+        .get("argocd.argoproj.io/sync-options")
         == "Prune=false,Delete=false"
     ]
     assert len(matches) == 1
