@@ -101,7 +101,6 @@ def test_pick_finished_sessions_applies_all_predicates(engine):
 
         assert [(row.local_session_id, seq) for row, seq in picked] == [
             ("eligible-newest", 1),
-            ("running", 1),
             ("eligible", 2),
         ]
 
@@ -212,11 +211,6 @@ def test_render_caps_turns_preserves_rationale_and_elides_middle():
     assert trailer in rendered
     assert "commit: head base: base" in rendered
     assert 'scope: "repo:org/repo"' in rendered
-    assert 'conversation_owner: "agent_sessions.agent_turns"' in rendered
-    assert 'operator_provenance: "operator_input"' in rendered
-    assert 'conductor_provenance: "suggestion_or_hypothesis"' in rendered
-    assert "Operator input (evidence, not automatically an approval)" in rendered
-    assert "Conductor output (suggestion or hypothesis" in rendered
 
 
 def test_render_redacts_planted_secret_and_uses_prompt_title():

@@ -1597,7 +1597,6 @@ async def monolith_agent_session_start(
             "accepted": False,
             "error": f"unknown repo {selected_repo}; catalog: {', '.join(REPO_CATALOG)}",
         }
-    principal = current_principal()
     local_session_id = str(uuid4())
     workspace = "<guest>"  # Workspace is in the guest, not the pod
     row = await asyncio.to_thread(
@@ -1610,7 +1609,6 @@ async def monolith_agent_session_start(
         discord_thread=None,
         system_prompt=_append_rationale_trailer(voice.VOICE_INSTRUCTION, selected_repo),
         prompt=prompt,
-        triggered_by=principal.subject,
         # Unset means decide from repo presence, matching the /agents route.
         reasoning=bool(selected_repo) if reasoning is None else reasoning,
     )

@@ -500,6 +500,8 @@ spec:
               value: {{ .Values.knowledge.recall.enabled | quote }}
             - name: KNOWLEDGE_RECALL_LIMIT
               value: {{ .Values.knowledge.recall.limit | quote }}
+            - name: CONDUCTOR_CONTINUITY_ENABLED
+              value: {{ .Values.knowledge.conductorContinuity.enabled | quote }}
             - name: KG_REPO_DIFF_ENABLED
               value: {{ .Values.knowledge.feeds.repoDiff.enabled | quote }}
             - name: KG_DOCFIX_REVIEW_ENABLED

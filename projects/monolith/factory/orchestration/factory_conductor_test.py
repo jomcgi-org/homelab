@@ -1181,6 +1181,7 @@ def test_inserted_planner_decision_uses_its_own_committed_revision(
     import json
     from factory.orchestration import factory_controls as controls
 
+    monkeypatch.setenv("CONDUCTOR_CONTINUITY_ENABLED", "true")
     task, policy = feedback_task()
     if later_planner:
         prior = complete_feedback_node(
