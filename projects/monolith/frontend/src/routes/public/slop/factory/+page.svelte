@@ -33,15 +33,18 @@
 
   const day = (value) => value?.slice(5, 10).replace("-", "·") ?? "";
   const today = new Date().toISOString().slice(0, 10);
+  // Freshness measures the age of the goal declaration, not the age of a
+  // merge snapshot: goals are declared intent, and a stale declaration is
+  // shown as stale rather than silently presented as current.
   const initialFresh = snapshotFreshness(
-    data.merges.snapshotted_at,
-    data.merges.snapshotted_at,
+    data.goals.declared_at,
+    data.goals.declared_at,
   );
   let fresh = $state(initialFresh);
   let freshLabel = $state(
     initialFresh.clock
-      ? `snapshot ${initialFresh.clock} UTC`
-      : "snapshot unknown",
+      ? `declared ${initialFresh.clock} UTC`
+      : "declaration unknown",
   );
   const sessions = $derived(
     activitySeries([
@@ -163,13 +166,21 @@
     ].join(" / ");
   }
 
+  function declaredMeta(goal) {
+    const issues = goal.issue_numbers.map((issue) => `#${issue}`).join(", ");
+    const activity = goal.last_activity
+      ? `last ref ${goal.last_activity.slice(0, 10)}`
+      : "no linked merges yet";
+    return `issues ${issues} / ${goal.merged_refs} refs / ${activity}`;
+  }
+
   $effect(() => {
     const refresh = () => {
-      const next = snapshotFreshness(data.merges.snapshotted_at, new Date());
+      const next = snapshotFreshness(data.goals.declared_at, new Date());
       fresh = next;
       freshLabel = next.clock
-        ? `snapshot ${next.clock} UTC / ${next.label}`
-        : "snapshot unknown";
+        ? `declared ${next.clock} UTC / ${next.label}`
+        : "declaration unknown";
     };
     refresh();
     const timer = setInterval(refresh, 60_000);
@@ -364,46 +375,80 @@
 
         <div class="goals">
           <p class="sec-label">
-            / Goal summary
-            <span class="win">last {goalData.windowHours}h</span>
+            / Factory goals
             <span class="fresh" class:stale={fresh.stale}>{freshLabel}</span>
           </p>
-          {#if goalData.goals.length}
+          {#if data.unavailable.goals}
+            <p class="none">Goals unavailable right now.</p>
+          {:else if data.goals.goals.length}
+            {#if data.goals.stale}
+              <p class="stale-note">
+                These goals have gone stale: no fresh declaration.
+              </p>
+            {/if}
             <ol class="goal-list">
-              {#each goalData.goals as goal, index}
+              {#each data.goals.goals as goal, index}
                 <li>
                   <div class="goal-head">
                     <span class="rank num"
                       >{String(index + 1).padStart(2, "0")}</span
                     >
                     <span class="goal-name"
-                      ><strong>{goal.area}</strong><span>{goal.focus}</span
-                      ></span
+                      ><strong>{goal.statement}</strong
+                      ><span>declared by {goal.declared_by}</span></span
                     >
-                    <span class="bar" aria-hidden="true"
-                      ><i style={`width:${goal.share * 100}%`}></i></span
+                    <span class="merge-count num"
+                      >{goal.merged_refs} refs{#if goal.stale} · stale{/if}</span
                     >
-                    <span class="merge-count num">{goal.merged} merged</span>
                   </div>
-                  <p class="goal-meta">{goalMeta(goal)}</p>
-                  <ul class="goal-recent">
-                    {#each goal.recent as pull}
-                      <li>
-                        <a
-                          href={`https://github.com/jomcgi/homelab/pull/${pull.number}`}
-                          >{pull.title}</a
-                        >
-                      </li>
-                    {/each}
-                  </ul>
+                  <p class="goal-meta">{declaredMeta(goal)}</p>
                 </li>
               {/each}
             </ol>
           {:else}
-            <p class="none">
-              Nothing merged in the last {goalData.windowHours} hours.
-            </p>
+            <p class="none">No declared goals.</p>
           {/if}
+          <details class="merge-secondary">
+            <summary>
+              Recent merge activity (secondary signal, last {goalData.windowHours}h)
+            </summary>
+            {#if goalData.goals.length}
+              <ol class="goal-list">
+                {#each goalData.goals as goal, index}
+                  <li>
+                    <div class="goal-head">
+                      <span class="rank num"
+                        >{String(index + 1).padStart(2, "0")}</span
+                      >
+                      <span class="goal-name"
+                        ><strong>{goal.area}</strong><span>{goal.focus}</span
+                        ></span
+                      >
+                      <span class="bar" aria-hidden="true"
+                        ><i style={`width:${goal.share * 100}%`}></i></span
+                      >
+                      <span class="merge-count num">{goal.merged} merged</span>
+                    </div>
+                    <p class="goal-meta">{goalMeta(goal)}</p>
+                    <ul class="goal-recent">
+                      {#each goal.recent as pull}
+                        <li>
+                          <a
+                            href={`https://github.com/jomcgi/homelab/pull/${pull.number}`}
+                            >{pull.title}</a
+                          >
+                        </li>
+                      {/each}
+                    </ul>
+                  </li>
+                {/each}
+              </ol>
+            {:else}
+              <p class="none">
+                Nothing merged in the last {goalData.windowHours} hours.
+              </p>
+            {/if}
+          </details>
         </div>
       </div>
     </div>

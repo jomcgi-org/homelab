@@ -66,6 +66,7 @@ REQUIRED_PATHS = [
     "/api/knowledge/public/notes/{note_id}",
     "/api/home/observability/stats",
     "/api/agents/public/merges",
+    "/api/agents/public/factory/goals",
     "/api/ember/postgres/status",
 ]
 

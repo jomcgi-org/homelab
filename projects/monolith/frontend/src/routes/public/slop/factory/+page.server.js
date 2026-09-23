@@ -17,6 +17,7 @@ export async function load({ fetch, setHeaders }) {
     getJson(fetch, "/slop/factory/data/activity"),
     getJson(fetch, "/slop/factory/merges"),
     getJson(fetch, "/slop/factory/facts"),
+    getJson(fetch, "/slop/factory/goals"),
   ]);
   const fallback = [
     {
@@ -32,6 +33,7 @@ export async function load({ fetch, setHeaders }) {
       totals: { verified: 0, unverified: 0, disputed: 0 },
       contradictions: 0,
     },
+    { goals: [], declared_at: null, stale: true },
   ];
   const values = sections.map((section, index) =>
     section.status === "fulfilled" ? section.value.data : fallback[index],
@@ -52,10 +54,12 @@ export async function load({ fetch, setHeaders }) {
     activity: values[0],
     merges: values[1],
     facts: values[2],
+    goals: values[3],
     unavailable: {
       activity: sections[0].status === "rejected",
       merges: sections[1].status === "rejected",
       facts: sections[2].status === "rejected",
+      goals: sections[3].status === "rejected",
     },
   };
 }
