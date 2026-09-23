@@ -20,20 +20,26 @@ from typing import Any
 from uuid import uuid4
 
 import yaml
-from sqlmodel import Session, select
-
 from auth.api import current_principal
 from core.db import get_engine
+from shared.embedding import EmbeddingClient
+from sqlmodel import Session, select
+
 from knowledge.atoms import index_atom
 from knowledge.burst import create_kg_burst_grant, validate_kg_burst_grant
 from knowledge.indexing import index_note_from_raw
 from knowledge.interventions import create_intervention
-from knowledge.models import AgentReportWriteFailure, Dispute, SCOPE_PATTERN
+from knowledge.models import SCOPE_PATTERN, AgentReportWriteFailure, Dispute
 from knowledge.notes import resolve_note_body
-from knowledge.redact import redact_text
 from knowledge.raw_write import persist_raw_with_status
+from knowledge.redact import redact_text
+from knowledge.retrieval_policy import (
+    RetrievalAuditError,
+    RetrievalAuthorizationError,
+    audit_personal_retrieval,
+    authorize_retrieval,
+)
 from knowledge.store import KnowledgeStore
-from shared.embedding import EmbeddingClient
 
 logger = logging.getLogger(__name__)
 
@@ -192,6 +198,7 @@ async def search_knowledge(
     query: str,
     limit: int = 20,
     type: str | None = None,
+    include_personal: bool = False,
 ) -> dict:
     """Semantic search over the knowledge graph.
 
@@ -203,22 +210,49 @@ async def search_knowledge(
         query: Natural language search query (minimum 2 characters).
         limit: Maximum results to return (default 20, max 100).
         type: Optional note type filter (e.g. "concept", "paper").
+        include_personal: Explicitly include the caller's personal and legacy
+            NULL-scoped notes. The verified principal must carry its exact
+            ``personal:<subject>`` grant, and the attempt is durably audited.
     """
-    if len(query) < 2:
-        return {"results": []}
-
-    embed_client = EmbeddingClient()
+    principal = current_principal()
     try:
-        vector = await embed_client.embed(query)
-    except Exception:
-        logger.exception("knowledge mcp: embedding call failed")
-        return {"error": "embedding unavailable"}
+        authorization = authorize_retrieval(
+            principal, include_personal=include_personal
+        )
+    except RetrievalAuthorizationError as exc:
+        return {"error": str(exc), "reason": exc.reason}
 
     with Session(get_engine()) as session:
+        try:
+            audit_personal_retrieval(
+                session,
+                principal,
+                authorization,
+                entrypoint="mcp",
+            )
+        except RetrievalAuditError:
+            logger.exception("knowledge mcp: personal retrieval audit failed")
+            return {
+                "error": "personal retrieval audit unavailable",
+                "reason": "audit_unavailable",
+            }
+
+        if len(query) < 2:
+            return {"results": []}
+
+        embed_client = EmbeddingClient()
+        try:
+            vector = await embed_client.embed(query)
+        except Exception:
+            logger.exception("knowledge mcp: embedding call failed")
+            return {"error": "embedding unavailable", "reason": "embedding_failed"}
+
         results = KnowledgeStore(session).search_notes_with_context(
             query_embedding=vector,
             limit=min(limit, 100),
             type_filter=type,
+            scope_filters=authorization.scopes,
+            include_unscoped=authorization.include_unscoped,
         )
     return {"results": results}
 

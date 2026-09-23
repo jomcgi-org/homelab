@@ -22,14 +22,12 @@ def runner():
 
 
 @pytest.fixture
-def session():
+def session(tmp_path):
     from sqlmodel import Session, SQLModel, create_engine
-    from sqlmodel.pool import StaticPool
 
     engine = create_engine(
-        "sqlite://",
+        f"sqlite:///{tmp_path / 'knowledge.db'}",
         connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
     )
     original_schemas = {}
     for table in SQLModel.metadata.tables.values():
@@ -41,6 +39,7 @@ def session():
         with Session(engine) as s:
             yield s
     finally:
+        engine.dispose()
         for table in SQLModel.metadata.tables.values():
             if table.name in original_schemas:
                 table.schema = original_schemas[table.name]
@@ -52,7 +51,8 @@ def _patch_fastapi(session):
 
     FastAPI's TestClient is httpx-compatible, so we patch knowledge._client
     to return it directly. We also patch get_cf_token to avoid reading real
-    cloudflared files.
+    cloudflared files. Authentication is deliberately not overridden here, so
+    tests can exercise the CLI's actual tokenless application request.
     """
     from fastapi.testclient import TestClient
     from app.main import app as fastapi_app
@@ -72,6 +72,31 @@ def _patch_fastapi(session):
         yield
 
     fastapi_app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def authorized_knowledge_search():
+    """Supply a scoped principal only to formatting and forwarding tests."""
+    from app.main import app as fastapi_app
+    from auth.api import Authority, Principal, PrincipalKind, get_principal
+
+    fastapi_app.dependency_overrides[get_principal] = lambda: Principal(
+        subject="knowledge-cli-test",
+        actor=(),
+        scope=(
+            "org:jomcgi-org",
+            "repo:jomcgi-org/homelab",
+            "environment:homelab",
+        ),
+        groups=(),
+        email="knowledge-cli-test@example.com",
+        kind=PrincipalKind.HUMAN,
+        authority=Authority.STANDING,
+    )
+    try:
+        yield
+    finally:
+        fastapi_app.dependency_overrides.pop(get_principal, None)
 
 
 def _make_raw(session, *, raw_id="raw-1", path="raw/test.md", source="test"):
@@ -194,13 +219,19 @@ class TestReplay:
 class TestSearch:
     """Tests for the `knowledge search` CLI command."""
 
-    def test_empty_query_returns_no_results(self, runner):
+    def test_tokenless_client_is_denied_by_real_auth_dependency(self, runner):
+        result = runner.invoke(app, ["knowledge", "search", "attention"])
+
+        assert result.exit_code == 1
+        assert result.exception.response.status_code == 401
+
+    def test_empty_query_returns_no_results(self, runner, authorized_knowledge_search):
         """Single-char query hits the router's 2-char fast-path → 'No results.'"""
         result = runner.invoke(app, ["knowledge", "search", "x"])
         assert result.exit_code == 0
         assert "No results." in result.output
 
-    def test_search_with_results(self, runner):
+    def test_search_with_results(self, runner, authorized_knowledge_search):
         """Successful search prints score, note_id, title, and type."""
         from app.main import app as fastapi_app
 
@@ -220,7 +251,7 @@ class TestSearch:
         assert "Attention Is All You Need" in result.output
         assert "paper" in result.output
 
-    def test_search_no_results(self, runner):
+    def test_search_no_results(self, runner, authorized_knowledge_search):
         """Store returning [] prints 'No results.'"""
         from app.main import app as fastapi_app
 
@@ -235,7 +266,7 @@ class TestSearch:
         assert result.exit_code == 0
         assert "No results." in result.output
 
-    def test_json_flag(self, runner):
+    def test_json_flag(self, runner, authorized_knowledge_search):
         """--json flag emits raw JSON instead of formatted lines."""
         from app.main import app as fastapi_app
 
@@ -256,7 +287,7 @@ class TestSearch:
         assert '"note_id"' in result.output
         assert '"n1"' in result.output
 
-    def test_type_filter_forwarded(self, runner):
+    def test_type_filter_forwarded(self, runner, authorized_knowledge_search):
         """--type value is forwarded to the store as type_filter."""
         from app.main import app as fastapi_app
 
@@ -271,12 +302,18 @@ class TestSearch:
                     query_embedding=_FAKE_EMBEDDING,
                     limit=10,
                     type_filter="paper",
+                    scope_filters=(
+                        "org:jomcgi-org",
+                        "repo:jomcgi-org/homelab",
+                        "environment:homelab",
+                    ),
+                    include_unscoped=False,
                     include_legacy=True,
                 )
         finally:
             del fastapi_app.dependency_overrides[get_embedding_client]
 
-    def test_limit_forwarded(self, runner):
+    def test_limit_forwarded(self, runner, authorized_knowledge_search):
         """--limit value is forwarded to the store."""
         from app.main import app as fastapi_app
 
@@ -289,12 +326,20 @@ class TestSearch:
                     query_embedding=_FAKE_EMBEDDING,
                     limit=5,
                     type_filter=None,
+                    scope_filters=(
+                        "org:jomcgi-org",
+                        "repo:jomcgi-org/homelab",
+                        "environment:homelab",
+                    ),
+                    include_unscoped=False,
                     include_legacy=True,
                 )
         finally:
             del fastapi_app.dependency_overrides[get_embedding_client]
 
-    def test_search_with_edges_displays_edge_info(self, runner):
+    def test_search_with_edges_displays_edge_info(
+        self, runner, authorized_knowledge_search
+    ):
         """Results with typed edges render edge type and target in output."""
         from app.main import app as fastapi_app
 

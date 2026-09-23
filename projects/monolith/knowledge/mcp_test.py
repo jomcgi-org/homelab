@@ -1,25 +1,53 @@
-"""Unit tests for knowledge/mcp.py — MCP tools for knowledge search, notes, and tasks."""
+"""Unit tests for knowledge/mcp.py MCP search, notes, and task tools."""
 
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from auth.api import Authority, Principal, PrincipalKind, anonymous_principal
 from sqlmodel import Session, select
 
-from knowledge.models import Note
 from knowledge.mcp import (
-    grant_kg_burst,
     get_daily_tasks,
     get_note,
     get_weekly_tasks,
+    grant_kg_burst,
     list_tasks,
     search_knowledge,
     search_tasks,
     update_task,
 )
+from knowledge.models import Note
 
 FAKE_EMBEDDING = [0.1] * 1024
+DEFAULT_SCOPES = (
+    "org:jomcgi-org",
+    "repo:jomcgi-org/homelab",
+    "environment:homelab",
+)
+
+
+def _principal(
+    *,
+    personal: bool = False,
+    scopes: tuple[str, ...] | None = None,
+    groups: tuple[str, ...] = ("operators",),
+) -> Principal:
+    subject = "agent@example.com"
+    grants = DEFAULT_SCOPES if scopes is None else scopes
+    if personal:
+        grants = (*grants, f"personal:{subject}")
+    return Principal(
+        subject=subject,
+        actor=(),
+        scope=grants,
+        groups=groups,
+        email=subject,
+        kind=PrincipalKind.HUMAN,
+        authority=Authority.STANDING,
+    )
+
 
 CANNED_TASKS = [
     {
@@ -117,6 +145,11 @@ def _get_note_row(engine, note_id: str) -> Note:
 class TestSearchKnowledge:
     """Tests for the search_knowledge MCP tool."""
 
+    @pytest.fixture(autouse=True)
+    def authorized_principal(self):
+        with patch("knowledge.mcp.current_principal", return_value=_principal()):
+            yield
+
     @pytest.mark.asyncio
     async def test_returns_results(self):
         mock_session = MagicMock()
@@ -137,6 +170,13 @@ class TestSearchKnowledge:
         assert len(result["results"]) == 1
         assert result["results"][0]["note_id"] == "n1"
         mock_embed.embed.assert_awaited_once_with("attention")
+        MockStore.return_value.search_notes_with_context.assert_called_once_with(
+            query_embedding=FAKE_EMBEDDING,
+            limit=20,
+            type_filter=None,
+            scope_filters=DEFAULT_SCOPES,
+            include_unscoped=False,
+        )
 
     @pytest.mark.asyncio
     async def test_short_query_returns_empty(self):
@@ -167,6 +207,8 @@ class TestSearchKnowledge:
                 query_embedding=FAKE_EMBEDDING,
                 limit=5,
                 type_filter="paper",
+                scope_filters=DEFAULT_SCOPES,
+                include_unscoped=False,
             )
 
     @pytest.mark.asyncio
@@ -182,6 +224,152 @@ class TestSearchKnowledge:
             result = await search_knowledge("hello")
 
         assert "error" in result
+        assert result["reason"] == "embedding_failed"
+
+    @pytest.mark.asyncio
+    async def test_anonymous_and_unmapped_principals_have_distinct_denials(self):
+        mock_embed = AsyncMock()
+        with (
+            patch("knowledge.mcp.EmbeddingClient", return_value=mock_embed),
+            patch(
+                "knowledge.mcp.current_principal",
+                return_value=anonymous_principal(),
+            ),
+        ):
+            anonymous = await search_knowledge("attention")
+        with patch(
+            "knowledge.mcp.current_principal",
+            return_value=_principal(scopes=("openid", "profile")),
+        ):
+            unmapped = await search_knowledge("attention")
+        with patch(
+            "knowledge.mcp.current_principal",
+            return_value=_principal(scopes=(), groups=()),
+        ):
+            empty_grants = await search_knowledge("attention")
+
+        assert anonymous["reason"] == "anonymous"
+        assert unmapped["reason"] == "unmapped_principal"
+        assert empty_grants["reason"] == "unmapped_principal"
+        mock_embed.embed.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_cross_subject_personal_opt_in_is_denied_before_audit(self):
+        mock_embed = AsyncMock()
+        with (
+            patch(
+                "knowledge.mcp.current_principal",
+                return_value=_principal(
+                    scopes=(*DEFAULT_SCOPES, "personal:someone-else")
+                ),
+            ),
+            patch("knowledge.mcp.audit_personal_retrieval") as audit,
+        ):
+            result = await search_knowledge("attention", include_personal=True)
+
+        assert result["reason"] == "personal_scope_not_granted"
+        audit.assert_not_called()
+        mock_embed.embed.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_verified_homelab_group_maps_to_exact_repository_scopes(self):
+        mock_embed = AsyncMock()
+        mock_embed.embed.return_value = FAKE_EMBEDDING
+        with (
+            patch(
+                "knowledge.mcp.current_principal",
+                return_value=_principal(
+                    scopes=("openid", "profile"),
+                    groups=("homelab-admin", "operators"),
+                ),
+            ),
+            patch("knowledge.mcp.Session"),
+            patch("knowledge.mcp.get_engine"),
+            patch("knowledge.mcp.EmbeddingClient", return_value=mock_embed),
+            patch("knowledge.mcp.KnowledgeStore") as MockStore,
+        ):
+            MockStore.return_value.search_notes_with_context.return_value = []
+            result = await search_knowledge("attention")
+
+        assert result == {"results": []}
+        MockStore.return_value.search_notes_with_context.assert_called_once_with(
+            query_embedding=FAKE_EMBEDDING,
+            limit=20,
+            type_filter=None,
+            scope_filters=DEFAULT_SCOPES,
+            include_unscoped=False,
+        )
+
+    @pytest.mark.asyncio
+    async def test_personal_opt_in_is_audited_once_and_filters_personal_and_null(self):
+        session = MagicMock()
+        context = MagicMock()
+        context.__enter__.return_value = session
+        mock_embed = AsyncMock()
+        mock_embed.embed.return_value = FAKE_EMBEDDING
+        principal = _principal(personal=True)
+        with (
+            patch("knowledge.mcp.current_principal", return_value=principal),
+            patch("knowledge.mcp.Session", return_value=context),
+            patch("knowledge.mcp.get_engine"),
+            patch("knowledge.mcp.EmbeddingClient", return_value=mock_embed),
+            patch("knowledge.mcp.KnowledgeStore") as MockStore,
+            patch("knowledge.mcp.audit_personal_retrieval") as audit,
+        ):
+            MockStore.return_value.search_notes_with_context.return_value = []
+            result = await search_knowledge("attention", include_personal=True)
+
+        assert result == {"results": []}
+        audit.assert_called_once()
+        MockStore.return_value.search_notes_with_context.assert_called_once_with(
+            query_embedding=FAKE_EMBEDDING,
+            limit=20,
+            type_filter=None,
+            scope_filters=(*DEFAULT_SCOPES, "personal:agent@example.com"),
+            include_unscoped=True,
+        )
+
+    @pytest.mark.asyncio
+    async def test_personal_audit_failure_denies_before_embedding(self):
+        from knowledge.retrieval_policy import RetrievalAuditError
+
+        mock_embed = AsyncMock()
+        with (
+            patch(
+                "knowledge.mcp.current_principal",
+                return_value=_principal(personal=True),
+            ),
+            patch("knowledge.mcp.Session"),
+            patch("knowledge.mcp.get_engine"),
+            patch("knowledge.mcp.EmbeddingClient", return_value=mock_embed),
+            patch(
+                "knowledge.mcp.audit_personal_retrieval",
+                side_effect=RetrievalAuditError("no audit"),
+            ),
+        ):
+            result = await search_knowledge("attention", include_personal=True)
+
+        assert result["reason"] == "audit_unavailable"
+        mock_embed.embed.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_personal_embedding_failure_occurs_after_one_audit(self):
+        mock_embed = AsyncMock()
+        mock_embed.embed.side_effect = RuntimeError("boom")
+        with (
+            patch(
+                "knowledge.mcp.current_principal",
+                return_value=_principal(personal=True),
+            ),
+            patch("knowledge.mcp.Session"),
+            patch("knowledge.mcp.get_engine"),
+            patch("knowledge.mcp.EmbeddingClient", return_value=mock_embed),
+            patch("knowledge.mcp.audit_personal_retrieval") as audit,
+        ):
+            result = await search_knowledge("attention", include_personal=True)
+
+        assert result["reason"] == "embedding_failed"
+        audit.assert_called_once()
 
 
 class TestGetNote:

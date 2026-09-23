@@ -6,13 +6,14 @@ import logging
 from collections.abc import Iterable
 from datetime import date, datetime, timedelta, timezone
 
-from sqlalchemy import func, not_, or_
+from sqlalchemy import false, func, not_, or_
 from sqlalchemy.orm.attributes import flag_modified
 from sqlmodel import Session, delete, select
 
-from knowledge.frontmatter import ParsedFrontmatter
-from knowledge.extraction import LANE_OWNED_SOURCES
+from knowledge.chunker import Chunk as ChunkPayload
 from knowledge.entities import Entity, NoteEntity
+from knowledge.extraction import LANE_OWNED_SOURCES
+from knowledge.frontmatter import ParsedFrontmatter
 from knowledge.gardener import GARDENER_VERSION, MAX_GARDENER_RETRIES, _slugify
 from knowledge.links import Link
 from knowledge.models import (
@@ -24,7 +25,6 @@ from knowledge.models import (
     NoteLink,
     RawInput,
 )
-from knowledge.chunker import Chunk as ChunkPayload
 
 logger = logging.getLogger(__name__)
 
@@ -51,16 +51,36 @@ _DONE_STATUSES = frozenset({"done", "cancelled"})
 GRAPH_NOTE_TYPES = frozenset({"atom", "fact", "raw", "gap", "active", "paper"})
 
 
-def _resolve_edge_targets(session: Session, rows: list) -> set[str]:
-    """Return the set of target_id values (for kind='edge' rows) that exist as notes."""
+def _scope_predicate(scope_filters: tuple[str, ...] | None, *, include_unscoped: bool):
+    """Build the note-scope allow-list predicate, including legacy NULL on opt-in."""
+    if scope_filters is None and not include_unscoped:
+        return None
+    conditions = []
+    if scope_filters:
+        conditions.append(Note.scope.in_(scope_filters))
+    if include_unscoped:
+        conditions.append(Note.scope.is_(None))
+    return or_(*conditions) if conditions else false()
+
+
+def _resolve_edge_targets(
+    session: Session,
+    rows: list,
+    *,
+    scope_filters: tuple[str, ...] | None = None,
+    include_unscoped: bool = False,
+) -> set[str]:
+    """Return edge targets that exist inside the retrieval allow-list."""
     edge_ids = {r.target_id for r in rows if r.kind == "edge"}
     if not edge_ids:
         return set()
-    return set(
-        session.execute(select(Note.note_id).where(Note.note_id.in_(edge_ids)))
-        .scalars()
-        .all()
+    stmt = select(Note.note_id).where(
+        Note.note_id.in_(edge_ids), Note.deleted_at.is_(None)
     )
+    scope_predicate = _scope_predicate(scope_filters, include_unscoped=include_unscoped)
+    if scope_predicate is not None:
+        stmt = stmt.where(scope_predicate)
+    return set(session.execute(stmt).scalars().all())
 
 
 def open_dispute_note_ids(session: Session, note_ids: Iterable[str]) -> set[str]:
@@ -170,7 +190,8 @@ def _rank_search_chunks(
     query_embedding: list[float],
     limit: int,
     type_filter: str | None,
-    scope_filter: str | None = None,
+    scope_filters: tuple[str, ...] | None = None,
+    include_unscoped: bool = False,
     exclude_invalidated: bool = False,
     include_legacy: bool = False,
 ) -> list[tuple[int, int, float]]:
@@ -190,12 +211,12 @@ def _rank_search_chunks(
         .group_by(Note.id)
         .having(func.max(adjusted) >= MIN_SEARCH_SCORE)
         .order_by(best_score.desc())
-        .limit(limit)
     )
     if type_filter is not None:
         notes_stmt = notes_stmt.where(Note.type == type_filter)
-    if scope_filter is not None:
-        notes_stmt = notes_stmt.where(Note.scope == scope_filter)
+    scope_predicate = _scope_predicate(scope_filters, include_unscoped=include_unscoped)
+    if scope_predicate is not None:
+        notes_stmt = notes_stmt.where(scope_predicate)
     if not include_legacy:
         notes_stmt = notes_stmt.where(
             or_(
@@ -211,6 +232,9 @@ def _rank_search_chunks(
                 Note.verification_state != "invalidated",
             ),
         )
+    # Authorization belongs in this query, before top-N is selected. Filtering
+    # ranked results in Python would let unauthorized rows consume the limit.
+    notes_stmt = notes_stmt.limit(limit)
 
     note_rows = session.execute(notes_stmt).all()
     if not note_rows:
@@ -533,6 +557,8 @@ class KnowledgeStore:
         limit: int = 20,
         type_filter: str | None = None,
         scope_filter: str | None = None,
+        scope_filters: tuple[str, ...] | None = None,
+        include_unscoped: bool = False,
         exclude_invalidated: bool = False,
         include_embeddings: bool = False,
         include_legacy: bool = False,
@@ -552,12 +578,18 @@ class KnowledgeStore:
         Results are stitched in Python into dicts with keys:
         ``note_id, title, path, type, tags, score, section, snippet, entities``.
         """
+        if scope_filter is not None and scope_filters is not None:
+            raise ValueError("scope_filter and scope_filters are mutually exclusive")
+        effective_scope_filters = (
+            (scope_filter,) if scope_filter is not None else scope_filters
+        )
         ranked = _rank_search_chunks(
             self.session,
             query_embedding,
             limit,
             type_filter,
-            scope_filter=scope_filter,
+            scope_filters=effective_scope_filters,
+            include_unscoped=include_unscoped,
             exclude_invalidated=exclude_invalidated,
             include_legacy=include_legacy,
         )
@@ -567,25 +599,29 @@ class KnowledgeStore:
         top_ids = [note_fk for note_fk, _, _ in ranked]
         top_chunk_ids = [chunk_fk for _, chunk_fk, _ in ranked]
         score_by_note = {note_fk: score for note_fk, _, score in ranked}
-        note_by_id = {
-            note.id: note
-            for note in self.session.exec(
-                select(
-                    Note.id,
-                    Note.note_id,
-                    Note.title,
-                    Note.path,
-                    Note.type,
-                    Note.tags,
-                    Note.scope,
-                    Note.verification_state,
-                    Note.confidence,
-                    Note.valid_from,
-                    Note.valid_until,
-                    Note.observed_at,
-                ).where(Note.id.in_(top_ids))
-            ).all()
-        }
+        note_stmt = select(
+            Note.id,
+            Note.note_id,
+            Note.title,
+            Note.path,
+            Note.type,
+            Note.tags,
+            Note.scope,
+            Note.verification_state,
+            Note.confidence,
+            Note.valid_from,
+            Note.valid_until,
+            Note.observed_at,
+        ).where(Note.id.in_(top_ids), Note.deleted_at.is_(None))
+        hydration_scope_predicate = _scope_predicate(
+            effective_scope_filters, include_unscoped=include_unscoped
+        )
+        if hydration_scope_predicate is not None:
+            # Repeat the authorization predicate when hydrating ranked IDs. At
+            # READ COMMITTED a concurrent scope change between the two queries
+            # must fail closed rather than expose the newly unauthorized row.
+            note_stmt = note_stmt.where(hydration_scope_predicate)
+        note_by_id = {note.id: note for note in self.session.exec(note_stmt).all()}
         chunk_projection = [
             Chunk.id,
             Chunk.section_header,
@@ -622,7 +658,12 @@ class KnowledgeStore:
 
         # Resolve typed edges: check which target note_ids exist so
         # consumers know which edges are navigable.
-        resolved = _resolve_edge_targets(self.session, edge_rows)
+        resolved = _resolve_edge_targets(
+            self.session,
+            edge_rows,
+            scope_filters=effective_scope_filters,
+            include_unscoped=include_unscoped,
+        )
 
         edges_by_note: dict[int, list[dict]] = {}
         for edge_row in edge_rows:

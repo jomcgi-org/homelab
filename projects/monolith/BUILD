@@ -5959,11 +5959,14 @@ py_test(
 py_test(
     name = "knowledge_store_scoped_test",
     srcs = ["knowledge/store_scoped_test.py"],
+    data = ["//projects/monolith/chart:migrations"],
     imports = ["."],
     deps = [
+        ":pkg_auth",
         ":pkg_knowledge",
         "@pip//pytest",
         "@pip//pytest_asyncio",
+        "@pip//sqlalchemy",
         "@pip//sqlmodel",
     ],
 )
@@ -7587,6 +7590,7 @@ py_test(
     srcs = ["knowledge/router_test.py"],
     imports = ["."],
     deps = [
+        ":pkg_auth",
         ":pkg_core",
         ":pkg_framework",
         ":pkg_knowledge",
@@ -7660,6 +7664,7 @@ py_test(
     srcs = ["knowledge/mcp_test.py"],
     imports = ["."],
     deps = [
+        ":pkg_auth",
         ":pkg_knowledge",
         "@pip//fastmcp",
         "@pip//httpx",
@@ -8357,6 +8362,14 @@ bdd_test(
 bdd_test(
     name = "public_api_chunks_grants_test",
     srcs = ["public_api_chunks_grants_test.py"],
+)
+
+# Real-Postgres test: agents_writer can insert audit rows through the narrow
+# column grant, cannot read or delete them, and insert-triggered retention runs
+# atomically through the definer-rights function.
+bdd_test(
+    name = "personal_retrieval_audit_grants_test",
+    srcs = ["knowledge/personal_retrieval_audit_grants_test.py"],
 )
 
 # Real-Postgres test: public_writer can SELECT/INSERT/UPDATE demo_pg_savings

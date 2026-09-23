@@ -131,6 +131,7 @@ def _seed_knowledge_note(
     path: str,
     note_type: str = "note",
     tags: list[str] | None = None,
+    scope: str | None = None,
     chunk_texts: list[str],
     content: str | None = None,
 ) -> None:
@@ -162,6 +163,7 @@ def _seed_knowledge_note(
             content=content,
             type=note_type,
             tags=tags or [],
+            scope=scope,
         )
         session.add(note)
         session.flush()
@@ -200,16 +202,22 @@ class TestKnowledgeSearchHttp:
     deterministic embedding client so no external embedding service is needed.
     """
 
-    def test_knowledge_search_empty_query(self, live_server_with_fake_embedding):
+    def test_knowledge_search_denies_anonymous_caller(
+        self, live_server_with_fake_embedding
+    ):
+        """Anonymous search fails closed before embedding or retrieval."""
+        r = httpx.get(f"{live_server_with_fake_embedding}/api/knowledge/search?q=x")
+        assert r.status_code == 401
+        assert r.json()["detail"]["reason"] == "anonymous"
+
+    def test_knowledge_search_empty_query(self, authorized_knowledge_server):
         """GET /api/knowledge/search?q= returns empty results."""
-        base = live_server_with_fake_embedding
+        base = authorized_knowledge_server
         r = httpx.get(f"{base}/api/knowledge/search?q=")
         assert r.status_code == 200
         assert r.json() == {"results": []}
 
-    def test_knowledge_search_returns_results(
-        self, live_server_with_fake_embedding, pg
-    ):
+    def test_knowledge_search_returns_results(self, authorized_knowledge_server, pg):
         """Seed a note, search with matching text, expect it in results."""
         _cleanup_knowledge(pg)
         _seed_knowledge_note(
@@ -219,10 +227,11 @@ class TestKnowledgeSearchHttp:
             path="notes/transformers.md",
             note_type="note",
             tags=["ml", "architecture"],
+            scope="repo:jomcgi-org/homelab",
             chunk_texts=["Transformers use self-attention to process sequences."],
         )
 
-        base = live_server_with_fake_embedding
+        base = authorized_knowledge_server
         r = httpx.get(
             f"{base}/api/knowledge/search",
             params={"q": "Transformers use self-attention to process sequences."},
@@ -242,7 +251,7 @@ class TestKnowledgeSearchHttp:
 
         _cleanup_knowledge(pg)
 
-    def test_knowledge_search_type_filter(self, live_server_with_fake_embedding, pg):
+    def test_knowledge_search_type_filter(self, authorized_knowledge_server, pg):
         """Seed two notes with different types, filter by type, expect only matching."""
         _cleanup_knowledge(pg)
         shared_text = "Neural network training and optimization techniques."
@@ -252,6 +261,7 @@ class TestKnowledgeSearchHttp:
             title="Training Neural Nets",
             path="notes/training.md",
             note_type="article",
+            scope="repo:jomcgi-org/homelab",
             chunk_texts=[shared_text],
         )
         _seed_knowledge_note(
@@ -260,10 +270,11 @@ class TestKnowledgeSearchHttp:
             title="Training Log Entry",
             path="notes/training-log.md",
             note_type="log",
+            scope="repo:jomcgi-org/homelab",
             chunk_texts=[shared_text],
         )
 
-        base = live_server_with_fake_embedding
+        base = authorized_knowledge_server
         r = httpx.get(
             f"{base}/api/knowledge/search",
             params={"q": shared_text, "type": "article"},

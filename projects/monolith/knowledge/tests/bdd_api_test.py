@@ -7,9 +7,9 @@ from shared.testing.markers import covers_route
 
 class TestKnowledgeSearch:
     @covers_route("/api/knowledge/search")
-    def test_search_returns_results(self, live_server_with_fake_embedding):
+    def test_search_returns_results(self, authorized_knowledge_server):
         r = httpx.get(
-            f"{live_server_with_fake_embedding}/api/knowledge/search",
+            f"{authorized_knowledge_server}/api/knowledge/search",
             params={"q": "test query"},
         )
         assert r.status_code == 200
