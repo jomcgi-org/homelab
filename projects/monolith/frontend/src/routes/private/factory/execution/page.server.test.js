@@ -15,6 +15,7 @@ function jsonResponse(body, ok = true) {
 describe("agents /private/factory/execution load", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    delete process.env.AGENT_SESSION_STOP_CONTROL_ENABLED;
   });
 
   it("passes sessions and the model catalogue through untouched", async () => {
@@ -31,6 +32,7 @@ describe("agents /private/factory/execution load", () => {
     expect(result).toEqual({
       sessions,
       models: catalog.models,
+      sessionStopControlEnabled: false,
       error: false,
     });
     expect(fetchMock).toHaveBeenCalledWith(
@@ -48,6 +50,7 @@ describe("agents /private/factory/execution load", () => {
 
     expect(result.sessions).toEqual([]);
     expect(result.models).toEqual([]);
+    expect(result.sessionStopControlEnabled).toBe(false);
     expect(result.error).toBe(false);
   });
 
@@ -58,6 +61,22 @@ describe("agents /private/factory/execution load", () => {
 
     const result = await load({ fetch: fetchMock });
 
-    expect(result).toEqual({ sessions: [], models: [], error: true });
+    expect(result).toEqual({
+      sessions: [],
+      models: [],
+      sessionStopControlEnabled: false,
+      error: true,
+    });
+  });
+
+  it("passes the explicit Stop rollout flag only when true", async () => {
+    process.env.AGENT_SESSION_STOP_CONTROL_ENABLED = "true";
+    const fetchMock = vi.fn(async (url) =>
+      jsonResponse(String(url).includes("models") ? { models: [] } : []),
+    );
+
+    const result = await load({ fetch: fetchMock });
+
+    expect(result.sessionStopControlEnabled).toBe(true);
   });
 });

@@ -211,6 +211,8 @@ spec:
               value: {{ .Values.agents.sessions.resultReceiptAdoptionEnabled | quote }}
             - name: AGENT_RESPONSE_LOST_RECOVERY_ENABLED
               value: {{ .Values.agents.sessions.responseLostRecoveryEnabled | default false | quote }}
+            - name: AGENT_SESSION_STOP_CONTROL_ENABLED
+              value: {{ .Values.agents.sessions.stopControlEnabled | quote }}
             {{- with .Values.agents.drainer }}
             # Work-queue drainer. DRAINER_ENABLED is checked both by the
             # internal trigger and inside the DBOS workflow. Its job kind is a
@@ -819,6 +821,8 @@ spec:
           env:
             - name: API_BASE
               value: "http://localhost:8000"
+            - name: AGENT_SESSION_STOP_CONTROL_ENABLED
+              value: {{ .Values.agents.sessions.stopControlEnabled | quote }}
             {{- if .Values.frontend.otelCollectorUrl }}
             - name: OTEL_COLLECTOR_HTTP_URL
               value: {{ .Values.frontend.otelCollectorUrl | quote }}

@@ -7,6 +7,13 @@
 // has no bundled fallback list, so an empty response renders an empty picker.
 const API_BASE = process.env.API_BASE;
 
+function stopControlEnabled() {
+  return (
+    String(process.env.AGENT_SESSION_STOP_CONTROL_ENABLED).toLowerCase() ===
+    "true"
+  );
+}
+
 export async function load({ fetch }) {
   try {
     const [sessionsRes, modelsRes] = await Promise.all([
@@ -18,16 +25,27 @@ export async function load({ fetch }) {
       }),
     ]);
     if (!sessionsRes.ok || !modelsRes.ok) {
-      return { sessions: [], models: [], error: true };
+      return {
+        sessions: [],
+        models: [],
+        sessionStopControlEnabled: stopControlEnabled(),
+        error: true,
+      };
     }
     const sessions = await sessionsRes.json();
     const models = await modelsRes.json();
     return {
       sessions: Array.isArray(sessions) ? sessions : (sessions.sessions ?? []),
       models: Array.isArray(models.models) ? models.models : [],
+      sessionStopControlEnabled: stopControlEnabled(),
       error: false,
     };
   } catch {
-    return { sessions: [], models: [], error: true };
+    return {
+      sessions: [],
+      models: [],
+      sessionStopControlEnabled: stopControlEnabled(),
+      error: true,
+    };
   }
 }
