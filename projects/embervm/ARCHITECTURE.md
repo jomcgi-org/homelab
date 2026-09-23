@@ -920,8 +920,11 @@ never stores or witnesses anything that scales with the fleet.
   can still read red at a single checkpoint: a primed VM mid-teardown, a
   session VM between reservation and commit, a finished task VM the node has
   not yet dropped, and task VMs orphaned by a control-plane restart.
-  **Planned**: the TLC tier, trace validation of `adoption.tla` against dev
-  SpecTrace windows (#6415). The broader ADR embervm/034 harness beyond that
+  **Staged**: the TLC tier, trace validation of `adoption.tla` against dev
+  SpecTrace windows (#6415), ships default-off behind `conformance.s6.enabled`
+  (adoption_trace.tla plus the S6 runner feeding `/verdict`, provable in CI on
+  fixture windows with no live cluster). Live embervm-dev validation remains
+  open on the issue. The broader ADR embervm/034 harness beyond that
   is not planned (#4761, #4763 closed).
 - **Cells are not an active programme**: no `cell_id`, workload-to-cell
   assignment or per-cell dial-home address exists. The implementation proposal
