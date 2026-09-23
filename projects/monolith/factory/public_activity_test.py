@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import SQLAlchemyError
@@ -54,7 +55,9 @@ def _client(fake_session):
     return TestClient(app, raise_server_exceptions=False)
 
 
-def _daily_row(day_value, amount, *, cost=None, list_cost=None, model="luna"):
+def _daily_row(
+    day_value, amount, *, cost=None, list_cost=None, cost_source=None, model="luna"
+):
     return {
         "day": day_value,
         "model": model,
@@ -65,6 +68,7 @@ def _daily_row(day_value, amount, *, cost=None, list_cost=None, model="luna"):
         "cache_read_tokens": amount * 5,
         "cost_usd": cost,
         "list_cost_usd": list_cost,
+        "cost_source": cost_source,
     }
 
 
@@ -134,6 +138,7 @@ def test_activity_shape_windows_headers_and_stable_etag():
             "cache_read_tokens",
             "cost_usd",
             "list_cost_usd",
+            "cost_source",
         }
         assert [row["day"] for row in payload["daily"]] == [
             today.isoformat(),
@@ -201,6 +206,41 @@ def test_activity_shape_windows_headers_and_stable_etag():
     assert fake_session.statements
     assert all("public_api." in sql for sql in fake_session.statements)
     assert all("agent_sessions.agent_" not in sql for sql in fake_session.statements)
+
+
+@pytest.mark.parametrize("cost_source", [None, "reported", "list", "mixed"])
+def test_activity_exposes_aggregate_cost_source_and_etag_tracks_it(cost_source):
+    row = _daily_row(datetime.now(timezone.utc).date(), 1, cost_source=cost_source)
+    fake_session = _FakeSession(
+        {
+            "active_last_hour": 1,
+            "sessions_today": 1,
+            "running": 0,
+            "last_turn_at": None,
+        },
+        [row],
+    )
+    # Extra private fields must not leak even if supplied by a future view.
+    row.update(session_id=123, prompt="private", result_text="private", diff="private")
+    with _client(fake_session) as client:
+        first = client.get("/api/agents/public/activity")
+        assert first.status_code == 200
+        assert first.json()["daily"][0]["cost_source"] == cost_source
+        assert not {"session_id", "prompt", "result_text", "diff"} & set(
+            first.json()["daily"][0]
+        )
+        row["cost_source"] = "reported" if cost_source is None else None
+        changed = client.get(
+            "/api/agents/public/activity",
+            headers={"If-None-Match": first.headers["etag"]},
+        )
+        assert changed.status_code == 200
+        assert changed.headers["etag"] != first.headers["etag"]
+    assert "cost_source" in next(
+        sql
+        for sql in fake_session.statements
+        if "public_api.agent_activity_daily" in sql
+    )
 
 
 def test_activity_serializes_last_turn_at_as_utc():

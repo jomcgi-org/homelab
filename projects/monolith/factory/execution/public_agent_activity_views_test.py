@@ -33,6 +33,7 @@ def test_agent_activity_view_columns_and_types(session):
         ("cache_write_tokens", "numeric"),
         ("cost_usd", "numeric"),
         ("list_cost_usd", "double precision"),
+        ("cost_source", "text"),
     ]
 
     now_columns = session.execute(
@@ -74,6 +75,29 @@ def test_agent_activity_view_columns_and_types(session):
         ("cache_read_tokens", "numeric"),
         ("list_cost_usd", "numeric"),
     ]
+
+
+def test_agent_activity_views_use_owner_permissions_and_select_only_grants(session):
+    rows = session.execute(
+        text(
+            """
+            SELECT c.relname,
+                   COALESCE('security_invoker=true' = ANY(c.reloptions), false)
+            FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = 'public_api' AND c.relkind = 'v'
+              AND c.relname IN ('agent_activity_daily', 'agent_activity_now')
+            ORDER BY c.relname
+            """
+        )
+    ).all()
+    assert rows == [("agent_activity_daily", False), ("agent_activity_now", False)]
+    for view, _ in rows:
+        for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE"):
+            allowed = session.execute(
+                text("SELECT has_table_privilege('public_reader', :view, :privilege)"),
+                {"view": f"public_api.{view}", "privilege": privilege},
+            ).scalar_one()
+            assert allowed is (privilege == "SELECT")
 
 
 def _insert_session(session, local_id, model):
@@ -217,6 +241,53 @@ def test_daily_view_skips_nul_escape_but_keeps_literal_escape_text(session):
     assert tuple(row) == (1, 1, 7)
 
 
+@pytest.mark.parametrize(
+    ("costs", "expected_source", "expected_reported", "expected_list"),
+    [
+        ([(None, None)], None, None, None),
+        ([(0, None)], "reported", 0, None),
+        ([(None, 0)], "list", None, 0),
+        ([(0.1, 0.2)], "mixed", 0.1, 0.2),
+        ([(0.1, None), (None, 0.2), (None, None)], "mixed", 0.1, 0.2),
+        ([(0.1, None), (None, None)], "reported", 0.1, None),
+        ([(None, 0.2), (None, None)], "list", None, 0.2),
+    ],
+)
+def test_daily_cost_source_preserves_day_model_grain(
+    session, costs, expected_source, expected_reported, expected_list
+):
+    agent = _insert_session(session, "activity-provenance", "provenance-model")
+    for seq, (reported, listed) in enumerate(costs, start=1):
+        _insert_turn(
+            session,
+            agent,
+            seq,
+            '{"input_tokens":10}',
+            cost_usd=reported,
+            list_cost_usd=listed,
+        )
+    row = session.execute(
+        text(
+            """
+            SELECT sessions, turns, input_tokens, cost_usd, list_cost_usd, cost_source
+            FROM public_api.agent_activity_daily WHERE model = 'provenance-model'
+            """
+        )
+    ).one()
+    assert row.sessions == 1
+    assert row.turns == len(costs)
+    assert row.input_tokens == 10 * len(costs)
+    assert row.cost_source == expected_source
+    if expected_reported is None:
+        assert row.cost_usd is None
+    else:
+        assert float(row.cost_usd) == pytest.approx(expected_reported)
+    if expected_list is None:
+        assert row.list_cost_usd is None
+    else:
+        assert row.list_cost_usd == pytest.approx(expected_list)
+
+
 def test_public_reader_can_select_views_but_not_agent_tables(pg):
     engine = create_engine(pg.url)
     try:
@@ -226,7 +297,9 @@ def test_public_reader_can_select_views_but_not_agent_tables(pg):
                 text("SELECT active_last_hour FROM public_api.agent_activity_now")
             ).all()
             session.execute(
-                text("SELECT day, model FROM public_api.agent_activity_daily")
+                text(
+                    "SELECT day, model, cost_source FROM public_api.agent_activity_daily"
+                )
             ).all()
             session.execute(
                 text(
