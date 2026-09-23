@@ -1268,7 +1268,8 @@ knowledge:
     limit: 5
   feeds:
     emberSessions:
-      # Export finished Ember sessions only after this dark feed is verified.
+      # Export quiet active or finished Ember sessions only after this dark feed
+      # is verified. Incremental watermarks prevent duplicate turn extraction.
       # Empty starts at process startup, so enabling the feed does not backfill
       # history. Set an RFC3339 timestamp to backfill sessions created since it.
       enabled: false
