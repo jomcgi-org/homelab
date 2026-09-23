@@ -15,8 +15,17 @@ from factory.execution.models import AgentSession, AgentTurn, PendingMessage
 from knowledge.models import KnowledgeFeedState, RawInput
 
 
+SEEDED_SINCE_FLOOR = "2026-01-01T00:00:00Z"
+
+
 @pytest.fixture(name="engine")
-def engine_fixture(tmp_path):
+def engine_fixture(tmp_path, monkeypatch):
+    # Pin the feed floor before any test seeds sessions. Without it the first
+    # feed pass persists a durable floor of "now", which excludes the sessions
+    # the test just seeded. SQLite's CURRENT_TIMESTAMP truncates to whole
+    # seconds, so that only showed up when seeding and the first pass straddled
+    # a second boundary. Tests of the durable floor delete this variable.
+    monkeypatch.setenv("KG_FEED_SINCE", SEEDED_SINCE_FLOOR)
     engine = create_engine(
         f"sqlite:///{tmp_path / 'kg_feed_test.db'}",
         connect_args={"check_same_thread": False},
