@@ -1122,12 +1122,17 @@ spec:
                       type:
                         type: string
                         description: >-
-                          Ready | BaseBuilt | BaseVendorCoverage. Ready means a
+                          Ready | BaseBuilt | BaseVendorCoverage |
+                          BaseRegistryConverged. Ready means a
                           restorable base exists SOMEWHERE, which on a
                           vendor-split fleet is not the same as everywhere:
                           BaseVendorCoverage is the per-CPU-vendor view and goes
                           False while any known fleet vendor lacks a base at the
-                          desired signature.
+                          desired signature. BaseRegistryConverged observes
+                          whether every eligible instance advertises its vendor's
+                          exact recorded ref READY at the desired signature.
+                          Incomplete evidence is Unknown. This is observation
+                          only, not a placement gate or proof of live discovery.
                       status:
                         type: string
                         enum:
