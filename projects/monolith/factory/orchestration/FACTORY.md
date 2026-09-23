@@ -118,6 +118,27 @@ metadata while continuing to return factory state during a KG outage. Issue
 task-relevant subset to the Planner, with current task and decision state read
 from the authoritative factory records above.
 
+`FACTORY_PLANNER_KNOWLEDGE_ENABLED` stages that Planner input and is false when
+unset. When enabled, the server resolves the exact receipt and generation from
+the selected task, refreshes the receipt acceptance, direction, policy and
+control state, and admits only KG notes whose complete raw provenance is tagged
+for that receipt. Repository scope alone is not authorization. Session history,
+another receipt's history and graph neighbours are excluded. KG failure is
+recorded as unavailable, not as a successful empty search.
+
+Each enabled Planner node and its bounded input manifest commit together. The
+manifest records the authoritative input timestamps, actual note and raw IDs,
+verification, dispute, validity and observation metadata, retrieval status and
+all omission counts. Later Planner rounds append a new manifest. Prompt sizing
+drops optional KG notes before receipt acceptance, operator direction, current
+decision/control state or deviation evidence.
+
+The enabled Planner may emit one `request_context` decision for a bounded query.
+The server derives receipt authorization again, records a linked request and
+result in `factory_audit`, and presents the result to a later Planner round.
+The action cannot name a receipt or expose `factory_context` or another
+operator-only MCP endpoint to a worker.
+
 Keep three inputs visibly distinct. Operator instructions are attributed task
 requests or steering applied through an authorized interface. Approved
 decisions are resolved receipt decisions and their audit evidence. Retrieved
