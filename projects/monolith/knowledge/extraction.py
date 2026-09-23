@@ -684,6 +684,66 @@ def _update_job_payload_in_session(session: Session, name: str, payload: dict) -
     return result.rowcount > 0
 
 
+_REPO_DIFF_PLACEHOLDER_MARKER = "[... elided ...]"
+_REPO_DIFF_HEADER = "diff --git "
+
+
+def _validate_repo_diff_evidence(parsed: _RepoDiffResult) -> None:
+    """Reject placeholder or mismatched scout evidence before any cursor write.
+
+    The scout prompt caps large patches by embedding the exact marker inside
+    real diff content, so a diff that is only the marker (or that carries no
+    git diff headers) is model-invented evidence, not source data. Raising
+    here leaves the job payload untouched because apply_repo_diff has not
+    written yet and rolls back on error.
+    """
+    diff_empty = not parsed.diff.strip()
+    stat_empty = not parsed.diff_stat.strip()
+    if parsed.base_sha is None:
+        if diff_empty and stat_empty:
+            return
+        raise ExtractionOutputInvalid(
+            "first-run scout result must carry empty diff and diff_stat"
+        )
+    if parsed.base_sha == parsed.head_sha:
+        if diff_empty and stat_empty:
+            return
+        raise ExtractionOutputInvalid(
+            "scout range is empty but carries diff evidence"
+        )
+    if diff_empty and stat_empty:
+        return
+    if diff_empty != stat_empty:
+        raise ExtractionOutputInvalid(
+            "scout diff and diff_stat must both be empty or both be set"
+        )
+    if parsed.diff.strip() == _REPO_DIFF_PLACEHOLDER_MARKER:
+        raise ExtractionOutputInvalid(
+            "scout diff is a placeholder, not source evidence"
+        )
+    if _REPO_DIFF_HEADER not in parsed.diff:
+        raise ExtractionOutputInvalid(
+            "scout diff carries no git diff headers"
+        )
+
+
+def _stored_scout_sha(session: Session, job_name: str) -> str | None:
+    row = session.execute(
+        text("SELECT payload FROM routine_jobs WHERE name = :name"),
+        {"name": job_name},
+    ).first()
+    if row is None:
+        return None
+    try:
+        payload = row[0]
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        last_sha = (payload or {}).get("last_sha")
+    except Exception:
+        return None
+    return last_sha if isinstance(last_sha, str) else None
+
+
 def _changed_files(diff_stat: str, diff: str) -> int:
     stat_count = sum(1 for line in diff_stat.splitlines() if " | " in line)
     if stat_count:
@@ -716,9 +776,10 @@ def _repo_diff_markdown(parsed: _RepoDiffResult, changed_files: int) -> str:
 def apply_repo_diff(session: Session, job_name: str, result_text: str) -> dict:
     """Apply one scout result and advance its cursor in the same transaction."""
     parsed = _parse_repo_diff_result(result_text)
+    _validate_repo_diff_evidence(parsed)
     cursor_payload = {"mode": "repo-diff", "last_sha": parsed.head_sha}
     try:
-        if parsed.base_sha is None or not parsed.diff:
+        if parsed.base_sha is None or not parsed.diff.strip():
             _update_job_payload_in_session(session, job_name, cursor_payload)
             session.commit()
             return {
@@ -727,6 +788,12 @@ def apply_repo_diff(session: Session, job_name: str, result_text: str) -> dict:
                 "summary": "no changes",
             }
 
+        stored_sha = _stored_scout_sha(session, job_name)
+        preserve_cursor = (
+            stored_sha is not None
+            and stored_sha != parsed.base_sha
+            and stored_sha != parsed.head_sha
+        )
         changed_files = _changed_files(parsed.diff_stat, parsed.diff)
         markdown = _repo_diff_markdown(parsed, changed_files)
         from knowledge.raw_write import persist_raw_with_status
@@ -744,16 +811,21 @@ def apply_repo_diff(session: Session, job_name: str, result_text: str) -> dict:
             },
             commit=False,
         )
-        _update_job_payload_in_session(session, job_name, cursor_payload)
+        if not preserve_cursor:
+            _update_job_payload_in_session(session, job_name, cursor_payload)
         session.commit()
     except Exception:
         session.rollback()
         raise
+    summary = f"raw={raw.raw_id} changed_files={changed_files}"
+    if preserve_cursor:
+        summary += " cursor_preserved"
     return {
         "raw_id": raw.raw_id,
         "created": created,
         "changed_files": changed_files,
-        "summary": f"raw={raw.raw_id} changed_files={changed_files}",
+        "cursor_preserved": preserve_cursor,
+        "summary": summary,
     }
 
 

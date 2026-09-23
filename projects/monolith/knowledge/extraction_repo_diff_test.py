@@ -216,3 +216,181 @@ def test_unknown_scout_hold_survives_feature_flag_toggle(session, monkeypatch):
     assert row.next_run_at is None
     assert row.last_status == "invocation_outcome_unknown"
     assert json.loads(row.payload)["last_sha"] == "retain"
+
+
+def _stored_last_sha(session):
+    payload = session.execute(
+        text("SELECT payload FROM routine_jobs WHERE name = 'kg-repo-diff'")
+    ).scalar_one()
+    return json.loads(payload)["last_sha"]
+
+
+def _valid_diff(*, base_sha="a" * 40, diff_stat=None, diff=None):
+    return _output(
+        base_sha=base_sha,
+        diff_stat=(
+            " file.py | 1 +\n 1 file changed" if diff_stat is None else diff_stat
+        ),
+        diff=(
+            "diff --git a/file.py b/file.py\n+x = 1" if diff is None else diff
+        ),
+    )
+
+
+def test_placeholder_only_diff_rejected_without_cursor_advance(session):
+    _scout_job(session)
+
+    with pytest.raises(ExtractionOutputInvalid):
+        apply_repo_diff(
+            session,
+            "kg-repo-diff",
+            _output(
+                base_sha="a" * 40,
+                diff_stat=" file.py | 1 +\n 1 file changed",
+                diff="[... elided ...]",
+            ),
+        )
+
+    assert session.exec(select(RawInput)).all() == []
+    assert _stored_last_sha(session) is None
+
+
+def test_placeholder_with_surrounding_whitespace_rejected(session):
+    _scout_job(session)
+
+    with pytest.raises(ExtractionOutputInvalid):
+        apply_repo_diff(
+            session,
+            "kg-repo-diff",
+            _output(
+                base_sha="a" * 40,
+                diff_stat=" file.py | 1 +",
+                diff="  \n[... elided ...]\n ",
+            ),
+        )
+
+    assert session.exec(select(RawInput)).all() == []
+    assert _stored_last_sha(session) is None
+
+
+def test_headerless_invented_diff_rejected(session):
+    _scout_job(session)
+
+    with pytest.raises(ExtractionOutputInvalid):
+        apply_repo_diff(
+            session,
+            "kg-repo-diff",
+            _output(
+                base_sha="a" * 40,
+                diff_stat=" 145 files changed, 13202 insertions(+)",
+                diff="summary of 145 files, 13202 insertions and 245 deletions",
+            ),
+        )
+
+    assert session.exec(select(RawInput)).all() == []
+    assert _stored_last_sha(session) is None
+
+
+def test_first_run_with_evidence_rejected(session):
+    _scout_job(session)
+
+    with pytest.raises(ExtractionOutputInvalid):
+        apply_repo_diff(session, "kg-repo-diff", _valid_diff(base_sha=None))
+
+    assert session.exec(select(RawInput)).all() == []
+    assert _stored_last_sha(session) is None
+
+
+def test_same_sha_with_evidence_rejected(session):
+    _scout_job(session)
+
+    with pytest.raises(ExtractionOutputInvalid):
+        apply_repo_diff(session, "kg-repo-diff", _valid_diff(base_sha="b" * 40))
+
+    assert session.exec(select(RawInput)).all() == []
+    assert _stored_last_sha(session) is None
+
+
+def test_mismatched_diff_and_stat_rejected(session):
+    _scout_job(session)
+
+    with pytest.raises(ExtractionOutputInvalid):
+        apply_repo_diff(
+            session,
+            "kg-repo-diff",
+            _output(
+                base_sha="a" * 40,
+                diff_stat="",
+                diff="diff --git a/file.py b/file.py\n+x = 1",
+            ),
+        )
+    with pytest.raises(ExtractionOutputInvalid):
+        apply_repo_diff(
+            session,
+            "kg-repo-diff",
+            _output(
+                base_sha="a" * 40,
+                diff_stat=" file.py | 1 +",
+                diff="",
+            ),
+        )
+
+    assert session.exec(select(RawInput)).all() == []
+    assert _stored_last_sha(session) is None
+
+
+def test_valid_empty_comparison_advances_cursor_without_raw(session):
+    _scout_job(session)
+
+    applied = apply_repo_diff(
+        session, "kg-repo-diff", _output(base_sha="a" * 40)
+    )
+
+    assert applied["summary"] == "no changes"
+    assert session.exec(select(RawInput)).all() == []
+    assert _stored_last_sha(session) == "b" * 40
+
+
+def test_truncated_large_diff_with_headers_accepted(session, monkeypatch):
+    _scout_job(session)
+    monkeypatch.setattr("knowledge.raw_write.upload_raw", lambda *_args: None)
+    diff = (
+        "diff --git a/big.py b/big.py\n"
+        "+line\n"
+        "[... elided ...]\n"
+        "+tail\n"
+    )
+
+    applied = apply_repo_diff(
+        session,
+        "kg-repo-diff",
+        _output(
+            base_sha="a" * 40,
+            diff_stat=" big.py | 200 ++++",
+            diff=diff,
+        ),
+    )
+
+    assert applied["created"] is True
+    assert applied.get("cursor_preserved") is False
+    assert len(session.exec(select(RawInput)).all()) == 1
+    assert _stored_last_sha(session) == "b" * 40
+
+
+def test_stale_base_persists_raw_but_preserves_newer_cursor(
+    session, monkeypatch
+):
+    _scout_job(session)
+    monkeypatch.setattr("knowledge.raw_write.upload_raw", lambda *_args: None)
+    session.execute(
+        text("UPDATE routine_jobs SET payload = :payload WHERE name = 'kg-repo-diff'"),
+        {"payload": json.dumps({"mode": "repo-diff", "last_sha": "c" * 40})},
+    )
+    session.commit()
+
+    applied = apply_repo_diff(session, "kg-repo-diff", _valid_diff())
+
+    assert applied["created"] is True
+    assert applied.get("cursor_preserved") is True
+    assert len(session.exec(select(RawInput)).all()) == 1
+    assert _stored_last_sha(session) == "c" * 40
