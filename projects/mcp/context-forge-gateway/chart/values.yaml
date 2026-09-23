@@ -247,7 +247,10 @@ previewAuth:
   # provider name. Both of these track blueprints/preview-auth.yaml entry 2;
   # renaming the application there breaks token validation here.
   issuer: https://auth.jomcgi.dev/application/o/preview/
-  jwksUri: https://auth.jomcgi.dev/application/o/preview/jwks/
+  # In-cluster JWKS: the public hostname hairpins Envoy Gateway's JWKS
+  # refresh out through Cloudflare and back, so the cluster was polling its
+  # own public ingress. Issuer stays the public string for the `iss` compare.
+  jwksUri: "http://authentik-server.authentik.svc.cluster.local/application/o/preview/jwks/"
   # Pinned in the blueprint rather than generated, because it is not a secret
   # and this file has to name it.
   clientID: preview-friends
