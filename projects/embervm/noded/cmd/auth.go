@@ -20,8 +20,9 @@ const bearerPrefix = "Bearer "
 
 // checkBearer validates the incoming call's authorization metadata against the
 // configured static token in constant time. It is the portable, mesh-independent
-// gate (v1 auth per the node.proto contract); a Cilium/Linkerd policy layers on
-// top. The upgrade path to mTLS/SPIFFE is additive and does not touch this.
+// gate (v1 auth per the node.proto contract), not network-level caller isolation.
+// The removed Cilium policy supplies no defence-in-depth guarantee. The upgrade
+// path to mTLS/SPIFFE is additive and does not touch this.
 func checkBearer(ctx context.Context, token string) error {
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
