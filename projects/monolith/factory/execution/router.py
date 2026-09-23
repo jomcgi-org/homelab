@@ -218,9 +218,7 @@ def _session_payload(
             float(total_cost_usd) if total_cost_usd is not None else None
         ),
         "total_list_cost_usd": (
-            float(total_list_cost_usd)
-            if total_list_cost_usd is not None
-            else None
+            float(total_list_cost_usd) if total_list_cost_usd is not None else None
         ),
         "reported_cost_missing_turns": int(reported_cost_missing_turns),
         "list_cost_missing_turns": int(list_cost_missing_turns),

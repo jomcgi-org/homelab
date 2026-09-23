@@ -4122,9 +4122,7 @@ def _muse_usage_projection(events, session_id, command_id, expected_completions)
         result["total_tokens"] = sum(row["totalTokens"] for row in observations)
         if all("durationMs" in row for row in observations):
             result["model_ms"] = sum(row["durationMs"] for row in observations)
-        reported_models = [
-            row["modelId"] for row in observations if "modelId" in row
-        ]
+        reported_models = [row["modelId"] for row in observations if "modelId" in row]
         if len(reported_models) == len(observations):
             meta["model_identity_status"] = "reported"
         elif reported_models:

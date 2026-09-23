@@ -161,9 +161,7 @@ export function recentSummary(sessions = [], runs = [], now = Date.now()) {
     .sort((a, b) => b.at - a.at);
   const costs = items.map((item) => {
     const raw =
-      item.kind === "run"
-        ? item.value?.cost_usd
-        : item.value?.total_cost_usd;
+      item.kind === "run" ? item.value?.cost_usd : item.value?.total_cost_usd;
     if (raw == null) return null;
     const value = Number(raw);
     return Number.isFinite(value) && value >= 0 ? value : null;

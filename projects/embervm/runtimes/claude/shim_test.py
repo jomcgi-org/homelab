@@ -9279,9 +9279,7 @@ def test_muse_usage_real_retained_capture_preserves_native_provenance():
     assert usage["muse"]["observation_scope"] == "model_completion_delta"
     assert usage["muse"]["cumulative_scope"] == "session"
     assert usage["muse"]["input_includes_cache"] is True
-    assert usage["muse"]["reported_model_ids"] == [
-        "muse-spark-1.3-contributor"
-    ]
+    assert usage["muse"]["reported_model_ids"] == ["muse-spark-1.3-contributor"]
     assert usage["input_tokens"] == usage["prompt_tokens"] == 23415
     assert usage["output_tokens"] == 24
     assert usage["total_tokens"] == 23439

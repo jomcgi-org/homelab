@@ -624,15 +624,11 @@ def compose_run(
     reported_costs = [
         cost
         for row in sessions
-        if (
-            cost := _value(row, "total_cost_usd", _value(row, "cost_usd"))
-        )
-        is not None
+        if (cost := _value(row, "total_cost_usd", _value(row, "cost_usd"))) is not None
     ]
     cost_usd = sum(float(cost) for cost in reported_costs) if reported_costs else None
     reported_cost_missing_turns = sum(
-        int(_value(row, "reported_cost_missing_turns", 0) or 0)
-        for row in sessions
+        int(_value(row, "reported_cost_missing_turns", 0) or 0) for row in sessions
     )
     state = _derived_state(raw, output, nodes, stranded)
     disposition = _disposition(raw, state, output, nodes, plan)

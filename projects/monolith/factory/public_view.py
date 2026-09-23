@@ -118,11 +118,7 @@ def _totals(rows: list[dict], fields: tuple[str, ...]) -> dict:
 
 def _reported_spend(rows: list[dict]) -> float | None:
     """Return only provider-reported spend, never a blend with list estimates."""
-    values = [
-        float(row["cost_usd"])
-        for row in rows
-        if row.get("cost_usd") is not None
-    ]
+    values = [float(row["cost_usd"]) for row in rows if row.get("cost_usd") is not None]
     return float(sum(values)) if values else None
 
 
@@ -208,9 +204,7 @@ def _shape_activity(
     spend_daily = [
         {
             "day": day,
-            "spend_usd": (
-                float(sum(spend_by_day[day])) if spend_by_day[day] else None
-            ),
+            "spend_usd": (float(sum(spend_by_day[day])) if spend_by_day[day] else None),
         }
         for day in sorted(spend_by_day)
     ]

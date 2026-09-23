@@ -115,9 +115,7 @@ def test_real_muse_shape_keeps_cache_in_inclusive_input_once():
     assert priced.cost_usd == pytest.approx(0.0633624)
 
 
-@pytest.mark.parametrize(
-    "value", [True, -1, 1.5, float("nan"), float("inf"), "1000"]
-)
+@pytest.mark.parametrize("value", [True, -1, 1.5, float("nan"), float("inf"), "1000"])
 def test_muse_invalid_or_nonfinite_counters_are_not_priced(value):
     assert (
         price_usage(
