@@ -1437,6 +1437,98 @@ defmodule Embervm.Dispatcher do
     _ -> state
   end
 
+  @doc """
+  Per-instance counts of control-plane-known non-pool VMs, for the
+  `inventory_reconciled` checker (#6422).
+
+  `live_vms` on a node counts EVERY live VM, but the checkpoint pool
+  (`node_workload_vm_ids`) holds only primed task VMs. Two CP-known
+  populations live outside the pool yet count as live on the node:
+
+    * task VMs reserved by in-flight assign workers (`worker_metas`, each
+      `%{node_id: ..., vm_id: ...}`; `node_id` is already the instance id);
+    * live session VMs (`session_vm_ids`: committed `claimed_vm_ids` plus
+      transient `session_reservations`), attributed to the instance whose
+      capacity fact reports the vm: in `session_vms` first, then in a
+      workload's `primed_vm_ids`, which covers reserved-but-still-primed
+      and never-invoked session VMs the node has not bound to a session yet.
+
+  A session VM no fact reports is unattributed (fail-closed): it excuses
+  nothing, so a suppress-primed wedge (#4838) still fails. Counts dedupe by
+  `vm_id` across both sources. `capacity_facts` are `NodeCapacity.all/1`
+  shaped maps.
+  """
+  @spec cp_nonpool_vm_counts([map()], [String.t()], [map()]) :: %{String.t() => non_neg_integer()}
+  def cp_nonpool_vm_counts(worker_metas, session_vm_ids, capacity_facts) do
+    {seen, counts} =
+      Enum.reduce(worker_metas, {MapSet.new(), %{}}, fn meta, {seen, counts} ->
+        vm_id = is_map(meta) && Map.get(meta, :vm_id)
+        node_id = is_map(meta) && Map.get(meta, :node_id)
+
+        if is_binary(vm_id) and vm_id != "" and is_binary(node_id) and node_id != "" and
+             not MapSet.member?(seen, vm_id) do
+          {MapSet.put(seen, vm_id), Map.update(counts, node_id, 1, &(&1 + 1))}
+        else
+          {seen, counts}
+        end
+      end)
+
+    {_seen, counts} =
+      Enum.reduce(session_vm_ids, {seen, counts}, fn vm_id, {seen, counts} ->
+        if is_binary(vm_id) and vm_id != "" and not MapSet.member?(seen, vm_id) do
+          case attribute_session_vm(capacity_facts, vm_id) do
+            nil -> {seen, counts}
+            instance -> {MapSet.put(seen, vm_id), Map.update(counts, instance, 1, &(&1 + 1))}
+          end
+        else
+          {seen, counts}
+        end
+      end)
+
+    counts
+  end
+
+  # The instance id of the capacity fact reporting this session VM, or nil
+  # when no fact does (fail-closed: an unattributed VM excuses nothing).
+  defp attribute_session_vm(capacity_facts, vm_id) do
+    session_hit =
+      Enum.find(capacity_facts, fn facts ->
+        facts
+        |> Map.get(:session_vms, [])
+        |> List.wrap()
+        |> Enum.any?(fn entry -> is_map(entry) and Map.get(entry, :vm_id) == vm_id end)
+      end)
+
+    primed_hit =
+      if is_nil(session_hit) do
+        Enum.find(capacity_facts, fn facts ->
+          case Map.get(facts, :workloads) do
+            workloads when is_map(workloads) ->
+              Enum.any?(workloads, fn {_wl, wc} ->
+                is_map(wc) and vm_id in (Map.get(wc, :primed_vm_ids, []) || [])
+              end)
+
+            _ ->
+              false
+          end
+        end)
+      end
+
+    case session_hit || primed_hit do
+      nil ->
+        nil
+
+      facts ->
+        # Same key the checkpoint's node_reported uses (instance_id, else the
+        # node name), resolved defensively: a malformed fact excuses nothing
+        # rather than raising or emitting a nil key.
+        case Map.get(facts, :instance_id) || Map.get(facts, :configured_id) do
+          id when is_binary(id) and id != "" -> id
+          _ -> nil
+        end
+    end
+  end
+
   defp do_emit_spec_trace_checkpoint(state) do
     node_workload_vm_ids =
       for {{node_id, workload}, queue} <- state.inventory, into: %{} do
@@ -1468,8 +1560,10 @@ defmodule Embervm.Dispatcher do
       |> Enum.map(&Map.get(&1, :vm_id))
       |> Enum.filter(&is_binary/1)
 
+    capacity_facts = NodeCapacity.all(state.capacity_table)
+
     node_reported =
-      for facts <- NodeCapacity.all(state.capacity_table), into: %{} do
+      for facts <- capacity_facts, into: %{} do
         primed_vm_ids =
           Map.get(facts, :workloads, %{})
           |> Map.values()
@@ -1481,12 +1575,24 @@ defmodule Embervm.Dispatcher do
         }}
       end
 
+    # CP-known non-pool VMs per instance (#6422): worker-reserved task VMs
+    # plus live session VMs (committed claims and transient reservations).
+    # `claimed_vm_ids` is the SessionStore live-session read, refreshed every
+    # sweep; the capacity facts attribute each VM to its instance.
+    cp_nonpool_vm_counts =
+      cp_nonpool_vm_counts(
+        Map.values(state.workers),
+        state.claimed_vm_ids |> MapSet.union(state.session_reservations) |> MapSet.to_list(),
+        capacity_facts
+      )
+
     Embervm.SpecTrace.emit(:adoption, :checkpoint, %{
       "node_workload_vm_ids" => node_workload_vm_ids,
       "queued_tasks" => queued_tasks,
       "queued_tasks_truncated" => queued_tasks_truncated,
       "workload_concurrency" => workload_concurrency,
       "reserved_vm_ids" => reserved_vm_ids,
+      "cp_nonpool_vm_counts" => cp_nonpool_vm_counts,
       "node_health" => safe_node_health(),
       "node_reported" => node_reported
     })

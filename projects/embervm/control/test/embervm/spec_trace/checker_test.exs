@@ -876,6 +876,7 @@ defmodule Embervm.SpecTrace.CheckerTest do
       assert verdict[:detail] =~ "node-1"
       assert verdict[:detail] =~ "1"
       assert verdict[:detail] =~ "100"
+      assert verdict[:detail] =~ "cp_nonpool=0"
     end
 
     test "inventory_reconciled does not fail for an idle node", %{store: store} do
@@ -913,6 +914,43 @@ defmodule Embervm.SpecTrace.CheckerTest do
 
       assert verdict[:verdict] == :vacuous
       assert verdict[:detail] =~ "no checkpoint carried a readable inventory"
+    end
+
+    test "inventory_reconciled passes when a live session VM is CP-known with an empty pool", %{store: store} do
+      :ok = SQLite.write(store, [inventory_checkpoint("session-live", 600, %{"node-1:wl" => []}, %{"node-1" => %{"live_vms" => 1, "primed_count" => 0}}, %{"node-1" => 1})])
+
+      verdict = inventory_verdict(Checker.run(SQLite, store))
+
+      assert verdict[:verdict] == :pass
+      assert verdict[:coverage] == 1
+    end
+
+    test "inventory_reconciled fails when live_vms exceed CP-known non-pool VMs", %{store: store} do
+      :ok = SQLite.write(store, [inventory_checkpoint("partial", 700, %{"node-1:wl" => []}, %{"node-1" => %{"live_vms" => 2, "primed_count" => 0}}, %{"node-1" => 1})])
+
+      verdict = inventory_verdict(Checker.run(SQLite, store))
+
+      assert verdict[:verdict] == :fail
+      assert verdict[:detail] =~ "node-1"
+      assert verdict[:detail] =~ "cp_nonpool=1"
+    end
+
+    test "inventory_reconciled does not excuse an instance with another instance's CP-known VMs", %{store: store} do
+      :ok = SQLite.write(store, [inventory_checkpoint("sibling", 800, %{"node-1:wl" => []}, %{"node-1" => %{"live_vms" => 1, "primed_count" => 0}}, %{"node-2" => 1})])
+
+      verdict = inventory_verdict(Checker.run(SQLite, store))
+
+      assert verdict[:verdict] == :fail
+      assert verdict[:detail] =~ "node-1"
+    end
+
+    test "inventory_reconciled treats malformed CP-known counts as zero", %{store: store} do
+      :ok = SQLite.write(store, [inventory_checkpoint("malformed", 900, %{"node-1:wl" => []}, %{"node-1" => %{"live_vms" => 1, "primed_count" => 0}}, %{"node-1" => "one"})])
+
+      verdict = inventory_verdict(Checker.run(SQLite, store))
+
+      assert verdict[:verdict] == :fail
+      assert verdict[:detail] =~ "cp_nonpool=0"
     end
   end
 
@@ -1197,9 +1235,10 @@ defmodule Embervm.SpecTrace.CheckerTest do
     }
   end
 
-  defp inventory_checkpoint(run_id, mono, inventory, node_reported) do
+  defp inventory_checkpoint(run_id, mono, inventory, node_reported, cp_nonpool \\ nil) do
     vars = %{"node_workload_vm_ids" => inventory}
     vars = if is_nil(node_reported), do: vars, else: Map.put(vars, "node_reported", node_reported)
+    vars = if is_nil(cp_nonpool), do: vars, else: Map.put(vars, "cp_nonpool_vm_counts", cp_nonpool)
 
     %{
       "run_id" => "test-run-#{run_id}",

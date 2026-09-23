@@ -68,12 +68,17 @@ defmodule Embervm.SpecTrace.Checker do
      share check remains a known residual for this invariant.
 
   9. **InventoryReconciled**: at a checkpoint, a dispatchable node instance
-     reporting `live_vms > 0` must not have an empty control-plane inventory.
-     The only invariant whose oracle is not the trace alone: the node's own
-     count is recorded into the checkpoint, so a suppress-primed wedge (the
-     node stops reporting its pool, the CP's inventory genuinely empties) is
-     distinguishable from an idle control plane, which no trace-only invariant
-     can do (#4838).
+     reporting more `live_vms` than the control plane can account for must
+     not have an empty pool inventory. The checkpoint pool
+     (`node_workload_vm_ids`) holds only primed task VMs, while `live_vms`
+     counts every live VM, so the dispatcher also records per-instance
+     CP-known non-pool counts (`cp_nonpool_vm_counts`: worker-reserved task
+     VMs plus live session VMs, #6422) and only the unexplained remainder
+     fails. The only invariant whose oracle is not the trace alone: the
+     node's own count is recorded into the checkpoint, so a suppress-primed
+     wedge (the node stops reporting its pool, the CP's inventory genuinely
+     empties) is distinguishable from an idle control plane, which no
+     trace-only invariant can do (#4838).
 
   This list is the fourth copy of the invariant set (#4802): `invariants/0` is
   the source, `check_invariant/2` dispatches on it, and the router reads it. The
@@ -913,20 +918,27 @@ defmodule Embervm.SpecTrace.Checker do
                 inventory_reconciled_vacuous("node_reconciled oracle input is missing live_vms")
 
               true ->
-                violations = Enum.filter(readable_observations, fn {checkpoint, instance_id, report} ->
-                  live_vms = Map.get(report, "live_vms", 0)
-                  live_vms > 0 and checkpoint_inventory_empty?(checkpoint, instance_id)
-                end)
+                violations =
+                  readable_observations
+                  |> Enum.map(fn {checkpoint, instance_id, report} ->
+                    {checkpoint, instance_id, report, cp_nonpool_vm_count(checkpoint, instance_id)}
+                  end)
+                  |> Enum.filter(fn {checkpoint, instance_id, report, cp_nonpool} ->
+                    live_vms = Map.get(report, "live_vms", 0)
+
+                    live_vms > 0 and live_vms > cp_nonpool and
+                      checkpoint_inventory_empty?(checkpoint, instance_id)
+                  end)
 
                 case violations do
-                  [{checkpoint, instance_id, report} | _] ->
+                  [{checkpoint, instance_id, report, cp_nonpool} | _] ->
                     %{
                       invariant: :inventory_reconciled,
                       verdict: :fail,
                       coverage: examined_instance_count(readable_observations),
                       oracle: :node_reconciled,
                       detail:
-                        "instance #{instance_id} reports #{report["live_vms"]} live_vms with empty checkpoint inventory at mono #{checkpoint["mono"]}"
+                        "instance #{instance_id} reports #{report["live_vms"]} live_vms with empty checkpoint inventory at mono #{checkpoint["mono"]} (cp_nonpool=#{cp_nonpool})"
                     }
 
                   [] ->
@@ -954,6 +966,22 @@ defmodule Embervm.SpecTrace.Checker do
 
       _ ->
         false
+    end
+  end
+
+  # CP-known non-pool VMs on this instance at this checkpoint (#6422). Missing
+  # or malformed reads as zero, so pre-change checkpoints and a suppress-primed
+  # wedge (#4838) still fail.
+  defp cp_nonpool_vm_count(checkpoint, instance_id) do
+    case get_in(checkpoint, ["vars", "cp_nonpool_vm_counts"]) do
+      counts when is_map(counts) ->
+        case Map.get(counts, instance_id) do
+          n when is_integer(n) and n >= 0 -> n
+          _ -> 0
+        end
+
+      _ ->
+        0
     end
   end
 

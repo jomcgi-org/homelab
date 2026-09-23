@@ -879,6 +879,14 @@ never stores or witnesses anything that scales with the fleet.
   `/verdict` gates the Kargo dev-to-prod promotion on the hub. The checker
   re-implements the invariants by hand; it does not ask TLC whether a trace
   is a behaviour of the model.
+  **Compared like with like** (#6422): the checkpoint pool
+  (`node_workload_vm_ids`) holds only primed task VMs while node `live_vms`
+  counts every live VM, so the dispatcher also records per-instance
+  CP-known non-pool counts (`cp_nonpool_vm_counts`: worker-reserved task
+  VMs plus live session VMs attributed through the capacity facts) and
+  `inventory_reconciled` fails an empty pool only for the unexplained
+  remainder. `live_vms` stays the independent node testimony, so a
+  suppress-primed wedge (#4838) still fails.
   **Planned**: the TLC tier, trace validation of `adoption.tla` against dev
   SpecTrace windows (#6415). The broader ADR embervm/034 harness beyond that
   is not planned (#4761, #4763 closed).

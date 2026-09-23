@@ -121,6 +121,7 @@ defmodule Embervm.DispatcherTest do
       mem_budget_mib: Keyword.get(opts, :mem_budget, 0),
       cpu_headroom_millicores: 4000,
       live_vms: Keyword.get(opts, :live, 0),
+      session_vms: Keyword.get(opts, :session_vms, []),
       max_live_vms: Keyword.get(opts, :max, 8),
       draining: Keyword.get(opts, :draining, false),
       updated_at: Keyword.get(opts, :updated_at, 1_000_000)
@@ -369,6 +370,105 @@ defmodule Embervm.DispatcherTest do
     assert :ok = Dispatcher.release_session_vm(ctx.name, "vm-session-reserved")
     Dispatcher.sweep(ctx.name)
     assert {:ok, "vm-session-reserved"} = Dispatcher.claim(ctx.name, "node-4", "wl-a")
+  end
+
+  describe "cp_nonpool_vm_counts/3" do
+    defp cp_facts(instance_id, opts \\ []) do
+      %{
+        node_id: Keyword.get(opts, :node, "node-4"),
+        configured_id: Keyword.get(opts, :node, "node-4"),
+        instance_id: instance_id,
+        live_vms: Keyword.get(opts, :live, 0),
+        session_vms: Keyword.get(opts, :session_vms, []),
+        workloads: Keyword.get(opts, :workloads, %{})
+      }
+    end
+
+    test "groups worker-reserved task VMs by their instance" do
+      metas = [
+        %{node_id: "node-4/a", vm_id: "vm-w1"},
+        %{node_id: "node-4/a", vm_id: "vm-w2"},
+        %{node_id: "node-4/b", vm_id: "vm-w3"},
+        %{node_id: "node-4/b", vm_id: nil},
+        %{node_id: nil, vm_id: "vm-w4"},
+        %{node_id: "node-4/a", vm_id: "vm-w1"}
+      ]
+
+      assert Dispatcher.cp_nonpool_vm_counts(metas, [], []) == %{
+               "node-4/a" => 2,
+               "node-4/b" => 1
+             }
+    end
+
+    test "attributes a live session VM to the instance reporting it in session_vms" do
+      facts = [
+        cp_facts("node-4/a", session_vms: [%{vm_id: "vm-s1", session_id: "s-1", workload: "wl-a"}]),
+        cp_facts("node-4/b")
+      ]
+
+      assert Dispatcher.cp_nonpool_vm_counts([], ["vm-s1"], facts) == %{"node-4/a" => 1}
+    end
+
+    test "attributes a reserved-but-still-primed session VM via primed_vm_ids" do
+      facts = [
+        cp_facts("node-4", workloads: %{"wl-a" => %{primed_vm_ids: ["vm-r1"]}})
+      ]
+
+      assert Dispatcher.cp_nonpool_vm_counts([], ["vm-r1"], facts) == %{"node-4" => 1}
+    end
+
+    test "leaves a session VM no fact reports unattributed (fail-closed)" do
+      facts = [cp_facts("node-4")]
+
+      assert Dispatcher.cp_nonpool_vm_counts([], ["vm-ghost"], facts) == %{}
+    end
+
+    test "dedupes a vm held by both a worker and the session sets" do
+      metas = [%{node_id: "node-4", vm_id: "vm-both"}]
+      facts = [cp_facts("node-4")]
+
+      assert Dispatcher.cp_nonpool_vm_counts(metas, ["vm-both"], facts) == %{"node-4" => 1}
+    end
+
+    test "ignores malformed entries without raising" do
+      metas = [%{node_id: "node-4", vm_id: 42}, "not-a-map"]
+      facts = [%{node_id: "node-4"}]
+
+      assert Dispatcher.cp_nonpool_vm_counts(metas, [nil, "", 42], facts) == %{}
+    end
+  end
+
+  test "checkpoint emission carries per-instance CP-known non-pool counts" do
+    System.put_env("EMBERVM_SPEC_TRACE", "on")
+    Embervm.SpecTrace.configure()
+    trace_path = Path.join(System.tmp_dir!(), "spec_trace_cp_nonpool_#{System.unique_integer([:positive])}.db")
+
+    on_exit(fn ->
+      System.put_env("EMBERVM_SPEC_TRACE", "off")
+      Embervm.SpecTrace.configure()
+      File.rm_rf!(trace_path)
+    end)
+
+    trace_store = start_supervised!({Embervm.SpecTrace.Store.SQLite, name: nil, path: trace_path})
+    writer = start_supervised!({Embervm.SpecTrace.Writer, store_mod: Embervm.SpecTrace.Store.SQLite, store: trace_store, batch_size: 1, flush_ms: 5})
+    ctx = start_stack(claimed_vm_ids_fun: fn -> MapSet.new(["vm-sess-1", "vm-ghost"]) end)
+    put_catalog(ctx, "wl-cp", cap: 10)
+    put_facts(ctx, "wl-cp",
+      live: 2,
+      max: 8,
+      session_vms: [%{vm_id: "vm-sess-1", session_id: "sess-1", workload: "wl-cp"}]
+    )
+
+    Dispatcher.sweep(ctx.name)
+    :ok = Embervm.SpecTrace.drain(writer)
+    {:ok, records} = Embervm.SpecTrace.Store.SQLite.read_window(trace_store, action: "checkpoint")
+
+    assert [record] = records
+    assert record["vars"]["node_workload_vm_ids"] == %{}
+    assert record["vars"]["reserved_vm_ids"] == []
+    # vm-sess-1 is reported by the node, vm-ghost is not: only the reported
+    # VM excuses live_vms on this instance.
+    assert record["vars"]["cp_nonpool_vm_counts"] == %{"node-4" => 1}
   end
 
   test "adoption does not double-enqueue a vm already in inventory (dedup)" do
