@@ -236,7 +236,9 @@ def factory_decision(
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     _raise_refused(result)
-    return result
+    from factory.orchestration.conductor_context import with_request_knowledge
+
+    return with_request_knowledge(result, principal.subject, body.request_key)
 
 
 @router.post("/issues")

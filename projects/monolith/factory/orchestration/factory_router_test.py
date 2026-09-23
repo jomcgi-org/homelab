@@ -346,7 +346,7 @@ def test_a_decision_names_exactly_one_of_an_option_or_a_chat(body):
 
 
 def test_a_decision_carries_the_operator_subject_as_the_actor(monkeypatch):
-    from factory.orchestration import factory_decisions
+    from factory.orchestration import conductor_context, factory_decisions
 
     seen = {}
 
@@ -372,6 +372,11 @@ def test_a_decision_carries_the_operator_subject_as_the_actor(monkeypatch):
         return {"ok": True, "state": "completed", "resolution": {}}
 
     monkeypatch.setattr(factory_decisions, "request_decision", request_decision)
+    monkeypatch.setattr(
+        conductor_context,
+        "report_with_deadline",
+        lambda actor, key: {"status": "queued", "actor": actor, "key": key},
+    )
     response = operator_client("operator:joe").post(
         "/api/swarm/factory/decisions/12",
         json={
@@ -390,6 +395,11 @@ def test_a_decision_carries_the_operator_subject_as_the_actor(monkeypatch):
         "request_key": "decision-12",
         "note": "agreed",
         "action": "decide",
+    }
+    assert response.json()["knowledge"] == {
+        "status": "queued",
+        "actor": "operator:joe",
+        "key": "decision-12",
     }
 
 
