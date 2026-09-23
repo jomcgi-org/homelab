@@ -50,6 +50,26 @@ bricks:
     8gi: 0
     16gi: 0
   nodeFloors: []
+  # The BrickController's static target is max(desiredReplicas, minReplicas)
+  # per class, and it enforces that even in autoscale mode observe. The chart
+  # default minReplicas carries a 16gi warm floor of 1 (a home policy), so
+  # leaving this unset ran a 16gi brick in dev on the hub, which the render
+  # alone never shows: the Deployment renders 0 and the controller scales it.
+  # Production's hub overlay zeroes the same floor. Max matches the one-brick
+  # intent, so no mode can grow dev past it.
+  autoscale:
+    minReplicas:
+      1gi: 0
+      2gi: 0
+      4gi: 0
+      8gi: 0
+      16gi: 0
+    maxReplicas:
+      1gi: 0
+      2gi: 1
+      4gi: 0
+      8gi: 0
+      16gi: 0
 
 noded:
   # No Cilium CRDs on the hub (same trade as deploy/values-gke.yaml).
