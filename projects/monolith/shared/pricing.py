@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -73,7 +74,12 @@ def _token_count(usage: Mapping[str, Any], key: str) -> int | float:
     value = usage.get(key, 0)
     if value is None:
         return 0
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value < 0
+    ):
         raise ValueError(f"invalid token count for {key}")
     return value
 
@@ -99,10 +105,10 @@ def _normalized_usage(
     output_tokens = _token_count(usage, "output_tokens")
 
     collector_shape = usage.get("shape")
-    if collector_shape not in {None, "claude", "codex"}:
+    if collector_shape not in {None, "claude", "codex", "muse"}:
         raise ValueError("invalid collector usage shape")
 
-    if collector_shape in {"claude", "codex"}:
+    if collector_shape in {"claude", "codex", "muse"}:
         cache_read_tokens = _token_count(usage, "cache_read_tokens")
         cache_write_tokens = _token_count(usage, "cache_write_tokens")
         claude_shape = collector_shape == "claude"
@@ -159,6 +165,8 @@ def price_usage(
             prices = FIXED_PRICES[model_ref]
             # Muse prices input inclusively like OpenAI (cache_read_tokens are
             # counted in input_tokens); do not charge separately for cache.
+            if counts[2] > counts[0] or counts[3] > counts[0]:
+                raise ValueError("Muse cache tokens exceed inclusive input tokens")
             cost = (
                 counts[0] * prices["input_per_million"]
                 + counts[1] * prices["output_per_million"]

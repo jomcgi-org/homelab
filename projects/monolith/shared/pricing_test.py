@@ -99,6 +99,51 @@ def test_muse_cache_reads_add_no_separate_cost():
     assert with_cache == without_cache
 
 
+def test_real_muse_shape_keeps_cache_in_inclusive_input_once():
+    priced = price_usage(
+        "spark",
+        {
+            "shape": "muse",
+            "input_tokens": 620_234,
+            "output_tokens": 6_695,
+            "cache_read_tokens": 597_505,
+            "cache_write_tokens": 0,
+        },
+    )
+
+    assert priced is not None
+    assert priced.cost_usd == pytest.approx(0.0633624)
+
+
+@pytest.mark.parametrize("value", [True, -1, float("nan"), float("inf"), "1000"])
+def test_muse_invalid_or_nonfinite_counters_are_not_priced(value):
+    assert (
+        price_usage(
+            "spark",
+            {
+                "shape": "muse",
+                "input_tokens": value,
+                "output_tokens": 10,
+            },
+        )
+        is None
+    )
+
+
+def test_muse_cache_cannot_exceed_inclusive_input():
+    assert (
+        price_usage(
+            "spark",
+            {
+                "shape": "muse",
+                "input_tokens": 999,
+                "cache_read_tokens": 1_000,
+            },
+        )
+        is None
+    )
+
+
 @pytest.mark.parametrize(
     ("model", "expected"),
     [("gpt-6-astra", 12.75), ("codex-auto-review", 3.4375)],

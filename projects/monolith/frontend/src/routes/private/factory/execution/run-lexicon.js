@@ -168,6 +168,8 @@ export const RUN_LEXICON = {
     defaultModel: "luna",
     defaultModelOption: "{model} (default)",
     zeroCost: "$0.00",
+    costUnavailable: "cost unavailable",
+    costPartial: "({count} unknown)",
     vmWord: "vm",
     controlPlaneState: "control plane: {state}",
     noLiveVm: "no live microVM; the next prompt boots fresh",

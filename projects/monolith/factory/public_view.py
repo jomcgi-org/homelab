@@ -116,12 +116,24 @@ def _totals(rows: list[dict], fields: tuple[str, ...]) -> dict:
     return result
 
 
-def _spend(ember_rows: list[dict], local_rows: list[dict]) -> float:
-    ember_cost = sum(
-        (row["cost_usd"] or 0) + (row["list_cost_usd"] or 0) for row in ember_rows
-    )
-    local_cost = sum(row["list_cost_usd"] or 0 for row in local_rows)
-    return float(ember_cost + local_cost)
+def _row_spend(row: dict) -> float | None:
+    # A provider charge and a list estimate are alternate bases for one turn,
+    # never additive charges. Prefer reported spend and fall back to the list
+    # estimate only when the provider did not report a charge.
+    if row.get("cost_usd") is not None:
+        return float(row["cost_usd"])
+    if row.get("list_cost_usd") is not None:
+        return float(row["list_cost_usd"])
+    return None
+
+
+def _spend(ember_rows: list[dict], local_rows: list[dict]) -> float | None:
+    values = [
+        value
+        for row in [*ember_rows, *local_rows]
+        if (value := _row_spend(row)) is not None
+    ]
+    return float(sum(values)) if values else None
 
 
 def _shape_activity(
@@ -197,17 +209,20 @@ def _shape_activity(
     combined_totals = _totals([*ember_totals_rows, *local_totals_rows], total_fields)
     combined_totals["spend_usd"] = _spend(ember_totals_rows, local_totals_rows)
 
-    spend_by_day = {}
-    for row in daily:
-        spend_by_day[row["day"]] = spend_by_day.get(row["day"], 0.0) + float(
-            (row["cost_usd"] or 0) + (row["list_cost_usd"] or 0)
-        )
-    for row in local_daily:
-        spend_by_day[row["day"]] = spend_by_day.get(row["day"], 0.0) + float(
-            row["list_cost_usd"] or 0
-        )
+    spend_by_day: dict[str, list[float]] = {}
+    for row in [*daily, *local_daily]:
+        spend_by_day.setdefault(row["day"], [])
+        value = _row_spend(row)
+        if value is not None:
+            spend_by_day[row["day"]].append(value)
     spend_daily = [
-        {"day": day, "spend_usd": spend_by_day[day]} for day in sorted(spend_by_day)
+        {
+            "day": day,
+            "spend_usd": (
+                float(sum(spend_by_day[day])) if spend_by_day[day] else None
+            ),
+        }
+        for day in sorted(spend_by_day)
     ]
 
     return {

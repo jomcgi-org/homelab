@@ -29,6 +29,7 @@ export function formatCount(value) {
 }
 
 export function formatSpend(value) {
+  if (value == null || !Number.isFinite(Number(value))) return "unavailable";
   const rounded = Math.round(numeric(value));
   const abbreviated = (amount, suffix) =>
     `${amount.toFixed(1).replace(/\.0$/, "")}${suffix}`;
@@ -83,8 +84,10 @@ export function activitySeries(rows) {
 export function spendSeries(rows) {
   const byDay = new Map();
   for (const row of rows) {
-    const value = byDay.get(row.day) ?? { d: row.day, spend_usd: 0 };
-    value.spend_usd += numeric(row.spend_usd);
+    const value = byDay.get(row.day) ?? { d: row.day, spend_usd: null };
+    if (row.spend_usd != null && Number.isFinite(Number(row.spend_usd))) {
+      value.spend_usd = (value.spend_usd ?? 0) + Number(row.spend_usd);
+    }
     byDay.set(row.day, value);
   }
   return [...byDay.values()].sort((a, b) => a.d.localeCompare(b.d));
@@ -175,7 +178,11 @@ export function tileDerivations(activity, merges, facts, series, now) {
       spark: last14(series.sessions, "input_tokens", now),
     },
     spend: {
-      value: numeric(combined.spend_usd),
+      value:
+        combined.spend_usd == null ||
+        !Number.isFinite(Number(combined.spend_usd))
+          ? null
+          : Number(combined.spend_usd),
       spark: last14(series.spend, "spend_usd", now),
     },
     facts: {

@@ -1835,6 +1835,10 @@ async def monolith_agent_session_status(session_id: int) -> dict:
     files, commands = _activity_values(turns)
     last = turns[-1] if turns else None
     denials = _decode_json(last.permission_denials, []) if last else []
+    reported_costs = [turn.cost_usd for turn in turns if turn.cost_usd is not None]
+    list_costs = [
+        turn.list_cost_usd for turn in turns if turn.list_cost_usd is not None
+    ]
     return {
         "status": row.status,
         "model": row.model,
@@ -1842,7 +1846,10 @@ async def monolith_agent_session_status(session_id: int) -> dict:
         "files_touched": files,
         "commands_run": commands,
         "needs_answer": bool(denials) or row.status == "needs_input",
-        "cost_usd": sum(turn.cost_usd or 0 for turn in turns),
+        "cost_usd": sum(reported_costs) if reported_costs else None,
+        "list_cost_usd": sum(list_costs) if list_costs else None,
+        "reported_cost_missing_turns": len(turns) - len(reported_costs),
+        "list_cost_missing_turns": len(turns) - len(list_costs),
     }
 
 

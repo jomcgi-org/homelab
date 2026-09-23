@@ -229,6 +229,47 @@ def test_activity_aggregation_and_spoken_diff():
     assert mcp._activity_values(turns) == (["a.py", "b.py"], ["git status"])
 
 
+def test_session_status_separates_explicit_zero_from_missing_cost(session):
+    row = store.create_session(session, "cost-status", "/workspace", "main")
+    store.create_turn(
+        session,
+        row.id,
+        1,
+        "reported zero",
+        None,
+        "done",
+        "completed",
+        None,
+        None,
+        None,
+        {"input_tokens": 1},
+        0.0,
+        model="spark",
+    )
+    store.create_turn(
+        session,
+        row.id,
+        2,
+        "missing reported charge",
+        None,
+        "done",
+        "completed",
+        None,
+        None,
+        None,
+        {"shape": "muse", "input_tokens": 1_000, "output_tokens": 10},
+        None,
+        model="spark",
+    )
+
+    status = asyncio.run(mcp.monolith_agent_session_status(row.id))
+
+    assert status["cost_usd"] == 0.0
+    assert status["reported_cost_missing_turns"] == 1
+    assert status["list_cost_usd"] == pytest.approx(0.000102)
+    assert status["list_cost_missing_turns"] == 1
+
+
 def test_send_persists_and_returns_immediately(session):
     row = store.create_session(session, "sid-123", "/workspace", "main")
 
