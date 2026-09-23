@@ -76,6 +76,9 @@ def compute_deviations(run: dict) -> list[dict]:
                 # An attempt that escalated up its pool after a failure or a
                 # changes-requested review ran a different model on purpose,
                 # and its pin says so. That is routing, not a deviation.
+                # Inert until graph node runs feed this view: the only caller,
+                # view.py's run detail, builds attempts from AgentSession rows,
+                # which carry no escalated_from.
                 if attempt.get("escalated_from"):
                     continue
                 deviations.append(
