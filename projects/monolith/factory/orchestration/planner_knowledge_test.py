@@ -428,15 +428,15 @@ def test_receipt_authorization_excludes_same_repo_and_session_history(
         for raw_id, extra in (
             (
                 "raw-authorized",
-                {"factory_receipt_id": 1, "factory_receipt_generation": 3},
+                {"factory_receipt_id": 9, "factory_receipt_generation": 3},
             ),
             (
                 "raw-other",
-                {"factory_receipt_id": 2, "factory_receipt_generation": 3},
+                {"factory_receipt_id": 10, "factory_receipt_generation": 3},
             ),
             (
                 "raw-invalidated",
-                {"factory_receipt_id": 1, "factory_receipt_generation": 3},
+                {"factory_receipt_id": 9, "factory_receipt_generation": 3},
             ),
             ("raw-session", {}),
         ):
@@ -536,6 +536,7 @@ def test_operator_exchange_writer_is_admitted_by_receipt_reader(
     monkeypatch.setattr(
         "knowledge.api.ingest_raw_with_status", persist_without_external_storage
     )
+    monkeypatch.setattr("core.db.get_engine", lambda: engine)
     result = conductor_context.maintain_request_knowledge("operator", "request-1")
     assert result["status"] == "queued"
     with Session(engine) as db:
