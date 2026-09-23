@@ -530,7 +530,7 @@ def test_context_knowledge_is_scoped_and_does_not_expand_neighbours(monkeypatch)
         assert kwargs == {
             "limit": 2,
             "scope_filter": "repo:owner/repo",
-            "exclude_invalidated": True,
+            "exclude_invalidated": False,
         }
         return [
             {
@@ -577,20 +577,18 @@ def test_receipt_context_has_a_stable_fresh_session_identity(monkeypatch):
     db = SimpleNamespace(get=lambda model, identity: row if identity == 7 else None)
     monkeypatch.setattr(context.controls, "_read_session", lambda: nullcontext(db))
     monkeypatch.setattr(
-        context.controls,
-        "_snapshot",
-        lambda db, receipt: {
-            "id": receipt.id,
-            "repo": receipt.repo,
-            "task_id": receipt.task_id,
-            "title": "Current task",
-            "direction": None,
-        },
+        context,
+        "_current_records",
+        lambda db, receipt, *, actor: (
+            {"control": {}, "queue": {}, "task": {"id": receipt.id}},
+            {"direction": None},
+            None,
+        ),
     )
     monkeypatch.setattr(context, "_request_records", lambda db: {})
-    monkeypatch.setattr(context.controls, "escalation_view", lambda snapshot: None)
+    monkeypatch.setattr(context, "continuity_enabled", lambda: False)
 
-    result = context._factory_context(7)
+    result = context._factory_context(7, actor="joe")
 
     assert result["conversation"] == {
         "id": "factory-receipt:owner/repo:7",
@@ -604,9 +602,83 @@ def test_receipt_context_has_a_stable_fresh_session_identity(monkeypatch):
     )
 
 
+def test_context_knowledge_preserves_supersession_provenance_and_stale_state(
+    monkeypatch,
+):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+    from factory.orchestration import conductor_context as context
+
+    async def embed(_text):
+        return [0.1]
+
+    def search(_vector, **_kwargs):
+        return [
+            {
+                "note_id": "corrected",
+                "scope": "repo:owner/repo",
+                "snippet": "Use the corrected constraint.",
+                "verification_state": "unverified",
+                "disputed": False,
+                "edges": [
+                    {
+                        "target_id": "old",
+                        "edge_type": "supersedes",
+                        "target_title": "Old constraint",
+                    },
+                    {"target_id": "private-note", "edge_type": "related"},
+                ],
+                "provenance": [{"raw_id": "raw-new"}],
+            },
+            {
+                "note_id": "old",
+                "scope": "repo:owner/repo",
+                "snippet": "Use the old constraint.",
+                "verification_state": "invalidated",
+                "disputed": False,
+                "edges": [],
+                "provenance": [{"raw_id": "raw-old"}],
+            },
+        ]
+
+    monkeypatch.setattr(
+        "shared.embedding.EmbeddingClient", lambda: SimpleNamespace(embed=embed)
+    )
+    monkeypatch.setattr("core.db.get_engine", lambda: object())
+    monkeypatch.setattr(context, "Session", lambda _: nullcontext(object()))
+    monkeypatch.setattr(
+        "knowledge.api.KnowledgeStore",
+        lambda _: SimpleNamespace(search_notes_with_context=search),
+    )
+    result = asyncio.run(context.retrieve_knowledge("constraint", "repo:owner/repo", 5))
+    assert result["notes"][0]["supersedes"] == ["old"]
+    assert result["notes"][0]["evidence_raw_ids"] == ["raw-new"]
+    assert result["notes"][1]["verification_state"] == "invalidated"
+    assert result["notes"][1]["stale"] is True
+    assert result["notes"][1]["evidence_raw_ids"] == ["raw-old"]
+    assert "private-note" not in result["notes"][0]["supersedes"]
+
+
+def test_factory_context_passes_authenticated_operator_to_shared_contract(monkeypatch):
+    calls = []
+
+    async def read(receipt_id, query, limit, *, actor):
+        calls.append((receipt_id, query, limit, actor))
+        return {"ok": True, "audience": "conductor"}
+
+    monkeypatch.setattr("factory.orchestration.conductor_context.read_context", read)
+    result = _as(
+        _principal(),
+        lambda: mcp.factory_context(7, query="current priorities", knowledge_limit=3),
+    )
+    assert result == {"ok": True, "audience": "conductor"}
+    assert calls == [(7, "current priorities", 3, "joe")]
+
+
 def test_knowledge_failure_does_not_undo_a_completed_decision(monkeypatch):
     from factory.orchestration import conductor_context as context
 
+    monkeypatch.setenv("CONDUCTOR_CONTINUITY_ENABLED", "true")
     monkeypatch.setattr(
         "factory.orchestration.factory_decisions.request_decision",
         lambda *a, **kw: {"ok": True, "state": "completed"},
@@ -620,6 +692,17 @@ def test_knowledge_failure_does_not_undo_a_completed_decision(monkeypatch):
     assert result["ok"] is True
     assert result["state"] == "completed"
     assert result["knowledge"]["status"] == "unavailable"
+
+
+def test_request_knowledge_maintenance_is_staged_off(monkeypatch):
+    monkeypatch.delenv("CONDUCTOR_CONTINUITY_ENABLED", raising=False)
+    monkeypatch.setattr(
+        "factory.orchestration.factory_decisions.request_decision",
+        lambda *a, **kw: {"ok": True, "state": "completed"},
+    )
+    result = mcp._decide(1, "decision:abc", "close", "r", None, "joe")
+    assert result["state"] == "completed"
+    assert result["knowledge"] == {"status": "disabled"}
 
 
 def test_control_attributes_authenticated_actor_and_preserves_owner_result(monkeypatch):

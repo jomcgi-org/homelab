@@ -142,7 +142,7 @@ def planner_db(tmp_path, monkeypatch):
 def _knowledge(note_id="authorized-current", raw_id="raw-authorized"):
     return {
         "status": "available",
-        "scope": "repo:owner/repo",
+        "scope": "session:factory-receipt:1",
         "authority": "receipt_authorized_untrusted_evidence",
         "observed_at": "2026-09-22T22:30:00+00:00",
         "retrieved_at": "2026-09-22T22:30:00+00:00",
@@ -151,7 +151,7 @@ def _knowledge(note_id="authorized-current", raw_id="raw-authorized"):
                 "note_id": note_id,
                 "title": "Corrected evidence",
                 "snippet": "The current bounded fact.",
-                "scope": "repo:owner/repo",
+                "scope": "session:factory-receipt:1",
                 "verification_state": "disputed",
                 "disputed": True,
                 "confidence": 0.7,
@@ -223,7 +223,7 @@ def _context(prompt):
 
 def test_flag_off_keeps_legacy_planner_input(planner_db, monkeypatch):
     _engine, task_id, _policy = planner_db
-    monkeypatch.delenv("FACTORY_PLANNER_KNOWLEDGE_ENABLED", raising=False)
+    monkeypatch.delenv("CONDUCTOR_CONTINUITY_ENABLED", raising=False)
     task = _task(task_id)
     assert conductor._load_planner_factory_context(task["id"]) is None
     context = _context(conductor.planner_prompt(task, [], []))
@@ -236,6 +236,56 @@ def test_flag_off_keeps_legacy_planner_input(planner_db, monkeypatch):
         "run_records",
         "decision_feedback_records",
     }
+
+
+def test_planner_context_uses_exact_receipt_scope_without_private_chat(
+    planner_db, monkeypatch
+):
+    engine, task_id, _policy = planner_db
+    with Session(engine) as db:
+        row = db.exec(select(FactoryReceipt)).one()
+        row.escalation_json = json.dumps(
+            {
+                "recommendation": "stage",
+                "question": "Which scope?",
+                "summary": "A bounded question.",
+                "options": [],
+                "chat": [
+                    {
+                        "actor": "operator-a",
+                        "note": "Private operator history.",
+                        "asked_at": "2026-09-23T00:00:00+00:00",
+                    }
+                ],
+            }
+        )
+        db.add(row)
+        db.commit()
+
+    calls = []
+
+    async def retrieve(query, scope, limit, *, receipt_id, generation):
+        calls.append((query, scope, limit, receipt_id, generation))
+        return _knowledge()
+
+    monkeypatch.setattr(conductor_context, "retrieve_knowledge", retrieve)
+    result = asyncio.run(conductor_context.planner_context(task_id))
+    assert result["ok"] is True
+    assert result["acceptance"]["body"] == (
+        "Current receipt acceptance and operator constraint."
+    )
+    assert result["decision"]["question"] == "Which scope?"
+    assert result["decision"]["chat"] == []
+    assert result["recent_exchanges"] == []
+    assert calls == [
+        (
+            "Current receipt title\nCurrent receipt acceptance and operator constraint.",
+            "session:factory-receipt:1",
+            5,
+            1,
+            3,
+        )
+    ]
 
 
 def test_enabled_prompt_uses_current_receipt_and_preserves_citation_metadata(
@@ -404,14 +454,17 @@ def test_receipt_authorization_excludes_same_repo_and_session_history(
     rows = [
         {
             **_knowledge()["notes"][0],
+            "scope": "session:factory-receipt:9",
             "provenance": [{"raw_id": "raw-authorized"}],
         },
         {
             **_knowledge("other-receipt", "raw-other")["notes"][0],
+            "scope": "session:factory-receipt:9",
             "provenance": [{"raw_id": "raw-other"}],
         },
         {
             **_knowledge("invalidated-authorized", "raw-invalidated")["notes"][0],
+            "scope": "session:factory-receipt:9",
             "verification_state": "invalidated",
             "provenance": [{"raw_id": "raw-invalidated"}],
         },
@@ -453,7 +506,7 @@ def test_receipt_authorization_excludes_same_repo_and_session_history(
         assert vector == [0.1]
         assert kwargs == {
             "limit": 30,
-            "scope_filter": "repo:owner/repo",
+            "scope_filter": "session:factory-receipt:9",
             "exclude_invalidated": False,
         }
         return rows
@@ -469,7 +522,7 @@ def test_receipt_authorization_excludes_same_repo_and_session_history(
     result = asyncio.run(
         conductor_context.retrieve_knowledge(
             "current query",
-            "repo:owner/repo",
+            "session:factory-receipt:9",
             3,
             receipt_id=9,
             generation=3,
@@ -508,7 +561,7 @@ def test_receipt_authorization_requires_id_and_generation_together(
         )
 
 
-def test_operator_exchange_writer_is_admitted_by_receipt_reader(
+def test_operator_exchange_writer_retains_private_scope_and_receipt_provenance(
     planner_db, monkeypatch
 ):
     engine, _task_id, _policy = planner_db
@@ -535,12 +588,14 @@ def test_operator_exchange_writer_is_admitted_by_receipt_reader(
         "knowledge.api.ingest_raw_with_status", persist_without_external_storage
     )
     monkeypatch.setattr("core.db.get_engine", lambda: engine)
+    monkeypatch.setenv("CONDUCTOR_CONTINUITY_ENABLED", "true")
     result = conductor_context.maintain_request_knowledge("operator", "request-1")
     assert result["status"] == "queued"
     with Session(engine) as db:
         raw = db.exec(select(RawInput).where(RawInput.raw_id == result["raw_id"])).one()
         assert raw.extra["factory_receipt_id"] == 1
         assert raw.extra["factory_receipt_generation"] == 3
+        assert raw.extra["scope"] == "personal:operator:factory-receipt:1"
         assert conductor_context._receipt_raw_ids(
             db,
             [{"provenance": [{"raw_id": raw.raw_id}]}],
@@ -554,7 +609,7 @@ def test_kg_outage_is_visible_with_authoritative_factory_evidence(planner_db):
     task = _task(task_id)
     unavailable = {
         "status": "unavailable",
-        "scope": "repo:owner/repo",
+        "scope": "session:factory-receipt:1",
         "retrieved_at": "2026-09-22T23:10:00+00:00",
         "notes": [],
         "omitted": {"unauthorized_candidates": 0, "prompt_budget": 0},
@@ -613,7 +668,7 @@ def test_prompt_pressure_drops_knowledge_before_required_evidence(
 
 def test_request_context_is_schema_bounded_and_durably_linked(planner_db, monkeypatch):
     engine, task_id, _policy = planner_db
-    monkeypatch.setenv("FACTORY_PLANNER_KNOWLEDGE_ENABLED", "true")
+    monkeypatch.setenv("CONDUCTOR_CONTINUITY_ENABLED", "true")
 
     async def current_context(selected_task_id, query=None, limit=5):
         assert selected_task_id == task_id
@@ -666,7 +721,7 @@ def test_request_context_is_schema_bounded_and_durably_linked(planner_db, monkey
 
 def test_request_context_records_authorization_failure(planner_db, monkeypatch):
     engine, task_id, _policy = planner_db
-    monkeypatch.setenv("FACTORY_PLANNER_KNOWLEDGE_ENABLED", "true")
+    monkeypatch.setenv("CONDUCTOR_CONTINUITY_ENABLED", "true")
 
     async def refused(_task_id, query=None, limit=5):
         return {"ok": False, "reason": "invalid_receipt_authorization"}
@@ -693,7 +748,7 @@ def test_request_context_records_authorization_failure(planner_db, monkeypatch):
 
 def test_request_context_records_bounded_retrieval_failure(planner_db, monkeypatch):
     engine, task_id, _policy = planner_db
-    monkeypatch.setenv("FACTORY_PLANNER_KNOWLEDGE_ENABLED", "true")
+    monkeypatch.setenv("CONDUCTOR_CONTINUITY_ENABLED", "true")
 
     async def failed(_task_id, query=None, limit=5):
         raise RuntimeError("database unavailable")
@@ -718,7 +773,7 @@ def test_request_context_records_bounded_retrieval_failure(planner_db, monkeypat
 
 def test_request_context_enforces_and_records_timeout(planner_db, monkeypatch):
     engine, task_id, _policy = planner_db
-    monkeypatch.setenv("FACTORY_PLANNER_KNOWLEDGE_ENABLED", "true")
+    monkeypatch.setenv("CONDUCTOR_CONTINUITY_ENABLED", "true")
     monkeypatch.setattr(conductor, "PLANNER_CONTEXT_REQUEST_TIMEOUT_SECONDS", 0.001)
 
     async def slow(_task_id, query=None, limit=5):

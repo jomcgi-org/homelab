@@ -265,17 +265,43 @@ def escalate(db, first="split", *, task_class="refine", state="succeeded"):
     with Session(db) as session:
         row = session.exec(select(FactoryReceipt)).one()
         row.state = state
-        row.escalation_json = json.dumps(
+        document = {
+            "recommendation": first,
+            "question": "Which target is required?",
+            "summary": "Two features wearing one issue number.",
+            "options": options(first),
+            "comment_url": f"https://github.com/{REPO}/issues/{ISSUE}#c1",
+            "downgraded": False,
+            "resolved": None,
+            "conversation": [
+                {
+                    "message_id": "factory-brief:test-task",
+                    "role": "conductor",
+                    "actor": "factory:refine",
+                    "source": "factory_brief",
+                    "timestamp": "2026-09-23T00:00:00+00:00",
+                    "task_id": "test-task",
+                    "decision_id": None,
+                    "request_key": None,
+                    "epistemic_status": "suggestion_or_hypothesis",
+                    "text": (
+                        "Two features wearing one issue number.\n\n"
+                        "Which target is required?"
+                    ),
+                    "summary": "Two features wearing one issue number.",
+                    "evidence": [f"https://github.com/{REPO}/issues/{ISSUE}#c1"],
+                }
+            ],
+        }
+        document["conversation"][0]["decision_id"] = controls.decision_identity(
             {
-                "recommendation": first,
-                "question": "Which target is required?",
-                "summary": "Two features wearing one issue number.",
-                "options": options(first),
-                "comment_url": f"https://github.com/{REPO}/issues/{ISSUE}#c1",
-                "downgraded": False,
-                "resolved": None,
+                "id": row.id,
+                "repo": row.repo,
+                "generation": row.generation,
+                "escalation": document,
             }
         )
+        row.escalation_json = json.dumps(document)
         session.add(row)
         session.commit()
         return row.id
@@ -323,6 +349,34 @@ def test_refine_escalation_stores_the_normalized_issue_body_hash(db, monkeypatch
     assert document["issue_body_sha256"] == controls.issue_body_hash(
         "The first line. The second line."
     )
+    brief = document["conversation"][0]
+    assert brief["role"] == "conductor"
+    assert brief["source"] == "factory_brief"
+    assert brief["message_id"] == f"factory-brief:{task_id}:{brief['decision_id']}"
+    assert brief["decision_id"].startswith("decision:")
+    updated_artifact = {
+        "recommendation": "split",
+        "question": "Which target is required now?",
+        "summary": "The brief changed after operator input.",
+        "options": options("split"),
+    }
+    updated = refine._record_escalation(
+        task_id,
+        updated_artifact,
+        f"https://github.com/{REPO}/issues/{ISSUE}#c2",
+        "The first line.\n\n  The second line.",
+        downgraded=False,
+    )
+    replayed = refine._record_escalation(
+        task_id,
+        updated_artifact,
+        f"https://github.com/{REPO}/issues/{ISSUE}#c2",
+        "The first line.\n\n  The second line.",
+        downgraded=False,
+    )
+    assert len(updated["conversation"]) == 2
+    assert len(replayed["conversation"]) == 2
+    assert len({item["message_id"] for item in updated["conversation"]}) == 2
 
 
 def test_agent_ready_moves_the_labels_and_comments_the_scope(db, github):
@@ -964,25 +1018,39 @@ def test_durable_delivery_answer_does_not_block_its_own_readmission(db, github):
     assert result["resolution"]["effects"]["readmitted"] is True
 
 
-def test_fresh_context_uses_durable_exchanges_even_when_knowledge_is_down(
+def test_fresh_context_uses_durable_requests_even_when_knowledge_is_down(
     db, github, monkeypatch
 ):
     import asyncio
     from factory.orchestration import conductor_context as context
 
+    monkeypatch.setenv("CONDUCTOR_CONTINUITY_ENABLED", "true")
     receipt_id = escalate(db, "close")
-    durable_answer(receipt_id, current_decision_id())
+    identity = current_decision_id()
+    durable_answer(receipt_id, identity)
+    durable_answer(receipt_id, identity, key="request-2")
     db.dispose()
 
-    async def unavailable(query, scope, limit):
-        assert scope == "repo:" + REPO
+    async def unavailable(query, scopes, limit):
+        assert scopes == (
+            f"personal:operator:factory-receipt:{receipt_id}",
+            f"session:factory-receipt:{receipt_id}",
+        )
         return {"status": "unavailable", "notes": []}
 
     monkeypatch.setattr(context, "retrieve_knowledge", unavailable)
-    result = asyncio.run(context.read_context(receipt_id, None, 5))
+    result = asyncio.run(context.read_context(receipt_id, None, 5, actor="operator"))
     assert result["receipt"]["state"] == "succeeded"
-    assert result["recent_exchanges"][0]["actor"] == "operator"
-    assert result["recent_exchanges"][0]["outcome"]["state"] == "completed"
+    assert [item["role"] for item in result["recent_exchanges"]] == [
+        "conductor",
+        "operator",
+    ]
+    assert result["recent_exchanges"][-1]["message_id"] == (
+        "factory-request:operator:request-1"
+    )
+    assert result["recent_exchanges"][-1]["epistemic_status"] == "approved"
+    assert result["recent_requests"][0]["actor"] == "operator"
+    assert result["recent_requests"][0]["outcome"]["state"] == "completed"
     assert result["knowledge"]["status"] == "unavailable"
 
 
@@ -992,8 +1060,11 @@ def test_committed_exchange_is_reported_deterministically_for_extraction(
     from types import SimpleNamespace
     from factory.orchestration import conductor_context as context
 
+    monkeypatch.setenv("CONDUCTOR_CONTINUITY_ENABLED", "true")
     receipt_id = escalate(db, "close")
-    durable_answer(receipt_id, current_decision_id())
+    identity = current_decision_id()
+    durable_answer(receipt_id, identity)
+    durable_answer(receipt_id, identity, key="request-2")
     recorded = []
 
     def ingest(session, **kwargs):
@@ -1004,15 +1075,260 @@ def test_committed_exchange_is_reported_deterministically_for_extraction(
     monkeypatch.setattr("knowledge.api.ingest_raw_with_status", ingest)
     first = context.maintain_request_knowledge("operator", "request-1")
     second = context.maintain_request_knowledge("operator", "request-1")
+    retelling = context.maintain_request_knowledge("operator", "request-2")
     assert first["status"] == "queued"
     assert second["status"] == "duplicate"
+    assert retelling["status"] == "duplicate"
     assert recorded[0] == recorded[1]
-    assert recorded[0]["extra"]["scope"] == "repo:" + REPO
+    assert recorded[0]["content"] == recorded[2]["content"]
+    assert recorded[0]["extra"]["scope"] == (
+        f"personal:operator:factory-receipt:{receipt_id}"
+    )
     assert recorded[0]["extra"]["reporter_subject"] == "operator"
     assert (
         context.maintain_request_knowledge("other", "request-1")["status"]
         == "not_applicable"
     )
+
+
+def test_fresh_context_keeps_operator_history_isolated_and_epistemic(
+    db, github, monkeypatch
+):
+    import asyncio
+    from factory.orchestration import conductor_context as context
+
+    monkeypatch.setenv("CONDUCTOR_CONTINUITY_ENABLED", "true")
+    receipt_id = escalate(db, "close")
+    brief_identity = current_decision_id()
+    configure()
+    decisions.request_decision(
+        receipt_id,
+        brief_identity,
+        "chat",
+        "operator-a",
+        request_key="same-key",
+        note="Operator A constraint.",
+        action="chat",
+    )
+    decisions.request_decision(
+        receipt_id,
+        current_decision_id(),
+        "chat",
+        "operator-b",
+        request_key="same-key",
+        note="Operator B private constraint.",
+        action="chat",
+    )
+
+    async def unavailable(*_args):
+        return {"status": "unavailable", "notes": []}
+
+    monkeypatch.setattr(context, "retrieve_knowledge", unavailable)
+    first = asyncio.run(context.read_context(receipt_id, None, 5, actor="operator-a"))
+    second = asyncio.run(context.read_context(receipt_id, None, 5, actor="operator-b"))
+
+    assert [item["actor"] for item in first["recent_exchanges"]] == [
+        "factory:refine",
+        "operator-a",
+    ]
+    assert [item["actor"] for item in second["recent_exchanges"]] == [
+        "factory:refine",
+        "operator-b",
+    ]
+    exchange = first["recent_exchanges"][1]
+    assert exchange["source"] == "factory_decision"
+    assert exchange["epistemic_status"] == "operator_input"
+    assert exchange["references"]["receipt_id"] == receipt_id
+    assert exchange["message_id"] == "factory-request:operator-a:same-key"
+    assert first["recent_exchanges"][0]["references"]["decision_id"] == (brief_identity)
+    assert first["recent_exchanges"][0]["epistemic_status"] == (
+        "suggestion_or_hypothesis"
+    )
+    assert first["recent_requests"][0]["kind"] == "operator_question"
+    assert first["decision"]["recommendation_status"] == "conductor_suggestion"
+    assert first["decision"]["resolution_status"] is None
+    assert first["summaries"][0]["evidence"] == ["factory-brief:test-task"]
+    assert first["summaries"][1]["evidence"] == ["factory-request:operator-a:same-key"]
+
+
+def test_legacy_operator_paths_trigger_receipt_knowledge_maintenance(
+    db, github, monkeypatch
+):
+    from factory.orchestration import conductor_context as context
+
+    receipt_id = escalate(db, "close")
+    configure()
+    maintained = []
+    monkeypatch.setattr(
+        context,
+        "report_receipt_with_deadline",
+        lambda target: maintained.append(target) or {"status": "queued"},
+    )
+
+    assert decisions.request_chat(receipt_id, "Which tier?", "operator")["ok"]
+    assert decisions.apply_decision(receipt_id, "close", "operator")["applied"]
+    assert maintained == [receipt_id, receipt_id]
+
+
+def test_pending_question_survives_fresh_context_with_current_queue_state(
+    db, github, monkeypatch
+):
+    import asyncio
+    from factory.orchestration import conductor_context as context
+
+    monkeypatch.setenv("CONDUCTOR_CONTINUITY_ENABLED", "true")
+    configure()
+    receipt_id = escalate(db, "close")
+    result = decisions.request_decision(
+        receipt_id,
+        current_decision_id(),
+        "chat",
+        "operator",
+        request_key="question-1",
+        note="Which retention scope is intended?",
+        action="chat",
+    )
+    assert result["state"] == "completed"
+
+    async def unavailable(*_args):
+        return {"status": "unavailable", "notes": []}
+
+    monkeypatch.setattr(context, "retrieve_knowledge", unavailable)
+    fresh = asyncio.run(context.read_context(receipt_id, None, 5, actor="operator"))
+    assert fresh["current"]["task"]["state"] == "queued"
+    assert fresh["current"]["queue"]["position"] == 1
+    assert fresh["decision"]["open"] is True
+    assert fresh["decision"]["chat"][-1]["note"] == (
+        "Which retention scope is intended?"
+    )
+    assert [item["message_id"] for item in fresh["recent_exchanges"]] == [
+        "factory-brief:test-task",
+        "factory-request:operator:question-1",
+    ]
+
+
+def test_fresh_context_current_records_outweigh_stale_knowledge(
+    db, github, monkeypatch
+):
+    import asyncio
+    from factory.orchestration import conductor_context as context
+
+    configure()
+    receipt_id = escalate(db, "close")
+    with Session(db) as session:
+        control = session.get(FactoryControl, "factory")
+        control.state = "stopped"
+        row = session.get(FactoryReceipt, receipt_id)
+        row.state = "succeeded"
+        session.add(control)
+        session.add(row)
+        session.commit()
+
+    async def stale(*_args):
+        return {
+            "status": "available",
+            "authority": "untrusted_context_only",
+            "notes": [
+                {
+                    "note_id": "old-authority",
+                    "verification_state": "invalidated",
+                    "snippet": "The task may continue.",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(context, "retrieve_knowledge", stale)
+    fresh = asyncio.run(context.read_context(receipt_id, None, 5, actor="operator"))
+    assert fresh["current"]["control"]["state"] == "stopped"
+    assert fresh["current"]["task"]["state"] == "succeeded"
+    assert fresh["knowledge"]["notes"][0]["verification_state"] == "invalidated"
+
+
+def test_receipt_knowledge_partitions_private_operator_exchanges(
+    db, github, monkeypatch
+):
+    from types import SimpleNamespace
+    from factory.orchestration import conductor_context as context
+
+    monkeypatch.setenv("CONDUCTOR_CONTINUITY_ENABLED", "true")
+    receipt_id = escalate(db, "close")
+    configure()
+    decisions.request_decision(
+        receipt_id,
+        current_decision_id(),
+        "chat",
+        "operator-a",
+        request_key="same-key",
+        note="Operator A private constraint.",
+        action="chat",
+    )
+    decisions.request_decision(
+        receipt_id,
+        current_decision_id(),
+        "chat",
+        "operator-b",
+        request_key="same-key",
+        note="Operator B private constraint.",
+        action="chat",
+    )
+    recorded = []
+    seen = set()
+
+    def ingest(session, **kwargs):
+        recorded.append(kwargs)
+        created = kwargs["content"] not in seen
+        seen.add(kwargs["content"])
+        return SimpleNamespace(raw_id=f"raw-{len(seen)}"), created
+
+    monkeypatch.setattr("core.db.get_engine", lambda: db)
+    monkeypatch.setattr("knowledge.api.ingest_raw_with_status", ingest)
+    result = context.maintain_receipt_knowledge(receipt_id)
+    replay = context.maintain_receipt_knowledge(receipt_id)
+    by_scope = {item["extra"]["scope"]: item["content"] for item in recorded}
+
+    shared = f"session:factory-receipt:{receipt_id}"
+    operator_a = f"personal:operator-a:factory-receipt:{receipt_id}"
+    operator_b = f"personal:operator-b:factory-receipt:{receipt_id}"
+    assert result["status"] == "queued"
+    assert replay["status"] == "duplicate"
+    assert set(by_scope) == {shared, operator_a, operator_b}
+    assert "Operator A private constraint." not in by_scope[shared]
+    assert "Operator B private constraint." not in by_scope[shared]
+    assert "Operator A private constraint." in by_scope[operator_a]
+    assert "Operator B private constraint." not in by_scope[operator_a]
+    assert "Operator B private constraint." in by_scope[operator_b]
+    assert "Operator A private constraint." not in by_scope[operator_b]
+    assert "factory-request:operator-a:same-key" in by_scope[operator_a]
+    assert "factory-request:operator-b:same-key" in by_scope[operator_b]
+    assert all(item["extra"]["factory_receipt_generation"] == 0 for item in recorded)
+
+
+def test_interrupted_knowledge_maintenance_retries_without_replaying_decision(
+    db, github, monkeypatch
+):
+    from types import SimpleNamespace
+    from factory.orchestration import conductor_context as context
+
+    monkeypatch.setenv("CONDUCTOR_CONTINUITY_ENABLED", "true")
+    receipt_id = escalate(db, "close")
+    identity = current_decision_id()
+    completed = durable_answer(receipt_id, identity)
+    attempts = []
+
+    def ingest(session, **kwargs):
+        attempts.append(kwargs)
+        if len(attempts) == 1:
+            raise RuntimeError("knowledge store unavailable")
+        return SimpleNamespace(raw_id="raw-recovered"), True
+
+    monkeypatch.setattr("core.db.get_engine", lambda: db)
+    monkeypatch.setattr("knowledge.api.ingest_raw_with_status", ingest)
+    with pytest.raises(RuntimeError, match="unavailable"):
+        context.maintain_request_knowledge("operator", "request-1")
+    recovered = context.maintain_request_knowledge("operator", "request-1")
+    assert recovered["status"] == "queued"
+    assert durable_answer(receipt_id, identity) == completed
+    assert len(github.comments) == 1
 
 
 def test_exact_decision_replays_its_durable_resolution(db, github):
