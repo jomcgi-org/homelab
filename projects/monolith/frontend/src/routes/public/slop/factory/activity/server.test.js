@@ -37,9 +37,13 @@ describe("documented public agent activity proxy", () => {
 
   it("does not cache failed upstream responses", async () => {
     const setHeaders = vi.fn();
-    const fetch = vi.fn().mockResolvedValue(new Response(null, { status: 500 }));
+    const fetch = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 500 }));
 
-    await expect(GET({ fetch, setHeaders })).rejects.toMatchObject({ status: 503 });
+    await expect(GET({ fetch, setHeaders })).rejects.toMatchObject({
+      status: 503,
+    });
     expect(setHeaders).not.toHaveBeenCalled();
   });
 });
