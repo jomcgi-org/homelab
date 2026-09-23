@@ -26,6 +26,13 @@ _CACHE_CONTROL = "public, max-age=1800, stale-while-revalidate=86400"
 # the merges snapshot. FACTORY_GOALS_CACHE_CONTROL in
 # frontend/src/lib/cache-headers.js mirrors this; keep the two in sync.
 _GOALS_CACHE_CONTROL = "public, max-age=0, s-maxage=1800, stale-while-revalidate=86400"
+# Goal scoring must see every merge the table can possibly hold, not a narrow
+# recency window: merged_prs retains 90 days (app/jobs_main.py
+# snapshot-merged-prs), and a goal stays non-stale for up to
+# observability.factory_goals.STALE_AFTER_DAYS (14). A shorter load window
+# than the retention period silently under-counts merged_refs for any goal
+# older than the window, even though the evidence is still in the table.
+_GOALS_MERGE_WINDOW_DAYS = 90
 
 
 def _as_utc(value: datetime | None) -> datetime | None:
@@ -142,11 +149,11 @@ def get_public_merges(
 
 def _goals_payload(session: Session, now: datetime) -> dict:
     goals = list_active_goals(session)
-    cutoff_7d = (_as_utc(now) or _now_utc()) - timedelta(days=7)
+    cutoff = (_as_utc(now) or _now_utc()) - timedelta(days=_GOALS_MERGE_WINDOW_DAYS)
     rows = list(
         session.exec(
             select(MergedPR)
-            .where(MergedPR.merged_at >= cutoff_7d)
+            .where(MergedPR.merged_at >= cutoff)
             .order_by(MergedPR.merged_at.desc())
         ).all()
     )

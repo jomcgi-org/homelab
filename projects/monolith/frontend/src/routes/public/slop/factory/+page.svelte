@@ -40,7 +40,6 @@
     data.goals.declared_at,
     data.goals.declared_at,
   );
-  let fresh = $state(initialFresh);
   let freshLabel = $state(
     initialFresh.clock
       ? `declared ${initialFresh.clock} UTC`
@@ -177,7 +176,6 @@
   $effect(() => {
     const refresh = () => {
       const next = snapshotFreshness(data.goals.declared_at, new Date());
-      fresh = next;
       freshLabel = next.clock
         ? `declared ${next.clock} UTC / ${next.label}`
         : "declaration unknown";
@@ -376,7 +374,7 @@
         <div class="goals">
           <p class="sec-label">
             / Factory goals
-            <span class="fresh" class:stale={fresh.stale}>{freshLabel}</span>
+            <span class="fresh" class:stale={data.goals.stale}>{freshLabel}</span>
           </p>
           {#if data.unavailable.goals}
             <p class="none">Goals unavailable right now.</p>
