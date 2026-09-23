@@ -8,6 +8,7 @@ go_library(
     name = "conformance_lib",
     srcs = [
         "main.go",
+        "s6_trace.go",
         "scenarios.go",
         "verdict.go",
     ],
@@ -24,6 +25,7 @@ go_binary(
 go_test(
     name = "conformance_test",
     srcs = [
+        "s6_trace_test.go",
         "scenarios_test.go",
         "verdict_test.go",
     ],

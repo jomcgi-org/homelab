@@ -11,10 +11,11 @@ import (
 )
 
 const (
-	verdictPass    = "pass"
-	verdictFail    = "fail"
-	verdictRunning = "running"
-	verdictVacuous = "vacuous"
+	verdictPass       = "pass"
+	verdictFail       = "fail"
+	verdictRunning    = "running"
+	verdictVacuous    = "vacuous"
+	verdictIncomplete = "incomplete"
 )
 
 type scenarioVerdict struct {

@@ -60,6 +60,9 @@ func runLoop(ctx context.Context, cfg config, client *controlPlaneClient, store 
 			store.finish(started, []scenarioVerdict{result})
 		} else {
 			totalBudget := cfg.budgets["S1"] + cfg.budgets["S2"] + cfg.budgets["S3"] + cfg.budgets["S4"] + cfg.budgets["S5"]
+		if cfg.s6Enabled {
+			totalBudget += cfg.budgets["S6"]
+		}
 			suiteCtx, cancelSuite := context.WithTimeout(ctx, totalBudget)
 			scenarios := runScenarios(suiteCtx, cfg, client, started)
 			cancelSuite()
@@ -109,12 +112,19 @@ func loadConfig() (config, error) {
 	if cfg.cloneStartupHeadroom >= cfg.cloneHold {
 		return config{}, fmt.Errorf("S1_CLONE_STARTUP_HEADROOM must be shorter than S1_CLONE_HOLD to reject two serialized holds")
 	}
-	for key, fallback := range map[string]time.Duration{"S1": 90 * time.Second, "S2": 2 * time.Minute, "S3": time.Minute, "S4": 10 * time.Second, "S5": time.Minute} {
+	for key, fallback := range map[string]time.Duration{"S1": 90 * time.Second, "S2": 2 * time.Minute, "S3": time.Minute, "S4": 10 * time.Second, "S5": time.Minute, "S6": time.Minute} {
 		cfg.budgets[key], err = durationEnv(key+"_BUDGET", fallback)
 		if err != nil {
 			return config{}, err
 		}
 	}
+	cfg.s6Enabled = os.Getenv("S6_ENABLED") == "true"
+	if cfg.minTraceEvents, err = intEnv("S6_MIN_TRACE_EVENTS", 4); err != nil {
+		return config{}, err
+	}
+	cfg.tlcJava = os.Getenv("S6_TLC_JAVA")
+	cfg.tlcJar = os.Getenv("S6_TLC_JAR")
+	cfg.tlcSpecDir = os.Getenv("S6_TLC_SPEC_DIR")
 	if cfg.idleBankSeconds, err = intEnv("IDLE_BANK_SECONDS", cfg.idleBankSeconds); err != nil {
 		return config{}, err
 	}
