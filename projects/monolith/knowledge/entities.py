@@ -276,6 +276,10 @@ def seed_entities(session: Session) -> SeedReport:
 
 
 def _note_entity_insert(session: Session, rows: list[dict]) -> int:
+    # Count inserted rows via RETURNING, not cursor rowcount. PostgreSQL
+    # reports rowcount -1 for INSERT ... ON CONFLICT DO NOTHING without
+    # RETURNING, which made every apply path report zero for rows it wrote
+    # while the dry-run path (which counts set differences) stayed correct.
     if not rows:
         return 0
     dialect = session.get_bind().dialect.name
@@ -284,11 +288,10 @@ def _note_entity_insert(session: Session, rows: list[dict]) -> int:
         insert(NoteEntity.__table__)
         .values(rows)
         .on_conflict_do_nothing(index_elements=["note_id", "entity_id", "role"])
+        .returning(NoteEntity.__table__.c.id)
     )
     result = session.execute(statement)
-    return (
-        result.rowcount if result.rowcount is not None and result.rowcount >= 0 else 0
-    )
+    return len(result.all())
 
 
 def link_subjects(

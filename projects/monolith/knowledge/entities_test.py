@@ -10,6 +10,7 @@ import knowledge.entities as entities_module
 from knowledge.entities import (
     Entity,
     NoteEntity,
+    _note_entity_insert,
     backfill_links,
     link_issue_entities,
     load_manifest,
@@ -211,3 +212,69 @@ def test_issue_linking_finds_title_and_content_references(session):
         ("body-issue", "mentions"),
         ("title-issue", "mentions"),
     }
+
+
+def test_apply_report_equals_dry_run_on_fresh_fixture_and_zero_on_rerun(session):
+    seed_entities(session)
+    session.add_all(
+        [
+            _fact("apply-tag", "A generic fact", tags=["KG"]),
+            _fact("apply-title", "vLLM requests fail when capacity is full"),
+            _fact("apply-plain", "Knowledge chat CI snapshot stateful warmth"),
+            _fact("apply-issue", "Fix #5899 before release"),
+        ]
+    )
+    session.commit()
+
+    dry_run = backfill_links(session, dry_run=True)
+    assert session.exec(select(NoteEntity)).all() == []
+
+    first = backfill_links(session, dry_run=False)
+    assert first.scanned == dry_run.scanned
+    assert first.linked == dry_run.linked
+    assert first.unresolved == dry_run.unresolved
+    assert first.linked > 0
+
+    rerun = backfill_links(session, dry_run=False)
+    assert rerun.scanned == dry_run.scanned
+    assert rerun.linked == 0
+
+    first_issues = link_issue_entities(session)
+    assert first_issues > 0
+    assert link_issue_entities(session) == 0
+
+
+def test_note_entity_insert_counts_rows_when_rowcount_is_unknown(
+    session, monkeypatch
+):
+    seed_entities(session)
+    entity = session.exec(
+        select(Entity).where(Entity.kind == "project", Entity.slug == "monolith")
+    ).one()
+
+    rows = [
+        {
+            "note_id": "rowcount-note",
+            "entity_id": entity.id,
+            "role": "subject",
+            "source": "backfill",
+        }
+    ]
+
+    real_execute = session.execute
+
+    def pg_like_execute(statement, *args, **kwargs):
+        result = real_execute(statement, *args, **kwargs)
+
+        class PgLikeResult:
+            rowcount = -1
+
+            def all(self):  # noqa: ANN202
+                return result.all()
+
+        return PgLikeResult()
+
+    monkeypatch.setattr(session, "execute", pg_like_execute)
+
+    assert _note_entity_insert(session, rows) == 1
+    assert _note_entity_insert(session, rows) == 0
