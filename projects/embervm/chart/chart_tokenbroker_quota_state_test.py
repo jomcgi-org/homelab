@@ -46,6 +46,29 @@ def _one(documents: list[dict], kind: str, name: str) -> dict:
     return matches[0]
 
 
+def _application_release_name(application: dict) -> str:
+    for source in application["spec"]["sources"]:
+        if source.get("chart") == "embervm":
+            return source.get("helm", {}).get(
+                "releaseName", application["metadata"]["name"]
+            )
+    raise AssertionError("Application does not contain the embervm chart")
+
+
+def _rendered_quota_configmap_name(release: str) -> str:
+    matches = [
+        document
+        for document in _render(release)
+        if document.get("kind") == "ConfigMap"
+        and document.get("metadata", {}).get("annotations", {}).get(
+            "argocd.argoproj.io/sync-options"
+        )
+        == "Prune=false,Delete=false"
+    ]
+    assert len(matches) == 1
+    return matches[0]["metadata"]["name"]
+
+
 def test_quota_state_is_dedicated_durable_and_narrowly_scoped() -> None:
     release = "quota-state"
     name = f"{release}-embervm-tokenbroker-quota"
@@ -81,12 +104,14 @@ def test_quota_state_is_dedicated_durable_and_narrowly_scoped() -> None:
 
 def test_every_argocd_application_preserves_runtime_quota_data() -> None:
     applications = [
-        (Path(os.environ["PROD_APPLICATION"]), "embervm-tokenbroker-quota"),
-        (Path(os.environ["GKE_APPLICATION"]), "embervm-tokenbroker-quota"),
-        (Path(os.environ["DEV_APPLICATION"]), "embervm-dev-tokenbroker-quota"),
+        Path(os.environ["PROD_APPLICATION"]),
+        Path(os.environ["GKE_APPLICATION"]),
+        Path(os.environ["DEV_APPLICATION"]),
     ]
-    for path, expected_name in applications:
+    for path in applications:
         application = yaml.safe_load(path.read_text())
+        release = _application_release_name(application)
+        expected_name = _rendered_quota_configmap_name(release)
         entries = application["spec"]["ignoreDifferences"]
         assert {
             "kind": "ConfigMap",
