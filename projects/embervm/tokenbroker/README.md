@@ -12,6 +12,38 @@ does not publish or require `factory/review`. Service identity is not proof of
 an individual session's role. Do not enable autonomous merge on this foundation
 alone.
 
+## Quota observation durability
+
+The broker persists its complete provider and grant quota snapshot in the
+dedicated `<release>-embervm-tokenbroker-quota` ConfigMap. The chart creates the
+object and grants the broker only `get` and `update` on that exact name. Argo CD
+ignores its `/data` field and the object is not pruned or cascade-deleted, so pod
+replacement and chart reconciliation do not erase runtime state. Quota data is
+non-secret and is never stored beside rotating OAuth credentials.
+The current production and GKE release name renders
+`embervm-embervm-tokenbroker-quota`; the development release renders
+`embervm-dev-embervm-tokenbroker-quota`.
+
+Each update compares the ConfigMap resource version, reloads and merges after a
+conflict, and retries at most five times. Ordering is monotonic by `observed_at`,
+then broker `received_at`, then the canonical record SHA-256 for an exact time
+tie. Provider and grant changes share one snapshot and one compare-and-swap.
+The broker preserves both timestamps and derives age and every window's expiry
+when serving a read, so startup does not make an old observation fresh.
+
+Missing, malformed, incompatible or unavailable state restores as explicitly
+unobserved. A failed write is not published to memory and invalidates cached
+quota state, so it cannot fabricate healthy capacity. The POST returns 503 and
+a later fresh supported report may recover once storage is available. A passed
+reset only marks the relevant window expired; it never establishes healthy
+capacity by itself. A newer successful report can replace the persisted
+rejection without a separate scheduler or latch.
+
+GET and metrics reads do not call the Kubernetes API. They read only the last
+validated, durably committed snapshot and recompute time-derived fields. A
+startup load failure or a write/reload failure marks that snapshot unreadable,
+so subsequent reads stay unobserved until a newer report commits successfully.
+
 ## Permission profiles
 
 All profiles have metadata, contents and pull requests read access unless the

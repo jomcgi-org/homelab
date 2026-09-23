@@ -1569,14 +1569,20 @@ def _effective_grants(objects, service_account, namespace):
     return sorted(grants, key=repr)
 
 
-def _broker_rules(names):
+def _broker_rules(names, broker_name):
     return [
         {
             "apiGroups": [""],
             "resources": ["secrets"],
             "resourceNames": [f"embervm-oauth-grant-{name}" for name in names],
             "verbs": ["get", "update"],
-        }
+        },
+        {
+            "apiGroups": [""],
+            "resources": ["configmaps"],
+            "resourceNames": [f"{broker_name}-quota"],
+            "verbs": ["get", "update"],
+        },
     ]
 
 
@@ -1617,7 +1623,7 @@ def test_default_rbac_preserves_all_rule_and_binding_contracts(
             "Role",
             f"{name}-tokenbroker",
             release,
-            _broker_rules(grant_names),
+            _broker_rules(grant_names, f"{name}-tokenbroker"),
             f"{name}-tokenbroker",
             release,
         )
@@ -1731,7 +1737,7 @@ def test_namespace_rbac_effective_grants_and_subject_boundaries(
             "Role",
             f"{name}-tokenbroker",
             "recovery",
-            _broker_rules(["recovery-only"]),
+            _broker_rules(["recovery-only"], f"{name}-tokenbroker"),
             f"{name}-tokenbroker",
             "recovery",
         )
@@ -1743,9 +1749,13 @@ def test_namespace_rbac_effective_grants_and_subject_boundaries(
     if mode == "full":
         cp_grants.append(("recovery", _POD_RULE))
     assert _effective_grants(objects, name, "recovery") == sorted(cp_grants, key=repr)
-    assert _effective_grants(objects, f"{name}-tokenbroker", "recovery") == [
-        ("recovery", _broker_rules(["recovery-only"])[0])
-    ]
+    assert _effective_grants(objects, f"{name}-tokenbroker", "recovery") == sorted(
+        [
+            ("recovery", rule)
+            for rule in _broker_rules(["recovery-only"], f"{name}-tokenbroker")
+        ],
+        key=repr,
+    )
     service_accounts = {
         doc["metadata"]["name"]
         for doc in documents
@@ -1932,7 +1942,10 @@ def test_recovery_namespace_rbac_matches_contract(recovery_render) -> None:
             "Role",
             f"{_RECOVERY_CP}-tokenbroker",
             _RECOVERY_NS,
-            _broker_rules(["codex-cluster", "recovery-agent-mcp"]),
+            _broker_rules(
+                ["codex-cluster", "recovery-agent-mcp"],
+                f"{_RECOVERY_CP}-tokenbroker",
+            ),
             f"{_RECOVERY_CP}-tokenbroker",
             _RECOVERY_NS,
         )

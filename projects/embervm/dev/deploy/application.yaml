@@ -59,6 +59,10 @@ spec:
       name: embervm-oauth-grant-codex-cluster
       jsonPointers:
         - /data
+    - kind: ConfigMap
+      name: embervm-dev-embervm-tokenbroker-quota
+      jsonPointers:
+        - /data
   syncPolicy:
     automated:
       prune: true

@@ -239,6 +239,29 @@ py_test(
 )
 
 py_test(
+    name = "chart_tokenbroker_quota_state_test",
+    srcs = ["chart_tokenbroker_quota_state_test.py"],
+    data = [
+        "Chart.yaml",
+        "values.yaml",
+        "//projects/embervm/deploy:application",
+        "//projects/embervm/dev/deploy:application",
+        "//projects/gke-apps/embervm:application.yaml",
+        "@multitool//tools/helm",
+    ] + glob([
+        "templates/**/*",
+        "crds/**/*",
+    ]),
+    env = {
+        "DEV_APPLICATION": "$(rootpath //projects/embervm/dev/deploy:application)",
+        "GKE_APPLICATION": "$(rootpath //projects/gke-apps/embervm:application.yaml)",
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+        "PROD_APPLICATION": "$(rootpath //projects/embervm/deploy:application)",
+    },
+    deps = ["@pip//pyyaml"],
+)
+
+py_test(
     name = "chart_github_broker_test",
     srcs = ["chart_github_broker_test.py"],
     data = [
@@ -442,6 +465,12 @@ semgrep_test(
 semgrep_test(
     name = "chart_tokenbroker_spiffe_test_semgrep_test",
     srcs = ["chart_tokenbroker_spiffe_test.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+semgrep_test(
+    name = "chart_tokenbroker_quota_state_test_semgrep_test",
+    srcs = ["chart_tokenbroker_quota_state_test.py"],
     rules = ["//bazel/semgrep/rules:python_rules"],
 )
 

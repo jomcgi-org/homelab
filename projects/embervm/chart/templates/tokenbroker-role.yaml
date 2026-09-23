@@ -5,6 +5,7 @@ metadata:
   name: {{ include "embervm.tokenBroker.fullname" . }}
   namespace: {{ .Release.Namespace }}
 rules:
+  # OAuth credentials and quota observations deliberately use separate objects.
   - apiGroups: [""]
     resources: [secrets]
     # Explicit grant names keep this Role narrowly scoped. Add a name here when
@@ -13,5 +14,10 @@ rules:
       {{- range .Values.tokenBroker.grants }}
       - embervm-oauth-grant-{{ .name }}
       {{- end }}
+    verbs: [get, update]
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames:
+      - {{ include "embervm.tokenBroker.fullname" . }}-quota
     verbs: [get, update]
 {{- end }}
