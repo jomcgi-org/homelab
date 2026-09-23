@@ -2301,6 +2301,23 @@ def test_hub_dev_renders_only_what_the_hub_can_run() -> None:
         "embervm-dev-embervm-noded-brick-2gi": 1
     }
 
+    # What the BrickController will actually run: its static target per class
+    # is max(desired, min) from EMBERVM_BRICK_CLASSES, enforced even in observe
+    # mode, so a Deployment rendering 0 replicas says nothing on its own.
+    (control,) = [
+        c
+        for d in docs
+        if d["kind"] == "Deployment" and d["metadata"]["name"] == "embervm-dev-embervm"
+        for c in d["spec"]["template"]["spec"]["containers"]
+        if any(e["name"] == "EMBERVM_BRICK_CLASSES" for e in c.get("env", []))
+    ]
+    (classes_env,) = [
+        e["value"] for e in control["env"] if e["name"] == "EMBERVM_BRICK_CLASSES"
+    ]
+    targets = {c["name"]: max(c["desired"], c["min"]) for c in json.loads(classes_env)}
+    assert {name: n for name, n in targets.items() if n} == {"2gi": 1}
+    assert all(c["max"] <= 1 for c in json.loads(classes_env))
+
     # Shared scratch: the brick mounts production's prepared ROOT (type
     # Directory, so kubelet never creates it on the boot disk), waits for its
     # generation marker first, and reaches scratch/dev only by subPath.
