@@ -231,9 +231,7 @@ def _valid_diff(*, base_sha="a" * 40, diff_stat=None, diff=None):
         diff_stat=(
             " file.py | 1 +\n 1 file changed" if diff_stat is None else diff_stat
         ),
-        diff=(
-            "diff --git a/file.py b/file.py\n+x = 1" if diff is None else diff
-        ),
+        diff=("diff --git a/file.py b/file.py\n+x = 1" if diff is None else diff),
     )
 
 
@@ -342,9 +340,7 @@ def test_mismatched_diff_and_stat_rejected(session):
 def test_valid_empty_comparison_advances_cursor_without_raw(session):
     _scout_job(session)
 
-    applied = apply_repo_diff(
-        session, "kg-repo-diff", _output(base_sha="a" * 40)
-    )
+    applied = apply_repo_diff(session, "kg-repo-diff", _output(base_sha="a" * 40))
 
     assert applied["summary"] == "no changes"
     assert session.exec(select(RawInput)).all() == []
@@ -354,12 +350,7 @@ def test_valid_empty_comparison_advances_cursor_without_raw(session):
 def test_truncated_large_diff_with_headers_accepted(session, monkeypatch):
     _scout_job(session)
     monkeypatch.setattr("knowledge.raw_write.upload_raw", lambda *_args: None)
-    diff = (
-        "diff --git a/big.py b/big.py\n"
-        "+line\n"
-        "[... elided ...]\n"
-        "+tail\n"
-    )
+    diff = "diff --git a/big.py b/big.py\n+line\n[... elided ...]\n+tail\n"
 
     applied = apply_repo_diff(
         session,
@@ -377,9 +368,7 @@ def test_truncated_large_diff_with_headers_accepted(session, monkeypatch):
     assert _stored_last_sha(session) == "b" * 40
 
 
-def test_stale_base_persists_raw_but_preserves_newer_cursor(
-    session, monkeypatch
-):
+def test_stale_base_persists_raw_but_preserves_newer_cursor(session, monkeypatch):
     _scout_job(session)
     monkeypatch.setattr("knowledge.raw_write.upload_raw", lambda *_args: None)
     session.execute(

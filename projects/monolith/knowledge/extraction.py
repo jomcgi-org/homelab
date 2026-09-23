@@ -708,9 +708,7 @@ def _validate_repo_diff_evidence(parsed: _RepoDiffResult) -> None:
     if parsed.base_sha == parsed.head_sha:
         if diff_empty and stat_empty:
             return
-        raise ExtractionOutputInvalid(
-            "scout range is empty but carries diff evidence"
-        )
+        raise ExtractionOutputInvalid("scout range is empty but carries diff evidence")
     if diff_empty and stat_empty:
         return
     if diff_empty != stat_empty:
@@ -722,9 +720,7 @@ def _validate_repo_diff_evidence(parsed: _RepoDiffResult) -> None:
             "scout diff is a placeholder, not source evidence"
         )
     if _REPO_DIFF_HEADER not in parsed.diff:
-        raise ExtractionOutputInvalid(
-            "scout diff carries no git diff headers"
-        )
+        raise ExtractionOutputInvalid("scout diff carries no git diff headers")
 
 
 def _stored_scout_sha(session: Session, job_name: str) -> str | None:
