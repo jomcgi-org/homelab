@@ -621,9 +621,7 @@ class KnowledgeStore:
             # READ COMMITTED a concurrent scope change between the two queries
             # must fail closed rather than expose the newly unauthorized row.
             note_stmt = note_stmt.where(hydration_scope_predicate)
-        note_by_id = {
-            note.id: note for note in self.session.exec(note_stmt).all()
-        }
+        note_by_id = {note.id: note for note in self.session.exec(note_stmt).all()}
         chunk_projection = [
             Chunk.id,
             Chunk.section_header,
