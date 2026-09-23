@@ -45,6 +45,7 @@ from factory.orchestration.factory_controls import (
 )
 from factory.orchestration.model_pool import (
     JUDGMENT_MODELS,
+    escalate,
     judgment_floor,
     pool_for,
     select_model,
@@ -3827,6 +3828,16 @@ def _correction_model(
     for dependency in review_node.get("deps") or []:
         node = by_key.get(dependency)
         if node is not None and _is_implementation(dependency):
+            # An escalated attempt runs on the model its pin records, not the
+            # one the plan stored, so the head's author is read from the run.
+            delivered = [
+                run
+                for run in runs
+                if run["node_key"] == dependency and run["status"] == "succeeded"
+            ]
+            if delivered:
+                pin = max(delivered, key=lambda run: run["id"]).get("pin") or {}
+                candidates.append((pin.get("model"), ""))
             candidates.append((node.get("model"), ""))
     completed = [
         run
@@ -5651,6 +5662,128 @@ def _reviewer_override(
     return True, None if model == node.get("model") else model
 
 
+def _escalation_role(node_key: str) -> str | None:
+    """The pool an implementation node's attempts climb, or None for any other.
+
+    Delivery nodes and their engine rounds resolve through the implement pool
+    and investigation through the worker pool, exactly as they were planned.
+    """
+    if _is_implementation(node_key):
+        return "implement"
+    if node_key.startswith("investigate_"):
+        return "worker"
+    return None
+
+
+def _model_ran(run: dict) -> bool:
+    """A settled attempt whose model actually did the work it is judged on."""
+    return (
+        run["status"] in graph.TERMINAL_RUN_STATUSES
+        and not run.get("capacity_denied")
+        and run.get("accounting_basis") != "no_model_post"
+    )
+
+
+def _correction_evidence(
+    node: dict, nodes: list[dict], runs: list[dict]
+) -> tuple[str | None, str] | None:
+    """The model a correction's first attempt steps up from, and why.
+
+    A correction answers a review that requested changes on a head its node
+    model produced. A reopened round answers the same review after an earlier
+    correction for it failed, so it steps up from the model that failed. A
+    merge-conflict round answers an approval and so carries no evidence the
+    work was too hard.
+    """
+    requested = [
+        dep
+        for dep in node["deps"]
+        if any(
+            run["node_key"] == dep
+            and run["status"] == "succeeded"
+            and _artifact(run).get("verdict") == "changes_requested"
+            for run in runs
+        )
+    ]
+    if not requested:
+        return None
+    siblings = {
+        other["node_key"]
+        for other in nodes
+        if other["node_key"] != node["node_key"]
+        and _CORRECT_KEY.fullmatch(other["node_key"])
+        and set(requested) & set(other["deps"])
+    }
+    failed = [run for run in runs if run["node_key"] in siblings and _model_ran(run)]
+    if failed:
+        latest = max(failed, key=lambda run: run["id"])
+        if latest["status"] == "failed":
+            return (latest.get("pin") or {}).get("model"), "failed"
+    return node.get("model"), "changes_requested"
+
+
+def _attempt_escalation(
+    task: dict, node: dict, nodes: list[dict], runs: list[dict], policy: dict
+) -> dict | None:
+    """The model this attempt steps up to when evidence says the task is hard.
+
+    Implementation starts on the head of its pool, the cheapest capable model.
+    An attempt that failed, or a correction answering changes requested,
+    steps one available member up the pool from the model that did the work
+    instead of handing the same model the same problem again. The step is
+    resolved at dispatch, like the reviewer fallback, so it reads quota when
+    it runs; the node keeps its planned model and the pin records what ran and
+    why. None keeps today's behaviour: the planned model runs.
+    """
+    node_key = node["node_key"]
+    role = _escalation_role(node_key)
+    if role is None:
+        return None
+    prior = [run for run in runs if run["node_key"] == node_key and _model_ran(run)]
+    carried: dict = {}
+    if prior:
+        latest = max(prior, key=lambda run: run["id"])
+        pin = latest.get("pin") or {}
+        if pin.get("escalated_from"):
+            carried = pin
+        if latest["status"] == "failed":
+            failed, reason = pin.get("model"), "failed"
+        elif carried:
+            failed, reason = None, ""
+        else:
+            return None
+    elif _CORRECT_KEY.fullmatch(node_key):
+        evidence = _correction_evidence(node, nodes, runs)
+        if evidence is None:
+            return None
+        failed, reason = evidence
+    else:
+        return None
+    from factory.orchestration.factory_refine import task_class_for
+
+    # The judgment floor is a capability constraint with its own selection.
+    # Escalation never moves judgment work, so it stays exactly where the
+    # floor put it.
+    if task_class_for(task["id"]) in JUDGMENT_CLASSES:
+        return None
+    choice = escalate(role, policy, failed) if failed else None
+    if choice is not None and choice["model"] in policy["allowed_models"]:
+        return {
+            "model": choice["model"],
+            "escalated_from": failed,
+            "escalation_reason": reason,
+        }
+    # The pool is spent above the model that failed. An attempt that already
+    # climbed stays on its rung rather than dropping back to the planned model.
+    if carried and carried.get("model") in policy["allowed_models"]:
+        return {
+            "model": carried["model"],
+            "escalated_from": carried["escalated_from"],
+            "escalation_reason": carried.get("escalation_reason"),
+        }
+    return None
+
+
 @dataclass(frozen=True)
 class ReservationResult:
     ok: bool
@@ -5862,6 +5995,11 @@ def _dispatch_ready(
                 # thing a review must never do, and pausing the task would
                 # hold the implement work that does not need a reviewer.
                 continue
+        escalation = (
+            _attempt_escalation(task, node, nodes, runs, policy)
+            if policy is not None and not node_key.startswith("review_")
+            else None
+        )
         attempt = sum(r["node_key"] == node_key for r in runs) + 1
         key = f"factory-node:{task_id}:{node_key}:{attempt}"
         context = {
@@ -5883,7 +6021,18 @@ def _dispatch_ready(
                     "conductor_direction": factory_gates.guidance(task),
                 }
             )[:16000]
-        reservation = reserve_node(task_id, node_key, key, context, model=reviewer)
+        reservation = (
+            reserve_node(
+                task_id,
+                node_key,
+                key,
+                context,
+                model=escalation["model"],
+                escalation=escalation,
+            )
+            if escalation
+            else reserve_node(task_id, node_key, key, context, model=reviewer)
+        )
         if reservation:
             dispatched += 1
             continue
@@ -5926,14 +6075,21 @@ def _dispatch_ready(
 
 
 def reserve_node(
-    task_id: str, node_key: str, key: str, context: dict, *, model: str | None = None
+    task_id: str,
+    node_key: str,
+    key: str,
+    context: dict,
+    *,
+    model: str | None = None,
+    escalation: dict | None = None,
 ) -> ReservationResult:
     """Atomically reserve graph attempt and factory turn under the control lock.
 
     ``model`` substitutes the model for this attempt, which is how a review
-    runs on a cheaper reviewer while the Claude window is nearly spent. The
-    turn is authorized against the pin, so the substitution is what gets
-    charged and what evidence later reads.
+    runs on a cheaper reviewer while the Claude window is nearly spent, and
+    how an implementation attempt escalates up its pool. The turn is
+    authorized against the pin, so the substitution is what gets charged and
+    what evidence later reads. ``escalation`` records why it moved.
     """
     from factory.orchestration.factory_controls import _locked_session, authorize_start
 
@@ -5968,6 +6124,7 @@ def reserve_node(
                 dispatch_key=key,
                 execution_context=context,
                 model=model,
+                escalation=escalation,
                 session=db,
             )
             if not admitted.ok:

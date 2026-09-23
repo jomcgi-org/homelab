@@ -527,6 +527,35 @@ def test_admit_attempt_numbering_bound_and_armed_stamp(db):
     assert [run["attempt"] for run in node_runs(task_id, "node")] == [1, 2]
 
 
+def test_admission_stores_the_dispatched_model_and_its_escalation(db):
+    task_id = make_task(db)
+    assert add_work(task_id, "node", 0, model="spark", max_cost_usd=2.0).ok
+    assert admit_dispatch(task_id, "node").ok
+    assert record_outcome(task_id, "node", 1, "failed", 0.5, None, "{}").ok
+    escalated = admit_dispatch(
+        task_id,
+        "node",
+        model="sol",
+        escalation={"escalated_from": "spark", "escalation_reason": "failed"},
+    )
+    assert escalated.ok
+    assert escalated.pin["model"] == "sol"
+    assert escalated.pin["escalated_from"] == "spark"
+    assert escalated.pin["escalation_reason"] == "failed"
+    # The escalated attempt reserves what is left of the node's ceiling.
+    assert escalated.pin["max_cost_usd"] == 1.5
+    with Session(db) as session:
+        rows = session.exec(
+            select(SwarmNodeRun)
+            .where(SwarmNodeRun.task_id == task_id)
+            .order_by(SwarmNodeRun.attempt)
+        ).all()
+        assert [row.model for row in rows] == ["spark", "sol"]
+        assert "escalated_from" not in json.loads(rows[0].pin_json)
+    # The planned model is untouched: the pin records what ran.
+    assert load_graph(task_id)[0]["model"] == "spark"
+
+
 def test_admit_unknown_and_node_budget_exhaustion(db):
     task_id = make_task(db)
     missing = admit_dispatch(task_id, "missing")

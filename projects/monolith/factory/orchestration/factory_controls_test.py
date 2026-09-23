@@ -577,6 +577,26 @@ def test_model_pools_are_normalised_and_stored_in_policy(db, policy):
     assert stored["conductor_model"] == "opus"
 
 
+def test_a_muse_first_escalation_ladder_is_a_valid_policy(db, policy):
+    """Muse heads the worker pool and the implement pool climbs to Astra."""
+    policy.update(
+        allowed_models=["astra", "opus", "sol", "spark"],
+        worker_model="spark",
+        reviewer_model="opus",
+        model_pools={
+            "conductor": ["opus", "sol"],
+            "worker": ["spark", "sol"],
+            "implement": ["spark", "sol", "astra"],
+            "reviewer": ["opus", "astra"],
+        },
+    )
+    assert controls.set_control("configure", "operator", policy=policy)["ok"]
+    stored = controls.status()["policy"]
+    assert stored["worker_model"] == "spark"
+    assert stored["model_pools"]["worker"] == ["spark", "sol"]
+    assert stored["model_pools"]["implement"] == ["spark", "sol", "astra"]
+
+
 def test_policy_without_model_pools_stays_unchanged(db, policy):
     assert controls.set_control("configure", "operator", policy=policy)["ok"]
     assert "model_pools" not in controls.status()["policy"]

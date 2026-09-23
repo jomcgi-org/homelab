@@ -68,6 +68,17 @@ def test_model_mismatch():
     assert "opus" in deviation["evidence"]
 
 
+def test_an_escalated_attempt_is_not_a_model_mismatch():
+    escalated = {**attempt(model="sol"), "escalated_from": "luna"}
+    run = {
+        "plan": plan(),
+        "nodes": [node("implement", [attempt(), escalated])],
+    }
+    codes = [deviation["code"] for deviation in compute_deviations(run)]
+    assert "model_mismatch" not in codes
+    assert codes == ["retry_taken"]
+
+
 def test_budget_exceeded():
     run = {"plan": plan(), "cost_usd": 1.25, "nodes": []}
     deviation = compute_deviations(run)[0]
