@@ -200,6 +200,7 @@ DECISION_SCHEMA = {
                 "add_node",
                 "discard_node",
                 "finish",
+                "settle_external",
                 "pause",
                 "request_funding",
                 "request_context",
@@ -223,6 +224,7 @@ DECISION_SCHEMA = {
             "items": {"type": "string", "pattern": _KEY},
         },
         "pr_number": {"type": "integer", "minimum": 1},
+        "head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
         # A pause is a decision request, so it leaves with the same shape a
         # refine escalation leaves with: the one question a person must
         # answer, and the two to four concrete things they could decide.
@@ -260,6 +262,10 @@ DECISION_SCHEMA = {
         {
             "if": {"properties": {"action": {"const": "finish"}}},
             "then": {"required": ["pr_number"]},
+        },
+        {
+            "if": {"properties": {"action": {"const": "settle_external"}}},
+            "then": {"required": ["pr_number", "head_sha"]},
         },
         {
             "if": {"properties": {"action": {"const": "pause"}}},
@@ -1680,9 +1686,9 @@ def planner_prompt(
     context_action = ", request_context" if factory_context is not None else ""
     funding_rule = (
         "Use request_funding for internal limits; pause for human authority. "
-        f"Otherwise use plan, add_node, discard_node, finish{context_action} or pause. "
+        f"Otherwise use plan, add_node, discard_node, finish, settle_external{context_action} or pause. "
         if funding_available
-        else f"Only use plan, add_node, discard_node, finish{context_action} or pause. "
+        else f"Only use plan, add_node, discard_node, finish, settle_external{context_action} or pause. "
     )
     budget_rule = (
         "When that happens, shrink the edit if the same objective still fits, or use request_funding with a reason and the remaining work. "
@@ -1803,6 +1809,11 @@ def planner_prompt(
         "requires one. Do not invent a non-author GitHub approval gate or try "
         "self-approval to satisfy the factory artifact gate. The server verifies "
         "delivery before accepting finish. "
+        "When another merged PR already delivered the change, propose "
+        "settle_external with its number and exact head instead of a duplicate "
+        "PR: it must target the base, avoid the task branch, close the issue, "
+        "and carry passing checks with an approving review at that head, "
+        "settling as externally fulfilled rather than factory delivery. "
         "A failed or uncertain attempt is evidence, never permission to retry "
         "uncertain external effects. Use decision_feedback to repair rejected "
         "decisions within the existing task, turn, time and budget limits. A refusal "
@@ -3369,6 +3380,23 @@ def _apply_decision(
             issue_number=task.get("issue_number"),
         )
         result = finish_task(task["id"], "succeeded", ACTOR, evidence=evidence)
+        if not result["ok"]:
+            _reject_decision(
+                task["id"],
+                cause,
+                action,
+                result["reason"],
+                "factory task settlement refused",
+            )
+    elif action == "settle_external":
+        from factory.orchestration import factory_external_disposition
+
+        evidence = factory_external_disposition.verify_external_disposition(
+            task,
+            decision["pr_number"],
+            decision["head_sha"],
+        )
+        result = finish_task(task["id"], "cancelled", ACTOR, evidence=evidence)
         if not result["ok"]:
             _reject_decision(
                 task["id"],
