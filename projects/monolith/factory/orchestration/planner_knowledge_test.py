@@ -319,8 +319,9 @@ def test_initial_and_amendment_manifests_are_append_only(planner_db):
         assert manifests[1]["knowledge"]["notes"][0]["note_id"] == (
             "authorized-correction"
         )
-        assert manifests[0]["authoritative"]["receipt_updated_at"] != (
-            manifests[1]["authoritative"]["receipt_updated_at"]
+        assert (
+            manifests[0]["authoritative"]["receipt_updated_at"]
+            != (manifests[1]["authoritative"]["receipt_updated_at"])
         )
 
 
@@ -456,9 +457,7 @@ def test_prompt_pressure_drops_knowledge_before_required_evidence(
     assert context["deviation"] == baseline["deviation"]
 
 
-def test_request_context_is_schema_bounded_and_durably_linked(
-    planner_db, monkeypatch
-):
+def test_request_context_is_schema_bounded_and_durably_linked(planner_db, monkeypatch):
     engine, task_id, _policy = planner_db
     monkeypatch.setenv("FACTORY_PLANNER_KNOWLEDGE_ENABLED", "true")
 
@@ -475,9 +474,7 @@ def test_request_context_is_schema_bounded_and_durably_linked(
         "query": "Which correction is current?",
     }
     assert not schema_errors(decision, conductor.DECISION_SCHEMA)
-    assert schema_errors(
-        {**decision, "receipt_id": 1}, conductor.DECISION_SCHEMA
-    )
+    assert schema_errors({**decision, "receipt_id": 1}, conductor.DECISION_SCHEMA)
     assert schema_errors(
         {"action": "request_context", "reason": "missing query"},
         conductor.DECISION_SCHEMA,
@@ -488,9 +485,7 @@ def test_request_context_is_schema_bounded_and_durably_linked(
     assert code == "context_provided"
     with Session(engine) as db:
         request = db.exec(
-            select(FactoryAudit).where(
-                FactoryAudit.action == "planner_context_request"
-            )
+            select(FactoryAudit).where(FactoryAudit.action == "planner_context_request")
         ).one()
         result = db.exec(
             select(FactoryAudit).where(FactoryAudit.action == "planner_context_result")

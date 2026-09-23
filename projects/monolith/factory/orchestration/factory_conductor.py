@@ -486,8 +486,7 @@ def escalation_revalidation_enabled() -> bool:
 def planner_knowledge_enabled() -> bool:
     """Whether receipt-authorized KG evidence may enter planner inputs."""
     return (
-        os.environ.get("FACTORY_PLANNER_KNOWLEDGE_ENABLED", "false").lower()
-        == "true"
+        os.environ.get("FACTORY_PLANNER_KNOWLEDGE_ENABLED", "false").lower() == "true"
     )
 
 
@@ -1509,9 +1508,7 @@ def _planner_context(
         # them. Untrusted text and never on the drop list: it is the answer
         # this task was re-admitted to act on.
         "operator_direction": (
-            None
-            if current_direction is None
-            else _planner_direction(current_direction)
+            None if current_direction is None else _planner_direction(current_direction)
         ),
         # The deviation is why this planner exists, so it is inside the object
         # the shrink loop bounds and is never on the drop list below.
@@ -1579,9 +1576,7 @@ def _planner_context(
         if context.get("knowledge", {}).get("notes"):
             context["knowledge"]["notes"].pop()
             context["knowledge"].setdefault("omitted", {})["prompt_budget"] = (
-                context["knowledge"].setdefault("omitted", {}).get(
-                    "prompt_budget", 0
-                )
+                context["knowledge"].setdefault("omitted", {}).get("prompt_budget", 0)
                 + 1
             )
             context["omitted"]["knowledge_records"] += 1
@@ -1591,12 +1586,10 @@ def _planner_context(
             notes = (followup.get("knowledge") or {}).get("notes") or []
             if notes:
                 notes.pop()
-                followup["knowledge"].setdefault("omitted", {})[
-                    "prompt_budget"
-                ] = (
-                    followup["knowledge"].setdefault("omitted", {}).get(
-                        "prompt_budget", 0
-                    )
+                followup["knowledge"].setdefault("omitted", {})["prompt_budget"] = (
+                    followup["knowledge"]
+                    .setdefault("omitted", {})
+                    .get("prompt_budget", 0)
                     + 1
                 )
                 context["omitted"]["knowledge_records"] += 1
