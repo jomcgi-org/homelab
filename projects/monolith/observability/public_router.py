@@ -1,7 +1,9 @@
-"""Public read-only API for merged pull request snapshots."""
+"""Public read-only API for merged pull request snapshots and factory goals."""
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections import defaultdict
 from datetime import datetime, time, timedelta, timezone
 from email.utils import format_datetime
@@ -10,6 +12,7 @@ from fastapi import APIRouter, Depends, Request, Response
 from sqlmodel import Session, select
 
 from core.db import get_session
+from observability.factory_goals import goals_payload, list_active_goals
 from observability.merged_prs import MERGE_TYPES, MergedPR
 
 router = APIRouter(prefix="/api/agents/public", tags=["observability"])
@@ -18,6 +21,11 @@ _TYPES = MERGE_TYPES
 # This endpoint contains only public repository metadata, so shared caches may
 # serve it directly. Private-tier cache policy must not enter this image.
 _CACHE_CONTROL = "public, max-age=1800, stale-while-revalidate=86400"
+# Declared goals move when the orchestrator declares them, not on a snapshot
+# cadence, so the goals endpoint keeps the same 30-minute shared freshness as
+# the merges snapshot. FACTORY_GOALS_CACHE_CONTROL in
+# frontend/src/lib/cache-headers.js mirrors this; keep the two in sync.
+_GOALS_CACHE_CONTROL = "public, max-age=0, s-maxage=1800, stale-while-revalidate=86400"
 
 
 def _as_utc(value: datetime | None) -> datetime | None:
@@ -125,6 +133,39 @@ def get_public_merges(
     headers = {"Cache-Control": _CACHE_CONTROL, "ETag": etag}
     if snapshotted_at is not None:
         headers["Last-Modified"] = format_datetime(snapshotted_at, usegmt=True)
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    for key, value in headers.items():
+        response.headers[key] = value
+    return payload
+
+
+def _goals_payload(session: Session, now: datetime) -> dict:
+    goals = list_active_goals(session)
+    cutoff_7d = (_as_utc(now) or _now_utc()) - timedelta(days=7)
+    rows = list(
+        session.exec(
+            select(MergedPR)
+            .where(MergedPR.merged_at >= cutoff_7d)
+            .order_by(MergedPR.merged_at.desc())
+        ).all()
+    )
+    merges = [{"title": row.title, "merged_at": _iso(row.merged_at)} for row in rows]
+    return goals_payload(goals, merges, now)
+
+
+@router.get("/factory/goals")
+def get_public_factory_goals(
+    request: Request,
+    response: Response,
+    session: Session = Depends(get_session),
+):
+    """Return orchestrator-declared goals with deterministic progress."""
+    now = _now_utc()
+    payload = _goals_payload(session, now)
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    etag = f'"factory-goals-v1-{hashlib.sha256(encoded).hexdigest()}"'
+    headers = {"Cache-Control": _GOALS_CACHE_CONTROL, "ETag": etag}
     if request.headers.get("if-none-match") == etag:
         return Response(status_code=304, headers=headers)
     for key, value in headers.items():
