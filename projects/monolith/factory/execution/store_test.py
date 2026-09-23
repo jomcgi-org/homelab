@@ -262,6 +262,51 @@ def test_create_turn_keeps_reported_and_list_costs_separate(
         _restore_schemas(schemas)
 
 
+def test_create_turn_persists_real_muse_shape_without_promoting_list_cost(
+    monkeypatch, tmp_path
+):
+    engine, schemas = _database(monkeypatch, tmp_path)
+    usage = {
+        "shape": "muse",
+        "input_tokens": 620_234,
+        "output_tokens": 6_695,
+        "cache_read_tokens": 597_505,
+        "cache_write_tokens": 0,
+        "muse": {
+            "source": "msp_retained_session_view",
+            "scope": "turn",
+            "counter_scope": "turn_delta",
+            "cumulative_scope": "session",
+            "cost_status": "not_reported",
+            "status": "complete",
+        },
+    }
+    try:
+        with Session(engine) as session:
+            agent = store.create_session(session, "muse", "<guest>", "main")
+            turn = store.create_turn(
+                session,
+                session_id=agent.id,
+                seq=1,
+                prompt="persist this",
+                voice_summary=None,
+                result_text="done",
+                terminal_reason="completed",
+                stop_reason=None,
+                permission_denials=None,
+                commit_sha=None,
+                usage=usage,
+                cost_usd=None,
+                model="spark",
+            )
+
+            assert json.loads(turn.usage_json) == usage
+            assert turn.cost_usd is None
+            assert turn.list_cost_usd == pytest.approx(0.0633624)
+    finally:
+        _restore_schemas(schemas)
+
+
 def test_create_turn_sanitizes_nul_from_usage(monkeypatch, tmp_path):
     engine, schemas = _database(monkeypatch, tmp_path)
     try:

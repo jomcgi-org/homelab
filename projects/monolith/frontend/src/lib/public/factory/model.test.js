@@ -174,8 +174,10 @@ describe("fact and tile derivations", () => {
     expect(dual.spend.spark.at(-1)).toBe(534.4);
     expect(formatSpend(dual.spend.value)).toBe("$1.2k");
     expect(formatSpend(12.75)).toBe("$13");
+    expect(formatSpend(null)).toBe("unavailable");
     expect(legacy.sessions.value).toBe(4);
     expect(legacy.tokens.input).toBe(7);
+    expect(legacy.spend.value).toBeNull();
   });
 });
 

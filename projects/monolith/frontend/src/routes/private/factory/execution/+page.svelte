@@ -348,6 +348,13 @@
     return session?.repo ? `${session.repo}@${session.branch || "main"}` : "";
   }
 
+  function costLabel(value) {
+    const formatted = fmtCost(value);
+    return formatted === null
+      ? P.labels.costUnavailable
+      : formatted || P.labels.zeroCost;
+  }
+
   function nearBottom() {
     if (!turnsEl) return false;
     return (
@@ -2610,9 +2617,9 @@
       </span>
       <span class="row-sub mono">
         {#if item.kind === "run"}
-          run · {P.stateWords[entry.state] || entry.state} · {fmtCost(
+          run · {P.stateWords[entry.state] || entry.state} · {costLabel(
             entry.cost_usd,
-          ) || "$0.00"}
+          )}
         {:else}
           {entry.model || "luna"} · {entry.repo
             ? `${entry.repo}@${entry.branch || "main"}`

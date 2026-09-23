@@ -116,12 +116,10 @@ def _totals(rows: list[dict], fields: tuple[str, ...]) -> dict:
     return result
 
 
-def _spend(ember_rows: list[dict], local_rows: list[dict]) -> float:
-    ember_cost = sum(
-        (row["cost_usd"] or 0) + (row["list_cost_usd"] or 0) for row in ember_rows
-    )
-    local_cost = sum(row["list_cost_usd"] or 0 for row in local_rows)
-    return float(ember_cost + local_cost)
+def _reported_spend(rows: list[dict]) -> float | None:
+    """Return only provider-reported spend, never a blend with list estimates."""
+    values = [float(row["cost_usd"]) for row in rows if row.get("cost_usd") is not None]
+    return float(sum(values)) if values else None
 
 
 def _shape_activity(
@@ -195,19 +193,20 @@ def _shape_activity(
     ember_totals = _totals(ember_totals_rows, total_fields)
     local_totals = _totals(local_totals_rows, total_fields)
     combined_totals = _totals([*ember_totals_rows, *local_totals_rows], total_fields)
-    combined_totals["spend_usd"] = _spend(ember_totals_rows, local_totals_rows)
+    combined_totals["spend_usd"] = _reported_spend(ember_totals_rows)
 
-    spend_by_day = {}
+    spend_by_day: dict[str, list[float]] = {}
+    for row in [*daily, *local_daily]:
+        spend_by_day.setdefault(row["day"], [])
     for row in daily:
-        spend_by_day[row["day"]] = spend_by_day.get(row["day"], 0.0) + float(
-            (row["cost_usd"] or 0) + (row["list_cost_usd"] or 0)
-        )
-    for row in local_daily:
-        spend_by_day[row["day"]] = spend_by_day.get(row["day"], 0.0) + float(
-            row["list_cost_usd"] or 0
-        )
+        if row["cost_usd"] is not None:
+            spend_by_day[row["day"]].append(float(row["cost_usd"]))
     spend_daily = [
-        {"day": day, "spend_usd": spend_by_day[day]} for day in sorted(spend_by_day)
+        {
+            "day": day,
+            "spend_usd": (float(sum(spend_by_day[day])) if spend_by_day[day] else None),
+        }
+        for day in sorted(spend_by_day)
     ]
 
     return {

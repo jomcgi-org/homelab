@@ -118,6 +118,29 @@ def _client(monkeypatch, handler):
     )
 
 
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        ({}, None),
+        ({"total_cost_usd": 0}, 0.0),
+        ({"total_cost_usd": 0.125}, 0.125),
+        ({"total_cost_usd": True}, None),
+        ({"total_cost_usd": -0.01}, None),
+        ({"total_cost_usd": float("nan")}, None),
+        ({"total_cost_usd": float("inf")}, None),
+        ({"total_cost_usd": 10**1000}, None),
+        ({"total_cost_usd": "0.125"}, None),
+        ({"total_cost_cents": 12.5}, None),
+    ],
+)
+def test_native_reported_cost_preserves_zero_and_rejects_unusable_evidence(
+    payload, expected
+):
+    turn = transport.parse_native_turn(payload, "guest")
+
+    assert turn.total_cost_usd == expected
+
+
 def test_receipt_observer_limit_preserves_one_synchronous_post(monkeypatch):
     from factory.execution import result_receipts
 

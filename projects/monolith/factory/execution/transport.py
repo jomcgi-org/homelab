@@ -18,6 +18,7 @@ from dataclasses import dataclass
 import hashlib
 import json
 import logging
+import math
 import os
 import random
 import re
@@ -356,6 +357,18 @@ class Turn(NamedTuple):
     native_receipt: dict | None = None
 
 
+def _reported_cost_usd(guest_data: dict) -> float | None:
+    """Accept only an explicit, finite USD charge from the native adapter."""
+    value = guest_data.get("total_cost_usd")
+    if type(value) not in (int, float) or value < 0:
+        return None
+    try:
+        projected = float(value)
+    except OverflowError:
+        return None
+    return projected if math.isfinite(projected) else None
+
+
 def parse_native_turn(
     guest_data: dict,
     guest_id: str,
@@ -374,7 +387,7 @@ def parse_native_turn(
         num_turns=int(guest_data.get("num_turns", 0)),
         session_id=guest_data.get("session_id") or cli_session_id,
         usage=guest_data.get("usage", {}),
-        total_cost_usd=guest_data.get("total_cost_usd"),
+        total_cost_usd=_reported_cost_usd(guest_data),
         duration_ms=guest_data.get("duration_ms"),
         activities=guest_data.get("activities", []),
         diff=_guest_diff(guest_data.get("diff"), guest_id),

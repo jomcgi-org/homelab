@@ -159,6 +159,14 @@ export function recentSummary(sessions = [], runs = [], now = Date.now()) {
         item.at > 0 && item.at <= nowMs && nowMs - item.at < RECENT_WINDOW_MS,
     )
     .sort((a, b) => b.at - a.at);
+  const costs = items.map((item) => {
+    const raw =
+      item.kind === "run" ? item.value?.cost_usd : item.value?.total_cost_usd;
+    if (raw == null) return null;
+    const value = Number(raw);
+    return Number.isFinite(value) && value >= 0 ? value : null;
+  });
+  const knownCosts = costs.filter((value) => value !== null);
 
   return {
     items: items.slice(0, 5),
@@ -166,15 +174,9 @@ export function recentSummary(sessions = [], runs = [], now = Date.now()) {
     allCount: allItems.length,
     sessionCount: items.filter((item) => item.kind === "session").length,
     runCount: items.filter((item) => item.kind === "run").length,
-    spend: items.reduce(
-      (sum, item) =>
-        sum +
-        Number(
-          item.kind === "run"
-            ? item.value?.cost_usd || 0
-            : item.value?.total_cost_usd || 0,
-        ),
-      0,
-    ),
+    spend: knownCosts.length
+      ? knownCosts.reduce((sum, value) => sum + value, 0)
+      : null,
+    spendMissing: costs.length - knownCosts.length,
   };
 }
