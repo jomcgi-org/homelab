@@ -5501,13 +5501,23 @@ class PiProcess:
                             )
                             result_text = message_text
                             accumulated_text += message_text
-                            raw_usage = message_event.get("usage", {})
-                            usage = {
-                                "input_tokens": raw_usage.get("input", 0),
-                                "output_tokens": raw_usage.get("output", 0),
-                                "cache_read_tokens": raw_usage.get("cacheRead", 0),
-                                "cache_write_tokens": raw_usage.get("cacheWrite", 0),
-                            }
+                            # Pi reports usage per LLM call, and a turn with
+                            # tool calls makes several, so the turn's usage is
+                            # the sum over every assistant message_end. Pi
+                            # emits message_end once per message (streaming
+                            # goes through message_update, and a retry is a
+                            # new message and a new billed call), so no
+                            # de-duplication is needed.
+                            raw_usage = message_event.get("usage") or {}
+                            for usage_key, raw_key in (
+                                ("input_tokens", "input"),
+                                ("output_tokens", "output"),
+                                ("cache_read_tokens", "cacheRead"),
+                                ("cache_write_tokens", "cacheWrite"),
+                            ):
+                                usage[usage_key] = usage.get(usage_key, 0) + (
+                                    raw_usage.get(raw_key) or 0
+                                )
                             terminal_reason = message_event.get(
                                 "stopReason", "completed"
                             )

@@ -624,6 +624,31 @@ for line in sys.stdin:
                   "content": [{"type": "text", "text": "Telemetry done"}],
                   "stopReason": "stop", "usage": {"input": 5, "output": 7}}})
             emit({"type": "agent_end", "messages": []})
+        elif os.environ.get("FAKE_PI_MODE") == "multi-message-usage":
+            # Pi reports usage per LLM call: one assistant message per call,
+            # with tool results between them.
+            emit({"type": "message_start", "message": {"role": "assistant"}})
+            emit({"type": "message_end", "message": {"role": "assistant",
+                  "content": [], "stopReason": "toolUse",
+                  "usage": {"input": 100, "output": 10, "cacheRead": 40,
+                            "cacheWrite": 5}}})
+            emit({"type": "tool_execution_start", "toolCallId": "bash-1",
+                  "toolName": "bash", "args": {"command": "echo pi"}})
+            emit({"type": "tool_execution_end", "toolCallId": "bash-1"})
+            emit({"type": "message_end", "message": {"role": "toolResult",
+                  "content": [{"type": "text", "text": "pi"}],
+                  "usage": {"input": 999, "output": 999}}})
+            emit({"type": "message_start", "message": {"role": "assistant"}})
+            emit({"type": "message_end", "message": {"role": "assistant",
+                  "content": [], "stopReason": "toolUse",
+                  "usage": {"input": 200, "output": 20, "cacheRead": 150}}})
+            emit({"type": "message_start", "message": {"role": "assistant"}})
+            emit({"type": "message_end", "message": {"role": "assistant",
+                  "content": [{"type": "text", "text": "Summed"}],
+                  "stopReason": "stop",
+                  "usage": {"input": 300, "output": 30, "cacheRead": 250,
+                            "cacheWrite": 7}}})
+            emit({"type": "agent_end", "messages": []})
         elif os.environ.get("FAKE_PI_MODE") == "no-tools":
             emit({"type": "message_start", "message": {"role": "assistant"}})
             emit({"type": "message_end", "message": {"role": "assistant",
@@ -1767,6 +1792,43 @@ def test_pi_turn_reports_model_and_tool_timing(tmp_path, monkeypatch, capsys):
     assert "phase=pi_tools calls=2 ms=" in timing
     assert "bash=1:1000" in timing
     assert "read=1:1000" in timing
+
+
+def test_pi_turn_usage_sums_every_assistant_message(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_PI_MODE", "multi-message-usage")
+    manager = _pi_manager(tmp_path, monkeypatch)
+    record = manager.turn("hello", model="spark")
+    manager._close_process()
+
+    assert record["result"] == "Summed"
+    assert record["num_turns"] == 3
+    assert record["usage"]["model_calls"] == 3
+    assert {
+        key: record["usage"][key]
+        for key in (
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cache_write_tokens",
+        )
+    } == {
+        "input_tokens": 600,
+        "output_tokens": 60,
+        "cache_read_tokens": 440,
+        "cache_write_tokens": 12,
+    }
+
+
+def test_pi_turn_single_message_usage_keeps_shape(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_PI_MODE", "no-tools")
+    manager = _pi_manager(tmp_path, monkeypatch)
+    record = manager.turn("hello", model="spark")
+    manager._close_process()
+
+    assert record["usage"]["input_tokens"] == 2
+    assert record["usage"]["output_tokens"] == 3
+    assert record["usage"]["cache_read_tokens"] == 0
+    assert record["usage"]["cache_write_tokens"] == 0
 
 
 def test_pi_turn_without_tools_reports_zero_tool_time(tmp_path, monkeypatch):
