@@ -222,6 +222,30 @@ def test_create_session_persists_optional_system_prompt(monkeypatch, tmp_path):
         (None, "luna", {"input_tokens": 1_000_000}, True),
         (None, "gpt-unknown", {"input_tokens": 1_000}, False),
         (None, "astra", {"input_tokens": 1_000, "output_tokens": 200}, True),
+        (
+            None,
+            "spark",
+            {
+                "muse": {"status": "complete"},
+                "input_tokens": 1_000_000,
+                "output_tokens": 200_000,
+                "cache_read_tokens": 100_000,
+                "cache_write_tokens": 0,
+            },
+            True,
+        ),
+        (
+            None,
+            "qwen",
+            {
+                "muse": {"status": "complete"},
+                "input_tokens": 1_000_000,
+                "output_tokens": 200_000,
+                "cache_read_tokens": 100_000,
+                "cache_write_tokens": 0,
+            },
+            True,
+        ),
     ],
 )
 def test_create_turn_keeps_reported_and_list_costs_separate(

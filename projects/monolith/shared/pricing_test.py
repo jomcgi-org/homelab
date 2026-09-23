@@ -99,6 +99,35 @@ def test_muse_cache_reads_add_no_separate_cost():
     assert with_cache == without_cache
 
 
+@pytest.mark.parametrize("model", ["spark", "qwen"])
+def test_muse_adapter_usage_does_not_double_count_cache_into_input(model):
+    # Regression for the Muse adapter (MuseProcess.turn / _muse_usage_projection
+    # in shim.py) forwarding generic {input_tokens, cache_read_tokens,
+    # cache_write_tokens} usage rather than Claude-shaped keys. If it emitted
+    # cache_read_input_tokens / cache_creation_input_tokens instead, this would
+    # get classified claude_shape and fold cache into input, inflating cost.
+    usage = {
+        "muse": {"status": "complete", "source": "msp_retained_session_view"},
+        "input_tokens": 1_000_000,
+        "output_tokens": 100_000,
+        "cached_tokens": 500_000,
+        "cache_read_tokens": 500_000,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 10,
+        "prompt_tokens": 1_000_000,
+        "total_tokens": 1_100_000,
+    }
+    priced = price_usage(model, usage)
+
+    assert priced is not None
+    assert priced.model_ref == "muse-spark-1.3-contributor"
+    # input_per_million=0.10, output_per_million=0.20; cache reads are already
+    # included in input_tokens and must not be charged again.
+    assert priced.cost_usd == pytest.approx(
+        (1_000_000 * 0.10 + 100_000 * 0.20) / 1_000_000
+    )
+
+
 @pytest.mark.parametrize(
     ("model", "expected"),
     [("gpt-6-astra", 12.75), ("codex-auto-review", 3.4375)],

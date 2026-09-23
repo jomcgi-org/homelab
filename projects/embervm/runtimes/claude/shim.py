@@ -4099,13 +4099,19 @@ def _muse_usage_projection(events, session_id, command_id, expected_completions)
         terminal_usage = meta["terminal"].get("usage", {})
         if any(totals.get(key) != value for key, value in terminal_usage.items()):
             raise ValueError("terminal aggregate mismatch")
+        # Generic keys only: shared/pricing.py treats cache_read_input_tokens /
+        # cache_creation_input_tokens as Claude-shaped and folds them into
+        # input_tokens (Anthropic reports uncached input separately). Muse
+        # already reports input_tokens inclusive of cache, like Codex, so
+        # emitting those Claude-shaped names here double-counts cache tokens
+        # into spark/qwen pricing.
         names = {
             "inputTokens": "input_tokens",
             "outputTokens": "output_tokens",
             "cachedTokens": "cached_tokens",
             "reasoningTokens": "reasoning_tokens",
-            "cacheReadTokens": "cache_read_input_tokens",
-            "cacheWriteTokens": "cache_creation_input_tokens",
+            "cacheReadTokens": "cache_read_tokens",
+            "cacheWriteTokens": "cache_write_tokens",
         }
         result.update({names[key]: value for key, value in totals.items()})
         result["prompt_tokens"] = sum(row["promptTokens"] for row in observations)

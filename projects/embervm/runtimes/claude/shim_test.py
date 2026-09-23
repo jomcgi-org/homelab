@@ -9278,12 +9278,28 @@ def test_muse_usage_real_retained_capture_preserves_native_provenance():
     assert usage["output_tokens"] == 24
     assert usage["total_tokens"] == 23439
     assert usage["cached_tokens"] == 0
-    assert usage["cache_read_input_tokens"] == 0
-    assert usage["cache_creation_input_tokens"] == 0
+    assert usage["cache_read_tokens"] == 0
+    assert usage["cache_write_tokens"] == 0
     assert usage["reasoning_tokens"] == 10
     assert usage["model_ms"] == 1871
     assert usage["muse"]["observations"] == [_MUSE_USAGE_RECORDED_EVENTS[1]["params"]]
     assert "total_cost_usd" not in usage
+
+
+def test_muse_usage_nonzero_cache_tokens_use_generic_keys_not_claude_shaped():
+    # shared/pricing.py folds cache_read_input_tokens / cache_creation_input_tokens
+    # (Claude-shaped) into input_tokens, since Anthropic reports uncached input
+    # separately. Muse reports input_tokens inclusive of cache like Codex, so
+    # those Claude-shaped names must never appear here or spark/qwen pricing
+    # double-counts cache tokens into input.
+    events = copy.deepcopy(_MUSE_USAGE_RECORDED_EVENTS)
+    events[1]["params"]["usage"]["cacheReadTokens"] = 200
+    events[1]["params"]["usage"]["cacheWriteTokens"] = 50
+    usage = _muse_usage_project(events)
+    assert usage["cache_read_tokens"] == 200
+    assert usage["cache_write_tokens"] == 50
+    assert "cache_read_input_tokens" not in usage
+    assert "cache_creation_input_tokens" not in usage
 
 
 def test_muse_usage_counts_only_this_turn_not_prior_session_or_terminal_totals():
@@ -9323,7 +9339,7 @@ def test_muse_usage_counts_only_this_turn_not_prior_session_or_terminal_totals()
     assert usage["output_tokens"] == 4
     assert usage["total_tokens"] == 32
     assert usage["model_ms"] == 1971
-    assert "cache_read_input_tokens" not in usage
+    assert "cache_read_tokens" not in usage
 
 
 @pytest.mark.parametrize("different_cursor", [False, True])
@@ -9442,8 +9458,8 @@ def test_muse_usage_absent_optional_counters_remain_unmeasured():
     usage = _muse_usage_project(events)
     assert usage["muse"]["status"] == "complete"
     assert "model_ms" not in usage
-    assert "cache_read_input_tokens" not in usage
-    assert "cache_creation_input_tokens" not in usage
+    assert "cache_read_tokens" not in usage
+    assert "cache_write_tokens" not in usage
     assert "modelId" not in usage["muse"]["observations"][0]
 
 
