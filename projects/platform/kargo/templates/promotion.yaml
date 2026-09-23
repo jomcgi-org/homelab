@@ -277,10 +277,10 @@ spec:
         the new pods pass their probes. The monolith's readiness probe is
         /healthz, so waiting for Healthy IS the assertion that the promoted
         chart's health check went green, reached over the Kubernetes API the
-        controller already has RBAC for. No HTTP path to the workload, which
-        matters: monolith-dev sits behind the `monolith-dev-api-ingress` Cilium
-        allowlist and the kargo namespace is not on it, so an http step would
-        silently dial-timeout rather than fail honestly.
+        controller already has RBAC for. This verifies Kubernetes readiness
+        without a separate HTTP path from the controller to the workload; it
+        does not verify end-to-end HTTP reachability. The removed Cilium
+        allowlist provides no justification for omitting that separate check.
 
         THE RESIDUAL RACE, stated plainly because it is the same class of bug
         this step fixes. argocd-wait has NO desiredRevision field; it asserts
