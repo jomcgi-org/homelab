@@ -176,7 +176,21 @@ editing KG text, silently changing policy, or inventing a priority mutation.
 
 ### Operating rules
 
-The practical MVP decision in #5956 retains four rules for all of these roles:
+The practical MVP operating decision of 2026-09-13 (issue #5956) accepts the
+delivered factory loop as sufficient for continued bounded improvement work,
+and satisfies the MVP prerequisite for separately approved work, including
+#5753. It replaces the earlier requirement to prove two consecutive runs
+before permitting further improvement. PR #5970 and PR #6032 are merged
+examples; this decision makes no claim that their complete run histories met
+the former intervention or consecutivity requirement, and it does not revive
+or certify the superseded G0-G3 programme. Other issues retain their own
+scope decisions and gates: this is not blanket approval for every formerly
+post-MVP programme, and it changes no automation policy, budgets,
+concurrency, merge authority, or deployment settings. No conflicting
+MVP-gate language remains in this file; earlier checkpoints live on in GitHub
+edit history and discussion and are not current acceptance requirements.
+
+It retains four rules for all of these roles:
 
 1. Do not add frozen packets, hash pinning, or timed approval windows. A PR is
    accepted by required CI plus one independent exact-head review, as for a
