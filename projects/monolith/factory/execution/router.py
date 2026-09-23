@@ -89,10 +89,14 @@ def _aggregate_statement(status: str | None = None, session_id: int | None = Non
     turns_statement = select(
         AgentTurn.session_id,
         func.count(AgentTurn.id).label("turn_count"),
-        func.coalesce(func.sum(AgentTurn.cost_usd), 0).label("total_cost_usd"),
-        func.coalesce(func.sum(AgentTurn.list_cost_usd), 0).label(
-            "total_list_cost_usd"
-        ),
+        func.sum(AgentTurn.cost_usd).label("total_cost_usd"),
+        func.sum(AgentTurn.list_cost_usd).label("total_list_cost_usd"),
+        func.count(AgentTurn.id)
+        .filter(AgentTurn.cost_usd.is_(None))
+        .label("reported_cost_missing_turns"),
+        func.count(AgentTurn.id)
+        .filter(AgentTurn.list_cost_usd.is_(None))
+        .label("list_cost_missing_turns"),
     )
     if session_id is not None:
         turns_statement = turns_statement.where(AgentTurn.session_id == session_id)
@@ -130,8 +134,10 @@ def _aggregate_statement(status: str | None = None, session_id: int | None = Non
         select(
             AgentSession,
             func.coalesce(turns.c.turn_count, 0),
-            func.coalesce(turns.c.total_cost_usd, 0),
-            func.coalesce(turns.c.total_list_cost_usd, 0),
+            turns.c.total_cost_usd,
+            turns.c.total_list_cost_usd,
+            func.coalesce(turns.c.reported_cost_missing_turns, 0),
+            func.coalesce(turns.c.list_cost_missing_turns, 0),
             func.coalesce(pending.c.pending_count, 0),
             first_turn_prompt,
             first_pending_prompt,
@@ -168,8 +174,10 @@ def _fallback_title(
 def _session_payload(
     row: AgentSession,
     turn_count: int,
-    total_cost_usd: float,
-    total_list_cost_usd: float,
+    total_cost_usd: float | None,
+    total_list_cost_usd: float | None,
+    reported_cost_missing_turns: int,
+    list_cost_missing_turns: int,
     pending_count: int,
     first_turn_prompt: str | None = None,
     first_pending_prompt: str | None = None,
@@ -206,8 +214,16 @@ def _session_payload(
         "last_turn_at": _iso(row.last_turn_at),
         "voice_summary": row.voice_summary,
         "turn_count": int(turn_count),
-        "total_cost_usd": float(total_cost_usd or 0),
-        "total_list_cost_usd": float(total_list_cost_usd or 0),
+        "total_cost_usd": (
+            float(total_cost_usd) if total_cost_usd is not None else None
+        ),
+        "total_list_cost_usd": (
+            float(total_list_cost_usd)
+            if total_list_cost_usd is not None
+            else None
+        ),
+        "reported_cost_missing_turns": int(reported_cost_missing_turns),
+        "list_cost_missing_turns": int(list_cost_missing_turns),
         "pending_count": int(pending_count),
     }
 
@@ -987,6 +1003,8 @@ def get_session_detail(
         turn_count,
         total_cost_usd,
         total_list_cost_usd,
+        reported_cost_missing_turns,
+        list_cost_missing_turns,
         pending_count,
         first_turn,
         first_pending,
@@ -1006,6 +1024,8 @@ def get_session_detail(
             turn_count,
             total_cost_usd,
             total_list_cost_usd,
+            reported_cost_missing_turns,
+            list_cost_missing_turns,
             pending_count,
             first_turn,
             first_pending,

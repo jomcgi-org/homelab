@@ -711,6 +711,8 @@ def test_list_sessions_aggregates(client, session):
     assert item["pending_count"] == 1
     assert item["total_cost_usd"] == pytest.approx(0.1)
     assert item["total_list_cost_usd"] == pytest.approx(0.07)
+    assert item["reported_cost_missing_turns"] == 0
+    assert item["list_cost_missing_turns"] == 1
     assert item["title"] == "one"
 
 
@@ -1059,8 +1061,10 @@ def test_get_session_detail(client, session):
     assert body["session"]["id"] == row.id
     assert body["session"]["turn_count"] == 2
     assert body["session"]["pending_count"] == 1
-    assert body["session"]["total_cost_usd"] == 0
+    assert body["session"]["total_cost_usd"] is None
     assert body["session"]["total_list_cost_usd"] == pytest.approx(0.05)
+    assert body["session"]["reported_cost_missing_turns"] == 2
+    assert body["session"]["list_cost_missing_turns"] == 1
     assert body["session"]["title"] == "one"
     assert [turn["seq"] for turn in body["turns"]] == [1, 2]
     assert body["turns"][1]["usage"] == {"activities": ["shell"]}
@@ -2447,9 +2451,8 @@ def test_unknown_outcome_detail_retains_evidence_and_rejects_all_send_boundaries
     assert recovery["claim_owner"] == "dead-pod:attempt"
     assert recovery["last_dispatch_at"] is not None
     assert body["pending_queue"][0]["prompt"] == "held successor"
-    # The existing aggregate is a subtotal of known costs, not a billing claim
-    # about an invocation whose outcome is unknown.
-    assert body["session"]["total_cost_usd"] == 0
+    assert body["session"]["total_cost_usd"] is None
+    assert body["session"]["reported_cost_missing_turns"] == 1
 
     response = client.post(
         f"/api/agents/sessions/{session_id}/messages", json={"prompt": "ordinary retry"}

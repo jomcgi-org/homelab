@@ -9458,8 +9458,16 @@ def _muse_usage_project(events=None, count=1, command_id=None):
 
 def test_muse_usage_real_retained_capture_preserves_native_provenance():
     usage = _muse_usage_project()
+    assert usage["shape"] == "muse"
     assert usage["muse"]["status"] == "complete"
     assert usage["muse"]["cost_status"] == "not_reported"
+    assert usage["muse"]["counter_scope"] == "turn_delta"
+    assert usage["muse"]["observation_scope"] == "model_completion_delta"
+    assert usage["muse"]["cumulative_scope"] == "session"
+    assert usage["muse"]["input_includes_cache"] is True
+    assert usage["muse"]["reported_model_ids"] == [
+        "muse-spark-1.3-contributor"
+    ]
     assert usage["input_tokens"] == usage["prompt_tokens"] == 23415
     assert usage["output_tokens"] == 24
     assert usage["total_tokens"] == 23439
@@ -9647,15 +9655,30 @@ def test_muse_usage_absent_optional_counters_remain_unmeasured():
     assert "cache_read_tokens" not in usage
     assert "cache_write_tokens" not in usage
     assert "modelId" not in usage["muse"]["observations"][0]
+    assert usage["muse"]["model_identity_status"] == "not_reported"
 
 
-@pytest.mark.parametrize("value", [True, -1, 1.5, "23", None])
+@pytest.mark.parametrize(
+    "value", [True, -1, 1.5, float("nan"), float("inf"), "23", None]
+)
 def test_muse_usage_rejects_invalid_counter(value):
     events = copy.deepcopy(_MUSE_USAGE_RECORDED_EVENTS)
     events[1]["params"]["usage"]["inputTokens"] = value
     usage = _muse_usage_project(events)
     assert usage["muse"]["reason"] == "invalid_evidence"
     assert "input_tokens" not in usage
+
+
+def test_muse_usage_ignores_uncontracted_cost_units():
+    events = copy.deepcopy(_MUSE_USAGE_RECORDED_EVENTS)
+    events[1]["params"]["usage"]["costCents"] = 12
+    events[-1]["params"]["totalCostCents"] = 12
+
+    usage = _muse_usage_project(events)
+
+    assert usage["muse"]["status"] == "complete"
+    assert usage["muse"]["cost_status"] == "not_reported"
+    assert "total_cost_usd" not in usage
 
 
 @pytest.mark.parametrize("count", [0, 2, None, True])
@@ -9763,11 +9786,17 @@ _MUSE_USAGE_RECORDED_EVENTS = [
 
 
 @pytest.mark.parametrize(
-    ("turn_index", "completion_count", "input_tokens", "output_tokens"),
-    [(0, 4, 98547, 582), (1, 17, 620234, 6695)],
+    (
+        "turn_index",
+        "completion_count",
+        "input_tokens",
+        "output_tokens",
+        "cache_read_tokens",
+    ),
+    [(0, 4, 98547, 582, 72531), (1, 17, 620234, 6695, 597505)],
 )
 def test_muse_usage_native_two_turn_capture_keeps_exact_exec_boundary(
-    turn_index, completion_count, input_tokens, output_tokens
+    turn_index, completion_count, input_tokens, output_tokens, cache_read_tokens
 ):
     # Paired native exec lifecycle and retained MSP metadata, not constructed
     # model-completion events. Both turns share one CLI session; cumulative
@@ -9800,6 +9829,7 @@ def test_muse_usage_native_two_turn_capture_keeps_exact_exec_boundary(
     assert usage["muse"]["reported_usage_completions"] == completion_count
     assert usage["input_tokens"] == usage["prompt_tokens"] == input_tokens
     assert usage["output_tokens"] == output_tokens
+    assert usage["cache_read_tokens"] == cache_read_tokens
     assert usage["total_tokens"] == input_tokens + output_tokens
     assert "total_cost_usd" not in usage
 

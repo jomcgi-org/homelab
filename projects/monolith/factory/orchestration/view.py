@@ -621,8 +621,17 @@ def compose_run(
             and output_decision.get("node_key") == node["key"]
             else None
         )
-    cost_usd = sum(
-        float(_value(row, "total_cost_usd", _value(row, "cost_usd", 0)) or 0)
+    reported_costs = [
+        cost
+        for row in sessions
+        if (
+            cost := _value(row, "total_cost_usd", _value(row, "cost_usd"))
+        )
+        is not None
+    ]
+    cost_usd = sum(float(cost) for cost in reported_costs) if reported_costs else None
+    reported_cost_missing_turns = sum(
+        int(_value(row, "reported_cost_missing_turns", 0) or 0)
         for row in sessions
     )
     state = _derived_state(raw, output, nodes, stranded)
@@ -647,6 +656,7 @@ def compose_run(
         "server_app_version": server_app_version,
         "stranded": stranded,
         "cost_usd": cost_usd,
+        "reported_cost_missing_turns": reported_cost_missing_turns,
         "note": None,
         "plan": plan,
         "effective_budget_usd": effective_budget_usd,

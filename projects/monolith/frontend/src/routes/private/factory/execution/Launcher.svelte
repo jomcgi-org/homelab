@@ -23,7 +23,8 @@
       allCount: 0,
       sessionCount: 0,
       runCount: 0,
-      spend: 0,
+      spend: null,
+      spendMissing: 0,
     },
     jumpCount = 0,
     onLoadBranches = () => {},
@@ -40,6 +41,13 @@
       ? firstLine(item.value?.title || item.value?.task?.text) ||
           item.value?.workflow_id
       : sessionTitle(item.value);
+  }
+
+  function costLabel(value) {
+    const formatted = fmtCost(value);
+    return formatted === null
+      ? P.labels.costUnavailable
+      : formatted || P.labels.zeroCost;
   }
 
   function submit() {
@@ -253,7 +261,13 @@
         {summary.runCount}
         {P.labels.recentRunsCount}
         {P.punct.dot}
-        {fmtCost(summary.spend) || P.labels.zeroCost}
+        {costLabel(summary.spend)}
+        {#if summary.spendMissing}
+          {P.labels.costPartial.replace(
+            "{count}",
+            String(summary.spendMissing),
+          )}
+        {/if}
       </span>
     </div>
     <div class="row-list">
@@ -291,7 +305,7 @@
                   ? runAsk(entry)
                   : P.stateWords[entry.state] || entry.state}
                 {P.punct.dot}
-                {fmtCost(entry.cost_usd) || P.labels.zeroCost}
+                {costLabel(entry.cost_usd)}
               {:else}
                 {entry.model || P.labels.defaultModel}
                 {P.punct.dot}

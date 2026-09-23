@@ -381,5 +381,18 @@ describe("recent summary", () => {
     expect(summary.sessionCount).toBe(1);
     expect(summary.runCount).toBe(5);
     expect(summary.spend).toBeCloseTo(0.22);
+    expect(summary.spendMissing).toBe(0);
+  });
+
+  test("keeps a wholly unknown recent spend unavailable", () => {
+    const now = new Date("2026-08-22T12:00:00Z");
+    const summary = recentSummary(
+      [session("unknown", "2026-08-22T11:00:00Z")],
+      [],
+      now,
+    );
+
+    expect(summary.spend).toBeNull();
+    expect(summary.spendMissing).toBe(1);
   });
 });
