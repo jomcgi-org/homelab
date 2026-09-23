@@ -18,7 +18,9 @@ accepts `http_check` only and does not accept OTLP metrics from services.
 
 Probe targets live under `httpcheck.targets` in
 `projects/platform/otel-collector/values-prod.yaml`. Add only public HTTPS URLs.
-An in-cluster target also needs a matching Cilium ingress rule on the destination.
+Revalidate any proposed in-cluster target against the destination's current
+reachability and access controls. The removed Cilium policies provide no ingress
+enforcement.
 
 ## Collector metamonitoring
 
