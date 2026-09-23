@@ -882,6 +882,9 @@ def apply_decision(
         effects,
         expected_decision_id=fields["decision_id"],
     )
+    from factory.orchestration.conductor_context import report_receipt_with_deadline
+
+    report_receipt_with_deadline(receipt_id)
     return {"ok": True, "applied": True, "resolution": resolution}
 
 
@@ -1271,6 +1274,9 @@ def request_chat(receipt_id: int, note: str, actor: str) -> dict:
             blocked_by=blocker,
             sequence=sequence,
         )
+    from factory.orchestration.conductor_context import report_receipt_with_deadline
+
+    report_receipt_with_deadline(receipt_id)
     return {
         "ok": True,
         "requeued": blocker is None,
