@@ -251,6 +251,7 @@ class TestSearchEndpoint:
             type_filter=None,
             scope_filters=(*DEFAULT_SCOPES, "personal:browser@example.com"),
             include_unscoped=True,
+            include_legacy=True,
         )
 
     def test_cross_subject_personal_grant_is_denied_without_audit(
