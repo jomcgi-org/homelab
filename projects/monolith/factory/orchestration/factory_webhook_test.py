@@ -29,6 +29,7 @@ from factory.orchestration.models import SwarmTask
 from factory.orchestration.work_items import (
     mint_or_sync_from_github,
     set_authority_local,
+    trust_for_github_author,
 )
 
 SECRET = "factory-test-secret"
@@ -605,3 +606,42 @@ def test_concurrent_local_handoff_prevents_webhook_close(tmp_path, monkeypatch):
         assert item.authority == "local"
         assert item.state == "ready"
         assert item.close_reason is None
+
+
+def test_item_2b_webhook_stays_default_off_and_trust_decides_fate(monkeypatch):
+    # Item 2b ships default-off: the route is inert unless the operator
+    # explicitly enables it, and trust (not prose or labels) decides a
+    # delivery's fate. No database is needed for either lock.
+    monkeypatch.delenv("FACTORY_GITHUB_WEBHOOK_ENABLED", raising=False)
+    assert webhook.webhook_enabled() is False
+    monkeypatch.setenv("FACTORY_GITHUB_WEBHOOK_ENABLED", "1")
+    assert webhook.webhook_enabled() is False
+    monkeypatch.setenv("FACTORY_GITHUB_WEBHOOK_ENABLED", "TRUE")
+    assert webhook.webhook_enabled() is True
+
+    trusted = frozenset(("jomcgi",))
+    assert (
+        trust_for_github_author(
+            {"login": "Jomcgi", "type": "User"}, trusted_authors=trusted
+        )
+        == "trusted"
+    )
+    assert (
+        trust_for_github_author(
+            {"login": "ci-bot[bot]", "type": "Bot"}, trusted_authors=trusted
+        )
+        == "semi_trusted"
+    )
+    assert (
+        trust_for_github_author(
+            {"login": "dependabot", "type": "User"}, trusted_authors=trusted
+        )
+        == "semi_trusted"
+    )
+    assert (
+        trust_for_github_author(
+            {"login": "stranger", "type": "User"}, trusted_authors=trusted
+        )
+        == "untrusted"
+    )
+    assert trust_for_github_author(None, trusted_authors=trusted) == "untrusted"
