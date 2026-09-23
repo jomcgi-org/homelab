@@ -152,20 +152,29 @@ func s6TraceRecordConstant(record traceRecord) string {
 	return "[" + strings.Join(fields, ", ") + "]"
 }
 
-// writeS6TraceCFG serializes a window as a TLC config pairing the shipped
-// adoption_trace.tla with a concrete Trace constant, the same shape as the
-// committed fixture cfgs under projects/embervm/specs.
-func writeS6TraceCFG(records []traceRecord, minEvents int, builder *strings.Builder) {
-	builder.WriteString("SPECIFICATION Spec\n\nCHECK_DEADLOCK FALSE\n\nCONSTANTS\n")
-	builder.WriteString("    MinTraceEvents = " + strconv.Itoa(minEvents) + "\n")
-	builder.WriteString("    Trace = <<")
+// writeS6TraceModule serializes a window as a TLA+ module instancing the
+// shipped adoption_trace.tla with the concrete exported records, plus the
+// scalar-only config that checks it.
+//
+// The window cannot ride in a .cfg the way the committed fixtures' scalar
+// Fixture selector does: TLC configuration files accept only scalars, sets
+// of scalars, and model values, never tuples or records (the driver fails
+// anything richer with "expecting = or <-"). So the window lives in this
+// generated module and plugs into the shipped spec by INSTANCE substitution
+// (Fixture <- "live", LiveTrace <- the window); the .cfg stays scalar-only.
+// The invariant aliases keep their bare names so a TLC rejection still reads
+// "Invariant <Name> is violated" for the fail verdict.
+func writeS6TraceModule(records []traceRecord, minEvents int, module, cfg *strings.Builder) {
+	module.WriteString("---- MODULE window ----\nEXTENDS Naturals, Sequences, FiniteSets\nVARIABLES cursor\nW ==\n    <<")
 	for i, record := range records {
 		if i > 0 {
-			builder.WriteString(",")
+			module.WriteString(",")
 		}
-		builder.WriteString("\n        " + s6TraceRecordConstant(record))
+		module.WriteString("\n      " + s6TraceRecordConstant(record))
 	}
-	builder.WriteString("\n    >>\n\nINVARIANT TraceWellFormed\nINVARIANT NoDestroyBeforeConfirm\nINVARIANT NoDoubleAssign\n")
+	module.WriteString(">>\nAT == INSTANCE adoption_trace WITH Fixture <- \"live\", LiveTrace <- W, MinTraceEvents <- " + strconv.Itoa(minEvents) + ", cursor <- cursor\n")
+	module.WriteString("Spec == AT!Spec\nTraceWellFormed == AT!TraceWellFormed\nNoDestroyBeforeConfirm == AT!NoDestroyBeforeConfirm\nNoDoubleAssign == AT!NoDoubleAssign\n================================================================================\n")
+	cfg.WriteString("SPECIFICATION Spec\n\nCHECK_DEADLOCK FALSE\n\nINVARIANT TraceWellFormed\nINVARIANT NoDestroyBeforeConfirm\nINVARIANT NoDoubleAssign\n")
 }
 
 // s6TLCConfigured reports whether the TLC leg can run here. The toolchain
@@ -175,11 +184,12 @@ func s6TLCConfigured(cfg config) bool {
 	return cfg.tlcJava != "" && cfg.tlcJar != "" && cfg.tlcSpecDir != ""
 }
 
-// runS6TLC stages adoption_trace.tla plus the generated window cfg into a
-// temp dir and runs TLC directly, mirroring the tlc.sh model-check block.
-// Output is classified by classifyS6TLCOutput; the java exit code is ignored
-// because a violation exit and a crash exit both need output text to tell
-// apart, and only named violations may read as fail.
+// runS6TLC stages adoption_trace.tla plus the generated window module and
+// its scalar-only config into a temp dir and runs TLC directly, mirroring
+// the tlc.sh model-check block. Output is classified by
+// classifyS6TLCOutput; the java exit code is ignored because a violation
+// exit and a crash exit both need output text to tell apart, and only named
+// violations may read as fail.
 func runS6TLC(ctx context.Context, cfg config, records []traceRecord) (verdict, detail string) {
 	coverage := len(records)
 	work, err := os.MkdirTemp("", "s6-trace-")
@@ -195,10 +205,12 @@ func runS6TLC(ctx context.Context, cfg config, records []traceRecord) (verdict, 
 	if err := os.WriteFile(filepath.Join(work, "adoption_trace.tla"), spec, 0o600); err != nil {
 		return verdictIncomplete, fmt.Sprintf("tlc staging failed: %v (coverage=%d)", err, coverage)
 	}
-	var cfgText strings.Builder
-	writeS6TraceCFG(records, cfg.minTraceEvents, &cfgText)
-	cfgName := "window.cfg"
-	if err := os.WriteFile(filepath.Join(work, cfgName), []byte(cfgText.String()), 0o600); err != nil {
+	var moduleText, cfgText strings.Builder
+	writeS6TraceModule(records, cfg.minTraceEvents, &moduleText, &cfgText)
+	if err := os.WriteFile(filepath.Join(work, "window.tla"), []byte(moduleText.String()), 0o600); err != nil {
+		return verdictIncomplete, fmt.Sprintf("tlc staging failed: %v (coverage=%d)", err, coverage)
+	}
+	if err := os.WriteFile(filepath.Join(work, "window.cfg"), []byte(cfgText.String()), 0o600); err != nil {
 		return verdictIncomplete, fmt.Sprintf("tlc staging failed: %v (coverage=%d)", err, coverage)
 	}
 
@@ -208,7 +220,7 @@ func runS6TLC(ctx context.Context, cfg config, records []traceRecord) (verdict, 
 		"-XX:+UseParallelGC",
 		"-Dtlc2.TLC.stopAfter="+strconv.Itoa(s6TLCTimeoutSeconds),
 		"-cp", cfg.tlcJar, "tlc2.TLC", "-workers", "auto",
-		"-config", cfgName, "adoption_trace")
+		"-config", "window.cfg", "window")
 	cmd.Dir = work
 	var output bytes.Buffer
 	cmd.Stdout = &output
