@@ -244,9 +244,7 @@ def test_apply_report_equals_dry_run_on_fresh_fixture_and_zero_on_rerun(session)
     assert link_issue_entities(session) == 0
 
 
-def test_note_entity_insert_counts_rows_when_rowcount_is_unknown(
-    session, monkeypatch
-):
+def test_note_entity_insert_counts_rows_when_rowcount_is_unknown(session, monkeypatch):
     seed_entities(session)
     entity = session.exec(
         select(Entity).where(Entity.kind == "project", Entity.slug == "monolith")
