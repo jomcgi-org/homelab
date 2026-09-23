@@ -1,9 +1,12 @@
 # EmberVM protocol TLA+ specs, checked by TLC in CI (ADR embervm/006).
 #
-# Eight specs, thirty-five genrules run the //bazel/tla:tlc.sh driver:
+# Nine specs, thirty-eight genrules run the //bazel/tla:tlc.sh driver:
 #   adoption.tla (protocol 1: VM lifecycle + adoption) with four cfgs: rich
 #     safety, positive liveness, and two NEGATIVE modes (expectation "fail") that
 #     prove the model still reproduces a historical bug.
+#   adoption_trace.tla (Tier B trace validation, issue #6415, staged
+#     default-off) with three cfgs: a pass fixture for the restart-plus-destroy
+#     happy path and two NEGATIVE fixtures for the acceptance deviations.
 #   bank_relight.tla (protocol 2: session bank/relight generation pairing, added by
 #     the ADR embervm/014 PR 5 follow-through) with three cfgs: a shared-lane safety
 #     config, an isolated single-use safety config, and one NEGATIVE mode proving
@@ -671,6 +674,66 @@ genrule(
           "\"$(location warmth_gc.tla)\" " +
           "\"$(location warmth_gc_newest_ref.cfg)\" " +
           "\"$@\" fail NewestStatefulRetainedWhileLive",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+# Tier B trace validation (issue #6415), staged default-off. adoption_trace.tla
+# replays an exported SpecTrace window record by record and asserts the two
+# ordering predicates the S6 runner verdicts on. The pass fixture is the happy
+# path a deliberate CP restart plus destroy produces; the two NEGATIVE fixtures
+# are the acceptance deviations (destroyed before node confirmation, same vm_id
+# dispatched twice) and must name their invariant. Thin windows never reach TLC:
+# the S6 runner returns vacuous below MinTraceEvents without checking, so there
+# is deliberately no thin-window genrule here (TLC would pass it, which is the
+# verdict the runner exists to withhold).
+genrule(
+    name = "tlc_adoption_trace_pass",
+    srcs = _JRE_SRCS + [
+        "adoption_trace.tla",
+        "adoption_trace_pass.cfg",
+    ],
+    outs = ["adoption_trace_pass.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location adoption_trace.tla)\" " +
+          "\"$(location adoption_trace_pass.cfg)\" " +
+          "\"$@\" pass",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_adoption_trace_destroy_before_confirm",
+    srcs = _JRE_SRCS + [
+        "adoption_trace.tla",
+        "adoption_trace_destroy_before_confirm.cfg",
+    ],
+    outs = ["adoption_trace_destroy_before_confirm.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location adoption_trace.tla)\" " +
+          "\"$(location adoption_trace_destroy_before_confirm.cfg)\" " +
+          "\"$@\" fail NoDestroyBeforeConfirm",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_adoption_trace_double_dispatch",
+    srcs = _JRE_SRCS + [
+        "adoption_trace.tla",
+        "adoption_trace_double_dispatch.cfg",
+    ],
+    outs = ["adoption_trace_double_dispatch.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location adoption_trace.tla)\" " +
+          "\"$(location adoption_trace_double_dispatch.cfg)\" " +
+          "\"$@\" fail NoDoubleAssign",
     tags = ["verification"],
     tools = ["//bazel/tla:tlc.sh"],
 )

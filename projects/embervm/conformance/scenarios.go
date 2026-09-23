@@ -41,7 +41,14 @@ type config struct {
 	idleBankSeconds      int
 	sweepGraceSeconds    int
 	minPassingInvariants int
-	budgets              map[string]time.Duration
+	// S6 TLC trace validation (issue #6415), staged default-off. When
+	// s6Enabled is false S6 never runs and the suite is exactly S1..S5.
+	s6Enabled      bool
+	minTraceEvents int
+	tlcJava        string
+	tlcJar         string
+	tlcSpecDir     string
+	budgets        map[string]time.Duration
 }
 
 type controlPlaneClient struct {
@@ -218,7 +225,16 @@ func runScenarios(ctx context.Context, cfg config, client *controlPlaneClient, s
 		return runS5(scenarioCtx, cfg, client, started)
 	})
 	logScenario(s5)
-	return []scenarioVerdict{s1, s2, s3, s4, s5}
+
+	scenarios := []scenarioVerdict{s1, s2, s3, s4, s5}
+	if cfg.s6Enabled {
+		s6 := runBudgeted(ctx, s6ScenarioID, cfg.budgets["S6"], func(scenarioCtx context.Context) scenarioVerdict {
+			return runS6(scenarioCtx, cfg, client, started)
+		})
+		logScenario(s6)
+		scenarios = append(scenarios, s6)
+	}
+	return scenarios
 }
 
 func runBudgeted(parent context.Context, id string, budget time.Duration, run func(context.Context) scenarioVerdict) scenarioVerdict {

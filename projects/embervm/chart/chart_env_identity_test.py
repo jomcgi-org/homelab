@@ -2116,6 +2116,26 @@ def test_recovery_rendered_credentials_and_capacity(recovery_render) -> None:
                 assert "EMBERVM_NODED_STORE_ENDPOINT" not in env
 
 
+def test_s6_trace_runner_is_default_off_everywhere() -> None:
+    """S6 TLC trace validation (#6415) ships default-off in every environment.
+
+    Narrower than and independent of the dev-only conformance.enabled gate: an
+    operator flips conformance.s6.enabled only after the embervm-dev lane is
+    confirmed stable. Reads the values files directly (no helm render), so a
+    missing key fails here rather than at template time.
+    """
+    chart_defaults = yaml.safe_load((_chart_dir() / "values.yaml").read_text())
+    assert chart_defaults["conformance"]["s6"]["enabled"] is False
+    assert chart_defaults["conformance"]["s6"]["minTraceEvents"] == 4
+    assert chart_defaults["conformance"]["budgets"]["s6"] == "60s"
+
+    dev_values = yaml.safe_load(Path(os.environ["DEV_VALUES"]).read_text())
+    assert dev_values["conformance"]["s6"]["enabled"] is False
+
+    recovery_values = yaml.safe_load(_recovery_values().read_text())
+    assert recovery_values["conformance"]["s6"]["enabled"] is False
+
+
 def test_recovery_disarms_destructive_defaults() -> None:
     values = yaml.safe_load(_recovery_values().read_text())
     assert values["noded"]["enabled"] is False

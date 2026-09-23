@@ -468,6 +468,16 @@ conformance:
     s3: 60s
     s4: 10s
     s5: 60s
+    s6: 60s
+  # S6 TLC trace validation (#6415), staged default-off. Narrower than and
+  # independent of conformance.enabled: the runner only appends the S6 scenario
+  # when this is true, and the S6 scenario itself withholds pass/incomplete
+  # unless TLC is wired (S6_TLC_* env, dev job context only). An operator flips
+  # this after the embervm-dev lane is confirmed stable; until then every
+  # environment, dev included, carries false.
+  s6:
+    enabled: false
+    minTraceEvents: 4
   resources:
     requests:
       cpu: 50m

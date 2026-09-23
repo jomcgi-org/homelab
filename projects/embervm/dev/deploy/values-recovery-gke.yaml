@@ -283,6 +283,8 @@ usageAdmins:
 - system:serviceaccount:embervm-dev:embervm-dev-embervm
 conformance:
   enabled: false
+  s6:
+    enabled: false
 servingEnvoy:
   enabled: false
 baseRetention:
