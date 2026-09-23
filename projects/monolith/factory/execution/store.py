@@ -459,6 +459,41 @@ def _hold_timestamp(value) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
+def _covered_response_lost_hold(
+    existing: AgentTurn | None, claim_owner: str, dispatch_count: int
+) -> bool:
+    """Whether a response-loss marker already covers this exact dispatch.
+
+    Mirrors the identity `_response_lost_hold` requires (a marker turn naming
+    a well-formed receipt and guest for this owner and dispatch), without the
+    liveness bound: an expired dispatch already had its one hold, and writing
+    again would re-arm a bound the lease path deliberately refuses to extend.
+    Duplicate and reordered lifecycle notifications for covered work are
+    therefore no-ops, so a later write can neither substitute a different
+    receipt nor stretch the first hold.
+    """
+    if (
+        existing is None
+        or existing.terminal_reason not in INTERRUPTED_TERMINAL_REASONS
+        or existing.stop_reason != RESPONSE_LOST
+    ):
+        return False
+    try:
+        recovery = json.loads(existing.usage_json or "{}").get("recovery", {})
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(recovery, dict):
+        return False
+    hold = recovery.get("response_lost")
+    return (
+        isinstance(hold, dict)
+        and recovery.get("claim_owner") == claim_owner
+        and recovery.get("dispatch_count") == dispatch_count
+        and isinstance(hold.get("receipt_id"), str)
+        and isinstance(hold.get("guest_id"), str)
+    )
+
+
 def _response_lost_hold(
     turn: AgentTurn | None, pending: PendingMessage, now: datetime | None = None
 ) -> dict | None:
@@ -537,7 +572,11 @@ def mark_turn_response_lost_sync(
 
     Returns False and writes nothing whenever the exact dispatch identity, its
     permit, or the turn history has moved, which leaves the caller on its
-    ordinary error path.
+    ordinary error path. Returns True without rewriting when a response-loss
+    marker already covers this exact dispatch: the first write wins, so a
+    duplicate or reordered notification changes neither the awaited receipt
+    nor the bound, and the caller stays on its held path instead of releasing
+    a claim the covering hold still needs.
     """
     if (
         type(session_id) is not int
@@ -606,6 +645,8 @@ def mark_turn_response_lost_sync(
             and existing.terminal_reason not in INTERRUPTED_TERMINAL_REASONS
         ):
             return False
+        if _covered_response_lost_hold(existing, claim_owner, dispatch_count):
+            return True
         _write_response_lost_locked(
             session,
             sess,

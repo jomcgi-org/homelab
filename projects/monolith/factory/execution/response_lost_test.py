@@ -522,6 +522,71 @@ def test_conflicting_and_duplicate_receipts_cannot_finish_a_held_turn(
     assert len(requests) == 1
 
 
+def test_reordered_hold_writes_neither_substitute_nor_stretch_the_first_hold(
+    database, monkeypatch
+):
+    record = native_record()
+    sid, requests = lose_the_response(database, monkeypatch)
+    held = assert_held(database, sid, "invoke_response_lost")
+    first = hold_of(sid)
+    with Session(database) as db:
+        pending = store.get_pending_message(db, sid, 1)
+        owner = pending.claimed_by_replica
+        dispatch_count = pending.dispatch_count
+    assert owner is not None
+    assert dispatch_count == 1
+
+    # A reordered lifecycle notification naming a different receipt for the
+    # same dispatch must not substitute the awaited receipt. The repeat
+    # reports held so its caller stays off the release path, and the first
+    # write wins byte for byte.
+    assert (
+        store.mark_turn_response_lost_sync(
+            sid,
+            1,
+            owner,
+            dispatch_count,
+            receipt_id="reordered-receipt",
+            guest_id=f"guest-{sid}",
+            reason="replica_shutdown",
+            hold_seconds=3600.0,
+            generation=0,
+            invoke_started_at=STARTED_AT,
+        )
+        is True
+    )
+    assert snapshot(database, sid) == held
+    assert hold_of(sid)["receipt_id"] == first["receipt_id"]
+
+    # An identical duplicate must not stretch the bound either.
+    assert (
+        store.mark_turn_response_lost_sync(
+            sid,
+            1,
+            owner,
+            dispatch_count,
+            receipt_id=first["receipt_id"],
+            guest_id=f"guest-{sid}",
+            reason="invoke_response_lost",
+            hold_seconds=3600.0,
+            generation=first["generation"],
+            invoke_started_at=first["invoke_started_at"],
+        )
+        is True
+    )
+    assert snapshot(database, sid) == held
+
+    # The guest's committed result for the first receipt still finishes the
+    # turn exactly once, without invoking the model a second time.
+    receipt = json.loads(requests[0].content)["result_receipt"]
+    assert receipt["id"] == first["receipt_id"]
+    result_receipts.capture_result(
+        receipt["id"], receipt["token"], json.dumps(record).encode()
+    )
+    assert store.adopt_response_lost_result(sid, ARTIFACT_PATH)["status"] == "adopted"
+    assert len(requests) == 1
+
+
 def test_adoption_is_idempotent_across_a_restart_between_receipt_and_turn(
     database, monkeypatch
 ):
