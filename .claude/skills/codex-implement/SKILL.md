@@ -54,10 +54,10 @@ just the worker's final message.
 
 | Tier           | Model         | Effort | Use for |
 | -------------- | ------------- | ------ | ------- |
-| **`frontier`** | gpt-5.6-sol   | high   | **Default, on trial until 2026-08-28.** Judged on correction rounds per PR, OpenAI quota burn, and exit-42 events |
+| **`frontier`** | gpt-6-sol     | high   | **Default, on trial until 2026-08-28.** Judged on correction rounds per PR, OpenAI quota burn, and exit-42 events |
 | `astra`        | gpt-6-astra   | high   | The factory conductor model. Only for a spec Sol has failed twice, or when Joe names it; same OpenAI grant |
-| `luna`         | gpt-5.6-luna  | medium | Trivially mechanical bulk, or the fallback default if the trial ends badly |
-| `terra`        | gpt-5.6-terra | high   | Middle rung; largely idle during the trial |
+| `luna`         | gpt-6-luna    | medium | Trivially mechanical bulk, or the fallback default if the trial ends badly |
+| `terra`        | gpt-5.6-terra | high   | Middle rung; largely idle during the trial. GPT-6 has no Terra |
 
 Rules:
 

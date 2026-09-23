@@ -8,9 +8,9 @@ def test_luna_input_price():
     priced = price_usage("luna", {"input_tokens": 1_000_000, "output_tokens": 0})
 
     assert priced is not None
-    assert priced.cost_usd == pytest.approx(0.40)
+    assert priced.cost_usd == pytest.approx(0.10)
     assert priced.source == "list"
-    assert priced.model_ref == "gpt-5.6-luna"
+    assert priced.model_ref == "gpt-6-luna"
 
 
 def test_luna_cached_input_uses_inclusive_input_semantics():
@@ -19,7 +19,7 @@ def test_luna_cached_input_uses_inclusive_input_semantics():
     )
 
     assert priced is not None
-    assert priced.cost_usd == pytest.approx(0.22)
+    assert priced.cost_usd == pytest.approx(0.055)
 
 
 def test_codex_transcript_cache_is_part_of_reported_input():
@@ -34,16 +34,18 @@ def test_codex_transcript_cache_is_part_of_reported_input():
     )
 
     assert priced is not None
-    assert priced.cost_usd == pytest.approx(0.22)
+    assert priced.cost_usd == pytest.approx(0.055)
 
 
-@pytest.mark.parametrize("model", ["sol", "terra"])
-def test_codex_aliases_resolve_to_provider_models(model):
+@pytest.mark.parametrize(
+    ("model", "model_ref"), [("sol", "gpt-6-sol"), ("terra", "gpt-5.6-terra")]
+)
+def test_codex_aliases_resolve_to_provider_models(model, model_ref):
     priced = price_usage(model, {"input_tokens": 1_000})
 
     assert priced is not None
     assert priced.cost_usd > 0
-    assert priced.model_ref == f"gpt-5.6-{model}"
+    assert priced.model_ref == model_ref
 
 
 def test_opus_adds_exclusive_claude_cache_tokens_to_input():
@@ -52,25 +54,32 @@ def test_opus_adds_exclusive_claude_cache_tokens_to_input():
         {"input_tokens": 1_000, "cache_read_tokens": 9_000, "output_tokens": 100},
     )
     assert blended is not None
-    assert blended.model_ref == "claude-opus-5"
-    model_price = calc_price(
-        Usage(
-            input_tokens=10_000,
-            cache_read_tokens=9_000,
-            output_tokens=100,
-        ),
-        "claude-opus-5",
-        provider_id="anthropic",
-    ).model_price
-    expected = float(
-        (
-            1_000 * model_price.input_mtok
-            + 9_000 * model_price.cache_read_mtok
-            + 100 * model_price.output_mtok
-        )
-        / 1_000_000
+    assert blended.model_ref == "claude-opus-5-5"
+    # 1,000 uncached input at $4, 9,000 cache reads at $0.20, 100 output at $20.
+    assert blended.cost_usd == pytest.approx(0.0078)
+
+
+def test_opus_5_5_prices_cache_writes_at_the_write_rate():
+    priced = price_usage(
+        "claude-opus-5-5",
+        {
+            "shape": "claude",
+            "input_tokens": 1_000,
+            "cache_write_tokens": 2_000,
+            "output_tokens": 0,
+        },
     )
-    assert blended.cost_usd == pytest.approx(expected)
+
+    assert priced is not None
+    assert priced.model_ref == "claude-opus-5-5"
+    assert priced.cost_usd == pytest.approx(0.014)
+
+
+def test_opus_5_5_model_id_is_not_priced_as_opus_5():
+    usage = {"input_tokens": 1_000_000, "output_tokens": 0}
+
+    assert price_usage("claude-opus-5-5", usage).cost_usd == pytest.approx(4.0)
+    assert price_usage("claude-opus-5", usage).cost_usd == pytest.approx(5.0)
 
 
 @pytest.mark.parametrize("model", ["spark", "qwen", "pi-spark"])
@@ -217,7 +226,7 @@ def test_reasoning_output_tokens_are_not_added_to_output():
 
 def test_claude_transcript_shape_uses_exclusive_input_semantics():
     shaped = price_usage(
-        "claude-opus-5",
+        "claude-opus-5-5",
         {
             "input_tokens": 1_000,
             "output_tokens": 100,

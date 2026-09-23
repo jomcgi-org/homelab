@@ -169,7 +169,7 @@ def test_create_raw_prices_local_session_usage(client, session):
     raw = session.exec(
         select(RawInput).where(RawInput.raw_id == response.json()["raw_id"])
     ).one()
-    assert raw.extra["usage_cost_usd"] == pytest.approx(0.40)
+    assert raw.extra["usage_cost_usd"] == pytest.approx(0.10)
     assert raw.extra["usage_cost_source"] == "list"
 
 

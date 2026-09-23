@@ -6146,7 +6146,7 @@ def test_claude_model_argv_and_mid_session_switch_resumes(tmp_path, monkeypatch)
         json.loads(args_path.read_text())[
             json.loads(args_path.read_text()).index("--model") + 1
         ]
-        == "opus"
+        == "claude-opus-5-5"
     )
     second = manager.turn("second", session_id="init-sid", model="fable")
     assert second["model"] == "fable"

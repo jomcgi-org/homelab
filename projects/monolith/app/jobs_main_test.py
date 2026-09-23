@@ -315,7 +315,7 @@ def test_price_turns_backfill_prices_only_eligible_rows(tmp_path):
             assert report == jobs_main.TurnPricingBackfillReport(1, 1, 0)
             rows = session.exec(select(AgentTurn).order_by(AgentTurn.seq)).all()
             assert rows[0].cost_usd is None
-            assert rows[0].list_cost_usd == pytest.approx(0.40)
+            assert rows[0].list_cost_usd == pytest.approx(0.10)
             assert rows[1].cost_usd is None
             assert rows[1].list_cost_usd is None
             assert rows[2].cost_usd is None

@@ -21,12 +21,13 @@ class PricedUsage:
 
 
 _MODEL_ALIASES = {
-    "luna": ("gpt-5.6-luna", "openai"),
+    # GPT-6 Luna, Sol and Astra and Claude Opus 5.5 have no genai-prices 0.1.6
+    # entry, so they settle through the fixed table. GPT-6 has no Terra.
+    "luna": ("gpt-6-luna", "fixed"),
     "terra": ("gpt-5.6-terra", "openai"),
-    "sol": ("gpt-5.6-sol", "openai"),
-    # astra has no genai-prices entry, so it settles through the fixed table.
+    "sol": ("gpt-6-sol", "fixed"),
     "astra": ("gpt-6-astra", "fixed"),
-    "opus": ("claude-opus-5", "anthropic"),
+    "opus": ("claude-opus-5-5", "fixed"),
     "sonnet": ("claude-sonnet-5", "anthropic"),
     "fable": ("claude-fable-5-1", "anthropic"),
     "spark": ("muse-spark-1.3-contributor", "muse"),
@@ -43,6 +44,25 @@ FIXED_PRICES = {
     "muse-spark-1.3-contributor": {
         "input_per_million": 0.10,
         "output_per_million": 0.20,
+    },
+    "gpt-6-luna": {
+        "input_per_million": 0.10,
+        "cache_read_per_million": 0.01,
+        "output_per_million": 0.50,
+        "note": "OpenAI list price, 2026-09-22; cache read assumed at 10% of input",
+    },
+    "gpt-6-sol": {
+        "input_per_million": 2.00,
+        "cache_read_per_million": 0.20,
+        "output_per_million": 10.00,
+        "note": "OpenAI list price, 2026-09-22; cache read assumed at 10% of input",
+    },
+    "claude-opus-5-5": {
+        "input_per_million": 4.00,
+        "cache_read_per_million": 0.20,
+        "cache_write_per_million": 5.00,
+        "output_per_million": 20.00,
+        "note": "Anthropic list price, 2026-09-22",
     },
     "gpt-6-astra": {
         "input_per_million": 10.00,
@@ -82,12 +102,14 @@ def _token_count(usage: Mapping[str, Any], key: str) -> int | float:
 def _model_ref(model: str) -> tuple[str, str | None]:
     if model in _MODEL_ALIASES:
         return _MODEL_ALIASES[model]
-    if model.startswith("claude-"):
-        return model, "anthropic"
+    # Fixed prices win over the provider prefixes: genai-prices would match
+    # claude-opus-5-5 as claude-opus-5 and price it at Opus 5 rates.
     if model in FIXED_PRICES:
         if model.startswith("muse-"):
             return model, "muse"
         return model, "fixed"
+    if model.startswith("claude-"):
+        return model, "anthropic"
     if model.startswith("gpt-"):
         return model, "openai"
     return model, None
@@ -152,7 +174,9 @@ def price_usage(
 
     model_ref, provider_id = _model_ref(model)
     try:
-        normalized, counts = _normalized_usage(usage, provider_id)
+        # Fixed-price Claude models keep Anthropic's exclusive input semantics.
+        usage_provider = "anthropic" if model_ref.startswith("claude-") else provider_id
+        normalized, counts = _normalized_usage(usage, usage_provider)
         if not any(counts):
             return None
 
@@ -168,12 +192,17 @@ def price_usage(
 
         if provider_id == "fixed":
             prices = FIXED_PRICES[model_ref]
-            input_tokens, output_tokens, cache_read_tokens, _ = counts
-            if cache_read_tokens > input_tokens:
-                raise ValueError("cache read tokens exceed input tokens")
+            input_tokens, output_tokens, cache_read_tokens, cache_write_tokens = counts
+            # Without a cache write price, cache writes bill as plain input.
+            if "cache_write_per_million" not in prices:
+                cache_write_tokens = 0
+            if cache_read_tokens + cache_write_tokens > input_tokens:
+                raise ValueError("cache tokens exceed input tokens")
             cost = (
-                (input_tokens - cache_read_tokens) * prices["input_per_million"]
+                (input_tokens - cache_read_tokens - cache_write_tokens)
+                * prices["input_per_million"]
                 + cache_read_tokens * prices["cache_read_per_million"]
+                + cache_write_tokens * prices.get("cache_write_per_million", 0)
                 + output_tokens * prices["output_per_million"]
             ) / 1_000_000
             return PricedUsage(float(cost), "list", model_ref)
