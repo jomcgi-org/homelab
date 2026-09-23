@@ -1623,6 +1623,35 @@ def _is_codex_config_error(text):
     return "-32600" in lowered and "failed to load configuration" in lowered
 
 
+# Codex app-server TokenUsageBreakdown field -> shim usage key. The shim keeps
+# the key set it has always emitted: adding reasoning_output_tokens would move
+# pricing.price_usage onto its cached_input_tokens branch and drop the cache
+# read discount. Codex reports outputTokens inclusive of reasoningOutputTokens
+# (OpenAI semantics), so reasoning is already priced through output_tokens.
+_CODEX_USAGE_FIELDS = (
+    ("input_tokens", "inputTokens"),
+    ("output_tokens", "outputTokens"),
+    ("cache_read_tokens", "cachedInputTokens"),
+    ("cache_write_tokens", "cacheWriteInputTokens"),
+)
+
+
+def _codex_usage_breakdown(value):
+    """Map one app-server TokenUsageBreakdown to shim usage keys, or None."""
+    if not isinstance(value, dict):
+        return None
+    breakdown = {}
+    for key, field in _CODEX_USAGE_FIELDS:
+        count = value.get(field, 0)
+        valid = isinstance(count, int) and not isinstance(count, bool)
+        breakdown[key] = count if valid and count > 0 else 0
+    return breakdown
+
+
+def _codex_usage_size(breakdown):
+    return breakdown["input_tokens"] + breakdown["output_tokens"]
+
+
 _managed_child_pids = set()
 
 
@@ -3030,6 +3059,10 @@ class CodexProcess:
         self._stdout_queue = None
         self._rpc_id = 0
         self._server_threads = set()
+        # Last cumulative thread/tokenUsage/updated total seen per thread: the
+        # baseline for that thread's next turn. It outlives a respawn because
+        # the app-server restores a thread's total from its rollout on resume.
+        self._codex_thread_totals = {}
         self._turn_id = None
         self._turn_done = threading.Event()
         self._turn_done.set()
@@ -3500,6 +3533,18 @@ url = %s
             )
             result_text = ""
             usage = {}
+            # thread/tokenUsage/updated carries `last`, the most recent model
+            # request only, and `total`, cumulative for the whole THREAD and
+            # restored on resume. A turn is many requests, and the app-server
+            # re-sends an unchanged total and last when rate limits update, so
+            # the turn's usage is the latest total minus the total before the
+            # turn. That prior total is the last one seen for this thread, or
+            # an earlier turn's update read in this loop (the resume replay),
+            # or failing both, the first update's total minus its last.
+            # Summing `last` is only the fallback for a server without `total`.
+            usage_baseline = None
+            prior_total = self._codex_thread_totals.get(self.session_id)
+            last_token_usage = None
             events = []
             accumulated_text = ""
             cached_activities = []
@@ -3566,6 +3611,23 @@ url = %s
                             or params.get("threadId") != self.session_id
                             or event_turn_id != self._turn_id
                         ):
+                            if (
+                                event_type == "thread/tokenUsage/updated"
+                                and params.get("threadId") == self.session_id
+                                and usage_baseline is None
+                            ):
+                                # An earlier turn's usage on this thread (the
+                                # resume replay, or an update that landed after
+                                # its turn returned) is this turn's baseline.
+                                seen = _codex_usage_breakdown(
+                                    params.get("tokenUsage", {}).get("total")
+                                )
+                                if seen is not None and (
+                                    prior_total is None
+                                    or _codex_usage_size(seen)
+                                    > _codex_usage_size(prior_total)
+                                ):
+                                    prior_total = seen
                             continue
                     legacy_event = self._translate_activity_event(event)
                     events.append(legacy_event)
@@ -3590,13 +3652,24 @@ url = %s
                             if item.get("type") in ("agentMessage", "agent_message"):
                                 result_text = item.get("text", "")
                     elif event_type == "thread/tokenUsage/updated":
-                        last = params.get("tokenUsage", {}).get("last", {})
-                        usage = {
-                            "input_tokens": last.get("inputTokens", 0),
-                            "output_tokens": last.get("outputTokens", 0),
-                            "cache_read_tokens": last.get("cachedInputTokens", 0),
-                            "cache_write_tokens": last.get("cacheWriteInputTokens", 0),
-                        }
+                        token_usage = params.get("tokenUsage", {})
+                        total = _codex_usage_breakdown(token_usage.get("total"))
+                        last = _codex_usage_breakdown(
+                            token_usage.get("last")
+                        ) or _codex_usage_breakdown({})
+                        if total is not None:
+                            if usage_baseline is None:
+                                usage_baseline = prior_total or {
+                                    key: max(0, total[key] - last[key]) for key in total
+                                }
+                            usage = {
+                                key: max(0, total[key] - usage_baseline[key])
+                                for key in total
+                            }
+                            self._codex_thread_totals[self.session_id] = total
+                        elif token_usage != last_token_usage:
+                            usage = {key: usage.get(key, 0) + last[key] for key in last}
+                        last_token_usage = token_usage
                     if activities_are_stale:
                         cached_activities = activity_from_events(events)[-300:]
                         activities_are_stale = False

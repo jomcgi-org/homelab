@@ -339,6 +339,20 @@ config_fail_path = os.environ.get("FAKE_CODEX_CONFIG_FAIL_ONCE")
 config_fail_always = os.environ.get("FAKE_CODEX_CONFIG_FAIL_ALWAYS")
 turn_failure = os.environ.get("FAKE_CODEX_TURN_FAILURE", "")
 turn_number = 0
+thread_totals = {}
+RESUMED_TOTAL = {"inputTokens": 1000, "cachedInputTokens": 900, "outputTokens": 50, "cacheWriteInputTokens": 0, "reasoningOutputTokens": 20, "totalTokens": 1050}
+RESUMED_LAST = {"inputTokens": 400, "cachedInputTokens": 380, "outputTokens": 20, "cacheWriteInputTokens": 0, "reasoningOutputTokens": 10, "totalTokens": 420}
+
+def usage(inputs, outputs, cached=0, cache_write=0, reasoning=0, thread=None):
+    # Mirrors the pinned server: `last` is one model request and `total` is
+    # the running sum for the whole thread.
+    last = {"inputTokens": inputs, "outputTokens": outputs, "cachedInputTokens": cached,
+            "cacheWriteInputTokens": cache_write, "reasoningOutputTokens": reasoning,
+            "totalTokens": inputs + outputs}
+    total = thread_totals.setdefault(thread or thread_id, {key: 0 for key in last})
+    for key in last:
+        total[key] += last[key]
+    return {"tokenUsage": {"total": dict(total), "last": last}}
 
 def config_error_now():
     # Cross-process latch: the FIRST app-server to bind a thread fails with the
@@ -409,11 +423,14 @@ for line in sys.stdin:
             response(request, error={"code": -32004, "message": "thread not found"})
         else:
             response(request, {"thread": {"id": thread_id}, "model": "gpt-5.6-luna", "cwd": "/workspace"})
-            if scenario == "resume-replay":
+            if scenario in ("resume-replay", "resume-resend", "resume-no-replay"):
+                # The resumed thread already carries usage from its rollout.
+                thread_totals[thread_id] = dict(RESUMED_TOTAL)
+            if scenario in ("resume-replay", "resume-resend"):
                 # The pinned app-server sends this after the resume response.
                 # It is historical usage for the completed turn, not usage for
                 # the new turn the client is about to start.
-                emit({"jsonrpc": "2.0", "method": "thread/tokenUsage/updated", "params": {"threadId": thread_id, "turnId": "turn-a", "tokenUsage": {"last": {"inputTokens": 11, "outputTokens": 7, "cachedInputTokens": 0, "cacheWriteInputTokens": 0, "reasoningOutputTokens": 0, "totalTokens": 18}}}})
+                emit({"jsonrpc": "2.0", "method": "thread/tokenUsage/updated", "params": {"threadId": thread_id, "turnId": "turn-a", "tokenUsage": {"total": RESUMED_TOTAL, "last": RESUMED_LAST}}})
     elif method == "turn/start":
         params = request.get("params", {})
         thread_id = params["threadId"]
@@ -433,7 +450,7 @@ for line in sys.stdin:
             # the pinned server can publish notifications first. The matching
             # turn/started establishes identity for those early events.
             notification("turn/started", started)
-            notification("thread/tokenUsage/updated", {"tokenUsage": {"last": {"inputTokens": 13, "outputTokens": 9, "cachedInputTokens": 2, "cacheWriteInputTokens": 1, "reasoningOutputTokens": 0, "totalTokens": 22}}})
+            notification("thread/tokenUsage/updated", usage(13, 9, cached=2, cache_write=1))
             response(request, {"turn": started["turn"]})
         else:
             response(request, {"turn": started["turn"]})
@@ -463,18 +480,37 @@ for line in sys.stdin:
                 stream.write("parent artifact captured only after this point")
         if scenario == "wrong-identities":
             notification("turn/completed", {"turn": {"id": "stale-turn", "status": "completed"}}, turn="stale-turn")
-            notification("thread/tokenUsage/updated", {"tokenUsage": {"last": {"inputTokens": 3, "outputTokens": 4, "cachedInputTokens": 0, "cacheWriteInputTokens": 0, "reasoningOutputTokens": 0, "totalTokens": 7}}})
-            notification("thread/tokenUsage/updated", {"tokenUsage": {"last": {"inputTokens": 41, "outputTokens": 42, "cachedInputTokens": 0, "cacheWriteInputTokens": 0, "reasoningOutputTokens": 0, "totalTokens": 83}}}, thread="other-thread")
-            notification("thread/tokenUsage/updated", {"tokenUsage": {"last": {"inputTokens": 51, "outputTokens": 52, "cachedInputTokens": 0, "cacheWriteInputTokens": 0, "reasoningOutputTokens": 0, "totalTokens": 103}}}, turn="stale-turn")
+            notification("thread/tokenUsage/updated", usage(3, 4))
+            notification("thread/tokenUsage/updated", usage(41, 42, thread="other-thread"), thread="other-thread")
+            notification("thread/tokenUsage/updated", usage(51, 52), turn="stale-turn")
         elif scenario == "late-usage":
             if turn_number == 1:
                 notification("turn/completed", {"turn": {"id": turn_id, "status": "completed"}})
-                notification("thread/tokenUsage/updated", {"tokenUsage": {"last": {"inputTokens": 11, "outputTokens": 7, "cachedInputTokens": 0, "cacheWriteInputTokens": 0, "reasoningOutputTokens": 0, "totalTokens": 18}}})
+                notification("thread/tokenUsage/updated", usage(11, 7))
                 notification("turn/completed", {"turn": {"id": turn_id, "status": "completed"}})
                 continue
-            notification("thread/tokenUsage/updated", {"tokenUsage": {"last": {"inputTokens": 5, "outputTokens": 6, "cachedInputTokens": 1, "cacheWriteInputTokens": 2, "reasoningOutputTokens": 0, "totalTokens": 11}}})
+            notification("thread/tokenUsage/updated", usage(5, 6, cached=1, cache_write=2))
+        elif scenario == "multi-request":
+            notification("thread/tokenUsage/updated", usage(100, 10, cached=80, reasoning=4))
+            second = usage(200, 20, cached=150, reasoning=5)
+            notification("thread/tokenUsage/updated", second)
+            # A rate-limit update re-sends the unchanged total and last.
+            notification("thread/tokenUsage/updated", second)
+            notification("thread/tokenUsage/updated", usage(300, 30, cached=250, reasoning=6))
+        elif scenario in ("resume-resend", "resume-no-replay"):
+            if scenario == "resume-resend":
+                # The first rate-limit update of the turn re-sends the usage
+                # restored from the rollout, tagged with the new turn.
+                notification("thread/tokenUsage/updated", {"tokenUsage": {"total": RESUMED_TOTAL, "last": RESUMED_LAST}})
+            notification("thread/tokenUsage/updated", usage(500, 40, cached=450, reasoning=12))
+            notification("thread/tokenUsage/updated", usage(600, 50, cached=560, reasoning=15))
+        elif scenario == "last-only":
+            last = {"inputTokens": 7, "outputTokens": 2, "cachedInputTokens": 5, "cacheWriteInputTokens": 0, "reasoningOutputTokens": 1, "totalTokens": 9}
+            notification("thread/tokenUsage/updated", {"tokenUsage": {"last": last}})
+            notification("thread/tokenUsage/updated", {"tokenUsage": {"last": last}})
+            notification("thread/tokenUsage/updated", {"tokenUsage": {"last": dict(last, inputTokens=8, totalTokens=10)}})
         elif scenario != "started-before-response":
-            notification("thread/tokenUsage/updated", {"tokenUsage": {"last": {"inputTokens": 3, "outputTokens": 4, "cachedInputTokens": 0, "cacheWriteInputTokens": 0, "reasoningOutputTokens": 0, "totalTokens": 7}}})
+            notification("thread/tokenUsage/updated", usage(3, 4))
         notification("turn/completed", {"turn": {"id": turn_id, "status": "completed"}})
     elif method == "turn/interrupt":
         params = request.get("params", {})
@@ -2241,6 +2277,71 @@ def test_codex_late_usage_and_completion_do_not_leak_into_next_turn(
         "output_tokens": 6,
         "cache_read_tokens": 1,
         "cache_write_tokens": 2,
+    }
+    manager._close_process()
+
+
+def test_codex_turn_usage_sums_every_request_in_the_turn(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_CODEX_SCENARIO", "multi-request")
+    manager = _codex_manager(tmp_path, monkeypatch)
+
+    record = manager.turn("several model requests", model="sol")
+
+    assert record["usage"] == {
+        "input_tokens": 600,
+        "output_tokens": 60,
+        "cache_read_tokens": 480,
+        "cache_write_tokens": 0,
+    }
+    manager._close_process()
+
+
+def test_codex_consecutive_turns_record_only_their_own_usage(tmp_path, monkeypatch):
+    manager = _codex_manager(tmp_path, monkeypatch)
+
+    first = manager.turn("first", model="luna")
+    second = manager.turn("second", model="luna")
+
+    expected = {
+        "input_tokens": 3,
+        "output_tokens": 4,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+    }
+    assert first["usage"] == expected
+    assert second["usage"] == expected
+    manager._close_process()
+
+
+@pytest.mark.parametrize("scenario", ["resume-resend", "resume-no-replay"])
+def test_codex_resumed_thread_records_only_this_turn_delta(
+    tmp_path, monkeypatch, scenario
+):
+    monkeypatch.setenv("FAKE_CODEX_SCENARIO", scenario)
+    manager = _codex_manager(tmp_path, monkeypatch)
+
+    record = manager.turn("resume", session_id="codex-thread", model="sol")
+
+    assert record["usage"] == {
+        "input_tokens": 1100,
+        "output_tokens": 90,
+        "cache_read_tokens": 1010,
+        "cache_write_tokens": 0,
+    }
+    manager._close_process()
+
+
+def test_codex_usage_without_total_sums_distinct_last_updates(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_CODEX_SCENARIO", "last-only")
+    manager = _codex_manager(tmp_path, monkeypatch)
+
+    record = manager.turn("legacy server", model="luna")
+
+    assert record["usage"] == {
+        "input_tokens": 15,
+        "output_tokens": 4,
+        "cache_read_tokens": 10,
+        "cache_write_tokens": 0,
     }
     manager._close_process()
 
