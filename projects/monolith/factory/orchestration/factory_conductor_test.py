@@ -1181,6 +1181,7 @@ def test_inserted_planner_decision_uses_its_own_committed_revision(
     import json
     from factory.orchestration import factory_controls as controls
 
+    monkeypatch.setenv("CONDUCTOR_CONTINUITY_ENABLED", "true")
     task, policy = feedback_task()
     if later_planner:
         prior = complete_feedback_node(
@@ -13013,6 +13014,16 @@ def test_dispatch_refusal_audit(
             assert card["options"] == decision["options"]
             assert card["dispatch_refusal"] == decision["dispatch_refusal"]
             assert card["comment_url"] == "https://example.test/card"
+            brief = card["conversation"][0]
+            assert brief["message_id"] == (
+                f"factory-brief:{task['id']}:{brief['decision_id']}"
+            )
+            assert brief["role"] == "conductor"
+            assert brief["actor"] == conductor.ACTOR
+            assert brief["source"] == "factory_brief"
+            assert brief["epistemic_status"] == "suggestion_or_hypothesis"
+            assert brief["decision_id"].startswith("decision:")
+            assert brief["evidence"] == ["https://example.test/card"]
 
 
 def _budget_refusal(feedback_db, monkeypatch, *, budget=8.0, spent=7.0):

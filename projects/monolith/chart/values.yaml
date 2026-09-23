@@ -1266,6 +1266,11 @@ knowledge:
   recall:
     enabled: false
     limit: 5
+  # Receipt-conversation KG maintenance and Astra context injection. Keep this
+  # off until the live #5787 checks establish provenance, isolation and outage
+  # behavior. Existing Ember recall and completed-session feeds are independent.
+  conductorContinuity:
+    enabled: false
   feeds:
     emberSessions:
       # Export finished Ember sessions only after this dark feed is verified.

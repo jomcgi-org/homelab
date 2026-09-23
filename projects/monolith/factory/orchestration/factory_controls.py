@@ -1675,7 +1675,11 @@ def decision_identity(receipt: dict) -> str | None:
         "receipt_id": receipt.get("id"),
         "repo": receipt.get("repo"),
         "generation": receipt.get("generation"),
-        "brief": {key: value for key, value in escalation.items() if key != "resolved"},
+        "brief": {
+            key: value
+            for key, value in escalation.items()
+            if key not in ("resolved", "conversation")
+        },
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return "decision:" + hashlib.sha256(encoded).hexdigest()

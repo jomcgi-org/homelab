@@ -485,9 +485,7 @@ def escalation_revalidation_enabled() -> bool:
 
 def planner_knowledge_enabled() -> bool:
     """Whether receipt-authorized KG evidence may enter planner inputs."""
-    return (
-        os.environ.get("FACTORY_PLANNER_KNOWLEDGE_ENABLED", "false").lower() == "true"
-    )
+    return os.environ.get("CONDUCTOR_CONTINUITY_ENABLED", "false").lower() == "true"
 
 
 def _outcome(run: dict) -> dict:
@@ -2375,6 +2373,7 @@ def _record_escalation(
     from factory.orchestration.factory_controls import _locked_session, _now
     from factory.orchestration.factory_models import FactoryReceipt
 
+    receipt_id = None
     with _locked_session() as (db, _control):
         row = db.exec(
             select(FactoryReceipt)
@@ -2409,9 +2408,57 @@ def _record_escalation(
                 # what an operator asked rather than any one attempt's answer,
                 # and the page renders it under whichever question is current.
                 document["chat"] = stored.get("chat") or []
+        conversation = list((stored or {}).get("conversation") or [])
+        brief_identity = decision_identity(
+            {
+                "id": row.id,
+                "repo": row.repo,
+                "generation": row.generation,
+                "escalation": document,
+            }
+        )
+        message_id = f"factory-brief:{task_id}:{brief_identity}"
+        if not any(item.get("message_id") == message_id for item in conversation):
+            latest_chat = ((stored or {}).get("chat") or [None])[-1]
+            parts = [
+                str(document.get("summary") or "").strip(),
+                str(document.get("question") or "").strip(),
+                str(document.get("recommendation") or "").strip(),
+                str(document.get("reason") or "").strip(),
+            ]
+            conversation.append(
+                {
+                    "message_id": message_id,
+                    "role": "conductor",
+                    "actor": ACTOR,
+                    "audience_actor": (
+                        latest_chat.get("actor") if latest_chat is not None else None
+                    ),
+                    "source": "factory_brief",
+                    "timestamp": _now().isoformat(),
+                    "task_id": task_id,
+                    "decision_id": None,
+                    "request_key": None,
+                    "epistemic_status": "suggestion_or_hypothesis",
+                    "text": "\n\n".join(part for part in parts if part)[:4000],
+                    "summary": str(document.get("summary") or "")[:1200],
+                    "evidence": [document.get("comment_url") or row.url],
+                }
+            )
+        document["conversation"] = conversation[-20:]
+        for item in document["conversation"]:
+            if item.get("message_id") == message_id:
+                item["decision_id"] = brief_identity
         row.escalation_json = json.dumps(document)
         row.updated_at = _now()
         db.add(row)
+        receipt_id = row.id
+    if receipt_id is not None:
+        from factory.orchestration.conductor_context import (
+            report_receipt_with_deadline,
+        )
+
+        report_receipt_with_deadline(receipt_id)
 
 
 def _notify_person_once(

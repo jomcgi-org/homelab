@@ -254,6 +254,10 @@ def test_knowledge_recall_enabled_in_deploy_with_five_notes(chart_context):
         r'- name: KNOWLEDGE_RECALL_LIMIT\n\s+value: "5"',
         rendered,
     )
+    assert re.search(
+        r'- name: CONDUCTOR_CONTINUITY_ENABLED\n\s+value: "false"',
+        rendered,
+    )
 
 
 def test_hosted_chat_provider_renders_from_deploy_values(chart_context):

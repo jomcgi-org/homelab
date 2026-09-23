@@ -70,6 +70,9 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 load("//projects/monolith:bdd_test.bzl", "bdd_test")
 load("//projects/monolith:domain_images.bzl", "MONOLITH_DOMAINS", "monolith_domain_images")
 
+# Keep changed architecture documentation addressable by affected-targets.
+exports_files(["ARCHITECTURE.md"])
+
 # Pin the frontend build to the exec (host) platform. The vite output is
 # just static HTML/CSS/JS — it's arch-independent — but py3_image's
 # platform transitions would otherwise cause aspect_rules_js to select

@@ -111,15 +111,15 @@ ledger:
 
 Issue #5787 owns maintenance and scoped retrieval of Conductor knowledge.
 Committed operator exchanges enter the existing KG ingestion and extraction
-path as attributed, unverified evidence. `factory_context` retrieves
-repository-scoped notes with provenance, freshness, verification, and dispute
-metadata while continuing to return factory state during a KG outage. Issue
+path as attributed, unverified evidence. `factory_context` retrieves exact
+receipt and operator-scoped notes with provenance, freshness, verification,
+and dispute metadata while continuing to return factory state during a KG outage. Issue
 #5788 exposes that same contract through factory MCP. Issue #5849 supplies the
 task-relevant subset to the Planner, with current task and decision state read
 from the authoritative factory records above.
 
-`FACTORY_PLANNER_KNOWLEDGE_ENABLED` stages that Planner input and is false when
-unset. When enabled, the server resolves the exact receipt and generation from
+`CONDUCTOR_CONTINUITY_ENABLED` stages receipt maintenance and Planner input and
+is false when unset. When enabled, the server resolves the exact receipt and generation from
 the selected task, refreshes the receipt acceptance, direction, policy and
 control state, and admits only KG notes whose complete raw provenance is tagged
 for that receipt. Repository scope alone is not authorization. Session history,

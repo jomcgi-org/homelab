@@ -904,15 +904,32 @@ def _looks_like_bare_value(body: str) -> bool:
     )
 
 
+def _authoritative_raw_scope(raw: RawInput) -> str | None:
+    """Return a producer-owned scope when the raw recorded one."""
+    extra = raw.extra or {}
+    if "scope" not in extra:
+        return None
+    scope = extra["scope"]
+    if not isinstance(scope, str) or re.fullmatch(SCOPE_PATTERN, scope) is None:
+        raise ExtractionOutputInvalid(
+            f"raw {raw.raw_id} has an invalid authoritative scope"
+        )
+    return scope
+
+
 def _best_duplicate(
-    session: Session, assertion: _Assertion, vector: list[float]
+    session: Session,
+    assertion: _Assertion,
+    vector: list[float],
+    *,
+    scope: str,
 ) -> dict | None:
     from knowledge.store import KnowledgeStore
 
     matches = KnowledgeStore(session).search_notes_with_context(
         vector,
         limit=DEDUPE_NOTES,
-        scope_filter=assertion.scope,
+        scope_filter=scope,
         exclude_invalidated=True,
     )
     if not matches:
@@ -1074,9 +1091,16 @@ def apply_extraction(
                 return _replayed_result(raw_id)
         elif passes > 0 or handled is not None:
             return _replayed_result(raw_id)
+        authoritative_scope = _authoritative_raw_scope(raw)
 
         for assertion, body, dedupe_vector, index_vectors in prepared:
-            duplicate = _best_duplicate(session, assertion, dedupe_vector)
+            effective_scope = authoritative_scope or assertion.scope
+            duplicate = _best_duplicate(
+                session,
+                assertion,
+                dedupe_vector,
+                scope=effective_scope,
+            )
             if duplicate is not None:
                 existing_note = session.exec(
                     select(Note).where(Note.note_id == duplicate["note_id"])
@@ -1157,7 +1181,7 @@ def apply_extraction(
                     tags=assertion.tags,
                     edges=assertion.edges.model_dump(exclude={"subjects"}),
                     derived_from_raw=raw_id,
-                    scope=assertion.scope,
+                    scope=effective_scope,
                     verification_state=verification_state,
                     confidence=assertion.confidence,
                     valid_from=assertion.valid_from,

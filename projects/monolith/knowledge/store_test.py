@@ -513,6 +513,37 @@ class TestSearchNotesWithContext:
         assert row["section"] == "## Architecture"
         assert distinctive in row["snippet"]
 
+    def test_scope_filter_isolates_personal_and_receipt_notes(self):
+        vector = [0.0] * 1024
+        scopes = {
+            "operator-a": "personal:operator-a:factory-receipt:7",
+            "operator-b": "personal:operator-b:factory-receipt:7",
+            "receipt": "session:factory-receipt:7",
+        }
+        for note_id, scope in scopes.items():
+            self.store.upsert_note(
+                note_id=note_id,
+                path=f"{note_id}.md",
+                content_hash=note_id,
+                title=note_id,
+                metadata=_meta(
+                    title=note_id,
+                    type="fact",
+                    scope=scope,
+                    verification_state="verified",
+                ),
+                chunks=[{"index": 0, "section_header": "", "text": note_id}],
+                vectors=[vector],
+                links=[],
+            )
+
+        for note_id, scope in scopes.items():
+            results = self.store.search_notes_with_context(
+                vector,
+                scope_filter=scope,
+            )
+            assert [row["note_id"] for row in results] == [note_id]
+
     def test_best_chunk_snippet_used_for_multi_chunk_note(self):
         # One note with two chunks whose embeddings are far apart. The
         # DISTINCT ON query must pick the chunk whose embedding is closest
@@ -733,6 +764,7 @@ class TestSearchNotesWithContext:
             ("legacy-expired", "legacy"),
             ("legacy-deleted", "legacy"),
             ("legacy-other-scope", "legacy"),
+            ("personal-private", "verified"),
         ):
             self.store.upsert_note(
                 note_id=note_id,
@@ -745,7 +777,11 @@ class TestSearchNotesWithContext:
                     scope=(
                         "repo:other/project"
                         if note_id == "legacy-other-scope"
-                        else "repo:jomcgi-org/homelab"
+                        else (
+                            "personal:operator"
+                            if note_id == "personal-private"
+                            else "repo:jomcgi-org/homelab"
+                        )
                     ),
                     verification_state=state,
                 ),

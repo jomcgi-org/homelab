@@ -2484,7 +2484,7 @@ def test_factory_decisions_accept_a_verified_identity_without_an_allowlist(
     client, monkeypatch
 ):
     """Access is the gate: with no allowlist one verified identity decides."""
-    from factory.orchestration import factory_decisions
+    from factory.orchestration import conductor_context, factory_decisions
 
     monkeypatch.delenv("FACTORY_OPERATOR_EMAILS", raising=False)
     seen = {}
@@ -2511,6 +2511,11 @@ def test_factory_decisions_accept_a_verified_identity_without_an_allowlist(
         return {"ok": True, "state": "completed", "resolution": {}}
 
     monkeypatch.setattr(factory_decisions, "request_decision", request_decision)
+    monkeypatch.setattr(
+        conductor_context,
+        "report_with_deadline",
+        lambda actor, key: {"status": "queued", "actor": actor, "key": key},
+    )
     response = client.post(
         "/api/agents/factory/decisions/4",
         json=factory_decision_body(),
@@ -2525,6 +2530,11 @@ def test_factory_decisions_accept_a_verified_identity_without_an_allowlist(
         "request_key": "browser-request",
         "note": None,
         "action": "decide",
+    }
+    assert response.json()["knowledge"] == {
+        "status": "queued",
+        "actor": "joe@example.test",
+        "key": "browser-request",
     }
 
 
