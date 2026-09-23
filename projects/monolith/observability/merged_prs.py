@@ -22,7 +22,7 @@ MERGE_TYPES = (
     "revert",
     "wip",
 )
-_TITLE_PREFIX_RE = re.compile(r"^\[[^]]+\]\s+")
+_TITLE_PREFIX_RE = re.compile(r"^\[[^]]+\]\s*")
 _TITLE_RE = re.compile(rf"^({'|'.join(MERGE_TYPES)})(?:\(([^)]+)\))?!?:\s+.+$")
 _CLAUDE_CODE_MARKER_RE = re.compile(r"generated with \[claude code\]", re.IGNORECASE)
 _CLAUDE_CODE_LINK_RE = re.compile(r"claude\.ai/code", re.IGNORECASE)
