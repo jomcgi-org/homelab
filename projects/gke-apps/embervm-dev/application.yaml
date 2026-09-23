@@ -1,0 +1,64 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: embervm-dev
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    # Kargo will not update an Application that has not named the Stage allowed
+    # to touch it; without this the dev Promotion errors "is not authorized".
+    # Mirrors projects/embervm/dev/deploy/application.yaml (the home app).
+    kargo.akuity.io/authorized-stage: kargo-embervm:dev
+    # Same wave as production's embervm Application.
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: default
+  sources:
+    - repoURL: ghcr.io/jomcgi/homelab/charts
+      chart: embervm
+      # Bootstrap floor only: Kargo's dev stage owns this field on the live
+      # object (projects/platform/kargo/values.yaml), and the hub root carries
+      # the matching ignoreDifferences entry. 0.93.13 verified by pulling the
+      # chart (digest b612eec1) and rendering both dev value files against it;
+      # the first dev Promotion moves it to the newest Freight.
+      targetRevision: 0.93.13
+      helm:
+        releaseName: embervm-dev
+        # dev values first, then the hub overlay for dev. NOT production's
+        # deploy/values-gke.yaml: that file carries production identities (see
+        # the header of dev/deploy/values-gke.yaml).
+        valueFiles:
+          - $values/projects/embervm/dev/deploy/values.yaml
+          - $values/projects/embervm/dev/deploy/values-gke.yaml
+    - repoURL: https://github.com/jomcgi-org/homelab.git
+      targetRevision: HEAD
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: embervm-dev
+  ignoreDifferences:
+    # The BrickController owns each brick Deployment's replica count; see the
+    # production twin in projects/gke-apps/embervm/application.yaml.
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/replicas
+    # The token broker owns the OAuth grant Secret's DATA. One entry per grant
+    # dev renders (codex-cluster only, the chart default).
+    - kind: Secret
+      name: embervm-oauth-grant-codex-cluster
+      jsonPointers:
+        - /data
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

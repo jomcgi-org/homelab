@@ -20,6 +20,14 @@ helm_admissibility_render(
     values_files = [":deploy_values"],
 )
 
+# The GKE hub overlay for embervm-dev, loaded after deploy_values by
+# projects/gke-apps/embervm-dev/application.yaml. Exposed to the chart tests.
+filegroup(
+    name = "gke_values",
+    srcs = ["values-gke.yaml"],
+    visibility = ["//projects/embervm/chart:__pkg__"],
+)
+
 # The dev Application, exposed to the chart tests.
 filegroup(
     name = "application",

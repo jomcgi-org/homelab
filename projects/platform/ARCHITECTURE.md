@@ -107,7 +107,7 @@ workload identity and added latency only on selected L7 surfaces.
 
 **Platform tier components** deploy on merge. Every `projects/platform/*/application.yaml` and every Application under `projects/platform-gke/` tracks git HEAD with no OCI chart version, so a platform change lands the moment it merges, with no write-back step.
 
-**Kargo owns promotion on the hub** for the monolith, monolith-public and EmberVM, with a prod stage only. Each pipeline's Warehouse polls the OCI registry every five minutes; a new chart becomes Freight, and the prod Stage auto-promotes it with `argocd-update` followed by `argocd-wait`, so a chart that cannot come up fails its Promotion instead of sitting half-rolled. There is no dev stage on the hub, therefore no soak and no pre-production exposure: the gate is point-in-time readiness, with no functional assertion (#4745). The wait timeout is measured per pipeline (30 minutes for EmberVM, whose bricks rebuild a guest rootfs one node at a time). The `projects/gke-apps` pins for these three Applications are bootstrap floors that Kargo patches past on the live object, so `git != live` is correct there. Read the deployed version from the hub:
+**Kargo owns promotion on the hub** for the monolith, monolith-public and EmberVM. Each pipeline's Warehouse polls the OCI registry every five minutes; a new chart becomes Freight, and each Stage auto-promotes it with `argocd-update` followed by `argocd-wait`, so a chart that cannot come up fails its Promotion instead of sitting half-rolled. EmberVM runs dev then prod: `embervm-dev` (`projects/gke-apps/embervm-dev`) takes Freight first, its Stage polls the conformance runner for a functional verdict on that chart version, and prod receives only Freight dev verified and held for a 5 minute soak. The monolith pipelines are still prod only, so for them the gate is point-in-time readiness with no functional assertion (#4745). The wait timeout is measured per pipeline (30 minutes for EmberVM, whose bricks rebuild a guest rootfs one node at a time). The `projects/gke-apps` pins for these three Applications are bootstrap floors that Kargo patches past on the live object, so `git != live` is correct there. Read the deployed version from the hub:
 
 ```bash
 kubectl get application monolith -n argocd -o jsonpath='{.spec.sources[0].targetRevision}'
@@ -130,7 +130,7 @@ and monotonic write-back remove PR contention, and Kargo promotion accepts live
 Application state as the deployed version plus a soak gate that proves readiness
 only (ADR platform/009). The hub runs exactly the production-only shape that was
 rejected, as a stated reduction: automatic health-verified promotion replaced
-hand-edited pins, and restoring a dev stage is the follow-up. ADR platform/014's
+hand-edited pins. EmberVM's dev stage is restored on the hub; restoring the monolith's is the follow-up. ADR platform/014's
 custom merge reconciler was superseded by the native queue; its reasoning about
 concurrent branches becoming stale after every merge still holds.
 

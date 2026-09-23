@@ -2243,3 +2243,69 @@ def test_gke_drain_uses_bounded_flush_and_ordinary_rollout_budget():
                 assert env["EMBERVM_SESSION_DRAIN_FLUSH_MS"] == "60000"
                 assert env["EMBERVM_SESSION_DRAIN_BANK_BUDGET_MS"] == "15000"
     assert bricks and control
+
+
+def test_hub_dev_renders_only_what_the_hub_can_run() -> None:
+    """embervm-dev on the GKE hub: dev values plus dev/deploy/values-gke.yaml.
+
+    The home dev values name node-4, longhorn, SeaweedFS and Cilium, none of
+    which exist on the hub. Each one renders cleanly and then fails at runtime:
+    a node floor that never schedules, a PVC that never binds, a store that
+    never answers, a CRD ArgoCD cannot apply. The overlay must remove all four,
+    keep exactly one schedulable brick, and keep the conformance runner the
+    Kargo dev gate polls.
+    """
+    application = yaml.safe_load(Path(os.environ["DEV_GKE_APPLICATION"]).read_text())
+    helm = application["spec"]["sources"][0]["helm"]
+    # Production's hub overlay carries production identities; dev must not load it.
+    assert helm["valueFiles"] == [
+        "$values/projects/embervm/dev/deploy/values.yaml",
+        "$values/projects/embervm/dev/deploy/values-gke.yaml",
+    ]
+    release = helm["releaseName"]
+    assert release == application["metadata"]["name"] == "embervm-dev"
+    assert application["spec"]["destination"]["namespace"] == "embervm-dev"
+    assert (
+        application["metadata"]["annotations"]["kargo.akuity.io/authorized-stage"]
+        == "kargo-embervm:dev"
+    )
+
+    rendered = _render(
+        release,
+        [
+            _chart_dir() / "values.yaml",
+            Path(os.environ["DEV_VALUES"]),
+            Path(os.environ["DEV_GKE_VALUES"]),
+        ],
+    )
+    docs = [doc for doc in yaml.safe_load_all(rendered) if isinstance(doc, dict)]
+    assert len(docs) > 20, "hub dev render has suspiciously few documents"
+
+    # Comments are dropped by the YAML load, so only live fields are searched.
+    # ConfigMaps are skipped: the rootfs-builder script's own comments mention
+    # node-4 as prose, which is text in a script, not a placement.
+    live = json.dumps([d for d in docs if d["kind"] != "ConfigMap"])
+    for home_only in ("node-4", "longhorn", "seaweedfs", "h0melab-ember-bases"):
+        assert home_only not in live, f"hub dev render still references {home_only}"
+    assert not [d for d in docs if d["kind"].startswith("Cilium")]
+
+    bricks = {
+        d["metadata"]["name"]: d["spec"]["replicas"]
+        for d in docs
+        if d["kind"] == "Deployment" and "-noded-brick-" in d["metadata"]["name"]
+    }
+    assert {name: n for name, n in bricks.items() if n} == {
+        "embervm-dev-embervm-noded-brick-2gi": 1
+    }
+
+    workloads = sorted(d["metadata"]["name"] for d in docs if d["kind"] == "Workload")
+    # The conformance suite's three workloads: S1, S2/S3 and S5.
+    assert workloads == ["pi-runtime", "sandbox-elixir", "sandbox-python"]
+
+    runner = [
+        d
+        for d in docs
+        if d["kind"] == "Service"
+        and d["metadata"]["name"] == "embervm-dev-embervm-conformance"
+    ]
+    assert runner, "the Kargo dev stage polls this Service for its verdict"

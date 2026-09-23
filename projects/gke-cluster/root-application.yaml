@@ -108,6 +108,13 @@ spec:
       name: embervm
       jsonPointers:
         - /spec/sources/0/targetRevision
+    # Kargo's embervm dev stage, armed in the same change that added
+    # projects/gke-apps/embervm-dev. Same trade as the entries above.
+    - group: argoproj.io
+      kind: Application
+      name: embervm-dev
+      jsonPointers:
+        - /spec/sources/0/targetRevision
   syncPolicy:
     automated:
       prune: true
