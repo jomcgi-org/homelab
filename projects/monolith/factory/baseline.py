@@ -708,7 +708,16 @@ def build_report(
     factory_timing = _distribution(intake_durations, accepted_count, accepted_evidence)
     if not factory_complete:
         factory_timing.update(status="unavailable", reason=factory_reason)
-    factory_rework = _ratio(len(reworked), accepted_count, _evidence(before_end))
+    factory_rework = _ratio(
+        len(reworked),
+        accepted_count,
+        _evidence(
+            event
+            for task_id in accepted
+            for event in cohort[task_id]
+            if event["event_type"] in {"review_correction", "verified_outcome"}
+        ),
+    )
     if not factory_complete:
         factory_rework.update(status="unavailable", value=None, reason=factory_reason)
     rework_inputs = [
