@@ -46,6 +46,11 @@ RESPONSE_LOST = "response_lost"
 # says, so an unrecoverable hold cannot pin an admission slot indefinitely.
 RESPONSE_LOST_BACKSTOP_SECONDS = 12 * 60 * 60
 
+# Durable cleanup claims are 32 lowercase hex characters. Reserve one prefix
+# for the staged bound-zero-turn settlement fence so late writers can reject
+# that proof without changing the established semantics of ordinary cleanup.
+BOUND_ZERO_TURN_CLEANUP_PREFIX = "b07d0000"
+
 
 def exact_dispatch_id(
     agent_session_id: int,

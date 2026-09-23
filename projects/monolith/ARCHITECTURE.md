@@ -742,6 +742,30 @@ contradictory execution evidence (#6285).
 (see: /projects/monolith/factory/execution/reconciliation.py)
 (see: /projects/monolith/factory/orchestration/factory_conductor.py)
 
+**Why.** A bound factory session can outlive its node workflow with zero local
+turns and its first claimed message still unconsumed even though Ember durably
+completed an invoke. Neither a missing current binding nor destroying the guest
+first proves that no guest ran. The staged bound-zero-turn proof therefore
+retains the reserved cost ceiling and settles the permit as `delivery_error`,
+never as a measured zero. It locks the exact factory owner, run, start, permit,
+pending sequence, dispatch owner, receipt state and guest binding, then requires
+two unchanged producer-shaped control-plane observations strictly farther apart
+than that node's `turn_timeout_seconds`. Only a healthy, non-draining node with
+unchanged generation, turn sequence and invoke stamps can mature. Sustained
+404/410 absence follows the same bound; transport failures, malformed payloads
+and identity mismatches reset or retain the proof. Before conditional cleanup,
+the proof writes an exact durable cleanup fence that blocks late dispatch,
+progress, error and result writers. Settlement revalidates the whole zero-turn
+shape and consumes the pending message, permit, run and start in one
+transaction. Conditional cleanup has a durable two-request cap, and a fenced
+lookup outage raises one intervention audit after two minutes. If fresh remote
+progress disproves a fence, releasing it reopens the exact uncommitted result
+receipt under its row lock. The dedicated chart switch defaults off, including
+in the GKE overlay, until the live race and cleanup checklist on #6288 is
+complete.
+(see: /projects/monolith/factory/execution/reconciliation.py)
+(see: /projects/monolith/factory/orchestration/factory_supervision.py)
+
 **Why.** A lost invoke response is not a lost invocation. Every monolith
 rollout cancelled the executor watching an in-flight turn, and the guest went
 on working while the executor recorded `invocation_outcome_unknown`, failed the

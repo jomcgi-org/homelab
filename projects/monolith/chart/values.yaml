@@ -124,6 +124,9 @@ agents:
     # Cover bound or proven-no-guest kg/project drainers and interactive permits,
     # probe destroyed/no-guest shapes, and bound factory project attempts.
     uncertainPermitSupervisionEnabled: false
+    # Stage the post-guest, zero-local-turn settlement proof from #6288. This
+    # remains separate because it conditionally stops a healthy bound guest.
+    boundZeroTurnSettlementEnabled: false
     # Capture exact completed results before the guest's synchronous response.
     resultReceiptsEnabled: false
     # Consume exact native receipts for active owners. Restart adoption and

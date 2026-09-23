@@ -205,6 +205,8 @@ spec:
               value: {{ .Values.agents.sessions.probeSupervisionEnabled | quote }}
             - name: AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED
               value: {{ .Values.agents.sessions.uncertainPermitSupervisionEnabled | quote }}
+            - name: FACTORY_BOUND_ZERO_TURN_SETTLEMENT_ENABLED
+              value: {{ .Values.agents.sessions.boundZeroTurnSettlementEnabled | default false | quote }}
             - name: AGENT_RESULT_RECEIPTS_ENABLED
               value: {{ .Values.agents.sessions.resultReceiptsEnabled | quote }}
             - name: AGENT_RESULT_RECEIPT_ADOPTION_ENABLED

@@ -104,6 +104,15 @@ def _assert_guest_reusable(
         )
 
 
+def _bound_zero_turn_cleanup_pending(row: AgentSession | None) -> bool:
+    """Whether #6288's settlement proof, not ordinary cleanup, owns the row."""
+    from factory.execution.constants import BOUND_ZERO_TURN_CLEANUP_PREFIX
+
+    return row is not None and (row.guest_cleanup_id or "").startswith(
+        BOUND_ZERO_TURN_CLEANUP_PREFIX
+    )
+
+
 def guest_cleanup_hold(session: Session, session_id: int, guest_id: str) -> str | None:
     """Observe pending-to-receipt handoff in one database statement.
 
@@ -1043,6 +1052,7 @@ def finish_unknown_pending_in_session(
     existing = get_turn(session, session_id, turn_seq)
     if (
         row is None
+        or _bound_zero_turn_cleanup_pending(row)
         or row.ember_session_id != expected_guest_id
         or row.workflow_id != expected_workflow_id
         or pending is None
@@ -1071,6 +1081,7 @@ def finish_unknown_pending_sync(
         pending = get_pending_message(session, session_id, turn_seq)
         if (
             row is None
+            or _bound_zero_turn_cleanup_pending(row)
             or pending is None
             or pending.claimed_by_replica != claim_owner
             or pending.dispatch_count != dispatch_count
@@ -1643,7 +1654,10 @@ def _claim_zombie_session_recovery(
     """CAS one zombie shape into the shared recovery state."""
     # Acquire the same lock as heartbeats before evaluating pending predicates.
     # PostgreSQL may evaluate a subquery before an UPDATE waits for a row lock.
-    _lock_session(session, session_id)
+    locked = _lock_session(session, session_id)
+    if _bound_zero_turn_cleanup_pending(locked):
+        session.rollback()
+        return None
     result = session.execute(
         update(AgentSession)
         .where(AgentSession.id == session_id, predicate)
@@ -2000,7 +2014,11 @@ def write_progress_sync(
         if session_id is None:
             return "unknown_token"
         row = _lock_session(session, session_id)
-        if row is None or row.progress_token != progress_token:
+        if (
+            row is None
+            or row.progress_token != progress_token
+            or _bound_zero_turn_cleanup_pending(row)
+        ):
             return "unknown_token"
         try:
             _assert_sendable(session, session_id)
@@ -2109,7 +2127,7 @@ def release_pending_message_claim_sync(
     with Session(get_engine()) as session:
         row = _lock_session(session, session_id)
         pending = get_pending_message(session, session_id, turn_seq)
-        if row is None:
+        if row is None or _bound_zero_turn_cleanup_pending(row):
             return False
         if (
             pending is None
@@ -2152,6 +2170,8 @@ def persist_turn_from_pending_sync(
         if not sess_row:
             raise ValueError(f"Session {session_id} not found")
         _assert_sendable(session, session_id)
+        if _bound_zero_turn_cleanup_pending(sess_row):
+            raise PendingClaimLost("Bound zero-turn settlement owns this dispatch")
         pending = get_pending_message(session, session_id, turn_seq)
         if claim_owner is not None and (
             pending is None
@@ -2385,7 +2405,7 @@ def mark_turn_error_sync(
     with Session(get_engine()) as session:
         sess = _lock_session(session, session_id)
         row = get_pending_message(session, session_id, turn_seq)
-        if sess is None or row is None:
+        if sess is None or row is None or _bound_zero_turn_cleanup_pending(sess):
             return
         if claim_owner is not None and row.claimed_by_replica != claim_owner:
             return
@@ -2454,7 +2474,7 @@ def mark_turn_interrupted_sync(
     with Session(get_engine()) as session:
         sess = _lock_session(session, session_id)
         pending = get_pending_message(session, session_id, turn_seq)
-        if sess is None or pending is None:
+        if sess is None or pending is None or _bound_zero_turn_cleanup_pending(sess):
             return
         if claim_owner is not None and pending.claimed_by_replica != claim_owner:
             return
@@ -2528,7 +2548,7 @@ def reclaim_stale_claims_sync() -> int:
                     _no_live_pending_claim(PendingMessage.session_id, now),
                 )
             ).first()
-            if row is None or pending is None:
+            if row is None or pending is None or _bound_zero_turn_cleanup_pending(row):
                 continue
             previous = get_turn(session, session_id, seq)
             if _response_lost_hold(previous, pending, now) is not None:
@@ -2557,10 +2577,14 @@ def refresh_claim_sync(session_id: int, turn_seq: int, replica_id: str) -> bool:
     Returns True if claim is still held, False if claim was stolen.
     """
     with Session(get_engine()) as session:
-        _lock_session(session, session_id)
+        row = _lock_session(session, session_id)
+        if row is None or _bound_zero_turn_cleanup_pending(row):
+            return False
         # Match the owner in the UPDATE itself. A recovery transaction that
         # clears claimed_by_replica while this call is waiting for the row lock
-        # therefore makes this return False instead of reviving the lease.
+        # therefore makes this return False instead of reviving the lease. The
+        # bound-zero-turn fence is checked under that same session lock, so a
+        # heartbeat waiting behind the fence cannot revive the executor.
         result = session.execute(
             update(PendingMessage)
             .where(

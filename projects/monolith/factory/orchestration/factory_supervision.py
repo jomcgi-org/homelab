@@ -18,8 +18,12 @@ import os
 from sqlmodel import select
 
 from factory.execution.api import (
+    fence_bound_zero_turn_factory_attempt,
+    read_bound_zero_turn_factory_attempt,
     read_drained_lost_factory_attempt,
     read_uncertain_factory_attempt,
+    release_bound_zero_turn_factory_fence,
+    settle_bound_zero_turn_factory_attempt,
     settle_drained_lost_factory_attempt,
     settle_uncertain_factory_attempt,
 )
@@ -70,7 +74,13 @@ ABSENCE_MAX_GAP_SECONDS = 600
 # being refused for some other reason, which is noted once. It bounds a run,
 # not an attempt: a run broken by presence starts again.
 MAX_ABSENCE_OBSERVATIONS = 8
+BOUND_ZERO_TURN_REQUEST_INTERVAL_SECONDS = 300
+MAX_BOUND_ZERO_TURN_DESTROY_REQUESTS = 2
 _ACTIONS = (
+    "bound_zero_turn_observation",
+    "bound_zero_turn_reset",
+    "bound_zero_turn_fence",
+    "bound_zero_turn_request",
     "stop_intent",
     "stop_request",
     "stop_accepted",
@@ -1453,6 +1463,536 @@ def _absence_settled(pin, session_id, identity, original_result):
         return True
 
 
+def _bound_zero_turn_evidence(view: dict, identity: dict) -> dict:
+    """Validate the additive SessionView contract emitted by EmberVM.
+
+    These fields are produced by ``session_view/2`` in the control-plane
+    router. Requiring the producer-shaped payload avoids a self-consistent test
+    fixture accidentally turning an invented provider contract into authority.
+    """
+    if not isinstance(view, dict) or view.get("session_id") != identity["guest_id"]:
+        raise ValueError("wrong_bound_zero_turn_session")
+    for field in ("workload", "principal", "base_digest"):
+        if not isinstance(view.get(field), str) or not view[field]:
+            raise ValueError("malformed_bound_zero_turn_observation")
+    for field in (
+        "created_at",
+        "invoke_started_at",
+        "last_invoke_at",
+        "expires_at",
+        "updated_at",
+        "turn_seq",
+        "generation",
+    ):
+        if type(view.get(field)) is not int or view[field] < 0:
+            raise ValueError("malformed_bound_zero_turn_observation")
+    if (
+        view["invoke_started_at"] < 1
+        or view["last_invoke_at"] < view["invoke_started_at"]
+        or view["updated_at"] < view["last_invoke_at"]
+        or view["turn_seq"] < 1
+        or view.get("state") != "running"
+        or view.get("terminal_reason") is not None
+    ):
+        raise ValueError("bound_zero_turn_invoke_not_complete")
+    node = view.get("node")
+    if (
+        not isinstance(node, dict)
+        or not isinstance(node.get("node_id"), str)
+        or not node["node_id"]
+        or node.get("health") != "healthy"
+        or type(node.get("draining")) is not bool
+        or node["draining"]
+    ):
+        raise ValueError("bound_zero_turn_node_not_stable")
+    precondition = _precondition(view.get("stop_precondition"), identity["guest_id"])
+    if (
+        precondition["generation"] != view["generation"]
+        or precondition["invoke_started_at"] != view["invoke_started_at"]
+        or precondition["node_id"] != node["node_id"]
+    ):
+        raise ValueError("bound_zero_turn_precondition_changed")
+    return {
+        "kind": "completed_invoke",
+        "session_id": view["session_id"],
+        "generation": view["generation"],
+        "turn_seq": view["turn_seq"],
+        "invoke_started_at": view["invoke_started_at"],
+        "last_invoke_at": view["last_invoke_at"],
+        "updated_at": view["updated_at"],
+        "node_id": node["node_id"],
+        "precondition": precondition,
+    }
+
+
+def _bound_zero_turn_reset(pin, session_id, identity, reason, *, release=False):
+    """Break one observation run, optionally releasing its exact fence."""
+    try:
+        with controls._locked_session() as (db, control):
+            current, _run = _locked_attempt(
+                db,
+                control,
+                pin,
+                session_id,
+                require_stop_due=False,
+                identity_reader=read_bound_zero_turn_factory_attempt,
+            )
+            if current["identity_sha256"] != identity["identity_sha256"]:
+                raise ValueError("factory_attempt_changed")
+            if release and current["cleanup_fenced"]:
+                release_bound_zero_turn_factory_fence(db, pin, current)
+                current = {**current, "cleanup_fenced": False}
+            records = _records(db, pin)
+            if not (
+                records
+                and records[-1][0] == "bound_zero_turn_reset"
+                and records[-1][1].get("reason") == reason
+            ):
+                _audit(
+                    db,
+                    pin,
+                    "bound_zero_turn_reset",
+                    reason=reason,
+                    identity_sha256=identity["identity_sha256"],
+                    observed_at=_now().isoformat(),
+                    intervention_required=False,
+                    cessation_confirmed=False,
+                )
+    except ValueError:
+        return False
+    return True
+
+
+def _bound_zero_turn_epoch(records, identity):
+    """Return this identity's audit records since its latest fence reset."""
+    identity_sha256 = identity["identity_sha256"]
+    current = []
+    for action, detail in records:
+        recorded_identity = detail.get("identity_sha256")
+        if recorded_identity is None:
+            recorded_identity = detail.get("identity", {}).get("identity_sha256")
+        if recorded_identity != identity_sha256:
+            continue
+        if action == "bound_zero_turn_reset":
+            current = []
+            continue
+        current.append((action, detail))
+    return current
+
+
+def _active_bound_zero_turn_fence(records, identity):
+    fences = [
+        detail
+        for action, detail in _bound_zero_turn_epoch(records, identity)
+        if action == "bound_zero_turn_fence"
+    ]
+    return fences[-1] if fences else None
+
+
+def _bound_zero_turn_observe(pin, session_id, identity, evidence):
+    """Persist unchanged, bounded samples past the node turn timeout.
+
+    Completed-invoke evidence pins remote progress and may mature from two
+    samples. Timestamp-free authoritative absence additionally needs a sampled
+    run with bounded gaps, so two unrelated 404 or 410 responses cannot fence
+    a guest that was live during an observer outage.
+    """
+    now = _now()
+    with controls._locked_session() as (db, control):
+        current, _run = _locked_attempt(
+            db,
+            control,
+            pin,
+            session_id,
+            require_stop_due=False,
+            identity_reader=read_bound_zero_turn_factory_attempt,
+        )
+        if current != identity or current["cleanup_fenced"]:
+            raise ValueError("factory_attempt_changed")
+        records = _records(db, pin)
+        previous = None
+        if records and records[-1][0] == "bound_zero_turn_observation":
+            candidate = records[-1][1]
+            if (
+                candidate.get("identity_sha256") == identity["identity_sha256"]
+                and candidate.get("evidence") == evidence
+            ):
+                previous = candidate
+        if previous is None:
+            _audit(
+                db,
+                pin,
+                "bound_zero_turn_observation",
+                identity_sha256=identity["identity_sha256"],
+                evidence=evidence,
+                first_observed_at=now.isoformat(),
+                observed_at=now.isoformat(),
+                observation=1,
+                intervention_required=False,
+                cessation_confirmed=False,
+            )
+            return "waiting", identity
+        first = _timestamp(previous.get("first_observed_at", previous["observed_at"]))
+        if evidence.get("kind") == "authoritative_absence":
+            latest = _timestamp(previous["observed_at"])
+            gap = (now - latest).total_seconds()
+            if gap > ABSENCE_MAX_GAP_SECONDS:
+                _audit(
+                    db,
+                    pin,
+                    "bound_zero_turn_observation",
+                    identity_sha256=identity["identity_sha256"],
+                    evidence=evidence,
+                    first_observed_at=now.isoformat(),
+                    observed_at=now.isoformat(),
+                    observation=1,
+                    intervention_required=False,
+                    cessation_confirmed=False,
+                )
+                return "waiting", identity
+            if gap < ABSENCE_OBSERVATION_INTERVAL_SECONDS:
+                return "waiting", identity
+            observation = int(previous.get("observation", 1)) + 1
+            _audit(
+                db,
+                pin,
+                "bound_zero_turn_observation",
+                identity_sha256=identity["identity_sha256"],
+                evidence=evidence,
+                first_observed_at=first.isoformat(),
+                observed_at=now.isoformat(),
+                observation=observation,
+                intervention_required=False,
+                cessation_confirmed=False,
+            )
+            if observation < MIN_ABSENCE_OBSERVATIONS:
+                return "waiting", identity
+        if (now - first).total_seconds() <= pin["turn_timeout_seconds"]:
+            return "waiting", identity
+        fence_bound_zero_turn_factory_attempt(db, pin, identity)
+        fenced = {**identity, "cleanup_fenced": True}
+        _audit(
+            db,
+            pin,
+            "bound_zero_turn_fence",
+            identity=fenced,
+            evidence=evidence,
+            first_observed_at=first.isoformat(),
+            observed_at=now.isoformat(),
+            held_seconds=int((now - first).total_seconds()),
+            intervention_required=False,
+            cessation_confirmed=False,
+        )
+        return "fenced", fenced
+
+
+def _settle_bound_zero_turn(pin, session_id, identity, original_result, proof) -> bool:
+    with controls._locked_session() as (db, control):
+        current, run = _locked_attempt(
+            db,
+            control,
+            pin,
+            session_id,
+            require_stop_due=False,
+            identity_reader=read_bound_zero_turn_factory_attempt,
+        )
+        if current != identity or not current["cleanup_fenced"]:
+            raise ValueError("factory_attempt_changed")
+        if any(action == "stop_settled" for action, _ in _records(db, pin)):
+            return True
+        _settle_failed_attempt(
+            db,
+            pin,
+            session_id,
+            identity,
+            run,
+            original_result,
+            reason=(
+                "bound_zero_turn_delivery_error: completed guest invocation "
+                "produced no local turn"
+            ),
+            evidence_key="bound_zero_turn",
+            evidence=proof,
+            settle_attempt=settle_bound_zero_turn_factory_attempt,
+        )
+        _audit(
+            db,
+            pin,
+            "stop_settled",
+            identity=identity,
+            bound_zero_turn=proof,
+            cessation_confirmed=True,
+            intervention_required=False,
+        )
+        return True
+
+
+def _reserve_bound_zero_turn_request(db, pin, records, identity, precondition) -> bool:
+    """Durably reserve one of the bounded conditional destroy attempts."""
+    requests = [
+        detail for action, detail in records if action == "bound_zero_turn_request"
+    ]
+    if len(requests) >= MAX_BOUND_ZERO_TURN_DESTROY_REQUESTS:
+        if not any(
+            action == "stop_observation"
+            and detail.get("reason") == "bound_zero_turn_destroy_exhausted"
+            for action, detail in records
+        ):
+            _audit(
+                db,
+                pin,
+                "stop_observation",
+                reason="bound_zero_turn_destroy_exhausted",
+                identity_sha256=identity["identity_sha256"],
+                destroy_requests=len(requests),
+                intervention_required=True,
+                cessation_confirmed=False,
+            )
+        return False
+    if (
+        requests
+        and (_now() - _timestamp(requests[-1]["observed_at"])).total_seconds()
+        < BOUND_ZERO_TURN_REQUEST_INTERVAL_SECONDS
+    ):
+        return False
+    _audit(
+        db,
+        pin,
+        "bound_zero_turn_request",
+        identity_sha256=identity["identity_sha256"],
+        request_number=len(requests) + 1,
+        precondition=precondition,
+        observed_at=_now().isoformat(),
+        intervention_required=False,
+        cessation_confirmed=False,
+    )
+    return True
+
+
+def _drive_bound_zero_turn_fence(
+    pin, session_id, identity, original_result, saved, view
+) -> bool:
+    """Observe or conditionally stop only the invocation named by the fence."""
+    from factory.execution.transport import EmberSessionGone
+
+    if isinstance(view, EmberSessionGone):
+        return _settle_bound_zero_turn(
+            pin,
+            session_id,
+            identity,
+            original_result,
+            {
+                **saved,
+                "cessation": "authoritative_absence",
+                "confirmed_at": _now().isoformat(),
+            },
+        )
+    if not isinstance(view, dict) or view.get("session_id") != identity["guest_id"]:
+        raise ValueError("wrong_bound_zero_turn_session")
+    evidence = saved.get("evidence")
+    if not isinstance(evidence, dict):
+        raise ValueError("malformed_bound_zero_turn_fence")
+    evidence_kind = evidence.get("kind")
+    if evidence_kind == "authoritative_absence":
+        # A producer-shaped live view disproves the persisted absence fence.
+        # Validate the full additive contract before reopening local delivery,
+        # so a malformed or wrong-shard response remains fail closed.
+        _bound_zero_turn_evidence(view, identity)
+        _bound_zero_turn_reset(
+            pin,
+            session_id,
+            identity,
+            "bound_zero_turn_authoritative_absence_disproved",
+            release=True,
+        )
+        return False
+    if evidence_kind != "completed_invoke":
+        raise ValueError("malformed_bound_zero_turn_fence")
+    precondition = _precondition(evidence.get("precondition"), identity["guest_id"])
+    try:
+        proof = _completion(view, precondition)
+    except ValueError as exc:
+        _bound_zero_turn_reset(
+            pin,
+            session_id,
+            identity,
+            str(exc),
+            release=True,
+        )
+        return False
+    if proof is not None:
+        return _settle_bound_zero_turn(
+            pin,
+            session_id,
+            identity,
+            original_result,
+            {**saved, "cessation": proof, "confirmed_at": _now().isoformat()},
+        )
+    # A validated stop intent with no completion is an accepted in-flight
+    # conditional cleanup. Keep its local fence and observe on later ticks.
+    if view.get("stop_intent") is not None:
+        return False
+    try:
+        current_evidence = _bound_zero_turn_evidence(view, identity)
+    except ValueError as exc:
+        _bound_zero_turn_reset(
+            pin,
+            session_id,
+            identity,
+            str(exc),
+            release=True,
+        )
+        return False
+    if current_evidence != saved["evidence"]:
+        _bound_zero_turn_reset(
+            pin,
+            session_id,
+            identity,
+            "bound_zero_turn_remote_progress",
+            release=True,
+        )
+        return False
+    with controls._locked_session() as (db, control):
+        current, _run = _locked_attempt(
+            db,
+            control,
+            pin,
+            session_id,
+            require_stop_due=False,
+            identity_reader=read_bound_zero_turn_factory_attempt,
+        )
+        if current != identity:
+            raise ValueError("factory_attempt_changed")
+        records = _bound_zero_turn_epoch(_records(db, pin), identity)
+        if not _reserve_bound_zero_turn_request(
+            db,
+            pin,
+            records,
+            identity,
+            precondition,
+        ):
+            return False
+    try:
+        _http(identity["guest_id"], precondition)
+    except EmberSessionGone:
+        return _settle_bound_zero_turn(
+            pin,
+            session_id,
+            identity,
+            original_result,
+            {
+                **saved,
+                "cessation": "authoritative_absence",
+                "confirmed_at": _now().isoformat(),
+            },
+        )
+    except Exception:
+        return False
+    return False
+
+
+def _reconcile_bound_zero_turn_attempt(pin, session_id, original_result):
+    """Return (handled, settled) for the staged #6288 proof."""
+    if (
+        os.environ.get("FACTORY_BOUND_ZERO_TURN_SETTLEMENT_ENABLED", "false").lower()
+        != "true"
+    ):
+        return False, False
+    try:
+        with controls._locked_session() as (db, control):
+            identity, _run = _locked_attempt(
+                db,
+                control,
+                pin,
+                session_id,
+                require_stop_due=False,
+                identity_reader=read_bound_zero_turn_factory_attempt,
+            )
+            fence = _active_bound_zero_turn_fence(_records(db, pin), identity)
+    except ValueError as exc:
+        if str(exc) == "factory_bound_zero_turn_not_applicable":
+            return False, False
+        _note(pin, "bound_zero_turn_local_identity_unconfirmed", error=str(exc))
+        return True, False
+    if identity["cleanup_fenced"]:
+        if fence is None:
+            _note(pin, "bound_zero_turn_fence_unconfirmed")
+            return True, False
+        from factory.execution.transport import EmberSessionGone
+
+        try:
+            view = _http(identity["guest_id"])
+        except EmberSessionGone as exc:
+            view = exc
+        except Exception as exc:
+            held_since = _timestamp(fence["observed_at"])
+            if (_now() - held_since).total_seconds() >= COMPLETION_ALARM_SECONDS:
+                _note(
+                    pin,
+                    "bound_zero_turn_fenced_lookup_unavailable",
+                    error=type(exc).__name__,
+                )
+            return True, False
+        try:
+            return True, _drive_bound_zero_turn_fence(
+                pin, session_id, identity, original_result, fence, view
+            )
+        except ValueError as exc:
+            _note(pin, "bound_zero_turn_fenced_evidence_changed", error=str(exc))
+            return True, False
+
+    from factory.execution.transport import EmberSessionGone
+
+    try:
+        view = _http(identity["guest_id"])
+    except EmberSessionGone:
+        evidence = {
+            "kind": "authoritative_absence",
+            "session_id": identity["guest_id"],
+        }
+    except Exception:
+        _bound_zero_turn_reset(
+            pin, session_id, identity, "bound_zero_turn_lookup_unavailable"
+        )
+        return True, False
+    else:
+        try:
+            evidence = _bound_zero_turn_evidence(view, identity)
+        except ValueError as exc:
+            _bound_zero_turn_reset(pin, session_id, identity, str(exc))
+            return True, False
+    try:
+        state, identity = _bound_zero_turn_observe(pin, session_id, identity, evidence)
+        if state != "fenced":
+            return True, False
+        fence = _active_bound_zero_turn_fence(_records_for_pin(pin), identity)
+        if fence is None:
+            raise ValueError("bound_zero_turn_fence_unconfirmed")
+        if evidence["kind"] == "authoritative_absence":
+            return True, _settle_bound_zero_turn(
+                pin,
+                session_id,
+                identity,
+                original_result,
+                {
+                    **fence,
+                    "cessation": "authoritative_absence",
+                    "confirmed_at": _now().isoformat(),
+                },
+            )
+        return True, _drive_bound_zero_turn_fence(
+            pin, session_id, identity, original_result, fence, view
+        )
+    except (StopIteration, ValueError) as exc:
+        _note(pin, "bound_zero_turn_evidence_changed", error=str(exc))
+        return True, False
+
+
+def _records_for_pin(pin):
+    with controls._locked_session() as (db, _control):
+        return _records(db, pin)
+
+
 def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_status):
     """One bounded supervision tick for an already terminal DBOS workflow.
 
@@ -1474,6 +2014,11 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
         return False
     drained, settled = _reconcile_drained_lost_attempt(pin, session_id, original_result)
     if drained:
+        return settled
+    bound_zero_turn, settled = _reconcile_bound_zero_turn_attempt(
+        pin, session_id, original_result
+    )
+    if bound_zero_turn:
         return settled
     cessation_enabled = (
         os.environ.get("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "false").lower()
