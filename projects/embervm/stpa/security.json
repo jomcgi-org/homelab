@@ -4,8 +4,9 @@
   "system_dir": "projects/embervm",
   "scope": {
     "summary": "Deliberate attacks on EmberVM's control structure: an adversary who forges, withholds, or replays control actions or feedback. Same control structure as the logic lens, analyzed for attack rather than honest failure.",
-    "built": "bearer-token authentication on every unary and streaming gRPC call plus CiliumNetworkPolicy restricting noded ingress to control-plane pod selector labels (#4693); SigV4-authenticated access to S3 artifact store enforced by gateway (#4708); brick dial-home registration bound to the noded pod's projected token claim identity (#4707, closed by #5049); per-principal envelope encryption of mutable state and capability-gated restore authorization (#4691, armed in production and dev 2026-08); the brick silence timeout (ADR embervm/037) bounding node-local authority once control-plane contact goes stale, armed at 21600s in production and dev; warmth ownership transition guard (#4962) refreshing .alive claims and reaping unclaimed pre-heartbeat directories",
-    "designed": "mTLS/SPIFFE certificate-based mutual transport auth for noded, request-scoped GitHub tool mediation replacing host-keyed injection (ADR agents/055), digest-verified manifests for restored artifact integrity (ADR embervm/033 decision 3), per-workload egress allowlist scoping (ADR embervm/035)"
+    "built": "bearer-token authentication on every unary and streaming gRPC call (#4693); the inert Cilium ingress policy was removed in #5816 and supplies no network isolation; SigV4-authenticated access to S3 artifact store enforced by gateway (#4708); brick dial-home registration bound to the noded pod's projected token claim identity (#4707, closed by #5049); per-principal envelope encryption of mutable state and capability-gated restore authorization (#4691, armed in production and dev 2026-08); the brick silence timeout (ADR embervm/037) bounding node-local authority once control-plane contact goes stale, armed at 21600s in production and dev; warmth ownership transition guard (#4962) refreshing .alive claims and reaping unclaimed pre-heartbeat directories",
+    "designed": "mTLS/SPIFFE certificate-based mutual transport auth for noded, request-scoped GitHub tool mediation replacing host-keyed injection (ADR agents/055), digest-verified manifests for restored artifact integrity (ADR embervm/033 decision 3), per-workload egress allowlist scoping (ADR embervm/035)",
+    "note": "Policy-removal corrections for #5816 only; other findings retain their earlier review stamp."
   },
   "losses": [
     {
@@ -138,7 +139,7 @@
       "hazards": [
         "identity-hijack"
       ],
-      "evidence": "projects/embervm/chart/templates/noded-networkpolicy.yaml:14-23",
+      "evidence": "projects/embervm/noded/cmd/auth.go:49-75; bearer authentication remains enabled, while #5816 removed the inert Cilium policy and supplies no network-level caller restriction",
       "status": "enforced-prod",
       "issue": "#4693"
     }

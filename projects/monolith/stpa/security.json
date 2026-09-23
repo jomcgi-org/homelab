@@ -4,7 +4,8 @@
   "scope": {
     "summary": "Adversarial abuse of the monolith's control structure: an attacker who deliberately forges or withholds identity, reaches a tool the entitlement model does not yet gate, or crosses a tier boundary in the control structure.",
     "built": "Separate public and private binaries (ADR security/004), public_reader role with visibility filters on the replica, Turnstile-gated chat with three nested budgets, PrincipalMiddleware bearer-token verification on every MCP message, Discord trust ledger with per-guild per-user scoring and heuristics-fed instant enforcement, Cloudflare Access lane projecting verified email to agents console, Kubernetes RBAC scoping cluster mutation to the private pod.",
-    "designed": "Per-tool authorization on the monolith's MCP surface (ADR 059 to route through delegation-consuming broker, #4569 tool-visibility reconcile pass), default-deny egress CiliumNetworkPolicy for the private pod, per-domain database isolation and cross-domain contract."
+    "designed": "Per-tool authorization on the monolith's MCP surface (ADR 059 to route through delegation-consuming broker, #4569 tool-visibility reconcile pass), activation of the staged native default-deny egress NetworkPolicy for the private pod, per-domain database isolation and cross-domain contract.",
+    "note": "Policy-removal corrections for #5816 only; other findings retain their earlier review stamp."
   },
   "losses": [
     {
@@ -107,7 +108,7 @@
     {
       "key": "no-egress-policy",
       "view": "physical",
-      "statement": "The private monolith pod carries no default-deny egress CiliumNetworkPolicy, so a compromised pod has open-ended cluster and internet reach",
+      "statement": "The private monolith pod has no enforced default-deny egress policy on the hub; the native policy is staged off, so a compromised pod has open-ended cluster and internet reach",
       "losses": [
         "L.unauthorized-access",
         "L.secret-exposure"
@@ -119,7 +120,7 @@
     {
       "key": "public-tier-broad-cluster-reach",
       "view": "physical",
-      "statement": "The public tier's CiliumNetworkPolicy scopes by 'in-cluster or not' (toEntities: cluster), allowing every in-cluster pod endpoint rather than only the intended four (Postgres, vLLM, embeddings, SeaweedFS)",
+      "statement": "The public tier has no enforced network isolation on the hub. Its inert Cilium templates were removed in #5816, so compromised public pods retain broad in-cluster reach until native-policy successor work lands",
       "losses": [
         "L.unauthorized-access"
       ],
@@ -339,7 +340,7 @@
   ],
   "open_questions": [
     "When #4569's tool-visibility reconcile pass lands, will it gate shotter.capture, sandbox.run, k8s_sync_argocd_app, and agent-session tools by Principal scope, or only by coarser tool-granular ACL?",
-    "When will the default-deny egress CiliumNetworkPolicy (#5277) land for the private pod's open-ended cluster and internet reach?",
+    "When will the staged native default-deny egress NetworkPolicy (#5277 / #3897) be validated and activated for the private pod's open-ended cluster and internet reach?",
     "Will the public tier's cluster-reach policy (#5276) be scoped to only the four intended destinations (Postgres, vLLM, embeddings, SeaweedFS)?",
     "Should run_code's docstring be corrected to stop claiming zero network for Python, or should the scratch-Postgres DSN injection move behind a separate explicitly-network-capable tool?"
   ],
