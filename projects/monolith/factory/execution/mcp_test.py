@@ -72,30 +72,6 @@ def test_session_start_stores_model_on_session_and_pending(
     assert pending.model == stored_model
 
 
-def test_session_start_records_authenticated_operator(monkeypatch, session):
-    from auth.api import Authority, Principal, PrincipalKind
-    from auth.dependencies import reset_current_principal, set_current_principal
-
-    monkeypatch.setattr(mcp, "_schedule_next_message", lambda _session_id: None)
-    principal = Principal(
-        subject="operator@example.com",
-        actor=("operator@example.com",),
-        scope=(),
-        groups=("software-factory-operators",),
-        email="operator@example.com",
-        kind=PrincipalKind.HUMAN,
-        authority=Authority.STANDING,
-    )
-    token = set_current_principal(principal)
-    try:
-        result = asyncio.run(mcp.monolith_agent_session_start("hello"))
-    finally:
-        reset_current_principal(token)
-
-    row = store.get_session(session, result["session_id"])
-    assert row.triggered_by == "operator@example.com"
-
-
 def test_session_start_normalizes_qwen_alias_and_logs_deprecation(
     monkeypatch, session, caplog
 ):

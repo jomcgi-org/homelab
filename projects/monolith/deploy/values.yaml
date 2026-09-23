@@ -204,6 +204,9 @@ knowledge:
   # every Ember session's system prompt. Chart 0.432.1 carries the template.
   recall:
     enabled: true
+  # #5787 remains staged until its receipt-conversation and Planner checks run.
+  conductorContinuity:
+    enabled: false
 
 chat:
   enabled: true

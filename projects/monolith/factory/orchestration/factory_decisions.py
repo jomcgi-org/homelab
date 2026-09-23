@@ -768,6 +768,26 @@ def _resolve(
                     {"requeued": blocker is None, "blocked_by": blocker}
                 )
                 escalation = escalation_of(row) or escalation
+            request_key = request.get("request_key") if request else None
+            _append_operator_exchange(
+                escalation,
+                message_id=(
+                    f"factory-request:{request_key}"
+                    if request_key
+                    else f"factory-decision:{expected_decision_id}:{actor}:{option['key']}"
+                ),
+                actor=actor,
+                timestamp=resolution["decided_at"],
+                task_id=task_id,
+                decision_id=expected_decision_id,
+                request_key=request_key,
+                epistemic_status="approved",
+                text=(
+                    f"Selected {option['label']}."
+                    + (f"\n\n{resolution['note']}" if resolution["note"] else "")
+                ),
+                summary=resolution["note"] or option["label"],
+            )
             escalation["resolved"] = resolution
             row.escalation_json = json.dumps(escalation)
             row.updated_at = _now()
@@ -1113,6 +1133,23 @@ def _requeue_refine(
         }
     )
     escalation["chat"] = chat
+    request_key = ignore_request[1] if ignore_request else None
+    _append_operator_exchange(
+        escalation,
+        message_id=(
+            f"factory-request:{request_key}"
+            if request_key
+            else f"factory-chat:{row.id}:{len(chat)}"
+        ),
+        actor=actor,
+        timestamp=chat[-1]["asked_at"],
+        task_id=row.task_id,
+        decision_id=_fields(row)["decision_id"],
+        request_key=request_key,
+        epistemic_status="operator_input",
+        text=note,
+        summary=note,
+    )
     row.escalation_json = json.dumps(escalation)
     row.updated_at = _now()
     if blocker is None:
@@ -1137,6 +1174,41 @@ def _requeue_refine(
         _requeue(row)
     db.add(row)
     return blocker
+
+
+def _append_operator_exchange(
+    escalation: dict,
+    *,
+    message_id: str,
+    actor: str,
+    timestamp: str,
+    task_id: str | None,
+    decision_id: str | None,
+    request_key: str | None,
+    epistemic_status: str,
+    text: str,
+    summary: str,
+) -> None:
+    """Append one real operator reply to the receipt conversation once."""
+    conversation = list(escalation.get("conversation") or [])
+    if any(item.get("message_id") == message_id for item in conversation):
+        return
+    conversation.append(
+        {
+            "message_id": message_id,
+            "role": "operator",
+            "actor": actor,
+            "source": "factory_decision",
+            "timestamp": timestamp,
+            "task_id": task_id,
+            "decision_id": decision_id,
+            "request_key": request_key,
+            "epistemic_status": epistemic_status,
+            "text": text[:4000],
+            "summary": summary[:1200],
+        }
+    )
+    escalation["conversation"] = conversation[-20:]
 
 
 def request_chat(receipt_id: int, note: str, actor: str) -> dict:

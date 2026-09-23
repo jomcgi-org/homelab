@@ -5179,7 +5179,6 @@ py_test(
     srcs = ["factory/orchestration/factory_decisions_test.py"],
     imports = ["."],
     deps = [
-        ":pkg_agent_sessions",
         ":pkg_auth",
         ":pkg_swarm",
         "@pip//fastapi",
