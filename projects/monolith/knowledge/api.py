@@ -18,7 +18,13 @@ from knowledge.extraction import (
     KG_JOB_KIND,
 )
 from knowledge.gardener import MAX_GARDENER_RETRIES
-from knowledge.recall import attach_recall, defer_recall, recall_prompt_ready
+from knowledge.recall import (
+    append_message_recall,
+    attach_recall,
+    defer_recall,
+    matches_message_recall,
+    recall_prompt_ready,
+)
 from knowledge.recall_cache import prepare_recall
 from knowledge.store import KnowledgeStore  # re-exported for cross-domain typing
 
@@ -31,8 +37,10 @@ __all__ = [
     "ExtractionOutputInvalid",
     "EXTRACTION_VERSION",
     "KG_JOB_KIND",
+    "append_message_recall",
     "attach_recall",
     "defer_recall",
+    "matches_message_recall",
     "recall_prompt_ready",
     "prepare_recall",
     "get_store",

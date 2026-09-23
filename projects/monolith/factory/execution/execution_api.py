@@ -25,6 +25,7 @@ from factory.execution.mcp import (
     _claim_pending_message_sync,
     _clear_ember_bindings_for,
     _delete_pending_message_sync,
+    _factory_first_message,
     _load_session_row,
     _mark_turn_error_sync,
     _persist_pending_message,
@@ -529,7 +530,10 @@ def start_session_for_swarm(
         task_id=task_id,
     )
     assert row.id is not None
-    _persist_pending_message(row.id, prompt, model)
+    first_message = prompt
+    if task_id is not None:
+        first_message = _factory_first_message(prompt, task_id, node_key)
+    _persist_pending_message(row.id, first_message, model)
     try:
         _schedule_next_message(row.id)
     except RuntimeError:

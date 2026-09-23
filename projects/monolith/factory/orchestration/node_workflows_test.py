@@ -832,6 +832,41 @@ def test_missing_prompt_with_execution_evidence_is_never_recreated(session_bindi
         assert session.exec(select(PendingMessage)).all() == []
 
 
+def test_first_message_recall_suffix_still_matches_the_node_prompt(
+    session_binding_db,
+):
+    """Recall rides after the node prompt, and replay still owns that message."""
+    from knowledge.recall import RECALL_HEADER
+
+    args = (
+        "factory:t-11:implement:1",
+        "one prompt",
+        "luna",
+        "org/repo",
+        "factory/11",
+    )
+    kwargs = {
+        "workflow_id": "parent-run",
+        "node_key": "implement",
+        "node_attempt": 1,
+    }
+    assert nodes._session_api(*args, **kwargs) == 1
+    with Session(session_binding_db) as session:
+        pending = session.exec(select(PendingMessage)).one()
+        pending.message_text = f"one prompt\n\n{RECALL_HEADER}leads"
+        session.add(pending)
+        session.commit()
+    assert nodes._session_api(*args, **kwargs) == 1
+
+    with Session(session_binding_db) as session:
+        pending = session.exec(select(PendingMessage)).one()
+        pending.message_text = "one prompt\n\nsomething else"
+        session.add(pending)
+        session.commit()
+    with pytest.raises(ValueError, match="ownership conflict: prompt"):
+        nodes._session_api(*args, **kwargs)
+
+
 def test_conflicting_run_binding_refuses_before_starting_another_session(
     session_binding_db, monkeypatch
 ):
