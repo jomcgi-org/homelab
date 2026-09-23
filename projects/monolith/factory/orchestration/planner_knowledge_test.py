@@ -229,6 +229,12 @@ def test_flag_off_keeps_legacy_planner_input(planner_db, monkeypatch):
     assert context["task"] == "STALE ADMISSION ACCEPTANCE"
     assert "factory" not in context
     assert "knowledge" not in context
+    assert set(context["omitted"]) == {
+        "task_characters",
+        "graph_records",
+        "run_records",
+        "decision_feedback_records",
+    }
 
 
 def test_enabled_prompt_uses_current_receipt_and_preserves_citation_metadata(

@@ -1539,18 +1539,22 @@ def _planner_context(
         ),
         "omitted": {
             "task_characters": len(task["task_text"]) - len(task_text),
-            "acceptance_characters": acceptance_omitted,
             "graph_records": max(0, len(nodes) - PLANNER_RECORD_LIMIT),
             "run_records": max(0, len(runs) - PLANNER_RECORD_LIMIT),
             "decision_feedback_records": 0,
-            "knowledge_records": 0,
         },
     }
     if authoritative is not None:
         context["factory"] = authoritative
         context["knowledge"] = knowledge
         context["context_followups"] = context_followups
-        context["omitted"]["task_characters"] = 0
+        context["omitted"].update(
+            {
+                "task_characters": 0,
+                "acceptance_characters": acceptance_omitted,
+                "knowledge_records": 0,
+            }
+        )
     if decision_revision is not None:
         context["graph_revision"] = decision_revision
     from factory.orchestration import factory_funding
