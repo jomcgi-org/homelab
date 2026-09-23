@@ -187,6 +187,25 @@ def test_a_percent_encoded_session_key_still_matches():
     assert response.json() == _SESSION
 
 
+def test_work_item_route_is_keyed_on_the_work_item_not_the_issue():
+    # A bare legacy issue number (below the work-item id floor) is not a
+    # work item address: only the snapshotted work-item id resolves, so the
+    # public page can never be read GitHub-shaped.
+    fake_session = _FakeSession()
+    with _client(fake_session) as client:
+        missing = client.get("/api/agents/public/factory/work-items/6257")
+        assert missing.status_code == 404
+        assert missing.json() == {"detail": "unknown work item"}
+        present = client.get("/api/agents/public/factory/work-items/100123")
+        assert present.status_code == 200
+        assert present.json()["item"]["id"] == 100123
+    assert any(
+        "public_api.factory_work_item_snapshot" in sql
+        for sql in fake_session.statements
+    )
+    assert all("swarm." not in sql for sql in fake_session.statements)
+
+
 def test_a_broken_database_is_a_500_not_a_partial_board():
     class _BrokenSession:
         def execute(self, statement, params=None):
