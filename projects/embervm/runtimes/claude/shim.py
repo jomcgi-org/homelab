@@ -3542,7 +3542,12 @@ url = %s
             # an earlier turn's update read in this loop (the resume replay),
             # or failing both, the first update's total minus its last.
             # Summing `last` is only the fallback for a server without `total`.
+            # A total that drops below the baseline or the turn's previous
+            # total is a server-side reset, and usage_carry holds what the turn
+            # counted before it.
             usage_baseline = None
+            usage_carry = {}
+            turn_total = None
             prior_total = self._codex_thread_totals.get(self.session_id)
             last_token_usage = None
             events = []
@@ -3662,10 +3667,22 @@ url = %s
                                 usage_baseline = prior_total or {
                                     key: max(0, total[key] - last[key]) for key in total
                                 }
+                            reference = turn_total or usage_baseline
+                            if any(total[key] < reference[key] for key in total):
+                                # The server lowered or reset the thread total
+                                # (compaction, context overflow). Keep what this
+                                # turn already counted and rebase on this
+                                # update, so only its own request is new.
+                                usage_carry = dict(usage)
+                                usage_baseline = {
+                                    key: max(0, total[key] - last[key]) for key in total
+                                }
                             usage = {
-                                key: max(0, total[key] - usage_baseline[key])
+                                key: usage_carry.get(key, 0)
+                                + max(0, total[key] - usage_baseline[key])
                                 for key in total
                             }
+                            turn_total = total
                             self._codex_thread_totals[self.session_id] = total
                         elif token_usage != last_token_usage:
                             usage = {key: usage.get(key, 0) + last[key] for key in last}

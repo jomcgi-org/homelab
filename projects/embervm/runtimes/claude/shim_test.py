@@ -497,6 +497,13 @@ for line in sys.stdin:
             # A rate-limit update re-sends the unchanged total and last.
             notification("thread/tokenUsage/updated", second)
             notification("thread/tokenUsage/updated", usage(300, 30, cached=250, reasoning=6))
+        elif scenario == "reset-mid-turn":
+            notification("thread/tokenUsage/updated", usage(100, 10, cached=80))
+            notification("thread/tokenUsage/updated", usage(200, 20, cached=150))
+            # Compaction resets the thread total; later requests count up again.
+            thread_totals[thread_id] = {key: 0 for key in thread_totals[thread_id]}
+            notification("thread/tokenUsage/updated", usage(50, 5, cached=40))
+            notification("thread/tokenUsage/updated", usage(70, 7, cached=60))
         elif scenario in ("resume-resend", "resume-no-replay"):
             if scenario == "resume-resend":
                 # The first rate-limit update of the turn re-sends the usage
@@ -2353,6 +2360,22 @@ def test_codex_turn_usage_sums_every_request_in_the_turn(tmp_path, monkeypatch):
         "input_tokens": 600,
         "output_tokens": 60,
         "cache_read_tokens": 480,
+        "cache_write_tokens": 0,
+    }
+    manager._close_process()
+
+
+def test_codex_thread_total_reset_mid_turn_keeps_every_request(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_CODEX_SCENARIO", "reset-mid-turn")
+    manager = _codex_manager(tmp_path, monkeypatch)
+
+    record = manager.turn("compacts partway through", model="sol")
+
+    # The sum of all four requests, not the post-reset total clamped to zero.
+    assert record["usage"] == {
+        "input_tokens": 420,
+        "output_tokens": 42,
+        "cache_read_tokens": 330,
         "cache_write_tokens": 0,
     }
     manager._close_process()
