@@ -73,12 +73,20 @@ swarm:
   # [spark, sol, astra] (Muse first, escalating one step per failed attempt
   # or changes-requested review), and reviewer [opus, astra]. The policy
   # itself is applied by the operator through the factory control surface,
-  # not by this chart. Workers spill from sol below 10 percent Codex. The
-  # planner spills from opus to sol below 25 percent Claude remaining, so
-  # planning never starves Claude review, which pauses at 85 percent used.
+  # not by this chart. Floors are keyed by role (model_pool.floor_for), so
+  # each covers exactly one role. codex.worker covers the worker role:
+  # planned non-implement work nodes the planner left to policy, and
+  # escalation of investigate_ nodes. codex.implement covers the implement
+  # role: planned implement nodes, correction rounds, and escalation of
+  # implement_, integrate_ and correct_ nodes. Both spill from sol below 10
+  # percent Codex remaining. claude.conductor covers the planner, which
+  # spills from opus to sol below 25 percent Claude remaining, so planning
+  # never starves Claude review, which pauses at 85 percent used. The
+  # reviewer and refine roles carry no floor.
   quotaFloors:
     codex:
       worker: 10
+      implement: 10
     claude:
       conductor: 25
 
