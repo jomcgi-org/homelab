@@ -126,9 +126,7 @@ def swarm_session_views(
             "node_attempt": row.node_attempt,
             "status": row.status,
             "model": row.model,
-            "total_cost_usd": (
-                float(total_cost) if total_cost is not None else None
-            ),
+            "total_cost_usd": (float(total_cost) if total_cost is not None else None),
             "reported_cost_missing_turns": int(reported_cost_missing_turns),
             "final_result_text": result_text,
             "created_at": row.created_at,
