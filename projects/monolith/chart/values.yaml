@@ -1892,7 +1892,12 @@ cfIngress:
   grimoire:
     enabled: false
     issuer: https://auth.jomcgi.dev/application/o/grimoire/
-    jwksUri: https://auth.jomcgi.dev/application/o/grimoire/jwks/
+    # In-cluster JWKS, for the same reason auth.authentik.jwksUrl above is
+    # in-cluster: the public hostname hairpins Envoy Gateway's JWKS refresh
+    # out through Cloudflare and back, which made the cluster its own
+    # auth.jomcgi.dev client and drove the retry-storm 5xx. Issuer stays the
+    # public string because it is compared against the token's `iss` claim.
+    jwksUri: "http://authentik-server.authentik.svc.cluster.local/application/o/grimoire/jwks/"
     clientID: grimoire-friends
     clientSecretName: grimoire-oidc-client
     onepasswordItemPath: vaults/k8s-homelab/items/grimoire-oidc
@@ -1920,7 +1925,9 @@ cfIngress:
       # The trailing slash is significant: `issuer` is compared as a STRING
       # against the token's `iss` claim.
       issuer: https://auth.jomcgi.dev/application/o/moving/
-      jwksUri: https://auth.jomcgi.dev/application/o/moving/jwks/
+      # In-cluster JWKS, for the same reason as auth.authentik.jwksUrl
+      # above. Issuer stays the public string for the `iss` compare.
+      jwksUri: "http://authentik-server.authentik.svc.cluster.local/application/o/moving/jwks/"
       # Pinned in the blueprint rather than generated, because it is not a
       # secret and this file has to name it.
       clientID: moving-friends
