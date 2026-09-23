@@ -223,15 +223,21 @@ def _node_prompt(
             + json.dumps({"prior_attempt_evidence": retry_context})
         )
     absolute_artifact = f"{CAPTURE_CHECKOUT}/{artifact_path}"
+    # The output contract is static per role, so it leads; the branch, retry
+    # evidence and attempt path trail the node prompt. A fresh guest session
+    # then shares the longest possible prefix with every other attempt, which
+    # is what the provider prompt cache bills at the cache-read rate.
     return (
+        "Write the declared JSON artifact fresh at the exact absolute path "
+        "given as the artifact path at the end of this prompt, as a single JSON "
+        f"document satisfying this schema: {schema_json}. Create its parent "
+        "directories if needed. Keep this transient artifact untracked and "
+        "unignored; do not commit it. The guest captures artifacts from "
+        "/workspace/src only. Tracked code edits belong in your dedicated linked "
+        "worktree, but write this artifact at the exact capture path regardless "
+        "of your current working directory.\n\n"
         f"{prompt}{working}{prior}\n\n"
-        f"Write the declared JSON artifact fresh at the exact absolute path "
-        f"{absolute_artifact}, as a single JSON document satisfying this schema: "
-        f"{schema_json}. Create its parent directories if needed. Keep this "
-        "transient artifact untracked and unignored; do not commit it. The guest "
-        "captures artifacts from /workspace/src only. Tracked code edits belong "
-        "in your dedicated linked worktree, but write this artifact at the exact "
-        "capture path above regardless of your current working directory."
+        f"Artifact path for this attempt: {absolute_artifact}"
     )
 
 

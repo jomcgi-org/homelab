@@ -187,6 +187,29 @@ The practical MVP decision in #5956 retains four rules for all of these roles:
 4. Planner turns share the task's start budget with implementation. If planning
    consumes more than half of the starts, stop the task and respec it by hand.
 
+### Planner prompt layout
+
+A planner node's guest prompt is built static-first. It opens with the output
+contract and decision schema from `node_workflows._node_prompt`, then
+`_PLANNER_CHARTER` in `factory_conductor.py`: the planner boundary, the gate
+policy and the charter, identical for every task, round and attempt. A labelled
+task section follows with the task id, repository, branch, base, closing
+keyword rule, conductor gate guidance, and the flag-dependent funding, budget
+and judgment-class rules. Then comes the JSON context, serialized by
+`_planner_json` in a fixed stable-first key order (`PLANNER_CONTEXT_ORDER`,
+nested keys sorted), and last the attempt's working branch, prior-attempt
+evidence and artifact path. The size cap and its shrink loop only change the
+JSON, which sits after the static block.
+
+**Why.** Every planner round is a fresh guest session with no resume, so the
+only prompt the provider can reuse is the byte-identical start of the text.
+Claude Code caches a prefix automatically (five-minute TTL, 512-token minimum)
+and Codex caches prefixes the same way, but the old layout opened with
+"Factory task {id}, repository ..." and put the schema last, so almost nothing
+matched between rounds. Putting the static charter and schema first and the
+volatile context last lets every round of every task read about 4,300 tokens
+from cache at the cache-read rate.
+
 ## Availability and operator policy
 
 The chart's `swarm.factoryEnabled` defaults to false. It makes the reconciler
