@@ -39,6 +39,7 @@
   import PaneHeader from "./PaneHeader.svelte";
   import CodexLogin from "./CodexLogin.svelte";
   import ComposerPrewarm from "./ComposerPrewarm.svelte";
+  import StopControl from "./StopControl.svelte";
   import WalkthroughNarrative from "./WalkthroughNarrative.svelte";
   import JumpPalette from "./JumpPalette.svelte";
   import Turns from "./Turns.svelte";
@@ -68,6 +69,7 @@
     initialStartPoll,
     startPollDelay,
   } from "./start-poll.js";
+  import { reconcileStop, stopInFlight } from "./stop-control.js";
 
   const MOBILE_MEDIA_QUERY = "(max-width: 760px)";
   const VOICE_POLL_MS = 2000;
@@ -156,6 +158,7 @@
   let prompt = $state("");
   let composerModelOverride = $state(null);
   let sending = $state(false);
+  let stopRequest = $state(null);
   let codexLoginHint = $state(null);
   let creating = $state(false);
   let needsInputState = $state(false);
@@ -249,6 +252,7 @@
   );
   const eligibleWalkthroughTurns = $derived(walkthroughTurns(detail?.turns));
   const latestSelectedTurn = $derived(detail?.turns?.at(-1) ?? null);
+  const stopPresentation = $derived(reconcileStop(stopRequest, detail));
   const selectedDisplayStatus = $derived({
     ...selectedSession,
     terminal_reason: latestSelectedTurn?.terminal_reason,
@@ -403,6 +407,7 @@
               session: body.session,
               turns: mergeTurns(detail?.turns, body.turns),
               pending_queue: body.pending_queue,
+              stop_control: body.stop_control,
             }
           : body;
         const force = !incremental;
@@ -1235,6 +1240,52 @@
     }
   }
 
+  async function stopActiveTurn(identity) {
+    if (
+      !data.sessionStopControlEnabled ||
+      !selectedId ||
+      !identity ||
+      stopInFlight(stopRequest)
+    ) {
+      return;
+    }
+    const sessionId = selectedId;
+    stopRequest = { ...identity, outcome: "pending" };
+    try {
+      const response = await fetch(
+        `/factory/execution/session/${encodeURIComponent(sessionId)}/stop`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(identity),
+        },
+      );
+      const body = await response.json();
+      if (
+        String(selectedId) === String(sessionId) &&
+        stopRequest?.dispatch_id === identity.dispatch_id
+      ) {
+        stopRequest = {
+          ...identity,
+          outcome: body.outcome ?? (response.ok ? "requested" : "failed"),
+          reason: body.reason ?? null,
+        };
+        await loadDetail(sessionId, requestSequence, true);
+      }
+    } catch {
+      if (
+        String(selectedId) === String(sessionId) &&
+        stopRequest?.dispatch_id === identity.dispatch_id
+      ) {
+        stopRequest = {
+          ...identity,
+          outcome: "unknown",
+          reason: "relay unavailable",
+        };
+      }
+    }
+  }
+
   async function cancelRun(id) {
     if (!id || !window.confirm(P.labels.cancelRunConfirm)) return;
     try {
@@ -1311,6 +1362,7 @@
     if (String(sessionId) !== String(wasSessionId)) {
       sessionView = SESSION_VIEW_CONVERSATION;
       sessionViewInitializedFor = null;
+      stopRequest = null;
     }
 
     requestSequence += 1;
@@ -2332,6 +2384,15 @@
               </div>
             </div>
           {/if}
+
+          <StopControl
+            enabled={Boolean(
+              data.sessionStopControlEnabled && detail?.stop_control?.enabled,
+            )}
+            identity={detail?.stop_control?.active ?? null}
+            status={stopPresentation}
+            onStop={stopActiveTurn}
+          />
 
           <form
             class="composer"

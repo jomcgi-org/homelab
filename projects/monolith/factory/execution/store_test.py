@@ -1233,6 +1233,87 @@ def _successful_uncertain_turn():
     )
 
 
+def test_confirmed_user_interrupt_settles_actual_usage_once_and_allows_followup(
+    monkeypatch, tmp_path
+):
+    from factory.execution.models import AgentCapacityReservation
+
+    engine, schemas = _database(monkeypatch, tmp_path)
+    try:
+        with Session(engine) as session:
+            agent = store.create_session(
+                session, "user-interrupt", "<guest>", "main", model="luna"
+            )
+            pending = store.create_pending_message(
+                session, agent.id, "long operation", "luna"
+            )
+            session_id, turn_seq = agent.id, pending.seq
+        assert store.claim_pending_message_for_session_sync(session_id, "owner-1") == 1
+
+        interrupted = _successful_uncertain_turn()._replace(
+            result="partial result through interrupt",
+            terminal_reason="user_interrupt",
+            stop_reason="user_interrupt",
+            usage={"input_tokens": 120, "output_tokens": 9},
+            total_cost_usd=0.37,
+        )
+        store.persist_turn_from_pending_sync(
+            session_id,
+            turn_seq,
+            "long operation",
+            interrupted,
+            "partial result",
+            store.turn_status(interrupted),
+            "cli-preserved",
+            "luna",
+            "owner-1",
+            1,
+        )
+        with Session(engine) as session:
+            turn = store.get_turn(session, session_id, turn_seq)
+            permit = session.exec(select(AgentCapacityReservation)).one()
+            assert turn.result_text == "partial result through interrupt"
+            assert turn.terminal_reason == "user_interrupt"
+            assert json.loads(turn.usage_json)["input_tokens"] == 120
+            assert json.loads(turn.usage_json)["output_tokens"] == 9
+            assert turn.cost_usd == 0.37
+            assert store.get_pending_message(session, session_id, turn_seq) is None
+            assert permit.state == "settled"
+            assert permit.outcome == "user_interrupt"
+            assert (
+                store.get_session(session, session_id).cli_session_id == "cli-preserved"
+            )
+
+        with pytest.raises(store.PendingClaimLost):
+            store.persist_turn_from_pending_sync(
+                session_id,
+                turn_seq,
+                "long operation",
+                interrupted,
+                "partial result",
+                "completed",
+                "cli-preserved",
+                "luna",
+                "owner-1",
+                1,
+            )
+
+        with Session(engine) as session:
+            turns = session.exec(
+                select(AgentTurn).where(AgentTurn.session_id == session_id)
+            ).all()
+            assert len(turns) == 1
+            assert turns[0].cost_usd == 0.37
+            followup = store.create_pending_message(
+                session, session_id, "continue after Stop", "luna"
+            )
+            assert followup.seq == 2
+        assert store.claim_pending_message_for_session_sync(session_id, "owner-2") == 2
+    finally:
+        engine.dispose()
+        _restore_schemas(schemas)
+
+
 def test_unknown_record_and_queue_disposition_roll_back_together(
     uncertain_lane, monkeypatch
 ):

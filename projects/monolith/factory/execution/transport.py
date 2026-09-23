@@ -113,6 +113,10 @@ LIST_SESSIONS_READ_TIMEOUT = 5.0
 # a wedged control plane must not inherit the long invoke budget.
 DESTROY_SESSION_READ_TIMEOUT = 30.0
 
+# The guest's user interrupt is bounded at 30 seconds. The HTTP caller leaves
+# five seconds for the control-plane forwarder and response serialization.
+INTERRUPT_SESSION_READ_TIMEOUT = 35.0
+
 # A composer prewarm only needs to hand the request to the control plane. The
 # relight continues there if this client gives up before the guest answers.
 PREWARM_SESSION_TIMEOUT = 2.0
@@ -291,6 +295,16 @@ class EmberSessionGone(EmberVMTransportError):
     and the retry also failed. The ORIGINAL binding is dead regardless of retry failure reason."""
 
     pass
+
+
+class EmberInterruptFailure(EmberVMTransportError):
+    """A Stop request that was rejected or whose final relay state is unknown."""
+
+    def __init__(self, message: str, *, status: int, outcome: str, reason: str):
+        super().__init__(message)
+        self.status = status
+        self.outcome = outcome
+        self.reason = reason
 
 
 class EmberBrickGone(EmberVMTransportError):
@@ -1076,6 +1090,90 @@ class EmberVmShimTransport:
                 exc,
             )
             raise EmberVMTransportError(str(exc)) from exc
+
+    async def interrupt_session(
+        self,
+        ember_session_id: str,
+        session_token: str,
+        dispatch_id: str,
+    ) -> dict:
+        """Request interruption of one exact active dispatch.
+
+        The returned acknowledgment is not a terminal turn result. Callers must
+        continue observing the normal invoke result before releasing ownership,
+        admission capacity, or billing state.
+        """
+        if not EMBERVM_URL:
+            raise EmberVMTransportError("EMBERVM_URL is not configured")
+        if not session_token or not dispatch_id:
+            raise ValueError("session_token and dispatch_id are required")
+
+        url = f"{EMBERVM_URL}/v1/sessions/{ember_session_id}/interrupt"
+        headers = {"Authorization": f"Bearer {session_token}"}
+        timeout = httpx.Timeout(
+            INTERRUPT_SESSION_READ_TIMEOUT,
+            connect=SUBMIT_CONNECT_TIMEOUT,
+        )
+
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(
+                    url,
+                    headers=headers,
+                    json={"dispatch_id": dispatch_id},
+                )
+                response.raise_for_status()
+                return response.json()
+        except httpx.TimeoutException as exc:
+            logger.warning(
+                "embervm session interrupt timed out for session %s: %s",
+                ember_session_id,
+                exc,
+            )
+            raise EmberInterruptFailure(
+                str(exc),
+                status=504,
+                outcome="unknown",
+                reason="timeout",
+            ) from exc
+        except httpx.HTTPStatusError as exc:
+            try:
+                body = exc.response.json()
+            except Exception:
+                body = {}
+            outcome = body.get("outcome") if isinstance(body, dict) else None
+            reason = body.get("reason") if isinstance(body, dict) else None
+            if outcome not in {"failed", "unknown"}:
+                outcome = (
+                    "unknown"
+                    if exc.response.status_code in {502, 503, 504}
+                    else "failed"
+                )
+            if not isinstance(reason, str) or not reason:
+                reason = f"http_{exc.response.status_code}"
+            logger.warning(
+                "embervm session interrupt failed for session %s: %s",
+                ember_session_id,
+                _status_error_detail(exc),
+            )
+            raise EmberInterruptFailure(
+                _status_error_detail(exc),
+                status=exc.response.status_code,
+                outcome=outcome,
+                reason=reason,
+            ) from exc
+        except httpx.TransportError as exc:
+            logger.warning(
+                "embervm session interrupt transport error for session %s: %s",
+                ember_session_id,
+                exc,
+            )
+            raise EmberInterruptFailure(
+                str(exc),
+                status=503,
+                outcome="unknown",
+                reason="control_plane_unavailable",
+            ) from exc
 
     async def get_session(self, ember_session_id: str) -> dict:
         """Read one control plane session by its EmberVM session id (management auth).

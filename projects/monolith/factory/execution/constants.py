@@ -19,9 +19,10 @@ CODEX_SYNTHETIC_PROMPT = "Reply with exactly: codex synthetic ok"
 SPARK_SYNTHETIC_PROMPT = "Reply with exactly: spark synthetic ok"
 
 # Terminal reasons that mean the turn ended normally. The claude lane reports
-# "completed" or "end_turn"; the pi lane passes the model's raw stopReason
-# through, which is "stop" for a normal spark turn (see runtimes/claude/shim.py).
-CLEAN_TERMINAL_REASONS = {"completed", "end_turn", "stop"}
+# "completed" or "end_turn"; a confirmed Stop reports "user_interrupt"; the pi
+# lane passes the model's raw stopReason through, which is "stop" for a normal
+# spark turn (see runtimes/claude/shim.py).
+CLEAN_TERMINAL_REASONS = {"completed", "end_turn", "stop", "user_interrupt"}
 
 # A durable record of an attempt that did not finish. The pending message with
 # the same sequence remains live and will replace this turn after re-dispatch.

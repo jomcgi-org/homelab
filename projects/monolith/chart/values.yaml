@@ -119,6 +119,9 @@ agents:
   # not appear in the console or Discord command without a values change.
   models: "luna,terra,sol,astra,opus,sonnet,fable,spark,pi-spark"
   sessions:
+    # Repository-only rollout gate for exact-turn Stop. Keep false until the
+    # live lane, reuse, accounting and relay-failure checks on #4321 pass.
+    stopControlEnabled: false
     # Observe failed probes until exact eviction evidence releases their hold.
     probeSupervisionEnabled: false
     # Cover bound or proven-no-guest kg/project drainers and interactive permits,

@@ -6913,6 +6913,48 @@ def test_interrupt_waits_for_clean_exit(tmp_path, monkeypatch):
     assert errors
 
 
+def test_muse_interrupt_sends_sigint_and_preserves_session_process(
+    tmp_path, monkeypatch
+):
+    """Muse uses its native SIGINT path and does not destroy the guest session."""
+    signals = []
+    waits = []
+
+    class Process:
+        pid = 4242
+
+        def poll(self):
+            return None
+
+        def send_signal(self, value):
+            signals.append(value)
+
+        def wait(self, timeout=None):
+            waits.append(timeout)
+            return 0
+
+        def kill(self):
+            pytest.fail("a clean Muse SIGINT must not escalate to kill")
+
+    muse = object.__new__(shim.MuseProcess)
+    muse.process_lock = threading.Lock()
+    muse.process = Process()
+    muse._stdout_queue = None
+    muse._prompt_file_path = None
+    monkeypatch.setattr(shim, "_reap_orphans", lambda: None)
+
+    outcome = muse.interrupt(timeout=3.0)
+
+    assert signals == [signal.SIGINT]
+    assert waits == [3.0, 10]
+    assert outcome == {
+        "terminal_reason": "user_interrupt",
+        "killed": False,
+        "timeout": False,
+    }
+    assert muse.process is None
+
+
 def test_process_manager_interrupt_is_exact_duplicate_safe_and_successor_fenced():
     manager = object.__new__(shim.ProcessManager)
     manager._dispatch_lock = threading.Lock()

@@ -203,6 +203,14 @@ defmodule Embervm.RouterTest do
     def invoke(_srv, "s-snapshot", _req), do: {:error, {:relight_failed, {:prime_failed, %GRPC.RPCError{status: 9, message: "snapshot lost"}}}}
     def invoke(_srv, "s-brick-gone", _req), do: {:error, :brick_gone}
 
+    def interrupt(_srv, "s-live", "dispatch-ok"),
+      do: {:ok, %{terminal_reason: "user_interrupt", killed: false, timeout: false}}
+
+    def interrupt(_srv, "s-live", "dispatch-stale"), do: {:error, :stale_dispatch}
+    def interrupt(_srv, "s-live", "dispatch-timeout"), do: {:error, :deadline_exceeded}
+    def interrupt(_srv, "s-live", "dispatch-unavailable"), do: {:error, {:rpc, 14}}
+    def interrupt(_srv, _id, _dispatch_id), do: {:error, :not_found}
+
     def invoke(_srv, "s-pi-timeout", _req) do
       Process.sleep(50)
 
@@ -1802,6 +1810,78 @@ defmodule Embervm.RouterTest do
     resp = req(:post, "/v1/sessions/s-term/invoke", auth("sess-token-term"), "x")
     assert resp.status == 410
     assert json(resp.body)["reason"] == "destroyed"
+  end
+
+  test "interrupt is session-authenticated and relays the client's exact dispatch identity" do
+    with_session_fakes()
+
+    body = ~s({"dispatch_id":"dispatch-ok"})
+    assert req(:post, "/v1/sessions/s-live/interrupt", [], body).status == 401
+    assert req(:post, "/v1/sessions/s-live/interrupt", auth("good"), body).status == 403
+
+    response =
+      req(:post, "/v1/sessions/s-live/interrupt", auth("sess-token-live"), body)
+
+    assert response.status == 202
+    assert json(response.body) == %{
+             "session_id" => "s-live",
+             "dispatch_id" => "dispatch-ok",
+             "outcome" => "requested",
+             "relay" => %{
+               "terminal_reason" => "user_interrupt",
+               "killed" => false,
+               "timeout" => false
+             }
+           }
+  end
+
+  test "interrupt rejects malformed and stale requests and retains transport uncertainty" do
+    with_session_fakes()
+    token = auth("sess-token-live")
+
+    for body <- [
+          "",
+          "{}",
+          ~s({"dispatch_id":""}),
+          ~s({"dispatch_id":" dispatch-ok"}),
+          ~s({"dispatch_id":"x","extra":true})
+        ] do
+      assert req(:post, "/v1/sessions/s-live/interrupt", token, body).status == 400
+    end
+
+    stale =
+      req(
+        :post,
+        "/v1/sessions/s-live/interrupt",
+        token,
+        ~s({"dispatch_id":"dispatch-stale"})
+      )
+
+    assert stale.status == 409
+    assert json(stale.body)["outcome"] == "failed"
+    assert json(stale.body)["reason"] == "stale_dispatch"
+
+    timeout =
+      req(
+        :post,
+        "/v1/sessions/s-live/interrupt",
+        token,
+        ~s({"dispatch_id":"dispatch-timeout"})
+      )
+
+    assert timeout.status == 504
+    assert json(timeout.body)["outcome"] == "unknown"
+
+    unavailable =
+      req(
+        :post,
+        "/v1/sessions/s-live/interrupt",
+        token,
+        ~s({"dispatch_id":"dispatch-unavailable"})
+      )
+
+    assert unavailable.status == 503
+    assert json(unavailable.body)["outcome"] == "unknown"
   end
 
   test "invoke queue-full maps to 429" do
