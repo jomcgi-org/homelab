@@ -1,0 +1,518 @@
+{
+  "contract_version": 1,
+  "report_kind": "observed_repository_baseline",
+  "synthetic": false,
+  "generated_at": "2026-09-23T01:50:44Z",
+  "source_as_of": "2026-09-23T01:50:44Z",
+  "window": {
+    "start": "2026-09-16T00:00:00Z",
+    "end": "2026-09-23T00:00:00Z",
+    "semantics": "half-open UTC [start, end)"
+  },
+  "repository": "jomcgi-org/homelab",
+  "scope": {
+    "accepted_change": "A factory cohort task with active verified_outcome evidence. Private cohort evidence is unavailable in this observation.",
+    "repository_delivery": "A distinct merged pull request. This is not deployment or verified outcome.",
+    "production": "Each repository-declared GKE Argo Application is a separate production service boundary."
+  },
+  "sources": [
+    {
+      "kind": "github_merged_prs",
+      "complete": true,
+      "coverage_start": "2026-09-16T00:00:00Z",
+      "coverage_end": "2026-09-23T00:00:00Z",
+      "returned": 184,
+      "query": "GraphQL merged query in projects/monolith/factory/baseline.md"
+    },
+    {
+      "kind": "github_closed_unmerged_prs",
+      "complete": true,
+      "coverage_start": "2026-09-16T00:00:00Z",
+      "coverage_end": "2026-09-23T00:00:00Z",
+      "returned": 2,
+      "query": "GraphQL closed-unmerged query in projects/monolith/factory/baseline.md"
+    },
+    {
+      "kind": "factory",
+      "complete": false,
+      "coverage_start": null,
+      "coverage_end": null,
+      "query": "projects/monolith/factory/baseline_export.sql"
+    },
+    {
+      "kind": "cost",
+      "complete": false,
+      "coverage_start": null,
+      "coverage_end": null,
+      "query": "private factory_start accounting ledger"
+    },
+    {
+      "kind": "deployment",
+      "complete": false,
+      "coverage_start": null,
+      "coverage_end": null,
+      "query": "live Argo, workload, image digest, and chart receipt validation"
+    },
+    {
+      "kind": "incident",
+      "complete": false,
+      "coverage_start": null,
+      "coverage_end": null,
+      "query": "Polylane or another authoritative incident source"
+    },
+    {
+      "kind": "operator_audit",
+      "complete": false,
+      "coverage_start": null,
+      "coverage_end": null,
+      "query": "private audit, decision, and control records"
+    }
+  ],
+  "observed": {
+    "repository_all_merged_prs": {
+      "status": "observed",
+      "value": 184,
+      "unit": "merged pull requests",
+      "coverage": {
+        "known": 184,
+        "total": 184
+      },
+      "warning": "Not production deployment frequency."
+    },
+    "repository_factory_branch_merged_prs": {
+      "status": "observed",
+      "value": 95,
+      "unit": "merged pull requests",
+      "coverage": {
+        "known": 95,
+        "total": 95
+      },
+      "warning": "Not an accepted-change, deployment, or verified-outcome count.",
+      "evidence": [
+        "https://github.com/jomcgi-org/homelab/pull/6176",
+        "https://github.com/jomcgi-org/homelab/pull/6177",
+        "https://github.com/jomcgi-org/homelab/pull/6392",
+        "https://github.com/jomcgi-org/homelab/pull/6391"
+      ]
+    },
+    "factory_branch_pr_open_to_merge": {
+      "status": "observed",
+      "minimum": 877,
+      "median": 14084,
+      "maximum": 636316,
+      "unit": "seconds",
+      "coverage": {
+        "known": 95,
+        "total": 95
+      },
+      "warning": "Repository review/delivery interval only, not DORA lead time."
+    },
+    "repository_factory_branch_closed_unmerged_prs": {
+      "status": "observed",
+      "value": 0,
+      "unit": "closed-unmerged pull requests",
+      "coverage": {
+        "known": 2,
+        "total": 2
+      },
+      "note": "Two closed-unmerged repository PRs were observed and neither used a factory/ head. Private abandoned factory work remains unavailable."
+    }
+  },
+  "unavailable": {
+    "factory_cohort_counts": null,
+    "factory_intake_to_verified_outcome_seconds": null,
+    "factory_rework_rate": null,
+    "interventions_per_accepted_change": null,
+    "known_cost_subtotal_usd": null,
+    "complete_cohort_cost_usd": null,
+    "cohort_cost_per_accepted_change_usd": null,
+    "reason": "Private full-history factory, cost, and operator audit sources were not available. Unknown values are not zero."
+  },
+  "managed_production_applications": [
+    {
+      "name": "context-forge-gateway",
+      "environment": "gke-production",
+      "service_boundary": "Argo Application/context-forge-gateway",
+      "inventory_source": "projects/gke-apps/context-forge-gateway/application.yaml",
+      "inventory_status": "repository_declared_not_live_validated",
+      "metrics": {
+        "production_lead_time_seconds": null,
+        "deployment_frequency_per_utc_day": null,
+        "change_failure_rate": null,
+        "failed_deployment_recovery_seconds": null,
+        "production_rework_rate": null,
+        "status": "unavailable",
+        "reason": "live deployment and incident coverage were not available to the repository-only runner"
+      }
+    },
+    {
+      "name": "embervm",
+      "environment": "gke-production",
+      "service_boundary": "Argo Application/embervm",
+      "inventory_source": "projects/gke-apps/embervm/application.yaml",
+      "inventory_status": "repository_declared_not_live_validated",
+      "metrics": {
+        "production_lead_time_seconds": null,
+        "deployment_frequency_per_utc_day": null,
+        "change_failure_rate": null,
+        "failed_deployment_recovery_seconds": null,
+        "production_rework_rate": null,
+        "status": "unavailable",
+        "reason": "live deployment and incident coverage were not available to the repository-only runner"
+      }
+    },
+    {
+      "name": "inference",
+      "environment": "gke-production",
+      "service_boundary": "Argo Application/inference",
+      "inventory_source": "projects/gke-apps/inference/application.yaml",
+      "inventory_status": "repository_declared_not_live_validated",
+      "metrics": {
+        "production_lead_time_seconds": null,
+        "deployment_frequency_per_utc_day": null,
+        "change_failure_rate": null,
+        "failed_deployment_recovery_seconds": null,
+        "production_rework_rate": null,
+        "status": "unavailable",
+        "reason": "live deployment and incident coverage were not available to the repository-only runner"
+      }
+    },
+    {
+      "name": "monolith-agents",
+      "environment": "gke-production",
+      "service_boundary": "Argo Application/monolith-agents",
+      "inventory_source": "projects/gke-apps/monolith-agents/application.yaml",
+      "inventory_status": "repository_declared_not_live_validated",
+      "metrics": {
+        "production_lead_time_seconds": null,
+        "deployment_frequency_per_utc_day": null,
+        "change_failure_rate": null,
+        "failed_deployment_recovery_seconds": null,
+        "production_rework_rate": null,
+        "status": "unavailable",
+        "reason": "live deployment and incident coverage were not available to the repository-only runner"
+      }
+    },
+    {
+      "name": "monolith-public",
+      "environment": "gke-production",
+      "service_boundary": "Argo Application/monolith-public",
+      "inventory_source": "projects/gke-apps/monolith-public/application.yaml",
+      "inventory_status": "repository_declared_not_live_validated",
+      "metrics": {
+        "production_lead_time_seconds": null,
+        "deployment_frequency_per_utc_day": null,
+        "change_failure_rate": null,
+        "failed_deployment_recovery_seconds": null,
+        "production_rework_rate": null,
+        "status": "unavailable",
+        "reason": "live deployment and incident coverage were not available to the repository-only runner"
+      }
+    },
+    {
+      "name": "monolith",
+      "environment": "gke-production",
+      "service_boundary": "Argo Application/monolith",
+      "inventory_source": "projects/gke-apps/monolith/application.yaml",
+      "inventory_status": "repository_declared_not_live_validated",
+      "metrics": {
+        "production_lead_time_seconds": null,
+        "deployment_frequency_per_utc_day": null,
+        "change_failure_rate": null,
+        "failed_deployment_recovery_seconds": null,
+        "production_rework_rate": null,
+        "status": "unavailable",
+        "reason": "live deployment and incident coverage were not available to the repository-only runner"
+      }
+    },
+    {
+      "name": "argo-workflows",
+      "environment": "gke-production",
+      "service_boundary": "Argo Application/argo-workflows",
+      "inventory_source": "projects/platform-gke/argo-workflows/application.yaml",
+      "inventory_status": "repository_declared_not_live_validated",
+      "metrics": {
+        "production_lead_time_seconds": null,
+        "deployment_frequency_per_utc_day": null,
+        "change_failure_rate": null,
+        "failed_deployment_recovery_seconds": null,
+        "production_rework_rate": null,
+        "status": "unavailable",
+        "reason": "live deployment and incident coverage were not available to the repository-only runner"
+      }
+    },
+    {
+      "name": "argocd",
+      "environment": "gke-production",
+      "service_boundary": "Argo Application/argocd",
+      "inventory_source": "projects/platform-gke/argocd/application.yaml",
+      "inventory_status": "repository_declared_not_live_validated",
+      "metrics": {
+        "production_lead_time_seconds": null,
+        "deployment_frequency_per_utc_day": null,
+        "change_failure_rate": null,
+        "failed_deployment_recovery_seconds": null,
+        "production_rework_rate": null,
+        "status": "unavailable",
+        "reason": "live deployment and incident coverage were not available to the repository-only runner"
+      }
+    },
+    {
+      "name": "atlas-operator",
+      "environment": "gke-production",
+      "service_boundary": "Argo Application/atlas-operator",
+      "inventory_source": "projects/platform-gke/atlas-operator/application.yaml",
+      "inventory_status": "repository_declared_not_live_validated",
+      "metrics": {
+        "production_lead_time_seconds": null,
+        "deployment_frequency_per_utc_day": null,
+        "change_failure_rate": null,
+        "failed_deployment_recovery_seconds": null,
+        "production_rework_rate": null,
+        "status": "unavailable",
+        "reason": "live deployment and incident coverage were not available to the repository-only runner"
+      }
+    },
+    {
+      "name": "authentik",
+      "environment": "gke-production",
+      "service_boundary": "Argo Application/authentik",
+      "inventory_source": "projects/platform-gke/authentik/application.yaml",
+      "inventory_status": "repository_declared_not_live_validated",
+      "metrics": {
+        "production_lead_time_seconds": null,
+        "deployment_frequency_per_utc_day": null,
+        "change_failure_rate": null,
+        "failed_deployment_recovery_seconds": null,
+        "production_rework_rate": null,
+        "status": "unavailable",
+        "reason": "live deployment and incident coverage were not available to the repository-only runner"
+      }
+    },
+    {
+      "name": "cert-manager",
+      "environment": "gke-production",
+      "service_boundary": "Argo Application/cert-manager",
+      "inventory_source": "projects/platform-gke/cert-manager/application.yaml",
+      "inventory_status": "repository_declared_not_live_validated",
+      "metrics": {
+        "production_lead_time_seconds": null,
+        "deployment_frequency_per_utc_day": null,
+        "change_failure_rate": null,
+        "failed_deployment_recovery_seconds": null,
+        "production_rework_rate": null,
+        "status": "unavailable",
+        "reason": "live deployment and incident coverage were not available to the repository-only runner"
+      }
+    },
+    {
+      "name": "cloudflare-gateway",
+      "environment": "gke-production",
+      "service_boundary": "Argo Application/cloudflare-gateway",
+      "inventory_source": "projects/platform-gke/cloudflare-gateway/application.yaml",
+      "inventory_status": "repository_declared_not_live_validated",
+      "metrics": {
+        "production_lead_time_seconds": null,
+        "deployment_frequency_per_utc_day": null,
+        "change_failure_rate": null,
+        "failed_deployment_recovery_seconds": null,
+        "production_rework_rate": null,
+        "status": "unavailable",
+        "reason": "live deployment and incident coverage were not available to the repository-only runner"
+      }
+    },
+    {
+      "name": "cloudnative-pg",
+      "environment": "gke-production",
+      "service_boundary": "Argo Application/cloudnative-pg",
+      "inventory_source": "projects/platform-gke/cloudnative-pg/application.yaml",
+      "inventory_status": "repository_declared_not_live_validated",
+      "metrics": {
+        "production_lead_time_seconds": null,
+        "deployment_frequency_per_utc_day": null,
+        "change_failure_rate": null,
+        "failed_deployment_recovery_seconds": null,
+        "production_rework_rate": null,
+        "status": "unavailable",
+        "reason": "live deployment and incident coverage were not available to the repository-only runner"
+      }
+    },
+    {
+      "name": "kargo",
+      "environment": "gke-production",
+      "service_boundary": "Argo Application/kargo",
+      "inventory_source": "projects/platform-gke/kargo/application.yaml",
+      "inventory_status": "repository_declared_not_live_validated",
+      "metrics": {
+        "production_lead_time_seconds": null,
+        "deployment_frequency_per_utc_day": null,
+        "change_failure_rate": null,
+        "failed_deployment_recovery_seconds": null,
+        "production_rework_rate": null,
+        "status": "unavailable",
+        "reason": "live deployment and incident coverage were not available to the repository-only runner"
+      }
+    },
+    {
+      "name": "kyverno",
+      "environment": "gke-production",
+      "service_boundary": "Argo Application/kyverno",
+      "inventory_source": "projects/platform-gke/kyverno/application.yaml",
+      "inventory_status": "repository_declared_not_live_validated",
+      "metrics": {
+        "production_lead_time_seconds": null,
+        "deployment_frequency_per_utc_day": null,
+        "change_failure_rate": null,
+        "failed_deployment_recovery_seconds": null,
+        "production_rework_rate": null,
+        "status": "unavailable",
+        "reason": "live deployment and incident coverage were not available to the repository-only runner"
+      }
+    },
+    {
+      "name": "onepassword",
+      "environment": "gke-production",
+      "service_boundary": "Argo Application/onepassword",
+      "inventory_source": "projects/platform-gke/onepassword/application.yaml",
+      "inventory_status": "repository_declared_not_live_validated",
+      "metrics": {
+        "production_lead_time_seconds": null,
+        "deployment_frequency_per_utc_day": null,
+        "change_failure_rate": null,
+        "failed_deployment_recovery_seconds": null,
+        "production_rework_rate": null,
+        "status": "unavailable",
+        "reason": "live deployment and incident coverage were not available to the repository-only runner"
+      }
+    },
+    {
+      "name": "otel-collector",
+      "environment": "gke-production",
+      "service_boundary": "Argo Application/otel-collector",
+      "inventory_source": "projects/platform-gke/otel-collector/application.yaml",
+      "inventory_status": "repository_declared_not_live_validated",
+      "metrics": {
+        "production_lead_time_seconds": null,
+        "deployment_frequency_per_utc_day": null,
+        "change_failure_rate": null,
+        "failed_deployment_recovery_seconds": null,
+        "production_rework_rate": null,
+        "status": "unavailable",
+        "reason": "live deployment and incident coverage were not available to the repository-only runner"
+      }
+    },
+    {
+      "name": "polylane",
+      "environment": "gke-production",
+      "service_boundary": "Argo Application/polylane",
+      "inventory_source": "projects/platform-gke/polylane/application.yaml",
+      "inventory_status": "repository_declared_not_live_validated",
+      "metrics": {
+        "production_lead_time_seconds": null,
+        "deployment_frequency_per_utc_day": null,
+        "change_failure_rate": null,
+        "failed_deployment_recovery_seconds": null,
+        "production_rework_rate": null,
+        "status": "unavailable",
+        "reason": "live deployment and incident coverage were not available to the repository-only runner"
+      }
+    },
+    {
+      "name": "priority-classes",
+      "environment": "gke-production",
+      "service_boundary": "Argo Application/priority-classes",
+      "inventory_source": "projects/platform-gke/priority-classes/application.yaml",
+      "inventory_status": "repository_declared_not_live_validated",
+      "metrics": {
+        "production_lead_time_seconds": null,
+        "deployment_frequency_per_utc_day": null,
+        "change_failure_rate": null,
+        "failed_deployment_recovery_seconds": null,
+        "production_rework_rate": null,
+        "status": "unavailable",
+        "reason": "live deployment and incident coverage were not available to the repository-only runner"
+      }
+    },
+    {
+      "name": "renovate",
+      "environment": "gke-production",
+      "service_boundary": "Argo Application/renovate",
+      "inventory_source": "projects/platform-gke/renovate/application.yaml",
+      "inventory_status": "repository_declared_not_live_validated",
+      "metrics": {
+        "production_lead_time_seconds": null,
+        "deployment_frequency_per_utc_day": null,
+        "change_failure_rate": null,
+        "failed_deployment_recovery_seconds": null,
+        "production_rework_rate": null,
+        "status": "unavailable",
+        "reason": "live deployment and incident coverage were not available to the repository-only runner"
+      }
+    },
+    {
+      "name": "spire",
+      "environment": "gke-production",
+      "service_boundary": "Argo Application/spire",
+      "inventory_source": "projects/platform-gke/spire/application.yaml",
+      "inventory_status": "repository_declared_not_live_validated",
+      "metrics": {
+        "production_lead_time_seconds": null,
+        "deployment_frequency_per_utc_day": null,
+        "change_failure_rate": null,
+        "failed_deployment_recovery_seconds": null,
+        "production_rework_rate": null,
+        "status": "unavailable",
+        "reason": "live deployment and incident coverage were not available to the repository-only runner"
+      }
+    },
+    {
+      "name": "tailscale",
+      "environment": "gke-production",
+      "service_boundary": "Argo Application/tailscale",
+      "inventory_source": "projects/platform-gke/tailscale/application.yaml",
+      "inventory_status": "repository_declared_not_live_validated",
+      "metrics": {
+        "production_lead_time_seconds": null,
+        "deployment_frequency_per_utc_day": null,
+        "change_failure_rate": null,
+        "failed_deployment_recovery_seconds": null,
+        "production_rework_rate": null,
+        "status": "unavailable",
+        "reason": "live deployment and incident coverage were not available to the repository-only runner"
+      }
+    }
+  ],
+  "slo_proposal": {
+    "binding": false,
+    "enforcement": false,
+    "decision_owner": "Joe",
+    "measurement_owner": "factory maintainers",
+    "evaluation_window": "rolling 28 completed UTC days after one fully covered window exists",
+    "minimum_evidence": "non-zero denominators and complete factory, cost, deployment, incident, and operator-audit coverage",
+    "speed": {
+      "target": null,
+      "prerequisite": "complete merge-to-production and intake-to-verified intervals"
+    },
+    "reliability": {
+      "target": null,
+      "prerequisite": "complete deployment failure and recovery evidence"
+    },
+    "autonomy": {
+      "target": null,
+      "prerequisite": "validated operator-authored actions and actors"
+    },
+    "cost": {
+      "target": null,
+      "prerequisite": "complete cohort cost including failed, correction, and abandoned work"
+    },
+    "breach_response": "Manual evidence review and a reviewed corrective proposal, with no automatic action or policy change.",
+    "reason_targets_unset": "Repository-only evidence cannot support numerical production, autonomy, or complete-cost targets."
+  },
+  "material_gaps": [
+    "Private full-history factory coverage, pagination, predecessor identity, corrections, failed/cancelled/incomplete/abandoned tasks, reserved ceilings, and unknown costs.",
+    "Live Argo Application, workload, image digest, and chart-publication receipt validation for every service boundary.",
+    "Authoritative production incident, failed deployment, recovery, and incident-caused rework evidence.",
+    "Validated operator-authored intervention actions and actors, separate from intervention-required signals.",
+    "Joe's SLO decision."
+  ]
+}
