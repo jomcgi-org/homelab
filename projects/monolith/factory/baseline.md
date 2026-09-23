@@ -148,7 +148,7 @@ jq -s --slurpfile inventory \
   sources: (["factory","cost","audit"] | map({kind:.,complete:false,
     coverage_start:null,coverage_end:null,
     query:"projects/monolith/factory/baseline_export.sql"})),
-  managed_applications: ($inventory[0].managed_production_applications
+  managed_applications: ($inventory[0].metrics.managed_production_applications
     | map({name,environment,service_boundary})),
   events: .
 }' /tmp/factory-events.jsonl > /tmp/factory-baseline-input.json
