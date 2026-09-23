@@ -1,4 +1,4 @@
-"""Leader-owned export of finished Ember sessions to knowledge raws."""
+"""Leader-owned incremental export of durable Ember turns to knowledge raws."""
 
 from __future__ import annotations
 
@@ -103,7 +103,12 @@ def _size(value: str) -> int:
 def pick_finished_sessions(
     session: Session, limit: int = KG_FEED_BATCH
 ) -> list[tuple[AgentSession, int]]:
-    """Return quiet finished sessions with turns beyond their KG watermark."""
+    """Return quiet durable sessions with turns beyond their KG watermark.
+
+    The compatibility name predates incremental active-session export. A quiet
+    running session is eligible so useful context does not depend on a
+    session-end hook that may never run.
+    """
     since_floor = _since_floor(session)
     max_seq = (
         select(AgentTurn.session_id, func.max(AgentTurn.seq).label("max_seq"))
@@ -115,7 +120,7 @@ def pick_finished_sessions(
     rows = session.exec(
         select(AgentSession, max_seq.c.max_seq)
         .join(max_seq, max_seq.c.session_id == AgentSession.id)
-        .where(AgentSession.status.in_(("completed", "warn")))
+        .where(AgentSession.status.in_(("running", "completed", "warn")))
         .where(~pending)
         .where(AgentSession.created_at >= since_floor)
         .where(AgentSession.last_turn_at < quiet_before)
@@ -147,11 +152,11 @@ def _turn_block(turn: AgentTurn) -> str:
     parts = [
         f"## Turn {turn.seq}",
         "",
-        "**Prompt:**",
+        "**Operator input (evidence, not automatically an approval):**",
         "",
         _clip_text(turn.prompt, PROMPT_CAP),
         "",
-        "**Result:**",
+        "**Conductor output (suggestion or hypothesis unless separately approved):**",
         "",
         _clip_result(turn.result_text),
     ]
@@ -210,6 +215,9 @@ def _frontmatter(
         ("model", session_row.model),
         ("triggered_by", session_row.triggered_by),
         ("scope", scope),
+        ("conversation_owner", "agent_sessions.agent_turns"),
+        ("operator_provenance", "operator_input"),
+        ("conductor_provenance", "suggestion_or_hypothesis"),
         ("turn_range", f"{first_seq}-{last_seq}"),
         ("started_at", _timestamp(session_row.created_at)),
         ("ended_at", _timestamp(session_row.last_turn_at)),

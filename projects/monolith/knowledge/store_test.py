@@ -733,6 +733,7 @@ class TestSearchNotesWithContext:
             ("legacy-expired", "legacy"),
             ("legacy-deleted", "legacy"),
             ("legacy-other-scope", "legacy"),
+            ("personal-private", "verified"),
         ):
             self.store.upsert_note(
                 note_id=note_id,
@@ -745,7 +746,11 @@ class TestSearchNotesWithContext:
                     scope=(
                         "repo:other/project"
                         if note_id == "legacy-other-scope"
-                        else "repo:jomcgi-org/homelab"
+                        else (
+                            "personal:operator"
+                            if note_id == "personal-private"
+                            else "repo:jomcgi-org/homelab"
+                        )
                     ),
                     verification_state=state,
                 ),
