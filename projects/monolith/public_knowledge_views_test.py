@@ -300,6 +300,85 @@ def test_public_reader_reads_published_fact_columns_and_sanitized_scope(session)
     assert by_id["personal-scope-fact"].scope is None
 
 
+def test_issue_entities_require_a_public_link(session):
+    """Issue slugs derived from private-only facts must not read as public.
+
+    link_issue_entities scans live non-legacy facts regardless of visibility,
+    so an issue entity can exist with links only to private notes. The
+    entities view must hide it (same boundary as knowledge_note_entities),
+    while an issue entity with a public link and curated non-issue entities
+    stay visible.
+    Seeded + read through the SAVEPOINT session so nothing persists."""
+    session.execute(
+        _INSERT_NOTE,
+        {
+            "note_id": "priv-fact",
+            "path": "priv-fact.md",
+            "title": "Private mentions #9901",
+            "content_hash": "h-priv",
+            "content": "Private body.",
+            "visibility": "private",
+            "type": "fact",
+            "deleted_at": None,
+        },
+    )
+    session.execute(
+        _INSERT_NOTE,
+        {
+            "note_id": "pub-fact",
+            "path": "pub-fact.md",
+            "title": "Public mentions #9902",
+            "content_hash": "h-pub",
+            "content": "Public body.",
+            "visibility": "public",
+            "type": "fact",
+            "deleted_at": None,
+        },
+    )
+    session.execute(
+        text(
+            """
+            INSERT INTO knowledge.entities (kind, slug, title, source)
+            VALUES
+                ('issue', '9901', '#9901', 'regex'),
+                ('issue', '9902', '#9902', 'regex'),
+                ('issue', '9903', '#9903', 'regex'),
+                ('project', 'leak-test-project', 'Leak Test Project', 'test')
+            """
+        )
+    )
+    priv_id = session.execute(
+        text("SELECT id FROM knowledge.entities WHERE kind = 'issue' AND slug = '9901'")
+    ).scalar_one()
+    pub_id = session.execute(
+        text("SELECT id FROM knowledge.entities WHERE kind = 'issue' AND slug = '9902'")
+    ).scalar_one()
+    session.execute(
+        text(
+            """
+            INSERT INTO knowledge.note_entities
+                (note_id, entity_id, role, source)
+            VALUES
+                ('priv-fact', :priv_id, 'mentions', 'regex'),
+                ('pub-fact', :pub_id, 'mentions', 'regex')
+            """
+        ),
+        {"priv_id": priv_id, "pub_id": pub_id},
+    )
+    session.commit()
+
+    slugs = {
+        r[0]
+        for r in session.execute(
+            text("SELECT slug FROM public_api.knowledge_entities")
+        ).all()
+    }
+    assert "9902" in slugs  # linked to a public note
+    assert "9901" not in slugs  # linked only to a private note
+    assert "9903" not in slugs  # linked to nothing at all
+    assert "leak-test-project" in slugs  # curated catalog stays visible
+
+
 def test_public_reader_denied_on_knowledge_note_links(pg):
     """public_reader has SELECT on the edges view but no access to the
     underlying knowledge schema. Mirrors public_reader_grants_test for the
