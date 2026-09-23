@@ -9,6 +9,7 @@ from sqlmodel import Session, SQLModel, create_engine
 
 from core.db import get_session
 from observability import public_router
+from observability.factory_goals import FactoryGoal
 from observability.merged_prs import MergedPR
 
 _NOW = datetime(2026, 9, 7, 12, tzinfo=timezone.utc)
@@ -17,15 +18,17 @@ _NOW = datetime(2026, 9, 7, 12, tzinfo=timezone.utc)
 @pytest.fixture(name="session")
 def session_fixture(tmp_path):
     engine = create_engine(f"sqlite:///{tmp_path / 'merged-pr-router.db'}")
-    table = MergedPR.__table__
-    original_schema = table.schema
-    table.schema = None
+    tables = [MergedPR.__table__, FactoryGoal.__table__]
+    original_schemas = [table.schema for table in tables]
+    for table in tables:
+        table.schema = None
     try:
-        SQLModel.metadata.create_all(engine, tables=[table])
+        SQLModel.metadata.create_all(engine, tables=tables)
         with Session(engine) as session:
             yield session
     finally:
-        table.schema = original_schema
+        for table, schema in zip(tables, original_schemas):
+            table.schema = schema
         engine.dispose()
 
 
@@ -145,3 +148,82 @@ def test_public_merges_etag_changes_when_seven_day_cutoff_hour_changes(
     second = client.get("/api/agents/public/merges")
 
     assert second.headers["ETag"] != first.headers["ETag"]
+
+
+def test_public_factory_goals_scores_declared_goals(client, session):
+    session.add(
+        FactoryGoal(
+            statement="Land declared goals",
+            issue_numbers=[5927],
+            declared_by="opus",
+            declared_at=_NOW - timedelta(days=1),
+            active=True,
+        )
+    )
+    session.add(_row(123, timedelta(hours=1), title="feat(factory): goals for #5927"))
+    session.commit()
+
+    response = client.get("/api/agents/public/factory/goals")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["declared_at"] == "2026-09-06T12:00:00Z"
+    assert body["stale"] is False
+    assert len(body["goals"]) == 1
+    goal = body["goals"][0]
+    assert goal["statement"] == "Land declared goals"
+    assert goal["issue_numbers"] == [5927]
+    assert goal["merged_refs"] == 1
+    assert goal["last_activity"] == "2026-09-07T11:00:00Z"
+    assert goal["stale"] is False
+    assert "public" in response.headers["Cache-Control"]
+    assert response.headers["ETag"]
+
+
+def test_public_factory_goals_counts_refs_older_than_seven_days(client, session):
+    # Regression for a goal declared beyond the 7-day merge window this
+    # endpoint used to load: merges referencing it at 8, 11, and 20 days old
+    # must still count even though the goal itself (declared 12 days ago) is
+    # not yet stale (STALE_AFTER_DAYS is 14).
+    session.add(
+        FactoryGoal(
+            statement="Land declared goals",
+            issue_numbers=[5927],
+            declared_by="opus",
+            declared_at=_NOW - timedelta(days=12),
+            active=True,
+        )
+    )
+    session.add(_row(123, timedelta(days=8), title="feat(factory): goals for #5927"))
+    session.add(_row(122, timedelta(days=11), title="fix(factory): tuneup #5927"))
+    session.add(_row(121, timedelta(days=20), title="docs(factory): notes #5927"))
+    session.commit()
+
+    response = client.get("/api/agents/public/factory/goals")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["stale"] is False
+    goal = body["goals"][0]
+    assert goal["stale"] is False
+    assert goal["merged_refs"] == 3
+    assert goal["last_activity"] == "2026-08-30T12:00:00Z"
+
+
+def test_public_factory_goals_is_stale_with_no_declarations(client):
+    response = client.get("/api/agents/public/factory/goals")
+
+    assert response.status_code == 200
+    assert response.json()["goals"] == []
+    assert response.json()["stale"] is True
+
+
+def test_public_factory_goals_supports_conditional_get(client):
+    first = client.get("/api/agents/public/factory/goals")
+    second = client.get(
+        "/api/agents/public/factory/goals",
+        headers={"If-None-Match": first.headers["ETag"]},
+    )
+
+    assert second.status_code == 304
+    assert second.headers["ETag"] == first.headers["ETag"]

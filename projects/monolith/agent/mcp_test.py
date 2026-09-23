@@ -22,6 +22,7 @@ EXPECTED_TOOLS = {
     "monolith_agent_register_routine_job",
     "monolith_agent_deregister_routine_job",
     "monolith_agent_trigger_routine_job",
+    "monolith_agent_set_factory_goals",
 }
 
 
@@ -36,6 +37,6 @@ async def test_all_agent_tools_registered():
     assert not missing, f"Missing agent tools: {missing}"
 
 
-def test_expected_tool_count_is_fifteen():
+def test_expected_tool_count_is_sixteen():
     """Guard against silently dropping a tool from EXPECTED_TOOLS."""
-    assert len(EXPECTED_TOOLS) == 15
+    assert len(EXPECTED_TOOLS) == 16

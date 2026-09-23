@@ -658,6 +658,25 @@
   color: var(--accent-ink);
 }
 
+.factory-page .goals .stale-note {
+  color: var(--accent-ink);
+  font-family: var(--font-code);
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+}
+
+.factory-page .goals .merge-secondary {
+  margin-top: 0.9rem;
+}
+
+.factory-page .goals .merge-secondary summary {
+  cursor: pointer;
+  font-family: var(--font-code);
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+  color: var(--ink-2);
+}
+
 @media (max-height: 720px), (max-width: 900px) {
   .factory-page {
     height: auto;

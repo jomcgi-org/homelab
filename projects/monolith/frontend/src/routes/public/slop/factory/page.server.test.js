@@ -15,6 +15,7 @@ const payloads = {
     totals: { verified: 1, unverified: 2, disputed: 0 },
     contradictions: 0,
   },
+  "/slop/factory/goals": { goals: [], declared_at: null, stale: true },
 };
 
 function response(path, ok = true) {
@@ -34,16 +35,19 @@ describe("factory overview loader", () => {
       "/slop/factory/data/activity",
       "/slop/factory/merges",
       "/slop/factory/facts",
+      "/slop/factory/goals",
     ]);
     expect(result.activity).toEqual(payloads["/slop/factory/data/activity"]);
     expect(result.merges).toEqual(payloads["/slop/factory/merges"]);
     expect(result.facts).toEqual(payloads["/slop/factory/facts"]);
+    expect(result.goals).toEqual(payloads["/slop/factory/goals"]);
   });
 
   it.each([
     ["/slop/factory/data/activity", "activity"],
     ["/slop/factory/merges", "merges"],
     ["/slop/factory/facts", "facts"],
+    ["/slop/factory/goals", "goals"],
   ])("keeps rendering when %s returns 503", async (failedPath, section) => {
     const fetch = vi.fn((path) =>
       Promise.resolve(response(path, path !== failedPath)),
