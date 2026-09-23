@@ -86,9 +86,11 @@ def test_validation_overlay_is_unreferenced_and_production_is_unchanged() -> Non
         "PROD_APPLICATION",
         "DEV_APPLICATION",
         "GKE_APPLICATION",
+        "DEV_GKE_APPLICATION",
         "PROD_KUSTOMIZATION",
         "DEV_KUSTOMIZATION",
         "GKE_KUSTOMIZATION",
+        "DEV_GKE_KUSTOMIZATION",
     ):
         assert "values-store-validation-gke.yaml" not in _path(name).read_text()
 

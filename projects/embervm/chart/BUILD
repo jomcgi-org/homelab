@@ -165,6 +165,8 @@ py_test(
         "//projects/embervm/dev/deploy:store_validation_values",
         "//projects/gke-apps/embervm:application.yaml",
         "//projects/gke-apps/embervm:kustomization.yaml",
+        "//projects/gke-apps/embervm-dev:application.yaml",
+        "//projects/gke-apps/embervm-dev:kustomization.yaml",
         "@multitool//tools/helm",
     ] + glob([
         "templates/**/*",
@@ -176,6 +178,8 @@ py_test(
         "DEV_VALUES": "$(rootpath //projects/embervm/dev/deploy:deploy_values)",
         "GKE_APPLICATION": "$(rootpath //projects/gke-apps/embervm:application.yaml)",
         "GKE_KUSTOMIZATION": "$(rootpath //projects/gke-apps/embervm:kustomization.yaml)",
+        "DEV_GKE_APPLICATION": "$(rootpath //projects/gke-apps/embervm-dev:application.yaml)",
+        "DEV_GKE_KUSTOMIZATION": "$(rootpath //projects/gke-apps/embervm-dev:kustomization.yaml)",
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
         "PROD_APPLICATION": "$(rootpath //projects/embervm/deploy:application)",
         "PROD_GKE_VALUES": "$(rootpath //projects/embervm/deploy:gke_values)",
