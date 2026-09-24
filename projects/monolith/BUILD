@@ -4999,6 +4999,14 @@ bdd_test(
     srcs = ["factory/orchestration/swarm_node_run_model_postgres_test.py"],
 )
 
+# Hand-registered real-PostgreSQL coverage for the one-shot migration that
+# moves the live factory policy off astra, which rewrites the TEXT policy
+# through jsonb and so cannot run on SQLite.
+bdd_test(
+    name = "swarm_factory_policy_no_astra_postgres_test",
+    srcs = ["factory/orchestration/factory_policy_no_astra_postgres_test.py"],
+)
+
 py_test(
     name = "swarm_work_item_links_test",
     srcs = ["factory/orchestration/work_item_links_test.py"],

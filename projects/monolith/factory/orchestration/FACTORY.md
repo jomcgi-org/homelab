@@ -461,6 +461,11 @@ stated preference is what the pool is ranked from. A class pool, `implement`,
 `refine` and `reviewer`, names no policy field and so has no head to anchor to; its order
 is the preference. Every member of every pool must appear in `allowed_models`.
 
+A GitOps policy change is a one-shot guarded migration that bumps `version`
+and writes a `swarm.factory_audit` row (for example
+`20260924060000_factory_policy_no_astra.sql`); the operator control surface
+remains the normal path for changing policy.
+
 The `refine` default only applies to what a policy allows: a policy that allows
 neither `spark` nor `sol` falls back to the conductor pool, which is where
 refine ran before class pools existed. `spark` needs no separate guest profile,
