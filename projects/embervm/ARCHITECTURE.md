@@ -62,7 +62,7 @@ signals, and admission control are the product surface instead).
 | Stateful | **Built** | Node-local authoritative volume |
 | Composite | **Built** | No current consumer |
 | Node-local activator | **Planned** | Partly landed |
-| Brick autoscale | **Built** at rung `up`; **Planned** scale-down | Full ladder remains |
+| Brick autoscale | **Configured** at rung `full`; operational validation outstanding | Scale-down acceptance remains on #6059 |
 | S3 archive-at-bank | **Decided direction** | Archive at bank commit |
 | Transport auth CP-to-noded | **Built** (bearer + ingress policy) | SPIFFE mTLS is **Planned**: SPIRE is live with no EmberVM consumer yet, phase 2 of #5706 in flight |
 | Guest identity (JWT-SVID) | **Decided direction** | Per-principal SVID delivered over vsock, phase 3 of #5706 |
@@ -1030,11 +1030,13 @@ running one fixed daemon per node; discovery is dial-home, never a Service
 or a per-node DaemonSet. Desired per-class counts are a values knob
 reconciled by `Embervm.BrickController` through `/scale`, because ArgoCD
 ignores `/spec/replicas` fleet-wide and git-declared replicas would not
-sync; instance identity is the kubelet pod UID. Brick autoscale runs at
-rung `up` on the `observe -> up -> full` ladder: denial-driven scale-up
-acts, clamped to the chart's maxReplicas. **Planned**: promoting to `full`
-adds drain-aware scale-down. The current brick mix is deployment state and
-lives in the fleet section.
+sync; instance identity is the kubelet pod UID. Brick autoscale is configured
+at rung `full` on the `observe -> up -> full` ladder: denial-driven scale-up
+acts, clamped to the chart's maxReplicas, and drain-aware scale-down may act
+after its idle and fully-exported victim rails pass. This is staged repository
+configuration, not proof of a rollout or live behavior. Post-rollout
+operational acceptance remains outstanding on #6059. The current brick mix is
+deployment state and lives in the fleet section.
 
 Catalog-derived class floors apply only to the scalable, unpinned class
 Deployment. Same-class `nodeFloors` are additive topology guarantees and are

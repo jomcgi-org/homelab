@@ -260,7 +260,7 @@ noded:
   # WILDCARD DAEMONSET DEPRECATED (bricks-only migration). The per-node wildcard
   # noded DaemonSet is retired: node capacity is now provided entirely by the
   # size-class brick Deployments the BrickController autoscales (bricks.autoscale
-  # = up below), so the CP picks the optimal brick mix from placement demand
+  # = full below), so the CP picks the optimal brick mix from placement demand
   # rather than one fixed daemon per node. Discovery is dial-home (not the noded
   # Service), and the shared noded ServiceAccount + the CP dial-home auth env are
   # decoupled from this flag (rendered for noded OR bricks), so bricks keep their
@@ -411,12 +411,12 @@ bricks:
   # min/max clamps live in the chart values (recorded policy 2026-07-20:
   # min {16gi: 1}, max {2gi: 4, 4gi: 3, 8gi: 2, 16gi: 2}).
   autoscale:
-    # up: with the wildcard DaemonSet retired (noded.enabled=false above), bricks
-    # are the ONLY capacity, so the BrickController must act on placement-denial
-    # pressure and scale classes up (clamped to chart maxReplicas: 2gi 4, 16gi 2)
-    # to absorb the migrated workloads. Scale-down stays observe-only until we
-    # promote to full. This is what lets the CP choose the optimal brick mix.
-    mode: up
+    # full: with the wildcard DaemonSet retired (noded.enabled=false above),
+    # bricks are the ONLY capacity. Denial-driven scale-up remains clamped to
+    # chart maxReplicas (2gi 4, 16gi 2), while drain-aware scale-down may now
+    # act after its idle and fully-exported victim rails pass. Post-rollout
+    # operational acceptance remains tracked on #6059.
+    mode: full
   # Per-node brick floor guarantees (PR-3, #35): pins one small brick onto a
   # specific node so it joins active duty instead of the fleet bin-packing
   # everything onto node-4 and spilling under load. All three master nodes
