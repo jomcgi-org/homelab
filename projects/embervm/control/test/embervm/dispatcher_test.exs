@@ -123,6 +123,10 @@ defmodule Embervm.DispatcherTest do
       live_vms: Keyword.get(opts, :live, 0),
       max_live_vms: Keyword.get(opts, :max, 8),
       draining: Keyword.get(opts, :draining, false),
+      session_vms: Keyword.get(opts, :session_vms, []),
+      serving_vms: Keyword.get(opts, :serving_vms, []),
+      stateful_vms: Keyword.get(opts, :stateful_vms, []),
+      group_member_vms: Keyword.get(opts, :group_member_vms, []),
       updated_at: Keyword.get(opts, :updated_at, 1_000_000)
     })
   end
@@ -1508,6 +1512,49 @@ defmodule Embervm.DispatcherTest do
 
     assert adopt,
            "adopt_inventory must carry the adopted vm under vm_ids: #{inspect(adopts)}"
+  end
+
+  # #6422: live_vms counts every VM on the node, so the checkpoint must also
+  # record the VMs that are live for a reason other than the pool. Pin the keys
+  # against the real emitter, as the adopt_inventory test above does, so the
+  # checker's fixtures cannot drift from what production writes.
+  test "a checkpoint records node non-pool VM counts beside live_vms" do
+    System.put_env("EMBERVM_SPEC_TRACE", "on")
+    Embervm.SpecTrace.configure()
+    trace_path = Path.join(System.tmp_dir!(), "spec_trace_nonpool_#{System.unique_integer([:positive])}.db")
+
+    on_exit(fn ->
+      System.put_env("EMBERVM_SPEC_TRACE", "off")
+      Embervm.SpecTrace.configure()
+      File.rm_rf!(trace_path)
+    end)
+
+    store = start_supervised!({Embervm.SpecTrace.Store.SQLite, name: nil, path: trace_path})
+    writer = start_supervised!({Embervm.SpecTrace.Writer, store_mod: Embervm.SpecTrace.Store.SQLite, store: store, batch_size: 1, flush_ms: 5})
+
+    ctx = start_stack()
+    put_catalog(ctx, "wl-a", cap: 10)
+
+    put_facts(ctx, "wl-a",
+      live: 4,
+      session_vms: [%{vm_id: "s-1"}],
+      serving_vms: [%{vm_id: "sv-1"}],
+      stateful_vms: [%{vm_id: "st-1"}],
+      group_member_vms: [%{vm_id: "g-1"}]
+    )
+
+    Dispatcher.sweep(ctx.name)
+
+    :ok = Embervm.SpecTrace.drain(writer)
+    {:ok, records} = Embervm.SpecTrace.Store.SQLite.read_window(store, action: "checkpoint")
+
+    report =
+      Enum.find_value(records, fn record -> get_in(record, ["vars", "node_reported", "node-4"]) end)
+
+    assert report, "no checkpoint carried node-4 testimony: #{inspect(records)}"
+    assert report["live_vms"] == 4
+    assert report["non_pool_vms"] == 4
+    assert report["reserved_vms"] == 0
   end
 
   # The negative half: adoption that adopts NOTHING must emit no record.

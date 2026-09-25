@@ -878,6 +878,38 @@ defmodule Embervm.SpecTrace.CheckerTest do
       assert verdict[:detail] =~ "100"
     end
 
+    test "inventory_reconciled still fails on a wedge beside accounted non-pool VMs", %{store: store} do
+      report = %{"live_vms" => 3, "primed_count" => 0, "non_pool_vms" => 1, "reserved_vms" => 1}
+      :ok = SQLite.write(store, [inventory_checkpoint("wedge-busy", 150, %{"node-1:wl" => []}, %{"node-1" => report})])
+
+      verdict = inventory_verdict(Checker.run(SQLite, store))
+
+      assert verdict[:verdict] == :fail
+      assert verdict[:detail] =~ "node-1"
+      assert verdict[:detail] =~ "(1 not session"
+    end
+
+    test "inventory_reconciled passes with a live session VM and an empty pool", %{store: store} do
+      report = %{"live_vms" => 1, "primed_count" => 0, "non_pool_vms" => 1, "reserved_vms" => 0}
+      :ok = SQLite.write(store, [inventory_checkpoint("session", 160, %{"node-1:wl" => []}, %{"node-1" => report})])
+
+      assert inventory_verdict(Checker.run(SQLite, store))[:verdict] == :pass
+    end
+
+    test "inventory_reconciled passes with a claimed task VM and an empty pool", %{store: store} do
+      report = %{"live_vms" => 1, "primed_count" => 0, "non_pool_vms" => 0, "reserved_vms" => 1}
+      :ok = SQLite.write(store, [inventory_checkpoint("claimed", 170, %{"node-1:wl" => []}, %{"node-1" => report})])
+
+      assert inventory_verdict(Checker.run(SQLite, store))[:verdict] == :pass
+    end
+
+    test "inventory_reconciled ignores malformed non-pool counts", %{store: store} do
+      report = %{"live_vms" => 1, "primed_count" => 0, "non_pool_vms" => "1", "reserved_vms" => -1}
+      :ok = SQLite.write(store, [inventory_checkpoint("malformed", 180, %{"node-1:wl" => []}, %{"node-1" => report})])
+
+      assert inventory_verdict(Checker.run(SQLite, store))[:verdict] == :fail
+    end
+
     test "inventory_reconciled does not fail for an idle node", %{store: store} do
       :ok = SQLite.write(store, [inventory_checkpoint("idle", 200, %{"node-1:wl" => []}, %{"node-1" => %{"live_vms" => 0, "primed_count" => 0}})])
 

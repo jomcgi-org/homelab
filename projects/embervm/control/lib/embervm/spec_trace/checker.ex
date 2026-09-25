@@ -68,7 +68,9 @@ defmodule Embervm.SpecTrace.Checker do
      share check remains a known residual for this invariant.
 
   9. **InventoryReconciled**: at a checkpoint, a dispatchable node instance
-     reporting `live_vms > 0` must not have an empty control-plane inventory.
+     reporting live VMs beyond its session, serving, stateful and group-member
+     VMs and the task VMs workers have claimed must not have an empty
+     control-plane inventory (#6422).
      The only invariant whose oracle is not the trace alone: the node's own
      count is recorded into the checkpoint, so a suppress-primed wedge (the
      node stops reporting its pool, the CP's inventory genuinely empties) is
@@ -914,8 +916,7 @@ defmodule Embervm.SpecTrace.Checker do
 
               true ->
                 violations = Enum.filter(readable_observations, fn {checkpoint, instance_id, report} ->
-                  live_vms = Map.get(report, "live_vms", 0)
-                  live_vms > 0 and checkpoint_inventory_empty?(checkpoint, instance_id)
+                  unaccounted_live_vms(report) > 0 and checkpoint_inventory_empty?(checkpoint, instance_id)
                 end)
 
                 case violations do
@@ -926,7 +927,9 @@ defmodule Embervm.SpecTrace.Checker do
                       coverage: examined_instance_count(readable_observations),
                       oracle: :node_reconciled,
                       detail:
-                        "instance #{instance_id} reports #{report["live_vms"]} live_vms with empty checkpoint inventory at mono #{checkpoint["mono"]}"
+                        "instance #{instance_id} reports #{report["live_vms"]} live_vms " <>
+                          "(#{unaccounted_live_vms(report)} not session, serving, stateful, group or claimed task VMs) " <>
+                          "with empty checkpoint inventory at mono #{checkpoint["mono"]}"
                     }
 
                   [] ->
@@ -935,11 +938,27 @@ defmodule Embervm.SpecTrace.Checker do
                       verdict: :pass,
                       coverage: examined_instance_count(readable_observations),
                       oracle: :node_reconciled,
-                      detail: "every examined node instance with live_vms had checkpoint inventory"
+                      detail: "every examined node instance with unaccounted live_vms had checkpoint inventory"
                     }
                 end
             end
         end
+    end
+  end
+
+  # live_vms is the node's count of every live VM. Only the ones the pool could
+  # hold are this invariant's business, so subtract the VMs the node reports as
+  # session, serving, stateful or group members (disjoint from its primed pool)
+  # and the task VMs a worker has claimed. Traces from before these counts
+  # existed carry neither key and keep the old, stricter comparison.
+  defp unaccounted_live_vms(report) do
+    report_count(report, "live_vms") - report_count(report, "non_pool_vms") - report_count(report, "reserved_vms")
+  end
+
+  defp report_count(report, key) do
+    case Map.get(report, key) do
+      n when is_integer(n) and n >= 0 -> n
+      _ -> 0
     end
   end
 
