@@ -686,6 +686,7 @@ def _update_job_payload_in_session(session: Session, name: str, payload: dict) -
 
 _REPO_DIFF_PLACEHOLDER_MARKER = "[... elided ...]"
 _REPO_DIFF_HEADER = "diff --git "
+_REPO_DIFF_HEADER_RE = re.compile(r"^diff --git a/", re.MULTILINE)
 
 
 def _validate_repo_diff_evidence(parsed: _RepoDiffResult) -> None:
@@ -719,13 +720,14 @@ def _validate_repo_diff_evidence(parsed: _RepoDiffResult) -> None:
         raise ExtractionOutputInvalid(
             "scout diff is a placeholder, not source evidence"
         )
-    if _REPO_DIFF_HEADER not in parsed.diff:
+    if not _REPO_DIFF_HEADER_RE.search(parsed.diff):
         raise ExtractionOutputInvalid("scout diff carries no git diff headers")
 
 
 def _stored_scout_sha(session: Session, job_name: str) -> str | None:
+    table, _ = _routine_jobs_table(session)
     row = session.execute(
-        text("SELECT payload FROM routine_jobs WHERE name = :name"),
+        text(f"SELECT payload FROM {table} WHERE name = :name"),
         {"name": job_name},
     ).first()
     if row is None:
