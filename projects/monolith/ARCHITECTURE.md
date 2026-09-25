@@ -1348,9 +1348,9 @@ deploy. Read the live one:
 
 The home Application is dormant (backend replicas zero by values commit,
 WhatsApp off) and keeps its write-back-maintained revision as the revert lever.
-The home-plus-GKE direction in
-[#4964](https://github.com/jomcgi-org/homelab/issues/4964) authorizes no wipe;
-revalidate the selected UK placement before reusing the overlay. The development
+The hub is the sole management plane
+([#4964](https://github.com/jomcgi-org/homelab/issues/4964) closed 2026-09-18, not
+planned), so the overlay is a revert lever and not a placement target. The development
 overlays are inert until development Applications exist on the hub.
 (see: /projects/monolith/deploy/application.yaml)
 
@@ -1386,8 +1386,6 @@ this table when the work ships or the issue closes without it.
 | Per-caller result scoping restricts what each MCP caller's tool calls can return | section 7 | #4569 | not started |
 | The knowledge graph gains project context, runtime evidence and known-work linkage in bounded slices behind a measured retrieval baseline | section 6 | #5829 (children #6128, #5849, #5571, #5573, #5913, #5926) | not started: baseline #6128 first |
 | Evidence-lane follow-ons: deployment observations (#5571), default retrieval scopes with personal opt-in (#5573), distress inbox (#5574), #5569, #5587 | section 6 (agents/063) | #5527 | in progress: slice live 2026-09-03, children open |
-| Grimoire private routes enforce campaign membership instead of the `?as=` override | section 6 | #3959 | in progress (PR #6125) |
-| Approved character sheets with DM approval become Grimoire's mechanical source of truth | section 6 | #3960 | proposal, gated on #3959 and a selected table workflow |
 | A Discord-backed session transcript pipeline with ACL-filtered surfacing and reviewed replays | section 6 | #3961 | proposal, gated on #3959, a selected table workflow and a new ASR-capacity decision; #5461 closed as not planned |
 | Discord chat automation gets persisted scheduled tasks, configurable message triggers, and per-channel memory notes | Decision history (services/002) | #3901 | in progress: configurable message triggers are implemented; persisted scheduled tasks and per-channel memory notes remain |
 | Grimoire post-extraction quality passes (evidence-grounded stat verification, review-approved alias merges) ship | Decision history (services/014) | #3912 | not started |

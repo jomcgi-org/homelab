@@ -22,10 +22,9 @@ bricks and the embeddings pod. The pools, the GCS buckets, and the IAM
 bindings are managed with `gcloud`, not from git; ADR platform/016 is the
 record of the shape. The last recorded home state was a k3s cluster pruned of
 application workloads and a GPU inference host reached over the tailnet. The
-current direction instead keeps GKE as the always-on, more reliable hub while
-already-owned nodes shipped to the UK return as primary home capacity after a
-separate bring-up and placement plan
-([#4964](https://github.com/jomcgi-org/homelab/issues/4964)). The closed
+hub is the sole management plane: the plan to return shipped nodes as UK home
+capacity was dropped on 2026-09-18 ([#4964](https://github.com/jomcgi-org/homelab/issues/4964)
+closed, not planned). The closed
 [#5485](https://github.com/jomcgi-org/homelab/issues/5485) and
 [#5461](https://github.com/jomcgi-org/homelab/issues/5461) decisions authorize
 no teardown, migration or hardware disposal. The cluster roots are

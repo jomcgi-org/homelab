@@ -6,19 +6,12 @@ reference overlays and their operational caveats.
 
 ## Checked-in home fleet overlay
 
-The table and commands in this section describe the home deployment overlay,
-not verified current UK deployment or approved workload placement. The operator
-confirmed that at least three already-owned nodes were shipped to the UK, each
-with at least 12 CPUs and 16 GB RAM
-([#4964](https://github.com/jomcgi-org/homelab/issues/4964)). Shipping does not
-establish installation, usable capacity, virtualization readiness or data
-placement.
-
-The intended direction is primary home workloads alongside the always-on, more
-reliable GKE hub, with bare metal a useful candidate for EmberVM. A bounded UK
-bring-up and placement plan is still required before treating that direction as
-deployed. The closed Vancouver teardown and GPU-serving proposals
-([#5485](https://github.com/jomcgi-org/homelab/issues/5485) and
+The table and commands in this section describe the checked-in home deployment
+overlay, which is residual: the GKE hub is the sole management plane and the
+plan to bring the shipped nodes back as UK home capacity was dropped on
+2026-09-18 ([#4964](https://github.com/jomcgi-org/homelab/issues/4964) closed, not
+planned). No home placement is planned. The closed Vancouver teardown and
+GPU-serving proposals ([#5485](https://github.com/jomcgi-org/homelab/issues/5485) and
 [#5461](https://github.com/jomcgi-org/homelab/issues/5461)) remain separate
 decisions and authorize no hardware wipe or disposal.
 
