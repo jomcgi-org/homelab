@@ -14,13 +14,13 @@ This covers the residual operational acceptance for issue #5938. The repository 
 
 - Guest completion path: `projects/embervm/runtimes/claude/shim.py` validates `result_receipt` with `_valid_result_receipt`, publishes the native record with `_publish_result_receipt` before `self._send(200, record)`, which is the site of the observed `BrokenPipeError`.
 - Control plane receipt and adoption: `projects/monolith/factory/execution/result_receipts.py`, `result_receipts_router.py`, `receipt_capture_test.py`, `receipt_consumer_test.py`, `response_lost_test.py`. Receipt writes and adoption are idempotent and reject conflicting, stale, and newer-attempt data.
-- Live flags: `projects/monolith/deploy/values-gke.yaml` sets `resultReceiptsEnabled: true` and `responseLostRecoveryEnabled: true`. Those flags gate the underlying behavior. This runbook adds no additional default-on surface.
+- Live flags: `projects/monolith/deploy/values-gke.yaml` sets `resultReceiptsEnabled: true` (`AGENT_RESULT_RECEIPTS_ENABLED`), `resultReceiptAdoptionEnabled: true` (`AGENT_RESULT_RECEIPT_ADOPTION_ENABLED`) and `responseLostRecoveryEnabled: true` (`AGENT_RESPONSE_LOST_RECOVERY_ENABLED`). Capture, adoption by the active writer, and recovery are three separate controls, and the canary needs all three.
 
 ## Preconditions (all required)
 
 1. An operator is present for the whole canary and can stop it.
 2. Exactly one bounded factory or KG invocation is used. No batch, no loop, no schedule.
-3. Capture plus adoption is enabled on the hub (the two flags above read back true in the live render).
+3. Capture, adoption and recovery are enabled on the hub: all three flags above read back true from the live monolith Deployment env (read-only `kubectl get deployment -n monolith -o jsonpath` filtered to `AGENT_RESULT_RECEIPT` and `AGENT_RESPONSE_LOST_RECOVERY_ENABLED`), not only from a render of git values, because Kargo owns what monolith runs.
 4. No new credential is minted for the canary. Use only the operator's existing hub access.
 
 ## Bounded canary steps
