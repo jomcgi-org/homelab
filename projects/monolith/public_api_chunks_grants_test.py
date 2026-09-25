@@ -95,7 +95,9 @@ def test_public_chunk_view_has_no_repo_doc_arm(pg):
             assert "PRIVATE secret chunk text" not in chunk_texts
         with Session(engine) as session:
             assert (
-                session.execute(text("SELECT to_regclass('knowledge.repo_docs')")).scalar()
+                session.execute(
+                    text("SELECT to_regclass('knowledge.repo_docs')")
+                ).scalar()
                 is None
             )
             assert (
