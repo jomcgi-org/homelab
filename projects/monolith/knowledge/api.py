@@ -239,9 +239,10 @@ def search_public_chunks(
     from knowledge.public_models import PublicChunk, PublicNote
 
     distance = PublicChunk.embedding.cosine_distance(query_embedding)
-    # Repo-doc chunks use synthetic ``repo:<path>`` note IDs and therefore have
-    # no row in knowledge_notes. They are static external content, not
-    # agent-derived facts, so they default to verified and undisputed.
+    # The repo-doc arm of the view was removed by #3905, so every remaining row
+    # joins to a real note. The outer join stays only as a guard against a
+    # chunk whose note row disappears mid-query; such an orphan defaults to
+    # verified and undisputed via the coalesce below.
     verification_state = func.coalesce(PublicNote.verification_state, "verified").label(
         "verification_state"
     )
