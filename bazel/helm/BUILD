@@ -28,6 +28,7 @@ MANIFEST_SETS = [
     "//projects/embervm/deploy:manifests/all.yaml",
     "//projects/embervm/deploy:manifests_gke/all.yaml",
     "//projects/embervm/dev/deploy:manifests/all.yaml",
+    "//projects/embervm/dev/deploy:manifests_gke/all.yaml",
     "//projects/inference/deploy:manifests/all.yaml",
     "//projects/inference/deploy:manifests_gke/all.yaml",
     "//projects/mcp/context-forge-gateway/deploy:manifests/all.yaml",
