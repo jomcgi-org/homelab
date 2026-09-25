@@ -1557,6 +1557,47 @@ defmodule Embervm.DispatcherTest do
     assert report["reserved_vms"] == 0
   end
 
+  # The reserved half of #6422: a task VM an in-flight worker holds must be
+  # counted under the same instance id the node testimony is keyed by, or the
+  # claimed-task false fail comes back silently.
+  test "a checkpoint counts an in-flight worker's VM under its node instance" do
+    System.put_env("EMBERVM_SPEC_TRACE", "on")
+    Embervm.SpecTrace.configure()
+    trace_path = Path.join(System.tmp_dir!(), "spec_trace_reserved_#{System.unique_integer([:positive])}.db")
+
+    on_exit(fn ->
+      System.put_env("EMBERVM_SPEC_TRACE", "off")
+      Embervm.SpecTrace.configure()
+      File.rm_rf!(trace_path)
+    end)
+
+    store = start_supervised!({Embervm.SpecTrace.Store.SQLite, name: nil, path: trace_path})
+    writer = start_supervised!({Embervm.SpecTrace.Writer, store_mod: Embervm.SpecTrace.Store.SQLite, store: store, batch_size: 1, flush_ms: 5})
+
+    gate = new_gate()
+    ctx = start_stack(assign_fun: gated_assign(gate))
+    put_catalog(ctx, "wl-a", cap: 10)
+    put_facts(ctx, "wl-a", live: 1, max: 8)
+
+    tid = submit(ctx, "wl-a", "p1")
+    assert eventually(fn -> Map.get(Dispatcher.stats(ctx.name).inflight_wl, "wl-a") == 1 end)
+
+    reserved = fn ->
+      Dispatcher.sweep(ctx.name)
+      :ok = Embervm.SpecTrace.drain(writer)
+      {:ok, records} = Embervm.SpecTrace.Store.SQLite.read_window(store, action: "checkpoint")
+
+      Enum.any?(records, fn record ->
+        get_in(record, ["vars", "node_reported", "node-4", "reserved_vms"]) == 1
+      end)
+    end
+
+    assert eventually(reserved), "no checkpoint counted the in-flight worker's VM under node-4"
+
+    open_gate(gate)
+    assert eventually(fn -> state_of(ctx, tid) == :succeeded end)
+  end
+
   # The negative half: adoption that adopts NOTHING must emit no record.
   # adopt_inventory is additive and idempotent and runs every sweep, so emitting
   # per sweep would flood the trace with no-ops and make a genuine adoption
