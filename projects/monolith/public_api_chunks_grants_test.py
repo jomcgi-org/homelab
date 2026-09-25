@@ -1,6 +1,6 @@
 """Phase 4a (ADR 005 layer 5): the public chunk view confines retrieval to public.
 
-Exercises the GRANTs + view from chart/migrations/20260617040000_public_api_chunks.sql
+Exercises the GRANTs + view from chart/migrations/20260618230000_public_api_chunks.sql
 against a real Postgres (the `pg` fixture applies every migration), using SET ROLE so
 no login credential is needed. The point is confidentiality at the database layer:
 the public-chat retrieval path reads ONLY chunks of public notes, so a private note's
@@ -8,14 +8,17 @@ chunk text and embedding are physically unreachable as public_reader regardless 
 prompt or query. This is the database half of "confinement is a DB property, never a
 prompt instruction".
 
+The repo-doc arm of the view was removed by
+chart/migrations/20260925120000_drop_repo_docs.sql (#3905): the reconcile job that
+populated knowledge.repo_docs / knowledge.repo_doc_chunks was removed in 66eb33979,
+so both tables are dropped and the view is notes-only again.
+
 Hand-written bdd_test (real DB), so excluded from gazelle and registered by hand in
 projects/monolith/BUILD.
 """
 
 import pytest
 from sqlmodel import Session, create_engine, text
-
-from knowledge.api import search_public_chunks
 
 # A 1024-dim pgvector literal (matches knowledge.chunks.embedding's Vector(1024)).
 # The exact direction is irrelevant: this test asserts row visibility, not ranking.
@@ -68,92 +71,39 @@ def _seed(engine) -> None:
         session.commit()
 
 
-def _seed_repo_doc(engine) -> None:
-    """Seed one repo doc + chunk (the machine-synced, public-grounding tier).
+def test_public_chunk_view_has_no_repo_doc_arm(pg):
+    """The repo-doc arm of the chunk view is gone (#3905).
 
-    Runs as the migration/owner role like _seed above. Idempotent via ON CONFLICT
-    and a NOT EXISTS guard so the shared session-scoped Postgres stays reusable.
-    """
-    with Session(engine) as session:
-        session.execute(
-            text(
-                """
-                INSERT INTO knowledge.repo_docs (path, content_hash, title)
-                VALUES ('docs/test-repo-doc.md', 'rh1', 'Test Repo Doc')
-                ON CONFLICT (path) DO NOTHING
-                """
-            )
-        )
-        session.execute(
-            text(
-                """
-                INSERT INTO knowledge.repo_doc_chunks
-                    (repo_doc_fk, chunk_index, section_header, chunk_text, embedding)
-                SELECT id, 0, 'Intro', :ctext, CAST(:emb AS vector)
-                FROM knowledge.repo_docs
-                WHERE path = 'docs/test-repo-doc.md'
-                  AND NOT EXISTS (
-                      SELECT 1 FROM knowledge.repo_doc_chunks rc
-                      WHERE rc.repo_doc_fk = knowledge.repo_docs.id
-                        AND rc.chunk_index = 0
-                  )
-                """
-            ),
-            {"ctext": "REPO DOC grounding text", "emb": _EMB},
-        )
-        session.commit()
-
-
-def test_public_chunk_view_includes_repo_docs(pg):
-    """As public_reader, the chunk view also returns repo-doc chunks surfaced via the
-    UNION ALL: a synthetic note_id 'repo:'||path, the doc title, the chunk text, and a
-    1024-dim embedding. The private note's chunk text stays unreachable through the
-    same view (confinement holds across both arms of the union)."""
+    As public_reader, no row in public_api.knowledge_chunks carries a synthetic
+    'repo:' note_id, and the private note's chunk text stays unreachable through
+    the view (confinement holds on the notes-only definition). As the owner
+    role, both knowledge.repo_docs and knowledge.repo_doc_chunks are gone, so
+    the drop is contract-tested rather than asserted in prose."""
     engine = create_engine(pg.url)
     _seed(engine)
-    _seed_repo_doc(engine)
     try:
         with Session(engine) as session:
             session.execute(text("SET ROLE public_reader"))
-            row = session.execute(
-                text(
-                    "SELECT note_id, title, chunk_text, vector_dims(embedding) "
-                    "FROM public_api.knowledge_chunks "
-                    "WHERE note_id = 'repo:docs/test-repo-doc.md'"
-                )
-            ).one()
-            assert row[0] == "repo:docs/test-repo-doc.md"
-            assert row[1] == "Test Repo Doc"
-            assert row[2] == "REPO DOC grounding text"
-            assert row[3] == 1024
+            rows = session.execute(
+                text("SELECT note_id, chunk_text FROM public_api.knowledge_chunks")
+            ).all()
+            note_ids = [r[0] for r in rows]
+            chunk_texts = [r[1] for r in rows]
+            assert not any(nid.startswith("repo:") for nid in note_ids)
+            assert "PUBLIC chunk grounding text" in chunk_texts
             # The private note's chunk text remains unreachable via the same view.
-            chunk_texts = [
-                r[0]
-                for r in session.execute(
-                    text("SELECT chunk_text FROM public_api.knowledge_chunks")
-                ).all()
-            ]
             assert "PRIVATE secret chunk text" not in chunk_texts
-    finally:
-        engine.dispose()
-
-
-def test_search_public_chunks_returns_repo_doc(pg):
-    """The retrieval join keeps repo docs that have no synthetic note row."""
-    engine = create_engine(pg.url)
-    _seed_repo_doc(engine)
-    try:
         with Session(engine) as session:
-            session.execute(text("SET ROLE public_reader"))
-            rows = search_public_chunks(session, [0.1] * 1024, limit=1000)
-
-            repo_doc = next(
-                row for row in rows if row["note_id"] == "repo:docs/test-repo-doc.md"
+            assert (
+                session.execute(text("SELECT to_regclass('knowledge.repo_docs')")).scalar()
+                is None
             )
-            assert repo_doc["title"] == "Test Repo Doc"
-            assert repo_doc["chunk_text"] == "REPO DOC grounding text"
-            assert repo_doc["verification_state"] == "verified"
-            assert repo_doc["disputed"] is False
+            assert (
+                session.execute(
+                    text("SELECT to_regclass('knowledge.repo_doc_chunks')")
+                ).scalar()
+                is None
+            )
     finally:
         engine.dispose()
 
