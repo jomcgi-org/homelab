@@ -910,7 +910,11 @@ never stores or witnesses anything that scales with the fleet.
   primed pool) plus claimed task VMs. The checker flags only the live VMs left
   over. It keeps `live_vms` rather than switching to `primed_count` because a
   node that stops reporting its pool zeroes `primed_count` too, which would
-  hide the wedge the invariant exists to catch (#4838).
+  hide the wedge the invariant exists to catch (#4838). Brief windows can
+  still read red at a single checkpoint: a primed VM mid-teardown, a session
+  VM claimed from the pool before its first assign, a finished task VM the
+  node has not yet dropped, and task VMs orphaned by a control-plane restart.
+  A red S4 there is not a regression of this fix.
   **Planned**: the TLC tier, trace validation of `adoption.tla` against dev
   SpecTrace windows (#6415). The broader ADR embervm/034 harness beyond that
   is not planned (#4761, #4763 closed).
