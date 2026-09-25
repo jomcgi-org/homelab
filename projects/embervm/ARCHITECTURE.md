@@ -901,6 +901,16 @@ never stores or witnesses anything that scales with the fleet.
   `/verdict` gates the Kargo dev-to-prod promotion on the hub. The checker
   re-implements the invariants by hand; it does not ask TLC whether a trace
   is a behaviour of the model.
+  **Why.** `inventory_reconciled` compares the node's `live_vms`, its count
+  of every live VM, with the control plane's primed pool. A session VM, or a
+  task VM a worker has already claimed, on a node with an empty pool made it
+  fail on every dev suite, so no chart could promote (#6422). Each checkpoint
+  now records, per node, the VMs live for another reason: the node's own
+  session, serving, stateful and group-member lists (each disjoint from its
+  primed pool) plus claimed task VMs. The checker flags only the live VMs left
+  over. It keeps `live_vms` rather than switching to `primed_count` because a
+  node that stops reporting its pool zeroes `primed_count` too, which would
+  hide the wedge the invariant exists to catch (#4838).
   **Planned**: the TLC tier, trace validation of `adoption.tla` against dev
   SpecTrace windows (#6415). The broader ADR embervm/034 harness beyond that
   is not planned (#4761, #4763 closed).

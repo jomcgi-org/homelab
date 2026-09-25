@@ -1468,16 +1468,32 @@ defmodule Embervm.Dispatcher do
       |> Enum.map(&Map.get(&1, :vm_id))
       |> Enum.filter(&is_binary/1)
 
+    reserved_by_instance =
+      state.workers
+      |> Map.values()
+      |> Enum.filter(&(is_binary(Map.get(&1, :vm_id)) and is_binary(Map.get(&1, :node_id))))
+      |> Enum.frequencies_by(& &1.node_id)
+
     node_reported =
       for facts <- NodeCapacity.all(state.capacity_table), into: %{} do
+        instance_id = instance_id_of(facts)
+
         primed_vm_ids =
           Map.get(facts, :workloads, %{})
           |> Map.values()
           |> Enum.flat_map(&(Map.get(&1, :primed_vm_ids, []) || []))
 
-        {instance_id_of(facts), %{
+        # live_vms counts every VM on the node, not only the task pool. The
+        # checker subtracts the VMs that are live for another reason: the node's
+        # own session, serving, stateful and group-member enumerations (each
+        # disjoint from primed_vm_ids) plus task VMs a worker has already
+        # claimed. primed_count is deliberately not used: a node that stops
+        # reporting its pool (#4838) zeroes it, while live_vms stays honest.
+        {instance_id, %{
           "live_vms" => Map.get(facts, :live_vms, 0),
-          "primed_count" => length(primed_vm_ids)
+          "primed_count" => length(primed_vm_ids),
+          "non_pool_vms" => node_non_pool_vm_count(facts),
+          "reserved_vms" => Map.get(reserved_by_instance, instance_id, 0)
         }}
       end
 
@@ -1492,6 +1508,17 @@ defmodule Embervm.Dispatcher do
     })
 
     :ok
+  end
+
+  defp node_non_pool_vm_count(facts) do
+    [:session_vms, :serving_vms, :stateful_vms, :group_member_vms]
+    |> Enum.map(fn key ->
+      case Map.get(facts, key) do
+        vms when is_list(vms) -> length(vms)
+        _ -> 0
+      end
+    end)
+    |> Enum.sum()
   end
 
   defp spec_trace_workload_concurrency(_state, []), do: %{}
