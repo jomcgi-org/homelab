@@ -80,9 +80,20 @@ STUB
 	else
 		cat >"$WORK/bin/crane" <<STUB
 #!/usr/bin/env bash
-# \$1 is "digest", \$2 is the repo@digest or repo:tag ref. Only digest-addressed
+# \$1 is "digest" or "tag". For "tag", record the call and succeed. For
+# "digest", \$2 is the repo@digest or repo:tag ref. Only digest-addressed
 # refs are pre-seeded by these tests. Stamped tag refs model the registry result
-# after the corresponding successful push.
+# after the corresponding successful push, and the floating tools tag resolves
+# to whatever STUB_TOOLS_TAG_DIGEST says (unset: the tag does not exist).
+if [ "\$1" = "tag" ]; then
+	echo "\$2 \$3" >>"\$STUB_TAG_LOG"
+	exit 0
+fi
+if [ "\$2" = "ghcr.io/jomcgi/homelab/alpha:main" ]; then
+	[ -n "\${STUB_TOOLS_TAG_DIGEST:-}" ] || exit 1
+	echo "\$STUB_TOOLS_TAG_DIGEST"
+	exit 0
+fi
 if printf '%s\n' "$published" | grep -qxF "\$2"; then
 	printf '%s\n' "\${2##*@}"
 	exit 0
@@ -106,6 +117,8 @@ STUB
 	export STUB_ARGV_LOG="$WORK/argv.log"
 	export STUB_VERIFY_ARGV="$WORK/verifier-argv.log"
 	export STUB_VERIFY_RESULTS="$WORK/verifier-results.log"
+	export STUB_TAG_LOG="$WORK/tag.log"
+	: >"$STUB_TAG_LOG"
 	: >"$STUB_RUN_LOG"
 	: >"$STUB_ARGV_LOG"
 	: >"$STUB_VERIFY_ARGV"
@@ -118,7 +131,15 @@ run_script() {
 	BUILD_WORKSPACE_DIRECTORY="$WORK" BAZEL="$WORK/bin/bazel" CRANE="$WORK/bin/crane" \
 		HELM="$WORK/bin/crane" PUBLISH_RUN_ID=test-run \
 		VERIFY_PUBLISHED_IMAGES="$WORK/bin/verifier" \
+		TOOLS_VERSION_FILE="${TOOLS_VERSION_FILE:-$WORK/.tools-version}" \
 		bash "$SCRIPT" 2>&1
+}
+
+# Names alpha as the tools image with a floating `main` tag, the shape
+# .tools-version has in the real repo. Cases that do not write this file
+# exercise the "no .tools-version" path, where the retag step is a no-op.
+tools_version_alpha() {
+	printf 'ghcr.io/jomcgi/homelab/alpha:main\n' >"$WORK/.tools-version"
 }
 
 MANIFEST_3=$(
@@ -287,6 +308,57 @@ if grep -q -- "--remote_download_outputs" <<<"$IMAGE_ARGV"; then
 	fail "image push does not pay for a download-mode override" "$IMAGE_ARGV"
 else
 	pass "image push does not pay for a download-mode override"
+fi
+teardown
+
+# 11. The floating tools tag follows the published digest even when the image
+#     itself was SKIPPED as already present. This is the case that bit: every
+#     push carries only the stamped tag, so once the branch tag was dropped
+#     from remote_tags nothing moved `:main` again and fresh bootstraps pulled
+#     a fossil. A skip must still repair a stale tag.
+setup "$MANIFEST_3" "$ALL_PUBLISHED"
+tools_version_alpha
+OUT=$(STUB_TOOLS_TAG_DIGEST=sha256:old run_script)
+if grep -qxF "ghcr.io/jomcgi/homelab/alpha@sha256:aaa main" "$STUB_TAG_LOG"; then
+	pass "stale floating tools tag is moved to the published digest on the skip path"
+else
+	fail "stale floating tools tag is moved to the published digest on the skip path" "$OUT
+tag.log: $(cat "$STUB_TAG_LOG")"
+fi
+teardown
+
+# 12. A tag that does not exist yet is created the same way, after a push.
+setup "$MANIFEST_3" ""
+tools_version_alpha
+OUT=$(run_script)
+if grep -qxF "ghcr.io/jomcgi/homelab/alpha@sha256:aaa main" "$STUB_TAG_LOG"; then
+	pass "missing floating tools tag is created after a push"
+else
+	fail "missing floating tools tag is created after a push" "$OUT
+tag.log: $(cat "$STUB_TAG_LOG")"
+fi
+teardown
+
+# 13. A tag already at the published digest is left alone: no registry write
+#     per deploy for an image that did not change.
+setup "$MANIFEST_3" "$ALL_PUBLISHED"
+tools_version_alpha
+OUT=$(STUB_TOOLS_TAG_DIGEST=sha256:aaa run_script)
+if [ ! -s "$STUB_TAG_LOG" ]; then
+	pass "current floating tools tag is not rewritten"
+else
+	fail "current floating tools tag is not rewritten" "tag.log: $(cat "$STUB_TAG_LOG")"
+fi
+teardown
+
+# 14. Only the tools image gets a floating tag. Nothing retags beta or gamma.
+setup "$MANIFEST_3" ""
+tools_version_alpha
+OUT=$(run_script)
+if grep -qE 'beta|gamma' "$STUB_TAG_LOG"; then
+	fail "only the tools image is retagged" "tag.log: $(cat "$STUB_TAG_LOG")"
+else
+	pass "only the tools image is retagged"
 fi
 teardown
 
