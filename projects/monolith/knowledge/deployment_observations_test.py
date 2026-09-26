@@ -211,3 +211,33 @@ async def test_async_wrapper_writes_off_loop_and_embeds_only_new_facts(session):
     assert write_threads and loop_thread not in write_threads
     session.expire_all()
     assert len(session.exec(select(Note)).all()) == 1
+
+
+@pytest.mark.asyncio
+async def test_repair_of_missing_provenance_does_not_need_the_embedder(session):
+    """A fact whose raw link was lost is repaired without re-embedding."""
+    engine = session.get_bind()
+    poll_time = datetime(2026, 9, 20, 12, 0, tzinfo=timezone.utc)
+    first = await _persist(session, _observation(poll_time))
+    for row in session.exec(select(AtomRawProvenance)).all():
+        session.delete(row)
+    session.commit()
+
+    class _DownEmbedder:
+        async def embed_batch(self, texts):
+            raise RuntimeError("embedder is down")
+
+    with (
+        patch("knowledge.raw_write.upload_raw"),
+        patch("knowledge.deployment_observations.EmbeddingClient", _DownEmbedder),
+    ):
+        repaired = await persist_deployment_observation(
+            _observation(poll_time), engine=engine
+        )
+
+    assert repaired.provenance_created
+    assert not repaired.fact_created and not repaired.raw_created
+    assert repaired.note_id == first.note_id
+    session.expire_all()
+    assert len(session.exec(select(AtomRawProvenance)).all()) == 1
+    assert len(session.exec(select(Note)).all()) == 1

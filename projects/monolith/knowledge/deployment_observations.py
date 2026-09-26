@@ -193,9 +193,15 @@ async def persist_deployment_observation(
 
         engine = get_engine()
     note_id = _note_id(observation)
-    existing = await asyncio.to_thread(_existing_result_in_new_session, engine, note_id)
+    existing, note_exists = await asyncio.to_thread(
+        _existing_result_in_new_session, engine, note_id
+    )
     if existing is not None:
         return existing
+    # A note without its raw is repaired without re-indexing, so it needs no
+    # vectors; only a missing fact is embedded.
+    if vectors is None and note_exists:
+        vectors = []
     if vectors is None:
         texts = chunk_texts_for_raw(
             _fact_markdown(observation, note_id), _fact_rel_path(note_id)
@@ -216,9 +222,17 @@ def _fact_rel_path(note_id: str) -> str:
 
 def _existing_result_in_new_session(
     engine: Engine, note_id: str
-) -> ObservationWriteResult | None:
+) -> tuple[ObservationWriteResult | None, bool]:
+    """The stored result if complete, and whether the fact note exists at all."""
     with Session(engine) as session:
-        return _existing_result(session, note_id)
+        result = _existing_result(session, note_id)
+        if result is not None:
+            return result, True
+        note_exists = (
+            session.exec(select(Note.id).where(Note.note_id == note_id)).first()
+            is not None
+        )
+        return None, note_exists
 
 
 def _persist_in_new_session(
