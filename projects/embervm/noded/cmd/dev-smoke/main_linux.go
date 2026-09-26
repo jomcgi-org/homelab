@@ -27,7 +27,6 @@ import (
 )
 
 func main() {
-	driver.ExecMountTrampoline()
 	if err := run(); err != nil {
 		log.Fatal(err)
 	}
@@ -69,22 +68,14 @@ func run() (result error) {
 	defer stop()
 	ctx, cancel := context.WithTimeout(signalCtx, 3*time.Minute)
 	defer cancel()
-	self, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	canonical := filepath.Join(*root, "v")
-	if err := os.MkdirAll(canonical, 0o750); err != nil {
-		return err
-	}
 	cfg := driver.Config{
 		KernelImagePath: *kernel, RootfsPath: *rootfs, RootfsReadOnly: true,
 		HarnessInit: "/init", VCPUs: 1, MemMib: *mem,
 		KernelBootArgs: "console=ttyS0 reboot=k panic=1 pci=off keep_bootcon",
-		SnapshotRoot:   *root, CanonicalVsockDir: canonical,
-		Node: "apple-dev", Arch: "arm64",
+		SnapshotRoot:   *root,
+		Node:           "apple-dev", Arch: "arm64",
 	}
-	d := driver.New(cfg, &driver.ExecLauncher{Bin: *fc, Self: self, VsockBindTarget: canonical}, nil)
+	d := driver.New(cfg, &driver.ExecLauncher{Bin: *fc, MountNamespace: true}, nil)
 	transport := vsockhttp.NewTransport()
 	live := make(map[string]substrate.Handle)
 	release := func(h substrate.Handle) error {
