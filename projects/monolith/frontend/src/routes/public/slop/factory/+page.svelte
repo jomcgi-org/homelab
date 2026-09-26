@@ -374,7 +374,9 @@
         <div class="goals">
           <p class="sec-label">
             / Factory goals
-            <span class="fresh" class:stale={data.goals.stale}>{freshLabel}</span>
+            <span class="fresh" class:stale={data.goals.stale}
+              >{freshLabel}</span
+            >
           </p>
           {#if data.unavailable.goals}
             <p class="none">Goals unavailable right now.</p>
