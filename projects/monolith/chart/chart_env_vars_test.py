@@ -228,6 +228,37 @@ def test_factory_webhook_and_pointer_ship_staged_off(chart_context):
     )
 
 
+def test_session_stop_control_is_default_off_and_wires_both_containers(
+    chart_context,
+):
+    """Backend enforcement and frontend visibility share one explicit flag."""
+    pattern = r'- name: AGENT_SESSION_STOP_CONTROL_ENABLED\n\s+value: "(true|false)"'
+    assert re.findall(pattern, chart_context["rendered"]) == ["false", "false"]
+
+    chart_dir = chart_context["chart_dir"]
+    helm_bin = os.environ.get("HELM_BIN", "helm")
+    result = subprocess.run(
+        [
+            helm_bin,
+            "template",
+            "monolith",
+            str(chart_dir),
+            "--namespace",
+            "default",
+            "--values",
+            str(chart_dir / "values.yaml"),
+            "--values",
+            str(chart_context["deploy_values_file"]),
+            "--set",
+            "agents.sessions.stopControlEnabled=true",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert re.findall(pattern, result.stdout) == ["true", "true"]
+
+
 def test_factory_lost_before_session_sweep_ships_staged_off(chart_context):
     """The chart wires the runtime gate without enabling the new sweep."""
     rendered = chart_context["rendered"]

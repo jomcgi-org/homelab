@@ -177,6 +177,10 @@ defmodule Embervm.Router do
     handle_session_invoke(conn, id)
   end
 
+  post "/v1/sessions/:id/interrupt" do
+    handle_session_interrupt(conn, id)
+  end
+
   get "/v1/sessions/:id" do
     handle_get_session(conn, id)
   end
@@ -303,11 +307,14 @@ defmodule Embervm.Router do
 
   # The routes whose bearer token is a SESSION token (verified in-handler against
   # Embervm.SessionStore), NOT a management ServiceAccount token: POST
-  # /v1/sessions/:id/invoke (session token ONLY), and GET
+  # /v1/sessions/:id/invoke and /interrupt (session token ONLY), and GET
   # /v1/sessions/:id (management OR session token). Matched structurally on
   # path_info so a query string or trailing content cannot smuggle a management
   # route past the gate.
   defp session_token_route?(%Plug.Conn{method: "POST", path_info: ["v1", "sessions", _id, "invoke"]}),
+    do: true
+
+  defp session_token_route?(%Plug.Conn{method: "POST", path_info: ["v1", "sessions", _id, "interrupt"]}),
     do: true
 
   defp session_token_route?(%Plug.Conn{method: "GET", path_info: ["v1", "sessions", _id]}), do: true
@@ -1561,6 +1568,87 @@ defmodule Embervm.Router do
         SessionTelemetry.mark_expected(:invalid_session_token)
         halt_json(conn, 403, %{error: "invalid session token", session_id: session_id, retryable: false})
     end
+  end
+
+  # POST /v1/sessions/:id/interrupt (SESSION TOKEN auth ONLY). This is a
+  # lookup-only exact-dispatch relay. A successful response says the interrupt
+  # reached the guest, not that the turn is terminal. The ordinary invoke
+  # response remains the only source of terminal result and usage truth.
+  defp handle_session_interrupt(conn, session_id) do
+    with {:ok, token} <- bearer_token(conn),
+         {:ok, _session} <- verify_session_token_span(session_id, token),
+         {:ok, body, conn} <- read_capped_body(conn),
+         {:ok, dispatch_id} <- decode_interrupt_request(body) do
+      case session_manager().interrupt(session_manager_server(), session_id, dispatch_id) do
+        {:ok, result} when is_map(result) ->
+          send_json(conn, 202, %{
+            session_id: session_id,
+            dispatch_id: dispatch_id,
+            outcome: "requested",
+            relay: result
+          })
+
+        {:error, :stale_dispatch} ->
+          interrupt_error(conn, 409, session_id, dispatch_id, "stale_dispatch", "failed", false)
+
+        {:error, :not_active} ->
+          interrupt_error(conn, 409, session_id, dispatch_id, "not_active", "failed", false)
+
+        {:error, {:gone, reason}} ->
+          interrupt_error(conn, 410, session_id, dispatch_id, to_string(reason), "failed", false)
+
+        {:error, :not_found} ->
+          interrupt_error(conn, 404, session_id, dispatch_id, "not_found", "failed", false)
+
+        {:error, :deadline_exceeded} ->
+          interrupt_error(conn, 504, session_id, dispatch_id, "deadline_exceeded", "unknown", false)
+
+        {:error, reason} ->
+          interrupt_error(conn, 503, session_id, dispatch_id, inspect(reason), "unknown", true)
+      end
+    else
+      {:error, :no_token} ->
+        send_json(conn, 401, %{error: "missing session token", retryable: false})
+
+      {:error, :terminal} ->
+        session_gone(conn, session_id)
+
+      {:error, :too_large} ->
+        send_json(conn, 413, %{error: "interrupt request too large", retryable: false})
+
+      {:error, :invalid_interrupt_request} ->
+        send_json(conn, 400, %{error: "dispatch_id must be a non-empty string", retryable: false})
+
+      {:error, _} ->
+        send_json(conn, 403, %{error: "invalid session token", session_id: session_id, retryable: false})
+    end
+  end
+
+  defp decode_interrupt_request(body) do
+    case safe_decode(body) do
+      %{"dispatch_id" => dispatch_id} = request
+      when map_size(request) == 1 and is_binary(dispatch_id) and
+             byte_size(dispatch_id) in 1..256 ->
+        trimmed = String.trim(dispatch_id)
+
+        if trimmed == "" or trimmed != dispatch_id,
+          do: {:error, :invalid_interrupt_request},
+          else: {:ok, dispatch_id}
+
+      _ ->
+        {:error, :invalid_interrupt_request}
+    end
+  end
+
+  defp interrupt_error(conn, status, session_id, dispatch_id, reason, outcome, retryable) do
+    send_json(conn, status, %{
+      error: "session interrupt not confirmed",
+      reason: reason,
+      outcome: outcome,
+      session_id: session_id,
+      dispatch_id: dispatch_id,
+      retryable: retryable
+    })
   end
 
   defp proxy_invoke(conn, session_id, authorized_session) do

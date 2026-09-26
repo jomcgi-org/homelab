@@ -2371,6 +2371,88 @@ def test_list_sessions_defaults_to_claude_runtime(monkeypatch):
     )
 
 
+def test_interrupt_session_sends_exact_identity_with_session_capability(monkeypatch):
+    requests = []
+
+    async def handler(request):
+        requests.append(request)
+        return httpx.Response(
+            202,
+            json={
+                "outcome": "requested",
+                "dispatch_id": "dispatch-exact",
+            },
+            request=request,
+        )
+
+    _client(monkeypatch, handler)
+    result = asyncio.run(
+        transport.EmberVmShimTransport().interrupt_session(
+            "s-1", "session-token", "dispatch-exact"
+        )
+    )
+
+    assert result["outcome"] == "requested"
+    assert len(requests) == 1
+    assert requests[0].method == "POST"
+    assert str(requests[0].url) == "https://ember.test/v1/sessions/s-1/interrupt"
+    assert requests[0].headers["authorization"] == "Bearer session-token"
+    assert json.loads(requests[0].content) == {"dispatch_id": "dispatch-exact"}
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "outcome", "reason"),
+    [
+        (
+            409,
+            {"outcome": "failed", "reason": "stale_dispatch"},
+            "failed",
+            "stale_dispatch",
+        ),
+        (503, {"outcome": "unknown", "reason": "rpc"}, "unknown", "rpc"),
+        (504, {}, "unknown", "http_504"),
+    ],
+)
+def test_interrupt_session_preserves_rejection_and_unknown_outcomes(
+    monkeypatch, status, body, outcome, reason
+):
+    async def handler(request):
+        return httpx.Response(status, json=body, request=request)
+
+    _client(monkeypatch, handler)
+    with pytest.raises(transport.EmberInterruptFailure) as caught:
+        asyncio.run(
+            transport.EmberVmShimTransport().interrupt_session(
+                "s-1", "session-token", "dispatch-exact"
+            )
+        )
+
+    assert caught.value.status == status
+    assert caught.value.outcome == outcome
+    assert caught.value.reason == reason
+
+
+def test_interrupt_session_timeout_is_unknown_and_never_retried(monkeypatch):
+    calls = []
+
+    async def handler(request):
+        calls.append(request)
+        raise httpx.ReadTimeout("interrupt timed out", request=request)
+
+    _client(monkeypatch, handler)
+    with pytest.raises(transport.EmberInterruptFailure) as caught:
+        asyncio.run(
+            transport.EmberVmShimTransport().interrupt_session(
+                "s-1", "session-token", "dispatch-exact"
+            )
+        )
+
+    assert caught.value.status == 504
+    assert caught.value.outcome == "unknown"
+    assert caught.value.reason == "timeout"
+    assert len(calls) == 1
+
+
 def test_destroy_session_maps_404_to_session_gone(monkeypatch):
     """404 is the control plane's "session not found": the goal state."""
 

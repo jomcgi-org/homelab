@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -27,6 +28,7 @@ from factory.execution.codex_login import codex_login_gate, watch_for_login
 from factory.execution.constants import (
     LEGACY_QWEN_SYNTHETIC_PROMPT,
     SYNTHETIC_SESSION_PREFIX,
+    exact_dispatch_id,
 )
 from factory.execution.models import AgentSession, AgentTurn, PendingMessage
 from factory.execution.mcp import (
@@ -43,6 +45,7 @@ from factory.execution.mcp import (
 )
 from core.db import get_session
 from faas.embervm_client import EmberVMTransportError
+from factory.execution.transport import EmberInterruptFailure
 from goosecracker.api import REPO_CATALOG
 from knowledge.api import attach_recall
 from factory.execution.rationale import parse_rationale
@@ -60,6 +63,13 @@ _BRANCH_LIST_CACHE_TTL = 60.0
 _BRANCH_LIST_CACHE_FAILURE_TTL = 10.0
 _PREWARM_TTL = 10.0
 _prewarm_timestamps: dict[int, float] = {}
+
+
+def session_stop_control_enabled() -> bool:
+    """The repository-only rollout gate for interactive Stop."""
+    return (
+        os.environ.get("AGENT_SESSION_STOP_CONTROL_ENABLED", "false").lower() == "true"
+    )
 
 
 def _as_utc(value: datetime | None) -> datetime | None:
@@ -212,6 +222,39 @@ def _session_payload(
     }
 
 
+def _active_stop_identity(
+    row: AgentSession, pending: list[PendingMessage]
+) -> dict | None:
+    """Return the exact currently claimed dispatch, without changing ownership."""
+    if (
+        not session_stop_control_enabled()
+        or row.id is None
+        or not row.ember_session_id
+        or not row.ember_session_token
+    ):
+        return None
+    active = next(
+        (
+            message
+            for message in pending
+            if message.claimed_by_replica and message.dispatch_count > 0
+        ),
+        None,
+    )
+    if active is None:
+        return None
+    return {
+        "turn_seq": active.seq,
+        "dispatch_id": exact_dispatch_id(
+            row.id,
+            row.ember_session_id,
+            active.seq,
+            active.claimed_by_replica,
+            active.dispatch_count,
+        ),
+    }
+
+
 def _rows(session: Session, status: str | None = None, limit: int | None = None):
     statement = _aggregate_statement(status, None)
     if limit is not None:
@@ -255,6 +298,13 @@ def _resolve_reasoning(start_request: "StartRequest") -> bool:
 class MessageRequest(BaseModel):
     prompt: str
     model: str | None = None
+
+
+class StopRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    turn_seq: int = Field(gt=0)
+    dispatch_id: str = Field(min_length=1, max_length=256)
 
 
 class CompanionRequest(BaseModel):
@@ -1000,6 +1050,7 @@ def get_session_detail(
         .where(PendingMessage.session_id == session_id)
         .order_by(PendingMessage.seq)
     ).all()
+    stop_enabled = session_stop_control_enabled()
     return {
         "session": _session_payload(
             row,
@@ -1044,6 +1095,10 @@ def get_session_detail(
             }
             for message in pending
         ],
+        "stop_control": {
+            "enabled": stop_enabled,
+            "active": _active_stop_identity(row, pending),
+        },
     }
 
 
@@ -1417,6 +1472,87 @@ async def prewarm_session(session_id: int) -> Response:
         # composer error channel or affect the real send that follows.
         logger.debug("agent session prewarm failed for session %s: %s", session_id, exc)
     return Response(status_code=204)
+
+
+def _require_session_owner(request: Request, row: AgentSession) -> None:
+    caller = factory_decider(request).strip().lower()
+    owner = (row.triggered_by or "").strip().lower()
+    if not caller or not owner or not hmac.compare_digest(caller, owner):
+        raise HTTPException(status_code=403, detail="session owner does not match")
+
+
+@router.post("/sessions/{session_id}/stop")
+async def stop_session(
+    session_id: int,
+    stop_request: StopRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+) -> Response:
+    """Relay Stop for the exact dispatch the authenticated owner observed."""
+    if not session_stop_control_enabled():
+        raise HTTPException(status_code=404, detail="session Stop is disabled")
+
+    row = session.get(AgentSession, session_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Agent session not found")
+    _require_session_owner(request, row)
+
+    pending = store.get_pending_message(session, session_id, stop_request.turn_seq)
+    if (
+        pending is None
+        or not pending.claimed_by_replica
+        or pending.dispatch_count <= 0
+        or not row.ember_session_id
+        or not row.ember_session_token
+    ):
+        raise HTTPException(status_code=409, detail="turn is no longer active")
+
+    expected_dispatch_id = exact_dispatch_id(
+        session_id,
+        row.ember_session_id,
+        pending.seq,
+        pending.claimed_by_replica,
+        pending.dispatch_count,
+    )
+    if not hmac.compare_digest(stop_request.dispatch_id, expected_dispatch_id):
+        raise HTTPException(status_code=409, detail="turn dispatch identity is stale")
+
+    try:
+        result = await _transport.interrupt_session(
+            row.ember_session_id,
+            row.ember_session_token,
+            stop_request.dispatch_id,
+        )
+    except EmberInterruptFailure as exc:
+        return JSONResponse(
+            status_code=exc.status,
+            content={
+                "outcome": exc.outcome,
+                "reason": exc.reason,
+                "turn_seq": stop_request.turn_seq,
+                "dispatch_id": stop_request.dispatch_id,
+            },
+        )
+    except EmberVMTransportError:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "outcome": "unknown",
+                "reason": "control_plane_unavailable",
+                "turn_seq": stop_request.turn_seq,
+                "dispatch_id": stop_request.dispatch_id,
+            },
+        )
+
+    return JSONResponse(
+        status_code=202,
+        content={
+            "outcome": "requested",
+            "turn_seq": stop_request.turn_seq,
+            "dispatch_id": stop_request.dispatch_id,
+            "relay": result.get("relay") if isinstance(result, dict) else None,
+        },
+    )
 
 
 @router.delete("/sessions/{session_id}")

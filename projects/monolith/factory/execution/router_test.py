@@ -21,8 +21,10 @@ from factory.execution.constants import (
     CODEX_SYNTHETIC_PROMPT,
     LEGACY_QWEN_SYNTHETIC_PROMPT,
     SYNTHETIC_SESSION_PREFIX,
+    exact_dispatch_id,
 )
 from factory.execution.models import (
+    AgentCapacityReservation,
     AgentResultReceipt,
     AgentSession,
     AgentTurn,
@@ -1971,6 +1973,313 @@ def test_prewarm_errors_still_return_no_content(client, session, monkeypatch):
 
     assert response.status_code == 204
     assert response.content == b""
+
+
+def _claimed_stop_session(session: Session, name: str = "stop-owner"):
+    row = _session(
+        session,
+        name,
+        triggered_by="owner@example.com",
+        ember_session_id="ember-stop-1",
+        ember_session_token="session-token-1",
+    )
+    pending = PendingMessage(
+        session_id=row.id,
+        seq=1,
+        message_text="long running prompt",
+        claimed_by_replica="replica-1",
+        claimed_at=datetime.now(timezone.utc),
+        dispatch_count=1,
+        last_dispatch_at=datetime.now(timezone.utc),
+    )
+    permit = AgentCapacityReservation(
+        local_session_id=row.local_session_id,
+        session_id=row.id,
+        pending_seq=1,
+        tier="interactive",
+        owner="replica-1",
+        state="running",
+    )
+    session.add_all([pending, permit])
+    session.commit()
+    identity = {
+        "turn_seq": 1,
+        "dispatch_id": exact_dispatch_id(row.id, "ember-stop-1", 1, "replica-1", 1),
+    }
+    return row, identity
+
+
+def test_stop_control_is_hidden_and_inert_by_default(client, session, monkeypatch):
+    row, identity = _claimed_stop_session(session, "stop-disabled")
+    forwarded = []
+
+    async def must_not_forward(*args):
+        forwarded.append(args)
+
+    monkeypatch.delenv("AGENT_SESSION_STOP_CONTROL_ENABLED", raising=False)
+    monkeypatch.setattr(
+        "factory.execution.router._transport.interrupt_session", must_not_forward
+    )
+
+    detail = client.get(f"/api/agents/sessions/{row.id}").json()
+    assert detail["stop_control"] == {"enabled": False, "active": None}
+
+    response = client.post(
+        f"/api/agents/sessions/{row.id}/stop",
+        headers={"X-Auth-Email": "owner@example.com"},
+        json=identity,
+    )
+    assert response.status_code == 404
+    assert forwarded == []
+
+
+def test_stop_control_exposes_and_relays_only_the_observed_exact_turn(
+    client, session, monkeypatch
+):
+    row, identity = _claimed_stop_session(session)
+    successor = PendingMessage(
+        session_id=row.id,
+        seq=2,
+        message_text="next prompt",
+    )
+    session.add(successor)
+    session.commit()
+    calls = []
+
+    async def interrupt(ember_session_id, token, dispatch_id):
+        calls.append((ember_session_id, token, dispatch_id))
+        return {
+            "outcome": "requested",
+            "relay": {
+                "terminal_reason": "user_interrupt",
+                "killed": False,
+                "timeout": False,
+            },
+        }
+
+    monkeypatch.setenv("AGENT_SESSION_STOP_CONTROL_ENABLED", "true")
+    monkeypatch.setattr(
+        "factory.execution.router._transport.interrupt_session", interrupt
+    )
+
+    detail = client.get(f"/api/agents/sessions/{row.id}").json()
+    assert detail["stop_control"] == {"enabled": True, "active": identity}
+
+    response = client.post(
+        f"/api/agents/sessions/{row.id}/stop",
+        headers={"X-Auth-Email": "OWNER@example.com"},
+        json=identity,
+    )
+    assert response.status_code == 202
+    assert response.json()["outcome"] == "requested"
+    assert calls == [("ember-stop-1", "session-token-1", identity["dispatch_id"])]
+
+    session.expire_all()
+    pending = store.get_pending_message(session, row.id, 1)
+    successor = store.get_pending_message(session, row.id, 2)
+    permit = session.exec(
+        select(AgentCapacityReservation).where(
+            AgentCapacityReservation.session_id == row.id,
+            AgentCapacityReservation.pending_seq == 1,
+        )
+    ).one()
+    assert pending.claimed_by_replica == "replica-1"
+    assert pending.dispatch_count == 1
+    assert successor.claimed_by_replica is None
+    assert permit.state == "running"
+    assert permit.outcome is None
+    assert session.get(AgentSession, row.id).status == "running"
+
+
+def test_stop_control_rejects_cross_owner_and_stale_dispatch_without_forwarding(
+    client, session, monkeypatch
+):
+    row, identity = _claimed_stop_session(session, "stop-rejected")
+    other_row, _ = _claimed_stop_session(session, "stop-other-session")
+    calls = []
+
+    async def must_not_forward(*args):
+        calls.append(args)
+
+    monkeypatch.setenv("AGENT_SESSION_STOP_CONTROL_ENABLED", "true")
+    monkeypatch.setattr(
+        "factory.execution.router._transport.interrupt_session", must_not_forward
+    )
+
+    cross_owner = client.post(
+        f"/api/agents/sessions/{row.id}/stop",
+        headers={"X-Auth-Email": "other@example.com"},
+        json=identity,
+    )
+    assert cross_owner.status_code == 403
+
+    missing_owner = client.post(
+        f"/api/agents/sessions/{row.id}/stop",
+        json=identity,
+    )
+    assert missing_owner.status_code == 403
+
+    ambiguous_owner = client.post(
+        f"/api/agents/sessions/{row.id}/stop",
+        headers=[
+            ("X-Auth-Email", "forged@example.com"),
+            ("X-Auth-Email", "owner@example.com"),
+        ],
+        json=identity,
+    )
+    assert ambiguous_owner.status_code == 403
+
+    cross_session = client.post(
+        f"/api/agents/sessions/{other_row.id}/stop",
+        headers={"X-Auth-Email": "owner@example.com"},
+        json=identity,
+    )
+    assert cross_session.status_code == 409
+
+    stale = client.post(
+        f"/api/agents/sessions/{row.id}/stop",
+        headers={"X-Auth-Email": "owner@example.com"},
+        json={"turn_seq": 1, "dispatch_id": "0" * 64},
+    )
+    assert stale.status_code == 409
+    assert calls == []
+
+
+def test_stop_control_rejects_observed_turn_after_successor_starts(
+    client, session, monkeypatch
+):
+    row, first_identity = _claimed_stop_session(session, "stop-stale-successor")
+    first = store.get_pending_message(session, row.id, 1)
+    session.delete(first)
+    successor = PendingMessage(
+        session_id=row.id,
+        seq=2,
+        message_text="successor prompt",
+        claimed_by_replica="replica-2",
+        claimed_at=datetime.now(timezone.utc),
+        dispatch_count=1,
+        last_dispatch_at=datetime.now(timezone.utc),
+    )
+    session.add(successor)
+    session.commit()
+    calls = []
+
+    async def must_not_forward(*args):
+        calls.append(args)
+
+    monkeypatch.setenv("AGENT_SESSION_STOP_CONTROL_ENABLED", "true")
+    monkeypatch.setattr(
+        "factory.execution.router._transport.interrupt_session", must_not_forward
+    )
+
+    response = client.post(
+        f"/api/agents/sessions/{row.id}/stop",
+        headers={"X-Auth-Email": "owner@example.com"},
+        json=first_identity,
+    )
+
+    assert response.status_code == 409
+    assert calls == []
+    detail = client.get(f"/api/agents/sessions/{row.id}").json()
+    assert detail["stop_control"]["active"] == {
+        "turn_seq": 2,
+        "dispatch_id": exact_dispatch_id(row.id, "ember-stop-1", 2, "replica-2", 1),
+    }
+
+
+def test_stop_control_completion_race_preserves_completed_turn(
+    client, session, monkeypatch
+):
+    row, identity = _claimed_stop_session(session, "stop-race")
+    pending = store.get_pending_message(session, row.id, 1)
+    session.delete(pending)
+    completed = AgentTurn(
+        session_id=row.id,
+        seq=1,
+        prompt="long running prompt",
+        result_text="finished first",
+        terminal_reason="completed",
+        usage_json='{"input_tokens": 12, "output_tokens": 3}',
+        cost_usd=0.25,
+    )
+    session.add(completed)
+    session.commit()
+    calls = []
+
+    async def must_not_forward(*args):
+        calls.append(args)
+
+    monkeypatch.setenv("AGENT_SESSION_STOP_CONTROL_ENABLED", "true")
+    monkeypatch.setattr(
+        "factory.execution.router._transport.interrupt_session", must_not_forward
+    )
+
+    response = client.post(
+        f"/api/agents/sessions/{row.id}/stop",
+        headers={"X-Auth-Email": "owner@example.com"},
+        json=identity,
+    )
+
+    assert response.status_code == 409
+    assert calls == []
+    session.expire_all()
+    persisted = store.get_turn(session, row.id, 1)
+    assert persisted.terminal_reason == "completed"
+    assert persisted.cost_usd == 0.25
+
+
+def test_stop_control_unknown_relay_keeps_active_claim(client, session, monkeypatch):
+    row, identity = _claimed_stop_session(session, "stop-unknown")
+    destroyed = []
+
+    async def unavailable(*args):
+        raise transport.EmberInterruptFailure(
+            "relay unavailable",
+            status=503,
+            outcome="unknown",
+            reason="control_plane_unavailable",
+        )
+
+    async def destroy(ember_session_id):
+        destroyed.append(ember_session_id)
+        return {"session_id": ember_session_id, "state": "destroyed"}
+
+    monkeypatch.setenv("AGENT_SESSION_STOP_CONTROL_ENABLED", "true")
+    monkeypatch.setattr(
+        "factory.execution.router._transport.interrupt_session", unavailable
+    )
+
+    response = client.post(
+        f"/api/agents/sessions/{row.id}/stop",
+        headers={"X-Auth-Email": "owner@example.com"},
+        json=identity,
+    )
+
+    assert response.status_code == 503
+    assert response.json()["outcome"] == "unknown"
+    session.expire_all()
+    pending = store.get_pending_message(session, row.id, 1)
+    permit = session.exec(
+        select(AgentCapacityReservation).where(
+            AgentCapacityReservation.session_id == row.id,
+            AgentCapacityReservation.pending_seq == 1,
+        )
+    ).one()
+    assert pending.claimed_by_replica == "replica-1"
+    assert pending.dispatch_count == 1
+    assert permit.state == "running"
+    assert permit.outcome is None
+
+    monkeypatch.setattr("factory.execution.router._load_session_row", lambda _: row)
+    monkeypatch.setattr("factory.execution.router._transport.destroy_session", destroy)
+    monkeypatch.setattr(
+        "factory.execution.router._clear_ember_bindings_for",
+        lambda ember_id: store.clear_ember_bindings_by_ember_id(session, ember_id),
+    )
+    fallback = client.delete(f"/api/agents/sessions/{row.id}")
+    assert fallback.status_code == 200
+    assert fallback.json()["state"] == "destroyed"
+    assert destroyed == ["ember-stop-1"]
 
 
 def test_delete_session(client, session, monkeypatch):
