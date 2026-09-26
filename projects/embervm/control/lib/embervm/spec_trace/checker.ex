@@ -69,7 +69,8 @@ defmodule Embervm.SpecTrace.Checker do
 
   9. **InventoryReconciled**: at a checkpoint, a dispatchable node instance
      reporting live VMs beyond its session, serving, stateful and group-member
-     VMs and the task VMs workers have claimed must not have an empty
+     VMs, the task VMs workers have claimed and the primed VMs sessions hold
+     must not have an empty
      control-plane inventory (#6422).
      The only invariant whose oracle is not the trace alone: the node's own
      count is recorded into the checkpoint, so a suppress-primed wedge (the
@@ -928,7 +929,7 @@ defmodule Embervm.SpecTrace.Checker do
                       oracle: :node_reconciled,
                       detail:
                         "instance #{instance_id} reports #{report["live_vms"]} live_vms " <>
-                          "(#{unaccounted_live_vms(report)} not session, serving, stateful, group or claimed task VMs) " <>
+                          "(#{unaccounted_live_vms(report)} not session, serving, stateful, group, claimed task or session-held VMs) " <>
                           "with empty checkpoint inventory at mono #{checkpoint["mono"]}"
                     }
 
@@ -948,11 +949,13 @@ defmodule Embervm.SpecTrace.Checker do
 
   # live_vms is the node's count of every live VM. Only the ones the pool could
   # hold are this invariant's business, so subtract the VMs the node reports as
-  # session, serving, stateful or group members (disjoint from its primed pool)
-  # and the task VMs a worker has claimed. Traces from before these counts
+  # session, serving, stateful or group members (disjoint from its primed pool),
+  # the task VMs a worker has claimed, and the primed VMs a session holds before
+  # its first operation adopts them (#6422). Traces from before these counts
   # existed carry neither key and keep the old, stricter comparison.
   defp unaccounted_live_vms(report) do
-    report_count(report, "live_vms") - report_count(report, "non_pool_vms") - report_count(report, "reserved_vms")
+    report_count(report, "live_vms") - report_count(report, "non_pool_vms") - report_count(report, "reserved_vms") -
+      report_count(report, "session_held_vms")
   end
 
   defp report_count(report, key) do
