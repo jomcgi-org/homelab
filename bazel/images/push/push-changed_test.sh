@@ -87,6 +87,7 @@ STUB
 # to whatever STUB_TOOLS_TAG_DIGEST says (unset: the tag does not exist).
 if [ "\$1" = "tag" ]; then
 	echo "\$2 \$3" >>"\$STUB_TAG_LOG"
+	[ -z "\${STUB_TAG_FAIL:-}" ] || exit 1
 	exit 0
 fi
 if [ "\$2" = "ghcr.io/jomcgi/homelab/alpha:main" ]; then
@@ -351,7 +352,37 @@ else
 fi
 teardown
 
-# 14. Only the tools image gets a floating tag. Nothing retags beta or gamma.
+# 14. The retag runs AFTER the charts are published and verified, and a registry
+#     error moving the tag warns instead of failing the deploy: nothing in the
+#     cluster reads this tag, so it must not be able to hold a rollout hostage.
+setup "$MANIFEST_3" ""
+tools_version_alpha
+STUB_TAG_FAIL=1
+export STUB_TAG_FAIL
+OUT=$(run_script) && STATUS=0 || STATUS=$?
+unset STUB_TAG_FAIL
+if [ "$STATUS" -eq 0 ] && grep -q "WARNING: could not point" <<<"$OUT" && grep -q "push_charts" "$STUB_RUN_LOG"; then
+	pass "a failed retag warns after the charts are published"
+else
+	fail "a failed retag warns after the charts are published" "status=$STATUS
+$OUT"
+fi
+teardown
+
+# 15. No published digest for the tools repo this run (its stamped-tag lookup
+#     came back empty) leaves the tag alone and says so, instead of going quiet
+#     the way the original bug did.
+setup "$MANIFEST_3" ""
+printf 'ghcr.io/jomcgi/homelab/delta:main\n' >"$WORK/.tools-version"
+OUT=$(run_script)
+if grep -q "no published digest recorded for ghcr.io/jomcgi/homelab/delta" <<<"$OUT" && [ ! -s "$STUB_TAG_LOG" ]; then
+	pass "an unrecorded tools digest warns and does not retag"
+else
+	fail "an unrecorded tools digest warns and does not retag" "$OUT"
+fi
+teardown
+
+# 16. Only the tools image gets a floating tag. Nothing retags beta or gamma.
 setup "$MANIFEST_3" ""
 tools_version_alpha
 OUT=$(run_script)
