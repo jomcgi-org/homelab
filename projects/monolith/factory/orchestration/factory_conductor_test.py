@@ -1618,8 +1618,8 @@ def test_planner_keeps_completed_review_after_recursive_historical_prompts(monke
     assert len(prompt.rsplit("\n", 1)[1]) <= conductor.PLANNER_CONTEXT_CHARS
     # The shrink loop bounds the JSON context; the instruction preamble rides
     # on top of it and nothing bounds that, so this is the guard on preamble
-    # growth. The preamble is about 9,700 characters and this case's context
-    # about 6,700. It moved once, from 16,000, when pause gained its option
+    # growth. The preamble is about 13,200 characters and this case's context
+    # about 7,400. It moved once, from 16,000, when pause gained its option
     # contract (#6041): roughly 1,000 characters, and cheap against the
     # planner round a refused pause costs. Move it again only for a rule the
     # planner cannot follow without being told, and say which rule.
@@ -1632,8 +1632,10 @@ def test_planner_keeps_completed_review_after_recursive_historical_prompts(monke
     # duplicate gate contract went with it, so the guest prompt shrank.
     # #5929 adds the settle_external typed action with its validation
     # contract: the planner cannot propose an externally-fulfilled settlement
-    # without being told the action, its evidence, and its provenance.
-    assert len(prompt) < 20_400
+    # without being told the action, its evidence, and its provenance. That
+    # rule is roughly 350 characters on a preamble main had already grown to
+    # within 200 of the bound, so the bound moved from 20,400 to 20,800.
+    assert len(prompt) < 20_800
     assert (task, nodes, runs) == before
 
 
