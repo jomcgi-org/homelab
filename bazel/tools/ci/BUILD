@@ -5,7 +5,10 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 package(default_visibility = ["//visibility:public"])
 
-exports_files(["ci"])
+exports_files([
+    "ci",
+    "source_ratchet.py",
+])
 
 py_library(
     name = "central_build_ratchet_lib",
@@ -33,6 +36,21 @@ py_test(
     srcs = ["chart_version_guard_test.py"],
     deps = [
         ":chart_version_guard_lib",
+        "@pip//pytest",
+    ],
+)
+
+py_library(
+    name = "source_ratchet_lib",
+    srcs = ["source_ratchet.py"],
+    imports = ["."],
+)
+
+py_test(
+    name = "source_ratchet_test",
+    srcs = ["source_ratchet_test.py"],
+    deps = [
+        ":source_ratchet_lib",
         "@pip//pytest",
     ],
 )

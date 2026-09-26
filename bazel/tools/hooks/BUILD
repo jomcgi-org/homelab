@@ -11,6 +11,15 @@ sh_test(
 )
 
 sh_test(
+    name = "block_kubectl_mutate_test",
+    srcs = ["block-kubectl-mutate_test.sh"],
+    data = [
+        ":block-kubectl-mutate.sh",
+        "//bazel/tools/ci:source_ratchet.py",
+    ],
+)
+
+sh_test(
     name = "check_ci_pipe_mask_test",
     srcs = ["check-ci-pipe-mask_test.sh"],
     data = [":check-ci-pipe-mask.sh"],

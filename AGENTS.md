@@ -18,7 +18,10 @@ and deploys from Git. Go, Python, JavaScript and Starlark.
 
 Use `ls` for structure and `git log` for history. The rest of this file is what
 you would only learn by breaking it. Rules marked **(gated)** are enforced by
-CI or a git hook, so a violation fails loudly rather than silently.
+CI or a git hook, so a violation fails loudly rather than silently. Gotchas
+marked "Gated" are caught by `bazel/tools/ci/source_ratchet.py`, which fails a
+PR that adds a new instance (existing ones are grandfathered). A genuinely safe
+line can opt out with `ratchet-allow: <rule> (<reason>)` in a comment.
 
 ## Invariants
 
@@ -26,6 +29,8 @@ CI or a git hook, so a violation fails loudly rather than silently.
   `edit`, `scale`, `label` or `delete`, and never `helm install` or
   `helm uninstall`. To change something, edit
   `projects/<service>/deploy/values.yaml`, commit, push, and ArgoCD syncs it.
+  Gated for writes committed into scripts (`source_ratchet.py`) and for Claude
+  Code's shell (a hook); nothing else sees another agent's shell.
 - **Never commit to main (gated: `protect-main.sh`).** Worktree, branch, PR.
   The repo allows rebase merges only, through the GitHub merge queue
   (`gh pr merge --auto --rebase` enqueues). Never rebase a PR only because main
@@ -127,11 +132,10 @@ for another agent, assume it has no KG and put what it must know in the spec.
   Every other chart deploys off the git value.
 - **Never hand-pin `@sha256:` image digests in values files.** Build-time
   pinning replaces tags; hand-pinned digests go stale into `ImagePullBackOff`.
-  Nothing in CI catches one.
+  Gated for this repo's own images; third-party digest pins are fine.
 - **Never hardcode a `.svc.cluster.local` URL.** Helm prepends the release
   name, so a rename silently breaks it. Read it from an env var set in
-  `values.yaml` (`envOr("URL", "")`, no default). Nothing in CI catches one
-  either.
+  `values.yaml` (`envOr("URL", "")`, no default). Gated.
 - **Monolith endpoints that read cluster resources need matching `ClusterRole`
   verbs.** A missing verb fails in prod as `Forbidden`, which dashboards show
   as a generic 5xx.

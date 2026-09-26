@@ -14,7 +14,9 @@ Argo CronWorkflows invoking `app/jobs_main.py`; `replaces` adds a name to
 
 Async batch handlers must still keep synchronous SQLModel work off their event
 loop: no direct Session methods inside `async def`, and never move an existing
-Session across threads. Nothing in CI checks either, so review has to catch it.
+Session across threads. Both are gated for new code by
+`bazel/tools/ci/source_ratchet.py` (`sync-session`, `session-to-thread`); older
+instances are grandfathered, so do not copy a pattern just because it exists.
 
 The established pattern (see `hikes/jobs.py`, `ships/retention.py`):
 
@@ -34,7 +36,7 @@ The established pattern (see `hikes/jobs.py`, `ships/retention.py`):
 4. Keep the DB logic in a sync core that takes an explicit `session` parameter
    so the SQLite `create_all` test fixtures can drive it directly; the async
    wrapper (network + `to_thread`) stays thin and is not unit tested.
-5. Do not `session.add` in a loop: build the
+5. Do not `session.add` in a loop (gated: `session-add-loop`): build the
    rows and `session.add_all(...)` once, or mutate `session.get`-tracked rows
    and let them flush on `commit`.
 6. Put memory requests, limits, deadlines, and concurrency policy on the Argo
