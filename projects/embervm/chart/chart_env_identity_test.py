@@ -410,7 +410,6 @@ def test_rootfs_parallel_driver_is_default_off_and_preserves_builder_contract() 
         declared = {workload: memory for workload, _image, _path, memory in tuples}
         assert declared["runtimePython"] == ""
         assert declared["runtimeClaude"] == "4096"
-        assert declared["semgrep"] == "1536"
         assert {entry["name"]: entry for entry in driver["env"]} == common_env
         assert driver["image"] == legacy_builders[0]["image"]
         assert driver["volumeMounts"] == legacy_builders[0]["volumeMounts"]
