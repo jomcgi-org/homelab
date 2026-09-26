@@ -7858,9 +7858,14 @@ def test_a_second_engine_round_is_refused_when_its_own_nodes_do_not_fit(feedback
 
     detail = json.loads(audits[0]["reason"].split("envelope exceeded: ", 1)[1])
     assert detail["turns"] == {"needed": 5 + 2, "allowed": 6}
-    # One turn of six is spare against a round that costs two, which is what
-    # the refusal tells the planner it has to work inside.
-    assert detail["spare_turns"] == 1
+    # The round was admitted on its own two nodes, but the spare is the
+    # planner's figure: five spent turns plus the two-turn reserve for the one
+    # review round still remaining is seven against six, so the planner truly
+    # has no room. Reporting the raw one turn of six would cost it a round
+    # proposing an edit the reserve cannot fit (#6000).
+    assert conductor._rounds_remaining(task["id"], policy) == 1
+    assert detail["spare_turns"] == 0
+    assert detail["spare_usd"] >= 0
     assert controls.task_snapshot(task["id"])["allowance"]["turns"] == 6
 
 
