@@ -133,6 +133,7 @@ def test_retired_private_demo_and_perf_routes_are_absent():
     paths = set(_iter_route_paths(app.routes))
     retired_prefixes = (
         "/api/demos",
+        "/api/ember/semgrep",
         "/api/semgrep/perf",
         "/internal/semgrep",
         "/webhooks/semgrep",

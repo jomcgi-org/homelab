@@ -33,7 +33,6 @@ EXPECTED_EXTERNAL_FQDNS = {
     "openrouter.ai",
     "integrate.api.nvidia.com",
     "api.meta.ai",
-    "semgrep.dev",
     "stream.aisstream.io",
     "discord.com",
     "gateway.discord.gg",

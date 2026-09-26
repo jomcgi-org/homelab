@@ -1214,8 +1214,9 @@ rootfsBuilder:
     tag: latest
     digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
   # 4G was sized for the largest guest at the time (the since-removed semgrep
-  # guest: engine + rules + python); the sandbox base is smaller but a uniform size keeps the builder simple (matches
-  # fc-invoke's 4G). The ext4 is sparse, so an oversized fs costs little.
+  # guest: engine + rules + python); the sandbox base is smaller but a uniform
+  # size keeps the builder simple (matches fc-invoke's 4G). The ext4 is sparse,
+  # so an oversized fs costs little.
   rootfsSize: 4G
 
 # ENOSPC orphan reclaim in the rootfs builder (#4458). Last-resort deadlock
@@ -1561,7 +1562,8 @@ noded:
   # OOM CEILING, not a scheduling reservation (the request stays 256Mi), so it
   # does not overcommit node scheduling, exactly like fc-invoke's 50Gi cap.
   #
-  # embervm worst case (both workloads at cap, no serialization):
+  # Historical derivation (Task 14b, when the since-removed semgrep workload
+  # existed; the number has not been re-derived since):
   #   semgrep 16 x 1536Mi = 24Gi + sandbox 16 x 512Mi = 8Gi + ~2Gi transient
   #   base-build cold-boot + ~0.3Gi daemon ~= 34Gi -> 36Gi ceiling.
   #
