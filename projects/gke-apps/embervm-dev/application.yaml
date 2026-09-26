@@ -26,7 +26,12 @@ spec:
       # brick fails its mount by design and the first auto-sync waits on it
       # indefinitely. Verified by pulling the chart (digest 5d7db488) and
       # rendering both dev value files against it.
-      targetRevision: 0.94.1
+      # Raised to 0.99.2 (digest 4a278219, both dev value files render) while
+      # the live hub root lacks its embervm-dev ignoreDifferences entry: until
+      # that manual apply lands, every root sync stamps this floor back over
+      # Kargo's promotion, so the floor must be a chart carrying the #6422
+      # checker fix for dev to verify anything and pass Freight to prod.
+      targetRevision: 0.99.2
       helm:
         releaseName: embervm-dev
         # dev values first, then the hub overlay for dev. NOT production's
