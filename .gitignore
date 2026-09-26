@@ -85,7 +85,7 @@ Thumbs.db
 # once and broke BuildBuddy git sync, blocking every push.
 bb-out/
 
-# Codex dispatch transcripts (bazel/tools/codex/dispatch.sh), kept per-worktree
+# Codex dispatch transcripts, kept per-worktree
 # for triage, never committed
 .codex-dispatch/
 
