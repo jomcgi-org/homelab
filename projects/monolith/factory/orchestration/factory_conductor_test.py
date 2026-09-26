@@ -12032,6 +12032,250 @@ def test_expired_idle_task_stops_after_six_funding_refusals_and_releases_lane(
         assert admitted.task_id is not None
 
 
+def test_expired_task_with_reserved_work_is_left_alone_until_it_settles(
+    feedback_db, monkeypatch
+):
+    """The refusal bound settles an idle expired task, never a working one.
+
+    Receipt 461 on 2026-09-19 (#6227): past its deadline, six capacity refusals
+    behind it, and a node still dispatched on a reserved start. A tick must
+    leave that shape exactly as it found it, holding the lane slot: the
+    funding bound is reached only once nothing is in flight, and the deadline
+    backstop refuses any task with a reserved start even when opted in. Once
+    the running attempt settles and the receipt drops to zero unresolved
+    starts with nothing running, the very next tick finishes it through the
+    same bound and the queued receipt takes the slot.
+    """
+    import time
+    from datetime import datetime, timedelta, timezone
+    import factory.orchestration.factory_intake_loop as intake_loop
+    import factory.orchestration.factory_landing as landing
+    import factory.orchestration.work_item_pointer as work_item_pointer
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_funding as funding,
+    )
+    from factory.orchestration.factory_intake import receive_issue
+    from factory.orchestration.factory_models import FactoryAudit, FactoryStart
+    from factory.orchestration.models import SwarmTask
+
+    monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "true")
+    # Opting in changes nothing while the release is staged off, and a reserved
+    # start is refused by the backstop either way.
+    monkeypatch.setenv("FACTORY_DEADLINE_BACKSTOP_ENABLED", "true")
+    now = datetime(2026, 9, 20, 12, tzinfo=timezone.utc)
+    monkeypatch.setattr(controls, "_now", lambda: now)
+    task, policy = feedback_task(
+        issue_numbers=[7, 8], max_tasks={"delivery": 1, "advisory": 0}
+    )
+    node_key = "implement_running"
+    assert conductor._add(
+        task,
+        policy,
+        node_key,
+        "Implement the bounded change.",
+        [],
+        "luna",
+        "test:expired-reserved-work",
+        "Reproduce an expired admitted task with a node still running.",
+    ).ok
+    # Reserve and dispatch before the deadline passes, as the live receipt did.
+    workflow = f"factory-node:{task['id']}:{node_key}:1"
+    assert conductor.reserve_node(
+        task["id"],
+        node_key,
+        workflow,
+        {
+            "repo": task["repo"],
+            "branch": f"factory/{task['id']}",
+            "workflow_id": workflow,
+            "artifact_path": f".factory/{node_key}.json",
+            "artifact_schema": conductor._schema(node_key),
+            "hydration_branch": "main",
+            "retry_context": "[]",
+        },
+    )
+    session_id = 101
+    assert conductor.graph.record_dispatch(task["id"], node_key, 1, session_id, None).ok
+    receive_issue(
+        "owner/repo",
+        8,
+        "Next eligible issue",
+        "Queued behind the occupied delivery lane.",
+        "https://github.com/owner/repo/issues/8",
+        "poller",
+    )
+    retry_after = (now - timedelta(minutes=1)).isoformat()
+    with controls._locked_session() as (db, _control):
+        stored = db.get(SwarmTask, task["id"])
+        stored.created_at = now - timedelta(seconds=policy["task_timeout_seconds"] + 1)
+        db.add(stored)
+        for ordinal in range(funding.FUNDING_REFUSAL_LIMIT):
+            controls._audit(
+                db,
+                funding.ACTOR,
+                "funding_review_settled",
+                task_id=task["id"],
+                request_id=ordinal,
+                refusal=(
+                    "Review could not acquire execution capacity before its deadline"
+                ),
+                retry_after=retry_after,
+            )
+
+    def audit_actions():
+        with Session(feedback_db) as db:
+            return [
+                row.action
+                for row in db.exec(
+                    select(FactoryAudit)
+                    .where(
+                        FactoryAudit.task_id == task["id"],
+                        FactoryAudit.action.in_(
+                            [
+                                "funding_review_settled",
+                                "funding_review_requested",
+                                "node_stalled",
+                                "workflow_stranded",
+                            ]
+                        ),
+                    )
+                    .order_by(FactoryAudit.id)
+                ).all()
+            ]
+
+    def start_status():
+        with Session(feedback_db) as db:
+            return (
+                db.exec(
+                    select(FactoryStart).where(
+                        FactoryStart.task_id == task["id"],
+                        FactoryStart.start_key == workflow,
+                    )
+                )
+                .one()
+                .status
+            )
+
+    before = controls.task_snapshot(task["id"])
+    assert before["state"] == "admitted"
+    assert before["limits"]["deadline_expired"] is True
+    assert before["unresolved_starts"] == 1
+    assert start_status() == "reserved"
+    assert [r["status"] for r in conductor.graph.node_runs(task["id"])] == [
+        "dispatched"
+    ]
+    assert audit_actions() == ["funding_review_settled"] * funding.FUNDING_REFUSAL_LIMIT
+
+    def untouched(*_args, **_kwargs):
+        pytest.fail("a task with reserved work past its deadline must be left alone")
+
+    monkeypatch.setattr(funding, "request", untouched)
+    # A healthy node checkpoints continuously. The running version matches and
+    # the newest step is fresh, so neither the strand nor the stall path fires.
+    monkeypatch.setattr(conductor, "_running_app_version", lambda: "running-version")
+    monkeypatch.setattr(
+        conductor, "_last_step_epoch_ms", lambda _key: int(time.time() * 1000)
+    )
+    monkeypatch.setattr(
+        conductor, "_STARTED_AT", time.monotonic() - conductor.TICK_SECONDS * 3
+    )
+    workflow_state = {"status": "PENDING"}
+    dbos = SimpleNamespace(
+        get_workflow_status=lambda _key: SimpleNamespace(
+            status=workflow_state["status"], app_version="running-version"
+        ),
+        cancel_workflow=untouched,
+        retrieve_workflow=untouched,
+        start_workflow=untouched,
+    )
+    monkeypatch.setattr(conductor.runtime, "is_launched", lambda: True)
+    monkeypatch.setattr(conductor.runtime, "init_dbos", lambda: dbos)
+    monkeypatch.setattr(conductor, "revalidate_escalations", lambda: None)
+    monkeypatch.setattr(conductor, "observe_reviewer_routing", lambda _policy: None)
+    monkeypatch.setattr(conductor, "ingest_eligible", lambda _policy: None)
+    monkeypatch.setattr(conductor, "_post_decision_card", untouched)
+    monkeypatch.setattr(conductor, "_notify_escalation", untouched)
+    monkeypatch.setattr(conductor, "_notify_person_once", untouched)
+    monkeypatch.setattr(intake_loop, "intake_tick", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(landing, "landing_tick", lambda _policy: None)
+    monkeypatch.setattr(work_item_pointer, "sync_pointers", lambda **_kwargs: None)
+
+    conductor.tick()
+    conductor.tick()
+
+    with Session(feedback_db) as db:
+        held = db.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == task["id"])
+        ).one()
+        queued = db.exec(
+            select(FactoryReceipt).where(FactoryReceipt.issue_number == 8)
+        ).one()
+        assert held.state == "admitted"
+        assert queued.state == "queued"
+    after = controls.task_snapshot(task["id"])
+    assert after["unresolved_starts"] == 1
+    assert after["evidence"] == before["evidence"]
+    assert start_status() == "reserved"
+    assert [r["status"] for r in conductor.graph.node_runs(task["id"])] == [
+        "dispatched"
+    ]
+    assert audit_actions() == ["funding_review_settled"] * funding.FUNDING_REFUSAL_LIMIT
+
+    # The attempt settles on evidence, as the live one eventually must, and the
+    # receipt becomes the idle shape the refusal bound is built for.
+    workflow_state["status"] = "SUCCESS"
+    result = {
+        "status": "succeeded",
+        "session_id": session_id,
+        "cost_usd": 0.25,
+        "head_sha": None,
+        "value": {"summary": "done"},
+        "artifact": {"status": "ok", "value": {"summary": "done"}},
+        "cleanup": {"status": "completed"},
+    }
+    assert conductor.graph.record_outcome(
+        task["id"], node_key, 1, "succeeded", 0.25, None, json.dumps(result)
+    ).ok
+    assert controls.record_start_outcome(
+        task["id"],
+        workflow,
+        "succeeded",
+        "worker",
+        cost_usd=0.25,
+        session_id=session_id,
+    )["ok"]
+    idle = controls.task_snapshot(task["id"])
+    assert idle["state"] == "admitted"
+    assert idle["unresolved_starts"] == 0
+    assert start_status() == "succeeded"
+
+    conductor.tick()
+
+    with Session(feedback_db) as db:
+        settled = db.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == task["id"])
+        ).one()
+        assert settled.state == "failed"
+    assert controls.task_snapshot(task["id"])["evidence"] == {
+        "state": "funding_review_unavailable",
+        "reason": (
+            f"{funding.FUNDING_REFUSAL_LIMIT} consecutive funding "
+            "reviews could not start"
+        ),
+    }
+    assert audit_actions() == ["funding_review_settled"] * funding.FUNDING_REFUSAL_LIMIT
+
+    conductor.tick()
+
+    with Session(feedback_db) as db:
+        admitted = db.exec(
+            select(FactoryReceipt).where(FactoryReceipt.issue_number == 8)
+        ).one()
+        assert admitted.state == "admitted"
+        assert admitted.task_id is not None
+
+
 def test_astra_decides_extensions_repeatedly_without_mutating_original_policy(
     feedback_db, monkeypatch
 ):
