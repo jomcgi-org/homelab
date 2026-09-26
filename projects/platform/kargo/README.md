@@ -181,8 +181,22 @@ over and both are worth knowing before anyone tries it:
 There is also a residual race: `argocd-wait` has no `desiredRevision` field, so
 it asserts against whatever target is current. `argocd-update` waits for its
 sync operation first, so the applied manifests are the promoted chart's, but
-ArgoCD's status refresh can still briefly report the pre-apply Healthy. #4745
-tracks closing this properly.
+ArgoCD's status refresh can still briefly report the pre-apply Healthy.
+
+**The revision-aware gate, staged and off (#4745).** The close for that race is
+wired but not yet required: `promotion.revisionGate.enabled` in `values.yaml`
+defaults to `false`, and while it is false the render is identical to a chart
+with no gate at all (`promotion_gate_test.py` pins this). When it is true, a
+Stage carrying `revisionURL` gains an `http` step after `argocd-wait`, the same
+construction as the EmberVM conformance step minus the verdict: it polls the
+workload's own `/healthz` until the body reports `chart_version` equal to the
+Freight's chart version (pre-evaluated by Kargo from the same expression
+`argocd-update` used), and nothing short of the retry timeout fails it. The
+monolith prod Stage carries the URL today. What is missing is the field: the
+monolith's `/healthz` does not return `chart_version` yet, so flipping the flag
+before that ships would poll every promotion to timeout. Sequence is chart
+first (expose the field, publish, confirm the live body carries it), then flip
+the flag. Functional assertions beyond that stay out of scope; see the issue.
 
 **If a Promotion wedges.** A failed Promotion never verifies its Freight, so the
 chart is stranded upstream. The lever is Freight approval in the UI, which
