@@ -87,6 +87,14 @@ spec:
               value: {{ .Values.backend.leaderSingletons | quote }}
             - name: HOME_OBSERVABILITY_PRIME_ENABLED
               value: {{ .Values.backend.primeObservabilitySnapshots | quote }}
+            # The chart release this pod was rolled out with. /healthz echoes
+            # it as chart_version so the Kargo promotion gate (#4745) can
+            # assert the pod runs the promoted chart rather than trusting a
+            # point-in-time Healthy from ArgoCD. Unconditional: an absent
+            # variable would read as "gate not applicable" instead of a
+            # mismatch.
+            - name: MONOLITH_CHART_VERSION
+              value: {{ .Chart.Version | quote }}
             {{- if .Values.onepassword.enabled }}
             - name: ICAL_FEED_URL
               valueFrom:

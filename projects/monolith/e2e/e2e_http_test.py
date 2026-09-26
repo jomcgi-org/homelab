@@ -43,7 +43,7 @@ class TestLiveServerSmoke:
         """GET /healthz returns 200 on the live server."""
         r = httpx.get(f"{live_server}/healthz")
         assert r.status_code == 200
-        assert r.json() == {"status": "ok"}
+        assert r.json() == {"status": "ok", "chart_version": None}
 
 
 # ---------------------------------------------------------------------------

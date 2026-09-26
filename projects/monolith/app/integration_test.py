@@ -94,10 +94,18 @@ def client_fixture(session):
 
 
 def test_healthz_returns_ok(client):
-    """GET /healthz → 200, {"status": "ok"}."""
+    """GET /healthz → 200, {"status": "ok", "chart_version": null}."""
     response = client.get("/healthz")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    assert response.json() == {"status": "ok", "chart_version": None}
+
+
+def test_healthz_reports_chart_version_from_env(client, monkeypatch):
+    """With MONOLITH_CHART_VERSION set, /healthz echoes it (#4745 gate)."""
+    monkeypatch.setenv("MONOLITH_CHART_VERSION", "1.2.3")
+    response = client.get("/healthz")
+    assert response.status_code == 200
+    assert response.json()["chart_version"] == "1.2.3"
 
 
 # ---------------------------------------------------------------------------

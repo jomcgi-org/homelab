@@ -366,3 +366,21 @@ def test_backend_carries_browser_and_bearer_identity_verifiers(chart_context):
         "AUTH_CLOUDFLARE_ACCESS_ISSUER",
     ):
         assert f"name: {name}" in rendered, f"{name} missing from the rendered chart"
+
+
+def test_backend_exposes_chart_version_for_kargo_gate(chart_context):
+    """The backend carries MONOLITH_CHART_VERSION set from .Chart.Version.
+
+    /healthz echoes it as chart_version so the Kargo revision gate (#4745)
+    can assert the pod runs the promoted chart. Unconditional, so an absent
+    variable can never read as "gate not applicable".
+    """
+    rendered = chart_context["rendered"]
+    chart_yaml = (chart_context["chart_dir"] / "Chart.yaml").read_text()
+    chart_version = re.search(r"^version:\s*(\S+)", chart_yaml, re.M).group(1)
+    chart_version = chart_version.strip("'\"")
+
+    assert re.search(
+        rf'- name: MONOLITH_CHART_VERSION\n\s+value: "{re.escape(chart_version)}"',
+        rendered,
+    ), "backend container is missing MONOLITH_CHART_VERSION from .Chart.Version"
