@@ -1486,14 +1486,22 @@ defmodule Embervm.Dispatcher do
         # live_vms counts every VM on the node, not only the task pool. The
         # checker subtracts the VMs that are live for another reason: the node's
         # own session, serving, stateful and group-member enumerations (each
-        # disjoint from primed_vm_ids) plus task VMs a worker has already
-        # claimed. primed_count is deliberately not used: a node that stops
-        # reporting its pool (#4838) zeroes it, while live_vms stays honest.
+        # disjoint from primed_vm_ids), task VMs a worker has already claimed,
+        # and primed VMs a session holds before its first operation moves them
+        # out of the node's task registry (#6422). That last count matches the
+        # node's own primed ids against the durable session claims, so it needs
+        # both sides to agree. It reads claimed_vm_ids, rebuilt from live
+        # session rows every sweep, and not session_reservations, which has no
+        # expiry: a reservation leaked by a failed create must stay visible
+        # here rather than be subtracted. primed_count is deliberately not
+        # used: a node that stops reporting its pool (#4838) zeroes it, while
+        # live_vms stays honest.
         {instance_id, %{
           "live_vms" => Map.get(facts, :live_vms, 0),
           "primed_count" => length(primed_vm_ids),
           "non_pool_vms" => node_non_pool_vm_count(facts),
-          "reserved_vms" => Map.get(reserved_by_instance, instance_id, 0)
+          "reserved_vms" => Map.get(reserved_by_instance, instance_id, 0),
+          "session_held_vms" => Enum.count(primed_vm_ids, &MapSet.member?(state.claimed_vm_ids, &1))
         }}
       end
 

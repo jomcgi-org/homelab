@@ -910,11 +910,16 @@ never stores or witnesses anything that scales with the fleet.
   primed pool) plus claimed task VMs. The checker flags only the live VMs left
   over. It keeps `live_vms` rather than switching to `primed_count` because a
   node that stops reporting its pool zeroes `primed_count` too, which would
-  hide the wedge the invariant exists to catch (#4838). Brief windows can
-  still read red at a single checkpoint: a primed VM mid-teardown, a session
-  VM claimed from the pool before its first assign, a finished task VM the
-  node has not yet dropped, and task VMs orphaned by a control-plane restart.
-  A red S4 there is not a regression of this fix.
+  hide the wedge the invariant exists to catch (#4838). A session's VM is
+  not brief: it stays a primed task VM on the node until the session's first
+  operation adopts it, and a session destroyed unused never leaves the task
+  registry. The live dev lane failed S4 on every suite until checkpoints also
+  counted, per node, the primed ids the control plane holds as durable session
+  claims. Bare session reservations are deliberately not counted: they have no
+  expiry, so one leaked by a failed create must still read red. Brief windows
+  can still read red at a single checkpoint: a primed VM mid-teardown, a
+  session VM between reservation and commit, a finished task VM the node has
+  not yet dropped, and task VMs orphaned by a control-plane restart.
   **Planned**: the TLC tier, trace validation of `adoption.tla` against dev
   SpecTrace windows (#6415). The broader ADR embervm/034 harness beyond that
   is not planned (#4761, #4763 closed).

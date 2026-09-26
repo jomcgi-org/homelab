@@ -903,6 +903,13 @@ defmodule Embervm.SpecTrace.CheckerTest do
       assert inventory_verdict(Checker.run(SQLite, store))[:verdict] == :pass
     end
 
+    test "inventory_reconciled passes with a session-held primed VM and an empty pool", %{store: store} do
+      report = %{"live_vms" => 1, "primed_count" => 1, "non_pool_vms" => 0, "reserved_vms" => 0, "session_held_vms" => 1}
+      :ok = SQLite.write(store, [inventory_checkpoint("session-held", 175, %{"node-1:wl" => []}, %{"node-1" => report})])
+
+      assert inventory_verdict(Checker.run(SQLite, store))[:verdict] == :pass
+    end
+
     test "inventory_reconciled ignores malformed non-pool counts", %{store: store} do
       report = %{"live_vms" => 1, "primed_count" => 0, "non_pool_vms" => "1", "reserved_vms" => -1}
       :ok = SQLite.write(store, [inventory_checkpoint("malformed", 180, %{"node-1:wl" => []}, %{"node-1" => report})])

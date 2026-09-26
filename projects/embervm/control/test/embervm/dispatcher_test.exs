@@ -1598,6 +1598,44 @@ defmodule Embervm.DispatcherTest do
     assert eventually(fn -> state_of(ctx, tid) == :succeeded end)
   end
 
+  # #6422 again: a session's primed VM stays in the node's task registry (and
+  # its primed_vm_ids) until the session's first operation adopts it, while the
+  # control plane holds it only as a durable session claim. The checkpoint must
+  # count it per instance, matched by id against the node's own primed list: an
+  # adopted session's claim is no longer primed and must not count, and a bare
+  # reservation (no expiry, leaked by a failed create) must not count either.
+  test "a checkpoint counts a session-held primed VM under its node instance" do
+    System.put_env("EMBERVM_SPEC_TRACE", "on")
+    Embervm.SpecTrace.configure()
+    trace_path = Path.join(System.tmp_dir!(), "spec_trace_session_held_#{System.unique_integer([:positive])}.db")
+
+    on_exit(fn ->
+      System.put_env("EMBERVM_SPEC_TRACE", "off")
+      Embervm.SpecTrace.configure()
+      File.rm_rf!(trace_path)
+    end)
+
+    store = start_supervised!({Embervm.SpecTrace.Store.SQLite, name: nil, path: trace_path})
+    writer = start_supervised!({Embervm.SpecTrace.Writer, store_mod: Embervm.SpecTrace.Store.SQLite, store: store, batch_size: 1, flush_ms: 5})
+
+    ctx = start_stack(claimed_vm_ids_fun: fn -> MapSet.new(["vm-session-1", "vm-adopted"]) end)
+    put_catalog(ctx, "wl-a", cap: 10)
+    :ok = Dispatcher.reserve_session_vm(ctx.name, "vm-leaked-reservation")
+    put_facts(ctx, "wl-a", live: 3, primed_ids: ["vm-session-1", "vm-leaked-reservation", "vm-other"])
+
+    Dispatcher.sweep(ctx.name)
+
+    :ok = Embervm.SpecTrace.drain(writer)
+    {:ok, records} = Embervm.SpecTrace.Store.SQLite.read_window(store, action: "checkpoint")
+
+    report =
+      Enum.find_value(records, fn record -> get_in(record, ["vars", "node_reported", "node-4"]) end)
+
+    assert report, "no checkpoint carried node-4 testimony: #{inspect(records)}"
+    assert report["primed_count"] == 3
+    assert report["session_held_vms"] == 1
+  end
+
   # The negative half: adoption that adopts NOTHING must emit no record.
   # adopt_inventory is additive and idempotent and runs every sweep, so emitting
   # per sweep would flood the trace with no-ops and make a genuine adoption
