@@ -207,6 +207,7 @@ def test_only_narrow_kubernetes_tools_join_the_agent_catalogue():
         "report_distress",
         "kubernetes_read",
         "kubernetes_pod_logs",
+        "verify_deployment",
     )
     loaded = _loaded_modules()
     assert "agent_kubernetes.client" in loaded

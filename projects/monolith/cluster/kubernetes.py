@@ -156,6 +156,29 @@ class KubernetesClient:
             return None
         return result.get("status")
 
+    async def get_argocd_application(
+        self, name: str, namespace: str = "argocd"
+    ) -> dict | None:
+        """The whole Application object, None only when it does not exist.
+
+        Unlike :meth:`get_resource`, a Forbidden or server error raises instead
+        of reading as a miss, so a caller that decides from the object cannot
+        mistake a missing ClusterRole verb for a missing app.
+        """
+        api = await self._ensure_client()
+        try:
+            return await client.CustomObjectsApi(api).get_namespaced_custom_object(
+                group=_ARGO[0],
+                version=_ARGO[1],
+                namespace=namespace,
+                plural=_ARGO[2],
+                name=name,
+            )
+        except client.exceptions.ApiException as exc:
+            if exc.status == 404:
+                return None
+            raise
+
     async def list_kargo_freight(
         self,
         namespace: str = "kargo-monolith",

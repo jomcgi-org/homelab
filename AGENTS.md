@@ -69,7 +69,11 @@ line can opt out with `ratchet-allow: <rule> (<reason>)` in a comment.
 - Completion claims are verified, not trusted: check the artifact (`git show
   --stat`, re-read the file) before building on or reporting another agent's
   work. A change that must deploy is done only when the rollout is verified
-  live; `pr-workflow` has the checklist.
+  live: call the `verify_deployment` MCP tool (on both MCP surfaces) with the
+  app and, for a chart app, the chart version the write-back produced (for a
+  git-tracked app, nothing: `verified` with `reconciled_at` at least five
+  minutes after the merge is enough, past ArgoCD's cache of HEAD), poll while it says `in_progress`, and report its verdict.
+  `pr-workflow` has the rest of the checklist.
 - When debugging, state the hypothesis and run the one command that would
   falsify it before writing any fix.
 - For site copy and CV prose, audit facts and flag unsupportable claims, but

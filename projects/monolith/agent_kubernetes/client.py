@@ -582,13 +582,31 @@ class RestrictedKubernetesClient:
         return self._api
 
     async def read(self, request: ReadRequest) -> ReadResult:
+        raw, next_token = await self._fetch(request)
+        if request.verb == "get":
+            return ReadResult([_detail(request.rule, raw)], None)
+        return ReadResult([_list_item(request.rule, item) for item in raw], next_token)
+
+    async def get_unprojected(self, request: ReadRequest) -> dict[str, Any]:
+        """One validated GET, returned without the model-facing projection.
+
+        For in-process callers that derive their own bounded result from the
+        object (``shared.rollout.verdict``), never for returning the object to
+        a caller. Same rule table, timeout, and error classification as
+        :meth:`read`.
+        """
+        if request.verb != "get":
+            raise InvalidObservationRequest("get_unprojected supports get only")
+        raw, _ = await self._fetch(request)
+        return raw
+
+    async def _fetch(self, request: ReadRequest) -> tuple[Any, str | None]:
         try:
             async with asyncio.timeout(OPERATION_TIMEOUT_SECONDS):
                 api = await self._ensure_client()
                 if request.rule.api == "custom":
-                    raw, next_token = await self._read_custom(api, request)
-                else:
-                    raw, next_token = await self._read_typed(api, request)
+                    return await self._read_custom(api, request)
+                return await self._read_typed(api, request)
         except TimeoutError as exc:
             raise ObservationFailure(
                 "timeout", "Kubernetes observation timed out"
@@ -597,10 +615,6 @@ class RestrictedKubernetesClient:
             raise
         except Exception as exc:
             raise _classify_api_error(exc) from exc
-
-        if request.verb == "get":
-            return ReadResult([_detail(request.rule, raw)], None)
-        return ReadResult([_list_item(request.rule, item) for item in raw], next_token)
 
     async def _read_typed(
         self, api: ApiClient, request: ReadRequest

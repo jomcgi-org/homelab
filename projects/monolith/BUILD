@@ -2927,6 +2927,16 @@ py_test(
 )
 
 py_test(
+    name = "shared_rollout_test",
+    srcs = ["shared/rollout_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_shared",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "shared_inference_test",
     srcs = ["shared/inference_test.py"],
     imports = ["."],

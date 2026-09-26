@@ -40,6 +40,23 @@ class _Observer:
             raise self.failure
         return self.read_result
 
+    async def get_unprojected(self, request):
+        self.read_request = request
+        if self.failure:
+            raise self.failure
+        return {
+            "metadata": {"name": request.name},
+            "spec": {"source": {"chart": "monolith", "targetRevision": "0.5.0"}},
+            "status": {
+                "sync": {"status": "Synced", "revision": "0.5.0"},
+                "health": {"status": "Healthy"},
+                "operationState": {
+                    "phase": "Succeeded",
+                    "syncResult": {"revision": "0.5.0"},
+                },
+            },
+        }
+
     async def pod_logs(self, **kwargs):
         self.log_request = kwargs
         if self.failure:
@@ -187,4 +204,83 @@ async def test_observation_failure_is_explicit_and_client_is_closed(monkeypatch)
     assert response["freshness"]["successful"] is False
     assert response["coverage"]["resource"] == "freights"
     assert response["coverage"]["complete"] is False
+    assert _Observer.instances[0].closed is True
+
+
+@pytest.mark.parametrize(
+    "principal",
+    [
+        anonymous_principal(),
+        replace(AUTHORIZED, subject="another-service"),
+        replace(AUTHORIZED, groups=()),
+    ],
+)
+@pytest.mark.asyncio
+async def test_verify_deployment_rejects_wrong_principals(monkeypatch, principal):
+    monkeypatch.setattr(subject, "current_principal", lambda: principal)
+    response = await subject.verify_deployment("monolith")
+    assert response["ok"] is False
+    assert response["error"]["code"] == "unauthorized"
+    assert _Observer.instances == []
+
+
+@pytest.mark.asyncio
+async def test_verify_deployment_reads_only_the_argocd_application(monkeypatch):
+    monkeypatch.setattr(subject, "current_principal", lambda: AUTHORIZED)
+    response = await subject.verify_deployment("monolith", expected_revision="0.4.9")
+    assert response["ok"] is True
+    assert response["verdict"] == "verified"
+    assert response["live_revision"] == "0.5.0"
+    assert response["freshness"]["successful"] is True
+    request = _Observer.instances[0].read_request
+    assert (request.verb, request.rule.api_group, request.rule.resource) == (
+        "get",
+        "argoproj.io",
+        "applications",
+    )
+    assert (request.namespace, request.name) == ("argocd", "monolith")
+    assert _Observer.instances[0].closed is True
+
+
+@pytest.mark.asyncio
+async def test_verify_deployment_reports_not_yet_reached(monkeypatch):
+    monkeypatch.setattr(subject, "current_principal", lambda: AUTHORIZED)
+    response = await subject.verify_deployment("monolith", expected_revision="0.5.1")
+    assert response["ok"] is True
+    assert response["verdict"] == "in_progress"
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"app": "Not_A_Name"},
+        {"app": "monolith", "expected_revision": ""},
+        {"app": "monolith", "expected_revision": "x" * 65},
+    ],
+)
+@pytest.mark.asyncio
+async def test_verify_deployment_rejects_bad_input_before_io(monkeypatch, kwargs):
+    monkeypatch.setattr(subject, "current_principal", lambda: AUTHORIZED)
+    response = await subject.verify_deployment(**kwargs)
+    assert response["ok"] is False
+    assert response["error"]["code"] == "invalid_request"
+    assert _Observer.instances == []
+
+
+@pytest.mark.asyncio
+async def test_verify_deployment_failure_is_explicit_and_client_is_closed(monkeypatch):
+    monkeypatch.setattr(subject, "current_principal", lambda: AUTHORIZED)
+    _Observer.failure = ObservationFailure("not_found", "resource was not found")
+    response = await subject.verify_deployment("missing-app")
+    assert response["ok"] is False
+    assert response["error"]["code"] == "not_found"
+    assert _Observer.instances[0].closed is True
+
+
+@pytest.mark.asyncio
+async def test_verify_deployment_rejects_a_sha_for_a_chart_app(monkeypatch):
+    monkeypatch.setattr(subject, "current_principal", lambda: AUTHORIZED)
+    response = await subject.verify_deployment("monolith", expected_revision="abcdef1")
+    assert response["ok"] is False
+    assert response["error"]["code"] == "invalid_request"
     assert _Observer.instances[0].closed is True
