@@ -1494,7 +1494,7 @@ mismatch without silently rewriting the decision record.
 | `services/002` | Discord Chat Automation & Reactivity | Draft, superseded in practice: reminders, ambient engagement, thread sessions and changelog posts shipped through chat/001, agents/035 and agents/043; #3901 to #3904 hold the remainder | deleted |
 | `services/003` | Knowledge Search Overlay | Deprecated | deleted |
 | `services/004` | D&D Sourcebook Knowledge Graph Integration | Deprecated | deleted |
-| `services/005` | Repo Markdown Knowledge Graph Sync via OCI Volume | Implemented (see: /projects/monolith/knowledge/repo_docs.py) | deleted |
+| `services/005` | Repo Markdown Knowledge Graph Sync via OCI Volume | Not shipped as designed: the isolated repo-doc store was never wired into the gardener or provenance path, its reconcile job was removed (66eb33979), and the tables were dropped under #3905; the baked manifest survives only as the docfix path allowlist (see: /projects/monolith/knowledge/repo_docs.py) | deleted |
 | `services/006` | Stars grid ingest via a dedicated job writing to the monolith DB | Accepted, shipped (see: /projects/monolith/stars/grid_gen) | deleted |
 | `services/007` | Stars quality model and heatmap | Accepted, shipped (see: /projects/monolith/stars/models.py) | deleted |
 | `services/008` | Stars live and historical heatmaps via month-bucketed accumulate-at-drop | Superseded in part by 009 | deleted |

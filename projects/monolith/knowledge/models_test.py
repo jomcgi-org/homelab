@@ -206,30 +206,6 @@ def test_atom_raw_provenance_roundtrip(session):
     assert loaded.raw_fk == raw.id
 
 
-def test_repo_doc_and_chunk_roundtrip(session):
-    from knowledge.models import RepoDoc, RepoDocChunk
-
-    doc = RepoDoc(path="docs/security.md", content_hash="abc123", title="Security")
-    session.add(doc)
-    session.commit()
-    session.refresh(doc)
-
-    chunk = RepoDocChunk(
-        repo_doc_fk=doc.id,
-        chunk_index=0,
-        section_header="# Security",
-        chunk_text="never hardcode secrets",
-        embedding=[0.1] * 1024,
-    )
-    session.add(chunk)
-    session.commit()
-    session.refresh(chunk)
-
-    assert chunk.repo_doc_fk == doc.id
-    assert len(chunk.embedding) == 1024
-    assert doc.path == "docs/security.md"
-
-
 def test_atom_raw_provenance_rejects_both_null():
     with pytest.raises(ValueError, match="at least one of atom_fk or raw_fk"):
         AtomRawProvenance(
