@@ -19,4 +19,3 @@ class DemoPgSavings(SQLModel, table=True):  # nosemgrep
     last_sample_at: datetime | None = Field(default=None)
     last_state: str | None = Field(default=None)
     last_generation: int | None = Field(default=None)
-
