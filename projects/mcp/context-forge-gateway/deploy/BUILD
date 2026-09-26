@@ -1,7 +1,7 @@
 # gazelle:argocd disabled
 # The argocd gazelle extension would generate an argocd_app here (this is
-# the one git-chart single-source app) whose template and semgrep tests
-# depend on the chart target. The chart's visibility to this package is
+# the one git-chart single-source app) whose template test
+# depends on the chart target. The chart's visibility to this package is
 # held by a gazelle keep marker in ../chart/BUILD, and the renders the
 # admissibility gate consumes are the hand-written targets below.
 

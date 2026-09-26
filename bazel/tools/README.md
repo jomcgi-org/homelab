@@ -22,4 +22,3 @@ Shared Bazel build tooling: rules, wrappers, and helper binaries used across the
 | [postgres](postgres/) | Module extension registering `oci_postgres`, which extracts PostgreSQL 16 and pgvector binaries from an OCI image for use as test data dependencies | `//bazel/tools/postgres:extensions.bzl` |
 | [pytest](pytest/) | Thin `py_test` wrapper macro that sets `pytest_main = True` by default across all Python test targets in the repo | `//bazel/tools/pytest:defs.bzl` |
 | [python](python/) | Gazelle Python manifest configuration (`gazelle_python_manifest`, `modules_mapping`) for keeping import-to-package mappings current during BUILD file generation | Gazelle config; no `.bzl` rules |
-| [semgrep](semgrep/) | Python helper script that uploads semgrep scan results to Semgrep App after CI scans; always exits 0 so upload failures never affect Bazel test outcomes | Python script; no `.bzl` files |

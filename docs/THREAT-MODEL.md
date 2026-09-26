@@ -95,6 +95,6 @@ Ranked by what an attacker gets. Each issue holds the detail.
    cleanly but misbehaves promotes.
 9. **The auth domain has no delegated workload identity**
    ([#4940](https://github.com/jomcgi-org/homelab/issues/4940)).
-   The design umbrella behind finding 3: authentik issues standing
+   The design umbrella behind finding 2: authentik issues standing
    identity, while monolith-side attenuation, a broker, and delegated
    delivery remain gated proposals with no selected implementation.
