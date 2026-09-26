@@ -26,7 +26,6 @@ argocd_app(
     name = "argocd-gke",
     chart = "projects/platform/argocd",
     chart_files = ":chart",
-    generate_semgrep = False,
     namespace = "argocd",
     release_name = "argocd",
     tags = [

@@ -1,5 +1,4 @@
 load("//bazel/helm:defs.bzl", "helm_chart")
-load("//bazel/semgrep/defs:defs.bzl", "semgrep_test")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 # This script is mounted from the Helm chart and executed with the image's
@@ -34,12 +33,6 @@ py_test(
     deps = ["@pip//pytest"],
 )
 
-semgrep_test(
-    name = "reconcile_team_mapping_test_semgrep_test",
-    srcs = ["reconcile_team_mapping_test.py"],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-)
-
 py_test(
     name = "reconcile_tools_test",
     srcs = ["reconcile_tools_test.py"],
@@ -48,10 +41,4 @@ py_test(
         "RECONCILE_TOOLS_SCRIPT": "$(rootpath files/reconcile_tools.py)",
     },
     deps = ["@pip//pytest"],
-)
-
-semgrep_test(
-    name = "reconcile_tools_test_semgrep_test",
-    srcs = ["reconcile_tools_test.py"],
-    rules = ["//bazel/semgrep/rules:python_rules"],
 )

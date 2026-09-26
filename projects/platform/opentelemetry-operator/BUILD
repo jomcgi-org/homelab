@@ -12,13 +12,6 @@ argocd_app(
     chart_files = ":chart",
     namespace = "opentelemetry-operator",
     release_name = "opentelemetry-operator",
-    # Upstream defaults to uid 65532 and runAsNonRoot; only writable FS flagged; wget health-check containers lack resource limits; wget health-check containers also lack readiness probes
-    semgrep_exclude_rules = [
-        "require-tmp-emptydir",
-        "require-resource-limits",
-        "require-readiness-probe",
-        "yaml.kubernetes.security.writable-filesystem-container.writable-filesystem-container",
-    ],
     tags = [
         "helm",
         "template",

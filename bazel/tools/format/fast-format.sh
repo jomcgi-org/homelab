@@ -195,7 +195,7 @@ for pid in "${PIDS[@]}"; do wait "$pid" 2>/dev/null || true; done
 # gated a bare `gazelle` call that nothing ever set the variable to disable).
 # The only gazelle available on PATH was the multitool lockfile's
 # aspect-gazelle, a different program from //:gazelle_binary: without this
-# repo's helm, semgrep, bzl, go, proto and python extensions it regenerated
+# repo's helm, bzl, go, proto and python extensions it regenerated
 # BUILD files by its own defaults, rewriting external Go deps to
 # :go_default_library targets that do not exist. Because the call was wrapped in
 # `2>/dev/null || true`, that damage was silent, and it landed in whichever

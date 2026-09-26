@@ -1,5 +1,4 @@
 load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
-load("//bazel/semgrep/defs:defs.bzl", "semgrep_target_test", "semgrep_test")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 # gazelle:exclude python_deps.py
@@ -16,7 +15,7 @@ load(":python_tar.bzl", "python_tar")
 
 # No `gazelle` here on purpose. The multitool lockfile's gazelle is
 # aspect-build/aspect-gazelle, a different program from this repo's
-# //:gazelle_binary, which is bazel-gazelle plus the helm, semgrep, bzl, go,
+# //:gazelle_binary, which is bazel-gazelle plus the helm, bzl, go,
 # proto and python extensions. Running the multitool one regenerates BUILD
 # files by its own defaults: it rewrites external Go deps to
 # :go_default_library targets that do not exist, and the tree then fails
@@ -338,14 +337,6 @@ oci_image_info(
     visibility = ["//visibility:public"],
 )
 
-semgrep_target_test(
-    name = "python_deps_semgrep_test",
-    lockfiles = ["//bazel/requirements:all.txt"],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-    sca_rules = ["//bazel/semgrep/rules:sca_python_rules"],
-    target = ":python_deps",
-)
-
 # Unit tests verifying that the pip deps declared in python_deps.py are
 # importable and the key public APIs are constructible.
 py_test(
@@ -415,20 +406,6 @@ py_test(
         "@platforms//os:macos",
     ],
     deps = ["@pip//pytest"],
-)
-
-semgrep_test(
-    name = "tools_image_test_semgrep_test",
-    srcs = ["tools_image_test.py"],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-    tags = ["semgrep"],
-)
-
-semgrep_test(
-    name = "python_deps_test_semgrep_test",
-    srcs = ["python_deps_test.py"],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-    tags = ["semgrep"],
 )
 
 bzl_library(

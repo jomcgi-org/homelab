@@ -1,5 +1,4 @@
 load("//bazel/helm:defs.bzl", "argocd_app", "helm_chart", "helm_template_test")
-load("//bazel/semgrep/defs:defs.bzl", "semgrep_test")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 helm_chart(
@@ -62,7 +61,6 @@ argocd_app(
     chart = "projects/monolith-agents/chart",
     chart_files = ":chart",
     generate_manifests = False,
-    generate_semgrep = False,
     namespace = "monolith-agents",
     release_name = "monolith-agents",
     tags = [
@@ -70,10 +68,4 @@ argocd_app(
         "template",
     ],
     values_files = ["//projects/monolith-agents/deploy:deploy_values"],
-)
-
-semgrep_test(
-    name = "chart_render_test_semgrep_test",
-    srcs = ["chart_render_test.py"],
-    rules = ["//bazel/semgrep/rules:python_rules"],
 )

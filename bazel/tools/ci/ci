@@ -210,7 +210,7 @@ cmd_regen() {
 	# rather than a fallback. The only gazelle this repo can put on a Mac's
 	# PATH is the multitool one (aspect-gazelle), which is a different program
 	# from //:gazelle_binary and silently rewrites BUILD files by its own
-	# defaults. The correct generator carries this repo's helm, semgrep, bzl,
+	# defaults. The correct generator carries this repo's helm, bzl,
 	# go, proto and python extensions, links a cgo tree-sitter, and so can only
 	# be built natively: BuildBuddy's linux/amd64 executors cannot cross-compile
 	# it for darwin. CI's Format stage runs it via

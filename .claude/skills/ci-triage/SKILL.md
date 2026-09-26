@@ -65,11 +65,6 @@ workflow executors and the platforms are wrong.
   `max_tokens`, or retry count breaks assertions that hardcode the old value.
   Grep the test tree for the old value and fix the assertions in the same commit,
   or the failure looks like flakiness and takes a second push.
-- **Semgrep rules.** `no-sync-session-in-async-def`, `no-session-in-to-thread`,
-  `session-add-in-loop`, `no-hardcoded-k8s-service-url`, and
-  `no-hardcoded-image-digest` each encode a real production incident. See
-  `projects/monolith/CLAUDE.md` for the first three. Fix the code, do not silence
-  the rule.
 - **`Push images` failing on merge.** No longer a missed bump: PRs do not carry
   chart versions (ADR platform/009 decision 1). Read the failing stage.
   - **write-back (`write-back-versions.sh`)**: the charts published but main

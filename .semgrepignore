@@ -8,7 +8,7 @@ projects/monolith/frontend/src/lib/public/docs/docs-manifest.json
 # Our own Semgrep rule definitions and their test fixtures: these files
 # intentionally contain the patterns the rules match (eval/exec, raw SQL,
 # subprocess, etc.) as match targets, so the Pro registry rules false-positive
-# on them. The rules are validated by main_semgrep_test, not by scanning them.
+# on them. Semgrep Managed Scans honours this file, so keep them listed.
 bazel/semgrep/rules/
 bazel/semgrep/tests/
 

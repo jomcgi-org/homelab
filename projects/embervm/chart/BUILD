@@ -1,5 +1,4 @@
 load("//bazel/helm:defs.bzl", "helm_chart")
-load("//bazel/semgrep/defs:defs.bzl", "semgrep_test")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 # EmberVM control-plane chart. The control-plane image tag is pinned into
@@ -189,12 +188,6 @@ py_test(
     deps = ["@pip//pyyaml"],
 )
 
-semgrep_test(
-    name = "store_validation_config_test_semgrep_test",
-    srcs = ["store_validation_config_test.py"],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-)
-
 # Keeps the published single-host overlay independent of the homelab reference
 # deployment. The test renders the real chart and checks the exact minimum lane.
 py_test(
@@ -213,12 +206,6 @@ py_test(
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
     },
     deps = ["@pip//pyyaml"],
-)
-
-semgrep_test(
-    name = "standalone_quickstart_test_semgrep_test",
-    srcs = ["standalone_quickstart_test.py"],
-    rules = ["//bazel/semgrep/rules:python_rules"],
 )
 
 py_test(
@@ -353,30 +340,6 @@ py_test(
     deps = ["@pip//pytest"],
 )
 
-semgrep_test(
-    name = "chart_hypervisor_epoch_test_semgrep_test",
-    srcs = ["chart_hypervisor_epoch_test.py"],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-)
-
-semgrep_test(
-    name = "chart_sync_wave_test_semgrep_test",
-    srcs = ["chart_sync_wave_test.py"],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-)
-
-semgrep_test(
-    name = "scratch_prep_test_semgrep_test",
-    srcs = ["scratch_prep_test.py"],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-)
-
-semgrep_test(
-    name = "chart_env_identity_test_semgrep_test",
-    srcs = ["chart_env_identity_test.py"],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-)
-
 # Pins the two ADR-014-style control-plane gates (#5230) to their chart keys:
 # EMBERVM_PLACEMENT_RETRY (dispatcher.placementRetry) and
 # EMBERVM_ASYNC_LIFECYCLE_WRITES (asyncLifecycleWrites) must always render,
@@ -399,18 +362,6 @@ py_test(
     deps = ["@pip//pytest"],
 )
 
-semgrep_test(
-    name = "chart_control_env_gate_test_semgrep_test",
-    srcs = ["chart_control_env_gate_test.py"],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-)
-
-semgrep_test(
-    name = "noded_networkpolicy_test_semgrep_test",
-    srcs = ["noded_networkpolicy_test.py"],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-)
-
 py_test(
     name = "chart_brick_floor_test",
     srcs = ["chart_brick_floor_test.py"],
@@ -429,12 +380,6 @@ py_test(
         "@pip//pytest",
         "@pip//pyyaml",
     ],
-)
-
-semgrep_test(
-    name = "chart_brick_floor_test_semgrep_test",
-    srcs = ["chart_brick_floor_test.py"],
-    rules = ["//bazel/semgrep/rules:python_rules"],
 )
 
 py_test(
@@ -475,34 +420,4 @@ py_test(
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
     },
     deps = ["@pip//pyyaml"],
-)
-
-semgrep_test(
-    name = "chart_noded_tracing_test_semgrep_test",
-    srcs = ["chart_noded_tracing_test.py"],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-)
-
-semgrep_test(
-    name = "chart_control_plane_probe_test_semgrep_test",
-    srcs = ["chart_control_plane_probe_test.py"],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-)
-
-semgrep_test(
-    name = "chart_tokenbroker_spiffe_test_semgrep_test",
-    srcs = ["chart_tokenbroker_spiffe_test.py"],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-)
-
-semgrep_test(
-    name = "chart_noded_spiffe_test_semgrep_test",
-    srcs = ["chart_noded_spiffe_test.py"],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-)
-
-semgrep_test(
-    name = "chart_github_broker_test_semgrep_test",
-    srcs = ["chart_github_broker_test.py"],
-    rules = ["//bazel/semgrep/rules:python_rules"],
 )

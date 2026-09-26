@@ -1,6 +1,5 @@
 load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
-load("//bazel/semgrep/defs:defs.bzl", "semgrep_target_test", "semgrep_test")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 # Expose source files for the tools image genrule (//bazel/tools/image:homelab_cli_tar).
@@ -90,36 +89,6 @@ py_test(
     ],
 )
 
-semgrep_target_test(
-    name = "main_semgrep_test",
-    rules = ["//bazel/semgrep/rules:python_rules"],
-    target = ":main",
-)
-
-semgrep_test(
-    name = "auth_test_semgrep_test",
-    srcs = ["auth_test.py"],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-)
-
-semgrep_test(
-    name = "knowledge_test_semgrep_test",
-    srcs = ["knowledge_test.py"],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-)
-
-semgrep_test(
-    name = "main_test_semgrep_test",
-    srcs = ["main_test.py"],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-)
-
-semgrep_test(
-    name = "output_test_semgrep_test",
-    srcs = ["output_test.py"],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-)
-
 py_test(
     name = "tasks_test",
     srcs = ["tasks_test.py"],
@@ -130,12 +99,6 @@ py_test(
     ],
 )
 
-semgrep_test(
-    name = "tasks_test_semgrep_test",
-    srcs = ["tasks_test.py"],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-)
-
 py_test(
     name = "scheduler_test",
     srcs = ["scheduler_test.py"],
@@ -144,12 +107,6 @@ py_test(
         "@pip//pytest",
         "@pip//typer",
     ],
-)
-
-semgrep_test(
-    name = "scheduler_test_semgrep_test",
-    srcs = ["scheduler_test.py"],
-    rules = ["//bazel/semgrep/rules:python_rules"],
 )
 
 py_test(
@@ -163,12 +120,6 @@ py_test(
     ],
 )
 
-semgrep_test(
-    name = "knowledge_unit_test_semgrep_test",
-    srcs = ["knowledge_unit_test.py"],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-)
-
 py_test(
     name = "knowledge_note_empty_content_test",
     srcs = ["knowledge_note_empty_content_test.py"],
@@ -177,12 +128,6 @@ py_test(
         "@pip//pytest",
         "@pip//typer",
     ],
-)
-
-semgrep_test(
-    name = "knowledge_note_empty_content_test_semgrep_test",
-    srcs = ["knowledge_note_empty_content_test.py"],
-    rules = ["//bazel/semgrep/rules:python_rules"],
 )
 
 py_test(
@@ -194,10 +139,4 @@ py_test(
         "@pip//pytest",
         "@pip//typer",
     ],
-)
-
-semgrep_test(
-    name = "http_error_coverage_test_semgrep_test",
-    srcs = ["http_error_coverage_test.py"],
-    rules = ["//bazel/semgrep/rules:python_rules"],
 )

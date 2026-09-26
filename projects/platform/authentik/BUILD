@@ -1,5 +1,4 @@
 load("//bazel/helm:defs.bzl", "argocd_app", "helm_chart")
-load("//bazel/semgrep/defs:defs.bzl", "semgrep_test")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 helm_chart(
@@ -14,10 +13,6 @@ argocd_app(
     chart_files = ":chart",
     namespace = "authentik",
     release_name = "authentik",
-    semgrep_exclude_rules = [
-        "require-resource-limits",
-        "require-readiness-probe",
-    ],
     tags = [
         "helm",
         "template",
@@ -29,7 +24,6 @@ argocd_app(
     name = "authentik-gke",
     chart = "projects/platform/authentik",
     chart_files = ":chart",
-    generate_semgrep = False,
     namespace = "authentik",
     release_name = "authentik",
     tags = [
@@ -70,16 +64,4 @@ py_test(
         "@pip//pytest",
         "@pip//pyyaml",
     ],
-)
-
-semgrep_test(
-    name = "blueprint_tags_test_semgrep_test",
-    srcs = ["blueprint_tags_test.py"],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-)
-
-semgrep_test(
-    name = "operator_membership_test_semgrep_test",
-    srcs = ["operator_membership_test.py"],
-    rules = ["//bazel/semgrep/rules:python_rules"],
 )
