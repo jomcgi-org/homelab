@@ -2,7 +2,7 @@
 # PreToolUse hook: warn when content being written or edited contains an em-dash
 # (U+2014).
 #
-# The CLAUDE.md Writing Style section forbids em-dashes in new content. Use a
+# AGENTS.md forbids em-dashes in new content. Use a
 # comma, colon, parentheses, or split the sentence instead.
 #
 # This hook is advisory only. It emits a WARNING on stderr and exits 0 so the
@@ -40,12 +40,12 @@ if echo "$NEW_CONTENT" | grep -qP '\x{2014}' 2>/dev/null ||
 	EOF
 	cat >&2 <<-'EOF'
 
-		The CLAUDE.md Writing Style guide forbids em-dashes in new content.
+		AGENTS.md forbids em-dashes in new content.
 		Replace each em-dash with a comma, colon, parentheses, or split the
 		sentence instead. For example:
 
 		  Before: "The service (complex) handles auth."
-		  Use:    comma, colon, or parentheses (see CLAUDE.md Writing Style).
+		  Use:    comma, colon, or parentheses (see AGENTS.md Invariants).
 
 		This is advisory only. The write will proceed, but please revise the
 		content before committing.

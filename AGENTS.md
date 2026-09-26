@@ -1,8 +1,9 @@
 # AGENTS.md
 
 Instructions for every agent working in this repo, whatever the tool or
-model. Claude Code reads this through `.claude/CLAUDE.md`; other agents read it
-directly. Which model does which work is decided by the factory, not here.
+model. There is deliberately no CLAUDE.md: Claude Code (v2.1.277+) reads this
+file natively and would ignore it if one existed. Which model does which work
+is decided by the factory, not here.
 
 A Kubernetes homelab at
 [jomcgi-org/homelab](https://github.com/jomcgi-org/homelab). The GKE hub
@@ -203,6 +204,16 @@ follow): `pr-workflow`, `ci-triage`, `ship`, `stpa`,
 **Runbooks** (`docs/runbooks/`) are explicit-only: open one when Joe names it,
 a row above points at it, or a task asks for it. Index:
 `docs/runbooks/README.md`.
+
+**Agents** (`.claude/agents/`): `reviewer` reviews a finished PR diff once, at
+the end, and cannot edit; `stpa-analyst` refreshes a system's safety model.
+The reviewer must not be the agent that wrote the diff.
+
+**Claude Code hooks** (`.claude/settings.json`) are fast-fail duplicates of the
+CI and git gates plus a few advisories. A rule that must hold for every author
+lives in CI or a git hook, never only there. Claude Code's local memory is
+private to one machine: treat it as a lead, and put anything another agent
+needs in the KG.
 
 <!-- polylane:start -->
 ## Investigating production with Polylane
