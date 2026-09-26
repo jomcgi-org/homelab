@@ -285,7 +285,7 @@ the path noded attaches are byte-identical.
 {{/*
 Declared guest memory used only by the opt-in rootfs class filter. Values come
 from the same workload settings that render the Workload CRs, so deploy overlays
-such as the production pi and GKE semgrep sizes stay aligned with scheduling.
+such as the production pi and GKE runtime sizes stay aligned with scheduling.
 An unknown image lane, including the variable-size zip runtime, deliberately
 returns empty. The driver treats missing or malformed memory as eligible and
 bakes it with an explicit fail-closed log.
@@ -297,8 +297,6 @@ Input: (dict "ctx" $ctx "name" $name).
 {{- $name := .name -}}
 {{- if hasKey $ctx.Values.sandboxWorkloads $name -}}
 {{- (index $ctx.Values.sandboxWorkloads $name).memMib -}}
-{{- else if eq $name "semgrep" -}}
-{{- $ctx.Values.semgrepWorkload.memMib -}}
 {{- else if eq $name "runtimeClaude" -}}
 {{- $ctx.Values.claudeRuntimeWorkload.memMib -}}
 {{- else if eq $name "runtimePi" -}}
