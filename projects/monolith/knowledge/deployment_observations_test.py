@@ -13,6 +13,7 @@ from knowledge.deployment_observations import (
     build_deployment_observation,
     list_deployment_observations,
     persist_deployment_observation,
+    persist_deployment_observation_sync,
 )
 from knowledge.models import AtomRawProvenance, Note, RawInput
 
@@ -52,7 +53,7 @@ def _observation(poll_time: datetime, **overrides):
 
 async def _persist(session, observation):
     with patch("knowledge.raw_write.upload_raw"):
-        return await persist_deployment_observation(
+        return persist_deployment_observation_sync(
             session,
             observation,
             vectors=[[0.0] * 1024],
@@ -168,3 +169,45 @@ def test_payload_allowlist_rejects_telemetry_fields():
             from knowledge.deployment_observations import _validate_observation
 
             _validate_observation(invalid)
+
+
+class _Embedder:
+    calls = 0
+
+    async def embed_batch(self, texts):
+        type(self).calls += 1
+        return [[0.0] * 1024 for _ in texts]
+
+
+@pytest.mark.asyncio
+async def test_async_wrapper_writes_off_loop_and_embeds_only_new_facts(session):
+    """The async entry point opens its own Session in a worker thread."""
+    import threading
+
+    engine = session.get_bind()
+    poll_time = datetime(2026, 9, 20, 12, 0, tzinfo=timezone.utc)
+    loop_thread = threading.get_ident()
+    write_threads = []
+
+    def _upload(*_args, **_kwargs):
+        write_threads.append(threading.get_ident())
+
+    _Embedder.calls = 0
+    with (
+        patch("knowledge.raw_write.upload_raw", _upload),
+        patch("knowledge.deployment_observations.EmbeddingClient", _Embedder),
+    ):
+        first = await persist_deployment_observation(
+            _observation(poll_time), engine=engine
+        )
+        replay = await persist_deployment_observation(
+            _observation(poll_time), engine=engine
+        )
+
+    assert first.raw_created and first.fact_created and first.provenance_created
+    assert not (replay.raw_created or replay.fact_created or replay.provenance_created)
+    assert replay.note_id == first.note_id
+    assert _Embedder.calls == 1
+    assert write_threads and loop_thread not in write_threads
+    session.expire_all()
+    assert len(session.exec(select(Note)).all()) == 1

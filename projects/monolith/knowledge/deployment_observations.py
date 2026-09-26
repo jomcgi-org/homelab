@@ -9,6 +9,7 @@ observation.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
@@ -16,10 +17,11 @@ import json
 from typing import Any
 
 from sqlalchemy import or_
+from sqlalchemy.engine import Engine
 from sqlmodel import Session, select
 import yaml
 
-from knowledge.indexing import index_note_from_raw
+from knowledge.indexing import chunk_texts_for_raw, index_note_from_raw_sync
 from knowledge.models import AtomRawProvenance, Note, RawInput
 from knowledge.raw_write import persist_raw_with_status
 from knowledge.store import KnowledgeStore, provenance_for_notes
@@ -175,35 +177,103 @@ def _fact_markdown(observation: dict[str, Any], note_id: str) -> str:
 
 
 async def persist_deployment_observation(
-    session: Session,
     observation: dict[str, Any],
     *,
     vectors: list[list[float]] | None = None,
+    engine: Engine | None = None,
 ) -> ObservationWriteResult:
-    """Persist an observation and repair any partial replay idempotently."""
+    """Persist an observation without blocking the event loop.
+
+    All database and S3 work runs in a worker thread on a fresh Session; only
+    the embedding call runs here, and only when the fact does not exist yet.
+    """
     _validate_observation(observation)
-    event_id = _event_id(observation)
-    note_id = f"deployment-observation-{event_id}"
+    if engine is None:
+        from core.db import get_engine  # noqa: PLC0415
+
+        engine = get_engine()
+    note_id = _note_id(observation)
+    existing = await asyncio.to_thread(_existing_result_in_new_session, engine, note_id)
+    if existing is not None:
+        return existing
+    if vectors is None:
+        texts = chunk_texts_for_raw(
+            _fact_markdown(observation, note_id), _fact_rel_path(note_id)
+        )
+        vectors = await EmbeddingClient().embed_batch(texts)
+    return await asyncio.to_thread(
+        _persist_in_new_session, engine, observation, vectors
+    )
+
+
+def _note_id(observation: dict[str, Any]) -> str:
+    return f"deployment-observation-{_event_id(observation)}"
+
+
+def _fact_rel_path(note_id: str) -> str:
+    return f"_processed/{note_id}.md"
+
+
+def _existing_result_in_new_session(
+    engine: Engine, note_id: str
+) -> ObservationWriteResult | None:
+    with Session(engine) as session:
+        return _existing_result(session, note_id)
+
+
+def _persist_in_new_session(
+    engine: Engine, observation: dict[str, Any], vectors: list[list[float]]
+) -> ObservationWriteResult:
+    with Session(engine) as session:
+        return persist_deployment_observation_sync(
+            session, observation, vectors=vectors
+        )
+
+
+def _existing_result(session: Session, note_id: str) -> ObservationWriteResult | None:
+    """The stored result if this observation's fact and raw both exist."""
     existing_note = session.exec(
         select(Note).where(Note.note_id == note_id)
     ).one_or_none()
-    if existing_note is not None:
-        existing_provenance = session.exec(
-            select(AtomRawProvenance).where(
-                AtomRawProvenance.atom_fk == existing_note.id,
-                AtomRawProvenance.raw_fk.is_not(None),
-            )
-        ).first()
-        if existing_provenance is not None:
-            existing_raw = session.get(RawInput, existing_provenance.raw_fk)
-            if existing_raw is not None:
-                return ObservationWriteResult(
-                    raw_created=False,
-                    fact_created=False,
-                    provenance_created=False,
-                    raw_id=existing_raw.raw_id,
-                    note_id=note_id,
-                )
+    if existing_note is None:
+        return None
+    existing_provenance = session.exec(
+        select(AtomRawProvenance).where(
+            AtomRawProvenance.atom_fk == existing_note.id,
+            AtomRawProvenance.raw_fk.is_not(None),
+        )
+    ).first()
+    if existing_provenance is None:
+        return None
+    existing_raw = session.get(RawInput, existing_provenance.raw_fk)
+    if existing_raw is None:
+        return None
+    return ObservationWriteResult(
+        raw_created=False,
+        fact_created=False,
+        provenance_created=False,
+        raw_id=existing_raw.raw_id,
+        note_id=note_id,
+    )
+
+
+def persist_deployment_observation_sync(
+    session: Session,
+    observation: dict[str, Any],
+    *,
+    vectors: list[list[float]],
+) -> ObservationWriteResult:
+    """Persist an observation and repair any partial replay idempotently.
+
+    Synchronous: call it from a worker thread with its own Session, never from
+    the event loop. Takes an explicit Session so tests can drive it directly.
+    """
+    _validate_observation(observation)
+    event_id = _event_id(observation)
+    note_id = _note_id(observation)
+    existing = _existing_result(session, note_id)
+    if existing is not None:
+        return existing
 
     raw_body = json.dumps(observation, sort_keys=True, separators=(",", ":")) + "\n"
     raw, raw_created = persist_raw_with_status(
@@ -220,11 +290,10 @@ async def persist_deployment_observation(
     note = session.exec(select(Note).where(Note.note_id == note_id)).one_or_none()
     fact_created = note is None
     if note is None:
-        await index_note_from_raw(
+        index_note_from_raw_sync(
             KnowledgeStore(session),
-            EmbeddingClient(),
             note_id=note_id,
-            rel_path=f"_processed/{note_id}.md",
+            rel_path=_fact_rel_path(note_id),
             raw=_fact_markdown(observation, note_id),
             vectors=vectors,
             commit=False,

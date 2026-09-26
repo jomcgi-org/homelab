@@ -70,11 +70,43 @@ async def index_parsed_note(
     reconciler's normal-note indexing exactly; gap stubs are handled by the
     reconciler's own branch and never reach here.
     """
+    chunks = _chunks(authored_body, title)
+    if vectors is None:
+        vectors = await embed_client.embed_batch([c["text"] for c in chunks])
+    _upsert_parsed(
+        store,
+        note_id=note_id,
+        rel_path=rel_path,
+        content_hash=content_hash,
+        title=title,
+        meta=meta,
+        authored_body=authored_body,
+        chunks=chunks,
+        vectors=vectors,
+        commit=commit,
+    )
+
+
+def _chunks(authored_body: str, title: str) -> list[dict]:
     chunks = chunk_markdown(authored_body)
     if not chunks:
         chunks = [{"index": 0, "section_header": "", "text": authored_body or title}]
-    if vectors is None:
-        vectors = await embed_client.embed_batch([c["text"] for c in chunks])
+    return chunks
+
+
+def _upsert_parsed(
+    store: KnowledgeStore,
+    *,
+    note_id: str,
+    rel_path: str,
+    content_hash: str,
+    title: str,
+    meta: ParsedFrontmatter,
+    authored_body: str,
+    chunks: list[dict],
+    vectors: list[list[float]],
+    commit: bool,
+) -> None:
     note_links = links.extract(authored_body)
     store.upsert_note(
         note_id=note_id,
@@ -107,10 +139,7 @@ async def index_note_from_raw(
     filename stem for creates). Computes the content hash from ``raw`` so it
     matches what the reconciler would compute for the same bytes on disk.
     """
-    meta, body = frontmatter.parse(raw)
-    title = meta.title or Path(rel_path).stem
-    content_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()
-    authored_body = wikilinks.strip_links_section(body)
+    meta, title, content_hash, authored_body = _parse_raw(raw, rel_path)
     await index_parsed_note(
         store,
         embed_client,
@@ -120,6 +149,48 @@ async def index_note_from_raw(
         title=title,
         meta=meta,
         authored_body=authored_body,
+        vectors=vectors,
+        commit=commit,
+    )
+
+
+def _parse_raw(raw: str, rel_path: str) -> tuple[ParsedFrontmatter, str, str, str]:
+    meta, body = frontmatter.parse(raw)
+    title = meta.title or Path(rel_path).stem
+    content_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    return meta, title, content_hash, wikilinks.strip_links_section(body)
+
+
+def chunk_texts_for_raw(raw: str, rel_path: str) -> list[str]:
+    """The texts `index_note_from_raw` would embed for this raw, in order.
+
+    Lets an async caller embed first (network) and then index with
+    :func:`index_note_from_raw_sync` in a worker thread (database).
+    """
+    _, title, _, authored_body = _parse_raw(raw, rel_path)
+    return [c["text"] for c in _chunks(authored_body, title)]
+
+
+def index_note_from_raw_sync(
+    store: KnowledgeStore,
+    *,
+    note_id: str,
+    rel_path: str,
+    raw: str,
+    vectors: list[list[float]],
+    commit: bool = True,
+) -> None:
+    """:func:`index_note_from_raw` with precomputed vectors and no event loop."""
+    meta, title, content_hash, authored_body = _parse_raw(raw, rel_path)
+    _upsert_parsed(
+        store,
+        note_id=note_id,
+        rel_path=rel_path,
+        content_hash=content_hash,
+        title=title,
+        meta=meta,
+        authored_body=authored_body,
+        chunks=_chunks(authored_body, title),
         vectors=vectors,
         commit=commit,
     )

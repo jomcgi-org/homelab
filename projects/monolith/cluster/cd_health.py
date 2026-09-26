@@ -318,15 +318,11 @@ async def _collect_deployment_observation(
 
 
 async def _write_deployment_observation(observation: dict) -> None:
-    from sqlmodel import Session  # noqa: PLC0415
-
-    from core.db import get_engine  # noqa: PLC0415
     from knowledge.deployment_observations import (  # noqa: PLC0415
         persist_deployment_observation,
     )
 
-    with Session(get_engine()) as session:
-        await persist_deployment_observation(session, observation)
+    await persist_deployment_observation(observation)
 
 
 async def _record_deployment_observations(poll_time: datetime) -> None:
