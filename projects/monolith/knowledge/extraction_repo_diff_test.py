@@ -9,6 +9,8 @@ from sqlalchemy import text
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from knowledge.extraction import (
+    REPO_DIFF_MAX_REJECTIONS,
+    REPO_DIFF_SKIPPED_HISTORY,
     ExtractionOutputInvalid,
     apply_repo_diff,
     build_repo_diff_prompt,
@@ -363,23 +365,146 @@ def test_truncated_large_diff_with_headers_accepted(session, monkeypatch):
     )
 
     assert applied["created"] is True
-    assert applied.get("cursor_preserved") is False
     assert len(session.exec(select(RawInput)).all()) == 1
     assert _stored_last_sha(session) == "b" * 40
 
 
-def test_stale_base_persists_raw_but_preserves_newer_cursor(session, monkeypatch):
-    _scout_job(session)
-    monkeypatch.setattr("knowledge.raw_write.upload_raw", lambda *_args: None)
+def _set_cursor(session, last_sha, **extra):
     session.execute(
         text("UPDATE routine_jobs SET payload = :payload WHERE name = 'kg-repo-diff'"),
-        {"payload": json.dumps({"mode": "repo-diff", "last_sha": "c" * 40})},
+        {"payload": json.dumps({"mode": "repo-diff", "last_sha": last_sha, **extra})},
     )
     session.commit()
+
+
+def _stored_payload(session):
+    payload = session.execute(
+        text("SELECT payload FROM routine_jobs WHERE name = 'kg-repo-diff'")
+    ).scalar_one()
+    return json.loads(payload)
+
+
+def test_stale_base_rejected_without_raw_or_cursor_change(session, monkeypatch):
+    _scout_job(session)
+    monkeypatch.setattr("knowledge.raw_write.upload_raw", lambda *_args: None)
+    _set_cursor(session, "c" * 40)
+
+    with pytest.raises(ExtractionOutputInvalid, match="does not match the stored"):
+        apply_repo_diff(session, "kg-repo-diff", _valid_diff(base_sha="a" * 40))
+
+    assert session.exec(select(RawInput)).all() == []
+    assert _stored_payload(session) == {"mode": "repo-diff", "last_sha": "c" * 40}
+
+
+def test_base_sha_matches_stored_cursor_case_insensitively(session, monkeypatch):
+    _scout_job(session)
+    monkeypatch.setattr("knowledge.raw_write.upload_raw", lambda *_args: None)
+    _set_cursor(session, "ABCDEF" * 6 + "ABCD")
+
+    applied = apply_repo_diff(
+        session, "kg-repo-diff", _valid_diff(base_sha="abcdef" * 6 + "abcd")
+    )
+
+    assert applied["created"] is True
+    assert len(session.exec(select(RawInput)).all()) == 1
+    assert _stored_last_sha(session) == "b" * 40
+
+
+def test_first_run_result_rejected_once_cursor_is_set(session):
+    _scout_job(session)
+    _set_cursor(session, "c" * 40)
+
+    with pytest.raises(ExtractionOutputInvalid, match="first-run"):
+        apply_repo_diff(session, "kg-repo-diff", _output(base_sha=None))
+
+    assert _stored_last_sha(session) == "c" * 40
+
+
+def test_stale_empty_comparison_does_not_rewind_newer_cursor(session):
+    _scout_job(session)
+    _set_cursor(session, "c" * 40)
+
+    with pytest.raises(ExtractionOutputInvalid):
+        apply_repo_diff(session, "kg-repo-diff", _output(base_sha="a" * 40))
+
+    assert session.exec(select(RawInput)).all() == []
+    assert _stored_last_sha(session) == "c" * 40
+
+
+def test_repeated_placeholder_rejections_skip_range_after_bound(session):
+    _scout_job(session)
+    _set_cursor(session, "a" * 40, attempts=2)
+    placeholder = _valid_diff(diff="[... elided ...]")
+
+    for expected in range(1, REPO_DIFF_MAX_REJECTIONS):
+        with pytest.raises(ExtractionOutputInvalid, match="placeholder"):
+            apply_repo_diff(session, "kg-repo-diff", placeholder)
+        payload = _stored_payload(session)
+        assert payload["last_sha"] == "a" * 40
+        assert payload["rejections"] == expected
+        assert payload["attempts"] == 2
+
+    applied = apply_repo_diff(session, "kg-repo-diff", placeholder)
+
+    assert applied["raw_id"] is None
+    assert applied["skipped"]["base_sha"] == "a" * 40
+    assert applied["skipped"]["head_sha"] == "b" * 40
+    assert applied["skipped"]["rejections"] == REPO_DIFF_MAX_REJECTIONS
+    assert "placeholder" in applied["skipped"]["reason"]
+    assert applied["summary"].startswith("skipped aaaaaaa..bbbbbbb after 3")
+    assert session.exec(select(RawInput)).all() == []
+    payload = _stored_payload(session)
+    assert payload["last_sha"] == "b" * 40
+    assert "rejections" not in payload
+    assert "attempts" not in payload
+    assert payload["skipped"] == [applied["skipped"]]
+
+
+def test_accepted_result_clears_rejection_count_and_keeps_skip_history(
+    session, monkeypatch
+):
+    _scout_job(session)
+    monkeypatch.setattr("knowledge.raw_write.upload_raw", lambda *_args: None)
+    history = [{"base_sha": "0" * 40, "head_sha": "a" * 40, "rejections": 3}]
+    _set_cursor(session, "a" * 40, rejections=1, skipped=history)
 
     applied = apply_repo_diff(session, "kg-repo-diff", _valid_diff())
 
     assert applied["created"] is True
-    assert applied.get("cursor_preserved") is True
-    assert len(session.exec(select(RawInput)).all()) == 1
-    assert _stored_last_sha(session) == "c" * 40
+    assert _stored_payload(session) == {
+        "mode": "repo-diff",
+        "last_sha": "b" * 40,
+        "skipped": history,
+    }
+
+
+def test_range_mismatch_does_not_count_toward_skip(session):
+    _scout_job(session)
+    _set_cursor(session, "c" * 40, rejections=2)
+
+    with pytest.raises(ExtractionOutputInvalid, match="does not match"):
+        apply_repo_diff(session, "kg-repo-diff", _valid_diff(diff="[... elided ...]"))
+
+    payload = _stored_payload(session)
+    assert payload["last_sha"] == "c" * 40
+    assert payload["rejections"] == 2
+
+
+def test_skipped_history_is_bounded(session):
+    _scout_job(session)
+    history = [
+        {"base_sha": str(index) * 40, "head_sha": "a" * 40, "rejections": 3}
+        for index in range(REPO_DIFF_SKIPPED_HISTORY)
+    ]
+    _set_cursor(
+        session, "a" * 40, rejections=REPO_DIFF_MAX_REJECTIONS - 1, skipped=history
+    )
+
+    applied = apply_repo_diff(
+        session, "kg-repo-diff", _valid_diff(diff="[... elided ...]")
+    )
+
+    stored = _stored_payload(session)["skipped"]
+    assert len(stored) == REPO_DIFF_SKIPPED_HISTORY
+    assert stored[-1] == applied["skipped"]
+    assert stored[0] == history[1]
