@@ -663,6 +663,9 @@ may never open. Naming the spare turns and dollars in the refusal is the other
 half, computed under the reserve the refused edit implies: a planner that only
 hears no, or that shrinks to a figure which ignored the reserve its own review
 node brings, re-proposes until `max_planner_turns` pauses the task (#5419).
+That holds on the engine paths too: a refused review round or fan-in is admitted
+on its own nodes, but the spare it reports is read under the planner's reserve,
+because the planner is who acts on it (#6000).
 
 **Why.** Nodes were serial because every node pushed to the one branch
 `factory/<task-id>` and the reconciler dispatched one active run per task, not

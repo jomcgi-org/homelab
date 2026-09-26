@@ -3158,6 +3158,13 @@ def _envelope_refusal(
     that ignored it would send the planner back with an edit that is refused
     again. It costs a second derivation, so it is computed only once the
     envelope has actually been exceeded.
+
+    The spare is always read under the planner's reserve, even when the caller
+    overrides the reserve for admission. An engine insertion is admitted on the
+    nodes it really adds, with no forward reserve, but the spare it reports
+    reaches the planner through decision feedback, and the planner's next edit
+    is sized with the reserve in place. A spare that dropped the reserve would
+    promise a turn the planner cannot spend (#6000).
     """
     from factory.orchestration.factory_controls import (
         allowance_from_graph,
@@ -3190,8 +3197,8 @@ def _envelope_refusal(
         graph.load_graph(task_id),
         runs,
         policy,
-        review_rounds_remaining=rounds,
-        fan_ins_remaining=fan_ins,
+        review_rounds_remaining=_rounds_remaining(task_id, policy),
+        fan_ins_remaining=_planned_fan_ins(task_id, policy, projected),
         graph_revision=revision,
         reviewable=any(node["node_key"].startswith("review_") for node in projected),
     )
