@@ -225,16 +225,13 @@ check_noise() {
 	fi
 }
 
-# The affected query must use the global test dependency closure, avoid loading
-# Semgrep engines during traversal, and add all Semgrep tests back conservatively.
+# The affected query must use the global test dependency closure.
 setup_test_universe() { setup_rdeps_fail; }
 check_test_universe() {
 	local query
 	query="$(grep 'let all_tests = ' "$3" || true)"
 	if [[ "$query" == *'tests(//...)'* ]] &&
-		[[ "$query" == *'attr(name, ".*semgrep.*", $all_tests)'* ]] &&
-		[[ "$query" == *'attr(generator_function, "semgrep_.*", $all_tests)'* ]] &&
-		[[ "$query" == *'tests(rdeps(deps($all_tests except $semgrep_tests)'* ]]; then
+		[[ "$query" == *'tests(rdeps(deps($all_tests), set('* ]]; then
 		pass "global_test_universe"
 	else
 		fail "global_test_universe" "query='$query'"

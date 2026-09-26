@@ -546,55 +546,6 @@ oci.pull(
 use_repo(oci, "pgvector_pg16", "pgvector_pg16_linux_amd64")
 
 #########################
-# Semgrep Pro — engine + per-language rule packs from GHCR
-# Digests auto-updated by .github/workflows/update-semgrep-pro.yaml
-semgrep_pro = use_extension("//bazel/semgrep/third_party/semgrep_pro:extensions.bzl", "semgrep_pro")
-use_repo(
-    semgrep_pro,
-    "semgrep_pro_engine_amd64",
-    "semgrep_pro_engine_arm64",
-    "semgrep_pro_engine_osx_arm64",
-    "semgrep_pro_engine_osx_x86_64",
-    "semgrep_pro_rules_golang",
-    "semgrep_pro_rules_javascript",
-    "semgrep_pro_rules_kubernetes",
-    "semgrep_pro_rules_python",
-    "semgrep_pro_rules_rust",
-    "semgrep_sca_rules_golang",
-    "semgrep_sca_rules_javascript",
-    "semgrep_sca_rules_python",
-)
-
-# Semgrep experimental offline-Pro engine — osemgrep-pro warm scan-server.
-# amd64 only; digest pinned manually in semgrep_experimental/digests.bzl (not the
-# update-semgrep-pro workflow). Consumed by the Firecracker semgrep guest.
-semgrep_experimental = use_extension("//bazel/semgrep/third_party/semgrep_experimental:extensions.bzl", "semgrep_experimental")
-use_repo(semgrep_experimental, "semgrep_experimental_engine_amd64")
-
-# Semgrep Pro rule packs for the Firecracker/EmberVM guest image.
-# Manual digests in semgrep_guest/digests.bzl, not the update-semgrep-pro workflow.
-semgrep_guest = use_extension("//bazel/semgrep/third_party/semgrep_guest:extensions.bzl", "semgrep_guest")
-use_repo(
-    semgrep_guest,
-    "semgrep_guest_rules_golang",
-    "semgrep_guest_rules_javascript",
-    "semgrep_guest_rules_kubernetes",
-    "semgrep_guest_rules_python",
-    "semgrep_guest_rules_rust",
-)
-
-# Semgrep OSS — semgrep-core binary from GHCR (extracted from PyPI wheels)
-# Digests auto-updated by .github/workflows/update-semgrep-pro.yaml
-semgrep = use_extension("//bazel/semgrep/third_party/semgrep:extensions.bzl", "semgrep")
-use_repo(
-    semgrep,
-    "semgrep_engine_amd64",
-    "semgrep_engine_arm64",
-    "semgrep_engine_osx_arm64",
-    "semgrep_engine_osx_x86_64",
-)
-
-#########################
 # PostgreSQL test fixtures — extract PG16 + pgvector binaries from OCI
 postgres = use_extension("//bazel/tools/postgres:extensions.bzl", "postgres")
 use_repo(postgres, "postgres_test")
@@ -608,10 +559,6 @@ apko.translate_lock(
 apko.translate_lock(
     name = "rootfs_builder_lock",
     lock = "//projects/firecracker/substrate/rootfs-builder:apko.lock.json",
-)
-apko.translate_lock(
-    name = "semgrep_guest_lock",
-    lock = "//projects/firecracker/semgrep/guest:apko.lock.json",
 )
 
 # The six per-language code-executor guests (ADR agents/057). One lock each:
@@ -705,7 +652,7 @@ apko.translate_lock(
     name = "embervm_runtime_pi_lock",
     lock = "//projects/embervm/runtimes/pi:apko.lock.json",
 )
-use_repo(apko, "embervm_conformance_lock", "embervm_lock", "embervm_noded_lock", "embervm_runtime_bazel_lock", "embervm_runtime_claude_lock", "embervm_runtime_k3s_agent_lock", "embervm_runtime_k3s_server_lock", "embervm_runtime_pi_lock", "embervm_runtime_postgres_lock", "embervm_runtime_python_lock", "embervm_scratch_prep_lock", "embervm_tokenbroker_lock", "embervm_xds_lock", "monolith_frontend_lock", "rootfs_builder_lock", "sandbox_elixir_lock", "sandbox_go_lock", "sandbox_javascript_lock", "sandbox_ocaml_lock", "sandbox_python_lock", "sandbox_rust_lock", "semgrep_guest_lock", "shotter_lock", "stars_grid_apko_lock", "whatsapp_lock")
+use_repo(apko, "embervm_conformance_lock", "embervm_lock", "embervm_noded_lock", "embervm_runtime_bazel_lock", "embervm_runtime_claude_lock", "embervm_runtime_k3s_agent_lock", "embervm_runtime_k3s_server_lock", "embervm_runtime_pi_lock", "embervm_runtime_postgres_lock", "embervm_runtime_python_lock", "embervm_scratch_prep_lock", "embervm_tokenbroker_lock", "embervm_xds_lock", "monolith_frontend_lock", "rootfs_builder_lock", "sandbox_elixir_lock", "sandbox_go_lock", "sandbox_javascript_lock", "sandbox_ocaml_lock", "sandbox_python_lock", "sandbox_rust_lock", "shotter_lock", "stars_grid_apko_lock", "whatsapp_lock")
 
 # Download multiarch archives (binaries from zip files)
 multiarch_http_archive = use_repo_rule("//bazel/tools/http:multiarch_http_archive.bzl", "multiarch_http_archive")

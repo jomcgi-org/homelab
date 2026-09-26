@@ -60,7 +60,6 @@ MONOLITH_DOMAINS = [
     "updates",
     "agent",
     "cluster",
-    "semgrep_scan",
     "sandbox",
     "shotter",
 ]

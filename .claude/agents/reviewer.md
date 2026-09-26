@@ -35,8 +35,8 @@ Ranked. Spend your effort at the top.
    broke production here: missing `ClusterRole` verbs for new cluster reads,
    hardcoded `.svc.cluster.local` URLs or `@sha256:` digests, bulk data in the
    migrations ConfigMap, a chart bump missing on a change that must deploy, sync
-   Session calls inside `async def`. None of the repo's custom Semgrep rules
-   runs on a PR, so check every one of these yourself.
+   Session calls inside `async def`. Nothing in CI checks any of these, so
+   check every one yourself.
 3. **Config that looks live and is not.** For every flag, env var or values key
    the diff adds, changes or relies on, ask two questions: is anything consuming
    it, and is the branch that consumes it reachable? A key can be spelled

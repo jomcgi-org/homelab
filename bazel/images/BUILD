@@ -51,7 +51,6 @@ multirun(
         "//projects/firecracker/sandbox/ocaml:image.push",
         "//projects/firecracker/sandbox/python:image.push",
         "//projects/firecracker/sandbox/rust:image.push",
-        "//projects/firecracker/semgrep/guest:image.push",
         "//projects/firecracker/substrate/egress-proxy:image.push",
         "//projects/firecracker/substrate/rootfs-builder:image.push",
         "//projects/monolith-agents/chart:chart.push",

@@ -29,7 +29,6 @@ import moving.module
 import observability.module
 import sandbox.module
 import scheduler.module
-import semgrep_scan.module
 import shotter.module
 import ships.module
 import stars.module
@@ -59,15 +58,12 @@ ALL_MODULES: tuple[Module, ...] = (
     ember_public.module.MODULE,
     moving.module.MODULE,
     updates.module.MODULE,
-    # MCP-only domains (no HTTP routes of their own). Placed here, before
-    # semgrep_scan, so MCP tool registration order matches the historical
-    # app/main.py import order (knowledge, agent, cluster, semgrep_scan,
-    # sandbox); route order is unaffected because these mount no routes.
+    # MCP-only domains (no HTTP routes of their own). Placed here so MCP tool
+    # registration order matches the historical app/main.py import order
+    # (knowledge, agent, cluster, sandbox); route order is unaffected because
+    # these mount no routes.
     agent.module.MODULE,
     cluster.module.MODULE,
-    # GitHub PR webhook -> fc-invoke scan -> Semgrep App relay. Registers
-    # POST /webhooks/github/semgrep; HMAC-verified, no cf-access on that path.
-    semgrep_scan.module.MODULE,
     sandbox.module.MODULE,
     shotter.module.MODULE,
 )

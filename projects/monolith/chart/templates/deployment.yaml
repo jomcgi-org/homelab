@@ -118,7 +118,7 @@ spec:
               value: {{ .Values.backend.otelEndpoint | quote }}
             {{- end }}
             {{- if .Values.semgrep.embervmUrl }}
-            # EmberVM control-plane URL for the semgrep and sandbox workloads.
+            # EmberVM control-plane URL for the sandbox workloads and ember probes.
             - name: EMBERVM_URL
               value: {{ .Values.semgrep.embervmUrl | quote }}
             {{- end }}

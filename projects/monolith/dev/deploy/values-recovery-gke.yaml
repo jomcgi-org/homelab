@@ -89,9 +89,6 @@ swarm:
 semgrep:
   # This legacy values key configures the shared Ember client for sessions.
   embervmUrl: "http://embervm-dev-embervm.embervm-dev:8080"
-  shadowProject: ""
-  onepassword:
-    itemPath: ""
 tokenBroker:
   url: "http://embervm-dev-embervm-tokenbroker.embervm-dev:8080"
   spiffe:

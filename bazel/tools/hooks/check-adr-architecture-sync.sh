@@ -27,7 +27,7 @@ fi
 #     values-file comments, so a values edit is exactly when the architecture
 #     doc needs re-reading.
 #   - The build and CI trees behind bazel/ARCHITECTURE.md: the ci wrapper,
-#     the BuildBuddy workflow file, and the semgrep and ocaml rulesets.
+#     the BuildBuddy workflow file, and the ocaml ruleset.
 #     Matching is by substring, so a bare file name (buildbuddy.yaml) works
 #     as a watched path too.
 COVERAGE=(
@@ -37,7 +37,6 @@ COVERAGE=(
 	"projects/mcp/context-forge-gateway/deploy/ projects/mcp/ARCHITECTURE.md"
 	"bazel/tools/ci/ bazel/ARCHITECTURE.md"
 	"buildbuddy.yaml bazel/ARCHITECTURE.md"
-	"bazel/semgrep/ bazel/ARCHITECTURE.md"
 	"bazel/ocaml/ bazel/ARCHITECTURE.md"
 	"projects/platform/ projects/platform/ARCHITECTURE.md"
 	"projects/platform-gke/ projects/platform/ARCHITECTURE.md"

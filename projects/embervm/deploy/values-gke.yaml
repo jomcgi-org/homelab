@@ -122,18 +122,13 @@ tokenBroker:
       fqdn: auth.jomcgi.dev
 
 # Task demos use spare GKE capacity without a warm minimum.
-semgrepWorkload:
-  floor: 0
-  # The engine was OOM-killed at ~1482 MiB RSS while scanning the chart test
-  # file. Leave room for parser/rule allocations inside the existing 4gi class.
-  memMib: 3072
 bazelQueryWorkload:
   floor: 0
 
 # 2gi bricks scale horizontally for the small guests; the 4gi class exists
 # because the fleet has consumers that cannot fit a 2gi brick at all: the
-# semgrep task guest is 3072 MiB (its primed floor previously sat unsatisfied
-# and scans hung at wait=true), and pi-runtime sessions were
+# since-removed semgrep task guest was 3072 MiB (its primed floor sat
+# unsatisfied and scans hung at wait=true), and pi-runtime sessions were
 # taking steady no_capacity denials with the 2gi class at its ceiling. The
 # ember-bricks node pool autoscales (max 3 nodes), so a 4gi brick that does
 # not fit the current node adds one. 8gi/16gi stay off; explicit zeros

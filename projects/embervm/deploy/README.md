@@ -17,7 +17,7 @@ decisions and authorize no hardware wipe or disposal.
 
 | Node | CPU | Memory | Role |
 | ---- | --- | ------ | ---- |
-| node-1/2/3 | Intel Alder Lake-S, 12 vCPU each | ~15.3 GiB (~12.3 allocatable) | k3s control-plane/etcd masters; cold/CPU-rich tier (task-class, semgrep scans, bazel clones) |
+| node-1/2/3 | Intel Alder Lake-S, 12 vCPU each | ~15.3 GiB (~12.3 allocatable) | k3s control-plane/etcd masters; cold/CPU-rich tier (task-class, bazel clones) |
 | node-4 | AMD Zen4, 16 threads | 62 GiB | warm tier: banked sessions, serving, stateful volumes |
 
 - The home overlay encodes the guest/etcd co-location clause from the

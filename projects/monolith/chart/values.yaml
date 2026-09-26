@@ -1383,7 +1383,7 @@ chat:
   onepassword:
     itemPath: ""
 
-# EmberVM backs the semgrep and per-language code sandbox workloads.
+# EmberVM backs the per-language code sandbox workloads.
 sandbox:
   # run_code selects a language by choosing a WORKLOAD: the client POSTs to
   # `<workloadPrefix><language>` (sandbox-python, sandbox-go, ...). One knob
@@ -1470,7 +1470,8 @@ faas:
   s3Bucket: "faas"
 
 semgrep:
-  # EmberVM control-plane base URL for the semgrep workload.
+  # EmberVM control-plane base URL (EMBERVM_URL) for the sandbox workloads and
+  # the ember synthetic probes. The key name is historical.
   embervmUrl: ""
 
 # Shared provider secret. The values key and Kubernetes Secret retain their

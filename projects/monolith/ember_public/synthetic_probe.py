@@ -22,7 +22,7 @@ from opentelemetry.context import Context
 from sqlmodel import Session
 
 from core.db import get_engine
-from ember_public import bazel_core, core, semgrep_core
+from ember_public import bazel_core, core
 from ember_public.synthetic_models import EmberSyntheticProbe
 
 logger = logging.getLogger(__name__)
@@ -38,14 +38,13 @@ PAGE_SENTINELS = {
     "/ember/firecracker": "Boot once, restore forever",
     "/ember/postgres": "Ember Postgres",
     "/ember/bazel": "Ember Bazel Skyframe Query",
-    "/ember/semgrep": "Ember Semgrep",
 }
 
 # A real control-plane outage persists and still latches red on its first
 # probe run; #4137 lasted over an hour. A CP roll takes 15 to 60s, so this
 # absorbs normal Recreate downtime without blunting outage detection. The 90s
 # ceiling leaves 90s of margin inside the CronWorkflow's documented 180s API
-# request timeout (all four probes run concurrently) and stays below its 300s
+# request timeout (all three probes run concurrently) and stays below its 300s
 # deadline, so runs cannot overlap.
 EMBER_SYNTHETIC_RETRY_BUDGET_S = float(
     os.environ.get("EMBER_SYNTHETIC_RETRY_BUDGET_S", "90.0")
@@ -143,64 +142,6 @@ async def _probe_bazel_once() -> dict:
 
 async def probe_bazel() -> dict:
     return await _retry_probe("bazel", _probe_bazel_once)
-
-
-async def _probe_semgrep_once() -> dict:
-    try:
-        from semgrep_scan.client import scan_files
-
-        # This is the sample actually verified against the deployed scanner,
-        # so it is known to fire. It exercises interprocedural analysis:
-        # request.args.get("tool") flows through build_command() into os.system().
-        # A simplified single-file version could fire under a basic ruleset
-        # while interprocedural capability was dead, the same blind spot the
-        # bazel warmth marker exists to close.
-        snippet = """import os
-
-from flask import Flask, request
-
-app = Flask(__name__)
-
-
-def build_command():
-    tool = request.args.get("tool")
-    return f"/usr/bin/{tool} --report"
-
-
-@app.route("/run")
-def run():
-    os.system(build_command())
-    return "started"
-"""
-        started = perf_counter()
-        result = await scan_files(
-            [{"path": semgrep_core.snippet_path("python"), "content": snippet}],
-            dedupe=False,
-        )
-        if result.get("error"):
-            return {
-                "ok": False,
-                "detail": str(result["error"]),
-                "latency_ms": (perf_counter() - started) * 1000,
-            }
-        # Empty findings can mean the scanner loaded no rules, a silent failure.
-        if len(result.get("findings", [])) < 1:
-            return {
-                "ok": False,
-                "detail": "scanner returned no findings",
-                "latency_ms": (perf_counter() - started) * 1000,
-            }
-        return {
-            "ok": True,
-            "detail": f"{len(result['findings'])} finding(s)",
-            "latency_ms": (perf_counter() - started) * 1000,
-        }
-    except Exception as exc:  # noqa: BLE001 - probes report failures in-band
-        return _failure(exc)
-
-
-async def probe_semgrep() -> dict:
-    return await _retry_probe("semgrep", _probe_semgrep_once)
 
 
 async def _probe_pages_once() -> dict:

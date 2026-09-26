@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 import ember_public.core as core
 from ember_public.synthetic import read_probe
 
-# The combined demo probes (bazel, semgrep, pages, postgres) run in the one
+# The combined demo probes (bazel, pages, postgres) run in the one
 # ember-synthetic CronWorkflow hourly (see the jobs.cronWorkflows entry).
 # 2.5x that cadence, so a single missed or slow run never flaps the check but
 # a dead prober still surfaces. Explicit probe failures still report

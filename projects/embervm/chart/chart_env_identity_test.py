@@ -1091,7 +1091,6 @@ def test_dev_does_not_render_production_only_workloads(renders):
     # These should be in production but NOT in dev. Listed in
     # dev/deploy/values.yaml as disabled.
     prod_only = {
-        "semgrep",
         "bazel-query",
         "runtime-python",
         "runtime-claude",

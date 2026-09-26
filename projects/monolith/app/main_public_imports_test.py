@@ -39,11 +39,6 @@ FORBIDDEN_MODULES = [
     "factory.publication",
     "swarm",
     "agent_sessions",
-    # semgrep_scan: only .client (the fc-invoke HTTP client) is public-safe,
-    # for the ember semgrep demo; the rest of the package is private-only.
-    "semgrep_scan.mcp",
-    "semgrep_scan.report",
-    "semgrep_scan.router",
     # Private domains.
     "chat",
     "agent",

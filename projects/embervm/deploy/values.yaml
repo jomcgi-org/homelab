@@ -75,8 +75,7 @@ opLog:
 # (Task 8). Empty means deny-all (fail-closed). In R0 the only entry is the
 # control plane's own ServiceAccount, which lets an operator round-trip a live
 # TokenReview-authed submit with `kubectl create token embervm -n embervm`; the
-# real consumer SAs (the monolith semgrep scanner) are added at the Task 14/15
-# side-by-side/shadow cutover, not here.
+# real consumer SAs (the monolith) were added at the Task 14/15 cutover.
 auth:
   tokenReviewAudience: embervm-public-faas
   audienceBoundServiceAccounts:
@@ -85,14 +84,13 @@ auth:
   # (<release>-<chart> = embervm-embervm), so the principal TokenReview returns
   # is system:serviceaccount:embervm:embervm-embervm, not :embervm. This lets an
   # operator round-trip a live submit with `kubectl create token embervm-embervm
-  # -n embervm`. Real consumer SAs (the monolith semgrep scanner) are added at
-  # the Task 14/15 cutover.
+  # -n embervm`. Real consumer SAs (the monolith) were added at the Task 14/15
+  # cutover.
   allowedServiceAccounts:
     - system:serviceaccount:embervm:embervm-embervm
-    # The monolith ServiceAccount (Task 15): admits the monolith's semgrep_scan
-    # client when SEMGREP_DISPATCH is flipped to embervm/shadow. Same SA the
-    # monolith already uses to call fc-invoke. Added now so the dual-path code is
-    # ready to authenticate the moment the flag flips; no traffic until then.
+    # The monolith ServiceAccount (Task 15): admits the monolith's EmberVM
+    # clients (code sandbox, FaaS, shotter). It first landed for the semgrep_scan
+    # client, which is removed along with the semgrep guest.
     - system:serviceaccount:monolith:monolith
     # The PUBLIC tier (Task 13): monolith-public runs in its own namespace as its
     # own fullname-prefixed SA, so jomcgi.dev/functions/<name> submits as this

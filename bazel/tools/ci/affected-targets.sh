@@ -30,9 +30,7 @@
 #      (root package uses //:relative/path)
 #   4. Probe for label existence with one set() query; fallback if probe fails
 #   5. Build a global test-only universe and find tests that transitively depend
-#      on the labels. Exclude Semgrep tests from dependency traversal, then add
-#      them back conservatively so platform-specific Semgrep engines are not
-#      loaded by the query.
+#      on the labels.
 #   6. Separately find affected verification genrules: targets tagged
 #      "verification" that run a real suite without being Bazel test rules, so
 #      tests() is blind to them (#5538)
@@ -300,12 +298,8 @@ fi
 
 # Query within the dependency closure of all tests instead of using //... as the
 # rdeps universe. This avoids loading packages and targets that cannot affect a
-# test. Semgrep tests are excluded from the traversal because their configured
-# dependency closures load every platform engine, including repositories that
-# cannot be resolved on the Linux runner. Add them back conservatively because
-# semgrep_target_test can scan a transitive source closure that query cannot
-# recover after those tests are excluded.
-test_query="let all_tests = tests(//...) in let semgrep_tests = attr(name, \".*semgrep.*\", \$all_tests) union attr(generator_function, \"semgrep_.*\", \$all_tests) in \$semgrep_tests union tests(rdeps(deps(\$all_tests except \$semgrep_tests), set($(printf '"%s" ' "${valid_labels[@]}"))))"
+# test.
+test_query="let all_tests = tests(//...) in tests(rdeps(deps(\$all_tests), set($(printf '"%s" ' "${valid_labels[@]}"))))"
 echo "affected-targets: test-universe query over ${#valid_labels[@]} label(s) (timeout ${QUERY_TIMEOUT}s)" >&2
 query_output=$(timeout "$QUERY_TIMEOUT" "${BAZEL:-bazel}" query "$test_query" --keep_going --output=label "${bazel_args[@]}") || query_rc=$?
 query_rc=${query_rc:-0}

@@ -83,13 +83,13 @@ flowchart LR
     Sidecar --> AgentsApi[monolith-agents /mcp]
     Internal[Internal agents] --> ClusterIP[Kubernetes ClusterIP]
     ClusterIP --> PrivateApi
-    Webhooks[GitHub Semgrep webhook] --> PrivateIngress
+    Webhooks[GitHub factory webhook] --> PrivateIngress
     PrivateIngress --> WebhookRoute[HMAC-verified webhook route]
     WebhookRoute --> PrivateApi
 ```
 
 The public and private ingress split, the friends policy, and the internal
-service ports are rendered by the Helm chart. The GitHub Semgrep webhook route
+service ports are rendered by the Helm chart. The GitHub factory webhook route
 on the private hostname carries no `SecurityPolicy` on purpose: it reaches the
 backend through a Cloudflare Access IP bypass and is authenticated by the
 handler's HMAC verification alone, which is why it lives on its own HTTPRoute
@@ -223,8 +223,9 @@ database is divided into domain schemas including `knowledge`, `chat`,
 Atlas, and bulk seed data is kept out of it because client-side apply records
 the manifest in an annotation with a 256 KiB ceiling.
 
-Historical migrations still define the retired private demo load tables and
-Semgrep scan-performance table. Their application writers and readers are gone,
+Historical migrations still define the retired private demo load tables, the
+Semgrep scan-performance tables, and the Semgrep exhibit savings counter. Their
+application writers and readers are gone,
 but the tables remain because removing them would delete production schema and
 data. Any later cleanup requires a separately authorized migration and retention
 decision.
@@ -1097,7 +1098,7 @@ Two MCP surfaces exist. Context Forge remains the front door for people and
 hosted agents and stores the private monolith `/mcp` server as a registered
 streamable-HTTP upstream. That mount is one shared FastMCP instance populated
 by modules whose profile enables MCP: cluster, agent, agent sessions, chat
-directives and trust, knowledge and tasks, sandbox, Semgrep scanning,
+directives and trust, knowledge and tasks, sandbox,
 screenshotting, the swarm factory read tools, and the updates journal. Most
 register by a side-effect import of their decorated tool module during
 application composition; shotter calls an explicit `register_mcp_tools()`
@@ -1243,7 +1244,7 @@ by trust in the guest.
 - `/app/grimoire/chat`: Turnstile-gated Grimoire RAG chat. (see: /projects/monolith/grimoire_chat/router.py)
 - `/app/dr-jobs`: NHS job search over the scraped listings feed. (see: /projects/monolith/dr_jobs/router.py)
 - `/app/llm-leaderboard`: model-bench results scatter. (see: /projects/monolith/frontend/src/routes/public/app/llm-leaderboard/+page.svelte)
-- `/ember/{bazel,semgrep,postgres,agents,firecracker}`: the EmberVM demo pages the synthetic probes in section 9 exercise, which say when a brick was preempted and recovery is under way. (see: /projects/monolith/ember_public/bazel_router.py)
+- `/ember/{bazel,postgres,agents,firecracker}`: the EmberVM demo pages the synthetic probes in section 9 exercise, which say when a brick was preempted and recovery is under way. (see: /projects/monolith/ember_public/bazel_router.py)
 - `/artifact/{id}`: agent-built HTML served from object storage in a sandboxed opaque origin. (see: /projects/monolith/artifact/router.py)
 - `/blog`, `/docs`, `/engineering`: the posts, the published repository documents (this file among them), and the engineering index. (see: /projects/monolith/frontend/src/routes/public/docs)
 - `/agents` (private hostname): the agent console of section 4. (see: /projects/monolith/frontend/src/routes/private/agents/+page.svelte)
@@ -1276,7 +1277,7 @@ when the backend is unhealthy or unreachable.
 (see: /projects/monolith/frontend/src/routes/public/health/+server.js)
 
 Current fatal components are stars health plus the EmberVM synthetic latches
-for Bazel, Semgrep, pages, Postgres, and the Codex session. Continuous-delivery
+for Bazel, pages, Postgres, and the Codex session. Continuous-delivery
 health and the drainer's stall signal are advisory latches computed by a
 private leader and read by both tiers. The combined demo probes run one hourly
 CronWorkflow and the Codex lane probe runs its own hourly CronWorkflow, each

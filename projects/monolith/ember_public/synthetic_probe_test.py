@@ -189,17 +189,6 @@ async def test_bazel_drift_is_not_ok(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_semgrep_empty_findings_is_not_ok(monkeypatch):
-    async def scan_files(*_, **__):
-        return {"findings": []}
-
-    monkeypatch.setattr("semgrep_scan.client.scan_files", scan_files)
-    result = await probe.probe_semgrep()
-    assert result["ok"] is False
-    assert "no findings" in result["detail"]
-
-
-@pytest.mark.asyncio
 async def test_postgres_busy_is_skipped(monkeypatch):
     monkeypatch.setattr(probe.core, "demo_pg_dsn", lambda: "postgres://test")
     monkeypatch.setattr(probe.core, "try_acquire_query_slot", lambda: False)

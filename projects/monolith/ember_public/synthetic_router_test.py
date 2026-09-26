@@ -1,7 +1,7 @@
 """Tests for the internal ember synthetic-probe endpoint.
 
 Every probe is mocked: the point of these tests is the endpoint's orchestration
-(running all four, recording each, the in-flight guard), not the probes
+(running all three, recording each, the in-flight guard), not the probes
 themselves, which are covered in synthetic_probe_test.py.
 """
 
@@ -18,7 +18,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from ember_public import synthetic_router
 from ember_public.synthetic_router import internal_router
 
-DEMOS = ("bazel", "semgrep", "pages", "postgres")
+DEMOS = ("bazel", "pages", "postgres")
 
 
 @pytest.fixture
@@ -30,7 +30,7 @@ def app():
 
 @pytest.fixture
 def recorded(monkeypatch):
-    """Mock all four probes plus record(); return the recorded {demo: result}."""
+    """Mock all three probes plus record(); return the recorded {demo: result}."""
     rows: dict[str, dict] = {}
 
     def install(ok: bool = True, detail: str = "test"):

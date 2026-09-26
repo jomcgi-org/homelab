@@ -35,8 +35,7 @@ Defined in `buildbuddy.yaml`:
 `ci test` resolves the local committed and worktree diff inside one hosted Linux
 runner, then tests only affected test targets with the PR Test flags. Its reverse
 dependency query is scoped to the dependency closure of the global test universe,
-instead of loading every target in `//...`. Semgrep tests are added conservatively
-without traversing their platform-specific engine dependencies. The merge queue
+instead of loading every target in `//...`. The merge queue
 alone runs the mandatory full `//...` suite. Use `ci test -- //...` only when an
 explicit local full run is needed.
 

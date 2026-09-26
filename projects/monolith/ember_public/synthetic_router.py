@@ -9,12 +9,10 @@ from the job pod failed on three counts, none of which CI could catch:
 - bazel: embervm's auth.allowedServiceAccounts admits
   system:serviceaccount:monolith:monolith, but an Argo job runs as
   monolith-workflows:argo-workflow, so the control plane 403s.
-- semgrep: semgrep_scan.client needs EmberVM credentials, which the backend
-  Deployment sets and the job pod never had.
 - postgres: reaching the demo over the public origin returns the SvelteKit HTML
   shell, because /api/ember/* is not on the public HTTPRoute.
 
-This pod holds the admitted ServiceAccount and all three env vars, so each of
+This pod holds the admitted ServiceAccount and the demo env vars, so each of
 those disappears rather than being worked around.
 
 A failing probe still returns 200: the failure travels through the recorded
@@ -34,8 +32,7 @@ logger = logging.getLogger(__name__)
 internal_router = APIRouter(prefix="/internal/ember", tags=["ember-internal"])
 
 # Guards against overlapping runs: a second trigger while one is in flight is a
-# no-op rather than a second concurrent sweep competing for the same demo VMs
-# (mirrors semgrep_scan.router's _harvest_in_flight).
+# no-op rather than a second concurrent sweep competing for the same demo VMs.
 _probe_in_flight = False
 # The hourly Codex lane probe must not block, or be blocked by, the demo sweep.
 _codex_probe_in_flight = False
@@ -65,7 +62,7 @@ def _failure_detail_with_trace(result: dict) -> str:
 
 @internal_router.post("/synthetic-probe")
 async def synthetic_probe_endpoint() -> dict:
-    """Run all four demo probes concurrently and record their latch rows."""
+    """Run all three demo probes concurrently and record their latch rows."""
     global _probe_in_flight
 
     if _probe_in_flight:
@@ -78,7 +75,6 @@ async def synthetic_probe_endpoint() -> dict:
 
         probes = {
             "bazel": synthetic_probe.probe_bazel,
-            "semgrep": synthetic_probe.probe_semgrep,
             "pages": synthetic_probe.probe_pages,
             "postgres": synthetic_probe.probe_postgres,
         }

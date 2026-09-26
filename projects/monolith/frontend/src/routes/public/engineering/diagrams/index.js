@@ -11,7 +11,6 @@ import Trips from "./Trips.svelte";
 import Ships from "./Ships.svelte";
 import Stargazer from "./Stargazer.svelte";
 import Bazel from "./Bazel.svelte";
-import RulesSemgrep from "./RulesSemgrep.svelte";
 import { diagramIds } from "./registry-ids.js";
 
 export const diagrams = {
@@ -26,7 +25,6 @@ export const diagrams = {
   ships: Ships,
   stargazer: Stargazer,
   bazel: Bazel,
-  "rules-semgrep": RulesSemgrep,
 };
 
 // Drift check: registry-ids.js is the plain-JS mirror used by tests

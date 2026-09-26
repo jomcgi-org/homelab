@@ -19,7 +19,6 @@
 # gazelle:exclude sandbox
 # gazelle:exclude shotter
 # gazelle:exclude scheduler
-# gazelle:exclude semgrep_scan
 # gazelle:exclude goosecracker
 # gazelle:exclude shared
 # gazelle:exclude ships
@@ -141,7 +140,6 @@ _BACKEND_SRCS = glob(
         "sandbox/**/*.py",
         "shotter/**/*.py",
         "scheduler/**/*.py",
-        "semgrep_scan/**/*.py",
         "shared/**/*.py",
         "ships/**/*.py",
         "hikes/**/*.py",
@@ -817,44 +815,6 @@ py_library(
 )
 
 py_library(
-    name = "pkg_semgrep_scan",
-    srcs = glob(
-        [
-            "semgrep_scan/**/*.py",
-        ],
-        exclude = [
-            "**/*_test.py",
-            "**/test_*.py",
-            "*/tests/**/*.py",
-        ],
-    ),
-    imports = ["."],
-    visibility = ["//:__subpackages__"],
-    deps = [
-        ":pkg_core",
-        ":pkg_framework",
-        ":pkg_shared",
-        "@pip//certifi",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//opentelemetry_exporter_otlp_proto_http",
-        "@pip//opentelemetry_instrumentation_fastapi",
-        "@pip//opentelemetry_instrumentation_httpx",
-        "@pip//opentelemetry_sdk",
-        "@pip//pgvector",
-        "@pip//psycopg",
-        "@pip//psycopg_binary",
-        "@pip//pydantic",
-        "@pip//python_multipart",
-        "@pip//pyyaml",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-        "@pip//tzdata",
-        "@pip//uvicorn",
-    ],
-)
-
-py_library(
     name = "pkg_campsites",
     srcs = glob(
         [
@@ -1293,7 +1253,6 @@ py_library(
         ":pkg_core",
         ":pkg_faas",
         ":pkg_framework",
-        ":pkg_semgrep_scan",
         ":pkg_shared",
         "@pip//certifi",
         "@pip//fastapi",
@@ -1615,7 +1574,6 @@ py_library(
             "sandbox/**/*.py",
             "shotter/**/*.py",
             "scheduler/**/*.py",
-            "semgrep_scan/**/*.py",
             "shared/**/*.py",
             "ships/**/*.py",
             "hikes/**/*.py",
@@ -1822,11 +1780,6 @@ py3_image(
 _PUBLIC_PRUNE_EXCLUDE = [
     # Standard excludes (mirror :monolith_backend / :main).
     "**/*_test.py",
-    # Semgrep: the public tier ships only semgrep_scan/client.py (+ __init__)
-    # for the ember demo; the MCP tool, App reporting, PR router, full-scan
-    # and perf surfaces are private-only.
-    "semgrep_scan/mcp.py",
-    "semgrep_scan/module.py",
     "**/test_*.py",
     "*/tests/**/*.py",
     "shared/testing/**/*.py",
@@ -1969,7 +1922,6 @@ _AGENTS_PRUNE_EXCLUDE = [
     "grimoire_chat/**",
     "hikes/**",
     "home/**",
-    "semgrep_scan/**",
     "ships/**",
     "stars/**",
     "swarm/**",
@@ -2133,9 +2085,6 @@ py_library(
             # the demo-postgres core, public-safe by construction (EMBERVM_URL
             # is read directly from the environment).
             "ember_public/**/*.py",
-            # Semgrep demo (ember_public.semgrep_router): only client.py + the
-            # package __init__ ship; the rest is pruned below (private-only).
-            "semgrep_scan/**/*.py",
         ],
         exclude = _PUBLIC_PRUNE_EXCLUDE,
     ),  # keep
@@ -2208,10 +2157,6 @@ py_venv_binary(
             # below; main_public_imports_test enforces they stay out of the closure.
             "faas/**/*.py",
             "ember_public/**/*.py",
-            # Semgrep demo (ember_public.semgrep_router): only client.py + the
-            # package __init__ ship; mcp/report/full_scan/router/perf stay
-            # pruned below (private-tier surfaces).
-            "semgrep_scan/**/*.py",
         ],
         exclude = _PUBLIC_PRUNE_EXCLUDE,
     ),  # keep
@@ -2781,32 +2726,6 @@ py_test(
         ":pkg_cluster",
         ":pkg_core",
         "@pip//fastmcp",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-    ],
-)
-
-py_test(
-    name = "semgrep_mcp_test",
-    srcs = ["semgrep_scan/mcp_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_core",
-        ":pkg_semgrep_scan",
-        "@pip//fastmcp",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-    ],
-)
-
-py_test(
-    name = "semgrep_client_test",
-    srcs = ["semgrep_scan/client_test.py"],
-    imports = ["."],
-    # gazelle:exclude semgrep_scan means this py_test is hand-added, not generated.
-    deps = [
-        ":pkg_semgrep_scan",
-        "@pip//httpx",
         "@pip//pytest",
         "@pip//pytest_asyncio",
     ],
@@ -8066,30 +7985,6 @@ py_test(
     imports = ["."],
     deps = [
         ":monolith_backend",
-        "@pip//httpx",
-        "@pip//pytest",
-    ],
-)
-
-py_test(
-    name = "ember_public_semgrep_core_test",
-    srcs = ["ember_public/semgrep_core_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_backend",
-        "@pip//pytest",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-    ],
-)
-
-py_test(
-    name = "ember_public_semgrep_router_test",
-    srcs = ["ember_public/semgrep_router_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_backend",
-        "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
     ],

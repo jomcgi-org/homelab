@@ -165,9 +165,6 @@ noded:
 sandboxSessionWorkload:
   enabled: false
 
-semgrepWorkload:
-  enabled: false
-
 bazelQueryWorkload:
   enabled: false
 
@@ -360,8 +357,6 @@ workloads:
     rootfsPath: /var/lib/embervm/scratch/dev/embervm-noded/sandbox-ocaml/rootfs.ext4
   sandboxJavascript:
     rootfsPath: /var/lib/embervm/scratch/dev/embervm-noded/sandbox-javascript/rootfs.ext4
-  semgrep:
-    rootfsPath: /var/lib/embervm/scratch/dev/embervm-noded/semgrep/rootfs.ext4
   runtimePython:
     rootfsPath: /var/lib/embervm/scratch/dev/embervm-noded/runtime-python/rootfs.ext4
   runtimeClaude:
@@ -425,10 +420,6 @@ servingEnvoy:
 # init container is not rendered at all. There is deliberately NO `runtimePi:`
 # entry below: emptying it would leave the CR enabled with no base to restore,
 # which reports as a workload that never goes Ready.
-semgrep:
-  guestImage:
-    repository: ""
-
 runtimePython:
   guestImage:
     repository: ""

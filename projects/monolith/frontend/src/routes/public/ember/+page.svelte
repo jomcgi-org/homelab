@@ -194,7 +194,6 @@
               guest reaches exactly one thing: its channel to the host daemon.
             </p>
             <p class="sigs">
-              <a class="sig" href="/ember/semgrep">semgrep, live →</a>
               <a class="sig" href="/ember/bazel">a frozen Bazel brain, live →</a
               >
             </p>

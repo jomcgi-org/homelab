@@ -132,7 +132,6 @@ FORBIDDEN_MODULES = [
     "grimoire_chat",
     "hikes",
     "home",
-    "semgrep_scan",
     "ships",
     "stars",
     "swarm",

@@ -12,5 +12,4 @@ export const diagramIds = [
   "ships",
   "stargazer",
   "bazel",
-  "rules-semgrep",
 ];
