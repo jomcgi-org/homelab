@@ -77,9 +77,11 @@ namespaces, and node metrics. It has no mutation, watch, Secret, exec, attach,
 port-forward, proxy, or wildcard route and does not import the private
 monolith cluster client.
 
-This describes repository source only. The hub Application uses a published
-chart pin advanced separately, so merging these files does not prove the RBAC
-is deployed or that a live observation succeeds.
+This describes repository source only. On the hub, Kargo promotes each
+published `monolith-agents` chart (`kargo-monolith-agents`, since 356426a); the
+`projects/gke-apps/monolith-agents` pin is a bootstrap floor, not the deployed
+version. So merging these files does not prove the RBAC is deployed or that a
+live observation succeeds: check the promotion, or ask `verify_deployment`.
 (see: `projects/monolith-agents/chart/values.yaml`,
 `projects/monolith/app/agents_main.py`, `projects/embervm/deploy/values.yaml`
 under `egress.secrets`, `projects/embervm/deploy/values-gke.yaml` under
