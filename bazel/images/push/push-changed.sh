@@ -266,6 +266,34 @@ while IFS= read -r image_row || [ -n "${image_row:-}" ]; do
 	fi
 done <"$TO_PUSH"
 
+# The developer tools image is the one image a human pulls by TAG, not by
+# digest: bootstrap.sh reads `repo:tag` from .tools-version and `crane export`s
+# it. Every push carries only the stamped build tag, so that floating tag
+# never moved once the branch-name tag was dropped from remote_tags, and a fresh
+# checkout bootstrapped a fossil missing bb, buildifier, shellcheck and eslint.
+# Point the tag at whatever this run found published, whether it pushed the
+# image or skipped it as already present, so a retag also repairs a tag that is
+# stale today. No chart deploys off this tag, so moving it cannot change what
+# runs in the cluster.
+TOOLS_VERSION_FILE="${TOOLS_VERSION_FILE:-$WORKSPACE/.tools-version}"
+if [ -f "$TOOLS_VERSION_FILE" ]; then
+	tools_ref=$(head -1 "$TOOLS_VERSION_FILE" | tr -d '[:space:]')
+	tools_repo="${tools_ref%%:*}"
+	tools_tag="${tools_ref##*:}"
+	tools_digest=$(awk -F'\t' -v repo="$tools_repo" '$4 == repo { print $5 }' "$IMAGE_RESULTS" | head -1)
+	if [ -n "$tools_digest" ] && [ "$tools_tag" != "$tools_ref" ]; then
+		echo ""
+		echo "==> Pointing $tools_ref at $tools_digest"
+		current=$("$CRANE" digest "$tools_ref" 2>/dev/null || true)
+		if [ "$current" = "$tools_digest" ]; then
+			echo "  skip  $tools_ref already points there"
+		else
+			"$CRANE" tag "${tools_repo}@${tools_digest}" "$tools_tag"
+			echo "  moved $tools_ref from ${current:-<unset>}"
+		fi
+	fi
+fi
+
 # Charts LAST, and in their own multirun. Ordering is load-bearing now in a way
 # it could not be before: push_all ran everything concurrently (jobs = 0), so a
 # chart could publish while the images whose digests it pins were still
