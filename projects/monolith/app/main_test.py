@@ -68,10 +68,10 @@ def client_fixture(session):
 
 
 def test_healthz_returns_ok(client):
-    """GET /healthz returns HTTP 200 with {"status": "ok"}."""
+    """GET /healthz returns HTTP 200 with status ok and a null chart_version."""
     response = client.get("/healthz")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    assert response.json() == {"status": "ok", "chart_version": None}
 
 
 def test_healthz_content_type_is_json(client):
@@ -181,7 +181,7 @@ def test_api_routes_still_work_without_static_dir(client):
     """/healthz responds even when the static frontend directory is absent."""
     response = client.get("/healthz")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    assert response.json() == {"status": "ok", "chart_version": None}
 
 
 def test_unknown_path_returns_404_without_static_dir(client):

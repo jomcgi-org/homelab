@@ -1099,7 +1099,7 @@ def test_private_liveness_reports_failed_domain_and_recovers(raises):
     assert response.json()["components"]["worker"]["ok"] is False
     assert "internal details" not in response.text
     healthy = True
-    assert client.get("/healthz").json() == {"status": "ok"}
+    assert client.get("/healthz").json() == {"status": "ok", "chart_version": None}
     assert client.get("/healthz").status_code == 200
 
 
@@ -1110,3 +1110,29 @@ def test_public_liveness_does_not_run_private_domain_checks():
     framework_core._add_health(app, PUBLIC_PROFILE, [module])
     assert TestClient(app).get("/healthz").status_code == 200
     check.assert_not_called()
+
+
+@pytest.mark.parametrize("profile", [_PLAIN_PRIVATE, PUBLIC_PROFILE])
+def test_healthz_reports_chart_version_from_env(monkeypatch, profile):
+    """/healthz echoes MONOLITH_CHART_VERSION for the Kargo revision gate (#4745).
+
+    The chart sets the variable from .Chart.Version. The key is always present
+    so the gate compares a field rather than a missing one: null when unset or
+    empty, the release string otherwise. The 200 semantics do not change.
+    """
+    app = FastAPI()
+    framework_core._add_health(app, profile, [])
+    client = TestClient(app)
+
+    monkeypatch.delenv("MONOLITH_CHART_VERSION", raising=False)
+    response = client.get("/healthz")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "chart_version": None}
+
+    monkeypatch.setenv("MONOLITH_CHART_VERSION", "")
+    assert client.get("/healthz").json()["chart_version"] is None
+
+    monkeypatch.setenv("MONOLITH_CHART_VERSION", "1.2.3")
+    response = client.get("/healthz")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "chart_version": "1.2.3"}

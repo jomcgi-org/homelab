@@ -314,7 +314,15 @@ def _add_health(app: FastAPI, profile: Profile, modules: Sequence[Module]) -> No
                 status_code=503,
                 content={"status": "unhealthy", "components": failures},
             )
-        return {"status": "ok"}
+        # chart_version is what the Kargo revision gate (#4745) compares
+        # against the promoted chart: the chart sets MONOLITH_CHART_VERSION
+        # from .Chart.Version, so the value proves which release this
+        # process was rolled out with. Always present (null when unset) so
+        # the gate's expression compares a field, never a missing key.
+        return {
+            "status": "ok",
+            "chart_version": os.environ.get("MONOLITH_CHART_VERSION") or None,
+        }
 
     if not profile.deep_health:
         return

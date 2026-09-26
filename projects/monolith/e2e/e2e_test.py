@@ -35,7 +35,7 @@ class TestHealthz:
         """GET /healthz returns 200 OK."""
         response = client.get("/healthz")
         assert response.status_code == 200
-        assert response.json() == {"status": "ok"}
+        assert response.json() == {"status": "ok", "chart_version": None}
 
 
 class TestNotesAPI:
