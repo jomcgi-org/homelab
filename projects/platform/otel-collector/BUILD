@@ -1,5 +1,4 @@
 load("//bazel/helm:defs.bzl", "argocd_app", "helm_chart")
-load("//bazel/semgrep/defs:defs.bzl", "semgrep_test")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 helm_chart(
@@ -48,7 +47,6 @@ argocd_app(
     name = "otel-collector-gke",
     chart = "projects/platform/otel-collector",
     chart_files = ":chart",
-    generate_semgrep = False,
     namespace = "otel-collector",
     release_name = "otel-collector",
     tags = [
@@ -93,10 +91,4 @@ py_test(
         "@pip//pytest",
         "@pip//pyyaml",
     ],
-)
-
-semgrep_test(
-    name = "collector_optin_test_semgrep_test",
-    srcs = ["collector_optin_test.py"],
-    rules = ["//bazel/semgrep/rules:python_rules"],
 )

@@ -359,9 +359,9 @@ monolith, public and agents tiers' object storage. ADR embervm/041 phase 5
 would replace the EmberVM key with a federated JWT-SVID; nothing has
 started.
 
-No automated check on secret hygiene runs: the Semgrep rules that would
-catch a hardcoded secret or an empty item path are inert (#4777), so review
-catches what the rules would.
+No automated check on secret hygiene runs in CI: the repo's Semgrep rules
+for a hardcoded secret or an empty item path run only in the on-demand
+semgrep-scan guest (#4777), so review catches what the rules would.
 
 (see: `projects/*/chart/templates/onepassworditem*.yaml`, `projects/monolith/deploy/*.md`)
 
@@ -410,7 +410,8 @@ enforces any of it. Kyverno runs two `ClusterPolicy` objects, both `Audit`
 namespaces, and `clone-monolith-workflows-secrets`, which copies Secrets
 into the job namespace. The OTel injection policy is disabled. Nothing is
 rejected at admission, and the Semgrep rules `no-privileged` and
-`no-host-network` that would flag a new exception are inert (#4777).
+`no-host-network` that would flag a new exception run only in the on-demand
+semgrep-scan guest, not on PRs (#4777).
 
 (see: `projects/embervm/`, `projects/monolith/sandbox/`, `projects/platform/kyverno/`)
 
@@ -517,7 +518,8 @@ a convention this document asks for and nothing enforces.
 
 | Check | Mechanism | State |
 |-------|-----------|-------|
-| Custom Semgrep rules (93 under `bazel/semgrep/rules/`) | `semgrep_test` targets in `pr-checks` | inert: the vendored engine cannot load its shared libraries on the Linux runner and the wrapper exits 0 (#4777); the packaging fix merged (#5746) but the rebuilt images are blocked on a GHCR credential, and the fail-closed wrapper is parked until they exist |
+| Semgrep registry rules | Semgrep Managed Scans, configured on the Semgrep side | live; not in this repo |
+| Custom Semgrep rules (93 under `bazel/semgrep/rules/`) | semgrep-scan guest, on demand | not a PR gate: the Bazel test layer never scanned and was removed (#4777) |
 | Chart admissibility (kubeconform) | #5337 | not merged |
 | Pod hardening and privilege | Kyverno | two policies, both `Audit`, neither about security context |
 | Resource requests and a memory limit | Kyverno `require-resource-requests` | `Audit`, `monolith` and `monolith-public` only |
@@ -586,7 +588,7 @@ red, which is why the list above states enforcement rather than intent.
 | Public data isolation | `public_reader` and `public_writer` grants, `main_public_imports_test`, `public_httproute_chat_guard_test`, `chat_public_grants_test`, `check-public-reader-grant.sh` |
 | Public rate limits | `BackendTrafficPolicy` objects in `projects/monolith-public/chart/templates/` |
 | Published content | `projects/monolith/knowledge/tools/public_content.py` |
-| Review-time static checks | `bazel/semgrep/rules/` (inert until #4777 closes) |
+| Review-time static checks | Semgrep Managed Scans (registry rules); `bazel/semgrep/rules/` through the semgrep-scan guest only |
 | Findings register | `docs/THREAT-MODEL.md`, the `security-finding` label, `projects/*/stpa/security.json` |
 
 ## Direction
@@ -611,7 +613,7 @@ document carries what shipped.
 
 | ADR | Decision | Status today | Disposition |
 |-----|----------|--------------|-------------|
-| security/001 Hermetic Semgrep via Bazel | vendor `semgrep-core` as an OCI artifact and run rules as cached Bazel tests | Accepted; every target passes without scanning (#4777, #3893) | deleted |
+| security/001 Hermetic Semgrep via Bazel | vendor `semgrep-core` as an OCI artifact and run rules as cached Bazel tests | Superseded: the Bazel layer never scanned and was removed; CI scanning is Semgrep Managed Scans (#4777) | deleted |
 | security/002 Semgrep rule generation via RL | RL-finetuned model generates rules from CVEs | Deprecated; nothing live | deleted |
 | security/003 gVisor RuntimeClass | `runsc` for agent sandbox pods | Accepted, never built (#3894); the sandboxes it targeted became Firecracker guests | deleted |
 | security/004 Public read-only service isolation | separate public composition, `public_reader` on a replica, default-deny egress | Accepted; composition, role, replica, imports test and private rootfs hardening shipped; private egress policy is gated pending live audit and inert on the hub (#3897, #5277); tracking #3895 | deleted |

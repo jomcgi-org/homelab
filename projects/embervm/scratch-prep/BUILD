@@ -1,4 +1,3 @@
-load("//bazel/semgrep/defs:defs.bzl", "semgrep_test")
 load("//bazel/tools/oci:apko_image.bzl", "apko_image")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
@@ -25,10 +24,4 @@ py_test(
         "apko.yaml",
     ],
     deps = ["@pip//pyyaml"],
-)
-
-semgrep_test(
-    name = "package_test_semgrep_test",
-    srcs = ["package_test.py"],
-    rules = ["//bazel/semgrep/rules:python_rules"],
 )

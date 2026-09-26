@@ -46,10 +46,8 @@ def _s3_client():
         return None
     if not endpoint.startswith(("http://", "https://")):
         endpoint = "http://" + endpoint
-    # Scheme guaranteed by the guard above; inline nosemgrep clears the
-    # pre-commit boto3-endpoint-url-missing-scheme hook (the Bazel
-    # main_semgrep_test, which ignores nosemgrep, is covered by exclude_rules
-    # in projects/monolith/BUILD).
+    # Scheme guaranteed by the guard above; the inline nosemgrep
+    # suppresses boto3-endpoint-url-missing-scheme for Semgrep scans.
     return boto3.client(  # nosemgrep: boto3-endpoint-url-missing-scheme
         "s3",
         endpoint_url=endpoint,

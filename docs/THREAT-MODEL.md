@@ -56,47 +56,44 @@ graph LR
 
 Ranked by what an attacker gets. Each issue holds the detail.
 
-1. **The custom Semgrep rules enforce nothing**
-   ([#4777](https://github.com/jomcgi-org/homelab/issues/4777)).
-   Every rule target exits 0 without scanning.
-2. **A Firecracker escape is not contained**
+1. **A Firecracker escape is not contained**
    ([#5255](https://github.com/jomcgi-org/homelab/issues/5255)).
    The VM monitor runs as root in a privileged pod without the jailer.
    An escape hands over the node and the fleet's storage credential.
-3. **Any valid token reaches every MCP tool**
+2. **Any valid token reaches every MCP tool**
    ([#4569](https://github.com/jomcgi-org/homelab/issues/4569)).
    The monolith verifies who is calling; no tool then checks whether
    that caller should reach it. Finding 1 of the
    [monolith STPA security lens](../projects/monolith/STPA.md).
-4. **A compromised public-tier pod can reach every in-cluster endpoint**
+3. **A compromised public-tier pod can reach every in-cluster endpoint**
    ([#5276](https://github.com/jomcgi-org/homelab/issues/5276)).
    The destination-scoped egress policy exists in the chart but is gated
    off on the GKE hub, which exposes no Cilium policy CRD, so no egress
    policy renders for the public tier there.
-5. **The private monolith pod has no egress policy at all**
+4. **The private monolith pod has no egress policy at all**
    ([#5277](https://github.com/jomcgi-org/homelab/issues/5277)).
    The pod holding every backend secret can send anywhere the node
    can reach.
-6. **One storage credential can delete any tenant's artifacts**
+5. **One storage credential can delete any tenant's artifacts**
    ([#4691](https://github.com/jomcgi-org/homelab/issues/4691)).
    Encryption stops reads of tenant state; shared base images stay
    plaintext, and deletes and overwrites are open to every holder of
    the shared credential.
-7. **The egress allowlist is shared across every EmberVM workload**
+6. **The egress allowlist is shared across every EmberVM workload**
    ([#5320](https://github.com/jomcgi-org/homelab/issues/5320)).
    A destination added for one workload is reachable, with injected
    credentials, from every egress-enabled workload.
-8. **The public docs guard is a fixed marker list, not redaction**
+7. **The public docs guard is a fixed marker list, not redaction**
    ([#5275](https://github.com/jomcgi-org/homelab/issues/5275)).
    `check_public_content` fails CI on known internal markers; an
    internal identifier that matches no marker still publishes
    verbatim.
-9. **Production promotion has no functional check**
+8. **Production promotion has no functional check**
    ([#4745](https://github.com/jomcgi-org/homelab/issues/4745)).
    Promotion waits for rollout health and a short soak, and only
    EmberVM runs a conformance test first. A change that deploys
    cleanly but misbehaves promotes.
-10. **The auth domain has no delegated workload identity**
+9. **The auth domain has no delegated workload identity**
    ([#4940](https://github.com/jomcgi-org/homelab/issues/4940)).
    The design umbrella behind finding 3: authentik issues standing
    identity, while monolith-side attenuation, a broker, and delegated

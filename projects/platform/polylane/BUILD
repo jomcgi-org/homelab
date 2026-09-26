@@ -13,10 +13,6 @@ argocd_app(
     chart_files = ":chart",
     namespace = "polylane",
     release_name = "polylane-k8s",
-    # cloudflared runs runAsNonRoot with a read-only root filesystem and
-    # upstream gives it one mount, the state Secret. It writes nothing to /tmp,
-    # so the emptyDir the rule asks for would be dead weight.
-    semgrep_exclude_rules = ["require-tmp-emptydir"],
     tags = [
         "helm",
         "template",

@@ -17,13 +17,13 @@ npm_link_all_packages(name = "node_modules")
 # still defaults this to the legacy "go_default_library", so without this
 # directive every `ci regen` rewrites all external Go deps to
 # @repo//pkg/authn:go_default_library. Those targets do not exist, and the tree
-# then fails ANALYSIS rather than anything obvious: `//bazel/semgrep/defs/gazelle
-# :gazelle_test` aborts the build before a single test runs. The repo's own Go
+# then fails ANALYSIS rather than anything obvious: the first Go target that
+# depends on one aborts the build before a single test runs. The repo's own Go
 # targets already match the default, so only the external convention is set.
 # gazelle:go_naming_convention_external import
 # bazel_gazelle is brought in under the repo name `gazelle`, and its targets use
 # the import convention. Gazelle's resolver does not know either fact about
-# itself, so without these it rewrites this repo's two gazelle plugins to
+# itself, so without these it rewrites this repo's gazelle plugin to
 # @bazel_gazelle//config:go_default_library and friends, which do not exist.
 # gazelle:resolve go github.com/bazelbuild/bazel-gazelle/config @gazelle//config
 # gazelle:resolve go github.com/bazelbuild/bazel-gazelle/label @gazelle//label
@@ -37,15 +37,11 @@ npm_link_all_packages(name = "node_modules")
 # gazelle:exclude docs/runbooks
 # gazelle:exclude docs/posts/figures
 
-# gazelle:semgrep_target_kinds py_venv_binary,py3_image=binary
-# gazelle:semgrep_languages py
-
 # Custom gazelle binary with ArgoCD extensions
 gazelle_binary(
     name = "gazelle_binary",
     languages = [
         "//bazel/helm/gazelle",
-        "//bazel/semgrep/defs/gazelle",
         "@bazel_skylib_gazelle_plugin//bzl",
         "@gazelle//language/go",
         "@gazelle//language/proto",
@@ -58,7 +54,6 @@ gazelle(
     env = {
         "ENABLE_LANGUAGES": ",".join([
             "argocd",
-            "semgrep",
             "bzl",
             "proto",
             "go",

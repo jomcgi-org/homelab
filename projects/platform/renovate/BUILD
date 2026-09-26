@@ -1,5 +1,4 @@
 load("//bazel/helm:defs.bzl", "argocd_app", "helm_chart")
-load("//bazel/semgrep/defs:defs.bzl", "semgrep_test")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 helm_chart(
@@ -26,7 +25,6 @@ argocd_app(
     name = "renovate-gke",
     chart = "projects/platform/renovate",
     chart_files = ":chart",
-    generate_semgrep = False,
     namespace = "monolith-workflows",
     release_name = "renovate",
     tags = [
@@ -57,10 +55,4 @@ py_test(
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
     },
     deps = ["@pip//pyyaml"],
-)
-
-semgrep_test(
-    name = "migration_staging_test_semgrep_test",
-    srcs = ["migration_staging_test.py"],
-    rules = ["//bazel/semgrep/rules:python_rules"],
 )

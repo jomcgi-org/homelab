@@ -82,7 +82,6 @@ argocd_app(
     chart = "projects/monolith-public/chart",
     chart_files = ":chart",
     generate_manifests = False,
-    generate_semgrep = False,
     namespace = "monolith-public",
     release_name = "monolith-public",
     tags = [

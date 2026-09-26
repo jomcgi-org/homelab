@@ -6,7 +6,6 @@ load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
 load("@multitool//:tools.bzl", MULTITOOL_TOOLS = "TOOLS")
 load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
-load("//bazel/semgrep/defs:defs.bzl", "semgrep_target_test")
 
 exports_files([
     "argocd-live-diff.sh",
@@ -227,19 +226,10 @@ bzl_library(
     ],
     visibility = ["//visibility:public"],
     deps = [
-        "//bazel/semgrep/defs",  # keep
         "//bazel/tools/oci:providers",  # keep
         "@bazel_skylib//lib:paths",  # keep
         "@rules_shell//shell:rules_bzl",  # keep
     ],
-)
-
-semgrep_target_test(
-    name = "crd_schemas_semgrep_test",
-    lockfiles = ["//bazel/requirements:all.txt"],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-    sca_rules = ["//bazel/semgrep/rules:sca_python_rules"],
-    target = ":crd_schemas",
 )
 
 py_library(

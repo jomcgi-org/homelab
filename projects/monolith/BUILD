@@ -57,12 +57,10 @@
 # gazelle:exclude public_turnstile_secret_isolation_test.py
 # gazelle:exclude ember_public_savings_grants_test.py
 # gazelle:exclude ember_synthetic_probe_grants_test.py
-# gazelle:semgrep_exclude_rules avoid-sqlalchemy-text,sqlmodel-datetime-without-factory,tainted-fastapi-http-request-httpx,tainted-path-traversal-stdlib-fastapi,tainted-path-traversal-pillow-fastapi
 load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
 load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
 load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
-load("//bazel/semgrep/defs:defs.bzl", "semgrep_target_test", "semgrep_test")
 load("//bazel/tools/js:exec_filegroup.bzl", "exec_filegroup")
 load("//bazel/tools/oci:apko_image.bzl", "apko_image")
 load("//bazel/tools/oci:py3_image.bzl", "py3_image")
@@ -8006,57 +8004,6 @@ py_test(
     ],
 )
 
-semgrep_target_test(
-    name = "main_semgrep_test",
-    exclude_rules = [
-        # keep
-        "avoid-sqlalchemy-text",
-        "generic-sql-fastapi",  # keep
-        # stars/grid.py's _s3_client guards endpoint_url with a scheme check
-        # (prepends http:// when absent), mirroring the lakehouse S3 client, so
-        # the runtime "Invalid endpoint" risk is handled. semgrep-core does not
-        # honour the inline # nosemgrep, so exclude the rule here.
-        "boto3-endpoint-url-missing-scheme",  # keep
-        # The monolith uses datetime | None = None for intentional NULL state
-        # fields (e.g. last_run_at, locked_at, updated_at). semgrep-core
-        # invokes the rule engine directly without pysemgrep, so # nosemgrep
-        # inline comments are not honoured. Exclude until per-finding
-        # suppression is available in the core engine.
-        "sqlmodel-datetime-without-factory",  # keep
-        # test-hardcoded-past-timestamp's own paths.include is
-        # [*_test.py, test_*.py] -- the rule is intended for test files
-        # only. The semgrep_target_test macro runs rules without
-        # honouring per-rule path filters, so the rule fires on
-        # production files like knowledge/profile.py that have
-        # intentional audit-trail date constants (PROFILE_UPDATED).
-        # Excluded from main_semgrep_test (which scans :main, production
-        # code); the rule still applies wherever it's meant to.
-        "test-hardcoded-past-timestamp",  # keep
-        "tainted-fastapi-http-request-httpx",
-        # note_id → DB lookup → note["path"] → file read is guarded by
-        # is_relative_to(vault_root) but Semgrep Pro can't trace through
-        # the DB as a sanitizer.
-        "tainted-path-traversal-stdlib-fastapi",  # keep
-        # trips/ingest.py validate_image does Image.open(io.BytesIO(data)) on
-        # in-memory upload bytes (NOT a filesystem path), so there is no path
-        # traversal; the rule false-positives on any Image.open of request data.
-        "tainted-path-traversal-pillow-fastapi",  # keep
-        # shotter/hosts.py's HOST_SERVICE_MAP is the baked mapping design ADR
-        # embervm/035 section 3 and 4 call for on purpose: a Cloudflare-routed
-        # lookup would faithfully screenshot private.jomcgi.dev's login wall
-        # instead of the page behind it, so the map has to name the exact
-        # in-cluster Service DNS the guest's own proxy tunnels to, not a
-        # release-name-relative default read from an env var. The two entries
-        # are also asserted exact (size and values) by the domain's own tests,
-        # so a release rename would fail loudly here rather than silently
-        # resolving wrong. semgrep-core does not honour inline # nosemgrep, so
-        # excluded here.
-        "no-hardcoded-k8s-service-url",  # keep
-    ],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-    target = ":main",
-)
-
 py_test(
     name = "home_observability_stats_test",
     srcs = ["home/observability/stats_test.py"],
@@ -8739,32 +8686,6 @@ py_test(
     ],
 )
 
-semgrep_target_test(
-    name = "add_visibility_field_semgrep_test",
-    exclude_rules = [
-        "avoid-sqlalchemy-text",
-        "sqlmodel-datetime-without-factory",
-        "tainted-fastapi-http-request-httpx",
-        "tainted-path-traversal-stdlib-fastapi",
-        "tainted-path-traversal-pillow-fastapi",
-    ],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-    target = ":add_visibility_field",
-)
-
-semgrep_target_test(
-    name = "classify_visibility_backfill_semgrep_test",
-    exclude_rules = [
-        "avoid-sqlalchemy-text",
-        "sqlmodel-datetime-without-factory",
-        "tainted-fastapi-http-request-httpx",
-        "tainted-path-traversal-stdlib-fastapi",
-        "tainted-path-traversal-pillow-fastapi",
-    ],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-    target = ":classify_visibility_backfill",
-)
-
 # Run-by-hand backfill: re-derive trips.points from S3 image EXIF (+ optional
 # KML gap route and NRCan elevation) and upsert into Postgres. Not part of the
 # server image (excluded from the :main / :monolith_backend globs above).
@@ -8799,26 +8720,6 @@ py_venv_binary(
     ),
     main = "trips/backfill/main.py",
     visibility = ["//:__subpackages__"],
-)
-
-semgrep_target_test(
-    name = "trips_backfill_semgrep_test",
-    exclude_rules = [
-        # main.py guards the SeaweedFS endpoint with a scheme check, but
-        # semgrep-core ignores the inline # nosemgrep (mirrors :main). The
-        # # keep stops gazelle from dropping it back to the file directive set.
-        "boto3-endpoint-url-missing-scheme",  # keep
-        # trips.models uses datetime fields for the migration's TIMESTAMPTZ
-        # columns; semgrep-core ignores the inline # nosemgrep (mirrors :main).
-        "sqlmodel-datetime-without-factory",
-        "avoid-sqlalchemy-text",
-        "tainted-fastapi-http-request-httpx",
-        "tainted-path-traversal-stdlib-fastapi",
-        # validate_image opens in-memory bytes, not a path; false positive (mirrors :main).
-        "tainted-path-traversal-pillow-fastapi",
-    ],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-    target = ":trips_backfill",
 )
 
 # Backfill tests dep on :trips_backfill_lib (boto3/typer/httpx orchestration),
@@ -8907,69 +8808,6 @@ py_test(
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
-)
-
-semgrep_test(
-    name = "import_boundaries_test_semgrep_test",
-    srcs = ["import_boundaries_test.py"],
-    exclude_rules = [
-        "avoid-sqlalchemy-text",
-        "sqlmodel-datetime-without-factory",
-        "tainted-fastapi-http-request-httpx",
-        "tainted-path-traversal-stdlib-fastapi",
-        "tainted-path-traversal-pillow-fastapi",
-    ],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-)
-
-semgrep_target_test(
-    name = "main_public_semgrep_test",
-    exclude_rules = [
-        "avoid-sqlalchemy-text",
-        # knowledge/api.py search_public_chunks builds a fully parameterized
-        # SQLModel select (cosine_distance/order_by/limit), no raw SQL, so the
-        # taint flag is a false positive. Mirrors :main_semgrep_test's exclude.
-        "generic-sql-fastapi",  # keep
-        "sqlmodel-datetime-without-factory",
-        "tainted-fastapi-http-request-httpx",
-        "tainted-path-traversal-stdlib-fastapi",
-        # Same acknowledged false-positives that :main_semgrep_test excludes;
-        # the pruned public binary includes the same flagged files
-        # (stars/grid.py guards endpoint_url with a scheme check;
-        # knowledge/profile.py has an intentional audit-date constant).
-        # semgrep-core ignores inline # nosemgrep, so exclude here. # keep
-        "boto3-endpoint-url-missing-scheme",  # keep
-        "test-hardcoded-past-timestamp",  # keep
-        "tainted-path-traversal-pillow-fastapi",
-    ],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-    target = ":main_public",
-)
-
-semgrep_target_test(
-    name = "gen_repo_docs_manifest_semgrep_test",
-    exclude_rules = [
-        "avoid-sqlalchemy-text",
-        "sqlmodel-datetime-without-factory",
-        "tainted-fastapi-http-request-httpx",
-        "tainted-path-traversal-stdlib-fastapi",
-        "tainted-path-traversal-pillow-fastapi",
-    ],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-    target = ":gen_repo_docs_manifest",
-)
-
-semgrep_target_test(
-    name = "gen_docs_manifest_semgrep_test",
-    exclude_rules = [
-        "avoid-sqlalchemy-text",
-        "sqlmodel-datetime-without-factory",
-        "tainted-fastapi-http-request-httpx",
-        "tainted-path-traversal-stdlib-fastapi",
-        "tainted-path-traversal-pillow-fastapi",
-    ],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-    target = ":gen_docs_manifest",
 )
 
 # Hand-registered (chat_public is gazelle-excluded): rolling-summary helpers
@@ -9114,132 +8952,6 @@ py_test(
     deps = ["@pip//pytest"],
 )
 
-semgrep_target_test(
-    name = "jobs_semgrep_test",
-    # :jobs scans the identical source closure as :main, so it must carry the
-    # identical exclude_rules. Beyond the file-level gazelle directive, these
-    # mirror main_semgrep_test's hand-kept excludes; see that target for the
-    # per-rule rationale (semgrep-core does not honour inline # nosemgrep).
-    exclude_rules = [
-        "avoid-sqlalchemy-text",
-        "boto3-endpoint-url-missing-scheme",  # keep
-        "generic-sql-fastapi",  # keep
-        "sqlmodel-datetime-without-factory",
-        "tainted-fastapi-http-request-httpx",
-        "tainted-path-traversal-pillow-fastapi",
-        "tainted-path-traversal-stdlib-fastapi",
-        "test-hardcoded-past-timestamp",  # keep
-    ],
-    lockfiles = ["//bazel/requirements:all.txt"],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-    sca_rules = ["//bazel/semgrep/rules:sca_python_rules"],
-    target = ":jobs",
-)
-
-semgrep_target_test(
-    name = "gen_orchestrator_bundle_semgrep_test",
-    exclude_rules = [
-        "avoid-sqlalchemy-text",
-        "sqlmodel-datetime-without-factory",
-        "tainted-fastapi-http-request-httpx",
-        "tainted-path-traversal-pillow-fastapi",
-        "tainted-path-traversal-stdlib-fastapi",
-    ],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-    target = ":gen_orchestrator_bundle",
-)
-
-semgrep_target_test(
-    name = "main_domain_semgrep_test",
-    exclude_rules = [
-        "avoid-sqlalchemy-text",
-        "sqlmodel-datetime-without-factory",
-        "tainted-fastapi-http-request-httpx",
-        "tainted-path-traversal-pillow-fastapi",
-        "tainted-path-traversal-stdlib-fastapi",
-    ],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-    target = ":main_domain",
-)
-
-semgrep_target_test(
-    name = "progress_semgrep_test",
-    exclude_rules = [
-        "avoid-sqlalchemy-text",
-        "sqlmodel-datetime-without-factory",
-        "tainted-fastapi-http-request-httpx",
-        "tainted-path-traversal-pillow-fastapi",
-        "tainted-path-traversal-stdlib-fastapi",
-    ],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-    target = ":progress",
-)
-
-semgrep_test(
-    name = "public_library_image_digest_guard_test_semgrep_test",
-    srcs = ["public_library_image_digest_guard_test.py"],
-    exclude_rules = [
-        "avoid-sqlalchemy-text",
-        "sqlmodel-datetime-without-factory",
-        "tainted-fastapi-http-request-httpx",
-        "tainted-path-traversal-pillow-fastapi",
-        "tainted-path-traversal-stdlib-fastapi",
-    ],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-)
-
-semgrep_target_test(
-    name = "gen_posts_manifest_semgrep_test",
-    exclude_rules = [
-        "avoid-sqlalchemy-text",
-        "sqlmodel-datetime-without-factory",
-        "tainted-fastapi-http-request-httpx",
-        "tainted-path-traversal-pillow-fastapi",
-        "tainted-path-traversal-stdlib-fastapi",
-    ],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-    target = ":gen_posts_manifest",
-)
-
-semgrep_test(
-    name = "public_cilium_scoped_egress_guard_test_semgrep_test",
-    srcs = ["public_cilium_scoped_egress_guard_test.py"],
-    exclude_rules = [
-        "avoid-sqlalchemy-text",
-        "sqlmodel-datetime-without-factory",
-        "tainted-fastapi-http-request-httpx",
-        "tainted-path-traversal-pillow-fastapi",
-        "tainted-path-traversal-stdlib-fastapi",
-    ],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-)
-
-semgrep_test(
-    name = "github_repo_slug_test_semgrep_test",
-    srcs = ["github_repo_slug_test.py"],
-    exclude_rules = [
-        "avoid-sqlalchemy-text",
-        "sqlmodel-datetime-without-factory",
-        "tainted-fastapi-http-request-httpx",
-        "tainted-path-traversal-pillow-fastapi",
-        "tainted-path-traversal-stdlib-fastapi",
-    ],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-)
-
-semgrep_target_test(
-    name = "main_agents_semgrep_test",
-    exclude_rules = [
-        "avoid-sqlalchemy-text",
-        "sqlmodel-datetime-without-factory",
-        "tainted-fastapi-http-request-httpx",
-        "tainted-path-traversal-pillow-fastapi",
-        "tainted-path-traversal-stdlib-fastapi",
-    ],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-    target = ":main_agents",
-)
-
 # Static boundary contract for the inactive GKE recovery manifests.
 py_test(
     name = "recovery_network_test",
@@ -9255,19 +8967,6 @@ py_test(
         "@pip//pytest",
         "@pip//pyyaml",
     ],
-)
-
-semgrep_test(
-    name = "recovery_network_test_semgrep_test",
-    srcs = ["recovery_network_test.py"],
-    exclude_rules = [
-        "avoid-sqlalchemy-text",
-        "sqlmodel-datetime-without-factory",
-        "tainted-fastapi-http-request-httpx",
-        "tainted-path-traversal-pillow-fastapi",
-        "tainted-path-traversal-stdlib-fastapi",
-    ],
-    rules = ["//bazel/semgrep/rules:python_rules"],
 )
 
 py_library(
@@ -9379,19 +9078,4 @@ py_test(
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
     ],
-)
-
-semgrep_target_test(
-    name = "stars_grid_job_semgrep_test",
-    exclude_rules = [
-        "avoid-sqlalchemy-text",
-        "sqlmodel-datetime-without-factory",
-        "tainted-fastapi-http-request-httpx",
-        "tainted-path-traversal-pillow-fastapi",
-        "tainted-path-traversal-stdlib-fastapi",
-    ],
-    lockfiles = ["//bazel/requirements:all.txt"],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-    sca_rules = ["//bazel/semgrep/rules:sca_python_rules"],
-    target = ":stars_grid_job",
 )

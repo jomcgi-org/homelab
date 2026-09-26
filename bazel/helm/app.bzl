@@ -1,7 +1,6 @@
 """Macro for declaring ArgoCD application overlays."""
 
 load("//bazel/helm:test.bzl", "helm_template_test")
-load("//bazel/semgrep/defs:test.bzl", "semgrep_manifest_test")
 
 def argocd_app(
         name,
@@ -13,9 +12,6 @@ def argocd_app(
         generate_manifests = True,
         generate_diff = False,
         application_name = None,
-        generate_semgrep = True,
-        semgrep_rules = ["//bazel/semgrep/rules:kubernetes_rules"],
-        semgrep_exclude_rules = [],
         tags = [],
         target_suffix = ""):
     """Declares an ArgoCD application overlay with template testing and manifest rendering.
@@ -36,9 +32,6 @@ def argocd_app(
         generate_manifests: If True, create render_manifests genrule (default: True)
         generate_diff: If True, create live diff rule (default: False)
         application_name: Live ArgoCD Application name. Required with generate_diff.
-        generate_semgrep: If True, create semgrep_test for rendered manifests (default: True)
-        semgrep_rules: List of semgrep rule config labels for manifest scanning
-        semgrep_exclude_rules: List of semgrep rule IDs to skip (e.g., ["no-privileged"])
         tags: Additional tags for the template test
     """
     if release_name == None:
@@ -46,8 +39,7 @@ def argocd_app(
 
     # Always create a template test. target_suffix keeps a second overlay in
     # the same package (e.g. a values-gke.yaml variant) from colliding with
-    # the default target names. Semgrep still has a fixed target name, so a
-    # second overlay must disable only that output.
+    # the default target names.
     helm_template_test(
         name = "template_test" + target_suffix,
         chart = chart,
@@ -122,19 +114,6 @@ def argocd_app(
             local = True,
             tags = ["manual"],
             visibility = ["//visibility:public"],
-        )
-
-    if generate_semgrep:
-        semgrep_manifest_test(
-            name = "semgrep_test",
-            chart = chart,
-            chart_files = chart_files,
-            release_name = release_name,
-            namespace = namespace,
-            values_files = values_files,
-            rules = semgrep_rules,
-            exclude_rules = semgrep_exclude_rules,
-            tags = tags + ["semgrep"],
         )
 
     if generate_diff:

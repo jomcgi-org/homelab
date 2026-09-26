@@ -64,7 +64,6 @@ BUILD generation therefore runs in CI's Format stage, via
 | `:tools_image_test`       | Inspects all three platform layers and executes the linux/amd64 commands from a relocated root |
 | `:tools_image_linux_arm64_test` | Native Linux ARM64 runtime target; no execution coverage is currently claimed |
 | `:tools_image_darwin_arm64_test` | Local-only Darwin ARM64 runtime target; this repository has no macOS CI executor |
-| `:python_deps_semgrep_test` | SCA scan of the `python_deps` requirements against `//bazel/semgrep/rules:sca_python_rules` |
 
 `:image.push` is included in `//bazel/images:push_all` and runs on merge to main
 via BuildBuddy CI, but only when this image's content actually changed: the
