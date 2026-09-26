@@ -17,6 +17,7 @@ from agent_kubernetes.client import (
     validate_read_request,
 )
 from auth.api import Authority, PrincipalKind, current_principal
+from shared import rollout
 
 
 AUTHORIZED_SUBJECT = "kg-agent-sa"
@@ -216,5 +217,64 @@ async def kubernetes_pod_logs(
             "since_seconds": since_seconds,
             "previous": previous,
             "max_bytes": LOG_BYTES_MAX,
+        },
+    }
+
+
+async def verify_deployment(
+    app: str, expected_revision: str | None = None
+) -> dict[str, Any]:
+    """Say whether an ArgoCD Application has finished rolling out.
+
+    Reads one Application in the argocd namespace and returns a verdict of
+    verified, in_progress or failed, with the checks behind it: sync, health,
+    the last operation, ArgoCD error conditions, the live revision, and up to
+    ten unhealthy resources. Poll while in_progress. For a chart app pass
+    expected_revision, the chart version the write-back produced (that version
+    or a later one passes). For a git-tracked app omit it: verified with
+    reconciled_at at least five minutes after your merge means it is live. A version for a
+    git app, or a sha for a chart app, is rejected as invalid_request.
+    Read-only, and the same verdict rules as the operator tool.
+    """
+
+    if denial := _authorization_error():
+        return denial
+    if expected_revision is not None and (
+        not isinstance(expected_revision, str) or not 0 < len(expected_revision) <= 64
+    ):
+        return _error("invalid_request", "expected_revision must be 1 to 64 characters")
+    try:
+        request = validate_read_request(
+            verb="get",
+            api_group="argoproj.io",
+            resource="applications",
+            namespace="argocd",
+            name=app,
+            subresource=None,
+            limit=LIST_LIMIT_DEFAULT,
+            continue_token=None,
+        )
+    except InvalidObservationRequest as exc:
+        return _error("invalid_request", str(exc))
+
+    observer = RestrictedKubernetesClient()
+    try:
+        application = await observer.get_unprojected(request)
+    except ObservationFailure as exc:
+        return _error(exc.code, exc.message)
+    finally:
+        await observer.close()
+
+    try:
+        result = rollout.verdict(application, expected_revision=expected_revision)
+    except rollout.RevisionMismatch as exc:
+        return _error("invalid_request", str(exc))
+    return {
+        "ok": True,
+        **result,
+        "freshness": {
+            "observed_at": _now(),
+            "source": "kubernetes_api",
+            "successful": True,
         },
     }

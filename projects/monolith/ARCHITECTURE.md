@@ -1110,7 +1110,27 @@ instead, so its BDD specs can attach the tools deterministically.
 The agents tier is the second surface, intended for guests.
 `monolith-agents` runs in its own namespace and serves four knowledge tools (`search_knowledge`,
 `report_knowledge`, `dispute_fact`, `report_distress`) plus two Kubernetes
-observation tools (`kubernetes_read`, `kubernetes_pod_logs`) over stateless MCP.
+observation tools (`kubernetes_read`, `kubernetes_pod_logs`) and
+`verify_deployment` over stateless MCP.
+
+**`verify_deployment` is served on both surfaces with one rule set.** The
+private surface and the agents tier each read the ArgoCD Application through
+their own client and hand the raw object to `shared/rollout.py`, which returns
+verified, in_progress or failed with the checks behind it (sync, health, ArgoCD
+error conditions, the last operation, the live revision, an optional expected
+revision, and up to ten unhealthy resources). `status.sync.revision` is only
+what ArgoCD last compared against, so the live revision is that target while
+the app is Synced (a main commit that renders identically leaves a git app
+Synced with no operation) and the last successful sync or history entry
+otherwise. A failed operation counts only when it ran for the current target,
+and `Missing` health fails only once the app is synced with nothing running. **Why.** "Is my change live?" was the step
+every agent skipped or answered differently; one pure function means a factory
+worker, Claude and Joe get the same verdict, and ArgoCD's own health roll-up
+already encodes rollout completeness, so the verdict needs one GET, not a walk
+over workloads. The agents tier reads the object through
+`RestrictedKubernetesClient.get_unprojected`, which keeps the rule table,
+timeout and error classification but skips the model-facing projection; only
+the bounded verdict leaves the process.
 Identity middleware rejects anonymous callers, the tokens are minted by
 authentik's agent provider, and an Ember guest reaches the tier only through
 its egress sidecar, since the guest itself has no network. The tier holds its

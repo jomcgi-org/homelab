@@ -21,6 +21,7 @@ py_library(
     visibility = ["//projects/monolith:__pkg__"],
     deps = [
         "//projects/monolith:pkg_auth",
+        "//projects/monolith:pkg_shared",
         "@pip//kubernetes_asyncio",
     ],
 )

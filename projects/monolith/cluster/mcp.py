@@ -1,12 +1,14 @@
 """MCP tools for curated Kubernetes debugging — the ``k8s-*`` surface.
 
-Six tools, all read-only except ``k8s-sync-argocd-app``: cluster health
+Seven tools, all read-only except ``k8s-sync-argocd-app``: cluster health
 rollups, generic resource list/get over a curated kind allowlist, filtered pod
-logs, deduped events, and ArgoCD sync. Output is shaped by ``cluster.summarize``
+logs, deduped events, ArgoCD sync, and ``verify-deployment``, the rollout
+verdict shared with the agents tier (``shared.rollout``). Output is shaped by ``cluster.summarize``
 for token efficiency — never a raw manifest dump unless explicitly requested.
 
 Tool names follow the codebase convention: the FastMCP name is the function
-name (``k8s_*``). The gateway converts underscores to dashes and (today) adds
+name (``k8s_*``, and ``verify_deployment``, which keeps its name so it matches
+the agents tier). The gateway converts underscores to dashes and (today) adds
 the ``monolith-`` federation prefix, so these surface as ``k8s-*`` once that
 prefix is dropped.
 """
@@ -18,6 +20,9 @@ import logging
 from core.mcp_app import mcp
 from cluster import summarize
 from cluster.kubernetes import RESOURCE_KINDS, KubernetesClient, UnknownKindError
+from kubernetes_asyncio.client.exceptions import ApiException
+
+from shared import rollout
 
 logger = logging.getLogger(__name__)
 
@@ -179,3 +184,39 @@ async def k8s_sync_argocd_app(
         return {"error": f"sync failed: {exc}"}
     finally:
         await k8s.close()
+
+
+@mcp.tool
+async def verify_deployment(app: str, expected_revision: str | None = None) -> dict:
+    """Say whether an ArgoCD Application has finished rolling out.
+
+    Reads the Application and returns a verdict of verified, in_progress or
+    failed, with the checks behind it: sync, health, the last operation,
+    ArgoCD error conditions, the live revision, and up to ten unhealthy
+    resources. Poll while in_progress.
+
+    For a chart app pass expected_revision, the chart version the write-back
+    produced: it passes once that version or a later one is live. For a
+    git-tracked app omit it: verified with reconciled_at at least five minutes
+    after your merge (past ArgoCD's cache of HEAD) means your merge is live (a commit sha also works, but
+    matches only while it is still the head). A version for a git app, or a
+    sha for a chart app, is rejected as an error rather than left pending.
+    The agents tier serves the same tool with the same verdict rules.
+
+    Args:
+        app: ArgoCD Application name in the argocd namespace.
+        expected_revision: Optional chart version or commit sha that must be live.
+    """
+    k8s = KubernetesClient()
+    try:
+        obj = await k8s.get_argocd_application(app)
+    except ApiException as exc:
+        return {"error": f"reading application {app!r} failed: HTTP {exc.status}"}
+    finally:
+        await k8s.close()
+    if obj is None:
+        return {"error": f"application {app!r} not found in argocd"}
+    try:
+        return rollout.verdict(obj, expected_revision=expected_revision)
+    except rollout.RevisionMismatch as exc:
+        return {"error": str(exc)}
