@@ -31,12 +31,12 @@ Ranked. Spend your effort at the top.
 1. **Correctness.** Cases where the code produces a wrong result or crashes.
    State the concrete input or state that triggers it. A finding you cannot
    describe a failure path for is a guess, so drop it.
-2. **The gotchas in `.claude/CLAUDE.md`.** They exist because each one already
+2. **The gotchas in `AGENTS.md`.** They exist because each one already
    broke production here: missing `ClusterRole` verbs for new cluster reads,
    hardcoded `.svc.cluster.local` URLs or `@sha256:` digests, bulk data in the
-   migrations ConfigMap, a chart bump missing on a change that must deploy, sync
-   Session calls inside `async def`. Nothing in CI checks any of these, so
-   check every one yourself.
+   migrations ConfigMap, sync Session calls inside `async def`. Nothing in CI
+   checks any of these, so check every one yourself. (A chart `version:` or
+   `targetRevision:` moved on the branch is gated in CI.)
 3. **Config that looks live and is not.** For every flag, env var or values key
    the diff adds, changes or relies on, ask two questions: is anything consuming
    it, and is the branch that consumes it reachable? A key can be spelled

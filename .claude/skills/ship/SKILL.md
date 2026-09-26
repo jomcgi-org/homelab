@@ -13,29 +13,23 @@ issue ledger, and dispatch every unit of work to an agent. Keep your own context
 for sequencing and judgment: the agents carry the detail so this session does not
 have to.
 
-## Roles are agents
+## Roles
 
-| Work | Agent | Runs on |
-|------|-------|---------|
-| Implementation of a specified task | `implementer` | Codex Sol, via dispatch |
-| Review of the finished diff | `reviewer` | Opus |
-| Safety model refresh | `stpa-analyst` | Sonnet |
-| A genuine wall Opus could not clear | `escalation` | Fable |
+| Work | Who |
+|------|-----|
+| Implementation of a specified task | any implementing agent: a subagent, or the factory via `monolith-factory-submit-issue` |
+| Review of the finished diff | the `reviewer` agent, which has no `Write` or `Edit` tool |
+| Safety model refresh | the `stpa-analyst` agent |
 
-`implementer`, `reviewer` and `escalation` have no `Write` or `Edit` tool, so
-implementation cannot leak into review and review cannot quietly become a fix.
-
-Give each agent the full brief in one shot. An agent that has to come back for
-clarification costs more than the spec would have. Fan out independent tasks in
-the same turn rather than serializing them.
-
-Sol is the implementing tier during the trial (#4913), so it no longer serves
-as a cross-vendor second opinion on Phase 4 diffs: it would be grading its own
-work. Review is the Opus `reviewer` pass, and nothing substitutes for it.
+Which model runs each role is not this skill's decision. Give each agent the
+full brief in one shot: an agent that has to come back for clarification costs
+more than the spec would have. Fan out independent tasks in the same turn
+rather than serializing them. The reviewer must not be the agent that wrote
+the diff.
 
 Do **not** open bare `bazel` on the Mac, and do not treat PR CI as the first test
-run: `ci` before push so Workflows mostly cache-hit. Routing detail lives in
-`.claude/CLAUDE.md`; branch and merge mechanics in `pr-workflow`.
+run: `ci` before push so Workflows mostly cache-hit. Branch and merge mechanics
+live in `pr-workflow`.
 
 ## Phase 0: clarify
 
@@ -103,7 +97,6 @@ Closing the issue is how "shipped" is recorded.
 - [ ] `ci` green on the worktree
 - [ ] PR body contains `Closes #<this issue>` (or the parent, if a sub-issue)
 - [ ] No chart version in the diff (`Chart.yaml` `version:` / `targetRevision:` are written post-merge)
-- [ ] Branch up to date with main (strict checks; rebase if BEHIND)
 - [ ] `reviewer` agent run on the full diff; findings acted on or answered
 - [ ] Human review requested
 
@@ -116,7 +109,7 @@ a sub-issue is independently shippable end to end.
 ## Phase 1: plan
 
 Clarify, then write the plan into the tracking issue. Split it into tasks small
-enough that each is a single one-shot brief for an `implementer`, naming the
+enough that each is a single one-shot brief for an implementing agent, naming the
 files, the acceptance criteria, and the pattern to imitate.
 
 ## Phase 2: architecture record
@@ -130,25 +123,16 @@ accepted but not yet built, with its issue. Rebase-merge on green.
 Specs define done. `bdd_test(future = True, ...)` with `@covers_*` markers from
 `shared/testing/markers.py`. The gating Test action excludes `-future`; the
 informational "BDD future features" action runs them. Merging red specs is
-intentional. This is implementation work, so it goes to `implementer`.
+intentional. This is implementation work, so it goes to an implementing agent.
 
 ## Phase 4: implement
 
-1. Dispatch `implementer` per task, in parallel where tasks are independent.
-2. Keep on Opus only what a slow CI round-trip is the first detector for: deep
-   Helm, Bazel/apko, RBAC verbs, migration ordering, cross-service wiring.
-3. Run `ci` and commit with Conventional Commits. `implementer` agents never
-   commit.
-4. Dispatch `reviewer` **once**, on the full diff, at the end. Not per task.
-5. Check every Phase 4 gate before calling the PR ready.
-6. Human review only, no auto-merge. Report the PR URL and stop.
-
-If an `implementer` reports `CODEX_QUOTA_EXHAUSTED`: send one `warn` Discord
-notify, switch the remaining tasks to Sonnet implementers, and do not notify
-again this session.
-
-If Opus is genuinely stuck rather than merely slow, dispatch `escalation` with
-what has already been tried. Do not open it for routine difficulty.
+1. Dispatch an implementing agent per task, in parallel where tasks are
+   independent.
+2. Run `ci` and commit with Conventional Commits.
+3. Dispatch `reviewer` **once**, on the full diff, at the end. Not per task.
+4. Check every Phase 4 gate before calling the PR ready.
+5. Human review only, no auto-merge. Report the PR URL and stop.
 
 ## Phase 5: STPA
 
@@ -159,7 +143,8 @@ on the issue.
 ## Merge cadence
 
 Phases 2, 3 and 5 can `gh pr merge --auto --rebase`, followed through to merged.
-Phase 4 is human review only. The branch must stay up to date with main.
+Phase 4 is human review only. The merge queue handles main moving; never
+rebase a PR only because main moved.
 
 ## Stop conditions
 

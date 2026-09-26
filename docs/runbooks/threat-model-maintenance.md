@@ -60,30 +60,22 @@ Two independent reviewers caught six real errors in the index on
 2026-08-24, including two wrong findings and a missed document. To
 repeat:
 
-1. One detached worktree per reviewer:
+1. One detached worktree per reviewer, each on a different model family
+   from the author and from each other:
 
    ```bash
-   git worktree add /tmp/claude-worktrees/tm-review-sol origin/<branch> --detach
-   git worktree add /tmp/claude-worktrees/tm-review-ox origin/<branch> --detach
+   git worktree add /tmp/claude-worktrees/tm-review-a origin/<branch> --detach
+   git worktree add /tmp/claude-worktrees/tm-review-b origin/<branch> --detach
    ```
 
-2. Sol (Codex, bills the OpenAI subscription):
-
-   ```bash
-   cat <spec> | bazel/tools/codex/dispatch.sh frontier /tmp/claude-worktrees/tm-review-sol -
-   ```
-
-3. ox-alpha (OpenRouter stealth model, via opencode):
-
-   ```bash
-   cd /tmp/claude-worktrees/tm-review-ox && opencode run -m openrouter/stealth/ox-alpha "$(cat <spec>)"
-   ```
-
-4. The spec: review-only with no file edits; verify every factual claim
+2. Run each reviewer in its worktree with the spec below, through the
+   factory or any agent CLI directly. Which models is the factory's call;
+   what matters is that they are independent of the author.
+3. The spec: review-only with no file edits; verify every factual claim
    against the repository; flag language an outside engineer bounces
    off; report findings as blocker / should-fix / nit ending with a
    `VERDICT:` line.
-5. Verify each finding against the code before applying it, then batch
+4. Verify each finding against the code before applying it, then batch
    the accepted fixes into one PR. On 2026-08-24 every applied finding
    survived verification; apply none unverified.
 

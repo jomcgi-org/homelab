@@ -2,7 +2,6 @@
 name: stpa-analyst
 description: Generates or refreshes the STPA safety model for one system and one lens (logic/security/governance), written to committed JSON fragments under <system>/stpa/ with merged render at <system>/STPA.md. Takes system directory (e.g. projects/monolith) and lens name (logic|security|governance). Invokes the stpa skill and returns the path, changed findings, and deltas.
 tools: Bash, Read, Grep, Glob, Write, Edit, Skill
-model: sonnet
 ---
 
 # STPA analyst

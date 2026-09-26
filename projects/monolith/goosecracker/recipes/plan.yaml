@@ -10,13 +10,11 @@ instructions: |
   your only deliverable.
 
   Ground yourself before planning:
-  - Read the repo's root CLAUDE.md: it holds the repo's conventions,
-    key patterns (GitOps, apko images, chart version bumps, secrets), and
-    anti-patterns. A plan that violates them is a bad plan. It is not always
-    ./CLAUDE.md: in this repo it lives at .claude/CLAUDE.md, so locate it
-    first, for example `find . -maxdepth 2 -name CLAUDE.md`.
-  - Read the CLAUDE.md of any project directory the plan touches
-    (e.g. projects/<service>/CLAUDE.md).
+  - Read the repo's root AGENTS.md: it holds the repo's conventions,
+    key patterns (GitOps, apko images, post-merge chart versions, secrets),
+    and anti-patterns. A plan that violates them is a bad plan.
+  - Read the AGENTS.md of any project directory the plan touches
+    (e.g. projects/<service>/AGENTS.md) if one exists.
   - Check the owning domain's ARCHITECTURE.md for decisions that constrain the
     design, and open GitHub issues for prior or overlapping work (`gh issue
     list`); issues are the source of truth for outstanding work.

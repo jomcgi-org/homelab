@@ -26,9 +26,7 @@
       "Bash(helm lint:*)",
       "Bash(helm dependency:*)",
       "Bash(helm show:*)",
-      "Bash(helm uninstall:*)",
       "Bash(kubectl explain:*)",
-      "Bash(kubectl label:*)",
       "Bash(kubectl api-resources:*)",
       "Bash(go:*)",
       "Bash(operator-sdk:*)",
@@ -95,11 +93,6 @@
           {
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/bazel/tools/hooks/check-constant-change-test-grep.sh",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/bazel/tools/hooks/check-chart-version-targetrevision-sync.sh",
             "timeout": 10
           },
           {

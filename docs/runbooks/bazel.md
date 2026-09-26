@@ -17,7 +17,7 @@ Remote Bazel Test with the same flags as Workflows).
 
 Locally:
 
-- **`ci` / `ci lint` / `ci test`** — see `.claude/CLAUDE.md` Essential Commands
+- **`ci` / `ci lint` / `ci test`**: see `AGENTS.md` Commands
 - **`helm template`** — render charts without installing
 - **`mcp__buildbuddy__*`** — inspect Workflows invocations when debugging
 

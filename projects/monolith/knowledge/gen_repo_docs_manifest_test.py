@@ -17,13 +17,15 @@ def test_derive_title_falls_back_to_path():
 
 
 def test_should_index_includes_and_excludes():
-    # Included: *.md under docs/ or projects/, and any CLAUDE.md.
+    # Included: *.md under docs/ or projects/, and any AGENTS.md or CLAUDE.md.
     assert _should_index("docs/a.md")
     assert _should_index("docs/architecture-notes/004.md")
     assert _should_index("projects/svc/README.md")
     assert _should_index("CLAUDE.md")
     assert _should_index(".claude/CLAUDE.md")
     assert _should_index("projects/monolith/CLAUDE.md")
+    assert _should_index("AGENTS.md")
+    assert _should_index("projects/monolith/AGENTS.md")
     assert _should_index("bazel/ARCHITECTURE.md")
     assert _should_index("bazel/ocaml/README.md")
     # Excluded: wrong extension, outside the indexed dirs, or a noise segment.
