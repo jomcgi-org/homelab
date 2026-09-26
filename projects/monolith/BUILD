@@ -2576,6 +2576,17 @@ py_test(
     ],
 )
 
+py_test(
+    name = "agent_factory_goals_test",
+    srcs = ["agent/factory_goals_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
 # The sources are `data`, not just `srcs`: this test WALKS the tree rather than
 # importing it, and a bazel test only sees its own runfiles. Without the glob the
 # walk finds nothing, the violations list is empty, and the test passes while
