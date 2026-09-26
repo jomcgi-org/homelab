@@ -99,6 +99,21 @@ promotion:
   # server sets; changing them here is fine, omitting them is not.
   warehouseInterval: 5m0s
   freightCreationPolicy: Automatic
+  # REVISION-AWARE HEALTH GATE (#4745), staged and OFF. When enabled, every
+  # Stage that carries a `revisionURL` gains an `http` step after argocd-wait
+  # that polls that URL until its JSON body reports
+  # `chart_version == <the Freight's chart version>`, which closes the
+  # argocd-wait residual race (a Healthy computed against the pre-apply pods)
+  # without Argo Rollouts. The step's construction is the embervm conformance
+  # step's, minus the verdict; see templates/promotion.yaml.
+  #
+  # Off because the monolith's /healthz does not carry chart_version yet.
+  # Turning this on before that field ships makes every promotion poll a body
+  # without it until verdictTimeout, then fail. The flip belongs in the change
+  # that confirms the live /healthz returns the field. The step is rendered
+  # nowhere while this is false, so wiring revisionURL below is inert.
+  revisionGate:
+    enabled: false
   # One entry per workload whose chart version Kargo owns. Adding a workload
   # here is the whole change: the template is generic and this is the only
   # copy of it, so a second pipeline cannot drift from the first.
@@ -189,9 +204,11 @@ promotion:
       # settling window in which a pod that comes up Healthy and then crashloops
       # is caught before production sees it. argocd-wait is a point-in-time
       # check, so that class now reaches prod. It also does not buy any
-      # functional assertion beyond the readiness probe, nor a revision-aware
-      # health sample (the residual race in monolith-promotion.yaml). #4745
-      # tracks the rest.
+      # functional assertion beyond the readiness probe. The revision-aware
+      # health sample (the residual race in templates/promotion.yaml) is
+      # wired below as `revisionURL` and rendered only once
+      # `promotion.revisionGate.enabled` is true; #4745 tracks that flip and
+      # the functional assertion that remains out of scope.
       stages:
         - name: prod
           application: monolith
@@ -203,6 +220,19 @@ promotion:
           # Operator removed the recovery drill from the factory launch path.
           # Resume automatic promotion through the existing rollout checks.
           autoPromotion: true
+          # Revision gate target (#4745), INERT until promotion.revisionGate
+          # is enabled. The backend Service is named by the release
+          # (`monolith`, projects/gke-apps/monolith/application.yaml
+          # releaseName) in namespace `monolith` (same file, destination),
+          # and its `api` port (service.apiPort 8000 in the monolith chart) is
+          # the one whose /healthz the readiness probe already hits. The gate
+          # needs that body to carry `chart_version`, which the monolith chart
+          # does not add yet; ship that first.
+          revisionURL: http://monolith.monolith.svc.cluster.local:8000/healthz
+          # Rollout is about ten seconds and this is the same 10m0s bound the
+          # pipeline's waitTimeout uses; the http step defaults to it anyway,
+          # written out so the value is read here rather than in the template.
+          verdictTimeout: 10m0s
     - name: embervm
       warehouse: embervm-chart
       project: kargo-embervm

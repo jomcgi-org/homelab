@@ -365,6 +365,55 @@ spec:
             failureExpression: "response.status == 200 && response.body.chart_version == '{{ $pipeline.desiredRevisionExpr }}' && response.body.verdict == 'fail' && response.body.previous != nil && response.body.previous.verdict == 'fail'"
             errorExpression: "'conformance suite failed on chart ' + response.body.chart_version + ': ' + toJSON(response.body.scenarios)"
         {{- end }}
+        {{- if and $stage.revisionURL $.Values.promotion.revisionGate.enabled }}
+        {{- /*
+        REVISION-AWARE HEALTH GATE (#4745), staged behind
+        promotion.revisionGate.enabled and OFF by default.
+
+        This closes the residual race the argocd-wait comment above states:
+        argocd-wait has no desiredRevision, so it can accept a Healthy that
+        ArgoCD's status refresh computed against the pre-apply pods. This step
+        asks the workload itself which chart it is running, and only a body
+        whose chart_version equals the Freight's version (pre-evaluated by
+        Kargo from the same expression argocd-update used) satisfies it. It is
+        the same construction as the conformance step, minus the verdict:
+        a 200 with a stale chart_version, a missing field, or any non-200
+        keeps polling; nothing here is a skip.
+
+        No failureExpression, deliberately. A mismatch is the expected state
+        for the first seconds after a roll, and a fail-fast on it would red a
+        healthy promotion in exactly the window this step exists to wait out.
+        The retry timeout is the only terminal failure, and it fails the
+        Promotion. (Kargo evaluates errorExpression only when failure criteria
+        are met, so with no failureExpression there is nothing for one to
+        report; the timeout error names the step instead.)
+
+        WHY OFF BY DEFAULT: the step requires the workload's /healthz to carry
+        a chart_version field, and the monolith does not expose one yet. With
+        the flag on before that chart lands, every promotion polls a body with
+        no chart_version until the timeout and fails. Flip the flag in the
+        same change that confirms the live /healthz returns the field, and
+        after that chart version is what production runs.
+
+        Network: on the hub the monolith's CiliumNetworkPolicy templates are
+        inert (no CRD) and its native NetworkPolicy is egress only and
+        disabled, so kargo reaches the Service today. If an ingress policy
+        lands on that namespace this dials out silently and the timeout is
+        what reports it; allow the kargo namespace at the same time.
+        */}}
+        - uses: http
+          as: rollout-version
+          retry:
+            # Same shape as the conformance step: 3 absorbs transient dial
+            # errors; a stale or absent chart_version keeps polling regardless.
+            errorThreshold: 3
+            timeout: {{ $stage.verdictTimeout | default "10m0s" | quote }}
+          config:
+            method: GET
+            url: {{ $stage.revisionURL | quote }}
+            timeout: 10s
+            successExpression: "response.status == 200 && response.body.chart_version == '{{ $pipeline.desiredRevisionExpr }}'"
+        {{- end }}
 {{- end }}
 {{- end }}
 {{- end }}
