@@ -278,7 +278,7 @@ def ember_synthetic_trigger() -> None:
     probes run in the API pod, not this ephemeral job pod, so the job needs
     only HTTP access, not tokens or DB.
     """
-    # The four demo probes carry a 90s internal retry budget, so a 240s total
+    # The three demo probes carry a 90s internal retry budget, so a 240s total
     # client budget keeps every attempt inside the 300s step deadline.
     _post_internal(
         "/internal/ember/synthetic-probe",

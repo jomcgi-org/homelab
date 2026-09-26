@@ -1,6 +1,6 @@
 # Build and CI Architecture
 
-Everything that turns a commit into tested code, images and published charts: the Bazel graph, the vendored developer tools, the BuildBuddy workflow, the local `ci` loop, the formatters and generators, the Claude and git hooks, and the Semgrep and OCaml rulesets. Current as of a93980260 (2026-09-05).
+Everything that turns a commit into tested code, images and published charts: the Bazel graph, the vendored developer tools, the BuildBuddy workflow, the local `ci` loop, the formatters and generators, the Claude and git hooks, and the OCaml ruleset. Current as of a93980260 (2026-09-05).
 
 What happens after publish (chart versions, the write-back commit, Kargo, ArgoCD) is in `projects/platform/ARCHITECTURE.md`.
 
@@ -120,7 +120,7 @@ Codex dispatch lives here too: `bazel/tools/codex/dispatch.sh` runs an implement
 
 ## 8. Semgrep
 
-Nothing in this repo runs Semgrep. PR scanning is Semgrep Managed Scans, configured on the Semgrep side, with registry rules only; `.semgrepignore` at the root is the one file it reads from here. `# nosemgrep` markers across the tree are for those scans.
+Nothing in this repo runs Semgrep. PR scanning is Semgrep Managed Scans, configured on the Semgrep side, with registry rules only; `.semgrepignore` at the root is the one file it reads from here. Some `# nosemgrep` markers target registry rules; those naming the removed custom rules are inert.
 
 The repo used to carry its own layer: `semgrep_test` / `semgrep_target_test` / `semgrep_manifest_test` Bazel macros with a Gazelle language, about 93 custom rules under `bazel/semgrep/rules/`, digest-pinned OCaml engines and Pro packs refreshed by a weekly workflow, and a Firecracker semgrep guest serving the monolith's semgrep-scan MCP tool and the public `/ember/semgrep` exhibit. All of it was removed in #4777. The `semgrep_scan_perf` and `demo_sg_savings` tables are retained in Postgres with no writer.
 
