@@ -23,6 +23,21 @@ py_test(
 )
 
 py_library(
+    name = "chart_version_guard_lib",
+    srcs = ["chart_version_guard.py"],
+    imports = ["."],
+)
+
+py_test(
+    name = "chart_version_guard_test",
+    srcs = ["chart_version_guard_test.py"],
+    deps = [
+        ":chart_version_guard_lib",
+        "@pip//pytest",
+    ],
+)
+
+py_library(
     name = "test_source_reachability_lib",
     srcs = ["test_source_reachability.py"],
     imports = ["."],

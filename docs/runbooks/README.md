@@ -2,12 +2,11 @@
 
 Operational and agent procedures that are **explicit-only**.
 
-Unlike `.claude/skills/` (small auto-matched set: `ship`, `adr`, `stpa`,
-`codex-implement`, `pr-workflow`, `ci-triage`), runbooks are **not** selected by
+Unlike `.claude/skills/` (a small auto-matched set, listed in `AGENTS.md`), runbooks are **not** selected by
 description matching. Open only when:
 
 1. Joe asks for that procedure by name or intent, or
-2. A "Where to look next" row in `.claude/CLAUDE.md` names the file, or
+2. A "Where to look next" row in `AGENTS.md` names the file, or
 
 ## Index
 

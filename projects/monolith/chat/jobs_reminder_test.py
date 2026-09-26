@@ -3,7 +3,7 @@ the chat-drain-reminders Argo CronWorkflow one-shot (see chat/jobs.py).
 
 Only the core is unit tested; the thin async handler (drain_reminders_handler)
 just opens its own session and delegates via asyncio.to_thread, per
-projects/monolith/CLAUDE.md, and is not covered here (repo convention).
+projects/monolith/AGENTS.md, and is not covered here (repo convention).
 """
 
 from datetime import datetime, timedelta, timezone

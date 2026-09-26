@@ -31,7 +31,7 @@ MANIFEST_REL = "projects/monolith/knowledge/repo_docs_manifest.ndjson"
 # READMEs (helm, semgrep, ocaml, oci, image), which are the only place that
 # knowledge lives; without it the KG could not answer a CI question.
 _INCLUDE_DIRS = ("bazel/", "docs/", "projects/")
-_INCLUDE_NAMES = ("CLAUDE.md",)  # indexed anywhere (root + nested)
+_INCLUDE_NAMES = ("AGENTS.md", "CLAUDE.md")  # indexed anywhere (root + nested)
 
 # Path segments that mark generated / vendored / irrelevant trees. All entries
 # are slash-wrapped so they match whole path segments via the ``/{rel_path}/``

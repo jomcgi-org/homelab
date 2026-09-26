@@ -243,6 +243,8 @@ actions:
 
           python3 ./bazel/tools/ci/central_build_ratchet.py "$base_ref" HEAD
 
+          python3 ./bazel/tools/ci/chart_version_guard.py "$base_ref" HEAD
+
           # ---- 1b. tracked Python test reachability -----------------------
           # This is intentionally outside affected-target selection. A deleted
           # registration or a newly unowned test file must fail even when the

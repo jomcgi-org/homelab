@@ -35,12 +35,6 @@ sh_test(
 )
 
 sh_test(
-    name = "check_chart_version_targetrevision_sync_test",
-    srcs = ["check-chart-version-targetrevision-sync_test.sh"],
-    data = [":check-chart-version-targetrevision-sync.sh"],
-)
-
-sh_test(
     name = "check_adr_architecture_sync_test",
     srcs = ["check-adr-architecture-sync_test.sh"],
     data = [":check-adr-architecture-sync.sh"],
