@@ -29,11 +29,15 @@ CI or a git hook, so a violation fails loudly rather than silently.
   The repo allows rebase merges only, through the GitHub merge queue
   (`gh pr merge --auto --rebase` enqueues). Never rebase a PR only because main
   moved: the queue does that. See the `pr-workflow` skill.
-- **Never touch a chart's `version:` or pinned `targetRevision:` (gated:
+- **Never move a chart's `version:` or pinned `targetRevision:` forward (gated:
   `bazel/tools/ci/chart_version_guard.py`).** Main's publish computes the next
   version after merge and `chart-version-bot` writes both lines back (ADR
-  platform/009), so a deploy lands one commit after the merge, not in it.
-- **`ci` is the feedback loop, not PR CI.** Run it before pushing.
+  platform/009), so a deploy lands one commit after the merge, not in it. If a
+  change has not rolled out, check that write-back commit landed first.
+  Lowering a pin is allowed: it is the revert lever.
+- **`ci` is the feedback loop, not PR CI.** Run it before pushing. If `ci` is
+  not on your PATH (a sandboxed guest, say), PR CI is your test run and your
+  task spec says how to deliver.
 - **Conventional Commits (gated: `commit-msg` hook).**
 - **No em-dashes in anything you write**: prose, comments, docs, commit
   messages, PR bodies. Use a comma, colon, parentheses, or split the sentence.
@@ -109,7 +113,8 @@ and sessions. If your tools include it:
   intervention.
 
 If you have no MCP tools, this file, the repo and your task spec are all you
-have; skip the KG rather than treating it as a blocker.
+have; skip the KG rather than treating it as a blocker. When you write a spec
+for another agent, assume it has no KG and put what it must know in the spec.
 
 ## Gotchas
 
@@ -118,6 +123,7 @@ have; skip the KG rather than treating it as a blocker.
   `projects/gke-apps/` pins are hand-edited floors kept as the revert lever, so
   `git != live` is correct there. Read the live value:
   `kubectl get application monolith -n argocd -o jsonpath='{.spec.sources[0].targetRevision}'`.
+  Every other chart deploys off the git value.
 - **Never hand-pin `@sha256:` image digests in values files.** Build-time
   pinning replaces tags; hand-pinned digests go stale into `ImagePullBackOff`.
   Nothing in CI catches one.

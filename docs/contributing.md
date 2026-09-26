@@ -145,8 +145,8 @@ GitHub's merge queue rebases and tests every candidate, so never rebase for
 `BEHIND`; rebase only to resolve a real conflict. PRs never carry a version
 bump; the post-merge publish writes versions back. See the
 [`pr-workflow` skill](../.claude/skills/pr-workflow/SKILL.md) for mechanics.
-A pre-push hook blocks a PR that edits the `version:` or `targetRevision:`
-lines; the mechanism is described in
+A PR check (`bazel/tools/ci/chart_version_guard.py`) fails a PR that moves a
+published chart's `version:` or raises its `targetRevision:`; the mechanism is described in
 [`projects/platform/ARCHITECTURE.md`](../projects/platform/ARCHITECTURE.md),
 GitOps and delivery.
 Renovate opens weekly dependency PRs. Patch and minor upgrades may rebase-merge
