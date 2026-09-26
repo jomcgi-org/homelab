@@ -259,7 +259,7 @@ faas:
   s3Bucket: "faas"
 
 semgrep:
-  # EmberVM serves standalone Semgrep scans and the Python sandbox.
+  # EmberVM serves the code sandbox workloads (key name is historical).
   embervmUrl: "http://embervm-embervm.embervm.svc.cluster.local:8080"
 
 # Shared LLM provider keys, in the OnePasswordItem-backed `goosecracker` Secret.

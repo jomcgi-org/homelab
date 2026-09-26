@@ -30,8 +30,6 @@ helm_chart(
         "sandboxOcaml.guestImage": "//projects/firecracker/sandbox/ocaml:image.info",
         "sandboxJavascript.guestImage": "//projects/firecracker/sandbox/javascript:image.info",
         "rootfsBuilder.image": "//projects/firecracker/substrate/rootfs-builder:image.info",
-        # Semgrep guest image. Distinct top-level key.
-        "semgrep.guestImage": "//projects/firecracker/semgrep/guest:image.info",
         # R1 zip lane (ADR embervm/002): the runtime-python base image the zip
         # lane layers an adopter's archive onto. Distinct top-level key (D14a.6).
         "runtimePython.guestImage": "//projects/embervm/runtimes/python:image.info",

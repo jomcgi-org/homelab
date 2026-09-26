@@ -6,7 +6,7 @@
 #   - Always exits 0 (advisory only)
 #   - Emits a REMINDER on stderr when the path is under a covered chart or
 #     deploy tree, or a covered build/CI tree (bazel/tools/ci/, buildbuddy.yaml,
-#     bazel/semgrep/, bazel/ocaml/), naming the architecture doc
+#     bazel/ocaml/), naming the architecture doc
 #   - Stays silent for every other path
 #
 # jq is mocked via a minimal Python3 stub placed earlier on PATH so the
@@ -97,12 +97,11 @@ expect_reminder "/repo/projects/mcp/context-forge-gateway/deploy/values.yaml" "p
 expect_reminder "/repo/projects/mcp/context-forge-gateway/chart/templates/httproute-scoped.yaml" "projects/mcp/ARCHITECTURE.md"
 
 # Covered build and CI trees: the tooling rollup put the ci wrapper, the
-# BuildBuddy workflow, and the semgrep and ocaml rulesets behind
+# BuildBuddy workflow, and the ocaml ruleset behind
 # bazel/ARCHITECTURE.md. buildbuddy.yaml is a file, matched by substring.
 expect_reminder "/repo/bazel/tools/ci/ci" "bazel/ARCHITECTURE.md"
 expect_reminder "/repo/bazel/tools/ci/affected-targets.sh" "bazel/ARCHITECTURE.md"
 expect_reminder "/repo/buildbuddy.yaml" "bazel/ARCHITECTURE.md"
-expect_reminder "/repo/bazel/semgrep/defs/semgrep-test.sh" "bazel/ARCHITECTURE.md"
 expect_reminder "/repo/bazel/ocaml/toolchain/arches.bzl" "bazel/ARCHITECTURE.md"
 # what the two clusters run: the shared charts plus the hub overlays.
 expect_reminder "/repo/projects/platform/kargo/values.yaml" "projects/platform/ARCHITECTURE.md"

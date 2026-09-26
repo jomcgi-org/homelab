@@ -29,7 +29,6 @@ MODULE = _Module(
     register_public=_domain.register_public,
     register_health={
         "ember_bazel": synthetic_probe_health("bazel", EMBER_SYNTHETIC_STALENESS_S),
-        "ember_semgrep": synthetic_probe_health("semgrep", EMBER_SYNTHETIC_STALENESS_S),
         "ember_pages": synthetic_probe_health("pages", EMBER_SYNTHETIC_STALENESS_S),
         "ember_postgres": synthetic_probe_health(
             "postgres", EMBER_SYNTHETIC_STALENESS_S

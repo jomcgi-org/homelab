@@ -5,13 +5,6 @@
 # repo_docs_manifest.ndjson is skipped automatically as an unknown language.)
 projects/monolith/frontend/src/lib/public/docs/docs-manifest.json
 
-# Our own Semgrep rule definitions and their test fixtures: these files
-# intentionally contain the patterns the rules match (eval/exec, raw SQL,
-# subprocess, etc.) as match targets, so the Pro registry rules false-positive
-# on them. Semgrep Managed Scans honours this file, so keep them listed.
-bazel/semgrep/rules/
-bazel/semgrep/tests/
-
 # Vendored OCaml sources (semgrep_src overlay): upstream third-party code, not
 # ours to lint; the OCaml portability rules flag its CRLF/line-reading style.
 bazel/ocaml/semgrep_src/

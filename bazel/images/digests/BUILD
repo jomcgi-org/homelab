@@ -33,7 +33,6 @@ oci_digest_manifest(
         "//projects/firecracker/sandbox/ocaml:image.info": "//projects/firecracker/sandbox/ocaml:image.push",
         "//projects/firecracker/sandbox/python:image.info": "//projects/firecracker/sandbox/python:image.push",
         "//projects/firecracker/sandbox/rust:image.info": "//projects/firecracker/sandbox/rust:image.push",
-        "//projects/firecracker/semgrep/guest:image.info": "//projects/firecracker/semgrep/guest:image.push",
         "//projects/firecracker/substrate/egress-proxy:image.info": "//projects/firecracker/substrate/egress-proxy:image.push",
         "//projects/firecracker/substrate/rootfs-builder:image.info": "//projects/firecracker/substrate/rootfs-builder:image.push",
         "//projects/monolith/frontend:image.info": "//projects/monolith/frontend:image.push",

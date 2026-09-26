@@ -7,7 +7,7 @@
 # disables for behaviour that is actively harmful to run twice.
 #
 # WHAT DOES NOT: turning features off to make dev "smaller". Disabling chat,
-# whatsapp, marine or semgrep would make dev render DIFFERENT templates from
+# whatsapp or marine would make dev render DIFFERENT templates from
 # production, at which point dev stops rehearsing what you are about to promote
 # and becomes its own configuration with its own bugs. The leaderSingletons
 # switch below already stops every side effect those features would produce,

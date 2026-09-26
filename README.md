@@ -12,7 +12,7 @@ Personal monorepo. Dev tooling and deployment for my projects.
 - [**OCI Model Cache**](projects/operators/oci-model-cache/): Kubernetes operator that syncs ML models from HuggingFace to OCI registries. Compiler-enforced state machines.
 - [**Sextant**](projects/sextant/): code generator that turns YAML state-machine specs into type-safe Go for operators. Invalid transitions are compile errors, idempotency keys are forced into transition signatures. Generates the OCI Model Cache machine, drift-checked in CI.
 - [**Design system**](projects/design-system/): the shared `--ds-*` token contract the frontends build against. One namespaced vocabulary, three deliberately distinct themes (neobrutalist, ember, Grimoire) that override it inside their own scope class. Rationale in [the platform architecture](projects/platform/ARCHITECTURE.md#decision-history).
-- [**Build system**](bazel/): custom Bazel rules for Helm, Semgrep SAST, and Cloudflare Pages. All builds run remotely via BuildBuddy RBE.
+- [**Build system**](bazel/): custom Bazel rules for Helm and Cloudflare Pages. All builds run remotely via BuildBuddy RBE.
 - [**Buck2 rules**](buck2/): reusable Buck2 rules for container images (apko/OCI) and Helm charts, the Buck2 counterparts to the Bazel rules, consumable by other Buck2 projects as an external cell.
 
 ## Applications
@@ -67,7 +67,7 @@ projects/             # All services, operators, websites, colocated with deploy
 ├── gke-cluster/      #   Auto-generated ArgoCD root kustomization for GKE hub
 ├── home-cluster/     #   Auto-generated ArgoCD root kustomization
 └── platform-gke/     #   GKE cluster-critical infrastructure overlays (Tailscale, ArgoCD, Otel, Cloudflare)
-bazel/                # Build infrastructure (rules, tools, images, semgrep)
+bazel/                # Build infrastructure (rules, tools, images)
 buck2/                # Reusable Buck2 image/helm/apko rules (consumable as a cell)
 docs/                 # Cross-domain documentation and runbooks
 ```

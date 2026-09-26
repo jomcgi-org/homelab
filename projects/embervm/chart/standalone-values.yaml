@@ -100,9 +100,6 @@ sandboxWorkloads:
   sandboxJavascript:
     enabled: false
 
-semgrepWorkload:
-  enabled: false
-
 bazelQueryWorkload:
   enabled: false
 
@@ -148,10 +145,6 @@ sandboxOcaml:
     repository: ""
 
 sandboxJavascript:
-  guestImage:
-    repository: ""
-
-semgrep:
   guestImage:
     repository: ""
 

@@ -359,9 +359,9 @@ monolith, public and agents tiers' object storage. ADR embervm/041 phase 5
 would replace the EmberVM key with a federated JWT-SVID; nothing has
 started.
 
-No automated check on secret hygiene runs in CI: the repo's Semgrep rules
-for a hardcoded secret or an empty item path run only in the on-demand
-semgrep-scan guest (#4777), so review catches what the rules would.
+No automated check on secret hygiene runs in CI beyond Semgrep Managed
+Scans' registry rules: the repo's own rules for a hardcoded secret or an
+empty item path were removed (#4777), so review has to catch them.
 
 (see: `projects/*/chart/templates/onepassworditem*.yaml`, `projects/monolith/deploy/*.md`)
 
@@ -409,9 +409,8 @@ enforces any of it. Kyverno runs two `ClusterPolicy` objects, both `Audit`
 `require-resource-requests`, scoped to the `monolith` and `monolith-public`
 namespaces, and `clone-monolith-workflows-secrets`, which copies Secrets
 into the job namespace. The OTel injection policy is disabled. Nothing is
-rejected at admission, and the Semgrep rules `no-privileged` and
-`no-host-network` that would flag a new exception run only in the on-demand
-semgrep-scan guest, not on PRs (#4777).
+rejected at admission, and no check flags a new exception: the repo's
+`no-privileged` and `no-host-network` Semgrep rules were removed (#4777).
 
 (see: `projects/embervm/`, `projects/monolith/sandbox/`, `projects/platform/kyverno/`)
 
@@ -519,7 +518,6 @@ a convention this document asks for and nothing enforces.
 | Check | Mechanism | State |
 |-------|-----------|-------|
 | Semgrep registry rules | Semgrep Managed Scans, configured on the Semgrep side | live; not in this repo |
-| Custom Semgrep rules (93 under `bazel/semgrep/rules/`) | semgrep-scan guest, on demand | not a PR gate: the Bazel test layer never scanned and was removed (#4777) |
 | Chart admissibility (kubeconform) | #5337 | not merged |
 | Pod hardening and privilege | Kyverno | two policies, both `Audit`, neither about security context |
 | Resource requests and a memory limit | Kyverno `require-resource-requests` | `Audit`, `monolith` and `monolith-public` only |
@@ -559,15 +557,14 @@ column above says nothing will do it for you:
   caller can set; hand-pinned image digests go stale after the next
   rebuild.
 
-(see: `bazel/semgrep/rules/`, `bazel/tools/hooks/`, `projects/monolith/BUILD`, `.claude/settings.json`)
+(see: `bazel/tools/hooks/`, `projects/monolith/BUILD`, `.claude/settings.json`)
 
-**Why.** Semgrep was moved into Bazel so a rule runs as a cached test with
-hermetic, digest-pinned engine and rule inputs, in seconds instead of the
-minutes managed CI took, because agent loops need identical results from
-identical inputs (ADR security/001). The RL-generated rule pipeline that was
-to feed it was deprecated (ADR security/002). The same fail-open wrapper
-that made the tests fast is what let the engine stop scanning without a
-red, which is why the list above states enforcement rather than intent.
+**Why.** Semgrep was moved into Bazel so a rule would run as a cached test
+with hermetic, digest-pinned inputs (ADR security/001). Its fail-open wrapper
+let the engine stop scanning without a red, so for months the repo's 93
+custom rules enforced nothing, and the semgrep guest that also carried them
+went unused. Both were removed (#4777) in favour of Semgrep Managed Scans,
+which is why the list above states enforcement rather than intent.
 
 ## Where each control is enforced
 
@@ -588,7 +585,7 @@ red, which is why the list above states enforcement rather than intent.
 | Public data isolation | `public_reader` and `public_writer` grants, `main_public_imports_test`, `public_httproute_chat_guard_test`, `chat_public_grants_test`, `check-public-reader-grant.sh` |
 | Public rate limits | `BackendTrafficPolicy` objects in `projects/monolith-public/chart/templates/` |
 | Published content | `projects/monolith/knowledge/tools/public_content.py` |
-| Review-time static checks | Semgrep Managed Scans (registry rules); `bazel/semgrep/rules/` through the semgrep-scan guest only |
+| Review-time static checks | Semgrep Managed Scans (registry rules) |
 | Findings register | `docs/THREAT-MODEL.md`, the `security-finding` label, `projects/*/stpa/security.json` |
 
 ## Direction
@@ -601,7 +598,6 @@ this table when the work ships or the issue closes without it.
 | Public-tier egress scopes to its four documented destinations, enforced on the hub | Network | #5276 | not started |
 | Per-workload EmberVM egress allowlists replace the single allowlist shared across every workload | Network | #5320 | not started |
 | Optional delegated authority, a GitHub broker, or session delivery is selected only after its caller and permission or delivery gate fires | Identity | #4940, #4943, #4944, #4945, #4946 | gated; no proposal selected or shipped |
-| Semgrep findings reach the hosted App under required credentials, replacing the offline placeholder token | Static checks and review gates | #3893 | not started |
 
 ## Decision history
 

@@ -123,8 +123,6 @@ workloads:
     rootfsPath: /var/lib/embervm/scratch/recovery/embervm-noded/sandbox-ocaml/rootfs.ext4
   sandboxJavascript:
     rootfsPath: /var/lib/embervm/scratch/recovery/embervm-noded/sandbox-javascript/rootfs.ext4
-  semgrep:
-    rootfsPath: /var/lib/embervm/scratch/recovery/embervm-noded/semgrep/rootfs.ext4
   runtimePython:
     rootfsPath: /var/lib/embervm/scratch/recovery/embervm-noded/runtime-python/rootfs.ext4
   runtimeClaude:
@@ -166,8 +164,6 @@ sandboxWorkloads:
     enabled: false
 sandboxSessionWorkload:
   enabled: false
-semgrepWorkload:
-  enabled: false
 bazelQueryWorkload:
   enabled: false
 shotterWorkload:
@@ -184,9 +180,6 @@ scratchPostgres:
     repository: ''
 demoPostgres:
   enabled: false
-semgrep:
-  guestImage:
-    repository: ''
 runtimePython:
   guestImage:
     repository: ''

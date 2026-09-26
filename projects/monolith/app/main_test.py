@@ -146,10 +146,9 @@ def test_retired_private_demo_and_perf_routes_are_absent():
 
 
 def test_retained_factory_and_public_ember_routes_are_registered():
-    """Route B removal must preserve factory ingress and standalone scanning."""
+    """Route B removal must preserve factory ingress and the ember demos."""
     paths = set(_iter_route_paths(app.routes))
     assert "/webhooks/github/factory" in paths
-    assert "/api/ember/semgrep/scan" in paths
     assert "/api/ember/postgres/status" in paths
 
 

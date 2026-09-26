@@ -225,15 +225,13 @@ Anything a worker must know goes in `AGENTS.md` or in the spec you hand it.
 - **Never hand-pin `@sha256:` digests in values files.** Bazel
   `helm_images_values` deep-merges pinned tags at build time. Hand-pinned digests
   go stale after the next CI rebuild and turn into `ImagePullBackOff`. Nothing
-  in CI catches one: the repo's `no-hardcoded-image-digest` Semgrep rule runs
-  only in the on-demand semgrep-scan guest, and Semgrep Managed Scans uses
-  registry rules.
+  in CI catches one: the repo has no custom Semgrep rules any more, and
+  Semgrep Managed Scans runs registry rules only.
 - **Helm prepends the release name to service names.** A service `web` in release
   `myapp` resolves at `myapp-web.<namespace>.svc.cluster.local`, so a release
   rename silently breaks any hardcoded URL. Never hardcode one in a Go default:
   use `envOr("URL", "")` with no default and set it in `values.yaml`. Nothing
-  in CI catches one either (`no-hardcoded-k8s-service-url` is guest-only, like
-  the digest rule above).
+  in CI catches one either.
 - **New monolith endpoints that read cluster resources need matching
   `ClusterRole` verbs.** Check every `get` / `list` / `watch` the code calls
   before merging. Missing verbs fail silently in prod as `Forbidden`, which shows

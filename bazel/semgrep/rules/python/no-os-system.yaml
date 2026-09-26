@@ -1,9 +1,0 @@
-rules:
-  - id: no-os-system
-    languages: [python]
-    severity: ERROR
-    message: >-
-      Use subprocess.run() with list args instead.
-    metadata:
-      category: security
-    pattern: os.system(...)

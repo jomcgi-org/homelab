@@ -11,10 +11,8 @@ import (
 )
 
 // listenVsock binds an AF_VSOCK stream socket to (VMADDR_CID_ANY, port) and
-// returns a net.Listener for shim.Server.Serve. Mirrors the semgrep guest's
-// scanserver.ListenVsock
-// (projects/firecracker/semgrep/guest-init/internal/scanserver), kept as a
-// private helper here rather than a shared package since it is this small.
+// returns a net.Listener for shim.Server.Serve. Kept as a private helper here
+// rather than a shared package since it is this small.
 func listenVsock(port uint32) (net.Listener, error) {
 	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM, 0)
 	if err != nil {

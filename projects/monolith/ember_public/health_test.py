@@ -20,7 +20,6 @@ def test_module_registers_synthetic_postgres_health_hook():
     assert "ember_postgres" in MODULE.register_health
     assert set(MODULE.register_health) == {
         "ember_bazel",
-        "ember_semgrep",
         "ember_pages",
         "ember_postgres",
         "ember_codex",

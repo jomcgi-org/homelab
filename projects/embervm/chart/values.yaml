@@ -691,42 +691,6 @@ sandboxWorkloads:
     cap: 4
     timeoutSeconds: 30
 
-# The semgrep workload (Task 14b): EmberVM's named first consumer, side-by-side
-# with fc-invoke's semgrep path (which is halved 16->8 in the substrate chart to
-# make room). Same frozen guest contract as fc-invoke (vsock 1027, /shim/ready,
-# /invoke), 1 vcpu / 1536Mi / 90s, floor 1 / cap 16.
-semgrepWorkload:
-  enabled: true
-  name: semgrep
-  port: 1027
-  readyPath: /shim/ready
-  invokePath: /invoke
-  vcpus: 1
-  # 1536 is NOT reduced here, deliberately. It is sized for the rule engine's
-  # peak inside the guest, and there is no per-VM memory gauge to size it
-  # against (#4773): cutting it blind trades reservation for an OOM inside a
-  # scan, which surfaces as a red */5 probe rather than as a saving. The
-  # reservation problem was the floor multiplier below, not this number.
-  memMib: 1536
-  # 1, down from 4. This was cut during #4077, when floor was applied PER BRICK
-  # INSTANCE: at 1536 MiB a floor of 4 was then a 6 GiB ask per brick that a 2gi
-  # brick could never satisfy, and an unsatisfiable floor never stops priming,
-  # so it permanently pressured placement on every small brick in the fleet.
-  #
-  # That per-instance behaviour is GONE. `PoolManager.plan_fleet_allocation/4`
-  # computes floor deficits against `fleet_free_totals/1`, which sums free
-  # primed slots across every instance, so a floor is now ONE number for the
-  # whole fleet. The sizing below is kept anyway (see the next paragraph), but
-  # do not reason about it as a per-brick multiplier: that arithmetic no longer
-  # applies, and the sandbox floors it once justified are now 0.
-  #
-  # 1 rather than 0 because semgrep is the one demo path with a per-request cost
-  # high enough that a warm clone is worth a brick slot, and it keeps one
-  # instance able to answer the */5 probe without a restore.
-  floor: 1
-  cap: 16
-  timeoutSeconds: 90
-
 # The bazel-query workload (ADR embervm/010: the Skyframe snapshot demo). Task
 # class: the base is a warm Bazel server (Abseil analysis graph resident in the
 # JVM heap); each request restores a CoW clone, runs one `bazel cquery`, and the
@@ -843,9 +807,6 @@ workloads:
   sandboxJavascript:
     rootfsPath: /var/lib/embervm/scratch/embervm-noded/sandbox-javascript/rootfs.ext4
     harnessInit: /usr/local/bin/sandbox-guest-init
-  semgrep:
-    rootfsPath: /var/lib/embervm/scratch/embervm-noded/semgrep/rootfs.ext4
-    harnessInit: /usr/local/bin/semgrep-guest-init
   # R1 zip lane (ADR embervm/002): the runtime-python base image the zip lane
   # layers an adopter's archive onto. Its PID-1 guest-init mounts a tmpfs over
   # /tmp then execs the python bootstrap shim (see runtimes/python/guest-init).
@@ -944,15 +905,6 @@ sandboxOcaml:
 sandboxJavascript:
   guestImage:
     repository: ghcr.io/jomcgi/homelab/projects/firecracker/sandbox/javascript
-    tag: latest
-    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
-
-# The semgrep guest image, Bazel-pinned (helm_chart images="semgrep.guestImage")
-# from the frozen fc-invoke semgrep guest's .info provider. Distinct top-level key
-# (never noded.*) so the image pin does not collide, per D14a.6.
-semgrep:
-  guestImage:
-    repository: ghcr.io/jomcgi/homelab/projects/firecracker/semgrep/guest
     tag: latest
     digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
 
@@ -1261,8 +1213,8 @@ rootfsBuilder:
     repository: ghcr.io/jomcgi/homelab/projects/firecracker/substrate/rootfs-builder
     tag: latest
     digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
-  # 4G covers the largest guest (semgrep: engine + rules + python); the sandbox
-  # base is smaller but a uniform size keeps the builder simple (matches
+  # 4G was sized for the largest guest at the time (the since-removed semgrep
+  # guest: engine + rules + python); the sandbox base is smaller but a uniform size keeps the builder simple (matches
   # fc-invoke's 4G). The ext4 is sparse, so an oversized fs costs little.
   rootfsSize: 4G
 

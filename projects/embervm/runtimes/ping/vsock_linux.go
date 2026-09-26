@@ -1,9 +1,8 @@
 //go:build linux
 
 // ListenVsock binds an AF_VSOCK stream socket to (VMADDR_CID_ANY, port) and
-// returns it as a net.Listener, mirroring the semgrep guest-init's scanserver
-// helper. Replicated rather than imported because that helper is internal to
-// the semgrep guest-init package.
+// returns it as a net.Listener. Each guest-init keeps its own small copy of
+// this helper rather than importing a shared package.
 package main
 
 import (

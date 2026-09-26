@@ -93,7 +93,7 @@ export const projects = [
     oneLiner:
       "A Firecracker microVM orchestrator: an Elixir control plane and a Go node daemon run one-shot tasks, bankable stateful sessions, and warm HTTP serving on the same substrate.",
     motivation:
-      "fc-invoke proved the substrate but hardcoded one workload shape: a stateless invoke. EmberVM is the successor, built by forking the node daemon and putting a BEAM control plane in front of it. Semgrep scans already run on it, a public image renderer serves warm from it, and fc-invoke is frozen with the goose agent as its last tenant. The control plane owns placement and policy and stays off every serving hit path.",
+      "fc-invoke proved the substrate but hardcoded one workload shape: a stateless invoke. EmberVM is the successor, built by forking the node daemon and putting a BEAM control plane in front of it. A public image renderer serves warm from it, and fc-invoke is frozen with the goose agent as its last tenant. The control plane owns placement and policy and stays off every serving hit path.",
     facts: [
       {
         k: "Workload classes",
@@ -417,7 +417,7 @@ export const projects = [
       },
       {
         k: "Custom rulesets",
-        v: "rules_helm (lint, template, package, OCI-push charts, plus an ArgoCD application macro), rules_semgrep, rules_wrangler for Cloudflare Pages, and apko image tooling. Each ships a Gazelle extension that writes the BUILD files.",
+        v: "rules_helm (lint, template, package, OCI-push charts, plus an ArgoCD application macro), rules_wrangler for Cloudflare Pages, and apko image tooling. Each ships a Gazelle extension that writes the BUILD files.",
       },
       {
         k: "GitOps manifests",
@@ -436,43 +436,6 @@ export const projects = [
       {
         label: "bazel/",
         href: "https://github.com/jomcgi/homelab/tree/main/bazel",
-      },
-    ],
-  },
-  {
-    id: "rules-semgrep",
-    category: "build",
-    title: "rules_semgrep",
-    oneLiner:
-      "Hermetic Semgrep static and supply-chain analysis as Bazel tests: digest-pinned OCaml engine, cached diff scans in 30 seconds.",
-    motivation:
-      "Semgrep on managed CI took 2+ minutes per diff scan and rule-registry fetches made results non-deterministic. I needed scans that run in seconds, produce identical results from identical inputs, and only re-run when something changed. Bazel's content-addressed cache gives all three, but Semgrep had no Bazel integration.",
-    facts: [
-      {
-        k: "No Python",
-        v: "Extracts the semgrep-core OCaml binary from PyPI wheels and vendors it as an OCI artifact on GHCR, bypassing the Python wrapper and its startup tax.",
-      },
-      {
-        k: "Digest-pinned",
-        v: "Engine binaries and Pro rule packs are pinned to sha256 digests; a daily job updates digests and opens a PR. Same inputs, same results.",
-      },
-      {
-        k: "Three rule types",
-        v: "semgrep_test for sources, semgrep_manifest_test for Helm-rendered YAML, semgrep_target_test for transitive deps via aspect. Gazelle generates all of them.",
-      },
-      {
-        k: "Supply chain",
-        v: "SCA lockfile scanning with Pro reachability, auto-detected from @pip and @npm dependency prefixes. Zero config.",
-      },
-      {
-        k: "Results",
-        v: "Cached diff scans in 30 seconds, down from 2+ minutes. Cold cache: 4 minutes for all tests, images, and scans.",
-      },
-    ],
-    links: [
-      {
-        label: "bazel/semgrep",
-        href: "https://github.com/jomcgi/homelab/tree/main/bazel/semgrep",
       },
     ],
   },
