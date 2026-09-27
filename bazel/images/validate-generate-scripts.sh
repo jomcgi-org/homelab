@@ -18,8 +18,11 @@ extract_targets_from_build() {
 	# `sort -u`: the chart targets are deliberately listed twice, once in
 	# push_all and once in the push_charts subset PR CI runs, and this list is
 	# diffed against a bazel query that yields each label once.
+	# Package specs (`:__pkg__`, `:__subpackages__`) are visibility, not
+	# targets: the generated repo_docs filegroup (#6446) is visible to
+	# //projects/monolith:__pkg__.
 	local build_file="$1"
-	grep -o '"//[^"]*"' "$build_file" | tr -d '"' | grep -v '//visibility:\|//:__subpackages__\|//:__pkg__' | LC_ALL=C sort -u
+	grep -o '"//[^"]*"' "$build_file" | tr -d '"' | grep -v '^//visibility:\|:__subpackages__$\|:__pkg__$' | LC_ALL=C sort -u
 }
 
 compare_targets() {
