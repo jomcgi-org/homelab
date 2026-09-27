@@ -105,3 +105,20 @@ exports_files(
 # all pip packages during CI analysis phase. Use:
 # - bazel run //bazel/tools/python:gazelle_python_manifest.update
 # - bazel test //bazel/tools/python:gazelle_python_manifest.test
+
+# Markdown read by the monolith doc-manifest genrules (#6446). See
+# //projects/monolith:repo_docs_srcs.
+filegroup(
+    name = "repo_docs",
+    srcs = glob(
+        [
+            "AGENTS.md",
+            "CLAUDE.md",
+            "bazel/**/*.md",
+            "docs/**/*.md",
+        ],
+        allow_empty = True,
+        exclude = ["**/node_modules/**"],
+    ),
+    visibility = ["//projects/monolith:__pkg__"],
+)

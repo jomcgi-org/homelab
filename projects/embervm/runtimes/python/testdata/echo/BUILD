@@ -7,3 +7,15 @@
 # CI-exercised by projects/embervm/control/test/embervm/zip_lane_echo_test.exs
 # and the fixture is round-trip-checked against the shim; see README.md for the
 # live procedure.
+
+# Markdown read by the monolith doc-manifest genrules (#6446). See
+# //projects/monolith:repo_docs_srcs.
+filegroup(
+    name = "repo_docs",
+    srcs = glob(
+        ["**/*.md"],
+        allow_empty = True,
+        exclude = ["**/node_modules/**"],
+    ),
+    visibility = ["//projects/monolith:__pkg__"],
+)

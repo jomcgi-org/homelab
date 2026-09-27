@@ -83,5 +83,9 @@ workflow executors and the platforms are wrong.
   "nothing to publish" and "failed to notice a change" print almost the same
   thing. This exact failure happened on 2026-08-10 (commit 2000bae).
 - **Generated files drifting.** `ci regen` runs the committed generators (home
-  cluster kustomization, doc manifests, routes, orchestrator bundle). If CI
-  auto-commits a regen you did not run, that is the format bot, not a failure.
+  cluster kustomization, posts manifest, routes, orchestrator bundle). The
+  repo-docs and public docs manifests are genrule outputs (#6446); a
+  `repo-docs coverage: FAIL` from `validate-generate-scripts.sh` means a tracked
+  doc sits in a package with no `repo_docs` filegroup, and its message says
+  what to add. If CI auto-commits a regen you did not run, that is the format
+  bot, not a failure.

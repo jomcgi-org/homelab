@@ -12,11 +12,14 @@
 # Generators covered (each self-locates via BUILD_WORKSPACE_DIRECTORY, so this
 # wrapper only cd's to the workspace and invokes them):
 #   - home-cluster kustomization, the push-all BUILD list, monolith routes,
-#     the three manifests
-#     (repo_docs_manifest.ndjson + public docs and posts manifests), the
-#     ADR 036 orchestrator context bundle (orchestrator_bundle.md), and the
-#     guest env-readmes (ADR agents/044: environment.md per guest image,
-#     derived from that guest's apko.lock.json + env-notes.md).
+#     the posts manifest, the ADR 036 orchestrator context bundle
+#     (orchestrator_bundle.md), and the guest env-readmes (ADR agents/044:
+#     environment.md per guest image, derived from that guest's
+#     apko.lock.json + env-notes.md).
+#
+# Deliberately NOT here: the repo-docs and public docs manifests. They are
+# build outputs of genrules (#6446), never committed, so nothing regenerates
+# or checks them in; validate-generate-scripts.sh checks their inputs instead.
 #
 # Deliberately NOT here: sync-helm-deps and atlas-checksum generation. They need
 # helm/atlas CLIs that are not in the CI format runner and have their own gates;
@@ -36,9 +39,9 @@ run() {
 	pids+=($!)
 }
 
-# Guest env-readmes run BEFORE the parallel batch: the doc-manifest
-# generators below index repo markdown (including environment.md), so
-# writing it concurrently would make the manifests flip-flop across runs.
+# Guest env-readmes run serially BEFORE the parallel batch, so a failing one
+# exits before the rest start. (They were ordered ahead of the doc-manifest
+# generators, which read environment.md; those are genrules now, #6446.)
 for sandbox_lang in python go rust elixir ocaml javascript; do
 	python3 ./projects/firecracker/tools/env_readme/gen_env_readme.py \
 		--lock "projects/firecracker/sandbox/${sandbox_lang}/apko.lock.json" \
@@ -50,8 +53,6 @@ done
 run ./bazel/images/generate-home-cluster.sh
 run ./bazel/images/generate-push-all.sh
 run ./projects/monolith/generate-routes.sh
-run python3 ./projects/monolith/knowledge/tools/gen_repo_docs_manifest.py
-run python3 ./projects/monolith/knowledge/tools/gen_docs_manifest.py
 run python3 ./projects/monolith/knowledge/tools/gen_posts_manifest.py
 run python3 ./projects/monolith/knowledge/tools/gen_orchestrator_bundle.py
 

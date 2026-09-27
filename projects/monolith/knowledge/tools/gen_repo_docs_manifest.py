@@ -1,21 +1,24 @@
 """Generate the repo-docs manifest baked into the monolith image.
 
-Lists the repo's tracked markdown via ``git ls-files`` and writes one NDJSON line
-per indexed file, sorted by repo-relative path, to
-projects/monolith/knowledge/repo_docs_manifest.ndjson. Using git (not a filesystem
-walk) makes the output deterministic across platforms and Python versions and
-never picks up untracked files or build artifacts under symlinked bazel-out/ dirs.
+Writes one NDJSON line per indexed markdown file, sorted by repo-relative path.
+The manifest is a build output, not a committed file (#6446): the
+``//projects/monolith:repo_docs_manifest`` genrule runs this script with
+``--out`` and the doc files from ``//projects/monolith:repo_docs_srcs`` as
+arguments, and the image ships the result as its own layer.
 
-Regeneration is automatic: the "Format check" CI action (buildbuddy.yaml) runs
-this generator on every push and auto-commits any change to the manifest on PR
-branches (as ci-format-bot), like any other formatting fix, so a doc edit never
-needs a manual regen. To regenerate locally: run this script with any python3
-(or `bazel run //projects/monolith:gen_repo_docs_manifest`). The private
-monolith's reconcile job reads the committed manifest from the image.
+Without path arguments the script lists the repo's tracked markdown via
+``git ls-files`` (deterministic, never picks up untracked files or build
+artifacts under symlinked bazel-out/ dirs) and writes the gitignored local copy
+at projects/monolith/knowledge/repo_docs_manifest.ndjson, which a locally run
+backend reads beside ``knowledge/repo_docs.py``. The same selection, applied to
+``git ls-files``, is what bazel/images/validate-generate-scripts.sh compares
+against the genrule's inputs so a doc outside every ``repo_docs`` filegroup
+fails CI instead of silently leaving the manifest.
 """
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
@@ -113,13 +116,30 @@ def build_manifest_lines(root: Path, paths: list[str]) -> list[str]:
     return lines
 
 
-def main() -> int:
+def select_doc_paths(paths: list[str]) -> list[str]:
+    """Indexed paths from an explicit candidate list, sorted and de-duplicated."""
+    return sorted({p for p in paths if _should_index(p)})
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--out",
+        help="output path (default: the local copy under the repo root)",
+    )
+    parser.add_argument(
+        "paths",
+        nargs="*",
+        help="repo-relative candidate docs (default: git ls-files)",
+    )
+    args = parser.parse_args(argv)
     root = Path(os.environ.get("BUILD_WORKSPACE_DIRECTORY") or os.getcwd())
-    out = root / MANIFEST_REL
+    paths = select_doc_paths(args.paths) if args.paths else iter_doc_paths(root)
+    out = Path(args.out) if args.out else root / MANIFEST_REL
     out.parent.mkdir(parents=True, exist_ok=True)
-    lines = build_manifest_lines(root, iter_doc_paths(root))
+    lines = build_manifest_lines(root, paths)
     out.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
-    print(f"wrote {len(lines)} docs to {MANIFEST_REL}")
+    print(f"wrote {len(lines)} docs to {out}")
     return 0
 
 

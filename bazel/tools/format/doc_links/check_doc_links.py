@@ -93,8 +93,6 @@ _EXAMPLE_ALLOWLIST: frozenset[str] = frozenset(
 # mentioned inside the prose they bake in. Regenerating is what fixes them.
 _GENERATED: frozenset[str] = frozenset(
     {
-        "projects/monolith/frontend/src/lib/public/docs/docs-manifest.json",
-        "projects/monolith/knowledge/repo_docs_manifest.ndjson",
         "projects/monolith/chat/orchestrator_bundle.md",
     }
 )

@@ -1388,6 +1388,27 @@ runtime `targetRevision` is cluster state and, on the hub, that a point-in-time
 health wait stands in for a settling window until a development stage exists
 there (ADR platform/009).
 
+The two document manifests are build outputs, not committed files. The
+`:repo_docs_manifest` genrule writes the repo-docs NDJSON (the docfix path
+allowlist `knowledge/repo_docs.py` loads), which the backend, jobs and domain
+images carry as their own layer at `/etc/monolith`; the frontend's
+`:docs_manifest` genrule writes the public `/docs` manifest into the vite source
+tree. Both read the markdown gathered by `:repo_docs_srcs`, one `repo_docs`
+filegroup per package that owns a doc, and a format-stage check fails when a
+tracked doc falls outside it. Run locally, the generators write gitignored
+copies for a local backend and `pnpm dev`.
+(see: /projects/monolith/BUILD)
+(see: /projects/monolith/frontend/BUILD)
+(see: /bazel/images/validate-generate-scripts.sh)
+
+**Why.** Committed, each manifest embedded every document's full text on one
+line per document, so any two pull requests touching any doc conflicted on a
+line nobody could resolve by hand, and the format bot's regeneration commits
+pushed branches further apart (#6446). Generating them in the build removes
+the conflict; the cost is a filegroup in every doc-owning package, held
+complete by the coverage check. One pretty-printed committed file per doc was
+the fallback: mergeable, but still generated state in git.
+
 ## 11. Direction
 
 Decided and not yet built, each with the issue that tracks it. A row leaves
@@ -1415,6 +1436,7 @@ this table when the work ships or the issue closes without it.
 | Grimoire post-extraction quality passes (evidence-grounded stat verification, review-approved alias merges) ship | Decision history (services/014) | #3912 | not started |
 | Public chat retention and takedown purge tooling ships | Decision history (security/005) | #3899 | not started |
 | A role-separated GitHub App review gate lets swarm merge autonomously | Decision history (agents/027) | #3835 | not started |
+| The repo-docs and public docs manifests are genrule outputs read by the images and the vite build, never committed | section 10 | #6446 | implemented in repository; the first main build publishing images and a public frontend from the generated manifests is not yet observed |
 
 ### Reversible gates
 

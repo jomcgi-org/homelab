@@ -60,8 +60,8 @@ def test_test_files_are_skipped():
         assert c.check_file(path, f"{GONE}") == []
 
 
-def test_generated_manifests_are_skipped():
-    path = "projects/monolith/knowledge/repo_docs_manifest.ndjson"
+def test_generated_artifacts_are_skipped():
+    path = "projects/monolith/chat/orchestrator_bundle.md"
     assert not c.should_scan(path)
     assert c.check_file(path, f"{GONE}") == []
 

@@ -1,8 +1,7 @@
-# Generated public docs manifest: it bakes the full markdown bodies of every
-# published doc inline as JSON strings, so
-# semgrep would flag those embedded examples as if they were real config. The
-# source docs are linted in place; the manifest is a build artifact. (The sibling
-# repo_docs_manifest.ndjson is skipped automatically as an unknown language.)
+# Generated public docs manifest (a gitignored local copy; the build makes its
+# own, #6446): it bakes the full markdown bodies of every published doc inline
+# as JSON strings, so semgrep would flag those embedded examples as if they were
+# real config. The source docs are linted in place.
 projects/monolith/frontend/src/lib/public/docs/docs-manifest.json
 
 # Vendored OCaml sources (semgrep_src overlay): upstream third-party code, not

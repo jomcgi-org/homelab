@@ -123,20 +123,11 @@ The working recipe, verified by PR #5333:
    the job name in the body. Never enable auto-merge.
 8. "Your final answer must be only the PR URL."
 
-**Tell the job NOT to touch `knowledge/repo_docs_manifest.ndjson`.** Every `.md`
-under `docs/` or `projects/` feeds it, so a doc edit always changes it, but CI's
-Format stage regenerates and auto-commits it as `ci-format-bot` (see the
-docstring in `knowledge/tools/gen_repo_docs_manifest.py`). Verified on #5383 and
-again on #5404: the PR gets a second commit `style: auto-format` carrying
-`repo_docs_manifest.ndjson +1/-1`. Asking qwen to regenerate it is extra work
-that can go wrong; asking it to leave the file alone cannot.
-
-The cost of that auto-commit shows up at merge time. The manifest is one JSON
-object per line, so **two doc PRs open at once conflict on it**. Four qwen doc
-PRs merged cleanly in sequence on 2026-08-29; the fifth sat long enough for main
-to move and went `DIRTY`. The fix is not to resolve the conflict: reset the
-branch to `origin/main`, re-apply the one-line edit, drop the stale format-bot
-commit, and force-push. CI regenerates the manifest again.
+**Doc edits no longer carry a generated manifest.** The repo-docs and public
+docs manifests used to be committed, so every `.md` edit picked up a
+`style: auto-format` commit regenerating them and two doc PRs open at once
+conflicted on their one-line-per-doc files. They are genrule outputs now
+(#6446): a qwen doc PR touches only the doc, and nothing needs regenerating.
 
 ### The audit-and-fix template
 
@@ -175,8 +166,6 @@ PR arrives reviewable.
 
     Verify with git diff --stat before pushing. It must show ONLY {target}.
     If it shows any other file, run git checkout -- . and reply EDIT FAILED.
-    Do NOT edit projects/monolith/knowledge/repo_docs_manifest.ndjson; CI
-    regenerates it.
 
     Final answer: the PR URL, or CLEAN, or a list of reported-not-fixed lines.
 

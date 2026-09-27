@@ -3,23 +3,23 @@
 The public docs surface contains a fixed set of projects and, for each project,
 up to three current-state documents: README, architecture, and STPA (STPA now
 carries per-lens sections including security). Only the exact project/document
-pairs listed below are published. The generator uses ``git ls-files`` so
-untracked files, nested READMEs, ADRs, and other repository documentation never
-enter the manifest.
+pairs listed below are published, so nested READMEs, ADRs, and other repository
+documentation never enter the manifest.
 
-The committed JSON manifest stores full bodies inline at
+The JSON manifest stores full bodies inline at
 ``projects/monolith/frontend/src/lib/public/docs/docs-manifest.json``. The
 SvelteKit ``/docs`` route imports it server-side and sends only rendered HTML
 and small navigation structures to the browser.
 
-Regeneration is automatic: CI's Format stage runs this generator on every push
-and auto-commits manifest changes on PR branches. To regenerate locally, run
-this script with any python3 (or
-``bazel run //projects/monolith:gen_docs_manifest``).
+It is a build output, not a committed file (#6446): the
+``//projects/monolith/frontend:docs_manifest`` genrule passes ``--out`` and the
+candidate docs as arguments. With no paths the script reads ``git ls-files``
+and writes the gitignored local copy ``pnpm dev`` needs (its ``predev`` step).
 """
 
 from __future__ import annotations
 
+import argparse
 import os
 import re
 import subprocess
@@ -162,17 +162,30 @@ def build_manifest(root: Path, paths: list[str]) -> list[dict]:
     return entries
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--out",
+        help="output path (default: the local copy under the repo root)",
+    )
+    parser.add_argument(
+        "paths",
+        nargs="*",
+        help="repo-relative candidate docs (default: git ls-files)",
+    )
+    args = parser.parse_args(argv)
     root = Path(os.environ.get("BUILD_WORKSPACE_DIRECTORY") or os.getcwd())
-    require_public_readmes(_git_ls_files(root))
-    out = root / MANIFEST_REL
+    candidates = set(args.paths) if args.paths else _git_ls_files(root)
+    require_public_readmes(candidates)
+    out = Path(args.out) if args.out else root / MANIFEST_REL
     out.parent.mkdir(parents=True, exist_ok=True)
-    entries = build_manifest(root, iter_doc_paths(root))
+    paths = [path for path in _DOC_BY_PATH if path in candidates]
+    entries = build_manifest(root, paths)
     out.write_text(
         dumps_prettier_json(entries, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
-    print(f"wrote {len(entries)} docs to {MANIFEST_REL}")
+    print(f"wrote {len(entries)} docs to {out}")
     return 0
 
 
