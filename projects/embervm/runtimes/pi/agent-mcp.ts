@@ -393,6 +393,25 @@ const TOOLS: ToolSpec[] = [
       previous: Type.Optional(Type.Boolean()),
     }),
   },
+  {
+    mcpName: "verify_deployment",
+    label: "Verify Deployment",
+    description:
+      "Say whether an ArgoCD Application has finished rolling out: verified, in_progress or failed, with the checks behind it. Poll while in_progress.",
+    parameters: Type.Object({
+      app: Type.String({
+        description: "ArgoCD Application name in the argocd namespace",
+      }),
+      expected_revision: Type.Optional(
+        Type.String({
+          description:
+            "Chart version the write-back produced (that version or later passes); omit for a git-tracked app",
+          minLength: 1,
+          maxLength: 64,
+        }),
+      ),
+    }),
+  },
 ];
 
 function piToolName(mcpName: string): string {
