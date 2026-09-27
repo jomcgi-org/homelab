@@ -43,7 +43,7 @@ tar(
 )
 
 # Pi's bridge to the agents MCP server (#5569). Pi has no MCP client, so this
-# extension registers the tier's full nine-tool catalogue as pi tools and calls
+# extension registers the tier's full ten-tool catalogue as pi tools and calls
 # them over streamable HTTP through curl, on the same brokered egress lane as
 # web-research above. The shim loads it only when EMBER_AGENT_MCP_URL is set
 # and the endpoint answers a probe, so a guest on a cluster without the tier
