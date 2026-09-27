@@ -21,9 +21,11 @@ REQUIRED_COMMANDS = {
     "claude",
     "eslint",
     "hf2oci",
+    "prettier",
     "shellcheck",
 }
-NATIVE_COMMANDS = REQUIRED_COMMANDS - {"eslint"}
+NODE_WRAPPERS = {"eslint", "prettier"}
+NATIVE_COMMANDS = REQUIRED_COMMANDS - NODE_WRAPPERS
 SUPPORTED_PLATFORMS = ["linux_amd64", "linux_arm64", "darwin_arm64"]
 RUNTIME_PLATFORM = os.environ.get("TOOLS_IMAGE_RUNTIME_PLATFORM")
 TEST_PLATFORMS = [RUNTIME_PLATFORM] if RUNTIME_PLATFORM else SUPPORTED_PLATFORMS
@@ -55,6 +57,7 @@ def _layers(platform: str) -> list[pathlib.Path]:
         _runfile(f"node_tar_{platform}.tar"),
         _runfile("eslint_node_modules.tar"),
         _runfile("eslint_wrapper.tar"),
+        _runfile("prettier.tar"),
     ]
 
 
@@ -173,6 +176,18 @@ def test_every_platform_contains_executable_commands(platform: str) -> None:
     assert b'exec "$ROOT/usr/bin/node"' in eslint_payload
     assert b'"$ROOT/usr/local/lib/node_modules/eslint/bin/eslint.js"' in eslint_payload
 
+    # bootstrap.sh extracts the image under ~/.cache/homelab-tools, so the
+    # prettier wrapper must resolve node and its plugins from its own root.
+    prettier_payload = _read_member(commands["prettier"], "usr/bin/prettier")
+    assert prettier_payload is not None
+    assert b'exec "$ROOT/usr/bin/node"' in prettier_payload
+    assert (
+        b'"$ROOT/usr/local/lib/node_modules/prettier/bin/prettier.cjs"'
+        in prettier_payload
+    )
+    assert b'NODE_PATH="$ROOT/usr/local/lib/node_modules' in prettier_payload
+    assert b" /usr/" not in prettier_payload
+
     combined_members = set().union(*(_members(layer) for layer in layers))
     assert "usr/bin/node" in combined_members
 
@@ -241,6 +256,7 @@ def test_commands_execute_from_relocated_root() -> None:
             "buildifier": ["--version"],
             "claude": ["--version"],
             "hf2oci": ["--help"],
+            "prettier": ["--version"],
             "shellcheck": ["--version"],
         }
         for command, command_args in invocations.items():

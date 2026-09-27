@@ -114,7 +114,9 @@ genrule(
 # lockfile-managed npm packages. Plugins live next to prettier under
 # /usr/local/lib/node_modules/; /usr/bin/prettier is a wrapper that sets
 # NODE_PATH so require("prettier-plugin-svelte") from the repo config resolves
-# without a full workspace node_modules tree (bootstrap / ci lint path).
+# without a full workspace node_modules tree (bootstrap / ci lint path). Like
+# the eslint wrapper, it derives the extraction root from argv[0], so it works
+# from ~/.cache/homelab-tools rather than assuming installation at /.
 # nosemgrep: single-npm-package-in-apko-genrule -- intentional multi-package node_modules for PATH prettier plugins
 genrule(
     name = "prettier_tar",
@@ -154,12 +156,15 @@ genrule(
         chmod 755 "$$NM/prettier/bin/prettier.cjs"
         cat > "$$WORK/usr/bin/prettier" << 'WRAPPER'
 #!/usr/bin/env bash
+# Resolve the extraction root from argv[0] (like the eslint wrapper) so this
+# works from ~/.cache/homelab-tools as well as from an image rooted at /.
+ROOT="$$(cd "$$(dirname "$$0")/../.." && pwd)"
 # Ensure plugins packaged next to prettier resolve from any config require().
-export NODE_PATH="/usr/local/lib/node_modules$${NODE_PATH:+:$$NODE_PATH}"
-if [[ -x /usr/bin/node ]]; then
-  exec /usr/bin/node /usr/local/lib/node_modules/prettier/bin/prettier.cjs "$$@"
+export NODE_PATH="$$ROOT/usr/local/lib/node_modules$${NODE_PATH:+:$$NODE_PATH}"
+if [[ -x "$$ROOT/usr/bin/node" ]]; then
+  exec "$$ROOT/usr/bin/node" "$$ROOT/usr/local/lib/node_modules/prettier/bin/prettier.cjs" "$$@"
 fi
-exec /usr/local/lib/node_modules/prettier/bin/prettier.cjs "$$@"
+exec "$$ROOT/usr/local/lib/node_modules/prettier/bin/prettier.cjs" "$$@"
 WRAPPER
         chmod 755 "$$WORK/usr/bin/prettier"
         tar -cf $@ -C "$$WORK" .
@@ -358,6 +363,7 @@ py_test(
         ":node_tar_darwin_arm64",
         ":node_tar_linux_amd64",
         ":node_tar_linux_arm64",
+        ":prettier_tar",
         ":source_tools_tar_darwin_arm64",
         ":source_tools_tar_linux_amd64",
         ":source_tools_tar_linux_arm64",
@@ -378,6 +384,7 @@ py_test(
         ":eslint_node_modules",
         ":eslint_wrapper_tar",
         ":node_tar_linux_arm64",
+        ":prettier_tar",
         ":source_tools_tar_linux_arm64",
         ":tools_tar_linux_arm64",
     ],
@@ -397,6 +404,7 @@ py_test(
         ":eslint_node_modules",
         ":eslint_wrapper_tar",
         ":node_tar_darwin_arm64",
+        ":prettier_tar",
         ":source_tools_tar_darwin_arm64",
         ":tools_tar_darwin_arm64",
     ],
