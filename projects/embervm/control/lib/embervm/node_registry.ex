@@ -2160,12 +2160,13 @@ defmodule Embervm.NodeRegistry do
 
   # -- default (production) seams --------------------------------------------
 
-  # Plaintext h2c to the noded Service over the Mint adapter (no TLS, no castore;
-  # the daemon listens on the pod network gated by mesh policy). This is the
-  # pattern the Task 3 Mint round-trip proved.
+  # h2c to the noded pod over the Mint adapter (the daemon listens on the pod
+  # network gated by mesh policy), the pattern the Task 3 Mint round-trip
+  # proved. With the SPIFFE dial on (#5758) NodeAuth swaps the port for the
+  # noded TLS listener and attaches file-path credentials, resolved per dial.
   defp default_connect(address) do
     GRPC.Stub.connect(
-      address,
+      Embervm.NodeAuth.dial_address(address),
       [adapter: GRPC.Client.Adapters.Mint] ++ Embervm.NodeAuth.connect_opts()
     )
   end

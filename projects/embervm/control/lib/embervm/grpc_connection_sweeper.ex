@@ -458,11 +458,15 @@ defmodule Embervm.GrpcConnectionSweeper do
     try do
       status = state.status_fun.()
 
+      # The registry stores the ADVERTISED (plaintext) address; with the SPIFFE
+      # dial on (#5758) every channel's target is the same host on the noded TLS
+      # port. Keep both forms so a legitimate mTLS channel is never reaped.
       addresses =
         status
         |> Map.values()
         |> Enum.map(& &1[:address])
         |> Enum.filter(&is_binary/1)
+        |> Enum.flat_map(&[&1, Embervm.NodeAuth.dial_address(&1)])
         |> Enum.map(&normalize_address/1)
         |> Enum.reject(&(&1 == ""))
         |> MapSet.new()

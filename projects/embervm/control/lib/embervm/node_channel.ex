@@ -362,11 +362,14 @@ defmodule Embervm.NodeChannel do
 
   defp pt_key(node_id), do: {__MODULE__, node_id}
 
-  # Plaintext h2c over the Mint adapter, the pattern NodeRegistry/BaseBuilder use.
-  # grpc 1.0.3 copies connection-level headers onto every request, including the
-  # long-lived WatchNode stream, so the shared bearer option belongs at dial time.
+  # h2c (or, with the SPIFFE dial on, mTLS on the noded TLS port) over the Mint
+  # adapter, the pattern NodeRegistry/BaseBuilder use. grpc 1.0.3 copies
+  # connection-level headers onto every request, including the long-lived
+  # WatchNode stream, so the shared bearer option belongs at dial time. The
+  # credential and the port swap are both resolved here, at dial time, so a
+  # rotated SVID file is read by the next dial and never cached in this module.
   defp default_connect(address) do
-    GRPC.Stub.connect(address, default_connect_opts())
+    GRPC.Stub.connect(Embervm.NodeAuth.dial_address(address), default_connect_opts())
   end
 
   # Exposed only so the channel-cache test can pin the exact production dial
