@@ -21,6 +21,19 @@ BuildBuddy MCP tools:
 2. `get_target` to find the failing targets.
 3. `get_log` for the trace.
 
+Without the BuildBuddy MCP (a cloud session, say), the workflow log for a
+`pr-checks` run is readable without auth. Take the invocation ID from the
+status `target_url` (`GET /repos/{owner}/{repo}/commits/{sha}/status`), then:
+
+```bash
+curl -sS -X POST -H "Content-Type: application/json" \
+  https://jomcgi.buildbuddy.io/rpc/BuildBuddyService/GetEventLogChunk \
+  -d '{"invocationId":"<id>","chunkId":"","minLines":500}' | jq -r .buffer | base64 -d
+```
+
+An empty `chunkId` returns the tail; walk back with `previousChunkId` (chunks
+are `0000`, `0001`, ...) until the failure is on screen.
+
 **Quote the real assertion error or exception verbatim before proposing a
 cause.** Do not raise infrastructure (BuildBuddy outages, flaky runners, RBE
 hiccups) until a real test failure has been ruled out.

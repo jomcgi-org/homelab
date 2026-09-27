@@ -184,6 +184,7 @@ when its row applies.
 |------|------|
 | Working under `projects/monolith/` or `projects/embervm/` | that directory's `AGENTS.md` |
 | A red CI run you need to diagnose | `docs/agents/ci-triage.md` |
+| Opening, readying or enqueuing a PR without GraphQL (cloud session) | `docs/agents/cloud-sessions.md` |
 | Reviewing a finished PR diff | `docs/agents/review.md` |
 | Taking a feature from idea to merged (`/ship`) | `docs/agents/ship.md` |
 | Refreshing a system's STPA model | `docs/agents/stpa.md` |
