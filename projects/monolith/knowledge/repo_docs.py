@@ -20,8 +20,11 @@ from knowledge.chunker import Chunk, chunk_markdown
 
 logger = logging.getLogger(__name__)
 
-# The manifest sits beside this module in the image runfiles (the :main binary's
-# data). An env override exists purely for tests / ops.
+# Images set REPO_DOCS_MANIFEST_PATH to the manifest layer (/etc/monolith).
+# Without it, the manifest is looked for beside this module: where the
+# //projects/monolith:repo_docs_manifest genrule output lands in any runfiles
+# tree that carries it, and where the generator writes the gitignored local
+# copy for a locally run backend.
 _MANIFEST_NAME = "repo_docs_manifest.ndjson"
 
 
@@ -37,7 +40,9 @@ def manifest_path() -> Path:
     override = os.environ.get("REPO_DOCS_MANIFEST_PATH")
     if override:
         return Path(override)
-    return Path(__file__).resolve().parent / _MANIFEST_NAME
+    # No resolve(): in a runfiles tree this module is a symlink into the source
+    # tree, while the generated manifest beside it lives in the output tree.
+    return Path(__file__).parent / _MANIFEST_NAME
 
 
 def load_manifest(path: Path | None = None) -> list[ManifestEntry]:

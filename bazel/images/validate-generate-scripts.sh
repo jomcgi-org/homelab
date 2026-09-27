@@ -150,14 +150,25 @@ else
 	fi
 fi
 
-# NOTE: the two doc-index manifests (repo_docs_manifest.ndjson and the public
-# docs-site docs-manifest.json) used to be validated here and hard-fail on drift.
-# They now regenerate in the "Format check" action (buildbuddy.yaml) BEFORE its
-# auto-commit, so a doc edit auto-commits the refreshed manifest like any other
-# formatting fix instead of failing CI and forcing a manual regen. Keeping them
-# out of this validator avoids a redundant second check. This validator stays for
-# the BUILD-graph generate scripts above, whose drift needs human attention (a
-# changed build graph), not a mechanical regen.
+# --- Validation 3: doc manifest inputs ---
+
+# The two doc-index manifests (repo_docs_manifest.ndjson and the public docs-site
+# docs-manifest.json) are build outputs, not committed files (#6446). Their
+# genrules read the markdown in //projects/monolith:repo_docs_srcs, one
+# `repo_docs` filegroup per owning package. A glob stops at a package boundary,
+# so fail when a tracked doc the generators would index is not in that set.
+
+echo "Validating doc manifest inputs ..."
+
+bazel_query_retry 'kind("source file", deps(//projects/monolith:repo_docs_srcs))' |
+	filter_labels >"$TMPDIR_VALIDATE/repo_docs_query.txt"
+
+if python3 projects/monolith/knowledge/tools/check_repo_docs_coverage.py "$TMPDIR_VALIDATE/repo_docs_query.txt"; then
+	echo "  repo-docs coverage: PASS"
+else
+	echo "  repo-docs coverage: FAIL"
+	FAILED=1
+fi
 
 # --- Summary ---
 

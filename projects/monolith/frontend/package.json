@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "predev": "cd ../../.. && python3 projects/monolith/knowledge/tools/gen_docs_manifest.py",
     "dev": "vite dev",
     "build": "vite build",
     "preview": "vite preview"

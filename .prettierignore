@@ -7,10 +7,10 @@
 # Minified/bundled assets should not be reformatted
 **/dist/
 
-# Generated public docs manifest: produced deterministically by
-# projects/monolith/knowledge/tools/gen_docs_manifest.py (json.dumps indent=2)
-# and freshness-checked in CI. Prettier reformatting it would diverge from the
-# generator and churn the freshness check; the generator is the sole authority.
+# Generated public docs manifest: a build output of
+# //projects/monolith/frontend:docs_manifest (#6446), gitignored where the
+# generator writes a local copy for `pnpm dev`. The generator is the sole
+# authority for its layout.
 **/docs-manifest.json
 
 # Generated ADR 036 orchestrator context bundle: produced deterministically by

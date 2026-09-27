@@ -388,10 +388,11 @@ actions:
             if [ "$AUTHOR" = "ci-format-bot" ]; then
               echo "HEAD is the ci-format-bot commit; formatting just ran, going straight to tests."
             else
-              # :run_generators runs every doc/config generator (incl. the
-              # KG-ingest + public-docs manifests), so drift is auto-committed
-              # below rather than hard-failing. Single source of truth for the
-              # list: run-generators.sh, which local pre-commit also uses.
+              # :run_generators runs every committed doc/config generator, so
+              # drift is auto-committed below rather than hard-failing. Single
+              # source of truth for the list: run-generators.sh, which local
+              # pre-commit also uses. The repo-docs and public docs manifests
+              # are genrule outputs (#6446) and never committed.
               bazel run //bazel/tools/format:format --config=ci
 
               # Validate grep-based generate scripts against bazel query

@@ -97,3 +97,9 @@ bb-out/
 # (ADR platform/009 decision 1). Written by bazel/helm/push.sh.tpl, consumed and
 # deleted in the same CI action, never committed.
 .chart-version-records/
+
+# Doc manifests are build outputs (#6446): genrules produce them in bazel-bin.
+# These are the local copies the generators write for a locally run backend and
+# for `pnpm dev` (the frontend's predev script).
+/projects/monolith/knowledge/repo_docs_manifest.ndjson
+/projects/monolith/frontend/src/lib/public/docs/docs-manifest.json

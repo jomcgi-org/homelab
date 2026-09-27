@@ -88,7 +88,7 @@ def test_missing_project_readme_raises(tmp_path: Path, monkeypatch: pytest.Monke
     with pytest.raises(SystemExit, match="README.md"):
         require_public_readmes(set())
     with pytest.raises(SystemExit, match="README.md"):
-        main()
+        main([])
 
 
 def test_manifest_orders_projects_then_document_kinds(tmp_path: Path):
