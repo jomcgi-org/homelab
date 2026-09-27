@@ -416,11 +416,14 @@ def test_context_search_forwards_all_ranking_filters(
         )
         == []
     )
+    # A single scope_filter is normalised into the scope_filters tuple that
+    # _rank_search_chunks accepts; include_unscoped stays at its default.
     assert calls == [
         (
             (session, [0.0] * 1024, 20, None),
             {
-                "scope_filter": scope_filter,
+                "scope_filters": (scope_filter,) if scope_filter is not None else None,
+                "include_unscoped": False,
                 "exclude_invalidated": exclude_invalidated,
                 "include_legacy": include_legacy,
             },
