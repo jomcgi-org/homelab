@@ -420,7 +420,7 @@ def test_search_rechecks_scope_while_hydrating_ranked_notes(session):
 def test_personal_audit_migration_enforces_retention_and_least_privilege():
     migration = (
         Path(__file__).parents[1]
-        / "chart/migrations/20260919231000_personal_retrieval_audit.sql"
+        / "chart/migrations/20260926000000_personal_retrieval_audit.sql"
     ).read_text()
 
     assert "SECURITY DEFINER" in migration
