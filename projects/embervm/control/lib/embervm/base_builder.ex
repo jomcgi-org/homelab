@@ -4699,11 +4699,12 @@ defmodule Embervm.BaseBuilder do
 
   # -- default (production) seams ---------------------------------------------
 
-  # Plaintext h2c to the noded Service over the Mint adapter, opened per build
-  # (builds are infrequent and serialized). Same pattern as Embervm.NodeRegistry.
+  # h2c (or SPIFFE mTLS on the noded TLS port when that dial is on) over the
+  # Mint adapter, opened per build (builds are infrequent and serialized). Same
+  # pattern as Embervm.NodeRegistry: address and credential resolve at dial time.
   defp default_connect(address) do
     GRPC.Stub.connect(
-      address,
+      Embervm.NodeAuth.dial_address(address),
       [adapter: GRPC.Client.Adapters.Mint] ++ Embervm.NodeAuth.connect_opts()
     )
   end

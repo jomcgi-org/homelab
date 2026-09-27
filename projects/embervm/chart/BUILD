@@ -228,6 +228,31 @@ py_test(
     deps = ["@pip//pyyaml"],
 )
 
+# Phase 2b of #5706 (#5758): the control plane's default-off SPIFFE dial to
+# noded. Renders both checked-in overlays off, the sidecar-only shape, and the
+# dial shape, and pins the SPIFFE ID and port seam against the noded listener.
+py_test(
+    name = "chart_control_plane_spiffe_test",
+    srcs = ["chart_control_plane_spiffe_test.py"],
+    data = [
+        "Chart.yaml",
+        "values.yaml",
+        "//projects/embervm/deploy:deploy_values",
+        "//projects/embervm/deploy:gke_values",
+        "@multitool//tools/helm",
+    ] + glob([
+        "templates/**/*",
+        "crds/**/*",
+    ]),
+    env = {
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+    },
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)
+
 py_test(
     name = "chart_noded_spiffe_test",
     srcs = ["chart_noded_spiffe_test.py"],

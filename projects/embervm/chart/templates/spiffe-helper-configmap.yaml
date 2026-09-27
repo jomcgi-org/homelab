@@ -1,0 +1,33 @@
+{{- if .Values.controlPlane.spiffe.enabled }}
+# spiffe-helper configuration for the control-plane sidecar (#5758). The file
+# names are the spiffe-helper defaults and the SPIFFE Filesystem Delivery
+# layout the control plane reads by path (EMBERVM_NODED_SVID_*). Modes mirror
+# the monolith broker client: world-readable certificate and bundle, group
+# readable key (the control plane and the helper share the pod fsGroup).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "embervm.fullname" . }}-spiffe-helper
+  labels:
+    {{- include "embervm.labels" . | nindent 4 }}
+data:
+  helper.conf: |
+    agent_address = "/spiffe-workload-api/spire-agent.sock"
+    cert_dir = {{ .Values.controlPlane.spiffe.svidDir | quote }}
+    daemon_mode = true
+    hint = {{ .Values.controlPlane.spiffe.helper.hint | quote }}
+    cmd = ""
+    cmd_args = ""
+    renew_signal = ""
+    svid_file_name = "svid.pem"
+    svid_key_file_name = "svid_key.pem"
+    svid_bundle_file_name = "svid_bundle.pem"
+    cert_file_mode = 0444
+    key_file_mode = 0440
+    health_checks {
+      listener_enabled = true
+      bind_port = {{ .Values.controlPlane.spiffe.helper.healthPort }}
+      liveness_path = "/live"
+      readiness_path = "/ready"
+    }
+{{- end }}

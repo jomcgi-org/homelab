@@ -21,14 +21,21 @@ defmodule Embervm.NodeChannelTest do
 
   setup do
     previous = Application.get_env(:embervm, :noded_bearer_token, :not_set)
+    previous_tls = Application.get_env(:embervm, :noded_tls, :not_set)
 
     on_exit(fn ->
       case previous do
         :not_set -> Application.delete_env(:embervm, :noded_bearer_token)
         token -> Application.put_env(:embervm, :noded_bearer_token, token)
       end
+
+      case previous_tls do
+        :not_set -> Application.delete_env(:embervm, :noded_tls)
+        tls -> Application.put_env(:embervm, :noded_tls, tls)
+      end
     end)
 
+    Application.delete_env(:embervm, :noded_tls)
     :ok
   end
 
@@ -139,6 +146,29 @@ defmodule Embervm.NodeChannelTest do
     assert NodeChannel.default_connect_opts()[:headers] == [
              {"authorization", "Bearer node-secret"}
            ]
+
+    refute Keyword.has_key?(NodeChannel.default_connect_opts(), :cred)
+  end
+
+  test "production dial options carry the file-path credential once the SPIFFE dial is on" do
+    Application.put_env(:embervm, :noded_bearer_token, "node-secret")
+
+    Application.put_env(:embervm, :noded_tls, %{
+      spiffe_id: "spiffe://embervm.jomcgi.dev/ns/embervm/sa/embervm-embervm-noded",
+      tls_port: 9443,
+      cert_file: "/run/embervm-svid/svid.pem",
+      key_file: "/run/embervm-svid/svid_key.pem",
+      bundle_file: "/run/embervm-svid/svid_bundle.pem"
+    })
+
+    opts = NodeChannel.default_connect_opts()
+    assert opts[:adapter] == GRPC.Client.Adapters.Mint
+    assert %GRPC.Credential{ssl: ssl} = opts[:cred]
+    assert ssl[:verify] == :verify_peer
+    assert ssl[:server_name_indication] == :disable
+    assert ssl[:certfile] == ~c"/run/embervm-svid/svid.pem"
+    # The bearer keeps flowing during the dual window.
+    assert opts[:headers] == [{"authorization", "Bearer node-secret"}]
   end
 
   test "invalidate drops the channel so the next get re-dials" do

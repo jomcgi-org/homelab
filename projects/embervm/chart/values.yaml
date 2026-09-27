@@ -123,6 +123,38 @@ controlPlane:
     key: restore-capability-key
     onepassword:
       itemPath: ""
+  # Phase 2b of #5706 (#5758): the control plane dials noded over SPIFFE mTLS
+  # with a file-delivered X.509-SVID. Two independent flags, both default off:
+  #   enabled   adds the spiffe-helper sidecar and the shared in-memory SVID
+  #             volume, so the files exist before any dial depends on them.
+  #   dialNoded switches every control-plane gRPC dial from noded.grpcPort to
+  #             noded.spiffe.grpcTlsPort with mTLS; requires enabled AND
+  #             noded.spiffe.enabled (the listener from PR #6378), and the
+  #             bearer header keeps being sent during the dual window.
+  # The sidecar writes svid.pem, svid_key.pem, and svid_bundle.pem under
+  # svidDir; the control plane reads those PATHS at dial time, never caching
+  # bytes, so a Kubernetes podCertificate projected volume can later replace
+  # the sidecar with no code change. The noded identity the dial requires is
+  # derived from the release (spiffe://<trustDomain>/ns/<ns>/sa/<noded SA>),
+  # the same string noded's allowlist derives for this control plane's SA.
+  spiffe:
+    enabled: false
+    dialNoded: false
+    trustDomain: embervm.jomcgi.dev
+    svidDir: /run/embervm-svid
+    helper:
+      hint: embervm-platform
+      healthPort: 8091
+      image:
+        repository: ghcr.io/spiffe/spiffe-helper
+        tag: "0.11.0"
+        pullPolicy: IfNotPresent
+      resources:
+        requests:
+          cpu: 5m
+          memory: 16Mi
+        limits:
+          memory: 32Mi
 
 controlPlaneLivenessProbe:
   # Issue #5235: at the 10-second period, allow up to 60 seconds for an internal

@@ -125,6 +125,50 @@ defmodule Embervm.GrpcConnectionSweeperTest do
     assert is_list(result)
   end
 
+  test "with the SPIFFE dial on, a channel to the TLS port of a live node is kept (#5758)" do
+    previous = Application.get_env(:embervm, :noded_tls, :not_set)
+
+    on_exit(fn ->
+      case previous do
+        :not_set -> Application.delete_env(:embervm, :noded_tls)
+        value -> Application.put_env(:embervm, :noded_tls, value)
+      end
+    end)
+
+    Application.put_env(:embervm, :noded_tls, %{
+      spiffe_id: "spiffe://embervm.jomcgi.dev/ns/embervm/sa/embervm-embervm-noded",
+      tls_port: 9443,
+      cert_file: "/run/embervm-svid/svid.pem",
+      key_file: "/run/embervm-svid/svid_key.pem",
+      bundle_file: "/run/embervm-svid/svid_bundle.pem"
+    })
+
+    supervisor = mock_supervisor()
+    tls_child = mock_child("ipv4:10.42.3.34:9443")
+    plaintext_child = mock_child("ipv4:10.42.3.34:9090")
+    stray_child = mock_child("ipv4:10.42.9.99:9443")
+
+    MockSupervisor.set_children(supervisor, [
+      child(tls_child),
+      child(plaintext_child),
+      child(stray_child)
+    ])
+
+    {terminate_fun, calls} = terminate_child_collector()
+
+    sweeper =
+      start_sweeper(
+        status_fun: fn -> %{"node-0" => %{address: "10.42.3.34:9090"}} end,
+        supervisor: supervisor,
+        terminate_child_fun: terminate_fun,
+        strikes_required: 1,
+        sweep_enabled: true
+      )
+
+    assert [{^stray_child, _reason}] = GrpcConnectionSweeper.sweep_now(sweeper)
+    assert Agent.get(calls, & &1) == [stray_child]
+  end
+
   test "empty registry address set aborts sweep (fail-safe)" do
     # Empty registry = no live addresses = must NOT reap anything.
     # This is a routine case at boot under dial-home: the registry is seeded

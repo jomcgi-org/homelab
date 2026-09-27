@@ -1,3 +1,12 @@
+{{- $cpSPIFFE := .Values.controlPlane.spiffe.enabled -}}
+{{- $cpDialTLS := and $cpSPIFFE .Values.controlPlane.spiffe.dialNoded -}}
+{{- if and .Values.controlPlane.spiffe.dialNoded (not $cpSPIFFE) -}}
+{{- fail "controlPlane.spiffe.dialNoded requires controlPlane.spiffe.enabled (the sidecar that delivers the SVID files)" -}}
+{{- end -}}
+{{- if and $cpDialTLS (not .Values.noded.spiffe.enabled) -}}
+{{- fail "controlPlane.spiffe.dialNoded requires noded.spiffe.enabled (the noded mTLS listener it dials)" -}}
+{{- end -}}
+{{- $svidDir := .Values.controlPlane.spiffe.svidDir -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -183,6 +192,25 @@ spec:
                 secretKeyRef:
                   name: {{ include "embervm.noded.bearerTokenSecretName" . }}
                   key: {{ .Values.noded.bearerTokenSecret.key }}
+            {{- end }}
+            {{- if $cpDialTLS }}
+            # Phase 2b of #5706 (#5758): dial noded over SPIFFE mTLS. Paths
+            # only; the control plane reads the PEMs at each dial. The SPIFFE ID
+            # is the exact noded identity, derived from the same release fields
+            # noded's allowlist uses for this control plane, so the two seams
+            # cannot drift apart. The bearer Secret above keeps flowing.
+            - name: EMBERVM_NODED_DIAL_TLS
+              value: "true"
+            - name: EMBERVM_NODED_TLS_PORT
+              value: {{ .Values.noded.spiffe.grpcTlsPort | quote }}
+            - name: EMBERVM_NODED_SPIFFE_ID
+              value: {{ printf "spiffe://%s/ns/%s/sa/%s" .Values.noded.spiffe.trustDomain .Release.Namespace (include "embervm.noded.serviceAccountName" .) | quote }}
+            - name: EMBERVM_NODED_SVID_CERT
+              value: {{ printf "%s/svid.pem" $svidDir | quote }}
+            - name: EMBERVM_NODED_SVID_KEY
+              value: {{ printf "%s/svid_key.pem" $svidDir | quote }}
+            - name: EMBERVM_NODED_SVID_BUNDLE
+              value: {{ printf "%s/svid_bundle.pem" $svidDir | quote }}
             {{- end }}
             {{- if .Values.controlPlane.restoreCapabilityKeySecret.enabled }}
             # Restore capabilities use one dedicated MAC key on both sides. The
@@ -686,6 +714,55 @@ spec:
             # writable emptyDir. RELEASE_TMP is set in the image env (apko.yaml).
             - name: tmp
               mountPath: /tmp
+            {{- if $cpSPIFFE }}
+            - name: control-plane-svid
+              mountPath: {{ $svidDir }}
+              readOnly: true
+            {{- end }}
+        {{- if $cpSPIFFE }}
+        # spiffe-helper sidecar (#5758): fetches this pod's X.509-SVID from the
+        # SPIRE agent over the Workload API and writes svid.pem, svid_key.pem,
+        # and svid_bundle.pem to the shared in-memory volume, rewriting them on
+        # every rotation. The control plane only ever sees files, so a
+        # Kubernetes podCertificate projected volume can replace this container
+        # later with no control-plane change. Readiness gates the pod on the
+        # first SVID being on disk, so dialNoded never races an empty volume.
+        - name: control-plane-spiffe-helper
+          image: "{{ .Values.controlPlane.spiffe.helper.image.repository }}:{{ .Values.controlPlane.spiffe.helper.image.tag }}"
+          imagePullPolicy: {{ .Values.controlPlane.spiffe.helper.image.pullPolicy }}
+          args: ["-config", "/etc/spiffe-helper/helper.conf"]
+          ports:
+            - name: spiffe-health
+              containerPort: {{ .Values.controlPlane.spiffe.helper.healthPort }}
+              protocol: TCP
+          livenessProbe:
+            httpGet: { path: /live, port: spiffe-health }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+          readinessProbe:
+            httpGet: { path: /ready, port: spiffe-health }
+            initialDelaySeconds: 1
+            periodSeconds: 2
+            timeoutSeconds: 1
+          resources:
+            {{- toYaml .Values.controlPlane.spiffe.helper.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: spiffe-workload-api
+              mountPath: /spiffe-workload-api
+              readOnly: true
+            - name: control-plane-spiffe-helper-config
+              mountPath: /etc/spiffe-helper
+              readOnly: true
+            - name: control-plane-svid
+              mountPath: {{ $svidDir }}
+        {{- end }}
         {{- if .Values.xds.enabled }}
         # xDS sidecar (R3, PR-3): the go-control-plane ADS server. It shares this
         # pod's network namespace with the control-plane container, so the control
@@ -748,3 +825,19 @@ spec:
         {{- end }}
         - name: tmp
           emptyDir: {}
+        {{- if $cpSPIFFE }}
+        - name: spiffe-workload-api
+          csi:
+            driver: csi.spiffe.io
+            readOnly: true
+        - name: control-plane-spiffe-helper-config
+          configMap:
+            name: {{ include "embervm.fullname" . }}-spiffe-helper
+            defaultMode: 0444
+        # SPIFFE Filesystem Delivery layout, memory-backed so a private key
+        # never touches node disk. Sized for one SVID chain plus the bundle.
+        - name: control-plane-svid
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+        {{- end }}

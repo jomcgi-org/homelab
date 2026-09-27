@@ -64,7 +64,7 @@ signals, and admission control are the product surface instead).
 | Node-local activator | **Planned** | Partly landed |
 | Brick autoscale | **Built** at rung `up`; **Planned** scale-down | Full ladder remains |
 | S3 archive-at-bank | **Decided direction** | Archive at bank commit |
-| Transport auth CP-to-noded | **Built** (bearer + ingress policy) | SPIFFE mTLS is **Planned**: SPIRE is live with no EmberVM consumer yet, phase 2 of #5706 in flight |
+| Transport auth CP-to-noded | **Built** (bearer + ingress policy) | SPIFFE mTLS is **Built, default off**: noded's second listener (`noded.spiffe`, #5757) and the control plane's file-based dial (`controlPlane.spiffe`, #5758) both render inert until flipped; phase 2 of #5706 in flight |
 | Guest identity (JWT-SVID) | **Decided direction** | Per-principal SVID delivered over vsock, phase 3 of #5706 |
 | Encryption at rest | **Built** | Per-principal mutable artifacts (#4691), enabled per environment by values; Account-scoped immutable rootfs chunks remain planned (ADR 028, #4182) |
 | Cells / multi-cell | **Not planned** | No cell seams exist; [#3855](https://github.com/jomcgi-org/homelab/issues/3855) and [#4753](https://github.com/jomcgi-org/homelab/issues/4753) closed without the unmerged [PR #6069](https://github.com/jomcgi-org/homelab/pull/6069) |
@@ -1470,9 +1470,41 @@ fetched by noded as the node agent's delegate and delivered over vsock at
 boot and every relight, never written to scratch or into a snapshot; the
 egress proxy then authorizes by (principal, host) and the MCP lane validates
 the guest's own SVID. GCP credential federation follows. State: SPIRE is
-live with the platform registration entries and no EmberVM consumer (phases
-0 and 1); platform mTLS (phase 2) is in flight; guest identity,
+live with the platform registration entries (phases 0 and 1); platform mTLS
+(phase 2) is **Built, default off** on both sides of the CP-to-noded hop
+and awaits staged acceptance on #5757 and #5758; guest identity,
 request-scoped injection, and federation (phases 3 to 5) are **Planned**.
+
+**Built, default off** (phase 2 of #5706): noded opens a second gRPC
+listener on `noded.spiffe.grpcTlsPort` (9443) that requires a client
+X.509-SVID whose URI SAN is in an exact allowlist, derived by the chart from
+the control plane's ServiceAccount unless `clientSpiffeIds` overrides it
+(#5757). The control plane, with `controlPlane.spiffe.enabled`, runs a
+spiffe-helper sidecar that writes `svid.pem`, `svid_key.pem`, and
+`svid_bundle.pem` to a memory-backed volume in the SPIFFE Filesystem Delivery
+layout; with `controlPlane.spiffe.dialNoded` it dials every noded on the TLS
+port with a `GRPC.Credential` built from those file paths, `verify_peer`
+against the bundle, no partial-chain trust, SNI disabled, and a `verify_fun`
+that accepts only the exact noded SPIFFE ID the chart derives from the noded
+ServiceAccount (#5758). Both identity strings come from the same release
+fields on both sides, and the chart test pins that they agree. The bearer
+header keeps being sent on the TLS dial, so the dual window changes transport
+only. Rotation: `:ssl` reads the files at each dial and never caches their
+bytes in the control plane; noded bounds channel age with its gRPC
+`MaxConnectionAge`, after which the cached channel fails its next call, is
+invalidated, and the re-dial handshakes with the files on disk at that
+moment. Every flag defaults off in the chart and both checked-in overlays.
+
+**Why.** Files rather than a Workload API client in the control plane: OTP's
+`:ssl` already reads PEMs by path and re-checks them, so the control plane
+needs no SPIFFE library, no long-lived source process, and no cached bytes,
+and a Kubernetes `podCertificate` projected volume can replace the sidecar
+later with no Elixir change. Exact-ID `verify_fun` rather than a trust-domain
+match: a compromised pod in the namespace holds a valid SVID in the same
+domain, so only the noded identity may terminate the dial. SNI disabled
+rather than a DNS SAN on the SVID: the dial target is a pod IP and the SVID
+carries only a URI SAN, so OTP's default hostname check can never succeed and
+must be replaced, not tuned.
 
 **Decided direction:** GitHub leaves the agent egress
 catalog. Host-keyed injection bounds which host a credential reaches, never
@@ -1577,7 +1609,7 @@ Trust diagram legend: every edge is a current path.
 | Requirement (external mapping #) | Ember state |
 | ---------------------------- | ----------- |
 | No direct internet exposure of guests, nodes, or the CP (1, 2, 3) | **Built.** Nothing faces the internet directly; ingress rides the zero-trust edge tunnel, public routes are scoped at their HTTPRoutes, node Envoy returns 404 for `/shim/*` before routing, and hydrate is build-only (section 9). |
-| Mutual authentication and encrypted transport between components (4, 10) | **Built** for CP-to-noded authentication: one bearer Secret rendered into the control plane and every noded pod, attached to every gRPC request, enforced in production and dev (#4693). The ingress-only CiliumNetworkPolicy on each noded listener holds on the home cluster only: the hub gates it off (`values-gke.yaml` `noded.networkPolicy.enabled: false`, no Cilium CRDs), so there the bearer is the sole control. SPIFFE X.509-SVID mTLS is the additive upgrade the proto reserves, in flight as phase 2 of #5706 (section 9). Encrypted session-routing tokens and the actor / principal / permission split are **Decided direction**; management callers authenticate via Kubernetes TokenReview against an allow-list. |
+| Mutual authentication and encrypted transport between components (4, 10) | **Built** for CP-to-noded authentication: one bearer Secret rendered into the control plane and every noded pod, attached to every gRPC request, enforced in production and dev (#4693). The ingress-only CiliumNetworkPolicy on each noded listener holds on the home cluster only: the hub gates it off (`values-gke.yaml` `noded.networkPolicy.enabled: false`, no Cilium CRDs), so there the bearer is the sole control. SPIFFE X.509-SVID mTLS is the additive upgrade the proto reserves, **Built, default off** on both sides as phase 2 of #5706 (section 9) and awaiting staged acceptance. Encrypted session-routing tokens and the actor / principal / permission split are **Decided direction**; management callers authenticate via Kubernetes TokenReview against an allow-list. |
 | Control plane isolated from the data plane (6) | **Built** as a seam: the CP runs on Kubernetes, noded on bricks, payloads never traverse the CP (invariant 2). **Accepted risk** on a small fleet: guests co-locate with the etcd masters (section 11). |
 | Runtime configurable only by administrators (7) | **Built.** A workload chooses class and source; the sandbox technology, kernel, and bases are CI-built platform artifacts it cannot substitute. |
 | A sanctioned, secure path for secrets (11) | **Built.** The cluster's secret operator is the only secret source, and guests receive none (section 9). |
@@ -1746,7 +1778,7 @@ this table when the work ships or the issue closes without it.
 | EmberVM ships a standalone quickstart and packaging boundary independent of the homelab's deployment configuration | Decision history (embervm/009) | #3858 | guide merged (PR #6070); clean-host KVM validation outstanding |
 | OCI images convert to deterministic EROFS manifests and immutable content-addressed chunks, hydrated through a local-only read-only ublk device | section 8 | #4182 | deferred until EKS metal and per-Account KMS (2026-09-12) |
 | The brick `maxReplicas` ceiling itself moves on sustained denial pressure, not only the replica count clamped inside it | section 7 | #5505 | built, default-off pending staged live acceptance |
-| SPIFFE-issued identity moves beyond issuance: mTLS on the CP-to-noded hop, per-principal guest JWT-SVIDs, and GCP federation | section 9 | #5706 | not started |
+| SPIFFE-issued identity moves beyond issuance: mTLS on the CP-to-noded hop, per-principal guest JWT-SVIDs, and GCP federation | section 9 | #5706 | CP-to-noded mTLS built default off on both sides (#5757, #5758), rest not started |
 | A second Codex account joins the chatgpt.com grant pool once logged in, and quota floors per class and role protect planning capacity | section 9 | #5974 | grant pool built, pool not yet activated |
 | A guest-declared transient failure is retried inside EmberVM on a bounded session-invoke loop, so callers outside the monolith transport get it too | section 4 | #6185 | not started |
 | A guest reports memory pressure and OOM evidence, and VMM exits are classified | section 7 | #5805 | gated on a diagnostic gap |

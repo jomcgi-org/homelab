@@ -26,7 +26,13 @@ defmodule Embervm.ApplicationTest do
             "EMBERVM_OPLOG_DSN",
             "EMBERVM_ARTIFACT_ENCRYPTION",
             "EMBERVM_STORE_PROBE_INTERVAL_SECONDS",
-            "EMBERVM_BRICK_CLASSES"
+            "EMBERVM_BRICK_CLASSES",
+            "EMBERVM_NODED_DIAL_TLS",
+            "EMBERVM_NODED_SPIFFE_ID",
+            "EMBERVM_NODED_TLS_PORT",
+            "EMBERVM_NODED_SVID_CERT",
+            "EMBERVM_NODED_SVID_KEY",
+            "EMBERVM_NODED_SVID_BUNDLE"
           ] do
         {k, System.get_env(k)}
       end
@@ -73,6 +79,48 @@ defmodule Embervm.ApplicationTest do
 
     System.put_env("EMBERVM_ARTIFACT_ENCRYPTION", "0")
     assert App.artifact_encryption_enabled() == false
+  end
+
+  test "the noded SPIFFE dial is off by default and its boot wiring is a pure env read" do
+    previous = Application.get_env(:embervm, :noded_tls, :not_set)
+
+    on_exit(fn ->
+      case previous do
+        :not_set -> Application.delete_env(:embervm, :noded_tls)
+        value -> Application.put_env(:embervm, :noded_tls, value)
+      end
+    end)
+
+    # Off: a stale value from an earlier configuration is removed, not kept.
+    Application.put_env(:embervm, :noded_tls, %{stale: true})
+    App.configure_noded_tls()
+    assert Application.get_env(:embervm, :noded_tls) == nil
+    assert Embervm.NodeAuth.tls_config() == nil
+
+    # On: paths and identity land in app env. No file is opened here (the
+    # paths do not exist), so boot stays Finch-free and filesystem-free.
+    System.put_env("EMBERVM_NODED_DIAL_TLS", "true")
+    System.put_env("EMBERVM_NODED_SPIFFE_ID", "spiffe://embervm.jomcgi.dev/ns/e/sa/noded")
+    System.put_env("EMBERVM_NODED_TLS_PORT", "9443")
+    System.put_env("EMBERVM_NODED_SVID_CERT", "/run/embervm-svid/svid.pem")
+    System.put_env("EMBERVM_NODED_SVID_KEY", "/run/embervm-svid/svid_key.pem")
+    System.put_env("EMBERVM_NODED_SVID_BUNDLE", "/run/embervm-svid/svid_bundle.pem")
+    App.configure_noded_tls()
+
+    assert Embervm.NodeAuth.tls_config() == %{
+             spiffe_id: "spiffe://embervm.jomcgi.dev/ns/e/sa/noded",
+             tls_port: 9443,
+             cert_file: "/run/embervm-svid/svid.pem",
+             key_file: "/run/embervm-svid/svid_key.pem",
+             bundle_file: "/run/embervm-svid/svid_bundle.pem"
+           }
+
+    # On with a hole raises at boot rather than dialing plaintext.
+    System.delete_env("EMBERVM_NODED_SPIFFE_ID")
+
+    assert_raise ArgumentError, ~r/EMBERVM_NODED_SPIFFE_ID is required/, fn ->
+      App.configure_noded_tls()
+    end
   end
 
   test "store probe interval defaults to five minutes and reads seconds from env" do

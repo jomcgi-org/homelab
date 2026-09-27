@@ -57,6 +57,12 @@ defmodule Embervm.Application do
     # Like configured_nodes/0, this is pure environment wiring and stays Finch-free.
     Application.put_env(:embervm, :noded_bearer_token, trimmed_env("EMBERVM_NODED_BEARER_TOKEN"))
 
+    # Phase 2b of #5706 (#5758): the optional SPIFFE mTLS dial to noded. Only
+    # file PATHS and the expected noded SPIFFE ID enter app env; :ssl reads the
+    # PEMs at each dial. Off (the default) leaves the plaintext bearer dial
+    # exactly as before. On with a missing value raises here, at boot.
+    configure_noded_tls()
+
     # Restore-capability authentication is independent of transport auth. Empty
     # means unset so the minting path uses the one-release bearer fallback.
     configure_restore_capability_key()
@@ -779,6 +785,16 @@ defmodule Embervm.Application do
     case trimmed_env("EMBERVM_RESTORE_CAPABILITY_KEY") do
       "" -> Application.delete_env(:embervm, :restore_capability_key)
       key -> Application.put_env(:embervm, :restore_capability_key, key)
+    end
+  end
+
+  # Public for the boot-wiring test. Off deletes the key so a stale value from a
+  # previous configuration can never keep the mTLS dial on.
+  @doc false
+  def configure_noded_tls do
+    case Embervm.NodeAuth.tls_config_from_env!() do
+      nil -> Application.delete_env(:embervm, :noded_tls)
+      config -> Application.put_env(:embervm, :noded_tls, config)
     end
   end
 
