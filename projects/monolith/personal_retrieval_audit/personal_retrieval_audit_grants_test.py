@@ -5,7 +5,7 @@ use default-filled columns through its narrow INSERT grant, cannot inspect or
 delete audit rows, and cannot inspect the backing sequence. The insert also
 executes the definer-rights retention trigger in the same transaction.
 
-Hand-written bdd_test, so excluded from gazelle and registered in BUILD.
+Hand-written bdd_test registered in this package's own BUILD file.
 """
 
 import pytest
