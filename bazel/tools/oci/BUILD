@@ -74,18 +74,6 @@ bzl_library(
     deps = [":providers"],
 )
 
-bzl_library(
-    name = "oci_run",
-    srcs = ["oci_run.bzl"],
-    visibility = ["//visibility:public"],
-)
-
-bzl_library(
-    name = "providers",
-    srcs = ["providers.bzl"],
-    visibility = ["//visibility:public"],
-)
-
 # Markdown read by the monolith doc-manifest genrules (#6446). See
 # //projects/monolith:repo_docs_srcs.
 filegroup(
@@ -96,4 +84,16 @@ filegroup(
         exclude = ["**/node_modules/**"],
     ),
     visibility = ["//projects/monolith:__pkg__"],
+)
+
+bzl_library(
+    name = "oci_run",
+    srcs = ["oci_run.bzl"],
+    visibility = ["//visibility:public"],
+)
+
+bzl_library(
+    name = "providers",
+    srcs = ["providers.bzl"],
+    visibility = ["//visibility:public"],
 )

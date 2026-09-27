@@ -36,12 +36,6 @@ bzl_library(
     deps = ["@aspect_rules_js//js:providers"],
 )
 
-bzl_library(
-    name = "exec_filegroup",
-    srcs = ["exec_filegroup.bzl"],
-    visibility = ["//visibility:public"],
-)
-
 # Markdown read by the monolith doc-manifest genrules (#6446). See
 # //projects/monolith:repo_docs_srcs.
 filegroup(
@@ -52,4 +46,10 @@ filegroup(
         exclude = ["**/node_modules/**"],
     ),
     visibility = ["//projects/monolith:__pkg__"],
+)
+
+bzl_library(
+    name = "exec_filegroup",
+    srcs = ["exec_filegroup.bzl"],
+    visibility = ["//visibility:public"],
 )
