@@ -20,6 +20,15 @@ import yaml
 
 DIGITS = re.compile(r"^[0-9]+$")
 
+# The harness below replaces the builder's `sleep 5` lock-poll tick with this
+# (see _rootfs_download_harness). Four builders serialise on the lock, so the
+# last one to win waits at most three ticks after the download is released; the
+# budget adds a generous per-builder allowance for process startup, the mock
+# store's 10ms polling and a loaded runner.
+LOCK_TICK_SECONDS = 0.05
+BUILDER_COUNT = 4
+BUILDER_WAIT_SECONDS = BUILDER_COUNT * (LOCK_TICK_SECONDS + 5)
+
 
 def _repo_path(*parts: str) -> Path:
     """Resolve a repo-relative path, in-bazel (TEST_SRCDIR) or standalone."""
@@ -257,6 +266,22 @@ def _rootfs_download_harness(tmp_path):
             """)
     )
     flock.chmod(0o755)
+    # The builder polls the cache lock with `sleep 5`. Four builders serialising
+    # on it can need three full ticks after the download is released before the
+    # last one wins, which is 15s of pure waiting and the whole budget the
+    # communicate timeout used to allow (#6172 pr-checks failed on exactly that).
+    # What these tests prove is the ordering (download once, share the inode,
+    # recover from a dead holder), never the tick length, so the shim keeps the
+    # script's argument honest (a plain integer, as busybox sleep expects) and
+    # sleeps briefly. test_rootfs_lock_timeout_fails_without_downloading installs
+    # its own shim over this one and pins the argument to 5 there.
+    sleep = binaries / "sleep"
+    sleep.write_text(
+        "#!/bin/sh\n"
+        'case "$*" in "" | *[!0-9]*) echo "unexpected sleep arguments: $*" >&2; exit 2 ;; esac\n'
+        f"exec {sys.executable} -c 'import time; time.sleep({LOCK_TICK_SECONDS})'\n"
+    )
+    sleep.chmod(0o755)
     return script, {
         **os.environ,
         "PATH": str(binaries) + os.pathsep + os.environ["PATH"],
@@ -294,6 +319,20 @@ def _start_builder(script, env, tmp_path, identifier, base_name=None):
     )
 
 
+def _finish_builders(processes):
+    """Collect every builder within ONE shared budget that starts now, after
+    the whole batch was spawned and released, rather than a fresh per-process
+    timeout whose clock quietly restarts as each earlier builder returns."""
+    import time
+
+    deadline = time.monotonic() + BUILDER_WAIT_SECONDS
+    outputs = []
+    for process in processes:
+        output, _ = process.communicate(timeout=max(0.0, deadline - time.monotonic()))
+        outputs.append(output)
+    return outputs
+
+
 def _stop_builders(processes):
     import signal
 
@@ -308,23 +347,22 @@ def test_concurrent_rootfs_builders_download_once_and_share_inode(tmp_path, same
     script, env = _rootfs_download_harness(tmp_path)
     processes = []
     try:
-        for index in range(4):
+        for index in range(BUILDER_COUNT):
             processes.append(
                 _start_builder(
                     script, env, tmp_path, str(index), "shared" if same_path else None
                 )
             )
-        for index in range(4):
+        for index in range(BUILDER_COUNT):
             _wait_for_file(tmp_path / f"digest-{index}")
         _wait_for_file(tmp_path / "downloads")
         (tmp_path / "release").touch()
-        for process in processes:
-            output, _ = process.communicate(timeout=15)
+        for process, output in zip(processes, _finish_builders(processes)):
             assert process.returncode == 0, output
         assert len((tmp_path / "downloads").read_text().splitlines()) == 1
         paths = [
             tmp_path / "cache" / f"base-{'shared' if same_path else i}.ext4"
-            for i in range(4)
+            for i in range(BUILDER_COUNT)
         ]
         assert len({path.stat().st_ino for path in paths}) == 1
         assert all(path.read_bytes() == b"x" * 2048 for path in paths)
@@ -347,7 +385,7 @@ def test_rootfs_waiter_recovers_after_builder_process_group_dies(tmp_path):
         os.killpg(holder.pid, signal.SIGKILL)
         holder.communicate(timeout=10)
         (tmp_path / "release").touch()
-        output, _ = waiter.communicate(timeout=15)
+        output, _ = waiter.communicate(timeout=BUILDER_WAIT_SECONDS)
         assert waiter.returncode == 0, output
         assert (tmp_path / "cache" / "base-waiter.ext4").read_bytes() == b"x" * 2048
         assert (tmp_path / "downloads").read_text().splitlines() == ["holder", "waiter"]
