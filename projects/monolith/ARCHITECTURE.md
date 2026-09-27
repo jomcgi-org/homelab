@@ -175,7 +175,7 @@ closure.
 (see: /projects/monolith/app/main_public_imports_test.py)
 
 The agents tier is a third composition with no registry at all. Its entrypoint
-builds a Starlette app that serves an explicit nine-tool catalogue over
+builds a Starlette app that serves an explicit ten-tool catalogue over
 stateless MCP plus one health route, behind identity middleware that rejects
 anonymous callers. The binary is pruned by source glob, and an import test
 proves the private domains never enter its closure.
