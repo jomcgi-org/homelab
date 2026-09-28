@@ -1,4 +1,4 @@
-h1:sNjCEIda7JPXnQlYckmEKYmZ+nmWimCggh7iuf6T1wk=
+h1:TxQLMOyjWce4DsNp3GhF2T0ANDYD49zgmJt8LuXPAD8=
 20260330000000_initial_schema.sql h1:J2futpSW0nJAIRR7nR7ssT7LwXIYrvRI+PkHb5Y4tLI=
 20260403000000_chat_schema.sql h1:pERUFC0vzM95etRuzp43XzkCV7lBCzrrtY5Mk7aF3CA=
 20260404000000_chat_attachments.sql h1:tv+Fdbr1rQC5nzUxfaBC0O6fu2OMGgLWf+YNg1WQXi4=
@@ -237,5 +237,5 @@ h1:sNjCEIda7JPXnQlYckmEKYmZ+nmWimCggh7iuf6T1wk=
 20260923140000_swarm_node_run_model.sql h1:cPO/J/NHoKTqR7JmwN+WKrvaJvbvKGlVJHTKO7VYJYw=
 20260924060000_factory_policy_no_astra.sql h1:OpKVee9AEOJHTAEA8Q3hxQDnjIepdjuAKNF6LF+xOPs=
 20260924070000_factory_goals.sql h1:HNeptTeIp/GsDYJ00v0lCq8RXJsOciEXbitVQzsIZvQ=
-20260924120000_agent_board.sql h1:ef56sOLD8Chm6dsDiPps+hXrVcJf0zkHncbId77hDUg=
-20260926000000_personal_retrieval_audit.sql h1:V/nricPHekwNzdQMxyBsLnomWW8wajjzJ6FmfdM/ErQ=
+20260926000000_personal_retrieval_audit.sql h1:2bVZSeJ1HMA/OmdnnXCU3uPf/Q6Rb6TO45QEG8nYs+0=
+20260928010000_agent_board.sql h1:ITo1Z6coRSExU3noBB+uq+USSrPbx2TOCNcOAwHyUoU=
