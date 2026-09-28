@@ -116,6 +116,17 @@ noded:
   # schedules would hold every promotion for the full verdict timeout.
   priorityClassName: homelab-preemptible
 
+# Chart/values skew guard, same as deploy/values-gke.yaml: Kargo moves this
+# Application between charts that still ship the tokenbroker
+# CiliumNetworkPolicy template (defaulting to enabled) and charts after #5816
+# that do not. The hub has no Cilium CRDs, so without this key an older chart
+# renders the policy and the sync fails, holding every dev promotion for the
+# full wait timeout. Newer charts ignore the key. Remove it once no Freight
+# older than the template removal can be promoted to dev.
+tokenBroker:
+  networkPolicy:
+    enabled: false
+
 # Only the conformance suite's workloads. The other four sandbox languages are
 # off with their base builders, since each builder bakes into production's
 # shared 35 GiB scratch loop.
