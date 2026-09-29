@@ -1,0 +1,40 @@
+# Parent of the GKE cluster's root. It syncs projects/gke-cluster/root/, which
+# holds only the `hub` Application, so changes to the root deploy on merge like
+# everything else.
+#
+# This is the one object on the cluster that is applied by hand, once:
+#
+#     kubectl --context <gke-context> apply -f projects/gke-cluster/hub-root-application.yaml
+#
+# It is not synced by anything, including itself: if it were, a bad commit to it
+# could remove the thing that would sync the fix. Keep it small and change it
+# rarely; the interesting config lives in root/root-application.yaml.
+#
+# prune is OFF and there is no resources finalizer, deliberately. Moving or
+# emptying root/ must never delete `hub`: `hub` prunes every Application on the
+# cluster, so losing it would cascade into everything. Deleting `hub-root` also
+# leaves `hub` in place.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hub-root
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/jomcgi-org/homelab.git
+    targetRevision: HEAD
+    path: projects/gke-cluster/root
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

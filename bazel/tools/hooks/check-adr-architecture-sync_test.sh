@@ -107,7 +107,7 @@ expect_reminder "/repo/bazel/ocaml/toolchain/arches.bzl" "bazel/ARCHITECTURE.md"
 expect_reminder "/repo/projects/platform/kargo/values.yaml" "projects/platform/ARCHITECTURE.md"
 expect_reminder "/repo/projects/platform-gke/kustomization.yaml" "projects/platform/ARCHITECTURE.md"
 expect_reminder "/repo/projects/gke-apps/monolith/application.yaml" "projects/platform/ARCHITECTURE.md"
-expect_reminder "/repo/projects/gke-cluster/root-application.yaml" "projects/platform/ARCHITECTURE.md"
+expect_reminder "/repo/projects/gke-cluster/root/root-application.yaml" "projects/platform/ARCHITECTURE.md"
 
 # Editing an architecture doc itself is not drift.
 expect_silent "/repo/projects/embervm/ARCHITECTURE.md"

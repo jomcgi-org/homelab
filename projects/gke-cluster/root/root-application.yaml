@@ -1,43 +1,29 @@
-# The GKE cluster's root Application, captured from the live object.
+# The GKE cluster's root Application.
 #
-# NOT SYNCED BY ANYTHING, deliberately. kustomization.yaml in this directory
-# lists its resources explicitly and does not list this file, so `hub` does not
-# manage itself. That avoids the self-referential failure where a bad commit to
-# the root orphans the very Application that would sync the fix, recoverable
-# only by hand against a cluster you may not be able to reach.
+# SYNCED BY `hub-root` (projects/gke-cluster/hub-root-application.yaml), which
+# points at this directory and nothing else. Merge a change here and it is live
+# within one ArgoCD poll; no kubectl.
 #
-# So what is this file for? Until now the root existed ONLY as a live object
-# (the same convention `canada` followed on the home cluster: see
-# projects/home-cluster/kustomization.yaml). Nothing recorded what the cluster's
-# root of trust actually was, nothing reviewed changes to it, and nothing could
-# diff it. Every other resource in this repository gets a pull request; the one
-# resource that decides what the cluster syncs got a shell prompt.
+# Why a parent instead of listing this file in ../kustomization.yaml: a root
+# that syncs itself can be broken by one bad commit to itself, and then nothing
+# is left to sync the fix. `hub-root` never syncs its own definition, so a bad
+# commit here is repaired by the next commit here. Only a bad edit to
+# hub-root-application.yaml needs hands on the cluster, and that file should
+# essentially never change.
 #
-# That gap is about to become load-bearing. Kargo owns `targetRevision` at
-# runtime for the Applications it promotes (ADR platform/009), which requires an
-# `ignoreDifferences` entry here plus `RespectIgnoreDifferences=true`, or ArgoCD
-# stamps each promotion straight back. Leaving that config as an unreviewed hand
-# patch would put the mechanism that keeps production deploying somewhere nobody
-# can read.
+# Until 2026-09-28 this file was hand-applied after merge. That left the live
+# root missing the embervm-dev entry below for days while git said otherwise:
+# every Kargo promotion of embervm-dev was stamped straight back by selfHeal.
 #
-# HOW TO CHANGE THE ROOT
-#
-# Edit this file, get it reviewed like anything else, merge, and then apply it
-# ONCE by hand:
-#
-#     kubectl --context <gke-context> apply -f projects/gke-cluster/root-application.yaml
-#
-# The apply is manual on purpose and is the whole point of the arrangement: git
-# is the reviewable record, and a human decides when the root changes. A merged
-# change to this file has NOT taken effect until someone runs that command, so
-# treat this file as a proposal until you have applied it.
+# To force a sync now rather than wait for the poll, use the monolith MCP tool
+# k8s_sync_argocd_app with name "hub-root" (then "hub").
 #
 # WHEN YOU ADD A KARGO PIPELINE
 #
 # Add an `ignoreDifferences` entry for that Application's
 # `/spec/sources/0/targetRevision` AND ensure `RespectIgnoreDifferences=true` is
-# in syncOptions, in the same change that arms the pipeline. Apply the root
-# BEFORE that change merges: an entry naming an Application that does not exist
+# in syncOptions, and merge it (and let hub-root sync it) BEFORE the change
+# that arms the pipeline: an entry naming an Application that does not exist
 # yet is inert, while a Stage that arms first has every promotion reverted.
 # `ignoreDifferences` alone suppresses DIFFING, not APPLYING, so without the
 # sync option the field survives idle reconciliation and is stamped back by the
