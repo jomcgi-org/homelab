@@ -74,9 +74,19 @@ _KINDS: dict[str, tuple[str, str, bool]] = {
 }
 
 _ARGO = ("argoproj.io", "v1alpha1", "applications")
+_KARGO = ("kargo.akuity.io", "v1alpha1")
 
-# Kinds usable from the generic list/get tools, plus the argo alias.
-RESOURCE_KINDS = sorted([*_KINDS.keys(), "applications"])
+# Custom-object kinds usable from the generic list/get tools:
+# kind -> (group, version, plural, default namespace or None for all).
+_CUSTOM: dict[str, tuple[str, str, str, str | None]] = {
+    "applications": (*_ARGO, "argocd"),
+    "promotions": (*_KARGO, "promotions", None),
+    "stages": (*_KARGO, "stages", None),
+    "freights": (*_KARGO, "freights", None),
+}
+
+# Kinds usable from the generic list/get tools, typed and custom.
+RESOURCE_KINDS = sorted([*_KINDS.keys(), *_CUSTOM.keys()])
 
 
 class UnknownKindError(ValueError):
@@ -429,19 +439,39 @@ class KubernetesClient:
         """List a curated kind, returning sanitized dicts (raw, untrimmed).
 
         Cluster-scoped kinds (nodes, namespaces) ignore ``namespace``.
-        ``applications`` lists ArgoCD apps from the argocd namespace.
+        ``applications`` lists ArgoCD apps from the argocd namespace; the
+        Kargo kinds list across all namespaces unless one is given.
         """
         api = await self._ensure_client()
-        if kind == "applications":
+        if kind in _CUSTOM:
+            group, version, plural, default_ns = _CUSTOM[kind]
             custom = client.CustomObjectsApi(api)
-            result = await custom.list_namespaced_custom_object(
-                group=_ARGO[0],
-                version=_ARGO[1],
-                namespace=namespace or "argocd",
-                plural=_ARGO[2],
-                label_selector=label_selector,
-            )
-            return result.get("items", [])
+            ns = namespace or default_ns
+            if ns:
+                result = await custom.list_namespaced_custom_object(
+                    group=group,
+                    version=version,
+                    namespace=ns,
+                    plural=plural,
+                    label_selector=label_selector,
+                )
+            else:
+                result = await custom.list_cluster_custom_object(
+                    group=group,
+                    version=version,
+                    plural=plural,
+                    label_selector=label_selector,
+                )
+            items = result.get("items", [])
+            if group == _KARGO[0]:
+                # Newest first, so a truncated list keeps the recent Promotions.
+                items.sort(
+                    key=lambda o: (
+                        (o.get("metadata") or {}).get("creationTimestamp") or ""
+                    ),
+                    reverse=True,
+                )
+            return items
 
         if kind not in _KINDS:
             raise UnknownKindError(kind)
@@ -463,13 +493,14 @@ class KubernetesClient:
     ) -> dict | None:
         """Get a single curated resource as a sanitized dict, or None on miss."""
         api = await self._ensure_client()
-        if kind == "applications":
+        if kind in _CUSTOM:
+            group, version, plural, default_ns = _CUSTOM[kind]
             try:
                 return await client.CustomObjectsApi(api).get_namespaced_custom_object(
-                    group=_ARGO[0],
-                    version=_ARGO[1],
-                    namespace=namespace or "argocd",
-                    plural=_ARGO[2],
+                    group=group,
+                    version=version,
+                    namespace=namespace or default_ns or "default",
+                    plural=plural,
                     name=name,
                 )
             except client.exceptions.ApiException:

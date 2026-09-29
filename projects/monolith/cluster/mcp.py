@@ -98,7 +98,8 @@ async def k8s_get_resource(
         kind: One of the allowed kinds.
         name: Resource name.
         namespace: Namespace (defaults to "default" for namespaced kinds,
-            "argocd" for applications).
+            "argocd" for applications). Kargo kinds (promotions, stages,
+            freights) need the project namespace, e.g. kargo-embervm.
         full: Return the entire manifest instead of the trimmed view.
     """
     k8s = KubernetesClient()
@@ -270,7 +271,8 @@ async def kargo_promote(
     be running or queued. A version older than the Stage runs or last
     promoted is refused unless rollback is true. It never approves Freight. The Promotion runs the Stage's own steps, so
     it is exactly the Promotion auto-promotion would have created. Poll
-    verify_deployment with expected_revision afterwards.
+    verify_deployment with expected_revision afterwards, or watch the
+    Promotion with k8s_get_resource kind=promotions in the Stage's namespace.
 
     Args:
         app: ArgoCD Application name in the argocd namespace.

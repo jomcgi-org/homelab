@@ -1139,3 +1139,38 @@ async def test_get_kargo_context_reads_upstream_stages_and_splits_404(k8s_client
     a, b, c = _kargo_patches(mock_custom)
     with a, b, c, pytest.raises(ApiException):
         await k8s_client.get_kargo_context("kargo-embervm", "prod")
+
+
+@pytest.mark.asyncio
+async def test_list_kargo_kind_without_namespace_lists_cluster_wide_newest_first(
+    k8s_client,
+):
+    mock_custom = MagicMock()
+    mock_custom.list_cluster_custom_object = AsyncMock(
+        return_value={
+            "items": [
+                {
+                    "metadata": {
+                        "name": "p1",
+                        "creationTimestamp": "2026-09-27T00:00:00Z",
+                    }
+                },
+                {
+                    "metadata": {
+                        "name": "p2",
+                        "creationTimestamp": "2026-09-28T00:00:00Z",
+                    }
+                },
+            ]
+        }
+    )
+    with (
+        patch("cluster.kubernetes.config.load_incluster_config"),
+        patch("cluster.kubernetes.ApiClient", return_value=MagicMock()),
+        patch("cluster.kubernetes.client.CustomObjectsApi", return_value=mock_custom),
+    ):
+        items = await k8s_client.list_resources("promotions")
+    assert [i["metadata"]["name"] for i in items] == ["p2", "p1"]
+    assert mock_custom.list_cluster_custom_object.await_args.kwargs["plural"] == (
+        "promotions"
+    )

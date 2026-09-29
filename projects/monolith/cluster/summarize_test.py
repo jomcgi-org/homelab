@@ -274,3 +274,32 @@ class TestFilterLogs:
         assert out.get("filtered") is None
         assert out.get("truncated") is None
         assert out["lines"] == 3
+
+
+def test_promotion_row_carries_phase_and_freight():
+    obj = {
+        "metadata": {"name": "dev.mcp-x", "namespace": "kargo-embervm"},
+        "spec": {"stage": "dev", "freight": "abc"},
+        "status": {"phase": "Errored", "message": "boom"},
+    }
+    row = summarize.resource_row("promotions", obj)
+    assert row["phase"] == "Errored"
+    assert row["freight"] == "abc"
+    assert row["stage"] == "dev"
+
+
+def test_stage_row_carries_current_freight_and_last_promotion():
+    obj = {
+        "metadata": {"name": "dev", "namespace": "kargo-embervm"},
+        "status": {
+            "health": {"status": "Unknown"},
+            "freightHistory": [
+                {"items": {"Warehouse/embervm-chart": {"name": "6d87"}}}
+            ],
+            "lastPromotion": {"name": "dev.p1", "status": {"phase": "Errored"}},
+        },
+    }
+    row = summarize.resource_row("stages", obj)
+    assert row["freight"] == "6d87"
+    assert row["last_phase"] == "Errored"
+    assert row["health"] == "Unknown"
