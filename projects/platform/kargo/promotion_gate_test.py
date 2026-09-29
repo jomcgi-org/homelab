@@ -173,3 +173,13 @@ def test_monolith_revision_url_targets_the_probe_port():
         step["config"]["url"]
         == "http://monolith.monolith.svc.cluster.local:8000/healthz"
     )
+
+
+def test_conformance_step_survives_runner_restarts():
+    """The conformance runner restarts on every chart roll, so dial errors
+    while its new pod starts are expected. They must not error the Promotion:
+    Kargo never retries an Errored Promotion, which strands the stage."""
+    stages = _stages(_render())
+    for key in _stages_with("verdictURL"):
+        (step,) = [s for s in _steps(stages[key]) if s.get("as") == "conformance"]
+        assert step["retry"]["errorThreshold"] >= 30, key
