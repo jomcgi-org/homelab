@@ -212,7 +212,15 @@ async def monolith_agent_claim_routine_job(
 async def monolith_agent_complete_routine_job(
     name: str, status: str, summary: str | None = None
 ) -> dict:
-    """Mark a claimed routine_jobs row complete and clear its lock."""
+    """Mark a claimed routine_jobs row complete and clear its lock.
+
+    Records ``status`` (free text, stored as last_status) and, when given,
+    ``summary`` as the run's outcome. A recurring row (non-null
+    interval_secs) is rescheduled interval_secs from now. A one-shot row is
+    left idle until monolith-agent-trigger-routine-job re-arms it. Returns
+    ``ok=False`` when no matching row was updated, including a row held for
+    an unknown invocation outcome.
+    """
     return {"ok": routine_jobs.complete_job(name, status, summary=summary)}
 
 
@@ -227,7 +235,11 @@ async def monolith_agent_register_routine_job(
 ) -> dict:
     """Insert a new routine_jobs row.
 
-    ``next_run_at`` accepts an ISO 8601 string, parsed with
+    ``kind`` is the routine kind that claim and list filter on.
+    ``interval_secs`` makes the row recurring. Leave it unset for a one-shot
+    row that runs once and then waits to be re-triggered. ``payload`` is
+    stored as-is for the claiming worker. ``next_run_at`` accepts an ISO 8601
+    string, parsed with
     ``datetime.fromisoformat``. Raises ``ValueError`` if a row with the
     given ``name`` already exists.
     """

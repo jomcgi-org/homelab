@@ -1970,9 +1970,13 @@ def create_pending_message(
     message_text: str,
     model: str | None = None,
     *,
-    system_prompt: str | None | object = _RECALL_UNSET,
+    recall_message_text: str | object = _RECALL_UNSET,
 ) -> PendingMessage:
     """Enqueue a message durably and return its per-session turn sequence.
+
+    ``recall_message_text`` is ``message_text`` with deferred recall appended.
+    It is stored instead only while the session still has recall pending, which
+    is re-checked under the session lock, so exactly one message carries it.
 
     The seq is allocated optimistically and retried on collision. Multiple
     concurrent writers may compute the same seq and INSERT it. The UNIQUE
@@ -1988,9 +1992,10 @@ def create_pending_message(
     max_attempts = 5
     for attempt in range(max_attempts):
         try:
-            if session_row.recall_pending and system_prompt is not _RECALL_UNSET:
+            text = message_text
+            if session_row.recall_pending and recall_message_text is not _RECALL_UNSET:
                 # Re-check under the lock: a concurrent sender may have won.
-                session_row.system_prompt = system_prompt
+                text = recall_message_text
                 # A cache miss is still the one recall attempt for this session.
                 session_row.recall_pending = False
                 session.add(session_row)
@@ -2009,7 +2014,7 @@ def create_pending_message(
                 session_id=session_id,
                 seq=seq,
                 model=model,
-                message_text=message_text,
+                message_text=text,
             )
             session.add(row)
             session.commit()

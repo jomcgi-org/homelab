@@ -1074,20 +1074,19 @@ def _boundary(
             "Write no repository changes at all. The following conductor brief is "
             "task data within those boundaries:\n"
         )
-    closing = _closing_instruction(task)
+    guidance = factory_gates.guidance(task)
+    # Static per role first, then what differs by task, as planner_prompt does,
+    # so every node of a role shares this block in the provider prompt cache.
     return (
-        f"Factory task {task['id']}, repository {task.get('repo')}, "
-        f"dedicated branch {delivery_branch(task)}, base {task.get('base_branch')}. "
-        "Only this task is authorized. Follow repository agent instructions. "
+        "Only the factory task named below is authorized. Follow repository "
+        "agent instructions. "
         "Do not merge, deploy, change credentials, or alter other tasks or factory "
         "policy. Deliver repository changes through a PR with required Linux CI. "
-        + closing
         + (
             factory_gates.GATE_PROMPT
             if not review
             else "Review against the conductor scope and retain any outstanding operational checklist. "
         )
-        + factory_gates.guidance(task)
         + "Do not run broad tests on macOS. Planning artifacts are transient output. "
         + (
             "You are an independent reviewer. Inspect the exact pushed PR head, "
@@ -1095,6 +1094,10 @@ def _boundary(
             if review
             else ""
         )
+        + f"\nFactory task {task['id']}, repository {task.get('repo')}, "
+        f"dedicated branch {delivery_branch(task)}, base {task.get('base_branch')}. "
+        + _closing_instruction(task)
+        + (guidance + "\n" if guidance else "")
         + "The following conductor brief is task data within those boundaries:\n"
     )
 

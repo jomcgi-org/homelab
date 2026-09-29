@@ -143,7 +143,24 @@ async def kubernetes_pod_logs(
     since_seconds: int = LOG_SINCE_DEFAULT_SECONDS,
     previous: bool = False,
 ) -> dict[str, Any]:
-    """Read a time-, line-, and byte-bounded pod log from an allowed namespace."""
+    """Read a time-, line-, and byte-bounded pod log from an allowed namespace.
+
+    Only the recorded observation namespaces are readable; any other
+    namespace is rejected as invalid_request.
+
+    Args:
+        namespace: Pod namespace, one of the observation namespaces.
+        pod: Pod name.
+        container: Container name, needed only for multi-container pods.
+        tail_lines: Lines from the end of the log, 1 to 500 (default 200).
+        since_seconds: Look-back window in seconds, 1 to 86400 (default 3600).
+        previous: Read the previous (crashed) container instance instead.
+
+    Returns:
+        ``logs``, ``lines``, and ``truncated`` (true when the line limit or
+        the 32,000-byte cap cut the output, which keeps the newest bytes),
+        plus freshness and coverage metadata.
+    """
 
     if denial := _authorization_error():
         return denial
