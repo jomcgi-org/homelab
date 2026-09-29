@@ -29,6 +29,7 @@
   //   top-left, where the link would sit on top of the tabs
   // - /chat and /notes: both render their own top-left chrome (the explorer
   //   header and the notes status bar) that the link would overlap
+  // - /qwen: its session list fills the top-left; the page links home itself
   //
   // $page.url reflects the browser URL (hooks.js reroute keeps private
   // paths un-prefixed), but strip a literal /private prefix too in case a
@@ -36,7 +37,7 @@
   let showBack = $derived.by(() => {
     const path = $page.url.pathname.replace(/^\/private(?=\/|$)/, "") || "/";
     if (path === "/") return false;
-    if (/^\/(app|review|chat|notes)(\/|$)/.test(path)) return false;
+    if (/^\/(app|review|chat|notes|qwen)(\/|$)/.test(path)) return false;
     return true;
   });
 </script>

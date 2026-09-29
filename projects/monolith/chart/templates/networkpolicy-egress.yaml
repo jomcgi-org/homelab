@@ -75,7 +75,7 @@ spec:
       ports:
         - protocol: TCP
           port: 5432
-    {{- range $target := list $targets.inference $targets.embeddings $targets.authentik $targets.otelCollector $targets.embervm $targets.tokenBroker $targets.embervmServing $targets.dcgmExporter }}
+    {{- range $target := list $targets.inference $targets.embeddings $targets.authentik $targets.otelCollector $targets.embervm $targets.tokenBroker $targets.embervmServing $targets.dcgmExporter $targets.inferenceBridge }}
     - to:
         - namespaceSelector:
             matchLabels:

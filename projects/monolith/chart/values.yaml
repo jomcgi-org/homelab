@@ -1129,6 +1129,9 @@ tokenBroker:
 
 frontend:
   otelCollectorUrl: ""
+  # OpenAI-compatible FreeToken endpoint for the private /qwen chat page; empty
+  # leaves QWEN_API_BASE unset and the page answers 503.
+  qwenApiBase: ""
   image:
     repository: ghcr.io/jomcgi/homelab/projects/monolith/frontend
     tag: latest
@@ -2073,6 +2076,17 @@ networkPolicy:
         matchLabels:
           app: nvidia-dcgm-exporter
         port: 9400
+      # Tailscale operator proxy for frontend.qwenApiBase (FreeToken on node-4).
+      # These ownership labels identify one egress Service proxy rather than the
+      # whole namespace.
+      inferenceBridge:
+        namespace: tailscale
+        matchLabels:
+          tailscale.com/managed: "true"
+          tailscale.com/parent-resource-type: svc
+          tailscale.com/parent-resource: inference-bridge-freetoken
+          tailscale.com/parent-resource-ns: tailscale
+        port: 8090
     publicHttps:
       cidr: 0.0.0.0/0
       except:

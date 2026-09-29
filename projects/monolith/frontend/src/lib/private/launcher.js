@@ -21,6 +21,7 @@ export const launcher = [
   },
   { label: "Longhorn", desc: "cluster storage", href: "/app/longhorn" },
   { label: "Factory", desc: "autonomous work", href: "/factory" },
+  { label: "Qwen", desc: "4090 chat and inference stats", href: "/qwen" },
   { label: "Grimoire", desc: "character sheets", href: "/grimoire" },
   { label: "Updates", desc: "daily release journal", href: "/updates" },
   {
