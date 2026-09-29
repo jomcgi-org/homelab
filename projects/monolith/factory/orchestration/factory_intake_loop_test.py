@@ -219,7 +219,9 @@ def test_current_generation_work_blocks_intake(db, monkeypatch, state):
                 title="busy",
                 body="",
                 url="https://github.com/owner/repo/issues/99",
-                actor="test",
+                # Admissible work holds the slot. An operator receipt outside
+                # the allowlist does not (#6483, tested below).
+                actor=intake_loop.ACTOR,
                 state=state,
             )
         )
@@ -1870,7 +1872,7 @@ def test_local_item_counts_lane_full(db, monkeypatch):
                 title="held delivery",
                 body="",
                 url="https://github.com/owner/repo/issues/999",
-                actor="test",
+                actor=intake_loop.ACTOR,
                 state="queued",
             )
         )
@@ -1879,3 +1881,48 @@ def test_local_item_counts_lane_full(db, monkeypatch):
     assert intake_loop.intake_tick(policy(), generation=0) == []
     detail = json.loads(audits(db, "intake_idle")[0].detail_json)
     assert detail["excluded"] == {"lane_full": 1}
+
+
+def test_an_operator_receipt_outside_the_allowlist_holds_no_lane_slot(db, monkeypatch):
+    """#6483: a queued receipt admit_next can never admit must not fill a lane."""
+    with Session(db) as session:
+        session.add(
+            FactoryReceipt(
+                repo="owner/repo",
+                issue_number=77,
+                generation=0,
+                title="operator submission",
+                body="body",
+                url="https://github.com/owner/repo/issues/77",
+                actor="operator-subject",
+                task_class="bug-fix",
+                state="queued",
+            )
+        )
+        session.commit()
+    fake_pages(monkeypatch, [issue(1, ["agent-ready"])])
+    admitted = intake_loop.intake_tick(policy(labels=["agent-ready"]), generation=0)
+    assert [row["receipt"]["issue_number"] for row in admitted] == [1]
+
+
+def test_an_allowlisted_operator_receipt_still_holds_its_slot(db, monkeypatch):
+    with Session(db) as session:
+        session.add(
+            FactoryReceipt(
+                repo="owner/repo",
+                issue_number=77,
+                generation=0,
+                title="operator submission",
+                body="body",
+                url="https://github.com/owner/repo/issues/77",
+                actor="operator-subject",
+                task_class="bug-fix",
+                state="queued",
+            )
+        )
+        session.commit()
+    fake_pages(monkeypatch, [issue(1, ["agent-ready"])])
+    admitted = intake_loop.intake_tick(
+        {**policy(labels=["agent-ready"]), "issue_numbers": [77]}, generation=0
+    )
+    assert admitted == []
