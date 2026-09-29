@@ -317,7 +317,10 @@ def _kargo_app(live="0.546.4", **status_overrides):
 
 
 def _freight_ref(version):
-    return {"name": f"f-{version}", "charts": [{"repoURL": CHART_REPO, "version": version}]}
+    return {
+        "name": f"f-{version}",
+        "charts": [{"repoURL": CHART_REPO, "version": version}],
+    }
 
 
 def _promotion(version, phase, **status):
@@ -382,7 +385,9 @@ def test_kargo_block_reports_promotions_without_changing_a_verified_verdict():
 
 
 def test_failed_promotion_for_the_expected_version_fails_with_its_message():
-    stage = _stage(last=_promotion("0.547.0", "Errored", message="argocd-wait timed out"))
+    stage = _stage(
+        last=_promotion("0.547.0", "Errored", message="argocd-wait timed out")
+    )
     result = verdict(
         _kargo_app(),
         expected_revision="0.547.0",
@@ -443,9 +448,7 @@ def test_manual_approval_is_visible_on_the_expected_freight():
         _kargo_app(live="0.547.0"),
         expected_revision="0.547.0",
         kargo={
-            "stage": _stage(
-                last=_promotion("0.547.0", "Succeeded"), upstream=["dev"]
-            ),
+            "stage": _stage(last=_promotion("0.547.0", "Succeeded"), upstream=["dev"]),
             "freights": [_freight("0.547.0", approved=["prod"], current=["prod"])],
         },
     )
@@ -464,7 +467,9 @@ def test_reverted_promotion_is_drift():
 
 def test_no_drift_while_the_application_is_still_syncing():
     stage = _stage(last=_promotion("0.547.0", "Succeeded"))
-    app = _kargo_app(live="0.546.4", sync={"status": "OutOfSync", "revisions": ["0.547.0", GIT]})
+    app = _kargo_app(
+        live="0.546.4", sync={"status": "OutOfSync", "revisions": ["0.547.0", GIT]}
+    )
     result = verdict(app, kargo={"stage": stage, "freights": []})
     assert all(c["name"] != "kargo" for c in result["checks"])
 

@@ -116,7 +116,10 @@ async def test_verify_deployment_adds_kargo_context_for_kargo_owned_apps(monkeyp
                             "name": "prod.0.6.0",
                             "freight": {
                                 "charts": [
-                                    {"repoURL": "oci://x/charts/embervm", "version": "0.6.0"}
+                                    {
+                                        "repoURL": "oci://x/charts/embervm",
+                                        "version": "0.6.0",
+                                    }
                                 ]
                             },
                             "status": {"phase": "Running", "currentStep": 1},

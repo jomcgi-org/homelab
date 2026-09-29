@@ -221,7 +221,9 @@ async def verify_deployment(app: str, expected_revision: str | None = None) -> d
             try:
                 kargo = await k8s.get_kargo_context(*ref)
             except ApiException as exc:
-                kargo = {"error": f"reading Kargo stage {ref[1]!r} in {ref[0]} failed: HTTP {exc.status}"}
+                kargo = {
+                    "error": f"reading Kargo stage {ref[1]!r} in {ref[0]} failed: HTTP {exc.status}"
+                }
     except ApiException as exc:
         return {"error": f"reading application {app!r} failed: HTTP {exc.status}"}
     finally:
