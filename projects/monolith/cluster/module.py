@@ -35,6 +35,13 @@ async def _leader_start(app):
     return tasks
 
 
+def _register(app) -> None:
+    """Mount the private ``/api/cluster`` routes (lazy import keeps FastAPI out)."""
+    from cluster.router import router  # noqa: PLC0415
+
+    app.include_router(router)
+
+
 def _register_mcp() -> None:
     """Attach the cluster MCP tools to the shared instance (side-effect import)."""
     import cluster.mcp  # noqa: F401, PLC0415
@@ -42,6 +49,7 @@ def _register_mcp() -> None:
 
 MODULE = _Module(
     name="cluster",
+    register=_register,
     register_mcp=_register_mcp,
     # This domain COMPUTES cd health (it owns the k8s and ArgoCD read surface)
     # but does not serve it. The check runs here on a leader-elected loop and

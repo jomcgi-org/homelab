@@ -2908,6 +2908,20 @@ py_test(
 )
 
 py_test(
+    name = "cluster_router_test",
+    srcs = ["cluster/router_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_cluster",
+        ":pkg_core",
+        ":pkg_framework",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "sandbox_mcp_test",
     srcs = ["sandbox/mcp_test.py"],
     imports = ["."],
