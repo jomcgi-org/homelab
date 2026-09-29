@@ -1128,6 +1128,7 @@ def _settle_failed_attempt(
     evidence_key,
     evidence,
     settle_attempt=None,
+    accounting=None,
 ):
     """Record one uncertain attempt as failed, under a lock the caller holds.
 
@@ -1139,6 +1140,11 @@ def _settle_failed_attempt(
     recheck and the proof. This owns the four writes that have to land in one
     transaction, so a settlement can never leave the run and the start
     disagreeing about whether the reservation was released.
+
+    ``accounting`` overrides the cost labels for a caller whose proof names a
+    zero that is known rather than measured (factory_cessation's
+    lost-before-guest branch), matching the labels the conductor writes for
+    the same proof.
     """
     known_costs = [
         cost
@@ -1160,7 +1166,7 @@ def _settle_failed_attempt(
         "status": "failed",
         "session_id": session_id,
         "cost_usd": chosen,
-        **_settlement_accounting(chosen, original_result),
+        **(accounting or _settlement_accounting(chosen, original_result)),
         "reason": reason,
         "previous_outcome": json.loads(run.outcome_json or "{}"),
         evidence_key: evidence,

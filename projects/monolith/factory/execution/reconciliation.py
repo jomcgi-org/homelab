@@ -1862,6 +1862,269 @@ def settle_uncertain_factory_attempt(db: Session, pin: dict, identity: dict) -> 
     db.add(agent)
 
 
+def read_stranded_factory_attempt(db: Session, pin: dict, session_id: int) -> dict:
+    """Lock and fingerprint one stranded attempt before supervised cessation.
+
+    Every other reader in this module waits for one fingerprinted shape of
+    cessation evidence to appear. This one serves the supervisor that produces
+    that evidence instead: it records this identity, destroys the guest it
+    names, and settles only after the control plane has reported that guest
+    absent across a sampled window. So it accepts any session status, but it
+    pins everything that would show the attempt is still executing or has
+    already been taken over: turns, pending claims and dispatch counts, the
+    single live permit, receipts and their results, and the cleanup claim.
+
+    The binding fields are deliberately outside the fingerprint and are
+    returned beside it. Destroying a guest through the operator path clears
+    ember_session_id (store.clear_ember_bindings_by_ember_id), and a proof
+    that keyed off the live binding would refuse the very attempt it had just
+    stopped (#6288). The caller records the guest it is about to terminate
+    and later accepts only that recorded guest or a cleared binding.
+
+    Refuses with a fixed reason code. Acquires the pool before the session,
+    returns no prompt, result body or credential, settles nothing.
+    """
+    import hashlib
+    from datetime import timezone
+
+    from sqlalchemy import or_
+
+    from factory.execution.models import AgentResultReceipt, AgentTurn, PendingMessage
+
+    admission.lock_pool(db)
+    agent = _factory_owner(db, pin, session_id)
+    if agent is None:
+        raise ValueError("missing_factory_owner")
+    agent = _locked_session(db, agent.id)
+    if _factory_owner(db, pin, session_id) is None:
+        raise ValueError("factory_owner_changed")
+    # A cleanup claim or receipt fence names another owner that is already
+    # deciding this guest's fate: the bound-zero-turn fence, a cleanup worker,
+    # or an interactive observer. Supervised cessation never races one.
+    if admission.cleanup_pending(db, agent):
+        raise ValueError("guest_cleanup_pending")
+    if agent.result_receipt_fence_id is not None:
+        raise ValueError("result_receipt_fence_held")
+    if agent.ember_session_id is not None:
+        owners = db.exec(
+            select(AgentSession.id)
+            .where(AgentSession.ember_session_id == agent.ember_session_id)
+            .limit(2)
+        ).all()
+        if owners != [agent.id]:
+            raise ValueError("shared_factory_guest")
+    turns = db.exec(
+        select(AgentTurn)
+        .where(AgentTurn.session_id == agent.id)
+        .order_by(AgentTurn.seq, AgentTurn.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).all()
+    pending = db.exec(
+        select(PendingMessage)
+        .where(PendingMessage.session_id == agent.id)
+        .order_by(PendingMessage.seq, PendingMessage.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).all()
+    permits = db.exec(
+        select(AgentCapacityReservation)
+        .where(
+            or_(
+                AgentCapacityReservation.session_id == agent.id,
+                AgentCapacityReservation.local_session_id == agent.local_session_id,
+            )
+        )
+        .order_by(AgentCapacityReservation.pending_seq, AgentCapacityReservation.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).all()
+    receipts = db.exec(
+        select(AgentResultReceipt)
+        .where(
+            or_(
+                AgentResultReceipt.session_id == agent.id,
+                AgentResultReceipt.local_session_id == agent.local_session_id,
+            )
+        )
+        .order_by(AgentResultReceipt.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).all()
+    live = [permit for permit in permits if permit.state != "settled"]
+    if len(live) != 1:
+        raise ValueError("ambiguous_factory_permit")
+    permit = live[0]
+    if (
+        permit.state not in {"running", "uncertain"}
+        or permit.session_id != agent.id
+        or permit.local_session_id != agent.local_session_id
+        or permit.tier != "project"
+        or permit.routine_job_name is not None
+        or permit.settled_at is not None
+    ):
+        raise ValueError("factory_permit_not_stranded")
+    # A committed native result is completion, not a stranded attempt. The
+    # conductor's receipt recovery adopts it; settling it failed here would
+    # discard delivered work.
+    if any(
+        receipt.result_sha256 is not None or receipt.received_at is not None
+        for receipt in receipts
+    ):
+        raise ValueError("factory_result_committed")
+
+    def stamp(value):
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.isoformat()
+
+    protected = {
+        "pin": pin,
+        "session_id": agent.id,
+        "local_session_id": agent.local_session_id,
+        "workflow_id": agent.workflow_id,
+        "status": agent.status,
+        "recovery_completed_at": stamp(agent.recovery_completed_at),
+        "turns": [
+            {
+                "id": turn.id,
+                "seq": turn.seq,
+                "terminal_reason": turn.terminal_reason,
+                "stop_reason": turn.stop_reason,
+                "cost_usd": turn.cost_usd,
+                "created_at": stamp(turn.created_at),
+            }
+            for turn in turns
+        ],
+        "pending": [
+            {
+                "id": message.id,
+                "seq": message.seq,
+                "dispatch_count": message.dispatch_count,
+                "claimed_by_replica": message.claimed_by_replica,
+                "claimed_at": stamp(message.claimed_at),
+                "last_dispatch_at": stamp(message.last_dispatch_at),
+            }
+            for message in pending
+        ],
+        "permit": {
+            "id": permit.id,
+            "pending_seq": permit.pending_seq,
+            "state": permit.state,
+            "owner": permit.owner,
+            "outcome": permit.outcome,
+        },
+        "receipts": [
+            {
+                "id": receipt.id,
+                "seq": receipt.seq,
+                "dispatch_count": receipt.dispatch_count,
+                "claim_owner": receipt.claim_owner,
+                "guest_id": receipt.guest_id,
+                "superseded_at": stamp(receipt.superseded_at),
+            }
+            for receipt in receipts
+        ],
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(protected, sort_keys=True).encode()
+    ).hexdigest()
+    # Mirrors _LOST_BEFORE_GUEST_BINDING_EVIDENCE: any durable trace of a
+    # binding, or any receipt (prepared only for an already bound guest), means
+    # a guest may have run and may have spent money.
+    bound = bool(receipts) or any(
+        getattr(agent, name) is not None for name in _LOST_BEFORE_GUEST_BINDING_EVIDENCE
+    )
+    known_costs = [turn.cost_usd for turn in turns if turn.cost_usd is not None]
+    return {
+        "session_id": agent.id,
+        "local_session_id": agent.local_session_id,
+        "workflow_id": agent.workflow_id,
+        "status": agent.status,
+        "permit_id": permit.id,
+        "pending_seq": permit.pending_seq,
+        "turn_count": len(turns),
+        "pending_count": len(pending),
+        # Outside the fingerprint on purpose; see the docstring.
+        "guest_id": agent.ember_session_id,
+        "lineage_id": agent.ember_lineage_id,
+        "prior_lineage_id": agent.prior_ember_lineage_id,
+        "receipt_guest_ids": sorted({receipt.guest_id for receipt in receipts}),
+        "bound": bound,
+        "identity_sha256": fingerprint,
+        "cost_usd": max(known_costs) if known_costs else None,
+    }
+
+
+def settle_stranded_factory_attempt(
+    db: Session, pin: dict, identity: dict, *, guest_id: str | None, outcome: str
+) -> None:
+    """Consume one stranded attempt after its recorded guest is proven gone.
+
+    The caller holds the factory control lock, recorded ``identity`` and the
+    guest it terminated before acting, and has validated a sampled absence
+    proof for exactly that guest (or, for a never-bound attempt, that there is
+    no guest to prove). This re-reads the attempt under the pool and session
+    locks and refuses any change: a different fingerprint, or a binding that is
+    neither the recorded guest nor cleared. It then settles the one live permit
+    with cessation confirmed, consumes every pending message so no executor
+    can claim the turn again, closes any open receipt window, and retires the
+    binding into the prior_* fields. Turns and their UNKNOWN markers, cost and
+    artifacts stay immutable. The caller composes graph, start and audit
+    settlement in this same transaction.
+    """
+    from datetime import datetime, timezone
+
+    from factory.execution.models import AgentResultReceipt, PendingMessage
+
+    current = read_stranded_factory_attempt(db, pin, identity["session_id"])
+    if current["identity_sha256"] != identity["identity_sha256"]:
+        raise ValueError("factory_attempt_changed")
+    if current["guest_id"] not in (None, guest_id):
+        raise ValueError("factory_guest_changed")
+    agent = _locked_session(db, identity["session_id"])
+    admission.settle(
+        db,
+        agent,
+        current["pending_seq"],
+        outcome=outcome,
+        cessation_confirmed=True,
+    )
+    now = datetime.now(timezone.utc)
+    for receipt in db.exec(
+        select(AgentResultReceipt)
+        .where(AgentResultReceipt.session_id == agent.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).all():
+        if receipt.result_sha256 is not None or receipt.received_at is not None:
+            raise ValueError("factory_result_committed")
+        receipt.accept_until = now
+        db.add(receipt)
+    for message in db.exec(
+        select(PendingMessage)
+        .where(PendingMessage.session_id == agent.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).all():
+        db.delete(message)
+    if agent.ember_lineage_id:
+        agent.prior_ember_lineage_id = agent.ember_lineage_id
+    if agent.cli_session_id:
+        agent.prior_cli_session_id = agent.cli_session_id
+    agent.ember_session_id = None
+    agent.ember_session_token = None
+    agent.ember_session_expires_at = None
+    agent.ember_lineage_id = None
+    agent.cli_session_id = None
+    agent.progress_token = None
+    agent.status = "failed"
+    db.add(agent)
+    db.flush()
+
+
 def read_factory_dispatch(db: Session, pin: dict, session_id: int) -> dict:
     """Project persisted claim evidence without treating a missing row as queued."""
     from factory.execution.models import PendingMessage

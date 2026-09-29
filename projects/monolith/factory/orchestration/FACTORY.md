@@ -1926,7 +1926,8 @@ deadline backstops and terminal database state do not count as that proof.
 The historical deadline-release implementation is hard-staged off in addition
 to `FACTORY_DEADLINE_BACKSTOP_ENABLED=false`. An environment change cannot
 activate it in this delivery. Its warning remains useful, but deadline expiry
-does not release a start, a task slot or an admission permit.
+does not release a start, a task slot or an admission permit. Such an attempt
+is released instead by supervised cessation (below), on evidence it produces.
 
 Agent workloads have a twelve-hour runtime backstop. The caller's result wait
 and routine drainer observation wait exceed that ceiling. The CLI silence
@@ -1948,6 +1949,55 @@ uncertain attempt retains its capacity until exact control-plane evidence proves
 that its owned guest ceased. A parked guest on a departed node is first asked to
 destroy, then settled only after the later `destroyed` view. Issue #6091 tracks
 the control-plane root cause that can otherwise leave this state stranded.
+
+### Supervised cessation
+
+Cessation evidence may be produced by supervised termination, not only waited
+for. Every other proof above waits for one fingerprinted shape to appear, and
+an attempt whose shape never appears held its lane slot and admission permit
+indefinitely (#6025, #6288). `factory_cessation.py` closes that gap for an
+attempt whose run and start are both `uncertain` and whose node workflow is
+terminal:
+
+1. It records a `cessation_intent` naming the attempt's fingerprint
+   (`read_stranded_factory_attempt`) and the exact guest it will terminate,
+   committed before any external effect.
+2. It destroys that recorded guest through the ordinary EmberVM destroy route,
+   at most twice, each `cessation_request` committed before its call.
+3. It observes the recorded guest, never the live binding, and settles only
+   after the control plane has reported it gone across the same sampled window
+   as the #6156 absence proof (`MIN_ABSENCE_OBSERVATIONS` readings spanning
+   `ABSENCE_CONFIRM_SECONDS`, gaps bounded by `ABSENCE_MAX_GAP_SECONDS`). A
+   404/410 and a terminal state (`destroyed`, `evicted`, `expired`, `failed`)
+   both count as gone, because the control plane keeps a torn-down guest's
+   record until op-log compaction. Any live reading writes
+   `cessation_presence` and restarts the window.
+4. It settles through `_settle_failed_attempt` in one transaction: run and
+   start failed, the permit settled `supervised_cessation` with cessation
+   confirmed, pending messages consumed, cost unknown so the reserved ceiling
+   stays charged.
+
+The fingerprint excludes the binding fields on purpose. Destroying a guest
+clears `ember_session_id`, and a proof keyed on the live binding refused the
+attempt it had just stopped (#6288). Settlement accepts only the recorded guest
+or a cleared binding, and refuses any other fingerprint change. When a binding
+was already cleared before any intent, the guest is recovered only from the
+monolith's own receipts and earlier supervisor audits, and exactly one
+candidate is required.
+
+An attempt with no binding evidence at all has no guest to destroy. It settles
+at zero only when the exact lost-before-guest proof holds, and otherwise at
+the reserved ceiling as `never_bound_released`.
+
+This keeps the rule that elapsed time is not cessation evidence. The deadline
+decides only which attempts are worth acting on; the release still waits for
+the control plane to report the recorded guest gone. The automatic path runs
+more than two hours past the task deadline, paused or not, behind
+`FACTORY_ACTIVE_CESSATION_ENABLED` (default off). A past-deadline task left with
+no unresolved start then finishes `escalated` with a card, so a person owns the
+question. `factory_cessation.request_cessation` runs the same steps for one
+exact attempt on an operator's reviewed fingerprint (`read_cessation`),
+whatever the flag says, and never cancels the receipt.
 
 ## Validation
 
