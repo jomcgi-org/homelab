@@ -3308,7 +3308,7 @@ def _parked_claude(tmp_path):
     return manager
 
 
-def test_user_message_line_includes_optional_session_id():
+def test_user_message_line_is_a_plain_user_frame():
     assert json.loads(shim._user_message_line("hello")) == {
         "type": "user",
         "message": {
@@ -3316,13 +3316,17 @@ def test_user_message_line_includes_optional_session_id():
             "content": [{"type": "text", "text": "hello"}],
         },
     }
-    assert (
-        json.loads(shim._user_message_line("hello", session_id="sid"))["session_id"]
-        == "sid"
-    )
-    assert "session_id" not in json.loads(
-        shim._user_message_line("hello", session_id="")
-    )
+
+
+def _fake_claude_respawn(manager, calls):
+    """A _spawn stand-in that records its call and installs a fresh process."""
+
+    def respawn(session_id=None, **kwargs):
+        calls.append({"session_id": session_id, **kwargs})
+        manager.process = _FakeLiveProcess()
+        manager._process_workspace = manager.workspace
+
+    return respawn
 
 
 def test_process_manager_prewarm_marks_ready_after_park(tmp_path, monkeypatch):
@@ -4227,6 +4231,7 @@ def test_process_manager_normalizes_non_repo_workspace_to_src(tmp_path, monkeypa
 
 def test_missing_transcript_is_a_turn_error(tmp_path, monkeypatch):
     manager = _parked_claude(tmp_path)
+    manager.session_id = "sid"
     process = manager.process
     monkeypatch.setattr(
         manager,
@@ -4310,6 +4315,8 @@ def test_parked_create_latches_session_and_rejects_conflict(tmp_path, monkeypatc
 
 def test_adoption_latch_rolls_back_before_result(tmp_path, monkeypatch):
     manager = _parked_claude(tmp_path)
+    calls = []
+    monkeypatch.setattr(manager, "_spawn", _fake_claude_respawn(manager, calls))
     monkeypatch.setattr(manager, "_read_output", lambda *_args: b"not-json")
     monkeypatch.setattr(
         manager,
@@ -4319,6 +4326,7 @@ def test_adoption_latch_rolls_back_before_result(tmp_path, monkeypatch):
     monkeypatch.setattr(manager, "ready", lambda: True)
     with pytest.raises(RuntimeError, match="before result"):
         manager.turn("hello", session_id="sid")
+    assert [call["session_id"] for call in calls] == ["sid"]
     assert manager.session_id is None
 
 
@@ -4611,8 +4619,17 @@ def test_remediation_bound_session_closes_without_respawn(tmp_path, monkeypatch)
     assert manager.claude.session_id == "bound-session"
 
 
-def test_parked_claude_adopts_resume_without_respawn(tmp_path, monkeypatch):
+def test_parked_claude_adoption_respawns_with_resume(tmp_path, monkeypatch, capsys):
+    """A parked CLI cannot bind a session late, so adopting one respawns.
+
+    The prewarmed process is closed without receiving the turn, the fresh CLI
+    gets --resume <id> with the message as its first frame, and the message is
+    delivered exactly once.
+    """
     manager = _parked_claude(tmp_path)
+    parked_process = manager.process
+    calls = []
+    monkeypatch.setattr(manager, "_spawn", _fake_claude_respawn(manager, calls))
     monkeypatch.setattr(
         manager,
         "_read_output",
@@ -4627,10 +4644,46 @@ def test_parked_claude_adopts_resume_without_respawn(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(manager, "_parse_line", json.loads)
     monkeypatch.setattr(manager, "ready", lambda: True)
-    monkeypatch.setattr(manager, "_spawn", lambda **_kwargs: pytest.fail("respawn"))
 
     manager.turn("hello", session_id="sid")
-    assert json.loads(manager.process.stdin.lines[0])["session_id"] == "sid"
+    assert calls == [
+        {
+            "session_id": "sid",
+            "first_message": "hello",
+            "model": None,
+            "system_prompt": None,
+        }
+    ]
+    assert parked_process.stdin.lines == []
+    assert parked_process.returncode == 0
+    assert manager.process is not parked_process
+    assert manager.process.stdin.lines == []
+    assert manager.session_id == "sid"
+    assert "phase=cli_ready path=adopt_respawn ms=" in capsys.readouterr().err
+
+
+def test_parked_claude_create_reuses_prewarmed_process(tmp_path, monkeypatch):
+    manager = _parked_claude(tmp_path)
+    parked_process = manager.process
+    monkeypatch.setattr(
+        manager,
+        "_read_output",
+        lambda _process, _timeout: json.dumps(
+            {"type": "result", "result": "ok", "session_id": "created"}
+        ).encode(),
+    )
+    monkeypatch.setattr(manager, "_parse_line", json.loads)
+    monkeypatch.setattr(manager, "ready", lambda: True)
+    monkeypatch.setattr(
+        manager, "_spawn", lambda *_args, **_kwargs: pytest.fail("respawn")
+    )
+
+    manager.turn("hello")
+    assert manager.process is parked_process
+    assert [json.loads(line) for line in parked_process.stdin.lines] == [
+        json.loads(shim._user_message_line("hello"))
+    ]
+    assert manager.session_id == "created"
 
 
 def test_legacy_adoption_respawns_for_workspace_change(tmp_path, monkeypatch):
@@ -4831,7 +4884,6 @@ def test_spawn_raise_during_adoption_leaves_session_unbound(tmp_path, monkeypatc
             shim.StartupError("spawn failed")
         ),
     )
-    manager._process_workspace_identity = (0, 0)
 
     with pytest.raises(shim.StartupError, match="spawn failed"):
         manager.turn("hello", session_id="sid")
@@ -4922,10 +4974,12 @@ def test_claude_turn_timing_reports_spawn_adopt_reuse_and_remediation(
     manager.turn("first", session_id="sid")
     assert manager.process is not None
     first = capsys.readouterr().err
-    assert "phase=cli_ready path=adopt ms=" in first
+    assert "phase=cli_ready path=adopt_respawn ms=" in first
     assert "phase=model ms=" in first
     assert (
-        first.split("phase=cli_ready path=adopt ms=", 1)[1].split("\n", 1)[0].isdigit()
+        first.split("phase=cli_ready path=adopt_respawn ms=", 1)[1]
+        .split("\n", 1)[0]
+        .isdigit()
     )
 
     manager.turn("second", session_id="sid")
@@ -6332,7 +6386,7 @@ def test_claude_model_argv_and_mid_session_switch_resumes(tmp_path, monkeypatch)
         json.loads(args_path.read_text())[
             json.loads(args_path.read_text()).index("--model") + 1
         ]
-        == "claude-opus-5"
+        == "claude-opus-5-5"
     )
     second = manager.turn("second", session_id="init-sid", model="fable")
     assert second["model"] == "fable"

@@ -28,8 +28,7 @@ _MODEL_ALIASES = {
     "terra": ("gpt-5.6-terra", "openai"),
     "sol": ("gpt-6-sol", "fixed"),
     "astra": ("gpt-6-astra", "fixed"),
-    # Opus 5 until the guest CLI can run Opus 5.5 (see CLAUDE_MODELS in the shim).
-    "opus": ("claude-opus-5", "anthropic"),
+    "opus": ("claude-opus-5-5", "fixed"),
     "sonnet": ("claude-sonnet-5", "anthropic"),
     "fable": ("claude-fable-5-1", "anthropic"),
     "spark": ("muse-spark-1.3-contributor", "muse"),
