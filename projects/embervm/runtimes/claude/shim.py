@@ -526,9 +526,12 @@ CODEX_MODELS = {
 }
 # opus is pinned rather than left as the CLI alias, which resolves to whatever
 # the pinned claude_code_cli release shipped with, and so that the priced model
-# (shared/pricing.py) matches the one that ran.
+# (shared/pricing.py) matches the one that ran. It stays on Opus 5 until
+# claude_code_cli moves past 2.1.280: the API refuses claude-opus-5-5 from older
+# clients ("version 2.1.280 or newer is required"), and 2.1.220 is pinned by the
+# late-resume patch in tools/claude-code-patch.
 CLAUDE_MODELS = {
-    "opus": "claude-opus-5-5",
+    "opus": "claude-opus-5",
     "sonnet": "sonnet",
     "fable": "claude-fable-5",
 }

@@ -54,9 +54,9 @@ def test_opus_adds_exclusive_claude_cache_tokens_to_input():
         {"input_tokens": 1_000, "cache_read_tokens": 9_000, "output_tokens": 100},
     )
     assert blended is not None
-    assert blended.model_ref == "claude-opus-5-5"
-    # 1,000 uncached input at $4, 9,000 cache reads at $0.20, 100 output at $20.
-    assert blended.cost_usd == pytest.approx(0.0078)
+    assert blended.model_ref == "claude-opus-5"
+    # 1,000 uncached input at $5, 9,000 cache reads at $0.50, 100 output at $25.
+    assert blended.cost_usd == pytest.approx(0.012)
 
 
 def test_opus_5_5_prices_cache_writes_at_the_write_rate():
@@ -300,7 +300,7 @@ def test_claude_transcript_shape_uses_exclusive_input_semantics():
         },
     )
     canonical = price_usage(
-        "opus",
+        "claude-opus-5-5",
         {"input_tokens": 1_000, "output_tokens": 100, "cache_read_tokens": 9_000},
     )
 
