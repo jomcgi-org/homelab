@@ -4851,19 +4851,27 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
                 if session_id is not None:
                     result = {**result, "session_id": session_id}
             _abandon_recovering_factory_session(pin, session_id, workflow_status)
-            from factory.execution.api import read_interrupted_factory_continuation
+            from factory.execution.api import (
+                read_interrupted_factory_continuation,
+                read_provider_error_factory_attempt,
+            )
 
-            # Native terminal responses can settle a drain without a remote stop.
-            # Re-read the proof in the final transaction before changing anything.
+            # Native terminal responses can settle a drain, or a provider error
+            # returned before any work, without a remote stop. Re-read the
+            # proof in the final transaction before changing anything.
             with Session(get_engine()) as db:
                 with _locked_session(db):
-                    interrupted_ready = (
+                    native_ready = (
                         read_interrupted_factory_continuation(
                             db, pin, session_id, workflow_status
                         )
                         is not None
+                        or read_provider_error_factory_attempt(
+                            db, pin, session_id, workflow_status
+                        )
+                        is not None
                     )
-            if not interrupted_ready and reconcile_uncertain_attempt(
+            if not native_ready and reconcile_uncertain_attempt(
                 pin,
                 session_id,
                 result,
@@ -4872,6 +4880,79 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
                 return None
     with Session(get_engine()) as db:
         with _locked_session(db):
+            if result["status"] == "uncertain":
+                # A guest that answered with a provider error before any tool
+                # activity is a proven failure: its result is the cessation
+                # evidence, and it settles at the spend it reported so the
+                # node's own retry budget applies (#6468). The rule lives here
+                # rather than in execute_node so the pinned node workflow
+                # version holds across this deploy; execute_node still records
+                # these as uncertain, and this is the next thing that reads
+                # them. Unlike the proofs below it keeps a measured cost.
+                from factory.execution.api import (
+                    read_provider_error_factory_attempt,
+                    settle_provider_error_factory_attempt,
+                )
+                from factory.orchestration.node_workflows import (
+                    ACCOUNTING_LABELS,
+                    _settlement_cost,
+                )
+
+                provider_error = read_provider_error_factory_attempt(
+                    db,
+                    pin,
+                    result.get("session_id") or run.get("session_id"),
+                    workflow_status,
+                )
+                if provider_error is not None:
+                    current = next(
+                        (
+                            value
+                            for value in graph.node_runs(
+                                task["id"], run["node_key"], session=db
+                            )
+                            if value["attempt"] == run["attempt"]
+                        ),
+                        None,
+                    )
+                    if (
+                        current is None
+                        or current["pin"] != pin
+                        or current["dispatch_key"] != key
+                        or current["session_id"]
+                        not in (None, provider_error["session_id"])
+                        or current["status"]
+                        not in ("admitted", "dispatched", "uncertain")
+                    ):
+                        raise ValueError("provider-error factory attempt changed")
+                    settle_provider_error_factory_attempt(db, pin, provider_error)
+                    cost, basis = _settlement_cost(
+                        provider_error["cost_usd"], provider_error["list_cost_usd"]
+                    )
+                    result = {
+                        **result,
+                        "status": "failed",
+                        "session_id": provider_error["session_id"],
+                        "cost_usd": cost,
+                        "cost_basis": basis,
+                        "accounting": ACCOUNTING_LABELS[basis],
+                        "head_sha": current.get("head_sha") or result.get("head_sha"),
+                        "invocation_phase": "provider_error_before_work",
+                        "reason": (
+                            "provider_error_before_work: " + provider_error["error"]
+                        ),
+                        "previous_outcome": _outcome(current) or result,
+                        "provider_error_before_work": provider_error,
+                    }
+                    _controls_audit(
+                        db,
+                        ACTOR,
+                        "provider_error_settled",
+                        task_id=task["id"],
+                        workflow_id=key,
+                        session_id=provider_error["session_id"],
+                        identity=provider_error,
+                    )
             if (
                 result["status"] == "uncertain"
                 and result.get("cost_usd") is None

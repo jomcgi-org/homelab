@@ -12464,6 +12464,260 @@ def test_lost_before_guest_proof_refuses_or_raises_on_ownership(
     assert s.native_snapshot() == s.native_snapshot()
 
 
+PROVIDER_ERROR_TEXT = (
+    "API Error: 400 Claude Code 2.1.220 does not support this model; "
+    "version 2.1.280 or newer is required."
+)
+
+
+@pytest.fixture
+def provider_error_factory(queued_factory, monkeypatch):
+    """A guest that answered its first turn with a provider error (#6468).
+
+    The incident shape of receipts 609 and 665: the Claude CLI returned
+    ``terminal_reason: api_error`` with ``is_error: true`` and about a cent of
+    reported spend, having touched nothing. The native writer records the
+    session as ``warn`` and leaves the permit uncertain, and execute_node
+    returns uncertain with the reported cost.
+    """
+    from sqlmodel import Session, SQLModel, select
+    from factory.execution import admission, store
+    from factory.execution.models import (
+        AgentCapacityReservation,
+        AgentResultReceipt,
+        AgentSession,
+        AgentTurn,
+        PendingMessage,
+    )
+    from factory.execution.transport import parse_native_turn
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import factory_supervision, node_workflows
+
+    s = queued_factory
+    SQLModel.metadata.create_all(s.engine, tables=[AgentResultReceipt.__table__])
+    for module in (admission, store, controls):
+        monkeypatch.setattr(module, "get_engine", lambda: s.engine)
+    monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "true")
+
+    def unexpected(*_args, **_kwargs):
+        pytest.fail("provider-error settlement must not invoke or clean up")
+
+    monkeypatch.setattr(factory_supervision, "_http", unexpected)
+    monkeypatch.setattr(node_workflows, "_cleanup_node", unexpected)
+    monkeypatch.setattr(node_workflows, "_read_reconciliation_head", unexpected)
+    owner = "guest-executor"
+    assert store.claim_pending_message_for_session_sync(s.sid, owner) == 1
+    assert admission.recheck(s.sid, 1, owner, "claude-runtime")
+    with Session(s.engine) as db:
+        agent = db.get(AgentSession, s.sid)
+        agent.ember_session_id = "s-provider-error"
+        db.add(agent)
+        db.commit()
+
+    def persist(activities=(), **fields):
+        turn = parse_native_turn(
+            {
+                "result": PROVIDER_ERROR_TEXT,
+                "terminal_reason": "api_error",
+                "stop_reason": "stop_sequence",
+                "is_error": True,
+                "permission_denials": [],
+                "num_turns": 1,
+                "session_id": "cli-provider-error",
+                "usage": {"input_tokens": 0, "output_tokens": 0},
+                "total_cost_usd": 0.011866,
+                "duration_ms": 522,
+                "activities": list(activities),
+                "model": "opus",
+                **fields,
+            },
+            "s-provider-error",
+        )
+        store.persist_turn_from_pending_sync(
+            s.sid,
+            1,
+            "queued planner",
+            turn,
+            PROVIDER_ERROR_TEXT,
+            store.turn_status(turn),
+            cli_session_id="cli-provider-error",
+            model="opus",
+            claim_owner=owner,
+            dispatch_count=1,
+        )
+        with Session(s.engine) as db:
+            agent = db.get(AgentSession, s.sid)
+            permit = db.exec(select(AgentCapacityReservation)).one()
+            assert agent.status == store.turn_status(turn)
+            assert db.exec(select(AgentTurn)).one().terminal_reason == "api_error"
+            assert permit.state == "uncertain" and permit.outcome == "api_error"
+            assert db.exec(select(PendingMessage)).first() is None
+
+    s.persist = persist
+    # What the pinned execute_node returns for this turn, unchanged by #6468.
+    s.result = {
+        "status": "uncertain",
+        "session_id": s.sid,
+        "attempt": 1,
+        "cost_usd": 0.011866,
+        "head_sha": None,
+        "artifact": None,
+        "value": None,
+        "reason": "terminal reason does not confirm clean completion; reconcile before retry",
+        "cost_basis": "provider",
+        "accounting": "reported_cost",
+    }
+    s.dbos = SimpleNamespace(
+        get_workflow_status=lambda _: SimpleNamespace(status="SUCCESS"),
+        retrieve_workflow=lambda _: SimpleNamespace(get_result=lambda: s.result),
+        start_workflow=lambda *_args, **_kwargs: None,
+        cancel_workflow=unexpected,
+    )
+    return s
+
+
+def test_provider_error_before_work_settles_failed_and_admits_retry(
+    provider_error_factory, monkeypatch
+):
+    import json
+    from sqlmodel import Session, select
+    from factory.execution.models import AgentCapacityReservation, AgentTurn
+    from factory.orchestration import factory_controls as controls
+
+    s = provider_error_factory
+    monkeypatch.setattr(
+        conductor, "github_get", lambda *_args: {"object": {"sha": "c" * 40}}
+    )
+    s.persist()
+    conductor.reconcile_task(s.task["id"], s.policy, s.dbos)
+    runs = conductor.graph.node_runs(s.task["id"])
+    assert [(run["attempt"], run["status"]) for run in runs] == [(1, "failed")]
+    snapshot = controls.task_snapshot(s.task["id"])
+    # The reservation is released: nothing unresolved holds the receipt.
+    assert snapshot["state"] == "admitted" and snapshot["unresolved_starts"] == 0
+    assert snapshot["committed_cost_usd"] == 0.011866
+    # The settled graph admits the retry on the next tick, as any failure does.
+    conductor.reconcile_task(s.task["id"], s.policy, s.dbos)
+
+    runs = conductor.graph.node_runs(s.task["id"])
+    assert [(run["attempt"], run["status"]) for run in runs] == [
+        (1, "failed"),
+        (2, "admitted"),
+    ]
+    outcome = json.loads(runs[0]["outcome_json"])
+    assert outcome["reason"] == ("provider_error_before_work: " + PROVIDER_ERROR_TEXT)
+    assert outcome["invocation_phase"] == "provider_error_before_work"
+    assert outcome["provider_error_before_work"]["terminal_reason"] == "api_error"
+    assert outcome["previous_outcome"]["status"] == "uncertain"
+    # Settled at the reported spend, not the reservation.
+    assert outcome["cost_usd"] == 0.011866 and outcome["cost_basis"] == "provider"
+    assert runs[0]["accounted_cost_usd"] == 0.011866
+    snapshot = controls.task_snapshot(s.task["id"])
+    assert [(start["status"], start["cost_usd"]) for start in snapshot["starts"]] == [
+        ("failed", 0.011866),
+        ("reserved", None),
+    ]
+    with Session(s.engine) as db:
+        permit = db.exec(
+            select(AgentCapacityReservation).where(
+                AgentCapacityReservation.session_id == s.sid
+            )
+        ).one()
+        assert permit.state == "settled" and permit.outcome == "api_error"
+        assert permit.settled_at is not None
+        # The native result stays exactly as the guest reported it.
+        assert db.exec(select(AgentTurn)).one().result_text == PROVIDER_ERROR_TEXT
+    assert len(_stop_events(s, "provider_error_settled")) == 1
+    # Supervision was never asked to prove cessation the result already proved.
+    assert _stop_events(s, "stop_observation") == []
+
+
+def test_tool_activity_then_provider_error_stays_uncertain(
+    provider_error_factory, monkeypatch
+):
+    from sqlmodel import Session, select
+    from factory.execution.api import read_provider_error_factory_attempt
+    from factory.execution.models import AgentCapacityReservation
+    from factory.orchestration import factory_controls as controls
+
+    s = provider_error_factory
+    # Supervision owns this shape exactly as before; keep it out of the way.
+    monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "false")
+    s.persist(activities=[{"type": "tool", "name": "Bash", "input": "ls"}])
+    with Session(s.engine) as db:
+        assert (
+            read_provider_error_factory_attempt(db, s.run["pin"], s.sid, "SUCCESS")
+            is None
+        )
+    conductor.reconcile_task(s.task["id"], s.policy, s.dbos)
+
+    runs = conductor.graph.node_runs(s.task["id"])
+    assert [(run["attempt"], run["status"]) for run in runs] == [(1, "uncertain")]
+    snapshot = controls.task_snapshot(s.task["id"])
+    assert [start["status"] for start in snapshot["starts"]] == ["uncertain"]
+    assert snapshot["unresolved_starts"] == 1
+    with Session(s.engine) as db:
+        assert db.exec(select(AgentCapacityReservation)).one().state == "uncertain"
+    assert _stop_events(s, "provider_error_settled") == []
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "permission_denial",
+        "artifact",
+        "diff",
+        "clean_terminal",
+        "monolith_error_row",
+        "unknown_invocation",
+        "live_workflow",
+        "extra_turn",
+    ],
+)
+def test_provider_error_proof_refuses_any_sign_of_work(provider_error_factory, case):
+    import zlib
+    from sqlmodel import Session, select
+    from factory.execution.api import read_provider_error_factory_attempt
+    from factory.execution.constants import UNKNOWN_INVOCATION
+    from factory.execution.models import AgentTurn
+
+    s = provider_error_factory
+    if case == "permission_denial":
+        s.persist(permission_denials=[{"tool_name": "Bash"}])
+    else:
+        s.persist()
+    status = "PENDING" if case == "live_workflow" else "SUCCESS"
+    with Session(s.engine) as db:
+        # Every case starts from a shape that differs from the accepted one
+        # only by the named evidence.
+        if case != "permission_denial":
+            assert read_provider_error_factory_attempt(
+                db, s.run["pin"], s.sid, "SUCCESS"
+            )
+        turn = db.exec(select(AgentTurn)).one()
+        if case == "artifact":
+            turn.artifact_path = s.run["pin"]["artifact_path"]
+            turn.artifact_blob = b"{}"
+            turn.artifact_outcome = "ok"
+        elif case == "diff":
+            turn.diff_blob = zlib.compress(b"diff --git a/x b/x\n+changed\n")
+        elif case == "clean_terminal":
+            turn.terminal_reason = "completed"
+        elif case == "monolith_error_row":
+            turn.terminal_reason = "error"
+            turn.usage_json = '{"activities": [], "recovery": {"cause": "boom"}}'
+        elif case == "unknown_invocation":
+            turn.stop_reason = UNKNOWN_INVOCATION
+        elif case == "extra_turn":
+            db.add(AgentTurn(session_id=s.sid, seq=2, prompt="new", result_text="new"))
+        db.add(turn)
+        db.commit()
+    with Session(s.engine) as db:
+        assert (
+            read_provider_error_factory_attempt(db, s.run["pin"], s.sid, status) is None
+        )
+
+
 def recovery_github(monkeypatch, task, *, state="success", context="success"):
     """Serve one task-owned PR and its latest aggregate commit statuses."""
     pr = {
