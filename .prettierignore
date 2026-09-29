@@ -54,3 +54,6 @@
 # Session collector fixtures are JSON Lines (one JSON object per line), which
 # Prettier has no parser for; they are hand-written test inputs, not code.
 tools/session_collector/fixtures/*.jsonl
+# Muse 1.4.1 exec fixture is a verbatim two-turn JSONL recording from the
+# pinned CLI (same rationale as above): byte-stable test input, not code.
+projects/embervm/runtimes/claude/muse_exec_echo_two_turns_1_4_1.jsonl
