@@ -294,6 +294,10 @@ func runS1(ctx context.Context, cfg config, client *controlPlaneClient, suiteSta
 			results <- cloneInvocation{label: label, token: token, response: response, err: err}
 		}()
 	}
+	// Baseline before dispatch: live_vms is node-scoped, so a session or task
+	// VM that belongs to anything else on the brick would otherwise hold the
+	// reap check above zero forever.
+	liveBefore := workloadLiveVMBaseline(ctx, client, cfg.taskWorkload)
 	started := time.Now()
 	close(start)
 
@@ -338,9 +342,9 @@ func runS1(ctx context.Context, cfg config, client *controlPlaneClient, suiteSta
 			return scenarioVerdict{Verdict: verdictFail, Detail: fmt.Sprintf("%s did not return its bidirectional marker: exit_code=%d stdout=%q", label, guest.ExitCode, truncate(guest.Stdout, maxErrorBody))}
 		}
 	}
-	reapDelay, finalLiveVMs, err := waitForWorkloadVMsZero(ctx, client, cfg.taskWorkload)
+	reapDelay, finalLiveVMs, err := waitForWorkloadVMsAtMost(ctx, client, cfg.taskWorkload, liveBefore)
 	if err != nil {
-		return scenarioVerdict{Verdict: verdictFail, Detail: fmt.Sprintf("task guest was not reaped; final live VM count=%d: %v", finalLiveVMs, err)}
+		return scenarioVerdict{Verdict: verdictFail, Detail: fmt.Sprintf("task guest was not reaped; final live VM count=%d (baseline %d before dispatch): %v", finalLiveVMs, liveBefore, err)}
 	}
 	return scenarioVerdict{Verdict: verdictPass, Detail: fmt.Sprintf(
 		"two restored clones exchanged distinct bidirectional markers with no cross-route in %s; tokens=%q,%q; VM reap observed in %s",
@@ -364,6 +368,7 @@ func runS5(ctx context.Context, cfg config, client *controlPlaneClient, suiteSta
 	if err != nil {
 		return scenarioVerdict{Verdict: verdictFail, Detail: "encode Elixir probe: " + err.Error()}
 	}
+	liveBefore := workloadLiveVMBaseline(ctx, client, cfg.elixirWorkload)
 	response, err := client.request(ctx, http.MethodPost, path, body, "", map[string]string{
 		"Idempotency-Key": cfg.chartVersion + "-elixir-unicode-" + suiteStarted.UTC().Format(time.RFC3339Nano),
 	})
@@ -393,9 +398,9 @@ func runS5(ctx context.Context, cfg config, client *controlPlaneClient, suiteSta
 			truncate(guest.Error, maxErrorBody),
 		)}
 	}
-	reapDelay, finalLiveVMs, err := waitForWorkloadVMsZero(ctx, client, cfg.elixirWorkload)
+	reapDelay, finalLiveVMs, err := waitForWorkloadVMsAtMost(ctx, client, cfg.elixirWorkload, liveBefore)
 	if err != nil {
-		return scenarioVerdict{Verdict: verdictFail, Detail: fmt.Sprintf("Elixir task guest was not reaped; final live VM count=%d: %v", finalLiveVMs, err)}
+		return scenarioVerdict{Verdict: verdictFail, Detail: fmt.Sprintf("Elixir task guest was not reaped; final live VM count=%d (baseline %d before dispatch): %v", finalLiveVMs, liveBefore, err)}
 	}
 	return scenarioVerdict{Verdict: verdictPass, Detail: fmt.Sprintf("guest exited 0 with exact untruncated stdout %q and empty stderr and guest error; VM reap observed in %s", elixirUnicodeStdout, reapDelay.Round(time.Millisecond))}
 }
@@ -632,7 +637,26 @@ func workloadHeadroomMiB(view nodesView, workload string) (int, bool) {
 	return total, observed
 }
 
-func waitForWorkloadVMsZero(ctx context.Context, client *controlPlaneClient, workload string) (time.Duration, int, error) {
+// workloadLiveVMBaseline reads the node-scoped live VM count before a task is
+// dispatched. An unreadable view falls back to zero, the strictest ceiling,
+// which is what the check required before baselines existed.
+func workloadLiveVMBaseline(ctx context.Context, client *controlPlaneClient, workload string) int {
+	view, err := getNodes(ctx, client)
+	if err != nil {
+		return 0
+	}
+	liveVMs, observed := workloadLiveVMCount(view, workload)
+	if !observed {
+		return 0
+	}
+	return liveVMs
+}
+
+// waitForWorkloadVMsAtMost waits until the node-scoped live VM count is back at
+// or below ceiling, the count observed before the task was dispatched. A task
+// guest that is never reaped keeps the count above its baseline and still
+// fails; a VM that was already live for some other reason no longer does.
+func waitForWorkloadVMsAtMost(ctx context.Context, client *controlPlaneClient, workload string, ceiling int) (time.Duration, int, error) {
 	started := time.Now()
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
@@ -641,7 +665,7 @@ func waitForWorkloadVMsZero(ctx context.Context, client *controlPlaneClient, wor
 		if view, err := getNodes(ctx, client); err == nil {
 			if liveVMs, observed := workloadLiveVMCount(view, workload); observed {
 				lastLiveVMs = liveVMs
-				if liveVMs == 0 {
+				if liveVMs <= ceiling {
 					return time.Since(started), liveVMs, nil
 				}
 			}

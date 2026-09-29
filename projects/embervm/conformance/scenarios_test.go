@@ -279,6 +279,11 @@ func TestRunS5RejectsInvalidElixirResultsThroughTaskAPI(t *testing.T) {
 			}
 			var requestSeen atomic.Bool
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet && r.URL.Path == "/v1/nodes" {
+					// The pre-dispatch reap baseline read.
+					_, _ = w.Write([]byte(`{"nodes":[{"facts":{"live_vms":0,"workloads":{"sandbox-elixir":{}}}}]}`))
+					return
+				}
 				requestSeen.Store(true)
 				if r.Method != http.MethodPost || r.URL.Path != "/v1/workloads/sandbox-elixir/tasks" || r.URL.Query().Get("wait") != "true" {
 					t.Errorf("request = %s %s, want sandbox-elixir task with wait=true", r.Method, r.URL.String())
@@ -491,5 +496,70 @@ func TestS3LatencyRegressed(t *testing.T) {
 				t.Errorf("s3LatencyRegressed(%s, %s) = %v, want %v", tc.latency, tc.baseline, got, tc.want)
 			}
 		})
+	}
+}
+
+// fakeElixirReapServer serves a passing Elixir task and reports live_vms from
+// liveVMs, called once per GET /v1/nodes with the number of task POSTs seen.
+func fakeElixirReapServer(t *testing.T, liveVMs func(tasksPosted int32) int) (*httptest.Server, string) {
+	t.Helper()
+	tokenFile := t.TempDir() + "/token"
+	if err := os.WriteFile(tokenFile, []byte("test-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var tasksPosted atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/workloads/sandbox-elixir/tasks":
+			tasksPosted.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"exit_code": 0, "stdout": elixirUnicodeStdout, "stderr": "", "error": ""})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/nodes":
+			_, _ = fmt.Fprintf(w, `{"nodes":[{"facts":{"live_vms":%d,"workloads":{"sandbox-elixir":{}}}}]}`, liveVMs(tasksPosted.Load()))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server, tokenFile
+}
+
+func TestRunS5ReapIgnoresVMsAlreadyLiveBeforeDispatch(t *testing.T) {
+	// Two unrelated VMs share the brick for the whole scenario. The task guest
+	// adds a third, which is reaped once the task returns.
+	var afterTask atomic.Int32
+	server, tokenFile := fakeElixirReapServer(t, func(tasksPosted int32) int {
+		if tasksPosted == 0 {
+			return 2
+		}
+		if afterTask.Add(1) == 1 {
+			return 3
+		}
+		return 2
+	})
+	cfg := config{baseURL: server.URL, tokenFile: tokenFile, chartVersion: "1.2.3", elixirWorkload: "sandbox-elixir"}
+	client := &controlPlaneClient{baseURL: server.URL, tokenFile: tokenFile, http: server.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if got := runS5(ctx, cfg, client, time.Unix(1, 0)); got.Verdict != verdictPass {
+		t.Fatalf("S5 = %#v, want pass with two resident VMs", got)
+	}
+}
+
+func TestRunS5ReapStillFailsWhenTheTaskGuestLeaks(t *testing.T) {
+	// The brick was empty before dispatch and the task guest never goes away.
+	server, tokenFile := fakeElixirReapServer(t, func(tasksPosted int32) int {
+		if tasksPosted == 0 {
+			return 0
+		}
+		return 1
+	})
+	cfg := config{baseURL: server.URL, tokenFile: tokenFile, chartVersion: "1.2.3", elixirWorkload: "sandbox-elixir"}
+	client := &controlPlaneClient{baseURL: server.URL, tokenFile: tokenFile, http: server.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*pollInterval)
+	defer cancel()
+	got := runS5(ctx, cfg, client, time.Unix(1, 0))
+	if got.Verdict != verdictFail || !strings.Contains(got.Detail, "not reaped") || !strings.Contains(got.Detail, "baseline 0") {
+		t.Fatalf("S5 = %#v, want a reap failure against baseline 0", got)
 	}
 }
