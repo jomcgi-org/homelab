@@ -4,6 +4,9 @@
 #
 # Run from anywhere — the script cds to the repo root before doing work.
 #
+# Required env vars (read at Claude Code session time, not by this script):
+#   BUILDBUDDY_API_KEY  - for the BuildBuddy MCP server (defined in .mcp.json)
+#
 # Optional env vars used by this script:
 #   GITHUB_TOKEN        - if set, used to authenticate the gh CLI
 #   HOMELAB_NO_SUDO     - set to 1 to force the user-local path below
@@ -17,9 +20,6 @@
 #               crane and gh with `go install`, bazelisk with npm, extracts the
 #               tools image via ./bootstrap.sh, and writes the PATH additions
 #               .envrc would make to $HOMELAB_ENV_FILE for the caller to source.
-#
-# The BuildBuddy MCP server (.mcp.json) authenticates through OAuth, so no
-# BUILDBUDDY_API_KEY is needed for it (the key still gates `bb remote`).
 
 set -euo pipefail
 
@@ -223,6 +223,23 @@ if direnv exec . sh -c 'command -v format >/dev/null'; then
 else
 	echo "    format: NOT FOUND — bootstrap may have failed"
 	exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# BUILDBUDDY_API_KEY warning (required at Claude Code runtime, not by setup)
+# ---------------------------------------------------------------------------
+echo ""
+if [[ -z "${BUILDBUDDY_API_KEY:-}" ]]; then
+	cat <<-'EOF'
+		WARNING: $BUILDBUDDY_API_KEY is not set in this shell.
+		         The BuildBuddy MCP server (defined in .mcp.json) needs it at
+		         Claude Code session start. Set it in your shell env, e.g.:
+
+		           export BUILDBUDDY_API_KEY=<your-key>
+
+		         Without it, read pr-checks logs through the no-auth
+		         GetEventLogChunk fallback in docs/agents/ci-triage.md.
+	EOF
 fi
 
 echo ""
