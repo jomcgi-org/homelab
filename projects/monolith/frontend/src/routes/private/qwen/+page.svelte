@@ -1,5 +1,5 @@
 <script>
-  import { Marked } from "marked";
+  import { renderMarkdown as render } from "./markdown.js";
   import {
     applyChunk,
     formatBytes,
@@ -14,24 +14,6 @@
 
   const STORAGE_KEY = "qwen-chat-sessions-v1";
   const STATS_INTERVAL_MS = 5000;
-
-  // Model output is rendered as markdown, with raw HTML shown as text.
-  const escapeHtml = (text) =>
-    text.replace(
-      /[&<>"']/g,
-      (c) =>
-        ({
-          "&": "&amp;",
-          "<": "&lt;",
-          ">": "&gt;",
-          '"': "&quot;",
-          "'": "&#39;",
-        })[c],
-    );
-  const markdown = new Marked({
-    renderer: { html: ({ text }) => escapeHtml(text) },
-  });
-  const render = (text) => markdown.parse(text ?? "");
 
   let dark = $state(
     typeof window !== "undefined" &&

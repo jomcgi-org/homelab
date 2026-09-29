@@ -38,15 +38,15 @@ See [docs/security.md](docs/security.md) for the defense-in-depth model, [projec
 | -------------- | ------------------------------------------------------------------------------------------ |
 | Ingress        | Cloudflare Tunnel only; nothing exposed directly                                           |
 | Untrusted code | Firecracker microVMs (EmberVM), STPA hazard model colocated with the monolith              |
-| Networking     | Cilium eBPF CNI: WireGuard pod-to-pod encryption, network policy, Hubble metrics, no sidecars |
+| Networking     | GKE Dataplane V2 (managed Cilium); network enforcement details in the platform architecture |
 | Observability  | Opt-in OpenTelemetry collector exporting traces and synthetic probes to Honeycomb           |
 | Policy         | Kyverno enforces non-root (uid 65532), read-only filesystems                               |
 | Secrets        | 1Password Operator, OnePasswordItem CRDs, nothing in Git                                   |
-| Storage        | Longhorn for persistent volumes, SeaweedFS for S3-compatible object storage                |
+| Storage        | GCE persistent disks; Cloudflare R2 for monolith blobs and GCS for EmberVM exports                |
 | Messaging      | NATS JetStream: pub/sub backbone for AIS data, trip points, agent jobs                     |
-| GPU            | NVIDIA GPU Operator: Qwen3.8-27B via llama.cpp; voyage-4-nano embeddings via llama.cpp     |
-| Images         | apko + rules_apko: no Dockerfiles, dual-arch (x86_64 + aarch64), non-root                  |
-| CI             | BuildBuddy Workflows: remote build execution, `bazel test //...`, image push               |
+| GPU            | Chat inference on the tailnet GPU host; embeddings on the GKE hub     |
+| Images         | apko + rules_apko: amd64, non-root uid 65532                  |
+| CI             | `ci` for validation; BuildBuddy remote execution; image publish on merge               |
 | GitOps         | ArgoCD with colocated `deploy/` dirs; `kubectl` is read-only                               |
 
 ## Repo layout
@@ -58,14 +58,14 @@ projects/             # All services, operators, websites, colocated with deploy
 ├── monolith-public/  #   Read-only public replica of the monolith
 ├── monolith-agents/  #   Agent-facing MCP tier, pruned and with no cluster RBAC
 ├── mcp/              #   Context Forge gateway + MCP servers
-├── inference/        #   On-cluster llama.cpp (Qwen3.8-27B) + llama.cpp embeddings
+├── inference/        #   Inference configuration and llama.cpp embeddings
 ├── operators/        #   Custom Kubernetes operators
 ├── sextant/          #   State-machine code generator for operators
 ├── embervm/          #   Firecracker microVM orchestrator (Elixir control plane + Go node daemon)
 ├── firecracker/      #   fc-invoke microVM substrate (frozen; embervm forked its node daemon from it)
-├── gke-apps/         #   GKE destinations for the app workloads (dormant until cutover)
-├── gke-cluster/      #   Auto-generated ArgoCD root kustomization for GKE hub
-├── home-cluster/     #   Auto-generated ArgoCD root kustomization
+├── gke-apps/         #   Active GKE Applications for app workloads
+├── gke-cluster/      #   Hand-maintained ArgoCD root and parent Application for the GKE hub
+├── home-cluster/     #   Residual home configuration; no deployments
 └── platform-gke/     #   GKE cluster-critical infrastructure overlays (Tailscale, ArgoCD, Otel, Cloudflare)
 bazel/                # Build infrastructure (rules, tools, images)
 buck2/                # Reusable Buck2 image/helm/apko rules (consumable as a cell)
