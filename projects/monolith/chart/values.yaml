@@ -1590,6 +1590,13 @@ swarm:
   # optional 1Password field have been configured and live delivery is checked.
   factoryGithubWebhookEnabled: false
   factoryGithubWebhookRepository: jomcgi-org/homelab
+  # Extra webhook repos beyond the legacy single value above, comma
+  # separated. Empty (the default) means the legacy value alone is
+  # ingested. The staged weave-hand/loom enablement sets this to
+  # "weave-hand/loom" as part of the operator migration in FACTORY.md; the
+  # live policy still gates each repo, so naming one here never starts work
+  # its repos entry leaves disabled.
+  factoryGithubWebhookRepositories: ""
   factoryGithubWebhookTrustedAuthors: jomcgi
   # Staged between-job blocker poll (#5704). This is independent of the board
   # server flag and remains off until trusted binding and live queue checks are

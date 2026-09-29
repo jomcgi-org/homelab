@@ -20,7 +20,12 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
-from factory.orchestration.factory_models import FactoryWebhookDelivery, WorkItem
+from factory.orchestration.factory_controls import normalize_repo, repos_map
+from factory.orchestration.factory_models import (
+    FactoryControl,
+    FactoryWebhookDelivery,
+    WorkItem,
+)
 from factory.orchestration.work_item_links import reconcile_body_edges
 from factory.orchestration.work_items import (
     WorkItemError,
@@ -46,7 +51,27 @@ def webhook_enabled() -> bool:
 
 
 def webhook_repository() -> str:
+    """The legacy single webhook repository, still honoured as configured."""
     return os.getenv("FACTORY_GITHUB_WEBHOOK_REPOSITORY", "").strip().lower()
+
+
+def webhook_repositories() -> frozenset[str]:
+    """Every repository the webhook route is configured to ingest.
+
+    The legacy single value keeps working; comma-separated extra slugs in
+    FACTORY_GITHUB_WEBHOOK_REPOSITORIES add more without replacing it. The
+    live policy gates each one (below), so configuring a slug here never
+    starts work in a repo the policy leaves disabled.
+    """
+    repos = set()
+    legacy = webhook_repository()
+    if legacy:
+        repos.add(legacy)
+    for part in os.getenv("FACTORY_GITHUB_WEBHOOK_REPOSITORIES", "").split(","):
+        slug = part.strip().lower()
+        if slug:
+            repos.add(slug)
+    return frozenset(repos)
 
 
 def trusted_authors() -> frozenset[str]:
@@ -97,12 +122,64 @@ def _payload(body: bytes) -> dict:
     return value
 
 
+def _policy_repos_map(session: Session) -> dict | None:
+    """The live policy repos map, or None when no policy is readable.
+
+    Hermetic webhook tests run without the control row, and a stored policy
+    may predate validation; either way the env set governs. Never raises: a
+    webhook must fail closed on authentication, not on a policy read.
+    """
+    try:
+        row = session.get(FactoryControl, "factory")
+    except Exception:
+        session.rollback()
+        return None
+    if row is None or not getattr(row, "policy_json", None):
+        return None
+    try:
+        policy = json.loads(row.policy_json)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(policy, dict):
+        return None
+    try:
+        return repos_map(policy)
+    except Exception:
+        return None
+
+
+def _repo_acceptance(session: Session, slug: str) -> str:
+    """Whether the lane may ingest a delivery for ``slug``.
+
+    ``ok`` for every configured and enabled repo: a slug the live policy
+    enables, or an env-configured slug the policy does not disable.
+    ``disabled`` when the policy configures the repo but leaves it switched
+    off; ``unconfigured`` when neither the policy nor the env names it. The
+    trust rules below then apply per repo, against that repo's own items.
+    """
+    entries = _policy_repos_map(session)
+    entry = entries.get(slug) if entries is not None else None
+    if entry is not None:
+        return "ok" if entry.get("enabled") is True else "disabled"
+    if slug in webhook_repositories():
+        return "ok"
+    return "unconfigured"
+
+
 def _repo(payload: dict) -> str:
+    """The delivery's repo slug, without deciding whether it is accepted.
+
+    A missing or non-string repository is a malformed delivery, not an
+    unconfigured repo, so it still fails closed.
+    """
     repository = payload.get("repository")
     value = repository.get("full_name") if isinstance(repository, dict) else None
-    if not isinstance(value, str) or value.lower() != webhook_repository():
+    if not isinstance(value, str):
         raise HTTPException(403, "unexpected webhook repository")
-    return value.lower()
+    try:
+        return normalize_repo(value)
+    except ValueError as exc:
+        raise HTTPException(403, "unexpected webhook repository") from exc
 
 
 def _issue(payload: dict) -> dict:
@@ -167,6 +244,11 @@ def process_delivery(
 ) -> dict:
     """Apply one validated delivery and commit its deduplication fence."""
     repo = _repo(payload)
+    acceptance = _repo_acceptance(session, repo)
+    if acceptance != "ok":
+        # No work item, no error, no claim row: a repo outside the lane
+        # leaves no trace, so a retry stays just as ignorable.
+        return {"status": "ignored", "reason": f"{acceptance}_repo"}
     raw_action = payload.get("action")
     action = raw_action if isinstance(raw_action, str) else None
 
@@ -322,7 +404,7 @@ async def github_factory_webhook(
     """Authenticate and ingest one bounded GitHub issue lifecycle delivery."""
     if not webhook_enabled():
         raise HTTPException(404, "factory webhook disabled")
-    if not webhook_repository() or not trusted_authors():
+    if not webhook_repositories() or not trusted_authors():
         raise HTTPException(503, "factory webhook is not configured")
     if not isinstance(x_github_event, str) or not x_github_event:
         raise HTTPException(400, "missing GitHub event")

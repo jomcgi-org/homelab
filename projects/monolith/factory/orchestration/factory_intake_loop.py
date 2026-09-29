@@ -17,11 +17,13 @@ from factory.orchestration.factory_controls import (
     _now,
     _read_session,
     delivery_admissions,
+    enabled_repos,
     intake_policy,
     intake_state,
     is_advisory,
     lane_for,
     receipt_task_class,
+    repos_map,
 )
 from factory.orchestration.factory_intake import (
     INTAKE_ACTOR,
@@ -504,334 +506,383 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
             room = open_lanes(policy, held, lanes)
             if not any(room.values()):
                 return []
+        # Every enabled repo sweeps under its own intake labels and daily
+        # cap; a repo outside the enabled set is not even read. A policy
+        # with only the legacy repo reads as that one entry, so today's
+        # single-repo behaviour is unchanged.
+        repos = enabled_repos(policy)
+        if not repos:
+            return []
+        entries = repos_map(policy)
+        with _read_session() as db:
             # Delivery only. The cap bounds delivery churn, and an advisory
             # refine costs cents and produces a comment, so the cap is not
             # consulted for one at all: it must never throttle a burn-down.
             # Counted per repo, which is what that repo's cap bounds.
-            admitted_today = delivery_admissions(db, today, repo)
-
-        repo = policy["repo"]
+            admitted_today = {
+                slug: delivery_admissions(db, today, slug) for slug in repos
+            }
         excluded: dict[str, int] = {reason: 0 for reason in _EXCLUSION_REASONS}
 
         def exclude(reason: str) -> None:
             excluded[reason] += 1
 
-        include_labels = {label.lower() for label in intake["labels"]}
-        exclude_labels = {label.lower() for label in intake["exclude_labels"]}
         candidates = []
         cooldown_cutoff = now - timedelta(hours=intake["cooldown_hours"])
         local_listed = 0
-        try:
-            local_candidates, local_excluded, local_listed = _local_candidates(
-                repo,
-                intake=intake,
-                generation=generation,
-                room=room,
-                cooldown_cutoff=cooldown_cutoff,
-            )
-            candidates.extend(local_candidates)
-            for reason, count in local_excluded.items():
-                excluded[reason] += count
-        except Exception as exc:  # noqa: BLE001 - GitHub intake must still run
-            _throttled(
-                "local_intake_error",
-                {"error": type(exc).__name__},
-            )
-            logger.warning("factory local intake failed", exc_info=True)
+        for slug in repos:
+            repo_intake = {
+                **intake,
+                "labels": entries[slug]["labels"],
+                "exclude_labels": entries[slug]["exclude_labels"],
+            }
+            try:
+                local_candidates, local_excluded, listed = _local_candidates(
+                    slug,
+                    intake=repo_intake,
+                    generation=generation,
+                    room=room,
+                    cooldown_cutoff=cooldown_cutoff,
+                )
+                for candidate in local_candidates:
+                    candidate["repo"] = slug
+                candidates.extend(local_candidates)
+                for reason, count in local_excluded.items():
+                    excluded[reason] += count
+                local_listed += listed
+            except Exception as exc:  # noqa: BLE001 - GitHub intake must still run
+                _throttled(
+                    "local_intake_error",
+                    {"error": type(exc).__name__, "repo": slug},
+                )
+                logger.warning("factory local intake failed", exc_info=True)
 
-        issues = []
-        pulls = []
-        issues_cut = False
-        pulls_cut = False
-        github_status = None
-        if _listing_due(now):
-            # The clock records the ATTEMPT, not the result. A sweep that fails
-            # is the case most worth rate limiting: a 403 usually means the shared
-            # budget is already spent, and retrying every fifteen seconds is how
-            # it stays spent.
+        # The sweep clock records the ATTEMPT, not the result. A sweep that
+        # fails is the case most worth rate limiting: a 403 usually means the
+        # shared budget is already spent, and retrying every fifteen seconds
+        # is how it stays spent. One stamp covers every repo; each repo then
+        # reads and syncs on its own, so one repo's failure never blinds the
+        # others.
+        listing_due = _listing_due(now)
+        if listing_due:
             with _locked_session() as (db, _control):
                 _audit(db, ACTOR, "intake_swept")
-            try:
-                issues, issues_cut = _pages(repo, "issues")
-                pulls, pulls_cut = _pages(repo, "pulls", page_size=PULL_PAGE_SIZE)
-            except Exception as exc:  # noqa: BLE001 - recorded, never swallowed
-                # A 403 from the shared rate limit, or any other read failure,
-                # would otherwise leave intake silently dead: the blanket handler
-                # below logs where nobody looks. Record the shape of the failure
-                # without its response body, URL or credential-bearing text.
-                _throttled(
-                    "intake_error",
-                    {
-                        "stage": "listing",
-                        "error": type(exc).__name__,
-                        "status": getattr(
-                            getattr(exc, "response", None), "status_code", None
-                        ),
-                    },
-                )
-                logger.warning("factory intake listing failed", exc_info=True)
-                issues = []
-                pulls = []
-                issues_cut = False
-                pulls_cut = False
-                github_status = "failed"
-        else:
-            github_status = "not_due"
+        github_status = None if listing_due else "not_due"
+        listed_total = 0
+        truncated = False
+        per_repo: list[tuple[str, list, list]] = []
+        read_failed: list[str] = []
+        for slug in repos:
+            issues: list = []
+            pulls: list = []
+            issues_cut = False
+            pulls_cut = False
+            if listing_due:
+                try:
+                    issues, issues_cut = _pages(slug, "issues")
+                    pulls, pulls_cut = _pages(slug, "pulls", page_size=PULL_PAGE_SIZE)
+                except Exception as exc:  # noqa: BLE001 - recorded, never swallowed
+                    # A 403 from the shared rate limit, or any other read
+                    # failure, would otherwise leave intake silently dead: the
+                    # blanket handler below logs where nobody looks. Record
+                    # the shape of the failure without its response body, URL
+                    # or credential-bearing text.
+                    _throttled(
+                        "intake_error",
+                        {
+                            "stage": "listing",
+                            "error": type(exc).__name__,
+                            "status": getattr(
+                                getattr(exc, "response", None), "status_code", None
+                            ),
+                            "repo": slug,
+                        },
+                    )
+                    logger.warning("factory intake listing failed", exc_info=True)
+                    issues = []
+                    pulls = []
+                    issues_cut = False
+                    pulls_cut = False
+                    read_failed.append(slug)
+                    per_repo.append((slug, issues, pulls))
+                    continue
+                try:
+                    from factory.orchestration.work_item_links import (
+                        reconcile_body_edges,
+                    )
+                    from factory.orchestration.work_items import sync_github_work_items
 
-        if github_status is None:
-            try:
-                from factory.orchestration.work_item_links import reconcile_body_edges
-                from factory.orchestration.work_items import sync_github_work_items
+                    work_item_counts = sync_github_work_items(
+                        slug,
+                        issues,
+                        truncated=issues_cut,
+                        actor=ACTOR,
+                        source_ordered=os.getenv(
+                            "FACTORY_GITHUB_WEBHOOK_ENABLED", "false"
+                        ).lower()
+                        == "true",
+                    )
+                    logger.info("work_item_sync", extra=work_item_counts)
 
-                work_item_counts = sync_github_work_items(
-                    repo,
-                    issues,
-                    truncated=issues_cut,
-                    actor=ACTOR,
-                    source_ordered=os.getenv(
-                        "FACTORY_GITHUB_WEBHOOK_ENABLED", "false"
-                    ).lower()
-                    == "true",
-                )
-                logger.info("work_item_sync", extra=work_item_counts)
+                    # Reconcile body edges in a new transaction
+                    with _locked_session() as (db, _control):
+                        synced_items = db.exec(
+                            select(WorkItem).where(
+                                WorkItem.github_repo == slug,
+                            )
+                        ).all()
+                        # Reconcile only from persisted bodies. A stale sweep
+                        # payload rejected by source ordering must not reappear
+                        # here and undo newer webhook dependency state.
+                        items_with_bodies = [
+                            (item, item.body)
+                            for item in synced_items
+                            if item.github_issue_number is not None
+                        ]
 
-                # Reconcile body edges in a new transaction
-                with _locked_session() as (db, _control):
-                    synced_items = db.exec(
+                        if items_with_bodies:
+                            edge_counts = reconcile_body_edges(
+                                db,
+                                slug,
+                                items_with_bodies,
+                                actor=ACTOR,
+                                truncated=issues_cut,
+                            )
+                            logger.info("work_item_edge_reconcile", extra=edge_counts)
+                        db.commit()
+                except Exception as exc:  # noqa: BLE001 - intake survives sync failure
+                    logger.exception("work_item_sync_error")
+                    _throttled(
+                        "work_item_sync_error",
+                        {
+                            "error": type(exc).__name__,
+                            "truncated": issues_cut,
+                            "repo": slug,
+                        },
+                    )
+            truncated = truncated or issues_cut or pulls_cut
+            listed_total += len(issues)
+            per_repo.append((slug, issues, pulls))
+        if listing_due and len(read_failed) == len(repos):
+            github_status = "failed"
+
+        # One budget for the whole sweep, not one per repo: the delivery
+        # checks spend the same shared GitHub request budget as the listing.
+        delivery_check_budget = {"reads": handoff.INTAKE_READS_PER_SWEEP}
+        for slug, issues, pulls in per_repo:
+            include_labels = {label.lower() for label in entries[slug]["labels"]}
+            exclude_labels = {
+                label.lower() for label in entries[slug]["exclude_labels"]
+            }
+            linked: set[int] = set()
+            for pull in pulls:
+                if not isinstance(pull, dict):
+                    continue
+                for field in ("title", "body"):
+                    text = pull.get(field)
+                    if not isinstance(text, str):
+                        continue
+                    for match in re.findall(r"#(\d+)", text):
+                        number = int(match)
+                        if 1 <= number <= 2**31 - 1:
+                            linked.add(number)
+
+            survivors = []
+            for item in issues:
+                if not isinstance(item, dict):
+                    exclude("malformed")
+                    continue
+                labels = _label_names(item)
+                if "pull_request" in item:
+                    exclude("pull_request")
+                elif item.get("state") != "open":
+                    exclude("not_open")
+                elif item.get("assignees"):
+                    exclude("assigned")
+                elif labels & exclude_labels:
+                    exclude("excluded_label")
+                elif item.get("number") in linked:
+                    exclude("linked_pr")
+                else:
+                    survivors.append((item, labels))
+
+            receipt_rows = []
+            numbers = [
+                item.get("number")
+                for item, _labels in survivors
+                if type(item.get("number")) is int and 1 <= item["number"] <= 2**31 - 1
+            ]
+            work_item_map = {}
+            work_item_by_number = {}
+            local_authority_numbers = set()
+            blocked_numbers: set[int] = set()
+            if numbers:
+                with _read_session() as db:
+                    # Resolve the candidates' work items first, so a receipt that
+                    # was linked to one of them under another issue number is in
+                    # the set: fetching receipts by number alone can never see it.
+                    work_items = db.exec(
                         select(WorkItem).where(
-                            WorkItem.github_repo == repo,
+                            WorkItem.github_repo == slug,
+                            WorkItem.github_issue_number.in_(numbers),
                         )
                     ).all()
-                    # Reconcile only from persisted bodies. A stale sweep
-                    # payload rejected by source ordering must not reappear
-                    # here and undo newer webhook dependency state.
-                    items_with_bodies = [
-                        (item, item.body)
-                        for item in synced_items
-                        if item.github_issue_number is not None
-                    ]
-
-                    if items_with_bodies:
-                        edge_counts = reconcile_body_edges(
-                            db,
-                            repo,
-                            items_with_bodies,
-                            actor=ACTOR,
-                            truncated=issues_cut,
-                        )
-                        logger.info("work_item_edge_reconcile", extra=edge_counts)
-                    db.commit()
-            except Exception as exc:  # noqa: BLE001 - intake survives sync failure
-                logger.exception("work_item_sync_error")
-                _throttled(
-                    "work_item_sync_error",
-                    {
-                        "error": type(exc).__name__,
-                        "truncated": issues_cut,
-                    },
-                )
-        truncated = issues_cut or pulls_cut
-        linked: set[int] = set()
-        for pull in pulls:
-            if not isinstance(pull, dict):
-                continue
-            for field in ("title", "body"):
-                text = pull.get(field)
-                if not isinstance(text, str):
-                    continue
-                for match in re.findall(r"#(\d+)", text):
-                    number = int(match)
-                    if 1 <= number <= 2**31 - 1:
-                        linked.add(number)
-
-        delivery_check_budget = {"reads": handoff.INTAKE_READS_PER_SWEEP}
-        survivors = []
-        for item in issues:
-            if not isinstance(item, dict):
-                exclude("malformed")
-                continue
-            labels = _label_names(item)
-            if "pull_request" in item:
-                exclude("pull_request")
-            elif item.get("state") != "open":
-                exclude("not_open")
-            elif item.get("assignees"):
-                exclude("assigned")
-            elif labels & exclude_labels:
-                exclude("excluded_label")
-            elif item.get("number") in linked:
-                exclude("linked_pr")
-            else:
-                survivors.append((item, labels))
-
-        receipt_rows = []
-        numbers = [
-            item.get("number")
-            for item, _labels in survivors
-            if type(item.get("number")) is int and 1 <= item["number"] <= 2**31 - 1
-        ]
-        work_item_map = {}
-        work_item_by_number = {}
-        local_authority_numbers = set()
-        blocked_numbers: set[int] = set()
-        if numbers:
-            with _read_session() as db:
-                # Resolve the candidates' work items first, so a receipt that
-                # was linked to one of them under another issue number is in
-                # the set: fetching receipts by number alone can never see it.
-                work_items = db.exec(
-                    select(WorkItem).where(
-                        WorkItem.github_repo == repo,
-                        WorkItem.github_issue_number.in_(numbers),
-                    )
-                ).all()
-                work_item_map = {
-                    wi.id: wi.github_issue_number
-                    for wi in work_items
-                    if wi.github_issue_number is not None
-                }
-                work_item_by_number = {
-                    number: item_id for item_id, number in work_item_map.items()
-                }
-                local_authority_numbers = {
-                    item.github_issue_number
-                    for item in work_items
-                    if item.authority == "local"
-                    and item.github_issue_number is not None
-                }
-                if work_item_map:
-                    blocked_item_ids = set(
-                        db.exec(
-                            select(WorkItemEdge.to_id)
-                            .join(WorkItem, WorkItemEdge.from_id == WorkItem.id)
-                            .where(
-                                WorkItemEdge.kind == "blocks",
-                                WorkItemEdge.to_id.in_(list(work_item_map)),
-                                WorkItem.state != "closed",
-                            )
-                            .distinct()
-                        ).all()
-                    )
-                    blocked_numbers = {
-                        work_item_map[item_id] for item_id in blocked_item_ids
+                    work_item_map = {
+                        wi.id: wi.github_issue_number
+                        for wi in work_items
+                        if wi.github_issue_number is not None
                     }
-                by_number_or_item = FactoryReceipt.issue_number.in_(numbers)
-                if work_item_map:
-                    by_number_or_item = by_number_or_item | (
-                        FactoryReceipt.work_item_id.in_(list(work_item_map))
-                    )
-                receipt_rows = db.exec(
-                    select(FactoryReceipt)
-                    .where(FactoryReceipt.repo == repo, by_number_or_item)
-                    .order_by(FactoryReceipt.issue_number, FactoryReceipt.id.desc())
-                ).all()
-        for item, labels in survivors:
-            number = item.get("number")
-            if number in local_authority_numbers:
-                continue
-            rows = []
-            if type(number) is int:
-                for row in receipt_rows:
-                    if row.issue_number == number:
-                        rows.append(row)
-                    elif (
-                        row.work_item_id is not None
-                        and work_item_map.get(row.work_item_id) == number
-                    ):
-                        rows.append(row)
-            if number in blocked_numbers:
-                exclude("blocked")
-                continue
-            # A delivered issue is done, whatever generation delivered it and
-            # whatever the issue's own labels still say. The defect this
-            # closes is exactly that: #3877 shipped as PR #6007, the body
-            # carried no closing keyword so the issue stayed open with
-            # agent-ready, and the next generation admitted it again.
-            #
-            # Advisory classes are not deliveries. A refine pass settles
-            # succeeded when it has written a brief and moved the labels, and
-            # reading that as delivered would block the very delivery the
-            # refine just made possible.
-            #
-            # The exclusion is unconditional, including for an issue a human
-            # reopened. GitHub's issue listing carries created_at, updated_at
-            # and closed_at but no reopen timestamp, and updated_at moves on
-            # every comment, label and edit, so it cannot tell a reopen from a
-            # comment. Establishing the difference would cost one events read
-            # per candidate on a request budget the whole lane shares. An
-            # operator who wants a delivered issue worked again names it in
-            # the policy issue_numbers allowlist under a new generation, which
-            # writes its receipt directly and never consults this sweep.
-            delivery = bool(labels & include_labels)
-            refine = not delivery
-            task_class, class_reason = derive_task_class(labels, refine=refine)
-            if refine and "needs-thought" in labels:
-                exclude("deferred")
-                continue
-            # Scoped to the class, not just the generation. A refine pass that
-            # moved an issue to agent-ready has changed what the lane can do
-            # with it, and waiting for an operator to bump the generation
-            # would strand the readiness the lane just produced.
-            receipt_exclusion = _receipt_exclusion(
-                rows,
-                generation=generation,
-                task_class=task_class,
-                cooldown_cutoff=cooldown_cutoff,
-            )
-            if receipt_exclusion is not None:
-                exclude(receipt_exclusion)
-                continue
-            if not delivery and not intake["refine_enabled"]:
-                exclude("refine_disabled")
-                continue
-            if type(number) is not int or not 1 <= number <= 2**31 - 1:
-                exclude("malformed")
-                continue
-            label_rank = next(
-                (index for index, label in enumerate(RANK_LABELS) if label in labels),
-                len(RANK_LABELS),
-            )
-            rank_reason = (
-                RANK_LABELS[label_rank] if label_rank < len(RANK_LABELS) else "oldest"
-            )
-            lane = lane_for(task_class)
-            if not room.get(lane):
-                exclude("lane_full")
-                continue
-            if handoff.enabled():
-                # Finished repository work with only live checks left is
-                # delivered, whatever generation re-read its labels (#6288).
-                handed_off = handoff.intake_exclusion(
-                    repo, number, rows, delivery_check_budget
-                )
-                if handed_off is not None:
-                    exclude(handed_off)
+                    work_item_by_number = {
+                        number: item_id for item_id, number in work_item_map.items()
+                    }
+                    local_authority_numbers = {
+                        item.github_issue_number
+                        for item in work_items
+                        if item.authority == "local"
+                        and item.github_issue_number is not None
+                    }
+                    if work_item_map:
+                        blocked_item_ids = set(
+                            db.exec(
+                                select(WorkItemEdge.to_id)
+                                .join(WorkItem, WorkItemEdge.from_id == WorkItem.id)
+                                .where(
+                                    WorkItemEdge.kind == "blocks",
+                                    WorkItemEdge.to_id.in_(list(work_item_map)),
+                                    WorkItem.state != "closed",
+                                )
+                                .distinct()
+                            ).all()
+                        )
+                        blocked_numbers = {
+                            work_item_map[item_id] for item_id in blocked_item_ids
+                        }
+                    by_number_or_item = FactoryReceipt.issue_number.in_(numbers)
+                    if work_item_map:
+                        by_number_or_item = by_number_or_item | (
+                            FactoryReceipt.work_item_id.in_(list(work_item_map))
+                        )
+                    receipt_rows = db.exec(
+                        select(FactoryReceipt)
+                        .where(FactoryReceipt.repo == slug, by_number_or_item)
+                        .order_by(
+                            FactoryReceipt.issue_number, FactoryReceipt.id.desc()
+                        )
+                    ).all()
+            for item, labels in survivors:
+                number = item.get("number")
+                if number in local_authority_numbers:
                     continue
-            candidates.append(
-                {
-                    "issue": item,
-                    "number": number,
-                    "source": "github",
-                    "work_item_id": work_item_by_number.get(number),
-                    "lane": lane,
-                    "task_class": task_class,
-                    "class_reason": class_reason,
-                    "rank_reason": rank_reason,
-                    "sort": (
-                        1 if refine else 0,
-                        label_rank,
-                        _created_rank(item),
-                        number,
+                rows = []
+                if type(number) is int:
+                    for row in receipt_rows:
+                        if row.issue_number == number:
+                            rows.append(row)
+                        elif (
+                            row.work_item_id is not None
+                            and work_item_map.get(row.work_item_id) == number
+                        ):
+                            rows.append(row)
+                if number in blocked_numbers:
+                    exclude("blocked")
+                    continue
+                # A delivered issue is done, whatever generation delivered it and
+                # whatever the issue's own labels still say. The defect this
+                # closes is exactly that: #3877 shipped as PR #6007, the body
+                # carried no closing keyword so the issue stayed open with
+                # agent-ready, and the next generation admitted it again.
+                #
+                # Advisory classes are not deliveries. A refine pass settles
+                # succeeded when it has written a brief and moved the labels, and
+                # reading that as delivered would block the very delivery the
+                # refine just made possible.
+                #
+                # The exclusion is unconditional, including for an issue a human
+                # reopened. GitHub's issue listing carries created_at, updated_at
+                # and closed_at but no reopen timestamp, and updated_at moves on
+                # every comment, label and edit, so it cannot tell a reopen from a
+                # comment. Establishing the difference would cost one events read
+                # per candidate on a request budget the whole lane shares. An
+                # operator who wants a delivered issue worked again names it in
+                # the policy issue_numbers allowlist under a new generation, which
+                # writes its receipt directly and never consults this sweep.
+                delivery = bool(labels & include_labels)
+                refine = not delivery
+                task_class, class_reason = derive_task_class(labels, refine=refine)
+                if refine and "needs-thought" in labels:
+                    exclude("deferred")
+                    continue
+                # Scoped to the class, not just the generation. A refine pass that
+                # moved an issue to agent-ready has changed what the lane can do
+                # with it, and waiting for an operator to bump the generation
+                # would strand the readiness the lane just produced.
+                receipt_exclusion = _receipt_exclusion(
+                    rows,
+                    generation=generation,
+                    task_class=task_class,
+                    cooldown_cutoff=cooldown_cutoff,
+                )
+                if receipt_exclusion is not None:
+                    exclude(receipt_exclusion)
+                    continue
+                if not delivery and not intake["refine_enabled"]:
+                    exclude("refine_disabled")
+                    continue
+                if type(number) is not int or not 1 <= number <= 2**31 - 1:
+                    exclude("malformed")
+                    continue
+                label_rank = next(
+                    (
+                        index
+                        for index, label in enumerate(RANK_LABELS)
+                        if label in labels
                     ),
-                }
-            )
+                    len(RANK_LABELS),
+                )
+                rank_reason = (
+                    RANK_LABELS[label_rank]
+                    if label_rank < len(RANK_LABELS)
+                    else "oldest"
+                )
+                lane = lane_for(task_class)
+                if not room.get(lane):
+                    exclude("lane_full")
+                    continue
+                if handoff.enabled():
+                    # Finished repository work with only live checks left is
+                    # delivered, whatever generation re-read its labels (#6288).
+                    handed_off = handoff.intake_exclusion(
+                        slug, number, rows, delivery_check_budget
+                    )
+                    if handed_off is not None:
+                        exclude(handed_off)
+                        continue
+                candidates.append(
+                    {
+                        "issue": item,
+                        "number": number,
+                        "source": "github",
+                        "repo": slug,
+                        "work_item_id": work_item_by_number.get(number),
+                        "lane": lane,
+                        "task_class": task_class,
+                        "class_reason": class_reason,
+                        "rank_reason": rank_reason,
+                        "sort": (
+                            1 if refine else 0,
+                            label_rank,
+                            _created_rank(item),
+                            number,
+                        ),
+                    }
+                )
         candidates.sort(key=lambda candidate: candidate["sort"])
         excluded = {reason: count for reason, count in excluded.items() if count}
         if not candidates:
             _idle(
                 {
                     "excluded": excluded,
-                    "listed": len(issues),
+                    "listed": listed_total,
                     "local_listed": local_listed,
                     **({"github": github_status} if github_status else {}),
                     **({"truncated": True} if truncated else {}),
@@ -851,7 +902,7 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
             chosen.append(candidate)
 
         received_all = []
-        capped = False
+        capped: dict[str, dict] = {}
         for candidate in chosen:
             # Re-read the lane under the lock. The room that picked this
             # candidate was measured before a GitHub sweep that takes seconds,
@@ -890,11 +941,17 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                 )
                 continue
             delivery = candidate["lane"] == "delivery"
+            repo = candidate["repo"]
+            repo_max_per_day = entries[repo]["max_per_day"]
             # Refuse this candidate rather than the rest of the tick. The
             # lanes are independent, and the advisory lane behind a capped
             # delivery candidate has nothing to do with what the cap bounds.
-            if delivery and admitted_today >= intake["max_per_day"]:
-                capped = True
+            # The cap is per repo, so a capped repo never throttles another.
+            if delivery and admitted_today[repo] >= repo_max_per_day:
+                capped[repo] = {
+                    "admitted_today": admitted_today[repo],
+                    "max_per_day": repo_max_per_day,
+                }
                 continue
             issue = candidate["issue"]
             received = receive_issue(
@@ -910,7 +967,7 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                 work_item_id=candidate["work_item_id"],
             )
             if delivery:
-                admitted_today += 1
+                admitted_today[repo] += 1
             received_all.append(received)
             with _locked_session() as (db, _control):
                 _audit(
@@ -920,6 +977,7 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                     receipt_id=received["receipt"]["id"],
                     issue_number=candidate["number"],
                     source=candidate["source"],
+                    repo=repo,
                     lane=candidate["lane"],
                     task_class=candidate["task_class"],
                     class_reason=candidate["class_reason"],
@@ -928,6 +986,7 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                         {
                             "number": other["number"],
                             "source": other["source"],
+                            "repo": other["repo"],
                             "lane": other["lane"],
                             "task_class": other["task_class"],
                             "rank_reason": other["rank_reason"],
@@ -935,11 +994,11 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                         for other in candidates[:CANDIDATE_EVIDENCE_LIMIT]
                     ],
                     excluded=excluded,
-                    admitted_today=admitted_today,
+                    admitted_today=admitted_today[repo],
                     **(
                         {
                             "github": github_status,
-                            "listed": len(issues),
+                            "listed": listed_total,
                             "local_listed": local_listed,
                         }
                         if github_status
@@ -948,16 +1007,22 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                     **({"truncated": True} if truncated else {}),
                 )
         # Once per tick, and only when the cap actually refused a delivery
-        # candidate. A tick that admitted an advisory one still says so.
+        # candidate. A tick that admitted an advisory one still says so. One
+        # repo reads exactly today's shape; more than one names each capped
+        # repo beside it.
         if capped:
+            first = next(iter(capped))
             _idle(
                 {
                     "reason": "daily_cap",
-                    "admitted_today": admitted_today,
-                    "max_per_day": intake["max_per_day"],
+                    "admitted_today": capped[first]["admitted_today"],
+                    "max_per_day": capped[first]["max_per_day"],
                     "local_listed": local_listed,
                     **(
-                        {"github": github_status, "listed": len(issues)}
+                        {"repos": capped} if len(repos) > 1 else {}
+                    ),
+                    **(
+                        {"github": github_status, "listed": listed_total}
                         if github_status
                         else {}
                     ),

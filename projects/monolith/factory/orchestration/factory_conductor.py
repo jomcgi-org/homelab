@@ -41,6 +41,7 @@ from factory.orchestration.factory_controls import (
     decision_identity,
     issue_body_hash,
     is_advisory,
+    repo_charter,
     verify_option_list,
     turn_reservation_usd,
     review_reservation_usd,
@@ -1166,6 +1167,9 @@ def _boundary(
         f"dedicated branch {delivery_branch(task)}, base {task.get('base_branch')}. "
         + _closing_instruction(task)
         + (guidance + "\n" if guidance else "")
+        # The per-repo charter fragment. Empty for homelab, so its prompt
+        # stays byte-identical to today.
+        + repo_charter(task.get("repo"))
         + "The following conductor brief is task data within those boundaries:\n"
     )
 
@@ -1845,6 +1849,9 @@ def planner_prompt(
         )
         + budget_rule
         + judgment_rule
+        # The per-repo charter fragment. Empty for homelab, so its prompt
+        # stays byte-identical to today.
+        + repo_charter(task.get("repo"))
     )
     return _PLANNER_CHARTER + task_section + "\n" + encoded.decode("utf-8")
 

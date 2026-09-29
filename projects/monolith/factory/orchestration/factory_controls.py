@@ -890,6 +890,26 @@ REPO_ENTRY_KEYS = {
 # it through the staged migration, never through this change.
 LOOM_REPO_SLUG = "weave-hand/loom"
 LOOM_STAGED_MAX_PER_DAY = 2
+# The loom charter fragment planner and review prompts carry for
+# weave-hand/loom receipts (PART B of #6463). It names loom's own CI gate
+# (its GitHub Actions workflow, run with buck2), its landing (auto_merge
+# stays off, so a person merges each pull request after its own green run)
+# and its review rule (an independent second session reads the exact pushed
+# head and records its SHA and verdict). It carries none of the homelab
+# recipe: no BuildBuddy, pr-checks, merge queue, factory branch or factory
+# review wording. Homelab receipts carry no fragment at all, so their prompt
+# stays byte-identical to today: the static charter already is the homelab
+# recipe.
+LOOM_CHARTER = (
+    "Repository weave-hand/loom. CI is the repository's GitHub Actions "
+    "workflow: run its checks with buck2 the way that workflow does, and "
+    "deliver only on a green workflow run for the exact pushed head. "
+    "auto_merge stays off, so every change lands through a pull request "
+    "that a person merges after its own green run. Deliver repository "
+    "changes through a pull request with required Linux CI from that "
+    "workflow. An independent second session examines the exact pushed head "
+    "and records its SHA and verdict before delivery completes. "
+)
 # How many queued candidates admission scans for one whose repo has room.
 # A full head-of-line repo never blocks a later receipt on a repo with room.
 ADMISSION_CANDIDATE_SCAN_LIMIT = 100
@@ -1048,13 +1068,30 @@ def repo_effective_policy(policy: dict, repo: str) -> dict:
     }
 
 
+def repo_charter(repo: object) -> str:
+    """The charter fragment prompts carry for one repository.
+
+    Homelab and unknown repos read as empty, so their planner and review
+    prompts stay byte-identical to today. Loom carries LOOM_CHARTER. The
+    prompt resolves the fragment from the task's repo, so a re-posted policy
+    never rewrites the rules a running task already read.
+    """
+    if not isinstance(repo, str):
+        return ""
+    try:
+        slug = normalize_repo(repo)
+    except ValueError:
+        return ""
+    return LOOM_CHARTER if slug == LOOM_REPO_SLUG else ""
+
+
 def staged_loom_repo_entry() -> dict:
     """The default-off loom entry the staged operator migration posts.
 
     Budgets, lane caps and labels are left to inherit the live homelab
-    blocks at migration time; only the switch, the staged daily cap and the
-    inert landing stay fixed here, so this template cannot drift from what
-    the lane already runs. PART B owns the loom charter fragment.
+    blocks at migration time; only the switch, the staged daily cap, the
+    inert landing and the loom charter stay fixed here, so this template
+    cannot drift from what the lane already runs.
     """
     return {
         "enabled": False,
@@ -1062,6 +1099,7 @@ def staged_loom_repo_entry() -> dict:
         "max_per_day": LOOM_STAGED_MAX_PER_DAY,
         "landing": "none",
         "auto_merge": False,
+        "charter": LOOM_CHARTER,
     }
 
 

@@ -76,6 +76,11 @@ def policy(**intake):
         "repo": "owner/repo",
         "max_tasks": {"delivery": 1, "advisory": 1},
         "intake": {"enabled": True, "exclude_labels": [], **intake},
+        # The sweep resolves per-repo caps and budgets through the repos
+        # map, so the fixture carries the envelope a validated policy has.
+        "task_budget_usd": 10.0,
+        "turn_budget_usd": 1.0,
+        "auto_merge": False,
     }
 
 
@@ -2051,6 +2056,102 @@ def test_a_cancelled_ineligible_receipt_frees_its_lane_but_not_its_issue(
     assert intake_loop.intake_tick(policy(labels=["agent-ready"]), generation=0) == []
     detail = json.loads(audits(db, "intake_idle")[-1].detail_json)
     assert detail["excluded"] == {"cooldown": 1}
+
+
+def multi_repo_policy(**overrides):
+    base = {
+        "repo": "owner/repo",
+        "issue_numbers": [1],
+        "generation": 0,
+        "max_tasks": {"delivery": 2, "advisory": 1},
+        "max_turns_per_task": 5,
+        "task_budget_usd": 10.0,
+        "turn_budget_usd": 1.0,
+        "allowed_models": ["opus", "luna"],
+        "conductor_model": "opus",
+        "worker_model": "luna",
+        "base_branch": "main",
+        "turn_timeout_seconds": 60,
+        "max_attempts": 2,
+        "task_timeout_seconds": 3600,
+        "intake": {"enabled": True, "labels": ["agent-ready"], "exclude_labels": []},
+        "auto_merge": False,
+        "repos": {
+            "owner/repo": {"enabled": True},
+            "weave-hand/loom": {"enabled": True, "max_per_day": 2},
+        },
+    }
+    base.update(overrides)
+    return controls.validate_policy(base)
+
+
+def loom_issue(number: int, labels=(), **overrides):
+    value = issue(number, labels, **overrides)
+    value["html_url"] = f"https://github.com/weave-hand/loom/issues/{number}"
+    return value
+
+
+def fake_repo_pages(monkeypatch, by_repo, pulls=()):
+    calls = []
+
+    def github_list(repo, suffix):
+        calls.append((repo, suffix))
+        if suffix.startswith("pulls?"):
+            return list(pulls)
+        return list(by_repo.get(repo, []))
+
+    monkeypatch.setattr(intake_loop, "github_list", github_list)
+    return calls
+
+
+def test_sweep_serves_every_enabled_repo(db, monkeypatch):
+    fake_repo_pages(
+        monkeypatch,
+        {
+            "owner/repo": [issue(1, ["agent-ready"])],
+            "weave-hand/loom": [loom_issue(2, ["agent-ready"])],
+        },
+    )
+    first = intake_loop.intake_tick(multi_repo_policy(), generation=0)
+    assert len(first) == 1
+    # Older first: the homelab issue ranks ahead of the loom one.
+    assert first[0]["receipt"]["repo"] == "owner/repo"
+    assert first[0]["receipt"]["issue_number"] == 1
+    release_sweep(db)
+    second = intake_loop.intake_tick(multi_repo_policy(), generation=0)
+    assert len(second) == 1
+    assert second[0]["receipt"]["repo"] == "weave-hand/loom"
+    assert second[0]["receipt"]["issue_number"] == 2
+    with Session(db) as session:
+        rows = session.exec(select(FactoryReceipt)).all()
+        assert sorted((row.repo, row.issue_number) for row in rows) == [
+            ("owner/repo", 1),
+            ("weave-hand/loom", 2),
+        ]
+
+
+def test_sweep_ignores_a_disabled_repo_without_reading_it(db, monkeypatch):
+    calls = fake_repo_pages(
+        monkeypatch,
+        {
+            "owner/repo": [issue(1, ["agent-ready"])],
+            "weave-hand/loom": [loom_issue(2, ["agent-ready"])],
+        },
+    )
+    policy = multi_repo_policy(
+        repos={
+            "owner/repo": {"enabled": True},
+            "weave-hand/loom": {"enabled": False},
+        }
+    )
+    admitted = intake_loop.intake_tick(policy, generation=0)
+    assert [row["receipt"]["repo"] for row in admitted] == ["owner/repo"]
+    assert {repo for repo, _suffix in calls} == {"owner/repo"}
+    with Session(db) as session:
+        assert [
+            (row.repo, row.issue_number)
+            for row in session.exec(select(FactoryReceipt)).all()
+        ] == [("owner/repo", 1)]
 
 
 def _rescoped_history(db, number=11, task_id="t-rescoped", pr=6401):

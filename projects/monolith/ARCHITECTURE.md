@@ -404,6 +404,21 @@ agents/038 decision 5 gives judgment work an Opus-or-better implementer floor
 because no machine oracle can verify its correctness; quota pressure parks that
 work instead of demoting it.
 
+**Why.** Repository is a property of the work item and receipt, not of the
+lane, because pointing the single-repo policy at loom would have meant
+replacing the whole homelab policy and pausing homelab to work elsewhere.
+Policy now carries a `repos` map where each entry holds its own enable
+switch, intake labels, lane caps, daily cap, budget envelope, landing mode
+and charter fragment, while pause, stop and generation stay global so one
+operator act still halts everything. A policy with only the legacy `repo`
+field normalizes to a one-entry map that behaves exactly as today, so the
+live policy needs no re-post. Admission, the intake sweep and the webhook
+all serve the enabled entries under their own numbers, and each prompt
+carries its repo's charter: homelab receipts read the existing charter
+unchanged, loom receipts read loom's own CI, landing and review rules.
+The loom entry ships default-off and is enabled only through the staged
+operator migration, so adding a repository never starts work in it (#6463).
+
 **Why.** The chart ceiling and the per-lane maxima are set in two places and
 neither said which was binding, so a ceiling of 4 under lanes of 4 and 8 gave
 the advisory lane nothing: the limits handed delivery its whole maximum first

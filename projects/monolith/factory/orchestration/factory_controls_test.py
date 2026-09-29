@@ -2682,6 +2682,9 @@ def test_staged_loom_migration_is_default_off(db, policy, monkeypatch):
     assert loom["max_per_day"] == controls.LOOM_STAGED_MAX_PER_DAY == 2
     assert loom["landing"] == "none"
     assert loom["auto_merge"] is False
+    assert loom["charter"] == controls.LOOM_CHARTER == controls.repo_charter(
+        "weave-hand/loom"
+    )
     assert migrated["repos"]["owner/repo"] == validated["repos"]["owner/repo"]
     with pytest.raises(ValueError):
         controls.migration_policy_with_loom(migrated)
@@ -2691,3 +2694,23 @@ def test_staged_loom_migration_is_default_off(db, policy, monkeypatch):
     admission = admit_next("scheduler")
     assert admission["ok"] and admission["receipt"]["repo"] == "owner/repo"
     assert admit_next("scheduler")["reason"] == "no_eligible_issue"
+
+
+def test_repo_charter_is_empty_except_for_loom():
+    assert controls.repo_charter("owner/repo") == ""
+    assert controls.repo_charter("jomcgi-org/homelab") == ""
+    assert controls.repo_charter("Weave-Hand/Loom") == controls.LOOM_CHARTER
+    assert controls.repo_charter(None) == ""
+    assert controls.repo_charter("not a repo") == ""
+    assert "buck2" in controls.LOOM_CHARTER
+    assert "GitHub Actions" in controls.LOOM_CHARTER
+    assert "auto_merge stays off" in controls.LOOM_CHARTER
+    for homelab_wording in (
+        "BuildBuddy",
+        "pr-checks",
+        "merge queue",
+        "merge_queue",
+        "factory/",
+        "factory/review",
+    ):
+        assert homelab_wording not in controls.LOOM_CHARTER
