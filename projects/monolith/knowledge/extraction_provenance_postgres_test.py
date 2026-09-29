@@ -77,9 +77,7 @@ def test_no_new_notes_rerun_leaves_single_pending_row(pg):
             assert rows[0].atom_fk is None
             assert rows[0].derived_note_id == "no-new-notes"
             assert rows[0].gardener_version == EXTRACTION_VERSION
-            raw = session.exec(
-                select(RawInput).where(RawInput.raw_id == raw_id)
-            ).one()
+            raw = session.exec(select(RawInput).where(RawInput.raw_id == raw_id)).one()
             assert int((raw.extra or {}).get("extraction_passes", 0)) >= 1
     finally:
         engine.dispose()
