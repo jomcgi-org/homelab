@@ -2695,6 +2695,59 @@ def test_kg_provider_requires_confirmed_observation(monkeypatch):
     assert _KG_PROVIDER_WALLED() == (False, "confirmed_available")
 
 
+def _kg_grant_quota(grants):
+    from factory.orchestration import model_pool as pool
+
+    def window(used):
+        return {
+            "name": "primary",
+            "used_percent": used,
+            "resets_at": None,
+            "usable": True,
+        }
+
+    return pool.rollup_grants(
+        {},
+        {
+            name: {
+                "grant": name,
+                "provider": "codex",
+                "observed": True,
+                "exhausted": False,
+                "age_seconds": age,
+                "headline_used_percent": 10.0,
+                "windows": [window(10.0)],
+            }
+            for name, age in grants.items()
+        },
+        grants_complete=True,
+    )
+
+
+def test_kg_provider_admits_with_one_fresh_grant_beside_a_stale_one(monkeypatch):
+    from factory.orchestration import model_pool
+
+    monkeypatch.setattr(
+        model_pool,
+        "quota_summary",
+        lambda: _kg_grant_quota({"codex-cluster": 79960.9, "codex-b": 12.0}),
+    )
+    assert _KG_PROVIDER_WALLED() == (False, "confirmed_available")
+
+
+def test_kg_provider_defers_when_every_grant_is_stale(monkeypatch):
+    from factory.orchestration import model_pool
+
+    monkeypatch.setattr(
+        model_pool,
+        "quota_summary",
+        lambda: _kg_grant_quota({"codex-cluster": 79960.9, "codex-b": 2117.39}),
+    )
+    walled, reason = _KG_PROVIDER_WALLED()
+    assert walled is True
+    assert "stale_observation" in reason
+
+
 def test_an_unreadable_quota_never_defers_a_claim(monkeypatch):
     import factory.orchestration.model_pool as model_pool
 

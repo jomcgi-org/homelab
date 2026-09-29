@@ -99,6 +99,14 @@ def exhausted_percent() -> float:
 
 
 def max_quota_age_seconds() -> float:
+    """Freshness bound for quota observations used by the KG admission gate.
+
+    The egress sidecar's grant ranking treats observations older than its own
+    ``grantStaleAfter`` (15 minutes, not tunable) as unselectable, trying
+    fresh usable grants first. That bound must stay at or below this one:
+    the gate admits when at least one grant is fresh and permitting here,
+    which is sound only while the ranker never prefers a stale grant.
+    """
     return _env_float("SWARM_MODEL_POOL_QUOTA_MAX_AGE_SECONDS", 900.0)
 
 
@@ -356,6 +364,27 @@ def _confirmed_view_availability(
     return True, "confirmed_available"
 
 
+def _grant_stale_note(view: dict) -> str | None:
+    """Note a stale grant observation, or None when it is not provably stale.
+
+    Only a readable, finite, non-negative age past the freshness bound counts
+    as stale. Anything else (missing, NaN, negative) cannot prove staleness,
+    so the view stays on the fail-closed path: it is evaluated as-is and its
+    unknown age vetoes admission there.
+    """
+    age = view.get("age_seconds")
+    if (
+        not isinstance(age, (int, float))
+        or isinstance(age, bool)
+        or not math.isfinite(float(age))
+        or float(age) < 0.0
+    ):
+        return None
+    if float(age) > max_quota_age_seconds():
+        return f"stale_observation age {age:g}"
+    return None
+
+
 def confirmed_availability(
     model: str,
     quota: dict,
@@ -367,10 +396,14 @@ def confirmed_availability(
 
     General model-pool routing deliberately keeps its positive-evidence policy
     in :func:`availability`. KG admission uses this narrower fail-closed seam.
-    When multiple account grants are configured, every account must have a
-    fresh permitting observation because the egress ranker may select any of
-    them. Each account is evaluated as a whole, so windows from different
-    accounts are never combined to manufacture room.
+    When multiple account grants are configured, admission needs at least one
+    fresh permitting observation, and every fresh account is evaluated as a
+    whole, so windows from different accounts are never combined to
+    manufacture room. A merely idle (stale) grant is unselectable rather than
+    unconfirmed: the egress ranker tries fresh usable grants before stale
+    ones, so it neither permits nor vetoes admission. Unknown or exhausted
+    capacity still defers: unobserved grants, unusable inventories, and fresh
+    evidence of exhaustion all veto, as does a pool with no fresh grant left.
     """
     family = family_for(model)
     if family is None:
@@ -395,6 +428,8 @@ def confirmed_availability(
         return False, "grant_inventory_unusable"
     if isinstance(grant_views, list) and grant_views:
         reasons = []
+        skipped = []
+        evaluated = 0
         for view in grant_views:
             if not isinstance(view, dict):
                 reasons.append("grant_inventory_unusable")
@@ -405,6 +440,11 @@ def confirmed_availability(
                     f"grant {grant} unobserved" if grant else "grant unobserved"
                 )
                 continue
+            note = _grant_stale_note(view)
+            if note is not None:
+                skipped.append(f"grant {grant} {note}" if grant else note)
+                continue
+            evaluated += 1
             ok, reason = _confirmed_view_availability(
                 view, provider=provider, role=role, now=now
             )
@@ -412,6 +452,10 @@ def confirmed_availability(
                 reasons.append(f"grant {grant} {reason}" if grant else reason)
         if reasons:
             return False, "; ".join(reasons)
+        if evaluated == 0:
+            return False, "; ".join(skipped)
+        if skipped:
+            return True, "confirmed_available"
         return True, "all_grants_confirmed_available"
     if summary.get("observed") is not True:
         return False, "unobserved"
