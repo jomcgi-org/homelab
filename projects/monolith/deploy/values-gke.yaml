@@ -8,6 +8,11 @@ backend:
   autoscaling:
     enabled: false
 
+# The private /qwen chat page streams from FreeToken on node-4 through the
+# Tailscale egress Service (projects/platform-gke/tailscale/values.yaml).
+frontend:
+  qwenApiBase: "http://inference-bridge-freetoken.tailscale.svc.cluster.local:8090"
+
 tokenBroker:
   spiffe:
     enabled: false

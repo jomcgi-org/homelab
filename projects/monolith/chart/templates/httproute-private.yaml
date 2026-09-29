@@ -89,6 +89,17 @@ spec:
       backendRefs:
         - name: {{ include "monolith.fullname" . }}
           port: {{ .Values.cfIngress.private.servicePort | int }}
+    # Qwen chat on node-4: a long cold prompt streams for minutes.
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /private/qwen
+      timeouts:
+        request: 600s
+        backendRequest: 600s
+      backendRefs:
+        - name: {{ include "monolith.fullname" . }}
+          port: {{ .Values.cfIngress.private.servicePort | int }}
     # Long-lived Server-Sent Events stream; requires extended timeouts to prevent intermediate reaping.
     - matches:
         - path:
