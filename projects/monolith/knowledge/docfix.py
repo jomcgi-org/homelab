@@ -20,7 +20,9 @@ DOCFIX_ALLOWED_PATH_GLOBS = ("docs/**", "**/README.md", "**/ARCHITECTURE.md")
 DOCFIX_PROTECTED_PATH_GLOBS = (
     ".claude/**",
     "AGENTS.md",
+    "**/AGENTS.md",
     "**/skills/**",
+    "docs/agents/**",
     "docs/runbooks/**",
 )
 DOCFIX_REVIEW_JOB_PREFIX = "docfix-review:"

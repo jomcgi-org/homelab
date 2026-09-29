@@ -293,7 +293,7 @@ private import guard continues to enforce that exclusion.
 
 This is source and rendered-manifest state, not deployment evidence. The hub
 uses a separately published and pinned chart. No permission is live merely
-because this repository contains it, and this change makes no rollout claim.
+because this repository contains it.
 
 **Host-level exceptions, all named** (`kubectl get pods -A -o json`,
 filtered for `privileged`, `hostNetwork`, `hostPID`, and uid 0):
@@ -321,7 +321,7 @@ Cilium was chosen on the home cluster because the sidecar mesh blocked
 ordinary network policy and added a hop to every pod (ADR platform/012); the
 move to the GKE hub kept a Cilium-based dataplane but traded its policy CRDs
 and WireGuard for a managed one, an accepted cost recorded nowhere as a
-decision, which is why the inert templates above are still in the charts.
+decision.
 Guest egress is a proxy rather than a NIC because host-keyed injection at
 the sidecar bounds which host a credential reaches, and a guest that never
 holds the token cannot leak it into a snapshot (ADR embervm/033).
@@ -329,7 +329,7 @@ holds the token cannot leak it into a snapshot (ADR embervm/033).
 ## Secrets
 
 Every external credential enters the cluster as an `OnePasswordItem` CR
-synced by the 1Password Connect operator (41 items live on the hub). The
+synced by the 1Password Connect operator. The
 operator is one of two components installed by hand: Helm release `connect`
 in the `default` namespace, with no chart or values in this repo, and the
 ArgoCD bootstrap release, which ArgoCD then adopts through the `argocd`
@@ -521,7 +521,7 @@ a convention this document asks for and nothing enforces.
 | Public library image digests | `public_library_image_digest_guard_test` | live in CI |
 | Published doc content | `public_content.py` in the Format stage | live in CI, marker list only |
 | Retired ADR path guard | `bazel/tools/format/doc_links/check_doc_links.py` | live in CI |
-| STPA security rows carry `status` and `issue` | the `stpa` skill | skill-side, at authoring time |
+| STPA security rows carry `status` and `issue` | the validator in `docs/agents/stpa.md` BLOCK A | at authoring time |
 | `public_reader` grant, migration size, em-dashes | PreToolUse hooks in `.claude/settings.json`, `bazel/tools/hooks/` | Claude-side only; a hand edit or any other agent bypasses them |
 | Chart `version:` and `targetRevision:` moved on a branch | `bazel/tools/ci/chart_version_guard.py` in PR checks | every author; lowering a pin (the revert lever) is allowed |
 | `kubectl` read-only | `bazel/tools/hooks/block-kubectl-mutate.sh` for Claude's shell; `source_ratchet.py` for writes committed into scripts | no agent-identity RBAC yet, so another agent's shell is unguarded |
@@ -535,8 +535,7 @@ column above says nothing will do it for you:
   exception goes in the host-level table above with its reason.
 - CPU and memory requests and a memory limit.
 - What the pod reaches and what reaches it. On the hub only a Kubernetes
-  `NetworkPolicy` is enforceable; a `CiliumNetworkPolicy` template documents
-  intent and nothing more.
+  `NetworkPolicy` is enforceable.
 - Secrets only as `OnePasswordItem`; a CNPG role password is the one
   hand step and gets a note in `deploy/`.
 - Ingress as an `HTTPRoute` on the shared Gateway with an `ingress-tier`
@@ -574,7 +573,7 @@ which is why the list above states enforcement rather than intent.
 | MCP tool visibility | `projects/mcp/context-forge-gateway/deploy/values.yaml` (`tools.visibility`, teams) |
 | Workload identity issuance | `projects/platform/spire/values.yaml` (`clusterSPIFFEIDs`) |
 | Tailnet access | `projects/platform-gke/tailscale/values.yaml` (`apiServerProxyAdmins`, `egressServices`), `projects/monolith/chart/templates/service-tailnet.yaml` |
-| Pod network policy | none on the hub beyond the Context Forge redis rule; templates in `projects/{monolith,monolith-public,embervm,monolith-agents}/chart/templates/*policy*.yaml` are gated off in `values-gke.yaml` |
+| Pod network policy | none on the hub beyond the Context Forge redis rule; `projects/monolith/chart/templates/networkpolicy-egress.yaml` is gated off in `values-gke.yaml` |
 | Guest egress allowlist and credential swap | `projects/firecracker/substrate/egress-proxy/cmd/`, catalog in `projects/embervm/deploy/values-gke.yaml` |
 | Secrets | `OnePasswordItem` CRs per chart; operator is the `connect` Helm release outside git |
 | Sandbox | `projects/embervm/` (Firecracker), entry `projects/monolith/sandbox/client.py`; jailer gated on `noded.jailer.enabled` |

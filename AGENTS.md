@@ -1,87 +1,96 @@
 # AGENTS.md
 
-Instructions for every agent working in this repo, whatever the tool or
-model. There is deliberately no CLAUDE.md: Claude Code (v2.1.277+) reads this
-file natively and would ignore it if one existed. Which model does which work
-is decided by the factory, not here.
+Instructions for every agent working in this repo, whatever the tool or model.
+There is deliberately no CLAUDE.md: Claude Code reads this file natively. The
+factory decides which model does which work.
 
 A Kubernetes homelab at
 [jomcgi-org/homelab](https://github.com/jomcgi-org/homelab). The GKE hub
-(`homelab-hub`) has served every workload since 2026-08-31 and is the sole
-management plane. The home k3s fleet was dropped on 2026-09-18
-([#4964](https://github.com/jomcgi-org/homelab/issues/4964)); its checked-in
-configuration is residual, and no issue authorizes tearing it down.
-`projects/platform/ARCHITECTURE.md` has the shape. Services, operators and
-websites live under `projects/<name>/`, each colocating its Helm `chart/` with
-the `deploy/` config ArgoCD ships it from. Everything builds with Bazel (bzlmod)
-and deploys from Git. Go, Python, JavaScript and Starlark.
+(`homelab-hub`) runs every workload and is the only management plane.
+`projects/home-cluster/` is residual configuration: do not deploy to it, and do
+not tear it down without an issue. `projects/platform/ARCHITECTURE.md` has the
+shape. Services, operators and websites live under `projects/<name>/`, each
+colocating its Helm `chart/` with the `deploy/` config ArgoCD ships it from.
+Everything builds with Bazel (bzlmod) and deploys from Git. Go, Python,
+JavaScript and Starlark.
 
-Use `ls` for structure and `git log` for history. The rest of this file is what
-you would only learn by breaking it. Rules marked **(gated)** are enforced by
-CI or a git hook, so a violation fails loudly rather than silently. Gotchas
-marked "Gated" are caught by `bazel/tools/ci/source_ratchet.py`, which fails a
-PR that adds a new instance (existing ones are grandfathered). A genuinely safe
-line can opt out with `ratchet-allow: <rule> (<reason>)` in a comment.
+This file is what you would only learn by breaking it. **(gated)** rules fail
+loudly in CI or a git hook. Gotchas marked "Gated" are caught by
+`bazel/tools/ci/source_ratchet.py`, which fails a PR adding a new instance
+(existing ones are grandfathered); a genuinely safe line can opt out with
+`ratchet-allow: <rule> (<reason>)` in a comment.
 
 ## Invariants
 
 - **The cluster is GitOps, so `kubectl` is read-only.** Never `apply`, `patch`,
   `edit`, `scale`, `label` or `delete`, and never `helm install` or
-  `helm uninstall`. To change something, edit
-  `projects/<service>/deploy/values.yaml`, commit, push, and ArgoCD syncs it.
-  Gated for writes committed into scripts (`source_ratchet.py`) and for Claude
-  Code's shell (a hook); nothing else sees another agent's shell.
+  `helm uninstall`. Change `projects/<service>/deploy/values.yaml` through a
+  PR and ArgoCD syncs it. Gated for scripts (`source_ratchet.py`) and Claude
+  Code's shell (a hook) only.
 - **Never commit to main (gated: `protect-main.sh`).** Worktree, branch, PR.
-  The repo allows rebase merges only, through the GitHub merge queue
-  (`gh pr merge --auto` enqueues; the queue sets the strategy, so pass no
-  strategy flag). Never rebase a PR only because main
-  moved: the queue does that. See the `pr-workflow` skill.
+  Merging is covered under "Git and PRs" below.
 - **Never move a chart's `version:` or pinned `targetRevision:` forward (gated:
   `bazel/tools/ci/chart_version_guard.py`).** Main's publish computes the next
-  version after merge and `chart-version-bot` writes both lines back (ADR
-  platform/009), so a deploy lands one commit after the merge, not in it. If a
-  change has not rolled out, check that write-back commit landed first.
-  Lowering a pin is allowed: it is the revert lever.
+  version after merge and `chart-version-bot` writes both lines back, so a
+  deploy starts at that write-back commit: check it landed before assuming a
+  rollout failed. Lowering a pin is allowed: it is the revert lever.
 - **`ci` is the feedback loop, not PR CI.** Run it before pushing. If `ci` is
   not on your PATH (a sandboxed guest, say), PR CI is your test run and your
   task spec says how to deliver.
 - **Conventional Commits (gated: `commit-msg` hook).**
-- **No em-dashes in anything you write**: prose, comments, docs, commit
-  messages, PR bodies. Use a comma, colon, parentheses, or split the sentence.
-  Existing ones are grandfathered; do not churn files to strip them.
+- **No em-dashes in anything you write**, commits and PR bodies included. Use
+  a comma, colon or parentheses. Do not churn files to strip existing ones.
 - **GitHub Issues are the source of truth for outstanding work**, not committed
-  plan files. `docs/plans/` is retired. The domain's `ARCHITECTURE.md` records
-  a decision and its rationale; the issue records what is left to do.
+  plan files. The domain's `ARCHITECTURE.md` records a decision and its
+  rationale; the issue records what is left to do.
 - **Secrets come from the 1Password Operator** (`OnePasswordItem` CRD). Never
   hardcode one. Nothing is exposed to the internet directly: all traffic goes
   through Cloudflare.
 
 ## How to work
 
-- Any task that modifies tracked files runs in a dedicated git worktree on a
-  new branch, and ends as a pushed PR: ready for review when validation passes,
-  draft when it does not or a question is open. Report the PR URL and state.
-  If you cannot open the PR, stop and report the blocker; never leave an
-  uncommitted implementation or unrelated changes on the branch.
+- A task that modifies tracked files runs in a dedicated worktree on a new
+  branch and ends as a pushed PR: ready when validation passes, draft when it
+  does not or a question is open. Report the PR URL and state. If you cannot
+  open the PR, stop and report the blocker.
 - Reach for the simplest approach that holds. On a genuine design fork, put
   two or three options in front of Joe ranked by complexity with a
   recommendation, then wait. Skip that for config fixes, renames, and anything
   already scoped.
-- Completion claims are verified, not trusted: check the artifact (`git show
-  --stat`, re-read the file) before building on or reporting another agent's
-  work. A change that must deploy is done only when the rollout is verified
-  live: call the `verify_deployment` MCP tool (on both MCP surfaces) with the
-  app and, for a chart app, the chart version the write-back produced (for a
-  git-tracked app, nothing: `verified` with `reconciled_at` at least five
-  minutes after the merge is enough, past ArgoCD's cache of HEAD), poll while it says `in_progress`, and report its verdict.
-  `pr-workflow` has the rest of the checklist.
+- Verify completion claims (`git show --stat`, re-read the file) before
+  building on or reporting another agent's work.
+- A change that must deploy is done only when the rollout is verified live.
+  With the monolith MCP tools, call `verify_deployment` (its description has
+  the rules), poll while it says `in_progress`, and report its verdict.
+  Without them: the Application is Synced and Healthy, the pod rolled to the
+  new image, and the service answers. Never report success on a subset.
 - When debugging, state the hypothesis and run the one command that would
-  falsify it before writing any fix.
+  falsify it before writing any fix. On red CI, quote the real failing
+  assertion from the log before proposing a cause, and never retrigger a run
+  before reading it.
 - For site copy and CV prose, audit facts and flag unsupportable claims, but
   offer at most one draft: Joe writes the final wording.
 - Blocked on a decision only Joe can make while he may be away: send one
-  `monolith-monolith-agent-notify` line, if you have the MCP tools. Subagents report
-  blockers to their dispatcher instead.
+  `monolith-monolith-agent-notify` line, if you have the MCP tools. Subagents
+  report blockers to their dispatcher instead.
+
+## Git and PRs
+
+- Merge through the GitHub merge queue with `gh pr merge <n> --auto`. Pass no
+  strategy flag: the queue sets it (rebase only) and refuses `--rebase`. A
+  queued PR reads `autoMergeRequest: null`; check the queue with GraphQL
+  (`pullRequest(number:<n>){mergeQueueEntry{state}}`).
+- Never rebase a PR, or `gh pr update-branch`, only because main moved: the
+  queue does that. `DIRTY` or `CONFLICTING` is the one case to rebase yourself,
+  and `--auto` silently enqueues nothing while it lasts.
+- A red queue run ejects the PR. Read the failure, then re-enqueue.
+- Never push to a merged branch; start a new worktree. After a push, confirm
+  `gh pr view <n> --json headRefOid` equals `git rev-parse HEAD`.
+- Issues are titled `<area>: <summary>`, labelled `agent-ready` when an agent
+  can pick one up alone. Multi-part work gets a parent with sub-issues
+  (`gh api repos/jomcgi-org/homelab/issues/<parent>/sub_issues -F
+  sub_issue_id=<child database id>`; `-F`, because `-f` sends a string and
+  returns 422). Closing the issue records "shipped".
 
 ## Commands
 
@@ -99,21 +108,21 @@ helm template <rel> projects/<svc>/chart/ -f projects/<svc>/deploy/values.yaml
 `python`, `pnpm`, `node` and the formatters on PATH.
 
 - Use `ci`, not bare `bazel` or `bazelisk`: a Mac has no matching remote
-  executors and the results mislead. `bb remote` is allowed; `ci` is better.
-  Targeted `pytest` on hermetic, pure-Python files you edited is fine as an
-  advisory check.
+  executors. `bb remote` is allowed. Targeted `pytest` on pure-Python files
+  you edited is fine as an advisory check.
 - **Never pipe `ci` or `bb remote` output into a filter or discard it.** Run
   unpiped or `| tee` to a file. `ci test` has exited 0 without running
   anything (#4118): judge a run by its `Executed N out of M tests` line.
 - **BUILD generation is CI-only.** CI's format stage runs `//:gazelle` and
-  auto-commits, so a BUILD change arrives as a `style: auto-format` commit and
-  your next push needs a fetch and rebase first.
+  auto-commits a `style: auto-format` commit, so fetch and rebase before your
+  next push.
 - Image push happens only in CI on merge to main.
 
 ## Knowledge
 
 The knowledge graph (monolith, over MCP) is the shared memory across agents
-and sessions. If your tools include it:
+and sessions, and holds the evidence and incident history behind this repo's
+rules. If your tools include it:
 
 - **Search before investigating** (`search_knowledge`) anything that looks
   previously hit: a deploy that will not roll, a red gate, a wedged control
@@ -135,9 +144,9 @@ for another agent, assume it has no KG and put what it must know in the spec.
   `git != live` is correct there. Read the live value:
   `kubectl get application monolith -n argocd -o jsonpath='{.spec.sources[0].targetRevision}'`.
   Every other chart deploys off the git value.
-- **Never hand-pin `@sha256:` image digests in values files.** Build-time
-  pinning replaces tags; hand-pinned digests go stale into `ImagePullBackOff`.
-  Gated for this repo's own images; third-party digest pins are fine.
+- **Never hand-pin `@sha256:` digests for this repo's images in values
+  files.** Build-time pinning replaces tags; hand pins go stale into
+  `ImagePullBackOff`. Gated. Third-party digest pins are fine.
 - **Never hardcode a `.svc.cluster.local` URL.** Helm prepends the release
   name, so a rename silently breaks it. Read it from an env var set in
   `values.yaml` (`envOr("URL", "")`, no default). Gated.
@@ -145,8 +154,8 @@ for another agent, assume it has no KG and put what it must know in the spec.
   verbs.** A missing verb fails in prod as `Forbidden`, which dashboards show
   as a generic 5xx.
 - **Keep bulk data out of `chart/migrations/*.sql`.** The migrations ConfigMap
-  is applied client-side with a 256 KiB annotation cap; a seed breaks sync.
-  Seeds load out of band (`projects/monolith/hikes/seed/`).
+  has a 256 KiB client-side annotation cap; load seeds out of band
+  (`projects/monolith/hikes/seed/`).
 - **Grep the tests before changing a number.** TTLs, timeouts, `max_tokens`
   and retry counts are asserted; update the assertions in the same change.
 - **Images are apko plus `rules_apko`, never Dockerfiles**, amd64 only (every
@@ -157,49 +166,33 @@ for another agent, assume it has no KG and put what it must know in the spec.
   does not exist here. JS is pnpm plus `rules_js`. The
   `projects/monolith/frontend/` app is Svelte 5 runes only, with CSS imported
   from JavaScript, never bare `@import` package specifiers inside CSS.
-- **Cluster reads go through `kubectl` against the hub context**, or through
-  the monolith MCP's curated `k8s-*` tools and `verify_deployment` when your
-  tools include them; there is no separate Kubernetes or ArgoCD MCP server.
-  The ArgoCD UI has no route; Kargo's is at
-  `private.jomcgi.dev/app/kargo`. MCP topology: `projects/mcp/ARCHITECTURE.md`.
-- **New service:** copy a recent `deploy/` directory (`projects/monolith/deploy/`)
-  for the multi-source pattern, adjust names, then `ci regen`.
-
-## Test-writing traps
-
-- Nearly every subpackage under `projects/monolith/` is gazelle-excluded
-  (`grep gazelle:exclude projects/monolith/BUILD`): a new `*_test.py` there
-  needs a hand-written `py_test` in `projects/monolith/BUILD` or it never runs.
-- SQLite in tests: a file-backed database under `tmp_path`. An in-memory
-  StaticPool database is one connection and deadlocks concurrency tests.
-- SQLite returns naive datetimes where Postgres is tz-aware: assert
-  `isinstance(value, datetime)`, and coerce before comparing.
-- `build_app()` calls `logging.basicConfig(force=True)`, which removes
-  pytest's caplog handler: re-add it after `build_app`.
-- Mock async callables with async functions; a sync lambda fails only at
-  runtime.
-- Assert on ORM objects inside the session context; afterwards attribute
-  access lazy-loads and throws.
-- Never monkeypatch a builtin through a module attribute (`module.open`);
-  patch `builtins.open` or restructure the seam.
-
-## EmberVM invariants
-
-- Base snapshots clone guest process memory, so a restored guest is
-  bit-identical to the base. Restore-time triggers must derive from external
-  state the restore changed (device superblock, mount table), never from
-  in-process state.
-- The control plane's kv logger renders only whitelisted `@meta_keys`; a new
-  structured log field must be added to the whitelist or it is dropped.
+- **Cluster reads** use `kubectl` against the hub context, or the monolith
+  MCP's `k8s-*` tools and `verify_deployment`. The ArgoCD UI has no route;
+  Kargo's is `private.jomcgi.dev/app/kargo`. MCP topology:
+  `projects/mcp/ARCHITECTURE.md`.
+- **New service:** a chart and `deploy/` under `projects/<svc>/` (copy
+  `projects/monolith/deploy/` for the multi-source pattern), plus a hub
+  Application in `projects/gke-apps/<svc>/` listed in its `kustomization.yaml`.
+  `ci regen` does not create the hub Application.
 
 ## Where to look next
 
+Files under `docs/agents/` are procedures for specific jobs. Open one only
+when its row applies.
+
 | When | Read |
 |------|------|
+| Working under `projects/monolith/` or `projects/embervm/` | that directory's `AGENTS.md` |
+| A red CI run you need to diagnose | `docs/agents/ci-triage.md` |
+| Reviewing a finished PR diff | `docs/agents/review.md` |
+| Taking a feature from idea to merged (`/ship`) | `docs/agents/ship.md` |
+| Refreshing a system's STPA model | `docs/agents/stpa.md` |
+| Queueing or triaging drain-lane (`qwen-drain`) jobs | `docs/agents/drain-queue.md` |
+| Cutting BuildBuddy cache traffic | `docs/agents/buildbuddy-usage.md` |
 | Security-sensitive change | `docs/security.md`; `docs/THREAT-MODEL.md` for open findings |
 | Public tier: jomcgi.dev, monolith-public, `public_reader` data | `docs/runbooks/public-tier-checklist.md` |
 | ArgoCD OutOfSync, stuck rollout, "is my change live?" | `docs/runbooks/argocd-outofsync.md` |
-| Adding a service | `docs/contributing.md`, `docs/reference/services.md` |
+| Adding a service | "New service" above, `projects/platform/ARCHITECTURE.md` section 4, `docs/reference/services.md` |
 | Observability or alerting | `docs/observability.md`, `docs/reference/observability-alerting.md` |
 | Frontend or design: tokens, palette, motion, a11y | `.impeccable.md` |
 | Prose humans read: site copy, READMEs, runbooks, posts | `docs/writing.md` |
@@ -208,30 +201,18 @@ for another agent, assume it has no KG and put what it must know in the spec.
 | Build, CI, tooling, hooks, Semgrep | `bazel/ARCHITECTURE.md` |
 | Recording a decision | a `**Why.**` paragraph in the domain's ARCHITECTURE.md and a Direction row with its issue; no ADRs (#4667) |
 
-**Skills** (`.claude/skills/`, plain markdown procedures any agent can
-follow): `pr-workflow`, `ci-triage`, `ship`, `stpa`,
-`improve-buildbuddy-usage`, `qwen-queue`.
-
 **Runbooks** (`docs/runbooks/`) are explicit-only: open one when Joe names it,
 a row above points at it, or a task asks for it. Index:
 `docs/runbooks/README.md`.
 
-**Agents** (`.claude/agents/`): `reviewer` reviews a finished PR diff once, at
-the end, and cannot edit; `stpa-analyst` refreshes a system's safety model.
-The reviewer must not be the agent that wrote the diff.
-
-**Claude Code hooks** (`.claude/settings.json`) are fast-fail duplicates of the
-CI and git gates plus a few advisories. A rule that must hold for every author
-lives in CI or a git hook, never only there. Claude Code's local memory is
-private to one machine: treat it as a lead, and put anything another agent
-needs in the KG.
+**Claude Code hooks** (`.claude/settings.json`) duplicate CI and git gates to
+fail fast; a rule every author must follow lives in CI or a git hook.
 
 <!-- polylane:start -->
 ## Investigating production with Polylane
 
-[Polylane](https://polylane.com/?ref=github.onboarding-pr) is an AI production engineer: it watches deploys, telemetry, incidents, and the infrastructure this repository ships to, investigates problems as they happen, and proposes fixes as pull requests. It is connected to this repository and available to coding agents through the [Polylane MCP server](https://mcp.polylane.com/mcp).
-
-- If your tools include Polylane's MCP server, check it for questions about production behaviour (an error, a spike, a deploy, a missing signal): it may already hold evidence the code cannot show.
-- When debugging a failure, start from the incident or issue Polylane recorded: it carries the evidence an investigation already gathered.
-- Polylane reviews pull requests in this repository against the live infrastructure. Read its review comment before merging changes that touch production paths.
+If your tools include the [Polylane MCP server](https://mcp.polylane.com/mcp),
+check it for production-behaviour questions (an error, a spike, a deploy, a
+missing signal), and read its review comment before merging a PR that touches
+production paths.
 <!-- polylane:end -->

@@ -49,8 +49,7 @@ lag a few minutes) against the SeaweedFS side
 
 ## 2. Merge and roll the R2 flip (before the window)
 
-Enqueue #5462 (`gh pr merge 5462 --auto --rebase`). Done means live per the
-pr-workflow skill: merged, the chart write-back landed, monolith rolled
+Enqueue #5462 (`gh pr merge 5462 --auto`). Done means live per `AGENTS.md`: merged, the chart write-back landed, monolith rolled
 through Kargo, monolith-public rolled on its write-back, pods answer. Spot
 checks that prove the flip end to end:
 

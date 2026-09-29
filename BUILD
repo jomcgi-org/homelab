@@ -33,7 +33,7 @@ npm_link_all_packages(name = "node_modules")
 # gazelle:resolve go github.com/bazelbuild/bazel-gazelle/rule @gazelle//rule
 # gazelle:exclude .claude
 # Explicit-only agent procedures + helper scripts (not py packages; imports are
-# runtime/monolith paths Gazelle cannot resolve). Same class as .claude/skills.
+# runtime/monolith paths Gazelle cannot resolve).
 # gazelle:exclude docs/runbooks
 # gazelle:exclude docs/posts/figures
 
