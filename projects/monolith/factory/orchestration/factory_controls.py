@@ -2394,10 +2394,9 @@ def request_control(
             expected_version, "expected_version", 0, 2**63 - 1
         ),
         "task_id": _text(task_id, "task_id") if task_id is not None else None,
-        "receipt_id": _integer(receipt_id, "receipt_id", 1, 2**63 - 1)
-        if receipt_id is not None
-        else None,
     }
+    if receipt_id is not None:
+        request["receipt_id"] = _integer(receipt_id, "receipt_id", 1, 2**63 - 1)
     if (action in ("pause_task", "resume_task")) != (task_id is not None):
         raise ValueError("task_id is required only for task pause/resume")
     if action == "cancel_receipt":
