@@ -13,8 +13,17 @@ import (
 )
 
 const (
-	defaultCloneHold            = 30 * time.Second
-	defaultCloneStartupHeadroom = 20 * time.Second
+	defaultCloneHold            = 15 * time.Second
+	defaultCloneStartupHeadroom = 10 * time.Second
+	// sandboxGuestMaxTimeout mirrors maxTimeout in
+	// projects/firecracker/sandbox/guest-init/internal/handler/handler.go: the
+	// sandbox guest clamps a task's timeout_seconds to 25s (default 20s when
+	// omitted) and SIGKILLs the snippet at that wall clock, whatever the
+	// Workload's invocation.timeoutSeconds says. S1 asks for this ceiling.
+	sandboxGuestMaxTimeout = 25 * time.Second
+	// cloneGuestMargin is the slack S1 leaves between the end of a clone's hold
+	// and the guest's wall-clock kill, for interpreter start and the prints.
+	cloneGuestMargin = 5 * time.Second
 )
 
 func main() {
@@ -108,6 +117,9 @@ func loadConfig() (config, error) {
 	}
 	if cfg.cloneStartupHeadroom, err = durationEnv("S1_CLONE_STARTUP_HEADROOM", defaultCloneStartupHeadroom); err != nil {
 		return config{}, err
+	}
+	if cfg.cloneHold+cloneGuestMargin > sandboxGuestMaxTimeout {
+		return config{}, fmt.Errorf("S1_CLONE_HOLD %s must leave %s under the sandbox guest's %s wall-clock cap, or the guest kills the clone mid-hold", cfg.cloneHold, cloneGuestMargin, sandboxGuestMaxTimeout)
 	}
 	if cfg.cloneStartupHeadroom >= cfg.cloneHold {
 		return config{}, fmt.Errorf("S1_CLONE_STARTUP_HEADROOM must be shorter than S1_CLONE_HOLD to reject two serialized holds")

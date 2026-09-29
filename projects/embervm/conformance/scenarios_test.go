@@ -163,10 +163,17 @@ func TestTaskAndInvariantScenariosAgainstFakeControlPlane(t *testing.T) {
 				return
 			}
 			var request struct {
-				Code string `json:"code"`
+				Code           string `json:"code"`
+				TimeoutSeconds int    `json:"timeout_seconds"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			// Without an explicit timeout_seconds the sandbox guest kills the
+			// snippet at its 20s default, mid-hold.
+			if request.TimeoutSeconds != int(sandboxGuestMaxTimeout/time.Second) {
+				http.Error(w, "missing guest timeout_seconds", http.StatusBadRequest)
 				return
 			}
 			if cloneRequestCount.Add(1) == 2 {
@@ -323,6 +330,19 @@ func TestRunS5RejectsInvalidElixirResultsThroughTaskAPI(t *testing.T) {
 				t.Fatalf("S5 = %#v, want failure containing %q", got, test.wantDetail)
 			}
 		})
+	}
+}
+
+func TestS1CloneHoldFitsInsideSandboxGuestTimeout(t *testing.T) {
+	if defaultCloneHold+cloneGuestMargin > sandboxGuestMaxTimeout {
+		t.Fatalf("default clone hold %s plus %s margin exceeds the sandbox guest's %s wall-clock cap", defaultCloneHold, cloneGuestMargin, sandboxGuestMaxTimeout)
+	}
+	t.Setenv("EMBERVM_URL", "http://embervm.test")
+	t.Setenv("CHART_VERSION", "1.2.3")
+	t.Setenv("S1_CLONE_HOLD", "30s")
+	t.Setenv("S1_CLONE_STARTUP_HEADROOM", "20s")
+	if _, err := loadConfig(); err == nil || !strings.Contains(err.Error(), "wall-clock cap") {
+		t.Fatalf("loadConfig with a 30s hold = %v, want guest wall-clock cap rejection", err)
 	}
 }
 
