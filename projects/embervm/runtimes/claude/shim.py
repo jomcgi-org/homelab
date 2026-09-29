@@ -3815,6 +3815,9 @@ PI_BASE_URL = "https://api.meta.ai/v1"
 # verified against 1.0.3-R2198.1 on 2026-09-10. Its bundled roots cannot trust
 # the HTTPS interception lane, so plaintext through the sidecar is the only
 # working path. The sidecar injects the real key, leaving no guest credential.
+# 1.4.1-R4503.1 keeps the same transport settings surface (verified in the
+# guest: settings.json path, endpoint_transport, required MCP abort); the
+# bundled-roots behavior itself needs a live re-confirmation in prod.
 MUSE_BASE_URL = "http://api.meta.ai/v1"
 
 
@@ -4346,7 +4349,9 @@ class MuseProcess:
 
         Muse 1.0.3-R2198.1 was verified on 2026-09-10 to ignore every CA
         environment variable and the system trust store, trusting only its
-        bundled roots. The endpoint pin must therefore match the plaintext
+        bundled roots; 1.4.1-R4503.1 keeps the same settings surface and the
+        bundled-roots behavior needs a live re-confirmation in prod.
+        The endpoint pin must therefore match the plaintext
         --base-url routed through the sidecar, which injects the real key so
         the guest holds no credential. `auth` must stay "bearer": the
         api.meta.ai catalog entry has no injectAlwaysPaths, so the sidecar

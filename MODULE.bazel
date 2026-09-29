@@ -881,12 +881,12 @@ multiarch_http_file(
 # continuity). Version and sha256 come from the muse-stable channel document
 # at https://api.meta.ai/muse-code/channels/muse-stable and its manifest_url.
 # If Meta rotates this URL, the pinned fetch fails instead of silently using a
-# different binary. The Muse binary adds 264 MB to the claude-runtime base
+# different binary. The Muse binary adds 362 MB to the claude-runtime base
 # image.
 multiarch_http_file(
     name = "muse_cli",
-    amd64_sha256 = "75a68f98c437dfd17d264730c5bc72d57e5f1e18d10472a9f53261ffcc091352",
-    amd64_url = "https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=1.0.3-R2198.1&file=muse-x86-linux",
+    amd64_sha256 = "8b53c9cdbc025bc2d9068bc7016e2c1e51c3a0c608821da17528ad23be900a12",
+    amd64_url = "https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=1.4.1-R4503.1&file=muse-x86-linux",
     binary_name = "muse",
     package_dir = "/usr/local/bin",
 )
