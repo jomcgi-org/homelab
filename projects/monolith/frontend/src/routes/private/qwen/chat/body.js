@@ -34,4 +34,3 @@ export function upstreamBody(body) {
     chat_template_kwargs: { enable_thinking: body.enableThinking !== false },
   };
 }
-

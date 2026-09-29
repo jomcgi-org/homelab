@@ -23,7 +23,7 @@ describe("parseSseChunk", () => {
   });
 
   it("drops malformed frames and handles CRLF", () => {
-    const { events } = parseSseChunk("data: {bad\r\n\r\ndata: {\"c\":2}\r\n\r\n");
+    const { events } = parseSseChunk('data: {bad\r\n\r\ndata: {"c":2}\r\n\r\n');
     expect(events).toEqual([{ json: { c: 2 } }]);
   });
 });
