@@ -10,8 +10,11 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 import factory.orchestration.factory_controls as controls
 import factory.orchestration.work_items as work_items
+from factory.orchestration.factory_controls import INTAKE_ACTOR
 from factory.orchestration.factory_intake import (
+    _eligible_clause,
     admit_next,
+    admission_eligible,
     receive_issue,
     receipts_for_work,
     same_work,
@@ -117,6 +120,45 @@ def github_issue(number=1):
 def enable(policy):
     assert controls.set_control("configure", "operator", policy=policy)["ok"]
     assert controls.set_control("enable", "operator")["ok"]
+
+
+@pytest.mark.parametrize(
+    "issue_number,actor,intake_enabled,expected",
+    [
+        (7, "operator-subject", True, True),
+        (7, "operator-subject", False, True),
+        (7, INTAKE_ACTOR, False, True),
+        (9, "operator-subject", True, False),
+        (9, "operator-subject", False, False),
+        (9, INTAKE_ACTOR, True, True),
+        (9, INTAKE_ACTOR, False, False),
+    ],
+)
+def test_admission_eligibility_sql_matches_python(
+    db, issue_number, actor, intake_enabled, expected
+):
+    """#6483: the query predicate and the shared helper agree on every case."""
+    policy = {"issue_numbers": [7], "intake": {"enabled": intake_enabled}}
+    assert admission_eligible(policy, issue_number, actor) is expected
+    with Session(db) as session:
+        session.add(
+            FactoryReceipt(
+                repo="owner/repo",
+                issue_number=issue_number,
+                generation=0,
+                title="candidate",
+                body="",
+                url=f"https://github.com/owner/repo/issues/{issue_number}",
+                actor=actor,
+                state="queued",
+            )
+        )
+        session.commit()
+    with Session(db) as session:
+        found = session.exec(
+            select(FactoryReceipt).where(_eligible_clause(policy))
+        ).all()
+    assert [row.issue_number for row in found] == ([issue_number] if expected else [])
 
 
 def test_duplicate_receipt_preserves_first_payload_and_link_across_restart(

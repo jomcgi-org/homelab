@@ -2129,6 +2129,187 @@ def test_control_request_rejects_ambiguous_or_unsupported_actions(db, action, ta
         assert session.exec(select(FactoryAudit)).all() == []
 
 
+def queue_receipt(db, issue_number, state="queued", actor="operator-subject"):
+    with Session(db) as session:
+        session.add(
+            FactoryReceipt(
+                repo="owner/repo",
+                issue_number=issue_number,
+                generation=0,
+                title=f"issue {issue_number}",
+                body="",
+                url=f"https://github.com/owner/repo/issues/{issue_number}",
+                actor=actor,
+                state=state,
+            )
+        )
+        session.commit()
+        return (
+            session.exec(
+                select(FactoryReceipt).where(
+                    FactoryReceipt.issue_number == issue_number
+                )
+            )
+            .one()
+            .id
+        )
+
+
+def cancel_audits(db, action):
+    with Session(db) as session:
+        return session.exec(
+            select(FactoryAudit).where(FactoryAudit.action == action)
+        ).all()
+
+
+def test_cancel_receipt_settles_a_queued_receipt(db):
+    receipt_id = queue_receipt(db, 9)
+    version = controls.status()["version"]
+    result = controls.request_control(
+        "cancel_receipt",
+        "operator",
+        request_key="cancel-9",
+        expected_version=version,
+        receipt_id=receipt_id,
+    )
+    assert result["ok"] is True
+    assert result["state"] == "cancelled"
+    assert result["receipt_id"] == receipt_id
+    assert result["request_key"] == "cancel-9"
+    with Session(db) as session:
+        assert session.get(FactoryReceipt, receipt_id).state == "cancelled"
+    # The control itself did not move: cancelling a receipt changes no
+    # control state, so the operator's status version stays valid.
+    assert controls.status()["version"] == version
+    rows = cancel_audits(db, "cancel_receipt")
+    assert len(rows) == 1
+    assert rows[0].actor == "operator"
+    assert json.loads(rows[0].detail_json)["receipt_id"] == receipt_id
+    ledger = cancel_audits(db, "control_request")
+    assert len(ledger) == 1
+    assert ledger[0].actor == "operator"
+
+
+def test_cancel_receipt_replay_returns_the_original_acknowledgement(db):
+    receipt_id = queue_receipt(db, 9)
+    version = controls.status()["version"]
+    first = controls.request_control(
+        "cancel_receipt",
+        "operator",
+        request_key="cancel-9",
+        expected_version=version,
+        receipt_id=receipt_id,
+    )
+    assert first["ok"] is True
+    again = controls.request_control(
+        "cancel_receipt",
+        "operator",
+        request_key="cancel-9",
+        expected_version=version,
+        receipt_id=receipt_id,
+    )
+    assert again == first
+    assert len(cancel_audits(db, "cancel_receipt")) == 1
+    assert len(cancel_audits(db, "control_request")) == 1
+
+
+def test_cancel_receipt_rejects_key_reuse_and_stale_version(db):
+    first = queue_receipt(db, 9)
+    second = queue_receipt(db, 10)
+    version = controls.status()["version"]
+    controls.request_control(
+        "cancel_receipt",
+        "operator",
+        request_key="cancel",
+        expected_version=version,
+        receipt_id=first,
+    )
+    conflict = controls.request_control(
+        "cancel_receipt",
+        "operator",
+        request_key="cancel",
+        expected_version=version,
+        receipt_id=second,
+    )
+    assert conflict["reason"] == "conflicting_control_request"
+    stale = controls.request_control(
+        "cancel_receipt",
+        "operator",
+        request_key="cancel-other",
+        expected_version=version + 1,
+        receipt_id=second,
+    )
+    assert stale["reason"] == "control_version_changed"
+    with Session(db) as session:
+        assert session.get(FactoryReceipt, second).state == "queued"
+
+
+@pytest.mark.parametrize("state", ["admitted", "succeeded", "cancelled", "escalated"])
+def test_cancel_receipt_refuses_anything_but_queued(db, state):
+    receipt_id = queue_receipt(db, 9, state=state)
+    refused = controls.request_control(
+        "cancel_receipt",
+        "operator",
+        request_key=f"cancel-{state}",
+        expected_version=controls.status()["version"],
+        receipt_id=receipt_id,
+    )
+    assert refused["ok"] is False
+    assert refused["state"] == state
+    assert "only queued receipts can be cancelled" in refused["reason"]
+    with Session(db) as session:
+        assert session.get(FactoryReceipt, receipt_id).state == state
+
+
+def test_cancel_receipt_refuses_an_unknown_receipt(db):
+    refused = controls.request_control(
+        "cancel_receipt",
+        "operator",
+        request_key="cancel-ghost",
+        expected_version=controls.status()["version"],
+        receipt_id=999,
+    )
+    assert refused == {
+        "ok": False,
+        "reason": "unknown_receipt",
+        "receipt_id": 999,
+        "request_key": "cancel-ghost",
+        "task_id": None,
+        "acknowledged_at": refused["acknowledged_at"],
+    }
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"task_id": "task"},
+        {"receipt_id": None},
+    ],
+)
+def test_cancel_receipt_rejects_ambiguous_identity(db, kwargs):
+    with pytest.raises(ValueError):
+        controls.request_control(
+            "cancel_receipt",
+            "operator",
+            request_key="invalid",
+            expected_version=0,
+            **kwargs,
+        )
+    with Session(db) as session:
+        assert session.exec(select(FactoryAudit)).all() == []
+
+
+def test_cancel_receipt_rejects_a_receipt_id_on_other_actions(db):
+    with pytest.raises(ValueError):
+        controls.request_control(
+            "stop",
+            "operator",
+            request_key="invalid",
+            expected_version=0,
+            receipt_id=9,
+        )
+
+
 def test_automerge_delivery_pending_until_exact_trusted_rollout(db, policy):
     policy["auto_merge"] = True
     task = admitted(policy)

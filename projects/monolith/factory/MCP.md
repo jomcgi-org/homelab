@@ -36,7 +36,9 @@ actor in the body.
    policy-ineligible receipt will be admitted next.
 2. Call `factory_submit_issue` with an available repository, an existing open
    issue number and the intended generation. Use the policy's generation for
-   current work. Keep all three values unchanged when retrying.
+   current work. Keep all three values unchanged when retrying. An issue
+   outside the policy allowlist is refused with state `ineligible` and
+   creates no receipt, because such a receipt could never be admitted.
 3. Retain the returned `receipt_id`. `created=false` identifies an existing
    receipt, not a second submission. Intake preserves the original issue
    snapshot and returns before any eventual execution finishes.
@@ -63,7 +65,8 @@ turning those records into mutation authority.
 ## Apply controls
 
 Call `factory_control` with an explicit action, a new `request_key`, and
-`expected_version` from `factory_status`. Only task actions accept `task_id`.
+`expected_version` from `factory_status`. Only task actions accept `task_id`;
+only `cancel_receipt` accepts `receipt_id`.
 
 | Action | Effect |
 | --- | --- |
@@ -72,6 +75,7 @@ Call `factory_control` with an explicit action, a new `request_key`, and
 | `pause_task` | Fence new starts for an exact active task; its running workers continue. |
 | `resume_task` | Remove that active task's pause; never choose an escalation option. |
 | `stop` | Permanently fence the factory and request cancellation of owned work. |
+| `cancel_receipt` | Settle one queued receipt as cancelled; only queued receipts move. |
 
 A stop acknowledgement does not prove worker cessation or undo external
 effects. `enable` cannot undo `stop`. Inspect factory status for outstanding

@@ -1926,3 +1926,128 @@ def test_an_allowlisted_operator_receipt_still_holds_its_slot(db, monkeypatch):
         {**policy(labels=["agent-ready"]), "issue_numbers": [77]}, generation=0
     )
     assert admitted == []
+
+
+def test_intake_admits_a_delivery_candidate_when_the_lane_holds_only_ineligible_queued_receipts(
+    db, monkeypatch
+):
+    """#6483 acceptance: a lane full of ineligible queued receipts still admits."""
+    with Session(db) as session:
+        for number in (77, 78):
+            session.add(
+                FactoryReceipt(
+                    repo="owner/repo",
+                    issue_number=number,
+                    generation=0,
+                    title="operator submission",
+                    body="body",
+                    url=f"https://github.com/owner/repo/issues/{number}",
+                    actor="operator-subject",
+                    task_class="bug-fix",
+                    state="queued",
+                )
+            )
+        session.commit()
+    fake_pages(monkeypatch, [issue(1, ["agent-ready"])])
+    admitted = intake_loop.intake_tick(policy(labels=["agent-ready"]), generation=0)
+    assert [row["receipt"]["issue_number"] for row in admitted] == [1]
+    with Session(db) as session:
+        states = session.exec(
+            select(FactoryReceipt.state).where(
+                FactoryReceipt.issue_number.in_((77, 78))
+            )
+        ).all()
+    assert list(states) == ["queued", "queued"]
+
+
+def test_a_lane_full_skip_in_the_per_candidate_recheck_writes_a_throttled_idle(
+    db, monkeypatch
+):
+    """#6483: a lane that fills mid-tick is visible on the board, once an hour."""
+    with Session(db) as session:
+        session.add(
+            FactoryReceipt(
+                repo="owner/repo",
+                issue_number=999,
+                generation=0,
+                title="held delivery",
+                body="",
+                url="https://github.com/owner/repo/issues/999",
+                actor=intake_loop.ACTOR,
+                state="queued",
+            )
+        )
+        session.commit()
+    fake_pages(monkeypatch, [issue(1, ["agent-ready"])])
+    calls = []
+
+    def scripted_room(policy, rows, lanes=None):
+        # Another replica fills the lane during the GitHub sweep: open at
+        # selection, closed at the per-candidate re-read, on every tick.
+        calls.append(1)
+        if len(calls) % 2:
+            return {"delivery": 1, "advisory": 1}
+        return {"delivery": 0, "advisory": 0}
+
+    monkeypatch.setattr(intake_loop, "open_lanes", scripted_room)
+    assert intake_loop.intake_tick(policy(labels=["agent-ready"]), generation=0) == []
+    rows = audits(db, "intake_idle")
+    assert len(rows) == 1
+    detail = json.loads(rows[0].detail_json)
+    assert detail["reason"] == "lane_full"
+    assert detail["lane"] == "delivery"
+    assert detail["held"] == {"delivery:queued": 1}
+    # A second tick inside the throttle window re-hits the skip but writes
+    # nothing more.
+    release_sweep(db)
+    assert intake_loop.intake_tick(policy(labels=["agent-ready"]), generation=0) == []
+    assert len(audits(db, "intake_idle")) == 1
+
+
+def test_a_cancelled_ineligible_receipt_frees_its_lane_but_not_its_issue(
+    db, monkeypatch
+):
+    """#6483: cancelling clears the slot; recurrence still needs a new generation.
+
+    A cancelled receipt holds no lane slot, so other issues admit. The same
+    issue at the same generation stays excluded (cooling down, then
+    already_received): cancel is lane hygiene, not a retry.
+    """
+    with Session(db) as session:
+        session.add(
+            FactoryReceipt(
+                repo="owner/repo",
+                issue_number=77,
+                generation=0,
+                title="operator submission",
+                body="body",
+                url="https://github.com/owner/repo/issues/77",
+                actor="operator-subject",
+                task_class="bug-fix",
+                state="queued",
+            )
+        )
+        session.commit()
+        receipt_id = (
+            session.exec(
+                select(FactoryReceipt).where(FactoryReceipt.issue_number == 77)
+            )
+            .one()
+            .id
+        )
+    cancelled = controls.request_control(
+        "cancel_receipt",
+        "operator",
+        request_key="cancel-77",
+        expected_version=controls.status()["version"],
+        receipt_id=receipt_id,
+    )
+    assert cancelled["ok"] is True
+    fake_pages(monkeypatch, [issue(1, ["agent-ready"])])
+    admitted = intake_loop.intake_tick(policy(labels=["agent-ready"]), generation=0)
+    assert [row["receipt"]["issue_number"] for row in admitted] == [1]
+    # The admission re-opens the sweep, so the next tick really re-reads 77.
+    fake_pages(monkeypatch, [issue(77, ["agent-ready"])])
+    assert intake_loop.intake_tick(policy(labels=["agent-ready"]), generation=0) == []
+    detail = json.loads(audits(db, "intake_idle")[-1].detail_json)
+    assert detail["excluded"] == {"cooldown": 1}

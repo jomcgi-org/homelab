@@ -2322,6 +2322,42 @@ def set_control(
         }
 
 
+def _cancel_queued_receipt(db, receipt_id: int, actor: str) -> dict:
+    """Settle one queued receipt as cancelled, or refuse with the reason.
+
+    The operator lane-hygiene lever for #6483: a queued receipt that can
+    never admit stops counting anywhere once cancelled, because only queued,
+    admitted, uncertain and landing receipts hold lane slots. Only queued
+    receipts move; anything else is already owned by the lane or settled,
+    and cancelling it would rewrite history the board still shows.
+    """
+    row = db.get(FactoryReceipt, receipt_id)
+    if row is None:
+        return {"ok": False, "reason": "unknown_receipt", "receipt_id": receipt_id}
+    if row.state != "queued":
+        return {
+            "ok": False,
+            "reason": (
+                f"receipt is {row.state}, only queued receipts can be cancelled"
+            ),
+            "receipt_id": receipt_id,
+            "state": row.state,
+        }
+    row.state = "cancelled"
+    row.updated_at = _now()
+    db.add(row)
+    _audit(
+        db,
+        actor,
+        "cancel_receipt",
+        receipt_id=row.id,
+        repo=row.repo,
+        issue_number=row.issue_number,
+        generation=row.generation,
+    )
+    return {"ok": True, "state": "cancelled", "receipt_id": row.id}
+
+
 def request_control(
     action: str,
     actor: str,
@@ -2329,6 +2365,7 @@ def request_control(
     request_key: str,
     expected_version: int,
     task_id: str | None = None,
+    receipt_id: int | None = None,
 ) -> dict:
     """Apply a version-bound operator request once through the control owner.
 
@@ -2337,6 +2374,8 @@ def request_control(
     newer command has since changed the factory. It never reapplies the action.
     Task resume only unpauses active work here: selecting an escalation's
     recommendation is a separate decision and needs its own exact identity.
+    Cancelling a queued receipt settles the receipt without changing control
+    state or bumping the control version.
     """
     if action not in (
         "enable",
@@ -2344,6 +2383,7 @@ def request_control(
         "pause_task",
         "resume_task",
         "stop",
+        "cancel_receipt",
     ):
         raise ValueError("unsupported requested control")
     request = {
@@ -2354,9 +2394,19 @@ def request_control(
             expected_version, "expected_version", 0, 2**63 - 1
         ),
         "task_id": _text(task_id, "task_id") if task_id is not None else None,
+        "receipt_id": _integer(receipt_id, "receipt_id", 1, 2**63 - 1)
+        if receipt_id is not None
+        else None,
     }
     if (action in ("pause_task", "resume_task")) != (task_id is not None):
         raise ValueError("task_id is required only for task pause/resume")
+    if action == "cancel_receipt":
+        if task_id is not None:
+            raise ValueError("task_id is not used by cancel_receipt")
+        if receipt_id is None:
+            raise ValueError("receipt_id is required for cancel_receipt")
+    elif receipt_id is not None:
+        raise ValueError("receipt_id is required only for cancel_receipt")
     with _locked_session() as (db, control):
         previous = db.exec(
             select(FactoryAudit.detail_json).where(
@@ -2377,6 +2427,8 @@ def request_control(
                 "state": control.state,
                 "version": control.version,
             }
+        elif action == "cancel_receipt":
+            result = _cancel_queued_receipt(db, receipt_id, actor)
         else:
             # Supplying the locked session deliberately uses the active-task
             # branch of set_control, never its automatic escalation decision.
