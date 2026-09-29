@@ -49,6 +49,11 @@ kind: Application
 metadata:
   name: hub
   namespace: argocd
+  annotations:
+    # hub-root syncs this object with prune off; this also stops a manual
+    # prune sync of hub-root (or deleting root/) from removing hub, which
+    # would cascade to every Application on the cluster.
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
 spec:
   project: default
   source:

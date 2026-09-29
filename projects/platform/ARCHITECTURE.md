@@ -26,9 +26,10 @@ with spread rules was rejected as the least stable shape; a tiny on-demand
 seat for a few singletons was rejected on complexity per dollar saved. One
 on-demand core pool plus Spot bricks accepts that stateful EmberVM work stays
 on Spot and recovers from its export, and that the core pool needs a manual
-resize if the non-brick footprint outgrows one node. The committed,
-hand-applied root trades a reviewable record of the cluster's root of trust
-for one deliberate `kubectl apply` per root change.
+resize if the non-brick footprint outgrows one node. The root deploys
+on merge through `hub-root`, which costs one hand-applied parent that should
+almost never change; to hand-edit `hub` in an incident, delete `hub-root`
+first or its selfHeal reverts the edit.
 
 ---
 
