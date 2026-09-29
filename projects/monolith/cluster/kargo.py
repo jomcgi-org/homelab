@@ -13,7 +13,13 @@ narrower than the Kargo UI:
   ``requiredSoakTime``), approved for the Stage by a person, or from a
   Warehouse the Stage subscribes to directly. It never approves Freight, so it
   cannot skip a gate a person has not waived.
-- It refuses while a Promotion is running, rather than queueing behind it.
+- It refuses while any Promotion for the Stage is running or queued, rather
+  than queueing behind it (a queued one for newer Freight would otherwise run
+  first and leave the Stage on the older version).
+- It refuses a version older than the Stage runs or last promoted unless the
+  caller says ``rollback``: on a ``direct`` Stage every Freight the Warehouse
+  ever found is available, so an agent working from a stale verdict could
+  otherwise roll production back without meaning to.
 - The steps and vars are the Stage's own ``promotionTemplate``, exactly what
   auto-promotion would have run.
 """
@@ -27,6 +33,7 @@ from typing import Any
 from shared import rollout
 
 API_VERSION = "kargo.akuity.io/v1alpha1"
+_FINISHED = {"Succeeded", "Failed", "Errored", "Aborted"}
 
 _DURATION_PART = re.compile(r"(\d+(?:\.\d+)?)(ms|h|m|s)")
 _DURATION_UNITS = {"h": 3600.0, "m": 60.0, "s": 1.0, "ms": 0.001}
@@ -71,6 +78,33 @@ def _soaked(
     return max(t for t in (longest, current, timedelta(0)) if t is not None) >= required
 
 
+def _origin_key(origin: dict[str, Any]) -> tuple[str, str]:
+    return (str(origin.get("kind") or "Warehouse"), str(origin.get("name") or ""))
+
+
+def _floor(
+    stage: dict[str, Any],
+    freights: list[dict[str, Any]],
+    stage_name: str,
+    chart: str | None,
+) -> str | None:
+    """The newest version the Stage runs or last promoted successfully."""
+    candidates = [
+        rollout.freight_version(f, chart)
+        for f in freights
+        if stage_name in ((f.get("status") or {}).get("currentlyIn") or {})
+    ]
+    last = (stage.get("status") or {}).get("lastPromotion") or {}
+    if ((last.get("status") or {}).get("phase")) == "Succeeded":
+        candidates.append(
+            rollout.freight_version(
+                last.get("freight") or (last.get("status") or {}).get("freight"), chart
+            )
+        )
+    versions = [(parsed, v) for v in candidates if v and (parsed := rollout.semver(v))]
+    return max(versions)[1] if versions else None
+
+
 def _available(
     stage: dict[str, Any], freight: dict[str, Any], stage_name: str, now: datetime
 ) -> str | None:
@@ -79,8 +113,13 @@ def _available(
     if stage_name in (status.get("approvedFor") or {}):
         return None
     verified = status.get("verifiedIn") or {}
+    origin = freight.get("origin") or {}
     reasons = []
     for requested in (stage.get("spec") or {}).get("requestedFreight") or []:
+        wanted = (requested or {}).get("origin") or {}
+        if origin and wanted and _origin_key(origin) != _origin_key(wanted):
+            # This entry requests a different Warehouse's Freight.
+            continue
         sources = (requested or {}).get("sources") or {}
         if sources.get("direct"):
             return None
@@ -95,10 +134,10 @@ def _available(
         missing = [s for s in upstream if s not in ready]
         soak = f" and soaked for {sources['requiredSoakTime']}" if required else ""
         reasons.append(f"not verified{soak} in {', '.join(missing) or 'any upstream'}")
-    detail = "; ".join(reasons) or "the Stage requests no Freight"
+    detail = ", and ".join(reasons) or "the Stage requests no Freight"
     return (
         f"{detail}, and not approved for {stage_name}. Approving Freight past its "
-        "gate is a person's decision; do it in the Kargo UI"
+        "gate is a person's decision, made in the Kargo UI"
     )
 
 
@@ -110,17 +149,40 @@ def plan_promotion(
     stage_name: str,
     chart: str | None,
     version: str,
+    promotions: list[dict[str, Any]] = (),
+    rollback: bool = False,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """The Promotion that re-runs ``stage_name`` for this chart version."""
+    """The Promotion that re-runs ``stage_name`` for this chart version.
+
+    ``promotions`` is the namespace's Promotions, used to refuse while one for
+    this Stage is running or queued.
+    """
     if not isinstance(stage, dict):
         raise PromotionRefused(f"stage {stage_name!r} not found in {namespace}")
     status = stage.get("status") or {}
     current = status.get("currentPromotion")
+    unfinished = [
+        (p.get("metadata") or {}).get("name")
+        for p in promotions
+        if isinstance(p, dict)
+        and (p.get("spec") or {}).get("stage") == stage_name
+        and (p.get("status") or {}).get("phase") not in _FINISHED
+    ]
     if isinstance(current, dict) and current.get("name"):
+        unfinished.insert(0, current["name"])
+    if unfinished:
         raise PromotionRefused(
-            f"Promotion {current['name']} is still running on {stage_name}; wait "
-            "for it to finish (verify_deployment shows its step)"
+            f"Promotion {unfinished[0]} is still running or queued on {stage_name}. "
+            "Wait for it to finish (verify_deployment shows its step)"
+        )
+
+    floor = _floor(stage, freights, stage_name, chart)
+    want = rollout.semver(version)
+    if not rollback and floor and want and want < rollout.semver(floor):
+        raise PromotionRefused(
+            f"{stage_name} already runs or last promoted {floor}, so promoting "
+            f"{version} is a rollback. Pass rollback=True if that is intended"
         )
 
     matches = [

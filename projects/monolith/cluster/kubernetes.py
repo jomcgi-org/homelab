@@ -561,6 +561,18 @@ class KubernetesClient:
         )
         return {"app": name, "synced": True, "prune": prune, "dry_run": dry_run}
 
+    async def list_kargo_promotions(self, namespace: str) -> list[dict]:
+        """The Promotions in one Kargo Project namespace."""
+        api = await self._ensure_client()
+        custom = client.CustomObjectsApi(api)
+        result = await custom.list_namespaced_custom_object(
+            group="kargo.akuity.io",
+            version="v1alpha1",
+            namespace=namespace,
+            plural="promotions",
+        )
+        return result.get("items") or []
+
     async def create_kargo_promotion(
         self, namespace: str, body: dict, dry_run: bool = False
     ) -> dict:

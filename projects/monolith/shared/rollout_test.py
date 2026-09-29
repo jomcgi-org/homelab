@@ -598,3 +598,30 @@ def test_approved_freight_ignores_a_failed_upstream():
     )
     assert result["verdict"] == IN_PROGRESS
     assert "eligible for prod" in _check(result, "kargo")["detail"]
+
+
+def test_one_of_availability_ignores_a_failed_second_upstream():
+    failed = _promotion("0.547.0", "Failed", message="gate")
+    stage = _stage(upstream=["a", "b"])
+    result = verdict(
+        _kargo_app(),
+        expected_revision="0.547.0",
+        kargo={
+            "stage": stage,
+            "upstream": {"b": _dev(last=failed)},
+            "freights": [_freight("0.547.0", verified=["a"])],
+        },
+    )
+    assert result["verdict"] == IN_PROGRESS
+    assert "eligible for prod" in _check(result, "kargo")["detail"]
+    stage["spec"]["requestedFreight"][0]["sources"]["availabilityStrategy"] = "All"
+    result = verdict(
+        _kargo_app(),
+        expected_revision="0.547.0",
+        kargo={
+            "stage": stage,
+            "upstream": {"b": _dev(last=failed)},
+            "freights": [_freight("0.547.0", verified=["a"])],
+        },
+    )
+    assert result["verdict"] == FAILED

@@ -266,10 +266,13 @@ async def _kargo_context(
             continue_token=None,
         )
         stage_obj = await _get_stage(observer, namespace, stage)
-        upstream = {
-            name: await _get_stage(observer, namespace, name)
-            for name in rollout.upstream_stages(stage_obj or {})
-        }
+        upstream = {}
+        for name in rollout.upstream_stages(stage_obj or {}):
+            try:
+                upstream[name] = await _get_stage(observer, namespace, name)
+            except InvalidObservationRequest:
+                # An unreadable upstream name only loses its explanation.
+                upstream[name] = None
         freights = await observer.list_unprojected(freight_request)
     except InvalidObservationRequest as exc:
         return {"error": str(exc)}

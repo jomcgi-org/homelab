@@ -41,7 +41,7 @@ def _freight(version="0.6.0", verified=None, approved=(), current=None, name="f1
     }
 
 
-def _plan(stage, freights, version="0.6.0"):
+def _plan(stage, freights, version="0.6.0", **kwargs):
     return plan_promotion(
         stage,
         freights,
@@ -50,6 +50,7 @@ def _plan(stage, freights, version="0.6.0"):
         chart="embervm",
         version=version,
         now=NOW,
+        **kwargs,
     )
 
 
@@ -125,3 +126,56 @@ def test_refuses_a_stage_without_steps_and_an_unreadable_soak():
     bad = _stage(sources={"stages": ["dev"], "requiredSoakTime": "soon"})
     with pytest.raises(PromotionRefused, match="cannot read soak time"):
         _plan(bad, [_freight()])
+
+
+def test_refuses_a_rollback_unless_asked():
+    running = _freight("0.6.1", name="newer", current={"prod": {}})
+    with pytest.raises(PromotionRefused, match="already runs or last promoted 0.6.1"):
+        _plan(_stage(sources={"direct": True}), [running, _freight()])
+    body = _plan(_stage(sources={"direct": True}), [running, _freight()], rollback=True)
+    assert body["spec"]["freight"] == "f1"
+
+
+def test_last_successful_promotion_is_a_floor_too():
+    stage = _stage(sources={"direct": True})
+    stage["status"]["lastPromotion"] = {
+        "name": "prod.x",
+        "freight": {"charts": [{"repoURL": REPO, "version": "0.7.0"}]},
+        "status": {"phase": "Succeeded"},
+    }
+    with pytest.raises(PromotionRefused, match="rollback"):
+        _plan(stage, [_freight()])
+    stage["status"]["lastPromotion"]["status"]["phase"] = "Failed"
+    assert _plan(stage, [_freight()])["spec"]["freight"] == "f1"
+
+
+def test_refuses_while_another_promotion_for_the_stage_is_queued():
+    queued = {
+        "metadata": {"name": "prod.q"},
+        "spec": {"stage": "prod"},
+        "status": {"phase": "Pending"},
+    }
+    other_stage = {"metadata": {"name": "dev.q"}, "spec": {"stage": "dev"}}
+    done = {
+        "metadata": {"name": "prod.done"},
+        "spec": {"stage": "prod"},
+        "status": {"phase": "Errored"},
+    }
+    with pytest.raises(PromotionRefused, match="prod.q is still running or queued"):
+        _plan(_stage(), [_freight()], promotions=[done, other_stage, queued])
+    assert _plan(_stage(), [_freight()], promotions=[done, other_stage])
+
+
+def test_direct_counts_only_for_its_own_warehouse():
+    stage = _stage(sources={"direct": True})
+    stage["spec"]["requestedFreight"][0]["origin"] = {"kind": "Warehouse", "name": "a"}
+    stage["spec"]["requestedFreight"].append(
+        {"origin": {"kind": "Warehouse", "name": "b"}, "sources": {"stages": ["dev"]}}
+    )
+    from_b = _freight(verified={})
+    from_b["origin"] = {"kind": "Warehouse", "name": "b"}
+    with pytest.raises(PromotionRefused, match="not verified in dev"):
+        _plan(stage, [from_b])
+    from_a = _freight(verified={})
+    from_a["origin"] = {"kind": "Warehouse", "name": "a"}
+    assert _plan(stage, [from_a])["spec"]["freight"] == "f1"

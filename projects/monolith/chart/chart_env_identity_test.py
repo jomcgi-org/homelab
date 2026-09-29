@@ -554,7 +554,7 @@ _DEFAULT_KARGO_PROMOTE_RULES = [
     {
         "apiGroups": ["kargo.akuity.io"],
         "resources": ["promotions"],
-        "verbs": ["create"],
+        "verbs": ["list", "create"],
     },
     {"apiGroups": ["kargo.akuity.io"], "resources": ["stages"], "verbs": ["promote"]},
 ]

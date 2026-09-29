@@ -1075,3 +1075,67 @@ async def test_sync_argocd_app_dry_run_mode(k8s_client):
     assert kwargs["body"]["operation"]["sync"]["prune"] is False
     assert result["dry_run"] is True
     assert result["prune"] is False
+
+
+def _kargo_patches(mock_custom):
+    return (
+        patch("cluster.kubernetes.config.load_incluster_config"),
+        patch("cluster.kubernetes.ApiClient", return_value=MagicMock()),
+        patch("cluster.kubernetes.client.CustomObjectsApi", return_value=mock_custom),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dry_run, kwargs", [(True, {"dry_run": "All"}), (False, {})])
+async def test_create_kargo_promotion_maps_dry_run(k8s_client, dry_run, kwargs):
+    mock_custom = MagicMock()
+    mock_custom.create_namespaced_custom_object = AsyncMock(
+        return_value={"metadata": {"name": "prod.x"}}
+    )
+    a, b, c = _kargo_patches(mock_custom)
+    with a, b, c:
+        created = await k8s_client.create_kargo_promotion(
+            "kargo-embervm", {"spec": {}}, dry_run=dry_run
+        )
+    assert created["metadata"]["name"] == "prod.x"
+    mock_custom.create_namespaced_custom_object.assert_awaited_once_with(
+        group="kargo.akuity.io",
+        version="v1alpha1",
+        namespace="kargo-embervm",
+        plural="promotions",
+        body={"spec": {}},
+        **kwargs,
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_kargo_context_reads_upstream_stages_and_splits_404(k8s_client):
+    prod = {"spec": {"requestedFreight": [{"sources": {"stages": ["dev", "qa"]}}]}}
+
+    async def get_stage(**kwargs):
+        if kwargs["name"] == "prod":
+            return prod
+        if kwargs["name"] == "dev":
+            return {"metadata": {"name": "dev"}}
+        raise ApiException(status=404)
+
+    mock_custom = MagicMock()
+    mock_custom.get_namespaced_custom_object = AsyncMock(side_effect=get_stage)
+    mock_custom.list_namespaced_custom_object = AsyncMock(
+        return_value={"items": [{"metadata": {"name": "f1"}}]}
+    )
+    a, b, c = _kargo_patches(mock_custom)
+    with a, b, c:
+        context = await k8s_client.get_kargo_context("kargo-embervm", "prod")
+    assert context == {
+        "stage": prod,
+        "upstream": {"dev": {"metadata": {"name": "dev"}}, "qa": None},
+        "freights": [{"metadata": {"name": "f1"}}],
+    }
+
+    mock_custom.get_namespaced_custom_object = AsyncMock(
+        side_effect=ApiException(status=403)
+    )
+    a, b, c = _kargo_patches(mock_custom)
+    with a, b, c, pytest.raises(ApiException):
+        await k8s_client.get_kargo_context("kargo-embervm", "prod")
