@@ -747,15 +747,18 @@ def test_empty_assertions_write_sentinel(session):
     raw = _raw(session, "agent-report")
 
     applied = apply_extraction(session, raw.raw_id, _result([]))
+    corrected = apply_extraction(session, raw.raw_id, _result([]), correction=True)
 
     assert applied["atoms"] == []
-    row = session.exec(
+    assert corrected["failed"] is False
+    rows = session.exec(
         select(AtomRawProvenance).where(
             AtomRawProvenance.raw_fk == raw.id,
             AtomRawProvenance.derived_note_id == "no-new-notes",
         )
-    ).one()
-    assert row.gardener_version == EXTRACTION_VERSION
+    ).all()
+    assert len(rows) == 1
+    assert rows[0].gardener_version == EXTRACTION_VERSION
 
 
 def test_apply_is_idempotent_for_same_lane_version(session, monkeypatch):

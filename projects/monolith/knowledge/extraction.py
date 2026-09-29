@@ -18,7 +18,6 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import bindparam, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlmodel import Session, select
 
 from core.github import GITHUB_REPO
@@ -1168,12 +1167,10 @@ def _insert_no_new_notes_pending(session: Session, raw: RawInput) -> None:
     attempt already committed the pending row for this raw, and the
     partial unique index knowledge.atom_raw_provenance_pending rejects
     the duplicate, which wedged the drain job. Skip the write when the
-    row is already visible in this session (this also keeps SQLite, whose
-    create_all tables lack the partial index, at exactly one row), and
-    otherwise insert with ON CONFLICT DO NOTHING against that index so a
-    concurrent drain racing past the check still converges. Both dialects
-    render the same statement shape (the entities lane already branches
-    this way), so SQLite unit tests and Postgres behave alike.
+    row is already visible in this session. On Postgres, insert with ON
+    CONFLICT DO NOTHING against the partial index so a concurrent drain
+    racing past the check still converges. SQLite create_all tables lack
+    that index, so they use the presence check and an ordinary insert.
     """
     pending = session.exec(
         select(AtomRawProvenance.id).where(
@@ -1185,14 +1182,21 @@ def _insert_no_new_notes_pending(session: Session, raw: RawInput) -> None:
     ).first()
     if pending is not None:
         return
+    if session.get_bind().dialect.name != "postgresql":
+        session.add(
+            AtomRawProvenance(
+                raw_fk=raw.id,
+                derived_note_id="no-new-notes",
+                gardener_version=EXTRACTION_VERSION,
+            )
+        )
+        return
     table = AtomRawProvenance.__table__
-    dialect = session.get_bind().dialect.name
-    insert = sqlite_insert if dialect == "sqlite" else pg_insert
     # Pass created_at and retry_count explicitly: a Core INSERT does not
     # run the model's Python-side default_factory, and only Postgres has
     # a server default for created_at.
     session.execute(
-        insert(table)
+        pg_insert(table)
         .values(
             raw_fk=raw.id,
             derived_note_id="no-new-notes",
