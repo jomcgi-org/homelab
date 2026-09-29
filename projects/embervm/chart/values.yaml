@@ -486,8 +486,12 @@ conformance:
     pullPolicy: IfNotPresent
   runInterval: 30m
   readyWait: 15m
-  cloneHold: 30s
-  cloneStartupHeadroom: 20s
+  # The sandbox guest SIGKILLs a task at its own wall clock (20s default, 25s
+  # max via timeout_seconds; firecracker/sandbox/guest-init handler.go),
+  # independent of the Workload's timeoutSeconds. S1 requests the 25s max, so
+  # the hold must stay at or below 20s; the runner refuses a longer one.
+  cloneHold: 15s
+  cloneStartupHeadroom: 10s
   taskWorkload: sandbox-python
   sessionWorkload: pi-runtime
   elixirWorkload: sandbox-elixir

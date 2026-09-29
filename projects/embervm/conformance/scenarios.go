@@ -283,7 +283,10 @@ func runS1(ctx context.Context, cfg config, client *controlPlaneClient, suiteSta
 				cfg.cloneHold.Seconds(),
 				"guest-to-host:"+token,
 			)
-			body, err := json.Marshal(map[string]string{"code": code})
+			body, err := json.Marshal(map[string]any{
+				"code":            code,
+				"timeout_seconds": int(sandboxGuestMaxTimeout / time.Second),
+			})
 			if err != nil {
 				results <- cloneInvocation{label: label, token: token, err: err}
 				return
@@ -326,6 +329,7 @@ func runS1(ctx context.Context, cfg config, client *controlPlaneClient, suiteSta
 		var guest struct {
 			ExitCode int    `json:"exit_code"`
 			Stdout   string `json:"stdout"`
+			Error    string `json:"error"`
 		}
 		if err := json.Unmarshal(result.response.body, &guest); err != nil {
 			return scenarioVerdict{Verdict: verdictFail, Detail: fmt.Sprintf("POST %s for %s returned invalid guest response: %v", path, label, err)}
@@ -339,7 +343,7 @@ func runS1(ctx context.Context, cfg config, client *controlPlaneClient, suiteSta
 			return scenarioVerdict{Verdict: verdictFail, Detail: fmt.Sprintf("cross-route detected: %s returned peer token %q in stdout=%q", label, peerToken, truncate(guest.Stdout, maxErrorBody))}
 		}
 		if guest.ExitCode != 0 || !strings.Contains(guest.Stdout, "host-to-guest:"+result.token) || !strings.Contains(guest.Stdout, "guest-to-host:"+result.token) {
-			return scenarioVerdict{Verdict: verdictFail, Detail: fmt.Sprintf("%s did not return its bidirectional marker: exit_code=%d stdout=%q", label, guest.ExitCode, truncate(guest.Stdout, maxErrorBody))}
+			return scenarioVerdict{Verdict: verdictFail, Detail: fmt.Sprintf("%s did not return its bidirectional marker: exit_code=%d guest_error=%q stdout=%q", label, guest.ExitCode, guest.Error, truncate(guest.Stdout, maxErrorBody))}
 		}
 	}
 	reapDelay, finalLiveVMs, err := waitForWorkloadVMsAtMost(ctx, client, cfg.taskWorkload, liveBefore)
