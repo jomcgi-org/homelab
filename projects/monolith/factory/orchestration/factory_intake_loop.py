@@ -219,6 +219,25 @@ def _idle(detail: dict) -> None:
     _throttled("intake_idle", detail)
 
 
+def _slot_holders(rows, policy: dict) -> list:
+    """Receipts that really hold a lane slot for this intake tick.
+
+    A queued receipt holds a slot only if admit_next could admit it: one
+    intake created itself, or one whose issue is on the policy allowlist.
+    An operator receipt outside the allowlist can never admit, so counting it
+    let four such receipts fill a delivery lane and stall intake with no
+    audit (#6483).
+    """
+    allowlist = set(policy.get("issue_numbers") or ())
+    return [
+        row
+        for row in rows
+        if row.state != "queued"
+        or row.actor == INTAKE_ACTOR
+        or row.issue_number in allowlist
+    ]
+
+
 def _listing_due(now: datetime) -> bool:
     """Whether this tick may spend GitHub reads on a fresh sweep.
 
@@ -468,14 +487,17 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
         now = _now()
         today = now - timedelta(hours=24)
         with _locked_session() as (db, _control):
-            held = db.exec(
-                select(FactoryReceipt).where(
-                    FactoryReceipt.generation == generation,
-                    FactoryReceipt.state.in_(
-                        ("queued", "admitted", "uncertain", "landing")
-                    ),
-                )
-            ).all()
+            held = _slot_holders(
+                db.exec(
+                    select(FactoryReceipt).where(
+                        FactoryReceipt.generation == generation,
+                        FactoryReceipt.state.in_(
+                            ("queued", "admitted", "uncertain", "landing")
+                        ),
+                    )
+                ).all(),
+                policy,
+            )
             room = open_lanes(policy, held, lanes)
             if not any(room.values()):
                 return []
@@ -823,14 +845,17 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
             # is still the real gate; this only stops the lane queueing receipts
             # it already knows it cannot admit.
             with _locked_session() as (db, _control):
-                held = db.exec(
-                    select(FactoryReceipt).where(
-                        FactoryReceipt.generation == generation,
-                        FactoryReceipt.state.in_(
-                            ("queued", "admitted", "uncertain", "landing")
-                        ),
-                    )
-                ).all()
+                held = _slot_holders(
+                    db.exec(
+                        select(FactoryReceipt).where(
+                            FactoryReceipt.generation == generation,
+                            FactoryReceipt.state.in_(
+                                ("queued", "admitted", "uncertain", "landing")
+                            ),
+                        )
+                    ).all(),
+                    policy,
+                )
                 room = open_lanes(policy, held, lanes)
             if not room.get(candidate["lane"]):
                 continue
