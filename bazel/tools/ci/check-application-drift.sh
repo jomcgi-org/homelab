@@ -76,7 +76,7 @@ rendered_path, context, root_path = sys.argv[1], sys.argv[2], sys.argv[3]
 
 declared = {}
 self_managed = []
-missing_root = None
+missing_roots = []
 with open(rendered_path) as fh:
     for doc in yaml.safe_load_all(fh):
         if not doc or doc.get("kind") != "Application":
@@ -89,7 +89,7 @@ with open(rendered_path) as fh:
 # outside its own drift check in the first place.
 for path in root_path.split():
     if not os.path.exists(path):
-        missing_root = path
+        missing_roots.append(path)
         continue
     with open(path) as fh:
         for doc in yaml.safe_load_all(fh):
@@ -163,9 +163,9 @@ live_raw = subprocess.run(
 live = {a["metadata"]["name"]: a for a in json.loads(live_raw)["items"]}
 
 problems = []
-if missing_root:
+for path in missing_roots:
     problems.append(
-        f"{missing_root}: the root Application file is missing, so the root was "
+        f"{path}: this root-level Application file is missing, so it was "
         "not compared"
     )
 for name, doc in sorted(declared.items()):

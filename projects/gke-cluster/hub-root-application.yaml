@@ -13,7 +13,13 @@
 # prune is OFF and there is no resources finalizer, deliberately. Moving or
 # emptying root/ must never delete `hub`: `hub` prunes every Application on the
 # cluster, so losing it would cascade into everything. Deleting `hub-root` also
-# leaves `hub` in place.
+# leaves `hub` in place. `hub` additionally carries Prune=false,Delete=false so
+# a manual prune sync of hub-root cannot remove it either.
+#
+# INCIDENTS: selfHeal here reverts any hand edit to `hub` within seconds. To
+# pause or patch `hub` by hand, first
+#     kubectl --context <gke-context> -n argocd delete application hub-root
+# (safe: no finalizer, `hub` stays), then re-apply this file when git is fixed.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
