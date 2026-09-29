@@ -64,7 +64,7 @@ The format stage runs `bazel run //bazel/tools/format:format` plus the format-st
 
 Runner cost is dominated by cold snapshot restores, so the action keeps one shared workspace, removes Bazel's sandbox stash before the runner snapshots the VM, and disables the stash under `--config=ci`. `resource_requests` are part of the snapshot key, so changing them invalidates every snapshot and they change rarely. Two further actions (BDD future features, Buck2 rules) have been commented out since 2026-08-09 to cut runner spin-ups; nothing required depends on them. `gh run` sees none of this: PR and queue checks live on BuildBuddy, and a red one is re-triggered from there.
 
-The repository remains rebase-only, the merge queue remains the authoritative pre-merge gate, and a PR is never rebased by hand merely for BEHIND. The details are in the `pr-workflow` skill.
+The repository remains rebase-only, the merge queue remains the authoritative pre-merge gate, and a PR is never rebased by hand merely for BEHIND. The details are in `AGENTS.md`, "Git and PRs".
 
 (see: `buildbuddy.yaml`, `bazel/remote.bazelrc`, `.bazelrc` under `common:ci`, `bazel/images/push/push-changed.sh`, `bazel/helm/write-back-versions.sh`, `bazel/helm/chart-version.sh`)
 

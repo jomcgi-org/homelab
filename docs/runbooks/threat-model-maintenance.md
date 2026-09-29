@@ -21,7 +21,7 @@ prose models the original decision called for; no architecture update is needed.
    into a fresh `$STPA_TMP`, add or update the UCA, unsafe-feedback, or
    hazard row there (`status` and `issue` on every security row; a tracked
    unsafe state with no single attacking action goes on the hazard row),
-   then run the `stpa` skill's BLOCK A and BLOCK B. The skill only reads
+   then run BLOCK A and BLOCK B from `docs/agents/stpa.md`. The blocks only read
    fragments from `$STPA_TMP` or `origin/main`, so an edit left in the
    working tree is never picked up. Never hand-edit `STPA.md`.
 3. Re-rank `docs/THREAT-MODEL.md`: bold claim, issue link, one plain
@@ -47,7 +47,7 @@ session memory over the code.
 
 ## Add a security lens to a domain
 
-Run the `stpa` skill with the `security` lens for that system. It consumes
+Follow `docs/agents/stpa.md` with the `security` lens for that system. It consumes
 committed `stpa/structure.json`, produces `stpa/security.json`, and renders
 the lens into `STPA.md`. Every security row requires `status`, which must be
 one of `enforced-prod`, `enforced-dev`, `shipped-off`, `designed`, or `none`.

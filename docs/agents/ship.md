@@ -1,11 +1,6 @@
----
-name: ship
-description: Drive a feature end to end through planning, architecture rationale, failing BDD, implementation, and the STPA lifecycle. Use when the user says `/ship "<feature>"`, asks to "ship a feature", or wants a feature taken from idea to merged with a safety assessment.
----
+# Ship a feature
 
-# /ship
-
-Take a feature from idea to merged. `/ship "<feature>"`.
+Take a feature from idea to merged, when asked to "ship" one (`/ship "<feature>"`).
 
 You are the orchestrator in the main conversation. You hold the phase sequence,
 decide which phases this change actually needs, own the git operations and the
@@ -18,24 +13,19 @@ have to.
 | Work | Who |
 |------|-----|
 | Implementation of a specified task | any implementing agent: a subagent, or the factory via `monolith-factory-submit-issue` |
-| Review of the finished diff | the `reviewer` agent, which has no `Write` or `Edit` tool |
-| Safety model refresh | the `stpa-analyst` agent |
+| Review of the finished diff | an agent following `docs/agents/review.md`, never the author |
+| Safety model refresh | an agent following `docs/agents/stpa.md` |
 
-Which model runs each role is not this skill's decision. Give each agent the
+Which model runs each role is not this document's decision. Give each agent the
 full brief in one shot: an agent that has to come back for clarification costs
 more than the spec would have. Fan out independent tasks in the same turn
-rather than serializing them. The reviewer must not be the agent that wrote
-the diff.
-
-Do **not** open bare `bazel` on the Mac, and do not treat PR CI as the first test
-run: `ci` before push so Workflows mostly cache-hit. Branch and merge mechanics
-live in `pr-workflow`.
+rather than serializing them. Branch and merge mechanics are in `AGENTS.md`.
 
 ## Phase 0: clarify
 
 If the feature, its scope, its success criteria, or the systems it touches are
-unclear, ask 2 to 4 questions (`AskUserQuestion`). Restate the agreed direction
-in one sentence, then proceed.
+unclear, ask 2 to 4 questions. Restate the agreed direction in one sentence,
+then proceed.
 
 ## Which phases this change needs
 
@@ -69,8 +59,7 @@ stated reason is a decision; a silently skipped phase is a gap.
 
 Open or reuse a GitHub tracking issue (`enhancement`, plus `agent-ready` if
 autonomously pickable). The issue body is the source of truth for what is left to
-do. Multi-part work gets a parent with sub-issues. Never `docs/plans/`, which is
-retired and hook-blocked. Always a worktree and a feature branch.
+do. Multi-part work gets a parent with sub-issues.
 
 On resume: `gh issue view <n>`, find the first unchecked box, continue there.
 Closing the issue is how "shipped" is recorded.
@@ -97,7 +86,7 @@ Closing the issue is how "shipped" is recorded.
 - [ ] `ci` green on the worktree
 - [ ] PR body contains `Closes #<this issue>` (or the parent, if a sub-issue)
 - [ ] No chart version in the diff (`Chart.yaml` `version:` / `targetRevision:` are written post-merge)
-- [ ] `reviewer` agent run on the full diff; findings acted on or answered
+- [ ] Review (`docs/agents/review.md`) run on the full diff; findings acted on or answered
 - [ ] Human review requested
 
 ## Notes / blockers
@@ -123,34 +112,36 @@ accepted but not yet built, with its issue. Rebase-merge on green.
 Specs define done. `bdd_test(future = True, ...)` with `@covers_*` markers from
 `shared/testing/markers.py`. The gating `pr-checks` run excludes `future`-tagged
 tests, and no CI action runs them (the "BDD future features" action is disabled
-in `buildbuddy.yaml`). Merging red specs is intentional. This is implementation work, so it goes to an implementing agent.
+in `buildbuddy.yaml`). Merging red specs is intentional. This is implementation
+work, so it goes to an implementing agent.
 
 ## Phase 4: implement
 
 1. Dispatch an implementing agent per task, in parallel where tasks are
    independent.
 2. Run `ci` and commit with Conventional Commits.
-3. Dispatch `reviewer` **once**, on the full diff, at the end. Not per task.
+3. Dispatch a review (`docs/agents/review.md`) **once**, on the full diff, at
+   the end. Not per task.
 4. Check every Phase 4 gate before calling the PR ready.
 5. Human review only, no auto-merge. Report the PR URL and stop.
 
 ## Phase 5: STPA
 
-For each touched system meeting the criteria above, dispatch `stpa-analyst` with
-the system directory and what changed. Rebase-merge on green, record the systems
+For each touched system meeting the criteria above, dispatch an agent to follow
+`docs/agents/stpa.md` with the system directory, the lens and what changed. Rebase-merge on green, record the systems
 on the issue.
 
 ## Merge cadence
 
-Phases 2, 3 and 5 can `gh pr merge --auto` (no strategy flag), followed through to merged.
-Phase 4 is human review only. The merge queue handles main moving; never
-rebase a PR only because main moved.
+Phases 2, 3 and 5 can enqueue with `gh pr merge --auto`, followed through to
+merged. Phase 4 is human review only.
 
 ## Stop conditions
 
 - Phase 0 clarification unanswered: ask and stop (Discord if Joe may be away).
 - Phase 4 gates incomplete: finish them before requesting human review.
 - Phase 4 PR awaiting human review with gates green: stop, report the URL.
-- CI red on a real failure outside scope: stop and diagnose (`ci-triage`).
+- CI red on a real failure outside scope: stop and diagnose
+  (`docs/agents/ci-triage.md`).
 - All lifecycle boxes checked and the issue closed: report shipped, with links.
 - User says stop: stop.

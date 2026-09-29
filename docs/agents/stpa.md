@@ -1,15 +1,12 @@
----
-name: stpa
-description: Generate or refresh the STPA safety model for one system and lens (logic/security/governance), written colocated as <system>/stpa/<lens>.json with a merged render as <system>/STPA.md. Takes `system` (directory) and optional `lens` (logic|security|governance, default logic). The analysis is deterministic, findings extracted as JSON, rendered by an embedded jq renderer, so runs produce small reviewable diffs. Use when updating a system's STPA analysis, auditing unsafe control actions, or refreshing on schedule.
----
+# STPA refresh
 
-Generate/update the STPA safety model for ONE system and ONE lens. Findings are
+Generate or update the STPA safety model for ONE system and ONE lens. Findings are
 written to committed JSON fragments under `<system>/stpa/`, and a merged
 `<system>/STPA.md` is rendered deterministically from all present fragments.
 
 The `system` argument is the directory to analyze (e.g. `projects/monolith`).
 The `lens` argument is `logic`, `security`, or `governance` (default `logic` if
-not given; ask if ambiguous). The analysis scope is that subtree and the control
+not given). The analysis scope is that subtree and the control
 structure it grounds in.
 
 You are a systems-safety analyst applying STPA (System-Theoretic Process Analysis)
@@ -65,12 +62,10 @@ A system may model only one view; omit ones you cannot ground; do not invent.
 
 ## Steps
 
-1. **Determine system and lens.** If not given, ask (defaults: system =
-   `projects/monolith`, lens = `logic`).
+1. **Determine system and lens.** If not given, ask; a subagent with nobody to
+   ask uses the defaults (system = `projects/monolith`, lens = `logic`).
 2. **Check for prior fragments.** If `<system>/stpa/` exists, read them (prior
-   analysis, semantic keys to reuse). If not but `<system>/STPA.md` exists (legacy
-   single-lens), extract structure.json + logic.json from its tables (preserve keys
-   verbatim; minimizes diff).
+   analysis, semantic keys to reuse).
 3. **Ground in code.** List the system subtree; read READMEs, architecture docs,
    roadmap. Read code units that issue or receive commands. Get commit:
    `git rev-parse --short HEAD`.
@@ -98,14 +93,15 @@ A system may model only one view; omit ones you cannot ground; do not invent.
 11. **Wait for the merge** by running BLOCK C VERBATIM as a background Bash
     command (or under `Monitor`), never in the foreground: it polls for up to
     60 minutes, longer than a foreground command may run. You are notified when
-    it exits. Report the PR URL and its result line.
+    it exits.
 
-## Migration: existing single-analysis STPA.md
+## Report back
 
-Existing `<system>/STPA.md` files (no `stpa/` dir) are reverse-extracted: parse the
-tables, emit structure.json + logic.json preserving every semantic key verbatim.
-The logic lens's first run on such a system extracts once, then owns structure
-normally. Minimizes diff churn.
+The PR URL and its result line, the deltas as added, changed or removed hazards
+and constraints by semantic key, and an explicit note if this lens surfaced a
+hazard the change does not yet mitigate: that is the finding most worth
+escalating. When a refresh changes nothing, say so and leave the files alone.
+Commit, push and open the PR only through BLOCK B, never by hand.
 
 ## Remediation work goes to GitHub Issues
 

@@ -43,15 +43,25 @@ The established pattern (see `hikes/jobs.py`, `ships/retention.py`):
    CronWorkflow. `register_job(..., heavy=True)` is legacy metadata and does not
    serialize execution.
 
-## Test fixtures use SQLite; datetimes come back naive
+## Test-writing traps
 
-Model/endpoint tests use SQLite + `SQLModel.metadata.create_all` (not
-migrations). SQLite has no tz-aware type, so a `TIMESTAMPTZ` column round-trips
-as a **naive** datetime in tests, while production (Postgres) is tz-aware.
-
-- Assert `isinstance(value, datetime)`, not `value.tzinfo is not None`.
-- When comparing loaded datetimes for equality (sets, `==`), coerce first:
-  `dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)`.
-- Serialize datetimes through an `_as_utc`/`_iso` helper (see `ships/router.py`)
-  so JSON output and ETags are offset-consistent across SQLite tests and
-  Postgres prod.
+- Nearly every subpackage here is gazelle-excluded
+  (`grep gazelle:exclude projects/monolith/BUILD`): a new `*_test.py` needs a
+  hand-written `py_test` in `projects/monolith/BUILD` or it never runs.
+- Model and endpoint tests use SQLite plus `SQLModel.metadata.create_all`, not
+  migrations. Use a file-backed database under `tmp_path`: an in-memory
+  StaticPool database is one connection and deadlocks concurrency tests.
+- SQLite has no tz-aware type, so a `TIMESTAMPTZ` column comes back **naive**
+  in tests while Postgres is tz-aware. Assert `isinstance(value, datetime)`,
+  not `value.tzinfo is not None`; coerce before comparing
+  (`dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)`); serialize through
+  an `_as_utc`/`_iso` helper (see `ships/router.py`) so JSON and ETags match
+  across SQLite and Postgres.
+- `build_app()` calls `logging.basicConfig(force=True)`, which removes
+  pytest's caplog handler: re-add it after `build_app`.
+- Mock async callables with async functions; a sync lambda fails only at
+  runtime.
+- Assert on ORM objects inside the session context; afterwards attribute
+  access lazy-loads and throws.
+- Never monkeypatch a builtin through a module attribute (`module.open`);
+  patch `builtins.open` or restructure the seam.

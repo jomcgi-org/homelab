@@ -1,8 +1,3 @@
----
-name: ci-triage
-description: Diagnose a red CI run in this repo. Use when a BuildBuddy Workflows check fails, a PR is red, `ci test` fails, or the user asks why the build broke, what the test failure means, or whether a failure is flaky.
----
-
 # CI triage
 
 CI is **BuildBuddy Workflows** (`buildbuddy.yaml`), not GitHub Actions, and every
@@ -18,34 +13,27 @@ merge-queue candidate, in stages:
 
 ## Quote before hypothesizing
 
-When CI is red, the first action is to fetch the actual log:
+When CI is red, the first action is to fetch the actual log. With the
+BuildBuddy MCP tools:
 
-1. `mcp__buildbuddy__get_invocation` with the `commitSha` selector, which skips
-   the invocation-ID lookup.
+1. `get_invocation` with the `commitSha` selector, which skips the
+   invocation-ID lookup.
 2. `get_target` to find the failing targets.
 3. `get_log` for the trace.
 
 **Quote the real assertion error or exception verbatim before proposing a
 cause.** Do not raise infrastructure (BuildBuddy outages, flaky runners, RBE
-hiccups) until a real test failure has been ruled out: an unverified "it's just
-flaky" costs several wasted iterations.
+hiccups) until a real test failure has been ruled out.
 
-## Green that proves nothing
-
-`ci test` has exited 0 without testing anything (#4118): the remote runner can
-fail setup, and a fully cached run re-executes nothing. Judge a run by its
-log, not its exit code: find the `Executed N out of M tests` summary and grep
-the full output for `FAILED`. Never pipe `ci` output straight into `tail`,
-`head`, or `grep`; a hook blocks it. `| tee` the run to a file first, then
-grep the saved log.
+A green exit proves nothing on its own: judge a run by its `Executed N out of
+M tests` line (`AGENTS.md`, Commands).
 
 ## Retrigger discipline
 
 Never retrigger a red run before reading the failing log and naming the
-failure. One known shape: a red `pr-checks` run whose bazel summary looks green is
-the Elixir mix test genrule failing inside the build (ordering flake, #4391).
-Do not blind-retrigger it; if the same failure reappears, treat it as new
-evidence, not the same flake.
+failure. A red `pr-checks` run whose bazel summary looks green is usually the
+Elixir mix test genrule failing inside the build. A known flake that recurs is
+still new evidence, not the same flake.
 
 ## Reproduce locally
 
@@ -57,10 +45,8 @@ merge-queue test:
 ci test -- //...
 ```
 
-The default affected run and explicit full run both use the hosted Linux runner
-and PR Test flags, so their test actions share the remote cache. Bare `bazel` or
-`bazelisk` on the Mac will not reproduce anything useful: there are no darwin
-workflow executors and the platforms are wrong.
+Both runs use the hosted Linux runner and PR test flags, so their test actions
+share the remote cache.
 
 ## Failures with a known shape
 

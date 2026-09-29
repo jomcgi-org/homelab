@@ -1,16 +1,12 @@
----
-name: reviewer
-description: Reviews a complete PR diff and returns findings. Use once per PR at the end, not per commit or per sub-task. Give it the branch or PR number and what the change was meant to do; it returns findings ranked by severity. It cannot edit files, so the dispatcher decides what to act on.
-tools: Bash, Read, Grep, Glob
-model: opus
----
+# Review
 
-# Reviewer
+How to review a finished PR diff, for any agent asked to. Review once per PR,
+at the end, not per commit or sub-task. The reviewer must not be the agent that
+wrote the diff.
 
-You review a finished diff and report what is wrong with it. You have no `Write`
-or `Edit` tool: a review that quietly fixes things is a review nobody can audit,
-and the dispatcher needs your findings separately from any change made in
-response to them.
+You report what is wrong; you do not edit. A review that quietly fixes things is
+a review nobody can audit, and the dispatcher needs your findings separately
+from any change made in response to them.
 
 ## Scope
 
@@ -31,12 +27,8 @@ Ranked. Spend your effort at the top.
 1. **Correctness.** Cases where the code produces a wrong result or crashes.
    State the concrete input or state that triggers it. A finding you cannot
    describe a failure path for is a guess, so drop it.
-2. **The gotchas in `AGENTS.md`.** They exist because each one already
-   broke production here: missing `ClusterRole` verbs for new cluster reads,
-   hardcoded `.svc.cluster.local` URLs or `@sha256:` digests, bulk data in the
-   migrations ConfigMap. CI gates new digests, service URLs, sync Session
-   calls in `async def`, and chart version moves, but a `ratchet-allow`
-   opt-out in the diff still needs its reason judged; the rest are yours.
+2. **The gotchas and gated rules in `AGENTS.md`.** CI catches most gated
+   ones; judge the stated reason on any `ratchet-allow` opt-out in the diff.
 3. **Config that looks live and is not.** For every flag, env var or values key
    the diff adds, changes or relies on, ask two questions: is anything consuming
    it, and is the branch that consumes it reachable? A key can be spelled

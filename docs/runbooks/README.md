@@ -2,7 +2,7 @@
 
 Operational and agent procedures that are **explicit-only**.
 
-Unlike `.claude/skills/` (a small auto-matched set, listed in `AGENTS.md`), runbooks are **not** selected by
+Unlike the job procedures in `docs/agents/` (each listed with its trigger in `AGENTS.md`), runbooks are **not** selected by
 description matching. Open only when:
 
 1. Joe asks for that procedure by name or intent, or

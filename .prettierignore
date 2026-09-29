@@ -20,9 +20,10 @@
 # the sole authority (same rationale as docs-manifest.json above).
 **/chat/orchestrator_bundle.md
 
-# STPA fragments and rendered output are deterministically produced by the stpa
-# skill's jq renderer. Reformatting would diverge from the renderer output and
-# churn on every scheduled regeneration; the renderer is the sole authority.
+# STPA fragments and rendered output are deterministically produced by the jq
+# renderer in docs/agents/stpa.md. Reformatting would diverge from the renderer
+# output and churn on every scheduled regeneration; the renderer is the sole
+# authority.
 **/STPA.md
 **/stpa/*.json
 

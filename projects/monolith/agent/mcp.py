@@ -183,7 +183,12 @@ async def monolith_agent_trigger_job(name: str) -> dict:
 async def monolith_agent_list_routine_jobs(
     due_only: bool = False, kind: str | None = None
 ) -> dict:
-    """List routine_jobs rows, optionally filtered to due-only and/or by kind."""
+    """List routine_jobs rows, optionally filtered to due-only or by kind.
+
+    Each row's last_status and last_summary are the verdict of its latest run.
+    A one-shot row whose next_run_at is null has completed and will not run
+    again until monolith-agent-trigger-routine-job re-arms it.
+    """
     rows = routine_jobs.list_jobs(due_only=due_only, kind=kind)
     return {"jobs": [_serialize_routine_job(r) for r in rows]}
 
@@ -238,10 +243,14 @@ async def monolith_agent_register_routine_job(
     ``kind`` is the routine kind that claim and list filter on.
     ``interval_secs`` makes the row recurring. Leave it unset for a one-shot
     row that runs once and then waits to be re-triggered. ``payload`` is
-    stored as-is for the claiming worker. ``next_run_at`` accepts an ISO 8601
-    string, parsed with
-    ``datetime.fromisoformat``. Raises ``ValueError`` if a row with the
-    given ``name`` already exists.
+    stored as-is for the claiming worker. For kind qwen-drain (the drain lane)
+    the payload is an object with a required prompt and optional repo, branch
+    and reasoning. ``next_run_at`` accepts an ISO 8601 string, parsed with
+    ``datetime.fromisoformat``, and orders claims, so an earlier timestamp
+    runs first. Names are unique forever, completed one-shots included, so a
+    re-run needs a fresh name such as a dated prefix. Raises ``ValueError``
+    if a row with the given ``name`` already exists. docs/agents/drain-queue.md
+    covers writing drain-lane prompts.
     """
     parsed_next = datetime.fromisoformat(next_run_at) if next_run_at else None
     try:
@@ -266,7 +275,12 @@ async def monolith_agent_deregister_routine_job(name: str) -> dict:
 
 @mcp.tool
 async def monolith_agent_trigger_routine_job(name: str) -> dict:
-    """Kick a routine_jobs row to immediately due by setting ``next_run_at = now()``."""
+    """Kick a routine_jobs row to immediately due by setting ``next_run_at = now()``.
+
+    This re-arms a completed one-shot. A drain-lane job that failed on a bad
+    guest (session_down, workspace does not exist, a dropped connection) is
+    terminal as a one-shot and usually passes when triggered again.
+    """
     return {"ok": routine_jobs.trigger_job(name)}
 
 
