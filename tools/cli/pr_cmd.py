@@ -165,7 +165,9 @@ def wait_for_merge(number: int, repo: str, deadline: datetime) -> PrState:
             return s
         if s.state == "CLOSED":
             raise LandError(f"#{number} was closed without merging")
-        if not _waiting(s):
+        if _waiting(s):
+            grace = 2
+        else:
             if grace <= 0:
                 raise LandError(
                     f"#{number} left the merge queue without merging "
