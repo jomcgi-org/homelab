@@ -185,6 +185,7 @@ genrule(
         "//tools/cli:knowledge_cmd.py",
         "//tools/cli:main.py",
         "//tools/cli:output.py",
+        "//tools/cli:pr_cmd.py",
         "//tools/cli:scheduler_cmd.py",
         "//tools/cli:tasks_cmd.py",
     ],
@@ -202,6 +203,7 @@ genrule(
         cp $(location //tools/cli:knowledge_cmd.py) "$$DEST/tools/cli/knowledge_cmd.py"
         cp $(location //tools/cli:main.py) "$$DEST/tools/cli/main.py"
         cp $(location //tools/cli:output.py) "$$DEST/tools/cli/output.py"
+        cp $(location //tools/cli:pr_cmd.py) "$$DEST/tools/cli/pr_cmd.py"
         cp $(location //tools/cli:scheduler_cmd.py) "$$DEST/tools/cli/scheduler_cmd.py"
         cp $(location //tools/cli:tasks_cmd.py) "$$DEST/tools/cli/tasks_cmd.py"
         # Wrapper script — uses the vendored venv Python so pip packages resolve

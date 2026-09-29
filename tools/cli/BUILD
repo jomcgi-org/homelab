@@ -10,6 +10,7 @@ exports_files(
         "knowledge_cmd.py",
         "main.py",
         "output.py",
+        "pr_cmd.py",
         "scheduler_cmd.py",
         "tasks_cmd.py",
     ],
@@ -24,6 +25,7 @@ py_library(
         "knowledge_cmd.py",
         "main.py",
         "output.py",
+        "pr_cmd.py",
         "scheduler_cmd.py",
         "tasks_cmd.py",
     ],
@@ -138,6 +140,16 @@ py_test(
     deps = [
         ":cli",
         "@pip//httpx",
+        "@pip//pytest",
+        "@pip//typer",
+    ],
+)
+
+py_test(
+    name = "pr_cmd_test",
+    srcs = ["pr_cmd_test.py"],
+    deps = [
+        ":cli",
         "@pip//pytest",
         "@pip//typer",
     ],
