@@ -1,11 +1,11 @@
 {
   "lens": "security",
-  "commit": "34d4f1816",
+  "commit": "5f9363262",
   "scope": {
     "summary": "Adversarial abuse of the monolith's control structure: an attacker who deliberately forges or withholds identity, reaches a tool the entitlement model does not yet gate, or crosses a tier boundary in the control structure.",
-    "built": "Separate public and private binaries (ADR security/004), public_reader role with visibility filters on the replica, Turnstile-gated chat with three nested budgets, PrincipalMiddleware bearer-token verification on every MCP message, Discord trust ledger with per-guild per-user scoring and heuristics-fed instant enforcement, Cloudflare Access lane projecting verified email to agents console, Kubernetes RBAC scoping cluster mutation to the private pod.",
-    "designed": "Per-tool authorization on the monolith's MCP surface (ADR 059 to route through delegation-consuming broker, #4569 tool-visibility reconcile pass), activation of the staged native default-deny egress NetworkPolicy for the private pod, per-domain database isolation and cross-domain contract.",
-    "note": "Policy-removal corrections for #5816 only; other findings retain their earlier review stamp."
+    "built": "Separate public and private binaries (ADR security/004), public_reader role with visibility filters on the replica, Turnstile-gated chat with three nested budgets, PrincipalMiddleware bearer-token verification on every MCP message, GroupPolicyMiddleware denying every MCP tool call outside the operators group (no tool tagged mcp:public), Discord trust ledger with per-guild per-user scoring and heuristics-fed instant enforcement, Cloudflare Access lane projecting verified email to agents console, Kubernetes RBAC scoping cluster mutation (ArgoCD sync, per-Kargo-project promote Roles) to the private pod.",
+    "designed": "A narrower-than-operators scope for the production-moving MCP tools (#6475), principal attribution on MCP-driven cluster mutations (#6476), activation of the staged native default-deny egress NetworkPolicy for the private pod, per-domain database isolation and cross-domain contract.",
+    "note": "Refreshed for the operators-group MCP gate (core/mcp_policy.py) and kargo_promote (#6458/#6459); other findings retain their earlier review stamp."
   },
   "losses": [
     {
@@ -33,11 +33,13 @@
     {
       "key": "unrestricted-tool-visibility",
       "view": "logical",
-      "statement": "PrincipalMiddleware authenticates every MCP message (a valid authentik bearer token is required), but no monolith tool authorizes on the resulting Principal: the Context Forge tool-visibility reconcile pass that would scope who may call a given tool is still designed, not built (#4569), so any authenticated caller, not only ones entitled to the private tier, can invoke shotter.capture, sandbox.run, or k8s_sync_argocd_app",
+      "statement": "A monolith MCP tool is callable by a principal outside the operators group: GroupPolicyMiddleware denies such calls in prod and no tool carries mcp:public, but an absent bearer resolves to an anonymous principal rather than a 401, anonymous tools/list returns the full catalogue by design, and one env var (MCP_GROUP_POLICY_ENFORCED=false) reverts the gate to allow-all without a redeploy",
       "losses": [
         "L.unauthorized-access"
       ],
-      "maturity": "built"
+      "maturity": "built",
+      "status": "enforced-prod",
+      "issue": "#4569"
     },
     {
       "key": "unredacted-public-doc",
@@ -136,6 +138,18 @@
         "L.silent-incorrectness"
       ],
       "maturity": "built"
+    },
+    {
+      "key": "operator-grant-spans-prod-levers",
+      "view": "logical",
+      "statement": "The operators group is the only MCP authorization tier, so every operators principal (including an agent holding a forwarded operators token) reaches both production cluster levers, ArgoCD sync with prune and kargo_promote with rollback, and Kargo authorizes the Promotion against the monolith ServiceAccount rather than the caller",
+      "losses": [
+        "L.integrity-loss",
+        "L.unauthorized-access"
+      ],
+      "maturity": "built",
+      "status": "none",
+      "issue": "#6475"
     }
   ],
   "ucas": [
@@ -197,72 +211,73 @@
       "view": "logical",
       "control_action": "shotter.capture",
       "guideword": "providing",
-      "condition": "Any authenticated MCP caller (not entitled to private tier) calls the screenshot tool for private.jomcgi.dev pages, disclosing private-tier page content retained indefinitely at a guessable URL",
+      "condition": "A caller outside the operators group (anonymous, or a token without the groups claim) calls the screenshot tool for private.jomcgi.dev pages, disclosing private-tier page content retained indefinitely at a guessable URL",
       "severity": "high",
       "hazards": [
         "unrestricted-tool-visibility",
         "private-capture-retained"
       ],
-      "status": "none",
+      "status": "enforced-prod",
       "issue": "#4569",
-      "evidence": "projects/monolith/shotter/mcp.py:120"
+      "evidence": "projects/monolith/shotter/mcp.py:123"
     },
     {
       "key": "sandbox.run.providing",
       "view": "logical",
       "control_action": "sandbox.run",
       "guideword": "providing",
-      "condition": "Any authenticated MCP caller spends zero-egress compute or, when scratch feature is enabled, reaches the in-cluster scratch database with credentialed DSN",
+      "condition": "A caller outside the operators group spends zero-egress compute or, when scratch feature is enabled, reaches the in-cluster scratch database with credentialed DSN",
       "severity": "medium",
       "hazards": [
         "unrestricted-tool-visibility",
         "sandbox-credential-egress"
       ],
-      "status": "none",
+      "status": "enforced-prod",
       "issue": "#4569",
-      "evidence": "projects/monolith/sandbox/mcp.py:14"
+      "evidence": "projects/monolith/sandbox/mcp.py:15"
     },
     {
       "key": "k8s.mutate.providing",
       "view": "physical",
       "control_action": "k8s.mutate",
       "guideword": "providing",
-      "condition": "Any authenticated MCP caller triggers ArgoCD sync/prune on any Application or performs cluster-wide pod/log/configmap/event read with an unentitled token",
+      "condition": "A caller outside the operators group triggers ArgoCD sync/prune on any Application, or via kargo_promote creates a Promotion (rollback=true included) in any of the four production Kargo projects; denied in prod by the operators gate, but every operators principal holds both levers",
       "severity": "high",
       "hazards": [
-        "unrestricted-tool-visibility"
+        "unrestricted-tool-visibility",
+        "operator-grant-spans-prod-levers"
       ],
-      "status": "none",
-      "issue": "#4569",
-      "evidence": "projects/monolith/cluster/mcp.py:163"
+      "status": "enforced-prod",
+      "issue": "#6475",
+      "evidence": "projects/monolith/cluster/mcp.py:173, projects/monolith/cluster/mcp.py:258, projects/monolith/core/mcp_policy.py:75"
     },
     {
       "key": "mcp.agent-session.providing",
       "view": "logical",
       "control_action": "mcp.agent-session",
       "guideword": "providing",
-      "condition": "Any authenticated MCP caller starts or drives a full agent session, inheriting every tool that session can reach and compounding every other unentitled-tool row",
+      "condition": "A caller outside the operators group starts or drives a full agent session, inheriting every tool that session can reach and compounding every other unentitled-tool row",
       "severity": "high",
       "hazards": [
         "unrestricted-tool-visibility"
       ],
-      "status": "none",
+      "status": "enforced-prod",
       "issue": "#4569",
-      "evidence": "projects/monolith/factory/execution/mcp.py:660"
+      "evidence": "projects/monolith/factory/execution/mcp.py:1580"
     },
     {
       "key": "mcp.chat-pardon.providing",
       "view": "logical",
       "control_action": "mcp.chat-pardon",
       "guideword": "providing",
-      "condition": "An MCP caller with no Discord-side privilege calls monolith_chat_trust_pardon, resetting any locked-out user's score and flipping their labels, undoing the ledger's containment of an active red-team session from a different trust boundary",
+      "condition": "A caller outside the operators group calls monolith_chat_trust_pardon, resetting any locked-out user's score and flipping their labels, undoing the ledger's containment of an active red-team session from a different trust boundary",
       "severity": "high",
       "hazards": [
         "unrestricted-tool-visibility"
       ],
-      "status": "none",
+      "status": "enforced-prod",
       "issue": "#4569",
-      "evidence": "projects/monolith/agent/mcp.py:338"
+      "evidence": "projects/monolith/agent/mcp.py:380"
     },
     {
       "key": "secret.deliver-public.providing",
@@ -310,6 +325,22 @@
       "status": "none",
       "evidence": "projects/monolith/sandbox/client.py:97",
       "issue": "#5304"
+    },
+    {
+      "key": "k8s-mutation-attribution.unauthorized-source",
+      "view": "physical",
+      "from": "private-binary",
+      "to": "k8s-api",
+      "signal": "identity recorded on ArgoCD sync operations and Kargo Promotions",
+      "guideword": "unauthorized-source",
+      "condition": "MCP-driven syncs record the fixed username monolith-k8s-mcp and Promotions carry no requester, so the ArgoCD and Kargo audit trail names the monolith ServiceAccount, never the operator or agent session that moved production",
+      "severity": "medium",
+      "hazards": [
+        "operator-grant-spans-prod-levers"
+      ],
+      "status": "none",
+      "issue": "#6476",
+      "evidence": "projects/monolith/cluster/kubernetes.py:580, projects/monolith/cluster/kargo.py:219"
     }
   ],
   "non_ucas": [
@@ -336,10 +367,16 @@
     {
       "item": "Cluster-wide capacity exhaustion outside modeled admission and budget gates",
       "reason": "Not analyzed here"
+    },
+    {
+      "item": "Anonymous tools/list returns the full MCP catalogue",
+      "reason": "Catalogue disclosure only: on_call_tool denies every untagged call, and filtering the anonymous list would blank Context Forge's cached catalogue (projects/monolith/core/mcp_policy.py:104)"
     }
   ],
   "open_questions": [
-    "When #4569's tool-visibility reconcile pass lands, will it gate shotter.capture, sandbox.run, k8s_sync_argocd_app, and agent-session tools by Principal scope, or only by coarser tool-granular ACL?",
+    "structure gap: k8s.mutate is labelled ArgoCD sync only, and there is no control action for kargo_promote (private-binary to a Kargo Promotion) or node for the GroupPolicyMiddleware operators gate; this lens folds kargo_promote into k8s.mutate.providing until the logic lens models them.",
+    "Does Kargo's admission webhook itself refuse a Promotion for Freight not yet available to the Stage, so a holder of the monolith ServiceAccount token (bypassing cluster/kargo.py plan_promotion) cannot promote unverified Freight into production?",
+    "The monolith-agents MCP surface (projects/monolith/app/agents_main.py) rejects anonymous callers but applies no operators gate; should any authenticated token reach its board and knowledge write tools?",
     "When will the staged native default-deny egress NetworkPolicy (#5277 / #3897) be validated and activated for the private pod's open-ended cluster and internet reach?",
     "Will the public tier's cluster-reach policy (#5276) be scoped to only the four intended destinations (Postgres, vLLM, embeddings, SeaweedFS)?",
     "Should run_code's docstring be corrected to stop claiming zero network for Python, or should the scratch-Postgres DSN injection move behind a separate explicitly-network-capable tool?"
