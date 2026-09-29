@@ -113,19 +113,9 @@ Two cautions when consuming it:
 ### Codex app-server acceptance map
 
 Issue #4361 was verified against the Codex app-server pinned in `MODULE.bazel`:
-release `rust-v0.158.0`, amd64 archive SHA256
-`af9f5aa6e6662accf9d707cef0d9ca083880a173a9c2b6c22947edb7830e5778`, and
-tag commit `064c6b8c737f5b41d171fdda80bd9ef10ad06eb3`.
-
-The 0.146.0 to 0.158.0 re-verification (issue #6471) compared the
-`generate-json-schema` output of both binaries and ran the new binary live:
-every request the shim sends and every notification it consumes is unchanged
-in required shape (all diffs are additive), `exec resume` still rejects
-`--sandbox` and `-C`, and `[tools].web_search` is still accepted. Two
-removals do not touch the shim: the `thread/rollback` API is gone (renamed to
-`thread/revert`, removed in 0.156.0) and `enable_codex_api_key_env` is now an
-unrecognized setting, so the shim no longer writes it (`OPENAI_API_KEY`
-scrubbing in `_child_env` keeps the protection).
+release `rust-v0.146.0`, amd64 archive SHA256
+`5ba3b9405543953081f661d0854d266f76e2abbe51d41349355a36de7673776a`, and
+tag commit `e363b08c9175ac1cbe5893615dd2cb9ddf95043b`.
 
 - **Turn accounting:** the pinned protocol puts `threadId` and `turnId` on
   `thread/tokenUsage/updated`, and puts `threadId` plus `turn.id` on both
