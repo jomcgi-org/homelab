@@ -54,6 +54,14 @@ swarm:
   # starts and their capacity permits and escalates the task, never
   # interrupting a start that is still reserved.
   factoryDeadlineBackstopEnabled: true
+  # Produce the cessation proof the backstop waits for (#6495). The backstop
+  # is still staged off in code because elapsed time is not cessation
+  # evidence, so uncertain attempts past their deadline held their permits
+  # forever. This destroys the recorded guest, observes that same guest gone,
+  # settles the attempt and its permit in one transaction and escalates the
+  # task. Guests that never started settle at their reserved cost from local
+  # records.
+  factoryActiveCessationEnabled: true
   # Retire escalation cards their own issue has already answered (#6164): the
   # template landed one PR earlier, this is the behaviour flip. A sweep on
   # 2026-09-15 found 47 of 103 open cards stale, most of them because a card
