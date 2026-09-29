@@ -31,9 +31,10 @@ rules:
     resources: ["applications"]
     verbs: ["get", "list", "patch"]
   # cd health reads Freight to learn which chart versions have been published;
-  # verify_deployment reads a Kargo-owned app's Stage to explain its rollout.
+  # verify_deployment reads a Kargo-owned app's Stage to explain its rollout;
+  # the k8s-* list/get tools read Stages, Freight and Promotions.
   - apiGroups: ["kargo.akuity.io"]
-    resources: ["freights", "stages"]
+    resources: ["freights", "stages", "promotions"]
     verbs: ["get", "list"]
   - apiGroups: ["metrics.k8s.io"]
     resources: ["nodes"]

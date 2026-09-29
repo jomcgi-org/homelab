@@ -87,6 +87,34 @@ def _app_status(obj: dict) -> dict:
     )
 
 
+def _promotion_status(obj: dict) -> dict:
+    spec = obj.get("spec") or {}
+    status = obj.get("status") or {}
+    return _compact(
+        {
+            "stage": spec.get("stage"),
+            "freight": spec.get("freight"),
+            "phase": status.get("phase"),
+            "message": status.get("message"),
+        }
+    )
+
+
+def _stage_status(obj: dict) -> dict:
+    status = obj.get("status") or {}
+    last = status.get("lastPromotion") or {}
+    history = status.get("freightHistory") or [{}]
+    current = [item.get("name") for item in (history[0].get("items") or {}).values()]
+    return _compact(
+        {
+            "health": (status.get("health") or {}).get("status"),
+            "freight": ", ".join(n for n in current if n) or None,
+            "last_promotion": last.get("name"),
+            "last_phase": (last.get("status") or {}).get("phase"),
+        }
+    )
+
+
 def _node_status(obj: dict) -> dict:
     conds = (obj.get("status") or {}).get("conditions") or []
     ready = next((c for c in conds if c.get("type") == "Ready"), None)
@@ -104,6 +132,10 @@ def _status_for(kind: str, obj: dict) -> dict:
         return _app_status(obj)
     if kind == "nodes":
         return _node_status(obj)
+    if kind == "promotions":
+        return _promotion_status(obj)
+    if kind == "stages":
+        return _stage_status(obj)
     return {}
 
 
