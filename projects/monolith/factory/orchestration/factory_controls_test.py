@@ -2033,6 +2033,39 @@ def test_control_request_replay_never_reapplies_after_a_newer_stop(db, policy):
     assert current["receipts"][0]["cancellation_requested"]
 
 
+def test_control_request_replay_accepts_a_legacy_ledger_without_receipt_id(db, policy):
+    task = admitted(policy)
+    version = controls.status()["version"]
+    first = controls.request_control(
+        "pause_task",
+        "operator",
+        task_id=task,
+        request_key="legacy-pause",
+        expected_version=version,
+    )
+    assert first["ok"]
+    with Session(db) as session:
+        audit = session.exec(
+            select(FactoryAudit).where(FactoryAudit.action == "control_request")
+        ).one()
+        detail = json.loads(audit.detail_json)
+        detail["request"].pop("receipt_id", None)
+        audit.detail_json = json.dumps(detail)
+        session.commit()
+    stopped = controls.set_control("stop", "operator")
+    assert (
+        controls.request_control(
+            "pause_task",
+            "operator",
+            task_id=task,
+            request_key="legacy-pause",
+            expected_version=version,
+        )
+        == first
+    )
+    assert controls.status()["version"] == stopped["version"]
+
+
 def test_control_request_rejects_stale_version_and_key_reuse(db, policy):
     admitted(policy)
     version = controls.status()["version"]

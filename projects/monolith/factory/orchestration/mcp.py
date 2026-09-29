@@ -913,7 +913,7 @@ async def factory_control(
     Inspect status for unresolved starts. Cancellation does not undo effects.
     cancel_receipt settles one queued receipt as cancelled by its receipt_id,
     for clearing queue entries that can never admit. Only queued receipts
-    move; any other state is refused. Only pause_task and resume_task take
+    move, any other state is refused. Only pause_task and resume_task take
     task_id, and only cancel_receipt takes receipt_id. These controls do not
     alter priorities, task direction, policy or budgets and need no
     conductor turn.
