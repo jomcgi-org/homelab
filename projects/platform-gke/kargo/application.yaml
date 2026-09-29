@@ -9,7 +9,7 @@
 # and Stages the promotion template renders.
 #
 # The Applications it promotes need a matching ignoreDifferences entry on the
-# cluster root (projects/gke-cluster/root-application.yaml) plus
+# cluster root (projects/gke-cluster/root/root-application.yaml) plus
 # RespectIgnoreDifferences, or ArgoCD stamps every promotion straight back:
 # ignoreDifferences alone suppresses diffing, not applying. That entry is added
 # in the same change that arms a pipeline, never before, because the entry is

@@ -57,11 +57,12 @@ kubectl kustomize "$CLUSTER_PATH" >"$rendered/all.yaml"
 #                           promoted app and is the one thing this check must not
 #                           shout about. Everything else in `sources` is fair
 #                           game, which is precisely the blind spot being closed.
-# The root Application is committed but deliberately absent from that
-# kustomization: it must not manage itself. Without this it would be the one
-# object outside its own check, and its apply is manual, which is exactly the
-# way git and the cluster drift apart unnoticed.
-ROOT_APPLICATION="${ROOT_APPLICATION:-$CLUSTER_PATH/root-application.yaml}"
+# The root Application and its parent `hub-root` are committed but deliberately
+# absent from that kustomization: neither may manage itself. Without this they
+# would be the objects outside their own check, and hub-root's apply is manual,
+# which is exactly the way git and the cluster drift apart unnoticed.
+# Space-separated list of files.
+ROOT_APPLICATION="${ROOT_APPLICATION:-$CLUSTER_PATH/root/root-application.yaml $CLUSTER_PATH/hub-root-application.yaml}"
 
 python3 - "$rendered/all.yaml" "$CONTEXT" "$ROOT_APPLICATION" <<'PY'
 import json
@@ -86,14 +87,15 @@ with open(rendered_path) as fh:
 # of the kustomization on purpose (it would otherwise manage itself). A missing
 # file is reported rather than skipped: skipping is how the root ended up
 # outside its own drift check in the first place.
-if os.path.exists(root_path):
-    with open(root_path) as fh:
+for path in root_path.split():
+    if not os.path.exists(path):
+        missing_root = path
+        continue
+    with open(path) as fh:
         for doc in yaml.safe_load_all(fh):
             if not doc or doc.get("kind") != "Application":
                 continue
             declared[doc["metadata"]["name"]] = doc
-else:
-    missing_root = root_path
 
 
 def resolve(name, doc):
