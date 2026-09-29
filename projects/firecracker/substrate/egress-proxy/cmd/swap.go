@@ -184,6 +184,31 @@ const grantDeadCooldown = 60 * time.Second
 // otherwise latch a grant out of the pool forever.
 const grantExhaustionStaleAfter = 15 * time.Minute
 
+// grantStaleAfter bounds how long a grant observation steers the ranking.
+// The broker records an observation only on real provider traffic through
+// that grant, while the ranker concentrates traffic on one grant, so an
+// idle grant's windows age past any freshness bound under normal load. A
+// stale observation is not evidence the grant is idle: it is evidence of
+// nothing, so the ranker tries fresh usable grants first, then stale ones,
+// and only then known-exhausted and dead ones. A grant that never reported
+// stays in rotation (it can only be observed by serving), and staleness
+// never hides a known exhaustion: exhausted grants still sort last.
+//
+// This must stay at or below the factory KG gate's freshness bound
+// (SWARM_MODEL_POOL_QUOTA_MAX_AGE_SECONDS, default 900s). The gate admits
+// quota-sensitive work when at least one grant is fresh and permitting and
+// treats older observations as unselectable, which is sound only while the
+// ranker never prefers a stale grant over a fresh one.
+const grantStaleAfter = 15 * time.Minute
+
+// grantStale reports whether a grant observation is too old to steer the
+// ranking. Unobserved grants and ones with an unreadable age are not stale:
+// the former must serve to be observed at all, and the latter cannot prove
+// its age. NaN and negative ages fall out naturally (comparisons are false).
+func grantStale(view grantQuotaView, ok bool) bool {
+	return ok && view.Observed && view.AgeSeconds > grantStaleAfter.Seconds()
+}
+
 // grantPerishableWindow is the horizon where preserving quota outweighs
 // connection stickiness. It has to be long enough to actually drain the
 // remainder: a grant holding a fifth of a weekly window needs the better part
@@ -267,15 +292,28 @@ func bandFor(view grantQuotaView, ok bool, now time.Time) grantBand {
 // (isDead) moved to the end so a healthy account is always tried before a
 // dead one.
 //
-// The best grant first has quota with a reset inside the perishable window,
-// then the most remaining quota by band; within a band the sooner reset wins,
-// and within that pool order wins. An imminent grant with only hours left
-// therefore beats a higher-band grant whose quota will remain available.
+// Fresh usable grants come before stale ones: the broker records an
+// observation only on real traffic through a grant, so an idle grant's age
+// says nothing about its room, and a stale reading must never steer traffic
+// away from a fresh one. Known-exhausted grants still sort after every
+// usable grant, stale or fresh, and dead ones last, so staleness never hides
+// exhaustion, and a stale grant is still retried once nothing better can
+// serve (which refreshes it either way). The factory KG gate relies on this:
+// it admits quota-sensitive work when at least one grant is fresh and
+// permitting, which is sound only while a stale grant is never preferred
+// over a fresh one.
+//
+// Within each tier the best grant first has quota with a reset inside the
+// perishable window, then the most remaining quota by band; within a band
+// the sooner reset wins, and within that pool order wins. An imminent grant
+// with only hours left therefore beats a higher-band grant whose quota will
+// remain available.
 //
 // The current grant is normally kept unless the best is a full band ahead,
 // so small differences within the same perishability category do not cause
 // ping-pong. A perishable best grant can also displace a durable current grant
-// because quota lost at reset cannot be recovered.
+// because quota lost at reset cannot be recovered. A stale current grant is
+// never kept: it yields to the fresh-first ordering above.
 func rankGrants(pool []string, views map[string]grantQuotaView, current string, now time.Time, isDead func(string, time.Time) bool) []string {
 	if len(pool) == 0 {
 		if current == "" {
@@ -284,29 +322,41 @@ func rankGrants(pool []string, views map[string]grantQuotaView, current string, 
 		return []string{current}
 	}
 	bands := make(map[string]grantBand, len(pool))
-	var live, dead []string
+	stale := make(map[string]bool, len(pool))
+	var usableFresh, usableStale, exhausted, dead []string
 	for _, grant := range pool {
 		view, ok := views[grant]
 		bands[grant] = bandFor(view, ok, now)
 		if isDead != nil && isDead(grant, now) {
 			dead = append(dead, grant)
-		} else {
-			live = append(live, grant)
+			continue
 		}
+		if bands[grant].band < 0 {
+			exhausted = append(exhausted, grant)
+			continue
+		}
+		if grantStale(view, ok) {
+			stale[grant] = true
+			usableStale = append(usableStale, grant)
+			continue
+		}
+		usableFresh = append(usableFresh, grant)
 	}
 	sortByBand := func(grants []string) {
 		sort.SliceStable(grants, func(i, j int) bool {
 			return better(bands[grants[i]], bands[grants[j]])
 		})
 	}
-	sortByBand(live)
+	sortByBand(usableFresh)
+	sortByBand(usableStale)
+	sortByBand(exhausted)
 	sortByBand(dead)
-	ordered := append(live, dead...)
-	if current == "" || len(live) == 0 {
+	ordered := append(append(append(usableFresh, usableStale...), exhausted...), dead...)
+	if current == "" || len(usableFresh)+len(usableStale)+len(exhausted) == 0 {
 		return ordered
 	}
 	currentBand, inPool := bands[current]
-	if !inPool || (isDead != nil && isDead(current, now)) {
+	if !inPool || stale[current] || (isDead != nil && isDead(current, now)) {
 		return ordered
 	}
 	bestBand := bands[ordered[0]]

@@ -550,6 +550,83 @@ def test_unobserved_configured_grant_prevents_cross_account_admission():
     )
 
 
+def _codex_grant(name, *, age, used=10.0):
+    return {
+        "grant": name,
+        "provider": "codex",
+        "observed": True,
+        "exhausted": False,
+        "age_seconds": age,
+        "headline_used_percent": used,
+        "windows": [_window("primary", used)],
+    }
+
+
+def test_stale_grant_is_unselectable_beside_a_fresh_grant():
+    grants = {
+        "codex-cluster": _codex_grant("codex-cluster", age=79960.9),
+        "codex-b": _codex_grant("codex-b", age=12.0),
+    }
+    rolled = model_pool.rollup_grants({}, grants, grants_complete=True)
+
+    assert model_pool.confirmed_availability("luna", rolled) == (
+        True,
+        "confirmed_available",
+    )
+
+
+def test_all_stale_grants_stay_deferred():
+    grants = {
+        "codex-cluster": _codex_grant("codex-cluster", age=79960.9),
+        "codex-b": _codex_grant("codex-b", age=2117.39),
+    }
+    rolled = model_pool.rollup_grants({}, grants, grants_complete=True)
+
+    ok, reason = model_pool.confirmed_availability("luna", rolled)
+    assert ok is False
+    assert "codex-cluster" in reason
+    assert "codex-b" in reason
+    assert "stale_observation" in reason
+
+
+def test_all_exhausted_grants_stay_deferred():
+    grants = {
+        "codex-cluster": _codex_grant("codex-cluster", age=12.0, used=99.0),
+        "codex-b": _codex_grant("codex-b", age=12.0, used=98.0),
+    }
+    rolled = model_pool.rollup_grants({}, grants, grants_complete=True)
+
+    ok, reason = model_pool.confirmed_availability("luna", rolled)
+    assert ok is False
+    assert "used_percent" in reason
+
+
+def test_fresh_exhaustion_vetoes_beside_a_stale_grant():
+    grants = {
+        "codex-cluster": _codex_grant("codex-cluster", age=12.0, used=99.0),
+        "codex-b": _codex_grant("codex-b", age=2117.39),
+    }
+    rolled = model_pool.rollup_grants({}, grants, grants_complete=True)
+
+    assert model_pool.confirmed_availability("luna", rolled) == (
+        False,
+        "grant codex-cluster window primary used_percent 99",
+    )
+
+
+def test_unknown_age_grant_is_not_skipped_as_stale():
+    grants = {
+        "codex-cluster": _codex_grant("codex-cluster", age=12.0),
+        "codex-b": _codex_grant("codex-b", age=None),
+    }
+    rolled = model_pool.rollup_grants({}, grants, grants_complete=True)
+
+    assert model_pool.confirmed_availability("luna", rolled) == (
+        False,
+        "grant codex-b observation_age_unknown",
+    )
+
+
 def test_rollup_does_not_let_a_window_less_grant_hide_a_spent_class():
     grants = {
         "codex-cluster": {

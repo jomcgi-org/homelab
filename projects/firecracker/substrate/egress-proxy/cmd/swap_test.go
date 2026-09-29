@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"math/big"
 	"net"
 	"net/http"
@@ -1440,6 +1441,110 @@ func TestRankGrantsPutsDeadGrantsLast(t *testing.T) {
 	got := rankGrants([]string{"codex-a", "codex-b"}, nil, "codex-b", now, dead)
 	if got[0] != "codex-a" || got[1] != "codex-b" {
 		t.Fatalf("a dead current grant must yield to a healthy one, got %v", got)
+	}
+}
+
+func staleGrantView(used float64, age time.Duration) grantQuotaView {
+	view := grantView(true, false, "codex", used, "")
+	view.AgeSeconds = age.Seconds()
+	return view
+}
+
+func TestGrantStaleNeedsAnObservedAge(t *testing.T) {
+	fresh := grantView(true, false, "codex", 10, "")
+	if grantStale(fresh, true) {
+		t.Fatal("a fresh observation must not count as stale")
+	}
+	bound := staleGrantView(10, grantStaleAfter)
+	if grantStale(bound, true) {
+		t.Fatal("an observation exactly at the bound must not count as stale")
+	}
+	over := staleGrantView(10, grantStaleAfter+time.Second)
+	if !grantStale(over, true) {
+		t.Fatal("an observation past the bound must count as stale")
+	}
+	unreported := grantView(false, false, "codex", 0, "")
+	unreported.AgeSeconds = (grantStaleAfter + time.Hour).Seconds()
+	if grantStale(unreported, true) {
+		t.Fatal("an unreported grant must stay in rotation so it can be observed")
+	}
+	if grantStale(fresh, false) {
+		t.Fatal("a missing view must not count as stale")
+	}
+	negative := staleGrantView(10, -time.Second)
+	if grantStale(negative, true) {
+		t.Fatal("a negative age cannot prove staleness")
+	}
+	nan := staleGrantView(10, 0)
+	nan.AgeSeconds = math.NaN()
+	if grantStale(nan, true) {
+		t.Fatal("a NaN age cannot prove staleness")
+	}
+}
+
+func TestRankGrantsDefersStaleGrantsBehindFreshOnes(t *testing.T) {
+	now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
+	views := map[string]grantQuotaView{
+		// The idle grant's last reading claims nearly full quota, but the
+		// reading is old: it must not steer traffic away from fresh data.
+		"codex-stale": staleGrantView(10, 22*time.Hour),
+		"codex-fresh": grantView(true, false, "codex", 60, ""),
+	}
+	got := rankGrants([]string{"codex-stale", "codex-fresh"}, views, "", now, nil)
+	if len(got) != 2 || got[0] != "codex-fresh" || got[1] != "codex-stale" {
+		t.Fatalf("fresh grant must rank before a stale one, got %v", got)
+	}
+	got = rankGrants([]string{"codex-stale", "codex-fresh"}, views, "codex-stale", now, nil)
+	if got[0] != "codex-fresh" {
+		t.Fatalf("a stale current grant must yield to a fresh one, got %v", got)
+	}
+}
+
+func TestRankGrantsAllStaleKeepsBandOrder(t *testing.T) {
+	now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
+	views := map[string]grantQuotaView{
+		"codex-low":  staleGrantView(83, 2*time.Hour),
+		"codex-high": staleGrantView(26, 3*time.Hour),
+	}
+	pool := []string{"codex-low", "codex-high"}
+	got := rankGrants(pool, views, "", now, nil)
+	if len(got) != 2 || got[0] != "codex-high" || got[1] != "codex-low" {
+		t.Fatalf("all-stale grants must keep band order, got %v", got)
+	}
+	// No stickiness between stale grants: every request picks the same best
+	// stale grant, so the order is deterministic either way.
+	got = rankGrants(pool, views, "codex-low", now, nil)
+	if got[0] != "codex-high" {
+		t.Fatalf("a stale current grant must not stick, got %v", got)
+	}
+}
+
+func TestRankGrantsStaleNeverHidesExhaustion(t *testing.T) {
+	now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
+	exhausted := grantView(true, true, "codex", 0, "")
+	views := map[string]grantQuotaView{
+		"codex-exhausted": exhausted,
+		"codex-stale":     staleGrantView(10, 2*time.Hour),
+		"codex-fresh":     grantView(true, false, "codex", 60, ""),
+	}
+	pool := []string{"codex-exhausted", "codex-stale", "codex-fresh"}
+	got := rankGrants(pool, views, "", now, nil)
+	want := []string{"codex-fresh", "codex-stale", "codex-exhausted"}
+	if len(got) != len(want) {
+		t.Fatalf("rankGrants = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("rankGrants = %v, want %v", got, want)
+		}
+	}
+	dead := func(grant string, _ time.Time) bool { return grant == "codex-fresh" }
+	got = rankGrants([]string{"codex-stale", "codex-fresh"}, map[string]grantQuotaView{
+		"codex-stale": staleGrantView(10, 2*time.Hour),
+		"codex-fresh": grantView(true, false, "codex", 60, ""),
+	}, "", now, dead)
+	if len(got) != 2 || got[0] != "codex-stale" || got[1] != "codex-fresh" {
+		t.Fatalf("a stale usable grant must still precede a dead one, got %v", got)
 	}
 }
 
