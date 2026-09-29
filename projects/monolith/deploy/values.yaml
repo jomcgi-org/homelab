@@ -295,6 +295,10 @@ metaSpark:
 # documented in factory/orchestration/FACTORY.md under "Review publisher".
 swarm:
   enabled: true
+  # Webhook stays homelab-only: the legacy repository value in the chart is
+  # ingested, and no extra repos are configured until the staged
+  # weave-hand/loom operator migration in FACTORY.md sets this.
+  factoryGithubWebhookRepositories: ""
 
 # Arms the Luna work-queue drainer: the agent-drain CronWorkflow tick stops
 # no-opping and drain_cycle starts claiming due legacy qwen-drain routine jobs.

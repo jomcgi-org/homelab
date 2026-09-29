@@ -18099,3 +18099,29 @@ def test_a_typical_task_context_no_longer_triggers_the_shrink_loop(
     monkeypatch.setattr(conductor, "PLANNER_CONTEXT_CHARS", 48_000)
     old = json.loads(conductor._planner_context(task, nodes, runs))
     assert old["omitted"]["task_characters"] > 0
+
+
+def test_planner_and_review_prompts_carry_the_repo_charter(feedback_db):
+    from factory.orchestration import factory_controls as controls
+
+    task, _policy = feedback_task()
+    loom_task = {**task, "repo": "weave-hand/loom"}
+    homelab_prompt = conductor.planner_prompt(task, [], [])
+    loom_prompt = conductor.planner_prompt(loom_task, [], [])
+    assert controls.LOOM_CHARTER in loom_prompt
+    assert "buck2" in loom_prompt
+    assert "buck2" not in homelab_prompt
+    assert "weave-hand/loom" not in homelab_prompt
+    assert "required Linux CI" in homelab_prompt
+    for homelab_wording in (
+        "BuildBuddy",
+        "pr-checks",
+        "merge queue",
+        "merge_queue",
+        "factory/review",
+    ):
+        assert homelab_wording not in loom_prompt
+    homelab_review = conductor._boundary(task, review=True)
+    loom_review = conductor._boundary(loom_task, review=True)
+    assert controls.LOOM_CHARTER in loom_review
+    assert "buck2" not in homelab_review

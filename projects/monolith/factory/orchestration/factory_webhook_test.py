@@ -18,6 +18,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from factory.orchestration import factory_webhook as webhook
 from factory.orchestration.factory_models import (
+    FactoryControl,
     FactoryGithubIssueState,
     FactoryReceipt,
     FactoryWebhookDelivery,
@@ -109,6 +110,7 @@ def _setup(tmp_path, monkeypatch):
                 WorkItem,
                 WorkItemEdge,
                 WorkItemEvent,
+                FactoryControl,
                 FactoryReceipt,
                 FactoryWebhookDelivery,
                 FactoryGithubIssueState,
@@ -170,9 +172,53 @@ def test_disabled_missing_secret_and_invalid_signature_fail_closed(
     )
 
 
+def _policy_with_repos(repos):
+    from factory.orchestration import factory_controls as controls
+
+    policy = {
+        "repo": "owner/repo",
+        "issue_numbers": [1],
+        "generation": 0,
+        "max_tasks": {"delivery": 1, "advisory": 0},
+        "max_turns_per_task": 3,
+        "task_budget_usd": 5.0,
+        "turn_budget_usd": 2.0,
+        "allowed_models": ["opus", "luna"],
+        "conductor_model": "opus",
+        "worker_model": "luna",
+        "base_branch": "main",
+        "turn_timeout_seconds": 60,
+        "max_attempts": 2,
+        "task_timeout_seconds": 3600,
+        "intake": {"enabled": False},
+        "auto_merge": False,
+        "repos": repos,
+    }
+    return controls.validate_policy(policy)
+
+
+def _store_policy(engine, policy):
+    with Session(engine) as session:
+        session.add(
+            FactoryControl(
+                id="factory",
+                actor="test",
+                policy_json=json.dumps(policy),
+            )
+        )
+        session.commit()
+
+
 def test_event_repository_and_issue_identity_are_validated(tmp_path, monkeypatch):
     engine, client = _setup(tmp_path, monkeypatch)
-    assert _post(client, _payload(repo="elsewhere/repo")).status_code == 403
+    # A repo neither the policy nor the env names is ignored: no work item,
+    # no error, no claim row.
+    ignored = _post(client, _payload(repo="elsewhere/repo"), delivery="unknown-repo")
+    assert ignored.status_code == 200
+    assert ignored.json() == {"status": "ignored", "reason": "unconfigured_repo"}
+    with Session(engine) as session:
+        assert session.exec(select(WorkItem)).all() == []
+        assert session.exec(select(FactoryWebhookDelivery)).all() == []
 
     mismatch = _payload()
     mismatch["issue"]["number"] = "6257"
@@ -194,6 +240,61 @@ def test_event_repository_and_issue_identity_are_validated(tmp_path, monkeypatch
     accepted = _post(client, genuine_issues_shape, delivery="real-issues-shape")
     assert accepted.status_code == 200
     assert accepted.json()["outcome"] == "trusted_minted"
+
+
+def test_configured_but_disabled_repo_is_ignored(tmp_path, monkeypatch):
+    engine, client = _setup(tmp_path, monkeypatch)
+    monkeypatch.setenv("FACTORY_GITHUB_WEBHOOK_REPOSITORIES", "weave-hand/loom")
+    _store_policy(
+        engine,
+        _policy_with_repos(
+            {
+                "owner/repo": {"enabled": True},
+                "weave-hand/loom": {"enabled": False},
+            },
+        ),
+    )
+    # Env-configured but policy-disabled: ignored, not an error.
+    response = _post(
+        client,
+        _payload(repo="weave-hand/loom"),
+        delivery="disabled-loom",
+    )
+    assert response.status_code == 200
+    assert response.json() == {"status": "ignored", "reason": "disabled_repo"}
+    with Session(engine) as session:
+        assert session.exec(select(WorkItem)).all() == []
+        assert session.exec(select(FactoryWebhookDelivery)).all() == []
+
+
+def test_enabled_policy_repo_is_accepted_per_repo(tmp_path, monkeypatch):
+    engine, client = _setup(tmp_path, monkeypatch)
+    monkeypatch.setenv("FACTORY_GITHUB_WEBHOOK_REPOSITORIES", "weave-hand/loom")
+    _store_policy(
+        engine,
+        _policy_with_repos(
+            {
+                "owner/repo": {"enabled": True},
+                "weave-hand/loom": {"enabled": True},
+            },
+        ),
+    )
+    loom_payload = _payload(repo="weave-hand/loom")
+    loom_payload["issue"]["html_url"] = (
+        "https://github.com/weave-hand/loom/issues/6257"
+    )
+    response = _post(
+        client,
+        loom_payload,
+        delivery="enabled-loom",
+    )
+    assert response.status_code == 200
+    assert response.json()["outcome"] == "trusted_minted"
+    with Session(engine) as session:
+        items = session.exec(select(WorkItem)).all()
+        assert len(items) == 1
+        assert items[0].github_repo == "weave-hand/loom"
+        assert items[0].trust == "trusted"
 
 
 def test_payload_size_is_bounded_before_processing(tmp_path, monkeypatch):

@@ -272,6 +272,8 @@ spec:
               value: {{ .Values.swarm.factoryGithubWebhookEnabled | default false | quote }}
             - name: FACTORY_GITHUB_WEBHOOK_REPOSITORY
               value: {{ .Values.swarm.factoryGithubWebhookRepository | quote }}
+            - name: FACTORY_GITHUB_WEBHOOK_REPOSITORIES
+              value: {{ .Values.swarm.factoryGithubWebhookRepositories | default "" | quote }}
             - name: FACTORY_GITHUB_WEBHOOK_TRUSTED_AUTHORS
               value: {{ .Values.swarm.factoryGithubWebhookTrustedAuthors | quote }}
             - name: FACTORY_AGENT_BOARD_POLL_ENABLED

@@ -308,9 +308,30 @@ primary repo defaults to disabled.
 
 The staged `weave-hand/loom` entry ships default-off. Enabling it is a
 separate operator act: post the payload from
-`migration_policy_with_loom` (staged daily cap 2, landing `none`) through
-`configure`, then flip the entry on when the loom charter, sweep and review
-path land. No live enablement happens in the change that adds the map.
+`migration_policy_with_loom` (staged daily cap 2, landing `none`, loom
+charter) through `configure`, then flip the entry on when the loom charter,
+sweep and review path land. No live enablement happens in the change that
+adds the map.
+
+The webhook and the intake sweep follow the same map. A delivery for a repo
+outside the enabled entries is ignored with no work item and no error; the
+legacy `FACTORY_GITHUB_WEBHOOK_REPOSITORY` value keeps working as the
+single configured repo, and `FACTORY_GITHUB_WEBHOOK_REPOSITORIES`
+(`swarm.factoryGithubWebhookRepositories`, empty by default) names any
+extras. Trust rules apply per repo against the same configured authors.
+The sweep reads every enabled repo under that entry's own intake labels and
+daily cap, and each planner and review prompt carries its repo's charter:
+homelab receipts read the existing charter unchanged, loom receipts read
+the loom fragment (its GitHub Actions workflow with buck2, no merge queue,
+`auto_merge` off).
+
+Staged loom enablement, in order: set
+`swarm.factoryGithubWebhookRepositories` to `weave-hand/loom`, post the
+`migration_policy_with_loom` payload through `configure`, confirm the loom
+entry is present and disabled, then enable it. Operational acceptance stays
+on the issue: enable with `max_per_day: 2`, submit one loom ready issue,
+and confirm a PR opens on loom with green CI and an independent review
+artifact.
 
 ### Updating policy while work runs
 
