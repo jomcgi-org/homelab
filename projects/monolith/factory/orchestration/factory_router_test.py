@@ -192,6 +192,36 @@ def test_http_controls_use_the_versioned_request_owner(monkeypatch):
     }
 
 
+def test_http_repo_actions_take_only_a_repo(monkeypatch):
+    seen = {}
+
+    def set_control(action, actor, **kwargs):
+        seen.update(action=action, actor=actor, **kwargs)
+        return {"ok": True, "state": "enabled", "version": 3}
+
+    monkeypatch.setattr(factory_controls, "set_control", set_control)
+    monkeypatch.setattr(factory_router, "REPO_CATALOG", {"owner/repo": {}})
+    response = operator_client("operator:joe").post(
+        "/api/swarm/factory/control",
+        json={"action": "pause_repo", "repo": "owner/repo"},
+    )
+    assert response.status_code == 200
+    assert seen == {
+        "action": "pause_repo",
+        "actor": "operator:joe",
+        "repo": "owner/repo",
+    }
+    refused = operator_client().post(
+        "/api/swarm/factory/control",
+        json={"action": "pause_repo", "repo": "owner/repo", "task_id": "task-7"},
+    )
+    assert refused.status_code == 422
+    missing = operator_client().post(
+        "/api/swarm/factory/control", json={"action": "pause_repo"}
+    )
+    assert missing.status_code == 422
+
+
 @pytest.mark.parametrize(
     "body",
     [

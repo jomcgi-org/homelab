@@ -18,6 +18,7 @@ class ControlRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     action: str
     task_id: str | None = None
+    repo: str | None = None
     policy: dict | None = None
     node_key: str | None = None
     attempt: int | None = Field(default=None, ge=1, strict=True)
@@ -156,14 +157,43 @@ def factory_control(
             raise HTTPException(409, str(exc)) from exc
     if any(value is not None for value in attempt_fields):
         raise HTTPException(422, "attempt fields require stop_attempt")
-    if body.policy is not None and body.policy.get("repo") not in REPO_CATALOG:
-        raise HTTPException(422, "repository is not available to the executor")
+    if body.policy is not None:
+        extra = body.policy.get("repos") or {}
+        posted = [
+            body.policy.get("repo"),
+            *(extra.keys() if isinstance(extra, dict) else []),
+        ]
+        if any(
+            not isinstance(name, str) or name.lower() not in REPO_CATALOG
+            for name in posted
+        ):
+            raise HTTPException(422, "repository is not available to the executor")
     try:
+        from factory.orchestration.factory_controls import REPO_ACTIONS
+
+        if body.action in REPO_ACTIONS:
+            if (
+                body.policy is not None
+                or body.task_id is not None
+                or body.repo is None
+                or body.request_key is not None
+                or body.expected_version is not None
+                or any(value is not None for value in attempt_fields)
+            ):
+                raise HTTPException(422, "repo actions take only a repo")
+            if body.repo.lower() not in REPO_CATALOG:
+                raise HTTPException(422, "repository is not available to the executor")
+            result = set_control(body.action, principal.subject, repo=body.repo)
+            if not result["ok"]:
+                raise HTTPException(409, result)
+            return result
         if body.action == "configure":
             if body.request_key is not None or body.expected_version is not None:
                 raise HTTPException(
                     422, "configure does not accept a control request identity"
                 )
+            if body.repo is not None:
+                raise HTTPException(422, "configure takes a policy, not a repo")
             result = set_control(
                 body.action,
                 principal.subject,
@@ -173,6 +203,8 @@ def factory_control(
         else:
             if body.policy is not None:
                 raise HTTPException(422, "policy requires configure action")
+            if body.repo is not None:
+                raise HTTPException(422, "repo requires a per-repo action")
             if body.request_key is None or body.expected_version is None:
                 raise HTTPException(
                     422, "request_key and expected_version are required"

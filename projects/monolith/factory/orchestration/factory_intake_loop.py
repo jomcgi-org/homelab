@@ -507,7 +507,8 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
             # Delivery only. The cap bounds delivery churn, and an advisory
             # refine costs cents and produces a comment, so the cap is not
             # consulted for one at all: it must never throttle a burn-down.
-            admitted_today = delivery_admissions(db, today)
+            # Counted per repo, which is what that repo's cap bounds.
+            admitted_today = delivery_admissions(db, today, repo)
 
         repo = policy["repo"]
         excluded: dict[str, int] = {reason: 0 for reason in _EXCLUSION_REASONS}
