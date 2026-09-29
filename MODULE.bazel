@@ -865,8 +865,8 @@ multiarch_http_file(
 
 multiarch_http_file(
     name = "claude_code_cli",
-    amd64_sha256 = "25d2e2cae6d3d1d5ceeaf0da02e83c45c16455e45efa1ab305395dc05227ad0d",
-    amd64_url = "https://registry.npmjs.org/@anthropic-ai/claude-code-linux-x64/-/claude-code-linux-x64-2.1.220.tgz",
+    amd64_sha256 = "642690c3afaa22029c17341e520d8c35ca85857fce6dcc9ecd90ef5e3c7f1027",
+    amd64_url = "https://registry.npmjs.org/@anthropic-ai/claude-code-linux-x64/-/claude-code-linux-x64-2.1.284.tgz",
     binary_name = "claude",
     extract_path = "package/claude",
     package_dir = "/usr/local/bin",

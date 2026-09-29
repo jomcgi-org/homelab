@@ -55,9 +55,17 @@ Prewarm parks each family differently:
   default model with no caller prompt. A different model costs one `set_model`
   RPC; a different prompt respawns through the turn path.
 
-A turn that hands a session id to an unbound process reports `path=adopt` in
-the turn-timing log; a turn served by the already-bound process reports
-`reuse`. During a base build `/shim/ready` stays 503 until every configured
+A parked claude CLI serves a new session (a turn with no session id) directly
+and reports `path=reuse`. A turn that resumes a session on a parked claude CLI
+closes it and respawns with `--resume <id>`, reporting `path=adopt_respawn`;
+codex and pi bind the session per request and report `path=adopt`. A turn
+served by the already-bound process reports `reuse`.
+
+**Why.** The guest once binary-patched Claude Code so a parked CLI could
+resume the session named by its first stream-json frame. The patch targeted
+one exact CLI build and was retired when the guest moved to a CLI the API
+accepts for Opus 5.5 (2.1.280 or newer, `#6467`). Resuming on a parked claude
+CLI now pays one spawn instead. During a base build `/shim/ready` stays 503 until every configured
 parked CLI is alive, so the snapshot cannot capture warmth that is not there.
 
 ## Progress destination
@@ -183,7 +191,7 @@ conversation.
 
 The CLI ships as a single **262 MB** arch-specific ELF, dynamically linked against
 glibc (`/lib64/ld-linux-x86-64.so.2`, GLIBC_2.2.5 baseline), fetched from the npm
-registry by the `claude_code_cli` entry in `MODULE.bazel`.
+registry by the `claude_code_cli` entry in `MODULE.bazel` and shipped unmodified.
 
 This image is **amd64 only**. Every cluster node is amd64 and so is the RBE build
 executor, so a dual-arch manifest would fetch a second 262 MB payload that no node

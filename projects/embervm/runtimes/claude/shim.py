@@ -526,12 +526,9 @@ CODEX_MODELS = {
 }
 # opus is pinned rather than left as the CLI alias, which resolves to whatever
 # the pinned claude_code_cli release shipped with, and so that the priced model
-# (shared/pricing.py) matches the one that ran. It stays on Opus 5 until
-# claude_code_cli moves past 2.1.280: the API refuses claude-opus-5-5 from older
-# clients ("version 2.1.280 or newer is required"), and 2.1.220 is pinned by the
-# late-resume patch in tools/claude-code-patch.
+# (shared/pricing.py) matches the one that ran.
 CLAUDE_MODELS = {
-    "opus": "claude-opus-5",
+    "opus": "claude-opus-5-5",
     "sonnet": "sonnet",
     "fable": "claude-fable-5",
 }
@@ -1688,17 +1685,16 @@ def _json_line(value):
     return (json.dumps(value, separators=(",", ":")) + "\n").encode("utf-8")
 
 
-def _user_message_line(message, session_id=None):
-    value = {
-        "type": "user",
-        "message": {
-            "role": "user",
-            "content": [{"type": "text", "text": message}],
-        },
-    }
-    if session_id:
-        value["session_id"] = session_id
-    return _json_line(value)
+def _user_message_line(message):
+    return _json_line(
+        {
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [{"type": "text", "text": message}],
+            },
+        }
+    )
 
 
 def voice_summary(result):
@@ -2775,6 +2771,10 @@ class ClaudeProcess:
             parked_process = (
                 process is not None and process.poll() is None and not self.session_id
             )
+            # A parked CLI was spawned without --resume and the stock CLI cannot
+            # bind a session from its first stream-json frame, so a turn that
+            # names a session respawns with --resume. A turn without one keeps
+            # the prewarmed process.
             parked_adoption = parked_process and bool(session_id)
             cli_ready_path = None
             workspace_identity = _workspace_identity(self.workspace)
@@ -2791,11 +2791,17 @@ class ClaudeProcess:
             if (
                 process is not None
                 and process.poll() is None
-                and (model_changed or cwd_changed or system_prompt_changed)
+                and (
+                    parked_adoption
+                    or model_changed
+                    or cwd_changed
+                    or system_prompt_changed
+                )
             ):
                 # Prewarm parks a CLI started without a caller prompt. Since
                 # append-system-prompt is spawn-time only, adoption must respawn
-                # when this turn carries a different prompt.
+                # when this turn carries a different prompt. _spawn also picks
+                # the legacy cwd for a pre-2026-08-05 session.
                 self._close_process(kill=False)
                 try:
                     self._spawn(
@@ -2814,7 +2820,9 @@ class ClaudeProcess:
                     raise
                 process = self.process
                 message_sent = True
-                cli_ready_path = "remediation_respawn"
+                cli_ready_path = (
+                    "adopt_respawn" if parked_adoption else "remediation_respawn"
+                )
             else:
                 message_sent = False
             # After a model-change respawn the first_message is already in
@@ -2849,47 +2857,16 @@ class ClaudeProcess:
                 if not self.ready():
                     raise StartupError(self.fatal_error or "shim not ready")
                 self.current_result = None
-                # Adoption is latched only when the user message is about to be
-                # delivered. Every later failure rolls it back below.
+                # Adoption is latched once the respawned CLI has the user
+                # message. Every later failure rolls it back below.
                 if parked_adoption:
-                    # Check if this legacy session must respawn due to workspace change.
-                    if not _transcript_exists(self.workspace, session_id):
-                        legacy_workspace = os.path.dirname(self.workspace)
-                        if _transcript_exists(legacy_workspace, session_id):
-                            # Close parked CLI and respawn with legacy cwd to restore state.
-                            self._close_process(kill=False)
-                            try:
-                                self._spawn(
-                                    session_id,
-                                    first_message=message,
-                                    model=model,
-                                    system_prompt=system_prompt,
-                                )
-                            except Exception:
-                                if (
-                                    parked_adoption
-                                    and not session_was_bound
-                                    and not getattr(self, "_interrupt_requested", False)
-                                ):
-                                    self.session_id = None
-                                raise
-                            process = self.process
-                            message_sent = True
-                            parked_adoption = False
-                            cli_ready_path = "remediation_respawn"
-                    if parked_adoption:
-                        self.session_id = session_id
-                        cli_ready_path = "adopt"
+                    self.session_id = session_id
                 if cli_ready_path is None:
                     cli_ready_path = "reuse"
                 _emit_elapsed("cli_ready", cli_ready_start, path=cli_ready_path)
                 if not message_sent:
                     self._turn_timing_model_start = _turn_timing_now()
-                    message_line = _user_message_line(
-                        message,
-                        session_id=session_id if parked_adoption else None,
-                    )
-                    process.stdin.write(message_line)
+                    process.stdin.write(_user_message_line(message))
                     process.stdin.flush()
                 events = []
                 accumulated_text = ""

@@ -97,7 +97,7 @@ apko_image(
         # The pi coding agent, a self-contained Bun-compiled ELF from the GitHub
         # release (see pi_coding_agent in MODULE.bazel), plus the theme JSONs and
         # wasm sidecar it loads relative to argv0. The ONLY CLI in this image:
-        # claude_code_patched_tar_amd64 and @codex_cli//:tar_amd64 are
+        # @claude_code_cli//:tar_amd64 and @codex_cli//:tar_amd64 are
         # deliberately absent, and that absence is this image's entire reason to
         # exist (200 MB of the claude runtime's 300 MB compressed).
         "@pi_coding_agent//:tar_amd64",

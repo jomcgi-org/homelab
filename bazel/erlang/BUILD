@@ -72,9 +72,8 @@ filegroup(
 # Smoke test: proves the prebuilt ubuntu-22.04 OTP boots and runs crypto ON the
 # RBE executor (the decisive de-risk before wiring mix/elixir + apko). Built by
 # `bazel test //...`. It was no-remote-cache "to re-verify the live executor",
-# which meant it, mix_test_smoke, release_boot_smoke and the claude late-resume
-# smoke re-ran on EVERY invocation (PR, queue candidate, main, write-back) with
-# unchanged inputs. The inputs are hermetic, so it caches like everything else
+# which meant it, mix_test_smoke and release_boot_smoke re-ran on EVERY
+# invocation (PR, queue candidate, main, write-back) with unchanged inputs. The inputs are hermetic, so it caches like everything else
 # now; the executor was de-risked in 2026-07.
 genrule(
     name = "otp_smoke",
