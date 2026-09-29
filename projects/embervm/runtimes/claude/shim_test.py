@@ -10037,6 +10037,99 @@ def test_muse_usage_native_two_turn_capture_keeps_exact_exec_boundary(
     assert "total_cost_usd" not in usage
 
 
+def test_muse_1_4_1_echo_fixture_matches_adapter_contract():
+    """Live 1.4.1 exec stream pins the shapes MuseProcess parses.
+
+    Verbatim recording from Muse Code 1.4.1 (1.4.1-R4503.1), echo
+    provider, captured 2026-09-29 with no auth: turn 1 prompts
+    "hello world", turn 2 prompts "second turn", both pass the same
+    --session-id. Stdout JSONL only, no credentials or host paths.
+    Echo reports zero usage with a null modelId, so this fixture pins
+    the exec envelope, the terminal payload, the lifecycle shapes and
+    session continuity, not pricing. Nonzero usage projection stays on
+    muse_usage_two_turns.json.
+    """
+    with open(
+        os.path.join(
+            os.path.dirname(__file__), "muse_exec_echo_two_turns_1_4_1.jsonl"
+        )
+    ) as f:
+        records = [json.loads(line) for line in f if line.strip()]
+    assert len(records) == 54
+    envelope = {
+        "schema_version",
+        "id",
+        "stream",
+        "sequence",
+        "recorded_at",
+        "record_type",
+        "durability",
+        "causation_id",
+        "payload_type",
+        "payload_schema_version",
+        "payload",
+    }
+    for record in records:
+        assert envelope <= set(record)
+        assert record["stream"]["kind"] == "session"
+    terminals = [
+        record
+        for record in records
+        if record["payload_type"] == "run.terminal.completed"
+    ]
+    assert len(terminals) == 2
+    # Both turns share one CLI session while each turn gets its own
+    # command, proving --session-id continuity across processes.
+    session_ids = {record["stream"]["id"] for record in records}
+    assert len(session_ids) == 1
+    command_ids = [record["payload"]["command_id"] for record in terminals]
+    assert len(set(command_ids)) == 2
+    turns = [
+        records[: records.index(terminals[0]) + 1],
+        records[records.index(terminals[0]) + 1 :],
+    ]
+    terminal_texts = [
+        record["payload"]["text"]
+        for turn in turns
+        for record in turn
+        if record["payload_type"] == "run.terminal.completed"
+    ]
+    assert terminal_texts == ["echo: hello world", "echo: second turn"]
+    for turn, terminal in zip(turns, terminals):
+        deltas = [
+            record["payload"]
+            for record in turn
+            if record["payload_type"] == "run.output.delta"
+        ]
+        assert len(deltas) == 1
+        payload = terminal["payload"]
+        assert payload["terminal"] == "completed"
+        assert payload["text"] == deltas[0]["text"]
+        # Same dispatch the turn loop applies: reason or terminal.
+        terminal_reason = payload.get("reason") or payload.get("terminal")
+        assert terminal_reason == "completed"
+        attempts = {
+            (record["payload"].get("task_id"), facet.get("attempt"))
+            for record in turn
+            if record["payload_type"].startswith("task.lifecycle.")
+            for facet in record["payload"]
+            .get("event", {})
+            .get("details", {})
+            .get("facets", [])
+            if isinstance(facet, dict)
+            and facet.get("kind") == "external_attempt"
+            and facet.get("operation") == "model.response"
+        }
+        # Echo runs no model, so the usage projection gets zero expected
+        # completions for this fixture.
+        assert attempts == set()
+    for record in records:
+        if not record["payload_type"].startswith("task.lifecycle."):
+            continue
+        assert isinstance(record["payload"].get("task_id"), str)
+        assert isinstance(record["payload"].get("event"), dict)
+
+
 @pytest.mark.parametrize("during_startup", [False, True])
 @pytest.mark.parametrize("reason", ["interrupted_for_drain", "user_interrupt"])
 def test_interrupt_flushes_partial_transcript_before_turn_safe_point(
