@@ -5116,6 +5116,15 @@ bdd_test(
     srcs = ["factory/orchestration/factory_policy_no_astra_postgres_test.py"],
 )
 
+# Hand-registered real-PostgreSQL coverage for the no-new-notes pending
+# provenance write: the atom_raw_provenance_pending partial unique index
+# only exists in Postgres, so a SQLite test cannot prove the retry is
+# idempotent.
+bdd_test(
+    name = "knowledge_extraction_provenance_postgres_test",
+    srcs = ["knowledge/extraction_provenance_postgres_test.py"],
+)
+
 py_test(
     name = "swarm_work_item_links_test",
     srcs = ["factory/orchestration/work_item_links_test.py"],
