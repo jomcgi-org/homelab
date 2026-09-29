@@ -35,7 +35,16 @@ OBSERVATION_NAMESPACES = frozenset(
     }
 )
 ARGOCD_NAMESPACE = "argocd"
-KARGO_NAMESPACES = frozenset({"kargo-embervm", "kargo-monolith"})
+# One namespace per Kargo Project (projects/platform/kargo/values.yaml), so
+# verify_deployment can explain every Kargo-owned app.
+KARGO_NAMESPACES = frozenset(
+    {
+        "kargo-embervm",
+        "kargo-monolith",
+        "kargo-monolith-agents",
+        "kargo-monolith-public",
+    }
+)
 
 LIST_LIMIT_DEFAULT = 50
 LIST_LIMIT_MAX = 100

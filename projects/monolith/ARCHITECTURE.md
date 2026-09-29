@@ -1152,24 +1152,48 @@ timeout and error classification but skips the model-facing projection; only
 the bounded verdict leaves the process.
 For an app Kargo promotes (it names its Stage in the
 `kargo.akuity.io/authorized-stage` annotation), both surfaces also read that
-Stage and the project's Freight, and the verdict gains a `kargo` block and
-check. A Promotion that failed for the expected version fails the verdict with
-its message, one still running or Freight waiting on upstream verification
-reads `in_progress` with the reason, and a promotion that succeeded while the
-settled app runs something older fails as drift. The expected Freight's
+Stage, its upstream Stages and the project's Freight, and the verdict gains a
+`kargo` block and check. A Promotion that failed for the expected version
+fails the verdict with its message once ArgoCD has settled short of that
+version (a Promotion can time out while its sync still lands), and so does an
+upstream Stage's failed Promotion of it, since the Freight can then never be
+verified there. One still running or Freight waiting on upstream verification
+reads `in_progress` with the reason. A promotion that succeeded while the
+settled app runs something older fails as drift, except while another
+Promotion (a rollback) is running; a revert made through git rather than Kargo
+also reads as drift until Kargo promotes that version. The expected Freight's
 `verified_in` and `approved_for` show whether it passed the gate or was
 approved by hand. A failed Kargo read is reported in the block and never
 changes the verdict. **Why.** On 2026-09-26 `verify_deployment` said embervm
 was `in_progress` for two days: a Promotion had failed and Kargo never retries
 one, and nothing on either surface could read a Stage to say so.
+
+**`kargo_promote` re-runs a Kargo Promotion, on the private surface only.** It
+resolves the app's Stage from the same annotation, finds the Freight for the
+exact chart version, and creates a Promotion carrying the Stage's own
+`promotionTemplate` steps and vars, which is the Promotion auto-promotion would
+have made. `cluster/kargo.py` refuses while a Promotion is running and refuses
+Freight the Stage could not already take: it must be verified upstream and
+soaked there (per the Stage's `availabilityStrategy` and `requiredSoakTime`),
+approved for the Stage, or direct from a Warehouse. It never approves Freight
+and never aborts a Promotion. `dry_run` submits through admission, Kargo's
+webhook included, without creating anything. The grant is a Role per Kargo
+Project namespace (`rbac.kargoPromote`) with `create` on promotions and the
+custom `promote` verb on stages, which Kargo's webhook checks; dev disables it,
+because dev shares production's Kargo Projects. **Why.** Kargo never retries a
+failed Promotion, so a transient failure strands a chart until someone
+re-promotes it, and until now that someone had to be Joe in the Kargo UI.
+Approval and abort stay human levers: approval waives a gate, and the
+abort annotation's format could not be confirmed from the pinned chart.
 Identity middleware rejects anonymous callers, the tokens are minted by
 authentik's agent provider, and an Ember guest reaches the tier only through
 its egress sidecar, since the guest itself has no network. The tier holds its
 own database and object-storage credentials, synced into its namespace, and a
 ServiceAccount with its own enumerated read RBAC. Namespaced workload reads are
 separate Roles in the recorded namespace allowlist; Argo CD Applications are
-limited to `argocd`, Kargo Freight and Stages to `kargo-monolith` and
-`kargo-embervm`, and
+limited to `argocd`, Kargo Freight and Stages to the four Kargo Project
+namespaces (`kargo-embervm`, `kargo-monolith`, `kargo-monolith-agents`,
+`kargo-monolith-public`), and
 the only cluster-scoped exceptions are nodes, namespaces, and node metrics.
 There is no watch, mutation, Secret, exec, attach, port-forward, or proxy grant.
 The read tools independently require the standing workload principal

@@ -149,7 +149,13 @@ def kargo_stage_ref(app: dict[str, Any]) -> tuple[str, str] | None:
     return namespace, stage
 
 
-def _freight_version(freight: dict[str, Any] | None, chart: str | None) -> str | None:
+def app_chart(app: dict[str, Any]) -> str | None:
+    """The Helm chart name of the Application's primary source, if any."""
+    sources = _sources(app)
+    return sources[_primary_index(sources)].get("chart") if sources else None
+
+
+def freight_version(freight: dict[str, Any] | None, chart: str | None) -> str | None:
     """The version of this app's chart inside a Freight (or Freight reference)."""
     for entry in (freight or {}).get("charts") or []:
         if not isinstance(entry, dict):
@@ -170,7 +176,7 @@ def _promotion(
     status = block.get("status") or {}
     return {
         "name": block.get("name"),
-        "version": _freight_version(
+        "version": freight_version(
             block.get("freight") or status.get("freight"), chart
         ),
         "phase": status.get("phase"),
@@ -180,7 +186,7 @@ def _promotion(
     }
 
 
-def _upstream_stages(stage: dict[str, Any]) -> list[str]:
+def upstream_stages(stage: dict[str, Any]) -> list[str]:
     upstream: list[str] = []
     for requested in (stage.get("spec") or {}).get("requestedFreight") or []:
         sources = (requested or {}).get("sources") or {}
@@ -195,7 +201,7 @@ def _expected_freight(
     want = _semver(expected)
     best: tuple[tuple[int, ...], dict[str, Any]] | None = None
     for freight in freights:
-        version = _freight_version(freight, chart)
+        version = freight_version(freight, chart)
         if version == expected:
             return freight
         have = _semver(version)
@@ -204,11 +210,30 @@ def _expected_freight(
     return best[1] if best else None
 
 
+def _failed_upstream(
+    upstream: dict[str, Any], waiting: list[str], chart: str | None, covers: Any
+) -> list[tuple[str, dict[str, Any]]]:
+    """Upstream Stages whose last Promotion of this version failed for good."""
+    failed = []
+    for name in waiting:
+        status = (upstream.get(name) or {}).get("status") or {}
+        promotion = _promotion(status.get("lastPromotion"), chart)
+        if (
+            promotion
+            and not status.get("currentPromotion")
+            and covers(promotion)
+            and promotion["phase"] in _PROMOTION_FAILED
+        ):
+            failed.append((name, promotion))
+    return failed
+
+
 def _kargo(
     kargo: dict[str, Any],
     ref: tuple[str, str],
     chart: str | None,
     live: str | None,
+    requested: str | None,
     settled: bool,
     expected_revision: str | None,
     expected_reached: bool,
@@ -236,11 +261,15 @@ def _kargo(
     # Drift: Kargo's last Promotion succeeded, yet the settled Application runs
     # something older. Nothing in Kargo will correct that; something outside
     # it (a parent Application without an ignoreDifferences entry for this
-    # app's targetRevision, say) reverted the promotion.
+    # app's targetRevision, say) reverted the promotion. A running Promotion
+    # can itself be a rollback to older Freight, so drift waits for it. A
+    # revert through git (dropping the ignoreDifferences entry so the git pin
+    # applies) reads as drift until Kargo promotes that version too.
     last_version = _semver((last or {}).get("version"))
     live_version = _semver(live)
     if (
         last
+        and not current
         and last["phase"] == "Succeeded"
         and settled
         and last_version
@@ -265,7 +294,7 @@ def _kargo(
         block["expected_freight"] = {
             "name": (freight.get("metadata") or {}).get("name"),
             "alias": freight.get("alias"),
-            "version": _freight_version(freight, chart),
+            "version": freight_version(freight, chart),
             "verified_in": sorted(freight_status.get("verifiedIn") or {}),
             "approved_for": sorted(freight_status.get("approvedFor") or {}),
             "currently_in": sorted(freight_status.get("currentlyIn") or {}),
@@ -288,13 +317,20 @@ def _kargo(
             f"is {current['phase'] or 'running'}{step}",
         )
     elif last and covers(last) and last["phase"] in _PROMOTION_FAILED:
-        check(
-            "kargo",
-            FAILED,
+        # A Promotion can fail on a later step (a wait timeout) after it
+        # already pointed ArgoCD at the version, and that sync may still
+        # finish. It is final only once ArgoCD settled short of the version
+        # or was never asked for it.
+        applied = covers({"version": requested})
+        message = (
             f"Promotion {last['name']} of {last['version']} to {stage_name} "
             f"{last['phase']}: {last['message']}. Kargo does not retry a failed "
-            "Promotion; the Freight needs promoting again",
+            "Promotion; the Freight needs promoting again"
         )
+        if settled or not applied:
+            check("kargo", FAILED, message)
+        else:
+            check("kargo", IN_PROGRESS, f"{message} (ArgoCD is still syncing it)")
     elif freight is None:
         check(
             "kargo",
@@ -302,12 +338,26 @@ def _kargo(
             f"Kargo has not discovered chart {expected_revision} in {namespace} yet",
         )
     else:
-        upstream = _upstream_stages(stage)
+        upstream = upstream_stages(stage)
         verified = set(block["expected_freight"]["verified_in"])
         approved = set(block["expected_freight"]["approved_for"])
         waiting = [s for s in upstream if s not in verified]
         label = freight.get("alias") or block["expected_freight"]["version"]
-        if waiting and stage_name not in approved:
+        failed_upstream = _failed_upstream(
+            kargo.get("upstream") or {}, waiting, chart, covers
+        )
+        if failed_upstream and stage_name not in approved:
+            name, promotion = failed_upstream[0]
+            check(
+                "kargo",
+                FAILED,
+                f"Freight {label} waits for verification in {name}, but Promotion "
+                f"{promotion['name']} of {promotion['version']} to {name} "
+                f"{promotion['phase']}: {promotion['message']}. Kargo does not "
+                f"retry a failed Promotion, so {stage_name} will not get it "
+                f"unless it is promoted to {name} again",
+            )
+        elif waiting and stage_name not in approved:
             check(
                 "kargo",
                 IN_PROGRESS,
@@ -341,7 +391,9 @@ def verdict(
 
     ``kargo`` is optional context for a Kargo-owned app (see
     :func:`kargo_stage_ref`): ``{"stage": <Stage or None>, "freights":
-    [<Freight>...]}``, or ``{"error": <message>}`` when reading them failed.
+    [<Freight>...], "upstream": {<name>: <Stage>}}``, where ``upstream``
+    holds the Stages this one takes Freight from (optional), or ``{"error":
+    <message>}`` when reading them failed.
 
     Raises :class:`RevisionMismatch` when ``expected_revision`` is a chart
     version and the app deploys git commits, or the reverse, since that can
@@ -457,8 +509,9 @@ def verdict(
         kargo_block = _kargo(
             kargo,
             ref,
-            sources[idx].get("chart") if sources else None,
+            app_chart(app),
             live,
+            requested,
             synced and not running,
             expected_revision,
             reached,

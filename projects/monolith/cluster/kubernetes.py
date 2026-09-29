@@ -16,6 +16,8 @@ import time
 from kubernetes_asyncio import client, config
 from kubernetes_asyncio.client import ApiClient
 
+from shared import rollout
+
 logger = logging.getLogger(__name__)
 
 _node_names_cache: tuple[float, set[str]] | None = None
@@ -215,17 +217,12 @@ class KubernetesClient:
                     break
         return freight
 
-    async def get_kargo_context(self, namespace: str, stage: str) -> dict:
-        """The Stage and the project's Freight, for ``shared.rollout.verdict``.
-
-        Read-only. A missing Stage reads as ``stage: None``; any other API
-        error raises, so a missing RBAC verb is not mistaken for a missing
-        Stage.
-        """
+    async def _get_kargo_stage(self, namespace: str, stage: str) -> dict | None:
+        """One Stage, or None on 404. Any other API error raises."""
         api = await self._ensure_client()
         custom = client.CustomObjectsApi(api)
         try:
-            stage_obj = await custom.get_namespaced_custom_object(
+            return await custom.get_namespaced_custom_object(
                 group="kargo.akuity.io",
                 version="v1alpha1",
                 namespace=namespace,
@@ -235,14 +232,32 @@ class KubernetesClient:
         except client.exceptions.ApiException as exc:
             if exc.status != 404:
                 raise
-            stage_obj = None
+            return None
+
+    async def get_kargo_context(self, namespace: str, stage: str) -> dict:
+        """The Stage, its upstream Stages and the project's Freight.
+
+        Read-only, shaped for ``shared.rollout.verdict``. A missing Stage reads
+        as ``stage: None``; any other API error raises, so a missing RBAC verb
+        is not mistaken for a missing Stage.
+        """
+        api = await self._ensure_client()
+        custom = client.CustomObjectsApi(api)
+        stage_obj = await self._get_kargo_stage(namespace, stage)
+        upstream = {}
+        for name in rollout.upstream_stages(stage_obj or {}):
+            upstream[name] = await self._get_kargo_stage(namespace, name)
         freights = await custom.list_namespaced_custom_object(
             group="kargo.akuity.io",
             version="v1alpha1",
             namespace=namespace,
             plural="freights",
         )
-        return {"stage": stage_obj, "freights": freights.get("items") or []}
+        return {
+            "stage": stage_obj,
+            "upstream": upstream,
+            "freights": freights.get("items") or [],
+        }
 
     async def get_argocd_app_deployed_revision(
         self, name: str, namespace: str = "argocd"
@@ -545,6 +560,27 @@ class KubernetesClient:
             _content_type="application/merge-patch+json",
         )
         return {"app": name, "synced": True, "prune": prune, "dry_run": dry_run}
+
+    async def create_kargo_promotion(
+        self, namespace: str, body: dict, dry_run: bool = False
+    ) -> dict:
+        """Create one Kargo Promotion (``cluster.kargo.plan_promotion`` builds it).
+
+        Kargo's webhook admits it only if the caller holds the ``promote`` verb
+        on the Stage. ``dry_run`` runs admission, webhook included, without
+        persisting anything. Returns the created object.
+        """
+        api = await self._ensure_client()
+        custom = client.CustomObjectsApi(api)
+        kwargs = {"dry_run": "All"} if dry_run else {}
+        return await custom.create_namespaced_custom_object(
+            group="kargo.akuity.io",
+            version="v1alpha1",
+            namespace=namespace,
+            plural="promotions",
+            body=body,
+            **kwargs,
+        )
 
     async def create_workflow(self, namespace: str, body: dict) -> str:
         """Create an Argo Workflow custom resource; return its server-assigned name.
