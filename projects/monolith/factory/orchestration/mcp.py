@@ -788,7 +788,10 @@ def _submit_issue(
     from fastapi import HTTPException
     from goosecracker.api import REPO_CATALOG
 
-    from factory.orchestration.factory_intake import get_issue_receipt
+    from factory.orchestration.factory_intake import (
+        current_operator_allowlist,
+        get_issue_receipt,
+    )
     from factory.orchestration.factory_router import ReceiptRequest, factory_receipt
 
     # Reuse the HTTP adapter's repository eligibility and issue validation,
@@ -798,6 +801,21 @@ def _submit_issue(
             raise HTTPException(422, "repository is not available to the executor")
         result = get_issue_receipt(repo, issue_number, generation)
         if result is None:
+            # REFUSE, do not queue: an operator receipt outside the policy
+            # allowlist can never be admitted, yet a queued one held a lane
+            # slot and stalled intake (#6483). The allowlist is the same
+            # admission_eligible rule admit_next applies to a non-intake
+            # actor. An existing receipt is still returned above on retry.
+            allowlist = current_operator_allowlist()
+            if allowlist is not None and issue_number not in allowlist:
+                return {
+                    "ok": False,
+                    "state": "ineligible",
+                    "reason": "ineligible: not in policy issue_numbers",
+                    "repo": repo,
+                    "issue_number": issue_number,
+                    "generation": generation,
+                }
             result = factory_receipt(
                 ReceiptRequest(
                     repo=repo, issue_number=issue_number, generation=generation
@@ -827,6 +845,8 @@ async def factory_submit_issue(
     available to the executor. A retry with the same repository, issue and
     generation returns the existing receipt without replacing its request.
     Keep generation unchanged on retries. Changing it requests a new recurrence.
+    An issue outside the policy allowlist is refused with state ineligible
+    and creates no receipt, because such a receipt could never be admitted.
     Receipt creation does not start a worker or override paused admissions,
     policy eligibility, capacity or budgets. Check factory_status for admission.
     """
@@ -845,6 +865,7 @@ def _request_control(
     expected_version: int,
     task_id: str | None,
     actor: str,
+    receipt_id: int | None = None,
 ) -> dict:
     from factory.orchestration.factory_controls import request_control
 
@@ -855,6 +876,7 @@ def _request_control(
             request_key=request_key,
             expected_version=expected_version,
             task_id=task_id,
+            receipt_id=receipt_id,
         )
     except ValueError as exc:
         return {"ok": False, "reason": str(exc)}
@@ -862,10 +884,18 @@ def _request_control(
 
 @mcp.tool
 async def factory_control(
-    action: Literal["enable", "pause_admissions", "pause_task", "resume_task", "stop"],
+    action: Literal[
+        "enable",
+        "pause_admissions",
+        "pause_task",
+        "resume_task",
+        "stop",
+        "cancel_receipt",
+    ],
     request_key: Annotated[str, Field(min_length=1, max_length=256)],
     expected_version: Annotated[MCPInteger, Field(ge=0, le=2**63 - 1)],
     task_id: Annotated[str | None, Field(min_length=1, max_length=256)] = None,
+    receipt_id: Annotated[int | None, Field(gt=0, le=2**63 - 1)] = None,
 ) -> dict:
     """Apply a supported factory control as an authenticated human operator.
 
@@ -881,8 +911,12 @@ async def factory_control(
     stop permanently fences this factory and requests cancellation of its work.
     It cannot be undone by enable and is not an acknowledgement of cessation.
     Inspect status for unresolved starts. Cancellation does not undo effects.
-    Only pause_task and resume_task take task_id. These controls do not alter
-    priorities, task direction, policy or budgets and need no conductor turn.
+    cancel_receipt settles one queued receipt as cancelled by its receipt_id,
+    for clearing queue entries that can never admit. Only queued receipts
+    move; any other state is refused. Only pause_task and resume_task take
+    task_id, and only cancel_receipt takes receipt_id. These controls do not
+    alter priorities, task direction, policy or budgets and need no
+    conductor turn.
     """
     principal = current_principal()
     refusal = _refuse(principal)
@@ -895,6 +929,7 @@ async def factory_control(
         expected_version,
         task_id,
         principal.subject,
+        receipt_id,
     )
 
 

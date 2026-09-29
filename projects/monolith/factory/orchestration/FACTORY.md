@@ -152,7 +152,9 @@ A concrete flow uses the records and interfaces that exist today:
 
 1. The Conductor submits an approved open issue through `factory_submit_issue`.
    The server returns a durable `factory_receipt`; a retry with the same
-   identity returns the same receipt.
+   identity returns the same receipt. An issue outside the policy allowlist
+   is refused with state `ineligible` and creates no receipt, because such a
+   receipt could never be admitted yet would hold a lane slot while queued.
 2. Admission selects the oldest eligible unblocked receipt in its available
    lane and creates its `swarm_task`. The Astra Planner records a complete DAG
    through plan versions and nodes within the receipt's pinned policy and
@@ -1873,7 +1875,11 @@ MCP and `POST /api/swarm/factory/control` use
 `factory_controls.request_control` for these supported actions. The caller must
 supply a stable `request_key` and the exact control `expected_version` read from
 status. The owner records refused stale requests too, so the same request cannot
-become effective after state changes. `configure` remains a separate bearer-only
+become effective after state changes. `cancel_receipt` settles one queued
+receipt as cancelled through the same ledger and version check, without
+changing control state; only queued receipts move, and it takes a `receipt_id`
+rather than a `task_id`. The HTTP route carries no receipt id, so cancellation
+is MCP-only. `configure` remains a separate bearer-only
 policy operation and is not exposed through MCP. Priority edits, free-form
 direction, budget mutation and exact-attempt MCP stop have no supported owner in
 this surface and remain unavailable.

@@ -36,6 +36,7 @@ from factory.orchestration.factory_controls import (
     validate_policy,
 )
 from factory.orchestration.factory_models import (  # noqa: F401 - same_work re-exported
+    FactoryControl,
     FactoryReceipt,
     FactoryAudit,
     WorkItem,
@@ -322,6 +323,58 @@ def open_lanes(policy: dict, rows, lanes=LANES) -> dict:
     return room
 
 
+def admission_eligible(policy: dict, issue_number: int, actor: str) -> bool:
+    """Whether admit_next could ever admit a queued receipt for this issue.
+
+    One rule shared by the admission query, the intake lane-slot count and
+    the MCP submit path, so the three can never disagree about what
+    "eligible" means (#6483). An operator submission qualifies only through
+    the policy allowlist; an intake receipt qualifies the same way, or by
+    intake authorship while intake is enabled.
+    """
+    if issue_number in set(policy.get("issue_numbers") or ()):
+        return True
+    return actor == INTAKE_ACTOR and bool(intake_policy(policy).get("enabled"))
+
+
+def _eligible_clause(policy: dict):
+    """The SQL twin of admission_eligible for the queued-receipt query."""
+    eligible = FactoryReceipt.issue_number.in_(policy["issue_numbers"])
+    if intake_policy(policy)["enabled"]:
+        # Intake receipts are not in the operator allowlist by construction.
+        # They are admissible only while intake is on, so turning intake off
+        # leaves the allowlist exactly as it was.
+        eligible = or_(eligible, FactoryReceipt.actor == INTAKE_ACTOR)
+    return eligible
+
+
+def current_operator_allowlist(*, session: Session | None = None) -> set[int] | None:
+    """Allowlisted issue numbers from the live control policy, or None.
+
+    None when the factory has no posted policy yet. The submit path then
+    keeps its previous behaviour rather than refusing work for want of a
+    rule to check it against.
+    """
+    with _read_session(session) as db:
+        control = db.exec(
+            select(FactoryControl).where(FactoryControl.id == "factory")
+        ).first()
+        if control is None:
+            return None
+        try:
+            policy = json.loads(control.policy_json)
+        except ValueError:
+            return None
+    issues = policy.get("issue_numbers") if isinstance(policy, dict) else None
+    if (
+        not isinstance(issues, list)
+        or not issues
+        or any(type(number) is not int for number in issues)
+    ):
+        return None
+    return set(issues)
+
+
 def _audit_throttled(
     db: Session,
     actor: str,
@@ -446,12 +499,10 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
         in_lane = FactoryReceipt.task_class.in_(classes)
         if routes[DEFAULT_TASK_CLASS]["tier"] in available:
             in_lane = or_(in_lane, FactoryReceipt.task_class.is_(None))
-        eligible = FactoryReceipt.issue_number.in_(policy["issue_numbers"])
-        if intake_policy(policy)["enabled"]:
-            # Intake receipts are not in the operator allowlist by construction.
-            # They are admissible only while intake is on, so turning intake off
-            # leaves the allowlist exactly as it was.
-            eligible = or_(eligible, FactoryReceipt.actor == INTAKE_ACTOR)
+        # The Python twin is admission_eligible above; the two must agree on
+        # every (allowlisted, actor, intake-enabled) combination, pinned by
+        # test_admission_eligibility_sql_matches_python.
+        eligible = _eligible_clause(policy)
         # A new generation may coexist with an older task. A direct receipt
         # cannot start a second task on that same issue, even in another lane.
         owned = [

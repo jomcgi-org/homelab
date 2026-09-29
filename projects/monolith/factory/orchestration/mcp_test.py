@@ -4,12 +4,75 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import json
 
 import pytest
+from sqlalchemy import event
+from sqlmodel import Session, SQLModel, create_engine, select
 
 from auth.dependencies import reset_current_principal, set_current_principal
 from auth.principal import Authority, Principal, PrincipalKind
+import factory.orchestration.factory_controls as controls
 from factory.orchestration import mcp
+from factory.orchestration.factory_models import (
+    FactoryAudit,
+    FactoryControl,
+    FactoryReceipt,
+    FactoryStart,
+    WorkItem,
+    WorkItemEdge,
+    WorkItemEvent,
+)
+from factory.orchestration.models import SwarmTask
+
+
+@pytest.fixture
+def db(tmp_path, monkeypatch):
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'mcp.db'}",
+        connect_args={"check_same_thread": False, "timeout": 5},
+        execution_options={"schema_translate_map": {"swarm": None}},
+    )
+
+    @event.listens_for(engine, "connect")
+    def foreign_keys(connection, _record):
+        connection.execute("PRAGMA foreign_keys=ON")
+
+    SQLModel.metadata.create_all(
+        engine,
+        tables=[
+            m.__table__
+            for m in (
+                SwarmTask,
+                FactoryControl,
+                FactoryReceipt,
+                FactoryStart,
+                FactoryAudit,
+                WorkItem,
+                WorkItemEdge,
+                WorkItemEvent,
+            )
+        ],
+    )
+    with Session(engine) as session:
+        session.add(FactoryControl(id="factory", actor="migration"))
+        session.commit()
+    monkeypatch.setattr(controls, "get_engine", lambda: engine)
+    yield engine
+    engine.dispose()
+
+
+def seed_policy(db, issue_numbers):
+    with Session(db) as session:
+        control = session.get(FactoryControl, "factory")
+        control.policy_json = json.dumps({"issue_numbers": list(issue_numbers)})
+        session.add(control)
+        session.commit()
+
+
+def stored_receipts(db):
+    with Session(db) as session:
+        return session.exec(select(FactoryReceipt)).all()
 
 
 def _principal(
@@ -731,7 +794,56 @@ def test_control_attributes_authenticated_actor_and_preserves_owner_result(monke
     )
     assert result == acknowledgement
     assert calls == [
-        ("stop", "joe", {"request_key": "stop", "expected_version": 3, "task_id": None})
+        (
+            "stop",
+            "joe",
+            {
+                "request_key": "stop",
+                "expected_version": 3,
+                "task_id": None,
+                "receipt_id": None,
+            },
+        )
+    ]
+
+
+def test_control_passes_receipt_id_for_cancel_receipt(monkeypatch):
+    calls = []
+    acknowledgement = {
+        "ok": True,
+        "state": "cancelled",
+        "receipt_id": 9,
+        "request_key": "cancel-9",
+    }
+
+    def request(action, actor, **kwargs):
+        calls.append((action, actor, kwargs))
+        return acknowledgement
+
+    monkeypatch.setattr(
+        "factory.orchestration.factory_controls.request_control", request
+    )
+    result = _as(
+        _principal(),
+        lambda: mcp.factory_control(
+            "cancel_receipt",
+            "cancel-9",
+            3,
+            receipt_id=9,
+        ),
+    )
+    assert result == acknowledgement
+    assert calls == [
+        (
+            "cancel_receipt",
+            "joe",
+            {
+                "request_key": "cancel-9",
+                "expected_version": 3,
+                "task_id": None,
+                "receipt_id": 9,
+            },
+        )
     ]
 
 
@@ -739,6 +851,10 @@ def test_submit_preserves_durable_receipt_identity_and_duplicate_result(monkeypa
     monkeypatch.setattr("goosecracker.api.REPO_CATALOG", {"owner/repo": {}})
     monkeypatch.setattr(
         "factory.orchestration.factory_intake.get_issue_receipt", lambda *args: None
+    )
+    monkeypatch.setattr(
+        "factory.orchestration.factory_intake.current_operator_allowlist",
+        lambda **kwargs: {7},
     )
     calls = []
 
@@ -773,6 +889,10 @@ def test_submit_reports_ineligible_issue_without_claiming_acceptance(monkeypatch
     monkeypatch.setattr(
         "factory.orchestration.factory_intake.get_issue_receipt", lambda *args: None
     )
+    monkeypatch.setattr(
+        "factory.orchestration.factory_intake.current_operator_allowlist",
+        lambda **kwargs: {7},
+    )
     from fastapi import HTTPException
 
     def refuse(body, principal):
@@ -785,6 +905,121 @@ def test_submit_reports_ineligible_issue_without_claiming_acceptance(monkeypatch
         "status": 409,
         "reason": "issue is not open eligible work",
     }
+
+
+def test_submit_refuses_issue_outside_policy_allowlist(db, monkeypatch):
+    """#6483: an MCP submission admit_next can never admit creates no receipt."""
+    seed_policy(db, [7])
+    monkeypatch.setattr("goosecracker.api.REPO_CATALOG", {"owner/repo": {}})
+    monkeypatch.setattr(
+        "factory.orchestration.factory_intake.get_issue_receipt", lambda *args: None
+    )
+
+    def offline(*args):
+        raise AssertionError("an ineligible submit must not reach the receipt owner")
+
+    monkeypatch.setattr("factory.orchestration.factory_router.factory_receipt", offline)
+    result = _as(_principal(), lambda: mcp.factory_submit_issue("owner/repo", 8))
+    assert result["ok"] is False
+    assert result["state"] == "ineligible"
+    assert result["reason"] == "ineligible: not in policy issue_numbers"
+    assert result["issue_number"] == 8
+    assert stored_receipts(db) == []
+
+
+def test_submit_queues_allowlisted_issue(db, monkeypatch):
+    seed_policy(db, [7])
+    monkeypatch.setattr("goosecracker.api.REPO_CATALOG", {"owner/repo": {}})
+    monkeypatch.setattr(
+        "factory.orchestration.factory_intake.get_issue_receipt", lambda *args: None
+    )
+    calls = []
+
+    def receive(body, principal):
+        calls.append((body.model_dump(), principal.subject))
+        return {
+            "ok": True,
+            "created": True,
+            "receipt": {
+                "id": 1,
+                "repo": "owner/repo",
+                "issue_number": 7,
+                "generation": 0,
+                "state": "queued",
+                "task_id": None,
+            },
+        }
+
+    monkeypatch.setattr("factory.orchestration.factory_router.factory_receipt", receive)
+    result = _as(_principal(), lambda: mcp.factory_submit_issue("owner/repo", 7))
+    assert result["ok"] is True
+    assert result["created"] is True
+    assert result["receipt"]["receipt_id"] == 1
+    assert calls == [
+        ({"repo": "owner/repo", "issue_number": 7, "generation": 0}, "joe")
+    ]
+
+
+def test_submit_returns_existing_receipt_for_ineligible_issue_on_retry(db, monkeypatch):
+    """A retry after the REFUSE still reads the durable receipt, never a second."""
+    seed_policy(db, [7])
+    with Session(db) as session:
+        session.add(
+            FactoryReceipt(
+                repo="owner/repo",
+                issue_number=8,
+                generation=0,
+                title="old",
+                body="",
+                url="https://github.com/owner/repo/issues/8",
+                actor="joe",
+                state="queued",
+            )
+        )
+        session.commit()
+        receipt_id = (
+            session.exec(select(FactoryReceipt).where(FactoryReceipt.issue_number == 8))
+            .one()
+            .id
+        )
+    monkeypatch.setattr("goosecracker.api.REPO_CATALOG", {"owner/repo": {}})
+
+    def offline(*args):
+        raise AssertionError("a durable retry must not create another receipt")
+
+    monkeypatch.setattr("factory.orchestration.factory_router.factory_receipt", offline)
+    result = _as(_principal(), lambda: mcp.factory_submit_issue("owner/repo", 8))
+    assert result["ok"] is True
+    assert result["created"] is False
+    assert result["receipt"]["receipt_id"] == receipt_id
+    assert len(stored_receipts(db)) == 1
+
+
+def test_submit_without_posted_policy_keeps_previous_behaviour(db, monkeypatch):
+    """No control policy yet: nothing to check against, so the submit proceeds."""
+    monkeypatch.setattr("goosecracker.api.REPO_CATALOG", {"owner/repo": {}})
+    monkeypatch.setattr(
+        "factory.orchestration.factory_intake.get_issue_receipt", lambda *args: None
+    )
+
+    def receive(body, principal):
+        return {
+            "ok": True,
+            "created": True,
+            "receipt": {
+                "id": 1,
+                "repo": "owner/repo",
+                "issue_number": 7,
+                "generation": 0,
+                "state": "queued",
+                "task_id": None,
+            },
+        }
+
+    monkeypatch.setattr("factory.orchestration.factory_router.factory_receipt", receive)
+    result = _as(_principal(), lambda: mcp.factory_submit_issue("owner/repo", 7))
+    assert result["ok"] is True
+    assert result["created"] is True
 
 
 def test_mcp_client_lists_and_calls_controls_with_schema_validation(monkeypatch):
@@ -838,7 +1073,7 @@ def test_mcp_client_lists_and_calls_controls_with_schema_validation(monkeypatch)
                     raise_on_error=False,
                 )
                 assert invalid.is_error
-            assert calls == [("pause_admissions", "pause", 1, None, "joe")]
+            assert calls == [("pause_admissions", "pause", 1, None, "joe", None)]
 
     _as(_principal(), exercise)
 

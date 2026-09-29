@@ -25,7 +25,9 @@ from factory.orchestration.factory_controls import (
 )
 from factory.orchestration.factory_intake import (
     INTAKE_ACTOR,
+    admission_eligible,
     ceiling_below_lanes,
+    lane_of,
     open_lanes,
     receive_issue,
 )
@@ -222,19 +224,17 @@ def _idle(detail: dict) -> None:
 def _slot_holders(rows, policy: dict) -> list:
     """Receipts that really hold a lane slot for this intake tick.
 
-    A queued receipt holds a slot only if admit_next could admit it: one
-    intake created itself, or one whose issue is on the policy allowlist.
-    An operator receipt outside the allowlist can never admit, so counting it
-    let four such receipts fill a delivery lane and stall intake with no
-    audit (#6483).
+    A queued receipt holds a slot only if admit_next could admit it, which
+    is admission_eligible in factory_intake: one intake created itself, or
+    one whose issue is on the policy allowlist. An operator receipt outside
+    the allowlist can never admit, so counting it let four such receipts
+    fill a delivery lane and stall intake with no audit (#6483).
     """
-    allowlist = set(policy.get("issue_numbers") or ())
     return [
         row
         for row in rows
         if row.state != "queued"
-        or row.actor == INTAKE_ACTOR
-        or row.issue_number in allowlist
+        or admission_eligible(policy, row.issue_number, row.actor)
     ]
 
 
@@ -857,7 +857,23 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                     policy,
                 )
                 room = open_lanes(policy, held, lanes)
+                held_counts: dict[str, int] = {}
+                for row in held:
+                    key = f"{lane_of(row)}:{row.state}"
+                    held_counts[key] = held_counts.get(key, 0) + 1
             if not room.get(candidate["lane"]):
+                # The lane filled between the pre-sweep room check and this
+                # re-read: another replica, or an earlier candidate this tick
+                # admitted above. admit_next is still the real gate; this idle
+                # row is how the board shows the skip, throttled like every
+                # other idle reason so a full lane writes once an hour.
+                _idle(
+                    {
+                        "reason": "lane_full",
+                        "lane": candidate["lane"],
+                        "held": held_counts,
+                    }
+                )
                 continue
             delivery = candidate["lane"] == "delivery"
             # Refuse this candidate rather than the rest of the tick. The
