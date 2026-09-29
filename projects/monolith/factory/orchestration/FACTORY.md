@@ -291,6 +291,27 @@ own and defaults to 2. Those, `reviewer_model`, `model_pools`, `quota_guard`,
 and `intake` are optional. `max_review_recovery_rounds` is also optional and
 defaults to 0; it admits up to two extra rounds under the CI gate below.
 
+### Serving more than one repository
+
+The optional `repos` map keys per-repo policy by normalized repo slug. Each
+entry holds its own enable switch, pause switch, intake labels, lane caps
+(`max_tasks` plus `max_per_day`), budget envelope (`task_budget_usd` and
+`turn_budget_usd`), landing mode (`merge_queue` or `none`, with `auto_merge`
+off unless explicitly set), and charter reference. A policy with only the
+legacy `repo` field normalizes to a one-entry map that behaves exactly as
+today, so the live policy needs no re-post. Global pause, stop and generation
+stay global. Per-repo pause, resume, enable and disable are separate control
+actions that flip one entry without advancing generation or retiring any
+other repo's queue. Admission checks lane room, the daily cap and the budget
+envelope against the receipt's own repo. Any entry that is not the legacy
+primary repo defaults to disabled.
+
+The staged `weave-hand/loom` entry ships default-off. Enabling it is a
+separate operator act: post the payload from
+`migration_policy_with_loom` (staged daily cap 2, landing `none`) through
+`configure`, then flip the entry on when the loom charter, sweep and review
+path land. No live enablement happens in the change that adds the map.
+
 ### Updating policy while work runs
 
 `configure` accepts a new policy while tasks are admitted or uncertain. Each

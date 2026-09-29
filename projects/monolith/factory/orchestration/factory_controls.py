@@ -82,6 +82,7 @@ _POLICY_KEYS = {
     "quota_guard",
     "progress_watchdog",
     "auto_merge",
+    "repos",
 }
 _OPTIONAL_POLICY_KEYS = {
     "reviewer_model",
@@ -98,6 +99,7 @@ _OPTIONAL_POLICY_KEYS = {
     "quota_guard",
     "progress_watchdog",
     "auto_merge",
+    "repos",
 }
 
 
@@ -705,6 +707,18 @@ def validate_policy(policy: dict) -> dict:
     if type(auto_merge) is not bool:
         raise ValueError("invalid auto_merge")
     result["auto_merge"] = auto_merge
+    # A policy written before the repos map reads as one entry for the legacy
+    # repo, derived from the global blocks above, so the live policy needs no
+    # re-post and homelab behaves exactly as today.
+    repos = policy.get("repos")
+    if repos is None:
+        result["repos"] = {
+            result["repo"]: _validate_repo_entry(
+                result["repo"], {}, is_primary=True, policy=result
+            )
+        }
+    else:
+        result["repos"] = _validate_repos(repos, result)
     if result["turn_timeout_seconds"] > result["task_timeout_seconds"]:
         raise ValueError("turn timeout exceeds task timeout")
     result["base_branch"] = _text(policy["base_branch"], "base_branch", 256)
@@ -850,6 +864,224 @@ def progress_watchdog_policy(policy: dict) -> dict:
     return _validate_progress_watchdog(policy.get("progress_watchdog") or {})
 
 
+# Per-repository policy (PART A of #6463). The policy carries an optional
+# `repos` map keyed by normalized repo slug. Each entry holds its own
+# enable/pause switch, intake labels, lane caps, budget envelope, landing
+# mode and charter reference. Global pause/stop/generation stay global;
+# per-repo pause/enable is added. Admission computes lane caps, per-day caps
+# and budget envelopes per repo, keyed off the repo already on work items
+# and receipts (#6257).
+LANDING_MODES = ("merge_queue", "none")
+MAX_REPOS = 16
+REPO_ENTRY_KEYS = {
+    "enabled",
+    "paused",
+    "labels",
+    "exclude_labels",
+    "max_per_day",
+    "max_tasks",
+    "task_budget_usd",
+    "turn_budget_usd",
+    "landing",
+    "auto_merge",
+    "charter",
+}
+# The staged second repository for #6463. Default-off: an operator enables
+# it through the staged migration, never through this change.
+LOOM_REPO_SLUG = "weave-hand/loom"
+LOOM_STAGED_MAX_PER_DAY = 2
+# How many queued candidates admission scans for one whose repo has room.
+# A full head-of-line repo never blocks a later receipt on a repo with room.
+ADMISSION_CANDIDATE_SCAN_LIMIT = 100
+# Per-repo operator switches that bypass generation: flipping one never
+# retires another repo's queue.
+REPO_ACTIONS = ("pause_repo", "resume_repo", "enable_repo", "disable_repo")
+
+
+def _validate_repo_entry(
+    slug: str, value: object, *, is_primary: bool, policy: dict
+) -> dict:
+    """One repos entry, defaulted from the global blocks it refines.
+
+    The legacy primary entry defaults to enabled so a policy with only the
+    legacy `repo` field normalizes to today's behaviour. Any other entry
+    defaults to disabled, so adding a repo never starts work in it.
+    """
+    if not isinstance(value, dict) or not set(value) <= REPO_ENTRY_KEYS:
+        raise ValueError(f"invalid repos entry for {slug}")
+    entry: dict = {}
+    for key in ("enabled", "paused"):
+        default = True if key == "enabled" and is_primary else False
+        setting = value.get(key, default)
+        if type(setting) is not bool:
+            raise ValueError(f"invalid repos {key} for {slug}")
+        entry[key] = setting
+    intake = policy["intake"]
+    for key in ("labels", "exclude_labels"):
+        labels = value.get(key, intake[key])
+        if not isinstance(labels, list) or len(labels) > 32:
+            raise ValueError(f"invalid repos {key} for {slug}")
+        entry[key] = sorted({_text(label, "label", 128) for label in labels})
+    if {label.lower() for label in entry["labels"]} & {
+        label.lower() for label in entry["exclude_labels"]
+    }:
+        raise ValueError(f"repos labels overlap exclude_labels for {slug}")
+    entry["max_per_day"] = _integer(
+        value.get("max_per_day", intake["max_per_day"]),
+        "max_per_day",
+        1,
+        10000,
+    )
+    entry["max_tasks"] = _validate_max_tasks(value.get("max_tasks", policy["max_tasks"]))
+    for key in ("task_budget_usd", "turn_budget_usd"):
+        entry[key] = _money(value.get(key, policy[key]), key)
+    if entry["turn_budget_usd"] > entry["task_budget_usd"]:
+        raise ValueError(f"turn budget exceeds task budget for {slug}")
+    auto_merge = value.get(
+        "auto_merge", policy["auto_merge"] if is_primary else DEFAULT_AUTO_MERGE
+    )
+    if type(auto_merge) is not bool:
+        raise ValueError(f"invalid repos auto_merge for {slug}")
+    entry["auto_merge"] = auto_merge
+    landing = value.get("landing", "merge_queue" if auto_merge else "none")
+    if landing not in LANDING_MODES:
+        raise ValueError(f"invalid repos landing for {slug}")
+    if auto_merge and landing != "merge_queue":
+        raise ValueError(f"repos auto_merge needs merge_queue landing for {slug}")
+    entry["landing"] = landing
+    charter = value.get("charter", "")
+    if not isinstance(charter, str) or len(charter) > 2000:
+        raise ValueError(f"invalid repos charter for {slug}")
+    entry["charter"] = charter
+    return entry
+
+
+def _validate_repos(value: object, policy: dict) -> dict:
+    """The repos map, with the legacy primary entry synthesized when absent."""
+    if not isinstance(value, dict) or not 1 <= len(value) <= MAX_REPOS:
+        raise ValueError("invalid repos")
+    primary = policy["repo"]
+    result: dict = {}
+    for raw_slug, raw_entry in value.items():
+        slug = normalize_repo(raw_slug)
+        if slug in result:
+            raise ValueError("duplicate repos entry")
+        result[slug] = _validate_repo_entry(
+            slug, raw_entry, is_primary=(slug == primary), policy=policy
+        )
+    if primary not in result:
+        result = {
+            primary: _validate_repo_entry(
+                primary, {}, is_primary=True, policy=policy
+            ),
+            **result,
+        }
+    return result
+
+
+def repos_map(policy: dict) -> dict:
+    """The repos map, synthesized for a policy stored before it existed."""
+    repos = policy.get("repos")
+    if isinstance(repos, dict) and repos:
+        return repos
+    primary = policy.get("repo")
+    if not primary:
+        return {}
+    return {
+        primary: _validate_repo_entry(primary, {}, is_primary=True, policy=policy)
+    }
+
+
+def enabled_repos(policy: dict) -> list[str]:
+    """Repos admission may serve, sorted so admission order is deterministic."""
+    return sorted(
+        slug
+        for slug, entry in repos_map(policy).items()
+        if entry.get("enabled") is True and entry.get("paused") is not True
+    )
+
+
+def repo_entry(policy: dict, repo: str) -> dict:
+    """One validated repos entry, or a refusal for an unconfigured repo."""
+    entry = repos_map(policy).get(normalize_repo(repo))
+    if entry is None:
+        raise ValueError("unknown repo")
+    return entry
+
+
+def repo_lane_max_tasks(policy: dict, repo: str) -> dict:
+    """What the repo entry asks for per lane, before the chart ceiling."""
+    return _validate_max_tasks(repo_entry(policy, repo)["max_tasks"])
+
+
+def repo_lane_limits(policy: dict, repo: str) -> dict:
+    """Per-repo lane concurrency with the chart ceiling applied per lane.
+
+    The ceiling is chart configuration sized for the whole factory; each
+    repo entry is capped by it the same way the global lanes are. The
+    global admission gate still bounds total work in flight.
+    """
+    ceiling = factory_max_concurrent_tasks()
+    wanted = repo_lane_max_tasks(policy, repo)
+    delivery = max(1, min(wanted["delivery"], ceiling))
+    advisory = max(0, min(wanted["advisory"], ceiling - delivery))
+    return {"delivery": delivery, "advisory": advisory}
+
+
+def repo_effective_policy(policy: dict, repo: str) -> dict:
+    """The policy pinned to a task on ``repo``: global shape, repo envelope.
+
+    Lane caps, budget envelope and landing switch come from the entry, and
+    ``repo`` names the entry the task was admitted under, so every
+    downstream turn, planner and budget check answers to the repo's own
+    numbers without learning about the map.
+    """
+    slug = normalize_repo(repo)
+    entry = repo_entry(policy, slug)
+    return {
+        **policy,
+        "repo": slug,
+        "task_budget_usd": entry["task_budget_usd"],
+        "turn_budget_usd": entry["turn_budget_usd"],
+        "max_tasks": entry["max_tasks"],
+        "auto_merge": entry["auto_merge"],
+    }
+
+
+def staged_loom_repo_entry() -> dict:
+    """The default-off loom entry the staged operator migration posts.
+
+    Budgets, lane caps and labels are left to inherit the live homelab
+    blocks at migration time; only the switch, the staged daily cap and the
+    inert landing stay fixed here, so this template cannot drift from what
+    the lane already runs. PART B owns the loom charter fragment.
+    """
+    return {
+        "enabled": False,
+        "paused": False,
+        "max_per_day": LOOM_STAGED_MAX_PER_DAY,
+        "landing": "none",
+        "auto_merge": False,
+    }
+
+
+def migration_policy_with_loom(policy: dict) -> dict:
+    """A validated copy of ``policy`` with the default-off loom entry added.
+
+    This is the staged operator migration payload for #6463: it changes no
+    live switch, enables nothing, and validates end to end so the configure
+    that carries it can only be a shape the lane already accepts.
+    """
+    validated = validate_policy(dict(policy))
+    if LOOM_REPO_SLUG in validated["repos"]:
+        raise ValueError("loom entry already present")
+    merged = {
+        **validated,
+        "repos": {**validated["repos"], LOOM_REPO_SLUG: staged_loom_repo_entry()},
+    }
+    return validate_policy(merged)
+
+
 def quota_guard_policy(policy: dict) -> dict:
     """The guard block, defaulted, so a policy stored before it still guards."""
     return _validate_quota_guard(policy.get("quota_guard") or {})
@@ -876,6 +1108,10 @@ def _policy_for_generation_comparison(policy: dict) -> dict:
     comparable = dict(policy)
     comparable["problem_issues"] = problem_issues_policy(comparable)
     comparable["progress_watchdog"] = progress_watchdog_policy(comparable)
+    # A stored policy from before the repos map normalizes to the same
+    # single primary entry a fresh post does, so re-posting unchanged
+    # operator fields never demands a new generation.
+    comparable["repos"] = repos_map(comparable)
     return comparable
 
 
@@ -1665,7 +1901,7 @@ def _snapshot(db: Session, row: FactoryReceipt, *, body: bool = False) -> dict:
     return result
 
 
-def delivery_admissions(db, since: datetime) -> int:
+def delivery_admissions(db, since: datetime, repo: str | None = None) -> int:
     """Delivery receipts autonomous intake opened since ``since``.
 
     This is what ``max_per_day`` bounds. The cap exists to bound delivery
@@ -1680,25 +1916,27 @@ def delivery_admissions(db, since: datetime) -> int:
     Scoped to intake's own actor. An operator who names issues in the policy
     allowlist has already decided how many to take, and reading their receipts
     as autonomous admissions would close the lane on them.
+
+    ``repo`` scopes the count to one repository, which is what that repo's
+    per-day cap bounds. Omitted, it counts every repo, as before.
     """
-    return len(
-        db.exec(
-            select(FactoryReceipt.id).where(
-                FactoryReceipt.actor == INTAKE_ACTOR,
-                FactoryReceipt.created_at >= since,
-                # A receipt written before classes existed reads as the
-                # default, which is delivery, so an untyped row still counts.
-                or_(
-                    FactoryReceipt.routing_tier == "delivery",
-                    FactoryReceipt.routing_tier.is_(None)
-                    & or_(
-                        FactoryReceipt.task_class.is_(None),
-                        FactoryReceipt.task_class.notin_(ADVISORY_CLASSES),
-                    ),
-                ),
-            )
-        ).all()
+    query = select(FactoryReceipt.id).where(
+        FactoryReceipt.actor == INTAKE_ACTOR,
+        FactoryReceipt.created_at >= since,
+        # A receipt written before classes existed reads as the
+        # default, which is delivery, so an untyped row still counts.
+        or_(
+            FactoryReceipt.routing_tier == "delivery",
+            FactoryReceipt.routing_tier.is_(None)
+            & or_(
+                FactoryReceipt.task_class.is_(None),
+                FactoryReceipt.task_class.notin_(ADVISORY_CLASSES),
+            ),
+        ),
     )
+    if repo is not None:
+        query = query.where(FactoryReceipt.repo == normalize_repo(repo))
+    return len(db.exec(query).all())
 
 
 # The escape hatch every unresolved escalation carries. These three are
@@ -2253,6 +2491,7 @@ def set_control(
     *,
     policy: dict | None = None,
     task_id: str | None = None,
+    repo: str | None = None,
     session: Session | None = None,
 ) -> dict:
     actor = _text(actor, "actor")
@@ -2263,6 +2502,7 @@ def set_control(
         "pause_task",
         "resume_task",
         "stop",
+        *REPO_ACTIONS,
     ):
         raise ValueError("invalid control action")
     configured = validate_policy(policy) if action == "configure" else None
@@ -2270,6 +2510,8 @@ def set_control(
         raise ValueError("policy requires configure action")
     if (action in ("pause_task", "resume_task")) != (task_id is not None):
         raise ValueError("task_id is required only for task pause/resume")
+    if (action in REPO_ACTIONS) != (repo is not None):
+        raise ValueError("repo is required only for per-repo pause/enable")
     if action == "resume_task" and session is None:
         # Resuming an escalation is answering it. There is no node to unpause:
         # the task settled and left the lane, so the only way back in is the
@@ -2345,6 +2587,30 @@ def set_control(
                 control.state = "enabled"
         elif action == "pause_admissions":
             control.state = "paused"
+        elif action in REPO_ACTIONS:
+            # Per-repo switches bypass generation: flipping one retires
+            # nothing and leaves every other repo's queue exactly as it was.
+            slug = normalize_repo(repo)
+            stored = json.loads(control.policy_json or "{}")
+            if not stored:
+                reason = "not_configured"
+            else:
+                validated = validate_policy(stored)
+                if slug not in validated["repos"]:
+                    reason = "unknown_repo"
+                else:
+                    entry = dict(validated["repos"][slug])
+                    if action == "pause_repo":
+                        entry["paused"] = True
+                    elif action == "resume_repo":
+                        entry["paused"] = False
+                    elif action == "enable_repo":
+                        entry["enabled"] = True
+                    else:
+                        entry["enabled"] = False
+                    validated["repos"][slug] = entry
+                    control.policy_json = _json(validate_policy(validated))
+                    configure_detail["repo"] = slug
         elif action in ("pause_task", "resume_task"):
             row = _receipt(db, task_id)
             if row is None or row.state not in _ACTIVE:

@@ -19,8 +19,10 @@ from factory.orchestration.factory_controls import (
     _now,
     _snapshot,
     _text,
+    ADMISSION_CANDIDATE_SCAN_LIMIT,
     DEFAULT_TASK_CLASS,
     delivery_branch_owner,
+    enabled_repos,
     factory_max_concurrent_tasks,
     granted_delivery_surface,
     INTAKE_ACTOR,
@@ -31,6 +33,8 @@ from factory.orchestration.factory_controls import (
     lane_max_tasks,
     normalize_repo,
     receipt_task_class,
+    repo_effective_policy,
+    repo_lane_limits,
     TASK_CLASSES,
     validate_task_class,
     validate_policy,
@@ -505,28 +509,37 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
         eligible = _eligible_clause(policy)
         # A new generation may coexist with an older task. A direct receipt
         # cannot start a second task on that same issue, even in another lane.
+        # A repo outside the enabled set admits nothing; its receipts are not
+        # even candidates.
+        enabled = enabled_repos(policy)
+        if not enabled:
+            return {"ok": False, "reason": "no_eligible_issue"}
         owned = [
             *active,
             *db.exec(
                 select(FactoryReceipt).where(FactoryReceipt.state == "landing")
             ).all(),
         ]
-        busy_issues = [r.issue_number for r in owned if r.repo == policy["repo"]]
+        busy = [(r.repo, r.issue_number) for r in owned]
         busy_work_items = [
-            r.work_item_id
-            for r in owned
-            if r.work_item_id is not None and r.repo == policy["repo"]
+            r.work_item_id for r in owned if r.work_item_id is not None
         ]
         base_query = select(FactoryReceipt).where(
             FactoryReceipt.state == "queued",
-            FactoryReceipt.repo == policy["repo"],
+            FactoryReceipt.repo.in_(enabled),
             eligible,
             in_lane,
             FactoryReceipt.generation == policy["generation"],
         )
-        if busy_issues:
+        if busy:
             base_query = base_query.where(
-                FactoryReceipt.issue_number.not_in(busy_issues)
+                ~or_(
+                    *[
+                        (FactoryReceipt.repo == repo)
+                        & (FactoryReceipt.issue_number == number)
+                        for repo, number in busy
+                    ]
+                )
             )
         if busy_work_items:
             base_query = base_query.where(
@@ -557,17 +570,22 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
         )
 
         ordered = base_query.order_by(FactoryReceipt.created_at, FactoryReceipt.id)
-        row = db.exec(ordered.where(blocker_predicate)).first()
+        candidates = db.exec(
+            ordered.where(blocker_predicate).limit(ADMISSION_CANDIDATE_SCAN_LIMIT)
+        ).all()
+        first = candidates[0] if candidates else None
 
         # A blocked receipt at the head of the queue is held silently by the
         # predicate, so make the hold visible once an hour whether or not a
         # later receipt was admitted past it.
         blocked_head = db.exec(ordered.where(~blocker_predicate)).first()
-        if blocked_head is not None and (row is None or blocked_head.id != row.id):
-            head_is_first = row is None or (
+        if blocked_head is not None and (
+            first is None or blocked_head.id != first.id
+        ):
+            head_is_first = first is None or (
                 blocked_head.created_at,
                 blocked_head.id,
-            ) < (row.created_at, row.id)
+            ) < (first.created_at, first.id)
             if head_is_first:
                 blockers = db.exec(
                     select(WorkItem).where(
@@ -585,7 +603,31 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
                     work_item_id=blocked_head.work_item_id,
                     blocked_by=[blocker.id for blocker in blockers] or None,
                 )
+        # Each repo admits under its own lane caps, so a full repo never
+        # holds the lane for a later receipt on a repo with room.
+        row = None
+        for candidate in candidates:
+            tier = routes[receipt_task_class(candidate)]["tier"]
+            repo_limits = repo_lane_limits(policy, candidate.repo)
+            held = sum(
+                1
+                for item in active
+                if item.repo == candidate.repo and lane_of(item) == tier
+            )
+            if held >= repo_limits[tier]:
+                continue
+            row = candidate
+            break
         if row is None:
+            if candidates:
+                full = sorted({candidate.repo for candidate in candidates})
+                return {
+                    "ok": False,
+                    "reason": "wip_limit",
+                    "repos": full,
+                    "active": len(active),
+                    "limit": sum(limits[lane] for lane in lanes),
+                }
             if blocked_head is not None:
                 return {"ok": False, "reason": "blocked"}
             return {"ok": False, "reason": "no_eligible_issue"}
@@ -642,15 +684,18 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
                 "reason": "funding_overlay_invalid",
                 "detail": str(exc),
             }
+        # The pinned policy carries the repo's own envelope: lane caps,
+        # budget and landing switch come from the entry, so every
+        # downstream check answers to the repo's numbers.
         effective_policy = {
-            **policy,
+            **repo_effective_policy(policy, row.repo),
             **(dispatch_grant["policy_overlay"] if dispatch_grant else {}),
         }
         task_id = mint_task_id()
         task = SwarmTask(
             id=task_id,
             task_text=f"GitHub issue {row.url}\n\n{row.title}\n\n{row.body}",
-            repo=policy["repo"],
+            repo=row.repo,
             base_branch=policy["base_branch"],
             conductor_model=policy["conductor_model"],
             budget_usd=effective_policy["task_budget_usd"],

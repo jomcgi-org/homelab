@@ -2532,3 +2532,162 @@ def test_landing_retains_ownership_across_generation_without_guest_slot(db, poli
             select(FactoryReceipt).where(FactoryReceipt.task_id == task)
         ).one()
         assert pending.state == "landing"
+
+
+def two_repo_policy(policy):
+    base = dict(policy)
+    base["max_tasks"] = {"delivery": 4, "advisory": 0}
+    base["issue_numbers"] = [1, 2, 3]
+    base["repos"] = {
+        "owner/repo": {
+            "enabled": True,
+            "max_tasks": {"delivery": 1, "advisory": 0},
+            "task_budget_usd": 5.0,
+            "turn_budget_usd": 2.0,
+        },
+        "weave-hand/loom": {
+            "enabled": True,
+            "max_tasks": {"delivery": 1, "advisory": 0},
+            "task_budget_usd": 9.0,
+            "turn_budget_usd": 3.0,
+        },
+    }
+    return base
+
+
+def receive(repo, number):
+    return receive_issue(
+        repo,
+        number,
+        f"issue {number}",
+        "body",
+        f"https://github.com/{repo}/issues/{number}",
+        "poller",
+    )
+
+
+def enable(policy, monkeypatch):
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "4")
+    assert controls.set_control("configure", "operator", policy=policy)["ok"]
+    assert controls.set_control("enable", "operator")["ok"]
+
+
+def test_legacy_policy_normalizes_to_single_primary_repo_entry(db, policy):
+    validated = controls.validate_policy(dict(policy))
+    assert set(validated["repos"]) == {"owner/repo"}
+    entry = validated["repos"]["owner/repo"]
+    assert entry["enabled"] is True
+    assert entry["paused"] is False
+    assert entry["labels"] == validated["intake"]["labels"]
+    assert entry["exclude_labels"] == validated["intake"]["exclude_labels"]
+    assert entry["max_per_day"] == validated["intake"]["max_per_day"]
+    assert entry["max_tasks"] == validated["max_tasks"]
+    assert entry["task_budget_usd"] == validated["task_budget_usd"]
+    assert entry["turn_budget_usd"] == validated["turn_budget_usd"]
+    assert entry["auto_merge"] == validated["auto_merge"]
+    assert entry["landing"] == "none"
+    assert entry["charter"] == ""
+    # Re-posting unchanged operator fields with work in flight is harmless:
+    # the stored policy compares equal once the map is defaulted.
+    assert controls.set_control("configure", "operator", policy=policy)["ok"]
+    assert controls.set_control("enable", "operator")["ok"]
+    receive("owner/repo", 1)
+    assert admit_next("scheduler")["ok"]
+    assert controls.set_control("configure", "operator", policy=policy)["ok"]
+
+
+def test_two_repos_admit_independently_under_own_caps(db, policy, monkeypatch):
+    enable(two_repo_policy(policy), monkeypatch)
+    receive("owner/repo", 1)
+    receive("owner/repo", 2)
+    receive("weave-hand/loom", 3)
+    first = admit_next("scheduler")
+    assert first["ok"] and first["receipt"]["repo"] == "owner/repo"
+    assert first["policy"]["task_budget_usd"] == 5.0
+    assert first["receipt"]["policy"]["repo"] == "owner/repo"
+    # The second homelab receipt waits at its own cap while loom admits past it.
+    second = admit_next("scheduler")
+    assert second["ok"] and second["receipt"]["repo"] == "weave-hand/loom"
+    assert second["policy"]["task_budget_usd"] == 9.0
+    assert second["receipt"]["policy"]["repo"] == "weave-hand/loom"
+    with Session(db) as session:
+        tasks = {
+            task.id: task for task in session.exec(select(SwarmTask)).all()
+        }
+        assert tasks[first["task_id"]].budget_usd == 5.0
+        assert tasks[first["task_id"]].repo == "owner/repo"
+        assert tasks[second["task_id"]].budget_usd == 9.0
+        assert tasks[second["task_id"]].repo == "weave-hand/loom"
+    third = admit_next("scheduler")
+    assert third["ok"] is False and third["reason"] == "wip_limit"
+
+
+def test_pausing_one_repo_leaves_the_other_admitting(db, policy, monkeypatch):
+    upcoming = two_repo_policy(policy)
+    upcoming["repos"]["owner/repo"]["max_tasks"] = {"delivery": 2, "advisory": 0}
+    upcoming["repos"]["weave-hand/loom"]["max_tasks"] = {
+        "delivery": 2,
+        "advisory": 0,
+    }
+    enable(upcoming, monkeypatch)
+    receive("owner/repo", 1)
+    receive("weave-hand/loom", 2)
+    assert controls.set_control("pause_repo", "operator", repo="owner/repo")["ok"]
+    only = admit_next("scheduler")
+    assert only["ok"] and only["receipt"]["repo"] == "weave-hand/loom"
+    assert controls.set_control("resume_repo", "operator", repo="owner/repo")["ok"]
+    resumed = admit_next("scheduler")
+    assert resumed["ok"] and resumed["receipt"]["repo"] == "owner/repo"
+
+
+def test_disabled_repo_admits_nothing_until_enabled(db, policy, monkeypatch):
+    upcoming = two_repo_policy(policy)
+    upcoming["repos"]["weave-hand/loom"] = {"enabled": False}
+    enable(upcoming, monkeypatch)
+    receive("weave-hand/loom", 1)
+    assert admit_next("scheduler")["reason"] == "no_eligible_issue"
+    assert controls.status()["admitted_count"] == 0
+    assert controls.set_control(
+        "enable_repo", "operator", repo="weave-hand/loom"
+    )["ok"]
+    admission = admit_next("scheduler")
+    assert admission["ok"] and admission["receipt"]["repo"] == "weave-hand/loom"
+    assert controls.set_control(
+        "disable_repo", "operator", repo="weave-hand/loom"
+    )["ok"]
+    receive("weave-hand/loom", 2)
+    assert admit_next("scheduler")["reason"] == "no_eligible_issue"
+
+
+def test_repo_switches_refuse_unknown_repo_without_mutation(db, policy, monkeypatch):
+    enable(two_repo_policy(policy), monkeypatch)
+    assert controls.set_control("pause_repo", "operator", repo="other/repo") == {
+        "ok": False,
+        "reason": "unknown_repo",
+        "state": "enabled",
+        "version": 2,
+    }
+    with pytest.raises(ValueError):
+        controls.set_control("pause_repo", "operator")
+    with pytest.raises(ValueError):
+        controls.set_control("pause_repo", "operator", repo="not a repo")
+
+
+def test_staged_loom_migration_is_default_off(db, policy, monkeypatch):
+    validated = controls.validate_policy(dict(policy))
+    migrated = controls.migration_policy_with_loom(validated)
+    loom = migrated["repos"]["weave-hand/loom"]
+    assert loom["enabled"] is False
+    assert loom["paused"] is False
+    assert loom["max_per_day"] == controls.LOOM_STAGED_MAX_PER_DAY == 2
+    assert loom["landing"] == "none"
+    assert loom["auto_merge"] is False
+    assert migrated["repos"]["owner/repo"] == validated["repos"]["owner/repo"]
+    with pytest.raises(ValueError):
+        controls.migration_policy_with_loom(migrated)
+    enable(migrated, monkeypatch)
+    receive("weave-hand/loom", 1)
+    receive("owner/repo", 2)
+    admission = admit_next("scheduler")
+    assert admission["ok"] and admission["receipt"]["repo"] == "owner/repo"
+    assert admit_next("scheduler")["reason"] == "no_eligible_issue"
