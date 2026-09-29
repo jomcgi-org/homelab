@@ -32,14 +32,27 @@ const MIN_BYTES = 1400;
 const COMPRESSIBLE =
   /^(?:text\/|application\/(?:json|javascript|xml|manifest\+json)|application\/[\w.+-]+\+(?:json|xml)|image\/svg\+xml)\b/i;
 
-function pickEncoding(accept) {
+export function pickEncoding(accept) {
   if (!accept) return null;
-  const a = accept.toLowerCase();
-  // Prefer brotli (better ratio on JSON, and the browser-preferred token) then
-  // gzip. Anything else (identity only) means leave the body alone.
-  if (a.includes("br")) return "br";
-  if (a.includes("gzip")) return "gzip";
-  return null;
+  const qualities = new Map();
+  for (const entry of accept.toLowerCase().split(",")) {
+    const [name, ...parameters] = entry.trim().split(";");
+    const quality = parameters.find((p) => p.trim().startsWith("q="));
+    const value = quality ? Number(quality.trim().slice(2)) : 1;
+    qualities.set(
+      name.trim(),
+      Number.isFinite(value) && value >= 0 && value <= 1 ? value : 0,
+    );
+  }
+  const quality = (name) => qualities.get(name) ?? qualities.get("*") ?? 0;
+  const br = quality("br");
+  const gzip = quality("gzip");
+  // Identity is acceptable by default, but does not override an offered encoding.
+  const identity =
+    qualities.get("identity") ?? (qualities.get("*") === 0 ? 0 : null);
+  const best = Math.max(br, gzip);
+  if (best === 0 || (identity != null && identity > best)) return null;
+  return br >= gzip ? "br" : "gzip";
 }
 
 /** @type {import('@sveltejs/kit').Handle} */
