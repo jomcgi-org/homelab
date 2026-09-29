@@ -73,7 +73,8 @@ def test_review_template_renders_merge_switch():
     assert "docfix-review: would merge (verified against main <sha7>)" in comment_only
     assert "gh pr merge <n>" not in comment_only
     assert "AUTO_MERGE=true" in merging
-    assert "gh pr merge <n> --auto --rebase" in merging
+    assert "`gh pr merge <n> --auto` (no strategy flag" in merging
+    assert "--rebase" not in merging
     assert "docfix-review: verified against main <sha7>, queued" in merging
     assert "`--admin`" in merging
     assert "never squash" in merging

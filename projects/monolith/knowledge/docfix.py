@@ -97,7 +97,7 @@ def render_docfix_review_prompt(pr_numbers: list[int], auto_merge: bool) -> str:
     if auto_merge:
         decision = (
             "When `AUTO_MERGE` is true and all gates pass: run "
-            "`gh pr merge <n> --auto --rebase` and "
+            "`gh pr merge <n> --auto` (no strategy flag, the queue sets it) and "
             "comment `docfix-review: verified against main <sha7>, queued`."
         )
     else:
