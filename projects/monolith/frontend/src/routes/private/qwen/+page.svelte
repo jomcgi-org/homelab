@@ -229,11 +229,17 @@
 
 <main class="qwen-page shell {dark ? 'night' : 'day'}">
   <aside class="sessions" aria-label="Chat sessions">
-    <button class="new" onclick={newChat} disabled={streaming}>+ New chat</button>
+    <button class="new" onclick={newChat} disabled={streaming}
+      >+ New chat</button
+    >
     <ul>
       {#each sessions as s (s.id)}
         <li class:current={s.id === activeId}>
-          <button class="pick" onclick={() => (activeId = s.id)} disabled={streaming}>
+          <button
+            class="pick"
+            onclick={() => (activeId = s.id)}
+            disabled={streaming}
+          >
             {s.title}
           </button>
           <button
@@ -249,9 +255,20 @@
 
   <section class="chat" aria-label="Conversation">
     <header class="bar">
-      <h1><a class="home" href="/" aria-label="Back to dashboard">←</a> Qwen <span class="model">{server?.stats?.model?.id ?? "qwen3.6-27b"} · RTX 4090</span></h1>
+      <h1>
+        <a class="home" href="/" aria-label="Back to dashboard">←</a> Qwen
+        <span class="model"
+          >{server?.stats?.model?.id ?? "qwen3.6-27b"} · RTX 4090</span
+        >
+      </h1>
       <div class="controls">
-        <label><input type="checkbox" bind:checked={thinking} disabled={streaming} /> thinking</label>
+        <label
+          ><input
+            type="checkbox"
+            bind:checked={thinking}
+            disabled={streaming}
+          /> thinking</label
+        >
         <label>
           max tokens
           <select bind:value={maxTokens} disabled={streaming}>
@@ -265,7 +282,10 @@
 
     <div class="log" bind:this={scroller}>
       {#if !active.messages.length}
-        <p class="empty">Ask something. Prompts run on the home 4090, so a long cold prompt takes a while; repeats reuse the prefix cache.</p>
+        <p class="empty">
+          Ask something. Prompts run on the home 4090, so a long cold prompt
+          takes a while; repeats reuse the prefix cache.
+        </p>
       {/if}
       {#each active.messages as m, i (i)}
         {#if m.role === "user"}
@@ -274,15 +294,26 @@
           {@const st = m.turn ? turnStats(m.turn) : null}
           <div class="msg bot">
             {#if m.turn?.reasoning}
-              <details class="reasoning" open={streaming && i === active.messages.length - 1 && !m.turn.content}>
-                <summary>thinking{st?.thinkingMs != null ? ` · ${formatMs(st.thinkingMs)}` : ""}</summary>
+              <details
+                class="reasoning"
+                open={streaming &&
+                  i === active.messages.length - 1 &&
+                  !m.turn.content}
+              >
+                <summary
+                  >thinking{st?.thinkingMs != null
+                    ? ` · ${formatMs(st.thinkingMs)}`
+                    : ""}</summary
+                >
                 <pre>{m.turn.reasoning}</pre>
               </details>
             {/if}
             {#if m.content}
               <div class="md">{@html render(m.content)}</div>
             {:else if streaming && i === active.messages.length - 1}
-              <p class="pending">{m.turn?.firstTokenAt ? "thinking…" : "prefilling…"}</p>
+              <p class="pending">
+                {m.turn?.firstTokenAt ? "thinking…" : "prefilling…"}
+              </p>
             {/if}
             {#if m.turn?.error}
               <p class="err">{m.turn.error}</p>
@@ -290,7 +321,9 @@
             {#if st && m.turn.usage}
               <p class="meta">
                 TTFT {formatMs(st.ttftMs)} · decode {formatRate(st.decodeTps)} ·
-                {formatCount(st.completionTokens)} tokens · cache {pct(st.cacheHitRate)}
+                {formatCount(st.completionTokens)} tokens · cache {pct(
+                  st.cacheHitRate,
+                )}
               </p>
             {/if}
           </div>
@@ -298,7 +331,13 @@
       {/each}
     </div>
 
-    <form class="composer" onsubmit={(e) => { e.preventDefault(); send(); }}>
+    <form
+      class="composer"
+      onsubmit={(e) => {
+        e.preventDefault();
+        send();
+      }}
+    >
       <textarea
         bind:value={input}
         onkeydown={onKey}
@@ -317,36 +356,73 @@
     <section>
       <p class="sec-label">/ Last turn</p>
       <dl>
-        <dt>TTFT</dt><dd>{formatMs(last?.ttftMs)}</dd>
-        <dt>Thinking</dt><dd>{formatMs(last?.thinkingMs)}</dd>
-        <dt>Prefill</dt><dd>{formatRate(last?.prefillTps)}</dd>
-        <dt>Decode</dt><dd>{formatRate(last?.decodeTps)}</dd>
-        <dt>Prompt</dt><dd>{formatCount(last?.promptTokens)}</dd>
-        <dt>Cached</dt><dd>{formatCount(last?.cachedTokens)} ({pct(last?.cacheHitRate)})</dd>
-        <dt>Completion</dt><dd>{formatCount(last?.completionTokens)}</dd>
-        <dt>Wall</dt><dd>{formatMs(last?.wallMs)}</dd>
+        <dt>TTFT</dt>
+        <dd>{formatMs(last?.ttftMs)}</dd>
+        <dt>Thinking</dt>
+        <dd>{formatMs(last?.thinkingMs)}</dd>
+        <dt>Prefill</dt>
+        <dd>{formatRate(last?.prefillTps)}</dd>
+        <dt>Decode</dt>
+        <dd>{formatRate(last?.decodeTps)}</dd>
+        <dt>Prompt</dt>
+        <dd>{formatCount(last?.promptTokens)}</dd>
+        <dt>Cached</dt>
+        <dd>{formatCount(last?.cachedTokens)} ({pct(last?.cacheHitRate)})</dd>
+        <dt>Completion</dt>
+        <dd>{formatCount(last?.completionTokens)}</dd>
+        <dt>Wall</dt>
+        <dd>{formatMs(last?.wallMs)}</dd>
       </dl>
     </section>
 
     <section>
       <p class="sec-label">/ Session</p>
       <dl>
-        <dt>Turns</dt><dd>{session.turns}</dd>
-        <dt>Mean TTFT</dt><dd>{formatMs(session.meanTtftMs)}</dd>
-        <dt>Mean decode</dt><dd>{formatRate(session.meanDecodeTps)}</dd>
-        <dt>Tokens in / out</dt><dd>{formatCount(session.promptTokens)} / {formatCount(session.completionTokens)}</dd>
-        <dt>Prefix cache</dt><dd>{pct(session.cacheHitRate)}</dd>
-        <dt>Generating</dt><dd>{formatMs(session.generationMs)}</dd>
+        <dt>Turns</dt>
+        <dd>{session.turns}</dd>
+        <dt>Mean TTFT</dt>
+        <dd>{formatMs(session.meanTtftMs)}</dd>
+        <dt>Mean decode</dt>
+        <dd>{formatRate(session.meanDecodeTps)}</dd>
+        <dt>Tokens in / out</dt>
+        <dd>
+          {formatCount(session.promptTokens)} / {formatCount(
+            session.completionTokens,
+          )}
+        </dd>
+        <dt>Prefix cache</dt>
+        <dd>{pct(session.cacheHitRate)}</dd>
+        <dt>Generating</dt>
+        <dd>{formatMs(session.generationMs)}</dd>
       </dl>
-      <p class="gauge-label">context {formatCount(session.contextTokens)} / {formatCount(ctxLimit)}</p>
-      <div class="gauge"><span style="width: {Math.min(100, (session.contextTokens / ctxLimit) * 100)}%"></span></div>
+      <p class="gauge-label">
+        context {formatCount(session.contextTokens)} / {formatCount(ctxLimit)}
+      </p>
+      <div class="gauge">
+        <span
+          style="width: {Math.min(
+            100,
+            (session.contextTokens / ctxLimit) * 100,
+          )}%"
+        ></span>
+      </div>
       {#if turnSeries.length > 1}
         <p class="gauge-label">decode tok/s per turn</p>
-        <svg class="spark" viewBox="0 0 220 44" role="img" aria-label="Decode rate per turn">
+        <svg
+          class="spark"
+          viewBox="0 0 220 44"
+          role="img"
+          aria-label="Decode rate per turn"
+        >
           <polyline points={sparkline(turnSeries.map((s) => s.decodeTps))} />
         </svg>
         <p class="gauge-label">TTFT per turn</p>
-        <svg class="spark" viewBox="0 0 220 44" role="img" aria-label="Time to first token per turn">
+        <svg
+          class="spark"
+          viewBox="0 0 220 44"
+          role="img"
+          aria-label="Time to first token per turn"
+        >
           <polyline points={sparkline(turnSeries.map((s) => s.ttftMs))} />
         </svg>
       {/if}
@@ -359,16 +435,35 @@
       {:else if server}
         {@const s = server.stats}
         <dl>
-          <dt>KV pages</dt><dd>{formatCount(s.kv?.used_pages)} / {formatCount(s.kv?.total_pages)}</dd>
-          <dt>VRAM</dt><dd>{formatBytes(s.vram_bytes)} / {formatBytes(s.gpus?.[0]?.total_bytes)}</dd>
-          <dt>Decode now</dt><dd>{formatRate(s.throughput?.decode_tps)}</dd>
-          <dt>Prefill now</dt><dd>{formatRate(s.throughput?.prefill_tps)}</dd>
-          <dt>Active / done</dt><dd>{s.requests?.active ?? "–"} / {formatCount(s.requests?.completed)}</dd>
-          <dt>Uptime</dt><dd>{formatMs((s.uptime_s ?? 0) * 1000)}</dd>
+          <dt>KV pages</dt>
+          <dd>
+            {formatCount(s.kv?.used_pages)} / {formatCount(s.kv?.total_pages)}
+          </dd>
+          <dt>VRAM</dt>
+          <dd>
+            {formatBytes(s.vram_bytes)} / {formatBytes(
+              s.gpus?.[0]?.total_bytes,
+            )}
+          </dd>
+          <dt>Decode now</dt>
+          <dd>{formatRate(s.throughput?.decode_tps)}</dd>
+          <dt>Prefill now</dt>
+          <dd>{formatRate(s.throughput?.prefill_tps)}</dd>
+          <dt>Active / done</dt>
+          <dd>
+            {s.requests?.active ?? "–"} / {formatCount(s.requests?.completed)}
+          </dd>
+          <dt>Uptime</dt>
+          <dd>{formatMs((s.uptime_s ?? 0) * 1000)}</dd>
         </dl>
         {#if server.recent?.length}
           <table class="recent">
-            <thead><tr><th>time</th><th>in</th><th>out</th><th>TTFT</th><th>total</th></tr></thead>
+            <thead
+              ><tr
+                ><th>time</th><th>in</th><th>out</th><th>TTFT</th><th>total</th
+                ></tr
+              ></thead
+            >
             <tbody>
               {#each server.recent.slice(-6).reverse() as r}
                 <tr>
