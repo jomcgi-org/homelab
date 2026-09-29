@@ -201,6 +201,11 @@ async def verify_deployment(app: str, expected_revision: str | None = None) -> d
     after your merge (past ArgoCD's cache of HEAD) means your merge is live (a commit sha also works, but
     matches only while it is still the head). A version for a git app, or a
     sha for a chart app, is rejected as an error rather than left pending.
+    For an app Kargo promotes, a ``kargo`` block and check say why a revision
+    is not live yet: a Promotion running or failed (Kargo never retries a
+    failed one), Freight waiting on upstream verification, or drift where
+    something reverted a promotion. The expected Freight's ``approved_for``
+    shows a manual approval.
     The agents tier serves the same tool with the same verdict rules.
 
     Args:
@@ -208,8 +213,15 @@ async def verify_deployment(app: str, expected_revision: str | None = None) -> d
         expected_revision: Optional chart version or commit sha that must be live.
     """
     k8s = KubernetesClient()
+    kargo = None
     try:
         obj = await k8s.get_argocd_application(app)
+        ref = rollout.kargo_stage_ref(obj) if obj is not None else None
+        if ref is not None:
+            try:
+                kargo = await k8s.get_kargo_context(*ref)
+            except ApiException as exc:
+                kargo = {"error": f"reading Kargo stage {ref[1]!r} in {ref[0]} failed: HTTP {exc.status}"}
     except ApiException as exc:
         return {"error": f"reading application {app!r} failed: HTTP {exc.status}"}
     finally:
@@ -217,6 +229,6 @@ async def verify_deployment(app: str, expected_revision: str | None = None) -> d
     if obj is None:
         return {"error": f"application {app!r} not found in argocd"}
     try:
-        return rollout.verdict(obj, expected_revision=expected_revision)
+        return rollout.verdict(obj, expected_revision=expected_revision, kargo=kargo)
     except rollout.RevisionMismatch as exc:
         return {"error": str(exc)}

@@ -78,3 +78,65 @@ async def test_verify_deployment_reads_the_application(monkeypatch):
 
     mismatch = await mod.verify_deployment("monolith", expected_revision="abcdef1")
     assert "cannot be compared" in mismatch["error"]
+
+
+@pytest.mark.asyncio
+async def test_verify_deployment_adds_kargo_context_for_kargo_owned_apps(monkeypatch):
+    mod = importlib.import_module("cluster.mcp")
+    seen = {}
+
+    class _K8s:
+        async def get_argocd_application(self, name, namespace="argocd"):
+            return {
+                "metadata": {
+                    "name": name,
+                    "annotations": {
+                        "kargo.akuity.io/authorized-stage": "kargo-embervm:prod"
+                    },
+                },
+                "spec": {"source": {"chart": "embervm", "targetRevision": "0.5.0"}},
+                "status": {
+                    "sync": {"status": "Synced", "revision": "0.5.0"},
+                    "health": {"status": "Healthy"},
+                    "operationState": {
+                        "phase": "Succeeded",
+                        "syncResult": {"revision": "0.5.0"},
+                    },
+                },
+            }
+
+        async def get_kargo_context(self, namespace, stage):
+            seen["kargo"] = (namespace, stage)
+            if seen.get("deny"):
+                raise ApiException(status=403)
+            return {
+                "stage": {
+                    "status": {
+                        "currentPromotion": {
+                            "name": "prod.0.6.0",
+                            "freight": {
+                                "charts": [
+                                    {"repoURL": "oci://x/charts/embervm", "version": "0.6.0"}
+                                ]
+                            },
+                            "status": {"phase": "Running", "currentStep": 1},
+                        }
+                    }
+                },
+                "freights": [],
+            }
+
+        async def close(self):
+            seen["closed"] = True
+
+    monkeypatch.setattr(mod, "KubernetesClient", _K8s)
+
+    result = await mod.verify_deployment("embervm", expected_revision="0.6.0")
+    assert seen["kargo"] == ("kargo-embervm", "prod")
+    assert result["verdict"] == "in_progress"
+    assert result["kargo"]["current_promotion"]["phase"] == "Running"
+
+    seen["deny"] = True
+    denied = await mod.verify_deployment("embervm")
+    assert denied["verdict"] == "verified"
+    assert "HTTP 403" in denied["kargo"]["error"]

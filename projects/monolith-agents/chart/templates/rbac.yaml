@@ -83,7 +83,7 @@ metadata:
     {{- include "monolith-agents.labels" $root | nindent 4 }}
 rules:
   - apiGroups: ["kargo.akuity.io"]
-    resources: ["freights"]
+    resources: ["freights", "stages"]
     verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

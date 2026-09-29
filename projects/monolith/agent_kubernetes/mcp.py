@@ -7,6 +7,7 @@ from typing import Any
 
 from agent_kubernetes.client import (
     LIST_LIMIT_DEFAULT,
+    LIST_LIMIT_MAX,
     LOG_BYTES_MAX,
     LOG_SINCE_DEFAULT_SECONDS,
     LOG_TAIL_DEFAULT,
@@ -221,6 +222,50 @@ async def kubernetes_pod_logs(
     }
 
 
+async def _kargo_context(
+    observer: RestrictedKubernetesClient, namespace: str, stage: str
+) -> dict[str, Any]:
+    """The Stage and Freight behind a Kargo-owned app, or why they are unread.
+
+    A failure here explains nothing about the rollout, so it is returned as
+    context for the verdict rather than failing the whole call.
+    """
+    try:
+        stage_request = validate_read_request(
+            verb="get",
+            api_group="kargo.akuity.io",
+            resource="stages",
+            namespace=namespace,
+            name=stage,
+            subresource=None,
+            limit=LIST_LIMIT_DEFAULT,
+            continue_token=None,
+        )
+        freight_request = validate_read_request(
+            verb="list",
+            api_group="kargo.akuity.io",
+            resource="freights",
+            namespace=namespace,
+            name=None,
+            subresource=None,
+            limit=LIST_LIMIT_MAX,
+            continue_token=None,
+        )
+    except InvalidObservationRequest as exc:
+        return {"error": str(exc)}
+    try:
+        try:
+            stage_obj = await observer.get_unprojected(stage_request)
+        except ObservationFailure as exc:
+            if exc.code != "not_found":
+                raise
+            stage_obj = None
+        freights = await observer.list_unprojected(freight_request)
+    except ObservationFailure as exc:
+        return {"error": f"reading Kargo stage {stage!r} in {namespace}: {exc.message}"}
+    return {"stage": stage_obj, "freights": freights}
+
+
 async def verify_deployment(
     app: str, expected_revision: str | None = None
 ) -> dict[str, Any]:
@@ -234,7 +279,10 @@ async def verify_deployment(
     or a later one passes). For a git-tracked app omit it: verified with
     reconciled_at at least five minutes after your merge means it is live. A version for a
     git app, or a sha for a chart app, is rejected as invalid_request.
-    Read-only, and the same verdict rules as the operator tool.
+    For an app Kargo promotes, a kargo block and check say why a revision is
+    not live yet (a Promotion running or failed, Freight waiting on upstream
+    verification, or drift), and the expected Freight's approved_for shows a
+    manual approval. Read-only, and the same verdict rules as the operator tool.
     """
 
     if denial := _authorization_error():
@@ -258,15 +306,21 @@ async def verify_deployment(
         return _error("invalid_request", str(exc))
 
     observer = RestrictedKubernetesClient()
+    kargo = None
     try:
         application = await observer.get_unprojected(request)
+        ref = rollout.kargo_stage_ref(application)
+        if ref is not None:
+            kargo = await _kargo_context(observer, *ref)
     except ObservationFailure as exc:
         return _error(exc.code, exc.message)
     finally:
         await observer.close()
 
     try:
-        result = rollout.verdict(application, expected_revision=expected_revision)
+        result = rollout.verdict(
+            application, expected_revision=expected_revision, kargo=kargo
+        )
     except rollout.RevisionMismatch as exc:
         return _error("invalid_request", str(exc))
     return {

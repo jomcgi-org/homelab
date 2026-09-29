@@ -1150,13 +1150,26 @@ over workloads. The agents tier reads the object through
 `RestrictedKubernetesClient.get_unprojected`, which keeps the rule table,
 timeout and error classification but skips the model-facing projection; only
 the bounded verdict leaves the process.
+For an app Kargo promotes (it names its Stage in the
+`kargo.akuity.io/authorized-stage` annotation), both surfaces also read that
+Stage and the project's Freight, and the verdict gains a `kargo` block and
+check. A Promotion that failed for the expected version fails the verdict with
+its message, one still running or Freight waiting on upstream verification
+reads `in_progress` with the reason, and a promotion that succeeded while the
+settled app runs something older fails as drift. The expected Freight's
+`verified_in` and `approved_for` show whether it passed the gate or was
+approved by hand. A failed Kargo read is reported in the block and never
+changes the verdict. **Why.** On 2026-09-26 `verify_deployment` said embervm
+was `in_progress` for two days: a Promotion had failed and Kargo never retries
+one, and nothing on either surface could read a Stage to say so.
 Identity middleware rejects anonymous callers, the tokens are minted by
 authentik's agent provider, and an Ember guest reaches the tier only through
 its egress sidecar, since the guest itself has no network. The tier holds its
 own database and object-storage credentials, synced into its namespace, and a
 ServiceAccount with its own enumerated read RBAC. Namespaced workload reads are
 separate Roles in the recorded namespace allowlist; Argo CD Applications are
-limited to `argocd`, Kargo Freight to `kargo-monolith` and `kargo-embervm`, and
+limited to `argocd`, Kargo Freight and Stages to `kargo-monolith` and
+`kargo-embervm`, and
 the only cluster-scoped exceptions are nodes, namespaces, and node metrics.
 There is no watch, mutation, Secret, exec, attach, port-forward, or proxy grant.
 The read tools independently require the standing workload principal
