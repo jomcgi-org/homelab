@@ -170,6 +170,8 @@ def test_agents_tier_has_exact_restricted_read_rbac(documents: list[dict]) -> No
     assert {role["metadata"]["namespace"] for role in kargo} == {
         "kargo-embervm",
         "kargo-monolith",
+        "kargo-monolith-agents",
+        "kargo-monolith-public",
     }
     assert all(
         role["rules"]
@@ -183,7 +185,8 @@ def test_agents_tier_has_exact_restricted_read_rbac(documents: list[dict]) -> No
         for role in kargo
     )
 
-    assert len(roles) == len(OBSERVATION_NAMESPACES) + 3
+    # The observers, one argocd Application reader, and the Kargo readers.
+    assert len(roles) == len(OBSERVATION_NAMESPACES) + 1 + len(kargo)
     assert len(rolebindings) == len(roles)
     assert len(clusterroles) == 1
     assert clusterroles[0]["rules"] == [

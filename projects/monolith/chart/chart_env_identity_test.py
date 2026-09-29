@@ -550,6 +550,20 @@ _DEFAULT_FAAS_RULES = [
     },
     {"apiGroups": ["embervm.dev"], "resources": ["workloads/status"], "verbs": ["get"]},
 ]
+_DEFAULT_KARGO_PROMOTE_RULES = [
+    {
+        "apiGroups": ["kargo.akuity.io"],
+        "resources": ["promotions"],
+        "verbs": ["create"],
+    },
+    {"apiGroups": ["kargo.akuity.io"], "resources": ["stages"], "verbs": ["promote"]},
+]
+_KARGO_PROJECT_NAMESPACES = [
+    "kargo-embervm",
+    "kargo-monolith",
+    "kargo-monolith-agents",
+    "kargo-monolith-public",
+]
 _RBAC_KINDS = {"Role", "ClusterRole", "RoleBinding", "ClusterRoleBinding"}
 
 
@@ -598,6 +612,17 @@ def _expected_rbac(release, enabled):
                 },
             ],
         ),
+        *(
+            (
+                "kargoPromote",
+                "Role",
+                namespace,
+                f"{release}-kargo-promote",
+                _DEFAULT_KARGO_PROMOTE_RULES,
+                [subject],
+            )
+            for namespace in _KARGO_PROJECT_NAMESPACES
+        ),
     ]:
         if not enabled[gate]:
             continue
@@ -620,19 +645,31 @@ def test_default_rbac_preserves_rule_and_binding_contract(environment, renders):
         _render(release, []) if environment == "defaults" else renders[environment]
     )
     assert _rbac_objects(rendered) == _expected_rbac(
-        release, {"clusterAccess": True, "schedulerWorkflows": True, "faas": True}
+        release,
+        {
+            "clusterAccess": True,
+            "schedulerWorkflows": True,
+            "faas": True,
+            "kargoPromote": True,
+        },
     )
 
 
 @pytest.mark.parametrize("cluster", [False, True])
 @pytest.mark.parametrize("scheduler", [False, True])
 @pytest.mark.parametrize("faas", [False, True])
+@pytest.mark.parametrize("promote", [False, True])
 def test_optional_rbac_gates_remove_both_roles_and_all_subject_bindings(
-    tmp_path, cluster, scheduler, faas
+    tmp_path, cluster, scheduler, faas, promote
 ):
     # Layer onto actual home values, where the accidental production grants
     # matter, while keeping a distinct release identity.
-    enabled = {"clusterAccess": cluster, "schedulerWorkflows": scheduler, "faas": faas}
+    enabled = {
+        "clusterAccess": cluster,
+        "schedulerWorkflows": scheduler,
+        "faas": faas,
+        "kargoPromote": promote,
+    }
     override = tmp_path / "rbac.yaml"
     override.write_text(
         yaml.safe_dump(
@@ -649,7 +686,9 @@ def test_optional_rbac_gates_remove_both_roles_and_all_subject_bindings(
         assert actual == {}
 
 
-@pytest.mark.parametrize("gate", ["clusterAccess", "schedulerWorkflows", "faas"])
+@pytest.mark.parametrize(
+    "gate", ["clusterAccess", "schedulerWorkflows", "faas", "kargoPromote"]
+)
 @pytest.mark.parametrize("invalid", ["false", 1])
 def test_rbac_gate_rejects_non_boolean_values(tmp_path, gate, invalid):
     override = tmp_path / "invalid-rbac.yaml"
@@ -1877,3 +1916,11 @@ def test_grimoire_friend_routes_are_isolated_and_backend_revalidates(renders):
     assert "GRIMOIRE_AUTH_AUDIENCE" in renders["prod"]
     assert "GRIMOIRE_AUTH_JWKS_URL" in renders["prod"]
     assert "GRIMOIRE_AUTH_ISSUER" not in renders["dev"]
+
+
+def test_dev_cannot_promote_production_kargo_stages(renders):
+    """Dev shares production's Kargo Projects, so a promote Role there moves prod."""
+    dev = _rbac_objects(renders["dev"])
+    assert not [key for key in dev if key[2].endswith("-kargo-promote")]
+    prod = _rbac_objects(renders["prod"])
+    assert [key for key in prod if key[2].endswith("-kargo-promote")]

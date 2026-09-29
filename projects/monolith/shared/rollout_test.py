@@ -486,3 +486,115 @@ def test_missing_stage_is_reported_without_failing():
     )
     assert result["verdict"] == VERIFIED
     assert "not found" in result["kargo"]["error"]
+
+
+def test_no_drift_while_a_promotion_rolls_back_to_older_freight():
+    # A Kargo rollback to 0.546.4 settles in ArgoCD while the Promotion is
+    # still waiting on its later steps; the last Promotion is still 0.547.0.
+    stage = _stage(
+        last=_promotion("0.547.0", "Succeeded"),
+        current=_promotion("0.546.4", "Running", currentStep=3),
+    )
+    result = verdict(
+        _kargo_app(live="0.546.4"),
+        expected_revision="0.546.4",
+        kargo={"stage": stage, "freights": [_freight("0.546.4")]},
+    )
+    assert result["verdict"] == VERIFIED
+    assert all(c["name"] != "kargo" for c in result["checks"])
+
+
+def test_failed_promotion_is_in_progress_while_argocd_still_syncs_its_version():
+    # argocd-update already asked for 0.547.0, then a wait step timed out;
+    # the sync keeps going and may still land.
+    stage = _stage(last=_promotion("0.547.0", "Errored", message="step timed out"))
+    app = _kargo_app(
+        live="0.546.4",
+        operationState={
+            "phase": "Running",
+            "syncResult": {"revisions": ["0.546.4", GIT]},
+        },
+    )
+    app["spec"]["sources"][0]["targetRevision"] = "0.547.0"
+    result = verdict(
+        app,
+        expected_revision="0.547.0",
+        kargo={"stage": stage, "freights": [_freight("0.547.0")]},
+    )
+    assert result["verdict"] == IN_PROGRESS
+    check = _check(result, "kargo")
+    assert check["state"] == IN_PROGRESS
+    assert "step timed out" in check["detail"] and "still syncing" in check["detail"]
+
+
+def test_failed_promotion_that_never_applied_fails_even_mid_sync():
+    stage = _stage(last=_promotion("0.547.0", "Failed", message="no access"))
+    app = _kargo_app(
+        live="0.546.4",
+        operationState={
+            "phase": "Running",
+            "syncResult": {"revisions": ["0.546.4", GIT]},
+        },
+    )
+    result = verdict(
+        app,
+        expected_revision="0.547.0",
+        kargo={"stage": stage, "freights": [_freight("0.547.0")]},
+    )
+    assert result["verdict"] == FAILED
+
+
+def _dev(last=None, current=None):
+    dev = _stage(last=last, current=current)
+    dev["metadata"]["name"] = "dev"
+    return dev
+
+
+def test_failed_upstream_promotion_fails_the_downstream_stage():
+    failed_dev = _promotion("0.547.0", "Failed", message="conformance gate failed")
+    failed_dev["name"] = "dev.0.547.0"
+    result = verdict(
+        _kargo_app(),
+        expected_revision="0.547.0",
+        kargo={
+            "stage": _stage(upstream=["dev"]),
+            "upstream": {"dev": _dev(last=failed_dev)},
+            "freights": [_freight("0.547.0", alias="brave-otter")],
+        },
+    )
+    assert result["verdict"] == FAILED
+    detail = _check(result, "kargo")["detail"]
+    assert "dev.0.547.0" in detail and "conformance gate failed" in detail
+    assert "promoted to dev again" in detail
+
+
+def test_upstream_failure_is_not_final_while_upstream_promotes_again():
+    failed_dev = _promotion("0.547.0", "Failed", message="gate")
+    result = verdict(
+        _kargo_app(),
+        expected_revision="0.547.0",
+        kargo={
+            "stage": _stage(upstream=["dev"]),
+            "upstream": {
+                "dev": _dev(last=failed_dev, current=_promotion("0.547.0", "Running"))
+            },
+            "freights": [_freight("0.547.0", alias="brave-otter")],
+        },
+    )
+    assert result["verdict"] == IN_PROGRESS
+    assert "waits for verification in dev" in _check(result, "kargo")["detail"]
+
+
+def test_approved_freight_ignores_a_failed_upstream():
+    failed_dev = _promotion("0.547.0", "Failed", message="gate")
+    result = verdict(
+        _kargo_app(),
+        expected_revision="0.547.0",
+        kargo={
+            "stage": _stage(upstream=["dev"]),
+            "upstream": {"dev": _dev(last=failed_dev)},
+            "freights": [_freight("0.547.0", approved=["prod"])],
+        },
+    )
+    assert result["verdict"] == IN_PROGRESS
+    assert "eligible for prod" in _check(result, "kargo")["detail"]

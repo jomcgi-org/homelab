@@ -1,4 +1,4 @@
-# Optional Kubernetes integrations. Disable all three for a DBOS-only recovery
+# Optional Kubernetes integrations. Disable all four for a DBOS-only recovery
 # lane; these grants are independent of leader singletons and database leases.
 rbac:
   clusterAccess:
@@ -8,6 +8,17 @@ rbac:
   # The current FaaS client targets the production embervm namespace.
   faas:
     enabled: true
+  # kargo_promote (cluster/mcp.py) re-runs a Kargo Promotion. Kargo's webhook
+  # authorizes creating one through the custom "promote" verb on the Stage, so
+  # each Kargo Project namespace gets a Role with both. Never enable it in an
+  # environment that must not move production.
+  kargoPromote:
+    enabled: true
+    namespaces:
+      - kargo-embervm
+      - kargo-monolith
+      - kargo-monolith-agents
+      - kargo-monolith-public
 
 backend:
   # Whether this deployment runs the leader-elected singletons (Discord bot,

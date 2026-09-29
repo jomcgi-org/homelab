@@ -350,6 +350,7 @@ async def test_verify_deployment_explains_a_failed_kargo_promotion(monkeypatch):
     assert reads == [
         ("get", "applications", "argocd", "embervm"),
         ("get", "stages", "kargo-embervm", "prod"),
+        ("get", "stages", "kargo-embervm", "dev"),
         ("list", "freights", "kargo-embervm", None),
     ]
     assert observer.closed is True

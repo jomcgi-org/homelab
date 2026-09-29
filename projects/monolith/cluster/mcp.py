@@ -1,9 +1,11 @@
 """MCP tools for curated Kubernetes debugging — the ``k8s-*`` surface.
 
-Seven tools, all read-only except ``k8s-sync-argocd-app``: cluster health
-rollups, generic resource list/get over a curated kind allowlist, filtered pod
-logs, deduped events, ArgoCD sync, and ``verify-deployment``, the rollout
-verdict shared with the agents tier (``shared.rollout``). Output is shaped by ``cluster.summarize``
+Eight tools, all read-only except ``k8s-sync-argocd-app`` and
+``kargo-promote``: cluster health rollups, generic resource list/get over a
+curated kind allowlist, filtered pod logs, deduped events, ArgoCD sync,
+``verify-deployment``, the rollout verdict shared with the agents tier
+(``shared.rollout``), and ``kargo-promote``, which re-runs a Kargo Promotion
+(``cluster.kargo``). Output is shaped by ``cluster.summarize``
 for token efficiency — never a raw manifest dump unless explicitly requested.
 
 Tool names follow the codebase convention: the FastMCP name is the function
@@ -18,6 +20,7 @@ from __future__ import annotations
 import logging
 
 from core.mcp_app import mcp
+from cluster import kargo as kargo_plan
 from cluster import summarize
 from cluster.kubernetes import RESOURCE_KINDS, KubernetesClient, UnknownKindError
 from kubernetes_asyncio.client.exceptions import ApiException
@@ -224,6 +227,11 @@ async def verify_deployment(app: str, expected_revision: str | None = None) -> d
                 kargo = {
                     "error": f"reading Kargo stage {ref[1]!r} in {ref[0]} failed: HTTP {exc.status}"
                 }
+            except Exception as exc:
+                # Kargo context only explains the verdict; never let it fail one.
+                kargo = {
+                    "error": f"reading Kargo stage {ref[1]!r} in {ref[0]} failed: {exc}"
+                }
     except ApiException as exc:
         return {"error": f"reading application {app!r} failed: HTTP {exc.status}"}
     finally:
@@ -234,3 +242,71 @@ async def verify_deployment(app: str, expected_revision: str | None = None) -> d
         return rollout.verdict(obj, expected_revision=expected_revision, kargo=kargo)
     except rollout.RevisionMismatch as exc:
         return {"error": str(exc)}
+
+
+@mcp.tool
+async def kargo_promote(app: str, chart_version: str, dry_run: bool = False) -> dict:
+    """Promote a chart version to a Kargo-owned app's Stage again.
+
+    The lever for a Promotion that failed or errored: Kargo never retries one,
+    so the Freight waits until something promotes it again. Run
+    verify_deployment first; its kargo block says whether a failed Promotion
+    is what is holding the rollout.
+
+    Refuses rather than overriding a gate: the Freight must already be
+    available to the Stage (verified and soaked upstream, approved for the
+    Stage, or direct from the Warehouse), and no Promotion may be running.
+    It never approves Freight. The Promotion runs the Stage's own steps, so
+    it is exactly the Promotion auto-promotion would have created. Poll
+    verify_deployment with expected_revision afterwards.
+
+    Args:
+        app: ArgoCD Application name in the argocd namespace.
+        chart_version: The exact chart version to promote, such as 0.547.0.
+        dry_run: Plan and submit through admission (Kargo's webhook
+            included) without creating anything.
+    """
+    k8s = KubernetesClient()
+    try:
+        obj = await k8s.get_argocd_application(app)
+        if obj is None:
+            return {"error": f"application {app!r} not found in argocd"}
+        ref = rollout.kargo_stage_ref(obj)
+        if ref is None:
+            return {"error": f"application {app!r} is not promoted by Kargo"}
+        namespace, stage = ref
+        context = await k8s.get_kargo_context(namespace, stage)
+        body = kargo_plan.plan_promotion(
+            context.get("stage"),
+            context.get("freights") or [],
+            namespace=namespace,
+            stage_name=stage,
+            chart=rollout.app_chart(obj),
+            version=chart_version,
+        )
+        created = await k8s.create_kargo_promotion(namespace, body, dry_run=dry_run)
+    except kargo_plan.PromotionRefused as exc:
+        return {"error": f"not promoting: {exc}"}
+    except ApiException as exc:
+        return {"error": f"promotion failed: HTTP {exc.status}: {exc.reason}"}
+    except Exception as exc:
+        return {"error": f"promotion failed: {exc}"}
+    finally:
+        await k8s.close()
+    logger.info(
+        "kargo_promote: %s %s to %s/%s (dry_run=%s)",
+        app,
+        chart_version,
+        namespace,
+        stage,
+        dry_run,
+    )
+    return {
+        "app": app,
+        "namespace": namespace,
+        "stage": stage,
+        "freight": body["spec"]["freight"],
+        "chart_version": chart_version,
+        "promotion": (created.get("metadata") or {}).get("name"),
+        "dry_run": dry_run,
+    }

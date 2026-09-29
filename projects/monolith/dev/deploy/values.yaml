@@ -283,3 +283,9 @@ grimoire:
 swarm:
   implementerModel: "luna"
   reviewerModel: "luna"
+
+# An IDENTITY override: the promote Roles would let dev move production's
+# Kargo Stages. Dev only rehearses the tool against whatever it may read.
+rbac:
+  kargoPromote:
+    enabled: false

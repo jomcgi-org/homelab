@@ -66,6 +66,8 @@ class TestToolRegistration:
         src = inspect.getsource(cluster_agent)
         assert "sync_argocd_app" not in src
         assert "k8s_sync_argocd_app" not in src
+        assert "kargo_promote" not in src
+        assert "create_kargo_promotion" not in src
 
 
 class TestErrorWrapping:

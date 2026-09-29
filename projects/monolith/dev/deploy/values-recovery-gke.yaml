@@ -24,6 +24,8 @@ rbac:
     enabled: false
   faas:
     enabled: false
+  kargoPromote:
+    enabled: false
 
 postgres:
   instances: 1

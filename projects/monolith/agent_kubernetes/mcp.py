@@ -222,25 +222,39 @@ async def kubernetes_pod_logs(
     }
 
 
+def _stage_request(namespace: str, stage: str):
+    return validate_read_request(
+        verb="get",
+        api_group="kargo.akuity.io",
+        resource="stages",
+        namespace=namespace,
+        name=stage,
+        subresource=None,
+        limit=LIST_LIMIT_DEFAULT,
+        continue_token=None,
+    )
+
+
+async def _get_stage(
+    observer: RestrictedKubernetesClient, namespace: str, stage: str
+) -> dict[str, Any] | None:
+    try:
+        return await observer.get_unprojected(_stage_request(namespace, stage))
+    except ObservationFailure as exc:
+        if exc.code != "not_found":
+            raise
+        return None
+
+
 async def _kargo_context(
     observer: RestrictedKubernetesClient, namespace: str, stage: str
 ) -> dict[str, Any]:
-    """The Stage and Freight behind a Kargo-owned app, or why they are unread.
+    """The Stage, its upstream Stages and the Freight behind a Kargo-owned app.
 
     A failure here explains nothing about the rollout, so it is returned as
     context for the verdict rather than failing the whole call.
     """
     try:
-        stage_request = validate_read_request(
-            verb="get",
-            api_group="kargo.akuity.io",
-            resource="stages",
-            namespace=namespace,
-            name=stage,
-            subresource=None,
-            limit=LIST_LIMIT_DEFAULT,
-            continue_token=None,
-        )
         freight_request = validate_read_request(
             verb="list",
             api_group="kargo.akuity.io",
@@ -251,19 +265,17 @@ async def _kargo_context(
             limit=LIST_LIMIT_MAX,
             continue_token=None,
         )
+        stage_obj = await _get_stage(observer, namespace, stage)
+        upstream = {
+            name: await _get_stage(observer, namespace, name)
+            for name in rollout.upstream_stages(stage_obj or {})
+        }
+        freights = await observer.list_unprojected(freight_request)
     except InvalidObservationRequest as exc:
         return {"error": str(exc)}
-    try:
-        try:
-            stage_obj = await observer.get_unprojected(stage_request)
-        except ObservationFailure as exc:
-            if exc.code != "not_found":
-                raise
-            stage_obj = None
-        freights = await observer.list_unprojected(freight_request)
     except ObservationFailure as exc:
         return {"error": f"reading Kargo stage {stage!r} in {namespace}: {exc.message}"}
-    return {"stage": stage_obj, "freights": freights}
+    return {"stage": stage_obj, "upstream": upstream, "freights": freights}
 
 
 async def verify_deployment(

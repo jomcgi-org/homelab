@@ -2870,6 +2870,16 @@ py_test(
 )
 
 py_test(
+    name = "cluster_kargo_test",
+    srcs = ["cluster/kargo_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_cluster",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "cluster_mcp_test",
     srcs = ["cluster/mcp_test.py"],
     imports = ["."],

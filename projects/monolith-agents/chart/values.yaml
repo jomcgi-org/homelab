@@ -58,6 +58,8 @@ kubernetesRead:
   kargoNamespaces:
     - kargo-embervm
     - kargo-monolith
+    - kargo-monolith-agents
+    - kargo-monolith-public
 
 nodeSelector: {}
 tolerations: []
