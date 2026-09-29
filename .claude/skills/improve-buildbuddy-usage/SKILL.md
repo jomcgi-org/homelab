@@ -16,14 +16,12 @@ change at the largest source, and tracks the result across cycles.
 |---|---|
 | Baseline (7 days to 2026-07-28) | 1.502 TB/day download |
 | Target | 0.751 TB/day download |
-| Latest (6 days to 2026-08-28, post-#5116/#5118) | 0.757 TB/day download |
+| Last recorded (6 days to 2026-08-28, `snapshot --days 6 --no-write`) | 0.757 TB/day download |
 | Upload | 4.9 GB/day, 0.6% of the problem |
 
-99% of the way to the target, 6 GB/day short, and #5374 has not had a full
-window yet. The window is clean: the last byte levers landed 2026-08-22 and it
-starts 2026-08-23. The seven clean days a committed snapshot needs are complete
-on 2026-08-29, so this figure came from `snapshot --days 6 --no-write` and
-`snapshots/` still holds two pre-rewrite files.
+These figures are dated: run `trend` for the current number before claiming
+progress. `snapshots/` holds only the two pre-rewrite files, so `report`
+compares pre-change windows until a clean snapshot is committed.
 
 **The repo URL is part of the measurement, and it moved.** BuildBuddy keys
 invocations by the URL it was told at push time. The 2026-08-22 move to the
@@ -93,7 +91,7 @@ happened. Do not read that as "nothing worked". A snapshot is only clean from
 **2026-08-16** onward; before then measure with `snapshot --days N --no-write`
 over a window that starts after the change.
 
-Current split, measured 2026-08-10 over the 1.5 days since the rewrite
+Split measured 2026-08-10 over the 1.5 days since the rewrite
 (1.67 TB/day, still 2.2x the target):
 
 | Share | GB/day | Source |
@@ -424,14 +422,12 @@ confirmed against a real invocation** before you act on it.
 4. **`CI test //...` runfiles trees.** Mechanism settled 2026-08-12, see "Test
    bytes are runfiles trees". #5116 and #5118 took the tree from 1.54 GB to
    ~0.65 GB; what is left is the app's honest closure. Largely spent.
-5. **`deploy`'s cold unit is 18.2 GB against `pr-checks`' 17.6 GB.** The 12 GB
-   gap recorded on 2026-08-10 is closed, so the two workspaces now carry the
-   same content and the same fix applies to both. Nothing specific left here.
+5. **`deploy` is folded into `pr-checks`** (#4824), so main's run and PR runs
+   share one runner snapshot and lever 1 covers both. Nothing specific left here.
 6. **Fewer redundant pushes.** 1,396 runs in 7 days were superseded within 10
-   minutes by another run of the same action on the same branch. The strict
-   "up to date with main" rule forces `update-branch` on every open PR whenever
-   anything merges. This is policy, not config. Note that a superseded run still
-   pays its cold start, so cancellation does not help.
+   minutes by another run of the same action on the same branch. This is how
+   the repo is worked, not config. Note that a superseded run still pays its
+   cold start, so cancellation does not help.
 
 Collapsing actions is **done** (`d6b4041c6`), with the split result recorded
 above. If you revisit it, the trap is unchanged: required status checks are
@@ -483,8 +479,8 @@ size mechanism as everything else in this section.
    keep printing the stale comparison until then; that is expected, not a bug.
 2. Pick **one** lever. Open the specific invocations that motivate it and
    confirm the mechanism before writing any code.
-3. Land it as a normal PR (`pr-workflow`). Chart bumps still apply if a
-   deployed service changes.
+3. Land it as a normal PR (`pr-workflow`). Do not bump chart versions: the
+   post-merge write-back does that.
 4. Wait at least 7 days so the window is not half old behaviour, then
    `snapshot --days 7` again and commit the new snapshot in the same PR as any
    follow-up. `report` prints progress toward the 50% and the per-source movers

@@ -20,9 +20,9 @@ Then work in `/tmp/claude-worktrees/my-feature`, run `ci` until green, commit
 with Conventional Commits, push, open the PR.
 
 Run `ci` **before** pushing so the PR run is mostly cache-hit. The pre-push
-hook no longer runs `ci test` by default: PR CI and the queue candidate both
-test the change after push, so a third run was pure cost. `RUN_CI_TEST=1 git
-push` runs it for a change you want proven before it is public.
+hook skips `ci test` unless `RUN_CI_TEST=1` is set, because PR CI and the queue
+candidate both test the change after push; set it for a change you want proven
+before it is public.
 
 ## Before you push again
 
@@ -78,11 +78,6 @@ the queue re-tests the candidates behind it on each move. That is the queue's
 churn, not yours. A red queue run ejects the PR: re-enqueue with the same
 `gh pr merge --auto` after checking whether the failure was the flaky
 Elixir suite (#4828) or real.
-
-This rationale used to be about chart versions: the re-run let the
-missed-chart-bump guard catch two PRs claiming the same version. That reason is
-gone, because PRs no longer carry a version at all (see below). The
-tested-against-current-main reason is the live one.
 
 ## Auto-merge
 

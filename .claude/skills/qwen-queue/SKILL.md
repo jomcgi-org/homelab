@@ -1,15 +1,21 @@
 ---
 name: qwen-queue
-description: Operate and improve the qwen work-queue drainer. Use when queueing qwen-drain jobs, reviewing qwen-agent-for-review PRs, triaging failed drainer jobs, tuning job prompts, or when the user says "queue qwen work", "check the qwen queue", or "/qwen-queue".
+description: Operate and improve the background work-queue drainer (the Luna lane; jobs keep the historical qwen-drain kind). Use when queueing qwen-drain jobs, reviewing qwen-agent-for-review PRs, triaging failed drainer jobs, tuning job prompts, or when the user says "queue drain work", "queue qwen work", "check the qwen queue", or "/qwen-queue".
 ---
 
-# qwen queue
+# Drain queue (Luna lane)
 
-The drainer (ADR agents/061, `projects/monolith/factory/orchestration/drainer.py`) runs
-`claude_agent.routine_jobs` rows of kind `qwen-drain` as one fresh qwen pi
-session each, strictly serially, claimed by a `*/15` CronWorkflow tick. The
-lane bills nothing, so it exists to convert idle overnight capacity into
-audits, reports, and small PRs. This skill is the operating manual plus the
+The skill, job kind (`qwen-drain`), PR label (`qwen-agent-for-review`), git
+identity (`qwen-drainer`) and branch prefix (`qwen/`) keep the name of the
+model the lane was built on. The worker is now Luna: `DRAIN_MODEL = "luna"` in
+`drainer.py`, a Codex-family model that runs on claude-runtime, not pi-runtime.
+
+The drainer (`projects/monolith/factory/orchestration/drainer.py`) runs
+`claude_agent.routine_jobs` rows of kind `qwen-drain` as one fresh Luna session
+each, strictly serially,
+claimed by a `*/15` CronWorkflow tick. The lane spends subscription quota
+rather than per-token billing, so it exists to convert idle overnight capacity
+into audits, reports, and small PRs. This skill is the operating manual plus the
 improvement loop.
 The same drainer also claims `kg-drain` jobs for knowledge extraction.
 `docfix:` jobs are one-shot `qwen-drain` tasks for human-reviewed documentation PRs.
@@ -56,48 +62,36 @@ Job names must be unique forever: a completed one-shot keeps its row (so it can
 be re-armed), so a re-run of the same audit needs a fresh prefix. Use a dated
 batch prefix such as `qd0828-<template>-<path-slug>`.
 
-### Sizing (the watchdog is the real budget)
+### Sizing (the search space is the real budget)
 
-The per-job ceiling is the EmberVM invoke watchdog at ~920s
-(`piRuntimeWorkload.invocation.timeoutSeconds`), not the drainer's 1800s
-timeout. A job must finish in **under 10 minutes of qwen time**. Repo-wide
-sweeps blow it; per-file and per-directory questions fit. Split "audit all
-runbooks" into one job per runbook.
+The timeouts are backstops, not a size limit: the drainer's `turnTimeoutSeconds`
+is 43800 and the EmberVM runtime invoke backstop is 43200s (twelve hours).
+Size jobs by search space instead: per-file and per-directory questions converge, repo-wide sweeps
+do not. Split "audit all runbooks" into one job per runbook.
 
-### Thinking must stay on, and prompt quality will not save you if it is off
+### The `reasoning` knob does not reach Luna
 
-`agents.drainer.reasoning` defaults **true**, which sets `thinking: "high"` on
-every drain session. Leave it on. The pi lane's own default is off because it
-was built for small one-shot tasks, and drain jobs are multi-step audits.
-
-This is worth stating because the symptom looks exactly like a prompt problem
-and is not. With thinking off, qwen locks onto one tool call and repeats it
-verbatim until the context window fills. Measured on the same prompt:
-
-| thinking | tool calls | input tokens | outcome |
-|---|---|---|---|
-| off | 461 | 118787 | `stopReason: length`, no answer |
-| on | 8 and 12 (two runs) | ~27000 | correct answer |
-
-The prompt that looped 461 times satisfied every rule in the next section. Two
-of the failures were plain report-only jobs, so task shape was not the trigger
-either. Before rewriting a prompt that loops, check `DRAINER_REASONING` in the
-pod env.
-
-`PI_MAX_IDENTICAL_TOOL_CALLS` (20, in the EmberVM shim) is a backstop that ends
-a turn after 20 consecutive byte-identical tool calls. It bounds the damage; it
-does not make the job succeed.
+`agents.drainer.reasoning` and a job's `payload.reasoning` become the invoke's
+`thinking` field, which only the pi adapter reads. The Codex adapter in the
+EmberVM shim (`CodexProcess.turn`) takes no thinking argument and sends the
+effort pinned in the shim's `CODEX_MODELS` table (`luna`: `medium`), so the flag
+has no effect on Luna sessions. Changing Luna's depth means changing that table.
+If a Luna job loops or runs long, fix the job's search space or prompt first. The identical-call
+backstop (`PI_MAX_IDENTICAL_TOOL_CALLS`) is pi-only too, so nothing ends a
+looping Luna turn short of the timeouts above.
 
 ### Prompt shape that works
 
-qwen is a small model. Prompts that one-shot share these properties:
+These properties were measured on the lane's earlier small model; they are the
+starting point for Luna, not a re-measured result:
 
 - **One bounded question** with an explicit output contract ("output one line
   per finding as 'file: problem'", "reply with exactly X").
-- **Exact numbered steps** for multi-step work (the PR recipe below). Do not
-  ask it to plan.
+- **Exact numbered steps** for the PR recipe below, where one sequence is the
+  safe one. For audits, state the question and the output contract and let the
+  model plan.
 - A **verification clause**: "verify each claim with an actual grep/ls before
-  reporting it". Without it, qwen asserts from memory.
+  reporting it", so every finding carries evidence the reviewer can check.
 - A **size cap** ("keep the whole answer under 1800 characters"): summaries
   land in `last_summary` and Discord.
 - For report-only jobs, open with "Report-only task, do not modify files."
@@ -105,10 +99,11 @@ qwen is a small model. Prompts that one-shot share these properties:
 
 ## The PR lane
 
-qwen sessions can open PRs with no extra plumbing: pi guests sit in the egress
+Drain sessions can open PRs with no extra plumbing: guests sit in the egress
 lane, the sidecar injects the GitHub token host-keyed (Basic for git push,
 Bearer for `api.github.com`), and the guest image ships git, gh, curl, jq.
-The working recipe, verified by PR #5333:
+The working recipe (first verified by PR #5333; `knowledge/docfix.py` uses the
+same identity and label):
 
 1. Find the checkout (`ls /session /session/*` then cd to the dir with
    `.git`).
@@ -123,11 +118,9 @@ The working recipe, verified by PR #5333:
    the job name in the body. Never enable auto-merge.
 8. "Your final answer must be only the PR URL."
 
-**Doc edits no longer carry a generated manifest.** The repo-docs and public
-docs manifests used to be committed, so every `.md` edit picked up a
-`style: auto-format` commit regenerating them and two doc PRs open at once
-conflicted on their one-line-per-doc files. They are genrule outputs now
-(#6446): a qwen doc PR touches only the doc, and nothing needs regenerating.
+**A doc PR touches only the doc.** The repo-docs and public docs manifests are
+genrule outputs, so nothing needs regenerating and concurrent doc PRs do not
+conflict.
 
 ### The audit-and-fix template
 
@@ -180,7 +173,7 @@ Review keys on diff class, not author.
 - **Spec'd job** (the dispatcher wrote the exact edit): dispatcher checks the
   diff matches the spec, PR CI gates, no separate Opus pass. There is nothing
   to judge, because the finding was verified before the job ran.
-- **Audit-and-fix job** (qwen found the drift itself): **one Opus review**.
+- **Audit-and-fix job** (the drain worker found the drift itself): **one Opus review**.
   Nobody has judged the finding yet, so the review is judging both the claim
   and the edit. Read the evidence block in the PR body first; if the two sides
   it quotes do not actually disagree, close the PR rather than fixing it.
@@ -218,7 +211,8 @@ sitting rather than queueing every candidate at once.
    daily-repo-pulse job also reports this).
 3. For each failure, classify against the known taxonomy below. Check the
    HARNESS first: on a 174-job batch every single failure was infrastructure
-   (bad guest, deploy roll, watchdog), none was qwen producing a wrong answer.
+   (bad guest, deploy roll, watchdog), none was the model producing a wrong
+   answer.
 4. Fold any new failure mode into this skill in the same PR that fixes its
    first occurrence.
 
@@ -233,7 +227,7 @@ summaries, or match on a finding shape such as `'\.md:[0-9]+: doc says'`.
 identical to real findings in a list, and will waste a PR round each:
 
 - **Stale-but-working references.** 32 files still say `jomcgi/homelab` after
-  the org move. GitHub redirects it, the qwen PR recipe itself uses it, and
+  the org move. GitHub redirects it, the lane's PR recipe itself uses it, and
   every PR pushes fine. Churn with no functional gain.
 - **Comparisons the template got wrong.** A doc citing the caller-facing MCP
   tool name (`monolith-monolith-agent-trigger-job`, double prefix from FastMCP)
@@ -248,9 +242,7 @@ sample of each template tells you whether that whole class holds.
 
 | Symptom in `last_summary` | Cause | Fix |
 |---|---|---|
-| `terminal_reason` `length`, ~119k input tokens, hundreds of tool calls | the lane ran with thinking OFF and the model repeated one identical call until the context filled | should not recur: `agents.drainer.reasoning` now defaults true. If it does, check `DRAINER_REASONING` is actually set in the pod env |
-| literal `<tool_call>` as the whole summary | 15 of 1035 turns leaked this: 11 truncated by token limit (already fail on own, `terminal_reason: length`), 4 complete but malformed with spurious junk closing tags (silently pass as `ok`, `terminal_reason: stop`). NInfer's parser rejects the junk and returns raw XML as content. Guard now detects and fails both variants. | reduce job size if truncated; malformed is NInfer parser issue |
-| `502 :invoke_timeout` after ~15 min | the 920s EmberVM invoke watchdog | usually a non-converging job; check the tool-call count in `usage_json` before assuming the job is oversized |
+| `502 :invoke_timeout` after ~12 hours | the 43200s EmberVM invoke backstop | a non-converging job; check the tool-call count in `usage_json`, then narrow the job's search space |
 | `502 {:session_down, ...}`, `503 workspace does not exist`, `All connection attempts failed`, `Server disconnected` | the GUEST was bad, the job was fine | `trigger-routine-job` and it will almost certainly pass on a fresh guest. Measured 2026-08-29: five such failures, five clean passes on requeue. The drainer treats all of these as terminal, so a one-shot dies permanently unless you requeue it by hand |
 | jobs due but nothing claimed for hours, ticks firing | a wedged drain_cycle holding the concurrency-1 slot (#5328) | open the drain console (below). A monolith pod roll does **NOT** clear it: DBOS recovery re-enqueues into a permanently PENDING row. The reaper now cancels a cycle with no step checkpoint for 1800s; to clear one sooner, `POST /api/swarm/runs/{workflow_id}/cancel` in-pod |
 | `next_run_at` NULL, job vanished from due list | one-shot completed; this is normal | `trigger-routine-job` to re-run |
@@ -259,9 +251,10 @@ sample of each template tells you whether that whole class holds.
 
 `agents.drainer.*` in `projects/monolith/chart/values.yaml`: `enabled` (the
 kill switch, flipped in deploy values), `maxJobsPerCycle`, `turnTimeoutSeconds`
-(1800), `reasoning` (true; see the thinking section above),
-`stallThresholdSeconds` (advisory only), `jobKind`, `repo`, `branch`.
-Session-side limits live in `piRuntimeWorkload` in
+(43800), `reasoning` (true; pi sessions only, see "The `reasoning` knob does not reach Luna"),
+`stallThresholdSeconds` (advisory only), `jobKinds` (a list; `[]` pauses all
+claims), `repo`, `branch`.
+Session-side limits for Luna live in `claudeRuntimeWorkload` in
 `projects/embervm/deploy/values.yaml`.
 
 **Read the knob from the deployment, not from `agent/config.py`.** The code
@@ -278,16 +271,17 @@ Measured on a 174-job batch: about 1.8 to 3.6 minutes per job depending on
 template weight, roughly nine hours end to end. Over-filling is harmless because
 unclaimed jobs simply wait.
 
-## What qwen is for (and not for)
+## What the lane is for (and not for)
 
 Good: per-file staleness audits, path-citation checks, TODO inventories,
 index-vs-directory drift, single-defect spec'd PR fixes, daily digests.
 Bad: anything needing bazel or the test suite (not in the guest), repo-wide
 sweeps, judgment calls on prose, multi-file refactors, anything where a wrong
 answer is expensive to detect. The dispatcher owns finding defects worth
-fixing; qwen owns bounded execution.
+fixing; the lane owns bounded execution.
 
-**Task shape is the strongest predictor in this lane.** Recorded to date:
+**Task shape is the strongest predictor in this lane.** Recorded on the
+earlier model; re-check against Luna before leaning on the exact numbers:
 
 | shape | record |
 |---|---|
@@ -300,7 +294,7 @@ find-and-fix combination. "Find one wrong thing somewhere in `projects/mcp/`,
 then fix it" has no stopping rule, so the job explores until something kills it;
 one burned 434 tool calls without reaching the fix. All six also ran with
 thinking off, which is what turned exploration into a loop, so that evidence is
-confounded.
+confounded, and that failure mode belonged to the pi lane.
 
 So the rule is about the SEARCH SPACE, not the combination:
 
@@ -332,8 +326,8 @@ Three habits make the spec'd job reliable:
   says 15s but code says 90s" is a claim; open the file and confirm before
   putting the number in a spec.
 
-qwen will also tell you when your premise is wrong rather than inventing an
-answer: it reported a nonexistent `projects/monolith-public/frontend`, found the
+Drain jobs also tell you when your premise is wrong rather than inventing an
+answer: one reported a nonexistent `projects/monolith-public/frontend`, found the
 real path when the spec named a wrong `projects/shared/chart/templates`, and
 switched to the GitHub API when its checkout came up empty. Read those replies
 as spec bugs, not job failures.

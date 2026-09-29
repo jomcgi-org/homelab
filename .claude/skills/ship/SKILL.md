@@ -121,9 +121,9 @@ accepted but not yet built, with its issue. Rebase-merge on green.
 ## Phase 3: failing BDD
 
 Specs define done. `bdd_test(future = True, ...)` with `@covers_*` markers from
-`shared/testing/markers.py`. The gating Test action excludes `-future`; the
-informational "BDD future features" action runs them. Merging red specs is
-intentional. This is implementation work, so it goes to an implementing agent.
+`shared/testing/markers.py`. The gating `pr-checks` run excludes `future`-tagged
+tests, and no CI action runs them (the "BDD future features" action is disabled
+in `buildbuddy.yaml`). Merging red specs is intentional. This is implementation work, so it goes to an implementing agent.
 
 ## Phase 4: implement
 
@@ -142,7 +142,7 @@ on the issue.
 
 ## Merge cadence
 
-Phases 2, 3 and 5 can `gh pr merge --auto --rebase`, followed through to merged.
+Phases 2, 3 and 5 can `gh pr merge --auto` (no strategy flag), followed through to merged.
 Phase 4 is human review only. The merge queue handles main moving; never
 rebase a PR only because main moved.
 
