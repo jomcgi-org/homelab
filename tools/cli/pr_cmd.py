@@ -92,7 +92,9 @@ class PrState:
         if self.state == "MERGED":
             return f"merged as {(self.merge_commit or '')[:9]}"
         if self.queue_state:
-            return f"in merge queue: {self.queue_state} (position {self.queue_position})"
+            return (
+                f"in merge queue: {self.queue_state} (position {self.queue_position})"
+            )
         if self.auto_merge:
             return f"auto-merge armed, waiting on checks ({self.merge_state})"
         return f"{self.state.lower()}, not queued ({self.merge_state})"
@@ -211,7 +213,9 @@ def _descends_from(repo: str, base: str, head: str) -> bool:
     return status in {"ahead", "identical"}
 
 
-def find_writeback(repo: str, merge_commit: str, merged_at: str) -> dict[str, str] | None:
+def find_writeback(
+    repo: str, merge_commit: str, merged_at: str
+) -> dict[str, str] | None:
     """Chart bumps (``chart dir -> new version``) from the write-back covering a merge.
 
     Returns None while no chart-version-bot commit has a ``Chart-Source-Commit``

@@ -1,4 +1,4 @@
-"""Unit tests for cluster/router.py — the /api/cluster verdict route."""
+"""Unit tests for cluster/router.py: the /api/cluster verdict route."""
 
 from __future__ import annotations
 
@@ -6,10 +6,10 @@ import dataclasses
 
 import pytest
 from fastapi.testclient import TestClient
+from framework import PRIVATE_PROFILE, build_app
 
 import cluster.module
 import cluster.router
-from framework import PRIVATE_PROFILE, build_app
 
 # Compose only the cluster domain: the production framework wiring without
 # importing every other domain.

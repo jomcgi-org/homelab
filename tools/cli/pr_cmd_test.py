@@ -180,7 +180,11 @@ def test_ejection_from_the_queue_fails_and_points_at_ci_triage(monkeypatch, cloc
 def test_git_app_waits_for_reconcile_past_argocd_cache(monkeypatch, clock):
     gh = FakeGh([_pr("MERGED")], files=["projects/gke-apps/monolith-public/x.yaml"])
     gh.commits = [
-        {"commit": {"message": f"chore(charts): publish 0\n\nChart-Source-Commit: {SOURCE}\n"}}
+        {
+            "commit": {
+                "message": f"chore(charts): publish 0\n\nChart-Source-Commit: {SOURCE}\n"
+            }
+        }
     ]
     early = (T0 + timedelta(minutes=1)).isoformat()
     late = (T0 + timedelta(minutes=6)).isoformat()
