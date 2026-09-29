@@ -14,7 +14,7 @@ structure it grounds in.
 
 You are a systems-safety analyst applying STPA (System-Theoretic Process Analysis)
 per lens. EXTRACT findings as JSON (judgment), RENDER the document by running
-BLOCK A verbatim (mechanism), and only if it changed, open/refresh a PR via BLOCK B.
+BLOCK A verbatim (mechanism), and only if it changed, open/refresh a PR via BLOCK B and wait for the merge via BLOCK C.
 Determinism depends on rendering ONLY via the renderer. Do NOT hand-write markdown.
 (`**/STPA.md` and `**/stpa/*.json` are in `.prettierignore` so the renderer and
 jq pretty-print are sole authorities.)
@@ -93,8 +93,12 @@ A system may model only one view; omit ones you cannot ground; do not invent.
    forge-token UCA`). Write concise body to `$STPA_TMP/stpa-body.md` (2-6
    bullets naming changed findings by semantic key, plus scope/maturity shifts).
 10. **Open/refresh PR** by running BLOCK B VERBATIM. Commits both the fragment
-    and merged STPA.md, force-pushes, opens or updates PR, watches CI, rebase-merges
-    on green. Report PR URL and result.
+    and merged STPA.md, force-pushes, opens or updates the PR, and enqueues it
+    in the merge queue.
+11. **Wait for the merge** by running BLOCK C VERBATIM as a background Bash
+    command (or under `Monitor`), never in the foreground: it polls for up to
+    60 minutes, longer than a foreground command may run. You are notified when
+    it exits. Report the PR URL and its result line.
 
 ## Migration: existing single-analysis STPA.md
 
@@ -111,17 +115,18 @@ for outstanding work), titled `<system>: <finding> (STPA <key>)`, labeled `bug`
 severe losses. Security lens findings add label `security-finding`. Reference
 the issue from the finding's evidence, not a STPA.md checklist.
 
-## Drift minimization (this is an UPDATE, not a rewrite)
+## Drift minimization (this is an update, not a rewrite)
 
-Rendered docs are committed and reviewed as diffs. Minimize churn:
+Rendered docs are committed and reviewed as diffs, so every unneeded change is
+review noise:
 
-- REUSE each prior finding's semantic key VERBATIM when the code it cites still
+- Reuse each prior finding's semantic key verbatim when the code it cites still
   exists and still means the same thing.
-- KEEP prior `condition`/`statement`/`label`/`scope` wording UNCHANGED unless code
-  changed. Do not reword for style.
+- Keep prior `condition`/`statement`/`label`/`scope` wording unless the code
+  changed; do not reword for style.
 - Update an `evidence` `path:line` only if the referenced code actually moved.
-- But RE-VERIFY, never parrot: open each prior finding's cited code and confirm it
-  still holds. Logic changed, update it. Code deleted, drop it. New unsafe action,
+- Re-verify rather than carry forward: open each prior finding's cited code and
+  confirm it still holds. Logic changed, update it. Code deleted, drop it. New unsafe action,
   add it with a new key. Net: unchanged code => identical finding; changed code =>
   localized change; added/removed code => added/removed finding.
 
@@ -379,7 +384,7 @@ else
 fi
 ````
 
-## BLOCK B: commit, PR, watch CI, merge on green (run verbatim; ONLY when STPA_RESULT=changed)
+## BLOCK B: commit, PR, enqueue (run verbatim; ONLY when STPA_RESULT=changed)
 
 ```bash
 set -euo pipefail
@@ -414,7 +419,17 @@ fi
 URL="$(gh pr view "$BRANCH" --json url -q .url)"
 echo "PR: $URL"
 
-gh pr merge "$BRANCH" --auto --rebase || true
+gh pr merge "$BRANCH" --auto || true
+printf 'BRANCH=%q\nWT=%q\nREPO_ROOT=%q\nURL=%q\n' "$BRANCH" "$WT" "$REPO_ROOT" "$URL" > $STPA_TMP/pr.env
+echo "queued: $URL"
+```
+
+## BLOCK C: wait for merge, clean up (run verbatim in background Bash or Monitor; ONLY after BLOCK B)
+
+```bash
+set -euo pipefail
+. $STPA_TMP/pr.env
+STATE=UNKNOWN
 for _ in $(seq 1 60); do
   STATE="$(gh pr view "$BRANCH" --json state -q .state)"
   [ "$STATE" = "MERGED" ] && break

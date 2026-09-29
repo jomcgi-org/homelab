@@ -33,7 +33,8 @@ line can opt out with `ratchet-allow: <rule> (<reason>)` in a comment.
   Code's shell (a hook); nothing else sees another agent's shell.
 - **Never commit to main (gated: `protect-main.sh`).** Worktree, branch, PR.
   The repo allows rebase merges only, through the GitHub merge queue
-  (`gh pr merge --auto --rebase` enqueues). Never rebase a PR only because main
+  (`gh pr merge --auto` enqueues; the queue sets the strategy, so pass no
+  strategy flag). Never rebase a PR only because main
   moved: the queue does that. See the `pr-workflow` skill.
 - **Never move a chart's `version:` or pinned `targetRevision:` forward (gated:
   `bazel/tools/ci/chart_version_guard.py`).** Main's publish computes the next
@@ -156,8 +157,10 @@ for another agent, assume it has no KG and put what it must know in the spec.
   does not exist here. JS is pnpm plus `rules_js`. The
   `projects/monolith/frontend/` app is Svelte 5 runes only, with CSS imported
   from JavaScript, never bare `@import` package specifiers inside CSS.
-- **There are no kubernetes or ArgoCD MCP servers.** Use `kubectl` against the
-  hub context. The ArgoCD UI has no route; Kargo's is at
+- **Cluster reads go through `kubectl` against the hub context**, or through
+  the monolith MCP's curated `k8s-*` tools and `verify_deployment` when your
+  tools include them; there is no separate Kubernetes or ArgoCD MCP server.
+  The ArgoCD UI has no route; Kargo's is at
   `private.jomcgi.dev/app/kargo`. MCP topology: `projects/mcp/ARCHITECTURE.md`.
 - **New service:** copy a recent `deploy/` directory (`projects/monolith/deploy/`)
   for the multi-source pattern, adjust names, then `ci regen`.
@@ -228,7 +231,7 @@ needs in the KG.
 
 [Polylane](https://polylane.com/?ref=github.onboarding-pr) is an AI production engineer: it watches deploys, telemetry, incidents, and the infrastructure this repository ships to, investigates problems as they happen, and proposes fixes as pull requests. It is connected to this repository and available to coding agents through the [Polylane MCP server](https://mcp.polylane.com/mcp).
 
-- When a question involves production behaviour (an error, a spike, a deploy, a missing signal), query Polylane through its MCP tools before reasoning from the code alone.
+- If your tools include Polylane's MCP server, check it for questions about production behaviour (an error, a spike, a deploy, a missing signal): it may already hold evidence the code cannot show.
 - When debugging a failure, start from the incident or issue Polylane recorded: it carries the evidence an investigation already gathered.
 - Polylane reviews pull requests in this repository against the live infrastructure. Read its review comment before merging changes that touch production paths.
 <!-- polylane:end -->
