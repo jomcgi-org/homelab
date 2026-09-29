@@ -318,6 +318,29 @@ def test_unconfirmed_execution_never_becomes_a_retryable_completed_failure(
     assert harness.cleanups == []
 
 
+def test_provider_error_keeps_the_pinned_uncertain_result_with_its_cost(harness):
+    """The durable body does not settle a provider error itself (#6468).
+
+    Changing execute_node would move the pinned node workflow version and
+    strand every in-flight node, so the proof that a provider error before any
+    work is a plain failure runs in the conductor instead
+    (factory_conductor_test: test_provider_error_before_work_*). This pins
+    the evidence that proof starts from: an uncertain result that already
+    carries the reported spend and the session to read.
+    """
+    harness.turn = {
+        "seq": 1,
+        "terminal_reason": "api_error",
+        "stop_reason": "stop_sequence",
+        "cost_usd": 0.011866,
+    }
+    result = nodes.execute_node.__wrapped__(pin())
+    assert result["status"] == "uncertain"
+    assert result["session_id"] == 7
+    assert result["cost_usd"] == 0.011866 and result["cost_basis"] == "provider"
+    assert harness.cleanups == []
+
+
 @pytest.mark.parametrize("phase", ["wait", "artifact", "head"])
 def test_read_failures_retain_available_evidence(harness, phase):
     setattr(harness, f"{phase}_error", RuntimeError("offline"))

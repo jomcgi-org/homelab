@@ -24,6 +24,13 @@ SPARK_SYNTHETIC_PROMPT = "Reply with exactly: spark synthetic ok"
 # spark turn (see runtimes/claude/shim.py).
 CLEAN_TERMINAL_REASONS = {"completed", "end_turn", "stop", "user_interrupt"}
 
+# Terminal reasons a guest CLI reports when the provider refused the request
+# itself. Claude Code ends such a turn with `terminal_reason: api_error` and
+# `is_error: true` (a 400 for an unsupported model, for example). Only the guest
+# writes these: no monolith-synthesized turn uses them, so a turn carrying one
+# is a native result, and its invocation has ended (#6468).
+PROVIDER_ERROR_TERMINAL_REASONS = frozenset({"api_error"})
+
 # A durable record of an attempt that did not finish. The pending message with
 # the same sequence remains live and will replace this turn after re-dispatch.
 INTERRUPTED_TERMINAL_REASONS = {"interrupted", "interrupted_for_drain"}

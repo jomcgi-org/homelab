@@ -1638,6 +1638,161 @@ def settle_interrupted_factory_continuation(
     db.flush()
 
 
+_PROVIDER_ERROR_WORKFLOW_STATUSES = frozenset(
+    {"SUCCESS", "ERROR", "CANCELLED", "MAX_RECOVERY_ATTEMPTS_EXCEEDED"}
+)
+PROVIDER_ERROR_TEXT_LIMIT = 200
+
+
+def read_provider_error_factory_attempt(
+    db: Session, pin: dict, session_id: int | None, workflow_status: str | None
+) -> dict | None:
+    """Prove the guest itself reported a provider error before doing any work.
+
+    The turn is the guest's own native result, so the invocation has ended:
+    no monolith writer produces a provider-error terminal reason, and the
+    UNKNOWN_INVOCATION and recovery markers those writers leave are refused
+    here. With no tool activity, no permission request, no diff and no
+    artifact, nothing the attempt could have changed is outstanding, so it is
+    a proven failure rather than an unknown one (#6468). Any sign of work
+    returns None and leaves the attempt to the ordinary uncertain path. The
+    caller holds the factory control lock through graph and start settlement.
+    """
+    import zlib
+
+    from factory.execution.constants import PROVIDER_ERROR_TERMINAL_REASONS
+    from factory.execution.models import AgentTurn, PendingMessage
+    from sqlalchemy import or_
+
+    if (
+        workflow_status not in _PROVIDER_ERROR_WORKFLOW_STATUSES
+        or type(session_id) is not int
+        or session_id < 1
+    ):
+        return None
+    admission.lock_pool(db)
+    try:
+        agent = _factory_owner(db, pin, session_id)
+    except ValueError:
+        return None
+    if agent is None:
+        return None
+    agent = _locked_session(db, agent.id)
+    if (
+        agent.status != "warn"
+        or agent.result_receipt_fence_id is not None
+        or db.exec(
+            select(PendingMessage.id).where(PendingMessage.session_id == agent.id)
+        ).first()
+        is not None
+    ):
+        return None
+    turns = db.exec(
+        select(AgentTurn)
+        .where(AgentTurn.session_id == agent.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+        .limit(2)
+    ).all()
+    if len(turns) != 1:
+        return None
+    turn = turns[0]
+    if (
+        turn.seq != 1
+        or turn.terminal_reason not in PROVIDER_ERROR_TERMINAL_REASONS
+        or turn.stop_reason == UNKNOWN_INVOCATION
+        or turn.artifact_blob is not None
+        or turn.artifact_outcome == "ok"
+        or turn.diff_truncated
+    ):
+        return None
+    try:
+        usage = json.loads(turn.usage_json or "{}")
+        denials = json.loads(turn.permission_denials or "[]")
+        diff = (
+            zlib.decompress(bytes(turn.diff_blob)).decode("utf-8")
+            if turn.diff_blob is not None
+            else ""
+        )
+    except (TypeError, ValueError, zlib.error):
+        return None
+    if (
+        not isinstance(usage, dict)
+        or usage.get("activities") != []
+        or denials != []
+        or diff.strip()
+        # Monolith-written rows carry recovery history, and a drain
+        # continuation means an earlier physical dispatch may have worked.
+        or "recovery" in usage
+        or "drain_continuations" in usage
+    ):
+        return None
+    permits = db.exec(
+        select(AgentCapacityReservation)
+        .where(
+            or_(
+                AgentCapacityReservation.session_id == agent.id,
+                AgentCapacityReservation.local_session_id == agent.local_session_id,
+            )
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+        .limit(2)
+    ).all()
+    if len(permits) != 1:
+        return None
+    permit = permits[0]
+    if (
+        permit.pending_seq != 1
+        or permit.session_id != agent.id
+        or permit.local_session_id != agent.local_session_id
+        or permit.tier != "project"
+        or permit.routine_job_name is not None
+        or permit.state not in ("uncertain", "settled")
+    ):
+        return None
+    error = " ".join((turn.result_text or "").split())[:PROVIDER_ERROR_TEXT_LIMIT]
+    return {
+        "session_id": agent.id,
+        "local_session_id": agent.local_session_id,
+        "workflow_status": workflow_status,
+        "turn_id": turn.id,
+        "seq": turn.seq,
+        "permit_id": permit.id,
+        "permit_state": permit.state,
+        "terminal_reason": turn.terminal_reason,
+        "error": error or turn.terminal_reason,
+        "cost_usd": turn.cost_usd,
+        "list_cost_usd": turn.list_cost_usd,
+        "invocation_phase": "provider_error_before_work",
+    }
+
+
+def settle_provider_error_factory_attempt(db: Session, pin: dict, proof: dict) -> None:
+    """Release the permit of an attempt whose guest reported a provider error.
+
+    The native result is the cessation evidence, so the permit settles here
+    rather than waiting on stop supervision, whose reader only accepts the
+    monolith's own failure rows. The turn and guest binding stay as they are
+    for audit and normal lifecycle cleanup; the caller composes the graph,
+    start and audit settlement in this same transaction.
+    """
+    current = read_provider_error_factory_attempt(
+        db, pin, proof["session_id"], proof["workflow_status"]
+    )
+    if current != proof:
+        raise ValueError("factory_attempt_changed")
+    agent = _locked_session(db, proof["session_id"])
+    admission.settle(
+        db,
+        agent,
+        proof["seq"],
+        outcome=proof["terminal_reason"],
+        cessation_confirmed=True,
+    )
+    db.flush()
+
+
 def settle_drained_lost_factory_attempt(db: Session, pin: dict, identity: dict) -> None:
     """Consume only the orphaned continuation after exact permanent loss."""
     from factory.execution.models import PendingMessage

@@ -24,6 +24,7 @@ from factory.execution.reconciliation import (
     read_lost_before_guest_factory_attempt as read_lost_before_guest_factory_attempt,
     read_never_dispatched_factory_attempt as read_never_dispatched_factory_attempt,
     read_not_invoked_factory_attempt as read_not_invoked_factory_attempt,
+    read_provider_error_factory_attempt as read_provider_error_factory_attempt,
     read_uncertain_factory_attempt as read_uncertain_factory_attempt,
     release_bound_zero_turn_factory_fence as release_bound_zero_turn_factory_fence,
     settle_bound_zero_turn_factory_attempt as settle_bound_zero_turn_factory_attempt,
@@ -32,6 +33,7 @@ from factory.execution.reconciliation import (
     settle_lost_before_guest_factory_attempt as settle_lost_before_guest_factory_attempt,
     settle_lost_before_session_factory_attempt as settle_lost_before_session_factory_attempt,
     settle_never_dispatched_factory_attempt as settle_never_dispatched_factory_attempt,
+    settle_provider_error_factory_attempt as settle_provider_error_factory_attempt,
     settle_uncertain_factory_attempt as settle_uncertain_factory_attempt,
 )
 

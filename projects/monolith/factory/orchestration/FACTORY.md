@@ -1360,6 +1360,26 @@ remains on the response-loss and stop-supervision paths and is never refunded
 by `lost_before_guest`. A message with dispatch count zero remains the separate
 `never_dispatched` proof.
 
+A guest that answers its turn with a provider error before doing any work is a
+proven failure, not an unknown one (#6468). The Claude CLI reports a refused
+request, such as a 400 for a model its version does not support, as a native
+result with `terminal_reason` `api_error`. `execute_node` still records that
+turn as uncertain, because its terminal reason is not clean, and the native
+writer leaves its permit uncertain. The conductor then reads the
+`provider_error_before_work` proof: the attempt's one turn carries a
+`PROVIDER_ERROR_TERMINAL_REASONS` value that only a guest writes, no
+`UNKNOWN_INVOCATION` or recovery marker, no tool activity, no permission
+request, no diff and no artifact, with no pending message and a terminal
+workflow. The returned result is itself the cessation evidence, so the proof
+settles the permit, fails the graph attempt with reason
+`provider_error_before_work: <error text>` at the reported spend (not the
+reservation), and settles the start, all in one transaction. The node's
+ordinary `max_attempts` then applies to the retry. Any tool activity before the
+error, a lost response, a timeout or an unknown invocation keeps the attempt on
+the uncertain path exactly as before. The rule is not in `execute_node`, so the
+pinned node workflow version is unchanged and an attempt already recorded
+uncertain in this shape settles on its task's next reconciler tick.
+
 #### Bound zero-turn settlement runbook
 
 `FACTORY_BOUND_ZERO_TURN_SETTLEMENT_ENABLED` stages the post-guest proof from
