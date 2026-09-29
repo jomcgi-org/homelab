@@ -6534,11 +6534,17 @@ def _warn_deadline_tripped(task: dict) -> None:
     # Say what will actually happen. Promising a release the flag has turned
     # off would have an operator wait out a slot that is never coming back,
     # which is the 2026-09-14 wedge again with a notification on top.
+    from factory.orchestration import factory_cessation
+
     outcome = (
         "The lane slot is released within "
         f"{FACTORY_DEADLINE_BACKSTOP_GRACE_SECONDS // 3600} hours of the "
         "deadline if none arrives."
         if _deadline_backstop_enabled()
+        else "Active cessation will destroy the recorded guest "
+        f"{factory_cessation.GRACE_SECONDS // 3600} hours after the deadline "
+        "and release the slot once the control plane reports it gone."
+        if factory_cessation.enabled()
         else "The deadline backstop is off, so nothing will release the lane "
         "slot on its own."
     )
@@ -6845,6 +6851,166 @@ def _expire_task_deadline(task: dict) -> bool:
     return True
 
 
+def _escalate_ceased_task(task: dict) -> bool:
+    """Finish a past-deadline task escalated once supervised cessation freed it.
+
+    factory_cessation settles each stranded attempt on evidence it produced,
+    one attempt at a time. When that leaves a task past its deadline with no
+    start reserved or uncertain and nothing running, this ends it the way the
+    old backstop did, escalated with a card, so a person owns the question of
+    what to do with the work and the lane slot returns. The admission permit
+    was already settled with the attempt, on evidence, so unlike the backstop
+    card this one has no permit to apologise for.
+
+    Paused tasks are included. A pause holds admission and this admits
+    nothing; resuming the escalation re-admits with the pause cleared
+    (factory_decisions._requeue). Ordinary reconciliation would otherwise
+    finish an unpaused past-deadline task "failed" with no card, and would
+    leave a paused one holding its slot.
+    """
+    from factory.orchestration import factory_cessation
+    from factory.orchestration.factory_controls import (
+        _ACTIVE,
+        _audit,
+        _locked_session,
+        _receipt,
+        _starts,
+        finish_task,
+    )
+    from factory.orchestration.factory_landing import github_write
+    from factory.orchestration.factory_models import FactoryAudit
+    from factory.orchestration.factory_refine import HUMAN_LABEL
+
+    if not factory_cessation._deadline_due(task):
+        return False
+    task_id = task["task_id"]
+
+    def eligible(db) -> bool:
+        receipt = _receipt(db, task_id)
+        if receipt is None or receipt.state not in _ACTIVE:
+            return False
+        if any(row.status in ("reserved", "uncertain") for row in _starts(db, task_id)):
+            return False
+        if any(
+            run["status"] in ("admitted", "dispatched", "uncertain")
+            for run in graph.node_runs(task_id, session=db)
+        ):
+            return False
+        return any(
+            json.loads(raw).get("reason") == "supervised_cessation"
+            for raw in db.exec(
+                select(FactoryAudit.detail_json).where(
+                    FactoryAudit.task_id == task_id,
+                    FactoryAudit.action == "stop_settled",
+                    FactoryAudit.actor == factory_cessation.ACTOR,
+                )
+            ).all()
+        )
+
+    with Session(get_engine()) as db:
+        with _locked_session(db):
+            if not eligible(db):
+                return False
+
+    number = task.get("issue_number")
+    repo = task.get("repo")
+    pr_number = _latest_pr(graph.node_runs(task_id))
+    question = (
+        "This task passed its deadline holding an attempt that no proof could "
+        "settle. Supervision destroyed that attempt's recorded guest and "
+        "settled it only after the control plane reported the guest gone, so "
+        "its lane slot and admission permit were released on evidence. Decide "
+        "whether to carry the work on."
+    )
+    document = {
+        "kind": "delivery",
+        "task_id": task_id,
+        # Carrying on stays first: resume_escalated applies options[0]
+        # without showing the card (see _expire_task_deadline).
+        "recommendation": EFFECT_WORD[CONTINUE_EFFECT],
+        "question": question,
+        "reason": (
+            "The deadline passed more than "
+            f"{factory_cessation.GRACE_SECONDS // 3600} hours ago with an "
+            "attempt still uncertain. Its guest was terminated and observed "
+            "gone across the sampled absence window before the attempt was "
+            "settled failed at its reserved cost ceiling."
+        ),
+        "options": [
+            {
+                "key": "readmit",
+                "label": "Re-admit and carry the work on",
+                "effect": CONTINUE_EFFECT,
+            },
+            {
+                "key": "hold",
+                "label": "Hold until a person has looked at the attempt",
+                "effect": "hold",
+            },
+        ],
+        "branch": task_branch(task_id),
+        "pr_number": pr_number,
+        "pr_url": (
+            f"https://github.com/{repo}/pull/{pr_number}"
+            if pr_number and isinstance(repo, str)
+            else None
+        ),
+        "comment_url": None,
+        "downgraded": False,
+        "resolved": None,
+    }
+    if isinstance(repo, str) and isinstance(number, int):
+        try:
+            github_write(repo, f"issues/{number}/labels", {"labels": [HUMAN_LABEL]})
+            document["comment_url"] = _post_decision_card(
+                repo,
+                number,
+                _escalation_marker(task_id),
+                _decision_card(document),
+            )
+        except Exception:  # noqa: BLE001 - the release must not wait on GitHub
+            logger.exception(
+                "factory supervised cessation card failed for task %s", task_id
+            )
+    _record_escalation(task_id, document)
+    with Session(get_engine()) as db:
+        with _locked_session(db):
+            if not eligible(db):
+                return False
+            result = finish_task(
+                task_id,
+                "escalated",
+                ACTOR,
+                evidence={
+                    "state": "supervised_cessation_expired",
+                    "reason": question[:1024],
+                },
+                session=db,
+            )
+            if not result["ok"]:
+                return False
+            _audit(db, ACTOR, "supervised_cessation_escalated", task_id=task_id)
+        # Required for the same reason as in _expire_task_deadline: a supplied
+        # session is only flushed by _locked_session.
+        db.commit()
+    if isinstance(repo, str) and isinstance(number, int):
+        _notify_escalation(task_id, repo, number, question)
+    return True
+
+
+def _supervise_cessation(task: dict, dbos) -> None:
+    """Produce cessation evidence for this task's stranded attempts, then escalate.
+
+    Runs after reconcile_task, so every proof that waits for evidence has
+    had the tick first, and before the deadline backstop, which then finds
+    nothing left to release.
+    """
+    from factory.orchestration import factory_cessation
+
+    factory_cessation.supervise_task(task, dbos)
+    _escalate_ceased_task(task)
+
+
 def tick() -> None:
     from factory.orchestration.factory_controls import status
     from factory.orchestration.factory_intake import admit_next
@@ -6890,6 +7056,14 @@ def tick() -> None:
             reconcile_task(task["task_id"], task["policy"], dbos)
         except Exception:  # noqa: BLE001 - per-task isolation keeps the lane live
             logger.exception("factory reconcile failed for task %s", task["task_id"])
+        # Its own guard as well: a control plane that cannot be read must not
+        # keep the backstop below, or the next task, from its tick.
+        try:
+            _supervise_cessation(task, dbos)
+        except Exception:  # noqa: BLE001 - supervision must not stall the lane
+            logger.exception(
+                "factory supervised cessation failed for task %s", task["task_id"]
+            )
         # Last, and in its own guard. Proof-based release always gets this
         # tick first, and a task whose reconcile raises every time is exactly
         # the one that must still reach the backstop.

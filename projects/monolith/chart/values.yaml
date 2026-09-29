@@ -1582,6 +1582,14 @@ swarm:
   # Flipped on in a follow-up PR after review, never in the PR adding the
   # template, so a behaviour change never rides in on a template change.
   factoryDeadlineBackstopEnabled: false
+  # Produce cessation evidence for an uncertain attempt more than two hours
+  # past its task deadline, paused or not: record the exact guest, destroy it,
+  # and settle only after the control plane has reported that recorded guest
+  # gone across the sampled absence window (factory_cessation.py). Elapsed time
+  # only selects the attempt; the settlement is on evidence. Past-deadline
+  # tasks then finish escalated with a card. Operator-requested cessation runs
+  # whatever this says. Flipped on in a follow-up PR after review.
+  factoryActiveCessationEnabled: false
   # Hard ceiling on factory tasks in flight at once, over BOTH lanes together.
   # The policy's per-lane max_tasks is what sizes each lane; this only stops a
   # posted policy opening more than the platform is sized for, and delivery

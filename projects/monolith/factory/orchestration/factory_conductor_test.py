@@ -16668,3 +16668,513 @@ def test_the_correction_model_reads_the_escalated_pin():
     review_run = {"node_key": "review_work", "id": 3}
     model, _ = conductor._correction_model(nodes, runs, review_run, policy)
     assert model == "sol"
+
+
+# Supervised cessation (factory_cessation.py): produce the evidence rather than
+# wait for it, then settle only on a sampled gone proof for the recorded guest.
+
+
+def _cessation(s, monkeypatch, *, enabled=True, guest=None, paused=False):
+    """Drive factory_cessation against a fake control plane for one attempt."""
+    import copy
+    from datetime import datetime, timedelta, timezone
+
+    from factory.execution.transport import EmberSessionGone
+    from factory.orchestration import factory_cessation
+    from factory.orchestration import factory_supervision as supervisor
+
+    monkeypatch.setenv(
+        "FACTORY_ACTIVE_CESSATION_ENABLED", "true" if enabled else "false"
+    )
+    # Isolate this path from the proofs that wait for evidence.
+    monkeypatch.setenv("FACTORY_BOUND_ZERO_TURN_SETTLEMENT_ENABLED", "false")
+    if not hasattr(s, "now"):
+        s.now = [datetime.now(timezone.utc)]
+    monkeypatch.setattr(factory_cessation, "_now", lambda: s.now[0])
+    monkeypatch.setattr(supervisor, "_now", lambda: s.now[0])
+    s.guest = guest or "s-stranded"
+    s.remote = {"session_id": s.guest, "state": "running", "gone": False}
+    s.gets, s.destroys = [], []
+    s.destroy_effect = "destroyed"
+
+    def get(guest_id):
+        s.gets.append(guest_id)
+        if s.remote["gone"]:
+            raise EmberSessionGone("404 Not Found")
+        view = copy.deepcopy(s.remote)
+        view.pop("gone")
+        return view
+
+    def destroy(guest_id):
+        s.destroys.append(guest_id)
+        if s.destroy_effect == "destroyed":
+            s.remote["state"] = "destroyed"
+        elif s.destroy_effect == "absent":
+            s.remote["gone"] = True
+        return {"state": "destroying"}
+
+    monkeypatch.setattr(factory_cessation, "_get", get)
+    monkeypatch.setattr(factory_cessation, "_destroy", destroy)
+    s.cessation_task = {
+        "task_id": s.task["id"],
+        "repo": s.task["repo"],
+        "issue_number": 7,
+        "task_paused": paused,
+        "deadline_at": (
+            s.now[0] - timedelta(seconds=factory_cessation.GRACE_SECONDS + 60)
+        ).isoformat(),
+    }
+    if not hasattr(s, "dbos"):
+        s.dbos = SimpleNamespace(
+            get_workflow_status=lambda _: SimpleNamespace(status="SUCCESS")
+        )
+    return factory_cessation
+
+
+def _cessation_tick(s, seconds=0):
+    from datetime import timedelta
+
+    from factory.orchestration import factory_cessation
+
+    s.now[0] += timedelta(seconds=seconds)
+    return factory_cessation.supervise_task(s.cessation_task, s.dbos)
+
+
+def _cessation_sample_until_settled(s, ticks=8):
+    from factory.orchestration import factory_supervision as supervisor
+
+    for _ in range(ticks):
+        if _cessation_tick(s, supervisor.ABSENCE_OBSERVATION_INTERVAL_SECONDS):
+            return True
+        if _cessation_tick(s, 1):
+            return True
+    return False
+
+
+def _cessation_events(s, action):
+    import json
+    from sqlmodel import Session, select
+    from factory.orchestration.factory_models import FactoryAudit
+
+    with Session(s.engine) as db:
+        return [
+            json.loads(row.detail_json)
+            for row in db.exec(
+                select(FactoryAudit)
+                .where(FactoryAudit.action == action)
+                .order_by(FactoryAudit.id)
+            ).all()
+        ]
+
+
+@pytest.fixture(params=["bound_zero_turn_factory", "uncertain_factory"])
+def bound_stranded_factory(request):
+    """Both bound stranded shapes: no local turn, and an UNKNOWN failed turn."""
+    s = request.getfixturevalue(request.param)
+    s.guest = s.precondition["session_id"]
+    return s
+
+
+@pytest.mark.parametrize("readback", ["destroyed", "absent"])
+def test_active_cessation_destroys_the_recorded_guest_then_settles_on_absence(
+    bound_stranded_factory, monkeypatch, readback
+):
+    """The 617/623/633 release: record, destroy, observe gone, settle once.
+
+    A destroyed guest normally reads back 200 "destroyed" until op-log
+    compaction rather than 404 (values-gke.yaml, factoryDeadlineBackstop), so
+    both readings count as the same gone sample and both need the full
+    sampled window.
+    """
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = bound_stranded_factory
+    _cessation(s, monkeypatch, guest=s.guest)
+    s.destroy_effect = readback
+    before = _uncertain_snapshot(s)
+
+    assert _cessation_tick(s) == 0
+    intents = _cessation_events(s, "cessation_intent")
+    assert len(intents) == 1
+    assert intents[0]["guest_id"] == s.guest and intents[0]["shape"] == "bound"
+    assert intents[0]["trigger"] == "deadline"
+    requests = _cessation_events(s, "cessation_request")
+    assert [row["request_number"] for row in requests] == [1]
+    assert s.destroys == [s.guest]
+    # Destroying produced no settlement: only the later observation can.
+    assert _uncertain_snapshot(s)["permits"] == before["permits"]
+
+    assert _cessation_sample_until_settled(s)
+    samples = _cessation_events(s, "cessation_absence")
+    assert len(samples) >= supervisor.MIN_ABSENCE_OBSERVATIONS
+    after = _uncertain_snapshot(s)
+    assert after["session"]["status"] == "failed"
+    assert after["session"]["ember_session_id"] is None
+    assert after["pending"] == []
+    assert after["turns"] == before["turns"]
+    assert [permit["state"] for permit in after["permits"]] == ["settled"]
+    assert after["permits"][0]["outcome"] == "supervised_cessation"
+    assert after["runs"][0]["status"] == "failed"
+    assert after["runs"][0]["cost_usd"] is None
+    assert after["factory"]["starts"][0]["status"] == "failed"
+    assert after["factory"]["starts"][0]["cost_usd"] is None
+    outcome = json.loads(after["runs"][0]["outcome_json"])
+    assert outcome["cost_basis"] == "unknown"
+    assert outcome["supervised_cessation"]["guest_id"] == s.guest
+    assert outcome["supervised_cessation"]["held_seconds"] >= (
+        supervisor.ABSENCE_CONFIRM_SECONDS
+    )
+    settled = _cessation_events(s, "stop_settled")
+    assert len(settled) == 1 and settled[0]["reason"] == "supervised_cessation"
+    assert settled[0]["cessation_confirmed"] is True
+    assert controls.task_snapshot(s.task["id"])["unresolved_starts"] == 0
+    assert s.destroys == [s.guest]
+
+    # Settled once: further ticks change nothing and contact nothing.
+    calls = len(s.gets)
+    assert _cessation_tick(s, 600) == 0
+    assert len(s.gets) == calls
+    assert _uncertain_snapshot(s)["permits"] == after["permits"]
+
+
+def test_active_cessation_escalates_the_past_deadline_task_it_freed(
+    bound_zero_turn_factory, monkeypatch
+):
+    import factory.orchestration.factory_landing as landing
+    from factory.orchestration.factory_models import FactoryReceipt
+
+    s = bound_zero_turn_factory
+    _cessation(s, monkeypatch, guest=s.precondition["session_id"])
+    posted, notified = [], []
+    monkeypatch.setattr(landing, "github_write", lambda *args: None)
+    monkeypatch.setattr(
+        conductor,
+        "_post_decision_card",
+        lambda repo, number, marker, body: posted.append(body) or "https://card",
+    )
+    monkeypatch.setattr(
+        conductor, "_notify_escalation", lambda *args: notified.append(args)
+    )
+    assert not conductor._escalate_ceased_task(s.cessation_task)
+    _cessation_tick(s)
+    assert _cessation_sample_until_settled(s)
+
+    assert conductor._escalate_ceased_task(s.cessation_task)
+    with Session(s.engine) as db:
+        receipt = db.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == s.task["id"])
+        ).one()
+        assert receipt.state == "escalated"
+        escalation = json.loads(receipt.escalation_json)
+    assert escalation["options"][0]["effect"] == conductor.CONTINUE_EFFECT
+    assert escalation["comment_url"] == "https://card"
+    assert len(posted) == 1 and len(notified) == 1
+    assert not conductor._escalate_ceased_task(s.cessation_task)
+
+
+def test_active_cessation_never_settles_while_the_guest_still_answers(
+    bound_stranded_factory, monkeypatch
+):
+    from factory.orchestration import factory_cessation
+
+    s = bound_stranded_factory
+    _cessation(s, monkeypatch, guest=s.guest)
+    s.destroy_effect = "ignored"
+    before = _uncertain_snapshot(s)
+
+    for _ in range(12):
+        assert _cessation_tick(s, 301) == 0
+    after = _uncertain_snapshot(s)
+    for key in ("session", "turns", "pending", "permits", "runs"):
+        assert after[key] == before[key]
+    assert s.destroys == [s.guest] * factory_cessation.MAX_DESTROY_REQUESTS
+    assert _cessation_events(s, "cessation_absence") == []
+    exhausted = [
+        row
+        for row in _cessation_events(s, "stop_observation")
+        if row["reason"] == "cessation_destroy_exhausted"
+    ]
+    assert len(exhausted) == 1 and exhausted[0]["intervention_required"] is True
+
+
+def test_a_live_reading_between_gone_samples_restarts_the_window(
+    bound_zero_turn_factory, monkeypatch
+):
+    s = bound_zero_turn_factory
+    _cessation(s, monkeypatch, guest=s.precondition["session_id"])
+    _cessation_tick(s)
+    assert not _cessation_tick(s, 301)
+    assert not _cessation_tick(s, 301)
+    s.remote["state"] = "running"
+    assert not _cessation_tick(s, 301)
+    assert _cessation_events(s, "cessation_presence")
+    s.remote["state"] = "destroyed"
+    assert not _cessation_tick(s, 301)
+    assert not _cessation_tick(s, 1)
+    assert _uncertain_snapshot(s)["permits"][0]["state"] != "settled"
+    assert _cessation_sample_until_settled(s)
+
+
+def test_active_cessation_releases_a_paused_task(bound_zero_turn_factory, monkeypatch):
+    """617/619/623/633 are all paused: _expire_task_deadline skips them."""
+    import factory.orchestration.factory_landing as landing
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryReceipt
+
+    s = bound_zero_turn_factory
+    with controls._locked_session() as (db, _control):
+        receipt = db.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == s.task["id"])
+        ).one()
+        receipt.task_paused = True
+        db.add(receipt)
+    _cessation(s, monkeypatch, guest=s.precondition["session_id"], paused=True)
+    monkeypatch.setattr(landing, "github_write", lambda *args: None)
+    monkeypatch.setattr(conductor, "_post_decision_card", lambda *args: None)
+    monkeypatch.setattr(conductor, "_notify_escalation", lambda *args: None)
+    # The old backstop refuses every paused task, so this is the only release.
+    assert not conductor._expire_task_deadline(s.cessation_task)
+
+    conductor._supervise_cessation(s.cessation_task, s.dbos)
+    assert s.destroys == [s.precondition["session_id"]]
+    assert _cessation_sample_until_settled(s)
+    assert conductor._escalate_ceased_task(s.cessation_task)
+    with Session(s.engine) as db:
+        receipt = db.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == s.task["id"])
+        ).one()
+        assert receipt.state == "escalated"
+
+
+def test_active_cessation_settles_across_a_cleared_binding(
+    bound_zero_turn_factory, monkeypatch
+):
+    """#6288: a destroy that clears ember_session_id must not strand the proof."""
+    from factory.execution import store
+
+    s = bound_zero_turn_factory
+    guest = s.precondition["session_id"]
+    _cessation(s, monkeypatch, guest=guest)
+    _cessation_tick(s)
+    # What monolith-agent-session-destroy does after its DELETE.
+    with Session(s.engine) as db:
+        assert store.clear_ember_bindings_by_ember_id(db, guest) == [s.sid]
+        db.commit()
+    assert _uncertain_snapshot(s)["session"]["ember_session_id"] is None
+    assert _cessation_sample_until_settled(s)
+    after = _uncertain_snapshot(s)
+    assert after["permits"][0]["state"] == "settled"
+    assert after["session"]["prior_ember_lineage_id"] == "lineage-bound"
+    assert set(s.gets) == {guest}
+
+
+def test_a_cleared_binding_is_recovered_only_from_recorded_evidence(
+    bound_zero_turn_factory, monkeypatch
+):
+    """A guest destroyed before any intent is found in the audit trail or not at all."""
+    from factory.execution import store
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = bound_zero_turn_factory
+    guest = s.precondition["session_id"]
+    _cessation(s, monkeypatch, guest=guest)
+    with Session(s.engine) as db:
+        store.clear_ember_bindings_by_ember_id(db, guest)
+        db.commit()
+    assert _cessation_tick(s) == 0
+    assert _cessation_events(s, "cessation_intent") == []
+    assert s.gets == [] and s.destroys == []
+    refusals = [row["reason"] for row in _cessation_events(s, "stop_observation")]
+    assert "cessation_refused_guest_identity_unrecoverable" in refusals
+
+    # An earlier supervisor's audited identity names exactly one guest.
+    with controls._locked_session() as (db, _control):
+        supervisor._audit(
+            db,
+            s.run["pin"],
+            "stop_intent",
+            identity={"session_id": s.sid, "guest_id": guest},
+            precondition=s.precondition,
+        )
+    assert _cessation_tick(s) == 0
+    assert _cessation_events(s, "cessation_intent")[0]["guest_id"] == guest
+    assert s.destroys == [guest]
+
+
+@pytest.mark.parametrize("change", ["dispatch", "rebound"])
+def test_active_cessation_refuses_an_identity_changed_since_the_intent(
+    bound_zero_turn_factory, monkeypatch, change
+):
+    from factory.execution import store
+    from factory.execution.models import AgentSession
+
+    s = bound_zero_turn_factory
+    _cessation(s, monkeypatch, guest=s.precondition["session_id"])
+    _cessation_tick(s)
+    assert s.destroys == [s.precondition["session_id"]]
+    with Session(s.engine) as db:
+        if change == "dispatch":
+            pending = store.get_pending_message(db, s.sid, 1)
+            pending.dispatch_count += 1
+            db.add(pending)
+        else:
+            agent = db.get(AgentSession, s.sid)
+            agent.ember_session_id = "s-replacement"
+            db.add(agent)
+        db.commit()
+    before = _uncertain_snapshot(s)
+    assert not _cessation_sample_until_settled(s)
+    after = _uncertain_snapshot(s)
+    for key in ("session", "turns", "pending", "permits", "runs"):
+        assert after[key] == before[key]
+    reason = (
+        "cessation_identity_changed"
+        if change == "dispatch"
+        else "cessation_guest_changed"
+    )
+    notes = [
+        row
+        for row in _cessation_events(s, "stop_observation")
+        if row["reason"] == reason
+    ]
+    assert len(notes) == 1
+    assert _cessation_events(s, "stop_settled") == []
+
+
+def test_active_cessation_is_off_by_default(bound_stranded_factory, monkeypatch):
+    s = bound_stranded_factory
+    _cessation(s, monkeypatch, guest=s.guest)
+    monkeypatch.delenv("FACTORY_ACTIVE_CESSATION_ENABLED")
+    before = _uncertain_snapshot(s)
+    for _ in range(4):
+        assert _cessation_tick(s, 301) == 0
+    after = _uncertain_snapshot(s)
+    for key in ("session", "turns", "pending", "permits", "runs"):
+        assert after[key] == before[key]
+    assert s.gets == [] and s.destroys == []
+    assert _cessation_events(s, "cessation_intent") == []
+
+
+def test_active_cessation_waits_for_the_grace_after_the_deadline(
+    bound_zero_turn_factory, monkeypatch
+):
+    from datetime import timedelta
+
+    s = bound_zero_turn_factory
+    cessation = _cessation(s, monkeypatch, guest=s.precondition["session_id"])
+    s.cessation_task["deadline_at"] = (
+        s.now[0] - timedelta(seconds=cessation.GRACE_SECONDS - 60)
+    ).isoformat()
+    assert _cessation_tick(s) == 0
+    assert s.gets == [] and _cessation_events(s, "cessation_intent") == []
+
+
+def test_active_cessation_never_touches_a_live_workflow(
+    bound_zero_turn_factory, monkeypatch
+):
+    s = bound_zero_turn_factory
+    _cessation(s, monkeypatch, guest=s.precondition["session_id"])
+    s.dbos = SimpleNamespace(
+        get_workflow_status=lambda _: SimpleNamespace(status="PENDING")
+    )
+    assert _cessation_tick(s) == 0
+    assert s.gets == [] and _cessation_events(s, "cessation_intent") == []
+
+
+def test_operator_cessation_runs_with_the_flag_off_and_keeps_the_receipt(
+    bound_zero_turn_factory, monkeypatch
+):
+    """#6025 item 2: one exact attempt on demand, no receipt cancellation."""
+    from factory.orchestration.factory_models import FactoryReceipt
+
+    s = bound_zero_turn_factory
+    cessation = _cessation(
+        s, monkeypatch, enabled=False, guest=s.precondition["session_id"]
+    )
+    # Not past the deadline either: an operator request needs neither.
+    s.cessation_task["deadline_at"] = s.now[0].isoformat()
+    preview = cessation.read_cessation(s.task["id"], s.run["node_key"], 1)
+    assert preview["target_guest_id"] == s.precondition["session_id"]
+    stale = cessation.request_cessation(
+        s.task["id"],
+        s.run["node_key"],
+        1,
+        "operator:joe",
+        expected_identity_sha256="0" * 64,
+        workflow_status="SUCCESS",
+    )
+    assert stale == {"ok": False, "state": "refused"}
+    assert s.destroys == [] and _cessation_events(s, "cessation_intent") == []
+
+    result = cessation.request_cessation(
+        s.task["id"],
+        s.run["node_key"],
+        1,
+        "operator:joe",
+        expected_identity_sha256=preview["identity_sha256"],
+        workflow_status="SUCCESS",
+    )
+    assert result == {"ok": True, "state": "waiting"}
+    intent = _cessation_events(s, "cessation_intent")[0]
+    assert intent["trigger"] == "operator"
+    assert intent["requested_by"] == "operator:joe"
+    assert s.destroys == [s.precondition["session_id"]]
+    assert _cessation_sample_until_settled(s)
+    with Session(s.engine) as db:
+        receipt = db.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == s.task["id"])
+        ).one()
+        assert receipt.state not in ("cancelled", "escalated")
+    assert _uncertain_snapshot(s)["runs"][0]["status"] == "failed"
+
+
+def test_never_bound_attempt_settles_at_zero_on_the_lost_before_guest_proof(
+    lost_before_guest_factory, monkeypatch
+):
+    """The #6025 shape with the conductor's own proof flag off: nothing to destroy."""
+    s = lost_before_guest_factory
+    monkeypatch.setenv("FACTORY_LOST_BEFORE_GUEST_SETTLEMENT_ENABLED", "false")
+    _persist_uncertain_lost_before_guest(s)
+    _cessation(s, monkeypatch)
+    before = s.native_snapshot()
+
+    assert _cessation_tick(s) == 1
+    assert s.gets == [] and s.destroys == []
+    intent = _cessation_events(s, "cessation_intent")[0]
+    assert intent["shape"] == "never_bound" and intent["guest_id"] is None
+    after = s.native_snapshot()
+    assert after["agent_turns"] == before["agent_turns"]
+    permit = after["capacity_reservations"][0]
+    assert permit["state"] == "settled" and permit["outcome"] == "lost_before_guest"
+    run = conductor.graph.node_runs(s.task["id"])[0]
+    assert run["status"] == "failed" and run["cost_usd"] == 0.0
+    proof = json.loads(run["outcome_json"])["lost_before_guest"]
+    assert proof["invocation_phase"] == "lost_before_guest"
+
+
+def test_never_bound_attempt_outside_the_exact_proof_keeps_its_ceiling(
+    lost_before_guest_factory, monkeypatch
+):
+    """619-like: never bound, but the narrow proof refuses its recorded cause."""
+    from factory.execution.models import AgentCapacityReservation
+
+    s = lost_before_guest_factory
+    _persist_uncertain_lost_before_guest(s)
+    with Session(s.engine) as db:
+        permit = db.exec(select(AgentCapacityReservation)).one()
+        permit.outcome = "factory_recovery_abandoned"
+        db.add(permit)
+        db.commit()
+    _cessation(s, monkeypatch)
+
+    assert _cessation_tick(s) == 1
+    assert s.gets == [] and s.destroys == []
+    permit = s.native_snapshot()["capacity_reservations"][0]
+    assert permit["state"] == "settled"
+    assert permit["outcome"] == "never_bound_released"
+    run = conductor.graph.node_runs(s.task["id"])[0]
+    assert run["status"] == "failed" and run["cost_usd"] is None
+    start = _uncertain_snapshot(s)["factory"]["starts"][0]
+    assert start["status"] == "failed" and start["cost_usd"] is None
