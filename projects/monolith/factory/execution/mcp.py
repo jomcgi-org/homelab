@@ -361,12 +361,15 @@ def _persist_pending_message(
     with Session(get_engine()) as db_session:
         agent = db_session.get(AgentSession, session_id)
         pending = agent is not None and agent.recall_pending
-        system_prompt = agent.system_prompt if agent is not None else None
         node_key = agent.node_key if agent is not None else None
     # Vector search must finish before taking the cluster-wide admission lock.
     if pending and recall_prompt_ready(message_text):
-        recall_update["system_prompt"] = attach_recall(
-            system_prompt, message_text, node_key=node_key
+        # Deferred recall goes on this message, never the system prompt: by now
+        # earlier turns exist, and rewriting the system prompt under them edits
+        # the conversation's prefix, which resets the provider prompt cache and
+        # invalidates replayed thinking.
+        recall_update["recall_message_text"] = append_message_recall(
+            message_text, message_text, node_key=node_key
         )
     with Session(get_engine()) as db_session:
         row = store.create_pending_message(
@@ -1587,8 +1590,8 @@ async def monolith_agent_session_start(
         prompt: The first message for the session.
         model: Optional model, which also pins the session's adapter family.
             Claude family: opus, sonnet, fable. Codex family: luna, terra,
-            sol. Muse family: spark. Pi family: pi-spark. Claude, Codex, and
-            Muse run on claude-runtime. Pi runs on pi-runtime. The deprecated
+            sol, astra. Muse family: spark. Pi family: pi-spark. Claude, Codex,
+            and Muse run on claude-runtime. Pi runs on pi-runtime. The deprecated
             qwen alias is accepted as spark. Omit for the Claude CLI default.
             Later sends may only name models within the pinned family.
         repo: owner/repo to check out into the guest workspace, defaulting to
@@ -1674,7 +1677,19 @@ async def monolith_voice_ui_attach(session_id: int | None = None) -> dict:
 async def monolith_voice_ui_show(
     surface: str, ref: str, focus: str | None = None
 ) -> dict:
-    """Show one run, walkthrough, transcript, or VM surface on the companion."""
+    """Show one run, walkthrough, transcript, or VM surface on the companion.
+
+    The companion is the optional voice UI screen. When none is open the call
+    is still accepted with ``companion_open`` false and nothing is shown, so a
+    voice answer never depends on it. Any other surface name is rejected with
+    an error listing the valid ones.
+
+    Args:
+        surface: One of run, walkthrough, transcript, or vm. walkthrough,
+            transcript, and vm render the attached session.
+        ref: What to show. For run, the swarm run's workflow id.
+        focus: Optional part of the run to highlight.
+    """
     subject, authority = _voice_ui_principal()
     return await asyncio.to_thread(
         voice_ui.show, surface, ref, focus, subject, authority
@@ -1786,8 +1801,8 @@ async def monolith_agent_session_send(
         message: The message text for the next turn.
         model: Optional per-turn model within the session's pinned family.
             Claude family: opus, sonnet, fable. Codex family: luna, terra,
-            sol. Muse family: spark. Pi family: pi-spark. Claude, Codex, and
-            Muse run on claude-runtime. Pi runs on pi-runtime. The deprecated
+            sol, astra. Muse family: spark. Pi family: pi-spark. Claude, Codex,
+            and Muse run on claude-runtime. Pi runs on pi-runtime. The deprecated
             qwen alias is accepted as spark. Defaults to the session's model.
     """
     row = await asyncio.to_thread(_load_session_row, session_id)

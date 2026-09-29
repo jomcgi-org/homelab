@@ -373,9 +373,9 @@ async def report_knowledge(
     """Report an unverified assertion for grounded knowledge extraction.
 
     Reports are unverified evidence. They never become facts without the
-    extraction process checking and classifying them. Session scope currently
-    resolves to ``session:<subject>:<UTC YYYY-MM-DD>``. A per-session ID arrives
-    with #5569.
+    extraction process checking and classifying them. Session scope resolves
+    to ``session:<subject>:<UTC YYYY-MM-DD>``, so all of a caller's session
+    reports on one UTC day share a scope.
 
     Args:
         assertion: The claim to report, limited to 20,000 characters.

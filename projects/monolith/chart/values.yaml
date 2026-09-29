@@ -190,9 +190,10 @@ agents:
     docFixAutoMerge: false
     repo: "jomcgi-org/homelab"
     branch: "main"
-    # High reasoning for every Luna drain job unless the payload overrides it.
-    # These jobs are usually multi-step repo audits, so reasoning stays tunable
-    # per job rather than being hardcoded in the drainer.
+    # Sent as the invoke's thinking level (high when true) unless the payload
+    # overrides it. Only pi sessions read it: Luna runs through the Codex
+    # adapter, whose effort is pinned per model in the EmberVM shim's
+    # CODEX_MODELS table, so this has no effect on the current drain model.
     reasoning: true
 
 # Off-pod batch-job execution via Argo CronWorkflows.

@@ -1524,9 +1524,9 @@ def test_deferred_recall_uses_first_non_boilerplate_prompt_once(
         events.append("lock")
         return lock_session(session, session_id)
 
-    def attach(system, prompt, **_kwargs):
+    def append(message, recall_text, **_kwargs):
         assert events == []  # No admission lock has been taken for this message.
-        seen.append(prompt)
+        seen.append(recall_text)
         events.append("recall")
         if concurrent_sender:
             with Session(engine) as session:
@@ -1534,11 +1534,20 @@ def test_deferred_recall_uses_first_non_boilerplate_prompt_once(
                     session,
                     session_id,
                     "Concurrent ready message",
-                    system_prompt="other sender recall",
+                    recall_message_text="Concurrent ready message\n\nother recall",
                 )
-        return recall_block
+        return message if recall_block is None else f"{message}\n\n{recall_block}"
 
-    monkeypatch.setattr(mcp, "attach_recall", attach)
+    def pending_texts():
+        with Session(engine) as session:
+            rows = session.exec(
+                select(PendingMessage)
+                .where(PendingMessage.session_id == session_id)
+                .order_by(PendingMessage.seq)
+            ).all()
+            return [row.message_text for row in rows]
+
+    monkeypatch.setattr(mcp, "append_message_recall", append)
     monkeypatch.setattr(store, "_lock_session", lock)
     try:
         with Session(engine) as session:
@@ -1560,9 +1569,18 @@ def test_deferred_recall_uses_first_non_boilerplate_prompt_once(
         with Session(engine) as session:
             agent = session.get(AgentSession, session_id)
             assert agent.recall_pending is False
-            assert agent.system_prompt == (
-                "other sender recall" if concurrent_sender else recall_block
-            )
+            # Recall never rewrites the system prompt once a turn exists.
+            assert agent.system_prompt is None
+        ready = "Investigate the guest memory restore bug"
+        if concurrent_sender:
+            assert pending_texts()[1:] == [
+                "Concurrent ready message\n\nother recall",
+                ready,
+            ]
+        else:
+            assert pending_texts()[1:] == [
+                ready if recall_block is None else f"{ready}\n\n{recall_block}"
+            ]
         assert events[0] == "recall"
         assert events[1:] == ["lock"] * (2 if concurrent_sender else 1)
         mcp._persist_pending_message(
