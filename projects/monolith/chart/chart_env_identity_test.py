@@ -529,7 +529,7 @@ _DEFAULT_CLUSTER_RULES = [
     },
     {
         "apiGroups": ["kargo.akuity.io"],
-        "resources": ["freights"],
+        "resources": ["freights", "stages"],
         "verbs": ["get", "list"],
     },
     {

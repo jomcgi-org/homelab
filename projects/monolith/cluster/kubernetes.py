@@ -215,6 +215,35 @@ class KubernetesClient:
                     break
         return freight
 
+    async def get_kargo_context(self, namespace: str, stage: str) -> dict:
+        """The Stage and the project's Freight, for ``shared.rollout.verdict``.
+
+        Read-only. A missing Stage reads as ``stage: None``; any other API
+        error raises, so a missing RBAC verb is not mistaken for a missing
+        Stage.
+        """
+        api = await self._ensure_client()
+        custom = client.CustomObjectsApi(api)
+        try:
+            stage_obj = await custom.get_namespaced_custom_object(
+                group="kargo.akuity.io",
+                version="v1alpha1",
+                namespace=namespace,
+                plural="stages",
+                name=stage,
+            )
+        except client.exceptions.ApiException as exc:
+            if exc.status != 404:
+                raise
+            stage_obj = None
+        freights = await custom.list_namespaced_custom_object(
+            group="kargo.akuity.io",
+            version="v1alpha1",
+            namespace=namespace,
+            plural="freights",
+        )
+        return {"stage": stage_obj, "freights": freights.get("items") or []}
+
     async def get_argocd_app_deployed_revision(
         self, name: str, namespace: str = "argocd"
     ) -> str | None:

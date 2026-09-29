@@ -6,7 +6,14 @@ import copy
 
 import pytest
 
-from shared.rollout import FAILED, IN_PROGRESS, VERIFIED, RevisionMismatch, verdict
+from shared.rollout import (
+    FAILED,
+    IN_PROGRESS,
+    VERIFIED,
+    RevisionMismatch,
+    kargo_stage_ref,
+    verdict,
+)
 
 GIT = "a" * 40
 
@@ -291,3 +298,186 @@ def test_unhealthy_resources_are_bounded():
     result = verdict(_app(health={"status": "Degraded"}, resources=resources))
     assert result["unhealthy_resource_count"] == 40
     assert len(result["unhealthy_resources"]) == 10
+
+
+# --- Kargo-owned apps -------------------------------------------------------
+
+CHART_REPO = "oci://ghcr.io/jomcgi/homelab/charts/monolith"
+
+
+def _kargo_app(live="0.546.4", **status_overrides):
+    app = _app(**status_overrides)
+    app["metadata"]["annotations"] = {
+        "kargo.akuity.io/authorized-stage": "kargo-monolith:prod"
+    }
+    app["spec"]["sources"][0]["targetRevision"] = live
+    app["status"]["sync"]["revisions"] = [live, GIT]
+    app["status"]["operationState"]["syncResult"]["revisions"] = [live, GIT]
+    return app
+
+
+def _freight_ref(version):
+    return {"name": f"f-{version}", "charts": [{"repoURL": CHART_REPO, "version": version}]}
+
+
+def _promotion(version, phase, **status):
+    return {
+        "name": f"prod.{version}",
+        "freight": _freight_ref(version),
+        "status": {"phase": phase, **status},
+    }
+
+
+def _stage(last=None, current=None, upstream=(), auto=True):
+    status = {"autoPromotionEnabled": auto}
+    if last:
+        status["lastPromotion"] = last
+    if current:
+        status["currentPromotion"] = current
+    return {
+        "metadata": {"name": "prod"},
+        "spec": {
+            "requestedFreight": [{"sources": {"stages": list(upstream)}}]
+            if upstream
+            else [{"sources": {"direct": True}}]
+        },
+        "status": status,
+    }
+
+
+def _freight(version, alias=None, verified=(), approved=(), current=()):
+    return {
+        "metadata": {"name": f"f-{version}"},
+        "alias": alias or f"alias-{version}",
+        "charts": [{"repoURL": CHART_REPO, "version": version}],
+        "status": {
+            "verifiedIn": {s: {} for s in verified},
+            "approvedFor": {s: {} for s in approved},
+            "currentlyIn": {s: {} for s in current},
+        },
+    }
+
+
+def test_kargo_stage_ref_reads_the_authorized_stage_annotation():
+    assert kargo_stage_ref(_kargo_app()) == ("kargo-monolith", "prod")
+    assert kargo_stage_ref(_app()) is None
+    bad = _kargo_app()
+    bad["metadata"]["annotations"]["kargo.akuity.io/authorized-stage"] = "no-colon"
+    assert kargo_stage_ref(bad) is None
+
+
+def test_app_without_the_annotation_ignores_kargo_context():
+    result = verdict(_app(), kargo={"stage": _stage(), "freights": []})
+    assert "kargo" not in result
+    assert result["verdict"] == VERIFIED
+
+
+def test_kargo_block_reports_promotions_without_changing_a_verified_verdict():
+    stage = _stage(last=_promotion("0.546.4", "Succeeded", finishedAt="t"))
+    result = verdict(_kargo_app(), kargo={"stage": stage, "freights": []})
+    assert result["verdict"] == VERIFIED
+    assert result["kargo"]["stage"] == "prod"
+    assert result["kargo"]["last_promotion"]["version"] == "0.546.4"
+    assert result["kargo"]["last_promotion"]["phase"] == "Succeeded"
+
+
+def test_failed_promotion_for_the_expected_version_fails_with_its_message():
+    stage = _stage(last=_promotion("0.547.0", "Errored", message="argocd-wait timed out"))
+    result = verdict(
+        _kargo_app(),
+        expected_revision="0.547.0",
+        kargo={"stage": stage, "freights": [_freight("0.547.0")]},
+    )
+    assert result["verdict"] == FAILED
+    detail = _check(result, "kargo")["detail"]
+    assert "Errored" in detail and "argocd-wait timed out" in detail
+    assert "does not retry" in detail
+
+
+def test_failed_promotion_for_an_older_version_does_not_fail_a_newer_expectation():
+    stage = _stage(last=_promotion("0.546.9", "Failed", message="old"))
+    result = verdict(
+        _kargo_app(),
+        expected_revision="0.547.0",
+        kargo={"stage": stage, "freights": [_freight("0.547.0")]},
+    )
+    assert result["verdict"] == IN_PROGRESS
+    assert _check(result, "kargo")["state"] == IN_PROGRESS
+
+
+def test_running_promotion_is_in_progress_with_its_step():
+    stage = _stage(current=_promotion("0.547.0", "Running", currentStep=2))
+    result = verdict(
+        _kargo_app(),
+        expected_revision="0.547.0",
+        kargo={"stage": stage, "freights": [_freight("0.547.0")]},
+    )
+    assert result["verdict"] == IN_PROGRESS
+    assert "at step 2" in _check(result, "kargo")["detail"]
+
+
+def test_undiscovered_chart_is_in_progress():
+    result = verdict(
+        _kargo_app(),
+        expected_revision="0.547.0",
+        kargo={"stage": _stage(), "freights": [_freight("0.546.4")]},
+    )
+    assert "has not discovered chart 0.547.0" in _check(result, "kargo")["detail"]
+
+
+def test_freight_waiting_on_upstream_verification_names_the_stage():
+    result = verdict(
+        _kargo_app(),
+        expected_revision="0.547.0",
+        kargo={
+            "stage": _stage(upstream=["dev"]),
+            "freights": [_freight("0.547.0", alias="brave-otter")],
+        },
+    )
+    detail = _check(result, "kargo")["detail"]
+    assert "brave-otter waits for verification in dev" in detail
+
+
+def test_manual_approval_is_visible_on_the_expected_freight():
+    result = verdict(
+        _kargo_app(live="0.547.0"),
+        expected_revision="0.547.0",
+        kargo={
+            "stage": _stage(
+                last=_promotion("0.547.0", "Succeeded"), upstream=["dev"]
+            ),
+            "freights": [_freight("0.547.0", approved=["prod"], current=["prod"])],
+        },
+    )
+    assert result["verdict"] == VERIFIED
+    assert result["kargo"]["expected_freight"]["approved_for"] == ["prod"]
+    assert result["kargo"]["expected_freight"]["verified_in"] == []
+
+
+def test_reverted_promotion_is_drift():
+    stage = _stage(last=_promotion("0.547.0", "Succeeded"))
+    result = verdict(_kargo_app(live="0.546.4"), kargo={"stage": stage, "freights": []})
+    assert result["verdict"] == FAILED
+    detail = _check(result, "kargo")["detail"]
+    assert "promoted 0.547.0" in detail and "runs 0.546.4" in detail
+
+
+def test_no_drift_while_the_application_is_still_syncing():
+    stage = _stage(last=_promotion("0.547.0", "Succeeded"))
+    app = _kargo_app(live="0.546.4", sync={"status": "OutOfSync", "revisions": ["0.547.0", GIT]})
+    result = verdict(app, kargo={"stage": stage, "freights": []})
+    assert all(c["name"] != "kargo" for c in result["checks"])
+
+
+def test_kargo_read_error_is_reported_and_never_changes_the_verdict():
+    result = verdict(_kargo_app(), kargo={"error": "HTTP 403"})
+    assert result["verdict"] == VERIFIED
+    assert result["kargo"]["error"] == "HTTP 403"
+
+
+def test_missing_stage_is_reported_without_failing():
+    result = verdict(
+        _kargo_app(), expected_revision="0.546.4", kargo={"stage": None, "freights": []}
+    )
+    assert result["verdict"] == VERIFIED
+    assert "not found" in result["kargo"]["error"]

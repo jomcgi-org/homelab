@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from kubernetes_asyncio import client, config
@@ -164,6 +164,17 @@ _SPECIAL_RULES = (
         "v1alpha1",
         "freights",
         "freight",
+        "custom",
+        True,
+        KARGO_NAMESPACES,
+    ),
+    # Status only: the projection omits a Stage's spec (promotion steps), and
+    # verify_deployment reads it to explain a Kargo-owned app's rollout.
+    ResourceRule(
+        "kargo.akuity.io",
+        "v1alpha1",
+        "stages",
+        "stage",
         "custom",
         True,
         KARGO_NAMESPACES,
@@ -599,6 +610,25 @@ class RestrictedKubernetesClient:
             raise InvalidObservationRequest("get_unprojected supports get only")
         raw, _ = await self._fetch(request)
         return raw
+
+    async def list_unprojected(
+        self, request: ReadRequest, *, max_pages: int = 5
+    ) -> list[dict[str, Any]]:
+        """A validated LIST, at most ``max_pages`` pages, without projection.
+
+        The same contract as :meth:`get_unprojected`: for in-process callers
+        that derive a bounded result, never for returning the objects.
+        """
+        if request.verb != "list":
+            raise InvalidObservationRequest("list_unprojected supports list only")
+        items: list[dict[str, Any]] = []
+        for _ in range(max_pages):
+            raw, next_token = await self._fetch(request)
+            items.extend(item for item in raw if isinstance(item, dict))
+            if not next_token:
+                break
+            request = replace(request, continue_token=next_token)
+        return items
 
     async def _fetch(self, request: ReadRequest) -> tuple[Any, str | None]:
         try:

@@ -176,7 +176,7 @@ def test_agents_tier_has_exact_restricted_read_rbac(documents: list[dict]) -> No
         == [
             {
                 "apiGroups": ["kargo.akuity.io"],
-                "resources": ["freights"],
+                "resources": ["freights", "stages"],
                 "verbs": ["get", "list"],
             }
         ]

@@ -284,3 +284,86 @@ async def test_verify_deployment_rejects_a_sha_for_a_chart_app(monkeypatch):
     assert response["ok"] is False
     assert response["error"]["code"] == "invalid_request"
     assert _Observer.instances[0].closed is True
+
+
+class _KargoObserver(_Observer):
+    """An Application that names its Kargo Stage, plus that Stage and Freight."""
+
+    stage_failure = None
+
+    def __init__(self):
+        super().__init__()
+        self.requests = []
+
+    async def get_unprojected(self, request):
+        self.requests.append(request)
+        if request.rule.resource == "stages":
+            if self.stage_failure:
+                raise self.stage_failure
+            return {
+                "metadata": {"name": request.name},
+                "spec": {"requestedFreight": [{"sources": {"stages": ["dev"]}}]},
+                "status": {
+                    "lastPromotion": {
+                        "name": "prod.0.6.0",
+                        "freight": {
+                            "charts": [
+                                {"repoURL": "oci://x/charts/embervm", "version": "0.6.0"}
+                            ]
+                        },
+                        "status": {"phase": "Errored", "message": "argocd-wait failed"},
+                    }
+                },
+            }
+        app = await super().get_unprojected(request)
+        app["metadata"]["annotations"] = {
+            "kargo.akuity.io/authorized-stage": "kargo-embervm:prod"
+        }
+        app["spec"]["source"]["chart"] = "embervm"
+        return app
+
+    async def list_unprojected(self, request, max_pages=5):
+        self.requests.append(request)
+        return [
+            {
+                "metadata": {"name": "f1"},
+                "charts": [{"repoURL": "oci://x/charts/embervm", "version": "0.6.0"}],
+                "status": {"verifiedIn": {"dev": {}}},
+            }
+        ]
+
+
+@pytest.mark.asyncio
+async def test_verify_deployment_explains_a_failed_kargo_promotion(monkeypatch):
+    monkeypatch.setattr(subject, "current_principal", lambda: AUTHORIZED)
+    monkeypatch.setattr(subject, "RestrictedKubernetesClient", _KargoObserver)
+    response = await subject.verify_deployment("embervm", expected_revision="0.6.0")
+    assert response["ok"] is True
+    assert response["verdict"] == "failed"
+    assert response["kargo"]["last_promotion"]["phase"] == "Errored"
+    assert response["kargo"]["expected_freight"]["verified_in"] == ["dev"]
+    observer = _KargoObserver.instances[-1]
+    reads = [
+        (r.verb, r.rule.resource, r.namespace, r.name) for r in observer.requests
+    ]
+    assert reads == [
+        ("get", "applications", "argocd", "embervm"),
+        ("get", "stages", "kargo-embervm", "prod"),
+        ("list", "freights", "kargo-embervm", None),
+    ]
+    assert observer.closed is True
+
+
+@pytest.mark.asyncio
+async def test_verify_deployment_survives_an_unreadable_kargo_stage(monkeypatch):
+    monkeypatch.setattr(subject, "current_principal", lambda: AUTHORIZED)
+    monkeypatch.setattr(subject, "RestrictedKubernetesClient", _KargoObserver)
+    monkeypatch.setattr(
+        _KargoObserver,
+        "stage_failure",
+        ObservationFailure("forbidden", "Kubernetes denied the observation"),
+    )
+    response = await subject.verify_deployment("embervm")
+    assert response["ok"] is True
+    assert response["verdict"] == "verified"
+    assert "denied" in response["kargo"]["error"]

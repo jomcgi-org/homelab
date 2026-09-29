@@ -30,9 +30,10 @@ rules:
   - apiGroups: ["argoproj.io"]
     resources: ["applications"]
     verbs: ["get", "list", "patch"]
-  # cd health reads Freight to learn which chart versions have been published.
+  # cd health reads Freight to learn which chart versions have been published;
+  # verify_deployment reads a Kargo-owned app's Stage to explain its rollout.
   - apiGroups: ["kargo.akuity.io"]
-    resources: ["freights"]
+    resources: ["freights", "stages"]
     verbs: ["get", "list"]
   - apiGroups: ["metrics.k8s.io"]
     resources: ["nodes"]
