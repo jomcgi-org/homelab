@@ -10050,9 +10050,7 @@ def test_muse_1_4_1_echo_fixture_matches_adapter_contract():
     muse_usage_two_turns.json.
     """
     with open(
-        os.path.join(
-            os.path.dirname(__file__), "muse_exec_echo_two_turns_1_4_1.jsonl"
-        )
+        os.path.join(os.path.dirname(__file__), "muse_exec_echo_two_turns_1_4_1.jsonl")
     ) as f:
         records = [json.loads(line) for line in f if line.strip()]
     assert len(records) == 54
