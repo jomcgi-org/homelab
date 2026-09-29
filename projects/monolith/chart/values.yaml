@@ -11,7 +11,9 @@ rbac:
   # kargo_promote (cluster/mcp.py) re-runs a Kargo Promotion. Kargo's webhook
   # authorizes creating one through the custom "promote" verb on the Stage, so
   # each Kargo Project namespace gets a Role with both. Never enable it in an
-  # environment that must not move production.
+  # environment that must not move production. Kargo creates these namespaces
+  # from its Project objects, so on a fresh cluster this chart's sync retries
+  # until they exist (as the faas Role does for embervm).
   kargoPromote:
     enabled: true
     namespaces:

@@ -168,7 +168,7 @@ def _kargo_freight(verified=("dev",)):
     }
 
 
-def _promote_k8s(seen, stage, freights, annotated=True):
+def _promote_k8s(seen, stage, freights, annotated=True, promotions=()):
     class _K8s:
         async def get_argocd_application(self, name, namespace="argocd"):
             if name == "missing":
@@ -186,9 +186,14 @@ def _promote_k8s(seen, stage, freights, annotated=True):
         async def get_kargo_context(self, namespace, stage_name):
             return {"stage": stage, "freights": freights}
 
+        async def list_kargo_promotions(self, namespace):
+            return list(promotions)
+
         async def create_kargo_promotion(self, namespace, body, dry_run=False):
             if seen.get("deny"):
-                raise ApiException(status=403, reason="Forbidden")
+                exc = ApiException(status=403, reason="Forbidden")
+                exc.body = '{"message": "not authorized to promote to Stage prod"}'
+                raise exc
             seen["created"] = (namespace, body, dry_run)
             return {"metadata": {"name": "prod.01abc.abc123"}}
 
@@ -231,9 +236,11 @@ async def test_kargo_promote_refuses_and_reports_errors(monkeypatch):
     mod = importlib.import_module("cluster.mcp")
     seen = {}
 
-    def use(stage, freights, annotated=True):
+    def use(stage, freights, annotated=True, promotions=()):
         monkeypatch.setattr(
-            mod, "KubernetesClient", _promote_k8s(seen, stage, freights, annotated)
+            mod,
+            "KubernetesClient",
+            _promote_k8s(seen, stage, freights, annotated, promotions),
         )
 
     use(_kargo_stage(), [_kargo_freight()])
@@ -246,6 +253,15 @@ async def test_kargo_promote_refuses_and_reports_errors(monkeypatch):
     error = (await mod.kargo_promote("embervm", "0.6.0"))["error"]
     assert "prod.running is still running" in error
 
+    queued = {
+        "metadata": {"name": "prod.queued"},
+        "spec": {"stage": "prod"},
+        "status": {"phase": "Pending"},
+    }
+    use(_kargo_stage(), [_kargo_freight()], promotions=[queued])
+    error = (await mod.kargo_promote("embervm", "0.6.0"))["error"]
+    assert "prod.queued is still running or queued" in error
+
     use(_kargo_stage(), [_kargo_freight(verified=())])
     error = (await mod.kargo_promote("embervm", "0.6.0"))["error"]
     assert error.startswith("not promoting: Freight brave-otter")
@@ -253,5 +269,31 @@ async def test_kargo_promote_refuses_and_reports_errors(monkeypatch):
     use(_kargo_stage(), [_kargo_freight()])
     seen["deny"] = True
     error = (await mod.kargo_promote("embervm", "0.6.0"))["error"]
-    assert error == "promotion failed: HTTP 403: Forbidden"
+    assert error == (
+        "promotion failed: HTTP 403: not authorized to promote to Stage prod"
+    )
     assert "created" not in seen
+
+
+@pytest.mark.asyncio
+async def test_verify_deployment_keeps_its_verdict_when_kargo_read_times_out(
+    monkeypatch,
+):
+    mod = importlib.import_module("cluster.mcp")
+
+    class _K8s(_promote_k8s({}, None, [])):
+        async def get_argocd_application(self, name, namespace="argocd"):
+            app = await super().get_argocd_application(name, namespace)
+            app["status"] = {
+                "sync": {"status": "Synced", "revision": "0.5.0"},
+                "health": {"status": "Healthy"},
+            }
+            return app
+
+        async def get_kargo_context(self, namespace, stage_name):
+            raise TimeoutError("read timed out")
+
+    monkeypatch.setattr(mod, "KubernetesClient", _K8s)
+    result = await mod.verify_deployment("embervm")
+    assert result["verdict"] == "verified"
+    assert "read timed out" in result["kargo"]["error"]

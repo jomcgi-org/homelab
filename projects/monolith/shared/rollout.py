@@ -64,7 +64,7 @@ class RevisionMismatch(ValueError):
     """The expected revision is a different kind from what the app deploys."""
 
 
-def _semver(value: str | None) -> tuple[int, ...] | None:
+def semver(value: str | None) -> tuple[int, ...] | None:
     match = _SEMVER.match(value or "")
     return tuple(int(part) for part in match.groups()) if match else None
 
@@ -194,17 +194,24 @@ def upstream_stages(stage: dict[str, Any]) -> list[str]:
     return upstream
 
 
+def _needs_all(stage: dict[str, Any]) -> bool:
+    return any(
+        ((requested or {}).get("sources") or {}).get("availabilityStrategy") == "All"
+        for requested in (stage.get("spec") or {}).get("requestedFreight") or []
+    )
+
+
 def _expected_freight(
     freights: list[dict[str, Any]], chart: str | None, expected: str
 ) -> dict[str, Any] | None:
     """The Freight carrying the expected version, else the lowest above it."""
-    want = _semver(expected)
+    want = semver(expected)
     best: tuple[tuple[int, ...], dict[str, Any]] | None = None
     for freight in freights:
         version = freight_version(freight, chart)
         if version == expected:
             return freight
-        have = _semver(version)
+        have = semver(version)
         if want and have and have > want and (best is None or have < best[0]):
             best = (have, freight)
     return best[1] if best else None
@@ -265,8 +272,8 @@ def _kargo(
     # can itself be a rollback to older Freight, so drift waits for it. A
     # revert through git (dropping the ignoreDifferences entry so the git pin
     # applies) reads as drift until Kargo promotes that version too.
-    last_version = _semver((last or {}).get("version"))
-    live_version = _semver(live)
+    last_version = semver((last or {}).get("version"))
+    live_version = semver(live)
     if (
         last
         and not current
@@ -302,10 +309,10 @@ def _kargo(
     if expected_reached:
         return block
 
-    want = _semver(expected_revision)
+    want = semver(expected_revision)
 
     def covers(promotion: dict[str, Any] | None) -> bool:
-        have = _semver((promotion or {}).get("version"))
+        have = semver((promotion or {}).get("version"))
         return bool(want and have and have >= want)
 
     if current and current["phase"] in _PROMOTION_RUNNING | {None}:
@@ -342,6 +349,9 @@ def _kargo(
         verified = set(block["expected_freight"]["verified_in"])
         approved = set(block["expected_freight"]["approved_for"])
         waiting = [s for s in upstream if s not in verified]
+        if waiting and not _needs_all(stage) and len(waiting) < len(upstream):
+            # OneOf (the default): verified in any upstream is enough.
+            waiting = []
         label = freight.get("alias") or block["expected_freight"]["version"]
         failed_upstream = _failed_upstream(
             kargo.get("upstream") or {}, waiting, chart, covers
@@ -410,8 +420,8 @@ def verdict(
     if expected_revision:
         comparable = target or applied
         if comparable and (
-            (_semver(expected_revision) and _is_sha(comparable))
-            or (_is_sha(expected_revision) and _semver(comparable))
+            (semver(expected_revision) and _is_sha(comparable))
+            or (_is_sha(expected_revision) and semver(comparable))
         ):
             raise RevisionMismatch(
                 f"expected_revision {expected_revision!r} cannot be compared with "
@@ -482,7 +492,7 @@ def verdict(
             f"{first.get('type')}: {_clip(first.get('message'))}",
         )
 
-    if _semver(requested) and target is not None and requested != target:
+    if semver(requested) and target is not None and requested != target:
         check(
             "refresh",
             IN_PROGRESS,
@@ -493,8 +503,8 @@ def verdict(
 
     reached = False
     if expected_revision:
-        have = _semver(live)
-        want = _semver(expected_revision)
+        have = semver(live)
+        want = semver(expected_revision)
         if want and have:
             reached = have >= want
             detail = f"expected at least {expected_revision}, live {live}"

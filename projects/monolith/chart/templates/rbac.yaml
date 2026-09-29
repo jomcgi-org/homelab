@@ -103,11 +103,11 @@ metadata:
   labels:
     {{- include "monolith.labels" $ | nindent 4 }}
 rules:
-  # cluster/mcp.py kargo_promote: create_namespaced_custom_object for one
-  # Promotion. Nothing updates or deletes one.
+  # cluster/mcp.py kargo_promote: list to refuse while one is running or
+  # queued, create for the one Promotion. Nothing updates or deletes one.
   - apiGroups: ["kargo.akuity.io"]
     resources: ["promotions"]
-    verbs: ["create"]
+    verbs: ["list", "create"]
   # Kargo's admission webhook checks this custom verb on the target Stage
   # before it admits a Promotion.
   - apiGroups: ["kargo.akuity.io"]

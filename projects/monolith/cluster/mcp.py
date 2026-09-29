@@ -17,6 +17,7 @@ prefix is dropped.
 
 from __future__ import annotations
 
+import json
 import logging
 
 from core.mcp_app import mcp
@@ -244,19 +245,30 @@ async def verify_deployment(app: str, expected_revision: str | None = None) -> d
         return {"error": str(exc)}
 
 
+def _api_message(exc: ApiException) -> str:
+    try:
+        message = json.loads(exc.body or "").get("message")
+    except (TypeError, ValueError, AttributeError):
+        message = None
+    return str(message or exc.reason)[:500]
+
+
 @mcp.tool
-async def kargo_promote(app: str, chart_version: str, dry_run: bool = False) -> dict:
+async def kargo_promote(
+    app: str, chart_version: str, dry_run: bool = False, rollback: bool = False
+) -> dict:
     """Promote a chart version to a Kargo-owned app's Stage again.
 
     The lever for a Promotion that failed or errored: Kargo never retries one,
     so the Freight waits until something promotes it again. Run
-    verify_deployment first; its kargo block says whether a failed Promotion
+    verify_deployment first: its kargo block says whether a failed Promotion
     is what is holding the rollout.
 
     Refuses rather than overriding a gate: the Freight must already be
     available to the Stage (verified and soaked upstream, approved for the
-    Stage, or direct from the Warehouse), and no Promotion may be running.
-    It never approves Freight. The Promotion runs the Stage's own steps, so
+    Stage, or direct from the Warehouse), and no Promotion for the Stage may
+    be running or queued. A version older than the Stage runs or last
+    promoted is refused unless rollback is true. It never approves Freight. The Promotion runs the Stage's own steps, so
     it is exactly the Promotion auto-promotion would have created. Poll
     verify_deployment with expected_revision afterwards.
 
@@ -265,6 +277,7 @@ async def kargo_promote(app: str, chart_version: str, dry_run: bool = False) -> 
         chart_version: The exact chart version to promote, such as 0.547.0.
         dry_run: Plan and submit through admission (Kargo's webhook
             included) without creating anything.
+        rollback: Allow a version older than the Stage runs or last promoted.
     """
     k8s = KubernetesClient()
     try:
@@ -276,6 +289,7 @@ async def kargo_promote(app: str, chart_version: str, dry_run: bool = False) -> 
             return {"error": f"application {app!r} is not promoted by Kargo"}
         namespace, stage = ref
         context = await k8s.get_kargo_context(namespace, stage)
+        promotions = await k8s.list_kargo_promotions(namespace)
         body = kargo_plan.plan_promotion(
             context.get("stage"),
             context.get("freights") or [],
@@ -283,23 +297,27 @@ async def kargo_promote(app: str, chart_version: str, dry_run: bool = False) -> 
             stage_name=stage,
             chart=rollout.app_chart(obj),
             version=chart_version,
+            promotions=promotions,
+            rollback=rollback,
         )
         created = await k8s.create_kargo_promotion(namespace, body, dry_run=dry_run)
     except kargo_plan.PromotionRefused as exc:
         return {"error": f"not promoting: {exc}"}
     except ApiException as exc:
-        return {"error": f"promotion failed: HTTP {exc.status}: {exc.reason}"}
+        # Kargo's webhook explains a denial in the body, not the reason.
+        return {"error": f"promotion failed: HTTP {exc.status}: {_api_message(exc)}"}
     except Exception as exc:
         return {"error": f"promotion failed: {exc}"}
     finally:
         await k8s.close()
     logger.info(
-        "kargo_promote: %s %s to %s/%s (dry_run=%s)",
+        "kargo_promote: %s %s to %s/%s (dry_run=%s, rollback=%s)",
         app,
         chart_version,
         namespace,
         stage,
         dry_run,
+        rollback,
     )
     return {
         "app": app,

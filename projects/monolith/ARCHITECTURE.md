@@ -1172,13 +1172,16 @@ one, and nothing on either surface could read a Stage to say so.
 resolves the app's Stage from the same annotation, finds the Freight for the
 exact chart version, and creates a Promotion carrying the Stage's own
 `promotionTemplate` steps and vars, which is the Promotion auto-promotion would
-have made. `cluster/kargo.py` refuses while a Promotion is running and refuses
-Freight the Stage could not already take: it must be verified upstream and
+have made. `cluster/kargo.py` refuses while a Promotion for the Stage is running or
+queued, refuses a version older than the Stage runs or last promoted unless
+the caller passes `rollback` (on a `direct` Stage every discovered Freight is
+available, so a stale verdict could otherwise roll production back), and
+refuses Freight the Stage could not already take: it must be verified upstream and
 soaked there (per the Stage's `availabilityStrategy` and `requiredSoakTime`),
 approved for the Stage, or direct from a Warehouse. It never approves Freight
 and never aborts a Promotion. `dry_run` submits through admission, Kargo's
 webhook included, without creating anything. The grant is a Role per Kargo
-Project namespace (`rbac.kargoPromote`) with `create` on promotions and the
+Project namespace (`rbac.kargoPromote`) with `list` and `create` on promotions and the
 custom `promote` verb on stages, which Kargo's webhook checks; dev disables it,
 because dev shares production's Kargo Projects. **Why.** Kargo never retries a
 failed Promotion, so a transient failure strands a chart until someone
