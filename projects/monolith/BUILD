@@ -317,8 +317,8 @@ pkg_tar(
 # app/jobs_main.py (a Typer CLI) instead of the FastAPI server. Built into its
 # own image (:jobs_image) so an ephemeral pod (e.g. an Argo Workflow) can run a
 # single job to completion off the API pod. The jobs entrypoint never serves
-# the frontend, so the static bundle is omitted. The repo-docs manifest, which
-# the knowledge.repo_docs_reconcile job reads, arrives as the
+# the frontend, so the static bundle is omitted. The repo-docs manifest (the
+# docfix path allowlist knowledge/extraction.py reads) arrives as the
 # :repo_docs_manifest_layer tar on :jobs_image rather than as data here.
 py_venv_binary(
     name = "jobs",
