@@ -3145,8 +3145,11 @@ class CodexProcess:
         # bearing: it makes both plausible client join behaviors, trimming the
         # trailing slash and concatenating, or an RFC 3986 Url::join with a
         # relative segment, land on the same /codex/responses path.
+        # No enable_codex_api_key_env line: rust-v0.158.0 reports it as an
+        # unrecognized setting (configWarning plus an ERROR log on every
+        # spawn) while rust-v0.146.0 accepted it. Dropping it loses no
+        # protection because _child_env already scrubs OPENAI_API_KEY.
         config = """model_provider = "ember-openai"
-enable_codex_api_key_env = false
 chatgpt_base_url = %s
 sandbox_mode = "danger-full-access"
 approval_policy = "never"
@@ -3154,8 +3157,9 @@ approval_policy = "never"
 [projects.%s]
 trust_level = "trusted"
 
-# Codex 0.146.0 binary inspection exposes [tools].web_search, while
-# web_search_request is deprecated because web search is enabled by default.
+# Codex 0.158.0 still accepts [tools].web_search (verified live: no
+# configWarning for it), while web_search_request is deprecated because web
+# search is enabled by default.
 [tools]
 web_search = true
 
