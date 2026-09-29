@@ -84,6 +84,11 @@ loudly in CI or a git hook. Gotchas marked "Gated" are caught by
   queue does that. `DIRTY` or `CONFLICTING` is the one case to rebase yourself,
   and `--auto` silently enqueues nothing while it lasts.
 - A red queue run ejects the PR. Read the failure, then re-enqueue.
+- `homelab pr land <n>` runs that whole flow where the `homelab` CLI is on
+  PATH: enqueue with bare `--auto`, wait for the merge or ejection, wait for
+  the chart write-back, then poll the rollout verdict for each app the PR
+  touched (`--app` to override). It exits non-zero on ejection, a failed
+  rollout or its timeout; read the failure it names before acting.
 - Never push to a merged branch; start a new worktree. After a push, confirm
   `gh pr view <n> --json headRefOid` equals `git rev-parse HEAD`.
 - Issues are titled `<area>: <summary>`, labelled `agent-ready` when an agent
