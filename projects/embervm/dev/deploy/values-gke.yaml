@@ -131,6 +131,14 @@ tokenBroker:
 # off with their base builders, since each builder bakes into production's
 # shared 35 GiB scratch loop.
 sandboxWorkloads:
+  # S1 holds each clone guest for conformance.cloneHold (30s since 998ea9b74)
+  # between its two markers, and a task's timeoutSeconds is counted from
+  # dispatch, snapshot restore included. At the chart's 30s the guest is killed
+  # about 20s into the hold ("clone-a did not return its bidirectional marker:
+  # exit_code=-1", every cycle since that change reached dev), which keeps the
+  # dev stage red. Dev only: production's run_python budget stays at 30s.
+  sandboxPython:
+    timeoutSeconds: 60
   sandboxGo:
     enabled: false
   sandboxRust:
