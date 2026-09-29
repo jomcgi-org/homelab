@@ -308,7 +308,10 @@ class _KargoObserver(_Observer):
                         "name": "prod.0.6.0",
                         "freight": {
                             "charts": [
-                                {"repoURL": "oci://x/charts/embervm", "version": "0.6.0"}
+                                {
+                                    "repoURL": "oci://x/charts/embervm",
+                                    "version": "0.6.0",
+                                }
                             ]
                         },
                         "status": {"phase": "Errored", "message": "argocd-wait failed"},
@@ -343,9 +346,7 @@ async def test_verify_deployment_explains_a_failed_kargo_promotion(monkeypatch):
     assert response["kargo"]["last_promotion"]["phase"] == "Errored"
     assert response["kargo"]["expected_freight"]["verified_in"] == ["dev"]
     observer = _KargoObserver.instances[-1]
-    reads = [
-        (r.verb, r.rule.resource, r.namespace, r.name) for r in observer.requests
-    ]
+    reads = [(r.verb, r.rule.resource, r.namespace, r.name) for r in observer.requests]
     assert reads == [
         ("get", "applications", "argocd", "embervm"),
         ("get", "stages", "kargo-embervm", "prod"),

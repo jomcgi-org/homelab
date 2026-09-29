@@ -162,13 +162,17 @@ def _freight_version(freight: dict[str, Any] | None, chart: str | None) -> str |
     return None
 
 
-def _promotion(block: dict[str, Any] | None, chart: str | None) -> dict[str, Any] | None:
+def _promotion(
+    block: dict[str, Any] | None, chart: str | None
+) -> dict[str, Any] | None:
     if not isinstance(block, dict) or not block.get("name"):
         return None
     status = block.get("status") or {}
     return {
         "name": block.get("name"),
-        "version": _freight_version(block.get("freight") or status.get("freight"), chart),
+        "version": _freight_version(
+            block.get("freight") or status.get("freight"), chart
+        ),
         "phase": status.get("phase"),
         "step": status.get("currentStep"),
         "message": _clip(status.get("message")),
