@@ -117,10 +117,20 @@ def _render_default() -> list[dict]:
 
 def _collector_config(docs: list[dict]) -> dict:
     """The collector config is YAML nested inside a ConfigMap string."""
+    return _named_collector_config(docs, RELEASE)
+
+
+def _named_collector_config(docs: list[dict], name: str) -> dict:
+    """The gateway and the log agent each carry a collector.yaml, so select by
+    ConfigMap name rather than taking whichever renders first."""
     for doc in docs:
-        if doc.get("kind") == "ConfigMap" and "collector.yaml" in doc.get("data", {}):
+        if (
+            doc.get("kind") == "ConfigMap"
+            and doc["metadata"]["name"] == name
+            and "collector.yaml" in doc.get("data", {})
+        ):
             return yaml.safe_load(doc["data"]["collector.yaml"])
-    pytest.fail("no ConfigMap carrying collector.yaml in the render")
+    pytest.fail(f"no ConfigMap {name} carrying collector.yaml in the render")
 
 
 def _of_kind(docs: list[dict], kind: str) -> dict:
@@ -632,3 +642,108 @@ def test_disabling_tail_storage_removes_every_piece():
         for v in _of_kind(docs, "Deployment")["spec"]["template"]["spec"]["volumes"]
     }
     assert "tail-storage" not in volumes
+
+
+# ---------------------------------------------------------------------------
+# Pod log agent: a DaemonSet that must stay inert by default and must never be
+# selected by the gateway Service.
+# ---------------------------------------------------------------------------
+
+LOGS = f"{RELEASE}-logs"
+
+
+def test_log_agent_is_absent_by_default():
+    for docs in (_render_default(), _render_overlay("values-prod")):
+        kinds = {(d["kind"], d["metadata"]["name"]) for d in docs}
+        assert ("DaemonSet", LOGS) not in kinds
+        assert ("ClusterRole", LOGS) not in kinds
+        assert ("ConfigMap", LOGS) not in kinds
+
+
+def test_log_agent_requires_namespaces():
+    argv = [
+        os.environ.get("HELM_BIN", "helm"),
+        "template",
+        RELEASE,
+        str(_chart_dir()),
+        "--values",
+        str(_values("values")),
+        "--set",
+        "logs.enabled=true",
+    ]
+    result = subprocess.run(
+        argv, capture_output=True, text=True, timeout=120, check=False
+    )
+    assert result.returncode != 0
+    assert "logs.namespaces" in result.stderr
+
+
+def test_gke_log_agent_pipeline():
+    docs = _render_overlay("values-gke")
+    config = _named_collector_config(docs, LOGS)
+    _assert_pipelines_reference_defined_components(config)
+
+    # The gateway config is untouched by the agent: no logs pipeline there.
+    assert "logs" not in _collector_config(docs)["service"]["pipelines"]
+
+    include = config["receivers"]["file_log"]["include"]
+    assert "/var/log/pods/embervm_*/*/*.log" in include
+    assert "/var/log/pods/kargo-*_*/*/*.log" in include
+    assert not any("embervm-dev" in p for p in include)
+    assert config["receivers"]["file_log"]["start_at"] == "end"
+
+    logs = config["service"]["pipelines"]["logs"]
+    processors = logs["processors"]
+    assert processors[0] == "memory_limiter"
+    assert processors[-1] == "batch"
+    # Parse before filtering, filter before the API-backed enrichment.
+    assert (
+        processors.index("transform/parse")
+        < processors.index("filter/severity")
+        < processors.index("k8s_attributes")
+    )
+    assert config["processors"]["filter/severity"]["logs"]["log_record"] == [
+        "log.severity_number < 13"
+    ]
+    assert config["processors"]["k8s_attributes"]["filter"] == {
+        "node_from_env_var": "K8S_NODE_NAME"
+    }
+
+    (exporter,) = logs["exporters"]
+    assert exporter == "otlphttp/honeycomb-logs"
+    headers = config["exporters"][exporter]["headers"]
+    assert headers["x-honeycomb-team"] == "${env:HONEYCOMB_API_KEY}"
+    assert headers["x-honeycomb-dataset"] == "k8s-logs"
+
+
+def test_gke_log_agent_workload_shape():
+    docs = _render_overlay("values-gke")
+    ds = next(d for d in docs if d["kind"] == "DaemonSet")
+    pod = ds["spec"]["template"]["spec"]
+    labels = ds["spec"]["template"]["metadata"]["labels"]
+
+    # The gateway Service must not select agent pods, or it would send OTLP
+    # to pods that do not listen on 4317/4318.
+    service_selector = _of_kind(docs, "Service")["spec"]["selector"]
+    assert not all(labels.get(k) == v for k, v in service_selector.items())
+
+    assert {"operator": "Exists"} in pod["tolerations"]
+    container = pod["containers"][0]
+    mounts = {m["name"]: m for m in container["volumeMounts"]}
+    assert mounts["varlogpods"]["readOnly"] is True
+    volumes = {v["name"]: v for v in pod["volumes"]}
+    assert volumes["varlogpods"]["hostPath"]["path"] == "/var/log/pods"
+    assert container["securityContext"]["readOnlyRootFilesystem"] is True
+    assert container["securityContext"]["capabilities"]["drop"] == ["ALL"]
+    assert container["resources"]["limits"]["memory"]
+    assert container["resources"]["requests"]["cpu"]
+
+    env = {e["name"]: e for e in container["env"]}
+    assert env["HONEYCOMB_API_KEY"]["valueFrom"]["secretKeyRef"] == {
+        "name": "honeycomb-ingest",
+        "key": "honeycomb-key-secret",
+    }
+
+    role = next(d for d in docs if d["kind"] == "ClusterRole")
+    for rule in role["rules"]:
+        assert set(rule["verbs"]) <= {"get", "list", "watch"}

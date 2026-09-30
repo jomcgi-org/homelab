@@ -236,3 +236,60 @@ resources:
     memory: 256Mi
   limits:
     memory: 512Mi
+
+# Kubernetes pod logs, warning and above, shipped to Honeycomb.
+#
+# Why: on 2026-09-30 the diagnosis sat in embervm control-plane logs that were
+# gone once the pod restarted, and the egress-proxy denials behind a 7-hour
+# Codex outage were log-only. Traces and metrics alone did not carry them.
+#
+# Topology: a node-level DaemonSet in this chart, separate from the gateway
+# Deployment, that tails /var/log/pods with the file_log receiver and exports
+# DIRECTLY to Honeycomb. It does not forward through the gateway, because:
+#   - it reuses the same honeycomb-ingest Secret in this namespace, so the
+#     API-key wiring is identical and nothing new is minted;
+#   - the gateway's OTLP receiver exists only for allowlisted trace senders,
+#     and adding a logs pipeline there would open an OTLP logs path that any
+#     workload could write to, which the opt-in model exists to prevent;
+#   - the gateway is a single replica with a disk-backed tail sampler, and
+#     logs need neither sampling nor another hop that can drop them.
+#
+# Disabled by default so the chart stays inert; the hub enables it.
+logs:
+  enabled: false
+  # Namespaces whose container logs are collected. Each entry is a glob on the
+  # namespace segment of /var/log/pods/<namespace>_<pod>_<uid>/, so "kargo-*"
+  # matches every Kargo project namespace and "embervm" does NOT match
+  # embervm-dev (the underscore delimits the namespace).
+  namespaces: []
+  # One dataset for every pod log, not a dataset per service.
+  #
+  # service.name derived from Kubernetes labels does not line up with the OTel
+  # service names the trace datasets use (the embervm pod is
+  # app.kubernetes.io/name=embervm while its traces are embervm-control), so
+  # per-service routing would create a parallel set of near-duplicate datasets
+  # plus one per Kargo and Postgres component. A single dataset keeps "what
+  # was every workload saying at 03:50" to one query, bounds dataset count, and
+  # still groups by service.name, k8s.namespace.name and k8s.container.name.
+  # trace_id and span_id columns (when a line carries them) pivot to traces.
+  dataset: k8s-logs
+  # Parsed levels below this are dropped. Values are OTel severity numbers:
+  # 13 is WARN, 17 is ERROR. See the agent ConfigMap for the level mapping and
+  # the non-JSON heuristic.
+  minSeverityNumber: 13
+  # Offsets and the export queue persist here on the node so an agent restart
+  # neither re-ships nor loses lines. Owned by this agent alone.
+  stateHostPath: /var/lib/otel-collector-logs
+  # Run on every node, including the tainted ember-bricks pool where noded and
+  # the egress proxy run. A log agent that skips a tainted node is blind there.
+  tolerations:
+    - operator: Exists
+  # Measured 2026-09-30: about 3,200 lines/hour across the target namespaces,
+  # about 700 of them warn or above. The limit is sized for a recovery drain
+  # of the persistent queue plus the node-scoped k8s_attributes pod cache.
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      memory: 256Mi

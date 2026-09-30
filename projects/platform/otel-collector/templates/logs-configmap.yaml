@@ -1,0 +1,193 @@
+{{- if .Values.logs.enabled }}
+{{- if not .Values.logs.namespaces }}
+{{- fail "logs.enabled requires at least one entry in logs.namespaces" }}
+{{- end }}
+{{- $hcExporter := "otlp/honeycomb-logs" }}
+{{- if eq (.Values.honeycomb.protocol | default "grpc") "http" }}
+{{- $hcExporter = "otlphttp/honeycomb-logs" }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "otel-collector.logs.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "otel-collector.logs.labels" . | nindent 4 }}
+data:
+  collector.yaml: |
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+      # Read offsets and the export queue, on a node hostPath so a restart of
+      # this agent neither re-ships the files from the start nor drops what
+      # was read but not yet exported.
+      file_storage/logs:
+        directory: /var/lib/otelcol/logs
+        create_directory: true
+
+    receivers:
+      file_log:
+        # /var/log/pods/<namespace>_<pod>_<uid>/<container>/<restart>.log. The
+        # underscore after the namespace glob is what stops "embervm" from also
+        # matching embervm-dev.
+        include:
+          {{- range .Values.logs.namespaces }}
+          - /var/log/pods/{{ . }}_*/*/*.log
+          {{- end }}
+        # end, not beginning: the first start must not replay every retained
+        # log on the node. After that the stored offsets take over.
+        start_at: end
+        include_file_path: true
+        storage: file_storage/logs
+        operators:
+          # Parses the CRI line format, reassembles partial (P) lines, and sets
+          # k8s.namespace.name, k8s.pod.name, k8s.pod.uid, k8s.container.name
+          # and k8s.container.restart_count from the file path.
+          - type: container
+            id: container-parser
+
+    processors:
+      memory_limiter:
+        check_interval: 1s
+        limit_percentage: 80
+        spike_limit_percentage: 25
+
+      # Level extraction. Order matters: each step only fills in a level the
+      # previous steps did not find.
+      #
+      #  1. JSON bodies ({"level":"warning"} from the Elixir control plane,
+      #     "level":"WARN" from Go slog in noded and the egress proxy, zap JSON
+      #     from CNPG) are parsed into attributes; the level comes from level,
+      #     severity or levelname. CNPG wraps Postgres records at level "info",
+      #     so record.error_severity overrides it.
+      #  2. Plain-text lines with a recognised level token: a LEADING level,
+      #     optionally after an ISO timestamp (Python "WARNING logger: ...",
+      #     zap console "2026-..Z<TAB>ERROR<TAB>..."), Envoy's
+      #     "[ts][pid][warning]" and logfmt "level=warn".
+      #  3. Anything still without a level is kept ONLY if the body looks like
+      #     an error or a stack trace (see the regex below), and is marked
+      #     log.level_source=heuristic with severity ERROR so it can be
+      #     told apart and tuned. Everything else without a level is dropped.
+      #
+      # Tracebacks are not stitched back together; each frame line is its own
+      # record. Frame lines match the heuristic, so they survive, and they sort
+      # together by time and k8s.pod.name.
+      transform/parse:
+        error_mode: ignore
+        log_statements:
+          - context: log
+            statements:
+              # 1. JSON.
+              - merge_maps(log.attributes, ParseJSON(log.body), "upsert") where IsString(log.body) and IsMatch(log.body, "^\\s*\\{.*\\}\\s*$")
+              - set(log.severity_text, log.attributes["level"]) where IsString(log.attributes["level"])
+              - set(log.severity_text, log.attributes["severity"]) where log.severity_text == "" and IsString(log.attributes["severity"])
+              - set(log.severity_text, log.attributes["levelname"]) where log.severity_text == "" and IsString(log.attributes["levelname"])
+              - set(log.severity_text, log.attributes["record"]["error_severity"]) where log.attributes["logger"] == "postgres" and IsString(log.attributes["record"]["error_severity"])
+              # 2. Text formats.
+              - merge_maps(log.cache, ExtractPatterns(log.body, "^\\[[^\\]]+\\]\\[\\d+\\]\\[(?P<level>[A-Za-z]+)\\]"), "upsert") where log.severity_text == "" and IsString(log.body)
+              - merge_maps(log.cache, ExtractPatterns(log.body, "^(?:\\d{4}-\\d{2}-\\d{2}[T ]\\S+\\s+)?\\[?(?P<level>(?i:trace|debug|info|notice|warning|warn|error|err|critical|crit|fatal|panic|dpanic))\\]?(?:[\\s:]|$)"), "upsert") where log.severity_text == "" and log.cache["level"] == nil and IsString(log.body)
+              - merge_maps(log.cache, ExtractPatterns(log.body, "\\blevel=\"?(?P<level>[A-Za-z]+)"), "upsert") where log.severity_text == "" and log.cache["level"] == nil and IsString(log.body)
+              - set(log.severity_text, log.cache["level"]) where log.severity_text == "" and IsString(log.cache["level"])
+              # Map the level text to a severity number, case-insensitively.
+              - set(log.severity_number, SEVERITY_NUMBER_TRACE) where IsMatch(log.severity_text, "(?i)^trace$")
+              - set(log.severity_number, SEVERITY_NUMBER_DEBUG) where IsMatch(log.severity_text, "(?i)^debug\\d?$")
+              - set(log.severity_number, SEVERITY_NUMBER_INFO) where IsMatch(log.severity_text, "(?i)^(info|information|notice|log)$")
+              - set(log.severity_number, SEVERITY_NUMBER_WARN) where IsMatch(log.severity_text, "(?i)^(warn|warning)$")
+              - set(log.severity_number, SEVERITY_NUMBER_ERROR) where IsMatch(log.severity_text, "(?i)^(error|err)$")
+              - set(log.severity_number, SEVERITY_NUMBER_FATAL) where IsMatch(log.severity_text, "(?i)^(fatal|critical|crit|panic|dpanic|alert|emerg|emergency)$")
+              # 3. The non-JSON, no-level heuristic. Matches: Python
+              # "Traceback (most recent call last)" and '  File "..."' frames,
+              # JVM/Node "  at ..." frames, Go "goroutine N [" dumps, an
+              # "...Error"/"...Exception" type name (ValueError, ** (RuntimeError)),
+              # and the words error, exception, panic or fatal.
+              - set(log.attributes["log.level_source"], "heuristic") where log.severity_number == SEVERITY_NUMBER_UNSPECIFIED and IsString(log.body) and IsMatch(log.body, "(?i)(traceback \\(most recent call last\\)|^\\s+file \"|^\\s+at \\S|^goroutine \\d+ \\[|\\w(error|exception)\\b|\\b(error|exception|panic|fatal)\\b)")
+              - set(log.severity_number, SEVERITY_NUMBER_ERROR) where log.attributes["log.level_source"] == "heuristic"
+              - set(log.severity_text, "ERROR") where log.attributes["log.level_source"] == "heuristic"
+              # Readable body for structured lines: the message, not the JSON.
+              - set(log.body, log.attributes["message"]) where IsString(log.attributes["message"])
+              - set(log.body, log.attributes["msg"]) where IsString(log.attributes["msg"]) and not IsString(log.attributes["message"])
+              - set(log.body, log.attributes["record"]["message"]) where log.attributes["logger"] == "postgres" and IsString(log.attributes["record"]["message"])
+
+      # Keep warning and above. Everything the parser could not classify has
+      # severity 0 (unspecified) and is dropped here too.
+      filter/severity:
+        error_mode: ignore
+        logs:
+          log_record:
+            - 'log.severity_number < {{ .Values.logs.minSeverityNumber | int }}'
+
+      # Scoped to this node's pods: the agent watches only what it can tail.
+      k8s_attributes:
+        auth_type: serviceAccount
+        # Block startup until the pod cache has synced, so lines read in the
+        # first seconds after an agent restart are not shipped unlabelled.
+        wait_for_metadata: true
+        filter:
+          node_from_env_var: K8S_NODE_NAME
+        extract:
+          metadata:
+            - k8s.node.name
+            - k8s.deployment.name
+            - k8s.statefulset.name
+            - k8s.daemonset.name
+            - k8s.job.name
+            - k8s.cronjob.name
+          labels:
+            - key: app.kubernetes.io/name
+              from: pod
+            - key: app.kubernetes.io/component
+              from: pod
+        pod_association:
+          - sources:
+              - from: resource_attribute
+                name: k8s.pod.uid
+
+      # service.name from the app label, else the owning workload, else the
+      # container. Only set when absent. Everything lands in one dataset, so
+      # this is a grouping column, not a routing key.
+      transform/service:
+        error_mode: ignore
+        log_statements:
+          - context: resource
+            statements:
+              - set(resource.attributes["service.name"], resource.attributes["k8s.pod.labels.app.kubernetes.io/name"]) where resource.attributes["service.name"] == nil and resource.attributes["k8s.pod.labels.app.kubernetes.io/name"] != nil
+              - set(resource.attributes["service.name"], resource.attributes["k8s.deployment.name"]) where resource.attributes["service.name"] == nil and resource.attributes["k8s.deployment.name"] != nil
+              - set(resource.attributes["service.name"], resource.attributes["k8s.statefulset.name"]) where resource.attributes["service.name"] == nil and resource.attributes["k8s.statefulset.name"] != nil
+              - set(resource.attributes["service.name"], resource.attributes["k8s.daemonset.name"]) where resource.attributes["service.name"] == nil and resource.attributes["k8s.daemonset.name"] != nil
+              - set(resource.attributes["service.name"], resource.attributes["k8s.container.name"]) where resource.attributes["service.name"] == nil and resource.attributes["k8s.container.name"] != nil
+      {{- if .Values.environment }}
+      resource/environment:
+        attributes:
+          - key: deployment.environment
+            value: {{ .Values.environment | quote }}
+            action: upsert
+      {{- end }}
+      batch:
+        timeout: 5s
+        send_batch_size: 512
+
+    exporters:
+      # Same key and wiring as the gateway's exporters (see configmap.yaml for
+      # the otlp versus otlphttp endpoint syntax); only the dataset differs.
+      {{- if eq $hcExporter "otlphttp/honeycomb-logs" }}
+      otlphttp/honeycomb-logs:
+        endpoint: {{ .Values.honeycomb.httpEndpoint | default "https://api.honeycomb.io" | quote }}
+      {{- else }}
+      otlp/honeycomb-logs:
+        endpoint: {{ .Values.honeycomb.endpoint | quote }}
+      {{- end }}
+        headers:
+          x-honeycomb-team: ${env:HONEYCOMB_API_KEY}
+          x-honeycomb-dataset: {{ .Values.logs.dataset | quote }}
+        sending_queue:
+          enabled: true
+          storage: file_storage/logs
+
+    service:
+      extensions: [health_check, file_storage/logs]
+      pipelines:
+        logs:
+          receivers: [file_log]
+          processors: [memory_limiter, transform/parse, filter/severity, k8s_attributes, transform/service{{ if .Values.environment }}, resource/environment{{ end }}, batch]
+          exporters: [{{ $hcExporter }}]
+{{- end }}

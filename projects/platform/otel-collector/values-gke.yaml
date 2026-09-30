@@ -36,3 +36,14 @@ honeycomb:
 cfIngress:
   enabled: true
   hostname: jomcgi.dev
+
+# Warning-and-above pod logs from the workloads whose incidents have been
+# log-only. "kargo" is the controller namespace; "kargo-*" covers the Kargo
+# project namespaces.
+logs:
+  enabled: true
+  namespaces:
+    - embervm
+    - monolith
+    - kargo
+    - "kargo-*"
