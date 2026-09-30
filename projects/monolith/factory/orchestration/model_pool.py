@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
-ROLES = ("conductor", "worker", "implement", "refine", "reviewer")
+ROLES = ("conductor", "worker", "implement", "refine", "reviewer", "judge")
 _ROLE_KEY = {
     "conductor": "conductor_model",
     "worker": "worker_model",
@@ -42,6 +42,11 @@ DEFAULT_REFINE_POOL = ("spark", "sol")
 # Codex grant, so a Sol rung could never be reachable when Astra is walled,
 # and offering it would only make the fallback look deeper than it is.
 DEFAULT_REVIEWER_POOL = ("opus", "astra")
+# The judge decides funding extensions and reservation-lease continuations.
+# It names no policy field: ``model_pools.judge`` configures it, and without
+# one it runs on Opus when policy allows Opus, else on the reviewer pool. Astra
+# is a valid judge only when a policy allows it and lists it in the pool.
+DEFAULT_JUDGE_MODEL = "opus"
 # Adapter family to broker provider. Families absent here have no quota feed.
 QUOTA_PROVIDERS = {"codex": "codex", "claude": "claude"}
 # Models at or above the ADR agents/038 judgment floor. Adapter family is NOT
@@ -127,6 +132,10 @@ def pool_for(role: str, policy: dict) -> list[str]:
         if configured and configured not in default:
             return [configured, *default]
         return default or ([configured] if configured else [])
+    if role == "judge":
+        if DEFAULT_JUDGE_MODEL in (policy.get("allowed_models") or []):
+            return [DEFAULT_JUDGE_MODEL]
+        return pool_for("reviewer", policy)
     return [policy[_ROLE_KEY[role]]]
 
 

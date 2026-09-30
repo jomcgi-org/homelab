@@ -1940,7 +1940,7 @@ def settle_funding_request(task, request, decision):
         "node_key": request["node_key"],
         "attempt": 1,
         "status": "succeeded",
-        "pin": {"model": "astra"},
+        "pin": {"model": request["model"]},
         "dispatch_key": request["start_key"],
         "outcome_json": json.dumps({"value": decision}),
     }

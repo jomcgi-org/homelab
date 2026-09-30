@@ -751,3 +751,23 @@ def test_escalation_follows_the_worker_pool_for_worker_nodes():
         quota={},
     )
     assert choice["model"] == "sol"
+
+
+def test_judge_defaults_to_opus_even_when_astra_is_allowed():
+    assert model_pool.pool_for("judge", policy()) == ["opus"]
+    assert model_pool.select_model("judge", policy())["model"] == "opus"
+
+
+def test_judge_follows_a_configured_pool_with_quota_floors():
+    configured = policy(model_pools={"judge": ["astra", "opus"]})
+    assert model_pool.pool_for("judge", configured) == ["astra", "opus"]
+    assert model_pool.select_model("judge", configured, quota={})["model"] == "astra"
+    walled = model_pool.select_model(
+        "judge", configured, quota={"codex": {"exhausted": True}}
+    )
+    assert walled["model"] == "opus" and walled["fallback_from"] == "astra"
+
+
+def test_judge_falls_back_to_the_reviewer_pool_without_opus():
+    no_opus = policy(allowed_models=["sol", "spark"], reviewer_model="sol")
+    assert model_pool.pool_for("judge", no_opus) == ["sol"]
