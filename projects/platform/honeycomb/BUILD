@@ -1,7 +1,9 @@
+load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
+
 # gazelle:exclude sync.py
 # gazelle:exclude sync_test.py
 
-load("@aspect_rules_py//py:defs.bzl", "py_binary", "py_library")
+load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 py_library(
@@ -13,7 +15,7 @@ py_library(
 )
 
 # Dry run by default; pass --apply to write. Reads HONEYCOMB_CONFIG_KEY.
-py_binary(
+py_venv_binary(
     name = "sync",
     srcs = ["sync.py"],
     data = glob(["triggers/*.yaml"]),
