@@ -1341,6 +1341,52 @@ defmodule Embervm.SessionManagerTest do
     assert {:error, {:denied, :no_capacity}} = SessionManager.create(ctx.mgr, "wl-nocap", "p1")
   end
 
+  test "a no_capacity create records which placement miss denied it" do
+    ctx = start_stack()
+
+    # Base missing on a brick with room: the BaseBuilder's miss, not capacity.
+    put_session_workload(ctx, "wl-base-missing")
+    {:ok, fact} = NodeCapacity.fetch(ctx.cap_table, "node-4")
+
+    NodeCapacity.put(
+      ctx.cap_table,
+      "node-4",
+      put_in(fact, [:workloads, "wl-base-missing", :base_state], :BASE_BUILD_STATE_BUILDING)
+    )
+
+    assert_placement_outcome(ctx, "wl-base-missing", "base_missing", "node-4")
+
+    # Slot-exhausted brick with the base ready: a real capacity wall (the only
+    # outcome that records autoscaler demand).
+    put_session_workload(ctx, "wl-full", live: 8, max: 8)
+    assert_placement_outcome(ctx, "wl-full", "capacity", nil)
+
+    # No capacity facts at all: the CP is blind.
+    :ets.delete_all_objects(ctx.cap_table)
+    assert_placement_outcome(ctx, "wl-full", "no_bricks", nil)
+  end
+
+  defp assert_placement_outcome(ctx, workload, outcome, base_missing_node) do
+    {result, spans} =
+      TestSpanExporter.capture(
+        fn -> SessionManager.create(ctx.mgr, workload, "p1") end,
+        ["embervm.session.create"]
+      )
+
+    # The wire reason is unchanged: every placement miss stays a retryable no_capacity.
+    assert result == {:error, {:denied, :no_capacity}}
+
+    span =
+      spans
+      |> TestSpanExporter.named("embervm.session.create")
+      |> Enum.find(&(TestSpanExporter.attributes(&1)["ember.workload"] == workload))
+
+    attrs = TestSpanExporter.attributes(span)
+    assert attrs["ember.reason"] == "no_capacity"
+    assert attrs["ember.placement.outcome"] == outcome
+    assert attrs["ember.placement.base_missing_node"] == base_missing_node
+  end
+
   test "create primes on a claim miss and fails to :no_capacity when prime fails" do
     ctx = start_stack(claim_fun: fn _d, _n, _w -> :miss end, prime_fun: fn _ch, _req -> {:error, :boom} end)
     put_session_workload(ctx, "wl-miss")
