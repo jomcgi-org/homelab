@@ -467,6 +467,24 @@ spec:
               value: {{ .Values.podRestartWatch.intervalSeconds | quote }}
             - name: POD_RESTART_WATCH_NAMESPACES
               value: {{ join "," .Values.podRestartWatch.namespaces | quote }}
+            # Discord transition alerts for the factory/ops_health components
+            # (embervm_capacity, agent_turns, codex_quota_fresh, factory_stuck),
+            # posted by the leader only. Replaces the Honeycomb triggers the
+            # free plan cannot hold. See docs/reference/observability-alerting.md.
+            - name: HEALTH_ALERTS_ENABLED
+              value: {{ .Values.healthAlerts.enabled | quote }}
+            - name: HEALTH_ALERTS_INTERVAL_S
+              value: {{ .Values.healthAlerts.intervalSeconds | quote }}
+            - name: HEALTH_ALERTS_RENOTIFY_S
+              value: {{ .Values.healthAlerts.renotifySeconds | quote }}
+            - name: HEALTH_ALERTS_CHANNEL_ID
+              value: {{ .Values.healthAlerts.channelId | quote }}
+            - name: AGENT_TURNS_ALERT_MIN_FAILED
+              value: {{ .Values.healthAlerts.agentTurnsMinFailed | quote }}
+            - name: EMBERVM_BRICK_NAMESPACE
+              value: {{ .Values.healthAlerts.brickNamespace | quote }}
+            - name: EMBERVM_CREATE_OUTCOME_LATCH_ENABLED
+              value: {{ .Values.healthAlerts.recordCreateOutcomes | quote }}
             {{- if .Values.whatsapp.enabled }}
             # Pinned OpenRouter model for the surviving in-monolith WhatsApp
             # household reply path. Heavy Goose agent dispatch was retired.

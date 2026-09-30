@@ -11,6 +11,7 @@ from factory.execution.provider_quota import provider_quota_health
 from knowledge.api import kg_health
 from factory.reservation_reviews import reservation_health
 from factory.orchestration.health import drainer_health
+from factory import ops_health
 
 
 def register(app) -> None:
@@ -74,6 +75,7 @@ def _factory_liveness() -> dict:
 
 async def _start_session_maintenance(app):
     """Start leader-owned agent session maintenance loops."""
+    from factory.health_alerts import start_health_alert_loop
     from factory.quota_probe import start_quota_probe_loop
     from factory.reservation_reviews import start_review_loop
     from factory.execution.guest_cleanup import start_guest_cleanup_loop
@@ -93,6 +95,7 @@ async def _start_session_maintenance(app):
         start_receipt_retention_loop,
         start_quota_probe_loop,
         start_review_loop,
+        start_health_alert_loop,
     ):
         started = start()
         register_leader_tasks(app, started)
@@ -126,6 +129,11 @@ MODULE = _Module(
         "drainer": drainer_health,
         "kg": kg_health,
         "provider_quota": provider_quota_health,
+        # Alerting components (factory/ops_health.py): advisory on purpose.
+        # They describe capacity, providers and the factory lane, not whether
+        # this process serves, so they must not 503 /api/health. Discord
+        # transition alerts come from factory/health_alerts.py on the leader.
+        **ops_health.CHECKS,
     },
     register_liveness={"factory": _factory_liveness},
 )

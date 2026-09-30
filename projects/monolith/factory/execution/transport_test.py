@@ -3191,3 +3191,43 @@ def test_get_session_invalid_json_is_a_transport_failure(monkeypatch):
     with pytest.raises(EmberVMTransportError, match="invalid JSON") as caught:
         asyncio.run(transport.EmberVmShimTransport().get_session("s-1"))
     assert not isinstance(caught.value, EmberSessionGone)
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "expected"),
+    [
+        (
+            201,
+            {"session_id": "s1", "session_token": "t1"},
+            (True, "created on claude-runtime"),
+        ),
+        (
+            429,
+            {"reason": "no_capacity", "retryable": False},
+            (False, "429 no_capacity"),
+        ),
+        (503, {"error": "down", "retryable": False}, (False, "503 from control plane")),
+        (409, {"error": "lineage has a live heir"}, None),
+    ],
+)
+def test_create_session_records_capacity_relevant_outcomes(
+    monkeypatch, status, body, expected
+):
+    from factory.execution import create_outcome
+
+    recorded = []
+    monkeypatch.setattr(
+        create_outcome, "record", lambda ok, detail: recorded.append((ok, detail))
+    )
+
+    async def handler(request):
+        return httpx.Response(status, json=body, request=request)
+
+    _client(monkeypatch, handler)
+    shim = transport.EmberVmShimTransport()
+    shim.retry_create = False
+    try:
+        asyncio.run(shim.create_session())
+    except EmberVMTransportError:
+        pass
+    assert recorded == ([expected] if expected else [])

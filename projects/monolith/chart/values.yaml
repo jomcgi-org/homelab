@@ -1364,6 +1364,24 @@ podRestartWatch:
   namespaces:
     - monolith-public
 
+# Homelab alerting (factory/ops_health.py + factory/health_alerts.py). Honeycomb's
+# free plan allows one trigger, spent on the public /health composite, so the
+# other alert conditions are advisory /api/health components and the leader
+# posts a Discord message when one flips (and every renotifySeconds while it
+# stays failing). channelId empty means agent.discord.defaultChannelId.
+# brickNamespace is where the EmberVM noded-brick Deployments live (read with
+# the clusterAccess ClusterRole); empty skips the zero-bricks half of
+# embervm_capacity. recordCreateOutcomes makes every replica record EmberVM
+# session-create outcomes in platform_probe for the create-failure half.
+healthAlerts:
+  enabled: true
+  intervalSeconds: 60
+  renotifySeconds: 21600
+  channelId: ""
+  agentTurnsMinFailed: 2
+  brickNamespace: embervm
+  recordCreateOutcomes: true
+
 # ember-durability health component (#4338, ADR embervm/031): a FATAL-tier
 # /api/health component reading the EmberVM control plane's durability surface
 # (GET /v1/health/durability): tier 1 sustained artifact-export failure
