@@ -318,6 +318,7 @@ defmodule Embervm.SpecTrace.CheckerTest do
 
       assert checkpoint[:verdict] == :fail
       assert checkpoint[:coverage] == 1
+      assert checkpoint[:detail] =~ ~s("vm-b")
     end
 
     test "prime_before_checkpoint passes when all checkpoint vms are primed", %{store: store} do
@@ -832,6 +833,139 @@ defmodule Embervm.SpecTrace.CheckerTest do
     end
   end
 
+  # Regressions for the 0.111.4 dev-gate S4 flake (2026-09-30). The runner asks
+  # for `since_ts_ms=<suite start>` against a long-lived control plane, so the
+  # window is a SLICE of a run. Both failures were lawful interleavings the
+  # checker judged wrongly; each test below replays one, next to a negative
+  # control that proves the invariant still fires.
+  describe "windows that start mid-run (S4 flake, 0.111.4)" do
+    # 01:29:37 UTC run. The noded pod was replaced during the rollout, so the old
+    # instance's stream closed, its dial retried at 1s/2s/4s, and it aged
+    # unknown then down on schedule while a new instance registered. The
+    # reconnect records between the unknown and the down edge used to reset the
+    # machine and fail the down edge. Coverage 7 matches the live verdict.
+    test "health_monotonic passes when backoff reconnects fall between unknown and down", %{store: store} do
+      old = "gke-x679/91b93e3a"
+      new = "gke-x679/a2910d5a"
+
+      records =
+        trace_records("run-noded-roll", [
+          {1_000, "reconnect", %{"node_id" => old, "gen" => 1}},
+          {13_000, "reconnect", %{"node_id" => old, "gen" => 2}},
+          {17_000, "age_to_unknown", %{"node_id" => old, "last_gen" => 2}},
+          {18_000, "reconnect", %{"node_id" => old, "gen" => 3}},
+          {25_000, "reconnect", %{"node_id" => old, "gen" => 4}},
+          {28_000, "age_to_down", %{"node_id" => old, "last_gen" => 4}},
+          {30_000, "reconnect", %{"node_id" => new, "gen" => 1}}
+        ])
+
+      :ok = SQLite.write(store, records)
+      health = verdict(Checker.run(SQLite, store), :health_monotonic)
+
+      assert health[:verdict] == :pass
+      assert health[:coverage] == 7
+    end
+
+    # Negative control for the above: the same dial storm with NO unknown edge
+    # must still fail, and the detail must name the record.
+    test "health_monotonic still fails a down edge with only reconnects before it", %{store: store} do
+      records =
+        trace_records("run-noded-roll-bad", [
+          {1_000, "reconnect", %{"node_id" => "node-9", "gen" => 1}},
+          {13_000, "reconnect", %{"node_id" => "node-9", "gen" => 2}},
+          {28_000, "age_to_down", %{"node_id" => "node-9", "last_gen" => 2}}
+        ])
+
+      :ok = SQLite.write(store, records)
+      health = verdict(Checker.run(SQLite, store), :health_monotonic)
+
+      assert health[:verdict] == :fail
+      assert health[:detail] =~ "node node-9 at seq 3"
+    end
+
+    test "health_monotonic seeds each node from the run before the window", %{store: store} do
+      records =
+        trace_records("run-health-slice", [
+          {1_000, "age_to_unknown", %{"node_id" => "node-1"}},
+          {1_200, "reconnect", %{"node_id" => "node-2", "gen" => 1}},
+          {2_000, "age_to_down", %{"node_id" => "node-1"}},
+          {2_100, "age_to_down", %{"node_id" => "node-2"}}
+        ])
+
+      :ok = SQLite.write(store, records)
+      health = verdict(Checker.run(SQLite, store, since_ts_ms: 1_500), :health_monotonic)
+
+      # node-1's unknown edge precedes the window and is honoured; node-2 had
+      # no unknown edge anywhere in the run and still fails. Only in-window
+      # records are counted and judged.
+      assert health[:verdict] == :fail
+      assert health[:coverage] == 2
+      assert health[:detail] =~ "node node-2"
+      refute health[:detail] =~ "node node-1"
+    end
+
+    # 02:00:31 UTC run. A warm-pool VM primed after the previous suite's S5
+    # (01:29) sat idle into this suite's window, so every checkpoint listed a
+    # vm_id whose prime was before `since_ts_ms`.
+    test "prime_before_checkpoint honours primes and adopts from before the window", %{store: store} do
+      records =
+        trace_records("run-warm-pool", [
+          {1_000, "adopt_inventory", %{"node_id" => "n1", "vm_ids" => ["vm-adopted"]}},
+          {1_100, "prime", %{"vm_id" => "vm-refill", "node_id" => "n1"}},
+          {2_000, "prime", %{"vm_id" => "vm-fresh", "node_id" => "n1"}},
+          {2_100, "checkpoint",
+           %{"node_workload_vm_ids" => %{"n1:sandbox-python" => ["vm-adopted", "vm-refill", "vm-fresh"]}}},
+          {2_200, "dispatch_warm", %{"vm_id" => "vm-refill", "task_id" => "t1", "provenance" => "warm"}}
+        ])
+
+      :ok = SQLite.write(store, records)
+      verdicts = Checker.run(SQLite, store, since_ts_ms: 1_500)
+
+      checkpoint = verdict(verdicts, :prime_before_checkpoint)
+      assert checkpoint[:verdict] == :pass
+      assert checkpoint[:coverage] == 1
+
+      # Same slice hazard, same fix: a warm dispatch of a pre-window prime.
+      provenance = verdict(verdicts, :dispatch_provenance)
+      assert provenance[:verdict] == :pass
+      assert provenance[:coverage] == 1
+    end
+
+    test "prime_before_checkpoint still fails a vm_id the run never primed, and names it", %{store: store} do
+      records =
+        trace_records("run-warm-pool-bad", [
+          {1_000, "prime", %{"vm_id" => "vm-refill", "node_id" => "n1"}},
+          {2_100, "checkpoint", %{"node_workload_vm_ids" => %{"n1:w" => ["vm-refill", "vm-ghost"]}}}
+        ])
+
+      # A prime of the same vm_id in ANOTHER incarnation is not provenance for
+      # this one: run_prefix/4 reads by run_id.
+      other_run =
+        trace_records("run-previous", [{500, "prime", %{"vm_id" => "vm-ghost", "node_id" => "n1"}}], 100)
+
+      :ok = SQLite.write(store, other_run ++ records)
+      checkpoint = verdict(Checker.run(SQLite, store, since_ts_ms: 1_500), :prime_before_checkpoint)
+
+      assert checkpoint[:verdict] == :fail
+      assert checkpoint[:detail] =~ ~s("vm-ghost")
+      refute checkpoint[:detail] =~ ~s("vm-refill")
+      assert checkpoint[:detail] =~ "seq 2"
+    end
+
+    test "a since_seq window reads the run prefix too", %{store: store} do
+      records =
+        trace_records("run-seq-slice", [
+          {1_000, "prime", %{"vm_id" => "vm-a", "node_id" => "n1"}},
+          {2_000, "checkpoint", %{"node_workload_vm_ids" => %{"n1:w" => ["vm-a"]}}}
+        ])
+
+      :ok = SQLite.write(store, records)
+      checkpoint = verdict(Checker.run(SQLite, store, since_seq: 2), :prime_before_checkpoint)
+
+      assert checkpoint[:verdict] == :pass
+    end
+  end
+
   describe "run_id boundary handling" do
     test "does not report violations across run_id boundaries", %{store: store} do
       # Two separate runs: same vm_id but in different runs should not be a violation
@@ -1160,6 +1294,25 @@ defmodule Embervm.SpecTrace.CheckerTest do
       assert length(documented) == length(evaluated)
       assert documented -- evaluated == []
     end
+  end
+
+  defp verdict(verdicts, invariant), do: Enum.find(verdicts, &(&1[:invariant] == invariant))
+
+  # {ts, action, vars} tuples to records with seq and mono in list order.
+  defp trace_records(run_id, entries, seq_base \\ 0) do
+    entries
+    |> Enum.with_index(1)
+    |> Enum.map(fn {{ts, action, vars}, index} ->
+      %{
+        "run_id" => run_id,
+        "seq" => seq_base + index,
+        "mono" => ts * 1_000,
+        "ts" => ts,
+        "spec" => "adoption",
+        "action" => action,
+        "vars" => vars
+      }
+    end)
   end
 
   defp destroy_verdict(verdicts, invariant) do

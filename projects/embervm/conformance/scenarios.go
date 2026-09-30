@@ -766,7 +766,18 @@ type invariantVerdict struct {
 	Invariant string  `json:"invariant"`
 	Verdict   string  `json:"verdict"`
 	Coverage  float64 `json:"coverage"`
+	// Detail is the checker's own explanation. It is carried into the S4
+	// detail for failing invariants only, so a red gate names the records
+	// that violated the invariant instead of just the invariant (#6422, the
+	// 0.111.4 S4 flake): without it a flake is undiagnosable once the trace
+	// window has aged out.
+	Detail string `json:"detail"`
 }
+
+// Bounds one failing invariant's detail inside the S4 verdict. The checker
+// already caps the records it names at ten; this keeps a pathological detail
+// from swamping the Kargo condition message the verdict ends up in.
+const s4FailureDetailLimit = 600
 
 func runS4(ctx context.Context, cfg config, client *controlPlaneClient, suiteStarted time.Time) scenarioVerdict {
 	query := url.Values{"since_ts_ms": []string{fmt.Sprintf("%d", suiteStarted.UnixMilli())}}
@@ -798,7 +809,11 @@ func runS4(ctx context.Context, cfg config, client *controlPlaneClient, suiteSta
 	allVacuous := len(invariants) > 0
 	hasFailure := false
 	for _, invariant := range invariants {
-		details = append(details, fmt.Sprintf("%s=%s(coverage=%g)", invariant.Invariant, invariant.Verdict, invariant.Coverage))
+		entry := fmt.Sprintf("%s=%s(coverage=%g)", invariant.Invariant, invariant.Verdict, invariant.Coverage)
+		if invariant.Verdict == verdictFail && invariant.Detail != "" {
+			entry += fmt.Sprintf("[%s]", truncate(invariant.Detail, s4FailureDetailLimit))
+		}
+		details = append(details, entry)
 		if invariant.Verdict != verdictVacuous {
 			allVacuous = false
 		}
@@ -830,12 +845,13 @@ func decodeInvariants(raw json.RawMessage) ([]invariantVerdict, error) {
 	var keyed map[string]struct {
 		Verdict  string  `json:"verdict"`
 		Coverage float64 `json:"coverage"`
+		Detail   string  `json:"detail"`
 	}
 	if err := json.Unmarshal(raw, &keyed); err != nil {
 		return nil, err
 	}
 	for name, item := range keyed {
-		list = append(list, invariantVerdict{Invariant: name, Verdict: item.Verdict, Coverage: item.Coverage})
+		list = append(list, invariantVerdict{Invariant: name, Verdict: item.Verdict, Coverage: item.Coverage, Detail: item.Detail})
 	}
 	return list, nil
 }

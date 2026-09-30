@@ -432,6 +432,35 @@ func TestRunS4SendsSuiteStart(t *testing.T) {
 	}
 }
 
+// A red S4 must name the violating records. The 0.111.4 gate failed twice
+// with only "health_monotonic=fail(coverage=7)" to go on, and the trace
+// window had aged out before anyone could look.
+func TestRunS4FailureCarriesCheckerDetail(t *testing.T) {
+	tokenFile := t.TempDir() + "/token"
+	if err := os.WriteFile(tokenFile, []byte("test-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"enabled":true,"verdicts":[` +
+			`{"invariant":"health_monotonic","verdict":"fail","coverage":3,"detail":"age_to_down without a preceding age_to_unknown: node n1 at seq 42"},` +
+			`{"invariant":"covered","verdict":"pass","coverage":1,"detail":"passing detail stays out"}]}`))
+	}))
+	defer server.Close()
+
+	cfg := config{baseURL: server.URL, tokenFile: tokenFile, minPassingInvariants: 1}
+	client := &controlPlaneClient{baseURL: server.URL, tokenFile: tokenFile, http: server.Client()}
+	got := runS4(context.Background(), cfg, client, time.Unix(1, 0))
+	if got.Verdict != verdictFail {
+		t.Fatalf("S4 = %#v, want fail", got)
+	}
+	if want := "health_monotonic=fail(coverage=3)[age_to_down without a preceding age_to_unknown: node n1 at seq 42]"; !strings.Contains(got.Detail, want) {
+		t.Fatalf("S4 detail = %q, want %q", got.Detail, want)
+	}
+	if strings.Contains(got.Detail, "passing detail stays out") {
+		t.Fatalf("S4 detail = %q, want pass details omitted", got.Detail)
+	}
+}
+
 func TestSessionSleepWakeRelightAgainstFakeControlPlane(t *testing.T) {
 	tokenFile := t.TempDir() + "/token"
 	if err := os.WriteFile(tokenFile, []byte("management-token\n"), 0o600); err != nil {
