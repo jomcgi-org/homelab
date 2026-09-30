@@ -451,6 +451,9 @@
   .chip-state--unverified {
     font-style: italic;
   }
+  .chip-state--invalidated {
+    text-decoration: line-through;
+  }
   .chip-state--disputed {
     padding-right: 4px;
     background: var(--ink);

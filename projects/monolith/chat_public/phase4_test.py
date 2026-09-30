@@ -241,6 +241,14 @@ async def test_node_touched_frames_carry_verification_state(
             verification_state="unverified",
             disputed=True,
         ),
+        RetrievedNote(
+            "note-i",
+            "Invalidated Note",
+            "invalidated text",
+            0.6,
+            verification_state="invalidated",
+            disputed=False,
+        ),
     ]
     monkeypatch.setattr(inference, "stream_chat", _fake_stream())
     monkeypatch.setattr(retrieval, "retrieve", _fake_retrieve(retrieved))
@@ -261,6 +269,8 @@ async def test_node_touched_frames_carry_verification_state(
     assert touched["note-u"]["disputed"] is False
     assert touched["note-d"]["verification_state"] == "unverified"
     assert touched["note-d"]["disputed"] is True
+    assert touched["note-i"]["verification_state"] == "invalidated"
+    assert touched["note-i"]["disputed"] is False
 
 
 @pytest.mark.asyncio
