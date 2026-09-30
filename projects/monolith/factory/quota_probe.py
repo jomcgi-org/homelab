@@ -147,17 +147,37 @@ def _codex_grant_views(payload: dict) -> list[dict]:
 
 
 def _codex_grant_exhausted(view: dict) -> bool:
-    """Whether one observed Codex grant reports no room left."""
+    """Whether one observed Codex grant can still be out of room.
+
+    Mirrors the egress ranker's ``bandFor``: exhaustion holds only while it
+    can still be true. An active window at the exhausted percent counts, and
+    so does a latched exhausted flag while some active window resets in the
+    future. A window-less rejection is exhausted only while its age is not
+    provably stale, and a rejection whose resets have all passed is retryable,
+    so an all-stale pool left by 429s is probed rather than wedged.
+    """
     from factory.orchestration import model_pool as pool
 
-    if view.get("exhausted") is True:
-        return True
-    used = view.get("headline_used_percent")
-    return (
-        isinstance(used, (int, float))
-        and not isinstance(used, bool)
-        and used >= pool.exhausted_percent()
-    )
+    windows = [
+        window
+        for window in view.get("windows") or []
+        if isinstance(window, dict)
+        and pool.reset_passed(window.get("resets_at")) is not True
+    ]
+    threshold = pool.exhausted_percent()
+    for window in windows:
+        used = window.get("used_percent")
+        if (
+            isinstance(used, (int, float))
+            and not isinstance(used, bool)
+            and used >= threshold
+        ):
+            return True
+    if view.get("exhausted") is not True:
+        return False
+    if not windows:
+        return pool.grant_observation_state(view) != "stale"
+    return any(pool.reset_passed(w.get("resets_at")) is False for w in windows)
 
 
 def _codex_fresh(payload: dict) -> bool:
@@ -197,7 +217,7 @@ def codex_claim(payload: dict) -> str | None:
         return None
     model = _codex_probe_model()
     with controls._locked_session() as (db, control):
-        interval = pool.max_quota_age_seconds()
+        interval = pool.kg_quota_max_age_seconds()
         previous = db.exec(
             select(FactoryAudit)
             .where(FactoryAudit.action == CODEX_STARTED_ACTION)

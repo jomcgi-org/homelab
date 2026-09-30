@@ -98,16 +98,26 @@ def exhausted_percent() -> float:
     return _env_float("SWARM_MODEL_POOL_EXHAUSTED_PERCENT", 97.0)
 
 
+# The egress sidecar's ``grantStaleAfter`` (swap.go), which is not tunable.
+SIDECAR_GRANT_STALE_AFTER_SECONDS = 900.0
+
+
 def max_quota_age_seconds() -> float:
-    """Freshness bound for quota observations used by the KG admission gate.
+    """Freshness bound for quota observations used by general pool routing."""
+    return _env_float("SWARM_MODEL_POOL_QUOTA_MAX_AGE_SECONDS", 900.0)
+
+
+def kg_quota_max_age_seconds() -> float:
+    """Freshness bound for the KG admission gate and the Codex probe.
 
     The egress sidecar's grant ranking treats observations older than its own
-    ``grantStaleAfter`` (15 minutes, not tunable) as unselectable, trying
-    fresh usable grants first. That bound must stay at or below this one:
-    the gate admits when at least one grant is fresh and permitting here,
-    which is sound only while the ranker never prefers a stale grant.
+    ``grantStaleAfter`` (15 minutes, not tunable) as stale and tries fresh
+    usable grants first. The gate admits when at least one grant is fresh and
+    permitting, which is sound only while every grant the gate calls fresh is
+    also fresh to the ranker. That needs this bound at or below the sidecar's,
+    so a larger ``SWARM_MODEL_POOL_QUOTA_MAX_AGE_SECONDS`` is capped here.
     """
-    return _env_float("SWARM_MODEL_POOL_QUOTA_MAX_AGE_SECONDS", 900.0)
+    return min(max_quota_age_seconds(), SIDECAR_GRANT_STALE_AFTER_SECONDS)
 
 
 def quota_floors() -> dict:
@@ -326,7 +336,7 @@ def _confirmed_view_availability(
         or float(age) < 0.0
     ):
         return False, "observation_age_unknown"
-    if float(age) > max_quota_age_seconds():
+    if float(age) > kg_quota_max_age_seconds():
         return False, f"stale_observation age {age:g}"
     windows = summary.get("windows")
     if not isinstance(windows, list):
@@ -381,7 +391,7 @@ def grant_observation_state(view: dict) -> str:
         or float(age) < 0.0
     ):
         return "unknown"
-    if float(age) > max_quota_age_seconds():
+    if float(age) > kg_quota_max_age_seconds():
         return "stale"
     return "fresh"
 
