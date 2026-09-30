@@ -7,7 +7,9 @@ from pathlib import Path
 import pytest
 from sync import (
     DEFAULT_SPEC_DIR,
+    PLAN_TRIGGER_LIMIT,
     HoneycombClient,
+    PlanLimitError,
     SpecError,
     diff_trigger,
     execute,
@@ -147,92 +149,47 @@ def test_imported_trigger_is_kept():
     assert "jomcgi.dev /health composite unhealthy" in names
 
 
-def test_ember_probe_trigger_counts_final_failed_roots_by_demo_and_trace():
-    specs = {s.source: s for s in load_specs(DEFAULT_SPEC_DIR)}
-    probe = specs["ember-demo-probe-failed.yaml"]
-    assert probe.dataset == "monolith-backend"
-    assert probe.enabled
-    assert probe.query == {
-        "time_range": 3600,
-        "calculations": [{"op": "COUNT"}],
-        "filters": [{"column": "ember.probe.ok", "op": "=", "value": False}],
-        "breakdowns": ["ember.probe.demo", "trace.trace_id"],
-    }
-    assert probe.query["filters"][0]["value"] is False
-    assert probe.frequency == 900
-    assert probe.threshold == {"op": ">", "value": 0, "exceeded_limit": 1}
-    assert probe.alert_type == "on_change"
-    assert probe.recipients == (RECIPIENT,)
-    assert probe.tags == {"service": "monolith", "signal": "ember-probe"}
-    assert all(
-        demo in probe.description
-        for demo in ("bazel", "pages", "postgres", "codex", "spark")
+def test_checked_in_specs_fit_the_free_plan():
+    # Honeycomb's free plan allows one trigger and it is the /health composite.
+    # Other alerts are monolith health components (see README).
+    specs = load_specs(DEFAULT_SPEC_DIR)
+    assert PLAN_TRIGGER_LIMIT == 1
+    assert [s.name for s in specs] == ["jomcgi.dev /health composite unhealthy"]
+
+
+def test_plan_refuses_more_specs_than_the_plan_limit():
+    with pytest.raises(PlanLimitError, match="2 spec"):
+        plan([spec(name="a"), spec(name="b")], [], {"embervm-control"})
+
+
+def test_plan_counts_unmanaged_live_triggers_against_the_limit():
+    stray = {"id": "x9", "name": "made by hand"}
+    with pytest.raises(PlanLimitError, match="made by hand"):
+        plan([spec()], [("embervm-control", stray, {})], {"embervm-control"})
+
+
+def test_plan_at_the_limit_is_allowed():
+    s = spec()
+    [action] = plan(
+        [s], [("embervm-control", live_from(s), echoed_query(s))], {"embervm-control"}
     )
-    assert len(probe.description) <= 1023
+    assert action.kind == "noop"
 
 
-def test_hub_probe_absence_stays_staged_and_scoped():
-    specs = {s.name: s for s in load_specs(DEFAULT_SPEC_DIR)}
-    probe = specs["jomcgi.dev /health probe absent"]
-    assert not probe.enabled
-    assert probe.query["filters"] == [
-        {"column": "http.url", "op": "=", "value": "https://jomcgi.dev/health"},
-        {"column": "deployment.environment", "op": "=", "value": "homelab-hub"},
-        {"column": "httpcheck.status", "op": "exists"},
-    ]
+def test_main_refuses_over_limit_specs_before_calling_the_api(
+    tmp_path: Path, monkeypatch, capsys
+):
+    for name in ("a", "b"):
+        (tmp_path / f"{name}.yaml").write_text(json.dumps(dict(RAW, name=name)))
+    monkeypatch.setenv("HONEYCOMB_CONFIG_KEY", "k")
+    monkeypatch.setattr(
+        HoneycombClient, "_call", lambda *a, **k: pytest.fail("API called")
+    )
+    assert main(["--spec-dir", str(tmp_path)]) == 1
+    assert "plan limit of 1" in capsys.readouterr().err
+    monkeypatch.setattr(HoneycombClient, "_call", lambda *a, **k: [])
+    assert main(["--spec-dir", str(tmp_path), "--plan-limit", "2"]) == 0
 
-
-def test_log_triggers_stay_disabled_until_logs_land():
-    for s in load_specs(DEFAULT_SPEC_DIR):
-        if s.dataset == "k8s-logs":
-            assert not s.enabled, s.name
-
-
-def test_loom_triggers_stay_staged_with_literal_thresholds():
-    specs = {s.source: s for s in load_specs(DEFAULT_SPEC_DIR)}
-    probe = specs["loom-query-api-unhealthy.yaml"]
-    age = specs["loom-pg-backup-stale.yaml"]
-    absent = specs["loom-pg-backup-check-absent.yaml"]
-    for s in (probe, age, absent):
-        assert not s.enabled
-        assert s.dataset == "metrics"
-        assert s.recipients == (RECIPIENT,)
-        assert s.tags["service"] == "loom"
-        assert s.query["filters"][0] == {
-            "column": "deployment.environment",
-            "op": "=",
-            "value": "homelab-hub",
-        }
-    assert probe.frequency == 300
-    assert probe.query["time_range"] == 600
-    assert probe.threshold == {"op": "<", "value": 1, "exceeded_limit": 1}
-    assert probe.query["calculations"] == [{"op": "COUNT"}]
-    assert probe.query["filters"][1:] == [
-        {
-            "column": "http.url",
-            "op": "=",
-            "value": "http://loom-query-api.loom.svc:8080/docs",
-        },
-        {"column": "http.status_class", "op": "=", "value": "2xx"},
-        {"column": "httpcheck.status", "op": "=", "value": 1},
-    ]
-    assert age.query["time_range"] == 3600
-    assert age.frequency == absent.frequency == 1800
-    assert age.threshold == {"op": ">", "value": 129600, "exceeded_limit": 1}
-    assert age.query["calculations"] == [
-        {"op": "MAX", "column": "cnpg.backup.last_success_age_seconds"}
-    ]
-    cluster_filters = [
-        {"column": "cnpg.cluster.name", "op": "=", "value": "loom-pg"},
-        {"column": "k8s.namespace.name", "op": "=", "value": "loom"},
-    ]
-    assert age.query["filters"][1:] == cluster_filters
-    assert absent.query["filters"][1:] == cluster_filters + [
-        {"column": "cnpg.backup.last_success_age_seconds", "op": "exists"}
-    ]
-    assert absent.query["time_range"] == 7200
-    assert absent.query["calculations"] == [{"op": "COUNT"}]
-    assert absent.threshold == {"op": "<", "value": 1, "exceeded_limit": 1}
 
 
 def test_duplicate_spec_names_are_rejected(tmp_path: Path):
@@ -309,7 +266,8 @@ def test_plan_creates_missing_updates_drifted_and_leaves_matching():
         ("embervm-control", live_from(same, "s1"), echoed_query(same)),
     ]
     actions = {
-        a.name: a for a in plan([missing, drifted, same], live, {"embervm-control"})
+        a.name: a
+        for a in plan([missing, drifted, same], live, {"embervm-control"}, limit=3)
     }
     assert actions["missing"].kind == "create"
     assert actions["drifted"].kind == "update"
@@ -321,7 +279,7 @@ def test_plan_creates_missing_updates_drifted_and_leaves_matching():
 def test_plan_reports_unmanaged_triggers_without_touching_them():
     s = spec()
     stray = {"id": "x9", "name": "made by hand"}
-    actions = plan([s], [("embervm-control", stray, {})], {"embervm-control"})
+    actions = plan([s], [("embervm-control", stray, {})], {"embervm-control"}, limit=2)
     kinds = {a.name: a.kind for a in actions}
     assert kinds == {s.name: "create", "made by hand": "unmanaged"}
 
@@ -399,7 +357,7 @@ def test_execute_only_writes_creates_and_updates():
     live = [
         ("embervm-control", live_from(other, "o1", frequency=900), echoed_query(other))
     ]
-    actions = plan([s, other], live, {"embervm-control"})
+    actions = plan([s, other], live, {"embervm-control"}, limit=2)
     client = FakeClient()
     execute(client, actions)
     kinds = [c[0] for c in client.calls]

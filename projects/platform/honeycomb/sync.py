@@ -8,6 +8,12 @@ spec is reported as unmanaged and never touched, and nothing is ever deleted.
 
 The default is a dry run that prints the plan. ``--apply`` executes it.
 The Honeycomb configuration key is read from ``HONEYCOMB_CONFIG_KEY``.
+
+The team is on Honeycomb's free plan, which allows exactly one trigger. The
+plan refuses to go ahead when the specs plus the unmanaged live triggers
+would add up to more than ``PLAN_TRIGGER_LIMIT`` (override with
+``--plan-limit`` or ``HONEYCOMB_TRIGGER_LIMIT`` after a plan upgrade). Other
+alert conditions live in the monolith; see the README.
 """
 
 from __future__ import annotations
@@ -26,6 +32,9 @@ from typing import Any
 import yaml
 
 API_URL = "https://api.honeycomb.io"
+# Honeycomb free plan: one trigger per team. Disabled triggers count too.
+PLAN_TRIGGER_LIMIT = 1
+PLAN_LIMIT_ENV = "HONEYCOMB_TRIGGER_LIMIT"
 DEFAULT_SPEC_DIR = Path(__file__).resolve().parent / "triggers"
 
 THRESHOLD_OPS = frozenset({">", ">=", "<", "<="})
@@ -52,6 +61,31 @@ SPEC_KEYS = frozenset(
 
 class SpecError(ValueError):
     """A trigger spec that Honeycomb would reject or that is ambiguous."""
+
+
+class PlanLimitError(SpecError):
+    """The plan would leave more triggers than the Honeycomb plan allows."""
+
+
+def check_plan_limit(spec_count: int, unmanaged: Iterable[str], limit: int) -> None:
+    """Refuse when specs plus unmanaged live triggers exceed the plan limit.
+
+    Every spec becomes a live trigger once applied (disabled ones included,
+    since Honeycomb counts them), and an unmanaged trigger keeps its slot
+    because the sync never deletes.
+    """
+    unmanaged = sorted(unmanaged)
+    total = spec_count + len(unmanaged)
+    if total <= limit:
+        return
+    detail = f"{spec_count} spec(s)"
+    if unmanaged:
+        detail += f" + {len(unmanaged)} unmanaged live trigger(s) {unmanaged}"
+    raise PlanLimitError(
+        f"{detail} = {total} triggers, over the plan limit of {limit}. The "
+        "Honeycomb free plan allows one trigger: alert in the monolith instead "
+        "(projects/platform/honeycomb/README.md), or delete triggers in the UI."
+    )
 
 
 # --------------------------------------------------------------------------
@@ -294,11 +328,14 @@ def plan(
     specs: Iterable[TriggerSpec],
     live: list[tuple[str, dict, dict | None]],
     existing_datasets: set[str],
+    limit: int = PLAN_TRIGGER_LIMIT,
 ) -> list[Action]:
     """Decide what to do for every spec and every live trigger.
 
     ``live`` is (dataset_slug, trigger, query_spec) for each trigger found.
+    Raises PlanLimitError when the result would exceed ``limit`` triggers.
     """
+    specs = list(specs)
     by_name: dict[str, list[tuple[str, dict, dict | None]]] = {}
     for dataset, trigger, query in live:
         by_name.setdefault(trigger["name"], []).append((dataset, trigger, query))
@@ -349,6 +386,9 @@ def plan(
             actions.append(
                 Action("unmanaged", trigger["name"], dataset, trigger_id=trigger["id"])
             )
+    check_plan_limit(
+        len(specs), (a.name for a in actions if a.kind == "unmanaged"), limit
+    )
     return actions
 
 
@@ -460,6 +500,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--apply", action="store_true", help="create and update triggers")
     p.add_argument("--spec-dir", type=Path, default=DEFAULT_SPEC_DIR)
     p.add_argument(
+        "--plan-limit",
+        type=int,
+        default=None,
+        help=f"max triggers the plan may leave (default {PLAN_TRIGGER_LIMIT}, "
+        f"or ${PLAN_LIMIT_ENV})",
+    )
+    p.add_argument(
         "--dataset",
         action="append",
         default=[],
@@ -470,7 +517,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    limit = args.plan_limit
+    if limit is None:
+        limit = int(os.environ.get(PLAN_LIMIT_ENV) or PLAN_TRIGGER_LIMIT)
     specs = load_specs(args.spec_dir)
+    try:
+        # Fail before touching the API: the specs alone may already be over.
+        check_plan_limit(len(specs), (), limit)
+    except PlanLimitError as err:
+        print(f"error: {err}", file=sys.stderr)
+        return 1
     key = os.environ.get("HONEYCOMB_CONFIG_KEY", "")
     if not key:
         print("HONEYCOMB_CONFIG_KEY is not set", file=sys.stderr)
@@ -479,7 +535,7 @@ def main(argv: list[str] | None = None) -> int:
     datasets = {s.dataset for s in specs} | set(args.dataset)
     try:
         live, existing = fetch_live(client, datasets)
-        actions = plan(specs, live, existing)
+        actions = plan(specs, live, existing, limit)
     except (RuntimeError, SpecError) as err:
         print(f"error: {err}", file=sys.stderr)
         return 1
