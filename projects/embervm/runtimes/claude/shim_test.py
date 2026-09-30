@@ -4652,6 +4652,7 @@ def test_parked_claude_adoption_respawns_with_resume(tmp_path, monkeypatch, caps
             "first_message": "hello",
             "model": None,
             "system_prompt": None,
+            "effort": None,
         }
     ]
     assert parked_process.stdin.lines == []
@@ -4944,6 +4945,8 @@ def test_parked_claude_model_mismatch_respawns_with_resume(tmp_path, monkeypatch
             "first_message": "hello",
             "model": "opus",
             "system_prompt": None,
+            # No caller effort, so the opus model default applies.
+            "effort": "high",
         }
     ]
 
@@ -6027,6 +6030,23 @@ def test_system_prompt_validation_and_forwarding():
     ]
     assert manager.calls[0][1] == {"thinking": "high"}
 
+    manager = _Manager()
+    assert post({"message": "hello", "effort": "xhigh"}, manager) == [
+        (200, {"result": "ok"})
+    ]
+    assert manager.calls[0][1] == {"effort": "xhigh"}
+
+    for effort in ("", "ultra", 3, True):
+        manager = _Manager()
+        responses = post({"message": "hello", "effort": effort}, manager)
+        assert responses == [
+            (
+                400,
+                {"error": "effort must be one of %s" % (shim.CLAUDE_EFFORT_LEVELS,)},
+            )
+        ]
+        assert manager.calls == []
+
     for token in ("", 123):
         manager = _Manager()
         responses = post({"message": "hello", "system_prompt": token}, manager)
@@ -6392,16 +6412,89 @@ def test_claude_model_argv_and_mid_session_switch_resumes(tmp_path, monkeypatch)
     assert second["model"] == "fable"
     args = json.loads(args_path.read_text())
     assert args[args.index("--resume") + 1] == "init-sid"
-    assert args[args.index("--model") + 1] == "claude-fable-5"
+    assert args[args.index("--model") + 1] == "claude-fable-5-1"
     manager._close_process(kill=True)
+
+
+@pytest.mark.parametrize(
+    ("alias", "pinned", "effort", "expected_effort"),
+    [
+        ("opus", "claude-opus-5-5", None, "high"),
+        ("sonnet", "claude-sonnet-5-5", None, "medium"),
+        ("fable", "claude-fable-5-1", None, "high"),
+        # The factory's planner and reviewer roles send xhigh.
+        ("opus", "claude-opus-5-5", "xhigh", "xhigh"),
+        ("sonnet", "claude-sonnet-5-5", "high", "high"),
+        ("fable", "claude-fable-5-1", "xhigh", "xhigh"),
+    ],
+)
+def test_claude_alias_argv_pins_model_and_effort(
+    tmp_path, monkeypatch, alias, pinned, effort, expected_effort
+):
+    args_path = tmp_path / "args.json"
+    monkeypatch.setenv("FAKE_ARGS", str(args_path))
+    manager = _manager(tmp_path, monkeypatch)
+    kwargs = {"effort": effort} if effort is not None else {}
+    record = manager.turn("first", model=alias, **kwargs)
+    args = json.loads(args_path.read_text())
+    assert args[args.index("--model") + 1] == pinned
+    assert args[args.index("--effort") + 1] == expected_effort
+    # The run records the level it ran at and the model behind the alias.
+    assert record["model"] == alias
+    assert record["effort"] == expected_effort
+    # The fake CLI's init reports model "fake"; the run records what the CLI
+    # said it ran rather than restating the pin.
+    assert record["provider_model"] == "fake"
+    manager._close_process(kill=True)
+
+
+def test_claude_provider_model_falls_back_to_pinned_id():
+    process = object.__new__(shim.ClaudeProcess)
+    process.init_event = {"type": "system", "subtype": "init"}
+    process.model = "sonnet"
+    assert process._provider_model() == "claude-sonnet-5-5"
+    process.init_event = {"model": "claude-sonnet-5-5"}
+    assert process._provider_model() == "claude-sonnet-5-5"
+
+
+def test_claude_effort_change_respawns_with_resume(tmp_path, monkeypatch):
+    args_path = tmp_path / "args.json"
+    monkeypatch.setenv("FAKE_ARGS", str(args_path))
+    manager = _manager(tmp_path, monkeypatch)
+    manager.turn("first", model="opus", effort="high")
+    first_process = manager.process
+    same = manager.turn("again", session_id="init-sid", model="opus", effort="high")
+    assert manager.process is first_process
+    assert same["effort"] == "high"
+    second = manager.turn("second", session_id="init-sid", model="opus", effort="xhigh")
+    assert manager.process is not first_process
+    args = json.loads(args_path.read_text())
+    assert args[args.index("--resume") + 1] == "init-sid"
+    assert args[args.index("--effort") + 1] == "xhigh"
+    assert second["effort"] == "xhigh"
+    manager._close_process(kill=True)
+
+
+def test_claude_model_level_default_effort_map():
+    assert shim.CLAUDE_DEFAULT_EFFORT == {
+        "opus": "high",
+        "sonnet": "medium",
+        "fable": "high",
+    }
+    assert set(shim.CLAUDE_DEFAULT_EFFORT.values()) <= set(shim.CLAUDE_EFFORT_LEVELS)
+    assert set(shim.CLAUDE_MODELS) == set(shim.CLAUDE_DEFAULT_EFFORT)
 
 
 def test_claude_model_none_keeps_legacy_argv(tmp_path, monkeypatch):
     args_path = tmp_path / "args.json"
     monkeypatch.setenv("FAKE_ARGS", str(args_path))
     manager = _manager(tmp_path, monkeypatch)
-    manager.turn("first")
-    assert "--model" not in json.loads(args_path.read_text())
+    record = manager.turn("first")
+    args = json.loads(args_path.read_text())
+    assert "--model" not in args
+    # No model means no model default, so the CLI keeps its own effort.
+    assert "--effort" not in args
+    assert record["effort"] is None
     manager._close_process(kill=True)
 
 
@@ -6416,6 +6509,22 @@ def test_manager_passes_claude_model_to_adapter():
     manager.codex = object()
     manager.pi = object()
     assert manager.turn("hello", "sid", "fable") == ("hello", "sid", "fable")
+
+
+def test_manager_passes_effort_only_to_claude_adapter():
+    manager = _new_process_manager()
+    seen = {}
+
+    class Claude:
+        def turn(self, *args, **kwargs):
+            seen.update(kwargs)
+            return {}
+
+    manager.claude = Claude()
+    manager.codex = object()
+    manager.pi = object()
+    manager.turn("hello", "sid", "opus", effort="xhigh")
+    assert seen == {"effort": "xhigh"}
 
 
 def test_first_turn_is_sent_before_delayed_cli_init_and_only_once(
