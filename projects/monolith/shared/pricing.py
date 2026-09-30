@@ -26,7 +26,7 @@ _MODEL_ALIASES = {
     # entry, so they settle through the fixed table. GPT-6 has no Terra.
     "luna": ("gpt-6-luna", "fixed"),
     "terra": ("gpt-5.6-terra", "openai"),
-    "sol": ("gpt-6-sol", "fixed"),
+    "sol": ("gpt-6.1-sol", "fixed"),
     "astra": ("gpt-6-astra", "fixed"),
     "opus": ("claude-opus-5-5", "fixed"),
     "sonnet": ("claude-sonnet-5", "anthropic"),
@@ -57,6 +57,12 @@ FIXED_PRICES = {
         "cache_read_per_million": 0.20,
         "output_per_million": 10.00,
         "note": "OpenAI list price, 2026-09-22; cache read assumed at 10% of input",
+    },
+    "gpt-6.1-sol": {
+        "input_per_million": 2.00,
+        "cache_read_per_million": 0.10,
+        "output_per_million": 10.00,
+        "note": "OpenAI list price, 2026-09-29 (above 272K input: 4.00/0.20/15.00)",
     },
     "claude-opus-5-5": {
         "input_per_million": 4.00,

@@ -521,7 +521,10 @@ PREWARM_CLIS_FILE = "/usr/share/ember-shim/prewarm-clis"
 CODEX_MODELS = {
     "luna": ("gpt-6-luna", "medium"),
     "terra": ("gpt-5.6-terra", "high"),
-    "sol": ("gpt-6-sol", "high"),
+    # GPT-6.1 Sol (2026-09-29): same list price as GPT-6 Sol, scores within a
+    # point of GPT-6 Astra on the Artificial Analysis index at about a fifth of
+    # its token price.
+    "sol": ("gpt-6.1-sol", "high"),
     "astra": ("gpt-6-astra", "high"),
 }
 # opus is pinned rather than left as the CLI alias, which resolves to whatever

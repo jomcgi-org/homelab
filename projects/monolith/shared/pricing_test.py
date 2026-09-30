@@ -38,7 +38,7 @@ def test_codex_transcript_cache_is_part_of_reported_input():
 
 
 @pytest.mark.parametrize(
-    ("model", "model_ref"), [("sol", "gpt-6-sol"), ("terra", "gpt-5.6-terra")]
+    ("model", "model_ref"), [("sol", "gpt-6.1-sol"), ("terra", "gpt-5.6-terra")]
 )
 def test_codex_aliases_resolve_to_provider_models(model, model_ref):
     priced = price_usage(model, {"input_tokens": 1_000})
@@ -271,7 +271,7 @@ def test_reasoning_output_tokens_are_not_added_to_output():
 
 @pytest.mark.parametrize(
     ("model", "expected_cost"),
-    [("gpt-5.6-sol", 0.002564), ("sol", 0.001282)],
+    [("gpt-5.6-sol", 0.002564), ("sol", 0.001181)],
 )
 def test_reasoning_key_keeps_shim_cache_read_discount(model, expected_cost):
     # reasoning_output_tokens selects the Codex branch; the cache still sits
