@@ -1,0 +1,113 @@
+{{- if .Values.logs.enabled }}
+# Node-level log agent: see the logs block in values.yaml for why this is a
+# DaemonSet exporting directly rather than a forwarder to the gateway.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "otel-collector.logs.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "otel-collector.logs.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "otel-collector.logs.selectorLabels" . | nindent 6 }}
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/logs-configmap.yaml") . | sha256sum }}
+      labels:
+        {{- include "otel-collector.logs.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "otel-collector.logs.fullname" . }}
+      {{- with .Values.logs.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: otel-collector
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --config=/conf/collector.yaml
+          env:
+            # k8s_attributes watches only this node's pods.
+            - name: K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            {{- if .Values.onepassword.enabled }}
+            # Same Secret and keys as the gateway Deployment.
+            - name: HONEYCOMB_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.onepassword.secretName }}
+                  key: {{ .Values.onepassword.apiKeySecretKey }}
+            - name: HONEYCOMB_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.onepassword.secretName }}
+                  key: {{ .Values.onepassword.apiKeyIdKey }}
+            {{- end }}
+          ports:
+            - name: health
+              containerPort: 13133
+              protocol: TCP
+          # Root, with every capability dropped. Container log files under
+          # /var/log/pods are root-owned 0640, and the offset store is a
+          # root-created hostPath; uid 0 reads and writes both as their owner,
+          # so no DAC_READ_SEARCH or DAC_OVERRIDE is needed. The root
+          # filesystem stays read-only and the log mount is read-only.
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+            runAsNonRoot: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          readinessProbe:
+            httpGet:
+              path: /
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.logs.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /conf
+              readOnly: true
+            - name: varlogpods
+              mountPath: /var/log/pods
+              readOnly: true
+            - name: state
+              mountPath: /var/lib/otelcol/logs
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "otel-collector.logs.fullname" . }}
+        - name: varlogpods
+          hostPath:
+            path: /var/log/pods
+            type: Directory
+        - name: state
+          hostPath:
+            path: {{ .Values.logs.stateHostPath | quote }}
+            type: DirectoryOrCreate
+        - name: tmp
+          emptyDir: {}
+{{- end }}

@@ -1,0 +1,47 @@
+{{- if .Values.logs.enabled }}
+# The log agent's own identity. It is separate from the gateway's
+# ServiceAccount because only the agent talks to the API server: the gateway
+# keeps automountServiceAccountToken false.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "otel-collector.logs.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "otel-collector.logs.labels" . | nindent 4 }}
+---
+# Read-only, and only what k8s_attributes needs: pods for pod metadata and
+# labels, replicasets to resolve a pod's Deployment, jobs to resolve a
+# CronJob, namespaces for namespace metadata.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "otel-collector.logs.fullname" . }}
+  labels:
+    {{- include "otel-collector.logs.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [pods, namespaces]
+    verbs: [get, list, watch]
+  - apiGroups: [apps]
+    resources: [replicasets]
+    verbs: [get, list, watch]
+  - apiGroups: [batch]
+    resources: [jobs]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "otel-collector.logs.fullname" . }}
+  labels:
+    {{- include "otel-collector.logs.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "otel-collector.logs.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "otel-collector.logs.fullname" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

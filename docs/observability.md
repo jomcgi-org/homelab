@@ -1,6 +1,7 @@
 # Observability Architecture
 
-One OpenTelemetry Collector Deployment exports admitted telemetry to Honeycomb.
+One OpenTelemetry Collector Deployment exports admitted telemetry to Honeycomb,
+and a node-level DaemonSet from the same chart ships warning-and-above pod logs.
 Production sends synthetic probe metrics plus OTLP traces and metrics from the
 services admitted by the production allowlist.
 
@@ -11,6 +12,8 @@ graph LR
     HC[http_check receiver] -->|probe metrics| OC[otel-collector]
     SVC[allowlisted services] -->|OTLP traces and metrics| OC
     OC -->|OTLP| H[Honeycomb]
+    PODS["/var/log/pods"] -->|warn+ lines| LA[otel-collector-logs DaemonSet]
+    LA -->|OTLP, k8s-logs dataset| H
     UR[UptimeRobot] -->|direct HTTPRoute| HEALTH[collector health_check]
     DCGM[DCGM exporter] -->|direct scrape| STATS[public stats ticker]
 ```
@@ -75,14 +78,20 @@ Production configures the private monolith's OTLP/HTTP trace endpoint in
 `projects/monolith/deploy/values.yaml`, and admits it to the Honeycomb-backed
 traces pipeline through the production allowlist above.
 
-## Log correlation limit
+## Pod logs
 
-The collector has no logs receiver or logs pipeline, and the platform has no
-pod-log collection path. Trace IDs emitted by application log formatters remain
-in pod logs rather than being ingested into Honeycomb. Operators can pivot from
-a pod log line to its Honeycomb trace by `trace_id`, then pivot back by searching
-pod logs for that ID. A bidirectional pivot entirely inside Honeycomb requires a
-separate log-ingestion follow-up.
+A node-level log agent (a DaemonSet in the same chart, enabled on the hub by
+`logs.enabled` in `values-gke.yaml`) tails `/var/log/pods` for the namespaces in
+`logs.namespaces` and exports warning-and-above lines directly to the Honeycomb
+`k8s-logs` dataset, using the same ingest key as the gateway. It does not pass
+through the gateway, so it opens no OTLP logs path for workloads.
+
+Levels come from JSON `level`/`severity`/`levelname` fields, a leading level
+token on plain-text lines (Python, zap console, Envoy, logfmt), or, for lines
+with no level at all, an error/traceback heuristic whose matches are marked
+`log.level_source=heuristic`. Everything below WARN is dropped at the node.
+Lines carrying `trace_id` pivot to the trace datasets; pod logs from other
+namespaces, and anything below WARN, still stay only in the pod logs.
 
 ## Network visibility
 
