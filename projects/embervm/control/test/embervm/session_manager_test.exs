@@ -4816,6 +4816,74 @@ defmodule Embervm.SessionManagerTest do
     assert_receive {:retire_attempted, ^lineage_id}, 1_000
   end
 
+  # #6499: archive_session_volume dialed the session's bare volume_node_id.
+  # The real fleet's channel_fun only accepts an INSTANCE dial
+  # ("<node>/<uuid>"), so every drain logged "archive failed; keeping volume"
+  # with :unknown_node and parked workspaces never reached the store. The
+  # permissive fake_channel_fun hides that, so this stub refuses anything that
+  # is not an instance id, like the fleet does.
+  test "drain archives a parked lineage through its owning instance, never the bare node" do
+    parent = self()
+    {:ok, dialed} = Agent.start_link(fn -> %{strict: false, dials: []} end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(dialed) end)
+
+    strict_channel_fun = fn node ->
+      strict? =
+        Agent.get_and_update(dialed, fn st -> {st.strict, %{st | dials: [node | st.dials]}} end)
+
+      cond do
+        not strict? -> {:ok, :fake_channel}
+        is_binary(node) and String.match?(node, ~r{\A[^/]+/[^/]+\z}) -> {:ok, {:channel, node}}
+        true -> {:error, :unknown_node}
+      end
+    end
+
+    ctx =
+      start_stack(
+        channel_fun: strict_channel_fun,
+        prime_fun: fake_prime_fun("vm-archive-owner"),
+        archive_volume_fun: fn channel, request ->
+          send(parent, {:archived, channel, request.lineage_id})
+          {:ok, %{skipped: false}}
+        end
+      )
+
+    created = create_persistence_session(ctx, workload: "wl-archive-owner")
+    parked = park_session(ctx, created)
+    assert parked.volume_node_id == "node-4"
+
+    # The instance that holds this lineage's volume on disk, co-located on the
+    # session's node under a distinct instance id.
+    NodeCapacity.put(ctx.cap_table, {"node-4", "pod-owner"}, %{
+      node_id: "node-4",
+      configured_id: "node-4",
+      instance_id: "node-4/pod-owner",
+      pod_uid: "pod-owner",
+      workloads: %{},
+      session_vms: [],
+      session_snapshots: [],
+      session_volumes: [%{lineage_id: parked.lineage_id, workload: parked.workload}],
+      live_vms: 0,
+      max_live_vms: 8,
+      updated_at: 5_000_001
+    })
+
+    Agent.update(dialed, fn _ -> %{strict: true, dials: []} end)
+
+    # The pre-fix dial is refused by this stub: dialing the bare node could
+    # never have reached ArchiveVolume.
+    assert strict_channel_fun.(parked.volume_node_id) == {:error, :unknown_node}
+    Agent.update(dialed, fn st -> %{st | dials: []} end)
+
+    assert SessionManager.drain_node(ctx.mgr, "node-4") == 0
+    lineage_id = parked.lineage_id
+    assert_receive {:archived, {:channel, "node-4/pod-owner"}, ^lineage_id}, 1_000
+
+    dials = Agent.get(dialed, & &1.dials)
+    assert "node-4/pod-owner" in dials
+    refute "node-4" in dials
+  end
+
   test "a failed departure eviction append is retried to one durable terminal timestamp" do
     {:ok, store_clock} = Agent.start_link(fn -> 100 end)
     on_exit(fn -> Embervm.TestProcess.stop_safely(store_clock) end)

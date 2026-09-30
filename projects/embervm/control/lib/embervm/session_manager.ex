@@ -6225,8 +6225,10 @@ defmodule Embervm.SessionManager do
   defp delete_session_volume(state, %{volume_node_id: node_id, workload: workload, lineage_id: lineage_id})
        when is_binary(node_id) and is_binary(workload) and is_binary(lineage_id) do
     req = %DeleteVolumeRequest{trace: %Trace{workload: workload}, workload: workload, lineage_id: lineage_id}
+    # Dial the owning instance, not the bare node name (see archive_session_volume/2).
+    dial_id = Embervm.WakeInstance.dial_for_session_volume(state.capacity_table, node_id, lineage_id)
     result =
-      with {:ok, channel} <- safe_channel(state.channel_fun, node_id) do
+      with {:ok, channel} <- safe_channel(state.channel_fun, dial_id) do
         try do
           state.delete_session_volume_fun.(channel, req)
         rescue
@@ -6238,7 +6240,7 @@ defmodule Embervm.SessionManager do
 
     case result do
       {:ok, _} -> :ok
-      other -> Logger.warning("embervm session volume delete failed", workload: workload, lineage_id: lineage_id, reason: inspect(other))
+      other -> Logger.warning("embervm session volume delete failed", workload: workload, lineage_id: lineage_id, node_id: node_id, dial_id: dial_id, reason: inspect(other))
     end
     :ok
   end
@@ -6249,9 +6251,17 @@ defmodule Embervm.SessionManager do
        when is_binary(node_id) and is_binary(workload) and is_binary(lineage_id) do
     if persistence_enabled_workload?(session_workload_entry(state, workload)) do
       req = %ArchiveVolumeRequest{trace: %Trace{workload: workload}, workload: workload, lineage_id: lineage_id}
+      # Dial the INSTANCE owning this lineage on disk, exactly as
+      # retire_session_volume/2 does: channel_fun only accepts instance dials,
+      # so the bare volume_node_id failed :unknown_node on every drain and
+      # parked workspaces never reached the store (#6499). The lookup fails
+      # open to the bare node_id when no instance reports the lineage; that
+      # dial still fails and the volume is kept, and dial_id == node_id in the
+      # warning below is how that miss reads in the logs.
+      dial_id = Embervm.WakeInstance.dial_for_session_volume(state.capacity_table, node_id, lineage_id)
 
       result =
-        with {:ok, channel} <- safe_channel(state.channel_fun, node_id) do
+        with {:ok, channel} <- safe_channel(state.channel_fun, dial_id) do
           try do
             state.archive_volume_fun.(channel, req)
           rescue
@@ -6264,7 +6274,7 @@ defmodule Embervm.SessionManager do
       case result do
         {:ok, %{skipped: true}} ->
           Logger.warning("embervm drain archive skipped, lineage still attached",
-            workload: workload, lineage_id: lineage_id, node_id: node_id)
+            workload: workload, lineage_id: lineage_id, node_id: node_id, dial_id: dial_id)
           {:error, :archive_skipped}
         {:ok, _} -> :ok
         other ->
@@ -6272,6 +6282,7 @@ defmodule Embervm.SessionManager do
             workload: workload,
             lineage_id: lineage_id,
             node_id: node_id,
+            dial_id: dial_id,
             reason: inspect(other)
           )
 
