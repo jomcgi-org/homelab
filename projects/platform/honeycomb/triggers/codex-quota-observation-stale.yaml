@@ -1,7 +1,8 @@
 # drain.quota.codex.age_seconds is written on every drain.cycle span (about
 # every 16 minutes), including disabled and empty cycles, as well as on
 # drain.job spans. A drainer that stops cycling entirely writes nothing, so
-# this does not catch that failure; it catches cycles with a stale reading.
+# this does not catch that failure; it catches cycles that decide on a stale
+# quota reading.
 name: Codex quota observation stale
 dataset: monolith-backend
 description: >-
@@ -10,7 +11,8 @@ description: >-
   last hour exceeds 3600 s, i.e. the drainer is deciding on a quota reading
   more than an hour old. In the 7 days to 2026-09-30 the largest value seen was
   138 s. The attribute is emitted on every drain.cycle, so an idle drainer
-  still reports and the trigger fires when it should.
+  that still cycles but claims no jobs reports too. A drainer that stops
+  cycling entirely writes nothing, and this trigger does not catch that.
 enabled: true
 frequency: 900
 alert_type: on_change
