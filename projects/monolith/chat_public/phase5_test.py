@@ -168,6 +168,76 @@ def test_repeated_message_hits_cache_and_skips_model(client, session, monkeypatc
 
 
 # ---------------------------------------------------------------------------
+# 1b. A cache hit replays the stored citation state (and persists it)
+# ---------------------------------------------------------------------------
+
+
+def test_cache_hit_replays_stored_citation_state(client, session, monkeypatch):
+    counter = {"calls": 0}
+    monkeypatch.setattr(inference, "stream_chat", _counting_stream(counter))
+    monkeypatch.setattr(
+        retrieval,
+        "retrieve",
+        _fake_retrieve(
+            [
+                RetrievedNote(
+                    "n1",
+                    "TSA",
+                    "thread state analysis",
+                    0.9,
+                    verification_state="verified",
+                    disputed=False,
+                ),
+                RetrievedNote(
+                    "n2",
+                    "RUM",
+                    "rum analysis",
+                    0.8,
+                    verification_state="unverified",
+                    disputed=True,
+                ),
+            ]
+        ),
+    )
+    _fix_watermark(monkeypatch)
+    row = sessions.create_session(session)
+
+    first = _post(client, row.id, "What is the TSA method?")
+    assert first.status_code == 200
+    assert counter["calls"] == 1
+
+    second = _post(client, row.id, "What is the TSA method?")
+    assert second.status_code == 200
+    assert counter["calls"] == 1
+
+    frames = _parse_sse(second.text)
+    touched = {
+        f["data"]["id"]: f["data"] for f in frames if f["type"] == "node_touched"
+    }
+    assert touched["n1"]["verification_state"] == "verified"
+    assert touched["n1"]["disputed"] is False
+    assert touched["n2"]["verification_state"] == "unverified"
+    assert touched["n2"]["disputed"] is True
+
+    # The replayed turn persists the same grounding on the transcript.
+    messages = session.exec(select(ChatMessage).order_by(ChatMessage.id)).all()
+    assert messages[-1].touched == [
+        {
+            "id": "n1",
+            "title": "TSA",
+            "verification_state": "verified",
+            "disputed": False,
+        },
+        {
+            "id": "n2",
+            "title": "RUM",
+            "verification_state": "unverified",
+            "disputed": True,
+        },
+    ]
+
+
+# ---------------------------------------------------------------------------
 # 2. A changed notes watermark misses and regenerates
 # ---------------------------------------------------------------------------
 
@@ -349,3 +419,74 @@ def test_slot_released_on_exception(client, session, monkeypatch):
     assert "busy" not in second_types
     assert "error" in second_types
     assert limits.current_inflight() == 0
+
+
+# ---------------------------------------------------------------------------
+# 8. The notes watermark covers view membership plus per-note review state
+# ---------------------------------------------------------------------------
+
+
+class _StubScalarResult:
+    def __init__(self, value):
+        self._value = value
+
+    def scalar(self):
+        return self._value
+
+
+class _StubReadDb:
+    """Stand-in for the public_reader session: records the watermark SQL and
+    answers with a canned scalar (the real SQL needs Postgres md5/string_agg,
+    which SQLite fixtures cannot run)."""
+
+    def __init__(self, scalar="wm-stub", error=None):
+        self.scalar_value = scalar
+        self.error = error
+        self.statements: list[str] = []
+
+    def execute(self, stmt):
+        self.statements.append(str(stmt))
+        if self.error is not None:
+            raise self.error
+        return _StubScalarResult(self.scalar_value)
+
+
+def test_watermark_query_covers_membership_and_review_state():
+    read_db = _StubReadDb(scalar="abc123")
+    assert cache._query_watermark(read_db) == "abc123"
+    assert len(read_db.statements) == 1
+    sql = read_db.statements[0]
+    # Membership (note_id), review state (verification_state, disputed) and the
+    # freshness column (indexed_at) all feed the hash, over the public view.
+    assert "public_api.knowledge_notes" in sql
+    assert "note_id" in sql
+    assert "verification_state" in sql
+    assert "disputed" in sql
+    assert "indexed_at" in sql
+
+
+def test_watermark_empty_view_yields_stable_empty():
+    # No rows (or a NULL aggregate): the watermark is the stable 'empty' value,
+    # so an empty public view still has a usable cache key.
+    assert cache._query_watermark(_StubReadDb(scalar=None)) == "empty"
+    assert cache._query_watermark(_StubReadDb(scalar="empty")) == "empty"
+
+
+def test_watermark_change_propagates_through_memo():
+    # A changed view hash (a note leaving the view, a state change, a dispute
+    # flip) becomes the new watermark once the short TTL memo is refreshed.
+    read_db = _StubReadDb(scalar="hash-one")
+    assert cache.current_watermark(read_db) == "hash-one"
+    read_db.scalar_value = "hash-two"
+    # Still memoized within the TTL window.
+    assert cache.current_watermark(read_db) == "hash-one"
+    cache.reset_watermark_memo()
+    assert cache.current_watermark(read_db) == "hash-two"
+
+
+def test_watermark_failure_disables_caching():
+    # The view absent (or any DB error): fail closed to None, unchanged.
+    assert (
+        cache.current_watermark(_StubReadDb(error=RuntimeError("no such view")))
+        is None
+    )

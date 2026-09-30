@@ -135,9 +135,10 @@ def append_message(
 ) -> ChatMessage:
     """Persist a single transcript message under the session.
 
-    ``touched`` is the assistant turn's grounding (a [{id, title}, ...] list of
-    the public notes it touched); it defaults to empty for user turns. Stored so
-    a shared snapshot can render the same grounding chips as the live app.
+    ``touched`` is the assistant turn's grounding (a
+    [{id, title, verification_state, disputed}, ...] list of the public notes
+    it touched); it defaults to empty for user turns. Stored so a shared
+    snapshot can render the same grounding chips as the live app.
     """
     message = ChatMessage(
         session_id=session.id,
