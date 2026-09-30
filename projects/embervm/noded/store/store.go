@@ -316,10 +316,10 @@ func (s *Store) Put(ctx context.Context, key string, r io.Reader, size int64) er
 	return nil
 }
 
-// PutIfAbsent uploads an object only when key does not already exist. S3's
-// If-None-Match: * condition makes completeness-marker publication atomic
-// across nodes: exactly one concurrent writer creates the key, and every loser
-// leaves that winner untouched. The returned bool is true only for the creator.
+// PutIfAbsent uploads an object only when key does not already exist. GCS XML
+// uses x-goog-if-generation-match: 0; other S3 backends use If-None-Match: *.
+// Exactly one concurrent writer creates the key, and every loser leaves that
+// winner untouched. The returned bool is true only for the creator.
 func (s *Store) PutIfAbsent(ctx context.Context, key string, r io.Reader, size int64) (bool, error) {
 	if s == nil {
 		return false, ErrNotPresent
@@ -332,7 +332,12 @@ func (s *Store) PutIfAbsent(ctx context.Context, key string, r io.Reader, size i
 		req.ContentLength = size
 	}
 	req.Header.Set("Content-Type", "application/octet-stream")
-	req.Header.Set("If-None-Match", "*")
+	host := strings.ToLower(req.URL.Hostname())
+	if host == "storage.googleapis.com" || strings.HasSuffix(host, ".storage.googleapis.com") {
+		req.Header.Set("x-goog-if-generation-match", "0")
+	} else {
+		req.Header.Set("If-None-Match", "*")
+	}
 	if err := s.sign(req); err != nil {
 		return false, fmt.Errorf("store: sign create-only PUT %q: %w", key, err)
 	}

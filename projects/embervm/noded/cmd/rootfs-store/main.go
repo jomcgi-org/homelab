@@ -372,6 +372,17 @@ func putRootfs(ctx context.Context, s *store.Store, identity cacheIdentity, path
 		return putAlreadyPresent, "", err
 	}
 
+	// A winner may have published during the payload upload. Recheck before
+	// attempting the atomic create, including for backends that ignore PUT
+	// preconditions. The conditional PUT still closes the HEAD-to-PUT race.
+	exists, err = s.Head(ctx, checksumKey)
+	if err != nil {
+		return putAlreadyPresent, "", err
+	}
+	if exists {
+		return winningRootfsResult(ctx, s, identity, payloadKey)
+	}
+
 	sidecar, err := json.Marshal(completenessMarker{
 		PayloadKey:  payloadKey,
 		SHA256:      checksum,
@@ -396,7 +407,11 @@ func putRootfs(ctx context.Context, s *store.Store, identity cacheIdentity, path
 		return putUploaded, payloadKey, nil
 	}
 
-	// Another node won the atomic marker create while this payload uploaded. If
+	return winningRootfsResult(ctx, s, identity, payloadKey)
+}
+
+func winningRootfsResult(ctx context.Context, s *store.Store, identity cacheIdentity, payloadKey string) (putResult, string, error) {
+	// Another node published the marker before our recheck or atomic create. If
 	// both bakes produced the same bytes the payload is shared; otherwise leave
 	// this content-addressed loser for the bounded retention sweep.
 	winner, err := getCompletenessMarker(ctx, s, identity)

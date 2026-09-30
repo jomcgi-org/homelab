@@ -35,14 +35,15 @@ var testCacheIdentity = cacheIdentity{
 // fakeObjectStore follows the HTTP helper used by the noded store package
 // tests, keeping these tests on the real Store client and its S3 request path.
 type fakeObjectStore struct {
-	mu           sync.Mutex
-	objects      map[string][]byte
-	puts         []string
-	gets         []string
-	heads        []string
-	headCount    int
-	appearOnHead int
-	appearBody   []byte
+	mu                sync.Mutex
+	objects           map[string][]byte
+	puts              []string
+	gets              []string
+	heads             []string
+	headCount         int
+	appearOnHead      int
+	appearBody        []byte
+	ignoreIfNoneMatch bool
 }
 
 func newFakeObjectStore(t *testing.T) (*httptest.Server, *fakeObjectStore) {
@@ -79,7 +80,7 @@ func newFakeObjectStore(t *testing.T) (*httptest.Server, *fakeObjectStore) {
 				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
-			if r.Header.Get("If-None-Match") == "*" {
+			if !fake.ignoreIfNoneMatch && r.Header.Get("If-None-Match") == "*" {
 				if _, exists := fake.objects[r.URL.Path]; exists {
 					w.WriteHeader(http.StatusPreconditionFailed)
 					return
@@ -190,8 +191,8 @@ func TestPutSparseFileStoresNominalSizeAndChecksum(t *testing.T) {
 		t.Fatalf("sidecar upload time = %q: %v", marker.UploadedAt, err)
 	}
 	wantChecksumPath := "/embervm/" + checksumKey
-	if len(fake.heads) != 2 || fake.heads[0] != wantChecksumPath || fake.heads[1] != wantChecksumPath {
-		t.Fatalf("presence checks = %v, want two sidecar HEADs", fake.heads)
+	if len(fake.heads) != 3 || fake.heads[0] != wantChecksumPath || fake.heads[1] != wantChecksumPath || fake.heads[2] != wantChecksumPath {
+		t.Fatalf("presence checks = %v, want three sidecar HEADs", fake.heads)
 	}
 	if len(fake.puts) != 2 || fake.puts[0] != "/embervm/"+wantPayloadKey || fake.puts[1] != wantChecksumPath {
 		t.Fatalf("PUT order = %v, want payload then sidecar", fake.puts)
@@ -235,6 +236,44 @@ func TestPutRechecksHeadAfterHashing(t *testing.T) {
 	}
 	if len(fake.puts) != 0 {
 		t.Fatalf("concurrent winner caused PUTs: %v", fake.puts)
+	}
+}
+
+func TestPutRechecksHeadAfterUploadWhenPUTIgnoresIfNoneMatch(t *testing.T) {
+	for _, samePayload := range []bool{false, true} {
+		t.Run(strconv.FormatBool(samePayload), func(t *testing.T) {
+			server, fake := newFakeObjectStore(t)
+			fake.ignoreIfNoneMatch = true
+			fake.appearOnHead = 3
+			winner := []byte("first writer rootfs")
+			_, fake.appearBody = testCompletenessMarker(t, testCacheIdentity, winner)
+			payload := []byte("later writer rootfs")
+			if samePayload {
+				payload = winner
+			}
+			payloadKey, _ := testCompletenessMarker(t, testCacheIdentity, payload)
+			path := filepath.Join(t.TempDir(), "rootfs.ext4")
+			if err := os.WriteFile(path, payload, 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			var stdout, stderr bytes.Buffer
+			code := run(context.Background(), testPutArgs(path), storeEnv(server.URL), &stdout, &stderr)
+			wantOutput := "already present; orphan payload " + payloadKey + " is eligible for retention sweep\n"
+			if samePayload {
+				wantOutput = "already present\n"
+			}
+			if code != 0 || stdout.String() != wantOutput {
+				t.Fatalf("put exit = %d, stdout = %q, stderr = %q, want %q", code, stdout.String(), stderr.String(), wantOutput)
+			}
+			checksumPath := "/embervm/" + checksumObjectKey(testCacheIdentity)
+			if got := fake.objects[checksumPath]; !bytes.Equal(got, fake.appearBody) {
+				t.Fatalf("first writer marker changed: got %q, want %q", got, fake.appearBody)
+			}
+			if len(fake.puts) != 1 || fake.puts[0] != "/embervm/"+payloadKey {
+				t.Fatalf("PUTs = %v, want only the later writer payload", fake.puts)
+			}
+		})
 	}
 }
 
@@ -305,6 +344,7 @@ func TestConcurrentPutWritersLeaveMatchingPayloadAndSidecar(t *testing.T) {
 	var markerAttempts atomic.Int32
 	firstHeadsDone := make(chan struct{})
 	secondHeadsDone := make(chan struct{})
+	postUploadHeadsDone := make(chan struct{})
 	markerAttemptsReady := make(chan struct{})
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -325,6 +365,11 @@ func TestConcurrentPutWritersLeaveMatchingPayloadAndSidecar(t *testing.T) {
 					close(secondHeadsDone)
 				}
 				<-secondHeadsDone
+			case call <= 6:
+				if call == 6 {
+					close(postUploadHeadsDone)
+				}
+				<-postUploadHeadsDone
 			}
 			if !ok {
 				w.WriteHeader(http.StatusNotFound)
