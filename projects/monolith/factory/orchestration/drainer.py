@@ -140,6 +140,7 @@ def pin_drainer_settings() -> dict:
 # session it later starts. The two must agree: a reservation whose model
 # changed is refused, and a refused reservation never dispatches.
 DRAIN_MODEL = "luna"
+DRAINER_QUOTA_ROLE = "drainer"
 
 
 def provider_walled() -> tuple[bool, str]:
@@ -154,11 +155,21 @@ def provider_walled() -> tuple[bool, str]:
     already-reset provider claims exactly as it did before, because
     model_pool.availability owns that contract and the factory routes on the
     same reading.
+
+    The floor is judged on the rolled-up Codex class view, so while any
+    Codex grant has room the drainer keeps claiming and the egress sidecar
+    carries each connection to the roomier grant: that is the spill. When
+    every grant is below the drainer floor the drainer defers its claim
+    (drainer yields first). There is no cross-model spill: DRAIN_MODEL must
+    match its claim reservation, and spilling to Claude would spend capacity
+    the higher-ranked roles are floored to keep.
     """
     try:
         from factory.orchestration.model_pool import availability, quota_summary
 
-        ok, reason = availability(DRAIN_MODEL, quota_summary())
+        ok, reason = availability(
+            DRAIN_MODEL, quota_summary(), DRAINER_QUOTA_ROLE
+        )
         return (not ok), reason
     # nosemgrep: no-broad-except-swallow
     except Exception:  # noqa: BLE001 - an unreadable quota never stops the lane
@@ -174,7 +185,9 @@ def kg_provider_walled() -> tuple[bool, str]:
             quota_summary,
         )
 
-        ok, reason = confirmed_availability(DRAIN_MODEL, quota_summary())
+        ok, reason = confirmed_availability(
+            DRAIN_MODEL, quota_summary(), DRAINER_QUOTA_ROLE
+        )
         return (not ok), reason
     # nosemgrep: no-broad-except-swallow
     except Exception:  # unknown capacity must not admit KG work

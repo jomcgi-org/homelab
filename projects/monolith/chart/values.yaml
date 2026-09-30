@@ -1679,11 +1679,13 @@ swarm:
   # walls review the way a worker floor walls implementation, except that
   # review waits rather than falling past the end of its pool. The work-queue
   # drainer still does not route through a pool, but it reads the same
-  # availability to defer a claim instead of spending it on a walled provider.
-  # A role whose pool has one member never consults quota, so a floor needs a
-  # model_pools entry with somewhere to spill to. Empty applies no floors.
+  # availability under the drainer role to defer a claim instead of spending
+  # it on a walled provider. A role whose pool has one member never consults
+  # quota, so a floor needs a model_pools entry with somewhere to spill to.
+  # The drainer spills through the Codex grant pool instead. Empty applies
+  # no floors.
   #   quotaFloors:
-  #     codex: {worker: 10, conductor: 0}
+  #     codex: {worker: 10, conductor: 0, drainer: 25}
   #     claude: {worker: 15, reviewer: 5}
   quotaFloors: {}
 
