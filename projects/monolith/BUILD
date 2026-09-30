@@ -5142,6 +5142,14 @@ bdd_test(
     srcs = ["factory/orchestration/factory_policy_claude_55_postgres_test.py"],
 )
 
+# Hand-registered real-PostgreSQL coverage for the generation-14 policy
+# migration that moves factory workers onto Sol, which rewrites the TEXT
+# policy through jsonb.
+bdd_test(
+    name = "swarm_factory_policy_gen14_sol_postgres_test",
+    srcs = ["factory/orchestration/factory_policy_gen14_sol_postgres_test.py"],
+)
+
 # Hand-registered real-PostgreSQL coverage for the no-new-notes pending
 # provenance write: the atom_raw_provenance_pending partial unique index
 # only exists in Postgres, so a SQLite test cannot prove the retry is

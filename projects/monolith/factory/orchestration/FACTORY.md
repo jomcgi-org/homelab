@@ -485,6 +485,11 @@ remains the normal path for changing policy.
 `20260930060100_factory_policy_claude_55.sql` stages `sonnet` (pinned to
 `claude-sonnet-5-5`) behind `spark` in existing worker and implement pools and
 raises `task_budget_usd` to at least $50, without moving `worker_model`.
+`20260930210000_factory_policy_gen14_sol.sql` advances `generation` from 13
+to 14, so issues that already failed at 13 become eligible for intake again,
+and moves `worker_model` to `sol`, putting `sol` first in the worker,
+implement and refine pools so delivery spends Codex quota before Muse and
+Claude.
 
 ### Claude effort by role
 
