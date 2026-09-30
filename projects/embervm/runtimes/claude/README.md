@@ -47,7 +47,11 @@ why earlier attempts silently no-oped and every turn logged `path=lazy_spawn`.
 Prewarm parks each family differently:
 
 - **claude** spawns and then clears the generated session id: a parked process
-  owns no caller session until its first user message.
+  owns no caller session until its first user message. Model and effort are
+  spawn flags: every alias in `CLAUDE_MODELS` is pinned to a model ID, a turn's
+  `effort` (or the alias default in `CLAUDE_DEFAULT_EFFORT`) becomes
+  `--effort`, and a turn that changes either respawns with `--resume`. The
+  turn record carries `effort` and `provider_model` beside the alias.
 - **codex** binds nothing at spawn. Thread identity, model, effort and developer
   instructions all ride per-turn requests, so the initialize handshake is the
   whole init cost.

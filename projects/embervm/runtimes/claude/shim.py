@@ -527,13 +527,25 @@ CODEX_MODELS = {
     "sol": ("gpt-6.1-sol", "high"),
     "astra": ("gpt-6-astra", "high"),
 }
-# opus is pinned rather than left as the CLI alias, which resolves to whatever
-# the pinned claude_code_cli release shipped with, and so that the priced model
-# (shared/pricing.py) matches the one that ran.
+# Every alias is pinned rather than left as the CLI alias, which resolves to
+# whatever the pinned claude_code_cli release shipped with, and so that the
+# priced model (monolith shared/pricing.py) matches the one that ran.
 CLAUDE_MODELS = {
     "opus": "claude-opus-5-5",
-    "sonnet": "sonnet",
-    "fable": "claude-fable-5",
+    "sonnet": "claude-sonnet-5-5",
+    "fable": "claude-fable-5-1",
+}
+# The CLI's --effort levels. Effort is a spawn-time flag, so a turn that asks
+# for a different level respawns the CLI the same way a model change does.
+CLAUDE_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+# The effort a turn gets when its caller names none. The factory sends an
+# effort chosen by role; this map covers interactive and MCP sessions. Opus 5.5
+# defaults to medium in the CLI, which is too shallow for agentic turns, so the
+# shim states the level rather than inheriting whatever the CLI release picks.
+CLAUDE_DEFAULT_EFFORT = {
+    "opus": "high",
+    "sonnet": "medium",
+    "fable": "high",
 }
 DEFAULT_CODEX_MODEL = "luna"
 CODEX_SUBSCRIPTION_BASE_URL_ENV = "CODEX_SUBSCRIPTION_BASE_URL"
@@ -551,6 +563,11 @@ DEFAULT_PI_MODEL = "spark"
 MUSE_MODELS = {"spark": "muse-spark-1.3-contributor"}
 MUSE_MODEL_ALIASES = {"qwen": "spark"}
 DEFAULT_MUSE_MODEL = "spark"
+
+
+def _claude_default_effort(model):
+    """The effort a Claude turn gets when its caller names none."""
+    return CLAUDE_DEFAULT_EFFORT.get(model)
 
 
 def _canonical_pi_model(model):
@@ -2418,6 +2435,7 @@ class ClaudeProcess:
         self.fatal_error = None
         self.session_id = None
         self.model = None
+        self.effort = None
         self.system_prompt = None
         self._process_workspace = None
         self._process_uses_legacy_cwd = False
@@ -2464,6 +2482,7 @@ class ClaudeProcess:
         model=None,
         init_timeout=None,
         system_prompt=None,
+        effort=None,
     ):
         if self.fatal_error is not None:
             raise StartupError(self.fatal_error)
@@ -2500,6 +2519,8 @@ class ClaudeProcess:
         command.extend(["--include-partial-messages"])
         if model is not None:
             command.extend(["--model", CLAUDE_MODELS.get(model, model)])
+        if effort is not None:
+            command.extend(["--effort", effort])
         if session_id:
             command.extend(["--resume", session_id])
         agent_mcp_url = os.environ.get(AGENT_MCP_URL_ENV)
@@ -2632,6 +2653,7 @@ class ClaudeProcess:
                 elif session_id:
                     self.session_id = session_id
                 self.model = model
+                self.effort = effort
                 self.system_prompt = system_prompt
                 if event.get("apiKeySource") != "none":
                     message = "apiKeySource must be none, got %r" % event.get(
@@ -2664,6 +2686,12 @@ class ClaudeProcess:
                 output_queue.put(raw)
         finally:
             output_queue.put(None)
+
+    def _provider_model(self):
+        init_model = (getattr(self, "init_event", None) or {}).get("model")
+        if isinstance(init_model, str) and init_model:
+            return init_model
+        return CLAUDE_MODELS.get(self.model, self.model)
 
     def _pump_stderr(self, process, ring):
         """Read stderr lines onto the console and into the given ring.
@@ -2758,6 +2786,7 @@ class ClaudeProcess:
         model=None,
         progress_token=None,
         system_prompt=None,
+        effort=None,
     ):
         with self.turn_lock:
             cli_ready_start = _turn_timing_now()
@@ -2770,6 +2799,11 @@ class ClaudeProcess:
                     % (session_id, self.session_id)
                 )
             model_changed = model is not None and model != self.model
+            if effort is None:
+                effort = _claude_default_effort(
+                    model if model is not None else self.model
+                )
+            effort_changed = effort != getattr(self, "effort", None)
             system_prompt_changed = system_prompt != self.system_prompt
             parked_process = (
                 process is not None and process.poll() is None and not self.session_id
@@ -2797,6 +2831,7 @@ class ClaudeProcess:
                 and (
                     parked_adoption
                     or model_changed
+                    or effort_changed
                     or cwd_changed
                     or system_prompt_changed
                 )
@@ -2812,6 +2847,7 @@ class ClaudeProcess:
                         first_message=message,
                         model=model,
                         system_prompt=system_prompt,
+                        effort=effort,
                     )
                 except Exception:
                     if (
@@ -2843,6 +2879,7 @@ class ClaudeProcess:
                         first_message=message,
                         model=model,
                         system_prompt=system_prompt,
+                        effort=effort,
                     )
                 except Exception:
                     if (
@@ -2966,6 +3003,11 @@ class ClaudeProcess:
                             raise RuntimeError(str(event.get("result")))
                         record = dict(event)
                         record["model"] = self.model or model
+                        # What actually ran, beside the alias the caller asked
+                        # for: the CLI's init names the resolved model, and the
+                        # pinned map is the fallback when it does not.
+                        record["provider_model"] = self._provider_model()
+                        record["effort"] = getattr(self, "effort", None)
                         record["voice"] = voice_summary(event.get("result", ""))
                         record["activities"] = activity_from_events(events)
                         _emit_elapsed(
@@ -6259,6 +6301,7 @@ class ProcessManager:
         artifact_path=None,
         dispatch_id=None,
         turn_seq=None,
+        effort=None,
     ):
         total_start = _turn_timing_now()
         self._turn_started_at = total_start
@@ -6343,8 +6386,12 @@ class ProcessManager:
                         **(extra | prompt),
                     )
                 else:
+                    # Effort is a Claude CLI flag. Codex takes its level from
+                    # CODEX_MODELS and Pi from thinking, so only this adapter
+                    # receives it.
+                    effort_arg = {"effort": effort} if effort is not None else {}
                     record = adapter.turn(
-                        message, session_id, model, **(extra | prompt)
+                        message, session_id, model, **(extra | prompt | effort_arg)
                     )
             except Exception:
                 if not getattr(self, "_interrupt_reason", None):
@@ -6655,6 +6702,13 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                 },
             )
             return
+        effort = payload.get("effort")
+        if effort is not None and effort not in CLAUDE_EFFORT_LEVELS:
+            self._send(
+                400,
+                {"error": "effort must be one of %s" % (CLAUDE_EFFORT_LEVELS,)},
+            )
+            return
         dispatch_id = payload.get("dispatch_id")
         if dispatch_id is not None and (
             not isinstance(dispatch_id, str) or not dispatch_id.strip()
@@ -6677,6 +6731,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             prompt = {"system_prompt": system_prompt.strip()} if system_prompt else {}
             artifact = {"artifact_path": artifact_path.strip()} if artifact_path else {}
             thinking_override = {"thinking": thinking} if thinking is not None else {}
+            effort_override = {"effort": effort} if effort is not None else {}
             dispatch = {"dispatch_id": dispatch_id.strip()} if dispatch_id else {}
             if payload.get("turn_seq") is not None:
                 dispatch["turn_seq"] = payload["turn_seq"]
@@ -6690,6 +6745,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                     | prompt
                     | artifact
                     | thinking_override
+                    | effort_override
                     | dispatch
                 ),
             )
