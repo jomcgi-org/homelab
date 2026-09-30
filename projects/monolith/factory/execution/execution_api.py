@@ -15,7 +15,7 @@ from faas.embervm_client import EmberVMTransportError
 from goosecracker.api import REPO_CATALOG
 from sqlmodel import Session
 
-from factory.execution import model_family, normalize_model, store
+from factory.execution import EFFORT_LEVELS, model_family, normalize_model, store
 from factory.execution.codex_login import codex_login_gate, watch_for_login
 from factory.execution.constants import SYNTHETIC_SESSION_PREFIX
 from factory.execution.mcp import (
@@ -488,6 +488,7 @@ def start_session_for_swarm(
     reasoning: bool = False,
     admission_tier: str = "project",
     task_id: str | None = None,
+    effort: str | None = None,
 ) -> int:
     """Create and schedule a swarm-owned session through the normal session path.
 
@@ -506,6 +507,10 @@ def start_session_for_swarm(
         raise ValueError(f"unknown repo {repo}; catalog: {', '.join(REPO_CATALOG)}")
     model = normalize_model(model)
     model_family(model)
+    if effort is not None and effort not in EFFORT_LEVELS:
+        raise ValueError(
+            f"unknown effort {effort!r}; valid: {', '.join(EFFORT_LEVELS)}"
+        )
     with Session(get_engine()) as session:
         existing = store.get_session_by_local_id(session, local_session_id)
     if existing is not None and existing.id is not None:
@@ -523,6 +528,7 @@ def start_session_for_swarm(
         repo,
         prompt=prompt,
         reasoning=reasoning,
+        **({"effort": effort} if effort is not None else {}),
         workflow_id=workflow_id,
         node_key=node_key,
         node_attempt=node_attempt,

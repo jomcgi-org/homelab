@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 # carries is the ceiling plus however many were excused (#6045).
 MAX_PIN_ATTEMPTS = MAX_ATTEMPTS + MAX_CAPACITY_DENIED_ATTEMPTS
 MAX_PIN_TIMEOUT_SECONDS = 43200
-MAX_RETRY_CONTEXT_CHARS = 16000
+MAX_RETRY_CONTEXT_CHARS = 64_000
 # Guest apko and shim contract: EMBER_CLAUDE_WORKSPACE=/workspace.
 CAPTURE_CHECKOUT = "/workspace/src"
 DIFF_BLOB_LIMIT_BYTES = 5 * 1024 * 1024
@@ -113,7 +113,8 @@ def _validate_pin(pin: dict) -> dict:
         or len(retry_context) > MAX_RETRY_CONTEXT_CHARS
     ):
         raise ValueError(
-            "pin['retry_context'] must be a string of at most 16000 characters"
+            "pin['retry_context'] must be a string of at most "
+            f"{MAX_RETRY_CONTEXT_CHARS} characters"
         )
     prompt = need_str("prompt")
     model = need_str("model")
@@ -168,6 +169,13 @@ def _validate_pin(pin: dict) -> dict:
             f"pin['artifact_schema'] is not a valid JSON Schema: {exc}"
         ) from exc
 
+    effort = pin.get("effort")
+    if "effort" in pin:
+        from factory.execution import EFFORT_LEVELS
+
+        if effort not in EFFORT_LEVELS:
+            raise ValueError(f"pin['effort'] must be one of {EFFORT_LEVELS}")
+
     task_deadline = pin.get("task_deadline_at")
     if "task_deadline_at" in pin:
         if not isinstance(task_deadline, str):
@@ -178,6 +186,7 @@ def _validate_pin(pin: dict) -> dict:
 
     return {
         **({"task_deadline_at": task_deadline} if task_deadline is not None else {}),
+        **({"effort": effort} if effort is not None else {}),
         "task_id": task_id,
         "node_key": node_key,
         "attempt": attempt,
@@ -456,6 +465,7 @@ def _session_api(
     )
     if bound_session_id is not None:
         _validate_or_recover_started_session(bound_session_id, expected, prompt)
+    effort = _pinned_effort(task_id, node_key, node_attempt, start_session)
     session_id = start_session_for_swarm(
         local_session_id,
         prompt,
@@ -465,6 +475,7 @@ def _session_api(
         workflow_id=workflow_id,
         node_key=node_key,
         node_attempt=node_attempt,
+        **({"effort": effort} if effort is not None else {}),
     )
     _validate_or_recover_started_session(
         session_id,
@@ -484,6 +495,86 @@ def _session_api(
     if not binding.ok:
         raise ValueError(f"node session binding refused: {binding.refusal_code}")
     return session_id
+
+
+def _pinned_effort(
+    task_id: str, node_key: str, node_attempt: int, session=None
+) -> str | None:
+    """The effort the admitted pin of this attempt carries, if any.
+
+    Read from the graph rather than passed down from _start_node_session, so
+    the node workflow's durable members (runtime._node_workflow_members) and
+    with them its application version stay unchanged. The pin is immutable
+    once admitted, so a replay reads the same value.
+    """
+    from contextlib import nullcontext
+
+    from sqlmodel import Session, select
+
+    from core.db import get_engine
+    from factory.execution import EFFORT_LEVELS
+    from factory.orchestration.models import SwarmNodeRun
+
+    owned = nullcontext(session) if session is not None else Session(get_engine())
+    with owned as db:
+        pin_json = db.exec(
+            select(SwarmNodeRun.pin_json).where(
+                SwarmNodeRun.task_id == task_id,
+                SwarmNodeRun.node_key == node_key,
+                SwarmNodeRun.attempt == node_attempt,
+            )
+        ).first()
+    try:
+        effort = (json.loads(pin_json) if pin_json else {}).get("effort")
+    except (TypeError, ValueError, AttributeError):
+        return None
+    return effort if effort in EFFORT_LEVELS else None
+
+
+def session_provider_evidence(session_id: object, *, session=None) -> dict:
+    """The provider model and effort the guest reported for an attempt's turn.
+
+    The conductor folds this into a completed node's result rather than
+    execute_node returning it, which keeps the pinned node workflow version.
+    """
+    from contextlib import nullcontext
+
+    from sqlmodel import Session, select
+
+    from core.db import get_engine
+    from factory.execution.models import AgentTurn
+    from factory.orchestration.steps import provider_evidence
+
+    if not _is_int(session_id) or session_id < 1:
+        return {}
+    owned = nullcontext(session) if session is not None else Session(get_engine())
+    with owned as db:
+        usage_json = db.exec(
+            select(AgentTurn.usage_json).where(
+                AgentTurn.session_id == session_id, AgentTurn.seq == 1
+            )
+        ).first()
+    return provider_evidence(usage_json)
+
+
+def _turn_provider_evidence(usage_json: str | None) -> dict:
+    from factory.orchestration.steps import provider_evidence
+
+    return provider_evidence(usage_json)
+
+
+def with_provider_evidence(result: dict, evidence: dict) -> dict:
+    """A node result with the provider model and effort that actually ran.
+
+    A guest that reports no provider model (every non-Claude adapter, and a
+    Claude guest from before #6461) leaves the alias as the best evidence.
+    """
+    enriched = dict(result)
+    if provider_model := evidence.get("provider_model"):
+        enriched["provider_model"] = provider_model
+    if effort := evidence.get("effort"):
+        enriched["effort"] = effort
+    return enriched
 
 
 def _validate_or_recover_started_session(
@@ -1288,6 +1379,7 @@ def reconcile_completed_node(pin: dict, session_id: int | None) -> dict | None:
             return None
         cost, basis = _settlement_cost(turn.cost_usd, turn.list_cost_usd)
         provider_model = turn.model
+        evidence = _turn_provider_evidence(turn.usage_json)
         artifact = _evaluate_stored_artifact(
             turn.artifact_path,
             turn.artifact_blob,
@@ -1345,6 +1437,7 @@ def reconcile_completed_node(pin: dict, session_id: int | None) -> dict | None:
     )
     if provider_model:
         result["provider_model"] = provider_model
+    result = with_provider_evidence(result, evidence)
     result["cleanup"] = {
         "status": "pending",
         "reason": "read-only reconciliation did not reap the guest",

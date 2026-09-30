@@ -552,6 +552,40 @@ def test_start_step_checks_live_guard_inside_effect_and_preserves_parent(monkeyp
     }
 
 
+def test_the_session_takes_its_effort_from_the_admitted_pin(tmp_path, monkeypatch):
+    from factory.orchestration.models import SwarmNodeRun, SwarmTask
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'effort.db'}").execution_options(
+        schema_translate_map={"swarm": None}
+    )
+    SQLModel.metadata.create_all(
+        engine, tables=[SwarmTask.__table__, SwarmNodeRun.__table__]
+    )
+    monkeypatch.setattr(core.db, "get_engine", lambda: engine)
+    with Session(engine) as session:
+        session.add(SwarmTask(id="t-11", task_text="t", conductor_model="opus"))
+        for attempt, pinned in enumerate(
+            ({"effort": "high"}, {"effort": "xhigh"}, {}, {"effort": "bogus"}),
+            start=1,
+        ):
+            session.add(
+                SwarmNodeRun(
+                    task_id="t-11",
+                    node_key="review_1",
+                    attempt=attempt,
+                    pin_json=json.dumps(pinned),
+                    status="admitted",
+                )
+            )
+        session.commit()
+    assert nodes._pinned_effort("t-11", "review_1", 2) == "xhigh"
+    assert nodes._pinned_effort("t-11", "review_1", 1) == "high"
+    # A pin admitted before effort rode dispatch leaves the guest default.
+    assert nodes._pinned_effort("t-11", "review_1", 3) is None
+    assert nodes._pinned_effort("t-11", "review_1", 4) is None
+    assert nodes._pinned_effort("t-11", "review_1", 9) is None
+
+
 @pytest.fixture
 def session_binding_db(tmp_path, monkeypatch):
     """The persisted-session boundary, without a guest or network service."""
@@ -1208,11 +1242,93 @@ def test_artifact_prompt_uses_absolute_capture_checkout(harness):
     assert "regardless of your current working directory" in prompt
 
 
-@pytest.mark.parametrize("retry_context", [None, 3, "x" * 16001])
+@pytest.mark.parametrize(
+    "retry_context", [None, 3, "x" * (nodes.MAX_RETRY_CONTEXT_CHARS + 1)]
+)
 def test_retry_context_is_bounded_string_before_any_start(harness, retry_context):
     with pytest.raises(ValueError):
         nodes.execute_node.__wrapped__(pin(retry_context=retry_context))
     assert harness.starts == []
+
+
+def test_retry_context_admits_the_raised_cap(harness):
+    nodes.execute_node.__wrapped__(pin(retry_context="x" * 64_000))
+    admitted, _, _ = harness.starts[0]
+    assert len(admitted["retry_context"]) == 64_000
+
+
+def test_the_conductor_slices_retry_context_to_the_pin_cap():
+    from factory.orchestration import factory_conductor
+
+    assert factory_conductor.MAX_RETRY_CONTEXT_CHARS == nodes.MAX_RETRY_CONTEXT_CHARS
+
+
+@pytest.mark.parametrize("effort", ["", "ultra", 3, None])
+def test_an_invalid_pin_effort_refuses_before_any_start(harness, effort):
+    with pytest.raises(ValueError, match="effort"):
+        nodes.execute_node.__wrapped__(pin(effort=effort))
+    assert harness.starts == []
+
+
+def test_pin_effort_rides_the_admitted_pin(harness):
+    nodes.execute_node.__wrapped__(pin(effort="xhigh"))
+    admitted, _, _ = harness.starts[0]
+    assert admitted["effort"] == "xhigh"
+
+
+def test_a_pin_without_effort_stays_without_one(harness):
+    nodes.execute_node.__wrapped__(pin())
+    admitted, _, _ = harness.starts[0]
+    assert "effort" not in admitted
+
+
+def test_run_records_provider_model_and_effort_beside_the_alias():
+    result = {"status": "succeeded", "provider_model": "sonnet"}
+    enriched = nodes.with_provider_evidence(
+        result, {"provider_model": "claude-sonnet-5-5", "effort": "high"}
+    )
+    assert enriched == {
+        "status": "succeeded",
+        "provider_model": "claude-sonnet-5-5",
+        "effort": "high",
+    }
+    assert result == {"status": "succeeded", "provider_model": "sonnet"}
+    # A guest that reports neither leaves the alias as the evidence.
+    assert nodes.with_provider_evidence(result, {}) == result
+
+
+def test_session_provider_evidence_reads_the_first_turn(tmp_path, monkeypatch):
+    engine = create_engine(f"sqlite:///{tmp_path / 'evidence.db'}").execution_options(
+        schema_translate_map={"agent_sessions": None}
+    )
+    SQLModel.metadata.create_all(
+        engine, tables=[AgentSession.__table__, AgentTurn.__table__]
+    )
+    monkeypatch.setattr(core.db, "get_engine", lambda: engine)
+    with Session(engine) as session:
+        owner = AgentSession(local_session_id="k", workspace="w", branch="b")
+        session.add(owner)
+        session.flush()
+        session.add(
+            AgentTurn(
+                session_id=owner.id,
+                seq=1,
+                prompt="p",
+                result_text="r",
+                model="opus",
+                usage_json=json.dumps(
+                    {"provider_model": "claude-opus-5-5", "effort": "xhigh"}
+                ),
+            )
+        )
+        session.commit()
+        session_id = owner.id
+    assert nodes.session_provider_evidence(session_id) == {
+        "provider_model": "claude-opus-5-5",
+        "effort": "xhigh",
+    }
+    assert nodes.session_provider_evidence(session_id + 1) == {}
+    assert nodes.session_provider_evidence(None) == {}
 
 
 def test_retry_context_is_passed_as_untrusted_evidence_without_changing_limits(harness):

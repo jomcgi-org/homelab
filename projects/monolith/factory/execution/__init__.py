@@ -28,6 +28,10 @@ SUPPORTED_MODELS = (
     "pi-spark",
 )
 LEGACY_MODEL_ALIASES = {"qwen": "spark"}
+# The Claude CLI's --effort levels, which the guest shim validates too
+# (projects/embervm/runtimes/claude/shim.py CLAUDE_EFFORT_LEVELS). A session's
+# effort rides every turn it sends; only the Claude adapter acts on it.
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 
 # Per-env allowlist narrowing what the console picker and the Discord /agent
 # command OFFER (issue #4859). Comma-separated names; empty or unset means

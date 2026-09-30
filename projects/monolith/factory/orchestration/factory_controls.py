@@ -74,6 +74,7 @@ _POLICY_KEYS = {
     "worker_model",
     "task_timeout_seconds",
     "model_pools",
+    "role_effort",
     "max_review_rounds",
     "max_review_recovery_rounds",
     "intake",
@@ -84,6 +85,7 @@ _POLICY_KEYS = {
 _OPTIONAL_POLICY_KEYS = {
     "reviewer_model",
     "model_pools",
+    "role_effort",
     "max_planner_turns",
     "max_review_rounds",
     "max_review_recovery_rounds",
@@ -282,6 +284,19 @@ DEFAULT_MAX_PARALLEL_NODES = 1
 REVIEW_ROUND_ATTEMPTS = 1
 
 
+# A Claude planner runs at xhigh effort (#6461), which spends more thinking
+# tokens than the turn budget was sized for, so its node reserves this much
+# more. The reservation may exceed turn_budget_usd for the same reason a
+# review's may: authorize_start accepts an admitted run's own pinned cost.
+CLAUDE_PLANNER_RESERVATION_FACTOR = 1.5
+# The Opus review floor, raised with reviewer effort to xhigh (#6461).
+CLAUDE_REVIEW_RESERVATION_FLOOR_USD = 10.0
+
+
+def _is_claude_model(model: str) -> bool:
+    return model in {"opus", "sonnet", "fable"} or model.startswith("claude-")
+
+
 def turn_reservation_usd(model: str, turn_class: str, fallback: float) -> float:
     """Reserve short decisions at the model's conservative turn-class price."""
     if turn_class in {"planner", "refine"} and model in {
@@ -293,6 +308,10 @@ def turn_reservation_usd(model: str, turn_class: str, fallback: float) -> float:
         "muse-spark-1.3-contributor",
     }:
         return 0.50
+    if turn_class == "planner" and _is_claude_model(model):
+        return (
+            math.ceil(float(fallback) * CLAUDE_PLANNER_RESERVATION_FACTOR * 100) / 100
+        )
     return float(fallback)
 
 
@@ -311,7 +330,11 @@ def review_reservation_usd(model: str, changed_lines: int, fallback: float) -> f
         if priced is None
         else math.ceil(priced.cost_usd * 4 * 100) / 100
     )
-    floor = 8.0 if model == "opus" or model.startswith("claude-opus-") else 0.0
+    floor = (
+        CLAUDE_REVIEW_RESERVATION_FLOOR_USD
+        if model == "opus" or model.startswith("claude-opus-")
+        else 0.0
+    )
     return max(floor, estimate)
 
 
@@ -652,6 +675,8 @@ def validate_policy(policy: dict) -> dict:
         raise ValueError("worker model is not allowed")
     if "model_pools" in policy:
         result["model_pools"] = _validate_model_pools(policy["model_pools"], result)
+    if "role_effort" in policy:
+        result["role_effort"] = _validate_role_effort(policy["role_effort"])
     result["intake"] = _validate_intake(policy.get("intake", {}))
     result["problem_issues"] = _validate_problem_issues(
         policy.get("problem_issues", {})
@@ -668,6 +693,19 @@ def validate_policy(policy: dict) -> dict:
         raise ValueError("turn timeout exceeds task timeout")
     result["base_branch"] = _text(policy["base_branch"], "base_branch", 256)
     return result
+
+
+def _validate_role_effort(value: object) -> dict:
+    """Per-role Claude effort overrides, each one of the CLI's levels."""
+    from factory.execution import EFFORT_LEVELS
+    from factory.orchestration.model_pool import ROLE_EFFORT
+
+    if not isinstance(value, dict) or not set(value) <= set(ROLE_EFFORT):
+        raise ValueError("invalid role_effort")
+    for role, effort in value.items():
+        if effort not in EFFORT_LEVELS:
+            raise ValueError(f"invalid role_effort for {role}")
+    return {role: value[role] for role in sorted(value)}
 
 
 def _validate_intake(value: object) -> dict:

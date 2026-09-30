@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -128,6 +129,60 @@ def test_execute_pending_message_forwards_reasoning_when_enabled(monkeypatch, se
     asyncio.run(mcp._execute_pending_message(row.id))
 
     assert delivered[0]["reasoning"] is True
+
+
+def test_execute_pending_message_forwards_session_effort(monkeypatch, session):
+    delivered = []
+
+    async def mock_deliver(*args, **kwargs):
+        delivered.append(kwargs)
+        return _completed_delivery(args[2])
+
+    async def mock_notify(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(mcp._transport, "deliver", mock_deliver)
+    monkeypatch.setattr(mcp.agent_api, "notify", mock_notify)
+    monkeypatch.setattr(mcp, "_schedule_next_message", lambda _session_id: None)
+
+    row = store.create_session(session, "effort", "/workspace", "main", effort="xhigh")
+    plain = store.create_session(session, "no-effort", "/workspace", "main")
+    store.create_pending_message(session, row.id, "hello")
+    store.create_pending_message(session, plain.id, "hello")
+    asyncio.run(mcp._execute_pending_message(row.id))
+    asyncio.run(mcp._execute_pending_message(plain.id))
+
+    assert delivered[0]["effort"] == "xhigh"
+    assert "effort" not in delivered[1]
+
+
+def test_persisted_turn_records_the_provider_model_and_effort(monkeypatch, session):
+    async def mock_deliver(*args, **kwargs):
+        turn, ember = _completed_delivery(args[2])
+        return (
+            turn._replace(
+                model="sonnet", provider_model="claude-sonnet-5-5", effort="high"
+            ),
+            ember,
+        )
+
+    async def mock_notify(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(mcp._transport, "deliver", mock_deliver)
+    monkeypatch.setattr(mcp.agent_api, "notify", mock_notify)
+    monkeypatch.setattr(mcp, "_schedule_next_message", lambda _session_id: None)
+
+    row = store.create_session(session, "provider", "/workspace", "main", "sonnet")
+    seq = store.create_pending_message(session, row.id, "hello").seq
+    asyncio.run(mcp._execute_pending_message(row.id))
+
+    session.expire_all()
+    turn = store.get_turn(session, row.id, seq)
+    usage = json.loads(turn.usage_json)
+    assert turn.model == "sonnet"
+    assert usage["provider_model"] == "claude-sonnet-5-5"
+    assert usage["effort"] == "high"
 
 
 def test_execute_pending_message_forwards_system_prompt_only_when_set(

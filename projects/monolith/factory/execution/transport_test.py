@@ -1119,6 +1119,56 @@ def test_deliver_sets_thinking_from_reasoning(
     assert json.loads(requests[0].content)["thinking"] == expected_thinking
 
 
+def test_deliver_sends_effort_only_when_set(monkeypatch):
+    requests = []
+
+    async def handler(request):
+        requests.append(request)
+        return _turn_response(request)
+
+    _client(monkeypatch, handler)
+    session = transport.EmberSession("s1", "t1", None)
+    asyncio.run(
+        transport.EmberVmShimTransport().deliver(
+            session, "cli-1", "hello", "opus", effort="xhigh"
+        )
+    )
+    asyncio.run(
+        transport.EmberVmShimTransport().deliver(session, "cli-1", "hello", "opus")
+    )
+
+    assert json.loads(requests[0].content)["effort"] == "xhigh"
+    assert "effort" not in json.loads(requests[1].content)
+
+
+def test_deliver_extracts_provider_model_and_effort(monkeypatch):
+    async def handler(request):
+        payload = _turn_response(request).json()
+        payload["model"] = "sonnet"
+        payload["provider_model"] = "claude-sonnet-5-5"
+        payload["effort"] = "medium"
+        return httpx.Response(200, json=payload, request=request)
+
+    _client(monkeypatch, handler)
+    turn, _ = asyncio.run(
+        transport.EmberVmShimTransport().deliver(
+            transport.EmberSession("s1", "t1", None), "cli-1", "hello", "sonnet"
+        )
+    )
+
+    assert turn.model == "sonnet"
+    assert turn.provider_model == "claude-sonnet-5-5"
+    assert turn.effort == "medium"
+
+
+def test_guest_provider_labels_must_be_short_strings():
+    turn = transport.parse_native_turn(
+        {"result": "", "provider_model": 5, "effort": "x" * 129}, "guest"
+    )
+    assert turn.provider_model is None
+    assert turn.effort is None
+
+
 def test_deliver_includes_progress_token_when_present(monkeypatch):
     requests = []
 

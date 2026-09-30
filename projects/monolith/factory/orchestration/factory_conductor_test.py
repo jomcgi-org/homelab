@@ -768,7 +768,7 @@ def feedback_task(
         # advisory lane is opt-in.
         "max_tasks": {"delivery": 1, "advisory": 1},
         "max_turns_per_task": max_turns,
-        "task_budget_usd": 30.0,
+        "task_budget_usd": 40.0,
         "turn_budget_usd": 2.0,
         "allowed_models": ["opus", "luna"],
         "conductor_model": "opus",
@@ -1941,6 +1941,9 @@ def test_planner_refuses_overflow_instead_of_clipping_required_summaries(monkeyp
         run["outcome_json"] = json.dumps(outcome)
     before = copy.deepcopy((task, runs))
     monkeypatch.setattr(conductor, "_decision_evidence", lambda _task: [])
+    # The summaries are sized against the pre-#6461 cap; the mechanism under
+    # test is the refusal, not the cap's value.
+    monkeypatch.setattr(conductor, "PLANNER_CONTEXT_CHARS", 48_000)
 
     with pytest.raises(conductor.PlannerContextOverflow, match="context limit"):
         conductor.planner_prompt(task, [], runs)
@@ -2303,9 +2306,10 @@ def test_budget_projection_shares_admission_accounting_and_retry_ceiling(feedbac
     assert projection["active_accounted_cost_usd"] == 3.5
     assert projection["settled_accounted_cost_usd"] == 2.75
     assert projection["active_attempts"] == 2 and projection["uncertain_attempts"] == 1
-    assert projection["unallocated_cost_usd"] == 23.75
+    assert projection["unallocated_cost_usd"] == 33.75
     assert projection["new_node_max_cost_usd"] == 2 and projection["max_attempts"] == 2
-    assert projection["pending_planner_max_cost_usd"] == 2
+    # An opus planner reserves 1.5x the turn budget for its xhigh effort.
+    assert projection["pending_planner_max_cost_usd"] == 3
     assert (
         projection["turns_used"] == 1
         and projection["planner_turns_used"] == 0
@@ -8771,7 +8775,7 @@ def test_changes_requested_opens_an_engine_owned_correction_round(feedback_db):
     assert correct["prompt"].startswith(conductor._boundary(task))
     review = nodes["review_1"]
     assert review["max_attempts"] == 1
-    assert review["max_cost_usd"] == 8.0
+    assert review["max_cost_usd"] == 10.0
     assert review["deps"] == ["correct_1"] and review["model"] == "opus"
     assert review["kind"] == "gate" and not review["side_effects"]
     assert review["prompt"].startswith(conductor._boundary(task, review=True))
@@ -11018,7 +11022,7 @@ def test_an_over_envelope_plan_is_refused_whole_with_its_excess(feedback_db):
     # spare figure read off a graph with no review node would send the planner
     # back with a six-turn plan that derives eight and is refused again.
     assert detail["spare_turns"] == 4
-    assert detail["spare_usd"] == round(policy["task_budget_usd"] - 10.25, 6)
+    assert detail["spare_usd"] == round(policy["task_budget_usd"] - 12.25, 6)
     # Nothing was derived, so admission still reads the envelope.
     assert controls.task_snapshot(task["id"])["allowance"]["derived"] is False
     # The next planner is told exactly what to shrink.
@@ -12923,7 +12927,9 @@ def test_review_recovery_transient_read_waits_and_retries(feedback_db, monkeypat
     assert conductor._review_rounds_used(task["id"]) == 2
 
 
-@pytest.mark.parametrize("envelope", [{"max_turns": 5}, {"task_budget_usd": 10.5}])
+# The budget admits round one (a $10 Opus review floor and a $2 correction)
+# but not the recovery round behind it.
+@pytest.mark.parametrize("envelope", [{"max_turns": 5}, {"task_budget_usd": 12.5}])
 def test_review_recovery_never_exceeds_the_task_envelope(
     feedback_db, monkeypatch, envelope
 ):
@@ -14697,10 +14703,13 @@ def test_the_deadline_backstop_leaves_a_reserved_start_alone(
 
 
 @pytest.mark.parametrize(
-    "model, expected", [("astra", 0.5), ("spark", 0.5), ("opus", 4.0)]
+    "model, expected, refine_expected",
+    [("astra", 0.5, 0.5), ("spark", 0.5, 0.5), ("opus", 6.0, 4.0)],
 )
 @pytest.mark.parametrize("refine", [False, True])
-def test_planner_node_pricing(feedback_db, model, expected, refine):
+def test_planner_node_pricing(feedback_db, model, expected, refine_expected, refine):
+    # A Claude planner reserves 1.5x the turn budget for xhigh; refine does not.
+    expected = refine_expected if refine else expected
     task, policy = feedback_task(
         turn_budget_usd=4.0, allowed_models=["astra", "spark", "opus", "luna"]
     )
@@ -14716,7 +14725,7 @@ def test_planner_node_pricing(feedback_db, model, expected, refine):
     )
 
 
-@pytest.mark.parametrize("lines, expected", [(0, 8.0), (100_000, 9.04)])
+@pytest.mark.parametrize("lines, expected", [(0, 10.0), (200_000, 17.84)])
 def test_review_node_pricing(feedback_db, monkeypatch, lines, expected):
     from shared import pricing
 
@@ -15220,7 +15229,7 @@ def test_fan_in_reinsertion_prices_a_legacy_review(feedback_db):
         for edit in edits
         if edit["op"] == "add_node" and edit["node_key"] == "review_check"
     )
-    assert review["max_cost_usd"] == 8.0
+    assert review["max_cost_usd"] == 10.0
     assert review["deps"] == ["integrate_1"]
 
 
@@ -17440,3 +17449,124 @@ def test_repeated_envelope_refusal_still_asks_for_funding(monkeypatch):
     assert 'The unresolved deficit is {"usd": 1.5}' in decision["question"]
     assert "Should the exact deficit be funded" in decision["question"]
     assert decision["options"][0]["key"] == "fund-and-resume"
+
+
+def test_dispatch_pins_the_effort_of_each_node_role(feedback_db, monkeypatch):
+    task, policy = parallel_plan()
+    conductor.reconcile_task(task["id"], policy, object())
+    monkeypatch.setattr(conductor, "github_get", task_ref(task["id"]))
+    monkeypatch.setattr(conductor, "_free_background_slots", lambda: 3)
+    conductor.reconcile_task(task["id"], policy, object())
+    runs = {
+        run["node_key"]: run
+        for run in conductor.graph.node_runs(task["id"])
+        if run["status"] == "admitted"
+    }
+    assert set(runs) == {"implement_alpha", "implement_beta"}
+    for run in runs.values():
+        assert run["pin"]["effort"] == "high"
+
+
+def test_policy_role_effort_overrides_the_pinned_effort(feedback_db, monkeypatch):
+    task, policy = parallel_plan()
+    policy = {**policy, "role_effort": {"implement": "medium"}}
+    conductor.reconcile_task(task["id"], policy, object())
+    monkeypatch.setattr(conductor, "github_get", task_ref(task["id"]))
+    monkeypatch.setattr(conductor, "_free_background_slots", lambda: 3)
+    conductor.reconcile_task(task["id"], policy, object())
+    efforts = {
+        run["pin"]["effort"]
+        for run in conductor.graph.node_runs(task["id"])
+        if run["status"] == "admitted"
+    }
+    assert efforts == {"medium"}
+
+
+def test_a_pin_admitted_before_effort_reattaches_without_conflict(feedback_db):
+    task, policy = feedback_task()
+    assert conductor._add(
+        task,
+        policy,
+        "implement_fix",
+        "bounded work",
+        [],
+        "luna",
+        "test:implement_fix",
+        "test fixture",
+        max_attempts=1,
+    ).ok
+    workflow = f"factory-node:{task['id']}:implement_fix:1"
+    context = {
+        "repo": task["repo"],
+        "branch": f"factory/{task['id']}",
+        "workflow_id": workflow,
+        "artifact_path": ".factory/implement_fix.json",
+        "artifact_schema": conductor._schema("implement_fix"),
+        "hydration_branch": "main",
+        "retry_context": "[]",
+    }
+    # The legacy pin: admitted by a conductor that sent no effort.
+    assert conductor.reserve_node(task["id"], "implement_fix", workflow, context)
+    # The same dispatch key after this deploy carries one, and must re-attach.
+    assert conductor.reserve_node(
+        task["id"], "implement_fix", workflow, {**context, "effort": "high"}
+    )
+    [run] = conductor.graph.node_runs(task["id"], "implement_fix")
+    assert "effort" not in run["pin"]
+
+
+def test_planner_caps_are_sized_for_a_1m_token_context():
+    assert conductor.PLANNER_CONTEXT_CHARS == 192_000
+    assert conductor.PLANNER_TASK_CHARS == 48_000
+    assert conductor.PLANNER_ACCEPTANCE_CHARS == 64_000
+    assert conductor.REVIEW_FINDINGS_CHARS == 32_000
+    assert conductor.MAX_RETRY_CONTEXT_CHARS == 64_000
+
+
+def test_a_typical_task_context_no_longer_triggers_the_shrink_loop(
+    feedback_db, monkeypatch
+):
+    import json
+
+    # A detailed issue body with a graph and a couple of runs behind it: the
+    # shape a real planner round sees. It used to be clipped at 12k and
+    # trimmed again under the 48k context cap.
+    body = "Acceptance and context. " * 1_200
+    task, policy = feedback_task(body=body)
+    assert conductor._add(
+        task,
+        policy,
+        "implement_fix",
+        "bounded work",
+        [],
+        "luna",
+        "test:implement_fix",
+        "test fixture",
+        max_attempts=2,
+    ).ok
+    run_feedback_node(
+        task,
+        "implement_fix",
+        {
+            "status": "needs_work",
+            "summary": "s" * 800,
+            "pr_number": None,
+            "head_sha": None,
+        },
+        status="failed",
+    )
+    nodes = conductor.graph.load_graph(task["id"])
+    runs = conductor.graph.node_runs(task["id"])
+    assert len(task["task_text"]) > 24_000
+
+    context = json.loads(conductor._planner_context(task, nodes, runs))
+    assert context["omitted"]["task_characters"] == 0
+    assert context["omitted"]["graph_records"] == 0
+    assert context["omitted"]["run_records"] == 0
+    assert context["omitted"]["decision_feedback_records"] == 0
+
+    # The same evidence under the old caps would have been cut.
+    monkeypatch.setattr(conductor, "PLANNER_TASK_CHARS", 12_000)
+    monkeypatch.setattr(conductor, "PLANNER_CONTEXT_CHARS", 48_000)
+    old = json.loads(conductor._planner_context(task, nodes, runs))
+    assert old["omitted"]["task_characters"] > 0

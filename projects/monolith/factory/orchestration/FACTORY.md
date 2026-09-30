@@ -482,6 +482,24 @@ A GitOps policy change is a one-shot guarded migration that bumps `version`
 and writes a `swarm.factory_audit` row (for example
 `20260924060000_factory_policy_no_astra.sql`); the operator control surface
 remains the normal path for changing policy.
+`20260930060100_factory_policy_claude_55.sql` stages `sonnet` (pinned to
+`claude-sonnet-5-5`) behind `spark` in existing worker and implement pools and
+raises `task_budget_usd` to at least $50, without moving `worker_model`.
+
+### Claude effort by role
+
+Every dispatch pins a Claude CLI `--effort` chosen by the node's role, beside
+the model it settles on (#6461). Planner (`conductor_*`) and review nodes run
+at `xhigh`; funding judges (`conductor_funding_*`), implement, integrate and
+correct nodes at `high`; investigate and refine nodes at `medium`; any other
+role at `high`. The optional policy field `role_effort` overrides any of
+`planner`, `reviewer`, `funding`, `implement`, `integrate`, `correct`,
+`investigate` and `refine` with one of `low`, `medium`, `high`, `xhigh` or
+`max`. The guest applies effort to Claude turns only and records it on the
+turn with `provider_model`, the model that actually ran behind the alias; a
+session without an effort gets the guest's per-model default (`opus` and
+`fable` `high`, `sonnet` `medium`). Because xhigh costs more, a Claude
+planner node reserves 1.5x `turn_budget_usd` and the Opus review floor is $10.
 
 The `refine` default only applies to what a policy allows: a policy that allows
 neither `spark` nor `sol` falls back to the conductor pool, which is where

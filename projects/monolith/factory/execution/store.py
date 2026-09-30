@@ -1267,6 +1267,7 @@ def create_session(
     discord_thread: str | None = None,
     system_prompt: str | None = None,
     reasoning: bool = False,
+    effort: str | None = None,
     workflow_id: str | None = None,
     triggered_by: str | None = None,
     node_key: str | None = None,
@@ -1290,6 +1291,7 @@ def create_session(
         system_prompt=system_prompt,
         recall_pending=recall_pending,
         reasoning=reasoning,
+        effort=effort,
         workflow_id=workflow_id,
         node_key=node_key,
         node_attempt=node_attempt,
@@ -2270,6 +2272,13 @@ def persist_turn_from_pending_sync(
             usage["native_result_receipt"] = receipt_provenance
         if turn.workspace_recovery is not None:
             usage["workspace_recovery"] = turn.workspace_recovery
+        # The model and effort the guest ran, beside the alias in model.
+        usage.pop("provider_model", None)
+        usage.pop("effort", None)
+        if turn.provider_model is not None:
+            usage["provider_model"] = turn.provider_model
+        if turn.effort is not None:
+            usage["effort"] = turn.effort
         diff_blob = None
         diff_truncated = False
         diff_base_sha = None

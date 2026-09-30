@@ -419,6 +419,7 @@ def test_start_session_for_swarm_retry_preserves_original_workflow_id(
             node_key="implement",
             node_attempt=2,
             reasoning=True,
+            effort="xhigh",
         )
         second_id = api.start_session_for_swarm(
             "test-key",
@@ -437,6 +438,7 @@ def test_start_session_for_swarm_retry_preserves_original_workflow_id(
             assert row.node_key == "implement"
             assert row.node_attempt == 2
             assert row.reasoning is True
+            assert row.effort == "xhigh"
     finally:
         for table in SQLModel.metadata.tables.values():
             if table.name in schemas:
@@ -1190,3 +1192,15 @@ def test_factory_recall_uses_task_text_instead_of_shim_prompt(monkeypatch, tmp_p
     )
     assert captured == [objective]
     assert message == "Factory task t-7, obey the launch instructions."
+
+
+def test_start_session_for_swarm_refuses_an_unknown_effort():
+    with pytest.raises(ValueError, match="effort"):
+        api.start_session_for_swarm(
+            "factory:t-1:review_1:1",
+            "prompt",
+            "opus",
+            "jomcgi-org/homelab",
+            "main",
+            effort="ultra",
+        )

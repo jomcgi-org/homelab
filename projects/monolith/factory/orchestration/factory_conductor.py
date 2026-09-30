@@ -22,6 +22,7 @@ import time
 from urllib.parse import quote
 
 import httpx
+from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, select
 
 from core.db import get_engine
@@ -46,6 +47,7 @@ from factory.orchestration.factory_controls import (
 )
 from factory.orchestration.model_pool import (
     JUDGMENT_MODELS,
+    effort_for,
     escalate,
     judgment_floor,
     pool_for,
@@ -95,15 +97,22 @@ FACTORY_DEADLINE_BACKSTOP_RELEASE_STAGED = False
 _STARTED_AT = time.monotonic()
 DECISION_EVIDENCE_LIMIT = 20
 CONSECUTIVE_REFUSAL_THRESHOLD = 2
-PLANNER_CONTEXT_CHARS = 48_000
+# Sized for 1M-token Claude contexts (#6461): about 4x the caps written for
+# smaller windows. The shrink loop in _bounded_planner_context stays as a
+# safety net, but a typical task should now fit without it.
+PLANNER_CONTEXT_CHARS = 192_000
 PLANNER_RECORD_LIMIT = 32
 PLANNER_TEXT_CHARS = 1_000
-PLANNER_TASK_CHARS = 12_000
-PLANNER_ACCEPTANCE_CHARS = 16_000
+PLANNER_TASK_CHARS = 48_000
+PLANNER_ACCEPTANCE_CHARS = 64_000
 PLANNER_CONTEXT_QUERY_CHARS = 2_000
 PLANNER_CONTEXT_REQUEST_LIMIT = 1
 PLANNER_CONTEXT_REQUEST_TIMEOUT_SECONDS = 8
-REVIEW_FINDINGS_CHARS = 8_000
+REVIEW_FINDINGS_CHARS = 32_000
+# A node's prior-attempt evidence. Must equal node_workflows'
+# MAX_RETRY_CONTEXT_CHARS, which refuses a longer pin; it is restated here
+# rather than imported so this module does not load the DBOS node workflow.
+MAX_RETRY_CONTEXT_CHARS = 64_000
 MAX_PLAN_EDITS = graph.MAX_PLAN_EDITS
 LOOP_CAUSE = "factory-loop"
 LANDING_RECOVERY_CAUSE = f"{LOOP_CAUSE}:landing-recovery"
@@ -1323,6 +1332,9 @@ def _planner_run(run: dict, *, complete_summary: bool = False) -> dict:
         if isinstance(provider_model, str) and provider_model
         else "unavailable"
     )
+    effort = outcome.get("effort")
+    if isinstance(effort, str) and effort:
+        result["effort"] = effort
     result["reason"] = _planner_fields(outcome, ("reason",)).get(
         "reason", "invalid structured reason"
     )
@@ -4728,6 +4740,8 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
     from factory.orchestration.node_workflows import (
         execute_node,
         reconcile_completed_node,
+        session_provider_evidence,
+        with_provider_evidence,
     )
 
     pin = run["pin"]
@@ -4813,6 +4827,20 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
         }
     elif workflow_status == "SUCCESS":
         result = dbos.retrieve_workflow(key).get_result()
+        # The model and effort the guest actually ran (#6461), folded in here
+        # rather than in execute_node for the same pinned-version reason as
+        # the rule below.
+        # The evidence is observational: failing to read it must never hold
+        # the settlement of a node that completed.
+        try:
+            with Session(get_engine()) as db:
+                evidence = session_provider_evidence(
+                    result.get("session_id"), session=db
+                )
+        except SQLAlchemyError:
+            logger.warning("provider evidence unreadable for %s", key, exc_info=True)
+            evidence = {}
+        result = with_provider_evidence(result, evidence)
         # A completed artifact over its reservation is booked, never
         # failed. The rule lives here rather than in execute_node so the
         # pinned node workflow version holds across this deploy
@@ -6195,7 +6223,11 @@ def _dispatch_ready(
             "hydration_branch": branch_hydration(task, branch, hydration),
             "retry_context": json.dumps(
                 [r for r in runs if r["node_key"] == node_key], default=str
-            )[-16000:],
+            )[-MAX_RETRY_CONTEXT_CHARS:],
+            # Effort follows the role, not the model: it rides the pin beside
+            # the model this dispatch settles on, and the guest applies it to
+            # Claude turns only.
+            "effort": effort_for(node_key, policy),
         }
 
         if factory_gates.guidance(task):
@@ -6204,7 +6236,7 @@ def _dispatch_ready(
                     "prior_attempts": context["retry_context"][-4000:],
                     "conductor_direction": factory_gates.guidance(task),
                 }
-            )[:16000]
+            )[:MAX_RETRY_CONTEXT_CHARS]
         reservation = (
             reserve_node(
                 task_id,
@@ -6290,6 +6322,10 @@ def reserve_node(
                 ),
                 None,
             )
+            # A pin admitted before effort rode dispatch has none, and the
+            # same dispatch key must present the same context to re-attach.
+            if existing is not None and "effort" not in existing["pin"]:
+                context = {k: v for k, v in context.items() if k != "effort"}
             if existing is None or "task_deadline_at" in existing["pin"]:
                 from factory.orchestration.factory_funding_limits import (
                     review_authority,

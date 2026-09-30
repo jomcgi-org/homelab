@@ -58,6 +58,7 @@ _CONTEXT_FIELDS = frozenset(
         "hydration_branch",
         "retry_context",
         "task_deadline_at",
+        "effort",
     )
 )
 

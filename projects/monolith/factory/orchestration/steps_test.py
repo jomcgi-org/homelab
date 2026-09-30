@@ -1,3 +1,5 @@
+import json
+
 import httpx
 import pytest
 
@@ -286,3 +288,21 @@ def test_usage_counts_rejects_uncoercible_input_tokens():
         None,
     )
     assert steps._usage_counts('{"activities": [{"type": "tool"}]}') == (1, None)
+
+
+def test_provider_evidence_reads_the_guest_model_and_effort():
+    from factory.orchestration.steps import provider_evidence
+
+    usage = {
+        "input_tokens": 10,
+        "provider_model": "claude-opus-5-5",
+        "effort": "xhigh",
+    }
+    assert provider_evidence(json.dumps(usage)) == {
+        "provider_model": "claude-opus-5-5",
+        "effort": "xhigh",
+    }
+    assert provider_evidence(json.dumps({"input_tokens": 10})) == {}
+    assert provider_evidence(json.dumps({"effort": 3, "provider_model": ""})) == {}
+    assert provider_evidence(None) == {}
+    assert provider_evidence("not json") == {}
