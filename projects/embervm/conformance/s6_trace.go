@@ -191,27 +191,36 @@ func s6TLCConfigured(cfg config) bool {
 // exit and a crash exit both need output text to tell apart, and only named
 // violations may read as fail.
 func runS6TLC(ctx context.Context, cfg config, records []traceRecord) (verdict, detail string) {
+	verdict, detail, _ = runS6TLCWithOutput(ctx, cfg, records)
+	return verdict, detail
+}
+
+// runS6TLCWithOutput is runS6TLC plus the captured TLC output. The production
+// path ignores the third value; the end-to-end test (s6_tlc_test.go) asserts
+// on it directly, so a pass is proven exhaustive by the queue-drained line
+// itself rather than only by the classified verdict.
+func runS6TLCWithOutput(ctx context.Context, cfg config, records []traceRecord) (verdict, detail, tlcOutput string) {
 	coverage := len(records)
 	work, err := os.MkdirTemp("", "s6-trace-")
 	if err != nil {
-		return verdictIncomplete, fmt.Sprintf("tlc staging failed: %v (coverage=%d)", err, coverage)
+		return verdictIncomplete, fmt.Sprintf("tlc staging failed: %v (coverage=%d)", err, coverage), ""
 	}
 	defer os.RemoveAll(work)
 
 	spec, err := os.ReadFile(filepath.Join(cfg.tlcSpecDir, "adoption_trace.tla"))
 	if err != nil {
-		return verdictIncomplete, fmt.Sprintf("tlc spec unreadable: %v (coverage=%d)", err, coverage)
+		return verdictIncomplete, fmt.Sprintf("tlc spec unreadable: %v (coverage=%d)", err, coverage), ""
 	}
 	if err := os.WriteFile(filepath.Join(work, "adoption_trace.tla"), spec, 0o600); err != nil {
-		return verdictIncomplete, fmt.Sprintf("tlc staging failed: %v (coverage=%d)", err, coverage)
+		return verdictIncomplete, fmt.Sprintf("tlc staging failed: %v (coverage=%d)", err, coverage), ""
 	}
 	var moduleText, cfgText strings.Builder
 	writeS6TraceModule(records, cfg.minTraceEvents, &moduleText, &cfgText)
 	if err := os.WriteFile(filepath.Join(work, "window.tla"), []byte(moduleText.String()), 0o600); err != nil {
-		return verdictIncomplete, fmt.Sprintf("tlc staging failed: %v (coverage=%d)", err, coverage)
+		return verdictIncomplete, fmt.Sprintf("tlc staging failed: %v (coverage=%d)", err, coverage), ""
 	}
 	if err := os.WriteFile(filepath.Join(work, "window.cfg"), []byte(cfgText.String()), 0o600); err != nil {
-		return verdictIncomplete, fmt.Sprintf("tlc staging failed: %v (coverage=%d)", err, coverage)
+		return verdictIncomplete, fmt.Sprintf("tlc staging failed: %v (coverage=%d)", err, coverage), ""
 	}
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, s6TLCTimeoutSeconds*time.Second)
@@ -226,7 +235,8 @@ func runS6TLC(ctx context.Context, cfg config, records []traceRecord) (verdict, 
 	cmd.Stdout = &output
 	cmd.Stderr = &output
 	_ = cmd.Run()
-	return classifyS6TLCOutput(output.String(), coverage)
+	verdict, detail = classifyS6TLCOutput(output.String(), coverage)
+	return verdict, detail, output.String()
 }
 
 func runS6(ctx context.Context, cfg config, client *controlPlaneClient, suiteStarted time.Time) scenarioVerdict {
