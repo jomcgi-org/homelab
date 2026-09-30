@@ -58,7 +58,8 @@ It needs Python 3 and PyYAML, nothing else. Tests:
 The first dry run should show one `NOOP` or `UPDATE` for the imported
 `jomcgi.dev /health composite unhealthy` trigger. Its `time_range` and
 `exceeded_limit` were not visible through the Honeycomb MCP and are taken
-from its description. If the dry run shows drift on it, correct the spec file
+from its description. Its probe is not running on the hub, so it currently
+sees no data (#6507). If the dry run shows drift on it, correct the spec file
 to the live value before running `--apply`.
 
 ## Triggers
@@ -91,15 +92,15 @@ These need instrumentation before they can alert.
   drainer writes nothing, so a staleness trigger cannot fire when it should.
   Set the same attribute on every `drain.cycle` span (about every 16 minutes)
   in `projects/monolith/factory/orchestration/drainer.py`, then enable
-  `codex-quota-observation-stale.yaml` unchanged.
+  `codex-quota-observation-stale.yaml` unchanged (#6508).
 - **Per-model-family turn success.** `agent_sessions.deliver`
   (`projects/monolith/factory/execution/transport.py`) receives `model` but
   records no attributes. Setting `agent.model` (and `agent.model_family`:
   `codex` for sol/luna/terra/astra, `claude`, `spark`) plus the turn's
   `terminal_reason` would let `agent-turns-none-successful.yaml` be split into
-  one trigger per family, which is what a Codex-only outage needs.
+  one trigger per family, which is what a Codex-only outage needs (#6509).
 - **Factory tasks stuck uncertain.** No span or column exposes factory task
   state (searched for factory, uncertain, receipt, permit). A periodic span
   from the factory reconciler carrying `factory.tasks.uncertain` and
   `factory.tasks.oldest_uncertain_age_seconds` would support a trigger on
-  `MAX(factory.tasks.oldest_uncertain_age_seconds) > 7200`.
+  `MAX(factory.tasks.oldest_uncertain_age_seconds) > 7200` (#6510).
