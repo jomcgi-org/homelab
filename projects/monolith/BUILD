@@ -9100,6 +9100,7 @@ py_library(
         ":pkg_knowledge",
         ":pkg_swarm",
         "@pip//httpx",
+        "@pip//kubernetes_asyncio",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
     ],
@@ -9157,6 +9158,38 @@ py_test(
         ":factory_durable_identity",
         ":pkg_swarm",
         "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "factory_ops_health_test",
+    srcs = ["factory/ops_health_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_agent_sessions",
+        ":pkg_core",
+        ":pkg_factory",
+        ":pkg_shared",
+        ":pkg_swarm",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "factory_health_alerts_test",
+    srcs = ["factory/health_alerts_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_agent_sessions",
+        ":pkg_core",
+        ":pkg_factory",
+        ":pkg_shared",
+        ":pkg_swarm",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
     ],
 )
 

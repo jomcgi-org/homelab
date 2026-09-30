@@ -31,6 +31,7 @@ from opentelemetry import trace
 
 from factory import execution as agent_sessions
 from factory.execution import model_family
+from factory.execution import create_outcome
 from factory.execution.constants import exact_dispatch_id
 from faas.embervm_client import (
     EmberVMTimeout,
@@ -263,6 +264,21 @@ async def _invoke_with_retryable_backoff(
             )
             await asyncio.sleep(backoff_seconds[attempt])
     raise AssertionError("retry loop did not return or raise")
+
+
+def _record_create_status(exc: httpx.HTTPStatusError) -> None:
+    """Record a failed create for embervm_capacity health, when it is EmberVM's.
+
+    A 429 capacity denial or a 5xx says EmberVM could not place a session. Any
+    other 4xx (a restore denial, an unknown workload) is about this request and
+    says nothing about capacity, so it is not recorded.
+    """
+    status = exc.response.status_code
+    if status == 429:
+        reason = _capacity_denial_reason(exc) or "unclassified"
+        create_outcome.record(False, f"429 {reason}")
+    elif status >= 500:
+        create_outcome.record(False, f"{status} from control plane")
 
 
 def _status_error_detail(exc: httpx.HTTPStatusError) -> str:
@@ -933,14 +949,17 @@ class EmberVmShimTransport:
                 data = response.json()
                 session_id = data.get("session_id")
                 if not session_id:
+                    create_outcome.record(False, "response missing session_id")
                     raise EmberVMTransportError(
                         "EmberVM session response missing session_id"
                     )
                 session_token = data.get("session_token")
                 if not session_token:
+                    create_outcome.record(False, "response missing session_token")
                     raise EmberVMTransportError(
                         "EmberVM session response missing session_token"
                     )
+                create_outcome.record(True, f"created on {self._workload_for(model)}")
                 return EmberSession(
                     session_id=session_id,
                     session_token=session_token,
@@ -950,9 +969,11 @@ class EmberVmShimTransport:
                 )
         except httpx.TimeoutException as exc:
             logger.warning("embervm session creation timed out: %s", exc)
+            create_outcome.record(False, f"timed out: {type(exc).__name__}")
             raise EmberVMTimeout(str(exc)) from exc
         except httpx.HTTPStatusError as exc:
             logger.warning("embervm session creation failed: %s", exc)
+            _record_create_status(exc)
             # A capacity denial waits out a whole turn; anything else retryable
             # keeps the original short ladder, because a transient control
             # plane problem clears in seconds and there is no point holding a
@@ -1000,6 +1021,7 @@ class EmberVmShimTransport:
             raise EmberVMTransportError(_status_error_detail(exc)) from exc
         except httpx.TransportError as exc:
             logger.warning("embervm session creation transport error: %s", exc)
+            create_outcome.record(False, f"transport error: {type(exc).__name__}")
             raise EmberVMTransportError(str(exc)) from exc
 
     # The operator surface for the workload cap: parked sessions count as live

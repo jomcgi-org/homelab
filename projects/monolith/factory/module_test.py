@@ -43,6 +43,10 @@ def test_private_surface_preserves_existing_routes_and_health():
         "drainer",
         "kg",
         "provider_quota",
+        "embervm_capacity",
+        "agent_turns",
+        "codex_quota_fresh",
+        "factory_stuck",
     }
     assert set(module.MODULE.register_health) == {"factory_reservations"}
     assert set(module.MODULE.register_liveness) == {"factory"}
@@ -144,9 +148,9 @@ async def test_disabled_orchestration_still_starts_session_maintenance(monkeypat
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("loop", ["quota", "review", "guest_cleanup"])
+@pytest.mark.parametrize("loop", ["quota", "review", "guest_cleanup", "health_alerts"])
 async def test_supervision_is_owned_by_factory_leader(monkeypatch, loop):
-    from factory import quota_probe, reservation_reviews
+    from factory import health_alerts, quota_probe, reservation_reviews
     from factory.execution import (
         guest_cleanup,
         kg_feed,
@@ -178,6 +182,11 @@ async def test_supervision_is_owned_by_factory_leader(monkeypatch, loop):
         reservation_reviews,
         "start_review_loop",
         lambda: [task] if loop == "review" else [],
+    )
+    monkeypatch.setattr(
+        health_alerts,
+        "start_health_alert_loop",
+        lambda: [task] if loop == "health_alerts" else [],
     )
     app = SimpleNamespace(state=SimpleNamespace(singleton_tasks=[]))
     try:
