@@ -3869,6 +3869,10 @@ PI_BASE_URL = "https://api.meta.ai/v1"
 # 1.4.1-R4503.1 keeps the same transport settings surface (verified in the
 # guest: settings.json path, endpoint_transport, required MCP abort); the
 # bundled-roots behavior itself needs a live re-confirmation in prod.
+# A 2026-09-30 capture run of 1.4.1-R4503.1 under these settings showed every
+# api.meta.ai request (catalog GET, turn POSTs) carrying Authorization Bearer,
+# with no other hosts and no telemetry traffic, so the presence-keyed swap
+# entry needs no injectAlwaysPaths.
 MUSE_BASE_URL = "http://api.meta.ai/v1"
 
 
@@ -4414,6 +4418,9 @@ class MuseProcess:
         Muse telemetry does not honor endpoint_transport and otherwise calls
         its bundled https://api.meta.ai telemetry endpoints directly. Disable
         it so automatic traffic stays on the sidecar's plaintext guest lane.
+        A 2026-09-30 capture run of 1.4.1-R4503.1 under these settings showed
+        no telemetry requests at all, and every api.meta.ai request carried
+        the Bearer Authorization header the presence-keyed swap keys on.
         """
         agent_mcp_url = os.environ.get(AGENT_MCP_URL_ENV)
         if not self._mcp_probe_cached:
