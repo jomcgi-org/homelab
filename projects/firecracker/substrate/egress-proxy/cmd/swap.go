@@ -194,11 +194,12 @@ const grantExhaustionStaleAfter = 15 * time.Minute
 // stays in rotation (it can only be observed by serving), and staleness
 // never hides a known exhaustion: exhausted grants still sort last.
 //
-// This must stay at or below the factory KG gate's freshness bound
-// (SWARM_MODEL_POOL_QUOTA_MAX_AGE_SECONDS, default 900s). The gate admits
-// quota-sensitive work when at least one grant is fresh and permitting and
-// treats older observations as unselectable, which is sound only while the
-// ranker never prefers a stale grant over a fresh one.
+// The factory KG gate's freshness bound (SWARM_MODEL_POOL_QUOTA_MAX_AGE_SECONDS,
+// default 900s, capped at this value there) must stay at or below this one.
+// The gate admits quota-sensitive work when at least one grant is fresh and
+// permitting, which is sound only while every grant the gate calls fresh is
+// also fresh to the ranker. A gate bound above this one would let the ranker
+// tie a stale grant with arbitrarily old evidence against the admitted one.
 const grantStaleAfter = 15 * time.Minute
 
 // grantStale reports whether a grant observation is too old to steer the

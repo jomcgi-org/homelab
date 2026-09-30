@@ -590,7 +590,12 @@ would be new security-sensitive surface for a reversible default. It is sound
 because the ranker never prefers a stale grant while a fresh usable one
 exists, so the probe lands on the best usable grant and refreshes it either
 way, while unknown, unobserved, and exhausted capacity still defer without
-spending a request.
+spending a request. Exhaustion counts only while it can still be true (an
+active window at the exhausted percent, or a rejection whose reset is still in
+the future), matching the ranker, so an all-stale pool of spent grants whose
+resets have passed is probed rather than wedged. The gate and probe cap their
+freshness bound at the sidecar's 15 minutes, so every grant the gate calls
+fresh is also fresh to the ranker.
 (see: /projects/monolith/factory/quota_probe.py)
 (see: /projects/monolith/factory/orchestration/model_pool.py)
 

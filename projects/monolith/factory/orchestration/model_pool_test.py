@@ -575,6 +575,22 @@ def test_stale_grant_is_unselectable_beside_a_fresh_grant():
     )
 
 
+def test_gate_bound_is_capped_at_the_sidecar_bound(monkeypatch):
+    # A gate bound above the sidecar's would call a grant fresh that the
+    # ranker calls stale, so a raised env value is capped at 900s.
+    monkeypatch.setenv("SWARM_MODEL_POOL_QUOTA_MAX_AGE_SECONDS", "1800")
+    assert model_pool.kg_quota_max_age_seconds() == 900.0
+    monkeypatch.setenv("SWARM_MODEL_POOL_QUOTA_MAX_AGE_SECONDS", "300")
+    assert model_pool.kg_quota_max_age_seconds() == 300.0
+    grants = {"codex-a": _codex_grant("codex-a", age=1000.0, used=60.0)}
+    rolled = model_pool.rollup_grants({}, grants, grants_complete=True)
+    monkeypatch.setenv("SWARM_MODEL_POOL_QUOTA_MAX_AGE_SECONDS", "1800")
+    ok, reason = model_pool.confirmed_availability("luna", rolled)
+    assert ok is False
+    assert "stale_observation" in reason
+    assert model_pool.grant_observation_state(grants["codex-a"]) == "stale"
+
+
 def test_all_stale_grants_stay_deferred():
     grants = {
         "codex-cluster": _codex_grant("codex-cluster", age=79960.9),

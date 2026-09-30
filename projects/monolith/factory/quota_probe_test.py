@@ -241,14 +241,21 @@ def test_total_deadline_cancels_stalled_creation(db, monkeypatch):
     assert probe.claim(payload(observed=False)) is None
 
 
-def codex_grant(age, used=10.0, exhausted=False, observed=True):
+def codex_grant(
+    age, used=10.0, exhausted=False, observed=True, windows=None, resets_at=None
+):
+    if windows is None:
+        window = {"name": "primary", "used_percent": used}
+        if resets_at is not None:
+            window["resets_at"] = resets_at
+        windows = [window]
     return {
         "provider": "codex",
         "observed": observed,
         "exhausted": exhausted,
         "status": "ok",
         "age_seconds": age,
-        "windows": [{"name": "primary", "used_percent": used}],
+        "windows": windows,
     }
 
 
@@ -285,9 +292,10 @@ def test_codex_probe_skips_fresh_grant(db, luna_model):
 
 
 def test_codex_probe_skips_all_exhausted_pool(db, luna_model):
+    future = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
     flagged = {
-        "codex-b": codex_grant(5000.0, exhausted=True),
-        "codex-cluster": codex_grant(6000.0, exhausted=True),
+        "codex-b": codex_grant(5000.0, exhausted=True, resets_at=future),
+        "codex-cluster": codex_grant(6000.0, exhausted=True, resets_at=future),
     }
     assert probe.codex_claim(codex_payload(flagged)) is None
     spent = {
@@ -295,6 +303,40 @@ def test_codex_probe_skips_all_exhausted_pool(db, luna_model):
         "codex-cluster": codex_grant(6000.0, used=98.0),
     }
     assert probe.codex_claim(codex_payload(spent)) is None
+
+
+def test_codex_probe_fires_when_stale_rejections_have_reset(db, luna_model):
+    # Both grants 429'd, traffic stopped, and every window has since expired.
+    grants = {
+        "codex-b": codex_grant(20000.0, exhausted=True, windows=[]),
+        "codex-cluster": codex_grant(18000.0, exhausted=True, windows=[]),
+    }
+    assert probe.codex_claim(codex_payload(grants)) is not None
+
+
+def test_codex_probe_fires_when_rejection_reset_has_passed(db, luna_model):
+    past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    grants = {
+        "codex-b": codex_grant(20000.0, used=100.0, exhausted=True, resets_at=past),
+        "codex-cluster": codex_grant(
+            18000.0, used=100.0, exhausted=True, resets_at=past
+        ),
+    }
+    assert probe.codex_claim(codex_payload(grants)) is not None
+
+
+def test_codex_probe_fires_for_bare_stale_rejection(db, luna_model):
+    grants = {"codex-b": codex_grant(5000.0, exhausted=True, windows=[])}
+    assert probe.codex_claim(codex_payload(grants)) is not None
+
+
+def test_codex_probe_skips_rejection_with_future_reset(db, luna_model):
+    future = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+    grants = {
+        "codex-b": codex_grant(5000.0, exhausted=True, resets_at=future),
+        "codex-cluster": codex_grant(6000.0, exhausted=True, resets_at=future),
+    }
+    assert probe.codex_claim(codex_payload(grants)) is None
 
 
 def test_codex_probe_skips_broken_broker_and_unobserved_pool(db, luna_model):
