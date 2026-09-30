@@ -2749,9 +2749,7 @@ def test_provider_walled_is_only_positive_evidence(monkeypatch):
 def test_provider_walled_applies_the_drainer_floor(monkeypatch):
     import factory.orchestration.model_pool as model_pool
 
-    monkeypatch.setenv(
-        "SWARM_QUOTA_FLOORS", '{"codex": {"drainer": 25, "worker": 10}}'
-    )
+    monkeypatch.setenv("SWARM_QUOTA_FLOORS", '{"codex": {"drainer": 25, "worker": 10}}')
     monkeypatch.setattr(
         model_pool,
         "quota_summary",
@@ -2802,16 +2800,10 @@ def test_provider_walled_spills_across_codex_grants(monkeypatch):
         }
         return model_pool.rollup_grants({}, grants)
 
-    monkeypatch.setenv(
-        "SWARM_QUOTA_FLOORS", '{"codex": {"drainer": 25, "worker": 10}}'
-    )
-    monkeypatch.setattr(
-        model_pool, "quota_summary", lambda: rolled(90.0, 50.0)
-    )
+    monkeypatch.setenv("SWARM_QUOTA_FLOORS", '{"codex": {"drainer": 25, "worker": 10}}')
+    monkeypatch.setattr(model_pool, "quota_summary", lambda: rolled(90.0, 50.0))
     assert drainer.provider_walled() == (False, "available")
-    monkeypatch.setattr(
-        model_pool, "quota_summary", lambda: rolled(80.0, 80.0)
-    )
+    monkeypatch.setattr(model_pool, "quota_summary", lambda: rolled(80.0, 80.0))
     walled, reason = drainer.provider_walled()
     assert walled is True and reason == "below_floor 25 remaining 20"
 
@@ -2837,9 +2829,7 @@ def test_kg_provider_walled_applies_the_drainer_floor(monkeypatch):
             }
         }
 
-    monkeypatch.setenv(
-        "SWARM_QUOTA_FLOORS", '{"codex": {"drainer": 25, "worker": 10}}'
-    )
+    monkeypatch.setenv("SWARM_QUOTA_FLOORS", '{"codex": {"drainer": 25, "worker": 10}}')
     monkeypatch.setattr(model_pool, "quota_summary", lambda: confirmed(80.0))
     walled, reason = _KG_PROVIDER_WALLED()
     assert walled is True and "below_floor 25" in reason
