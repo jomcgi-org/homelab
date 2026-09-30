@@ -7110,6 +7110,7 @@ def tick() -> None:
         try:
             if task.get("task_paused") and _expire_reconciler_pause(task["task_id"]):
                 continue
+            _watch_progress(task)
             reconcile_task(task["task_id"], task["policy"], dbos)
         except Exception:  # noqa: BLE001 - per-task isolation keeps the lane live
             logger.exception("factory reconcile failed for task %s", task["task_id"])
@@ -7186,6 +7187,16 @@ def tick() -> None:
             active.append(admitted)
     except Exception:  # noqa: BLE001 - admission problems are logged, not fatal
         logger.exception("factory admission failed")
+
+
+def _watch_progress(task: dict) -> None:
+    """The no-progress watchdog, ahead of dispatch so a pause fences it."""
+    from factory.orchestration.factory_progress_watchdog import check
+
+    try:
+        check(task["task_id"], task["policy"])
+    except Exception:  # noqa: BLE001 - the watchdog must not stall reconciliation
+        logger.exception("factory watchdog failed for task %s", task["task_id"])
 
 
 def cancel_owned(task_id: str, dbos) -> None:

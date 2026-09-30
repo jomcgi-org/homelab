@@ -1134,6 +1134,7 @@ def test_detail_pages_nodes_and_bounds_attempt_history(monkeypatch):
         mcp, "_work_item_context", lambda *args: {"status": "not_linked"}
     )
     monkeypatch.setattr(mcp, "_queue_context", lambda *args: None)
+    monkeypatch.setattr(mcp, "_watchdog_detail", lambda *args: None)
     monkeypatch.setattr(
         mcp,
         "_lifecycle_evidence",

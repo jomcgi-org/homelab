@@ -220,7 +220,13 @@ def _claim(
         # running right now would keep writing to an issue the decision has
         # just closed or relabelled, and would then settle against a verdict
         # nobody asked it for.
-        if row.state in _RUNNING_STATES:
+        from factory.orchestration import factory_progress_watchdog
+
+        # A watchdog card is the one answered mid-task: its task is paused
+        # waiting for it, and the watchdog enacts the answer on the next tick.
+        if row.state in _RUNNING_STATES and not factory_progress_watchdog.decidable(
+            row, escalation
+        ):
             raise DecisionError(
                 409, "a brief is running on this issue; decide when it settles"
             )

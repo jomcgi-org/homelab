@@ -441,10 +441,23 @@ def _factory_rows_sync() -> tuple[object | None, list, list]:
         return policy_json, uncertain, queued
 
 
+def _watchdog_paused_sync() -> list:
+    """Active receipts whose standing pause is the no-progress watchdog's."""
+    from factory.orchestration.factory_progress_watchdog import paused_receipts
+
+    with _db_session() as session:
+        return paused_receipts(session)
+
+
 def evaluate_factory(
-    policy_json: str | None, uncertain: list, queued: list, now: datetime
+    policy_json: str | None,
+    uncertain: list,
+    queued: list,
+    now: datetime,
+    watchdog_paused: list = (),
 ) -> dict:
-    """Uncertain receipts older than 2h, and queued receipts admit_next never takes.
+    """Uncertain receipts older than 2h, queued receipts admit_next never takes,
+    and tasks the no-progress watchdog paused for a person.
 
     Uncertain age is measured from the receipt's updated_at, which is when it
     last changed state. A queued receipt is flagged when it is at the live
@@ -507,6 +520,18 @@ def evaluate_factory(
             + ", ".join(ineligible[:5])
             + (f" and {len(ineligible) - 5} more" if len(ineligible) > 5 else "")
         )
+    if watchdog_paused:
+        listed = ", ".join(
+            f"receipt {rid} (#{issue}) at ${spent:.2f}"
+            for rid, issue, spent in watchdog_paused[:5]
+        )
+        more = (
+            f" and {len(watchdog_paused) - 5} more" if len(watchdog_paused) > 5 else ""
+        )
+        problems.append(
+            f"{len(watchdog_paused)} task(s) paused by the no-progress watchdog: "
+            f"{listed}{more}"
+        )
     if problems:
         return {"ok": False, "detail": "; ".join(problems)}
     return {
@@ -520,7 +545,8 @@ def evaluate_factory(
 
 async def _factory_stuck() -> dict:
     policy_json, uncertain, queued = await asyncio.to_thread(_factory_rows_sync)
-    return evaluate_factory(policy_json, uncertain, queued, _now())
+    paused = await asyncio.to_thread(_watchdog_paused_sync)
+    return evaluate_factory(policy_json, uncertain, queued, _now(), paused)
 
 
 # ---------------------------------------------------------------------------
