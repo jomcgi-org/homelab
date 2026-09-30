@@ -738,6 +738,15 @@ genrule(
     tools = ["//bazel/tla:tlc.sh"],
 )
 
+# The S6 end-to-end TLC test (issue #6415) stages the shipped spec next to the
+# runner-generated window module and runs real TLC over it. Exported as one
+# file so the test can address it with $(rlocationpath ...); the filegroup
+# below cannot serve that (rlocationpath needs a single file).
+exports_files(
+    ["adoption_trace.tla"],
+    visibility = ["//projects/embervm:__subpackages__"],
+)
+
 # The spec sources the layer-1 vocabulary sync test (Task 3) reads. vocabulary.exs
 # is globbed now so Task 3 does not have to touch this BUILD; the glob tolerates
 # its current absence. //bazel/erlang is granted visibility because mix_test_smoke

@@ -32,6 +32,35 @@ go_test(
     embed = [":conformance_lib"],
 )
 
+# S6 end-to-end TLC proof (issue #6415): drives runS6 against an httptest
+# trace window with the pinned toolchain and asserts pass, fail naming the
+# invariant, and vacuous off real TLC output. Separate from conformance_test
+# because only this target stages the JRE, the jar and the spec, and only it
+# is Linux-gated. Hand-maintained: this package carries gazelle:ignore.
+# Linux x86_64 only: the Temurin JRE is a linux-amd64 runtime, so other
+# platforms skip this target while CI's Linux executor still runs it.
+go_test(
+    name = "s6_tlc_test",
+    srcs = ["s6_tlc_test.go"],
+    data = [
+        "//projects/embervm/specs:adoption_trace.tla",
+        "@tla2tools//file",
+        "@temurin21_jre_linux_amd64//:bin/java",
+        "@temurin21_jre_linux_amd64//:jre",
+    ],
+    embed = [":conformance_lib"],
+    env = {
+        "S6_TLC_TEST_JAR": "$(rlocationpath @tla2tools//file)",
+        "S6_TLC_TEST_JAVA": "$(rlocationpath @temurin21_jre_linux_amd64//:bin/java)",
+        "S6_TLC_TEST_SPEC": "$(rlocationpath //projects/embervm/specs:adoption_trace.tla)",
+    },
+    target_compatible_with = [
+        "@platforms//cpu:x86_64",
+        "@platforms//os:linux",
+    ],
+    timeout = "moderate",
+)
+
 platform_transition_filegroup(
     name = "conformance_amd64_bin",
     srcs = [":conformance"],
