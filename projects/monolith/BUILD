@@ -4895,6 +4895,20 @@ py_test(
 )
 
 py_test(
+    name = "swarm_uncertain_tasks_test",
+    srcs = ["factory/orchestration/uncertain_tasks_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_factory",
+        ":pkg_swarm",
+        "@pip//opentelemetry_sdk",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "swarm_planner_knowledge_test",
     srcs = ["factory/orchestration/planner_knowledge_test.py"],
     imports = ["."],

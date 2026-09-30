@@ -1,0 +1,33 @@
+# Disabled: factory.tasks.oldest_uncertain_age_seconds starts flowing in
+# Honeycomb only after the conductor change that emits the
+# factory.tasks.snapshot span ships and the leader reconciler ticks with it.
+# Enable (set enabled: true) once the attribute is confirmed present on
+# factory.tasks.snapshot spans in the monolith-backend dataset.
+name: Factory task uncertain too long
+dataset: monolith-backend
+description: >-
+  factory.tasks.oldest_uncertain_age_seconds is the age of the longest-waiting
+  factory task whose start ledger reads status uncertain, sampled on every
+  factory.tasks.snapshot span each reconciler tick (0 when none are
+  uncertain). Fires when the MAX over the last hour exceeds 7200 s, i.e. a
+  factory task has held an unknown outcome for more than 2 hours without being
+  settled or re-driven. Uncertain means the attempt may or may not have run,
+  so the task keeps its reservation and its lane slot while nothing moves it
+  forward. The snapshot span is emitted every tick on purpose: an attribute
+  that only appears on work spans goes silent exactly when the loop stops
+  emitting, which is the failure this trigger exists to catch.
+enabled: false
+frequency: 900
+alert_type: on_change
+threshold:
+  op: ">"
+  value: 7200
+recipients: [kjEJr2qxxxe]
+tags:
+  service: monolith
+  signal: factory
+query:
+  time_range: 3600
+  calculations:
+    - op: MAX
+      column: factory.tasks.oldest_uncertain_age_seconds
